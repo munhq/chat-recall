@@ -1,0 +1,58 @@
+.status-widget {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  font-size: 0.875rem;
+}
+
+.status-indicator {
+  font-size: 0.5rem;
+}
+
+.status-indicator.active {
+  color: #238636;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.status-indicator.loading {
+  color: #d29922;
+}
+
+.status-indicator.error {
+  color: #f85149;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.status-info {
+  display: flex;
+  gap: 1rem;
+}
+
+.status-sessions,
+.status-chunks,
+.status-memory {
+  color: #8b949e;
+}
+
+.status-widget.error {
+  border-color: #f85149;
+  color: #f85149;
+}
+
+.status-widget.loading {
+  border-color: #d29922;
+  color: #d29922;
+}

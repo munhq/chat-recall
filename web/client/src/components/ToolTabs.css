@@ -1,0 +1,31 @@
+.tool-tabs {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.tool-tab {
+  padding: 0.3rem 0.65rem;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: #6e7681;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+
+.tool-tab:hover {
+  color: #c9d1d9;
+  background: #21262d;
+}
+
+.tool-tab.active {
+  color: #c9d1d9;
+  background: #21262d;
+  border-color: #30363d;
+}
+
+.tool-tab-claude.active { border-color: #d97706; color: #d97706; }
+.tool-tab-gemini.active { border-color: #1a73e8; color: #58a6ff; }
+.tool-tab-opencode.active { border-color: #8b5cf6; color: #a78bfa; }
