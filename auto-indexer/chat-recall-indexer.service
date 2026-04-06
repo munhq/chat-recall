@@ -1,0 +1,18 @@
+[Unit]
+Description=Chat Recall Auto-Indexer
+After=network.target
+
+[Service]
+Type=simple
+User=adi
+WorkingDirectory=/home/user/code/personal/chat-recall
+ExecStart=/home/user/.nvm/versions/node/v23.9.0/bin/node /home/user/code/personal/chat-recall/node_modules/.bin/tsx /home/user/code/personal/chat-recall/auto-indexer/indexer.ts
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+Environment="PATH=/home/user/.nvm/versions/node/v23.9.0/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="HOME=/home/user"
+
+[Install]
+WantedBy=multi-user.target

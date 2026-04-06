@@ -1,0 +1,148 @@
+# Chat-Recall Docker Compose
+#
+# Quick start:
+#   cp .env.example .env          # Edit with your settings
+#   docker compose up -d          # Start all services
+#   open http://localhost:8080     # Web UI
+#
+# Profiles:
+#   docker compose up -d                          # Default: starts Ollama + all services
+#   docker compose --profile gpu up -d            # With GPU acceleration for Ollama
+#   docker compose up -d --scale ollama=0         # Skip Ollama (use external/host Ollama)
+#
+# To use your host Ollama instead of the container:
+#   Set OLLAMA_HOST=http://host.docker.internal:11434 in .env
+#   Then: docker compose up -d --scale ollama=0
+
+services:
+  # ── Ollama: Local embedding model server ──────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # Ollama with GPU support (use --profile gpu)
+  ollama-gpu:
+    image: ollama/ollama:latest
+    profiles: [gpu]
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ── Model init: Pull required models on first start ───────────────────
+  ollama-init:
+    image: curlimages/curl:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: >
+      sh -c '
+        echo "Pulling embedding model: nomic-embed-text..."
+        curl -s http://ollama:11434/api/pull -d "{\"name\": \"nomic-embed-text\"}" | tail -1
+        if [ -n "${OLLAMA_SUMMARY_MODEL:-}" ]; then
+          echo "Pulling summary model: ${OLLAMA_SUMMARY_MODEL}..."
+          curl -s http://ollama:11434/api/pull -d "{\"name\": \"${OLLAMA_SUMMARY_MODEL}\"}" | tail -1
+        fi
+        echo "Models ready."
+      '
+
+  # ── Backend API server ────────────────────────────────────────────────
+  server:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+    ports:
+      - "${API_PORT:-5000}:5000"
+    volumes:
+      - ${CLAUDE_DIR:-~/.claude}:/root/.claude
+      - ${GEMINI_DIR:-~/.gemini}:/root/.gemini
+      - ${OPENCODE_DIR:-~/.local/share/opencode}:/root/.local/share/opencode
+    environment:
+      # Embedding
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # Summaries
+      SUMMARY_PROVIDER: ${SUMMARY_PROVIDER:-ollama}
+      OLLAMA_MODEL: ${OLLAMA_SUMMARY_MODEL:-qwen2.5:7b}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3-flash-preview}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Server
+      PORT: 5000
+      HOST: 0.0.0.0
+      NODE_ENV: production
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Web frontend (React + nginx) ─────────────────────────────────────
+  client:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.client
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Auto-indexer daemon ───────────────────────────────────────────────
+  indexer:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.server
+    volumes:
+      - ${CLAUDE_DIR:-~/.claude}:/root/.claude
+      - ${GEMINI_DIR:-~/.gemini}:/root/.gemini
+      - ${OPENCODE_DIR:-~/.local/share/opencode}:/root/.local/share/opencode
+    environment:
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      SUMMARY_PROVIDER: ${SUMMARY_PROVIDER:-ollama}
+      OLLAMA_MODEL: ${OLLAMA_SUMMARY_MODEL:-qwen2.5:7b}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3-flash-preview}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      NODE_ENV: production
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: unless-stopped
+    command: ["node_modules/.bin/tsx", "auto-indexer/indexer.ts"]
+
+volumes:
+  ollama_data:
+    # Persists Ollama models between restarts

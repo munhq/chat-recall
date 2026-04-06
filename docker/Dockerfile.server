@@ -1,0 +1,38 @@
+FROM node:20-bookworm-slim
+
+# Install build tools for native Node.js modules (better-sqlite3, lancedb)
+RUN apt-get update && apt-get install -y \
+    python3 \
+    make \
+    g++ \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy root package files first for layer caching
+COPY package.json package-lock.json ./
+
+# Install root dependencies (includes lancedb, better-sqlite3, tsx)
+RUN npm ci
+
+# Copy server package files
+COPY web/server/package.json web/server/package-lock.json ./web/server/
+
+# Install server dependencies
+RUN cd web/server && npm ci
+
+# Copy TypeScript source
+COPY tsconfig.json ./
+COPY src/ ./src/
+COPY web/server/ ./web/server/
+COPY auto-indexer/ ./auto-indexer/
+
+EXPOSE 5000
+
+ENV HOME=/root
+ENV NODE_ENV=production
+
+# Use tsx to run TypeScript directly - avoids path resolution issues
+# with cross-package relative imports (../../../../src/...)
+CMD ["node_modules/.bin/tsx", "web/server/src/server.ts"]

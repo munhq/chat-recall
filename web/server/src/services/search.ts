@@ -1,0 +1,116 @@
+/**
+ * Search service — uses unified MemoryIndex for all searches.
+ */
+
+import { MemoryIndex, OllamaEmbedder, MetadataCache, getAllSessions } from '../imports.js';
+import type { SourceType, MemorySearchResult } from '../imports.js';
+
+/** Session search result shape (consumed by the frontend) */
+export interface SearchResult {
+  sessionId: string;
+  score: number;
+  chunkType: string;
+  text: string;
+  projectPath: string;
+  created: string;
+  modified: string;
+  firstPrompt: string;
+  summary?: string;
+  matchedChunks: Array<{
+    chunkType: string;
+    text: string;
+    score: number;
+  }>;
+}
+
+export class SearchService {
+  private memoryIndex: MemoryIndex;
+  private embedder: OllamaEmbedder;
+
+  // Cache project counts for 30 seconds to avoid scanning filesystem on every SSE tick
+  private projectCountsCache: { projects: Record<string, number>; totalSessions: number } | null = null;
+  private projectCountsCacheTime = 0;
+  private static readonly CACHE_TTL_MS = 30_000;
+
+  constructor() {
+    this.embedder = new OllamaEmbedder();
+    this.memoryIndex = new MemoryIndex(this.embedder);
+  }
+
+  /**
+   * Search sessions only — returns results in the legacy SearchResult format
+   * for backward compatibility with the frontend.
+   */
+  async search(
+    query: string,
+    topK = 10,
+    projectFilter?: string
+  ): Promise<SearchResult[]> {
+    const results = await this.memoryIndex.search(query, {
+      topK,
+      sourceTypes: ['session'],
+      projectFilter,
+    });
+
+    // Enrich with metadata from cache (summaries, dates)
+    const cache = new MetadataCache();
+    const searchResults: SearchResult[] = results.map((r: MemorySearchResult) => {
+      const cached = cache.get(r.itemId);
+      return {
+        sessionId: r.itemId,
+        score: r.score,
+        chunkType: r.matchedChunks[0]?.chunkType || 'unknown',
+        text: r.matchedChunks[0]?.text || r.title,
+        projectPath: r.projectPath,
+        created: '',
+        modified: '',
+        firstPrompt: cached?.firstPrompt || r.title,
+        summary: cached?.summary,
+        matchedChunks: r.matchedChunks,
+      };
+    });
+    cache.close();
+    return searchResults;
+  }
+
+  async searchUnified(
+    query: string,
+    topK = 10,
+    sourceTypes?: SourceType[],
+    projectFilter?: string
+  ): Promise<MemorySearchResult[]> {
+    return await this.memoryIndex.search(query, { topK, sourceTypes, projectFilter });
+  }
+
+  async getStatus() {
+    let stats;
+    try {
+      stats = await this.memoryIndex.getStats();
+    } catch {
+      stats = { totalChunks: 0, totalItems: 0, bySourceType: {}, indexPath: '' };
+    }
+
+    // Build project counts from all sources (Claude + Gemini + OpenCode)
+    const now = Date.now();
+    if (!this.projectCountsCache || (now - this.projectCountsCacheTime) > SearchService.CACHE_TTL_MS) {
+      const { getRecentSessions: getAll } = await import('./sessions.js');
+      const allSessions = await getAll(0); // 0 = no limit
+      const projectCounts: Record<string, number> = {};
+      for (const s of allSessions) {
+        if (s.projectPath) {
+          projectCounts[s.projectPath] = (projectCounts[s.projectPath] || 0) + 1;
+        }
+      }
+      this.projectCountsCache = { projects: projectCounts, totalSessions: allSessions.length };
+      this.projectCountsCacheTime = now;
+    }
+    const { projects: projectCounts, totalSessions } = this.projectCountsCache;
+
+    return {
+      totalChunks: stats.totalChunks,
+      totalSessions,
+      projects: projectCounts,
+      indexPath: stats.indexPath,
+    };
+  }
+}

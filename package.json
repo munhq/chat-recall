@@ -1,0 +1,75 @@
+{
+  "name": "chat-recall",
+  "version": "0.1.0",
+  "description": "Semantic search for Claude Code sessions - MCP server, CLI, and Web UI",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "chat-recall": "./dist/cli.js",
+    "chat-recall-mcp": "./dist/mcp.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/cli.js",
+    "mcp": "node dist/mcp.js",
+    "index": "tsx scripts/full-index.ts",
+    "verify": "tsx scripts/verify-index.ts",
+    "generate-summaries": "tsx scripts/generate-summaries.ts",
+    "auto-indexer": "tsx auto-indexer/indexer.ts",
+    "web:server:dev": "cd web/server && npm run dev",
+    "web:server:build": "cd web/server && npm run build",
+    "web:client:dev": "cd web/client && npm run dev",
+    "web:client:build": "cd web/client && npm run build",
+    "web:dev": "concurrently \"npm run web:server:dev\" \"npm run web:client:dev\"",
+    "web:build": "npm run web:server:build && npm run web:client:build",
+    "web:install": "cd web/server && npm install && cd ../client && npm install",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:report": "playwright show-report",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:build": "docker compose build",
+    "docker:logs": "docker compose logs -f",
+    "prepublishOnly": "npm run build"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "mcp",
+    "semantic-search",
+    "vector-search",
+    "recall",
+    "embeddings",
+    "ollama",
+    "web-ui"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@lancedb/lancedb": "^0.13.0",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "better-sqlite3": "^12.6.2",
+    "chalk": "^5.3.0",
+    "chokidar": "^3.5.3",
+    "commander": "^12.0.0",
+    "dotenv": "^17.2.3",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^20.0.0",
+    "concurrently": "^8.2.2",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0"
+  }
+}

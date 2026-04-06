@@ -1,0 +1,21 @@
+[Unit]
+Description=Chat-Recall Auto-Indexer
+After=network.target
+
+[Service]
+Type=simple
+User=adi
+WorkingDirectory=/home/user/code/personal/chat-recall-ui
+ExecStart=/usr/bin/npx tsx /home/user/code/personal/chat-recall-ui/auto-indexer/indexer.ts
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=chat-recall-indexer
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target
