@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+web/client/dist/
+web/server/dist/
+*.js.map
+
+# Environment (contains API keys)
+.env
+
+# LanceDB / SQLite index data
+*.lance/
+*.db
+chat-recall-index/
+chat-recall-cache.db
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Playwright
+test-results/
+playwright-report/
+
+# Misc
+*.tgz
+*.log

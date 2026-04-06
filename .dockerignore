@@ -1,0 +1,34 @@
+# Build outputs
+dist/
+web/server/dist/
+web/client/dist/
+
+# Dependencies (installed fresh in Docker)
+node_modules/
+web/server/node_modules/
+web/client/node_modules/
+
+# Dev tools
+.git/
+.gitignore
+*.log
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# Test outputs
+e2e/
+playwright-report/
+test-results/
+playwright.config.ts
+
+# Documentation
+*.md
+!CLAUDE.md
+
+# OS files
+.DS_Store
+Thumbs.db

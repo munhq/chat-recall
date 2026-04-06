@@ -1,0 +1,147 @@
+.message {
+  padding: 1.5rem;
+  margin-bottom: 1rem;
+  border-radius: 6px;
+  border-left: 4px solid;
+}
+
+.message-user {
+  background: #161b22;
+  border-left-color: #58a6ff;
+}
+
+.message-assistant {
+  background: #1c2128;
+  border-left-color: #238636;
+}
+
+.message-summary {
+  background: #21262d;
+  border-left-color: #d29922;
+}
+
+.message-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid #30363d;
+}
+
+.message-role {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+}
+
+.message-user .message-role {
+  color: #58a6ff;
+}
+
+.message-assistant .message-role {
+  color: #238636;
+}
+
+.message-summary .message-role {
+  color: #d29922;
+}
+
+.message-line {
+  font-size: 0.75rem;
+  color: #8b949e;
+}
+
+.thinking-block {
+  margin-bottom: 1rem;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 0.5rem;
+}
+
+.thinking-block summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: #8b949e;
+  user-select: none;
+}
+
+.thinking-content {
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  background: #161b22;
+  border-radius: 4px;
+}
+
+.thinking-content pre {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-size: 0.875rem;
+  color: #c9d1d9;
+  font-family: 'Fira Code', monospace;
+}
+
+.message-content {
+  line-height: 1.6;
+}
+
+.message-content p {
+  margin-bottom: 0.5rem;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.tool-calls {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #30363d;
+}
+
+.tool-calls-header {
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+  color: #8b949e;
+}
+
+.tool-call {
+  margin-bottom: 0.5rem;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 0.5rem;
+}
+
+.tool-call summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-family: 'Fira Code', monospace;
+  user-select: none;
+}
+
+.tool-call-content {
+  margin-top: 0.5rem;
+}
+
+.tool-input,
+.tool-result {
+  margin-top: 0.5rem;
+}
+
+.tool-input strong,
+.tool-result strong {
+  display: block;
+  margin-bottom: 0.25rem;
+  color: #8b949e;
+}
+
+.tool-input pre,
+.tool-result pre {
+  background: #161b22;
+  padding: 0.5rem;
+  border-radius: 4px;
+  overflow-x: auto;
+  font-size: 0.875rem;
+  font-family: 'Fira Code', monospace;
+}

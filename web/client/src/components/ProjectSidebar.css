@@ -1,0 +1,116 @@
+.project-sidebar {
+  display: flex;
+  flex-direction: column;
+  background: #0d1117;
+  border-right: 1px solid #30363d;
+  height: 100%;
+  min-width: 200px;
+  max-width: 260px;
+  overflow: hidden;
+}
+
+.project-sidebar-header {
+  padding: 0.875rem 1rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #6e7681;
+  border-bottom: 1px solid #30363d;
+  flex-shrink: 0;
+}
+
+.project-sidebar-loading {
+  padding: 1rem;
+  color: #6e7681;
+  font-size: 0.875rem;
+}
+
+.project-sidebar-error {
+  padding: 0.75rem 1rem;
+  font-size: 0.8rem;
+  color: #f85149;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.retry-btn {
+  background: #21262d;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  color: #8b949e;
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.25rem 0.5rem;
+  width: fit-content;
+}
+
+.retry-btn:hover {
+  border-color: #58a6ff;
+  color: #c9d1d9;
+}
+
+.project-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.project-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  transition: background 0.15s;
+  border-left: 2px solid transparent;
+  min-height: 36px;
+}
+
+.project-item:hover {
+  background: #161b22;
+}
+
+.project-item.active {
+  background: #161b22;
+  border-left-color: #58a6ff;
+  color: #58a6ff;
+}
+
+.project-item.active .project-name {
+  color: #58a6ff;
+}
+
+.project-name {
+  color: #c9d1d9;
+  font-size: 0.8125rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.project-item:first-child .project-name {
+  font-weight: 600;
+  color: #e6edf3;
+}
+
+.project-count {
+  flex-shrink: 0;
+  font-size: 0.75rem;
+  color: #6e7681;
+  background: #21262d;
+  padding: 0.125rem 0.4rem;
+  border-radius: 10px;
+  min-width: 20px;
+  text-align: center;
+}
+
+.project-item.active .project-count {
+  background: #1f3a5f;
+  color: #58a6ff;
+}

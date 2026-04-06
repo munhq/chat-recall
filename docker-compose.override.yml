@@ -1,0 +1,38 @@
+# docker-compose.override.yml - Local development overrides
+# This file is automatically loaded by docker compose.
+#
+# ── Use your host Ollama instead of the container ──
+# Uncomment the block below if you already have Ollama running on the host:
+#
+# services:
+#   ollama:
+#     profiles: [disabled]    # Don't start container Ollama
+#   ollama-init:
+#     profiles: [disabled]    # Don't pull models
+#   server:
+#     depends_on: {}          # Remove Ollama dependency
+#     environment:
+#       OLLAMA_HOST: http://host.docker.internal:11434
+#   indexer:
+#     depends_on: {}
+#     environment:
+#       OLLAMA_HOST: http://host.docker.internal:11434
+#
+# ── Use Gemini API only (no Ollama at all) ──
+# Uncomment and set GEMINI_API_KEY + ANTHROPIC_API_KEY in .env:
+#
+# services:
+#   ollama:
+#     profiles: [disabled]
+#   ollama-init:
+#     profiles: [disabled]
+#   server:
+#     depends_on: {}
+#     environment:
+#       EMBEDDING_PROVIDER: gemini
+#       SUMMARY_PROVIDER: claude
+#   indexer:
+#     depends_on: {}
+#     environment:
+#       EMBEDDING_PROVIDER: gemini
+#       SUMMARY_PROVIDER: claude
