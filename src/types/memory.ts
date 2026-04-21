@@ -7,7 +7,7 @@
  */
 
 /** All supported memory source types */
-export type SourceType = 'session' | 'plan' | 'task' | 'claude_md' | 'paste' | 'history';
+export type SourceType = 'session' | 'plan' | 'task' | 'claude_md' | 'paste' | 'history' | 'diary';
 
 /** A single discoverable item from a data source */
 export interface MemoryItem {
@@ -59,7 +59,8 @@ export type LinkType =
   | 'claude_md_for_project' // CLAUDE.md in project directory
   | 'plan_for_project'     // Plan references project file paths
   | 'agent_plan_for_session' // Agent plan filename contains session hash
-  | 'brain_artifact_for_session'; // Gemini brain artifact linked to session
+  | 'brain_artifact_for_session' // Gemini brain artifact linked to session
+  | 'diary_for_session'; // Agent diary entry linked to session
 
 /** A discovered relationship between two memory items */
 export interface MemoryLink {
