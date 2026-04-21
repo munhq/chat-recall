@@ -25,6 +25,14 @@ export { GeminiSessionSource } from '../../../src/parsers/gemini-source.js';
 export { GeminiBrainSource } from '../../../src/parsers/gemini-brain-source.js';
 export { OpenCodeSource } from '../../../src/parsers/opencode-source.js';
 export { OpenCodeTodoSource } from '../../../src/parsers/opencode-todo-source.js';
+export { DiarySource } from '../../../src/parsers/diary-source.js';
+
+// Core (new features)
+export { KnowledgeGraph } from '../../../src/core/knowledge-graph.js';
+export { sanitizeQuery } from '../../../src/core/query-sanitizer.js';
+export { getWAL } from '../../../src/core/write-ahead-log.js';
+export { classifyChunk, type MemoryType, type ClassificationResult } from '../../../src/core/memory-classifier.js';
+export { extractEntities, extractAndPopulateKG } from '../../../src/core/entity-extractor.js';
 
 // Types
 export type {

@@ -5,7 +5,7 @@
 import {
   MemoryIndex, MemoryStore, OllamaEmbedder, SourceRegistry,
   SessionSource, PlanSource, TaskSource, ClaudeMdSource, HistorySource, PasteSource,
-  GeminiSessionSource, GeminiBrainSource, OpenCodeSource, OpenCodeTodoSource,
+  GeminiSessionSource, GeminiBrainSource, OpenCodeSource, OpenCodeTodoSource, DiarySource,
 } from '../imports.js';
 import type { SourceType, MemorySearchResult, MemoryMetadataRow, MemoryLinkRow } from '../imports.js';
 
@@ -32,6 +32,7 @@ export class MemoryService {
     this.registry.register(new GeminiBrainSource());
     this.registry.register(new OpenCodeSource());
     this.registry.register(new OpenCodeTodoSource());
+    this.registry.register(new DiarySource());
   }
 
   async search(
