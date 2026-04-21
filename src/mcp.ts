@@ -35,6 +35,12 @@ import { GeminiBrainSource } from './parsers/gemini-brain-source.js';
 import { OpenCodeSource } from './parsers/opencode-source.js';
 import { OpenCodeTodoSource } from './parsers/opencode-todo-source.js';
 import { MetadataCache } from './core/metadata-cache.js';
+import { KnowledgeGraph } from './core/knowledge-graph.js';
+import { classifyChunk } from './core/memory-classifier.js';
+import { extractAndPopulateKG } from './core/entity-extractor.js';
+import { sanitizeQuery } from './core/query-sanitizer.js';
+import { getWAL } from './core/write-ahead-log.js';
+import { DiarySource } from './parsers/diary-source.js';
 import type { SourceType } from './types/memory.js';
 
 // Load .env configuration
@@ -82,7 +88,7 @@ const RecallSuggestResumeSchema = z.object({
 const RecallMemorySearchSchema = z.object({
   query: z.string().describe('What you\'re looking for across all memory types'),
   top_k: z.number().optional().default(10).describe('Number of results'),
-  source_types: z.array(z.enum(['session', 'plan', 'task', 'claude_md', 'paste', 'history'])).optional()
+  source_types: z.array(z.enum(['session', 'plan', 'task', 'claude_md', 'paste', 'history', 'diary'])).optional()
     .describe('Filter by source types (default: all)'),
   project_filter: z.string().optional().describe('Filter by project path'),
   provider: z.enum(['ollama', 'gemini']).optional().default('ollama'),
@@ -107,8 +113,57 @@ const RecallPlansSchema = z.object({
   limit: z.number().optional().default(20).describe('Number of plans to list'),
 });
 
+const RecallPlanShowSchema = z.object({
+  plan_id: z.string().describe('Plan ID (the filename without .md)'),
+});
+
 const RecallTasksSchema = z.object({
   limit: z.number().optional().default(20).describe('Number of task groups to list'),
+});
+
+// ── Knowledge Graph Schemas ──────────────────────────────────────
+
+const RecallKGQuerySchema = z.object({
+  entity: z.string().describe('Entity name to query (e.g., "Alice", "chat-recall", "PostgreSQL")'),
+  as_of: z.string().optional().describe('Date filter — only facts valid at this date (YYYY-MM-DD)'),
+  direction: z.enum(['outgoing', 'incoming', 'both']).optional().default('both'),
+});
+
+const RecallKGAddSchema = z.object({
+  subject: z.string().describe('The entity doing/being something'),
+  predicate: z.string().describe('Relationship type (e.g., "uses", "works_on", "prefers")'),
+  object: z.string().describe('The entity being connected to'),
+  valid_from: z.string().optional().describe('When this became true (YYYY-MM-DD)'),
+  source_session: z.string().optional().describe('Session ID where this was learned'),
+});
+
+const RecallKGInvalidateSchema = z.object({
+  subject: z.string().describe('Entity'),
+  predicate: z.string().describe('Relationship'),
+  object: z.string().describe('Connected entity'),
+  ended: z.string().optional().describe('When it stopped being true (YYYY-MM-DD, default: today)'),
+});
+
+const RecallKGTimelineSchema = z.object({
+  entity: z.string().optional().describe('Entity to get timeline for (omit for full timeline)'),
+  limit: z.number().optional().default(50),
+});
+
+const RecallKGStatsSchema = z.object({});
+
+// ── Diary Schemas ────────────────────────────────────────────────
+
+const RecallDiaryWriteSchema = z.object({
+  agent_name: z.string().describe('Your name — each agent gets their own diary'),
+  entry: z.string().describe('What happened, what you learned, what matters'),
+  topic: z.string().optional().default('general').describe('Topic tag'),
+  session_id: z.string().optional().describe('Current session ID (for linking)'),
+  project_path: z.string().optional().describe('Project path (for context)'),
+});
+
+const RecallDiaryReadSchema = z.object({
+  agent_name: z.string().describe('Agent name to read diary for'),
+  last_n: z.number().optional().default(10).describe('Number of recent entries'),
 });
 
 const server = new Server(
@@ -255,7 +310,7 @@ Perfect for: "I'm working on X, what past work is relevant?"`,
       },
       {
         name: 'recall_memory_search',
-        description: `Search across all memory types: sessions, plans, tasks, CLAUDE.md files, history, and paste cache.
+        description: `Search across all memory types: sessions, plans, tasks, CLAUDE.md files, history, paste cache, and agent diaries.
 
 Returns results from any memory source, ranked by relevance. Use source_types to filter.`,
         inputSchema: {
@@ -265,7 +320,7 @@ Returns results from any memory source, ranked by relevance. Use source_types to
             top_k: { type: 'number', default: 10, description: 'Number of results' },
             source_types: {
               type: 'array',
-              items: { type: 'string', enum: ['session', 'plan', 'task', 'claude_md', 'paste', 'history'] },
+              items: { type: 'string', enum: ['session', 'plan', 'task', 'claude_md', 'paste', 'history', 'diary'] },
               description: 'Filter by source types (default: all)',
             },
             project_filter: { type: 'string', description: 'Filter by project path' },
@@ -356,6 +411,19 @@ Shows plan titles and metadata. Use recall_memory_search to search plan content.
         },
       },
       {
+        name: 'recall_plan_show',
+        description: `Show the full content of a specific plan by ID.
+
+Use this to view or edit the complete plan text. Pass the plan_id from recall_plans results.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            plan_id: { type: 'string', description: 'Plan ID (filename without .md extension)' },
+          },
+          required: ['plan_id'],
+        },
+      },
+      {
         name: 'recall_tasks',
         description: `List indexed task groups from ~/.claude/tasks/.
 
@@ -365,6 +433,105 @@ Each task group corresponds to a session. Shows task subjects and status.`,
           properties: {
             limit: { type: 'number', default: 20, description: 'Number of task groups to list' },
           },
+        },
+      },
+      // ── Knowledge Graph Tools ──────────────────────────────────
+      {
+        name: 'recall_kg_query',
+        description: `Query the knowledge graph for an entity's relationships.
+
+Returns typed facts with temporal validity. E.g. "chat-recall" → uses TypeScript, has source FTS5.
+Filter by date with as_of to see what was true at a specific point in time.
+Use this to VERIFY facts before asserting them.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            entity: { type: 'string', description: 'Entity to query (e.g., "Alice", "chat-recall")' },
+            as_of: { type: 'string', description: 'Date filter (YYYY-MM-DD, optional)' },
+            direction: { type: 'string', enum: ['outgoing', 'incoming', 'both'], default: 'both' },
+          },
+          required: ['entity'],
+        },
+      },
+      {
+        name: 'recall_kg_add',
+        description: `Add a fact to the knowledge graph. Subject → predicate → object with optional time window.
+
+E.g. ("chat-recall", "uses", "LanceDB", valid_from="2024-01-15")`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            subject: { type: 'string', description: 'The entity doing/being something' },
+            predicate: { type: 'string', description: 'Relationship type (e.g., "uses", "works_on", "prefers")' },
+            object: { type: 'string', description: 'The entity being connected to' },
+            valid_from: { type: 'string', description: 'When this became true (YYYY-MM-DD, optional)' },
+            source_session: { type: 'string', description: 'Session ID where this was learned (optional)' },
+          },
+          required: ['subject', 'predicate', 'object'],
+        },
+      },
+      {
+        name: 'recall_kg_invalidate',
+        description: `Mark a fact as no longer true. Use when things change — tools replaced, decisions reversed, people leave.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            subject: { type: 'string', description: 'Entity' },
+            predicate: { type: 'string', description: 'Relationship' },
+            object: { type: 'string', description: 'Connected entity' },
+            ended: { type: 'string', description: 'When it stopped being true (YYYY-MM-DD, default: today)' },
+          },
+          required: ['subject', 'predicate', 'object'],
+        },
+      },
+      {
+        name: 'recall_kg_timeline',
+        description: `Get chronological timeline of facts. Shows the story of an entity (or everything) in order.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            entity: { type: 'string', description: 'Entity to get timeline for (optional)' },
+            limit: { type: 'number', default: 50 },
+          },
+        },
+      },
+      {
+        name: 'recall_kg_stats',
+        description: 'Knowledge graph overview: entities, triples, current vs expired facts, relationship types.',
+        inputSchema: {
+          type: 'object',
+          properties: {},
+        },
+      },
+      // ── Diary Tools ────────────────────────────────────────────
+      {
+        name: 'recall_diary_write',
+        description: `Write to your agent diary. Record observations, decisions, what you worked on, what matters.
+
+Each agent gets their own persistent diary across sessions. Use this at the end of sessions
+or when you learn something important that should persist.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            agent_name: { type: 'string', description: 'Your name — each agent gets their own diary' },
+            entry: { type: 'string', description: 'What happened, what you learned, what matters' },
+            topic: { type: 'string', default: 'general', description: 'Topic tag' },
+            session_id: { type: 'string', description: 'Current session ID (for linking)' },
+            project_path: { type: 'string', description: 'Project path (for context)' },
+          },
+          required: ['agent_name', 'entry'],
+        },
+      },
+      {
+        name: 'recall_diary_read',
+        description: `Read your recent diary entries. See what past versions of yourself recorded across sessions.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            agent_name: { type: 'string', description: 'Agent name to read diary for' },
+            last_n: { type: 'number', default: 10, description: 'Number of recent entries' },
+          },
+          required: ['agent_name'],
         },
       },
     ],
@@ -379,6 +546,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     switch (name) {
       case 'recall_search': {
         const params = RecallSearchSchema.parse(args);
+
+        // Sanitize query to prevent prompt injection
+        const sanitized = sanitizeQuery(params.query);
+        const searchQuery = sanitized.cleanQuery;
 
         // Use provided param, env var, or default to ollama (local)
         const provider = (params.provider || process.env.EMBEDDING_PROVIDER || 'ollama') as EmbedderProvider;
@@ -395,7 +566,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         try {
           const searchTopK = params.skip_ranking ? params.top_k : params.top_k * 4;
           const memoryIndex = new MemoryIndex(embedder);
-          const memResults = await memoryIndex.search(params.query, {
+          const memResults = await memoryIndex.search(searchQuery, {
             topK: searchTopK,
             sourceTypes: ['session'],
             projectFilter: params.project_filter,
@@ -497,6 +668,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       
       case 'recall_index': {
         const params = RecallIndexSchema.parse(args);
+        const wal = getWAL();
+        wal.log('index', { force: params.force, provider: params.provider });
         const provider = (params.provider || process.env.EMBEDDING_PROVIDER || 'ollama') as EmbedderProvider;
 
         let embedder: Awaited<ReturnType<typeof getEmbedder>> | null;
@@ -521,8 +694,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         registry.register(new GeminiBrainSource());
         registry.register(new OpenCodeSource());
         registry.register(new OpenCodeTodoSource());
+        registry.register(new DiarySource());
 
-        let totalItems = 0, totalChunks = 0, totalErrors = 0;
+        // Open KG for entity extraction during indexing
+        const kg = new KnowledgeGraph();
+        let totalItems = 0, totalChunks = 0, totalErrors = 0, totalKGTriples = 0;
         for (const sourceType of registry.getRegisteredTypes()) {
           const sources = registry.getAll(sourceType);
           if (sources.length === 0) continue;
@@ -532,6 +708,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               if (!params.force && !memoryIndex.needsUpdate(item.sourceType, item.id, item.mtime)) continue;
               await memoryIndex.deleteItem(item.sourceType, item.id);
               const chunks = await source.parse(item);
+              // Classify chunks and enrich chunkType with memory type + importance
+              for (const chunk of chunks) {
+                const classification = classifyChunk(chunk.text);
+                if (classification.memoryType !== 'general') {
+                  chunk.chunkType = `${chunk.chunkType}:${classification.memoryType}:imp${classification.importance}`;
+                }
+                // Auto-extract entities into KG
+                totalKGTriples += extractAndPopulateKG(kg, chunk.text, {
+                  projectPath: item.projectPath,
+                  sourceType: item.sourceType,
+                  sessionId: item.id,
+                });
+              }
               if (chunks.length > 0) {
                 await memoryIndex.bufferChunks(chunks);
                 totalChunks += chunks.length;
@@ -545,13 +734,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         }
         await memoryIndex.flushBuffer();
+        kg.close();
         // Note: optimize() removed from auto flows — run `node dist/cli.js optimize` manually
         store.close();
 
         return {
           content: [{
             type: 'text',
-            text: `Indexing complete!\nItems processed: ${totalItems}\nChunks indexed: ${totalChunks}\nErrors: ${totalErrors}`,
+            text: `Indexing complete!\nItems processed: ${totalItems}\nChunks indexed: ${totalChunks}\nKG triples extracted: ${totalKGTriples}\nErrors: ${totalErrors}`,
           }],
         };
       }
@@ -959,9 +1149,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               output.push(result.text.substring(0, 200) + '...');
             }
 
+            // KG facts for this project
+            const projSlug = result.projectPath.split('/').filter(Boolean).pop() || '';
+            if (projSlug) {
+              try {
+                const kgSuggest = new KnowledgeGraph();
+                const facts = kgSuggest.queryEntity(projSlug).filter(f => f.current && f.direction === 'outgoing').slice(0, 5);
+                if (facts.length > 0) {
+                  output.push(`**Known:** ${facts.map(f => `${f.predicate} ${f.object}`).join(', ')}`);
+                }
+                kgSuggest.close();
+              } catch { /* skip */ }
+            }
+
             output.push('');
             output.push(`**Resume:** \`claude --resume ${result.sessionId}\``);
-            output.push(`**Full Summary:** Use \`recall_summary\` with session ID \`${result.sessionId}\``);
             output.push('');
           }
         } finally {
@@ -973,6 +1175,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_memory_search': {
         const params = RecallMemorySearchSchema.parse(args);
+
+        // Sanitize query to prevent prompt injection
+        const sanitizedMem = sanitizeQuery(params.query);
+        const memSearchQuery = sanitizedMem.cleanQuery;
+
         const provider = (params.provider || process.env.EMBEDDING_PROVIDER || 'ollama') as EmbedderProvider;
 
         let embedder: Awaited<ReturnType<typeof getEmbedder>> | null;
@@ -983,7 +1190,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         const memoryIndex = new MemoryIndex(embedder);
-        const results = await memoryIndex.search(params.query, {
+        const results = await memoryIndex.search(memSearchQuery, {
           topK: params.top_k,
           sourceTypes: params.source_types as SourceType[] | undefined,
           projectFilter: params.project_filter,
@@ -1075,10 +1282,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (item.content_preview) {
             lines.push(`  ${item.content_preview.slice(0, 120)}...`);
           }
+          const links = memoryStore.getLinksFrom('plan', item.id);
+          for (const link of links) {
+            if (link.target_type === 'session') {
+              lines.push(`  **Session:** \`claude --resume ${link.target_id}\``);
+            }
+          }
         }
 
         memoryStore.close();
         return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_plan_show': {
+        const params = RecallPlanShowSchema.parse(args);
+        const plansDir = join(homedir(), '.claude', 'plans');
+        const filePath = join(plansDir, `${params.plan_id}.md`);
+
+        if (!existsSync(filePath)) {
+          return { content: [{ type: 'text', text: `Plan not found: ${params.plan_id}` }] };
+        }
+
+        const content = readFileSync(filePath, 'utf-8');
+        return { content: [{ type: 'text', text: content }] };
       }
 
       case 'recall_tasks': {
@@ -1204,6 +1430,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             lines.push(`- ${work}`);
           }
           lines.push('');
+        }
+
+        // Known facts from knowledge graph about this project
+        if (projName) {
+          try {
+            const kgResume = new KnowledgeGraph();
+            const projFacts = kgResume.queryEntity(projName);
+            const currentFacts = projFacts.filter(f => f.current);
+            if (currentFacts.length > 0) {
+              lines.push('## Known Facts (Knowledge Graph)');
+              for (const fact of currentFacts.slice(0, 15)) {
+                const arrow = fact.direction === 'outgoing' ? '→' : '←';
+                lines.push(`- ${fact.subject} ${arrow} **${fact.predicate}** ${arrow} ${fact.object}`);
+              }
+              lines.push('');
+            }
+            kgResume.close();
+          } catch { /* KG not available, skip */ }
         }
 
         // What's pending (tasks, TODOs)
@@ -1417,6 +1661,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
           lines.push('');
         }
+
+        // Knowledge graph facts for this project
+        const projectSlug = params.project_path.split('/').filter(Boolean).pop() || params.project_path;
+        try {
+          const kgCtx = new KnowledgeGraph();
+          const projectFacts = kgCtx.queryEntity(projectSlug);
+          const currentFacts = projectFacts.filter(f => f.current);
+          if (currentFacts.length > 0) {
+            lines.push('## Known Facts (Knowledge Graph)\n');
+            for (const fact of currentFacts.slice(0, 20)) {
+              const arrow = fact.direction === 'outgoing' ? '→' : '←';
+              lines.push(`- ${fact.subject} ${arrow} **${fact.predicate}** ${arrow} ${fact.object}`);
+            }
+            lines.push('');
+          }
+          kgCtx.close();
+        } catch { /* KG not available */ }
 
         // Files modified
         if (allFilesModified.size > 0) {
@@ -1665,7 +1926,149 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           lines.push('');
         }
 
+        // Knowledge graph stats
+        try {
+          const kgDigest = new KnowledgeGraph();
+          const kgS = kgDigest.stats();
+          if (kgS.triples > 0) {
+            lines.push('## Knowledge Graph\n');
+            lines.push(`Entities: ${kgS.entities} | Facts: ${kgS.current_facts} current, ${kgS.expired_facts} expired`);
+            if (kgS.relationship_types.length > 0) {
+              lines.push(`Relationships: ${kgS.relationship_types.join(', ')}`);
+            }
+            lines.push('');
+          }
+          kgDigest.close();
+        } catch { /* KG not available */ }
+
         store.close();
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      // ── Knowledge Graph Handlers ─────────────────────────────────
+
+      case 'recall_kg_query': {
+        const params = RecallKGQuerySchema.parse(args);
+        const kg = new KnowledgeGraph();
+        const facts = kg.queryEntity(params.entity, params.as_of, params.direction);
+        kg.close();
+
+        if (facts.length === 0) {
+          return { content: [{ type: 'text', text: `No facts found for entity: "${params.entity}"${params.as_of ? ` as of ${params.as_of}` : ''}` }] };
+        }
+
+        const lines = [`# Knowledge Graph: "${params.entity}"${params.as_of ? ` (as of ${params.as_of})` : ''}\n`];
+        lines.push(`**Facts:** ${facts.length} (${facts.filter(f => f.current).length} current)\n`);
+
+        for (const fact of facts) {
+          const arrow = fact.direction === 'outgoing' ? '→' : '←';
+          const status = fact.current ? '' : ' [expired]';
+          const validity = fact.valid_from ? ` (${fact.valid_from}${fact.valid_to ? ' → ' + fact.valid_to : ' → now'})` : '';
+          lines.push(`- ${fact.subject} ${arrow} **${fact.predicate}** ${arrow} ${fact.object}${validity}${status}`);
+        }
+
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_kg_add': {
+        const params = RecallKGAddSchema.parse(args);
+        const wal = getWAL();
+        wal.log('kg_add', { subject: params.subject, predicate: params.predicate, object: params.object, valid_from: params.valid_from });
+
+        const kg = new KnowledgeGraph();
+        const tripleId = kg.addTriple(params.subject, params.predicate, params.object, {
+          validFrom: params.valid_from,
+          sourceSession: params.source_session,
+        });
+        kg.close();
+
+        return { content: [{ type: 'text', text: `Added: ${params.subject} → ${params.predicate} → ${params.object} (id: ${tripleId})` }] };
+      }
+
+      case 'recall_kg_invalidate': {
+        const params = RecallKGInvalidateSchema.parse(args);
+        const wal = getWAL();
+        wal.log('kg_invalidate', { subject: params.subject, predicate: params.predicate, object: params.object, ended: params.ended });
+
+        const kg = new KnowledgeGraph();
+        const count = kg.invalidate(params.subject, params.predicate, params.object, params.ended);
+        kg.close();
+
+        const endDate = params.ended || new Date().toISOString().split('T')[0];
+        return { content: [{ type: 'text', text: `Invalidated ${count} fact(s): ${params.subject} → ${params.predicate} → ${params.object} (ended: ${endDate})` }] };
+      }
+
+      case 'recall_kg_timeline': {
+        const params = RecallKGTimelineSchema.parse(args);
+        const kg = new KnowledgeGraph();
+        const entries = kg.timeline(params.entity, params.limit);
+        kg.close();
+
+        if (entries.length === 0) {
+          return { content: [{ type: 'text', text: `No timeline entries found${params.entity ? ` for "${params.entity}"` : ''}.` }] };
+        }
+
+        const lines = [`# Timeline${params.entity ? `: ${params.entity}` : ''}\n`];
+        for (const entry of entries) {
+          const status = entry.current ? '' : ' [ended]';
+          const from = entry.valid_from || '?';
+          lines.push(`- **${from}** ${entry.subject} → ${entry.predicate} → ${entry.object}${status}`);
+        }
+
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_kg_stats': {
+        const kg = new KnowledgeGraph();
+        const s = kg.stats();
+        kg.close();
+
+        const lines = [
+          '# Knowledge Graph Stats\n',
+          `**Entities:** ${s.entities}`,
+          `**Triples:** ${s.triples} (${s.current_facts} current, ${s.expired_facts} expired)`,
+          '',
+          `**Relationship types:** ${s.relationship_types.length > 0 ? s.relationship_types.join(', ') : 'none yet'}`,
+        ];
+
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      // ── Diary Handlers ─────────────────────────────────────────
+
+      case 'recall_diary_write': {
+        const params = RecallDiaryWriteSchema.parse(args);
+        const wal = getWAL();
+        wal.log('diary_write', { agent: params.agent_name, topic: params.topic });
+
+        const entryId = DiarySource.write({
+          agent: params.agent_name,
+          topic: params.topic,
+          content: params.entry,
+          timestamp: new Date().toISOString(),
+          sessionId: params.session_id,
+          projectPath: params.project_path,
+        });
+
+        return { content: [{ type: 'text', text: `Diary entry saved: ${entryId}` }] };
+      }
+
+      case 'recall_diary_read': {
+        const params = RecallDiaryReadSchema.parse(args);
+        const entries = DiarySource.read(params.agent_name, params.last_n);
+
+        if (entries.length === 0) {
+          return { content: [{ type: 'text', text: `No diary entries for agent "${params.agent_name}".` }] };
+        }
+
+        const lines = [`# Diary: ${params.agent_name} (${entries.length} entries)\n`];
+        for (const entry of entries) {
+          const date = entry.timestamp?.slice(0, 16).replace('T', ' ') || '?';
+          lines.push(`## ${date} [${entry.topic}]`);
+          lines.push(entry.content);
+          lines.push('');
+        }
+
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 

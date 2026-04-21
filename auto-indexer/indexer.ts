@@ -25,6 +25,10 @@ import { PlanSource } from '../src/parsers/plan-source.js';
 import { TaskSource } from '../src/parsers/task-source.js';
 import { ClaudeMdSource } from '../src/parsers/claude-md-source.js';
 import { HistorySource } from '../src/parsers/history-source.js';
+import { DiarySource } from '../src/parsers/diary-source.js';
+import { classifyChunk } from '../src/core/memory-classifier.js';
+import { extractAndPopulateKG } from '../src/core/entity-extractor.js';
+import { KnowledgeGraph } from '../src/core/knowledge-graph.js';
 import { statSync, existsSync } from 'fs';
 import { homedir } from 'os';
 import { join, basename } from 'path';
@@ -34,6 +38,7 @@ const CLAUDE_DIR = join(homedir(), '.claude', 'projects');
 const PLANS_DIR = join(homedir(), '.claude', 'plans');
 const TASKS_DIR = join(homedir(), '.claude', 'tasks');
 const HISTORY_PATH = join(homedir(), '.claude', 'history.jsonl');
+const DIARY_DIR = join(homedir(), '.claude', 'chat-recall-index', 'diary');
 
 const embedder = new OllamaEmbedder();
 const metadataCache = new MetadataCache();
@@ -93,6 +98,7 @@ async function runSessionIndexing() {
   try {
     const memoryIndex = new MemoryIndex(embedder);
     const store = new MemoryStore();
+    const kg = new KnowledgeGraph();
     const source = new SessionSource();
     let processed = 0, chunks = 0;
 
@@ -101,6 +107,15 @@ async function runSessionIndexing() {
         if (!memoryIndex.needsUpdate(item.sourceType, item.id, item.mtime)) continue;
         await memoryIndex.deleteItem(item.sourceType, item.id);
         const itemChunks = await source.parse(item);
+        for (const chunk of itemChunks) {
+          const cls = classifyChunk(chunk.text);
+          if (cls.memoryType !== 'general') {
+            chunk.chunkType = `${chunk.chunkType}:${cls.memoryType}:imp${cls.importance}`;
+          }
+          extractAndPopulateKG(kg, chunk.text, {
+            projectPath: item.projectPath, sourceType: item.sourceType, sessionId: item.id,
+          });
+        }
         if (itemChunks.length > 0) {
           await memoryIndex.bufferChunks(itemChunks);
           chunks += itemChunks.length;
@@ -113,6 +128,7 @@ async function runSessionIndexing() {
     }
 
     await memoryIndex.flushBuffer();
+    kg.close();
     // optimize() removed from auto flows
     store.close();
 
@@ -141,6 +157,9 @@ async function runMemoryIndexing() {
     registry.register(new TaskSource());
     registry.register(new ClaudeMdSource());
     registry.register(new HistorySource());
+    registry.register(new DiarySource());
+
+    const kg = new KnowledgeGraph();
 
     for (const sourceType of types) {
       const source = registry.get(sourceType as any);
@@ -158,6 +177,17 @@ async function runMemoryIndexing() {
 
             await memoryIndex.deleteItem(item.sourceType, item.id);
             const chunks = await source.parse(item);
+
+            // Classify and extract entities
+            for (const chunk of chunks) {
+              const cls = classifyChunk(chunk.text);
+              if (cls.memoryType !== 'general') {
+                chunk.chunkType = `${chunk.chunkType}:${cls.memoryType}:imp${cls.importance}`;
+              }
+              extractAndPopulateKG(kg, chunk.text, {
+                projectPath: item.projectPath, sourceType: item.sourceType, sessionId: item.id,
+              });
+            }
 
             if (chunks.length > 0) {
               await memoryIndex.bufferChunks(chunks);
@@ -188,13 +218,7 @@ async function runMemoryIndexing() {
       }
     }
 
-    // Optimize after all source types processed
-    try {
-      // optimize() removed from auto flows
-    } catch (err) {
-      console.error(`[${new Date().toISOString()}] Optimize error:`, err);
-    }
-
+    kg.close();
     memoryStore.close();
   } catch (error) {
     console.error(`[${new Date().toISOString()}] Memory indexing failed:`, error);
@@ -216,6 +240,8 @@ function scheduleIndexing(filePath: string) {
     changedMemoryTypes.add('task');
   } else if (filePath === HISTORY_PATH) {
     changedMemoryTypes.add('history');
+  } else if (filePath.startsWith(DIARY_DIR)) {
+    changedMemoryTypes.add('diary');
   }
 
   if (debounceTimer) {
@@ -282,12 +308,23 @@ const historyWatcher = chokidar.watch(HISTORY_PATH, {
   interval: 30000,  // Check less frequently
 });
 
+// 5. Diary entries
+const diaryWatcher = chokidar.watch(`${DIARY_DIR}/**/*.json`, {
+  persistent: true,
+  ignoreInitial: true,
+  awaitWriteFinish: {
+    stabilityThreshold: 1000,
+    pollInterval: 100,
+  },
+});
+
 // Wire up all watchers
 for (const [name, watcher] of Object.entries({
   sessions: sessionWatcher,
   plans: plansWatcher,
   tasks: tasksWatcher,
   history: historyWatcher,
+  diary: diaryWatcher,
 })) {
   watcher
     .on('ready', () => {
@@ -311,6 +348,7 @@ console.log(`  Watching sessions: ${CLAUDE_DIR}`);
 console.log(`  Watching plans: ${PLANS_DIR}`);
 console.log(`  Watching tasks: ${TASKS_DIR}`);
 console.log(`  Watching history: ${HISTORY_PATH}`);
+console.log(`  Watching diary: ${DIARY_DIR}`);
 console.log(`  Debounce: ${DEBOUNCE_MS}ms`);
 console.log(`  Ready for changes...`);
 

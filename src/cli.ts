@@ -26,6 +26,10 @@ import { GeminiSessionSource } from './parsers/gemini-source.js';
 import { GeminiBrainSource } from './parsers/gemini-brain-source.js';
 import { OpenCodeSource } from './parsers/opencode-source.js';
 import { OpenCodeTodoSource } from './parsers/opencode-todo-source.js';
+import { DiarySource } from './parsers/diary-source.js';
+import { classifyChunk } from './core/memory-classifier.js';
+import { extractAndPopulateKG } from './core/entity-extractor.js';
+import { KnowledgeGraph } from './core/knowledge-graph.js';
 import type { SourceType } from './types/memory.js';
 
 // Load .env configuration
@@ -114,7 +118,9 @@ program
       registry.register(new GeminiBrainSource());
       registry.register(new OpenCodeSource());
       registry.register(new OpenCodeTodoSource());
+      registry.register(new DiarySource());
 
+      const kg = new KnowledgeGraph();
       let totalItems = 0, totalChunks = 0, totalErrors = 0;
       const typeCounts: Record<string, number> = {};
 
@@ -128,6 +134,15 @@ program
               if (!memoryIndex.needsUpdate(item.sourceType, item.id, item.mtime)) continue;
               await memoryIndex.deleteItem(item.sourceType, item.id);
               const chunks = await source.parse(item);
+              for (const chunk of chunks) {
+                const cls = classifyChunk(chunk.text);
+                if (cls.memoryType !== 'general') {
+                  chunk.chunkType = `${chunk.chunkType}:${cls.memoryType}:imp${cls.importance}`;
+                }
+                extractAndPopulateKG(kg, chunk.text, {
+                  projectPath: item.projectPath, sourceType: item.sourceType, sessionId: item.id,
+                });
+              }
               if (chunks.length > 0) {
                 await memoryIndex.bufferChunks(chunks);
                 totalChunks += chunks.length;
@@ -143,6 +158,7 @@ program
         await memoryIndex.flushBuffer();
         if (typeItems > 0) typeCounts[sourceType] = typeItems;
       }
+      kg.close();
       store.close();
 
       for (const [type, count] of Object.entries(typeCounts)) {
@@ -179,6 +195,10 @@ program
               'recall_search', 'recall_show', 'recall_index', 'recall_status',
               'recall_recent', 'recall_context', 'recall_summary', 'recall_suggest_resume',
               'recall_memory_search', 'recall_memory_status', 'recall_plans', 'recall_tasks',
+              'recall_smart_resume', 'recall_project_context', 'recall_weekly_digest',
+              'recall_kg_query', 'recall_kg_add', 'recall_kg_invalidate',
+              'recall_kg_timeline', 'recall_kg_stats',
+              'recall_diary_write', 'recall_diary_read',
             ],
           };
           mcpConfig.mcpServers = mcpServers;
@@ -234,8 +254,10 @@ program
       registry.register(new GeminiBrainSource());
       registry.register(new OpenCodeSource());
       registry.register(new OpenCodeTodoSource());
+      registry.register(new DiarySource());
 
-      let totalItems = 0, totalSkipped = 0, totalChunks = 0, totalErrors = 0;
+      const kg = new KnowledgeGraph();
+      let totalItems = 0, totalSkipped = 0, totalChunks = 0, totalErrors = 0, totalKGTriples = 0;
       for (const sourceType of registry.getRegisteredTypes()) {
         const sources = registry.getAll(sourceType);
         if (sources.length === 0) continue;
@@ -249,6 +271,15 @@ program
             }
             await memoryIndex.deleteItem(item.sourceType, item.id);
             const chunks = await source.parse(item);
+            for (const chunk of chunks) {
+              const cls = classifyChunk(chunk.text);
+              if (cls.memoryType !== 'general') {
+                chunk.chunkType = `${chunk.chunkType}:${cls.memoryType}:imp${cls.importance}`;
+              }
+              totalKGTriples += extractAndPopulateKG(kg, chunk.text, {
+                projectPath: item.projectPath, sourceType: item.sourceType, sessionId: item.id,
+              });
+            }
             if (chunks.length > 0) {
               await memoryIndex.bufferChunks(chunks);
               totalChunks += chunks.length;
@@ -262,6 +293,7 @@ program
         }
         await memoryIndex.flushBuffer();
       }
+      kg.close();
       // optimize() removed from auto flows to prevent data corruption
       store.close();
 
@@ -270,6 +302,7 @@ program
       console.log(`  Items processed: ${totalItems}`);
       console.log(`  Items skipped (unchanged): ${totalSkipped}`);
       console.log(`  Total chunks indexed: ${totalChunks}`);
+      console.log(`  KG triples extracted: ${totalKGTriples}`);
 
       if (totalErrors > 0) {
         console.log(chalk.yellow(`  Errors: ${totalErrors}`));
@@ -671,6 +704,7 @@ memory
       registry.register(new GeminiBrainSource());
       registry.register(new OpenCodeSource());
       registry.register(new OpenCodeTodoSource());
+      registry.register(new DiarySource());
 
       const requestedTypes: SourceType[] = options.types
         ? options.types.split(',') as SourceType[]
@@ -680,6 +714,7 @@ memory
       if (options.force) console.log('Force mode: re-indexing everything');
       console.log();
 
+      const kgLegacy = new KnowledgeGraph();
       let totalItems = 0;
       let totalChunks = 0;
       let totalLinks = 0;
@@ -703,6 +738,15 @@ memory
 
               await memoryIndex.deleteItem(item.sourceType, item.id);
               const chunks = await source.parse(item);
+              for (const chunk of chunks) {
+                const cls = classifyChunk(chunk.text);
+                if (cls.memoryType !== 'general') {
+                  chunk.chunkType = `${chunk.chunkType}:${cls.memoryType}:imp${cls.importance}`;
+                }
+                extractAndPopulateKG(kgLegacy, chunk.text, {
+                  projectPath: item.projectPath, sourceType: item.sourceType, sessionId: item.id,
+                });
+              }
 
               if (chunks.length > 0) {
                 const added = await memoryIndex.addChunks(chunks);
@@ -743,6 +787,7 @@ memory
       console.log(`  Links: ${totalLinks}`);
       if (totalErrors > 0) console.log(chalk.yellow(`  Errors: ${totalErrors}`));
 
+      kgLegacy.close();
       memoryStore.close();
     } catch (err) {
       console.error(chalk.red('Error:'), err);
@@ -792,14 +837,15 @@ memory
         const r = results[i];
         const scorePct = Math.round(r.score * 100);
 
-        const typeColor = {
+        const typeColor = ({
           session: chalk.blue,
           plan: chalk.green,
           task: chalk.yellow,
           claude_md: chalk.magenta,
           history: chalk.cyan,
           paste: chalk.gray,
-        }[r.sourceType] || chalk.white;
+          diary: chalk.redBright,
+        } as Record<string, typeof chalk.white>)[r.sourceType] || chalk.white;
 
         const typeBadge = typeColor(`[${r.sourceType}]`);
 
@@ -908,6 +954,278 @@ memory
       }
 
       memoryStore.close();
+    } catch (err) {
+      console.error(chalk.red('Error:'), err);
+      process.exit(1);
+    }
+  });
+
+memory
+  .command('compress <session_id>')
+  .description('Compress a session to AAAK format (~120 tokens for L1 wake-up)')
+  .option('-o, --output <file>', 'Output file (default: stdout)')
+  .action(async (sessionId: string, options: { output?: string }) => {
+    try {
+      const { compressSessionToAaak, getAaakSpec } = await import('./core/aaak.js');
+      const { parseSessionFile } = await import('./parsers/session.js');
+      const { join } = await import('path');
+      const { homedir } = await import('os');
+      const { readdirSync, existsSync } = await import('fs');
+
+      const claudeDir = join(homedir(), '.claude', 'projects');
+      let sessionFile: string | null = null;
+
+      try {
+        const entries = readdirSync(claudeDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const candidate = join(claudeDir, entry.name, `${sessionId}.jsonl`);
+          if (existsSync(candidate)) {
+            sessionFile = candidate;
+            break;
+          }
+        }
+      } catch { /* ignore */ }
+
+      if (!sessionFile) {
+        console.error(chalk.red(`Session not found: ${sessionId}`));
+        process.exit(1);
+      }
+
+      const content = await parseSessionFile(sessionFile);
+      const result = compressSessionToAaak(content);
+
+      const output = [
+        chalk.bold('## AAAK Compressed Facts'),
+        chalk.bold('─────────────────────────'),
+        '',
+        result.aaak,
+        '',
+        chalk.dim('─── Full AAAK ───'),
+        result.rawText,
+        '',
+      ];
+
+      if (result.contradictions.length > 0) {
+        output.push(chalk.bold.yellow('⚠ Contradictions Detected:'));
+        for (const c of result.contradictions) {
+          const icon = c.type === 'error' ? '🔴' : c.type === 'warning' ? '🟡' : '🟢';
+          output.push(`  ${icon} ${chalk.bold(c.code)}: ${c.message}`);
+          if (c.expected) output.push(`     Expected: ${c.expected}`);
+          if (c.actual) output.push(`     Actual:   ${c.actual}`);
+        }
+        output.push('');
+      }
+
+      output.push(chalk.dim('─── AAAK Spec ───'));
+      output.push(getAaakSpec());
+
+      const text = output.join('\n');
+
+      if (options.output) {
+        const { writeFileSync } = await import('fs');
+        writeFileSync(options.output, text);
+        console.log(chalk.green(`Written to ${options.output}`));
+      } else {
+        console.log(text);
+      }
+    } catch (err) {
+      console.error(chalk.red('Error:'), err);
+      process.exit(1);
+    }
+  });
+
+memory
+  .command('wake-up')
+  .description('Generate L0 + L1 context (critical facts) for AI wake-up')
+  .option('-s, --session <id>', 'Session ID to focus on')
+  .option('-w, --wing <name>', 'Filter by project/person wing')
+  .action(async (options: { session?: string; wing?: string }) => {
+    try {
+      const { compressToAaak, getAaakSpec } = await import('./core/aaak.js');
+      const { parseSessionFile } = await import('./parsers/session.js');
+      const { join } = await import('path');
+      const { homedir } = await import('os');
+      const { readdirSync, existsSync, readFileSync } = await import('fs');
+
+      // L0: Identity (static)
+      const identityFile = join(homedir(), '.claude', 'chat-recall-identity.txt');
+      let identity = 'AI coding assistant';
+      if (existsSync(identityFile)) {
+        identity = readFileSync(identityFile, 'utf-8').trim();
+      }
+
+      const lines = [
+        chalk.bold('# AI Wake-Up Context'),
+        chalk.bold('─────────────────────'),
+        '',
+        chalk.bold('## L0: Identity'),
+        identity,
+        '',
+      ];
+
+      // L1a: High-importance facts from FTS5 index (decisions, milestones, preferences)
+      try {
+        const store = new MemoryStore();
+        // Query FTS5 for chunks classified as high-importance
+        const impChunks = store.searchFTS('decision preference milestone', { topK: 30 });
+        const highImp = impChunks
+          .filter(r => r.chunkType.includes(':imp4') || r.chunkType.includes(':imp5'))
+          .slice(0, 10);
+
+        if (highImp.length > 0) {
+          lines.push(chalk.bold('## L1a: High-Importance Facts'));
+          for (const chunk of highImp) {
+            const typeMatch = chunk.chunkType.match(/:(\w+):imp/);
+            const memType = typeMatch ? typeMatch[1] : 'fact';
+            const text = chunk.text.replace(/\n/g, ' ').trim().slice(0, 150);
+            lines.push(`  [${memType}] ${text}`);
+          }
+          lines.push('');
+        }
+        store.close();
+      } catch { /* FTS not available */ }
+
+      // L1b: Knowledge graph snapshot — current facts
+      try {
+        const kgWake = new KnowledgeGraph();
+        const kgStats = kgWake.stats();
+        if (kgStats.current_facts > 0) {
+          const timeline = kgWake.timeline(undefined, 20);
+          const currentFacts = timeline.filter(e => e.current);
+          if (currentFacts.length > 0) {
+            lines.push(chalk.bold('## L1b: Knowledge Graph'));
+            lines.push(chalk.dim(`${kgStats.entities} entities, ${kgStats.current_facts} current facts`));
+            for (const fact of currentFacts.slice(0, 15)) {
+              lines.push(`  ${fact.subject} → ${fact.predicate} → ${fact.object}`);
+            }
+            lines.push('');
+          }
+        }
+        kgWake.close();
+      } catch { /* KG not available */ }
+
+      // L1c: Saved session facts (legacy)
+      const memoryDir = join(homedir(), '.claude', 'chat-recall-memory', 'sessions');
+      let allFacts: string[] = [];
+
+      if (existsSync(memoryDir)) {
+        try {
+          const files = readdirSync(memoryDir).filter(f => f.endsWith('.json'));
+          for (const file of files.slice(0, 10)) {
+            try {
+              const { readFileSync: rf } = await import('fs');
+              const data = JSON.parse(rf(join(memoryDir, file), 'utf-8'));
+              if (data.first_topic) {
+                allFacts.push(data.first_topic);
+              }
+              if (data.decisions) {
+                const dec = JSON.parse(data.decisions);
+                if (typeof dec === 'string') allFacts.push(dec);
+              }
+            } catch { /* skip bad files */ }
+          }
+        } catch { /* memory dir not populated yet */ }
+      }
+
+      if (options.session) {
+        const claudeDir = join(homedir(), '.claude', 'projects');
+        let sessionFile: string | null = null;
+        try {
+          const entries = readdirSync(claudeDir, { withFileTypes: true });
+          for (const entry of entries) {
+            if (!entry.isDirectory()) continue;
+            const candidate = join(claudeDir, entry.name, `${options.session}.jsonl`);
+            if (existsSync(candidate)) {
+              sessionFile = candidate;
+              break;
+            }
+          }
+        } catch { /* ignore */ }
+
+        if (sessionFile) {
+          const content = await parseSessionFile(sessionFile);
+          const { compressSessionToAaak: compress } = await import('./core/aaak.js');
+          const result = compress(content);
+          lines.push(chalk.bold('## L1: Critical Facts (AAAK)'));
+          lines.push(result.aaak || '(no facts extracted)');
+          lines.push('');
+          lines.push(chalk.dim('─── AAAK Spec ───'));
+          lines.push(getAaakSpec());
+        } else {
+          lines.push(chalk.yellow(`Session not found: ${options.session}`));
+        }
+      } else if (allFacts.length > 0) {
+        lines.push(chalk.bold('## L1: Critical Facts'));
+        const uniqueFacts = [...new Set(allFacts)].slice(0, 20);
+        for (const fact of uniqueFacts) {
+          lines.push(`• ${fact}`);
+        }
+        lines.push('');
+        lines.push(chalk.dim('Tip: Use --session to generate AAAK for a specific session'));
+      } else {
+        lines.push(chalk.bold('## L1: Critical Facts'));
+        lines.push(chalk.dim('(no facts collected yet — sessions will be analyzed on first use)'));
+        lines.push('');
+        lines.push(chalk.dim('Run a session first, then use:'));
+        lines.push(chalk.dim('  chat-recall memory wake-up --session <session-id>'));
+      }
+
+      console.log(lines.join('\n'));
+    } catch (err) {
+      console.error(chalk.red('Error:'), err);
+      process.exit(1);
+    }
+  });
+
+memory
+  .command('check <session_id>')
+  .description('Check a session for contradictions against known facts')
+  .action(async (sessionId: string) => {
+    try {
+      const { compressSessionToAaak } = await import('./core/aaak.js');
+      const { parseSessionFile } = await import('./parsers/session.js');
+      const { join } = await import('path');
+      const { homedir } = await import('os');
+      const { readdirSync, existsSync } = await import('fs');
+
+      const claudeDir = join(homedir(), '.claude', 'projects');
+      let sessionFile: string | null = null;
+
+      try {
+        const entries = readdirSync(claudeDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const candidate = join(claudeDir, entry.name, `${sessionId}.jsonl`);
+          if (existsSync(candidate)) {
+            sessionFile = candidate;
+            break;
+          }
+        }
+      } catch { /* ignore */ }
+
+      if (!sessionFile) {
+        console.error(chalk.red(`Session not found: ${sessionId}`));
+        process.exit(1);
+      }
+
+      const content = await parseSessionFile(sessionFile);
+      const result = compressSessionToAaak(content);
+
+      if (result.contradictions.length === 0) {
+        console.log(chalk.green('✓ No contradictions detected'));
+      } else {
+        console.log(chalk.bold.yellow(`⚠ ${result.contradictions.length} potential contradiction(s) found:`));
+        console.log();
+        for (const c of result.contradictions) {
+          const icon = c.type === 'error' ? '🔴' : c.type === 'warning' ? '🟡' : '🟢';
+          console.log(`  ${icon} ${chalk.bold(c.code)}`);
+          console.log(`     ${c.message}`);
+          if (c.expected) console.log(`     Expected: ${chalk.green(c.expected)}`);
+          if (c.actual) console.log(`     Actual:   ${chalk.red(c.actual)}`);
+          console.log();
+        }
+      }
     } catch (err) {
       console.error(chalk.red('Error:'), err);
       process.exit(1);
