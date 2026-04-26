@@ -29,16 +29,29 @@ export interface SessionChunk {
   sourceLine: number;  // Line number in file (0 = not applicable)
 }
 
+/**
+ * Claude Code and related clients occasionally prepend status banners
+ * to user messages (e.g. when MCP servers fail or context runs low).
+ * They aren't part of the user's intent and shouldn't show up in
+ * summaries, previews, or search hits.
+ */
+const INJECTED_BANNERS: RegExp[] = [
+  /MCP issues detected\. ?Run \/mcp list for status\.?/g,
+  /Context low[^\n]*Run \/compact[^\n]*/g,
+  /API Error:[^\n]{0,120}/g,
+];
+
+export function stripInjectedBanners(text: string): string {
+  let result = text;
+  for (const re of INJECTED_BANNERS) result = result.replace(re, ' ');
+  return result;
+}
+
 function cleanText(text: string): string {
-  // Remove system reminder tags
   let result = text.replace(/<system-reminder>.*?<\/system-reminder>/gs, '');
-  
-  // Remove ANSI escape codes
+  result = stripInjectedBanners(result);
   result = result.replace(/\x1b\[[0-9;]*m/g, '');
-  
-  // Normalize whitespace
   result = result.replace(/\s+/g, ' ');
-  
   return result.trim();
 }
 

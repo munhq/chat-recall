@@ -5,6 +5,19 @@
 import { MemoryIndex, OllamaEmbedder, MetadataCache, getAllSessions } from '../imports.js';
 import type { SourceType, MemorySearchResult } from '../imports.js';
 
+// See sessions.ts for why we strip client-injected banners here.
+const INJECTED_BANNERS: RegExp[] = [
+  /MCP issues detected\. ?Run \/mcp list for status\.?/g,
+  /Context low[^\n]*Run \/compact[^\n]*/g,
+  /API Error:[^\n]{0,120}/g,
+];
+function cleanBanner(text: string | undefined): string | undefined {
+  if (!text) return text;
+  let out = text;
+  for (const re of INJECTED_BANNERS) out = out.replace(re, ' ');
+  return out.replace(/[ \t]{2,}/g, ' ').trim();
+}
+
 /** Session search result shape (consumed by the frontend) */
 export interface SearchResult {
   sessionId: string;
@@ -64,8 +77,8 @@ export class SearchService {
         projectPath: r.projectPath,
         created: '',
         modified: '',
-        firstPrompt: cached?.firstPrompt || r.title,
-        summary: cached?.summary,
+        firstPrompt: cleanBanner(cached?.firstPrompt || r.title) ?? '',
+        summary: cleanBanner(cached?.summary),
         matchedChunks: r.matchedChunks,
       };
     });
@@ -94,11 +107,13 @@ export class SearchService {
     const now = Date.now();
     if (!this.projectCountsCache || (now - this.projectCountsCacheTime) > SearchService.CACHE_TTL_MS) {
       const { getRecentSessions: getAll } = await import('./sessions.js');
+      const { normalizeProjectPath } = await import('../utils/paths.js');
       const allSessions = await getAll(0); // 0 = no limit
       const projectCounts: Record<string, number> = {};
       for (const s of allSessions) {
-        if (s.projectPath) {
-          projectCounts[s.projectPath] = (projectCounts[s.projectPath] || 0) + 1;
+        const norm = normalizeProjectPath(s.projectPath);
+        if (norm) {
+          projectCounts[norm] = (projectCounts[norm] || 0) + 1;
         }
       }
       this.projectCountsCache = { projects: projectCounts, totalSessions: allSessions.length };

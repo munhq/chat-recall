@@ -7,6 +7,22 @@ import type { SessionEntry, SessionMetadata, MemoryMetadataRow, MemoryLinkRow, S
 import { homedir } from 'os';
 import { join } from 'path';
 
+// Client banners like "MCP issues detected. Run /mcp list for status." are
+// prepended by Claude Code to the first user message when an MCP server fails.
+// They leaked into older cached summaries/firstPrompts; strip on the way out
+// so consumers never see them regardless of what's in the metadata cache.
+const INJECTED_BANNERS: RegExp[] = [
+  /MCP issues detected\. ?Run \/mcp list for status\.?/g,
+  /Context low[^\n]*Run \/compact[^\n]*/g,
+  /API Error:[^\n]{0,120}/g,
+];
+function cleanBanner(text: string | undefined): string | undefined {
+  if (!text) return text;
+  let out = text;
+  for (const re of INJECTED_BANNERS) out = out.replace(re, ' ');
+  return out.replace(/[ \t]{2,}/g, ' ').trim();
+}
+
 export interface SessionInfo {
   sessionId: string;
   projectPath: string;
@@ -52,16 +68,20 @@ export async function getRecentSessions(limit = 20): Promise<SessionInfo[]> {
       modified: entry.modified,
       fileMtime: entry.fileMtime,
       filePath,
-      firstPrompt,
-      summary,
+      firstPrompt: cleanBanner(firstPrompt) ?? '',
+      summary: cleanBanner(summary),
       tool: 'claude',
     });
   }
 
   cache.close();
 
-  // 2. Gemini and OpenCode sessions from MemoryStore (indexed items)
+  // 2. Gemini and OpenCode sessions from MemoryStore (indexed items).
+  //    Summaries are looked up in MetadataCache keyed by the item id
+  //    (e.g. "gemini_<sessionId>" / "opencode_<sessionId>") — populated
+  //    by scripts/generate-summaries.ts once it's run.
   const store = new MemoryStore();
+  const cache2 = new MetadataCache();
   try {
     const memItems = store.listItems('session' as SourceType, 5000, 0);
     const seenIds = new Set(sessions.map(s => s.sessionId));
@@ -73,6 +93,8 @@ export async function getRecentSessions(limit = 20): Promise<SessionInfo[]> {
       const tool = extra.tool as string;
       if (!tool || tool === 'claude') continue; // Only add non-Claude
 
+      const cached = cache2.get(item.id);
+
       sessions.push({
         sessionId: item.id,
         projectPath: item.project_path,
@@ -80,13 +102,14 @@ export async function getRecentSessions(limit = 20): Promise<SessionInfo[]> {
         modified: new Date(item.mtime).toISOString(),
         fileMtime: item.mtime,
         filePath: item.file_path,
-        firstPrompt: item.content_preview || item.title,
-        summary: undefined,
+        firstPrompt: cleanBanner(cached?.firstPrompt || item.content_preview || item.title),
+        summary: cleanBanner(cached?.summary),
         tool,
       });
     }
   } finally {
     store.close();
+    cache2.close();
   }
 
   // Sort by modification time (newest first)
@@ -206,8 +229,8 @@ export function getRelatedItems(sessionId: string): RelatedItemsResponse {
         const cached = cache.get(sib.id);
         siblingSessionsInProject.push({
           sessionId: sib.id,
-          firstPrompt: sib.content_preview?.slice(0, 120) || sib.title,
-          summary: cached?.summary,
+          firstPrompt: cleanBanner(sib.content_preview?.slice(0, 120) || sib.title) ?? '',
+          summary: cleanBanner(cached?.summary),
           modified: new Date(sib.mtime).toISOString(),
         });
       }

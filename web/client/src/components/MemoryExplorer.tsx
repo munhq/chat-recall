@@ -1,564 +1,446 @@
-/**
- * Memory Explorer - Browse all memory types with tabs and detail views.
- */
-
 import React, { useState, useEffect } from 'react';
-import type { SourceType, MemoryMetadataRow, MemoryLinkRow, MemorySearchResult } from '../services/api';
-import { browseMemory, getMemoryLinks, searchMemory, getMemoryStatus, reindexMemory, updateItemProjectPath, type MemoryStatus } from '../services/api';
-import './MemoryExplorer.css';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { Icon, Button, Input, SourceBadge, SegmentedControl, Card, Chip } from './primitives';
+import type {
+  SourceType,
+  MemoryMetadataRow,
+  MemoryLinkRow,
+  MemorySearchResult,
+  MemoryStatus,
+} from '../services/api';
+import {
+  searchMemory,
+  getMemoryStatus,
+  getMemoryItem,
+  getMemoryLinks,
+  browseMemory,
+  reindexMemory,
+  getMemoryItemContent,
+} from '../services/api';
 
-/** Shorten an absolute path for display — replaces home dir with ~ */
-function shortenPath(path: string): string {
-  // Detect home dir from the path itself (works for any user)
-  const homeMatch = path.match(/^(\/home\/[^/]+|\/root|\/Users\/[^/]+)/);
-  if (homeMatch) {
-    return path.replace(homeMatch[1], '~');
-  }
-  return path;
-}
-
-const SOURCE_TYPES: { type: SourceType; label: string; icon: string }[] = [
-  { type: 'session', label: 'Sessions', icon: '💬' },
-  { type: 'plan', label: 'Plans', icon: '📋' },
-  { type: 'task', label: 'Tasks', icon: '✅' },
-  { type: 'claude_md', label: 'CLAUDE.md', icon: '📄' },
-  { type: 'history', label: 'History', icon: '🕐' },
-  { type: 'paste', label: 'Pastes', icon: '📎' },
+const SOURCE_TABS: Array<{ id: SourceType | 'all'; label: string }> = [
+  { id: 'all', label: 'Everything' },
+  { id: 'plan', label: 'Plans' },
+  { id: 'session', label: 'Sessions' },
+  { id: 'claude_md', label: 'CLAUDE.md' },
+  { id: 'task', label: 'Tasks' },
+  { id: 'paste', label: 'Pastebin' },
+  { id: 'history', label: 'History' },
+  { id: 'diary', label: 'Diary' },
 ];
 
 interface MemoryExplorerProps {
-  toolFilter: string;
   onSessionClick?: (sessionId: string) => void;
 }
 
-/** Extract folder/path information for display */
-function getFolderInfo(item: MemoryMetadataRow): { prefix?: string; info?: string; fullPath?: string } {
-  const filePath = item.file_path || '';
-
-  // For CLAUDE.md files - show project folder name
-  if (item.source_type === 'claude_md') {
-    const match = filePath.match(/\/([^/]+)\/CLAUDE\.md$/);
-    if (match) {
-      const projectName = match[1];
-      const parentPath = filePath.replace(/\/[^/]+\/CLAUDE\.md$/, '');
-      const workOrPersonal = parentPath.split('/').pop() || 'project';
-      return {
-        prefix: projectName,
-        info: `${workOrPersonal} project`,
-        fullPath: parentPath
-      };
-    }
-  }
-
-  // For plans - show project and if it's an agent plan
-  if (item.source_type === 'plan') {
-    const agentMatch = item.id.match(/^(.+)-agent-([a-f0-9]+)$/);
-    const isAgentPlan = !!agentMatch;
-    const parentPlan = agentMatch?.[1];
-
-    // Extract project name from project_path if available
-    let projectInfo = '';
-    let projectDisplay = '';
-    if (item.project_path) {
-      const projectName = item.project_path.split('/').pop();
-      projectInfo = projectName || '';
-      // Show shortened path
-      projectDisplay = shortenPath(item.project_path);
-    } else {
-      projectDisplay = '~/.claude/plans/';
-    }
-
-    if (isAgentPlan) {
-      return {
-        prefix: projectInfo ? `${projectInfo} (agent)` : `${parentPlan} (agent)`,
-        info: projectInfo ? projectDisplay : '~/.claude/plans/',
-        fullPath: item.project_path || filePath
-      };
-    }
-
-    return {
-      prefix: projectInfo,
-      info: projectDisplay,
-      fullPath: item.project_path || filePath
-    };
-  }
-
-  // For tasks - show session folder
-  if (item.source_type === 'task') {
-    const sessionIdMatch = filePath.match(/tasks\/([^/]+)\//);
-    if (sessionIdMatch) {
-      const sessionId = sessionIdMatch[1].slice(0, 8);
-      return {
-        info: `session: ${sessionId}...`,
-        fullPath: filePath
-      };
-    }
-  }
-
-  // For sessions - show project name from project_path
-  if (item.source_type === 'session' && item.project_path) {
-    const projectName = item.project_path.split('/').pop();
-    return {
-      info: projectName,
-      fullPath: item.project_path
-    };
-  }
-
-  return {};
-}
-
-export default function MemoryExplorer({ toolFilter, onSessionClick }: MemoryExplorerProps) {
-  const [activeType, setActiveType] = useState<SourceType>('plan');
+export default function MemoryExplorer({ onSessionClick }: MemoryExplorerProps) {
+  const [activeType, setActiveType] = useState<SourceType | 'all'>('plan');
+  const [query, setQuery] = useState('');
   const [items, setItems] = useState<MemoryMetadataRow[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [selectedItem, setSelectedItem] = useState<MemoryMetadataRow | null>(null);
-  const [links, setLinks] = useState<MemoryLinkRow[]>([]);
-  const [status, setStatus] = useState<MemoryStatus | null>(null);
-  const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<MemorySearchResult[]>([]);
-  const [searching, setSearching] = useState(false);
-  const [reindexing, setReindexing] = useState<Set<SourceType>>(new Set());
-  const [reindexMessage, setReindexMessage] = useState<string | null>(null);
-  const [projectFilter, setProjectFilter] = useState<string>('all');
-  const [availableProjects, setAvailableProjects] = useState<string[]>([]);
-  const [editingProject, setEditingProject] = useState(false);
-  const [editProjectValue, setEditProjectValue] = useState('');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState<MemoryStatus | null>(null);
+  const [reindexing, setReindexing] = useState<Set<string>>(new Set());
 
-  // Load status on mount
   useEffect(() => {
     getMemoryStatus().then(setStatus).catch(console.error);
   }, []);
 
-  // Load items when type changes
   useEffect(() => {
+    if (activeType !== 'all' && query === '') {
+      setLoading(true);
+      browseMemory(activeType)
+        .then(setItems)
+        .finally(() => setLoading(false));
+    } else {
+      setItems([]);
+    }
+  }, [activeType, query]);
+
+  const handleSearch = () => {
+    if (!query.trim()) return;
     setLoading(true);
-    setSelectedItem(null);
-    setLinks([]);
-    setProjectFilter('all');
-    browseMemory(activeType, 500)
-      .then((fetchedItems) => {
-        setItems(fetchedItems);
-
-        // Extract unique projects
-        const projects = new Set<string>();
-        fetchedItems.forEach(item => {
-          if (item.project_path) {
-            // Extract project name from path
-            const projectName = item.project_path.split('/').pop();
-            if (projectName) projects.add(projectName);
-          }
-        });
-
-        // Add "Unknown project" option if there are items without projects
-        const hasUnknown = fetchedItems.some(item => !item.project_path);
-        if (hasUnknown) {
-          projects.add('(unknown)');
-        }
-
-        setAvailableProjects(Array.from(projects).sort());
-      })
-      .catch(console.error)
+    searchMemory(query, 30, activeType === 'all' ? undefined : [activeType as SourceType])
+      .then(setSearchResults)
       .finally(() => setLoading(false));
-  }, [activeType]);
+  };
 
-  // Filter items by selected project
-  // Apply tool filter first, then project filter
-  const toolFilteredItems = toolFilter
-    ? items.filter(item => {
-        try {
-          const extra = JSON.parse(item.extra_json || '{}');
-          return (extra.tool || 'claude') === toolFilter;
-        } catch { return toolFilter === 'claude'; }
+  const handleReindex = (type: SourceType) => {
+    setReindexing((s) => new Set(s).add(type));
+    reindexMemory([type])
+      .then(() => {
+        getMemoryStatus().then(setStatus);
+        if (activeType === type) {
+          browseMemory(type).then(setItems);
+        }
       })
+      .finally(() => {
+        setReindexing((s) => {
+          const next = new Set(s);
+          next.delete(type);
+          return next;
+        });
+      });
+  };
+
+  const getTypeCount = (type: string) => {
+    if (!status) return 0;
+    if (type === 'all') return status.totalItems;
+    return status.bySourceType[type]?.items || 0;
+  };
+
+  const displayedItems = query
+    ? searchResults.map((r) => ({
+        id: r.itemId,
+        source_type: r.sourceType,
+        title: r.title,
+        content_preview: r.text,
+        mtime: r.mtime,
+        project_path: r.projectPath,
+        file_path: r.filePath,
+        indexed_at: 0,
+        extra_json: '{}',
+      }))
     : items;
 
-  const filteredItems = projectFilter === 'all'
-    ? toolFilteredItems
-    : projectFilter === '(unknown)'
-    ? toolFilteredItems.filter(item => !item.project_path)
-    : toolFilteredItems.filter(item => {
-        if (!item.project_path) return false;
-        const projectName = item.project_path.split('/').pop();
-        return projectName === projectFilter;
-      });
-
-  // Load links when item is selected
-  useEffect(() => {
-    if (selectedItem) {
-      getMemoryLinks(selectedItem.source_type, selectedItem.id)
-        .then(setLinks)
-        .catch(console.error);
-    }
-  }, [selectedItem]);
-
-  const handleSearch = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!searchQuery.trim()) return;
-
-    setSearching(true);
-    try {
-      const results = await searchMemory(searchQuery, 20);
-      setSearchResults(results);
-    } catch (err) {
-      console.error('Memory search failed:', err);
-    } finally {
-      setSearching(false);
-    }
-  };
-
-  const getTypeCount = (type: SourceType): number => {
-    if (!status?.bySourceType?.[type]) return 0;
-    return status.bySourceType[type].items;
-  };
-
-  const handleProjectUpdate = async () => {
-    if (!selectedItem) return;
-
-    try {
-      await updateItemProjectPath(
-        selectedItem.source_type,
-        selectedItem.id,
-        editProjectValue
-      );
-
-      // Update local state
-      selectedItem.project_path = editProjectValue;
-      setEditingProject(false);
-      setReindexMessage(`✅ Project updated for ${selectedItem.id.slice(0, 20)}`);
-      setTimeout(() => setReindexMessage(null), 3000);
-
-      // Reload items to refresh the list
-      const newItems = await browseMemory(activeType, 100);
-      setItems(newItems);
-    } catch (err) {
-      setReindexMessage(`❌ Failed to update: ${err}`);
-      setTimeout(() => setReindexMessage(null), 5000);
-    }
-  };
-
-  const handleReindex = async (type: SourceType, force = false) => {
-    setReindexing(prev => new Set(prev).add(type));
-    setReindexMessage(`Reindexing ${type}...`);
-
-    try {
-      const result = await reindexMemory([type], force);
-      setReindexMessage(
-        `✅ ${type}: ${result.itemsProcessed} items, ${result.chunksAdded} chunks` +
-        (result.errors > 0 ? ` (${result.errors} errors)` : '')
-      );
-
-      // Reload items and status
-      const newStatus = await getMemoryStatus();
-      setStatus(newStatus);
-
-      if (activeType === type) {
-        const newItems = await browseMemory(type, 100);
-        setItems(newItems);
-      }
-
-      // Clear message after 3 seconds
-      setTimeout(() => setReindexMessage(null), 3000);
-    } catch (err) {
-      setReindexMessage(`❌ Failed to reindex ${type}: ${err}`);
-      setTimeout(() => setReindexMessage(null), 5000);
-    } finally {
-      setReindexing(prev => {
-        const next = new Set(prev);
-        next.delete(type);
-        return next;
-      });
-    }
-  };
+  const selectedItem = displayedItems.find((i) => i.id === selectedId);
 
   return (
-    <div className="memory-explorer">
-      <div className="memory-header">
-        <h2>Memory Explorer</h2>
-        {status && (
-          <div className="memory-stats">
-            <span>{status.totalItems} items</span>
-            <span>{status.totalChunks} chunks</span>
-            <span>{status.linkCount} links</span>
+    <div
+      data-testid="memory-explorer"
+      style={{
+        flex: 1,
+        display: 'flex',
+        flexDirection: 'column',
+        background: 'var(--cr-ink-0)',
+        overflow: 'hidden',
+      }}
+    >
+      {/* Header / Search */}
+      <div
+        style={{
+          padding: '24px 32px 16px',
+          borderBottom: '1px solid var(--cr-line-1)',
+          background: 'var(--cr-ink-1)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 16, maxWidth: 1000, margin: '0 auto', width: '100%' }}>
+          <div style={{ flex: 1 }}>
+            <Input
+              placeholder={`Search in ${activeType === 'all' ? 'everything' : activeType + 's'}…`}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+              onClear={() => {
+                setQuery('');
+                setSearchResults([]);
+              }}
+              inputSize="lg"
+            />
           </div>
+          <Button variant="primary" size="lg" onClick={handleSearch} disabled={!query.trim() || loading}>
+            Search Memory
+          </Button>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div
+        style={{
+          padding: '12px 32px',
+          borderBottom: '1px solid var(--cr-line-1)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+        }}
+      >
+        <SegmentedControl
+          value={activeType}
+          onChange={(v) => {
+            setActiveType(v as SourceType | 'all');
+            setSearchResults([]);
+            setSelectedId(null);
+          }}
+          options={SOURCE_TABS.map((t) => ({
+            value: t.id,
+            label: `${t.label} (${getTypeCount(t.id)})`,
+          }))}
+        />
+
+        {activeType !== 'all' && (
+          <Button
+            size="sm"
+            variant="ghost"
+            icon="refresh"
+            onClick={() => handleReindex(activeType as SourceType)}
+            disabled={reindexing.has(activeType as SourceType)}
+          >
+            {reindexing.has(activeType as SourceType) ? 'Reindexing...' : 'Reindex'}
+          </Button>
         )}
       </div>
 
-      {/* Search */}
-      <form onSubmit={handleSearch} className="memory-search-form">
-        <input
-          type="text"
-          placeholder="Search across all memory types..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          className="memory-search-input"
-        />
-        <button type="submit" disabled={searching} className="memory-search-button">
-          {searching ? 'Searching...' : 'Search'}
-        </button>
-      </form>
-
-      {/* Search results */}
-      {searchResults.length > 0 && (
-        <div className="memory-search-results">
-          <div className="memory-section-header">
-            <span>Search results ({searchResults.length})</span>
-            <button onClick={() => setSearchResults([])} className="clear-button">Clear</button>
-          </div>
-          <div className="memory-list">
-            {searchResults.map((r, i) => (
-              <div
-                key={`${r.sourceType}-${r.itemId}-${i}`}
-                className="memory-item"
-                onClick={() => {
-                  if (r.sourceType === 'session' && onSessionClick) {
-                    onSessionClick(r.itemId);
-                  }
-                }}
-              >
-                <div className="memory-item-header">
-                  <span className={`source-badge source-${r.sourceType}`}>
-                    {SOURCE_TYPES.find(t => t.type === r.sourceType)?.icon} {r.sourceType}
-                  </span>
-                  <span className="memory-item-score">
-                    {Math.round(r.score * 100)}%
-                  </span>
-                </div>
-                <div className="memory-item-title">{r.title}</div>
-                <div className="memory-item-preview">
-                  {r.text.slice(0, 200)}{r.text.length > 200 ? '...' : ''}
-                </div>
-                {r.projectPath && (
-                  <div className="memory-item-meta">
-                    {shortenPath(r.projectPath)}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Reindex message */}
-      {reindexMessage && (
-        <div className="reindex-message">
-          {reindexMessage}
-        </div>
-      )}
-
-      {/* Type tabs */}
-      <div className="memory-tabs">
-        {SOURCE_TYPES.map(({ type, label, icon }) => (
-          <div key={type} className="memory-tab-container">
-            <button
-              className={`memory-tab ${activeType === type ? 'active' : ''}`}
-              onClick={() => setActiveType(type)}
-            >
-              {icon} {label}
-              <span className="tab-count">{getTypeCount(type)}</span>
-            </button>
-            <button
-              className="reindex-button"
-              onClick={(e) => {
-                e.stopPropagation();
-                handleReindex(type, false);
-              }}
-              disabled={reindexing.has(type)}
-              title={`Reindex ${type} (incremental)`}
-            >
-              {reindexing.has(type) ? '⏳' : '🔄'}
-            </button>
-          </div>
-        ))}
-      </div>
-
-
-      {/* Project filter (for types that have projects) */}
-      {(activeType === 'plan' || activeType === 'claude_md' || activeType === 'session') && availableProjects.length > 0 && (
-        <div className="project-filter">
-          <label htmlFor="project-select">
-            📁 Filter by project:
-          </label>
-          <select
-            id="project-select"
-            value={projectFilter}
-            onChange={(e) => setProjectFilter(e.target.value)}
-            className="project-select"
-          >
-            <option value="all">All projects ({items.length})</option>
-            {availableProjects.map(project => {
-              const count = project === '(unknown)'
-                ? items.filter(item => !item.project_path).length
-                : items.filter(item => {
-                    const itemProject = item.project_path?.split('/').pop();
-                    return itemProject === project;
-                  }).length;
-              return (
-                <option key={project} value={project}>
-                  {project} ({count})
-                </option>
-              );
-            })}
-          </select>
-        </div>
-      )}
-
-      {/* Content area */}
-      <div className="memory-content">
-        {/* Items list */}
-        <div className="memory-list-panel">
-          {loading ? (
-            <div className="memory-loading">Loading...</div>
-          ) : items.length === 0 ? (
-            <div className="memory-empty">
-              No {activeType} items indexed yet.
-              <br />
-              Run <code>chat-recall memory index</code> to index.
-            </div>
-          ) : filteredItems.length === 0 ? (
-            <div className="memory-empty">
-              No items match the selected project filter.
+      {/* Body: list + detail */}
+      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+        {/* List */}
+        <div
+          style={{
+            width: 380,
+            flexShrink: 0,
+            borderRight: '1px solid var(--cr-line-1)',
+            overflowY: 'auto',
+            background: 'var(--cr-ink-1)',
+          }}
+        >
+          {loading && displayedItems.length === 0 ? (
+            <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>Loading…</div>
+          ) : displayedItems.length === 0 ? (
+            <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>
+              {query ? 'No results found' : 'No items indexed yet'}
             </div>
           ) : (
-            <div className="memory-list">
-              {filteredItems.map((item) => {
-                // Extract folder info for better display
-                const folderInfo = getFolderInfo(item);
-
-                return (
-                  <div
-                    key={`${item.source_type}-${item.id}`}
-                    className={`memory-item ${selectedItem?.id === item.id ? 'selected' : ''}`}
-                    onClick={() => setSelectedItem(item)}
-                  >
-                    <div className="memory-item-title">
-                      {folderInfo.prefix && (
-                        <span className="folder-badge" title={folderInfo.fullPath}>
-                          📁 {folderInfo.prefix}
-                        </span>
-                      )}
-                      {item.title}
-                    </div>
-                    <div className="memory-item-preview">
-                      {item.content_preview?.slice(0, 150)}{(item.content_preview?.length || 0) > 150 ? '...' : ''}
-                    </div>
-                    <div className="memory-item-meta">
-                      {new Date(item.mtime).toLocaleDateString()}
-                      {folderInfo.info && (
-                        <span className="folder-meta"> | {folderInfo.info}</span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+            displayedItems.map((item) => (
+              <div
+                key={`${item.source_type}:${item.id}`}
+                onClick={() => setSelectedId(item.id)}
+                style={{
+                  padding: '14px 20px',
+                  cursor: 'pointer',
+                  borderBottom: '1px solid var(--cr-line-1)',
+                  background: selectedId === item.id ? 'var(--cr-ink-2)' : 'transparent',
+                  transition: 'background var(--cr-dur-fast)',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                  <SourceBadge type={item.source_type as any} />
+                  <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>
+                    {new Date(item.mtime).toLocaleDateString()}
+                  </span>
+                </div>
+                <div
+                  style={{
+                    fontSize: 14,
+                    fontWeight: 600,
+                    color: selectedId === item.id ? 'var(--cr-fg-1)' : 'var(--cr-fg-2)',
+                    marginBottom: 4,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {item.title}
+                </div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: 'var(--cr-fg-3)',
+                    display: '-webkit-box',
+                    WebkitLineClamp: 2,
+                    WebkitBoxOrient: 'vertical',
+                    overflow: 'hidden',
+                    lineHeight: 1.4,
+                  }}
+                >
+                  {item.content_preview}
+                </div>
+              </div>
+            ))
           )}
         </div>
 
-        {/* Detail panel */}
-        {selectedItem && (
-          <div className="memory-detail-panel">
-            <h3>{selectedItem.title}</h3>
-            <div className="detail-meta">
-              <span><strong>Type:</strong> {selectedItem.source_type}</span>
-              <span><strong>ID:</strong> {selectedItem.id.slice(0, 20)}{selectedItem.id.length > 20 ? '...' : ''}</span>
-              <span><strong>Modified:</strong> {new Date(selectedItem.mtime).toLocaleString()}</span>
-              {selectedItem.file_path && (
-                <span><strong>File:</strong> <code>{selectedItem.file_path}</code></span>
-              )}
-              {selectedItem.source_type === 'claude_md' && selectedItem.project_path && (
-                <span><strong>Project Dir:</strong> <code>{selectedItem.project_path}</code></span>
-              )}
-              {selectedItem.source_type === 'plan' && (
-                <>
-                  {selectedItem.id.includes('-agent-') ? (
-                    <span><strong>Type:</strong> Agent plan (sub-plan)</span>
-                  ) : (
-                    <span><strong>Type:</strong> Main plan</span>
-                  )}
-                  <span><strong>Location:</strong> ~/.claude/plans/</span>
-                  <div className="project-edit-section">
-                    <strong>Project:</strong>{' '}
-                    {editingProject ? (
-                      <div className="project-edit-controls">
-                        <input
-                          type="text"
-                          value={editProjectValue}
-                          onChange={(e) => setEditProjectValue(e.target.value)}
-                          placeholder="/path/to/your/project"
-                          className="project-edit-input"
-                        />
-                        <button onClick={handleProjectUpdate} className="project-save-btn">
-                          ✓ Save
-                        </button>
-                        <button onClick={() => setEditingProject(false)} className="project-cancel-btn">
-                          ✕ Cancel
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="project-display">
-                        <code>{selectedItem.project_path || '(not set)'}</code>
-                        <button
-                          onClick={() => {
-                            setEditingProject(true);
-                            setEditProjectValue(selectedItem.project_path || '');
-                          }}
-                          className="project-edit-btn"
-                          title="Edit project path"
-                        >
-                          ✏️ Edit
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </>
-              )}
-              {selectedItem.source_type === 'task' && (
-                <span><strong>Location:</strong> ~/.claude/tasks/{selectedItem.id}/</span>
-              )}
+        {/* Detail */}
+        <div style={{ flex: 1, overflowY: 'auto', background: 'var(--cr-ink-0)' }}>
+          {selectedItem ? (
+            <MemoryDetail item={selectedItem} onSessionClick={onSessionClick} />
+          ) : (
+            <div
+              style={{
+                height: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: 'var(--cr-fg-3)',
+              }}
+            >
+              <div style={{ textAlign: 'center' }}>
+                <Icon name="brain" size={32} style={{ opacity: 0.2, marginBottom: 16 }} />
+                <div>Select an item to view details</div>
+              </div>
             </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
-            {selectedItem.content_preview && (
-              <div className="detail-preview">
-                <h4>Preview</h4>
-                <pre>{selectedItem.content_preview}</pre>
-              </div>
-            )}
+function MemoryDetail({ item, onSessionClick }: { item: MemoryMetadataRow; onSessionClick?: (id: string) => void }) {
+  const [links, setLinks] = useState<MemoryLinkRow[]>([]);
+  const [content, setContent] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
-            {selectedItem.source_type === 'session' && onSessionClick && (
-              <button
-                className="detail-action-button"
-                onClick={() => onSessionClick(selectedItem.id)}
-              >
-                View Conversation
-              </button>
-            )}
+  useEffect(() => {
+    setLinks([]);
+    setContent(null);
+    setLoading(true);
 
-            {/* Links */}
-            {links.length > 0 && (
-              <div className="detail-links">
-                <h4>Related ({links.length})</h4>
-                {links.map((link) => {
-                  const isOutgoing = link.source_id === selectedItem.id;
-                  const otherType = isOutgoing ? link.target_type : link.source_type;
-                  const otherId = isOutgoing ? link.target_id : link.source_id;
-                  const confidence = Math.round(link.confidence * 100);
+    Promise.all([
+      getMemoryLinks(item.source_type, item.id).then(setLinks).catch(console.error),
+      getMemoryItemContent(item.source_type, item.id).then(setContent).catch(console.error),
+    ]).finally(() => setLoading(false));
+  }, [item.id, item.source_type]);
 
-                  return (
-                    <div key={link.id} className="link-item">
-                      <span className={`source-badge source-${otherType}`}>
-                        {SOURCE_TYPES.find(t => t.type === otherType)?.icon} {otherType}
-                      </span>
-                      <span className="link-id">{otherId.slice(0, 16)}...</span>
-                      <span className="link-type">{link.link_type}</span>
-                      <span className="link-confidence">{confidence}%</span>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+  const displayContent = content || item.content_preview;
+
+  return (
+    <div style={{ padding: '40px 40px 100px', maxWidth: 900, margin: '0 auto' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <SourceBadge type={item.source_type as any} />
+        <span style={{ fontSize: 13, color: 'var(--cr-fg-3)' }}>{item.id}</span>
+      </div>
+
+      <h1 style={{ fontSize: 24, fontWeight: 600, color: 'var(--cr-fg-1)', marginBottom: 20, letterSpacing: '-0.015em' }}>
+        {item.title}
+      </h1>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 32 }}>
+        {item.project_path && (
+          <Chip kind="mono" icon="database">
+            {item.project_path.split('/').pop()}
+          </Chip>
+        )}
+        <Chip kind="mono" icon="clock">
+          Indexed {new Date(item.mtime).toLocaleString()}
+        </Chip>
+        {item.file_path && (
+          <Chip kind="mono" icon="file">
+            {item.file_path.split('/').slice(-2).join('/')}
+          </Chip>
         )}
       </div>
+
+      {links.length > 0 && (
+        <div style={{ marginBottom: 32 }}>
+          <div
+            style={{
+              fontSize: 12,
+              fontWeight: 600,
+              textTransform: 'uppercase',
+              color: 'var(--cr-fg-3)',
+              marginBottom: 12,
+              letterSpacing: '0.04em',
+            }}
+          >
+            Connected to
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {links.map((link) => {
+              const isTarget = link.source_id === item.id;
+              const otherId = isTarget ? link.target_id : link.source_id;
+              const otherType = isTarget ? link.target_type : link.source_type;
+
+              return (
+                <Card
+                  key={link.id}
+                  interactive
+                  style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}
+                >
+                  <SourceBadge type={otherType as any} />
+                  <span style={{ fontSize: 13, fontWeight: 500 }}>{otherId.slice(0, 20)}…</span>
+                </Card>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <div
+        style={{
+          background: 'var(--cr-ink-1)',
+          border: '1px solid var(--cr-line-1)',
+          borderRadius: 'var(--cr-radius-md)',
+          padding: 24,
+          position: 'relative',
+        }}
+      >
+        <div
+          style={{
+            position: 'absolute',
+            top: 12,
+            right: 12,
+            fontSize: 11,
+            color: 'var(--cr-fg-3)',
+            textTransform: 'uppercase',
+            fontWeight: 600,
+          }}
+        >
+          {loading ? 'Loading Full Content…' : 'Full Content'}
+        </div>
+
+        <div className="markdown-body" style={{ fontSize: 14, lineHeight: 1.6, color: 'var(--cr-fg-1)' }}>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              code({ className, children, ...props }) {
+                const match = /language-(\w+)/.exec(className || '');
+                if (match && String(children).includes('\n')) {
+                  return (
+                    <SyntaxHighlighter
+                      language={match[1]}
+                      style={vscDarkPlus}
+                      customStyle={{ margin: '1rem 0', borderRadius: '8px', fontSize: '13px' }}
+                    >
+                      {String(children).replace(/\n$/, '')}
+                    </SyntaxHighlighter>
+                  );
+                }
+                return (
+                  <code
+                    style={{
+                      background: 'var(--cr-ink-2)',
+                      padding: '2px 4px',
+                      borderRadius: 4,
+                      fontSize: '0.9em',
+                    }}
+                    {...props}
+                  >
+                    {children}
+                  </code>
+                );
+              },
+              h1: ({ children }) => <h1 style={{ borderBottom: '1px solid var(--cr-line-1)', paddingBottom: '0.3em', marginTop: '1.5em' }}>{children}</h1>,
+              h2: ({ children }) => <h2 style={{ borderBottom: '1px solid var(--cr-line-1)', paddingBottom: '0.3em', marginTop: '1.5em' }}>{children}</h2>,
+              blockquote: ({ children }) => (
+                <blockquote
+                  style={{
+                    borderLeft: '4px solid var(--cr-brand-500)',
+                    paddingLeft: '1em',
+                    color: 'var(--cr-fg-3)',
+                    margin: '1em 0',
+                  }}
+                >
+                  {children}
+                </blockquote>
+              ),
+            }}
+          >
+            {displayContent}
+          </ReactMarkdown>
+        </div>
+      </div>
+
+      {item.source_type === 'session' && onSessionClick && (
+        <div style={{ marginTop: 32 }}>
+          <Button variant="primary" size="md" icon="arrowRight" onClick={() => onSessionClick(item.id)}>
+            Open Full Conversation
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

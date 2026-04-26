@@ -1,192 +1,339 @@
 /**
- * Main App component - 3-column layout with project browser.
+ * Main App component — v2 design system rebuild.
  */
 
-import React, { useState } from 'react';
-import SearchBar from './components/SearchBar';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import TopBar from './components/TopBar';
+import Sidebar from './components/Sidebar';
+import ConversationList from './components/ConversationList';
 import ConversationViewer from './components/ConversationViewer';
-import StatusWidget from './components/StatusWidget';
 import MemoryExplorer from './components/MemoryExplorer';
 import Dashboard from './components/Dashboard';
-import ProjectSidebar from './components/ProjectSidebar';
-import ToolTabs from './components/ToolTabs';
 import {
-  searchSessions,
-  getConversation,
+  getStatus,
   getRecentSessions,
-  type SearchResult,
-  type Message,
+  getConversationWithSubagents,
+  searchSessions,
   type SessionInfo,
+  type SearchResult,
+  type Subagent,
 } from './services/api';
-import './App.css';
 
 type ViewMode = 'search' | 'memory' | 'dashboard';
 
+/**
+ * Recursive tree node used by the project sidebar. One node renders as
+ * one row; `children` nest below it. A node with `count > 0` represents
+ * a project directly at that path; an inner folder may also have
+ * `count > 0` if sessions exist exactly at that path.
+ */
+export interface ProjectTreeNode {
+  name: string;       // display label (may include "/" from collapsed chains)
+  fullPath: string;   // absolute path used for filtering
+  count: number;      // sessions directly at this path
+  totalCount: number; // count + sum of descendants
+  children: ProjectTreeNode[];
+}
+
+// Mirror of server-side normalizeProjectPath. Kept local so the client
+// has no cross-build dependency on the server package.
+function normalizeProjectPath(p: string | null | undefined): string {
+  if (!p) return '';
+  let n = String(p).trim();
+  if (!n) return '';
+  n = n.replace(/\\/g, '/');
+  n = n.replace(/\/+/g, '/');
+  if (n.length > 1) n = n.replace(/\/+$/, '');
+  return n;
+}
+
+interface TrieNode {
+  name: string;
+  fullPath: string;
+  count: number;
+  isProject: boolean;
+  children: Map<string, TrieNode>;
+}
+
+function buildTrie(projects: Record<string, number>): TrieNode {
+  const root: TrieNode = {
+    name: '',
+    fullPath: '',
+    count: 0,
+    isProject: false,
+    children: new Map(),
+  };
+  for (const [rawPath, count] of Object.entries(projects)) {
+    const path = normalizeProjectPath(rawPath);
+    if (!path) continue;
+    const segs = path.split('/').filter(Boolean);
+    if (segs.length === 0) continue;
+    let cur = root;
+    let acc = '';
+    for (const seg of segs) {
+      acc = acc + '/' + seg;
+      let child = cur.children.get(seg);
+      if (!child) {
+        child = { name: seg, fullPath: acc, count: 0, isProject: false, children: new Map() };
+        cur.children.set(seg, child);
+      }
+      cur = child;
+    }
+    cur.count += count;
+    cur.isProject = true;
+  }
+  return root;
+}
+
+/**
+ * LCP-strip: walk down from the synthetic root while we have exactly one
+ * child that is not itself a project. This strips shared structural
+ * prefixes like /home/<user>/code without hardcoding any path.
+ *
+ * Returns the set of top-level nodes to render. If every project shares
+ * a single deep path (one-project case), returns that project as a
+ * single-element array.
+ */
+function findTopLevel(root: TrieNode): TrieNode[] {
+  let cur = root;
+  while (!cur.isProject && cur.children.size === 1) {
+    cur = cur.children.values().next().value!;
+  }
+  if (cur.isProject) return [cur];
+  return Array.from(cur.children.values());
+}
+
+/**
+ * Convert a TrieNode subtree into a ProjectTreeNode, collapsing any
+ * transparent chain (single child + no own sessions) into the display
+ * name of its descendant — so /foo/bar/baz with no projects above baz
+ * renders as a single "foo/bar/baz" leaf rather than three nested rows.
+ */
+function toTreeNode(node: TrieNode, namePrefix = ''): ProjectTreeNode {
+  const myName = namePrefix ? namePrefix + '/' + node.name : node.name;
+
+  if (node.children.size === 1 && !node.isProject) {
+    const only = node.children.values().next().value!;
+    return toTreeNode(only, myName);
+  }
+
+  // Folders first, then leaf discussions. Alphabetic within each group.
+  const children = Array.from(node.children.values())
+    .map((c) => toTreeNode(c))
+    .sort(compareTreeNodes);
+
+  const totalCount = node.count + children.reduce((s, c) => s + c.totalCount, 0);
+
+  return {
+    name: myName,
+    fullPath: node.fullPath,
+    count: node.count,
+    totalCount,
+    children,
+  };
+}
+
+function compareTreeNodes(a: ProjectTreeNode, b: ProjectTreeNode): number {
+  const aIsFolder = a.children.length > 0;
+  const bIsFolder = b.children.length > 0;
+  if (aIsFolder !== bIsFolder) return aIsFolder ? -1 : 1;
+  return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+}
+
+export function buildProjectTree(projects: Record<string, number>): ProjectTreeNode[] {
+  const trie = buildTrie(projects);
+  return findTopLevel(trie)
+    .map((n) => toTreeNode(n))
+    .sort(compareTreeNodes);
+}
+
 export default function App() {
-  const [viewMode, setViewMode] = useState<ViewMode>('search');
-  const [toolFilter, setToolFilter] = useState('');
-  const [selectedProject, setSelectedProject] = useState<string | null>(null);
+  const [view, setView] = useState<ViewMode>('search');
+  const [toolFilter, setToolFilter] = useState<string>('all');
+  const [projectFilter, setProjectFilter] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [sort, setSort] = useState('recent');
+
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  const [projectTree, setProjectTree] = useState<ProjectTreeNode[]>([]);
+  const [totalProjectCount, setTotalProjectCount] = useState(0);
+  const [recentSessions, setRecentSessions] = useState<SessionInfo[]>([]);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  const [searchLoading, setSearchLoading] = useState(false);
-  const [selectedSession, setSelectedSession] = useState<string | null>(null);
-  const [selectedResult, setSelectedResult] = useState<SearchResult | null>(null);
-  const [selectedSessionInfo, setSelectedSessionInfo] = useState<SessionInfo | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<any[]>([]);
+  const [subagents, setSubagents] = useState<Subagent[]>([]);
   const [conversationLoading, setConversationLoading] = useState(false);
 
-  const handleSearch = async (query: string) => {
-    if (!query.trim()) {
-      setSearchResults([]);
-      return;
-    }
-    setSearchLoading(true);
-    try {
-      const results = await searchSessions(query, 50, selectedProject || undefined);
-      setSearchResults(results);
-    } catch (error) {
-      console.error('Search failed:', error);
-    } finally {
-      setSearchLoading(false);
-    }
-  };
+  const [selectedResult, setSelectedResult] = useState<SearchResult | null>(null);
+  const [selectedSessionInfo, setSelectedSessionInfo] = useState<SessionInfo | null>(null);
 
-  const handleProjectSelect = (project: string | null) => {
-    setSelectedProject(project);
-    // Clear search results when switching projects
-    setSearchResults([]);
-    setSelectedSession(null);
-    setSelectedResult(null);
-    setSelectedSessionInfo(null);
-    setMessages([]);
-  };
+  // Build the project tree from status. LCP-strip + collapse-transparent-chains
+  // gives a sensible hierarchy on any OS without hardcoded path depths.
+  useEffect(() => {
+    getStatus()
+      .then((stats) => {
+        const tree = buildProjectTree(stats.projects);
+        setProjectTree(tree);
+        setTotalProjectCount(tree.reduce((s, n) => s + n.totalCount, 0));
+      })
+      .catch(console.error);
+  }, []);
 
-  const handleResultClick = async (sessionId: string) => {
-    const result = searchResults.find((r) => r.sessionId === sessionId);
-    setSelectedSession(sessionId);
-    setSelectedResult(result || null);
-    setMessages([]);
-
-    if (!result) {
-      try {
-        const recentSessions = await getRecentSessions(100);
-        const sessionInfo = recentSessions.find((s) => s.sessionId === sessionId);
-        setSelectedSessionInfo(sessionInfo || null);
-      } catch (error) {
-        console.error('Failed to load session info:', error);
+  // Keyboard shortcut for search (Cmd/Ctrl + K)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        searchRef.current?.focus();
       }
-    } else {
-      setSelectedSessionInfo(null);
-    }
-  };
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
-  const handleLoadFull = async () => {
-    if (!selectedSession) return;
+  // Load recent sessions when filters change
+  useEffect(() => {
+    getRecentSessions(50, projectFilter || undefined, toolFilter === 'all' ? undefined : toolFilter)
+      .then((sessions) => {
+        setRecentSessions(sessions);
+        setSearchResults([]);
+      })
+      .catch(console.error);
+  }, [projectFilter, toolFilter]);
+
+  const handleSearch = useCallback(
+    async (q: string) => {
+      if (!q.trim()) {
+        setSearchResults([]);
+        return;
+      }
+      try {
+        const results = await searchSessions(q, 50, projectFilter || undefined);
+        setSearchResults(results);
+      } catch (err) {
+        console.error('Search failed:', err);
+      }
+    },
+    [projectFilter]
+  );
+
+  // Debounced search when query changes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (query.trim()) {
+        handleSearch(query);
+      } else {
+        setSearchResults([]);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [query, handleSearch]);
+
+  const handleSelectSession = useCallback((sessionId: string) => {
+    setSelectedSessionId(sessionId);
+    setMessages([]);
+    setSubagents([]);
+    // Find session info
+    const info = recentSessions.find((s) => s.sessionId === sessionId) || null;
+    setSelectedSessionInfo(info);
+    const result = searchResults.find((r) => r.sessionId === sessionId) || null;
+    setSelectedResult(result);
+  }, [recentSessions, searchResults]);
+
+  const handleLoadFull = useCallback(async () => {
+    if (!selectedSessionId) return;
     setConversationLoading(true);
     try {
-      const msgs = await getConversation(selectedSession);
+      const { messages: msgs, subagents: subs } = await getConversationWithSubagents(selectedSessionId);
       setMessages(msgs);
-    } catch (error) {
-      console.error('Failed to load conversation:', error);
+      setSubagents(subs);
+    } catch (err) {
+      console.error('Failed to load conversation:', err);
     } finally {
       setConversationLoading(false);
     }
-  };
+  }, [selectedSessionId]);
 
-  const handleCloseConversation = () => {
-    setSelectedSession(null);
+  const handleCloseConversation = useCallback(() => {
+    setSelectedSessionId(null);
     setSelectedResult(null);
     setSelectedSessionInfo(null);
     setMessages([]);
-  };
+    setSubagents([]);
+  }, []);
 
-  const handleMemorySessionClick = (sessionId: string) => {
-    setViewMode('search');
-    handleResultClick(sessionId);
-  };
+  const handleMemorySessionClick = useCallback((sessionId: string) => {
+    setView('search');
+    handleSelectSession(sessionId);
+  }, [handleSelectSession]);
+
+  const displayedSessions: SessionInfo[] = useMemo(() => {
+    if (searchResults.length > 0) {
+      return searchResults.map((r) => ({
+        sessionId: r.sessionId,
+        projectPath: r.projectPath,
+        modified: r.modified,
+        firstPrompt: r.firstPrompt,
+        summary: r.summary,
+        tool: '',
+        created: r.created,
+        filePath: '',
+        score: r.score,
+      } as SessionInfo & { score?: number }));
+    }
+    return recentSessions;
+  }, [searchResults, recentSessions]);
 
   return (
     <div className="app">
-      <header className="app-header">
-        <div className="app-header-top">
-          <h1 className="app-title">Chat Recall</h1>
-          <nav className="app-nav">
-            <button
-              className={`nav-button ${viewMode === 'search' ? 'active' : ''}`}
-              onClick={() => setViewMode('search')}
-              data-testid="nav-search"
-            >
-              Conversations
-            </button>
-            <button
-              className={`nav-button ${viewMode === 'memory' ? 'active' : ''}`}
-              onClick={() => setViewMode('memory')}
-              data-testid="nav-memory"
-            >
-              Memory
-            </button>
-            <button
-              className={`nav-button ${viewMode === 'dashboard' ? 'active' : ''}`}
-              onClick={() => setViewMode('dashboard')}
-              data-testid="nav-dashboard"
-            >
-              Dashboard
-            </button>
-          </nav>
-          <StatusWidget />
-        </div>
-        <div className="app-header-filters">
-          <ToolTabs value={toolFilter} onChange={setToolFilter} />
-        </div>
-      </header>
-
-      {viewMode === 'search' ? (
-        <div className="search-layout" data-testid="search-layout">
-          {/* Column 1: Project browser */}
-          <ProjectSidebar
-            selectedProject={selectedProject}
-            onProjectSelect={handleProjectSelect}
+      <TopBar 
+        view={view} 
+        setView={setView} 
+        query={query} 
+        setQuery={setQuery} 
+        searchRef={searchRef}
+        onSearch={handleSearch}
+      />
+      {view === 'search' && (
+        <div className="app-row" data-testid="search-layout">
+          <Sidebar
+            tree={projectTree}
+            totalCount={totalProjectCount}
+            selected={projectFilter}
+            onSelect={setProjectFilter}
+            toolFilter={toolFilter}
+            setToolFilter={setToolFilter}
           />
-
-          {/* Column 2: Conversation list + search */}
-          <div className="conversations-column">
-            <SearchBar
-              projectFilter={selectedProject}
-              toolFilter={toolFilter}
-              onSearch={handleSearch}
-              onResultClick={handleResultClick}
-              results={searchResults}
-              loading={searchLoading}
-              selectedSessionId={selectedSession}
-            />
-          </div>
-
-          {/* Column 3: Conversation detail */}
-          <div className={`conversation-column ${selectedSession ? 'visible' : 'hidden'}`}>
-            {selectedSession && (
-              <ConversationViewer
-                sessionId={selectedSession}
-                messages={messages}
-                loading={conversationLoading}
-                onClose={handleCloseConversation}
-                onLoadFull={handleLoadFull}
-                searchResult={selectedResult}
-                sessionInfo={selectedSessionInfo}
-              />
-            )}
-            {!selectedSession && (
-              <div className="no-conversation" data-testid="no-conversation">
-                <p>Select a conversation to view it</p>
-              </div>
-            )}
-          </div>
+          <ConversationList
+            results={displayedSessions}
+            selected={selectedSessionId}
+            onSelect={handleSelectSession}
+            sort={sort}
+            setSort={setSort}
+          />
+          <ConversationViewer
+            sessionId={selectedSessionId}
+            messages={messages}
+            subagents={subagents}
+            loading={conversationLoading}
+            onClose={handleCloseConversation}
+            onLoadFull={handleLoadFull}
+            searchResult={selectedResult}
+            sessionInfo={selectedSessionInfo}
+          />
         </div>
-      ) : viewMode === 'memory' ? (
-        <div className="memory-layout">
-          <MemoryExplorer toolFilter={toolFilter} onSessionClick={handleMemorySessionClick} />
+      )}
+      {view === 'memory' && (
+        <div className="app-row">
+          <MemoryExplorer
+            onSessionClick={handleMemorySessionClick}
+          />
         </div>
-      ) : (
-        <div className="dashboard-layout">
-          <Dashboard toolFilter={toolFilter} />
+      )}
+      {view === 'dashboard' && (
+        <div className="app-row">
+          <Dashboard />
         </div>
       )}
     </div>

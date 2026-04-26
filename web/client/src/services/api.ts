@@ -23,7 +23,20 @@ export interface Message {
     name: string;
     input: any;
     result?: any;
+    isError?: boolean;
   }>;
+  timestamp?: string;
+}
+
+export interface Subagent {
+  id: string;
+  kind: 'explore' | 'compact' | 'aside' | 'other';
+  agentType?: string;
+  description?: string;
+  filePath: string;
+  messageCount: number;
+  toolUseCount: number;
+  messages: Message[];
 }
 
 export interface SessionInfo {
@@ -42,6 +55,12 @@ export interface IndexStats {
   totalSessions: number;
   projects: Record<string, number>;
   indexPath: string;
+}
+
+export interface ProjectInfo {
+  path: string;
+  name: string;
+  count: number;
 }
 
 const API_BASE = '/api';
@@ -104,6 +123,19 @@ export async function getConversation(sessionId: string): Promise<Message[]> {
 
   const data = await res.json();
   return data.messages;
+}
+
+export async function getConversationWithSubagents(
+  sessionId: string,
+): Promise<{ messages: Message[]; subagents: Subagent[] }> {
+  const res = await fetchWithTimeout(`${API_BASE}/conversations/${sessionId}`, {}, 30000);
+
+  if (!res.ok) {
+    throw new Error(`Failed to get conversation: ${res.statusText}`);
+  }
+
+  const data = await res.json();
+  return { messages: data.messages ?? [], subagents: data.subagents ?? [] };
 }
 
 export async function getRawConversation(sessionId: string): Promise<any[]> {
@@ -373,6 +405,17 @@ export async function getMemoryItem(sourceType: string, id: string): Promise<Mem
   return await res.json();
 }
 
+export async function getMemoryItemContent(sourceType: string, id: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/memory/item/${sourceType}/${id}/content`);
+
+  if (!res.ok) {
+    throw new Error(`Failed to get memory item content: ${res.statusText}`);
+  }
+
+  const data = await res.json();
+  return data.content;
+}
+
 export async function getMemoryLinks(sourceType: string, id: string): Promise<MemoryLinkRow[]> {
   const res = await fetch(`${API_BASE}/memory/links/${sourceType}/${id}`);
 
@@ -423,6 +466,54 @@ export async function reindexMemory(
     throw new Error(`Failed to reindex memory: ${res.statusText}`);
   }
 
+  return await res.json();
+}
+
+// --- Settings API ---
+
+export interface AppSettings {
+  SUMMARY_PROVIDER?: string;
+  SUMMARY_CLI_PRESET?: string;
+  SUMMARY_CLI_CMD?: string;
+  SUMMARY_CLI_TIMEOUT_MS?: string;
+  GEMINI_MODEL?: string;
+  EMBEDDING_PROVIDER?: string;
+  OLLAMA_HOST?: string;
+  OLLAMA_SUMMARY_MODEL?: string;
+  CLAUDE_DIR?: string;
+}
+
+export interface SettingsResponse {
+  envPath: string;
+  settings: AppSettings;
+  presets: {
+    summaryCliPresets: string[];
+    summaryProviders: string[];
+    embeddingProviders: string[];
+  };
+}
+
+export async function getSettings(): Promise<SettingsResponse> {
+  const res = await fetchWithTimeout(`${API_BASE}/settings`);
+  if (!res.ok) throw new Error(`Failed to load settings: ${res.statusText}`);
+  return await res.json();
+}
+
+export async function saveSettings(settings: AppSettings): Promise<{
+  ok: boolean;
+  envPath: string;
+  updated: string[];
+  restartHint: string;
+}> {
+  const res = await fetchWithTimeout(`${API_BASE}/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ settings }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Failed to save settings: ${res.statusText} ${body}`);
+  }
   return await res.json();
 }
 
