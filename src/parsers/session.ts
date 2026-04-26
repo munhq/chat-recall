@@ -6,6 +6,7 @@ import { createReadStream, existsSync, readdirSync, readFileSync, statSync } fro
 import { createInterface } from 'readline';
 import { homedir } from 'os';
 import { join, basename } from 'path';
+import { stripInjectedBanners } from './chunker.js';
 
 export interface SessionEntry {
   sessionId: string;
@@ -382,16 +383,20 @@ export async function parseSessionFile(
         
         // Skip system reminders, sidechain-injected task prompts, and very short messages
         if (text && !text.includes('<system-reminder>') && text.trim().length > 10) {
+          // Strip status banners (MCP health, context-low, transient API errors)
+          // so they don't leak into summaries, search, or previews.
+          const cleanedText = stripInjectedBanners(text).trim();
+          if (cleanedText.length < 10) continue;
+
           content.userMessages.push({
-            text,
+            text: cleanedText,
             lineNumber: lineNum,
             contentType: 'user',
           });
           userCount++;
-          
-          // Capture first prompt
+
           if (!content.firstPrompt) {
-            content.firstPrompt = text.slice(0, 1000);
+            content.firstPrompt = cleanedText.slice(0, 1000);
           }
         }
       } else if (msgType === 'assistant') {

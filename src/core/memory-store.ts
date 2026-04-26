@@ -74,6 +74,14 @@ export class MemoryStore {
         UNIQUE(source_type, source_id, target_type, target_id, link_type)
       );
 
+      CREATE TABLE IF NOT EXISTS content_cache (
+        id TEXT NOT NULL,
+        source_type TEXT NOT NULL,
+        content_json TEXT NOT NULL,
+        mtime INTEGER NOT NULL,
+        PRIMARY KEY (id, source_type)
+      );
+
       CREATE INDEX IF NOT EXISTS idx_links_source
         ON memory_links(source_type, source_id);
       CREATE INDEX IF NOT EXISTS idx_links_target
@@ -291,6 +299,24 @@ export class MemoryStore {
     `).run(projectPath, id, sourceType);
 
     return result.changes > 0;
+  }
+
+  /** Get cached parsed content */
+  getCachedContent(id: string, sourceType: string, mtime: number): string | null {
+    const row = this.db.prepare(`
+      SELECT content_json FROM content_cache
+      WHERE id = ? AND source_type = ? AND mtime >= ?
+    `).get(id, sourceType, mtime) as { content_json: string } | undefined;
+    
+    return row?.content_json || null;
+  }
+
+  /** Set cached parsed content */
+  setCachedContent(id: string, sourceType: string, mtime: number, content: string): void {
+    this.db.prepare(`
+      INSERT OR REPLACE INTO content_cache (id, source_type, mtime, content_json)
+      VALUES (?, ?, ?, ?)
+    `).run(id, sourceType, mtime, content);
   }
 
   // ── FTS5 full-text search ──────────────────────────────────────

@@ -14,18 +14,77 @@ import { join } from 'path';
 import type { SessionContent } from '../parsers/session.js';
 
 export interface SummaryGeneratorConfig {
-  provider: 'gemini-cli' | 'claude' | 'ollama';
+  /**
+   * - `cli`        — run any local CLI, prompt piped to stdin. Configure via
+   *                  `cliCommand` (or env `SUMMARY_CLI_CMD`). No API key.
+   * - `gemini-cli` — legacy alias: runs `gemini -m <model> -p " "`.
+   * - `ollama`     — POST to local Ollama at `OLLAMA_HOST`.
+   * - `claude`     — Anthropic HTTP API (requires `ANTHROPIC_API_KEY`).
+   */
+  provider: 'cli' | 'gemini-cli' | 'claude' | 'ollama';
+  /** Shell command for the generic `cli` provider. Prompt is piped via stdin.
+   *  Example: `gemini -p " "`, `claude -p " "`, `codex chat`, `aichat`. */
+  cliCommand?: string;
+  cliTimeoutMs?: number;
   geminiModel?: string;
   claudeModel?: string;
   ollamaModel?: string;
 }
 
+/**
+ * Known invocation patterns for local coding-assistant CLIs. Users can opt in
+ * with `SUMMARY_CLI_PRESET=<name>`, or override entirely with SUMMARY_CLI_CMD.
+ * The placeholder `{prompt_file}` is substituted with a temp file containing
+ * the prompt at runtime. Commands without any placeholder get the prompt
+ * piped to stdin instead.
+ */
+/**
+ * Normalise stdout from agentic CLIs: drop ANSI escapes, strip the one-line
+ * session banner opencode/kilo print before the model reply (e.g.
+ * `> build · kimi-k2.6:cloud`), and trim.
+ */
+function cleanCliOutput(raw: string): string {
+  let out = raw.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ''); // ANSI CSI
+  out = out.replace(/\x1b\].*?(?:\x07|\x1b\\)/gs, '');   // ANSI OSC (title-set)
+  // opencode / kilo banner: "> build · <model:tag>"
+  out = out.replace(/^>\s*\w+\s*·\s*[^\n]+\n/gm, '');
+  out = out
+    .split('\n')
+    .filter((l) => l.trim() !== '')
+    .join('\n')
+    .trim();
+  // Drop common summary-generator echo prefixes
+  out = out.replace(/^Summary:\s*/i, '').replace(/^\d+\.\s*/, '').trim();
+  return out;
+}
+
+const CLI_PRESETS: Record<string, string> = {
+  // Coding-agent CLIs that take the message as a positional arg
+  opencode: 'opencode run "$(cat {prompt_file})"',
+  kilo: 'kilo run "$(cat {prompt_file})"',
+  kilocode: 'kilocode run "$(cat {prompt_file})"',
+  // Stdin-friendly CLIs (the prompt is piped in, command gets an empty "-p")
+  gemini: 'gemini -p " "',
+  'claude-cli': 'claude -p " "',
+  llm: 'llm --no-stream',
+  aichat: 'aichat --no-stream',
+};
+
 export class SummaryGenerator {
   private config: SummaryGeneratorConfig;
 
   constructor(config?: Partial<SummaryGeneratorConfig>) {
+    // Preset shortcuts: `SUMMARY_CLI_PRESET=opencode` picks a known invocation
+    // so users don't need to know each CLI's flag conventions.
+    const preset = (config?.cliCommand ? undefined : process.env.SUMMARY_CLI_PRESET)?.toLowerCase();
+    const presetCmd = preset ? CLI_PRESETS[preset] : undefined;
+
     this.config = {
-      provider: config?.provider || 'gemini-cli',
+      provider: config?.provider || (process.env.SUMMARY_PROVIDER as any) || 'gemini-cli',
+      cliCommand: config?.cliCommand || process.env.SUMMARY_CLI_CMD || presetCmd,
+      cliTimeoutMs:
+        config?.cliTimeoutMs ||
+        (process.env.SUMMARY_CLI_TIMEOUT_MS ? parseInt(process.env.SUMMARY_CLI_TIMEOUT_MS, 10) : 120000),
       geminiModel: config?.geminiModel || process.env.GEMINI_MODEL || 'gemini-3-flash-preview',
       claudeModel: config?.claudeModel || 'claude-3-5-haiku-20241022',
       ollamaModel: config?.ollamaModel || 'qwen2.5:7b',
@@ -41,6 +100,8 @@ export class SummaryGenerator {
 
     // Generate summary based on provider
     switch (this.config.provider) {
+      case 'cli':
+        return this.generateWithCLI(context);
       case 'gemini-cli':
         return this.generateWithGeminiCLI(context);
       case 'claude':
@@ -84,6 +145,58 @@ export class SummaryGenerator {
     }
 
     return parts.join('\n\n');
+  }
+
+  /**
+   * Generic local-CLI provider. Pipes the prompt to stdin of a user-configured
+   * command so you can reuse whatever coding-assistant CLI you already have
+   * logged in (gemini, claude, codex, aichat, llm, ollama run, …) without
+   * managing API keys from this tool.
+   *
+   * Configure with `SUMMARY_CLI_CMD`. Examples:
+   *   SUMMARY_CLI_CMD='gemini -p " "'
+   *   SUMMARY_CLI_CMD='claude -p " "'
+   *   SUMMARY_CLI_CMD='llm --no-stream'
+   *   SUMMARY_CLI_CMD='aichat --no-stream'
+   */
+  private generateWithCLI(context: string): string {
+    const cmd = this.config.cliCommand?.trim();
+    if (!cmd) {
+      throw new Error(
+        "provider='cli' needs SUMMARY_CLI_CMD or SUMMARY_CLI_PRESET " +
+          `(known presets: ${Object.keys(CLI_PRESETS).join(', ')})`
+      );
+    }
+    const prompt = this.buildPrompt(context);
+    const tempFile = join(tmpdir(), `summary-prompt-${Date.now()}-${process.pid}.txt`);
+    writeFileSync(tempFile, prompt, 'utf-8');
+
+    try {
+      // Two invocation modes:
+      //  (a) `{prompt_file}` placeholder — substituted with the temp file path.
+      //      Use this for CLIs that take prompts as positional args
+      //      (opencode run, kilo run, …).
+      //  (b) No placeholder — prompt is piped to the command's stdin.
+      //      Use this for streaming CLIs (gemini -p, claude -p, llm, aichat).
+      const shellCmd = cmd.includes('{prompt_file}')
+        ? cmd.replace(/\{prompt_file\}/g, tempFile)
+        : `cat "${tempFile}" | ${cmd}`;
+
+      const raw = execSync(shellCmd, {
+        encoding: 'utf-8',
+        maxBuffer: 10 * 1024 * 1024,
+        timeout: this.config.cliTimeoutMs,
+        cwd: tmpdir(), // neutral dir so agentic CLIs don't latch onto a project
+        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: '/bin/bash', // enable $(…) in presets
+      });
+
+      const summary = cleanCliOutput(raw);
+      if (!summary || summary.length < 10) throw new Error('Generated summary too short');
+      return summary;
+    } finally {
+      try { unlinkSync(tempFile); } catch {}
+    }
   }
 
   private generateWithGeminiCLI(context: string): string {

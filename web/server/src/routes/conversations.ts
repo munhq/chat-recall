@@ -4,9 +4,11 @@
 
 import express from 'express';
 import { getRecentSessions, getSessionPath, getRelatedItems, getSessionMetadata } from '../services/sessions.js';
-import { getConversation, getGeminiConversation, getOpenCodeConversation } from '../services/parser.js';
+import { getConversation, getGeminiConversation, getOpenCodeConversation, getSubagents } from '../services/parser.js';
+import type { Subagent } from '../services/parser.js';
 import { MemoryStore } from '../imports.js';
 import type { SourceType } from '../imports.js';
+import { matchesPrefix } from '../utils/paths.js';
 
 const router = express.Router();
 
@@ -21,9 +23,10 @@ router.get('/recent', async (req, res) => {
     const needsAll = projectFilter || toolFilter;
     let sessions = await getRecentSessions(needsAll ? 0 : limit);
 
-    // Filter by project — exact match
+    // Filter by project — exact or folder prefix match (so clicking a
+    // folder in the sidebar tree returns all descendant sessions too).
     if (projectFilter) {
-      sessions = sessions.filter(s => s.projectPath === projectFilter);
+      sessions = sessions.filter(s => matchesPrefix(s.projectPath || '', projectFilter));
     }
 
     // Filter by tool
@@ -82,43 +85,82 @@ router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Detect tool type from MemoryStore
-    let tool = 'claude';
     const store = new MemoryStore();
     try {
+      // 1. Detect tool type and file path
       const item = store.getItem(id, 'session' as SourceType);
+      let tool = 'claude';
+      let filePath = '';
+      let mtime = 0;
+
       if (item) {
         const extra = JSON.parse(item.extra_json || '{}');
         tool = extra.tool || 'claude';
+        filePath = item.file_path;
+        mtime = item.mtime;
       }
+
+      if (tool === 'claude' && !filePath) {
+        try {
+          filePath = getSessionPath(id);
+          const { statSync } = await import('fs');
+          mtime = statSync(filePath).mtimeMs;
+        } catch {}
+      }
+
+      // 2. Try Cache
+      // PARSER_VERSION: bump when parser output shape changes so stale cache
+      // entries from older buggy parsers are ignored instead of served.
+      const PARSER_VERSION = 4;
+      if (mtime > 0) {
+        const cached = store.getCachedContent(id, 'session', mtime);
+        if (cached) {
+          try {
+            const parsed = JSON.parse(cached);
+            if (parsed && parsed.v === PARSER_VERSION && Array.isArray(parsed.messages)) {
+              return res.json({
+                sessionId: id,
+                messages: parsed.messages,
+                subagents: parsed.subagents ?? [],
+                count: parsed.messages.length,
+                fromCache: true,
+              });
+            }
+          } catch {
+            // fall through and reparse
+          }
+        }
+      }
+
+      // 3. Parse and cache
+      let messages;
+      let subagents: Subagent[] = [];
+      if (tool === 'gemini') {
+        if (!filePath) throw new Error('Session path not found');
+        messages = await getGeminiConversation(filePath);
+      } else if (tool === 'opencode') {
+        messages = await getOpenCodeConversation(id);
+      } else {
+        // Claude
+        if (!filePath) throw new Error('Session not found');
+        messages = await getConversation(filePath);
+        subagents = await getSubagents(filePath);
+      }
+
+      // Store in cache (versioned envelope — see PARSER_VERSION above)
+      if (mtime > 0 && messages.length > 0) {
+        store.setCachedContent(id, 'session', mtime, JSON.stringify({ v: PARSER_VERSION, messages, subagents }));
+      }
+
+      res.json({
+        sessionId: id,
+        messages,
+        subagents,
+        count: messages.length,
+      });
     } finally {
       store.close();
     }
-
-    let messages;
-    if (tool === 'gemini') {
-      // Find the Gemini session file path from the store
-      const store2 = new MemoryStore();
-      try {
-        const item = store2.getItem(id, 'session' as SourceType);
-        if (!item) throw new Error('Session not found');
-        messages = await getGeminiConversation(item.file_path);
-      } finally {
-        store2.close();
-      }
-    } else if (tool === 'opencode') {
-      messages = await getOpenCodeConversation(id);
-    } else {
-      // Claude — use JSONL parser
-      const sessionPath = getSessionPath(id);
-      messages = await getConversation(sessionPath);
-    }
-
-    res.json({
-      sessionId: id,
-      messages,
-      count: messages.length,
-    });
   } catch (error) {
     console.error('Conversation error:', error);
 

@@ -10,6 +10,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join, basename } from 'path';
+import { MemoryStore } from './memory-store.js';
 
 export interface ConversationContext {
   sessionId: string;
@@ -36,6 +37,7 @@ export interface RecentSession {
   mtime: number;
   firstPrompt: string;
   messageCount: number;
+  tool?: 'claude' | 'gemini' | 'opencode';
 }
 
 /**
@@ -122,10 +124,67 @@ export function getRecentSessions(
     }
   }
   
+  // Augment with Gemini + OpenCode sessions from the unified memory index.
+  // These don't live in ~/.claude/projects — they're rows in memory_metadata
+  // with extra_json.tool set to "gemini" or "opencode".
+  try {
+    const seen = new Set(sessions.map(s => s.sessionId));
+    for (const item of listNonClaudeSessionItems()) {
+      if (seen.has(item.id)) continue;
+      if (projectFilter && !item.project_path.toLowerCase().includes(projectFilter.toLowerCase())) {
+        continue;
+      }
+      let extra: Record<string, any> = {};
+      try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
+      const tool = extra.tool as 'gemini' | 'opencode' | undefined;
+      if (tool !== 'gemini' && tool !== 'opencode') continue;
+      const iso = new Date(item.mtime || 0).toISOString();
+      sessions.push({
+        sessionId: item.id,
+        projectPath: item.project_path || '',
+        projectDir: item.project_path ? basename(item.project_path) : tool,
+        fullPath: item.file_path || '',
+        created: iso,
+        modified: iso,
+        mtime: item.mtime || 0,
+        firstPrompt: item.content_preview || item.title || '',
+        messageCount: extra.messageCount || 0,
+        tool,
+      });
+    }
+  } catch {
+    // If the memory store isn't available, fall back to Claude-only.
+  }
+
+  // Default Claude rows to tool='claude' for downstream discrimination.
+  for (const s of sessions) if (!s.tool) s.tool = 'claude';
+
   // Sort by modification time descending
   sessions.sort((a, b) => b.mtime - a.mtime);
-  
+
   return sessions.slice(0, limit);
+}
+
+/**
+ * Lazy-load session items from the unified memory store. Kept behind a
+ * try/catch in the caller so a missing/locked DB just degrades to the
+ * Claude-only path instead of crashing.
+ */
+function listNonClaudeSessionItems(): Array<{
+  id: string;
+  title: string;
+  project_path: string;
+  file_path: string;
+  mtime: number;
+  content_preview: string;
+  extra_json: string;
+}> {
+  const store = new MemoryStore();
+  try {
+    return store.listItems('session', 50000, 0) as any[];
+  } finally {
+    store.close();
+  }
 }
 
 /**

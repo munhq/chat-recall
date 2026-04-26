@@ -1,43 +1,198 @@
+/* Chat Recall — Design System Tokens (v2, premium rebuild) */
+
+/* ────────────────────────────── Dark (default) ────────────────────────────── */
+:root {
+  /* Ink scale */
+  --cr-ink-0: #0E1217;
+  --cr-ink-1: #161B22;
+  --cr-ink-2: #1C2128;
+  --cr-ink-3: #21262D;
+  --cr-ink-4: #30363D;
+
+  /* Foreground */
+  --cr-fg-1: #E6EDF3;
+  --cr-fg-2: #8B949E;
+  --cr-fg-3: #6E7681;
+
+  /* Lines */
+  --cr-line-1: #21262D;
+  --cr-line-2: #30363D;
+  --cr-line-3: #484F58;
+
+  /* Brand */
+  --cr-brand-500: #F5A97F;
+  --cr-brand-600: #E08D5F;
+  --cr-brand-700: #C9734A;
+  --cr-brand-surf: rgba(245, 169, 127, 0.12);
+  --cr-brand-line: rgba(245, 169, 127, 0.25);
+
+  /* Semantic colors */
+  --cr-ok-500: #3FB950;
+  --cr-ok-surf: rgba(63, 185, 80, 0.12);
+  --cr-ok-line: rgba(63, 185, 80, 0.25);
+
+  --cr-warn-500: #D29922;
+  --cr-warn-surf: rgba(210, 153, 34, 0.12);
+  --cr-warn-line: rgba(210, 153, 34, 0.25);
+
+  --cr-err-500: #F85149;
+  --cr-err-surf: rgba(248, 81, 73, 0.12);
+  --cr-err-line: rgba(248, 81, 73, 0.25);
+
+  --cr-info-500: #58A6FF;
+  --cr-info-surf: rgba(88, 166, 255, 0.12);
+  --cr-info-line: rgba(88, 166, 255, 0.25);
+
+  /* Tool badges */
+  --cr-tool-claude: #D4A5FF;
+  --cr-tool-claude-surf: rgba(212, 165, 255, 0.12);
+  --cr-tool-gemini: #78C9A0;
+  --cr-tool-gemini-surf: rgba(120, 201, 160, 0.12);
+  --cr-tool-opencode: #79C0FF;
+  --cr-tool-opencode-surf: rgba(121, 192, 255, 0.12);
+
+  /* Radii */
+  --cr-radius-xs: 4px;
+  --cr-radius-sm: 6px;
+  --cr-radius-md: 8px;
+  --cr-radius-lg: 12px;
+
+  /* Motion */
+  --cr-dur-fast: 120ms;
+  --cr-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --cr-focus-ring: 0 0 0 3px rgba(245, 169, 127, 0.25);
+
+  /* Layout */
+  --cr-header-h: 52px;
+  --cr-sidebar-w: 240px;
+  --cr-convos-w: 360px;
+  --cr-subbar-h: 48px;
+
+  /* Typography */
+  --cr-fw-medium: 500;
+  --cr-font-mono: 'Fira Code', 'SF Mono', 'Courier New', monospace;
+}
+
+/* ────────────────────────────── Light ────────────────────────────── */
+[data-theme="light"] {
+  --cr-ink-0: #FFFFFF;
+  --cr-ink-1: #F6F8FA;
+  --cr-ink-2: #EAEEF2;
+  --cr-ink-3: #D0D7DE;
+  --cr-ink-4: #C1C7CD;
+
+  --cr-fg-1: #1F2328;
+  --cr-fg-2: #57606A;
+  --cr-fg-3: #8C959F;
+
+  --cr-line-1: #D0D7DE;
+  --cr-line-2: #C1C7CD;
+  --cr-line-3: #A0A8B0;
+
+  --cr-brand-500: #C45D2A;
+  --cr-brand-600: #A34E22;
+  --cr-brand-700: #823E1B;
+  --cr-brand-surf: rgba(196, 93, 42, 0.08);
+  --cr-brand-line: rgba(196, 93, 42, 0.20);
+
+  --cr-focus-ring: 0 0 0 3px rgba(196, 93, 42, 0.20);
+}
+
+/* ────────────────────────────── Base ────────────────────────────── */
 * {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
 
+html, body, #root {
+  height: 100%;
+}
+
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: #0d1117;
-  color: #c9d1d9;
-  line-height: 1.6;
+  background: var(--cr-ink-0);
+  color: var(--cr-fg-1);
+  line-height: 1.5;
+  overflow: hidden;
+  transition: background var(--cr-dur-fast) var(--cr-ease), color var(--cr-dur-fast) var(--cr-ease);
 }
 
-code {
-  font-family: 'Fira Code', 'Courier New', monospace;
+code, pre, kbd {
+  font-family: var(--cr-font-mono);
 }
 
-#root {
-  min-height: 100vh;
-}
-
-/* Scrollbar styling */
+/* Scrollbars */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
-
 ::-webkit-scrollbar-track {
-  background: #161b22;
+  background: transparent;
 }
-
 ::-webkit-scrollbar-thumb {
-  background: #30363d;
-  border-radius: 5px;
+  background: var(--cr-ink-4);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--cr-line-3);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: #484f58;
+/* Typography helpers */
+.cr-h4 {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--cr-fg-3);
+}
+
+.cr-lead {
+  font-size: 14px;
+  color: var(--cr-fg-2);
+}
+
+h1, h2, h3 {
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--cr-fg-1);
+}
+h1 { font-size: 24px; }
+h2 { font-size: 20px; }
+h3 { font-size: 15px; }
+
+a {
+  color: var(--cr-brand-500);
+  text-decoration: none;
+  font-size: 13px;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+pre {
+  background: var(--cr-ink-1);
+  border: 1px solid var(--cr-line-1);
+  border-radius: var(--cr-radius-md);
+  padding: 14px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* App shell */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+.app-row {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
 }
