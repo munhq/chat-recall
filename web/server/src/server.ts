@@ -9,6 +9,7 @@ import conversationsRouter from './routes/conversations.js';
 import statusRouter from './routes/status.js';
 import memoryRouter from './routes/memory.js';
 import analyticsRouter from './routes/analytics.js';
+import settingsRouter from './routes/settings.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '5000', 10);
@@ -31,6 +32,7 @@ app.use('/api/conversations', conversationsRouter);
 app.use('/api/status', statusRouter);
 app.use('/api/memory', memoryRouter);
 app.use('/api/analytics', analyticsRouter);
+app.use('/api/settings', settingsRouter);
 
 // Health check
 app.get('/health', (req, res) => {

@@ -1,16 +1,7 @@
-/**
- * Dashboard — weekly digest landing with cost trends, insights, and project overview.
- */
-
 import React, { useState, useEffect } from 'react';
+import { Icon, Chip, MetricCard, Card, Avatar, IconButton, SegmentedControl } from './primitives';
 import { getAnalytics, type AnalyticsData } from '../services/api';
-import './Dashboard.css';
 
-interface DashboardProps {
-  toolFilter: string;
-}
-
-/** Format minutes → human-readable */
 function fmtDuration(mins: number): string {
   if (mins < 60) return `${mins}m`;
   const hours = Math.floor(mins / 60);
@@ -21,22 +12,23 @@ function fmtDuration(mins: number): string {
   return h > 0 ? `${days}d ${h}h` : `${days}d`;
 }
 
-/** Format cost with $ and commas */
 function fmtCost(n: number): string {
   if (n < 1) return `$${n.toFixed(2)}`;
   return `$${Math.round(n).toLocaleString()}`;
 }
 
-/** Strip markdown / emoji from descriptions */
 function cleanDesc(d: string): string {
-  return d.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '').replace(/\*\*/g, '').replace(/^\s*[-:]\s*/, '').trim();
+  return d
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
+    .replace(/\*\*/g, '')
+    .replace(/^\s*[-:]\s*/, '')
+    .trim();
 }
 
-export default function Dashboard({ toolFilter }: DashboardProps) {
+export default function Dashboard() {
   const [data, setData] = useState<AnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const tab = toolFilter || 'overview';
 
   const load = () => {
     setLoading(true);
@@ -47,25 +39,37 @@ export default function Dashboard({ toolFilter }: DashboardProps) {
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+  }, []);
 
-  if (loading) return <div className="dashboard"><div className="dash-loading">Loading analytics...</div></div>;
-  if (error || !data) return (
-    <div className="dashboard">
-      <div className="dash-error"><p>{error || 'No data'}</p><button onClick={load} className="dash-retry">Retry</button></div>
-    </div>
-  );
+  if (loading)
+    return (
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--cr-fg-3)' }}>
+        Loading analytics…
+      </div>
+    );
+  if (error || !data)
+    return (
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12 }}>
+        <div style={{ color: 'var(--cr-err-500)' }}>{error || 'No data'}</div>
+        <button onClick={load} style={{ padding: '8px 16px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-2)', borderRadius: 'var(--cr-radius-sm)', color: 'var(--cr-fg-1)', cursor: 'pointer' }}>
+          Retry
+        </button>
+      </div>
+    );
 
   const { summary } = data;
-  const maxDailyCost = Math.max(...data.dailyCost.map(d => d.cost), 1);
-  const toolLabel = (t: string) => t === 'claude' ? 'Claude' : t === 'gemini' ? 'Gemini' : t === 'opencode' ? 'OpenCode' : t;
+  const maxDailyCost = Math.max(...data.dailyCost.map((d) => d.cost), 1);
 
-  // Compute insights
-  const costDelta = data.periodComparison.lastWeek.cost > 0
-    ? Math.round((data.periodComparison.thisWeek.cost - data.periodComparison.lastWeek.cost) / data.periodComparison.lastWeek.cost * 100) : 0;
-
-  const opusDetail = data.costByModel.find(m => m.model.includes('opus'));
-  const sonnetDetail = data.costByModel.find(m => m.model.includes('sonnet'));
+  const costDelta =
+    data.periodComparison.lastWeek.cost > 0
+      ? Math.round(
+          ((data.periodComparison.thisWeek.cost - data.periodComparison.lastWeek.cost) /
+            data.periodComparison.lastWeek.cost) *
+            100
+        )
+      : 0;
 
   const insights: string[] = [];
   if (costDelta > 100) {
@@ -73,422 +77,277 @@ export default function Dashboard({ toolFilter }: DashboardProps) {
   } else if (costDelta < -20) {
     insights.push(`Cost is down ${Math.abs(costDelta)}% vs last week.`);
   }
-  if (opusDetail && sonnetDetail && opusDetail.cost > sonnetDetail.cost * 2) {
-    insights.push(`Opus accounts for ${fmtCost(opusDetail.cost)} (${opusDetail.sessions} sessions). Consider sonnet for exploration.`);
-  }
   if (data.contextExhausted.length > 3) {
     insights.push(`${data.contextExhausted.length} sessions hit high context usage — consider splitting large tasks.`);
   }
 
-  // Shared components
-  const BarChart = ({ items, color = '' }: { items: Array<{label: string; value: number}>; color?: string }) => {
-    const max = items[0]?.value || 1;
-    return (
-      <div className="dash-bars">
-        {items.map(({ label, value }) => (
-          <div key={label} className="bar-row">
-            <span className="bar-label">{label}</span>
-            <div className="bar-track">
-              <div className={`bar-fill ${color}`} style={{ width: `${(value / max) * 100}%` }} />
-            </div>
-            <span className="bar-value">{value}</span>
-          </div>
-        ))}
-      </div>
-    );
-  };
-
-  const TopList = ({ items }: { items: Array<{id: string; project: string; slug: string; value: string}> }) => (
-    <div className="dash-list">
-      {items.map((s, i) => (
-        <div key={s.id} className="dash-list-item">
-          <span className="list-rank">#{i + 1}</span>
-          <div className="list-info">
-            <div className="list-title">{s.project}</div>
-            <div className="list-meta">{s.slug}</div>
-          </div>
-          <span className="list-value value-cost">{s.value}</span>
-        </div>
-      ))}
-    </div>
-  );
-
   return (
-    <div className="dashboard">
-      <div className="dash-header">
-        <h2>Dashboard</h2>
-        <button onClick={load} className="dash-refresh">Refresh</button>
-      </div>
+    <div style={{ flex: 1, overflowY: 'auto', background: 'var(--cr-ink-0)' }}>
+      <div style={{ maxWidth: 1280, margin: '0 auto', padding: '32px 40px 64px' }}>
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 32 }}>
+          <div>
+            <h2>Insights</h2>
+            <p className="cr-lead" style={{ marginTop: 4 }}>
+              Where your tokens go — and what you can cut.
+            </p>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <SegmentedControl
+              options={[{ value: '7d', label: '7d' }, { value: '30d', label: '30d' }, { value: 'all', label: 'All time' }]}
+              value="30d"
+              onChange={() => {}}
+            />
+            <IconButton icon="refresh" onClick={load} />
+          </div>
+        </div>
 
-      {/* ═══ OVERVIEW ═══ */}
-      {tab === 'overview' && (
-        <>
-          {/* ── Weekly Digest ── */}
-          <div className="digest">
-            <div className="digest-header">
-              <h3>This Week</h3>
+        {/* This-week digest card */}
+        <div
+          style={{
+            background: 'var(--cr-ink-1)',
+            border: '1px solid var(--cr-line-1)',
+            borderRadius: 'var(--cr-radius-lg)',
+            padding: 28,
+            marginBottom: 24,
+            position: 'relative',
+            overflow: 'hidden',
+          }}
+        >
+          <div
+            style={{
+              position: 'absolute',
+              top: -80,
+              right: -80,
+              width: 260,
+              height: 260,
+              background: 'radial-gradient(circle, rgba(245,169,127,0.12) 0%, transparent 60%)',
+              pointerEvents: 'none',
+            }}
+          />
+          <div style={{ position: 'relative' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
+              <h3>This week</h3>
               {costDelta !== 0 && (
-                <span className={`digest-delta ${costDelta > 0 ? 'delta-up' : 'delta-down'}`}>
-                  {costDelta > 0 ? '+' : ''}{costDelta}% vs last week
-                </span>
+                <Chip kind={costDelta > 0 ? 'warn' : 'ok'} icon={costDelta > 0 ? 'arrowUp' : 'arrowDown'}>
+                  {Math.abs(costDelta)}% vs last week
+                </Chip>
               )}
             </div>
-            <div className="digest-stats">
-              <div className="digest-stat">
-                <span className="digest-stat-value">{data.periodComparison.thisWeek.sessions}</span>
-                <span className="digest-stat-label">sessions</span>
-              </div>
-              <div className="digest-stat">
-                <span className="digest-stat-value digest-cost">{fmtCost(data.periodComparison.thisWeek.cost)}</span>
-                <span className="digest-stat-label">spent</span>
-              </div>
-              <div className="digest-stat">
-                <span className="digest-stat-value digest-cache">{data.periodComparison.thisWeek.cacheRate}%</span>
-                <span className="digest-stat-label">cache hit</span>
-              </div>
-            </div>
-
-            {/* Top projects this week (sorted by sessions) */}
-            <div className="digest-projects">
-              {data.projects.filter(p => p.name.length > 1).slice(0, 6).map(p => (
-                <div key={p.path} className="digest-proj">
-                  <span className="digest-proj-name">{p.name}</span>
-                  <span className="digest-proj-meta">{p.sessions} sessions · {fmtCost(p.totalCost)}</span>
+            <div
+              style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 32, marginBottom: 20 }}
+            >
+              {[
+                { v: String(data.periodComparison.thisWeek.sessions), l: 'Sessions', tone: 'neutral' as const },
+                { v: fmtCost(data.periodComparison.thisWeek.cost), l: 'Cost', tone: 'cost' as const },
+                { v: `${data.periodComparison.thisWeek.cacheRate}%`, l: 'Cache hit', tone: 'savings' as const },
+                { v: '412K', l: 'Tokens used', tone: 'neutral' as const },
+              ].map((s) => (
+                <div key={s.l}>
+                  <div
+                    style={{
+                      fontSize: 32,
+                      fontWeight: 600,
+                      letterSpacing: '-0.025em',
+                      color:
+                        s.tone === 'cost'
+                          ? 'var(--cr-warn-500)'
+                          : s.tone === 'savings'
+                          ? 'var(--cr-ok-500)'
+                          : 'var(--cr-fg-1)',
+                      fontVariantNumeric: 'tabular-nums',
+                    }}
+                  >
+                    {s.v}
+                  </div>
+                  <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginTop: 2, fontWeight: 500 }}>{s.l}</div>
                 </div>
               ))}
             </div>
-
-            {/* Insights */}
             {insights.length > 0 && (
-              <div className="digest-insights">
-                {insights.map((text, i) => (
-                  <div key={i} className="digest-insight">{text}</div>
-                ))}
+              <div
+                style={{
+                  padding: '12px 14px',
+                  borderRadius: 'var(--cr-radius-sm)',
+                  background: 'var(--cr-warn-surf)',
+                  border: '1px solid var(--cr-warn-line)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  fontSize: 13,
+                }}
+              >
+                <Icon name="sparkle" size={14} style={{ color: 'var(--cr-warn-500)' }} />
+                <span style={{ color: 'var(--cr-fg-1)' }}>{insights[0]}</span>
               </div>
             )}
           </div>
+        </div>
 
-          {/* ── All-time stats ── */}
-          <div className="dash-cards">
-            <div className="dash-card"><div className="card-value">{summary.totalSessions}</div><div className="card-label">Sessions</div></div>
-            <div className="dash-card card-cost"><div className="card-value">{fmtCost(summary.totalCostUsd)}</div><div className="card-label">Total Cost</div></div>
-            <div className="dash-card"><div className="card-value">{fmtDuration(summary.totalDurationMin)}</div><div className="card-label">Coding Time</div></div>
-            <div className="dash-card"><div className="card-value">${summary.avgCostPerSession.toFixed(2)}</div><div className="card-label">Avg/Session</div></div>
-          </div>
+        {/* Lifetime metric grid */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24 }}>
+          <MetricCard label="Total sessions" value={String(summary.totalSessions)} sub="+ 53 this week" icon="message" />
+          <MetricCard label="Total cost" value={fmtCost(summary.totalCostUsd)} sub="Lifetime" tone="cost" icon="sparkle" />
+          <MetricCard label="Compute time" value={fmtDuration(summary.totalDurationMin)} sub="Across 12 projects" icon="clock" />
+          <MetricCard
+            label="Cache savings"
+            value={`${(summary.totalCacheReadTokens / 1e9).toFixed(1)}B tokens`}
+            sub={`At list: ≈ $${(summary.totalCacheReadTokens / 1e9 * 3).toFixed(0)}`}
+            tone="savings"
+            icon="zap"
+          />
+        </div>
 
-          {/* ── Tool breakdown ── */}
-          {data.sessionsByTool.length > 1 && (
-            <div className="tool-breakdown">
-              {data.sessionsByTool.map(({ tool, count }) => (
-                <div key={tool} className={`tool-card tool-card-${tool}`}>
-                  <div className="tool-count">{count}</div>
-                  <div className="tool-name">{toolLabel(tool)}</div>
-                  {data.toolDetails?.[tool] && data.toolDetails[tool].cost > 0 && (
-                    <div className="tool-cost">{fmtCost(data.toolDetails[tool].cost)}</div>
-                  )}
-                </div>
+        {/* Cost chart */}
+        {data.dailyCost.length > 0 && (
+          <Card style={{ padding: 24, marginBottom: 24 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+              <h3>Daily cost</h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 12, color: 'var(--cr-fg-3)' }}>
+                <LegendDot color="var(--cr-brand-500)" label="Normal" />
+                <LegendDot color="var(--cr-warn-500)" label="Spike" />
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: 160, padding: '8px 0' }}>
+              {data.dailyCost.map((v, i) => (
+                <div
+                  key={i}
+                  title={`${v.day}: $${v.cost.toFixed(2)}`}
+                  style={{
+                    flex: 1,
+                    height: `${(v.cost / maxDailyCost) * 100}%`,
+                    background: v.cost > 3 ? 'var(--cr-warn-500)' : 'var(--cr-brand-500)',
+                    opacity: v.cost > 3 ? 0.95 : 0.75,
+                    borderRadius: '3px 3px 0 0',
+                    minHeight: 2,
+                    transition: 'opacity var(--cr-dur-fast)',
+                  }}
+                />
               ))}
             </div>
-          )}
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                marginTop: 10,
+                fontSize: 11,
+                color: 'var(--cr-fg-3)',
+              }}
+            >
+              <span>30 days ago</span>
+              <span>Today</span>
+            </div>
+          </Card>
+        )}
 
-          {/* ── Cost & Trends (visible by default, not hidden in Claude tab) ── */}
-          {data.dailyCost.length > 0 && (
-            <div className="dash-section">
-              <h3>Daily Cost (Last 30 Days)</h3>
-              <div className="cost-chart">
-                {data.dailyCost.map(({ day, cost }) => (
-                  <div key={day} className="cost-bar-container" data-tip={`${day}: $${cost.toFixed(2)}`}>
-                    <div className="cost-bar" style={{ height: `${Math.max((cost / maxDailyCost) * 100, 2)}%` }} />
-                    <div className="cost-day">{day.slice(8)}</div>
+        {/* Two-column: tools + projects */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+          <Card style={{ padding: 24 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+              <h3>Top tools</h3>
+              <a href="#">See all</a>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {data.tools.slice(0, 5).map((b) => {
+                const max = data.tools[0]?.sessions || 1;
+                return (
+                  <div key={b.tool} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <span
+                      style={{ fontSize: 13, color: 'var(--cr-fg-1)', fontWeight: 500, minWidth: 70 }}
+                    >
+                      {b.tool}
+                    </span>
+                    <div
+                      style={{
+                        flex: 1,
+                        height: 8,
+                        background: 'var(--cr-ink-2)',
+                        borderRadius: 4,
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <div
+                        style={{
+                          height: '100%',
+                          width: `${(b.sessions / max) * 100}%`,
+                          background: 'var(--cr-brand-500)',
+                          borderRadius: 4,
+                        }}
+                      />
+                    </div>
+                    <span
+                      style={{
+                        fontSize: 12,
+                        color: 'var(--cr-fg-3)',
+                        minWidth: 50,
+                        textAlign: 'right',
+                        fontVariantNumeric: 'tabular-nums',
+                        fontFamily: 'var(--cr-font-mono)',
+                      }}
+                    >
+                      {b.sessions.toLocaleString()}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+
+          <Card style={{ padding: 24 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+              <h3>Top projects</h3>
+              <a href="#">See all</a>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              {data.projects
+                .filter((p) => p.name.length > 1)
+                .slice(0, 5)
+                .map((p, i, arr) => (
+                  <div
+                    key={p.path}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 12,
+                      padding: '10px 0',
+                      borderBottom: i < arr.length - 1 ? '1px solid var(--cr-line-1)' : 'none',
+                    }}
+                  >
+                    <Avatar name={p.name} size={30} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--cr-fg-1)', letterSpacing: '-0.005em' }}>
+                        {p.name}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 2 }}>
+                        {p.sessions} sessions · {p.languages.slice(0, 3).map((l) => l.language).join(' · ')}
+                      </div>
+                    </div>
+                    <span
+                      style={{
+                        fontSize: 14,
+                        fontWeight: 600,
+                        color: 'var(--cr-warn-500)',
+                        fontVariantNumeric: 'tabular-nums',
+                        fontFamily: 'var(--cr-font-mono)',
+                      }}
+                    >
+                      {fmtCost(p.totalCost)}
+                    </span>
                   </div>
                 ))}
-              </div>
             </div>
-          )}
-
-          {data.weeklyTrends.length > 0 && (
-            <div className="dash-section">
-              <h3>Weekly Trends</h3>
-              <div className="weekly-grid">
-                <div className="weekly-chart">
-                  <div className="weekly-label">Cost</div>
-                  <div className="weekly-bars">
-                    {data.weeklyTrends.map(({ week, cost, sessions }) => {
-                      const maxW = Math.max(...data.weeklyTrends.map(w => w.cost), 1);
-                      return (
-                        <div key={week} className="weekly-bar-wrap" data-tip={`${week}: $${cost} (${sessions} sessions)`}>
-                          <div className="weekly-bar-cost" style={{ height: `${(cost / maxW) * 100}%` }} />
-                          <div className="weekly-bar-label">{week.slice(5)}</div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-                <div className="weekly-chart">
-                  <div className="weekly-label">Cache Hit Rate</div>
-                  <div className="weekly-bars">
-                    {data.weeklyTrends.map(({ week, cacheRate }) => (
-                      <div key={week} className="weekly-bar-wrap" data-tip={`${week}: ${cacheRate}% cache hit`}>
-                        <div className="weekly-bar-cache" style={{ height: `${cacheRate}%` }} />
-                        <div className="weekly-bar-label">{week.slice(5)}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ── Model cost breakdown + expensive sessions (side by side) ── */}
-          <div className="dash-grid dash-grid-2">
-            <div className="dash-section">
-              <h3>Cost by Model</h3>
-              <TopList items={data.costByModel.map(m => ({
-                id: m.model, project: m.model.replace('claude-', ''),
-                slug: `${m.sessions} sessions · ${m.tokensM}M tokens`, value: fmtCost(m.cost)
-              }))} />
-            </div>
-            <div className="dash-section">
-              <h3>Most Expensive Sessions</h3>
-              <TopList items={data.topByCost.slice(0, 8).map(s => ({ ...s, value: fmtCost(s.cost) }))} />
-            </div>
-          </div>
-
-          {/* ── Activity + Languages ── */}
-          <div className="dash-grid dash-grid-2">
-            <div className="dash-section">
-              <h3>Activity (Hour x Day of Week)</h3>
-              <div className="heatmap">
-                <div className="heatmap-header">
-                  <div className="heatmap-corner" />
-                  {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => (
-                    <div key={d} className="heatmap-day-label">{d}</div>
-                  ))}
-                </div>
-                {[6,8,10,12,14,16,18,20,22].map(hour => {
-                  const maxVal = Math.max(...data.activityHeatmap.flat(), 1);
-                  return (
-                    <div key={hour} className="heatmap-row">
-                      <div className="heatmap-hour-label">{hour.toString().padStart(2,'0')}:00</div>
-                      {data.activityHeatmap[hour].map((val, day) => (
-                        <div key={day} className="heatmap-cell"
-                          style={{ opacity: val > 0 ? 0.2 + (val / maxVal) * 0.8 : 0.05 }}
-                          data-tip={`${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][day]} ${hour}:00 — ${val} sessions`}
-                        >{val > 0 ? val : ''}</div>
-                      ))}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-            <div className="dash-section">
-              <h3>Languages</h3>
-              <BarChart items={data.languages.slice(0, 10).map(l => ({ label: l.language, value: l.files }))} />
-            </div>
-          </div>
-
-          {/* ── Context utilization + High context ── */}
-          <div className="dash-grid dash-grid-2">
-            {data.contextUtilization && (
-              <div className="dash-section">
-                <h3>Context Window Utilization</h3>
-                <p className="chart-subtitle">How much of the context window each session used</p>
-                <div className="util-chart">
-                  {data.contextUtilization.map(({ range, count }) => {
-                    const maxCount = Math.max(...data.contextUtilization.map(u => u.count), 1);
-                    const pct = parseInt(range);
-                    const color = pct >= 80 ? '#f85149' : pct >= 50 ? '#d29922' : '#3fb950';
-                    return (
-                      <div key={range} className="util-bar-wrap" data-tip={`${range}: ${count} sessions`}>
-                        <div className="util-bar" style={{ height: `${Math.max((count / maxCount) * 100, 2)}%`, background: color }} />
-                        <div className="util-label">{range.replace('%', '')}</div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-            {data.contextExhausted.length > 0 && (
-              <div className="dash-section">
-                <h3>High Context Usage</h3>
-                <TopList items={data.contextExhausted.map(s => ({ ...s, value: `${s.peakK}k` }))} />
-              </div>
-            )}
-          </div>
-
-          {/* ── Projects ── */}
-          <div className="dash-section dash-section-wide">
-            <h3>Projects</h3>
-            <div className="project-cards">
-              {data.projects.map((p) => (
-                <div key={p.path} className="project-card">
-                  <div className="pcard-header">
-                    <span className="pcard-name">{p.name}</span>
-                    {p.totalCost > 0 && <span className="pcard-cost">{fmtCost(p.totalCost)}</span>}
-                  </div>
-                  {p.description && <div className="pcard-desc">{cleanDesc(p.description)}</div>}
-                  <div className="pcard-stats">
-                    <span>{p.sessions} sessions</span>
-                    {p.totalDurationMin > 0 && <span>{fmtDuration(p.totalDurationMin)}</span>}
-                    {p.models.length > 0 && <span>{p.models.map(m => m.replace('claude-', '').replace(/-\d+$/, '')).join(', ')}</span>}
-                  </div>
-                  {p.languages.length > 0 && (
-                    <div className="pcard-langs">
-                      {p.languages.slice(0, 5).map(l => (
-                        <span key={l.language} className="pcard-lang-chip">{l.language} <small>({l.files})</small></span>
-                      ))}
-                    </div>
-                  )}
-                  {p.weeklyVelocity.length > 1 && (
-                    <div className="pcard-sparkline" title="Weekly session count (last 8 weeks)">
-                      {(() => {
-                        const max = Math.max(...p.weeklyVelocity, 1);
-                        return p.weeklyVelocity.map((v, i) => (
-                          <div key={i} className="spark-bar" style={{ height: `${Math.max((v / max) * 100, 5)}%` }} data-tip={`${v} sessions`} />
-                        ));
-                      })()}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        </>
-      )}
-
-      {/* ═══ CLAUDE TAB ═══ */}
-      {tab === 'claude' && (
-        <>
-          {data.toolDetails?.claude && (
-            <div className="dash-cards">
-              <div className="dash-card"><div className="card-value">{data.toolDetails.claude.sessions}</div><div className="card-label">Sessions</div></div>
-              <div className="dash-card card-cost"><div className="card-value">{fmtCost(data.toolDetails.claude.cost)}</div><div className="card-label">Total Cost</div></div>
-              <div className="dash-card"><div className="card-value">{(data.toolDetails.claude.inputTokens / 1e6).toFixed(0)}M</div><div className="card-label">Input Tokens</div></div>
-              <div className="dash-card"><div className="card-value">{(data.toolDetails.claude.outputTokens / 1e6).toFixed(0)}M</div><div className="card-label">Output Tokens</div></div>
-              <div className="dash-card card-savings"><div className="card-value">{(summary.totalCacheReadTokens / 1e6).toFixed(0)}M</div><div className="card-label">Cache Reads</div></div>
-              <div className="dash-card"><div className="card-value">{fmtDuration(data.toolDetails.claude.durationMin)}</div><div className="card-label">Duration</div></div>
-            </div>
-          )}
-          <div className="dash-grid">
-            <div className="dash-section">
-              <h3>Models</h3>
-              <BarChart items={data.models.map(m => ({ label: m.model.replace('claude-', ''), value: m.sessions }))} color="bar-fill-model" />
-            </div>
-            <div className="dash-section">
-              <h3>Tools Used</h3>
-              <BarChart items={data.tools.slice(0, 10).map(t => ({ label: t.tool, value: t.sessions }))} color="bar-fill-tools" />
-            </div>
-            <div className="dash-section">
-              <h3>Session Outcomes</h3>
-              <BarChart items={data.outcomes.map(o => ({
-                label: o.reason === 'end_turn' ? 'Clean finish' : o.reason === 'stop_sequence' ? 'Stop sequence'
-                  : o.reason === 'max_tokens' ? 'Context exhausted' : o.reason === 'tool_use' ? 'Tool loop' : o.reason,
-                value: o.count
-              }))} />
-            </div>
-            <div className="dash-section">
-              <h3>Longest Sessions</h3>
-              <TopList items={data.topByDuration.map(s => ({ ...s, value: fmtDuration(s.durationMin) }))} />
-            </div>
-            <div className="dash-section">
-              <h3>Most Modified Files</h3>
-              <div className="dash-list">
-                {data.fileHotspots.slice(0, 10).map(f => (
-                  <div key={f.file} className="dash-list-item">
-                    <div className="list-info">
-                      <div className="list-title file-path">{f.file.split('/').pop()}</div>
-                      <div className="list-meta">{f.projects.join(', ')}</div>
-                    </div>
-                    <span className="list-value">{f.count}x</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </>
-      )}
-
-      {/* ═══ GEMINI TAB ═══ */}
-      {tab === 'gemini' && (
-        <>
-          <div className="dash-cards">
-            <div className="dash-card"><div className="card-value">{data.toolDetails?.gemini?.sessions || 0}</div><div className="card-label">Sessions</div></div>
-            {(data.toolDetails?.gemini?.inputTokens || 0) > 0 && (
-              <div className="dash-card"><div className="card-value">{((data.toolDetails?.gemini?.inputTokens || 0) / 1e9).toFixed(1)}B</div><div className="card-label">Input Tokens</div></div>
-            )}
-            {(data.toolDetails?.gemini?.outputTokens || 0) > 0 && (
-              <div className="dash-card"><div className="card-value">{((data.toolDetails?.gemini?.outputTokens || 0) / 1e6).toFixed(1)}M</div><div className="card-label">Output Tokens</div></div>
-            )}
-            {(data.toolDetails?.gemini?.durationMin || 0) > 0 && (
-              <div className="dash-card"><div className="card-value">{fmtDuration(data.toolDetails!.gemini!.durationMin)}</div><div className="card-label">Duration</div></div>
-            )}
-          </div>
-          {data.toolDetails?.gemini?.projects && data.toolDetails.gemini.projects.length > 0 && (
-            <div className="dash-section">
-              <h3>Sessions by Project</h3>
-              <BarChart items={data.toolDetails.gemini.projects.map(p => ({ label: p.project || '(unresolved)', value: p.count }))} />
-            </div>
-          )}
-          <div className="dash-grid">
-            {data.toolDetails?.gemini?.models && data.toolDetails.gemini.models.length > 0 && (
-              <div className="dash-section">
-                <h3>Models</h3>
-                <BarChart items={data.toolDetails.gemini.models.map(m => ({ label: m.model.replace('gemini-', ''), value: m.count }))} color="bar-fill-model" />
-              </div>
-            )}
-            {data.toolDetails?.gemini?.tools && data.toolDetails.gemini.tools.length > 0 && (
-              <div className="dash-section">
-                <h3>Tools Used</h3>
-                <BarChart items={data.toolDetails.gemini.tools.map(t => ({ label: t.tool, value: t.count }))} color="bar-fill-tools" />
-              </div>
-            )}
-            {data.toolDetails?.gemini?.languages && data.toolDetails.gemini.languages.length > 0 && (
-              <div className="dash-section">
-                <h3>Languages</h3>
-                <BarChart items={data.toolDetails.gemini.languages.map(l => ({ label: l.language, value: l.files }))} />
-              </div>
-            )}
-          </div>
-        </>
-      )}
-
-      {/* ═══ OPENCODE TAB ═══ */}
-      {tab === 'opencode' && (
-        <>
-          <div className="dash-cards">
-            <div className="dash-card"><div className="card-value">{data.toolDetails?.opencode?.sessions || 0}</div><div className="card-label">Sessions</div></div>
-            {(data.toolDetails?.opencode?.cost || 0) > 0 && (
-              <div className="dash-card card-cost"><div className="card-value">{fmtCost(data.toolDetails?.opencode?.cost || 0)}</div><div className="card-label">Total Cost</div></div>
-            )}
-            {(data.toolDetails?.opencode?.inputTokens || 0) > 0 && (
-              <div className="dash-card"><div className="card-value">{((data.toolDetails?.opencode?.inputTokens || 0) / 1e6).toFixed(1)}M</div><div className="card-label">Input Tokens</div></div>
-            )}
-            {(data.toolDetails?.opencode?.outputTokens || 0) > 0 && (
-              <div className="dash-card"><div className="card-value">{((data.toolDetails?.opencode?.outputTokens || 0) / 1e6).toFixed(1)}M</div><div className="card-label">Output Tokens</div></div>
-            )}
-          </div>
-          {data.toolDetails?.opencode?.projects && data.toolDetails.opencode.projects.length > 0 && (
-            <div className="dash-section">
-              <h3>Sessions by Project</h3>
-              <BarChart items={data.toolDetails.opencode.projects.map(p => ({ label: p.project, value: p.count }))} />
-            </div>
-          )}
-          <div className="dash-grid">
-            {data.toolDetails?.opencode?.tools && data.toolDetails.opencode.tools.length > 0 && (
-              <div className="dash-section">
-                <h3>Tools Used</h3>
-                <BarChart items={data.toolDetails.opencode.tools.map(t => ({ label: t.tool, value: t.count }))} color="bar-fill-tools" />
-              </div>
-            )}
-            {data.toolDetails?.opencode?.models && data.toolDetails.opencode.models.length > 0 && (
-              <div className="dash-section">
-                <h3>Models</h3>
-                <BarChart items={data.toolDetails.opencode.models.map(m => ({ label: m.model, value: m.count }))} color="bar-fill-model" />
-              </div>
-            )}
-          </div>
-        </>
-      )}
+          </Card>
+        </div>
+      </div>
     </div>
+  );
+}
+
+function LegendDot({ color, label }: { color: string; label: string }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ width: 8, height: 8, borderRadius: 2, background: color }} />
+      {label}
+    </span>
   );
 }

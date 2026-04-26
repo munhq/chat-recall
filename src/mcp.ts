@@ -1366,8 +1366,55 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
         }
 
+        // Fallback: session may be a Gemini or OpenCode item indexed in the
+        // memory store rather than a Claude .jsonl on disk. Return a minimal
+        // resume dossier built from memory_metadata + cached summary so the
+        // tool is useful across all three backends.
         if (!sessionFileSR) {
-          return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
+          const fbStore = new MemoryStore();
+          try {
+            // Accept either raw id ("<uuid>") or prefixed id ("gemini_<uuid>", "opencode_<uuid>").
+            const candidates = [
+              params.session_id,
+              `gemini_${params.session_id}`,
+              `opencode_${params.session_id}`,
+            ];
+            let item: any = null;
+            for (const id of candidates) {
+              item = fbStore.getItem(id, 'session' as SourceType);
+              if (item) break;
+            }
+            if (!item) {
+              return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
+            }
+            let extra: any = {};
+            try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
+            const DatabaseFB = (await import('better-sqlite3')).default;
+            const cacheDbFB = new DatabaseFB(join(homedir(), '.claude', 'chat-recall-cache.db'), { readonly: true });
+            const row = cacheDbFB
+              .prepare('SELECT summary, first_prompt FROM session_metadata WHERE session_id = ?')
+              .get(item.id) as { summary: string; first_prompt: string } | undefined;
+            cacheDbFB.close();
+            const lines: string[] = [];
+            lines.push(`# Resume — ${item.title || item.id}`);
+            lines.push(`Tool: ${extra.tool || 'unknown'}   Project: ${item.project_path || '(unknown)'}`);
+            if (row?.summary) {
+              lines.push('');
+              lines.push('## Summary');
+              lines.push(row.summary);
+            } else {
+              lines.push('');
+              lines.push('(No AI summary yet — run `npm run generate-summaries` to produce one.)');
+            }
+            if (row?.first_prompt || item.content_preview) {
+              lines.push('');
+              lines.push('## First prompt');
+              lines.push(row?.first_prompt || item.content_preview);
+            }
+            return { content: [{ type: 'text', text: lines.join('\n') }] };
+          } finally {
+            fbStore.close();
+          }
         }
 
         // Parse the session for structured resume data

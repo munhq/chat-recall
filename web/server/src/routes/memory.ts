@@ -10,6 +10,7 @@
 
 import express from 'express';
 import { MemoryService } from '../services/memory.js';
+import { MemoryStore } from '../imports.js';
 import type { SourceType } from '../imports.js';
 
 const router = express.Router();
@@ -78,6 +79,57 @@ router.get('/item/:sourceType/:id', async (req, res) => {
     console.error('Memory item error:', error);
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to get memory item',
+    });
+  }
+});
+
+// GET /api/memory/item/:sourceType/:id/content
+router.get('/item/:sourceType/:id/content', async (req, res) => {
+  try {
+    const { sourceType, id } = req.params;
+    if (!validateSourceType(sourceType)) {
+      return res.status(400).json({ error: `Invalid source type: ${sourceType}` });
+    }
+    
+    const store = new MemoryStore();
+    try {
+      const item = store.getItem(id, sourceType);
+
+      if (!item) {
+        return res.status(404).json({ error: 'Item not found' });
+      }
+
+      if (!item.file_path) {
+        return res.status(400).json({ error: 'Item has no associated file path' });
+      }
+
+      // 1. Try Cache
+      const cached = store.getCachedContent(id, sourceType, item.mtime);
+      if (cached) {
+        return res.json({ content: cached, fromCache: true });
+      }
+
+      // 2. Read from disk
+      const { readFile } = await import('fs/promises');
+      const { existsSync } = await import('fs');
+
+      if (!existsSync(item.file_path)) {
+        return res.status(404).json({ error: `File not found at path: ${item.file_path}` });
+      }
+
+      const content = await readFile(item.file_path, 'utf-8');
+
+      // 3. Store in Cache
+      store.setCachedContent(id, sourceType, item.mtime, content);
+
+      res.json({ content });
+    } finally {
+      store.close();
+    }
+  } catch (error) {
+    console.error('Memory item content error:', error);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to get memory item content',
     });
   }
 });

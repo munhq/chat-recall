@@ -5,11 +5,16 @@
  */
 
 import { config } from 'dotenv';
+import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import Database from 'better-sqlite3';
 import { getAllSessions, parseSessionFile } from '../src/parsers/session.js';
+import type { SessionContent } from '../src/parsers/session.js';
 import { MetadataCache } from '../src/core/metadata-cache.js';
+import { MemoryStore } from '../src/core/memory-store.js';
 import { SummaryGenerator } from '../src/core/summary-generator.js';
+import { stripInjectedBanners } from '../src/parsers/chunker.js';
 
 // Load .env
 config({ path: join(process.cwd(), '.env') });
@@ -17,7 +22,8 @@ config({ path: join(process.cwd(), '.env') });
 interface GenerateOptions {
   force?: boolean;
   limit?: number;
-  provider?: 'gemini-cli' | 'claude' | 'ollama';
+  provider?: 'cli' | 'gemini-cli' | 'claude' | 'ollama';
+  cliCommand?: string;
   showProgress?: boolean;
 }
 
@@ -26,18 +32,22 @@ async function generateSummaries(options: GenerateOptions = {}) {
     force = false,
     limit = 0,
     provider = process.env.SUMMARY_PROVIDER as any || 'gemini-cli',
+    cliCommand,
     showProgress = true,
   } = options;
 
   console.log('📝 Bulk Summary Generation');
   console.log(`   Provider: ${provider}`);
+  if (provider === 'cli') {
+    console.log(`   CLI cmd: ${cliCommand || process.env.SUMMARY_CLI_CMD || '(preset: ' + (process.env.SUMMARY_CLI_PRESET || 'unset') + ')'}`);
+  }
   console.log(`   Force: ${force ? 'yes' : 'no'}`);
   if (limit > 0) console.log(`   Limit: ${limit} sessions`);
   console.log();
 
   // Initialize cache and generator
   const cache = new MetadataCache();
-  const generator = new SummaryGenerator({ provider });
+  const generator = new SummaryGenerator({ provider, cliCommand });
 
   // Get all sessions
   const sessions = Array.from(getAllSessions());
@@ -122,13 +132,80 @@ async function generateSummaries(options: GenerateOptions = {}) {
     }
   }
 
+  // --------------------------------------------------------------
+  //  Gemini + OpenCode sessions: iterate the unified memory index.
+  //  Claude sessions were handled above via the filesystem parser.
+  // --------------------------------------------------------------
+  console.log();
+  console.log('📚 Scanning non-Claude sessions (Gemini / OpenCode)…');
+  const store = new MemoryStore();
+  let ncProcessed = 0, ncGenerated = 0, ncSkipped = 0, ncErrors = 0;
+  try {
+    const memItems = store.listItems('session' as any, 50000, 0);
+    for (const item of memItems) {
+      if (limit > 0 && ncProcessed >= limit) break;
+      let extra: Record<string, any> = {};
+      try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
+      const tool = extra.tool;
+      if (tool !== 'gemini' && tool !== 'opencode') continue;
+
+      ncProcessed++;
+
+      if (!force && !cache.needsUpdate(item.id, item.mtime)) {
+        ncSkipped++;
+        continue;
+      }
+
+      try {
+        const content = buildNonClaudeSessionContent(tool, item.id, item.file_path, extra);
+        if (!content) { ncSkipped++; continue; }
+
+        const totalChars = (content.firstPrompt || '').length +
+          content.userMessages.reduce((s, m) => s + m.text.length, 0);
+        if (totalChars < 50 && content.userMessages.length < 2) {
+          cache.set({
+            sessionId: item.id,
+            firstPrompt: content.firstPrompt || item.content_preview || '',
+            summary: content.firstPrompt?.trim() || item.title || 'No content',
+            summarySource: 'original',
+            mtime: item.mtime,
+            indexedAt: Date.now(),
+          });
+          ncSkipped++;
+          continue;
+        }
+
+        if (showProgress) {
+          console.log(`[${ncProcessed}] ${tool} ${item.id.slice(0, 24)}…  (${item.project_path || 'no-project'})`);
+        }
+        const summary = await generator.generate(content);
+        cache.set({
+          sessionId: item.id,
+          firstPrompt: content.firstPrompt,
+          summary,
+          summarySource: (provider === 'gemini-cli' ? 'gemini' : provider) as any,
+          mtime: item.mtime,
+          indexedAt: Date.now(),
+        });
+        ncGenerated++;
+        if (showProgress) console.log(`   ✅ "${summary.slice(0, 80)}…"`);
+      } catch (error) {
+        ncErrors++;
+        console.error(`   ❌ ${item.id}:`, (error as Error).message);
+      }
+    }
+  } finally {
+    store.close();
+  }
+  console.log(`   Non-Claude: processed=${ncProcessed} generated=${ncGenerated} skipped=${ncSkipped} errors=${ncErrors}`);
+
   // Final stats
   console.log();
   console.log('✅ Summary Generation Complete!');
-  console.log(`   Processed: ${processed}`);
-  console.log(`   Generated: ${generated}`);
-  console.log(`   Skipped: ${skipped}`);
-  console.log(`   Errors: ${errors}`);
+  console.log(`   Processed: ${processed + ncProcessed}`);
+  console.log(`   Generated: ${generated + ncGenerated}`);
+  console.log(`   Skipped: ${skipped + ncSkipped}`);
+  console.log(`   Errors: ${errors + ncErrors}`);
 
   const stats = cache.getStats();
   console.log();
@@ -140,6 +217,101 @@ async function generateSummaries(options: GenerateOptions = {}) {
   }
 
   cache.close();
+}
+
+/**
+ * Build a minimal SessionContent for a Gemini or OpenCode session by
+ * re-reading the raw source (JSON file / SQLite DB). We only populate
+ * the fields SummaryGenerator.buildContext actually reads: firstPrompt,
+ * userMessages, assistantMessages, toolsUsed.
+ */
+function buildNonClaudeSessionContent(
+  tool: string,
+  itemId: string,
+  filePath: string,
+  extra: Record<string, any>
+): SessionContent | null {
+  const empty = (): SessionContent => ({
+    sessionPath: filePath,
+    summaries: [],
+    userMessages: [],
+    assistantMessages: [],
+    toolResults: [],
+    toolsUsed: new Set<string>(),
+    firstPrompt: '',
+    metadata: {} as any,
+  });
+
+  if (tool === 'gemini') {
+    if (!existsSync(filePath)) return null;
+    let raw: any;
+    try { raw = JSON.parse(readFileSync(filePath, 'utf-8')); } catch { return null; }
+    const messages: any[] = raw.messages || [];
+    const getText = (m: any): string => {
+      if (typeof m.content === 'string') return m.content;
+      if (Array.isArray(m.content)) return m.content.map((p: any) => p.text || '').join('\n');
+      return '';
+    };
+    const c = empty();
+    for (const m of messages) {
+      const text = stripInjectedBanners(getText(m)).trim();
+      if (text.length < 10) continue;
+      if (m.type === 'user') {
+        c.userMessages.push({ text, lineNumber: 0, contentType: 'user' as any });
+        if (!c.firstPrompt) c.firstPrompt = text.slice(0, 1000);
+      } else if (m.type === 'gemini') {
+        c.assistantMessages.push({ text, lineNumber: 0, contentType: 'assistant' as any });
+      }
+      for (const tc of m.toolCalls || []) {
+        const name = tc.name || tc.displayName;
+        if (name) c.toolsUsed.add(name);
+      }
+    }
+    return c;
+  }
+
+  if (tool === 'opencode') {
+    const sessionDbId = itemId.replace(/^opencode_/, '');
+    const dbPath = filePath && existsSync(filePath)
+      ? filePath
+      : join(homedir(), '.local', 'share', 'opencode', 'opencode.db');
+    if (!existsSync(dbPath)) return null;
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      const parts = db
+        .prepare(
+          `SELECT p.data, m.data AS msg_data FROM part p
+             JOIN message m ON p.message_id = m.id
+            WHERE p.session_id = ?
+              AND (p.data LIKE '%"type":"text"%' OR p.data LIKE '%"type":"tool"%')
+            ORDER BY p.time_created ASC`
+        )
+        .all(sessionDbId) as Array<{ data: string; msg_data: string }>;
+      const c = empty();
+      for (const row of parts) {
+        let pd: any, md: any;
+        try { pd = JSON.parse(row.data); md = JSON.parse(row.msg_data); } catch { continue; }
+        if (pd.type === 'tool') {
+          if (pd.tool) c.toolsUsed.add(pd.tool);
+          continue;
+        }
+        const text = stripInjectedBanners(pd.text || '').trim();
+        if (text.length < 10) continue;
+        if (md.role === 'user') {
+          c.userMessages.push({ text, lineNumber: 0, contentType: 'user' as any });
+          if (!c.firstPrompt) c.firstPrompt = text.slice(0, 1000);
+        } else {
+          c.assistantMessages.push({ text, lineNumber: 0, contentType: 'assistant' as any });
+        }
+      }
+      for (const t of extra.toolsUsed || []) c.toolsUsed.add(t);
+      return c;
+    } finally {
+      db.close();
+    }
+  }
+
+  return null;
 }
 
 // Parse command-line args
@@ -156,6 +328,13 @@ for (let i = 0; i < args.length; i++) {
     options.limit = parseInt(args[++i], 10);
   } else if (arg === '--provider' || arg === '-p') {
     options.provider = args[++i] as any;
+  } else if (arg === '--cli-cmd') {
+    options.cliCommand = args[++i];
+    options.provider = 'cli';
+  } else if (arg === '--preset') {
+    // `--preset opencode` → sets SUMMARY_CLI_PRESET + provider='cli'
+    process.env.SUMMARY_CLI_PRESET = args[++i];
+    options.provider = 'cli';
   } else if (arg === '--quiet' || arg === '-q') {
     options.showProgress = false;
   }
