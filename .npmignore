@@ -1,0 +1,38 @@
+# Source — only ship compiled dist/
+src/
+auto-indexer/
+hooks/
+
+# Workspaces published separately or not at all
+web/
+e2e/
+scripts/
+docker/
+
+# Dev artefacts
+.git/
+.github/
+.vscode/
+.idea/
+.playwright-mcp/
+.tsbuildinfo
+tsconfig.json
+tsconfig*.json
+playwright.config.ts
+
+# Local state and secrets
+.env
+.env.*
+!.env.example
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# Misc
+chat-recall-snapshot.yml
+chat-recall-design-system/
+*.zip
+*.png
+*.jpeg
+*.jpg

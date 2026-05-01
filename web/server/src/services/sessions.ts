@@ -254,14 +254,14 @@ const PRICING: Record<string, { input: number; output: number; cacheRead: number
   'claude-sonnet-4-5':  { input: 3,   output: 15,  cacheRead: 0.3,  cacheWrite: 3.75 },
 };
 
-function getModelPricing(model: string) {
-  // Try exact match first, then prefix match
+/** Returns pricing for a model, or null if unknown (Gemini, Ollama, custom). */
+function getModelPricing(model: string): typeof PRICING[string] | null {
+  if (!model) return null;
   if (PRICING[model]) return PRICING[model];
   for (const [key, val] of Object.entries(PRICING)) {
     if (model.startsWith(key)) return val;
   }
-  // Default to sonnet pricing as a safe estimate
-  return PRICING['claude-sonnet-4-6'];
+  return null;
 }
 
 export interface SessionMetadataResponse {
@@ -281,9 +281,10 @@ export interface SessionMetadataResponse {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   peakContextTokens: number;
-  // Computed cost
-  estimatedCostUsd: number;
-  cacheSavingsUsd: number;
+  // Computed cost — null when no model in the session has known pricing
+  // (e.g. Gemini, Ollama, custom). UI should render "—" not "$0".
+  estimatedCostUsd: number | null;
+  cacheSavingsUsd: number | null;
 }
 
 /**
@@ -326,19 +327,27 @@ function computeMetadataResponse(meta: Record<string, any>): SessionMetadataResp
   const cacheReadTokens = meta.cacheReadTokens || 0;
   const cacheCreationTokens = meta.cacheCreationTokens || 0;
 
-  // Compute cost using the primary model (most expensive one as a worst-case estimate)
+  // Compute cost using whichever model has known pricing. If none do (Gemini,
+  // Ollama, custom), return null and let the UI render "—" — never fabricate.
   // Note: inputTokens already includes cacheRead + cacheCreation (total context), so
   // non-cached input = inputTokens - cacheReadTokens - cacheCreationTokens
-  const primaryModel = modelsUsed[0] || 'claude-sonnet-4-6';
-  const pricing = getModelPricing(primaryModel);
-  const nonCachedInput = Math.max(0, inputTokens - cacheReadTokens - cacheCreationTokens);
-  const inputCost = (nonCachedInput / 1_000_000) * pricing.input;
-  const outputCost = (outputTokens / 1_000_000) * pricing.output;
-  const cacheReadCost = (cacheReadTokens / 1_000_000) * pricing.cacheRead;
-  const cacheWriteCost = (cacheCreationTokens / 1_000_000) * pricing.cacheWrite;
-  const estimatedCostUsd = inputCost + outputCost + cacheReadCost + cacheWriteCost;
-  // Savings = what it would have cost without cache
-  const cacheSavingsUsd = (cacheReadTokens / 1_000_000) * (pricing.input - pricing.cacheRead);
+  let pricing: ReturnType<typeof getModelPricing> = null;
+  for (const m of modelsUsed) {
+    if (!m || m === '<synthetic>') continue;
+    pricing = getModelPricing(m);
+    if (pricing) break;
+  }
+  let estimatedCostUsd: number | null = null;
+  let cacheSavingsUsd: number | null = null;
+  if (pricing) {
+    const nonCachedInput = Math.max(0, inputTokens - cacheReadTokens - cacheCreationTokens);
+    const inputCost = (nonCachedInput / 1_000_000) * pricing.input;
+    const outputCost = (outputTokens / 1_000_000) * pricing.output;
+    const cacheReadCost = (cacheReadTokens / 1_000_000) * pricing.cacheRead;
+    const cacheWriteCost = (cacheCreationTokens / 1_000_000) * pricing.cacheWrite;
+    estimatedCostUsd = inputCost + outputCost + cacheReadCost + cacheWriteCost;
+    cacheSavingsUsd = (cacheReadTokens / 1_000_000) * (pricing.input - pricing.cacheRead);
+  }
 
   return {
     tool: meta.tool || 'claude',
@@ -356,7 +365,7 @@ function computeMetadataResponse(meta: Record<string, any>): SessionMetadataResp
     cacheReadTokens,
     cacheCreationTokens,
     peakContextTokens: meta.peakContextTokens || 0,
-    estimatedCostUsd: Math.round(estimatedCostUsd * 10000) / 10000,
-    cacheSavingsUsd: Math.round(cacheSavingsUsd * 10000) / 10000,
+    estimatedCostUsd: estimatedCostUsd === null ? null : Math.round(estimatedCostUsd * 10000) / 10000,
+    cacheSavingsUsd: cacheSavingsUsd === null ? null : Math.round(cacheSavingsUsd * 10000) / 10000,
   };
 }

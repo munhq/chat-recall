@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Icon, IconButton, Avatar } from './primitives';
+import { Icon, Avatar } from './primitives';
 import type { ProjectTreeNode } from '../App';
 
 interface SidebarProps {
@@ -57,7 +57,6 @@ export default function Sidebar({ tree, totalCount, selected, onSelect, toolFilt
 
       <div style={{ padding: '10px 12px 4px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div className="cr-h4" style={{ paddingLeft: 6 }}>Projects</div>
-        <IconButton icon="filter" size={22} />
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '4px 12px 16px', display: 'flex', flexDirection: 'column', gap: 1 }}>
@@ -214,6 +213,7 @@ function SidebarRow({
       onMouseLeave={() => setHov(false)}
       data-testid={testId}
       data-path={dataPath}
+      aria-current={on ? 'true' : undefined}
       title={label}
       style={{
         display: 'flex',

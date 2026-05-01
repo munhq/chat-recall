@@ -29,6 +29,17 @@ Thumbs.db
 # Playwright
 test-results/
 playwright-report/
+.playwright-mcp/
+
+# Local screenshots / scratch (keep curated images explicitly tracked)
+audit-*.png
+settings-*.png
+*-before.png
+*-after.png
+*-final*.png
+
+# Codeindex per-server cache
+web/server/.codeindex.json
 
 # Misc
 *.tgz

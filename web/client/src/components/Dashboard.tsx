@@ -1,6 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { Icon, Chip, MetricCard, Card, Avatar, IconButton, SegmentedControl } from './primitives';
-import { getAnalytics, type AnalyticsData } from '../services/api';
+import { Icon, Chip, MetricCard, Card, Avatar, IconButton } from './primitives';
+import { getAnalytics, getPatterns, type AnalyticsData, type PatternsResponse } from '../services/api';
+
+function fmtTokens(n: number): string {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${Math.round(n / 1e3)}K`;
+  return String(n);
+}
+
+function fmtSignedDelta(n: number, unit: string): string {
+  if (n === 0) return `No change ${unit}`;
+  return `${n > 0 ? '+' : ''}${n.toLocaleString()} ${unit}`;
+}
 
 function fmtDuration(mins: number): string {
   if (mins < 60) return `${mins}m`;
@@ -25,8 +37,16 @@ function cleanDesc(d: string): string {
     .trim();
 }
 
-export default function Dashboard() {
+interface DashboardProps {
+  /** Switch to the conversation list with this session selected. */
+  onJumpToSession?: (sessionId: string) => void;
+  /** Switch to search view with this query pre-filled. */
+  onJumpToSearch?: (query: string) => void;
+}
+
+export default function Dashboard({ onJumpToSession, onJumpToSearch }: DashboardProps = {}) {
   const [data, setData] = useState<AnalyticsData | null>(null);
+  const [patterns, setPatterns] = useState<PatternsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,6 +57,9 @@ export default function Dashboard() {
       .then(setData)
       .catch((err) => setError(err.message || 'Failed to load analytics'))
       .finally(() => setLoading(false));
+    // Patterns load in parallel — slower (cross-session aggregation) so we
+    // don't block the cost dashboard on it.
+    getPatterns().then(setPatterns).catch(() => { /* tolerate */ });
   };
 
   useEffect(() => {
@@ -93,12 +116,7 @@ export default function Dashboard() {
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <SegmentedControl
-              options={[{ value: '7d', label: '7d' }, { value: '30d', label: '30d' }, { value: 'all', label: 'All time' }]}
-              value="30d"
-              onChange={() => {}}
-            />
-            <IconButton icon="refresh" onClick={load} />
+            <IconButton icon="refresh" onClick={load} title="Refresh analytics" />
           </div>
         </div>
 
@@ -141,7 +159,7 @@ export default function Dashboard() {
                 { v: String(data.periodComparison.thisWeek.sessions), l: 'Sessions', tone: 'neutral' as const },
                 { v: fmtCost(data.periodComparison.thisWeek.cost), l: 'Cost', tone: 'cost' as const },
                 { v: `${data.periodComparison.thisWeek.cacheRate}%`, l: 'Cache hit', tone: 'savings' as const },
-                { v: '412K', l: 'Tokens used', tone: 'neutral' as const },
+                { v: fmtTokens(data.periodComparison.thisWeek.tokens), l: 'Tokens used', tone: 'neutral' as const },
               ].map((s) => (
                 <div key={s.l}>
                   <div
@@ -186,13 +204,36 @@ export default function Dashboard() {
 
         {/* Lifetime metric grid */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24 }}>
-          <MetricCard label="Total sessions" value={String(summary.totalSessions)} sub="+ 53 this week" icon="message" />
-          <MetricCard label="Total cost" value={fmtCost(summary.totalCostUsd)} sub="Lifetime" tone="cost" icon="sparkle" />
-          <MetricCard label="Compute time" value={fmtDuration(summary.totalDurationMin)} sub="Across 12 projects" icon="clock" />
           <MetricCard
-            label="Cache savings"
-            value={`${(summary.totalCacheReadTokens / 1e9).toFixed(1)}B tokens`}
-            sub={`At list: ≈ $${(summary.totalCacheReadTokens / 1e9 * 3).toFixed(0)}`}
+            label="Total sessions"
+            value={String(summary.totalSessions)}
+            sub={fmtSignedDelta(data.periodComparison.thisWeek.sessions, 'this week')}
+            icon="message"
+          />
+          <MetricCard
+            label="Total cost"
+            value={fmtCost(summary.totalCostUsd)}
+            sub={
+              summary.sessionsWithoutPricing > 0
+                ? `${summary.sessionsWithoutPricing} session${summary.sessionsWithoutPricing === 1 ? '' : 's'} w/o pricing`
+                : 'Lifetime'
+            }
+            tone="cost"
+            icon="sparkle"
+          />
+          <MetricCard
+            label="Compute time"
+            value={fmtDuration(summary.totalDurationMin)}
+            sub={`Across ${data.projects.length} project${data.projects.length === 1 ? '' : 's'}`}
+            icon="clock"
+          />
+          <MetricCard
+            label="Cache reads"
+            value={`${fmtTokens(summary.totalCacheReadTokens)} tokens`}
+            // Cache reads are billed at ~10% of base input on Anthropic; we don't
+            // know the actual base price for non-Anthropic models, so keep this
+            // a token count rather than a fabricated dollar amount.
+            sub="Saved vs. re-uploading"
             tone="savings"
             icon="zap"
           />
@@ -245,7 +286,7 @@ export default function Dashboard() {
           <Card style={{ padding: 24 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
               <h3>Top tools</h3>
-              <a href="#">See all</a>
+              <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{data.tools.length} total</span>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {data.tools.slice(0, 5).map((b) => {
@@ -296,7 +337,7 @@ export default function Dashboard() {
           <Card style={{ padding: 24 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
               <h3>Top projects</h3>
-              <a href="#">See all</a>
+              <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{data.projects.length} total</span>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column' }}>
               {data.projects
@@ -338,8 +379,216 @@ export default function Dashboard() {
             </div>
           </Card>
         </div>
+
+        <PatternsSection
+          patterns={patterns}
+          onJumpToSession={onJumpToSession}
+          onJumpToSearch={onJumpToSearch}
+        />
       </div>
     </div>
+  );
+}
+
+/**
+ * Cross-session pattern panel: hot files, repeated topics, redundancy alerts.
+ * Loads asynchronously after the cost dashboard since the aggregation can be
+ * slow on libraries with thousands of sessions.
+ *
+ * Cards are interactive: clicking a topic searches for it, clicking a hot-file
+ * row searches by filename, clicking a redundancy pair opens the more recent
+ * of the two sessions. Falls back to no-op when handlers aren't provided.
+ */
+function PatternsSection({
+  patterns, onJumpToSession, onJumpToSearch,
+}: {
+  patterns: PatternsResponse | null;
+  onJumpToSession?: (sessionId: string) => void;
+  onJumpToSearch?: (query: string) => void;
+}) {
+  if (!patterns) {
+    return (
+      <Card style={{ padding: 24, marginTop: 24 }} data-testid="patterns-section">
+        <h3>Patterns</h3>
+        <p style={{ fontSize: 13, color: 'var(--cr-fg-3)', marginTop: 8 }}>Loading cross-session patterns…</p>
+      </Card>
+    );
+  }
+  const hasAnything = patterns.hotFiles.length || patterns.topics.length || patterns.redundancyPairs.length;
+  if (!hasAnything) {
+    return (
+      <Card style={{ padding: 24, marginTop: 24 }} data-testid="patterns-section">
+        <h3>Patterns</h3>
+        <p style={{ fontSize: 13, color: 'var(--cr-fg-3)', marginTop: 8 }}>
+          No patterns yet. Once chat-recall has indexed sessions with file activity, this panel surfaces
+          repeated work, hot files, and likely-redundant sessions.
+        </p>
+      </Card>
+    );
+  }
+
+  return (
+    <div data-testid="patterns-section" style={{ marginTop: 32 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 16 }}>
+        <h2 style={{ margin: 0 }}>Patterns</h2>
+        <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
+          across {patterns.meta.sessionsAnalyzed} indexed sessions
+        </span>
+      </div>
+
+      {patterns.topics.length > 0 && (
+        <Card style={{ padding: 24, marginBottom: 16 }} data-testid="patterns-topics">
+          <h3 style={{ marginTop: 0 }}>Repeated work</h3>
+          <p style={{ fontSize: 12, color: 'var(--cr-fg-3)', margin: '4px 0 16px' }}>
+            Topics that show up across many sessions — recurring problem areas.
+          </p>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+            {patterns.topics.slice(0, 9).map((t) => (
+              <div
+                key={t.topic}
+                role={onJumpToSearch ? 'button' : undefined}
+                tabIndex={onJumpToSearch ? 0 : undefined}
+                onClick={() => onJumpToSearch?.(t.topic)}
+                onKeyDown={(e) => { if (onJumpToSearch && (e.key === 'Enter' || e.key === ' ')) onJumpToSearch(t.topic); }}
+                data-testid="patterns-topic"
+                style={{
+                  padding: 14,
+                  border: '1px solid var(--cr-line-1)',
+                  borderRadius: 'var(--cr-radius-md)',
+                  background: 'var(--cr-ink-0)',
+                  cursor: onJumpToSearch ? 'pointer' : 'default',
+                  transition: 'border-color var(--cr-dur-fast), background var(--cr-dur-fast)',
+                }}
+                onMouseEnter={(e) => { if (onJumpToSearch) e.currentTarget.style.borderColor = 'var(--cr-brand-line)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--cr-line-1)'; }}
+              >
+                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, textTransform: 'capitalize' }}>{t.topic}</span>
+                  <Chip kind="info">{t.sessionCount}</Chip>
+                </div>
+                {t.sampleSessions[0] && (
+                  <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', lineHeight: 1.45 }}>
+                    {t.sampleSessions[0].snippet}…
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {patterns.hotFiles.length > 0 && (
+        <Card style={{ padding: 24, marginBottom: 16 }} data-testid="patterns-hot-files">
+          <h3 style={{ marginTop: 0 }}>Hot files</h3>
+          <p style={{ fontSize: 12, color: 'var(--cr-fg-3)', margin: '4px 0 16px' }}>
+            Files touched by the most sessions. Multiple-project hits often signal a copy-paste pattern.
+          </p>
+          <div style={{ fontSize: 12, fontFamily: 'var(--cr-mono, monospace)' }}>
+            {patterns.hotFiles.slice(0, 12).map((f) => {
+              // Search by basename so the FTS5 hit lands on sessions whose
+              // chunks mention the file in question — better recall than
+              // searching the full path.
+              const basename = f.file.split('/').pop() || f.file;
+              const onClick = onJumpToSearch ? () => onJumpToSearch(basename) : undefined;
+              return (
+                <div
+                  key={f.file}
+                  role={onClick ? 'button' : undefined}
+                  tabIndex={onClick ? 0 : undefined}
+                  onClick={onClick}
+                  onKeyDown={(e) => { if (onClick && (e.key === 'Enter' || e.key === ' ')) onClick(); }}
+                  data-testid="patterns-hot-file"
+                  title={onClick ? `Click to search for sessions touching ${basename}` : undefined}
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '1fr auto auto',
+                    gap: 12,
+                    padding: '6px 8px',
+                    borderBottom: '1px solid var(--cr-line-1)',
+                    alignItems: 'baseline',
+                    borderRadius: 4,
+                    cursor: onClick ? 'pointer' : 'default',
+                    transition: 'background var(--cr-dur-fast)',
+                  }}
+                  onMouseEnter={(e) => { if (onClick) e.currentTarget.style.background = 'var(--cr-ink-1)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                >
+                  <span style={{ wordBreak: 'break-all' }}>{f.file}</span>
+                  <span style={{ color: 'var(--cr-fg-3)' }}>{f.projects.length} project{f.projects.length === 1 ? '' : 's'}</span>
+                  <Chip kind="info">{f.touchedInSessions} sessions</Chip>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
+
+      {patterns.redundancyPairs.length > 0 && (
+        <Card style={{ padding: 24, marginBottom: 16 }} data-testid="patterns-redundancy">
+          <h3 style={{ marginTop: 0 }}>Redundancy alerts</h3>
+          <p style={{ fontSize: 12, color: 'var(--cr-fg-3)', margin: '4px 0 16px' }}>
+            Pairs of sessions in the same project with significant file overlap — flagged as likely
+            duplicate work. The agent can read the older one before redoing it.
+          </p>
+          {patterns.redundancyPairs.slice(0, 6).map((r, i) => {
+            const projShort = r.projectPath.split('/').slice(-2).join('/') || r.projectPath;
+            // Pairs are sorted; "a" tends to be more recent. Click → open the
+            // older one (b) so the agent can read the prior work before
+            // redoing it. Two clickable session-id chips for finer control.
+            return (
+              <div
+                key={`${r.a.id}-${r.b.id}-${i}`}
+                data-testid="patterns-redundancy-pair"
+                style={{
+                  padding: '10px 12px',
+                  border: '1px solid var(--cr-line-1)',
+                  borderRadius: 'var(--cr-radius-md)',
+                  marginBottom: 8,
+                  background: 'var(--cr-ink-0)',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <span style={{ fontSize: 12, color: 'var(--cr-fg-2)' }}>{projShort}</span>
+                  <Chip kind="warn">{Math.round(r.overlap * 100)}% overlap · {r.sharedFiles.length} shared file{r.sharedFiles.length === 1 ? '' : 's'}</Chip>
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-mono, monospace)', display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                  <SessionLink id={r.a.id} date={r.a.mtime.slice(0, 10)} onClick={onJumpToSession} />
+                  <span>↔</span>
+                  <SessionLink id={r.b.id} date={r.b.mtime.slice(0, 10)} onClick={onJumpToSession} />
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 4, fontFamily: 'var(--cr-mono, monospace)', wordBreak: 'break-all' }}>
+                  {r.sharedFiles.slice(0, 3).join(' · ')}
+                  {r.sharedFiles.length > 3 ? ` · +${r.sharedFiles.length - 3} more` : ''}
+                </div>
+              </div>
+            );
+          })}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+/** Clickable session-id chip used in the redundancy-pair card. */
+function SessionLink({
+  id, date, onClick,
+}: { id: string; date: string; onClick?: (sessionId: string) => void }) {
+  const cb = onClick ? () => onClick(id) : undefined;
+  return (
+    <span
+      role={cb ? 'button' : undefined}
+      tabIndex={cb ? 0 : undefined}
+      onClick={cb}
+      onKeyDown={(e) => { if (cb && (e.key === 'Enter' || e.key === ' ')) cb(); }}
+      title={cb ? `Open session ${id}` : undefined}
+      style={{
+        cursor: cb ? 'pointer' : 'default',
+        textDecoration: cb ? 'underline dotted' : 'none',
+        textUnderlineOffset: 2,
+      }}
+    >
+      {id.slice(0, 8)} <span style={{ color: 'var(--cr-fg-3)' }}>({date})</span>
+    </span>
   );
 }
 

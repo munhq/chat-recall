@@ -18,7 +18,7 @@ import type {
 import { getRawConversation, getSessionRelated, getSessionMetadata } from '../services/api';
 import { stripInjectedBanners } from '../utils/clean';
 
-type ViewMode = 'summary' | 'firstPrompt' | 'full' | 'raw' | 'related';
+type ViewMode = 'summary' | 'firstPrompt' | 'full' | 'raw' | 'related' | 'files';
 type MessageFilter = 'all' | 'user' | 'assistant' | 'thinking' | 'tools' | 'edits';
 
 interface ConversationViewerProps {
@@ -214,12 +214,11 @@ export default function ConversationViewer({
       <div style={{ padding: '20px 20px 80px', maxWidth: '100%' }}>
         {/* Top row: back + actions */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16 }}>
-          <Button 
-            variant="ghost" 
-            size="sm" 
-            icon="chevronRight" 
-            onClick={onClose} 
-            style={{ transform: 'rotate(180deg)' }}
+          <Button
+            variant="ghost"
+            size="sm"
+            icon="chevronLeft"
+            onClick={onClose}
             data-testid="close-conversation"
           >
             Back
@@ -365,6 +364,7 @@ export default function ConversationViewer({
               { value: 'summary', label: 'Summary', icon: 'file' },
               { value: 'firstPrompt', label: 'First Prompt', icon: 'message' },
               { value: 'full', label: 'Full', icon: 'list' },
+              { value: 'files', label: 'Files', icon: 'file' },
               { value: 'raw', label: 'Raw', icon: 'terminal' },
               { value: 'related', label: 'Related', icon: 'sparkle' },
             ]}
@@ -541,6 +541,10 @@ export default function ConversationViewer({
           </div>
         )}
 
+        {viewMode === 'files' && (
+          <FilesPanel files={sessionMeta?.filesModified ?? []} loading={metaLoading} />
+        )}
+
         {viewMode === 'raw' && (
           <div>
             {rawLoading ? (
@@ -638,6 +642,64 @@ export default function ConversationViewer({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Files tab: shows the list of files this session touched, grouped by extension.
+ * Reads sessionMeta.filesModified — populated during indexing from JSONL tool calls.
+ * If the session was indexed before file metadata started being captured, the panel
+ * shows a hint to re-index.
+ */
+function FilesPanel({ files, loading }: { files: string[]; loading: boolean }) {
+  if (loading) {
+    return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Loading…</div>;
+  }
+  if (files.length === 0) {
+    return (
+      <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>
+        <Icon name="file" size={28} style={{ opacity: 0.3, marginBottom: 12 }} />
+        <div style={{ fontSize: 14, marginBottom: 6 }}>No file activity recorded for this session.</div>
+        <div style={{ fontSize: 12 }}>
+          Older sessions may not have <code>filesModified</code> metadata. Re-indexing rebuilds it.
+        </div>
+      </div>
+    );
+  }
+
+  // Group by extension so the agent (and the human) get a quick "what kind of work was this".
+  const byExt = new Map<string, string[]>();
+  for (const f of files) {
+    const ext = f.includes('.') ? f.split('.').pop()!.toLowerCase() : '(no ext)';
+    if (!byExt.has(ext)) byExt.set(ext, []);
+    byExt.get(ext)!.push(f);
+  }
+  const sorted = [...byExt.entries()].sort((a, b) => b[1].length - a[1].length);
+
+  return (
+    <div data-testid="files-panel">
+      <div style={{ fontSize: 13, color: 'var(--cr-fg-2)', marginBottom: 14 }}>
+        <strong style={{ color: 'var(--cr-fg-1)' }}>{files.length}</strong> file{files.length === 1 ? '' : 's'} touched · {byExt.size} extension{byExt.size === 1 ? '' : 's'}
+      </div>
+      {sorted.map(([ext, fs]) => (
+        <Card key={ext} style={{ padding: 14, marginBottom: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>.{ext}</span>
+            <Chip kind="info">{fs.length}</Chip>
+          </div>
+          <ul style={{ margin: 0, padding: 0, listStyle: 'none', fontSize: 12, color: 'var(--cr-fg-2)' }}>
+            {fs.slice(0, 50).map((f) => (
+              <li key={f} style={{ padding: '2px 0', fontFamily: 'var(--cr-mono)', wordBreak: 'break-all' }}>{f}</li>
+            ))}
+            {fs.length > 50 && (
+              <li style={{ padding: '2px 0', color: 'var(--cr-fg-3)', fontStyle: 'italic' }}>
+                …and {fs.length - 50} more
+              </li>
+            )}
+          </ul>
+        </Card>
+      ))}
     </div>
   );
 }
@@ -796,7 +858,7 @@ function MessageBlock({ message }: { message: Message }) {
                     <summary style={{ padding: '8px 12px', fontSize: 13, color: 'var(--cr-fg-1)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8, listStyle: 'none' }}>
                       <Icon name={isBash ? "terminal" : isEdit ? "edit" : "zap"} size={14} style={{ color: isEdit ? 'var(--cr-ok-500)' : 'var(--cr-brand-500)' }} />
                       <span style={{ fontWeight: 600 }}>{tc.name}</span>
-                      {isEdit && <Chip kind="ok" size="xs">{diffText ? 'Diff View' : isWrite ? 'File Create' : 'File Edit'}</Chip>}
+                      {isEdit && <Chip kind="ok" size="sm">{diffText ? 'Diff View' : isWrite ? 'File Create' : 'File Edit'}</Chip>}
                       <div style={{ flex: 1 }} />
                       <Icon name="chevronRight" size={12} style={{ opacity: 0.3 }} />
                     </summary>

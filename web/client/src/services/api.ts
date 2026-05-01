@@ -95,13 +95,21 @@ export async function searchSessions(
   return data.results;
 }
 
-export async function getRecentSessions(limit = 20, projectFilter?: string, toolFilter?: string): Promise<SessionInfo[]> {
+export async function getRecentSessions(
+  limit = 20,
+  projectFilter?: string,
+  toolFilter?: string,
+  sinceHours?: number,
+): Promise<SessionInfo[]> {
   const params = new URLSearchParams({ limit: limit.toString() });
   if (projectFilter) {
     params.append('project', projectFilter);
   }
   if (toolFilter) {
     params.append('tool', toolFilter);
+  }
+  if (sinceHours !== undefined && Number.isFinite(sinceHours) && sinceHours > 0) {
+    params.append('since_hours', String(sinceHours));
   }
 
   const res = await fetchWithTimeout(`${API_BASE}/conversations/recent?${params}`);
@@ -195,6 +203,7 @@ export interface AnalyticsData {
     totalDurationMin: number;
     avgCostPerSession: number;
     avgDurationMin: number;
+    sessionsWithoutPricing: number;
   };
   topByDuration: Array<{ id: string; slug: string; project: string; durationMin: number }>;
   topByCost: Array<{ id: string; slug: string; project: string; cost: number }>;
@@ -234,8 +243,8 @@ export interface AnalyticsData {
   contextExhausted: Array<{ id: string; slug: string; project: string; peakK: number }>;
   contextUtilization: Array<{ range: string; count: number }>;
   periodComparison: {
-    thisWeek: { sessions: number; cost: number; cacheRate: number };
-    lastWeek: { sessions: number; cost: number; cacheRate: number };
+    thisWeek: { sessions: number; cost: number; tokens: number; cacheRate: number };
+    lastWeek: { sessions: number; cost: number; tokens: number; cacheRate: number };
   };
 }
 
@@ -300,8 +309,8 @@ export interface SessionMetadataResponse {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   peakContextTokens: number;
-  estimatedCostUsd: number;
-  cacheSavingsUsd: number;
+  estimatedCostUsd: number | null;
+  cacheSavingsUsd: number | null;
 }
 
 export async function getSessionMetadata(sessionId: string): Promise<SessionMetadataResponse> {
@@ -314,7 +323,7 @@ export async function getSessionMetadata(sessionId: string): Promise<SessionMeta
 
 // --- Memory API ---
 
-export type SourceType = 'session' | 'plan' | 'task' | 'claude_md' | 'paste' | 'history';
+export type SourceType = 'session' | 'plan' | 'task' | 'claude_md' | 'paste' | 'history' | 'diary';
 
 export interface MemorySearchResult {
   itemId: string;
@@ -469,28 +478,79 @@ export async function reindexMemory(
   return await res.json();
 }
 
-// --- Settings API ---
+// --- Settings API (settings.json-backed, structured) ---
+
+export type EmbedderProvider = 'ollama' | 'gemini' | 'openai' | 'nvidia' | 'openai-compat' | 'none';
+export type SummaryProvider =
+  | 'none'
+  | 'cli'
+  | 'ollama'
+  | 'ollama-cloud'
+  | 'gemini'
+  | 'gemini-cli'
+  | 'openai'
+  | 'nvidia'
+  | 'openai-compat'
+  | 'claude';
+
+export interface EmbeddingSettings {
+  provider: EmbedderProvider;
+  ollamaHost?: string;
+  ollamaModel?: string;
+  geminiApiKey?: string;
+  openaiApiKey?: string;
+  openaiModel?: string;
+  nvidiaApiKey?: string;
+  nvidiaModel?: string;
+  openaiCompatBaseUrl?: string;
+  openaiCompatModel?: string;
+  openaiCompatApiKey?: string;
+  openaiCompatDimension?: number;
+}
+
+export interface SummarySettings {
+  provider: SummaryProvider;
+  cliCommand?: string;
+  cliPreset?: string;
+  cliTimeoutMs?: number;
+  geminiModel?: string;
+  claudeModel?: string;
+  ollamaModel?: string;
+  anthropicApiKey?: string;
+}
 
 export interface AppSettings {
-  SUMMARY_PROVIDER?: string;
-  SUMMARY_CLI_PRESET?: string;
-  SUMMARY_CLI_CMD?: string;
-  SUMMARY_CLI_TIMEOUT_MS?: string;
-  GEMINI_MODEL?: string;
-  EMBEDDING_PROVIDER?: string;
-  OLLAMA_HOST?: string;
-  OLLAMA_SUMMARY_MODEL?: string;
-  CLAUDE_DIR?: string;
+  v: number;
+  embedding: EmbeddingSettings;
+  summary: SummarySettings;
 }
 
 export interface SettingsResponse {
-  envPath: string;
   settings: AppSettings;
   presets: {
+    embeddingProviders: EmbedderProvider[];
+    summaryProviders: SummaryProvider[];
     summaryCliPresets: string[];
-    summaryProviders: string[];
-    embeddingProviders: string[];
+    summaryCliPresetCommands: Record<string, string>;
+    embeddingHints: Record<string, { label: string; requires: string }>;
+    summaryHints: Record<string, { label: string; requires: string }>;
   };
+  status: {
+    ollama?: { reachable: boolean; models?: string[]; error?: string };
+    geminiCli?: { available: boolean; version?: string };
+    cli?: { available: boolean };
+    /** preset name → whether its binary is on PATH */
+    cliDetected?: Record<string, boolean>;
+  };
+}
+
+export interface TestResult {
+  ok: boolean;
+  error?: string;
+  note?: string;
+  models?: string[];
+  dimension?: number;
+  version?: string;
 }
 
 export async function getSettings(): Promise<SettingsResponse> {
@@ -499,20 +559,168 @@ export async function getSettings(): Promise<SettingsResponse> {
   return await res.json();
 }
 
-export async function saveSettings(settings: AppSettings): Promise<{
+export async function saveSettings(update: Partial<AppSettings>): Promise<{
   ok: boolean;
-  envPath: string;
-  updated: string[];
+  settings: AppSettings;
   restartHint: string;
 }> {
   const res = await fetchWithTimeout(`${API_BASE}/settings`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ settings }),
+    body: JSON.stringify(update),
   });
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`Failed to save settings: ${res.statusText} ${body}`);
+  }
+  return await res.json();
+}
+
+export async function testSettings(
+  kind: 'embedding' | 'summary',
+  config: EmbeddingSettings | SummarySettings,
+): Promise<TestResult> {
+  const res = await fetchWithTimeout(`${API_BASE}/settings/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ kind, config }),
+  }, 15000);
+  return await res.json();
+}
+
+// --- Companions / codeindex ---
+
+export interface CodeindexStatus {
+  installed: boolean;
+  path?: string;
+  version?: string;
+  size?: number;
+  prebuiltAvailable: boolean;
+  artifactName?: string;
+  unsupportedReason?: string;
+}
+
+export interface CodeindexInfo {
+  status: CodeindexStatus;
+  capabilities: Array<{ name: string; desc: string }>;
+  installHint: { cli: string; curl: string; repo: string };
+  pitch: string;
+}
+
+export async function getCodeindexStatus(): Promise<CodeindexInfo> {
+  const res = await fetchWithTimeout(`${API_BASE}/settings/codeindex`);
+  if (!res.ok) throw new Error(`Failed to load codeindex status: ${res.statusText}`);
+  return await res.json();
+}
+
+export async function uninstallCodeindex(): Promise<{ ok: boolean; removed: boolean; unregistered: boolean }> {
+  const res = await fetchWithTimeout(`${API_BASE}/settings/codeindex/uninstall`, { method: 'POST' });
+  return await res.json();
+}
+
+// --- Patterns / cross-session insights ---
+
+export interface PatternsHotFile {
+  file: string;
+  touchedInSessions: number;
+  lastTouch: string;
+  projects: string[];
+  sampleSessionIds: string[];
+}
+
+export interface PatternsTopic {
+  topic: string;
+  sessionCount: number;
+  sampleSessions: Array<{ id: string; project: string; snippet: string }>;
+}
+
+export interface PatternsRedundancy {
+  projectPath: string;
+  a: { id: string; mtime: string };
+  b: { id: string; mtime: string };
+  sharedFiles: string[];
+  overlap: number;
+}
+
+export interface PatternsResponse {
+  hotFiles: PatternsHotFile[];
+  filesByProjectRecent: Record<string, Array<{ file: string; count: number; lastTouch: string }>>;
+  redundancyPairs: PatternsRedundancy[];
+  topics: PatternsTopic[];
+  meta: { sessionsAnalyzed: number; generatedAt: string };
+}
+
+export async function getPatterns(): Promise<PatternsResponse> {
+  const res = await fetchWithTimeout(`${API_BASE}/analytics/patterns`, {}, 30000);
+  if (!res.ok) throw new Error(`Failed to load patterns: ${res.statusText}`);
+  return await res.json();
+}
+
+// --- Edits timeline / live session files ---
+
+export type EditOp = 'edit' | 'write' | 'multi_edit' | 'notebook_edit' | 'read';
+
+export interface EditRow {
+  ts: number;
+  tsIso?: string;
+  sessionId: string;
+  projectPath: string;
+  file: string;
+  op: EditOp;
+  toolName: string;
+  line: number;
+}
+
+export interface EditsTimelineResponse {
+  sinceHours: number;
+  total: number;
+  truncated: boolean;
+  edits: EditRow[];
+}
+
+export async function getEditsTimeline(opts: {
+  sinceHours?: number;
+  limit?: number;
+  pattern?: string;
+  project?: string;
+  includeReads?: boolean;
+} = {}): Promise<EditsTimelineResponse> {
+  const params = new URLSearchParams();
+  if (opts.sinceHours !== undefined) params.append('since_hours', String(opts.sinceHours));
+  if (opts.limit !== undefined) params.append('limit', String(opts.limit));
+  if (opts.pattern) params.append('pattern', opts.pattern);
+  if (opts.project) params.append('project', opts.project);
+  if (opts.includeReads) params.append('include_reads', 'true');
+
+  const res = await fetchWithTimeout(`${API_BASE}/edits/timeline?${params}`, {}, 30000);
+  if (!res.ok) {
+    throw new Error(`Failed to load edits timeline: ${res.statusText}`);
+  }
+  return await res.json();
+}
+
+export interface LiveSessionFiles {
+  sessionId: string;
+  projectPath: string;
+  files: string[];
+  reads: string[];
+  filesByExt: Record<string, string[]>;
+  edits: Array<{
+    ts: number;
+    tsIso?: string;
+    file: string;
+    op: EditOp;
+    toolName: string;
+    line: number;
+  }>;
+  source: 'live';
+}
+
+export async function getLiveSessionFiles(sessionId: string): Promise<LiveSessionFiles> {
+  const res = await fetchWithTimeout(`${API_BASE}/conversations/${sessionId}/files-live`);
+  if (!res.ok) {
+    if (res.status === 404) throw new Error('Session not found');
+    throw new Error(`Failed to live-scan session: ${res.statusText}`);
   }
   return await res.json();
 }

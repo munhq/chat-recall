@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Icon, ToolBadge, SegmentedControl } from './primitives';
 import type { SessionInfo } from '../services/api';
 import { stripInjectedBanners } from '../utils/clean';
@@ -12,8 +12,31 @@ interface ConversationListProps {
 }
 
 export default function ConversationList({ results, selected, onSelect, sort, setSort }: ConversationListProps) {
-  // Group by relative date
-  const grouped = groupByDate(results);
+  // Search results carry a relevance `score`; recent listings don't.
+  const isSearch = results.some((r) => (r as any).score !== undefined);
+
+  // Effective sort value. When the user is browsing recent sessions, only
+  // 'recent' is meaningful — 'rel' has no score to sort by, so fall back.
+  const effectiveSort = !isSearch && sort === 'rel' ? 'recent' : sort;
+
+  const sortedResults = useMemo(() => {
+    if (effectiveSort === 'rel') {
+      return [...results].sort(
+        (a, b) => ((b as any).score ?? 0) - ((a as any).score ?? 0),
+      );
+    }
+    // 'recent' (default): newest first.
+    return [...results].sort(
+      (a, b) => new Date(b.modified).getTime() - new Date(a.modified).getTime(),
+    );
+  }, [results, effectiveSort]);
+
+  // For search-by-relevance, drop the date grouping — relevance order would
+  // be invisible inside Today/Yesterday buckets. Show as a single flat list.
+  const grouped =
+    effectiveSort === 'rel'
+      ? [{ label: 'By relevance', items: sortedResults }]
+      : groupByDate(sortedResults);
 
   return (
     <section
@@ -44,22 +67,26 @@ export default function ConversationList({ results, selected, onSelect, sort, se
             {results.length}
           </span>
         </div>
+        {/* Relevance sort only meaningful with active search results. */}
         <SegmentedControl
           size="sm"
-          options={[
-            { value: 'recent', label: 'Recent' },
-            { value: 'cost', label: 'Cost' },
-            { value: 'rel', label: 'Relevance' },
-          ]}
-          value={sort}
+          options={
+            isSearch
+              ? [
+                  { value: 'rel', label: 'Relevance' },
+                  { value: 'recent', label: 'Recent' },
+                ]
+              : [{ value: 'recent', label: 'Recent' }]
+          }
+          value={effectiveSort}
           onChange={setSort}
         />
       </div>
 
       {/* Results list */}
-      <div 
+      <div
         style={{ flex: 1, overflowY: 'auto' }}
-        data-testid={results.some(r => (r as any).score !== undefined) ? "search-results" : "recent-sessions"}
+        data-testid={isSearch ? 'search-results' : 'recent-sessions'}
       >
         {grouped.map((group) => (
           <React.Fragment key={group.label}>
@@ -101,6 +128,7 @@ function ResultRow({ r, on, onClick }: { r: SessionInfo; on: boolean; onClick: (
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
       data-testid="session-item"
+      data-session-id={r.sessionId}
       style={{
         padding: '12px 16px',
         cursor: 'pointer',

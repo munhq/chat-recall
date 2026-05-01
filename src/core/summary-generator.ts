@@ -58,10 +58,9 @@ function cleanCliOutput(raw: string): string {
   return out;
 }
 
-const CLI_PRESETS: Record<string, string> = {
+export const CLI_PRESETS: Record<string, string> = {
   // Coding-agent CLIs that take the message as a positional arg
   opencode: 'opencode run "$(cat {prompt_file})"',
-  kilo: 'kilo run "$(cat {prompt_file})"',
   kilocode: 'kilocode run "$(cat {prompt_file})"',
   // Stdin-friendly CLIs (the prompt is piped in, command gets an empty "-p")
   gemini: 'gemini -p " "',

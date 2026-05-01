@@ -82,6 +82,19 @@ export class MemoryStore {
         PRIMARY KEY (id, source_type)
       );
 
+      -- Generic KV store for agent state. Sits alongside diary (narrative)
+      -- and the knowledge graph (structured facts) — KV is the third
+      -- primitive: small persistent values keyed by namespaced strings.
+      -- Use cases: "current PR url", "branch I'm working on", user prefs.
+      CREATE TABLE IF NOT EXISTS kv_store (
+        scope TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (scope, key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_kv_scope ON kv_store(scope);
+
       CREATE INDEX IF NOT EXISTS idx_links_source
         ON memory_links(source_type, source_id);
       CREATE INDEX IF NOT EXISTS idx_links_target
@@ -506,6 +519,58 @@ export class MemoryStore {
     }
   }
 
+  /**
+   * Count distinct items (e.g. sessions) whose chunks match an FTS5 query.
+   *
+   * Use this instead of `searchFTS().length` when the caller only needs the
+   * total — `searchFTS` caps at `topK * 5` rows internally, so for popular
+   * keywords (authentication / docker / api) it would return the cap, not
+   * the true count.
+   */
+  countDistinctItemsMatching(
+    query: string,
+    options: { sourceTypes?: SourceType[]; projectFilter?: string } = {}
+  ): number {
+    const ftsQuery = this.buildFTSQuery(query);
+    if (!ftsQuery) return 0;
+
+    let sql = `
+      SELECT COUNT(DISTINCT item_id) AS n
+      FROM memory_chunks_fts
+      WHERE memory_chunks_fts MATCH ?
+    `;
+    const params: (string | number)[] = [ftsQuery];
+
+    if (options.sourceTypes && options.sourceTypes.length > 0) {
+      const placeholders = options.sourceTypes.map(() => '?').join(', ');
+      sql += ` AND source_type IN (${placeholders})`;
+      params.push(...options.sourceTypes);
+    }
+
+    if (options.projectFilter) {
+      sql += ` AND project_path LIKE ?`;
+      params.push(`%${options.projectFilter}%`);
+    }
+
+    try {
+      const row = this.db.prepare(sql).get(...params) as { n: number } | undefined;
+      return row?.n ?? 0;
+    } catch {
+      // Match the fallback `searchFTS` uses for unparseable queries.
+      const simpleQuery = query
+        .replace(/[^a-zA-Z0-9\s]/g, ' ').trim()
+        .split(/\s+/).filter(Boolean).join(' OR ');
+      if (!simpleQuery) return 0;
+      params[0] = simpleQuery;
+      try {
+        const row = this.db.prepare(sql).get(...params) as { n: number } | undefined;
+        return row?.n ?? 0;
+      } catch {
+        return 0;
+      }
+    }
+  }
+
   /** Build an FTS5 query from a natural language string */
   private buildFTSQuery(query: string): string {
     // Strip special FTS5 operators, keep words
@@ -520,6 +585,47 @@ export class MemoryStore {
     // Search in text and title columns only
     // Use OR to be permissive — the ranking handles relevance
     return `{text title} : ${words.join(' OR ')}`;
+  }
+
+  // ── KV store ───────────────────────────────────────────────────
+  // The third memory primitive (alongside diary + KG): small persistent
+  // values the agent can stash and read back. Scopes namespace keys so
+  // an agent can keep per-project / per-task state without collisions.
+
+  /** Set a key/value pair. Overwrites any previous value at (scope, key). */
+  kvSet(scope: string, key: string, value: string): void {
+    this.db.prepare(`
+      INSERT OR REPLACE INTO kv_store (scope, key, value, updated_at)
+      VALUES (?, ?, ?, ?)
+    `).run(scope, key, value, Date.now());
+  }
+
+  /** Read a value. Returns null if (scope, key) is not set. */
+  kvGet(scope: string, key: string): { value: string; updated_at: number } | null {
+    const row = this.db.prepare(`
+      SELECT value, updated_at FROM kv_store WHERE scope = ? AND key = ?
+    `).get(scope, key) as { value: string; updated_at: number } | undefined;
+    return row ?? null;
+  }
+
+  /** Delete a key. Returns true if a row was removed. */
+  kvDelete(scope: string, key: string): boolean {
+    const r = this.db.prepare('DELETE FROM kv_store WHERE scope = ? AND key = ?').run(scope, key);
+    return r.changes > 0;
+  }
+
+  /** List keys in a scope (or all scopes if scope is undefined). */
+  kvList(scope?: string, limit = 200): Array<{ scope: string; key: string; value: string; updated_at: number }> {
+    if (scope === undefined) {
+      return this.db.prepare(`
+        SELECT scope, key, value, updated_at FROM kv_store
+        ORDER BY updated_at DESC LIMIT ?
+      `).all(limit) as any;
+    }
+    return this.db.prepare(`
+      SELECT scope, key, value, updated_at FROM kv_store
+      WHERE scope = ? ORDER BY updated_at DESC LIMIT ?
+    `).all(scope, limit) as any;
   }
 
   close(): void {

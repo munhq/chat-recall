@@ -9,6 +9,8 @@ import ConversationList from './components/ConversationList';
 import ConversationViewer from './components/ConversationViewer';
 import MemoryExplorer from './components/MemoryExplorer';
 import Dashboard from './components/Dashboard';
+import ActivityTimeline from './components/ActivityTimeline';
+import SettingsPage from './components/SettingsPage';
 import {
   getStatus,
   getRecentSessions,
@@ -19,7 +21,7 @@ import {
   type Subagent,
 } from './services/api';
 
-type ViewMode = 'search' | 'memory' | 'dashboard';
+type ViewMode = 'search' | 'memory' | 'dashboard' | 'activity' | 'settings';
 
 /**
  * Recursive tree node used by the project sidebar. One node renders as
@@ -230,6 +232,18 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [query, handleSearch]);
 
+  // Default sort follows search state: relevance when searching, recent when
+  // browsing. Only flips on transition so the user can override mid-search
+  // (clicking "Recent" while a query is active won't get clobbered until they
+  // clear the query and start a new one).
+  const prevHadQuery = useRef(false);
+  useEffect(() => {
+    const hasQuery = !!query.trim();
+    if (hasQuery && !prevHadQuery.current) setSort('rel');
+    else if (!hasQuery && prevHadQuery.current) setSort('recent');
+    prevHadQuery.current = hasQuery;
+  }, [query]);
+
   const handleSelectSession = useCallback((sessionId: string) => {
     setSelectedSessionId(sessionId);
     setMessages([]);
@@ -333,7 +347,20 @@ export default function App() {
       )}
       {view === 'dashboard' && (
         <div className="app-row">
-          <Dashboard />
+          <Dashboard
+            onJumpToSession={handleMemorySessionClick}
+            onJumpToSearch={(q) => { setQuery(q); setView('search'); }}
+          />
+        </div>
+      )}
+      {view === 'activity' && (
+        <div className="app-row">
+          <ActivityTimeline onSessionClick={handleMemorySessionClick} />
+        </div>
+      )}
+      {view === 'settings' && (
+        <div className="app-row">
+          <SettingsPage onClose={() => setView('search')} />
         </div>
       )}
     </div>
