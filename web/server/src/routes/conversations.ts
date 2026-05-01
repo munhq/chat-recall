@@ -6,7 +6,7 @@ import express from 'express';
 import { getRecentSessions, getSessionPath, getRelatedItems, getSessionMetadata } from '../services/sessions.js';
 import { getConversation, getGeminiConversation, getOpenCodeConversation, getSubagents } from '../services/parser.js';
 import type { Subagent } from '../services/parser.js';
-import { MemoryStore } from '../imports.js';
+import { MemoryStore, liveScanModifiedFiles } from '../imports.js';
 import type { SourceType } from '../imports.js';
 import { matchesPrefix } from '../utils/paths.js';
 
@@ -18,9 +18,12 @@ router.get('/recent', async (req, res) => {
     const limit = parseInt(req.query.limit as string) || 20;
     const projectFilter = req.query.project as string | undefined;
     const toolFilter = req.query.tool as string | undefined;
+    const sinceHoursRaw = req.query.since_hours as string | undefined;
+    const sinceHours = sinceHoursRaw ? Number(sinceHoursRaw) : undefined;
 
-    // Fetch all when filtering, otherwise use limit
-    const needsAll = projectFilter || toolFilter;
+    // Fetch all when any filter is active so we can apply project/tool/time
+    // checks before the final slice.
+    const needsAll = projectFilter || toolFilter || sinceHours !== undefined;
     let sessions = await getRecentSessions(needsAll ? 0 : limit);
 
     // Filter by project — exact or folder prefix match (so clicking a
@@ -34,6 +37,12 @@ router.get('/recent', async (req, res) => {
       sessions = sessions.filter(s => (s.tool || 'claude') === toolFilter);
     }
 
+    // Filter by time window
+    if (sinceHours !== undefined && Number.isFinite(sinceHours) && sinceHours > 0) {
+      const cutoff = Date.now() - sinceHours * 3600 * 1000;
+      sessions = sessions.filter(s => (s.fileMtime || 0) >= cutoff);
+    }
+
     // Limit after filtering
     sessions = sessions.slice(0, limit);
 
@@ -45,6 +54,46 @@ router.get('/recent', async (req, res) => {
     console.error('Recent sessions error:', error);
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to get recent sessions',
+    });
+  }
+});
+
+// GET /api/conversations/:id/files-live
+// Live transcript scan of the session's tool_uses — works on the active
+// session even though the indexer hasn't run yet.
+router.get('/:id/files-live', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const live = liveScanModifiedFiles(id);
+    if (!live.found) return res.status(404).json({ error: 'Session not found' });
+
+    // Bucket by extension to mirror the MCP tool's response shape.
+    const byExt: Record<string, string[]> = {};
+    for (const f of live.files) {
+      const ext = f.includes('.') ? f.split('.').pop()!.toLowerCase() : '(no ext)';
+      (byExt[ext] = byExt[ext] || []).push(f);
+    }
+
+    res.json({
+      sessionId: id,
+      projectPath: live.projectPath,
+      files: live.files,
+      reads: live.reads,
+      filesByExt: byExt,
+      edits: live.edits.map(e => ({
+        ts: e.ts,
+        tsIso: e.tsIso,
+        file: e.file,
+        op: e.op,
+        toolName: e.toolName,
+        line: e.line,
+      })),
+      source: 'live',
+    });
+  } catch (error) {
+    console.error('Files-live error:', error);
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to live-scan session',
     });
   }
 });

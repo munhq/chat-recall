@@ -1,8 +1,17 @@
 {
   "name": "chat-recall",
-  "version": "0.1.0",
-  "description": "Semantic search for Claude Code sessions - MCP server, CLI, and Web UI",
+  "version": "0.2.0",
+  "description": "Cross-tool memory + MCP for Claude Code, Gemini CLI, and OpenCode sessions",
   "type": "module",
+  "author": "darkkraft",
+  "homepage": "https://github.com/darkkraft/chat-recall#readme",
+  "bugs": {
+    "url": "https://github.com/darkkraft/chat-recall/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/darkkraft/chat-recall.git"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
@@ -11,10 +20,12 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "hooks",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/postbuild.mjs",
     "dev": "tsc --watch",
     "start": "node dist/cli.js",
     "mcp": "node dist/mcp.js",
@@ -52,7 +63,6 @@
     "ollama",
     "web-ui"
   ],
-  "author": "",
   "license": "MIT",
   "dependencies": {
     "@lancedb/lancedb": "^0.13.0",

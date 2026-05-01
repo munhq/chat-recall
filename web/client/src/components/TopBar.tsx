@@ -1,10 +1,9 @@
 import React, { useState } from 'react';
 import { Icon, IconButton, Input, Logo, Button, Avatar } from './primitives';
-import SettingsDialog from './SettingsDialog';
 
 interface TopBarProps {
   view: string;
-  setView: (v: 'search' | 'memory' | 'dashboard') => void;
+  setView: (v: 'search' | 'memory' | 'dashboard' | 'activity' | 'settings') => void;
   query: string;
   setQuery: (q: string) => void;
   searchRef?: React.RefObject<HTMLInputElement>;
@@ -12,7 +11,6 @@ interface TopBarProps {
 }
 
 export default function TopBar({ view, setView, query, setQuery, searchRef, onSearch }: TopBarProps) {
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [theme, setTheme] = useState(() =>
     document.documentElement.getAttribute('data-theme') || 'dark'
   );
@@ -32,8 +30,9 @@ export default function TopBar({ view, setView, query, setQuery, searchRef, onSe
     requestAnimationFrame(() => requestAnimationFrame(() => killer.remove()));
   };
 
-  const navItems: Array<{ id: 'search' | 'memory' | 'dashboard'; label: string; icon: string }> = [
+  const navItems: Array<{ id: 'search' | 'memory' | 'dashboard' | 'activity'; label: string; icon: string }> = [
     { id: 'search', label: 'Conversations', icon: 'message' },
+    { id: 'activity', label: 'Activity', icon: 'clock' },
     { id: 'memory', label: 'Memory', icon: 'brain' },
     { id: 'dashboard', label: 'Insights', icon: 'chart' },
   ];
@@ -54,7 +53,7 @@ export default function TopBar({ view, setView, query, setQuery, searchRef, onSe
       {/* Brand */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 'var(--cr-sidebar-w)', paddingLeft: 4 }}>
         <Logo size={26} />
-        <span style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--cr-fg-1)' }}>
+        <span data-testid="brand" style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--cr-fg-1)' }}>
           Chat Recall
         </span>
         <span
@@ -148,14 +147,16 @@ export default function TopBar({ view, setView, query, setQuery, searchRef, onSe
         <IconButton
           icon="settings"
           title="Settings"
-          onClick={() => setSettingsOpen(true)}
+          onClick={() => setView('settings')}
           data-testid="open-settings"
+          // Visual cue when already on the settings page so the user can see
+          // the gear icon is the current location, not just a button.
+          style={view === 'settings' ? { color: 'var(--cr-brand-500)' } : undefined}
         />
         <div style={{ marginLeft: 4 }}>
           <Avatar name="User" size={28} />
         </div>
       </div>
-      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </header>
   );
 }

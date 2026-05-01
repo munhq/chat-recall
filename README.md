@@ -1,202 +1,204 @@
-# Chat-Recall
+# chat-recall
 
-> "I fixed an auth bug with Claude last week... which session was that?"
+> Search, browse, and resume past AI coding sessions across Claude Code, Gemini CLI, and OpenCode — and let the agent search its own history via MCP.
 
-Chat-Recall indexes all your Claude Code conversations and makes them searchable. It also tracks how much each session costs, what files were changed, and what decisions were made — so you (and Claude) can pick up where you left off without wasting context.
+`chat-recall` indexes the JSONL/JSON/SQLite transcripts your AI tools already write to disk, gives you a web UI to browse them, and exposes them to Claude Code through **35 MCP tools** so the agent can recall its own past work without you copy-pasting context. Local-first by default, no account, no upload.
 
-## What You Get
+## Four things it actually does
 
-**Find any past conversation instantly.** Search by what you discussed, not when it happened. "OAuth implementation", "React hooks refactor", "that Postgres migration bug" — semantic search finds the right session even if your exact words don't match.
+1. **Cross-tool unified memory.** One index, one search, one UI for Claude Code (`~/.claude/projects/`), Gemini CLI (`~/.gemini/tmp/`), and OpenCode (`~/.local/share/opencode/`). Sessions, plans, tasks, CLAUDE.md, paste cache, command history, and agent diaries all share a single pluggable `MemorySource` interface.
+2. **The agent recalls itself.** 35 MCP tools so Claude Code can `recall_smart_resume`, `recall_similar_sessions`, `recall_files_touched`, `recall_subagent_search`, `recall_redundant_files`, etc., instead of you describing what happened last time. It can also write decisions back via `recall_decision_record` and stash small state via `recall_set` / `recall_get`.
+3. **Warns before redoing work.** A `UserPromptSubmit` hook fires on every prompt you type, runs a quick search for similar past sessions, and injects a brief "you've worked on this before in session X" notice into the agent's context. Pair with the bundled **codeindex** companion (see below) to also warn when the new code you're about to write looks like code that already exists.
+4. **Temporal knowledge graph.** Decisions and tool/library mentions become entity-relationship triples with `valid_from`/`valid_to` windows, so you (and the agent) can ask "what did we decide about X in March, and is it still true?".
 
-**See what each session cost.** Every session shows token usage, estimated cost in USD, cache savings, peak context window usage, and which models were used. Know exactly where your API budget is going.
-
-**Give Claude memory across sessions.** The MCP server lets Claude automatically recall relevant past work. When you say "continue the auth work", Claude can find the right session, see what was done, what files changed, and what's still pending — without you having to explain.
-
-**Browse everything in a web UI.** Sessions grouped by project, full conversation viewer, metadata panels, related items (tasks, plans, CLAUDE.md), and a unified memory explorer.
-
-## Quick Start
-
-### Docker (recommended)
+## Quickstart (no API keys, no Ollama)
 
 ```bash
 git clone <repo-url>
 cd chat-recall
-cp .env.example .env
-docker compose up -d
+npm install
+npm run build
+node dist/cli.js index              # build the FTS5 index from on-disk sessions
+node dist/cli.js search "auth bug"  # try it
 ```
 
-Open http://localhost:8080 — that's it. On first start it pulls the embedding model (~270MB) and begins indexing your sessions automatically.
+That works right now. **No Ollama, no Gemini key, no Claude key.** SQLite FTS5 is the default search backend; vector search and summaries are upgrades, not requirements.
 
-### Local Install
+### Optional: vector search
 
 ```bash
-# Prerequisites: Node.js 18+, Ollama running locally
 ollama pull nomic-embed-text
-
-npm install
-npm run web:install    # Install web dependencies
-npm run build          # Compile TypeScript
-node dist/cli.js index # Build the search index
-npm run web:dev        # Start web UI (API on :5000, UI on :5173)
+node dist/cli.js index --force      # this time chunks are embedded into LanceDB
 ```
 
-### Add to Claude Code (MCP)
+…or set `EMBEDDING_PROVIDER=gemini` with `GEMINI_API_KEY` if you'd rather use a hosted embedder. Without either, search falls back to FTS5 — same UI, slightly less semantic.
 
-Add to `~/.claude/settings.local.json`:
+### Optional: web UI
+
+```bash
+npm run web:install                 # install web deps
+npm run web:dev                     # API on :5000, UI on :5173
+```
+
+### Optional: Docker
+
+```bash
+cp .env.example .env
+docker compose up -d                # bundles server + client + Ollama + auto-indexer
+```
+
+UI at http://localhost:8080. First start pulls the embedding model (~270MB).
+
+## Hook it up to Claude Code
+
+Add the MCP server to `~/.mcp.json` (or `~/.claude/settings.local.json`):
 
 ```json
 {
   "mcpServers": {
     "chat-recall": {
-      "command": "/path/to/chat-recall/node_modules/.bin/tsx",
-      "args": ["dist/mcp.js"],
-      "env": {
-        "EMBEDDING_PROVIDER": "ollama"
-      }
+      "command": "node",
+      "args": ["/path/to/chat-recall/dist/mcp.js"]
     }
   }
 }
 ```
 
-Now Claude can use tools like `recall_search`, `recall_context`, and `recall_suggest_resume` to find and resume past work.
-
-## What Gets Indexed
-
-Everything lives under `~/.claude/` — no hardcoded paths, works on any machine.
-
-| Source | What | Why It Matters |
-|--------|------|----------------|
-| **Sessions** | Conversation transcripts | The core data — every message, tool call, and decision |
-| **Plans** | Agent planning documents | Architecture decisions and implementation strategies |
-| **Tasks** | Task lists from sessions | What was planned vs. what got done |
-| **CLAUDE.md** | Project instructions | Links sessions to their project context |
-| **History** | Command history | What commands were run and in which sessions |
-| **Paste** | Paste cache | Large text blocks shared with Claude |
-
-## Session Metadata
-
-Each session is enriched with metadata extracted from the JSONL transcript:
-
-- **Token usage** — input, output, cache reads, cache creation, peak context window
-- **Estimated cost** — computed from model pricing (supports opus, sonnet, haiku)
-- **Cache savings** — how much the prompt cache saved you
-- **Duration** — total session time from turn_duration entries
-- **Tools used** — Bash, Read, Edit, Write, Agent, etc.
-- **Files modified** — from file-history-snapshot entries
-- **Git branch** — what branch you were on
-- **Models used** — which models handled each turn
-- **Slug** — Claude's auto-generated session name
-
-## CLI
+Then install the hooks (one command sets up auto-save, pre-compact backup, and the resume-hint that warns when you're about to redo work):
 
 ```bash
-# Search
-node dist/cli.js search "OAuth implementation"
-node dist/cli.js search "React hooks" --top 10 --project myproject
-
-# Browse
-node dist/cli.js recent
-node dist/cli.js show <session-id>
-node dist/cli.js context <session-id>    # Structured context for resuming
-node dist/cli.js summary <session-id>    # AI-generated summary
-
-# Memory system
-node dist/cli.js memory search "API error handling"
-node dist/cli.js memory status
-node dist/cli.js plans
-node dist/cli.js tasks
-
-# Indexing
-node dist/cli.js index                   # Incremental
-node dist/cli.js index --force           # Full re-index
-node dist/cli.js status
+node dist/cli.js install-hooks                # registers Stop + PreCompact + UserPromptSubmit
+node dist/cli.js install-hooks --no-resume-hint  # skip the resume warning if you don't want it
+node dist/cli.js install-hooks --uninstall     # remove all of ours, leave third-party hooks alone
 ```
 
-## MCP Tools
+| Hook | When it fires | What it does |
+|---|---|---|
+| `Stop` | After every assistant turn | Auto-saves topics, decisions, and tools to `~/.claude/chat-recall-memory/` |
+| `PreCompact` | Before Claude Code compacts context | Emergency save so nothing is lost to compaction |
+| `UserPromptSubmit` | When you type a prompt | Searches past sessions; if a similar one exists, injects "you've worked on this before" into the agent's context |
 
-| Tool | What It Does |
-|------|-------------|
-| `recall_search` | Semantic search across all sessions |
-| `recall_recent` | List recent sessions, optionally by project |
-| `recall_context` | Session context with token budget (so Claude knows if it's safe to load) |
-| `recall_summary` | AI-generated summary |
-| `recall_show` | Full session content |
-| `recall_suggest_resume` | Find relevant past sessions for the current task |
-| `recall_memory_search` | Search across all memory types |
-| `recall_memory_status` | Memory system stats |
-| `recall_plans` | Browse plans |
-| `recall_tasks` | Browse tasks |
-| `recall_index` | Trigger re-indexing |
-| `recall_status` | Index statistics |
+## Companion: codeindex (auto-detected)
 
-## Configuration
+There's a separate MCP server called **codeindex** (Zig binary, ~56 MB) by [@hotmun](https://github.com/hotmun/codeindex) that gives the agent code-level lookup. The two compose:
 
-### Embedding Providers
+- **chat-recall** = session memory. *What have I worked on? What did we decide?*
+- **codeindex** = code memory. *Where is this symbol? Who calls it? What breaks if I change it?*
 
-| Provider | Model | Setup |
-|----------|-------|-------|
-| `ollama` (default) | nomic-embed-text | Local, free, no API key |
-| `gemini` | text-embedding-004 | Requires `GEMINI_API_KEY` |
+Together the agent can answer "have I built this before?" *and* "does it already exist in this codebase?" before redoing work.
 
-### Summary Providers
-
-| Provider | Model | Setup |
-|----------|-------|-------|
-| `ollama` (default) | qwen2.5:7b (configurable) | Local, free |
-| `claude` | claude-3-5-haiku | Requires `ANTHROPIC_API_KEY` |
-| `gemini-cli` | gemini-3-flash-preview | Requires `gemini` CLI |
-
-### Environment Variables
-
-See [`.env.example`](.env.example) for full docs. Key settings:
+**How chat-recall handles it:** `chat-recall init` detects whether `codeindex` is on your PATH (or at `~/.local/bin/codeindex`). If yes, it registers it as an MCP server in `~/.mcp.json` automatically — no download, no surprise. If no, it prints a one-line hint about how to get it.
 
 ```bash
-EMBEDDING_PROVIDER=ollama
-SUMMARY_PROVIDER=ollama
-OLLAMA_HOST=http://localhost:11434
-OLLAMA_SUMMARY_MODEL=qwen2.5:7b
+chat-recall init                       # default — detect and register if installed
+chat-recall init --with-codeindex      # additionally force-download the binary
+chat-recall init --skip-codeindex      # don't even check
+chat-recall companions install         # download manually (after init)
+chat-recall companions status          # show what was detected
+chat-recall companions uninstall       # remove the binary + MCP registration
 ```
 
-## Docker
+The codeindex release artifacts are currently in a private repo, so `--with-codeindex` only works if you have access to it. The install is optional — chat-recall works entirely without codeindex; you just don't get the code-level tools.
+
+## What gets indexed
+
+| Source | Origin | Notes |
+|--------|--------|-------|
+| **Sessions (Claude)** | `~/.claude/projects/<hash>/<uuid>.jsonl` | Full transcripts, tokens, cost, files touched, models used |
+| **Sessions (Gemini CLI)** | `~/.gemini/tmp/*/chats/*.json` | Tokens and tool usage extracted where present |
+| **Sessions (OpenCode)** | `~/.local/share/opencode/opencode.db` (SQLite) | Cost, tokens, todos |
+| **Subagent transcripts** | `<session-dir>/<id>/subagents/*.jsonl` | Explore, aside, **and `acompact-*`** (orphaned compacted history) |
+| **Plans** | `~/.claude/plans/*.md` | Agent planning docs, split by `##` |
+| **Tasks** | `~/.claude/tasks/<session>/*.json` | Linked to parent session |
+| **CLAUDE.md** | Auto-discovered from project hashes | Linked to sessions in same project |
+| **History** | `~/.claude/history.jsonl` | Shell history, optionally tied to a session |
+| **Paste** | `~/.claude/paste-cache/*.txt` | Large pasted blobs |
+| **Diary** | `~/.claude/chat-recall-index/diary/<agent>/*.json` | What the agent told its future self via `recall_diary_write` |
+
+## MCP tools (35)
+
+**Search & retrieve** — `recall_search`, `recall_memory_search`, `recall_recent`, `recall_show`, `recall_context`, `recall_summary`, `recall_suggest_resume`, `recall_smart_resume`, `recall_project_context`, `recall_weekly_digest`, `recall_analytics_summary`, `recall_wake_up`.
+
+**Pattern detection** (the launch-headline tools) — `recall_similar_sessions` (vector cluster of past work matching a query), `recall_redundant_files` (warn when a new filename overlaps prior work), `recall_session_files` (what files did session X actually touch), `recall_files_touched` (which sessions edited `auth.rs`).
+
+**Subagents & filters** — `recall_subagent_search` (search inside hidden Explore/aside/compact transcripts), `recall_user_prompts` (only what the human typed, banner-stripped).
+
+**Knowledge graph** — `recall_kg_query`, `recall_kg_add`, `recall_kg_invalidate`, `recall_kg_timeline`, `recall_kg_stats`. Plus `recall_decision_record` to write a decision as both a triple and a diary entry in one call.
+
+**KV state** — `recall_set`, `recall_get`, `recall_kv_list`. Small persistent values keyed by namespaced strings: "current PR url", "branch I'm working on", user prefs.
+
+**Diary & status** — `recall_diary_write`, `recall_diary_read`, `recall_status`, `recall_memory_status`, `recall_plans`, `recall_plan_show`, `recall_tasks`, `recall_index`.
+
+When the codeindex companion is installed, the agent *also* gets 16 code-level tools (`find_symbol`, `find_callers`, `get_imports`, `plan_change`, `get_change_impact`, `analyze`, etc.) from a separate MCP server. They compose: chat-recall finds what you've done; codeindex tells you what currently exists.
+
+## Search architecture
+
+Two backends, FTS5 is the default:
+
+- **FTS5 (SQLite)** — zero external dependencies. Keyword search with BM25 ranking. Always available.
+- **Vector (LanceDB)** — opt-in. 768-dim embeddings via Ollama (`nomic-embed-text`) or Gemini (`text-embedding-004`).
+
+Both indexes are maintained in parallel when an embedder is configured. If neither is, every search tool transparently falls back to FTS5.
+
+## Cost tracking
+
+Cost in USD is computed from token usage when at least one model in the session has a known public price (currently Opus 4.6, Sonnet 4.5/4.6, Haiku 4.5). For models we don't have prices for (Gemini, Ollama, custom), the dashboard shows `—` instead of fabricating a number. The summary surfaces a `sessionsWithoutPricing` counter so you know how representative the totals are.
+
+## Wake-up context
 
 ```bash
-docker compose up -d                                  # Default setup
-docker compose --profile gpu up -d                    # With GPU for Ollama
-docker compose up -d --scale ollama=0 --scale ollama-init=0  # Use host Ollama
+node dist/cli.js memory wake-up
 ```
 
-| Service | Port | Description |
-|---------|------|-------------|
-| `client` | 8080 | Web UI (nginx) |
-| `server` | 5000 | API server |
-| `ollama` | 11434 | Embedding model |
-| `indexer` | — | Auto-indexer daemon |
+Builds a small bundle for an AI session: optional identity blurb, the top 10 chunks the classifier flagged as decisions/preferences/milestones at importance ≥ 4, and a snapshot of currently-valid knowledge-graph facts. No magic compression — just the highest-signal items the indexer already tags.
+
+## Data locations
+
+| Path | What |
+|------|------|
+| `~/.claude/chat-recall-index/lancedb/` | Vector index (optional) |
+| `~/.claude/chat-recall-index/metadata.db` | SQLite metadata + FTS5 + content cache |
+| `~/.claude/chat-recall-index/knowledge_graph.db` | Temporal KG |
+| `~/.claude/chat-recall-index/wal/write_log.jsonl` | Write-ahead audit log (mode 0600, secrets redacted) |
+| `~/.claude/chat-recall-index/diary/<agent>/` | Per-agent diary entries |
+| `~/.claude/chat-recall-hooks/` | Installed save hook (after `install-hooks`) |
+
+Wipe everything with `rm -rf ~/.claude/chat-recall-index ~/.claude/chat-recall-hooks` and a re-`index`.
+
+## Privacy
+
+By default everything stays on your machine. The only point at which session text leaves your laptop is summary generation **if you opt into the `claude` or `gemini` (API-based) summary provider** — and even then only the summary prompt + a snippet, not full transcripts. The default summary provider is `ollama` (local) or none (no summaries).
+
+The web UI binds to localhost. There is no telemetry, no account, no upload. There is also currently no built-in sync — your index lives in `~/.claude/chat-recall-index/`; back it up however you like.
 
 ## Architecture
 
-Plugin-based memory system. Each data source implements `MemorySource` (discover/parse/extractLinks) and registers with `SourceRegistry`. Adding a new source requires one file + one `.register()` call.
-
-**Storage:** LanceDB for vector search, SQLite for metadata and relationship links.
-
 ```
 src/
-├── core/           # Indexing, storage, embeddings, summaries
-├── parsers/        # One *-source.ts plugin per data type
-├── cli.ts          # CLI
-└── mcp.ts          # MCP server (12 tools)
+├── core/           Indexing, storage, embeddings, summaries, KG, classifier
+├── parsers/        One *-source.ts plugin per data type (11 sources)
+├── cli.ts          CLI
+└── mcp.ts          MCP server (27 tools)
 
 web/
-├── server/         # Express API
-└── client/         # React + Vite UI
+├── server/         Express API
+└── client/         React + Vite UI
 
-auto-indexer/       # File watcher daemon
-docker/             # Dockerfiles + nginx
-e2e/                # Playwright tests (21 tests)
+auto-indexer/       chokidar-based watcher daemon (systemd-friendly)
+hooks/              Claude Code save hook (install via `chat-recall install-hooks`)
+docker/             Dockerfiles + nginx
+e2e/                Playwright tests
 ```
+
+Adding a new source = one `MemorySource` implementation + one `.register()` call. The interface is `discover()` → `parse()` → `extractLinks()`.
 
 ## Requirements
 
 - Node.js 18+
-- Ollama (local, free) or API keys for Gemini/Claude
-- ~270MB for the embedding model
-- Claude Code sessions in `~/.claude/` (standard location)
+- Optional: Ollama (local, free) for vector search & local summaries
+- Optional: Gemini or Anthropic API key for hosted embeddings/summaries
+- Sessions in `~/.claude/`, `~/.gemini/`, or `~/.local/share/opencode/` (standard tool locations)
+
+## License
+
+MIT.
