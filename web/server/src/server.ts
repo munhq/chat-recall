@@ -4,12 +4,15 @@
 
 import express from 'express';
 import cors from 'cors';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import searchRouter from './routes/search.js';
 import conversationsRouter from './routes/conversations.js';
 import statusRouter from './routes/status.js';
 import memoryRouter from './routes/memory.js';
 import analyticsRouter from './routes/analytics.js';
 import settingsRouter from './routes/settings.js';
+import editsRouter from './routes/edits.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '5000', 10);
@@ -33,11 +36,27 @@ app.use('/api/status', statusRouter);
 app.use('/api/memory', memoryRouter);
 app.use('/api/analytics', analyticsRouter);
 app.use('/api/settings', settingsRouter);
+app.use('/api/edits', editsRouter);
 
 // Health check
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+// Serve the built React client from the same origin in production / Docker.
+// Tries STATIC_DIR first (set in the Dockerfile), then falls back to the
+// repo-relative path used during development.
+const STATIC_DIR = resolve(
+  process.env.STATIC_DIR || '../client/dist',
+);
+if (existsSync(STATIC_DIR)) {
+  app.use(express.static(STATIC_DIR));
+  // SPA fallback — any non-API path returns index.html so client-side routes work.
+  app.get(/^\/(?!api|health).*/, (_req, res) => {
+    res.sendFile(resolve(STATIC_DIR, 'index.html'));
+  });
+  console.log(`Serving client from ${STATIC_DIR}`);
+}
 
 // Error handler
 app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {

@@ -185,29 +185,6 @@ do_save() {
     fi
 }
 
-# Generate AAAK critical facts layer (L1)
-generate_l1_facts() {
-    local output_file="${MEMORY_DIR}/l1_aaak.txt"
-    
-    # Collect all recent session facts
-    local all_facts=""
-    for f in "${MEMORY_DIR}/sessions"/*.json 2>/dev/null; do
-        if [[ -f "$f" ]]; then
-            all_facts+="$(jq -r '.first_topic + " | " + .decisions + "\n"' "$f" 2>/dev/null)"
-        fi
-    done
-    
-    # Generate simple AAAK-style facts
-    {
-        echo "# chat-recall L1 Critical Facts"
-        echo "# Updated: $(date)"
-        echo ""
-        echo "$all_facts" | grep -v "^$" | sort -u | head -20
-    } > "$output_file"
-    
-    log "Updated L1 facts ($(wc -l < "$output_file") lines)"
-}
-
 # Check if we should save (throttle to avoid too frequent saves)
 should_save() {
     local session_file="$1"
@@ -272,7 +249,6 @@ main() {
     fi
     
     do_save "$precompact"
-    generate_l1_facts
 }
 
 main "$@"

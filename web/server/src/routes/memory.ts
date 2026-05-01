@@ -16,7 +16,7 @@ import type { SourceType } from '../imports.js';
 const router = express.Router();
 const memoryService = new MemoryService();
 
-const VALID_SOURCE_TYPES = ['session', 'plan', 'task', 'claude_md', 'paste', 'history'];
+const VALID_SOURCE_TYPES = ['session', 'plan', 'task', 'claude_md', 'paste', 'history', 'diary'];
 
 function validateSourceType(sourceType: string): sourceType is SourceType {
   return VALID_SOURCE_TYPES.includes(sourceType);

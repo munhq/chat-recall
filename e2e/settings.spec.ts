@@ -1,10 +1,10 @@
 /**
- * Settings dialog — opens from TopBar, reads /api/settings, PUTs changes.
+ * Settings dialog — opens from TopBar, reads /api/settings, PUTs structured updates.
  *
- * We mock both endpoints so the test doesn't depend on the user's real
- * .env contents and doesn't mutate disk.
+ * The new UI uses radio cards per provider (not a single select), with
+ * provider-specific form fields swapping in based on selection. We mock the
+ * /api/settings endpoint so the test doesn't depend on real disk state.
  */
-
 import { test, expect, type Page, type Route } from '@playwright/test';
 
 const STATUS_FIXTURE = {
@@ -15,22 +15,48 @@ const STATUS_FIXTURE = {
 };
 
 const SETTINGS_FIXTURE = {
-  envPath: '/tmp/fake/.env',
   settings: {
-    SUMMARY_PROVIDER: 'gemini-cli',
-    SUMMARY_CLI_PRESET: '',
-    SUMMARY_CLI_CMD: '',
-    SUMMARY_CLI_TIMEOUT_MS: '',
-    GEMINI_MODEL: 'gemini-3-flash-preview',
-    EMBEDDING_PROVIDER: 'ollama',
-    OLLAMA_HOST: 'http://localhost:11434',
-    OLLAMA_SUMMARY_MODEL: '',
-    CLAUDE_DIR: '~/.claude',
+    v: 1,
+    embedding: { provider: 'ollama', ollamaHost: 'http://localhost:11434', ollamaModel: 'nomic-embed-text' },
+    // Active summary provider is the "cli" row pinned to the gemini preset.
+    // The UI exposes each (provider=cli, preset) pair as a single selectable row
+    // via testid `summary-choice-cli:<preset>`.
+    summary:   { provider: 'cli', cliPreset: 'gemini', cliCommand: 'gemini -p " "', cliTimeoutMs: 120_000 },
   },
   presets: {
-    summaryCliPresets: ['opencode', 'kilo', 'kilocode', 'gemini', 'claude-cli', 'llm', 'aichat'],
-    summaryProviders: ['cli', 'gemini-cli', 'ollama', 'claude'],
-    embeddingProviders: ['ollama', 'gemini'],
+    embeddingProviders: ['none', 'ollama', 'nvidia', 'gemini', 'openai', 'openai-compat'],
+    summaryProviders:   ['none', 'cli', 'ollama', 'claude'],
+    summaryCliPresets:  ['opencode', 'kilocode', 'gemini', 'claude-cli', 'llm', 'aichat'],
+    summaryCliPresetCommands: {
+      opencode:    'opencode -p " "',
+      kilocode:    'kilo -p " "',
+      gemini:      'gemini -p " "',
+      'claude-cli':'claude -p " "',
+      llm:         'llm " "',
+      aichat:      'aichat " "',
+    },
+    embeddingHints: {
+      ollama:          { label: 'Ollama (local, free)', requires: 'Ollama running locally' },
+      gemini:          { label: 'Google Gemini (hosted)', requires: 'GEMINI_API_KEY' },
+      openai:          { label: 'OpenAI (hosted)', requires: 'OPENAI_API_KEY' },
+      nvidia:          { label: 'Nvidia NIM (free hosted)', requires: 'NVIDIA_API_KEY' },
+      'openai-compat': { label: 'Custom OpenAI-compatible endpoint', requires: 'A base URL + model name.' },
+      none:            { label: 'None — keyword search only (FTS5)', requires: 'Nothing.' },
+    },
+    summaryHints: {
+      'cli':    { label: 'Local CLI', requires: 'Detect or pick an installed AI CLI' },
+      'ollama': { label: 'Ollama (local)', requires: 'Ollama + a chat model' },
+      'claude': { label: 'Claude API (HTTP)', requires: 'ANTHROPIC_API_KEY' },
+      'none':   { label: 'None — first prompt fallback', requires: 'Nothing.' },
+    },
+  },
+  status: {
+    ollama: { reachable: true, models: ['nomic-embed-text:latest'] },
+    // CLI presets all marked detected so they render in the visible "Detected
+    // on this machine" group instead of the collapsed install-required group.
+    cliDetected: {
+      opencode: true, kilocode: true, gemini: true, 'claude-cli': true, llm: true, aichat: true,
+    },
   },
 };
 
@@ -42,6 +68,19 @@ async function mockApi(page: Page, onPut?: (body: any) => void) {
   await page.route('**/api/conversations/recent**', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: '{"sessions":[],"count":0}' })
   );
+  // Codeindex card calls this on dialog open. Stub it so the dialog renders
+  // cleanly even when no codeindex binary is on the test runner.
+  await page.route('**/api/settings/codeindex', (r: Route) =>
+    r.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({
+        status: { installed: false, prebuiltAvailable: false },
+        capabilities: [],
+        installHint: { cli: 'chat-recall init --with-codeindex', curl: 'curl … | sh', repo: 'https://github.com/munhq/codeindex' },
+        pitch: '',
+      }),
+    })
+  );
   await page.route('**/api/settings', (r: Route) => {
     if (r.request().method() === 'GET') {
       return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(SETTINGS_FIXTURE) });
@@ -49,15 +88,16 @@ async function mockApi(page: Page, onPut?: (body: any) => void) {
     if (r.request().method() === 'PUT') {
       const body = JSON.parse(r.request().postData() || '{}');
       onPut?.(body);
+      // Echo back the merged settings so the client can refresh its state.
+      const merged = {
+        v: 1,
+        embedding: { ...SETTINGS_FIXTURE.settings.embedding, ...(body.embedding ?? {}) },
+        summary:   { ...SETTINGS_FIXTURE.settings.summary,   ...(body.summary ?? {}) },
+      };
       return r.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({
-          ok: true,
-          envPath: SETTINGS_FIXTURE.envPath,
-          updated: Object.keys(body.settings || {}),
-          restartHint: 'Restart chat-recall-api to apply.',
-        }),
+        body: JSON.stringify({ ok: true, settings: merged, restartHint: 'CLI/MCP picks up on next start.' }),
       });
     }
     return r.fulfill({ status: 405, body: 'method not allowed' });
@@ -65,7 +105,7 @@ async function mockApi(page: Page, onPut?: (body: any) => void) {
 }
 
 test.describe('Settings dialog', () => {
-  test('opens from the TopBar Settings button and loads current settings', async ({ page }) => {
+  test('opens from the TopBar Settings button and shows current provider selection', async ({ page }) => {
     await mockApi(page);
     await page.goto('/');
     await page.waitForSelector('[data-testid="project-all"]');
@@ -75,28 +115,31 @@ test.describe('Settings dialog', () => {
     const dialog = page.getByTestId('settings-dialog');
     await expect(dialog).toBeVisible();
 
-    // Reads the fixture's provider value into the select.
-    const providerSelect = dialog.locator('select').first();
-    await expect(providerSelect).toHaveValue('gemini-cli');
+    // The fixture has embedding=ollama, summary=cli/gemini — both should
+    // be marked selected via data-selected on the wrapping label.
+    await expect(dialog.locator('[data-testid="embedding-choice-ollama"]')).toHaveAttribute('data-selected', 'true');
+    await expect(dialog.locator('[data-testid="summary-choice-cli:gemini"]')).toHaveAttribute('data-selected', 'true');
   });
 
-  test('switching to cli exposes preset/command/timeout fields', async ({ page }) => {
+  test('switching the embedding provider swaps in provider-specific fields', async ({ page }) => {
     await mockApi(page);
     await page.goto('/');
     await page.waitForSelector('[data-testid="project-all"]');
     await page.getByTestId('open-settings').click();
     const dialog = page.getByTestId('settings-dialog');
 
-    const providerSelect = dialog.locator('select').first();
-    await providerSelect.selectOption('cli');
+    // Click the OpenAI choice. Use the underlying input so React picks up onChange.
+    await dialog.locator('[data-testid="embedding-choice-openai"] input[type="radio"]').click();
 
-    // Preset select and custom-command input should appear.
-    await expect(dialog.getByText('CLI preset')).toBeVisible();
-    await expect(dialog.getByText('Custom CLI command (optional)')).toBeVisible();
-    await expect(dialog.getByText('Timeout (ms)')).toBeVisible();
+    // The form swap happens after the radio change. The OpenAI key textbox
+    // should now exist and the Ollama host field should be gone. Both
+    // strings appear in provider-hint copy too, so we scope to the actual
+    // <input> via its accessible name (label association).
+    await expect(dialog.getByRole('textbox', { name: 'OPENAI_API_KEY' })).toBeVisible();
+    await expect(dialog.getByRole('textbox', { name: 'Ollama host' })).toHaveCount(0);
   });
 
-  test('save sends allowlisted keys to PUT /api/settings', async ({ page }) => {
+  test('save sends a structured embedding+summary payload to PUT /api/settings', async ({ page }) => {
     let received: any = null;
     await mockApi(page, (body) => { received = body; });
 
@@ -105,16 +148,16 @@ test.describe('Settings dialog', () => {
     await page.getByTestId('open-settings').click();
     const dialog = page.getByTestId('settings-dialog');
 
-    await dialog.locator('select').first().selectOption('cli');
-    // The second select is the CLI preset.
-    await dialog.locator('select').nth(1).selectOption('opencode');
+    // Each (provider, cliPreset) pair is its own selectable row. Picking
+    // "cli:opencode" applies provider=cli + cliPreset=opencode in one click.
+    await dialog.locator('[data-testid="summary-choice-cli:opencode"] input[type="radio"]').click();
 
     await page.getByTestId('settings-save').click();
 
-    await expect.poll(() => received?.settings?.SUMMARY_PROVIDER).toBe('cli');
-    await expect.poll(() => received?.settings?.SUMMARY_CLI_PRESET).toBe('opencode');
-    // Confirm success banner rendered.
-    await expect(dialog.getByText(/Saved \d+ settings?\./)).toBeVisible();
+    await expect.poll(() => received?.summary?.provider).toBe('cli');
+    await expect.poll(() => received?.summary?.cliPreset).toBe('opencode');
+    // Embedding section was untouched but should still round-trip the current value.
+    await expect.poll(() => received?.embedding?.provider).toBe('ollama');
   });
 
   test('Escape key closes the dialog', async ({ page }) => {

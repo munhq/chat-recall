@@ -32,6 +32,20 @@ const SOURCE_TABS: Array<{ id: SourceType | 'all'; label: string }> = [
   { id: 'diary', label: 'Diary' },
 ];
 
+/** Properly pluralize a source-type for the search placeholder. */
+function pluralizeSource(t: SourceType | 'all'): string {
+  switch (t) {
+    case 'session':   return 'sessions';
+    case 'plan':      return 'plans';
+    case 'task':      return 'tasks';
+    case 'claude_md': return 'CLAUDE.md files';
+    case 'paste':     return 'pastes';
+    case 'history':   return 'history';
+    case 'diary':     return 'diary entries';
+    default:          return 'everything';
+  }
+}
+
 interface MemoryExplorerProps {
   onSessionClick?: (sessionId: string) => void;
 }
@@ -131,7 +145,7 @@ export default function MemoryExplorer({ onSessionClick }: MemoryExplorerProps) 
         <div style={{ display: 'flex', alignItems: 'center', gap: 16, maxWidth: 1000, margin: '0 auto', width: '100%' }}>
           <div style={{ flex: 1 }}>
             <Input
-              placeholder={`Search in ${activeType === 'all' ? 'everything' : activeType + 's'}…`}
+              placeholder={`Search in ${activeType === 'all' ? 'everything' : pluralizeSource(activeType)}…`}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
@@ -217,7 +231,7 @@ export default function MemoryExplorer({ onSessionClick }: MemoryExplorerProps) 
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                  <SourceBadge type={item.source_type as any} />
+                  <SourceBadge source={item.source_type as any} />
                   <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>
                     {new Date(item.mtime).toLocaleDateString()}
                   </span>
@@ -300,7 +314,7 @@ function MemoryDetail({ item, onSessionClick }: { item: MemoryMetadataRow; onSes
   return (
     <div style={{ padding: '40px 40px 100px', maxWidth: 900, margin: '0 auto' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-        <SourceBadge type={item.source_type as any} />
+        <SourceBadge source={item.source_type as any} />
         <span style={{ fontSize: 13, color: 'var(--cr-fg-3)' }}>{item.id}</span>
       </div>
 
@@ -350,7 +364,7 @@ function MemoryDetail({ item, onSessionClick }: { item: MemoryMetadataRow; onSes
                   interactive
                   style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}
                 >
-                  <SourceBadge type={otherType as any} />
+                  <SourceBadge source={otherType as any} />
                   <span style={{ fontSize: 13, fontWeight: 500 }}>{otherId.slice(0, 20)}…</span>
                 </Card>
               );

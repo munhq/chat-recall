@@ -69,14 +69,18 @@ export class SearchService {
     const cache = new MetadataCache();
     const searchResults: SearchResult[] = results.map((r: MemorySearchResult) => {
       const cached = cache.get(r.itemId);
+      // Use the indexed item's mtime as both created/modified — we don't track
+      // created separately, and an empty string here breaks client-side date
+      // grouping ("Invalid Date") and Recent-sort (NaN comparisons).
+      const iso = r.mtime ? new Date(r.mtime).toISOString() : '';
       return {
         sessionId: r.itemId,
         score: r.score,
         chunkType: r.matchedChunks[0]?.chunkType || 'unknown',
         text: r.matchedChunks[0]?.text || r.title,
         projectPath: r.projectPath,
-        created: '',
-        modified: '',
+        created: iso,
+        modified: iso,
         firstPrompt: cleanBanner(cached?.firstPrompt || r.title) ?? '',
         summary: cleanBanner(cached?.summary),
         matchedChunks: r.matchedChunks,

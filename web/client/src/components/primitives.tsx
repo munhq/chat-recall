@@ -8,7 +8,8 @@ const ICONS: Record<string, string> = {
   x: 'M18 6L6 18M6 6l12 12',
   plus: 'M12 5v14M5 12h14',
   chevronRight: 'M9 18l6-6-6-6',
-  chevronDown: 'M6 9l6 6 6-6',
+  chevronLeft:  'M15 18l-6-6 6-6',
+  chevronDown:  'M6 9l6 6 6-6',
   arrowUp: 'M12 19V5M5 12l7-7 7 7',
   arrowDown: 'M12 5v14M19 12l-7 7-7-7',
   refresh: 'M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8M21 3v5h-5',
@@ -197,6 +198,7 @@ export function SourceBadge({ source, size = 'md' }: SourceBadgeProps) {
     claude_md: { icon: 'file', label: 'CLAUDE.md', color: 'var(--cr-brand-500)' },
     history: { icon: 'terminal', label: 'History', color: 'var(--cr-tool-opencode)' },
     paste: { icon: 'tag', label: 'Paste', color: 'var(--cr-fg-2)' },
+    diary: { icon: 'book', label: 'Diary', color: 'var(--cr-info-500)' },
   };
   const info = m[source];
   if (!info) return null;
