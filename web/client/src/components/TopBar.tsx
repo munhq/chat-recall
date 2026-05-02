@@ -3,7 +3,7 @@ import { Icon, IconButton, Input, Logo, Button, Avatar } from './primitives';
 
 interface TopBarProps {
   view: string;
-  setView: (v: 'search' | 'memory' | 'dashboard' | 'activity' | 'settings') => void;
+  setView: (v: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'settings') => void;
   query: string;
   setQuery: (q: string) => void;
   searchRef?: React.RefObject<HTMLInputElement>;
@@ -30,10 +30,11 @@ export default function TopBar({ view, setView, query, setQuery, searchRef, onSe
     requestAnimationFrame(() => requestAnimationFrame(() => killer.remove()));
   };
 
-  const navItems: Array<{ id: 'search' | 'memory' | 'dashboard' | 'activity'; label: string; icon: string }> = [
+  const navItems: Array<{ id: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity'; label: string; icon: string }> = [
     { id: 'search', label: 'Conversations', icon: 'message' },
     { id: 'activity', label: 'Activity', icon: 'clock' },
     { id: 'memory', label: 'Memory', icon: 'brain' },
+    { id: 'toolkit', label: 'Toolkit', icon: 'zap' },
     { id: 'dashboard', label: 'Insights', icon: 'chart' },
   ];
 

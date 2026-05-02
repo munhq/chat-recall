@@ -1,6 +1,7 @@
-import React, { useMemo, useState } from 'react';
-import { Icon, ToolBadge, SegmentedControl } from './primitives';
-import type { SessionInfo } from '../services/api';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Icon, ToolBadge, SegmentedControl, Chip } from './primitives';
+import type { SessionInfo, SessionMarkersResponse } from '../services/api';
+import { getSessionMarkers } from '../services/api';
 import { stripInjectedBanners } from '../utils/clean';
 
 interface ConversationListProps {
@@ -168,6 +169,7 @@ function ResultRow({ r, on, onClick }: { r: SessionInfo; on: boolean; onClick: (
         >
           {formatPath(r.projectPath)}
         </span>
+        <SessionMarkerBadge sessionId={r.sessionId} tool={r.tool || 'claude'} />
         <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>{timeStr}</span>
       </div>
 
@@ -280,4 +282,66 @@ function groupByDate(items: SessionInfo[]): Array<{ label: string; items: Sessio
     result.push({ label: key, items: groups[key] });
   }
   return result;
+}
+
+/**
+ * Badge that surfaces sentiment/corrective markers for a session row.
+ *
+ * Lazy-loaded: only fires the /markers fetch when the row scrolls into view
+ * (IntersectionObserver) so a 200-session list doesn't trigger 200 transcript
+ * walks on first render. The fetch is also cached at the row level — we don't
+ * refetch when the row scrolls in/out of view.
+ *
+ * Only Claude sessions get the badge today — markers for Gemini/OpenCode/
+ * Codex would need parallel parser work and aren't a priority.
+ */
+function SessionMarkerBadge({ sessionId, tool }: { sessionId: string; tool: string }) {
+  const ref = useRef<HTMLSpanElement | null>(null);
+  const [data, setData] = useState<SessionMarkersResponse | null>(null);
+  const [seen, setSeen] = useState(false);
+
+  useEffect(() => {
+    if (tool !== 'claude') return;
+    if (!ref.current) return;
+    const el = ref.current;
+    const obs = new IntersectionObserver(entries => {
+      for (const e of entries) {
+        if (e.isIntersecting) {
+          setSeen(true);
+          obs.disconnect();
+        }
+      }
+    }, { rootMargin: '120px' });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [tool]);
+
+  useEffect(() => {
+    if (!seen || data || tool !== 'claude') return;
+    let cancelled = false;
+    getSessionMarkers(sessionId)
+      .then(d => { if (!cancelled) setData(d); })
+      .catch(() => { /* badge silently absent on failure */ });
+    return () => { cancelled = true; };
+  }, [seen, sessionId, tool, data]);
+
+  // Compact two-chip strip: most-severe-first.
+  const summary = data?.summary;
+  const chips: Array<{ kind: Parameters<typeof Chip>[0]['kind']; text: string }> = [];
+  if (summary) {
+    if (summary.frustrated > 0) chips.push({ kind: 'err', text: `⚠ ${summary.frustrated}` });
+    if (summary.interrupt > 0) chips.push({ kind: 'warn', text: `⏸ ${summary.interrupt}` });
+    if (summary.correction > 0) chips.push({ kind: 'warn', text: `↩ ${summary.correction}` });
+    if (chips.length === 0 && summary.approval > 0) {
+      chips.push({ kind: 'ok', text: `✓ ${summary.approval}` });
+    }
+  }
+
+  return (
+    <span ref={ref} style={{ display: 'inline-flex', gap: 4 }}>
+      {chips.slice(0, 2).map((c, i) => (
+        <Chip key={i} kind={c.kind} size="sm">{c.text}</Chip>
+      ))}
+    </span>
+  );
 }

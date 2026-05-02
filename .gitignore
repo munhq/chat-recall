@@ -41,6 +41,13 @@ settings-*.png
 # Codeindex per-server cache
 web/server/.codeindex.json
 
+# Coverage reports
+coverage/
+
+# Backup / patch artifacts
+*.orig
+*.rej
+
 # Misc
 *.tgz
 *.log

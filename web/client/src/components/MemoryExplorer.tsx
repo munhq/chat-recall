@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { Icon, Button, Input, SourceBadge, SegmentedControl, Card, Chip } from './primitives';
+import { Icon, Button, Input, SourceBadge, ToolBadge, SegmentedControl, Card, Chip } from './primitives';
 import type {
   SourceType,
   MemoryMetadataRow,
@@ -21,16 +21,23 @@ import {
   getMemoryItemContent,
 } from '../services/api';
 
+// Sessions live under the Conversations tab — Memory is for non-session memory
+// primitives. Skills / MCPs / Agents are config-y and live under the new
+// Toolkit tab, not here.
 const SOURCE_TABS: Array<{ id: SourceType | 'all'; label: string }> = [
   { id: 'all', label: 'Everything' },
   { id: 'plan', label: 'Plans' },
-  { id: 'session', label: 'Sessions' },
-  { id: 'claude_md', label: 'CLAUDE.md' },
+  // CLAUDE.md / GEMINI.md / AGENTS.md all live in this source type. The label
+  // used to read "CLAUDE.md" but that misrepresented what's indexed.
+  { id: 'claude_md', label: 'Notes' },
   { id: 'task', label: 'Tasks' },
   { id: 'paste', label: 'Pastebin' },
   { id: 'history', label: 'History' },
   { id: 'diary', label: 'Diary' },
 ];
+
+/** Source-types whose rows carry a meaningful per-tool tag (extra.tool). */
+const TOOL_FILTERABLE: ReadonlySet<SourceType | 'all'> = new Set(['plan', 'claude_md', 'task']);
 
 /** Properly pluralize a source-type for the search placeholder. */
 function pluralizeSource(t: SourceType | 'all'): string {
@@ -50,6 +57,23 @@ interface MemoryExplorerProps {
   onSessionClick?: (sessionId: string) => void;
 }
 
+type SessionToolFilter = 'all' | 'claude' | 'gemini' | 'opencode' | 'codex';
+
+/**
+ * Read the per-row tool tag. Defaults to 'claude' for sessions and
+ * notes-style rows that pre-date the multi-tool indexer (their extra_json
+ * has no `tool` field). Returns '' for source types that aren't
+ * tool-tagged at all.
+ */
+function readItemTool(item: { source_type: string; extra_json?: string }): string {
+  if (!TOOL_FILTERABLE.has(item.source_type as any)) return '';
+  try {
+    const t = JSON.parse(item.extra_json || '{}').tool;
+    if (t) return t;
+  } catch { /* fall through */ }
+  return 'claude';
+}
+
 export default function MemoryExplorer({ onSessionClick }: MemoryExplorerProps) {
   const [activeType, setActiveType] = useState<SourceType | 'all'>('plan');
   const [query, setQuery] = useState('');
@@ -59,6 +83,7 @@ export default function MemoryExplorer({ onSessionClick }: MemoryExplorerProps) 
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<MemoryStatus | null>(null);
   const [reindexing, setReindexing] = useState<Set<string>>(new Set());
+  const [sessionTool, setSessionTool] = useState<SessionToolFilter>('all');
 
   useEffect(() => {
     getMemoryStatus().then(setStatus).catch(console.error);
@@ -67,13 +92,23 @@ export default function MemoryExplorer({ onSessionClick }: MemoryExplorerProps) 
   useEffect(() => {
     if (activeType !== 'all' && query === '') {
       setLoading(true);
-      browseMemory(activeType)
+      // Tool-filterable sources span up to 3 AI tools — pull a wider page so
+      // the per-tool filter has enough rows on initial load. Tabs that aren't
+      // tool-filterable (paste/history/diary) keep the small default limit.
+      const limit = TOOL_FILTERABLE.has(activeType) ? 1000 : 50;
+      browseMemory(activeType, limit)
         .then(setItems)
         .finally(() => setLoading(false));
     } else {
       setItems([]);
     }
   }, [activeType, query]);
+
+  // Reset tool filter whenever the source-type tab changes — it doesn't
+  // travel between tabs cleanly (plans-by-claude has no meaning for paste).
+  useEffect(() => {
+    setSessionTool('all');
+  }, [activeType]);
 
   const handleSearch = () => {
     if (!query.trim()) return;
@@ -101,13 +136,43 @@ export default function MemoryExplorer({ onSessionClick }: MemoryExplorerProps) 
       });
   };
 
-  const getTypeCount = (type: string) => {
+  /**
+   * Tool-aware count for a source-type tab. When the user has selected a
+   * specific tool, we want the count to reflect only that tool's rows so
+   * the chip doesn't lie ("Pastebin (727)" while filtered to Gemini = 0).
+   */
+  const getTypeCount = (type: string, tool: SessionToolFilter) => {
     if (!status) return 0;
-    if (type === 'all') return status.totalItems;
-    return status.bySourceType[type]?.items || 0;
+    if (type === 'all') {
+      if (tool === 'all') return status.totalItems;
+      // Sum across all source types for the selected tool.
+      let n = 0;
+      const map = status.bySourceAndTool || {};
+      for (const t of Object.keys(map)) n += map[t][tool] || 0;
+      return n;
+    }
+    if (tool === 'all') return status.bySourceType[type]?.items || 0;
+    return status.bySourceAndTool?.[type]?.[tool] || 0;
   };
 
-  const displayedItems = query
+  /** Tabs visible for the currently-selected tool — hides tabs with 0 rows. */
+  const visibleSourceTabs = useMemo(() => {
+    if (sessionTool === 'all') return SOURCE_TABS;
+    return SOURCE_TABS.filter(t => t.id === 'all' || getTypeCount(t.id, sessionTool) > 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionTool, status]);
+
+  // If the active tab gets hidden by the tool filter, snap back to "Everything".
+  useEffect(() => {
+    if (sessionTool === 'all') return;
+    const stillVisible = visibleSourceTabs.some(t => t.id === activeType);
+    if (!stillVisible) {
+      setActiveType('all');
+      setSelectedId(null);
+    }
+  }, [sessionTool, visibleSourceTabs, activeType]);
+
+  const rawDisplayedItems: MemoryMetadataRow[] = query
     ? searchResults.map((r) => ({
         id: r.itemId,
         source_type: r.sourceType,
@@ -120,6 +185,23 @@ export default function MemoryExplorer({ onSessionClick }: MemoryExplorerProps) 
         extra_json: '{}',
       }))
     : items;
+
+  const isToolFilterable = TOOL_FILTERABLE.has(activeType);
+  const displayedItems =
+    isToolFilterable && sessionTool !== 'all'
+      ? rawDisplayedItems.filter(it => readItemTool(it) === sessionTool)
+      : rawDisplayedItems;
+
+  // Per-tool counts in the currently-loaded set, for the filter chip badges.
+  const sessionToolCounts = useMemo(() => {
+    if (!isToolFilterable) return { claude: 0, gemini: 0, opencode: 0, codex: 0 };
+    const c = { claude: 0, gemini: 0, opencode: 0, codex: 0 } as Record<string, number>;
+    for (const it of rawDisplayedItems) {
+      const t = readItemTool(it);
+      if (t in c) c[t]++;
+    }
+    return c as { claude: number; gemini: number; opencode: number; codex: number };
+  }, [isToolFilterable, rawDisplayedItems]);
 
   const selectedItem = displayedItems.find((i) => i.id === selectedId);
 
@@ -162,7 +244,57 @@ export default function MemoryExplorer({ onSessionClick }: MemoryExplorerProps) 
         </div>
       </div>
 
-      {/* Tabs */}
+      {/* Primary axis: pick a tool. Tool-first navigation hides source tabs
+          that have no rows for the selected tool. */}
+      <div
+        data-testid="memory-tool-filter"
+        style={{
+          padding: '10px 32px',
+          borderBottom: '1px solid var(--cr-line-1)',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          flexWrap: 'wrap',
+        }}
+      >
+        <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>Tool</span>
+        {(['all', 'claude', 'gemini', 'opencode', 'codex'] as SessionToolFilter[]).map(t => {
+          const on = sessionTool === t;
+          const label = t === 'all' ? 'All'
+            : t === 'claude' ? 'Claude'
+            : t === 'gemini' ? 'Gemini'
+            : t === 'opencode' ? 'OpenCode'
+            : 'Codex';
+          return (
+            <button
+              key={t}
+              onClick={() => { setSessionTool(t); setSelectedId(null); }}
+              style={{
+                height: 28,
+                padding: '0 12px',
+                background: on ? 'var(--cr-ink-3)' : 'var(--cr-ink-2)',
+                border: `1px solid ${on ? 'var(--cr-line-2)' : 'var(--cr-line-1)'}`,
+                borderRadius: 'var(--cr-radius-sm)',
+                color: on ? 'var(--cr-fg-1)' : 'var(--cr-fg-2)',
+                fontFamily: 'inherit',
+                fontSize: 12,
+                fontWeight: on ? 500 : 400,
+                cursor: 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                transition: 'background var(--cr-dur-fast), color var(--cr-dur-fast)',
+              }}
+            >
+              {t !== 'all' && <ToolBadge tool={t} size="sm" />}
+              {t === 'all' && <span>{label}</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Secondary axis: source-type tabs. Hidden tabs have 0 rows for the
+          selected tool — that's the "tool-first" rule. "Everything" stays. */}
       <div
         style={{
           padding: '12px 32px',
@@ -180,9 +312,9 @@ export default function MemoryExplorer({ onSessionClick }: MemoryExplorerProps) 
             setSearchResults([]);
             setSelectedId(null);
           }}
-          options={SOURCE_TABS.map((t) => ({
+          options={visibleSourceTabs.map((t) => ({
             value: t.id,
-            label: `${t.label} (${getTypeCount(t.id)})`,
+            label: `${t.label} (${getTypeCount(t.id, sessionTool)})`,
           }))}
         />
 
@@ -232,6 +364,10 @@ export default function MemoryExplorer({ onSessionClick }: MemoryExplorerProps) 
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
                   <SourceBadge source={item.source_type as any} />
+                  {(() => {
+                    const tool = readItemTool(item);
+                    return tool ? <ToolBadge tool={tool} size="sm" /> : null;
+                  })()}
                   <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>
                     {new Date(item.mtime).toLocaleDateString()}
                   </span>

@@ -1,14 +1,21 @@
 /**
  * Plan memory source.
  *
- * Parses ~/.claude/plans/*.md files. Each plan is split by ## headers
- * into chunks for granular search. Agent plans (with -agent-<hash> suffix)
- * are linked back to their parent session.
+ * Parses plans from two AI tools:
+ *   - Claude Code: ~/.claude/plans/*.md  (flat, +discoverSubdirs)
+ *   - Gemini CLI:  ~/.gemini/tmp/<sha256>/<uuid>/plans/*.md
+ *
+ * Each plan is split by ## headers into chunks for granular search. Claude
+ * agent plans (with -agent-<hash> suffix) are linked back to their parent.
+ *
+ * OpenCode doesn't store plans on disk — its todos live in a SQLite table
+ * and are picked up by OpenCodeTodoSource as `task` items.
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join, basename } from 'path';
+import { createHash } from 'crypto';
 
 import type {
   MemorySource,
@@ -57,26 +64,70 @@ export class PlanSource implements MemorySource {
   }
 
   async *discover(): AsyncGenerator<MemoryItem> {
-    const seen = new Set<string>();
+    // 1) Claude plans (~/.claude/plans/*.md and any ~/.claude-*/plans/)
+    const seenClaude = new Set<string>();
     for (const plansDir of this.plansDirs) {
       if (!existsSync(plansDir)) continue;
 
       const files = readdirSync(plansDir).filter(f => f.endsWith('.md'));
 
       for (const file of files) {
-        if (seen.has(file)) continue;
-        seen.add(file);
+        if (seenClaude.has(file)) continue;
+        seenClaude.add(file);
         const filePath = join(plansDir, file);
+        try {
+          const stat = statSync(filePath);
+          const planName = basename(file, '.md');
+          const isAgentPlan = planName.includes('-agent-');
+
+          const content = readFileSync(filePath, 'utf-8');
+          const firstLine = content.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim() || planName;
+          const projectPath = this.extractProjectPath(content);
+
+          yield {
+            id: planName,
+            sourceType: 'plan',
+            title: firstLine.slice(0, 150),
+            projectPath,
+            filePath,
+            mtime: stat.mtimeMs,
+            contentPreview: content.slice(0, 300),
+            extra: {
+              tool: 'claude',
+              isAgentPlan,
+              fileSize: stat.size,
+            },
+          };
+        } catch {
+          continue;
+        }
+      }
+    }
+
+    // 2) Gemini plans — ~/.gemini/tmp/<sha256>/<uuid>/plans/*.md
+    yield* this.discoverGeminiPlans();
+
+    // 3) OpenCode plans — ~/.local/share/opencode/plans/*.md
+    yield* this.discoverOpenCodePlans();
+  }
+
+  private async *discoverOpenCodePlans(): AsyncGenerator<MemoryItem> {
+    const plansDir = join(homedir(), '.local', 'share', 'opencode', 'plans');
+    if (!existsSync(plansDir)) return;
+
+    let files: string[];
+    try { files = readdirSync(plansDir).filter(f => f.endsWith('.md')); } catch { return; }
+
+    for (const file of files) {
+      const filePath = join(plansDir, file);
       try {
         const stat = statSync(filePath);
-        const planName = basename(file, '.md');
-        const isAgentPlan = planName.includes('-agent-');
-
-        // Read content for title and project path extraction
         const content = readFileSync(filePath, 'utf-8');
-        const firstLine = content.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim() || planName;
+        const firstLine = content.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim() || file;
+        const planName = `opencode_plan_${basename(file, '.md')}`;
 
-        // Extract project path from content
+        // OpenCode plans don't carry per-project metadata in the file itself;
+        // we leave projectPath empty and let the existing extractor try.
         const projectPath = this.extractProjectPath(content);
 
         yield {
@@ -88,14 +139,71 @@ export class PlanSource implements MemorySource {
           mtime: stat.mtimeMs,
           contentPreview: content.slice(0, 300),
           extra: {
-            isAgentPlan,
+            tool: 'opencode',
             fileSize: stat.size,
           },
         };
-      } catch {
-        continue;
-      }
+      } catch { /* skip */ }
     }
+  }
+
+  /** Walk Gemini's per-session plan directories and yield each .md file. */
+  private async *discoverGeminiPlans(): AsyncGenerator<MemoryItem> {
+    const tmpRoot = join(homedir(), '.gemini', 'tmp');
+    if (!existsSync(tmpRoot)) return;
+
+    // Resolve project hashes back to paths the same way GeminiSessionSource does.
+    const projMap = new Map<string, string>();
+    const projectsPath = join(homedir(), '.gemini', 'projects.json');
+    if (existsSync(projectsPath)) {
+      try {
+        const data = JSON.parse(readFileSync(projectsPath, 'utf-8'));
+        for (const path of Object.keys(data.projects || {})) {
+          projMap.set(createHash('sha256').update(path).digest('hex'), path);
+        }
+      } catch { /* tolerate */ }
+    }
+
+    let projDirs: string[];
+    try { projDirs = readdirSync(tmpRoot); } catch { return; }
+
+    for (const projDir of projDirs) {
+      const projPath = projMap.get(projDir) || '';
+      const projRoot = join(tmpRoot, projDir);
+      let sessions: string[];
+      try { sessions = readdirSync(projRoot); } catch { continue; }
+
+      for (const sess of sessions) {
+        const plansDir = join(projRoot, sess, 'plans');
+        if (!existsSync(plansDir)) continue;
+        let files: string[];
+        try { files = readdirSync(plansDir).filter(f => f.endsWith('.md')); } catch { continue; }
+
+        for (const file of files) {
+          const filePath = join(plansDir, file);
+          try {
+            const stat = statSync(filePath);
+            const content = readFileSync(filePath, 'utf-8');
+            const firstLine = content.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim() || file;
+            const planName = `gemini_plan_${sess}_${basename(file, '.md')}`;
+
+            yield {
+              id: planName,
+              sourceType: 'plan',
+              title: firstLine.slice(0, 150),
+              projectPath: projPath,
+              filePath,
+              mtime: stat.mtimeMs,
+              contentPreview: content.slice(0, 300),
+              extra: {
+                tool: 'gemini',
+                geminiSessionId: sess,
+                fileSize: stat.size,
+              },
+            };
+          } catch { /* skip */ }
+        }
+      }
     }
   }
 

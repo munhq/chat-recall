@@ -16,6 +16,9 @@ import type { SourceType } from '../imports.js';
 const router = express.Router();
 const memoryService = new MemoryService();
 
+// Memory route only validates the "what was said / what happened" set.
+// Toolkit primitives (skill, mcp, command, agent, hook, plugin) are
+// validated separately by /api/toolkit. The underlying store is shared.
 const VALID_SOURCE_TYPES = ['session', 'plan', 'task', 'claude_md', 'paste', 'history', 'diary'];
 
 function validateSourceType(sourceType: string): sourceType is SourceType {
