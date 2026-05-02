@@ -40,8 +40,51 @@ export {
   liveScanModifiedFiles,
   liveScanRecentEdits,
   liveScanSessionEdits,
+  findCodexSessionFile,
   type SessionEdit,
 } from '../../../src/core/live-session-scan.js';
+export {
+  extractTurnsAny,
+  replaySessionAny,
+  getSessionCommitsAny,
+  computeOutcomeAny,
+} from '../../../src/core/session-multi-tool.js';
+
+// Session replay / git / sentiment / outcome (per-session deep-dive)
+export {
+  replaySession,
+  findRepoRoot,
+  type SessionDiffResult,
+  type FileReplayResult,
+  type FileEditEvent,
+} from '../../../src/core/session-replay.js';
+export {
+  getSessionCommits,
+  groupFilesByRepo,
+  type SessionCommit,
+  type SessionCommitsResult,
+} from '../../../src/core/session-git.js';
+export {
+  markPrompt,
+  summarizeMarkers,
+  type PromptMarker,
+  type MarkedPrompt,
+  type SessionMarkerCounts,
+} from '../../../src/core/session-sentiment.js';
+export {
+  extractTurns,
+  type SessionTurn,
+  type TurnKind,
+  type ExtractedTurns,
+} from '../../../src/core/session-turns.js';
+export {
+  computeOutcome,
+  type SessionOutcome,
+  type SessionStatus,
+  type SessionDecision,
+  type SessionBlocker,
+  type ClaimReactionPair,
+} from '../../../src/core/session-outcome.js';
 export { SessionSource } from '../../../src/parsers/session-source.js';
 export { PlanSource } from '../../../src/parsers/plan-source.js';
 export { TaskSource } from '../../../src/parsers/task-source.js';
@@ -53,6 +96,12 @@ export { GeminiBrainSource } from '../../../src/parsers/gemini-brain-source.js';
 export { OpenCodeSource } from '../../../src/parsers/opencode-source.js';
 export { OpenCodeTodoSource } from '../../../src/parsers/opencode-todo-source.js';
 export { DiarySource } from '../../../src/parsers/diary-source.js';
+export { SkillsSource } from '../../../src/parsers/skills-source.js';
+export { McpsSource } from '../../../src/parsers/mcps-source.js';
+export { SlashCommandsSource } from '../../../src/parsers/slash-commands-source.js';
+export { SubagentsSource } from '../../../src/parsers/subagents-source.js';
+export { HooksSource } from '../../../src/parsers/hooks-source.js';
+export { PluginsSource } from '../../../src/parsers/plugins-source.js';
 
 // Companions (codeindex)
 export {
@@ -82,3 +131,4 @@ export type {
   MemoryMetadataRow,
   MemoryLinkRow,
 } from '../../../src/types/memory.js';
+export { CodexSessionSource } from '../../../src/parsers/codex-session-source.js';

@@ -73,10 +73,15 @@ function estimateCost(meta: Record<string, any>): number | null {
 }
 
 // GET /api/analytics
-router.get('/', async (_req, res) => {
+router.get('/', async (req, res) => {
   try {
+    const toolFilter = (req.query.tool as string | undefined)?.trim().toLowerCase();
+    const validTools = new Set(['claude', 'gemini', 'opencode', 'codex']);
+    const activeToolFilter = toolFilter && validTools.has(toolFilter) ? toolFilter : null;
+
+    // Cache key includes the tool filter so we don't return the wrong slice.
     const now = Date.now();
-    if (analyticsCache && (now - analyticsCacheTime) < CACHE_TTL_MS) {
+    if (!activeToolFilter && analyticsCache && (now - analyticsCacheTime) < CACHE_TTL_MS) {
       return res.json(analyticsCache);
     }
 
@@ -164,21 +169,28 @@ router.get('/', async (_req, res) => {
     // Context utilization distribution (% of context window used)
     const contextUtilBuckets = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; // 0-10%, 10-20%, ..., 90-100%
 
-    // Iterate ALL session items from MemoryStore (Claude + Gemini + OpenCode)
+    // Iterate ALL session items from MemoryStore (Claude + Gemini + OpenCode + Codex)
     const allItems = store.listItems('session' as SourceType, 10000, 0);
     // Also get Claude sessions from filesystem for those not yet in the store
     const storeIds = new Set(allItems.map(i => i.id));
     const claudeOnlyEntries: Array<{ sessionId: string; filePath: string; projectPath: string; created: string; modified: string; fileMtime: number }> = [];
-    for (const [entry, filePath] of getAllSessions()) {
-      if (!storeIds.has(entry.sessionId)) {
-        claudeOnlyEntries.push({ sessionId: entry.sessionId, filePath, projectPath: entry.projectPath, created: entry.created, modified: entry.modified, fileMtime: entry.fileMtime });
+    // When tool filter is active and not 'claude', skip the filesystem-only Claude
+    // path entirely — those sessions are by definition Claude-only.
+    if (!activeToolFilter || activeToolFilter === 'claude') {
+      for (const [entry, filePath] of getAllSessions()) {
+        if (!storeIds.has(entry.sessionId)) {
+          claudeOnlyEntries.push({ sessionId: entry.sessionId, filePath, projectPath: entry.projectPath, created: entry.created, modified: entry.modified, fileMtime: entry.fileMtime });
+        }
       }
     }
 
-    // Process store items (all tools)
+    // Process store items (all tools, optionally filtered by tool)
     for (const storeItem of allItems) {
-      totalSessions++;
       const extra = JSON.parse(storeItem.extra_json || '{}');
+      // Apply tool filter before any aggregation so totals only count matching rows.
+      const itemTool = (extra.tool as string) || 'claude';
+      if (activeToolFilter && itemTool !== activeToolFilter) continue;
+      totalSessions++;
       // For non-Claude tools, accept extra even without inputTokens
       const hasMeta = extra.inputTokens !== undefined || extra.tool;
       let meta: Record<string, any> | null = hasMeta ? extra : null;
@@ -638,8 +650,12 @@ router.get('/', async (_req, res) => {
       })(),
     };
 
-    analyticsCache = result;
-    analyticsCacheTime = now;
+    // Only cache the unfiltered (whole-fleet) result. Per-tool slices are
+    // recomputed on demand — they're small relative to the unfiltered run.
+    if (!activeToolFilter) {
+      analyticsCache = result;
+      analyticsCacheTime = now;
+    }
     res.json(result);
   } catch (error) {
     console.error('Analytics error:', error);

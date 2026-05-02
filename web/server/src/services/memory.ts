@@ -6,6 +6,8 @@ import {
   MemoryIndex, MemoryStore, OllamaEmbedder, SourceRegistry,
   SessionSource, PlanSource, TaskSource, ClaudeMdSource, HistorySource, PasteSource,
   GeminiSessionSource, GeminiBrainSource, OpenCodeSource, OpenCodeTodoSource, DiarySource,
+  SkillsSource, McpsSource, SlashCommandsSource, SubagentsSource, HooksSource, PluginsSource,
+  CodexSessionSource,
 } from '../imports.js';
 import type { SourceType, MemorySearchResult, MemoryMetadataRow, MemoryLinkRow } from '../imports.js';
 
@@ -32,7 +34,14 @@ export class MemoryService {
     this.registry.register(new GeminiBrainSource());
     this.registry.register(new OpenCodeSource());
     this.registry.register(new OpenCodeTodoSource());
+    this.registry.register(new CodexSessionSource());
     this.registry.register(new DiarySource());
+    this.registry.register(new SkillsSource());
+    this.registry.register(new McpsSource());
+    this.registry.register(new SlashCommandsSource());
+    this.registry.register(new SubagentsSource());
+    this.registry.register(new HooksSource());
+    this.registry.register(new PluginsSource());
   }
 
   async search(
@@ -55,11 +64,39 @@ export class MemoryService {
     const storeStats = this.store.getStats();
     const linkCount = this.store.getLinkCount();
 
+    // Per-(sourceType, tool) breakdown so the UI can hide tabs that have no
+    // rows for the selected tool — the "tool-first" navigation rule.
+    const bySourceAndTool = this.computeBySourceAndTool();
+
     return {
       ...indexStats,
       storeStats,
       linkCount,
+      bySourceAndTool,
     };
+  }
+
+  /**
+   * Counts grouped by (source_type, tool). Falls back to 'claude' for rows
+   * with no extra.tool field — that's the historical default.
+   */
+  private computeBySourceAndTool(): Record<string, Record<string, number>> {
+    const out: Record<string, Record<string, number>> = {};
+    const allTypes: SourceType[] = [
+      'session', 'plan', 'task', 'claude_md', 'paste', 'history', 'diary',
+      'skill', 'mcp', 'command', 'agent', 'hook', 'plugin',
+    ];
+    for (const t of allTypes) {
+      const items = this.store.listItems(t, 50000, 0);
+      const m: Record<string, number> = {};
+      for (const it of items) {
+        let tool = 'claude';
+        try { tool = JSON.parse(it.extra_json || '{}').tool || 'claude'; } catch {}
+        m[tool] = (m[tool] || 0) + 1;
+      }
+      if (items.length > 0) out[t] = m;
+    }
+    return out;
   }
 
   getItem(id: string, sourceType: SourceType): MemoryMetadataRow | null {

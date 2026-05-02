@@ -40,6 +40,9 @@
     "web:dev": "concurrently \"npm run web:server:dev\" \"npm run web:client:dev\"",
     "web:build": "npm run web:server:build && npm run web:client:build",
     "web:install": "cd web/server && npm install && cd ../client && npm install",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:cov": "vitest run --coverage",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:report": "playwright show-report",
@@ -71,15 +74,21 @@
     "chalk": "^5.3.0",
     "chokidar": "^3.5.3",
     "commander": "^12.0.0",
+    "diff": "^9.0.0",
     "dotenv": "^17.2.3",
     "zod": "^3.22.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
     "@types/better-sqlite3": "^7.6.13",
+    "@types/diff": "^7.0.2",
     "@types/node": "^20.0.0",
+    "@types/supertest": "^7.2.0",
+    "@vitest/coverage-v8": "^3.2.4",
     "concurrently": "^8.2.2",
+    "supertest": "^7.2.2",
     "tsx": "^4.7.0",
-    "typescript": "^5.3.0"
+    "typescript": "^5.3.0",
+    "vitest": "^3.2.4"
   }
 }

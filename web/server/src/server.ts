@@ -13,6 +13,7 @@ import memoryRouter from './routes/memory.js';
 import analyticsRouter from './routes/analytics.js';
 import settingsRouter from './routes/settings.js';
 import editsRouter from './routes/edits.js';
+import toolkitRouter from './routes/toolkit.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '5000', 10);
@@ -37,6 +38,7 @@ app.use('/api/memory', memoryRouter);
 app.use('/api/analytics', analyticsRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/edits', editsRouter);
+app.use('/api/toolkit', toolkitRouter);
 
 // Health check
 app.get('/health', (req, res) => {

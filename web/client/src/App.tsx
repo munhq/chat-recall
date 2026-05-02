@@ -8,6 +8,7 @@ import Sidebar from './components/Sidebar';
 import ConversationList from './components/ConversationList';
 import ConversationViewer from './components/ConversationViewer';
 import MemoryExplorer from './components/MemoryExplorer';
+import ToolkitExplorer from './components/ToolkitExplorer';
 import Dashboard from './components/Dashboard';
 import ActivityTimeline from './components/ActivityTimeline';
 import SettingsPage from './components/SettingsPage';
@@ -21,7 +22,7 @@ import {
   type Subagent,
 } from './services/api';
 
-type ViewMode = 'search' | 'memory' | 'dashboard' | 'activity' | 'settings';
+type ViewMode = 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'settings';
 
 /**
  * Recursive tree node used by the project sidebar. One node renders as
@@ -343,6 +344,11 @@ export default function App() {
           <MemoryExplorer
             onSessionClick={handleMemorySessionClick}
           />
+        </div>
+      )}
+      {view === 'toolkit' && (
+        <div className="app-row">
+          <ToolkitExplorer />
         </div>
       )}
       {view === 'dashboard' && (

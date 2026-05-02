@@ -2,7 +2,7 @@
  * Session listing service.
  */
 
-import { getAllSessions, parseSessionFile, MetadataCache, MemoryStore } from '../imports.js';
+import { getAllSessions, parseSessionFile, MetadataCache, MemoryStore, findCodexSessionFile } from '../imports.js';
 import type { SessionEntry, SessionMetadata, MemoryMetadataRow, MemoryLinkRow, SourceType } from '../imports.js';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -75,6 +75,85 @@ export async function getRecentSessions(limit = 20): Promise<SessionInfo[]> {
   }
 
   cache.close();
+
+  // 1b. Codex sessions from filesystem
+  try {
+    const { existsSync, readdirSync, statSync, readFileSync } = await import('fs');
+    const { join } = await import('path');
+    const codexSessionsDir = join(homedir(), '.codex', 'sessions');
+    if (existsSync(codexSessionsDir)) {
+      const seenIds = new Set(sessions.map(s => s.sessionId));
+      const years = readdirSync(codexSessionsDir);
+      for (const year of years) {
+        const yearDir = join(codexSessionsDir, year);
+        const months = readdirSync(yearDir);
+        for (const month of months) {
+          const monthDir = join(yearDir, month);
+          const days = readdirSync(monthDir);
+          for (const day of days) {
+            const dayDir = join(monthDir, day);
+            const files = readdirSync(dayDir);
+            for (const file of files) {
+              if (!file.endsWith('.jsonl') || !file.startsWith('rollout-')) continue;
+              const filePath = join(dayDir, file);
+              const st = statSync(filePath);
+              const mtime = st.mtimeMs;
+              const sessionId = `codex_${file.replace(/^rollout-/, '').replace(/\.jsonl$/, '')}`;
+              if (seenIds.has(sessionId)) continue;
+
+              let firstPrompt = '';
+              let projectPath = '';
+              let isSubagent = false;
+              let hasSessionMeta = false;
+              try {
+                const lines = readFileSync(filePath, 'utf-8').split('\n');
+                for (const line of lines) {
+                  if (!line.trim()) continue;
+                  try {
+                    const obj = JSON.parse(line);
+                    if (obj.type === 'session_meta' && obj.payload) {
+                      hasSessionMeta = true;
+                      projectPath = obj.payload.cwd || '';
+                      // Codex spawns one rollout file per sub-agent dispatch.
+                      // The sub-agent's session_meta carries thread_spawn /
+                      // agent_role — the user-facing parent does not. Skip
+                      // sub-agents so a single conversation doesn't surface
+                      // as N top-level sessions.
+                      if (obj.payload.source?.subagent?.thread_spawn ||
+                          obj.payload.agent_role ||
+                          obj.payload.agent_nickname) {
+                        isSubagent = true;
+                      }
+                    }
+                    if (obj.type === 'event_msg' && obj.payload?.type === 'user_message') {
+                      if (!firstPrompt) firstPrompt = obj.payload.message || '';
+                    }
+                  } catch {}
+                }
+              } catch {}
+              // Pre-1.0 Codex rollout files have no session_meta event and
+              // no user_message — they're not loadable as conversations,
+              // so don't surface them in the UI list.
+              if (isSubagent) continue;
+              if (!hasSessionMeta && !firstPrompt) continue;
+
+              sessions.push({
+                sessionId,
+                projectPath,
+                created: new Date(mtime).toISOString(),
+                modified: new Date(mtime).toISOString(),
+                fileMtime: mtime,
+                filePath,
+                firstPrompt: cleanBanner(firstPrompt)?.slice(0, 200) ?? '',
+                summary: undefined,
+                tool: 'codex',
+              });
+            }
+          }
+        }
+      }
+    }
+  } catch {}
 
   // 2. Gemini and OpenCode sessions from MemoryStore (indexed items).
   //    Summaries are looked up in MetadataCache keyed by the item id
@@ -316,8 +395,98 @@ export async function getSessionMetadata(sessionId: string): Promise<SessionMeta
     const content = await parseSessionFile(sessionPath);
     return computeMetadataResponse(content.metadata);
   } catch {
-    return null;
+    // Continue to per-tool fallbacks below.
   }
+
+  // Codex fallback — metadata isn't tracked anywhere yet, so synthesize a
+  // minimal response from the rollout file's session_meta + a quick scan
+  // of the events. Pricing is unknown for Codex (varies by provider) so
+  // estimatedCostUsd stays null and the UI renders "—".
+  if (sessionId.startsWith('codex_')) {
+    return await getCodexSessionMetadata(sessionId);
+  }
+
+  return null;
+}
+
+async function getCodexSessionMetadata(sessionId: string): Promise<SessionMetadataResponse | null> {
+  const located = findCodexSessionFile(sessionId.replace(/^codex_/, ''));
+  if (!located) return null;
+
+  const { readFileSync, statSync } = await import('fs');
+  let raw: string;
+  try { raw = readFileSync(located.path, 'utf-8'); } catch { return null; }
+
+  const lines = raw.split('\n');
+  const toolsUsed = new Set<string>();
+  const filesModified = new Set<string>();
+  const modelsUsed = new Set<string>();
+  let messageCount = 0;
+  let firstTs = 0;
+  let lastTs = 0;
+  let slug = '';
+  let gitBranch = '';
+
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let obj: any;
+    try { obj = JSON.parse(line); } catch { continue; }
+
+    const tsIso = obj.timestamp;
+    if (typeof tsIso === 'string') {
+      const t = Date.parse(tsIso);
+      if (!Number.isNaN(t)) {
+        if (!firstTs || t < firstTs) firstTs = t;
+        if (t > lastTs) lastTs = t;
+      }
+    }
+
+    if (obj.type === 'session_meta' && obj.payload) {
+      gitBranch = obj.payload.git?.branch || '';
+    }
+    if (obj.type === 'event_msg' && obj.payload?.type === 'user_message') {
+      messageCount++;
+      if (!slug) slug = String(obj.payload.message || '').slice(0, 100);
+    }
+    if (obj.type === 'response_item' && obj.payload?.type === 'message' && obj.payload.role === 'assistant') {
+      messageCount++;
+    }
+    if (obj.type === 'response_item' && obj.payload?.type === 'function_call') {
+      const name = obj.payload.name;
+      if (name) toolsUsed.add(name);
+      // Best-effort: pull a file path from common arg shapes.
+      let args: any = obj.payload.arguments;
+      if (typeof args === 'string') {
+        try { args = JSON.parse(args); } catch { args = null; }
+      }
+      const file = args?.file_path || args?.path || args?.target_file || args?.file;
+      if (typeof file === 'string' && file.trim()) filesModified.add(file);
+    }
+  }
+
+  let mtime = 0;
+  try { mtime = statSync(located.path).mtimeMs; } catch { /* ignore */ }
+  const durationMs = firstTs && lastTs ? lastTs - firstTs : 0;
+
+  return computeMetadataResponse({
+    tool: 'codex',
+    _contentPreview: slug,
+    _title: slug,
+    toolsUsed: [...toolsUsed],
+    gitBranch,
+    slug,
+    durationMs,
+    lastStopReason: '',
+    filesModified: [...filesModified],
+    modelsUsed: [...modelsUsed],
+    messageCount,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    peakContextTokens: 0,
+    _mtime: mtime,
+  });
 }
 
 function computeMetadataResponse(meta: Record<string, any>): SessionMetadataResponse {

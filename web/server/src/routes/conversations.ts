@@ -4,13 +4,59 @@
 
 import express from 'express';
 import { getRecentSessions, getSessionPath, getRelatedItems, getSessionMetadata } from '../services/sessions.js';
-import { getConversation, getGeminiConversation, getOpenCodeConversation, getSubagents } from '../services/parser.js';
+import { getConversation, getGeminiConversation, getOpenCodeConversation, getCodexConversation, getCodexSubagents, getSubagents } from '../services/parser.js';
 import type { Subagent } from '../services/parser.js';
-import { MemoryStore, liveScanModifiedFiles } from '../imports.js';
+import {
+  MemoryStore,
+  liveScanModifiedFiles,
+  replaySession,
+  getSessionCommits,
+  computeOutcome,
+  extractTurns,
+  markPrompt,
+  summarizeMarkers,
+  findCodexSessionFile,
+  extractTurnsAny,
+  replaySessionAny,
+  getSessionCommitsAny,
+  computeOutcomeAny,
+} from '../imports.js';
 import type { SourceType } from '../imports.js';
 import { matchesPrefix } from '../utils/paths.js';
 
 const router = express.Router();
+
+/**
+ * The per-session features below — diff replay, git commits, outcome,
+ * turns, markers — read Claude's tool_use shape directly from JSONL.
+ * Codex (apply_patch shell calls), Gemini (different tool format), and
+ * OpenCode (SQLite + tool parts) need their own implementations and
+ * aren't wired up yet, so for now we short-circuit to a graceful empty
+ * payload instead of 404. The UI's tab panels render an empty state
+ * naturally; the network tab stays clean.
+ */
+function isNonClaude(id: string): boolean {
+  return id.startsWith('codex_') || id.startsWith('gemini_') || id.startsWith('opencode_');
+}
+
+function emptyDiff(id: string) {
+  return { sessionId: id, projectPath: '', files: [], totalLinesAdded: 0, totalLinesRemoved: 0 };
+}
+
+function emptyOutcome(id: string) {
+  return {
+    sessionId: id,
+    found: true,
+    status: 'unknown',
+    reason: 'outcome analysis not yet implemented for this AI tool',
+    startMs: 0, endMs: 0,
+    decisions: [], blockers: [], claimReaction: {},
+    prompts: [],
+    promptMarkers: { total: 0, interrupt: 0, frustrated: 0, correction: 0, approval: 0, question: 0, directive: 0, clarification_request: 0, peakIntensity: 0 },
+    commits: { sessionId: id, startMs: 0, endMs: 0, repos: [], totalCommits: 0 },
+    fileCount: 0, filesChanged: [], totalLinesAdded: 0, totalLinesRemoved: 0,
+  };
+}
 
 // GET /api/conversations/recent
 router.get('/recent', async (req, res) => {
@@ -76,6 +122,7 @@ router.get('/:id/files-live', async (req, res) => {
 
     res.json({
       sessionId: id,
+      tool: live.tool,
       projectPath: live.projectPath,
       files: live.files,
       reads: live.reads,
@@ -86,6 +133,7 @@ router.get('/:id/files-live', async (req, res) => {
         file: e.file,
         op: e.op,
         toolName: e.toolName,
+        tool: e.tool,
         line: e.line,
       })),
       source: 'live',
@@ -95,6 +143,121 @@ router.get('/:id/files-live', async (req, res) => {
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to live-scan session',
     });
+  }
+});
+
+// GET /api/conversations/:id/diff
+// Per-file cumulative diff replayed from Edit/Write/MultiEdit/NotebookEdit
+// tool calls. Optional ?file=<absolute path> narrows to one file.
+router.get('/:id/diff', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const fileFilter = (req.query.file as string | undefined)?.trim() || undefined;
+    const result = isNonClaude(id) ? replaySessionAny(id) : replaySession(id);
+    if (!result.found) return res.status(404).json({ error: 'Session not found' });
+    const files = fileFilter ? result.files.filter(f => f.file === fileFilter) : result.files;
+    res.json({
+      sessionId: id,
+      projectPath: result.projectPath,
+      totalLinesAdded: result.totalLinesAdded,
+      totalLinesRemoved: result.totalLinesRemoved,
+      files: files.map(f => ({
+        file: f.file,
+        diff: f.diff,
+        linesAdded: f.linesAdded,
+        linesRemoved: f.linesRemoved,
+        reverted: f.reverted,
+        succeededEvents: f.succeededEvents,
+        failedEvents: f.failedEvents,
+        initialKnown: f.initialKnown,
+        events: f.events.map(e => ({
+          ts: e.ts,
+          tsIso: e.tsIso,
+          line: e.line,
+          toolName: e.toolName,
+          toolUseId: e.toolUseId,
+          succeeded: e.succeeded,
+          toolError: e.toolError,
+          applyError: e.applyError,
+          editsCount: e.edits?.length,
+          writeBytes: e.content?.length,
+        })),
+      })),
+    });
+  } catch (error) {
+    console.error('Diff error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to compute diff' });
+  }
+});
+
+// GET /api/conversations/:id/commits
+// Git commits (across all detected repos) that landed during the session window.
+router.get('/:id/commits', async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (isNonClaude(id)) {
+      return res.json(getSessionCommitsAny(id));
+    }
+    const replay = replaySession(id);
+    if (!replay.found) return res.status(404).json({ error: 'Session not found' });
+    const turns = extractTurns(id, { maxTurns: 50_000 });
+    const result = getSessionCommits(
+      id,
+      replay.files.map(f => f.file),
+      turns.startMs || Date.now() - 86400_000,
+      turns.endMs || Date.now(),
+    );
+    res.json(result);
+  } catch (error) {
+    console.error('Commits error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to compute commits' });
+  }
+});
+
+// GET /api/conversations/:id/outcome
+// Structured outcome: status, decisions, blockers, claim/reaction, markers.
+router.get('/:id/outcome', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const out = isNonClaude(id) ? computeOutcomeAny(id) : computeOutcome(id);
+    if (!out.found) return res.status(404).json({ error: 'Session not found' });
+    res.json(out);
+  } catch (error) {
+    console.error('Outcome error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to compute outcome' });
+  }
+});
+
+// GET /api/conversations/:id/turns
+// Interleaved user/assistant/tool turns with bash command + tool-result snippets.
+router.get('/:id/turns', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit as string) || 5000, 50_000));
+    const result = extractTurnsAny(id, { maxTurns: limit });
+    if (!result.found) return res.status(404).json({ error: 'Session not found' });
+    res.json(result);
+  } catch (error) {
+    console.error('Turns error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to extract turns' });
+  }
+});
+
+// GET /api/conversations/:id/markers
+// Just the marked prompts + counts. Cheaper than /outcome when the UI only
+// needs the badge counts without the diff/commit work.
+router.get('/:id/markers', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const turns = extractTurnsAny(id, { maxTurns: 50_000 });
+    if (!turns.found) return res.status(404).json({ error: 'Session not found' });
+    const prompts = turns.turns
+      .filter(t => t.kind === 'user' && t.text)
+      .map(t => ({ line: t.line, ts: t.ts, tsIso: t.tsIso, ...markPrompt(t.text!) }));
+    res.json({ sessionId: id, prompts, summary: summarizeMarkers(prompts) });
+  } catch (error) {
+    console.error('Markers error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to mark prompts' });
   }
 });
 
@@ -147,6 +310,15 @@ router.get('/:id', async (req, res) => {
         tool = extra.tool || 'claude';
         filePath = item.file_path;
         mtime = item.mtime;
+      } else if (id.startsWith('codex_')) {
+        // Codex sessions surfaced from a live filesystem scan aren't always
+        // in memory_metadata yet — locate the rollout file on disk so we
+        // can still render the conversation.
+        tool = 'codex';
+      } else if (id.startsWith('gemini_')) {
+        tool = 'gemini';
+      } else if (id.startsWith('opencode_')) {
+        tool = 'opencode';
       }
 
       if (tool === 'claude' && !filePath) {
@@ -155,12 +327,22 @@ router.get('/:id', async (req, res) => {
           const { statSync } = await import('fs');
           mtime = statSync(filePath).mtimeMs;
         } catch {}
+      } else if (tool === 'codex' && !filePath) {
+        // Stripped id matches the rollout filename body: <timestamp>-<uuid>.
+        const located = findCodexSessionFile(id.replace(/^codex_/, ''));
+        if (located) {
+          filePath = located.path;
+          try {
+            const { statSync } = await import('fs');
+            mtime = statSync(filePath).mtimeMs;
+          } catch {}
+        }
       }
 
       // 2. Try Cache
       // PARSER_VERSION: bump when parser output shape changes so stale cache
       // entries from older buggy parsers are ignored instead of served.
-      const PARSER_VERSION = 4;
+      const PARSER_VERSION = 5;
       if (mtime > 0) {
         const cached = store.getCachedContent(id, 'session', mtime);
         if (cached) {
@@ -189,6 +371,10 @@ router.get('/:id', async (req, res) => {
         messages = await getGeminiConversation(filePath);
       } else if (tool === 'opencode') {
         messages = await getOpenCodeConversation(id);
+      } else if (tool === 'codex') {
+        if (!filePath) throw new Error('Session path not found');
+        messages = await getCodexConversation(filePath);
+        subagents = await getCodexSubagents(filePath);
       } else {
         // Claude
         if (!filePath) throw new Error('Session not found');
@@ -228,10 +414,61 @@ router.get('/:id/raw', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Find session file path
-    const sessionPath = getSessionPath(id);
+    // Codex — JSONL stream from ~/.codex/sessions/YYYY/MM/DD/.
+    if (id.startsWith('codex_')) {
+      const located = findCodexSessionFile(id.replace(/^codex_/, ''));
+      if (!located) return res.status(404).json({ error: 'Session not found' });
+      const { readFileSync } = await import('fs');
+      const lines: any[] = [];
+      for (const line of readFileSync(located.path, 'utf-8').split('\n')) {
+        if (!line.trim()) continue;
+        try { lines.push(JSON.parse(line)); } catch { /* skip */ }
+      }
+      return res.json({ sessionId: id, tool: 'codex', lines, count: lines.length });
+    }
 
-    // Read raw JSONL and parse each line
+    // OpenCode — SQLite-backed; surface session row + its parts as the
+    // canonical raw representation.
+    if (id.startsWith('opencode_')) {
+      const ocId = id.replace(/^opencode_/, '');
+      const Database = (await import('better-sqlite3')).default;
+      const path = (await import('path')).join((await import('os')).homedir(), '.local', 'share', 'opencode', 'opencode.db');
+      try {
+        const db = new Database(path, { readonly: true, fileMustExist: true });
+        try {
+          const session = db.prepare('SELECT * FROM session WHERE id = ?').get(ocId) as any;
+          if (!session) return res.status(404).json({ error: 'Session not found' });
+          const parts = db.prepare('SELECT id, message_id, time_created, data FROM part WHERE session_id = ? ORDER BY time_created ASC').all(ocId) as any[];
+          const lines = parts.map(p => {
+            let data: any;
+            try { data = JSON.parse(p.data); } catch { data = p.data; }
+            return { id: p.id, message_id: p.message_id, time_created: p.time_created, data };
+          });
+          return res.json({ sessionId: id, tool: 'opencode', session, lines, count: lines.length });
+        } finally { db.close(); }
+      } catch (e) {
+        console.error('OpenCode raw error:', e);
+        return res.status(404).json({ error: e instanceof Error ? e.message : 'OpenCode database not found' });
+      }
+    }
+
+    // Gemini — single JSON file under ~/.gemini/tmp/<hash>/chats/.
+    if (id.startsWith('gemini_')) {
+      const store = new MemoryStore();
+      let filePath = '';
+      try {
+        const item = store.getItem(id, 'session' as SourceType);
+        if (item) filePath = item.file_path;
+      } finally { store.close(); }
+      if (!filePath) return res.status(404).json({ error: 'Session not found' });
+      const { readFileSync } = await import('fs');
+      const json = JSON.parse(readFileSync(filePath, 'utf-8'));
+      const messages = Array.isArray(json.messages) ? json.messages : [];
+      return res.json({ sessionId: id, tool: 'gemini', lines: messages, count: messages.length, raw: json });
+    }
+
+    // Claude — original path.
+    const sessionPath = getSessionPath(id);
     const { open } = await import('fs/promises');
     const file = await open(sessionPath);
     const rawLines: any[] = [];
@@ -250,6 +487,7 @@ router.get('/:id/raw', async (req, res) => {
 
     res.json({
       sessionId: id,
+      tool: 'claude',
       lines: rawLines,
       count: rawLines.length,
     });

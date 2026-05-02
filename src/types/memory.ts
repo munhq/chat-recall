@@ -7,7 +7,12 @@
  */
 
 /** All supported memory source types */
-export type SourceType = 'session' | 'plan' | 'task' | 'claude_md' | 'paste' | 'history' | 'diary';
+export type SourceType =
+  // Memory primitives — what was said / what happened. Read-mostly.
+  | 'session' | 'plan' | 'task' | 'claude_md' | 'paste' | 'history' | 'diary'
+  // Toolkit primitives — what's configured / what can run. Promotable
+  // across AI tools (Claude ↔ Gemini ↔ OpenCode) via /api/toolkit/promote.
+  | 'skill' | 'mcp' | 'command' | 'agent' | 'hook' | 'plugin';
 
 /** A single discoverable item from a data source */
 export interface MemoryItem {

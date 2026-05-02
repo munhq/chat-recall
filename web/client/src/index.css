@@ -50,6 +50,8 @@
   --cr-tool-gemini-surf: rgba(120, 201, 160, 0.12);
   --cr-tool-opencode: #79C0FF;
   --cr-tool-opencode-surf: rgba(121, 192, 255, 0.12);
+  --cr-tool-codex: #10A37F;
+  --cr-tool-codex-surf: rgba(16, 163, 127, 0.12);
 
   /* Radii */
   --cr-radius-xs: 4px;

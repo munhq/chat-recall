@@ -26,7 +26,14 @@ import { GeminiSessionSource } from './parsers/gemini-source.js';
 import { GeminiBrainSource } from './parsers/gemini-brain-source.js';
 import { OpenCodeSource } from './parsers/opencode-source.js';
 import { OpenCodeTodoSource } from './parsers/opencode-todo-source.js';
+import { CodexSessionSource } from './parsers/codex-session-source.js';
 import { DiarySource } from './parsers/diary-source.js';
+import { SkillsSource } from './parsers/skills-source.js';
+import { McpsSource } from './parsers/mcps-source.js';
+import { SlashCommandsSource } from './parsers/slash-commands-source.js';
+import { SubagentsSource } from './parsers/subagents-source.js';
+import { HooksSource } from './parsers/hooks-source.js';
+import { PluginsSource } from './parsers/plugins-source.js';
 import { classifyChunk } from './core/memory-classifier.js';
 import { extractAndPopulateKG } from './core/entity-extractor.js';
 import { KnowledgeGraph } from './core/knowledge-graph.js';
@@ -120,7 +127,14 @@ program
       registry.register(new GeminiBrainSource());
       registry.register(new OpenCodeSource());
       registry.register(new OpenCodeTodoSource());
+      registry.register(new CodexSessionSource());
       registry.register(new DiarySource());
+      registry.register(new SkillsSource());
+      registry.register(new McpsSource());
+      registry.register(new SlashCommandsSource());
+      registry.register(new SubagentsSource());
+      registry.register(new HooksSource());
+      registry.register(new PluginsSource());
 
       const kg = new KnowledgeGraph();
       let totalItems = 0, totalChunks = 0, totalErrors = 0;
@@ -337,7 +351,14 @@ program
       registry.register(new GeminiBrainSource());
       registry.register(new OpenCodeSource());
       registry.register(new OpenCodeTodoSource());
+      registry.register(new CodexSessionSource());
       registry.register(new DiarySource());
+      registry.register(new SkillsSource());
+      registry.register(new McpsSource());
+      registry.register(new SlashCommandsSource());
+      registry.register(new SubagentsSource());
+      registry.register(new HooksSource());
+      registry.register(new PluginsSource());
 
       const kg = new KnowledgeGraph();
       let totalItems = 0, totalSkipped = 0, totalChunks = 0, totalErrors = 0, totalKGTriples = 0;
@@ -787,7 +808,14 @@ memory
       registry.register(new GeminiBrainSource());
       registry.register(new OpenCodeSource());
       registry.register(new OpenCodeTodoSource());
+      registry.register(new CodexSessionSource());
       registry.register(new DiarySource());
+      registry.register(new SkillsSource());
+      registry.register(new McpsSource());
+      registry.register(new SlashCommandsSource());
+      registry.register(new SubagentsSource());
+      registry.register(new HooksSource());
+      registry.register(new PluginsSource());
 
       const requestedTypes: SourceType[] = options.types
         ? options.types.split(',') as SourceType[]

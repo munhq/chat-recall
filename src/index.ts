@@ -24,3 +24,4 @@ export { TaskSource } from './parsers/task-source.js';
 export { ClaudeMdSource } from './parsers/claude-md-source.js';
 export { HistorySource } from './parsers/history-source.js';
 export { PasteSource } from './parsers/paste-source.js';
+export { CodexSessionSource } from './parsers/codex-session-source.js';

@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Icon, Chip, MetricCard, Card, Avatar, IconButton } from './primitives';
+import { Icon, Chip, MetricCard, Card, Avatar, IconButton, ToolBadge } from './primitives';
 import { getAnalytics, getPatterns, type AnalyticsData, type PatternsResponse } from '../services/api';
+
+type InsightsToolFilter = 'all' | 'claude' | 'gemini' | 'opencode' | 'codex';
 
 function fmtTokens(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
@@ -49,22 +51,24 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch }: Dashboard
   const [patterns, setPatterns] = useState<PatternsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [toolFilter, setToolFilter] = useState<InsightsToolFilter>('all');
 
-  const load = () => {
+  const load = (tool: InsightsToolFilter) => {
     setLoading(true);
     setError(null);
-    getAnalytics()
+    getAnalytics(tool)
       .then(setData)
       .catch((err) => setError(err.message || 'Failed to load analytics'))
       .finally(() => setLoading(false));
-    // Patterns load in parallel — slower (cross-session aggregation) so we
-    // don't block the cost dashboard on it.
-    getPatterns().then(setPatterns).catch(() => { /* tolerate */ });
+    // Patterns are global (not yet tool-filterable); load once on mount.
+    if (tool === 'all') {
+      getPatterns().then(setPatterns).catch(() => { /* tolerate */ });
+    }
   };
 
   useEffect(() => {
-    load();
-  }, []);
+    load(toolFilter);
+  }, [toolFilter]);
 
   if (loading)
     return (
@@ -76,7 +80,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch }: Dashboard
     return (
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12 }}>
         <div style={{ color: 'var(--cr-err-500)' }}>{error || 'No data'}</div>
-        <button onClick={load} style={{ padding: '8px 16px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-2)', borderRadius: 'var(--cr-radius-sm)', color: 'var(--cr-fg-1)', cursor: 'pointer' }}>
+        <button onClick={() => load(toolFilter)} style={{ padding: '8px 16px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-2)', borderRadius: 'var(--cr-radius-sm)', color: 'var(--cr-fg-1)', cursor: 'pointer' }}>
           Retry
         </button>
       </div>
@@ -108,7 +112,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch }: Dashboard
     <div style={{ flex: 1, overflowY: 'auto', background: 'var(--cr-ink-0)' }}>
       <div style={{ maxWidth: 1280, margin: '0 auto', padding: '32px 40px 64px' }}>
         {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 32 }}>
+        <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 16 }}>
           <div>
             <h2>Insights</h2>
             <p className="cr-lead" style={{ marginTop: 4 }}>
@@ -116,8 +120,58 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch }: Dashboard
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
-            <IconButton icon="refresh" onClick={load} title="Refresh analytics" />
+            <IconButton icon="refresh" onClick={() => load(toolFilter)} title="Refresh analytics" />
           </div>
+        </div>
+
+        {/* Row 1: Tool filter — same pattern as Memory / Activity / Toolkit. */}
+        <div
+          data-testid="insights-tool-filter"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            flexWrap: 'wrap',
+            marginBottom: 24,
+          }}
+        >
+          <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>Tool</span>
+          {(['all', 'claude', 'gemini', 'opencode', 'codex'] as InsightsToolFilter[]).map(t => {
+            const on = toolFilter === t;
+            const label = t === 'all' ? 'All'
+              : t === 'claude' ? 'Claude'
+              : t === 'gemini' ? 'Gemini'
+              : t === 'opencode' ? 'OpenCode'
+              : 'Codex';
+            return (
+              <button
+                key={t}
+                onClick={() => setToolFilter(t)}
+                style={{
+                  height: 28,
+                  padding: '0 12px',
+                  background: on ? 'var(--cr-ink-3)' : 'var(--cr-ink-2)',
+                  border: `1px solid ${on ? 'var(--cr-line-2)' : 'var(--cr-line-1)'}`,
+                  borderRadius: 'var(--cr-radius-sm)',
+                  color: on ? 'var(--cr-fg-1)' : 'var(--cr-fg-2)',
+                  fontSize: 12,
+                  fontWeight: on ? 500 : 400,
+                  cursor: 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                }}
+              >
+                {t !== 'all' && <ToolBadge tool={t} size="sm" />}
+                {t === 'all' && <span>{label}</span>}
+              </button>
+            );
+          })}
+          {toolFilter !== 'all' && (
+            <span style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginLeft: 4 }}>
+              showing {toolFilter} only — totals reflect this tool's slice
+            </span>
+          )}
         </div>
 
         {/* This-week digest card */}

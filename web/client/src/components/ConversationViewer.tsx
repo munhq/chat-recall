@@ -14,11 +14,22 @@ import type {
   Subagent,
   RelatedItemsResponse,
   SessionMetadataResponse,
+  SessionDiffResponse,
+  SessionCommitsResponse,
+  SessionOutcomeResponse,
+  PromptMarker,
 } from '../services/api';
-import { getRawConversation, getSessionRelated, getSessionMetadata } from '../services/api';
+import {
+  getRawConversation,
+  getSessionRelated,
+  getSessionMetadata,
+  getSessionDiff,
+  getSessionCommits,
+  getSessionOutcome,
+} from '../services/api';
 import { stripInjectedBanners } from '../utils/clean';
 
-type ViewMode = 'summary' | 'firstPrompt' | 'full' | 'raw' | 'related' | 'files';
+type ViewMode = 'summary' | 'firstPrompt' | 'full' | 'raw' | 'related' | 'files' | 'diff' | 'commits' | 'outcome';
 type MessageFilter = 'all' | 'user' | 'assistant' | 'thinking' | 'tools' | 'edits';
 
 interface ConversationViewerProps {
@@ -51,6 +62,23 @@ export default function ConversationViewer({
   const [relatedLoading, setRelatedLoading] = useState(false);
   const [sessionMeta, setSessionMeta] = useState<SessionMetadataResponse | null>(null);
   const [metaLoading, setMetaLoading] = useState(false);
+  const [diffData, setDiffData] = useState<SessionDiffResponse | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diffError, setDiffError] = useState<string | null>(null);
+  const [commitsData, setCommitsData] = useState<SessionCommitsResponse | null>(null);
+  const [commitsLoading, setCommitsLoading] = useState(false);
+  const [commitsError, setCommitsError] = useState<string | null>(null);
+  const [outcomeData, setOutcomeData] = useState<SessionOutcomeResponse | null>(null);
+  const [outcomeLoading, setOutcomeLoading] = useState(false);
+  const [outcomeError, setOutcomeError] = useState<string | null>(null);
+
+  // Reset cross-section state when session changes — otherwise we'd flash
+  // the previous session's diff/commits/outcome briefly.
+  useEffect(() => {
+    setDiffData(null); setDiffError(null);
+    setCommitsData(null); setCommitsError(null);
+    setOutcomeData(null); setOutcomeError(null);
+  }, [sessionId]);
 
   // ── Hooks ──
 
@@ -144,7 +172,7 @@ export default function ConversationViewer({
 
   const handleResume = () => {
     if (!sessionId) return;
-    const command = `claude --resume ${sessionId}`;
+    const command = tool === 'codex' ? `codex resume ${sessionId.replace('codex_', '')}` : `claude --resume ${sessionId}`;
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(command).then(() => {
@@ -191,6 +219,30 @@ export default function ConversationViewer({
         .catch(() => {})
         .finally(() => setMetaLoading(false));
     }
+    if (mode === 'diff' && !diffData && !diffLoading) {
+      setDiffLoading(true);
+      setDiffError(null);
+      getSessionDiff(sessionId)
+        .then(setDiffData)
+        .catch(err => setDiffError(err instanceof Error ? err.message : 'Failed to load diff'))
+        .finally(() => setDiffLoading(false));
+    }
+    if (mode === 'commits' && !commitsData && !commitsLoading) {
+      setCommitsLoading(true);
+      setCommitsError(null);
+      getSessionCommits(sessionId)
+        .then(setCommitsData)
+        .catch(err => setCommitsError(err instanceof Error ? err.message : 'Failed to load commits'))
+        .finally(() => setCommitsLoading(false));
+    }
+    if (mode === 'outcome' && !outcomeData && !outcomeLoading) {
+      setOutcomeLoading(true);
+      setOutcomeError(null);
+      getSessionOutcome(sessionId)
+        .then(setOutcomeData)
+        .catch(err => setOutcomeError(err instanceof Error ? err.message : 'Failed to load outcome'))
+        .finally(() => setOutcomeLoading(false));
+    }
     setViewMode(mode);
   };
 
@@ -224,7 +276,7 @@ export default function ConversationViewer({
             Back
           </Button>
           <div style={{ flex: 1 }} />
-          {tool === 'claude' && (
+          {(tool === 'claude' || tool === 'codex') && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               {copied && <span style={{ fontSize: 12, color: 'var(--cr-ok-500)', fontWeight: 600 }}>Copied!</span>}
               <Button 
@@ -362,9 +414,12 @@ export default function ConversationViewer({
             onChange={(m) => handleViewChange(m as ViewMode)}
             options={[
               { value: 'summary', label: 'Summary', icon: 'file' },
+              { value: 'outcome', label: 'Outcome', icon: 'check' },
               { value: 'firstPrompt', label: 'First Prompt', icon: 'message' },
               { value: 'full', label: 'Full', icon: 'list' },
               { value: 'files', label: 'Files', icon: 'file' },
+              { value: 'diff', label: 'Diff', icon: 'terminal' },
+              { value: 'commits', label: 'Commits', icon: 'sparkle' },
               { value: 'raw', label: 'Raw', icon: 'terminal' },
               { value: 'related', label: 'Related', icon: 'sparkle' },
             ]}
@@ -640,6 +695,18 @@ export default function ConversationViewer({
               </div>
             )}
           </div>
+        )}
+
+        {viewMode === 'outcome' && (
+          <OutcomePanel data={outcomeData} loading={outcomeLoading} error={outcomeError} />
+        )}
+
+        {viewMode === 'diff' && (
+          <DiffPanel data={diffData} loading={diffLoading} error={diffError} />
+        )}
+
+        {viewMode === 'commits' && (
+          <CommitsPanel data={commitsData} loading={commitsLoading} error={commitsError} />
         )}
       </div>
     </div>
@@ -933,4 +1000,331 @@ function formatPath(path: string): string {
   const parts = path.replace(/\\/g, '/').split('/').filter(Boolean);
   if (parts.length >= 2) return parts.slice(-2).join('/');
   return path;
+}
+
+// ────────────────────────────── Outcome / Diff / Commits panels ──────────────────────────────
+// Three new tabs added on top of the original viewer:
+//   - Outcome: shipped/interrupted/abandoned status, decisions, blockers,
+//     last-claim-vs-reaction, prompt marker counts.
+//   - Diff: per-file unified diff replayed from Edit/Write tool calls.
+//   - Commits: git commits across all repos this session touched.
+//
+// All three call the dedicated HTTP routes added to the conversations router
+// and are loaded lazily on first switch (see handleViewChange).
+
+function StatusChip({ status }: { status: SessionOutcomeResponse['status'] }) {
+  const map: Record<SessionOutcomeResponse['status'], { label: string; kind: Parameters<typeof Chip>[0]['kind']; icon?: string }> = {
+    shipped: { label: 'Shipped', kind: 'ok', icon: 'check' },
+    interrupted: { label: 'Interrupted', kind: 'warn' },
+    abandoned: { label: 'Abandoned', kind: 'err' },
+    in_progress: { label: 'In progress', kind: 'info' },
+    unknown: { label: 'Unknown', kind: 'neutral' },
+  };
+  const m = map[status] || map.unknown;
+  return <Chip kind={m.kind} icon={m.icon}>{m.label}</Chip>;
+}
+
+const MARKER_STYLES: Record<PromptMarker, { label: string; kind: Parameters<typeof Chip>[0]['kind']; symbol: string }> = {
+  interrupt: { label: 'interrupt', kind: 'warn', symbol: '⏸' },
+  frustrated: { label: 'frustrated', kind: 'err', symbol: '⚠' },
+  correction: { label: 'correction', kind: 'warn', symbol: '↩' },
+  approval: { label: 'approval', kind: 'ok', symbol: '✓' },
+  question: { label: 'question', kind: 'info', symbol: '?' },
+  directive: { label: 'directive', kind: 'neutral', symbol: '▸' },
+  clarification_request: { label: 'clarify', kind: 'info', symbol: '◇' },
+};
+
+function MarkerChip({ marker }: { marker: PromptMarker }) {
+  const m = MARKER_STYLES[marker];
+  if (!m) return null;
+  return <Chip kind={m.kind} size="sm">{m.symbol} {m.label}</Chip>;
+}
+
+function OutcomePanel({
+  data, loading, error,
+}: { data: SessionOutcomeResponse | null; loading: boolean; error: string | null }) {
+  if (loading) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Computing outcome…</div>;
+  if (error) return <div style={{ padding: 20, color: 'var(--cr-err-500)' }}>Failed to load outcome: {error}</div>;
+  if (!data) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>No outcome data.</div>;
+
+  const minutes = data.startMs && data.endMs ? Math.round((data.endMs - data.startMs) / 60000) : 0;
+
+  return (
+    <div data-testid="conversation-outcome" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Headline status card */}
+      <Card style={{ padding: 16 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
+          <StatusChip status={data.status} />
+          <span style={{ fontSize: 13, color: 'var(--cr-fg-2)' }}>{data.reason}</span>
+        </div>
+        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, color: 'var(--cr-fg-3)' }}>
+          {minutes > 0 && <span>Window: {minutes} min</span>}
+          <span>Files: {data.fileCount} (+{data.totalLinesAdded} / −{data.totalLinesRemoved})</span>
+          <span>Commits: {data.commits.totalCommits} across {data.commits.repos.length} repo(s)</span>
+          <span>Prompts: {data.promptMarkers.total}</span>
+        </div>
+      </Card>
+
+      {/* Marker tally */}
+      {data.promptMarkers.total > 0 && (
+        <Card style={{ padding: 16 }}>
+          <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>
+            Prompt markers
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {(['frustrated','correction','interrupt','approval','question','directive','clarification_request'] as PromptMarker[])
+              .filter(k => data.promptMarkers[k] > 0)
+              .map(k => (
+                <Chip key={k} kind={MARKER_STYLES[k].kind} size="sm">
+                  {MARKER_STYLES[k].symbol} {data.promptMarkers[k]} {MARKER_STYLES[k].label}
+                </Chip>
+              ))}
+          </div>
+        </Card>
+      )}
+
+      {/* Decisions */}
+      {data.decisions.length > 0 && (
+        <Card style={{ padding: 16 }}>
+          <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>
+            Decisions ({data.decisions.length})
+          </div>
+          <ul style={{ paddingLeft: 18, margin: 0, color: 'var(--cr-fg-1)', fontSize: 13, lineHeight: 1.6 }}>
+            {data.decisions.slice(0, 12).map((d, i) => (
+              <li key={i}>{d.text}</li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
+      {/* Blockers */}
+      {data.blockers.length > 0 && (
+        <Card style={{ padding: 16, borderColor: 'var(--cr-warn-line)' }}>
+          <div style={{ fontSize: 12, color: 'var(--cr-warn-500)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>
+            Blockers ({data.blockers.length})
+          </div>
+          <ul style={{ paddingLeft: 18, margin: 0, color: 'var(--cr-fg-1)', fontSize: 13, lineHeight: 1.6 }}>
+            {data.blockers.slice(0, 12).map((b, i) => (
+              <li key={i}>
+                <span style={{ color: 'var(--cr-warn-500)', fontWeight: 600 }}>{b.kind}:</span> {b.text}
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
+      {/* Last claim vs reaction */}
+      {data.claimReaction.claim && (
+        <Card style={{ padding: 16 }}>
+          <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>
+            Last claim → user reaction
+          </div>
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginBottom: 4 }}>Agent claim</div>
+            <div style={{ fontSize: 13, color: 'var(--cr-fg-1)', lineHeight: 1.5 }}>{data.claimReaction.claim.text}</div>
+          </div>
+          {data.claimReaction.reaction ? (
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
+                User reaction
+                {data.claimReaction.reaction.markers.map(m => <MarkerChip key={m} marker={m} />)}
+              </div>
+              <div style={{ fontSize: 13, color: 'var(--cr-fg-1)', lineHeight: 1.5 }}>{data.claimReaction.reaction.text}</div>
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', fontStyle: 'italic' }}>
+              Session ended on this claim — no follow-up from the user.
+            </div>
+          )}
+        </Card>
+      )}
+
+      {/* Per-prompt markers strip — chronological */}
+      {data.prompts.length > 0 && (
+        <Card style={{ padding: 16 }}>
+          <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>
+            Prompts in order
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 360, overflowY: 'auto' }}>
+            {data.prompts.map((p, i) => (
+              <div key={i} style={{ borderLeft: '2px solid var(--cr-line-1)', paddingLeft: 10 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 3 }}>
+                  {p.markers.map(m => <MarkerChip key={m} marker={m} />)}
+                </div>
+                <div style={{ fontSize: 12, color: 'var(--cr-fg-2)', lineHeight: 1.5 }}>
+                  {p.text.length > 280 ? p.text.slice(0, 280) + '…' : p.text}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function DiffPanel({
+  data, loading, error,
+}: { data: SessionDiffResponse | null; loading: boolean; error: string | null }) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  if (loading) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Replaying edits…</div>;
+  if (error) return <div style={{ padding: 20, color: 'var(--cr-err-500)' }}>Failed to load diff: {error}</div>;
+  if (!data) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>No diff data.</div>;
+  if (data.files.length === 0) {
+    return (
+      <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>
+        No edits found in this session.
+      </div>
+    );
+  }
+
+  const toggle = (file: string) => {
+    setExpanded(prev => {
+      const next = new Set(prev);
+      if (next.has(file)) next.delete(file); else next.add(file);
+      return next;
+    });
+  };
+
+  return (
+    <div data-testid="conversation-diff" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <Card style={{ padding: 14 }}>
+        <div style={{ display: 'flex', gap: 10, fontSize: 13, color: 'var(--cr-fg-2)', flexWrap: 'wrap' }}>
+          <span><strong>{data.files.length}</strong> file(s)</span>
+          <span style={{ color: 'var(--cr-ok-500)' }}>+{data.totalLinesAdded}</span>
+          <span style={{ color: 'var(--cr-err-500)' }}>−{data.totalLinesRemoved}</span>
+        </div>
+      </Card>
+      {data.files.map(f => {
+        const isOpen = expanded.has(f.file);
+        return (
+          <Card key={f.file} style={{ padding: 0, overflow: 'hidden' }}>
+            <button
+              type="button"
+              onClick={() => toggle(f.file)}
+              style={{
+                width: '100%', textAlign: 'left', background: 'transparent', border: 'none',
+                padding: '12px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center',
+                gap: 10, color: 'var(--cr-fg-1)', fontFamily: 'inherit',
+              }}
+            >
+              <Icon name={isOpen ? 'chevronDown' : 'chevronRight'} size={14} />
+              <span style={{ fontFamily: 'var(--cr-font-mono)', fontSize: 12, fontWeight: 600, flex: 1, wordBreak: 'break-all' }}>
+                {f.file}
+              </span>
+              {f.reverted && <Chip kind="warn" size="sm">reverted</Chip>}
+              {!f.initialKnown && <Chip kind="neutral" size="sm">initial unknown</Chip>}
+              {f.failedEvents > 0 && <Chip kind="err" size="sm">{f.failedEvents} failed</Chip>}
+              <span style={{ color: 'var(--cr-ok-500)', fontSize: 12, fontFamily: 'var(--cr-font-mono)' }}>+{f.linesAdded}</span>
+              <span style={{ color: 'var(--cr-err-500)', fontSize: 12, fontFamily: 'var(--cr-font-mono)' }}>−{f.linesRemoved}</span>
+              <span style={{ color: 'var(--cr-fg-3)', fontSize: 11 }}>{f.events.length} event(s)</span>
+            </button>
+            {isOpen && (
+              <div style={{ borderTop: '1px solid var(--cr-line-1)', padding: 16 }}>
+                {f.diff ? (
+                  <SyntaxHighlighter
+                    language="diff"
+                    style={vscDarkPlus}
+                    customStyle={{
+                      margin: 0, borderRadius: 4, fontSize: 12,
+                      maxHeight: 480, overflow: 'auto', background: 'var(--cr-ink-2)',
+                    }}
+                  >
+                    {f.diff}
+                  </SyntaxHighlighter>
+                ) : (
+                  <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', fontStyle: 'italic' }}>
+                    {f.reverted ? 'File was edited then reverted to its original state.' : 'No textual diff (binary, notebook, or replay couldn\'t reconstruct).'}
+                  </div>
+                )}
+                {f.events.length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>
+                      Events
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                      {f.events.map(e => (
+                        <div key={e.toolUseId} style={{ display: 'flex', gap: 8, fontSize: 11, fontFamily: 'var(--cr-font-mono)', alignItems: 'center' }}>
+                          <span style={{ color: e.succeeded ? 'var(--cr-ok-500)' : 'var(--cr-err-500)' }}>
+                            {e.succeeded ? '✓' : '✗'}
+                          </span>
+                          <span style={{ color: 'var(--cr-fg-3)' }}>{(e.tsIso || '').slice(11, 19)}</span>
+                          <span style={{ color: 'var(--cr-fg-1)', fontWeight: 600 }}>{e.toolName}</span>
+                          {e.editsCount !== undefined && <span style={{ color: 'var(--cr-fg-3)' }}>{e.editsCount} edit(s)</span>}
+                          {e.writeBytes !== undefined && <span style={{ color: 'var(--cr-fg-3)' }}>{e.writeBytes}B</span>}
+                          {e.applyError && <span style={{ color: 'var(--cr-err-500)' }}>apply: {e.applyError}</span>}
+                          {e.toolError && <span style={{ color: 'var(--cr-err-500)' }}>tool error</span>}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+function CommitsPanel({
+  data, loading, error,
+}: { data: SessionCommitsResponse | null; loading: boolean; error: string | null }) {
+  if (loading) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Looking up commits…</div>;
+  if (error) return <div style={{ padding: 20, color: 'var(--cr-err-500)' }}>Failed to load commits: {error}</div>;
+  if (!data) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>No commit data.</div>;
+  if (data.totalCommits === 0) {
+    return (
+      <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>
+        <Icon name="sparkle" size={28} style={{ opacity: 0.3, marginBottom: 12 }} />
+        <div style={{ fontSize: 14, marginBottom: 6 }}>No commits matched this session's edit window.</div>
+        <div style={{ fontSize: 12 }}>Either the work stayed local, or commits landed outside the window.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="conversation-commits" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <Card style={{ padding: 14 }}>
+        <div style={{ fontSize: 13, color: 'var(--cr-fg-2)' }}>
+          <strong>{data.totalCommits}</strong> commit(s) across <strong>{data.repos.length}</strong> repo(s)
+        </div>
+      </Card>
+      {data.repos.map(r => (
+        <Card key={r.repo} style={{ padding: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 10 }}>
+            <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--cr-fg-1)' }}>{r.repoName}</span>
+            <span style={{ fontSize: 11, color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-font-mono)' }}>{r.repo}</span>
+            <span style={{ flex: 1 }} />
+            <Chip kind="info" size="sm">{r.commits.length} commit(s)</Chip>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {r.commits.map(c => (
+              <div key={c.sha} style={{
+                borderLeft: c.matchedSessionFiles.length > 0 ? '3px solid var(--cr-ok-500)' : '3px solid var(--cr-line-1)',
+                paddingLeft: 10,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 12, fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-3)' }}>{c.shortSha}</span>
+                  <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>{c.authorIso.slice(0, 16).replace('T', ' ')}</span>
+                  <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>· {c.authorName}</span>
+                  {c.matchedSessionFiles.length > 0 && (
+                    <Chip kind="ok" size="sm">{c.matchedSessionFiles.length} session file(s)</Chip>
+                  )}
+                </div>
+                <div style={{ fontSize: 13, color: 'var(--cr-fg-1)', fontWeight: 500, marginTop: 2, lineHeight: 1.4 }}>
+                  {c.subject}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 2, fontFamily: 'var(--cr-font-mono)' }}>
+                  +{c.linesAdded} / −{c.linesRemoved} · {c.files.length} file(s)
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+      ))}
+    </div>
+  );
 }

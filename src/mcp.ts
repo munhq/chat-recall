@@ -28,6 +28,11 @@ import {
   liveScanSessionEdits,
   type SessionEdit,
 } from './core/live-session-scan.js';
+import { replaySession, findRepoRoot } from './core/session-replay.js';
+import { getSessionCommits } from './core/session-git.js';
+import { extractTurns } from './core/session-turns.js';
+import { markPrompt, summarizeMarkers } from './core/session-sentiment.js';
+import { computeOutcome } from './core/session-outcome.js';
 import { MemoryIndex } from './core/memory-index.js';
 import { MemoryStore } from './core/memory-store.js';
 import { SourceRegistry } from './core/source-registry.js';
@@ -41,6 +46,7 @@ import { GeminiSessionSource } from './parsers/gemini-source.js';
 import { GeminiBrainSource } from './parsers/gemini-brain-source.js';
 import { OpenCodeSource } from './parsers/opencode-source.js';
 import { OpenCodeTodoSource } from './parsers/opencode-todo-source.js';
+import { CodexSessionSource } from './parsers/codex-session-source.js';
 import { MetadataCache } from './core/metadata-cache.js';
 import { KnowledgeGraph } from './core/knowledge-graph.js';
 import { classifyChunk } from './core/memory-classifier.js';
@@ -48,6 +54,12 @@ import { extractAndPopulateKG } from './core/entity-extractor.js';
 import { sanitizeQuery } from './core/query-sanitizer.js';
 import { getWAL } from './core/write-ahead-log.js';
 import { DiarySource } from './parsers/diary-source.js';
+import { SkillsSource } from './parsers/skills-source.js';
+import { McpsSource } from './parsers/mcps-source.js';
+import { SlashCommandsSource } from './parsers/slash-commands-source.js';
+import { SubagentsSource } from './parsers/subagents-source.js';
+import { HooksSource } from './parsers/hooks-source.js';
+import { PluginsSource } from './parsers/plugins-source.js';
 import type { SourceType } from './types/memory.js';
 
 // Load .env configuration
@@ -129,15 +141,49 @@ const RecallEditsTimelineSchema = z.object({
   project_filter: z.string().optional()
     .describe('Filter by project name (matched against the encoded project directory name)'),
   include_reads: z.boolean().optional().default(false)
-    .describe('Include Read tool_uses in addition to Edit/Write/MultiEdit/NotebookEdit'),
+    .describe('Include read-type tool calls in addition to write/edit ones'),
+  tools: z.array(z.enum(['claude', 'gemini', 'opencode', 'codex'])).optional()
+    .describe('Restrict to a subset of AI tools. Default: all four (claude+gemini+opencode+codex).'),
+  group_by_repo: z.boolean().optional().default(false)
+    .describe('Group output by detected git repo root instead of returning a flat list. Useful when a single session touched multiple repos.'),
 });
 
 const RecallContextSchema = z.object({
   session_id: z.string().describe('Session ID to get context from'),
+  include_turns: z.boolean().optional().default(false)
+    .describe('Append an in-order turn-by-turn dump (user/assistant/tool calls/tool results) for full reasoning visibility.'),
+  turns_limit: z.number().optional().default(60)
+    .describe('Maximum turns to include when include_turns is true.'),
 });
 
 const RecallSummarySchema = z.object({
   session_id: z.string().describe('Session ID to get summary for'),
+  rich: z.boolean().optional().default(true)
+    .describe('Include the structured outcome (decisions, blockers, claim vs reaction, status). Set false for the legacy short summary only.'),
+});
+
+const RecallDiffSchema = z.object({
+  session_id: z.string().describe('Session ID to replay edits for'),
+  file: z.string().optional().describe('Only return the diff for this absolute file path'),
+  context_only: z.boolean().optional().default(false)
+    .describe('Skip the full unified diff bodies and return only file-level stats (lines added/removed, reverted flag)'),
+  max_diff_chars: z.number().optional().default(4000)
+    .describe('Truncate each per-file unified diff at this many characters in the rendered output'),
+});
+
+const RecallCommitsSchema = z.object({
+  session_id: z.string().describe('Session ID whose edit window to look up commits for'),
+  buffer_minutes: z.number().optional().default(30)
+    .describe('Pad the session window by this many minutes on each side to catch commits made just after edits'),
+});
+
+const RecallOutcomeSchema = z.object({
+  session_id: z.string().describe('Session ID to classify'),
+});
+
+const RecallMarkersSchema = z.object({
+  session_id: z.string().describe('Session ID to mark prompts in'),
+  limit: z.number().optional().default(200).describe('Maximum prompts to mark'),
 });
 
 const RecallSuggestResumeSchema = z.object({
@@ -247,6 +293,8 @@ const RecallUserPromptsSchema = z.object({
   session_id: z.string().optional().describe('If set, only that session\'s prompts'),
   since_days: z.number().optional().default(7).describe('When session_id is omitted, look back this many days'),
   limit: z.number().optional().default(50).describe('Maximum prompts to return'),
+  with_markers: z.boolean().optional().default(true)
+    .describe('Tag each prompt with sentiment / corrective markers (interrupt, frustrated, correction, approval, …). Set false to revert to legacy text-only output.'),
 });
 
 const RecallDecisionRecordSchema = z.object({
@@ -418,14 +466,16 @@ Pass \`since_hours: N\` to restrict to sessions modified in the last N hours.`,
       },
       {
         name: 'recall_edits_timeline',
-        description: `Chronological list of file edits across recent sessions.
+        description: `Chronological list of file edits across recent sessions, spanning Claude Code,
+Gemini CLI, and OpenCode.
 
-Returns rows shaped like (timestamp, session_id, project, file, op) sorted newest first.
-Pulls live from the transcripts (tool_use blocks for Edit / Write / MultiEdit / NotebookEdit),
-so the active session is included even though its metadata hasn't been re-indexed yet.
+Returns rows shaped like (timestamp, tool, session_id, project, file, op) sorted newest
+first. Pulls live from each tool's native session store — Claude JSONL, Gemini chat
+JSON, OpenCode SQLite — so the active session is included even though its metadata
+hasn't been re-indexed yet.
 
 Great for "what were we just changing?" — call with \`since_hours: 2\` to see the last
-two hours of edits across every session.`,
+two hours of edits across every session and every AI tool.`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -434,6 +484,12 @@ two hours of edits across every session.`,
             pattern:        { type: 'string', description: 'Optional substring filter on file path' },
             project_filter: { type: 'string', description: 'Filter by encoded project directory name' },
             include_reads:  { type: 'boolean', default: false, description: 'Include Read tool_uses too' },
+            tools:          {
+              type: 'array',
+              items: { type: 'string', enum: ['claude', 'gemini', 'opencode', 'codex'] },
+              description: 'Restrict to specific AI tools. Default: all four.',
+            },
+            group_by_repo:  { type: 'boolean', default: false, description: 'Group results by detected git repo root.' },
           },
         },
       },
@@ -459,19 +515,100 @@ Use this to understand what happened in a session before resuming.`,
       },
       {
         name: 'recall_summary',
-        description: `Get the AI-generated summary for a specific session.
+        description: `Get the summary for a session.
 
-Returns the Gemini-generated summary that includes:
-- What was requested
-- The plan/approach
-- What was accomplished
-- What remains to be done
-
-Use this for a quick overview before deciding to resume a conversation.`,
+By default returns a *rich* summary that combines the AI summary (when available)
+with a structured breakdown derived from the transcript itself: status (shipped /
+interrupted / abandoned / in_progress), decisions the agent announced, blockers
+hit (tool errors, interrupts), and the last assistant claim paired with the
+user's reaction to it. Pass \`rich: false\` to fall back to the legacy
+single-line AI summary only.`,
         inputSchema: {
           type: 'object',
           properties: {
             session_id: { type: 'string', description: 'Session ID to get summary for' },
+            rich:       { type: 'boolean', default: true, description: 'Include structured outcome alongside AI summary' },
+          },
+          required: ['session_id'],
+        },
+      },
+      {
+        name: 'recall_diff',
+        description: `Replay a session's Edit/Write/MultiEdit/NotebookEdit tool calls into a unified
+diff per file. Lets you see what the agent actually changed — not just that it
+edited, but how — without grepping the raw transcript.
+
+Detects reverts: when a file was edited but the final state matches the initial
+state, the file is reported with \`reverted: true\` and a zero-line diff.
+
+Pass \`file\` to focus on a single absolute path. Pass \`context_only: true\` for
+just the per-file stats (lines added/removed) when you don't need the diff body.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            session_id:     { type: 'string', description: 'Session ID to replay' },
+            file:           { type: 'string', description: 'Absolute file path to focus on (optional)' },
+            context_only:   { type: 'boolean', default: false, description: 'Skip diff bodies, return stats only' },
+            max_diff_chars: { type: 'number', default: 4000, description: 'Truncate each per-file unified diff' },
+          },
+          required: ['session_id'],
+        },
+      },
+      {
+        name: 'recall_commits',
+        description: `Find git commits that landed during a session's edit window, grouped by repo.
+
+Multi-repo aware: a session that touched ~/code/personal/k8s_gpu and
+~/code/personal/munbot returns commits from each repo, with overlap shown
+between commit-files and session-touched-files.
+
+Use this to verify "shipped" claims — if the session edited 18 files but no
+matching commit exists, work probably stayed local.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            session_id:     { type: 'string', description: 'Session ID to look up commits for' },
+            buffer_minutes: { type: 'number', default: 30, description: 'Window padding on each side' },
+          },
+          required: ['session_id'],
+        },
+      },
+      {
+        name: 'recall_outcome',
+        description: `Classify a session as shipped / interrupted / abandoned / in_progress / unknown,
+with the supporting evidence: decisions the agent announced, blockers it hit,
+and the final claim paired with the user's reaction (so you can see whether
+"done!" was actually accepted or was met with "wtf").
+
+This is the single most useful triage call when scanning a session list — it
+answers the question the AI summary doesn't: did this work actually land?`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            session_id: { type: 'string', description: 'Session ID to classify' },
+          },
+          required: ['session_id'],
+        },
+      },
+      {
+        name: 'recall_markers',
+        description: `Tag every user prompt in a session with sentiment / corrective markers:
+
+  • interrupt              — user hit ESC mid-response
+  • frustrated             — caps, profanity, "wtf", "ffs"
+  • correction             — "no", "stop", "don't" — negating the last action
+  • approval               — "yes", "do it", "i approve"
+  • question               — "why", "what", ends with ?
+  • directive              — "use X", "implement Y", "build Z"
+  • clarification_request  — "wdym", "explain", "what is"
+
+Returns per-prompt markers + a session-level summary count. Use this to spot
+sessions where things went sideways before reading the whole transcript.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            session_id: { type: 'string', description: 'Session ID to mark prompts in' },
+            limit:      { type: 'number', default: 200, description: 'Maximum prompts to return' },
           },
           required: ['session_id'],
         },
@@ -1059,7 +1196,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         registry.register(new GeminiBrainSource());
         registry.register(new OpenCodeSource());
         registry.register(new OpenCodeTodoSource());
+        registry.register(new CodexSessionSource());
         registry.register(new DiarySource());
+        registry.register(new SkillsSource());
+        registry.register(new McpsSource());
+        registry.register(new SlashCommandsSource());
+        registry.register(new SubagentsSource());
+        registry.register(new HooksSource());
+        registry.register(new PluginsSource());
 
         // Open KG for entity extraction during indexing
         const kg = new KnowledgeGraph();
@@ -1430,42 +1574,313 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           // Non-critical, continue without metadata
         }
 
+        // Optional: append in-order turn dump so reviewers can see what the
+        // agent actually said and what tool output came back.
+        if (params.include_turns) {
+          try {
+            const turns = extractTurns(params.session_id, { maxTurns: params.turns_limit });
+            if (turns.found && turns.turns.length > 0) {
+              const lines: string[] = ['', '## Turn-by-turn'];
+              for (const t of turns.turns.slice(0, params.turns_limit)) {
+                const stamp = t.tsIso ? t.tsIso.slice(11, 19) : '';
+                if (t.kind === 'user' && t.text) {
+                  lines.push(`- ${stamp} **user** — ${t.text.replace(/\n/g, ' ')}`);
+                } else if (t.kind === 'assistant_text' && t.text) {
+                  const trimmed = t.text.length > 400 ? t.text.slice(0, 400) + '…' : t.text;
+                  lines.push(`- ${stamp} **assistant** — ${trimmed.replace(/\n/g, ' ')}`);
+                } else if (t.kind === 'tool_use' && t.toolName) {
+                  const sum = t.toolInputSummary ? ` ${t.toolInputSummary.replace(/\n/g, ' ').slice(0, 160)}` : '';
+                  lines.push(`- ${stamp} **${t.toolName}**${sum}`);
+                } else if (t.kind === 'tool_result') {
+                  const flag = t.resultIsError ? '❌' : '✓';
+                  const exit = t.resultExitCode !== undefined ? ` exit=${t.resultExitCode}` : '';
+                  const snip = t.resultSummary ? ` ${t.resultSummary.replace(/\n/g, ' ').slice(0, 200)}` : '';
+                  lines.push(`  ${flag} result${exit}${snip}`);
+                }
+              }
+              formatted += '\n' + lines.join('\n');
+            }
+          } catch {
+            // Non-critical — keep the response usable.
+          }
+        }
+
         return { content: [{ type: 'text', text: formatted }] };
       }
 
       case 'recall_summary': {
         const params = RecallSummarySchema.parse(args);
 
-        // Try to get summary from metadata cache
+        // 1. Pull the cached AI summary if one was generated.
         const Database = (await import('better-sqlite3')).default;
         const cacheDb = new Database(join(homedir(), '.claude', 'chat-recall-cache.db'), { readonly: true });
-
+        let aiSummary: { summary: string; summary_source: string } | null = null;
         try {
-          const row = cacheDb.prepare('SELECT summary, summary_source FROM session_metadata WHERE session_id = ?').get(params.session_id) as { summary: string; summary_source: string } | undefined;
+          aiSummary = (cacheDb.prepare('SELECT summary, summary_source FROM session_metadata WHERE session_id = ?')
+            .get(params.session_id) as { summary: string; summary_source: string } | undefined) ?? null;
+        } finally {
+          cacheDb.close();
+        }
 
-          if (!row) {
+        // Legacy mode: just the AI summary.
+        if (!params.rich) {
+          if (!aiSummary) {
             return { content: [{ type: 'text', text: `No summary found for session: ${params.session_id}\n\nRun 'npm run generate-summaries' to generate summaries.` }] };
           }
-
-          const output = [
+          return { content: [{ type: 'text', text: [
             `# 📋 Summary`,
             '',
             `**Session:** ${params.session_id.substring(0, 8)}...`,
-            `**Source:** ${row.summary_source}`,
+            `**Source:** ${aiSummary.summary_source}`,
             '',
             '---',
             '',
-            row.summary,
+            aiSummary.summary,
             '',
             '---',
             '',
             `**🔄 Resume:** \`claude --resume ${params.session_id}\``,
-          ];
-
-          return { content: [{ type: 'text', text: output.join('\n') }] };
-        } finally {
-          cacheDb.close();
+          ].join('\n') }] };
         }
+
+        // 2. Compute the structured outcome from the transcript.
+        const outcome = computeOutcome(params.session_id);
+        if (!outcome.found && !aiSummary) {
+          return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
+        }
+
+        const lines: string[] = [];
+        lines.push(`# 📋 Summary — ${params.session_id.substring(0, 8)}…`);
+        lines.push('');
+
+        // Status header line — most useful single signal.
+        if (outcome.found) {
+          const statusEmoji =
+            outcome.status === 'shipped' ? '🚢' :
+            outcome.status === 'interrupted' ? '⏸' :
+            outcome.status === 'abandoned' ? '🪦' :
+            outcome.status === 'in_progress' ? '🟡' : '❔';
+          lines.push(`**Status:** ${statusEmoji} ${outcome.status} — ${outcome.reason}`);
+          if (outcome.fileCount > 0) {
+            lines.push(`**Edits:** ${outcome.fileCount} file(s) · +${outcome.totalLinesAdded} / −${outcome.totalLinesRemoved} lines`);
+          }
+          if (outcome.commits.totalCommits > 0) {
+            const repoNames = outcome.commits.repos.map(r => `${r.repoName} (${r.commits.length})`).join(', ');
+            lines.push(`**Commits:** ${outcome.commits.totalCommits} across ${outcome.commits.repos.length} repo(s) — ${repoNames}`);
+          }
+          lines.push('');
+        }
+
+        // AI summary (verbatim) — keep for narrative context.
+        if (aiSummary) {
+          lines.push('## AI Summary');
+          lines.push(`*Source: ${aiSummary.summary_source}*`);
+          lines.push('');
+          lines.push(aiSummary.summary);
+          lines.push('');
+        }
+
+        if (outcome.found) {
+          if (outcome.decisions.length > 0) {
+            lines.push('## Decisions');
+            for (const d of outcome.decisions.slice(0, 8)) {
+              lines.push(`- ${d.text}`);
+            }
+            lines.push('');
+          }
+          if (outcome.blockers.length > 0) {
+            lines.push('## Blockers');
+            for (const b of outcome.blockers.slice(0, 8)) {
+              const tag = b.kind === 'tool_error' ? '⚠ tool error' : b.kind === 'interrupt' ? '⏸ interrupt' : '⚠';
+              lines.push(`- ${tag}: ${b.text}`);
+            }
+            lines.push('');
+          }
+          if (outcome.claimReaction.claim) {
+            lines.push('## Last claim vs user reaction');
+            lines.push(`- **claim:** ${outcome.claimReaction.claim.text.slice(0, 240)}`);
+            if (outcome.claimReaction.reaction) {
+              const r = outcome.claimReaction.reaction;
+              const markers = r.markers.length ? ` _[${r.markers.join(', ')}]_` : '';
+              lines.push(`- **reaction:** ${r.text.slice(0, 240)}${markers}`);
+            } else {
+              lines.push(`- **reaction:** _(no follow-up — session ended on this claim)_`);
+            }
+            lines.push('');
+          }
+          if (outcome.promptMarkers.total > 0) {
+            const m = outcome.promptMarkers;
+            const parts: string[] = [];
+            if (m.frustrated) parts.push(`⚠ ${m.frustrated} frustrated`);
+            if (m.correction) parts.push(`↩ ${m.correction} correction`);
+            if (m.interrupt) parts.push(`⏸ ${m.interrupt} interrupt`);
+            if (m.approval) parts.push(`✓ ${m.approval} approval`);
+            if (m.directive) parts.push(`▸ ${m.directive} directive`);
+            if (m.question) parts.push(`? ${m.question} question`);
+            if (parts.length) {
+              lines.push('## Prompt markers');
+              lines.push(parts.join(' · '));
+              lines.push('');
+            }
+          }
+        }
+
+        lines.push('---');
+        lines.push('');
+        lines.push(`**🔄 Resume:** \`claude --resume ${params.session_id}\``);
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_diff': {
+        const params = RecallDiffSchema.parse(args);
+        const result = replaySession(params.session_id);
+        if (!result.found) {
+          return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
+        }
+        const files = params.file ? result.files.filter(f => f.file === params.file) : result.files;
+        if (files.length === 0) {
+          return { content: [{ type: 'text', text: `No edits found${params.file ? ` for file ${params.file}` : ''} in session ${params.session_id}.` }] };
+        }
+        const lines: string[] = [];
+        lines.push(`# 🧾 Diff — ${params.session_id.substring(0, 8)}…`);
+        lines.push(`Total: ${files.length} file(s) · +${result.totalLinesAdded} / −${result.totalLinesRemoved} lines`);
+        lines.push('');
+        for (const f of files) {
+          const flags: string[] = [];
+          if (f.reverted) flags.push('🔁 reverted');
+          if (!f.initialKnown) flags.push('⚠ initial content unknown');
+          if (f.failedEvents > 0) flags.push(`✗ ${f.failedEvents} failed`);
+          lines.push(`## \`${f.file}\``);
+          lines.push(`+${f.linesAdded} / −${f.linesRemoved} · ${f.events.length} event(s) · ${f.succeededEvents} succeeded${flags.length ? ' · ' + flags.join(' · ') : ''}`);
+          if (!params.context_only && f.diff) {
+            const diff = f.diff.length > params.max_diff_chars
+              ? f.diff.slice(0, params.max_diff_chars) + '\n…(truncated)'
+              : f.diff;
+            lines.push('');
+            lines.push('```diff');
+            lines.push(diff);
+            lines.push('```');
+          }
+          lines.push('');
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_commits': {
+        const params = RecallCommitsSchema.parse(args);
+        const replay = replaySession(params.session_id);
+        if (!replay.found) {
+          return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
+        }
+        const turns = extractTurns(params.session_id, { maxTurns: 50_000 });
+        const result = getSessionCommits(
+          params.session_id,
+          replay.files.map(f => f.file),
+          turns.startMs || Date.now() - 86_400_000,
+          turns.endMs || Date.now(),
+          params.buffer_minutes,
+        );
+        if (result.totalCommits === 0) {
+          return { content: [{ type: 'text', text: `No commits in window for ${params.session_id} across ${result.repos.length} repo(s).\n\n_Edits stayed local or window was off — try increasing buffer_minutes._` }] };
+        }
+        const lines: string[] = [];
+        lines.push(`# 🔖 Commits — ${params.session_id.substring(0, 8)}…`);
+        lines.push(`${result.totalCommits} commit(s) across ${result.repos.length} repo(s) within window`);
+        lines.push('');
+        for (const r of result.repos) {
+          lines.push(`## ${r.repoName} (${r.commits.length})`);
+          for (const c of r.commits) {
+            lines.push(`- \`${c.shortSha}\` ${c.authorIso.slice(0, 16).replace('T', ' ')} — ${c.subject}`);
+            if (c.matchedSessionFiles.length > 0) {
+              lines.push(`  _matches ${c.matchedSessionFiles.length} session file(s)_`);
+            }
+            lines.push(`  +${c.linesAdded} / −${c.linesRemoved} · ${c.files.length} file(s)`);
+          }
+          lines.push('');
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_outcome': {
+        const params = RecallOutcomeSchema.parse(args);
+        const o = computeOutcome(params.session_id);
+        if (!o.found) {
+          return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
+        }
+        const statusEmoji =
+          o.status === 'shipped' ? '🚢' :
+          o.status === 'interrupted' ? '⏸' :
+          o.status === 'abandoned' ? '🪦' :
+          o.status === 'in_progress' ? '🟡' : '❔';
+        const lines: string[] = [];
+        lines.push(`# ${statusEmoji} Outcome — ${o.status}`);
+        lines.push(`**Session:** ${params.session_id.substring(0, 8)}…`);
+        lines.push(`**Reason:** ${o.reason}`);
+        if (o.startMs && o.endMs) {
+          const mins = Math.round((o.endMs - o.startMs) / 60000);
+          lines.push(`**Window:** ${new Date(o.startMs).toISOString().slice(0, 16).replace('T', ' ')} → ${new Date(o.endMs).toISOString().slice(0, 16).replace('T', ' ')} (${mins} min)`);
+        }
+        lines.push(`**Edits:** ${o.fileCount} file(s) · +${o.totalLinesAdded} / −${o.totalLinesRemoved} lines`);
+        if (o.commits.totalCommits > 0) {
+          lines.push(`**Commits:** ${o.commits.totalCommits} (${o.commits.repos.map(r => `${r.repoName}:${r.commits.length}`).join(', ')})`);
+        }
+        if (o.decisions.length) {
+          lines.push('');
+          lines.push('## Decisions');
+          for (const d of o.decisions.slice(0, 10)) lines.push(`- ${d.text}`);
+        }
+        if (o.blockers.length) {
+          lines.push('');
+          lines.push('## Blockers');
+          for (const b of o.blockers.slice(0, 10)) lines.push(`- _${b.kind}_: ${b.text}`);
+        }
+        if (o.claimReaction.claim) {
+          lines.push('');
+          lines.push('## Final claim vs reaction');
+          lines.push(`- **claim:** ${o.claimReaction.claim.text.slice(0, 240)}`);
+          if (o.claimReaction.reaction) {
+            const r = o.claimReaction.reaction;
+            const m = r.markers.length ? ` _[${r.markers.join(', ')}]_` : '';
+            lines.push(`- **reaction:** ${r.text.slice(0, 240)}${m}`);
+          } else {
+            lines.push(`- **reaction:** _none — session ended on this claim_`);
+          }
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_markers': {
+        const params = RecallMarkersSchema.parse(args);
+        const turns = extractTurns(params.session_id, { maxTurns: 50_000 });
+        if (!turns.found) {
+          return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
+        }
+        const prompts = turns.turns
+          .filter(t => t.kind === 'user' && t.text)
+          .slice(0, params.limit)
+          .map(t => ({ ts: t.ts, tsIso: t.tsIso, line: t.line, ...markPrompt(t.text!) }));
+        const summary = summarizeMarkers(prompts);
+        const lines: string[] = [];
+        lines.push(`# 🎚 Prompt markers — ${params.session_id.substring(0, 8)}…`);
+        lines.push(`${summary.total} prompt(s) · peak intensity ${summary.peakIntensity.toFixed(2)}`);
+        const tally: string[] = [];
+        if (summary.frustrated) tally.push(`⚠ ${summary.frustrated} frustrated`);
+        if (summary.correction) tally.push(`↩ ${summary.correction} correction`);
+        if (summary.interrupt) tally.push(`⏸ ${summary.interrupt} interrupt`);
+        if (summary.approval) tally.push(`✓ ${summary.approval} approval`);
+        if (summary.directive) tally.push(`▸ ${summary.directive} directive`);
+        if (summary.question) tally.push(`? ${summary.question} question`);
+        if (summary.clarification_request) tally.push(`◇ ${summary.clarification_request} clarify`);
+        if (tally.length) lines.push(tally.join(' · '));
+        lines.push('');
+        for (const p of prompts) {
+          const stamp = p.tsIso ? p.tsIso.slice(11, 19) : '';
+          const tags = p.markers.length ? ` _[${p.markers.join(', ')}]_` : '';
+          const snippet = p.text.length > 180 ? p.text.slice(0, 180) + '…' : p.text;
+          lines.push(`- ${stamp} L${p.line}${tags}`);
+          lines.push(`  ${snippet.replace(/\n/g, ' ')}`);
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
       case 'recall_suggest_resume': {
@@ -2665,6 +3080,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           sinceMs,
           pattern: params.pattern,
           projectFilter: params.project_filter,
+          tools: params.tools,
         });
 
         const filtered: SessionEdit[] = params.include_reads
@@ -2682,17 +3098,73 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           };
         }
 
+        // Per-tool tally for the header so the agent sees the spread at a glance.
+        const byTool: Record<string, number> = {};
+        for (const e of filtered) byTool[e.tool] = (byTool[e.tool] || 0) + 1;
+        const toolSummary = Object.entries(byTool)
+          .sort((a, b) => b[1] - a[1])
+          .map(([k, n]) => `${n} ${k}`).join(' · ');
+
         const trimmed = filtered.slice(0, params.limit);
+
+        if (params.group_by_repo) {
+          // Group every filtered edit (not just the trimmed ones) by detected
+          // repo root so the agent sees the full multi-repo footprint.
+          const repoCache = new Map<string, string | null>();
+          const repos = new Map<string, SessionEdit[]>();
+          let unmatched = 0;
+          for (const e of filtered) {
+            let repo = repoCache.get(e.file);
+            if (repo === undefined) { repo = findRepoRoot(e.file); repoCache.set(e.file, repo); }
+            if (!repo) { unmatched++; continue; }
+            if (!repos.has(repo)) repos.set(repo, []);
+            repos.get(repo)!.push(e);
+          }
+          const sortedRepos = Array.from(repos.entries())
+            .sort((a, b) => b[1].length - a[1].length);
+
+          const lines = [
+            `# Edits timeline — last ${params.since_hours}h (${filtered.length} edit${filtered.length === 1 ? '' : 's'})`,
+            `_${toolSummary}_`,
+            `_${sortedRepos.length} repo(s)${unmatched ? ` · ${unmatched} edit(s) outside any git repo` : ''}_`,
+            '',
+          ];
+          for (const [repo, edits] of sortedRepos) {
+            const repoName = repo.split('/').filter(Boolean).pop() || repo;
+            const limited = edits.slice(0, params.limit);
+            lines.push(`## ${repoName}  \`${repo}\` — ${edits.length} edit(s)`);
+            lines.push('| Time (UTC) | Tool | Session | Op | File |');
+            lines.push('|---|---|---|---|---|');
+            for (const e of limited) {
+              const ts = (e.tsIso || new Date(e.ts).toISOString()).replace('T', ' ').slice(0, 19);
+              const idForDisplay = e.sessionId.replace(/^(opencode_|gemini_)/, '');
+              const sid = idForDisplay.slice(0, 8);
+              const rel = e.file.startsWith(repo + '/') ? e.file.slice(repo.length + 1) : e.file;
+              lines.push(`| ${ts} | ${e.tool} | \`${sid}\` | ${e.op} | ${rel} |`);
+            }
+            if (edits.length > limited.length) {
+              lines.push('');
+              lines.push(`…${edits.length - limited.length} more in this repo (raise \`limit\`).`);
+            }
+            lines.push('');
+          }
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+
         const lines = [
           `# Edits timeline — last ${params.since_hours}h (${filtered.length} edit${filtered.length === 1 ? '' : 's'})`,
+          `_${toolSummary}_`,
           '',
-          '| Time (UTC) | Session | Op | File | Project |',
-          '|---|---|---|---|---|',
+          '| Time (UTC) | Tool | Session | Op | File | Project |',
+          '|---|---|---|---|---|---|',
         ];
         for (const e of trimmed) {
           const ts = (e.tsIso || new Date(e.ts).toISOString()).replace('T', ' ').slice(0, 19);
-          const sid = e.sessionId.slice(0, 8);
-          lines.push(`| ${ts} | \`${sid}\` | ${e.op} | ${e.file} | ${e.projectPath} |`);
+          // Strip the tool prefix when rendering the session id so the column
+          // stays compact — the Tool column already carries that info.
+          const idForDisplay = e.sessionId.replace(/^(opencode_|gemini_)/, '');
+          const sid = idForDisplay.slice(0, 8);
+          lines.push(`| ${ts} | ${e.tool} | \`${sid}\` | ${e.op} | ${e.file} | ${e.projectPath} |`);
         }
         if (filtered.length > trimmed.length) {
           lines.push('');
@@ -2780,7 +3252,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         for (const p of prompts) {
           const t = p.ts?.slice(0, 16).replace('T', ' ') || '';
           const snippet = p.text.length > 240 ? p.text.slice(0, 240) + '…' : p.text;
-          lines.push(`- **${p.sessionId}** L${p.line}${t ? ` · ${t}` : ''}`);
+          let markerSuffix = '';
+          if (params.with_markers) {
+            const m = markPrompt(p.text);
+            if (m.markers.length) markerSuffix = ` _[${m.markers.join(', ')}]_`;
+          }
+          lines.push(`- **${p.sessionId}** L${p.line}${t ? ` · ${t}` : ''}${markerSuffix}`);
           lines.push(`  ${snippet.replace(/\n/g, ' ')}`);
         }
         return { content: [{ type: 'text', text: lines.join('\n') }] };

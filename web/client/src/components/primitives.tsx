@@ -157,6 +157,7 @@ export function ToolBadge({ tool, size = 'md' }: ToolBadgeProps) {
     claude: { fg: 'var(--cr-tool-claude)', surf: 'var(--cr-tool-claude-surf)', label: 'Claude' },
     gemini: { fg: 'var(--cr-tool-gemini)', surf: 'var(--cr-tool-gemini-surf)', label: 'Gemini' },
     opencode: { fg: 'var(--cr-tool-opencode)', surf: 'var(--cr-tool-opencode-surf)', label: 'OpenCode' },
+    codex: { fg: 'var(--cr-tool-codex)', surf: 'var(--cr-tool-codex-surf)', label: 'Codex' },
   };
   const info = m[tool];
   if (!info) return null;
