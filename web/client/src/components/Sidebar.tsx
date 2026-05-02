@@ -16,6 +16,7 @@ const TOOL_SOURCES = [
   { id: 'claude', label: 'Claude', icon: 'zap', color: 'var(--cr-tool-claude)' },
   { id: 'gemini', label: 'Gemini', icon: 'zap', color: 'var(--cr-tool-gemini)' },
   { id: 'opencode', label: 'OpenCode', icon: 'zap', color: 'var(--cr-tool-opencode)' },
+  { id: 'codex', label: 'Codex', icon: 'zap', color: 'var(--cr-tool-codex)' },
 ];
 
 export default function Sidebar({ tree, totalCount, selected, onSelect, toolFilter, setToolFilter }: SidebarProps) {

@@ -248,8 +248,11 @@ export interface AnalyticsData {
   };
 }
 
-export async function getAnalytics(): Promise<AnalyticsData> {
-  const res = await fetchWithTimeout(`${API_BASE}/analytics`, {}, 30000);
+export async function getAnalytics(tool?: 'all' | 'claude' | 'gemini' | 'opencode' | 'codex'): Promise<AnalyticsData> {
+  const url = tool && tool !== 'all'
+    ? `${API_BASE}/analytics?tool=${encodeURIComponent(tool)}`
+    : `${API_BASE}/analytics`;
+  const res = await fetchWithTimeout(url, {}, 30000);
   if (!res.ok) {
     throw new Error(`Failed to get analytics: ${res.statusText}`);
   }
@@ -369,6 +372,8 @@ export interface MemoryStatus {
   totalChunks: number;
   totalItems: number;
   bySourceType: Record<string, { items: number; chunks: number }>;
+  /** Per-(sourceType, tool) row counts — used by the Memory UI to hide tabs that have no rows for the selected tool. */
+  bySourceAndTool?: Record<string, Record<string, number>>;
   indexPath: string;
   storeStats: Record<string, number>;
   linkCount: number;
@@ -656,18 +661,77 @@ export async function getPatterns(): Promise<PatternsResponse> {
   return await res.json();
 }
 
+// --- Toolkit (skills, MCPs, commands, agents, hooks, plugins) ---
+
+export type ToolkitType = 'skill' | 'mcp' | 'command' | 'agent' | 'hook' | 'plugin';
+
+export interface ToolkitStatus {
+  counts: Record<ToolkitType, Record<'claude' | 'gemini' | 'opencode' | 'codex', number>>;
+}
+
+export async function getToolkitStatus(): Promise<ToolkitStatus> {
+  const res = await fetchWithTimeout(`${API_BASE}/toolkit/status`);
+  if (!res.ok) throw new Error(`Failed to load toolkit status: ${res.statusText}`);
+  return await res.json();
+}
+
+export async function browseToolkit(
+  type: ToolkitType,
+  opts: { limit?: number; offset?: number; tool?: 'all' | 'claude' | 'gemini' | 'opencode' | 'codex' } = {},
+): Promise<MemoryMetadataRow[]> {
+  const params = new URLSearchParams();
+  if (opts.limit !== undefined) params.append('limit', String(opts.limit));
+  if (opts.offset !== undefined) params.append('offset', String(opts.offset));
+  if (opts.tool && opts.tool !== 'all') params.append('tool', opts.tool);
+  const res = await fetchWithTimeout(`${API_BASE}/toolkit/browse/${type}?${params}`);
+  if (!res.ok) throw new Error(`Failed to browse toolkit: ${res.statusText}`);
+  const data = await res.json();
+  return data.items;
+}
+
+export async function getToolkitItem(type: ToolkitType, id: string): Promise<MemoryMetadataRow> {
+  const res = await fetchWithTimeout(`${API_BASE}/toolkit/item/${type}/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error(`Failed to get toolkit item: ${res.statusText}`);
+  return await res.json();
+}
+
+export async function getToolkitItemContent(type: ToolkitType, id: string): Promise<{ content: string; filePath: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/toolkit/item/${type}/${encodeURIComponent(id)}/content`);
+  if (!res.ok) throw new Error(`Failed to load toolkit item content: ${res.statusText}`);
+  return await res.json();
+}
+
+export async function promoteToolkitItem(
+  type: ToolkitType,
+  sourceId: string,
+  toTool: 'claude' | 'gemini' | 'opencode' | 'codex',
+): Promise<{ ok: boolean; targetPath?: string; error?: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/toolkit/promote`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type, sourceId, toTool }),
+  }, 30000);
+  const data = await res.json();
+  if (!res.ok) return { ok: false, error: data.error || res.statusText };
+  return data;
+}
+
 // --- Edits timeline / live session files ---
 
 export type EditOp = 'edit' | 'write' | 'multi_edit' | 'notebook_edit' | 'read';
+export type AiTool = 'claude' | 'gemini' | 'opencode' | 'codex';
 
 export interface EditRow {
   ts: number;
   tsIso?: string;
   sessionId: string;
   projectPath: string;
+  repoRoot?: string | null;
+  repoName?: string | null;
   file: string;
   op: EditOp;
   toolName: string;
+  tool: AiTool;
   line: number;
 }
 
@@ -675,6 +739,8 @@ export interface EditsTimelineResponse {
   sinceHours: number;
   total: number;
   truncated: boolean;
+  byTool?: Partial<Record<AiTool, number>>;
+  byRepo?: Record<string, { name: string; count: number; sample: string }>;
   edits: EditRow[];
 }
 
@@ -684,6 +750,8 @@ export async function getEditsTimeline(opts: {
   pattern?: string;
   project?: string;
   includeReads?: boolean;
+  groupByRepo?: boolean;
+  tools?: AiTool[];
 } = {}): Promise<EditsTimelineResponse> {
   const params = new URLSearchParams();
   if (opts.sinceHours !== undefined) params.append('since_hours', String(opts.sinceHours));
@@ -691,6 +759,8 @@ export async function getEditsTimeline(opts: {
   if (opts.pattern) params.append('pattern', opts.pattern);
   if (opts.project) params.append('project', opts.project);
   if (opts.includeReads) params.append('include_reads', 'true');
+  if (opts.groupByRepo) params.append('group_by_repo', 'true');
+  if (opts.tools && opts.tools.length > 0) params.append('tools', opts.tools.join(','));
 
   const res = await fetchWithTimeout(`${API_BASE}/edits/timeline?${params}`, {}, 30000);
   if (!res.ok) {
@@ -701,6 +771,7 @@ export async function getEditsTimeline(opts: {
 
 export interface LiveSessionFiles {
   sessionId: string;
+  tool: AiTool;
   projectPath: string;
   files: string[];
   reads: string[];
@@ -711,6 +782,7 @@ export interface LiveSessionFiles {
     file: string;
     op: EditOp;
     toolName: string;
+    tool: AiTool;
     line: number;
   }>;
   source: 'live';
@@ -739,4 +811,195 @@ export async function updateItemProjectPath(
   if (!res.ok) {
     throw new Error(`Failed to update project path: ${res.statusText}`);
   }
+}
+
+// ── Diff / Commits / Outcome / Markers / Turns ─────────────────────────
+
+export type SessionStatus = 'shipped' | 'interrupted' | 'abandoned' | 'in_progress' | 'unknown';
+export type PromptMarker =
+  | 'interrupt'
+  | 'frustrated'
+  | 'correction'
+  | 'approval'
+  | 'question'
+  | 'directive'
+  | 'clarification_request';
+
+export interface SessionDiffFile {
+  file: string;
+  diff: string;
+  linesAdded: number;
+  linesRemoved: number;
+  reverted: boolean;
+  succeededEvents: number;
+  failedEvents: number;
+  initialKnown: boolean;
+  events: Array<{
+    ts: number;
+    tsIso?: string;
+    line: number;
+    toolName: string;
+    toolUseId: string;
+    succeeded: boolean;
+    toolError?: string;
+    applyError?: string;
+    editsCount?: number;
+    writeBytes?: number;
+  }>;
+}
+
+export interface SessionDiffResponse {
+  sessionId: string;
+  projectPath: string;
+  totalLinesAdded: number;
+  totalLinesRemoved: number;
+  files: SessionDiffFile[];
+}
+
+export async function getSessionDiff(sessionId: string, file?: string): Promise<SessionDiffResponse> {
+  const params = file ? `?file=${encodeURIComponent(file)}` : '';
+  const res = await fetchWithTimeout(`${API_BASE}/conversations/${sessionId}/diff${params}`, {}, 60000);
+  if (!res.ok) {
+    if (res.status === 404) throw new Error('Session not found');
+    throw new Error(`Failed to load diff: ${res.statusText}`);
+  }
+  return await res.json();
+}
+
+export interface SessionCommit {
+  repo: string;
+  repoName: string;
+  sha: string;
+  shortSha: string;
+  authorIso: string;
+  authorName: string;
+  subject: string;
+  body: string;
+  files: string[];
+  linesAdded: number;
+  linesRemoved: number;
+  matchedSessionFiles: string[];
+}
+
+export interface SessionCommitsResponse {
+  sessionId: string;
+  startMs: number;
+  endMs: number;
+  totalCommits: number;
+  repos: Array<{
+    repo: string;
+    repoName: string;
+    commits: SessionCommit[];
+  }>;
+}
+
+export async function getSessionCommits(sessionId: string): Promise<SessionCommitsResponse> {
+  const res = await fetchWithTimeout(`${API_BASE}/conversations/${sessionId}/commits`, {}, 30000);
+  if (!res.ok) {
+    if (res.status === 404) throw new Error('Session not found');
+    throw new Error(`Failed to load commits: ${res.statusText}`);
+  }
+  return await res.json();
+}
+
+export interface SessionDecision { text: string; ts: number; tsIso?: string; line: number; }
+export interface SessionBlocker {
+  kind: 'tool_error' | 'interrupt' | 'unknown_error';
+  text: string; ts: number; tsIso?: string; line: number;
+}
+export interface ClaimReactionPair {
+  claim?: { text: string; ts: number; tsIso?: string; line: number };
+  reaction?: { text: string; ts: number; tsIso?: string; line: number; markers: PromptMarker[]; intensity: number };
+}
+export interface MarkedPrompt {
+  text: string; markers: PromptMarker[]; intensity: number;
+  line?: number; ts?: number; tsIso?: string;
+}
+export interface SessionMarkerCounts {
+  total: number;
+  interrupt: number;
+  frustrated: number;
+  correction: number;
+  approval: number;
+  question: number;
+  directive: number;
+  clarification_request: number;
+  peakIntensity: number;
+}
+
+export interface SessionOutcomeResponse {
+  sessionId: string;
+  found: boolean;
+  status: SessionStatus;
+  reason: string;
+  startMs: number;
+  endMs: number;
+  decisions: SessionDecision[];
+  blockers: SessionBlocker[];
+  claimReaction: ClaimReactionPair;
+  prompts: MarkedPrompt[];
+  promptMarkers: SessionMarkerCounts;
+  commits: SessionCommitsResponse;
+  fileCount: number;
+  filesChanged: string[];
+  totalLinesAdded: number;
+  totalLinesRemoved: number;
+}
+
+export async function getSessionOutcome(sessionId: string): Promise<SessionOutcomeResponse> {
+  const res = await fetchWithTimeout(`${API_BASE}/conversations/${sessionId}/outcome`, {}, 60000);
+  if (!res.ok) {
+    if (res.status === 404) throw new Error('Session not found');
+    throw new Error(`Failed to load outcome: ${res.statusText}`);
+  }
+  return await res.json();
+}
+
+export interface SessionMarkersResponse {
+  sessionId: string;
+  prompts: MarkedPrompt[];
+  summary: SessionMarkerCounts;
+}
+
+export async function getSessionMarkers(sessionId: string): Promise<SessionMarkersResponse> {
+  const res = await fetchWithTimeout(`${API_BASE}/conversations/${sessionId}/markers`, {}, 30000);
+  if (!res.ok) {
+    if (res.status === 404) throw new Error('Session not found');
+    throw new Error(`Failed to load markers: ${res.statusText}`);
+  }
+  return await res.json();
+}
+
+export type TurnKind = 'user' | 'assistant_text' | 'tool_use' | 'tool_result';
+export interface SessionTurn {
+  kind: TurnKind;
+  ts: number;
+  tsIso?: string;
+  line: number;
+  text?: string;
+  toolName?: string;
+  toolUseId?: string;
+  toolInputSummary?: string;
+  command?: string;
+  resultSummary?: string;
+  resultIsError?: boolean;
+  resultExitCode?: number;
+  resultBytes?: number;
+}
+export interface SessionTurnsResponse {
+  sessionId: string;
+  found: boolean;
+  startMs: number;
+  endMs: number;
+  turns: SessionTurn[];
+}
+
+export async function getSessionTurns(sessionId: string, limit?: number): Promise<SessionTurnsResponse> {
+  const qp = limit ? `?limit=${limit}` : '';
+  const res = await fetchWithTimeout(`${API_BASE}/conversations/${sessionId}/turns${qp}`, {}, 30000);
+  if (!res.ok) {
+    if (res.status === 404) throw new Error('Session not found');
+    throw new Error(`Failed to load turns: ${res.statusText}`);
+  }
+  return await res.json();
 }

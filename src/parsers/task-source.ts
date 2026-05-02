@@ -47,6 +47,61 @@ export class TaskSource implements MemorySource {
     for (const tasksDir of this.tasksDirs) {
       yield* this.discoverInDir(tasksDir);
     }
+    // Claude also keeps per-agent todo state in ~/.claude/todos/<uuid>.json,
+    // separate from tasks/. Most files are empty (agents that finished
+    // cleanly), so we skip the noise and only yield the ones with real content.
+    yield* this.discoverClaudeTodos();
+  }
+
+  private async *discoverClaudeTodos(): AsyncGenerator<MemoryItem> {
+    const todosDir = join(homedir(), '.claude', 'todos');
+    if (!existsSync(todosDir)) return;
+
+    let files: string[];
+    try { files = readdirSync(todosDir).filter(f => f.endsWith('.json')); } catch { return; }
+
+    for (const file of files) {
+      const filePath = join(todosDir, file);
+      let stat;
+      try { stat = statSync(filePath); } catch { continue; }
+      // Skip empty `[]` files (most of the 2,500+ are these).
+      if (stat.size < 6) continue;
+
+      let parsed: TaskJson[];
+      try {
+        const raw = readFileSync(filePath, 'utf-8');
+        parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed) || parsed.length === 0) continue;
+      } catch { continue; }
+
+      // Filename pattern: <sessionUuid>-agent-<sessionUuid>.json
+      const m = file.match(/^([0-9a-f-]{36})-agent-/i);
+      const sessionUuid = m ? m[1] : file.replace(/\.json$/, '');
+
+      const subjects = parsed.map(t => (t as any).content || t.subject || '').filter(Boolean);
+      const title = subjects.join(' | ').slice(0, 150);
+      const preview = parsed
+        .map(t => `[${t.status || 'unknown'}] ${(t as any).content || t.subject || ''}`)
+        .join('\n')
+        .slice(0, 300);
+
+      yield {
+        id: `agent_todo_${sessionUuid}`,
+        sourceType: 'task',
+        title,
+        projectPath: '',
+        filePath,
+        mtime: stat.mtimeMs,
+        contentPreview: preview,
+        extra: {
+          tool: 'claude',
+          kind: 'agent_todo',
+          sessionUuid,
+          taskCount: parsed.length,
+          completedCount: parsed.filter(t => t.status === 'completed').length,
+        },
+      };
+    }
   }
 
   private async *discoverInDir(tasksDir: string): AsyncGenerator<MemoryItem> {
@@ -96,6 +151,11 @@ export class TaskSource implements MemorySource {
   }
 
   async parse(item: MemoryItem): Promise<MemoryChunk[]> {
+    // agent_todo items point at a single .json file, not a directory.
+    if ((item.extra as any)?.kind === 'agent_todo') {
+      return this.parseAgentTodo(item);
+    }
+
     const taskDir = item.filePath;
     if (!existsSync(taskDir)) return [];
 
@@ -150,14 +210,45 @@ export class TaskSource implements MemorySource {
   }
 
   async extractLinks(item: MemoryItem): Promise<MemoryLink[]> {
-    // The task directory UUID IS the session ID
+    // The task directory UUID IS the session ID. agent_todo items keep the
+    // session UUID in extra.sessionUuid so we can still wire the link.
+    const extra = (item.extra || {}) as Record<string, unknown>;
+    const sessionId = extra.kind === 'agent_todo' ? (extra.sessionUuid as string) : item.id;
+    if (!sessionId) return [];
     return [{
       sourceType: 'task',
       sourceId: item.id,
       targetType: 'session',
-      targetId: item.id,
+      targetId: sessionId,
       linkType: 'task_in_session',
       confidence: 1.0,
+    }];
+  }
+
+  private async parseAgentTodo(item: MemoryItem): Promise<MemoryChunk[]> {
+    if (!existsSync(item.filePath)) return [];
+    let parsed: TaskJson[];
+    try {
+      parsed = JSON.parse(readFileSync(item.filePath, 'utf-8'));
+    } catch { return []; }
+    if (!Array.isArray(parsed) || parsed.length === 0) return [];
+
+    const lines = parsed.map(t => {
+      const subject = (t as any).content || t.subject || '';
+      const status = t.status || 'unknown';
+      return `[${status}] ${subject}`;
+    });
+
+    return [{
+      chunkId: `${item.id}_agent_todo`,
+      itemId: item.id,
+      sourceType: 'task',
+      title: item.title,
+      text: lines.join('\n').slice(0, MAX_CHUNK_CHARS),
+      chunkType: 'agent_todo',
+      projectPath: item.projectPath,
+      filePath: item.filePath,
+      mtime: item.mtime,
     }];
   }
 
