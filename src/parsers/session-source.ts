@@ -48,7 +48,11 @@ export class SessionSource implements MemorySource {
       chunkId: sc.chunkId,
       itemId: sc.sessionId,
       sourceType: 'session' as const,
-      title: sc.firstPrompt.slice(0, 100) || `Session ${sc.sessionId.slice(0, 8)}`,
+      // Empty title is preferable to "Session abc12345" placeholder text:
+      // the latter pollutes search results and gets surfaced in the UI as
+      // a misleading heading. Downstream renderers fall back to
+      // project path / time when title is empty.
+      title: sc.firstPrompt.slice(0, 100),
       text: sc.text,
       chunkType: sc.chunkType,
       projectPath: sc.projectPath,
@@ -67,9 +71,12 @@ export class SessionSource implements MemorySource {
     return {
       id: entry.sessionId,
       sourceType: 'session',
+      // Empty title when there's no first prompt — the UI then knows to
+      // fall back to summary or project path instead of rendering the
+      // useless "Session abc12345" placeholder as a heading.
       title: entry.firstPrompt
         ? entry.firstPrompt.replace(/\n/g, ' ').trim().slice(0, 100)
-        : `Session ${entry.sessionId.slice(0, 8)}`,
+        : '',
       projectPath: entry.projectPath,
       filePath: sessionPath,
       mtime: entry.fileMtime,

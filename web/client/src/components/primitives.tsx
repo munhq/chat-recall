@@ -34,6 +34,7 @@ const ICONS: Record<string, string> = {
   database: 'M12 8c4.97 0 9-1.57 9-3.5S16.97 1 12 1 3 2.57 3 4.5 7.03 8 12 8zM3 4.5v15C3 21.43 7.03 23 12 23s9-1.57 9-3.5v-15M3 12c0 1.93 4.03 3.5 9 3.5s9-1.57 9-3.5',
   sun: 'M12 3v2M12 19v2M5.64 5.64l1.41 1.41M16.95 16.95l1.41 1.41M3 12h2M19 12h2M5.64 18.36l1.41-1.41M16.95 7.05l1.41-1.41M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z',
   moon: 'M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z',
+  menu: 'M3 6h18M3 12h18M3 18h18',
 };
 
 interface IconProps extends React.SVGProps<SVGSVGElement> {
@@ -101,9 +102,10 @@ interface ChipProps {
   icon?: string;
   size?: 'sm' | 'md';
   style?: React.CSSProperties;
+  className?: string;
 }
 
-export function Chip({ children, kind = 'neutral', icon, size = 'md', style }: ChipProps) {
+export function Chip({ children, kind = 'neutral', icon, size = 'md', style, className }: ChipProps) {
   const sizes: Record<string, { h: number, px: number, fs: number }> = {
     xs: { h: 18, px: 4, fs: 9 },
     sm: { h: 20, px: 6, fs: 11 },
@@ -122,6 +124,7 @@ export function Chip({ children, kind = 'neutral', icon, size = 'md', style }: C
   const k = kinds[kind];
   return (
     <span
+      className={className}
       style={{
         display: 'inline-flex',
         alignItems: 'center',

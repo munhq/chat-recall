@@ -62,7 +62,7 @@ description: Create plugins
   });
 
   test('discovers Codex plugin-bundled skills', async () => {
-    writeSkill('.codex/.tmp/plugins/myplugin/skills', 'react-helper', `---
+    writeSkill('.codex/.tmp/plugins/plugins/myplugin/skills', 'react-helper', `---
 name: react-helper
 description: React tips
 ---`);

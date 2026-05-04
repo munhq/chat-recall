@@ -386,6 +386,169 @@ function makeFileResult(acc: FileAccumulator): FileReplayResult {
 }
 
 /**
+ * Walk a single Codex rollout file and accumulate file edits into the
+ * given Map. Three signal sources:
+ *   1. function_call name='apply_patch' with patch text in args.input
+ *   2. event_msg/exec_command_end with Codex's pre-classified parsed_cmd
+ *   3. response_item/function_call name='exec_command' (used by sub-agents)
+ *      whose `cmd` string is a shell write (sed -i / cat > / tee / heredoc /
+ *      apply_patch heredoc / printf > / echo > / append).
+ *
+ * Sub-agents only emit (3) — they don't get parsed_cmd events — so without
+ * a heuristic shell parser their writes never surface in the diff.
+ */
+function walkCodexRolloutForEdits(path: string, accs: Map<string, FileAccumulator>): void {
+  let raw = '';
+  try { raw = readFileSync(path, 'utf-8'); } catch { return; }
+
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    let obj: any; try { obj = JSON.parse(line); } catch { continue; }
+
+    if (obj?.type === 'response_item' && obj.payload?.type === 'function_call') {
+      const name = obj.payload.name;
+      let args: any = obj.payload.arguments;
+      if (typeof args === 'string') { try { args = JSON.parse(args); } catch { /* keep raw */ } }
+
+      // (1) apply_patch as a typed function call
+      if (name === 'apply_patch' && typeof args?.input === 'string') {
+        for (const sec of parseCodexPatch(args.input)) {
+          const acc = accs.get(sec.file) || { file: sec.file, events: [], before: null, after: null, succeeded: 0, failed: 0 };
+          acc.events.push({ ts: 0, toolName: sec.kind === 'add' ? 'Write' : 'Edit', toolUseId: '', line: 0, succeeded: true });
+          acc.succeeded++;
+          if (sec.kind === 'add') { acc.before = ''; acc.after = sec.added.join('\n'); }
+          else {
+            (acc as any)._linesAdded = ((acc as any)._linesAdded || 0) + sec.added.length;
+            (acc as any)._linesRemoved = ((acc as any)._linesRemoved || 0) + sec.removed.length;
+          }
+          accs.set(sec.file, acc);
+        }
+      }
+
+      // (3) exec_command (sub-agents) — parse the cmd string for writes.
+      if (name === 'exec_command' && typeof args?.cmd === 'string') {
+        for (const w of parseShellWrites(args.cmd)) {
+          const acc = accs.get(w.file) || { file: w.file, events: [], before: null, after: null, succeeded: 0, failed: 0 };
+          acc.events.push({ ts: 0, toolName: w.kind === 'write' ? 'Write' : 'Edit', toolUseId: '', line: 0, succeeded: true });
+          acc.succeeded++;
+          if (w.content !== null) {
+            // Heredoc with full content — we have the whole "after" image.
+            // For an Add, before = ''. For an Edit/append, leave before null
+            // (we don't know the prior state) but keep the after for a
+            // partial-image diff.
+            if (w.kind === 'write' && acc.before === null) acc.before = '';
+            acc.after = w.content;
+          }
+          accs.set(w.file, acc);
+        }
+      }
+    }
+
+    // (2) event_msg/exec_command_end carries Codex's own classification
+    // of the shell command — used by parent rollouts.
+    if (obj?.type === 'event_msg' && obj.payload?.type === 'exec_command_end') {
+      const parsed = Array.isArray(obj.payload.parsed_cmd) ? obj.payload.parsed_cmd : [];
+      for (const c of parsed) {
+        const t = String(c?.type || '');
+        const file = String(c?.path || c?.file || '');
+        if (!file || (t !== 'write' && t !== 'edit')) continue;
+        const acc = accs.get(file) || { file, events: [], before: null, after: null, succeeded: 0, failed: 0 };
+        acc.events.push({ ts: 0, toolName: t === 'write' ? 'Write' : 'Edit', toolUseId: '', line: 0, succeeded: true });
+        acc.succeeded++;
+        accs.set(file, acc);
+      }
+    }
+  }
+}
+
+/**
+ * Heuristic shell-command parser that extracts file writes Codex
+ * sub-agents emit. Recognized patterns:
+ *   sed -i [-e] '…' /path/file        → edit
+ *   cat   > /path/file [<<'EOF' …EOF] → write (heredoc captures content)
+ *   cat  >> /path/file [<<'EOF' …EOF] → edit
+ *   tee  [-a] /path/file [<<'EOF']    → write/edit
+ *   printf …  >  /path/file           → write
+ *   printf … >> /path/file            → edit
+ *   echo   …  >  /path/file           → write
+ *   echo   … >> /path/file            → edit
+ *   apply_patch '<<EOF…EOF'           → patch payload (parsed via parseCodexPatch)
+ * False positives are filtered out: lines that are clearly grep/awk/etc.
+ */
+function parseShellWrites(cmd: string): Array<{ file: string; kind: 'write' | 'edit'; content: string | null }> {
+  const out: Array<{ file: string; kind: 'write' | 'edit'; content: string | null }> = [];
+
+  // Only inspect the first physical line of the command — anything past the
+  // first newline is the heredoc body / multi-line script and should not be
+  // parsed for redirects (that's what produced spurious files like 'PATCH'
+  // or `{` from script bodies).
+  const firstLine = cmd.split('\n', 1)[0].trim();
+  if (!firstLine) return out;
+
+  // Heredoc body, captured for content recovery on writes.
+  const heredocMatch = cmd.match(/<<\s*-?['"]?([A-Za-z_][\w]*)['"]?\s*\n([\s\S]*?)\n\1\s*$/m);
+
+  // Strip a single matching pair of surrounding quotes (heredoc filenames
+  // in shell often look like `> "file.txt"` or `> 'file.txt'`).
+  const stripQuotes = (s: string): string => {
+    const m = s.match(/^(['"`])(.*)\1$/);
+    return m ? m[2] : s;
+  };
+
+  // Path validity: must contain a slash OR be a relative path with a known
+  // file extension. Reject brace-bits, redirect operators, devices.
+  const looksLikeFile = (raw: string): boolean => {
+    const s = stripQuotes(raw);
+    if (!s || s.length < 2) return false;
+    if (/^[{}()[\]<>|&;]/.test(s)) return false;
+    if (s === '/dev/null' || s === '/dev/stdout' || s === '/dev/stderr') return false;
+    return s.includes('/') || /\.\w{1,8}$/.test(s);
+  };
+
+  // 0) apply_patch heredoc — capture and parse the patch payload.
+  if (/^apply_patch\b/.test(firstLine) && heredocMatch) {
+    for (const sec of parseCodexPatch(heredocMatch[2])) {
+      out.push({
+        file: sec.file,
+        kind: sec.kind === 'add' ? 'write' : 'edit',
+        content: sec.kind === 'add' ? sec.added.join('\n') : null,
+      });
+    }
+    return out;
+  }
+
+  // 1) sed -i [-e '…']* /path/file
+  //    Captures the last argument; tolerates double-quoted scripts too.
+  const sedMatch = firstLine.match(/^sed\s+-i\S*\s+(?:-e\s+(?:'[^']*'|"[^"]*")\s+)*(?:'[^']*'|"[^"]*"|\S+)\s+(\S+)\s*$/);
+  if (sedMatch && looksLikeFile(sedMatch[1])) {
+    out.push({ file: stripQuotes(sedMatch[1]), kind: 'edit', content: null });
+    return out;
+  }
+
+  // 2) Redirection on the first line: `cmd > file`, `cmd >> file`. Only the
+  //    last redirect on the line is interesting.
+  const redirMatches = [...firstLine.matchAll(/(>{1,2})\s+(\S+)/g)];
+  const lastRedir = redirMatches[redirMatches.length - 1];
+  if (lastRedir && looksLikeFile(lastRedir[2])) {
+    const file = stripQuotes(lastRedir[2]);
+    const kind: 'write' | 'edit' = lastRedir[1] === '>>' ? 'edit' : 'write';
+    const content = heredocMatch ? heredocMatch[2] : null;
+    out.push({ file, kind, content });
+  }
+
+  // 3) `tee [-a] file` (with or without piping in). No `>` arrow.
+  const teeMatch = firstLine.match(/(?:^|\|\s*)tee\s+(?:(-a)\s+)?(\S+)/);
+  const teeFile = teeMatch ? stripQuotes(teeMatch[2]) : '';
+  if (teeMatch && looksLikeFile(teeMatch[2]) && !out.find(w => w.file === teeFile)) {
+    const kind: 'write' | 'edit' = teeMatch[1] ? 'edit' : 'write';
+    const content = heredocMatch ? heredocMatch[2] : null;
+    out.push({ file: teeFile, kind, content });
+  }
+
+  return out;
+}
+
+/**
  * Codex apply_patch payload format (truncated):
  *   *** Begin Patch
  *   *** Update File: path/to/file.ts
@@ -400,56 +563,40 @@ function makeFileResult(acc: FileAccumulator): FileReplayResult {
  * full new content.
  */
 function replayCodexSession(sessionId: string): SessionDiffResult {
-  const located = findCodexSessionFile(sessionId.replace(/^codex_/, ''));
+  const parentUuid = sessionId.replace(/^codex_/, '');
+  const located = findCodexSessionFile(parentUuid);
   if (!located) return { sessionId, found: false, projectPath: '', files: [], totalLinesAdded: 0, totalLinesRemoved: 0 };
-
-  let raw = '';
-  try { raw = readFileSync(located.path, 'utf-8'); } catch { return { sessionId, found: false, projectPath: '', files: [], totalLinesAdded: 0, totalLinesRemoved: 0 }; }
 
   const accs = new Map<string, FileAccumulator>();
   const projectPath = located.projectPath;
 
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue;
-    let obj: any; try { obj = JSON.parse(line); } catch { continue; }
+  // Walk the parent rollout first.
+  walkCodexRolloutForEdits(located.path, accs);
 
-    // Path 1: function_call name='apply_patch' (used by some Codex flows).
-    if (obj?.type === 'response_item' && obj.payload?.type === 'function_call') {
-      const name = obj.payload.name;
-      let args: any = obj.payload.arguments;
-      if (typeof args === 'string') { try { args = JSON.parse(args); } catch { /* keep raw */ } }
+  // Then fan out to every sub-agent rollout that targets this parent.
+  // Codex stores them as siblings in the same YYYY/MM/DD directory; the
+  // session_meta payload's source.subagent.thread_spawn.parent_thread_id
+  // is the link. The actual file edits happen in the sub-agents — the
+  // parent only orchestrates via spawn_agent / wait_agent — so without
+  // this fan-out the Diff/Files tabs read empty for orchestrator parents.
+  const dayDir = located.path.substring(0, located.path.lastIndexOf('/'));
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(dayDir);
+  } catch { /* dir gone */ }
 
-      if (name === 'apply_patch' && typeof args?.input === 'string') {
-        for (const sec of parseCodexPatch(args.input)) {
-          const acc = accs.get(sec.file) || { file: sec.file, events: [], before: null, after: null, succeeded: 0, failed: 0 };
-          acc.events.push({ ts: 0, toolName: sec.kind === 'add' ? 'Write' : 'Edit', toolUseId: '', line: 0, succeeded: true });
-          acc.succeeded++;
-          if (sec.kind === 'add') { acc.before = ''; acc.after = sec.added.join('\n'); }
-          else {
-            (acc as any)._linesAdded = ((acc as any)._linesAdded || 0) + sec.added.length;
-            (acc as any)._linesRemoved = ((acc as any)._linesRemoved || 0) + sec.removed.length;
-          }
-          accs.set(sec.file, acc);
-        }
-      }
-    }
-
-    // Path 2: event_msg/exec_command_end carries Codex's own classification
-    // of the shell command (parsed_cmd[].type). Use those when present so
-    // shell-driven writes show up too.
-    if (obj?.type === 'event_msg' && obj.payload?.type === 'exec_command_end') {
-      const parsed = Array.isArray(obj.payload.parsed_cmd) ? obj.payload.parsed_cmd : [];
-      for (const c of parsed) {
-        const t = String(c?.type || '');
-        const file = String(c?.path || c?.file || '');
-        if (!file || (t !== 'write' && t !== 'edit')) continue;
-        const acc = accs.get(file) || { file, events: [], before: null, after: null, succeeded: 0, failed: 0 };
-        acc.events.push({ ts: 0, toolName: t === 'write' ? 'Write' : 'Edit', toolUseId: '', line: 0, succeeded: true });
-        acc.succeeded++;
-        // We don't have content, so no diff — but the file appears in the list.
-        accs.set(file, acc);
-      }
-    }
+  for (const entry of entries) {
+    if (!entry.endsWith('.jsonl') || !entry.startsWith('rollout-')) continue;
+    const path = `${dayDir}/${entry}`;
+    if (path === located.path) continue;
+    let firstLine = '';
+    try { firstLine = readFileSync(path, 'utf-8').split('\n', 1)[0] || ''; } catch { continue; }
+    if (!firstLine) continue;
+    let meta: any;
+    try { meta = JSON.parse(firstLine); } catch { continue; }
+    const spawn = meta?.payload?.source?.subagent?.thread_spawn;
+    if (!spawn || spawn.parent_thread_id !== parentUuid) continue;
+    walkCodexRolloutForEdits(path, accs);
   }
 
   const files: FileReplayResult[] = [];
@@ -599,11 +746,18 @@ function replayOpenCodeSession(sessionId: string): SessionDiffResult {
     if (!sess) return { sessionId, found: false, projectPath: '', files: [], totalLinesAdded: 0, totalLinesRemoved: 0 };
     const projectPath = sess.project_path || sess.directory || '';
 
+    // OpenCode's `task` tool spawns child sessions (session.parent_id = us).
+    // The actual edits happen in those children, so we union their parts
+    // with our own — same pattern as Codex sub-agents and Claude subagents.
+    const childIds = (db.prepare('SELECT id FROM session WHERE parent_id = ?').all(ocId) as Array<{ id: string }>).map(r => r.id);
+    const allIds = [ocId, ...childIds];
+
+    const placeholders = allIds.map(() => '?').join(',');
     const parts = db.prepare(`
       SELECT data FROM part
-      WHERE session_id = ? AND data LIKE '%"type":"tool"%'
+      WHERE session_id IN (${placeholders}) AND data LIKE '%"type":"tool"%'
       ORDER BY time_created ASC
-    `).all(ocId) as Array<{ data: string }>;
+    `).all(...allIds) as Array<{ data: string }>;
 
     const accs = new Map<string, FileAccumulator>();
 
@@ -719,8 +873,34 @@ export function computeOutcomeAny(sessionId: string): SessionOutcome {
     if (decisions.length >= 30) break;
   }
 
-  const replay = replaySessionAny(sessionId);
-  const filesChanged = replay.files.map(f => f.file);
+  // For OpenCode, prefer the native pre-computed summary_* columns over
+  // a full part-replay. The OpenCode SQLite store maintains
+  // summary_files / summary_additions / summary_deletions per session
+  // already — we'd just be re-deriving the same numbers by walking every
+  // tool-part row. We DO still need the file list (for git matching),
+  // which we extract via a lighter query on the part table when needed.
+  let filesChanged: string[];
+  let totalLinesAdded: number;
+  let totalLinesRemoved: number;
+  if (tool === 'opencode') {
+    const native = readOpenCodeSessionSummary(sessionId);
+    if (native) {
+      filesChanged = native.filesChanged;
+      totalLinesAdded = native.totalLinesAdded;
+      totalLinesRemoved = native.totalLinesRemoved;
+    } else {
+      const replay = replaySessionAny(sessionId);
+      filesChanged = replay.files.map(f => f.file);
+      totalLinesAdded = replay.totalLinesAdded;
+      totalLinesRemoved = replay.totalLinesRemoved;
+    }
+  } else {
+    const replay = replaySessionAny(sessionId);
+    filesChanged = replay.files.map(f => f.file);
+    totalLinesAdded = replay.totalLinesAdded;
+    totalLinesRemoved = replay.totalLinesRemoved;
+  }
+
   const commits = getSessionCommits(
     sessionId, filesChanged, turnsRes.startMs, turnsRes.endMs,
   );
@@ -740,7 +920,80 @@ export function computeOutcomeAny(sessionId: string): SessionOutcome {
     claimReaction: {},
     prompts, promptMarkers, commits,
     fileCount: filesChanged.length, filesChanged,
-    totalLinesAdded: replay.totalLinesAdded,
-    totalLinesRemoved: replay.totalLinesRemoved,
+    totalLinesAdded,
+    totalLinesRemoved,
   };
+}
+
+/**
+ * Read OpenCode's native pre-computed session summary
+ * (summary_files / summary_additions / summary_deletions) plus the
+ * distinct file paths touched, without replaying every part row.
+ *
+ * Why: OpenCode already counts file/line changes during normal
+ * operation and persists them on the session row. We were re-deriving
+ * the same numbers by parsing every JSON `part` row — wasteful when the
+ * source has them ready. We still query the part table for the file
+ * paths (needed for `getSessionCommits` git matching), but that's a
+ * single SELECT DISTINCT instead of a full N-row JSON parse loop.
+ *
+ * Returns null when the row is absent (sessionId not in the OpenCode DB)
+ * or when the OpenCode store itself is missing.
+ */
+function readOpenCodeSessionSummary(sessionId: string): {
+  filesChanged: string[];
+  totalLinesAdded: number;
+  totalLinesRemoved: number;
+} | null {
+  const ocId = sessionId.replace(/^opencode_/, '');
+  const dbPath = join(homedir(), '.local', 'share', 'opencode', 'opencode.db');
+  if (!existsSync(dbPath)) return null;
+
+  let db: Database.Database;
+  try { db = new Database(dbPath, { readonly: true, fileMustExist: true }); }
+  catch { return null; }
+
+  try {
+    // Sum the summary across the parent + any child sessions (task tool
+    // spawns sub-sessions whose edits belong to the parent's outcome).
+    const childIds = (db.prepare('SELECT id FROM session WHERE parent_id = ?').all(ocId) as Array<{ id: string }>).map(r => r.id);
+    const allIds = [ocId, ...childIds];
+    const placeholders = allIds.map(() => '?').join(',');
+
+    const sums = db.prepare(`
+      SELECT
+        COALESCE(SUM(summary_additions), 0) as add_sum,
+        COALESCE(SUM(summary_deletions), 0) as del_sum
+      FROM session
+      WHERE id IN (${placeholders})
+    `).get(...allIds) as { add_sum: number; del_sum: number };
+
+    // Distinct file paths from the part rows. Cheaper than the full JSON
+    // walk — we only need the path strings, not the diff bodies.
+    const partRows = db.prepare(`
+      SELECT DISTINCT data FROM part
+      WHERE session_id IN (${placeholders}) AND data LIKE '%"type":"tool"%'
+    `).all(...allIds) as Array<{ data: string }>;
+
+    const files = new Set<string>();
+    for (const p of partRows) {
+      try {
+        const d = JSON.parse(p.data);
+        if (d?.type !== 'tool') continue;
+        const name = String(d.tool || '').toLowerCase();
+        if (name !== 'edit' && name !== 'write') continue;
+        const input = d?.state?.input || {};
+        const file = String(input.filePath || input.file_path || input.path || '');
+        if (file) files.add(file);
+      } catch { /* skip malformed */ }
+    }
+
+    return {
+      filesChanged: Array.from(files),
+      totalLinesAdded: sums.add_sum || 0,
+      totalLinesRemoved: sums.del_sum || 0,
+    };
+  } finally {
+    db.close();
+  }
 }

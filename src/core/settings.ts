@@ -1,7 +1,7 @@
 /**
  * Persistent user settings for chat-recall.
  *
- * Stored at ~/.claude/chat-recall/settings.json with file mode 0600 because
+ * Stored at <data dir>/settings/settings.json with file mode 0600 because
  * the file holds API keys. Settings override env vars; env vars override
  * the hard-coded defaults. So the precedence chain (highest first) is:
  *   settings.json  →  process.env  →  defaults
@@ -14,6 +14,7 @@ import { delimiter } from 'path';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import type { EmbedderProvider } from './embedder.js';
+import { getDataDir } from './paths.js';
 
 /**
  * CLI presets we know how to invoke, in priority order. First one whose
@@ -136,7 +137,10 @@ function freshDefaults(): AppSettings {
 }
 
 function settingsPath(): string {
-  return join(homedir(), '.claude', 'chat-recall', 'settings.json');
+  // Settings live at <data dir>/settings/settings.json. The migration in
+  // paths.ts moves the legacy `~/.claude/chat-recall/` directory to
+  // `~/.chat-recall/settings/` so existing installs keep their config.
+  return join(getDataDir(), 'settings', 'settings.json');
 }
 
 /** Load settings from disk. Returns auto-detected defaults if the file doesn't exist or is unreadable. */

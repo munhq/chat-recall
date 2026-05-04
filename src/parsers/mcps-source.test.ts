@@ -65,10 +65,12 @@ describe('McpsSource', () => {
     expect(r.extra.command).toContain('uvx');
   });
 
-  test('Codex plugin-bundled MCP at ~/.codex/.tmp/plugins/<x>/.mcp.json', async () => {
-    // The source reads `mcpData.mcpServers` from each plugin's .mcp.json,
-    // so the fixture must use the same envelope as the production format.
-    writeJson('.codex/.tmp/plugins/foo/.mcp.json', {
+  test('Codex plugin-bundled MCP at ~/.codex/.tmp/plugins/plugins/<x>/.mcp.json', async () => {
+    // Codex plugins live at the doubled-"plugins" path on disk
+    // (~/.codex/.tmp/plugins/plugins/<name>/). The source reads
+    // `mcpData.mcpServers` from each plugin's .mcp.json, so the fixture
+    // must use the same envelope as the production format.
+    writeJson('.codex/.tmp/plugins/plugins/foo/.mcp.json', {
       mcpServers: { foo: { command: 'npx', args: ['foo-mcp'] } },
     });
     const items = await collect();

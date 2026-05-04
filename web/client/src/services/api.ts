@@ -48,6 +48,11 @@ export interface SessionInfo {
   firstPrompt?: string;
   summary?: string;
   tool?: string;
+  /** Server-attached when summary generation has failed for this session.
+   *  Absent means either pending (no attempt yet) or successful (a summary
+   *  exists). The list shows "summary unavailable — check settings" with
+   *  the error string as a hover tooltip. */
+  summaryError?: { error: string; attemptCount: number; lastFailedAt: number };
 }
 
 export interface IndexStats {
@@ -65,8 +70,13 @@ export interface ProjectInfo {
 
 const API_BASE = '/api';
 
-// Fetch with a timeout — prevents infinite hanging when server is down
-async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 10000): Promise<Response> {
+// Fetch with a timeout — prevents infinite hanging when server is down.
+// Default raised to 30s because the first request after a service restart
+// can take 2–7s while the server's TTL path-map cache warms up; a 10s
+// timeout would spuriously abort those cold-path requests and leave the
+// UI blank. The hot path is ~50ms so 30s is well above the worst-case
+// honest latency without being so long it hides real outages.
+async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 30000): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -95,55 +105,115 @@ export async function searchSessions(
   return data.results;
 }
 
+/**
+ * Paginated sessions response. `total` is the count after filtering but
+ * before slicing to the page; `hasMore` tells the UI whether to wire up
+ * a "load more" trigger for scroll-to-bottom.
+ */
+export interface RecentSessionsPage {
+  sessions: SessionInfo[];
+  count: number;
+  total: number;
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+}
+
+/**
+ * Backwards-compatible: returns just the page's sessions array. Existing
+ * callers that don't care about pagination keep working unchanged.
+ */
 export async function getRecentSessions(
   limit = 20,
   projectFilter?: string,
   toolFilter?: string,
   sinceHours?: number,
 ): Promise<SessionInfo[]> {
-  const params = new URLSearchParams({ limit: limit.toString() });
-  if (projectFilter) {
-    params.append('project', projectFilter);
-  }
-  if (toolFilter) {
-    params.append('tool', toolFilter);
-  }
+  const page = await getRecentSessionsPage({ limit, offset: 0, projectFilter, toolFilter, sinceHours });
+  return page.sessions;
+}
+
+/**
+ * Paginated variant — use this for infinite-scroll/load-more flows.
+ * Returns the full pagination metadata (`total`, `hasMore`, `offset`).
+ */
+export async function getRecentSessionsPage(opts: {
+  limit?: number;
+  offset?: number;
+  projectFilter?: string;
+  toolFilter?: string;
+  sinceHours?: number;
+}): Promise<RecentSessionsPage> {
+  const { limit = 20, offset = 0, projectFilter, toolFilter, sinceHours } = opts;
+  const params = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+  });
+  if (projectFilter) params.append('project', projectFilter);
+  if (toolFilter) params.append('tool', toolFilter);
   if (sinceHours !== undefined && Number.isFinite(sinceHours) && sinceHours > 0) {
     params.append('since_hours', String(sinceHours));
   }
 
   const res = await fetchWithTimeout(`${API_BASE}/conversations/recent?${params}`);
-
   if (!res.ok) {
     throw new Error(`Failed to get recent sessions: ${res.statusText}`);
   }
-
   const data = await res.json();
-  return data.sessions;
+  return {
+    sessions: data.sessions ?? [],
+    count: data.count ?? data.sessions?.length ?? 0,
+    total: data.total ?? 0,
+    offset: data.offset ?? offset,
+    limit: data.limit ?? limit,
+    hasMore: data.hasMore ?? false,
+  };
 }
 
+export interface ConversationPage {
+  messages: Message[];
+  subagents: Subagent[];
+  total: number;
+  offset: number;
+  hasMore: boolean;
+}
+
+const CONVERSATION_PAGE_SIZE = 500;
+
 export async function getConversation(sessionId: string): Promise<Message[]> {
-  const res = await fetchWithTimeout(`${API_BASE}/conversations/${sessionId}`, {}, 30000);
-
-  if (!res.ok) {
-    throw new Error(`Failed to get conversation: ${res.statusText}`);
-  }
-
-  const data = await res.json();
-  return data.messages;
+  const page = await getConversationPage(sessionId, 0, CONVERSATION_PAGE_SIZE);
+  return page.messages;
 }
 
 export async function getConversationWithSubagents(
   sessionId: string,
-): Promise<{ messages: Message[]; subagents: Subagent[] }> {
-  const res = await fetchWithTimeout(`${API_BASE}/conversations/${sessionId}`, {}, 30000);
+): Promise<{ messages: Message[]; subagents: Subagent[]; total?: number; hasMore?: boolean }> {
+  const page = await getConversationPage(sessionId, 0, CONVERSATION_PAGE_SIZE);
+  return { messages: page.messages, subagents: page.subagents, total: page.total, hasMore: page.hasMore };
+}
 
-  if (!res.ok) {
-    throw new Error(`Failed to get conversation: ${res.statusText}`);
-  }
-
+/**
+ * Fetch one window of a conversation. Server caps payload size with
+ * `?limit=` and slices in-memory from the cached parse.
+ *   - limit=0 → no slice (legacy / debug only — large sessions = MB of JSON)
+ *   - limit>0 → server returns up to `limit` messages from `offset`
+ */
+export async function getConversationPage(
+  sessionId: string,
+  offset = 0,
+  limit = CONVERSATION_PAGE_SIZE,
+): Promise<ConversationPage> {
+  const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+  const res = await fetchWithTimeout(`${API_BASE}/conversations/${sessionId}?${params}`, {}, 30000);
+  if (!res.ok) throw new Error(`Failed to get conversation: ${res.statusText}`);
   const data = await res.json();
-  return { messages: data.messages ?? [], subagents: data.subagents ?? [] };
+  return {
+    messages: data.messages ?? [],
+    subagents: data.subagents ?? [],
+    total: data.total ?? (data.messages?.length ?? 0),
+    offset: data.offset ?? offset,
+    hasMore: !!data.hasMore,
+  };
 }
 
 export async function getRawConversation(sessionId: string): Promise<any[]> {
@@ -716,6 +786,85 @@ export async function promoteToolkitItem(
   return data;
 }
 
+// --- Sync-all (bulk promote across tools) ---
+
+export type SyncTool = 'claude' | 'gemini' | 'opencode' | 'codex';
+
+export interface SyncPlanEntry {
+  type: 'skill' | 'mcp';
+  name: string;
+  source: SyncTool;
+  presentIn: SyncTool[];
+  copyTo: SyncTool[];
+}
+
+export interface SyncResultEntry extends SyncPlanEntry {
+  copied: { tool: SyncTool; targetPath?: string }[];
+  skipped: { tool: SyncTool; reason: string }[];
+  errors: { tool: SyncTool; error: string }[];
+}
+
+export interface SyncDryRunResponse {
+  dryRun: true;
+  plan: SyncPlanEntry[];
+  totalToCopy: number;
+}
+
+export interface SyncRunResponse {
+  dryRun: false;
+  summary: {
+    itemsConsidered: number;
+    itemsCopied: number;
+    itemsSkipped: number;
+    itemsFailed: number;
+  };
+  results: SyncResultEntry[];
+}
+
+export async function syncToolkit(
+  opts: { types?: ('skill' | 'mcp')[]; dryRun?: boolean } = {},
+): Promise<SyncDryRunResponse | SyncRunResponse> {
+  const res = await fetchWithTimeout(`${API_BASE}/toolkit/sync-all`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts),
+  }, 120_000);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `Sync failed: ${res.statusText}`);
+  }
+  return await res.json();
+}
+
+// --- Matrix view: name × tool presence ---
+
+export interface ToolkitMatrix {
+  skill: Record<string, Partial<Record<SyncTool, boolean>>>;
+  mcp:   Record<string, Partial<Record<SyncTool, boolean>>>;
+  supportedTargets: { skill: SyncTool[]; mcp: SyncTool[] };
+}
+
+export async function getToolkitMatrix(): Promise<ToolkitMatrix> {
+  const res = await fetchWithTimeout(`${API_BASE}/toolkit/matrix`, {}, 30_000);
+  if (!res.ok) throw new Error(`Failed to load toolkit matrix: ${res.statusText}`);
+  return await res.json();
+}
+
+export async function removeToolkitItem(
+  type: 'skill' | 'mcp',
+  name: string,
+  tool: SyncTool,
+): Promise<{ ok: boolean; removedPath?: string; error?: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/toolkit/item`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type, name, tool }),
+  }, 30_000);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return { ok: false, error: data.error || res.statusText };
+  return data;
+}
+
 // --- Edits timeline / live session files ---
 
 export type EditOp = 'edit' | 'write' | 'multi_edit' | 'notebook_edit' | 'read';
@@ -740,6 +889,7 @@ export interface EditsTimelineResponse {
   total: number;
   truncated: boolean;
   byTool?: Partial<Record<AiTool, number>>;
+  byProject?: Record<string, number>;
   byRepo?: Record<string, { name: string; count: number; sample: string }>;
   edits: EditRow[];
 }
@@ -854,6 +1004,8 @@ export interface SessionDiffResponse {
   totalLinesAdded: number;
   totalLinesRemoved: number;
   files: SessionDiffFile[];
+  /** Set when the server returned 202 — the real payload is being computed. */
+  _computing?: boolean;
 }
 
 export async function getSessionDiff(sessionId: string, file?: string): Promise<SessionDiffResponse> {
@@ -863,7 +1015,14 @@ export async function getSessionDiff(sessionId: string, file?: string): Promise<
     if (res.status === 404) throw new Error('Session not found');
     throw new Error(`Failed to load diff: ${res.statusText}`);
   }
-  return await res.json();
+  // 202 = server kicked off a background compute. Body is just a status
+  // placeholder ({ status: 'computing', ... }) without any of the
+  // payload fields the panels read. Tag it so the panel can render a
+  // proper "still computing" state instead of crashing on
+  // `undefined.length`.
+  const body = await res.json();
+  if (res.status === 202) return { ...body, _computing: true } as SessionDiffResponse;
+  return body;
 }
 
 export interface SessionCommit {
@@ -891,6 +1050,8 @@ export interface SessionCommitsResponse {
     repoName: string;
     commits: SessionCommit[];
   }>;
+  /** Set when the server returned 202 — the real payload is being computed. */
+  _computing?: boolean;
 }
 
 export async function getSessionCommits(sessionId: string): Promise<SessionCommitsResponse> {
@@ -899,7 +1060,9 @@ export async function getSessionCommits(sessionId: string): Promise<SessionCommi
     if (res.status === 404) throw new Error('Session not found');
     throw new Error(`Failed to load commits: ${res.statusText}`);
   }
-  return await res.json();
+  const body = await res.json();
+  if (res.status === 202) return { ...body, _computing: true } as SessionCommitsResponse;
+  return body;
 }
 
 export interface SessionDecision { text: string; ts: number; tsIso?: string; line: number; }
@@ -944,6 +1107,8 @@ export interface SessionOutcomeResponse {
   filesChanged: string[];
   totalLinesAdded: number;
   totalLinesRemoved: number;
+  /** Set when the server returned 202 — the real payload is being computed. */
+  _computing?: boolean;
 }
 
 export async function getSessionOutcome(sessionId: string): Promise<SessionOutcomeResponse> {
@@ -952,7 +1117,113 @@ export async function getSessionOutcome(sessionId: string): Promise<SessionOutco
     if (res.status === 404) throw new Error('Session not found');
     throw new Error(`Failed to load outcome: ${res.statusText}`);
   }
-  return await res.json();
+  const body = await res.json();
+  if (res.status === 202) return { ...body, _computing: true } as SessionOutcomeResponse;
+  return body;
+}
+
+export interface SessionOutcomeBadgeResponse {
+  // Server may return the heavyweight statuses (shipped/abandoned) when the
+  // full classifier is later wired into the badge endpoint, or the cheaper
+  // quick-classifier statuses today. The client shouldn't care which —
+  // both tier into the same badge color via the rendering logic.
+  emoji: string;
+  label: 'shipped' | 'interrupted' | 'abandoned' | 'in_progress' | 'completed' | 'unknown';
+  tooltip: string;
+  fileCount: number;
+  commits: number;
+  cached?: boolean;
+}
+
+// In-memory L1 cache for badges. Survives for the page session — when a
+// row scrolls out and back into view the IntersectionObserver re-fires,
+// and the cached entry means we don't re-hit the network at all.
+const badgeClientCache = new Map<string, SessionOutcomeBadgeResponse>();
+
+// Negative cache for sessions the server returned 404 for, so we don't
+// retry those forever during a single page session.
+const badge404Cache = new Set<string>();
+
+// Batching: when 50 rows render at once their IntersectionObservers all
+// fire ~simultaneously. Per-row HTTP overhead in dev mode is ~600ms so
+// 50 sequential calls take 30s. Coalescing them into one batch request
+// turns that into a single ~50ms round-trip.
+//
+// Each call to `getSessionOutcomeBadge` pushes the requested id into a
+// pending bucket and either schedules a flush (debounce window) or joins
+// an already-scheduled flush. When the flush fires we POST all collected
+// ids in one request, then resolve every pending caller from the result.
+const BATCH_DEBOUNCE_MS = 30;
+const MAX_BATCH = 200;
+type PendingResolver = {
+  resolve: (badge: SessionOutcomeBadgeResponse) => void;
+  reject: (err: Error) => void;
+};
+let pendingBatch = new Map<string, PendingResolver[]>();
+let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function flushBadgeBatch(): Promise<void> {
+  pendingTimer = null;
+  if (pendingBatch.size === 0) return;
+  const batch = pendingBatch;
+  pendingBatch = new Map();
+
+  const ids = Array.from(batch.keys());
+  // The server caps at MAX_BATCH; if we have more, do multiple requests.
+  // (Each chunk runs in parallel — they don't depend on each other.)
+  const chunks: string[][] = [];
+  for (let i = 0; i < ids.length; i += MAX_BATCH) {
+    chunks.push(ids.slice(i, i + MAX_BATCH));
+  }
+
+  await Promise.all(chunks.map(async chunk => {
+    try {
+      const res = await fetchWithTimeout(`${API_BASE}/conversations/outcome/badges`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: chunk }),
+      }, 30000);
+      if (!res.ok) throw new Error(`badges batch failed: ${res.status} ${res.statusText}`);
+      const body = await res.json() as { badges: Record<string, SessionOutcomeBadgeResponse> };
+      for (const id of chunk) {
+        const resolvers = batch.get(id) ?? [];
+        const badge = body.badges?.[id];
+        if (badge) {
+          badgeClientCache.set(id, badge);
+          for (const r of resolvers) r.resolve(badge);
+        } else {
+          // Server didn't include this id — treat as 404.
+          badge404Cache.add(id);
+          for (const r of resolvers) r.reject(new Error('Session not found'));
+        }
+      }
+    } catch (err) {
+      const e = err instanceof Error ? err : new Error(String(err));
+      for (const id of chunk) {
+        const resolvers = batch.get(id) ?? [];
+        for (const r of resolvers) r.reject(e);
+      }
+    }
+  }));
+}
+
+export async function getSessionOutcomeBadge(sessionId: string): Promise<SessionOutcomeBadgeResponse> {
+  // L1 client cache — instant.
+  const hit = badgeClientCache.get(sessionId);
+  if (hit) return hit;
+  if (badge404Cache.has(sessionId)) throw new Error('Session not found');
+
+  return new Promise<SessionOutcomeBadgeResponse>((resolve, reject) => {
+    const list = pendingBatch.get(sessionId);
+    if (list) {
+      list.push({ resolve, reject });
+    } else {
+      pendingBatch.set(sessionId, [{ resolve, reject }]);
+    }
+    if (!pendingTimer) {
+      pendingTimer = setTimeout(() => { void flushBadgeBatch(); }, BATCH_DEBOUNCE_MS);
+    }
+  });
 }
 
 export interface SessionMarkersResponse {

@@ -53,7 +53,12 @@ export default function ConversationViewer({
   searchResult,
   sessionInfo,
 }: ConversationViewerProps) {
-  const [viewMode, setViewMode] = useState<ViewMode>('summary');
+  // Default to the actual conversation messages, not the Gemini summary.
+  // Most sessions don't have a summary (worker-backfilled, can be slow or
+  // disabled entirely), so landing on the Summary tab shows "No summary
+  // available" and looks broken. The chat itself is what people clicked
+  // to read; Summary is a nice-to-have they can flip to.
+  const [viewMode, setViewMode] = useState<ViewMode>('full');
   const [filter, setFilter] = useState<MessageFilter>('all');
   const [rawData, setRawData] = useState<any[]>([]);
   const [rawLoading, setRawLoading] = useState(false);
@@ -72,12 +77,56 @@ export default function ConversationViewer({
   const [outcomeLoading, setOutcomeLoading] = useState(false);
   const [outcomeError, setOutcomeError] = useState<string | null>(null);
 
-  // Reset cross-section state when session changes — otherwise we'd flash
-  // the previous session's diff/commits/outcome briefly.
+  // Reset cross-section state when session changes AND immediately
+  // refetch for whatever tab is currently active. Without the refetch,
+  // switching sessions while parked on the Outcome (or Diff / Commits)
+  // tab leaves the panel empty until the user manually re-clicks the
+  // tab — which they shouldn't have to do.
   useEffect(() => {
+    if (!sessionId) return;
     setDiffData(null); setDiffError(null);
     setCommitsData(null); setCommitsError(null);
     setOutcomeData(null); setOutcomeError(null);
+    setSessionMeta(null);
+
+    // Always fetch session metadata up-front so the header title
+    // resolves regardless of which tab is open. When you click into a
+    // session from Activity (or any context that doesn't pre-populate
+    // sessionInfo), the title was falling through every check and
+    // landing on "Untitled session" because firstPrompt/projectPath
+    // were unavailable until you clicked Summary. This decouples the
+    // header from the tab the user happens to start on.
+    setMetaLoading(true);
+    getSessionMetadata(sessionId)
+      .then(setSessionMeta)
+      .catch(() => {})
+      .finally(() => setMetaLoading(false));
+
+    // Re-fire the fetch for the currently-active tab so the new session's
+    // data populates without requiring a second user click.
+    if (viewMode === 'outcome') {
+      setOutcomeLoading(true);
+      getSessionOutcome(sessionId)
+        .then(setOutcomeData)
+        .catch(err => setOutcomeError(err instanceof Error ? err.message : 'Failed to load outcome'))
+        .finally(() => setOutcomeLoading(false));
+    } else if (viewMode === 'diff') {
+      setDiffLoading(true);
+      getSessionDiff(sessionId)
+        .then(setDiffData)
+        .catch(err => setDiffError(err instanceof Error ? err.message : 'Failed to load diff'))
+        .finally(() => setDiffLoading(false));
+    } else if (viewMode === 'commits') {
+      setCommitsLoading(true);
+      getSessionCommits(sessionId)
+        .then(setCommitsData)
+        .catch(err => setCommitsError(err instanceof Error ? err.message : 'Failed to load commits'))
+        .finally(() => setCommitsLoading(false));
+    }
+    // viewMode is intentionally NOT in the dep array — we react to
+    // sessionId changes only. Tab clicks already fire their own fetches
+    // via handleViewModeChange.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
   // ── Hooks ──
@@ -94,14 +143,30 @@ export default function ConversationViewer({
     }
   }, [sessionId]);
 
+  // Auto-load the full conversation once per (session, mode) pair.
+  // We track which (sessionId, viewMode) we've already triggered a load
+  // for in a ref. Without this, sessions whose parent JSONL is an empty
+  // stub (new-format Claude sessions where everything lives in
+  // <id>/subagents/*) loop forever: messages.length stays 0 after every
+  // load → effect re-fires → onLoadFull → no new messages → repeat.
+  const autoLoadedFor = React.useRef<Set<string>>(new Set());
   useEffect(() => {
+    if (!sessionId) return;
     const derivedTool = sessionMeta?.tool || sessionInfo?.tool || 'claude';
     const shouldAutoLoad = derivedTool !== 'claude' || viewMode === 'full';
-    
-    if (sessionId && shouldAutoLoad && messages.length === 0 && !loading) {
-      onLoadFull();
-    }
+    if (!shouldAutoLoad) return;
+    const key = `${sessionId}:${viewMode}`;
+    if (autoLoadedFor.current.has(key)) return;
+    if (messages.length > 0 || loading) return;
+    autoLoadedFor.current.add(key);
+    onLoadFull();
   }, [sessionId, sessionMeta?.tool, sessionInfo?.tool, messages.length, loading, onLoadFull, viewMode]);
+
+  // When the user picks a different session the cache resets so the next
+  // session can auto-load too.
+  useEffect(() => {
+    autoLoadedFor.current.clear();
+  }, [sessionId]);
 
   const isEdit = (m: Message) => m.toolCalls?.some(tc => 
     ['write', 'replace', 'insert', 'edit', 'patch', 'create'].some(keyword => tc.name.toLowerCase().includes(keyword))
@@ -122,6 +187,8 @@ export default function ConversationViewer({
   if (!sessionId) {
     return (
       <div
+        className="conversation-column"
+        data-empty="true"
         style={{
           flex: 1,
           display: 'flex',
@@ -160,15 +227,34 @@ export default function ConversationViewer({
     const stripped = stripInjectedBanners(text);
     const firstLine = stripped.split('\n')[0].trim();
     const cleaned = firstLine.replace(/^\*\*[^*]+\*\*:?\s*-?\s*/, '').trim();
+    // Reject trivially-uninformative placeholder strings — they're worse
+    // than nothing because they push real content out of view.
+    if (!cleaned) return '';
+    if (/^no (first prompt|summary)( available)?$/i.test(cleaned)) return '';
+    if (/^session [0-9a-f]{4,}/i.test(cleaned)) return '';
     return cleaned.length > 80 ? cleaned.substring(0, 80) + '…' : cleaned;
   }
+  // Title fallback chain. Always falls back to the project's last segment
+  // (e.g. "chat-recall") rather than the opaque session UUID — a path is
+  // useful context, the UUID alone is just visual noise.
+  const projectFallback = (() => {
+    // SessionMetadataResponse uses a different shape; only sessionInfo has
+    // projectPath, but searchResult also exposes it.
+    const path = sessionInfo?.projectPath || searchResult?.projectPath || '';
+    if (!path) return '';
+    const parts = path.replace(/\\/g, '/').split('/').filter(Boolean);
+    return parts.length > 0 ? parts[parts.length - 1] : '';
+  })();
   const title =
     extractTitle(sessionInfo?.summary) ||
     extractTitle(searchResult?.summary) ||
+    extractTitle(sessionInfo?.firstPrompt) ||
+    extractTitle(searchResult?.firstPrompt) ||
     extractTitle(firstPrompt) ||
     extractTitle(summary) ||
     sessionMeta?.slug ||
-    sessionId;
+    projectFallback ||
+    'Untitled session';
 
   const handleResume = () => {
     if (!sessionId) return;
@@ -219,27 +305,39 @@ export default function ConversationViewer({
         .catch(() => {})
         .finally(() => setMetaLoading(false));
     }
-    if (mode === 'diff' && !diffData && !diffLoading) {
+    if (mode === 'diff' && (!diffData || diffData._computing) && !diffLoading) {
       setDiffLoading(true);
       setDiffError(null);
       getSessionDiff(sessionId)
-        .then(setDiffData)
+        .then((d) => {
+          setDiffData(d);
+          // Server still computing — re-fetch in 2s. The precompute
+          // worker fills the cache within tens of seconds; polling at
+          // 2s gives a snappy resolution without hammering the server.
+          if (d._computing) setTimeout(() => { if (mode === 'diff') setDiffData(null); }, 2000);
+        })
         .catch(err => setDiffError(err instanceof Error ? err.message : 'Failed to load diff'))
         .finally(() => setDiffLoading(false));
     }
-    if (mode === 'commits' && !commitsData && !commitsLoading) {
+    if (mode === 'commits' && (!commitsData || commitsData._computing) && !commitsLoading) {
       setCommitsLoading(true);
       setCommitsError(null);
       getSessionCommits(sessionId)
-        .then(setCommitsData)
+        .then((d) => {
+          setCommitsData(d);
+          if (d._computing) setTimeout(() => { if (mode === 'commits') setCommitsData(null); }, 2000);
+        })
         .catch(err => setCommitsError(err instanceof Error ? err.message : 'Failed to load commits'))
         .finally(() => setCommitsLoading(false));
     }
-    if (mode === 'outcome' && !outcomeData && !outcomeLoading) {
+    if (mode === 'outcome' && (!outcomeData || outcomeData._computing) && !outcomeLoading) {
       setOutcomeLoading(true);
       setOutcomeError(null);
       getSessionOutcome(sessionId)
-        .then(setOutcomeData)
+        .then((d) => {
+          setOutcomeData(d);
+          if (d._computing) setTimeout(() => { if (mode === 'outcome') setOutcomeData(null); }, 2000);
+        })
         .catch(err => setOutcomeError(err instanceof Error ? err.message : 'Failed to load outcome'))
         .finally(() => setOutcomeLoading(false));
     }
@@ -343,7 +441,7 @@ export default function ConversationViewer({
             <Chip kind="ok">saved {formatCost(sessionMeta.cacheSavingsUsd)}</Chip>
           )}
           {sessionMeta?.toolsUsed && sessionMeta.toolsUsed.length > 0 && (
-            <Chip kind="mono">
+            <Chip kind="mono" className="cr-chip-tools">
               {sessionMeta.toolsUsed.slice(0, 8).join(', ')}
               {sessionMeta.toolsUsed.length > 8 && ' +' + (sessionMeta.toolsUsed.length - 8)}
             </Chip>
@@ -353,6 +451,7 @@ export default function ConversationViewer({
         {/* Token strip */}
         {(sessionMeta?.inputTokens || 0) > 0 && (
           <div
+            className="cr-viewer-tokens"
             style={{
               display: 'grid',
               gridTemplateColumns: 'repeat(auto-fit, minmax(90px, 1fr))',
@@ -408,7 +507,7 @@ export default function ConversationViewer({
         )}
 
         {/* View mode buttons */}
-        <div style={{ marginBottom: 20 }}>
+        <div className="cr-segmented-scroll" style={{ marginBottom: 20 }}>
           <SegmentedControl
             value={viewMode}
             onChange={(m) => handleViewChange(m as ViewMode)}
@@ -1046,6 +1145,17 @@ function OutcomePanel({
   if (loading) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Computing outcome…</div>;
   if (error) return <div style={{ padding: 20, color: 'var(--cr-err-500)' }}>Failed to load outcome: {error}</div>;
   if (!data) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>No outcome data.</div>;
+  // 202 placeholder — outcome is being computed in the background. The
+  // body has none of the structured fields below (commits, prompts,
+  // promptMarkers) so accessing them throws.
+  if (data._computing || !data.commits || !data.promptMarkers) {
+    return (
+      <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>
+        <div style={{ fontSize: 14, marginBottom: 6 }}>Computing outcome in the background…</div>
+        <div style={{ fontSize: 12 }}>One-time cost for this session — reopen in a moment.</div>
+      </div>
+    );
+  }
 
   const minutes = data.startMs && data.endMs ? Math.round((data.endMs - data.startMs) / 60000) : 0;
 
@@ -1171,6 +1281,15 @@ function DiffPanel({
   if (loading) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Replaying edits…</div>;
   if (error) return <div style={{ padding: 20, color: 'var(--cr-err-500)' }}>Failed to load diff: {error}</div>;
   if (!data) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>No diff data.</div>;
+  // 202 placeholder — payload still computing in background.
+  if (data._computing || !Array.isArray(data.files)) {
+    return (
+      <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>
+        <div style={{ fontSize: 14, marginBottom: 6 }}>Replaying edits in the background…</div>
+        <div style={{ fontSize: 12 }}>One-time cost for this session — reopen in a moment.</div>
+      </div>
+    );
+  }
   if (data.files.length === 0) {
     return (
       <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>
@@ -1196,10 +1315,10 @@ function DiffPanel({
           <span style={{ color: 'var(--cr-err-500)' }}>−{data.totalLinesRemoved}</span>
         </div>
       </Card>
-      {data.files.map(f => {
+      {data.files.map((f, idx) => {
         const isOpen = expanded.has(f.file);
         return (
-          <Card key={f.file} style={{ padding: 0, overflow: 'hidden' }}>
+          <Card key={f.file || `file-${idx}`} style={{ padding: 0, overflow: 'hidden' }}>
             <button
               type="button"
               onClick={() => toggle(f.file)}
@@ -1244,8 +1363,8 @@ function DiffPanel({
                       Events
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                      {f.events.map(e => (
-                        <div key={e.toolUseId} style={{ display: 'flex', gap: 8, fontSize: 11, fontFamily: 'var(--cr-font-mono)', alignItems: 'center' }}>
+                      {f.events.map((e, ei) => (
+                        <div key={e.toolUseId || `${f.file || idx}-evt-${ei}`} style={{ display: 'flex', gap: 8, fontSize: 11, fontFamily: 'var(--cr-font-mono)', alignItems: 'center' }}>
                           <span style={{ color: e.succeeded ? 'var(--cr-ok-500)' : 'var(--cr-err-500)' }}>
                             {e.succeeded ? '✓' : '✗'}
                           </span>
@@ -1275,6 +1394,17 @@ function CommitsPanel({
   if (loading) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Looking up commits…</div>;
   if (error) return <div style={{ padding: 20, color: 'var(--cr-err-500)' }}>Failed to load commits: {error}</div>;
   if (!data) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>No commit data.</div>;
+  // Server returned 202 — payload is being computed in background.
+  // Show a quiet "computing" state instead of crashing on
+  // `data.repos.length` (the placeholder body has no repos field).
+  if (data._computing || !Array.isArray(data.repos)) {
+    return (
+      <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>
+        <div style={{ fontSize: 14, marginBottom: 6 }}>Computing commits in the background…</div>
+        <div style={{ fontSize: 12 }}>This is a one-time cost for this session. Reopen this tab in a few seconds.</div>
+      </div>
+    );
+  }
   if (data.totalCommits === 0) {
     return (
       <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>

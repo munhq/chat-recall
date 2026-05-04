@@ -12,7 +12,7 @@
  *                 ~/.opencode/skill/<name>/SKILL.md
  *                 ~/.opencode/skills/<name>/SKILL.md
  *   - Codex     — ~/.codex/skills/.system/<name>/SKILL.md
- *                 ~/.codex/.tmp/plugins/<plugin>/skills/<name>/SKILL.md
+ *                 ~/.codex/.tmp/plugins/plugins/<plugin>/skills/<name>/SKILL.md
  *   - Gemini    — no first-class skills concept; extensions under
  *                 ~/.gemini/extensions/ are surfaced as MCPs instead.
  *
@@ -74,8 +74,9 @@ export class SkillsSource implements MemorySource {
       yield* this.fromSkillRoot(root);
     }
 
-    // Codex plugin skills: ~/.codex/.tmp/plugins/<plugin>/skills/<name>/SKILL.md
-    const codexPluginsDir = join(homedir(), '.codex', '.tmp', 'plugins');
+    // Codex plugin skills live at ~/.codex/.tmp/plugins/plugins/<plugin>/skills/<name>/SKILL.md
+    // — the doubled "plugins" segment is intentional in Codex's on-disk layout.
+    const codexPluginsDir = join(homedir(), '.codex', '.tmp', 'plugins', 'plugins');
     if (existsSync(codexPluginsDir)) {
       for (const pluginName of readdirSync(codexPluginsDir)) {
         const skillsDir = join(codexPluginsDir, pluginName, 'skills');

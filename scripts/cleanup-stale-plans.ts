@@ -1,3 +1,4 @@
+import { getCacheDbPath } from '../src/core/paths.js';
 #!/usr/bin/env tsx
 /**
  * Remove stale plan entries from the database.
@@ -8,7 +9,7 @@ import { readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join, basename } from 'path';
 
-const dbPath = join(homedir(), '.claude', 'chat-recall-cache.db');
+const dbPath = getCacheDbPath();
 console.log(`Using database: ${dbPath}`);
 const store = new MemoryStore(dbPath);
 const plansDir = join(homedir(), '.claude', 'plans');

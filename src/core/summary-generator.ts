@@ -62,8 +62,14 @@ export const CLI_PRESETS: Record<string, string> = {
   // Coding-agent CLIs that take the message as a positional arg
   opencode: 'opencode run "$(cat {prompt_file})"',
   kilocode: 'kilocode run "$(cat {prompt_file})"',
-  // Stdin-friendly CLIs (the prompt is piped in, command gets an empty "-p")
-  gemini: 'gemini -p " "',
+  // Stdin-friendly CLIs (the prompt is piped in, command gets an empty "-p").
+  // `--skip-trust` is required for Gemini CLI: it refuses to run in
+  // directories not on its trusted-folder list, which the indexer's working
+  // dir typically isn't. Without this flag every summary errored out with
+  // "not running in a trusted directory". The flag is safe in this context
+  // because we're only piping our own generated prompt, never reading the
+  // workspace files.
+  gemini: 'gemini --skip-trust -p " "',
   'claude-cli': 'claude -p " "',
   llm: 'llm --no-stream',
   aichat: 'aichat --no-stream',

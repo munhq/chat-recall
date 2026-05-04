@@ -1,9 +1,10 @@
+import { getCacheDbPath } from '../src/core/paths.js';
 #!/usr/bin/env tsx
 import Database from 'better-sqlite3';
 import { homedir } from 'os';
 import { join } from 'path';
 
-const cache = new Database(join(homedir(), '.claude', 'chat-recall-cache.db'));
+const cache = new Database(getCacheDbPath());
 
 // Sessions by tool, with chunk presence and summary presence.
 const rows = cache

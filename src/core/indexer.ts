@@ -4,7 +4,6 @@
 
 import lancedb from '@lancedb/lancedb';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { homedir } from 'os';
 import { join } from 'path';
 
 import type { Embedder } from './embedder.js';
@@ -12,6 +11,7 @@ import type { SessionChunk } from '../parsers/chunker.js';
 import type { SessionEntry } from '../parsers/session.js';
 import { getAllSessions, parseSessionFile } from '../parsers/session.js';
 import { chunkSession } from '../parsers/chunker.js';
+import { getIndexDir } from './paths.js';
 
 export interface ChunkRecord {
   id: string;
@@ -47,18 +47,19 @@ export interface SearchResult {
 
 export class SessionIndex {
   static readonly TABLE_NAME = 'session_chunks';
-  static readonly DEFAULT_INDEX_PATH = join(homedir(), '.claude', 'chat-recall-index');
-  
+  /** Default index dir — resolved lazily so tests can swap it via env var. */
+  static getDefaultIndexPath(): string { return getIndexDir(); }
+
   private embedder: Embedder;
   private indexPath: string;
   private db: Awaited<ReturnType<typeof lancedb.connect>> | null = null;
   private table: unknown | null = null;
   private mtimeCache: Record<string, number> = {};
   private mtimeCachePath: string;
-  
+
   constructor(embedder: Embedder, indexPath?: string) {
     this.embedder = embedder;
-    this.indexPath = indexPath || SessionIndex.DEFAULT_INDEX_PATH;
+    this.indexPath = indexPath || SessionIndex.getDefaultIndexPath();
     this.mtimeCachePath = join(this.indexPath, 'mtime_cache.json');
     
     // Ensure directory exists

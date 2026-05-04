@@ -5,9 +5,58 @@
  */
 
 import express from 'express';
-import { liveScanRecentEdits, findRepoRoot } from '../imports.js';
+import { cachedRecentEdits, findRepoRoot } from '../imports.js';
+import type { SessionEdit } from '../imports.js';
 
 const router = express.Router();
+
+/**
+ * In-process TTL cache for `liveScanRecentEdits`. The scan walks every
+ * recent JSONL across all 4 tools to extract Edit/Write/Read tool calls
+ * — ~250ms per call. Caching the raw scan output for 30s collapses the
+ * activity panel's repeated queries (filter changes, repo grouping
+ * toggles, polling) into one walk per minute.
+ *
+ * Cache key buckets the since-time to the nearest minute so requests
+ * within the same window share an entry rather than each second being a
+ * unique key. Filtering / sorting / grouping happens on the cached list
+ * after lookup, so different filter combos still share the underlying
+ * scan output.
+ */
+const TIMELINE_CACHE_TTL_MS = 30_000;
+const TIMELINE_CACHE_MAX = 64;
+const timelineCache = new Map<string, { data: SessionEdit[]; expiresAt: number }>();
+
+function getCachedTimeline(opts: {
+  sinceMs: number;
+  pattern?: string;
+  projectFilter?: string;
+  tools?: ReadonlyArray<string>;
+}): SessionEdit[] {
+  const sinceBucket = Math.floor(opts.sinceMs / 60_000);
+  const key = `${sinceBucket}|${opts.pattern || ''}|${opts.projectFilter || ''}|${(opts.tools || []).slice().sort().join(',')}`;
+  const now = Date.now();
+  const hit = timelineCache.get(key);
+  if (hit && hit.expiresAt > now) return hit.data;
+
+  // Cache-first: pulls events from compute_cache[diff] for any session
+  // whose cached row is fresh (mtime matches memory_metadata). Falls
+  // back to a live transcript scan only for sessions whose cache is
+  // missing or stale (typically just the actively-running session).
+  const data = cachedRecentEdits({
+    sinceMs: opts.sinceMs,
+    pattern: opts.pattern,
+    projectFilter: opts.projectFilter,
+    tools: opts.tools as ('claude' | 'gemini' | 'opencode' | 'codex')[] | undefined,
+  });
+  timelineCache.set(key, { data, expiresAt: now + TIMELINE_CACHE_TTL_MS });
+  while (timelineCache.size > TIMELINE_CACHE_MAX) {
+    const oldest = timelineCache.keys().next().value;
+    if (!oldest) break;
+    timelineCache.delete(oldest);
+  }
+  return data;
+}
 
 // GET /api/edits/timeline?since_hours=24&limit=200&pattern=foo&project=chat-recall
 //        &include_reads=false&tools=claude,opencode,gemini&group_by_repo=true
@@ -33,18 +82,23 @@ router.get('/timeline', (req, res) => {
       : undefined;
 
     const sinceMs = Date.now() - sinceHours * 3600 * 1000;
-    const all = liveScanRecentEdits({
-      sinceMs,
-      pattern,
-      projectFilter,
-      tools,
-    });
+    const all = getCachedTimeline({ sinceMs, pattern, projectFilter, tools });
     const filtered = includeReads ? all : all.filter(e => e.op !== 'read');
     const trimmed = filtered.slice(0, limit);
 
     // Per-tool tally so the UI can render a "1k claude · 200 gemini · 80 opencode" header.
     const byTool: Record<string, number> = {};
     for (const e of filtered) byTool[e.tool] = (byTool[e.tool] || 0) + 1;
+
+    // Per-project tally — drives the Activity view's project tree so it
+    // shows ONLY projects with edits in the current window (instead of
+    // the all-time list from `getStatus`, which goes stale).
+    const byProject: Record<string, number> = {};
+    for (const e of filtered) {
+      const p = e.projectPath;
+      if (!p) continue;
+      byProject[p] = (byProject[p] || 0) + 1;
+    }
 
     // Cache of repo roots so we don't walk the filesystem per edit on a hot path.
     const repoCache = new Map<string, string | null>();
@@ -89,6 +143,7 @@ router.get('/timeline', (req, res) => {
       total: filtered.length,
       truncated: filtered.length > trimmed.length,
       byTool,
+      byProject,
       byRepo,
       edits: enriched,
     });
