@@ -11,9 +11,9 @@
 
 import Database from 'better-sqlite3';
 import { existsSync, mkdirSync } from 'fs';
-import { homedir } from 'os';
-import { join, dirname } from 'path';
+import { dirname } from 'path';
 import { createHash } from 'crypto';
+import { getKnowledgeGraphDbPath } from './paths.js';
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -71,15 +71,9 @@ export interface KGStats {
 
 export class KnowledgeGraph {
   private db: Database.Database;
-  private static readonly DEFAULT_DB_PATH = join(
-    homedir(),
-    '.claude',
-    'chat-recall-index',
-    'knowledge_graph.db'
-  );
 
   constructor(dbPath?: string) {
-    const path = dbPath || KnowledgeGraph.DEFAULT_DB_PATH;
+    const path = dbPath || getKnowledgeGraphDbPath();
 
     const dir = dirname(path);
     if (!existsSync(dir)) {

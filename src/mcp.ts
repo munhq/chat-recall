@@ -21,6 +21,7 @@ import { execSync as _execSync } from 'child_process';
 
 import { getEmbedder, type EmbedderProvider } from './core/embedder.js';
 import { getRecentSessions, extractConversationContext, formatContext } from './core/context.js';
+import { getCacheDbPath, getIdentityFilePath } from './core/paths.js';
 import { parseSessionFile } from './parsers/session.js';
 import {
   liveScanModifiedFiles,
@@ -33,6 +34,8 @@ import { getSessionCommits } from './core/session-git.js';
 import { extractTurns } from './core/session-turns.js';
 import { markPrompt, summarizeMarkers } from './core/session-sentiment.js';
 import { computeOutcome } from './core/session-outcome.js';
+import { tierFor } from './core/score-tier.js';
+import { outcomeOneLiner, statusEmoji } from './core/outcome-display.js';
 import { MemoryIndex } from './core/memory-index.js';
 import { MemoryStore } from './core/memory-store.js';
 import { SourceRegistry } from './core/source-registry.js';
@@ -319,7 +322,9 @@ const RecallWakeUpSchema = z.object({
   max_kg_facts: z.number().optional().default(15)
     .describe('How many current knowledge-graph facts to include'),
   identity: z.string().optional()
-    .describe('Optional override for the identity blurb. Defaults to ~/.claude/chat-recall-identity.txt or "AI coding assistant"'),
+    .describe('Optional override for the identity blurb. Defaults to <data dir>/identity.txt or "AI coding assistant"'),
+  project_filter: z.string().optional()
+    .describe('Scope facts and KG entities to a project (substring match against project_path / entity name). Without this, facts are global and bleed across unrelated projects.'),
 });
 
 // ── Cross-session pattern detection ────────────────────────────────────────
@@ -1105,6 +1110,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Truncate results
         const displayResults = results.slice(0, params.top_k);
 
+        // Score normalization: BM25 ranks and vector L2 distances live in
+        // wildly different absolute ranges, so `score * 100` rounded to 0/100
+        // for vectors. We tier within *this* result set instead — see
+        // `core/score-tier.ts` for the rationale.
+        const topScore = displayResults[0]?.score ?? 0;
+
         // Format results with rich context
         const lines = [`# Results for: "${params.query}"\n`];
 
@@ -1122,11 +1133,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             title = title.slice(0, 100) + '...';
           }
 
-          const scorePct = Math.round(result.score * 100);
-
           lines.push(`## #${i + 1}: ${title}`);
           lines.push(`**Project:** ${projectPath}`);
-          lines.push(`**Created:** ${result.created.slice(0, 10)} | **Score:** ${scorePct}/100`);
+          lines.push(`**Created:** ${result.created.slice(0, 10)} | **Match:** ${tierFor(result.score, topScore)} (#${i + 1} of ${displayResults.length})`);
           lines.push(`**Resume:** \`claude --resume ${result.sessionId}\``);
 
           // Show summary if available
@@ -1466,7 +1475,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         // Get summaries from metadata cache
         const Database = (await import('better-sqlite3')).default;
-        const cacheDb = new Database(join(homedir(), '.claude', 'chat-recall-cache.db'), { readonly: true });
+        const cacheDb = new Database(getCacheDbPath(), { readonly: true });
 
         const lines = ['# Recent Sessions\n'];
 
@@ -1613,7 +1622,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         // 1. Pull the cached AI summary if one was generated.
         const Database = (await import('better-sqlite3')).default;
-        const cacheDb = new Database(join(homedir(), '.claude', 'chat-recall-cache.db'), { readonly: true });
+        const cacheDb = new Database(getCacheDbPath(), { readonly: true });
         let aiSummary: { summary: string; summary_source: string } | null = null;
         try {
           aiSummary = (cacheDb.prepare('SELECT summary, summary_source FROM session_metadata WHERE session_id = ?')
@@ -1933,7 +1942,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         // Get summaries from metadata cache
         const Database = (await import('better-sqlite3')).default;
-        const cacheDb = new Database(join(homedir(), '.claude', 'chat-recall-cache.db'), { readonly: true });
+        const cacheDb = new Database(getCacheDbPath(), { readonly: true });
 
         const output = [
           `# Suggested Conversations to Resume`,
@@ -1959,18 +1968,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               output.push(result.text.substring(0, 200) + '...');
             }
 
-            // KG facts for this project
-            const projSlug = result.projectPath.split('/').filter(Boolean).pop() || '';
-            if (projSlug) {
-              try {
-                const kgSuggest = new KnowledgeGraph();
-                const facts = kgSuggest.queryEntity(projSlug).filter(f => f.current && f.direction === 'outgoing').slice(0, 5);
-                if (facts.length > 0) {
-                  output.push(`**Known:** ${facts.map(f => `${f.predicate} ${f.object}`).join(', ')}`);
-                }
-                kgSuggest.close();
-              } catch { /* skip */ }
-            }
+            // Outcome one-liner — far more actionable than the previous
+            // "Known: uses redis, uses docker, uses git" listing, which was
+            // global-tool noise that appeared identical on every session.
+            // Status tells you at a glance whether resuming this session is
+            // worth it (shipped → probably done; in_progress → real work to
+            // continue; abandoned → ghosts).
+            try {
+              const outcome = computeOutcome(result.sessionId);
+              if (outcome.found) {
+                output.push(`**Outcome:** ${outcomeOneLiner(outcome)}`);
+              }
+            } catch { /* outcome best-effort */ }
 
             output.push('');
             output.push(`**Resume:** \`claude --resume ${result.sessionId}\``);
@@ -2200,7 +2209,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             let extra: any = {};
             try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
             const DatabaseFB = (await import('better-sqlite3')).default;
-            const cacheDbFB = new DatabaseFB(join(homedir(), '.claude', 'chat-recall-cache.db'), { readonly: true });
+            const cacheDbFB = new DatabaseFB(getCacheDbPath(), { readonly: true });
             const row = cacheDbFB
               .prepare('SELECT summary, first_prompt FROM session_metadata WHERE session_id = ?')
               .get(item.id) as { summary: string; first_prompt: string } | undefined;
@@ -2233,7 +2242,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         // Get summary
         const DatabaseSR = (await import('better-sqlite3')).default;
-        const cacheDbSR = new DatabaseSR(join(homedir(), '.claude', 'chat-recall-cache.db'), { readonly: true });
+        const cacheDbSR = new DatabaseSR(getCacheDbPath(), { readonly: true });
         const summaryRow = cacheDbSR.prepare('SELECT summary FROM session_metadata WHERE session_id = ?')
           .get(params.session_id) as { summary: string } | undefined;
         cacheDbSR.close();
@@ -2280,8 +2289,54 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           lines.push('');
         }
 
-        // What was done
-        if (context.claudeWork.length > 0) {
+        // Outcome status — uses the same heuristic as `recall_outcome` so
+        // smart_resume and outcome agree on whether work shipped. Replaces
+        // the older `context.claudeWork` extraction which surfaced raw
+        // assistant fragments ("Let me check what's done…") as if they were
+        // milestones.
+        let outcomeStatus: string | null = null;
+        try {
+          const outcome = computeOutcome(params.session_id);
+          if (outcome.found) {
+            outcomeStatus = `${statusEmoji(outcome.status)} **${outcome.status}** — ${outcome.reason}`;
+            lines.push('## Outcome');
+            lines.push(outcomeOneLiner(outcome));
+            lines.push('');
+
+            if (outcome.decisions.length > 0) {
+              lines.push('## Decisions');
+              for (const d of outcome.decisions.slice(0, 8)) {
+                lines.push(`- ${d.text.slice(0, 200)}`);
+              }
+              lines.push('');
+            }
+
+            if (outcome.blockers.length > 0) {
+              lines.push('## Blockers');
+              for (const b of outcome.blockers.slice(0, 6)) {
+                lines.push(`- _${b.kind}_: ${b.text.slice(0, 200)}`);
+              }
+              lines.push('');
+            }
+
+            if (outcome.claimReaction.claim) {
+              lines.push('## Final claim vs reaction');
+              lines.push(`- **claim:** ${outcome.claimReaction.claim.text.slice(0, 240)}`);
+              if (outcome.claimReaction.reaction) {
+                const r = outcome.claimReaction.reaction;
+                const m = r.markers.length ? ` _[${r.markers.join(', ')}]_` : '';
+                lines.push(`- **reaction:** ${r.text.slice(0, 240)}${m}`);
+              } else {
+                lines.push(`- **reaction:** _none — session ended on this claim_`);
+              }
+              lines.push('');
+            }
+          }
+        } catch { /* outcome is best-effort; fall through to legacy fields */ }
+
+        // Fall back to the older claudeWork extraction only when the outcome
+        // classifier returned nothing usable — keeps legacy callers working.
+        if (!outcomeStatus && context.claudeWork.length > 0) {
           lines.push('## Completed Work');
           for (const work of context.claudeWork.slice(0, 8)) {
             lines.push(`- ${work}`);
@@ -2436,7 +2491,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const allFilesModified = new Set<string>();
 
         const Database = (await import('better-sqlite3')).default;
-        const cacheDb = new Database(join(homedir(), '.claude', 'chat-recall-cache.db'), { readonly: true });
+        const cacheDb = new Database(getCacheDbPath(), { readonly: true });
 
         try {
           for (let i = 0; i < sessions.length; i++) {
@@ -2652,7 +2707,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         // Get all sessions in the time range from metadata
         const Database = (await import('better-sqlite3')).default;
-        const cacheDb = new Database(join(homedir(), '.claude', 'chat-recall-cache.db'), { readonly: true });
+        const cacheDb = new Database(getCacheDbPath(), { readonly: true });
 
         const allSessions = store.listItems('session' as SourceType, 1000);
         const weekSessions = allSessions.filter(s => s.mtime >= weekStart.getTime() && s.mtime < weekEnd.getTime());
@@ -3723,7 +3778,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // self-description that survives across sessions ("I'm Adi's coding agent…").
         let identity = params.identity ?? 'AI coding assistant';
         if (!params.identity) {
-          const idFile = join(homedir(), '.claude', 'chat-recall-identity.txt');
+          const idFile = getIdentityFilePath();
           if (existsSync(idFile)) {
             try { identity = readFileSync(idFile, 'utf-8').trim() || identity; } catch {}
           }
@@ -3736,11 +3791,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           identity,
           '',
         ];
+        if (params.project_filter) {
+          lines.push(`_Scoped to project filter: \`${params.project_filter}\`_`);
+          lines.push('');
+        }
 
         // High-importance facts the classifier already tagged during indexing.
+        // When a project_filter is supplied, narrow the FTS5 search by
+        // project_path so wake-up doesn't leak unrelated decisions/milestones
+        // from other repos.
         const store = new MemoryStore();
         try {
-          const hits = store.searchFTS('decision preference milestone', { topK: 60 });
+          const hits = store.searchFTS('decision preference milestone', {
+            topK: 60,
+            projectFilter: params.project_filter,
+          });
           const high = hits
             .filter(r => r.chunkType.includes(':imp4') || r.chunkType.includes(':imp5'))
             .slice(0, params.max_facts);
@@ -3752,22 +3817,45 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               lines.push(`  [${m?.[1] ?? 'fact'}] ${t}`);
             }
             lines.push('');
+          } else if (params.project_filter) {
+            lines.push('## High-importance facts');
+            lines.push(`  _no classifier hits for project filter \`${params.project_filter}\`_`);
+            lines.push('');
           }
         } finally {
           store.close();
         }
 
         // Currently-valid KG facts (temporal validity respected by KG.timeline).
+        // With a project_filter, scope to triples whose subject OR object name
+        // contains the filter substring — this keeps "redis", "docker", etc.
+        // generic-tool facts from drowning out project-specific knowledge.
         try {
           const kg = new KnowledgeGraph();
           try {
             const stats = kg.stats();
             if (stats.current_facts > 0) {
-              const tl = kg.timeline(undefined, 50).filter(e => e.current).slice(0, params.max_kg_facts);
-              if (tl.length > 0) {
+              const all = kg.timeline(undefined, 500).filter(e => e.current);
+              const filtered = params.project_filter
+                ? all.filter(f => {
+                    const needle = params.project_filter!.toLowerCase();
+                    return f.subject.toLowerCase().includes(needle) ||
+                           f.object.toLowerCase().includes(needle);
+                  })
+                : all;
+              const display = filtered.slice(0, params.max_kg_facts);
+              if (display.length > 0) {
                 lines.push('## Knowledge graph (current facts)');
-                lines.push(`  ${stats.entities} entities, ${stats.current_facts} current facts`);
-                for (const f of tl) lines.push(`  ${f.subject} → ${f.predicate} → ${f.object}`);
+                if (params.project_filter) {
+                  lines.push(`  ${display.length} of ${filtered.length} facts matching \`${params.project_filter}\` (graph total: ${stats.entities} entities, ${stats.current_facts} facts)`);
+                } else {
+                  lines.push(`  ${stats.entities} entities, ${stats.current_facts} current facts`);
+                }
+                for (const f of display) lines.push(`  ${f.subject} → ${f.predicate} → ${f.object}`);
+                lines.push('');
+              } else if (params.project_filter) {
+                lines.push('## Knowledge graph (current facts)');
+                lines.push(`  _no facts matching \`${params.project_filter}\` (graph has ${stats.entities} entities)_`);
                 lines.push('');
               }
             }

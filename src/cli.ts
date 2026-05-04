@@ -14,6 +14,7 @@ import { execSync } from 'child_process';
 import { getEmbedder, type EmbedderProvider } from './core/embedder.js';
 import { MemoryIndex } from './core/memory-index.js';
 import { MetadataCache } from './core/metadata-cache.js';
+import { getDataDir, getIdentityFilePath, getHooksDir, getIndexDir } from './core/paths.js';
 import { MemoryStore } from './core/memory-store.js';
 import { SourceRegistry } from './core/source-registry.js';
 import { SessionSource } from './parsers/session-source.js';
@@ -536,7 +537,7 @@ program
   .command('status')
   .description('Show index status and statistics')
   .action(async () => {
-    const indexPath = MemoryIndex.DEFAULT_INDEX_PATH;
+    const indexPath = MemoryIndex.getDefaultIndexPath();
 
     if (!existsSync(indexPath)) {
       console.log(chalk.yellow('Index not found.'));
@@ -597,7 +598,7 @@ program
       console.log(`  Compacted fragments: ${stats.compactedFragments}`);
       console.log(`  Pruned old versions: ${stats.prunedFiles}`);
       console.log();
-      console.log('Run', chalk.bold('du -sh ~/.claude/chat-recall-index/'), 'to check the new size.');
+      console.log('Run', chalk.bold(`du -sh ${getIndexDir()}`), 'to check the new size.');
     } catch (err) {
       console.error(chalk.red('Error:'), err);
       process.exit(1);
@@ -1077,12 +1078,10 @@ memory
   .option('-s, --session <id>', 'Session ID to focus on')
   .action(async (_options: { session?: string }) => {
     try {
-      const { join } = await import('path');
-      const { homedir } = await import('os');
       const { readdirSync, existsSync, readFileSync } = await import('fs');
 
       // Identity (optional, static)
-      const identityFile = join(homedir(), '.claude', 'chat-recall-identity.txt');
+      const identityFile = getIdentityFilePath();
       let identity = 'AI coding assistant';
       if (existsSync(identityFile)) {
         identity = readFileSync(identityFile, 'utf-8').trim();
@@ -1374,7 +1373,7 @@ program
       process.exit(1);
     }
 
-    const hooksDir = join(homedir(), '.claude', 'chat-recall-hooks');
+    const hooksDir = getHooksDir();
     const installedSaveHook = join(hooksDir, 'chat_recall_save_hook.sh');
     const installedResumeHook = join(hooksDir, 'chat_recall_resume_hook.sh');
     const hooksJson = join(homedir(), '.claude', 'hooks.json');

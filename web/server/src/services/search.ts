@@ -107,20 +107,22 @@ export class SearchService {
       stats = { totalChunks: 0, totalItems: 0, bySourceType: {}, indexPath: '' };
     }
 
-    // Build project counts from all sources (Claude + Gemini + OpenCode)
+    // Build project counts from all sources (Claude + Codex + Gemini + OpenCode).
+    // Uses the lean `getSessionProjectCounts` which skips firstPrompt/summary
+    // extraction — `getStatus` only needs aggregate counts, and pulling
+    // firstPrompts for 500+ sessions was the cause of the multi-second
+    // cold status responses.
     const now = Date.now();
     if (!this.projectCountsCache || (now - this.projectCountsCacheTime) > SearchService.CACHE_TTL_MS) {
-      const { getRecentSessions: getAll } = await import('./sessions.js');
+      const { getSessionProjectCounts } = await import('./sessions.js');
       const { normalizeProjectPath } = await import('../utils/paths.js');
-      const allSessions = await getAll(0); // 0 = no limit
+      const { projects: rawCounts, total } = await getSessionProjectCounts();
       const projectCounts: Record<string, number> = {};
-      for (const s of allSessions) {
-        const norm = normalizeProjectPath(s.projectPath);
-        if (norm) {
-          projectCounts[norm] = (projectCounts[norm] || 0) + 1;
-        }
+      for (const [path, count] of Object.entries(rawCounts)) {
+        const norm = normalizeProjectPath(path);
+        if (norm) projectCounts[norm] = (projectCounts[norm] || 0) + count;
       }
-      this.projectCountsCache = { projects: projectCounts, totalSessions: allSessions.length };
+      this.projectCountsCache = { projects: projectCounts, totalSessions: total };
       this.projectCountsCacheTime = now;
     }
     const { projects: projectCounts, totalSessions } = this.projectCountsCache;

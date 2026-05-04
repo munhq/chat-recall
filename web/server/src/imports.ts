@@ -35,6 +35,22 @@ export {
 // Parsers
 export { getAllSessions, parseSessionFile, type SessionEntry, type SessionMetadata } from '../../../src/parsers/session.js';
 
+// Cheap first-prompt extractor (used as fallback when sessions-index.json is missing)
+export { extractFirstUserPromptSync } from '../../../src/core/first-prompt.js';
+
+// Display helpers shared between MCP and web
+export { tierFor, tierAll, type ScoreTier } from '../../../src/core/score-tier.js';
+export { statusEmoji, outcomeOneLiner, outcomeBadge } from '../../../src/core/outcome-display.js';
+export { quickOutcomeStatus, quickStatusEmoji, quickOutcomeFromMtime, type QuickOutcomeStatus, type QuickOutcome } from '../../../src/core/quick-outcome.js';
+export { detectTool, type AiTool } from '../../../src/core/live-session-scan.js';
+export {
+  OutcomeCache,
+  isFresh,
+  fingerprintFile,
+  type CachedOutcome,
+  type CachedOutcomeStatus,
+} from '../../../src/core/outcome-cache.js';
+
 // Live transcript scanning (for the active session and anything not yet re-indexed)
 export {
   liveScanModifiedFiles,
@@ -43,6 +59,8 @@ export {
   findCodexSessionFile,
   type SessionEdit,
 } from '../../../src/core/live-session-scan.js';
+// Cache-first timeline (Activity tab) — reads compute_cache[diff] when fresh.
+export { cachedRecentEdits } from '../../../src/core/cached-timeline.js';
 export {
   extractTurnsAny,
   replaySessionAny,

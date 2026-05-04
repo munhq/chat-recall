@@ -69,3 +69,26 @@ describe('GET /api/conversations/:id', () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe('GET /api/conversations/:id/outcome/badge', () => {
+  test('404 for unknown Claude session id', async () => {
+    const res = await request(app).get('/api/conversations/zzz-nonexistent/outcome/badge');
+    expect(res.status).toBe(404);
+  });
+
+  test('404 for unknown Codex session id', async () => {
+    // Same 404 contract for non-Claude tools — when the session truly
+    // doesn't exist (no rollout file, no MemoryStore row), the endpoint
+    // should fail rather than return a phantom badge.
+    const res = await request(app).get('/api/conversations/codex_no-such-session/outcome/badge');
+    expect(res.status).toBe(404);
+  });
+
+  test('404 for unknown Gemini/OpenCode session ids', async () => {
+    // Both go through the MemoryStore lookup path.
+    const r1 = await request(app).get('/api/conversations/gemini_no-such-session/outcome/badge');
+    const r2 = await request(app).get('/api/conversations/opencode_no-such-session/outcome/badge');
+    expect(r1.status).toBe(404);
+    expect(r2.status).toBe(404);
+  });
+});

@@ -7,9 +7,20 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Card, Chip, Input, Button, SegmentedControl, ToolBadge } from './primitives';
 import { getEditsTimeline, type EditRow, type EditOp, type AiTool } from '../services/api';
+import { useSidebarExtrasRegister } from '../context/sidebar-extras';
 
 interface Props {
   onSessionClick?: (sessionId: string) => void;
+  /** Source filter from the global Sidebar. */
+  toolFilter?: string;
+  /** Project filter from the global Sidebar. */
+  projectFilter?: string | null;
+  /**
+   * Optional: report the projects that have edits in the current window
+   * back to the parent so it can rebuild the Sidebar tree to show only
+   * active projects (not the stale all-time list from getStatus).
+   */
+  onActiveProjects?: (byProject: Record<string, number>) => void;
 }
 
 const PRESETS = [
@@ -38,23 +49,51 @@ const OP_TONE: Record<EditOp, 'ok' | 'info' | 'warn' | 'neutral'> = {
 function formatTs(iso: string | undefined, ms: number): string {
   const d = iso ? new Date(iso) : new Date(ms);
   if (Number.isNaN(d.getTime())) return '';
-  // Local time, "MM-DD HH:MM:SS" — short and unambiguous.
+  const ageMs = Date.now() - d.getTime();
+  const min = Math.round(ageMs / 60000);
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min}m ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `${hr}h ago`;
+  // Older than a day → calendar form, "MM-DD HH:MM" without seconds.
   const pad = (n: number) => String(n).padStart(2, '0');
-  return (
-    `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
-    `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-  );
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function shortFile(file: string): string {
-  // Strip $HOME-ish prefixes for readability while keeping the structure.
+/**
+ * Bucket a timestamp to a stable label for day-grouping headers.
+ * Returns "Today", "Yesterday", or "Mon Jul 14".
+ */
+function dayBucket(ms: number): string {
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return 'Unknown';
+  const now = new Date();
+  const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const dayMs = 86400_000;
+  const diffDays = Math.round((startOf(now) - startOf(d)) / dayMs);
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+function splitFilePath(file: string): { dir: string; base: string } {
+  // Strip $HOME-ish prefix to "~/…" for readability, then split into
+  // (dir, basename) so the UI can render the basename emphasized.
+  let displayed = file;
   const home = '/home/';
   if (file.startsWith(home)) {
     const rest = file.slice(home.length);
     const slash = rest.indexOf('/');
-    if (slash > 0) return '~' + rest.slice(slash);
+    if (slash > 0) displayed = '~' + rest.slice(slash);
   }
-  return file;
+  const i = displayed.lastIndexOf('/');
+  if (i < 0) return { dir: '', base: displayed };
+  return { dir: displayed.slice(0, i + 1), base: displayed.slice(i + 1) };
+}
+
+function shortFile(file: string): string {
+  const { dir, base } = splitFilePath(file);
+  return dir + base;
 }
 
 const ALL_TOOLS: AiTool[] = ['claude', 'gemini', 'opencode', 'codex'];
@@ -62,11 +101,14 @@ const ALL_TOOLS: AiTool[] = ['claude', 'gemini', 'opencode', 'codex'];
 type ToolFilter = 'all' | AiTool;
 type GroupBy = 'session' | 'repo';
 
-export default function ActivityTimeline({ onSessionClick }: Props) {
+export default function ActivityTimeline({ onSessionClick, toolFilter: toolFilterProp = 'all', projectFilter = null, onActiveProjects }: Props) {
   const [sinceHours, setSinceHours] = useState<number>(24);
   const [pattern, setPattern] = useState('');
   const [includeReads, setIncludeReads] = useState(false);
-  const [toolFilter, setToolFilter] = useState<ToolFilter>('all');
+  // Sidebar drives the source filter. Coerce unknown strings to 'all'.
+  const toolFilter: ToolFilter = (['all', 'claude', 'gemini', 'opencode', 'codex'] as const).includes(toolFilterProp as any)
+    ? (toolFilterProp as ToolFilter)
+    : 'all';
   const [edits, setEdits] = useState<EditRow[]>([]);
   const [total, setTotal] = useState(0);
   const [truncated, setTruncated] = useState(false);
@@ -85,6 +127,7 @@ export default function ActivityTimeline({ onSessionClick }: Props) {
     getEditsTimeline({
       sinceHours,
       pattern: pattern.trim() || undefined,
+      project: projectFilter || undefined,
       includeReads,
       limit: 500,
       groupByRepo: groupBy === 'repo',
@@ -97,6 +140,9 @@ export default function ActivityTimeline({ onSessionClick }: Props) {
         setTruncated(res.truncated);
         setByTool(res.byTool || {});
         setByRepo(res.byRepo || {});
+        // Report active projects up so the global Sidebar tree can
+        // re-render with only the projects relevant to this window.
+        if (onActiveProjects) onActiveProjects(res.byProject || {});
       })
       .catch((e: Error) => {
         if (cancelled) return;
@@ -111,7 +157,7 @@ export default function ActivityTimeline({ onSessionClick }: Props) {
         if (!cancelled) setLoading(false);
       });
     return () => { cancelled = true; };
-  }, [sinceHours, pattern, includeReads, toolFilter, groupBy]);
+  }, [sinceHours, pattern, includeReads, toolFilter, groupBy, projectFilter]);
 
   const grouped = useMemo(() => {
     const out: { sessionId: string; project: string; latest: number; tool: AiTool; rows: EditRow[] }[] = [];
@@ -157,72 +203,34 @@ export default function ActivityTimeline({ onSessionClick }: Props) {
   const distinctFiles = useMemo(() => new Set(edits.map(e => e.file)).size, [edits]);
   const distinctRepos = Object.keys(byRepo).length;
 
+  // Time-window selector → Sidebar.
+  useSidebarExtrasRegister(() => ([{
+    heading: 'Window',
+    rows: PRESETS.map(p => ({
+      id: `activity-window-${p.value}`,
+      label: p.label,
+      on: sinceHours === p.value,
+      onClick: () => setSinceHours(p.value),
+      testId: `activity-window-${p.value}`,
+    })),
+  }]), [sinceHours]);
+
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+    <div className="cr-page-pad" style={{ flex: 1, overflow: 'auto', padding: '20px 24px' }}>
+      <div className="cr-page-header-row" style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
         <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600, color: 'var(--cr-fg-1)' }}>
           Activity Timeline
         </h2>
-        <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
+        <span className="cr-page-header-lead" style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
           live transcript scan — includes the active session
         </span>
       </div>
 
-      {/* Row 1: Tool filter — radio-style, same pattern as Memory / Toolkit / Insights. */}
-      <Card style={{ padding: 14, marginBottom: 12 }}>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>Tool</span>
-          {(['all', ...ALL_TOOLS] as ToolFilter[]).map(t => {
-            const on = toolFilter === t;
-            const count = t === 'all'
-              ? Object.values(byTool).reduce<number>((a, b) => a + (b || 0), 0)
-              : (byTool[t] ?? 0);
-            const label = t === 'all' ? 'All'
-              : t === 'claude' ? 'Claude'
-              : t === 'gemini' ? 'Gemini'
-              : t === 'opencode' ? 'OpenCode'
-              : 'Codex';
-            return (
-              <button
-                key={t}
-                onClick={() => setToolFilter(t)}
-                style={{
-                  height: 28,
-                  padding: '0 12px',
-                  background: on ? 'var(--cr-ink-3)' : 'var(--cr-ink-2)',
-                  border: `1px solid ${on ? 'var(--cr-line-2)' : 'var(--cr-line-1)'}`,
-                  borderRadius: 'var(--cr-radius-sm)',
-                  color: on ? 'var(--cr-fg-1)' : 'var(--cr-fg-2)',
-                  cursor: 'pointer',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 6,
-                  fontSize: 12,
-                  fontWeight: on ? 500 : 400,
-                  transition: 'background var(--cr-dur-fast)',
-                }}
-              >
-                {t !== 'all' && <ToolBadge tool={t} size="sm" />}
-                {t === 'all' && <span>{label}</span>}
-                <span style={{ fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)', color: 'var(--cr-fg-3)', fontSize: 11 }}>{count}</span>
-              </button>
-            );
-          })}
-        </div>
-      </Card>
-
-      {/* Row 2: Secondary controls (window / pattern / include-reads / reset). */}
+      {/* Tool filter and Window live in the global Sidebar. The
+          remaining controls (search by path, include-reads, group-by)
+          stay here since they're activity-specific. */}
       <Card style={{ padding: 14, marginBottom: 16 }}>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>Window</span>
-            <SegmentedControl
-              options={PRESETS.map(p => ({ value: String(p.value), label: p.label }))}
-              value={String(sinceHours)}
-              onChange={(v) => setSinceHours(Number(v))}
-              size="sm"
-            />
-          </div>
           <div style={{ flex: 1, minWidth: 220 }}>
             <Input
               value={pattern}
@@ -252,7 +260,7 @@ export default function ActivityTimeline({ onSessionClick }: Props) {
               size="sm"
             />
           </div>
-          <Button size="sm" variant="ghost" onClick={() => { setPattern(''); setIncludeReads(false); setSinceHours(24); setToolFilter('all'); setGroupBy('session'); }}>
+          <Button size="sm" variant="ghost" onClick={() => { setPattern(''); setIncludeReads(false); setSinceHours(24); setGroupBy('session'); }}>
             Reset
           </Button>
         </div>
@@ -285,8 +293,27 @@ export default function ActivityTimeline({ onSessionClick }: Props) {
       )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {groupBy === 'session' && grouped.map((g) => (
-          <Card key={g.sessionId} style={{ padding: 12 }}>
+        {groupBy === 'session' && grouped.map((g, gi) => {
+          const bucket = dayBucket(g.latest);
+          const prevBucket = gi > 0 ? dayBucket(grouped[gi - 1].latest) : null;
+          const showDayHeader = bucket !== prevBucket;
+          return (
+          <React.Fragment key={g.sessionId}>
+          {showDayHeader && (
+            <div style={{
+              fontSize: 11,
+              fontWeight: 600,
+              letterSpacing: '0.05em',
+              textTransform: 'uppercase',
+              color: 'var(--cr-fg-3)',
+              padding: '12px 4px 2px',
+              borderBottom: '1px solid var(--cr-line-1)',
+              marginTop: gi > 0 ? 6 : 0,
+            }}>
+              {bucket}
+            </div>
+          )}
+          <Card style={{ padding: 12 }}>
             <div style={{
               display: 'flex',
               alignItems: 'center',
@@ -328,15 +355,22 @@ export default function ActivityTimeline({ onSessionClick }: Props) {
                     <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
                       <Chip kind={OP_TONE[e.op]} size="sm">{OP_LABELS[e.op]}</Chip>
                     </td>
-                    <td style={{ padding: '6px 0', color: 'var(--cr-fg-1)', fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)', wordBreak: 'break-all' }}>
-                      {shortFile(e.file)}
+                    <td style={{ padding: '6px 0', fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)', wordBreak: 'break-all' }}>
+                      {(() => { const { dir, base } = splitFilePath(e.file); return (
+                        <>
+                          <span style={{ color: 'var(--cr-fg-3)' }}>{dir}</span>
+                          <span style={{ color: 'var(--cr-fg-1)', fontWeight: 600 }}>{base}</span>
+                        </>
+                      ); })()}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </Card>
-        ))}
+          </React.Fragment>
+          );
+        })}
 
         {groupBy === 'repo' && groupedByRepo.map((g) => (
           <Card key={g.repo} style={{ padding: 12 }}>
@@ -384,10 +418,21 @@ export default function ActivityTimeline({ onSessionClick }: Props) {
                     <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
                       <Chip kind={OP_TONE[e.op]} size="sm">{OP_LABELS[e.op]}</Chip>
                     </td>
-                    <td style={{ padding: '6px 0', color: 'var(--cr-fg-1)', fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)', wordBreak: 'break-all' }}>
-                      {g.repo !== '__no_repo__' && e.file.startsWith(g.repo + '/')
-                        ? e.file.slice(g.repo.length + 1)
-                        : shortFile(e.file)}
+                    <td style={{ padding: '6px 0', fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)', wordBreak: 'break-all' }}>
+                      {(() => {
+                        const display = g.repo !== '__no_repo__' && e.file.startsWith(g.repo + '/')
+                          ? e.file.slice(g.repo.length + 1)
+                          : shortFile(e.file);
+                        const i = display.lastIndexOf('/');
+                        const dir = i >= 0 ? display.slice(0, i + 1) : '';
+                        const base = i >= 0 ? display.slice(i + 1) : display;
+                        return (
+                          <>
+                            <span style={{ color: 'var(--cr-fg-3)' }}>{dir}</span>
+                            <span style={{ color: 'var(--cr-fg-1)', fontWeight: 600 }}>{base}</span>
+                          </>
+                        );
+                      })()}
                     </td>
                   </tr>
                 ))}

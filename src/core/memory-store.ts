@@ -1,14 +1,14 @@
 /**
  * SQLite storage for memory metadata and links.
  *
- * Adds memory_metadata and memory_links tables to the existing
- * chat-recall-cache.db alongside session_metadata.
+ * Adds memory_metadata and memory_links tables to the same SQLite db that
+ * holds session_metadata — see `src/core/paths.ts` for the canonical
+ * location (env-overridable).
  */
 
 import Database from 'better-sqlite3';
 import { existsSync, mkdirSync } from 'fs';
-import { homedir } from 'os';
-import { join, dirname } from 'path';
+import { dirname } from 'path';
 
 import type {
   SourceType,
@@ -19,17 +19,13 @@ import type {
   MemoryLinkRow,
   MemorySearchResult,
 } from '../types/memory.js';
+import { getCacheDbPath } from './paths.js';
 
 export class MemoryStore {
   private db: Database.Database;
-  private static readonly DEFAULT_DB_PATH = join(
-    homedir(),
-    '.claude',
-    'chat-recall-cache.db'
-  );
 
   constructor(dbPath?: string) {
-    const path = dbPath || MemoryStore.DEFAULT_DB_PATH;
+    const path = dbPath || getCacheDbPath();
 
     const dir = dirname(path);
     if (!existsSync(dir)) {
@@ -245,7 +241,56 @@ export class MemoryStore {
     return stmt.all(sourceType, projectPath, `${projectPath}%`, limit) as MemoryMetadataRow[];
   }
 
+  /**
+   * List all sessions across every tool, sorted newest-first. Returns
+   * just (id, mtime, tool) — small enough that "give me everything"
+   * is fine even on a 10k-session install. Used by the precompute
+   * worker to find sessions missing cached compute results.
+   */
+  listAllSessionsForPrecompute(): Array<{ id: string; mtime: number; tool: string }> {
+    const rows = this.db.prepare(`
+      SELECT id, mtime, json_extract(extra_json, '$.tool') as tool
+      FROM memory_metadata
+      WHERE source_type = 'session'
+      ORDER BY mtime DESC
+    `).all() as Array<{ id: string; mtime: number; tool: string | null }>;
+    return rows.map(r => ({ id: r.id, mtime: r.mtime || 0, tool: r.tool || 'claude' }));
+  }
+
   /** List all items of a given source type */
+  /**
+   * Lightweight (id → project_path) map for all sessions. Used to
+   * overlay correct project paths onto live-scan results whose Claude
+   * scanner produces a mangled path (chat-recall → chat/recall) by
+   * replacing hyphens in the encoded directory name.
+   */
+  listAllSessionProjectPaths(): Array<{ id: string; project_path: string }> {
+    return this.db
+      .prepare(`SELECT id, project_path FROM memory_metadata WHERE source_type='session' AND project_path IS NOT NULL AND project_path <> ''`)
+      .all() as Array<{ id: string; project_path: string }>;
+  }
+
+  /**
+   * Sessions whose file mtime is at-or-after `sinceMs`. Used by the
+   * Activity timeline to limit cache scans to the relevant window.
+   */
+  listSessionsModifiedSince(sinceMs: number): Array<{ id: string; mtime: number; project_path: string }> {
+    return this.db
+      .prepare(`SELECT id, mtime, project_path FROM memory_metadata WHERE source_type='session' AND mtime >= ? ORDER BY mtime DESC`)
+      .all(sinceMs) as Array<{ id: string; mtime: number; project_path: string }>;
+  }
+
+  /**
+   * Lightweight (id → file_path) map for all sessions. Used by the web
+   * server's badge/diff/outcome endpoints in place of a filesystem walk.
+   * Single SQL query, only the two columns we actually need.
+   */
+  listAllSessionPaths(): Array<{ id: string; file_path: string }> {
+    return this.db
+      .prepare(`SELECT id, file_path FROM memory_metadata WHERE source_type='session' AND file_path IS NOT NULL AND file_path <> ''`)
+      .all() as Array<{ id: string; file_path: string }>;
+  }
+
   listItems(sourceType: SourceType, limit = 100, offset = 0): MemoryMetadataRow[] {
     const stmt = this.db.prepare(`
       SELECT * FROM memory_metadata
@@ -254,6 +299,66 @@ export class MemoryStore {
       LIMIT ? OFFSET ?
     `);
     return stmt.all(sourceType, limit, offset) as MemoryMetadataRow[];
+  }
+
+  /**
+   * Sorted/paginated/filtered query over indexed sessions, returning the
+   * page rows + total-after-filtering in two SQL statements (no JS sort,
+   * no JS slice). Backed by `idx_memory_mtime` so even on a 10k-session
+   * install the query is single-digit milliseconds.
+   *
+   * Tool filter uses `json_extract` on the `extra_json` column. SQLite
+   * indexes don't help json_extract directly, but the upstream
+   * `source_type='session'` predicate already narrows to the session
+   * subset, so the per-row JSON parse cost is bounded.
+   *
+   * `projectFilter` is a path PREFIX match (so a folder click in the
+   * sidebar pulls all descendant sessions). Empty string returns all.
+   *
+   * Returns `null` when the store is empty so callers can fall back to
+   * the filesystem walk during a fresh install before the indexer has
+   * populated anything.
+   */
+  querySessionIndex(opts: {
+    limit: number;
+    offset: number;
+    projectFilter?: string;
+    toolFilter?: string;
+    sinceMs?: number;
+  }): { rows: MemoryMetadataRow[]; total: number } {
+    const where: string[] = ["source_type = 'session'"];
+    const params: (string | number)[] = [];
+
+    if (opts.projectFilter) {
+      where.push('(project_path = ? OR project_path LIKE ?)');
+      params.push(opts.projectFilter, opts.projectFilter + '/%');
+    }
+    if (opts.toolFilter) {
+      // Default tool when extra_json doesn't carry one is 'claude' — match
+      // both the explicit-tool case and the implicit-claude case.
+      if (opts.toolFilter === 'claude') {
+        where.push("(json_extract(extra_json, '$.tool') IS NULL OR json_extract(extra_json, '$.tool') = 'claude')");
+      } else {
+        where.push("json_extract(extra_json, '$.tool') = ?");
+        params.push(opts.toolFilter);
+      }
+    }
+    if (opts.sinceMs && Number.isFinite(opts.sinceMs)) {
+      where.push('mtime >= ?');
+      params.push(opts.sinceMs);
+    }
+
+    const whereSQL = where.join(' AND ');
+
+    const total = (this.db.prepare(
+      `SELECT COUNT(*) as n FROM memory_metadata WHERE ${whereSQL}`
+    ).get(...params) as { n: number }).n;
+
+    const rows = this.db.prepare(
+      `SELECT * FROM memory_metadata WHERE ${whereSQL} ORDER BY mtime DESC LIMIT ? OFFSET ?`
+    ).all(...params, opts.limit, opts.offset) as MemoryMetadataRow[];
+
+    return { rows, total };
   }
 
   /** Get counts by source type */

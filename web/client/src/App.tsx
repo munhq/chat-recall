@@ -12,9 +12,10 @@ import ToolkitExplorer from './components/ToolkitExplorer';
 import Dashboard from './components/Dashboard';
 import ActivityTimeline from './components/ActivityTimeline';
 import SettingsPage from './components/SettingsPage';
+import { SidebarExtrasProvider, useSidebarExtras } from './context/sidebar-extras';
 import {
   getStatus,
-  getRecentSessions,
+  getRecentSessionsPage,
   getConversationWithSubagents,
   searchSessions,
   type SessionInfo,
@@ -151,18 +152,43 @@ export function buildProjectTree(projects: Record<string, number>): ProjectTreeN
 }
 
 export default function App() {
+  return (
+    <SidebarExtrasProvider>
+      <AppInner />
+    </SidebarExtrasProvider>
+  );
+}
+
+function AppInner() {
+  const sidebarExtras = useSidebarExtras();
   const [view, setView] = useState<ViewMode>('search');
   const [toolFilter, setToolFilter] = useState<string>('all');
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [sort, setSort] = useState('recent');
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
   const searchRef = useRef<HTMLInputElement>(null);
 
   const [projectTree, setProjectTree] = useState<ProjectTreeNode[]>([]);
   const [totalProjectCount, setTotalProjectCount] = useState(0);
+  // When in Activity view, the tree shows only projects with edits in the
+  // current window — fed by ActivityTimeline → onActiveProjects → here.
+  // Reset to null when leaving the Activity view so the all-time tree
+  // returns. `null` (not `{}`) distinguishes "haven't received an update
+  // yet" from "received an empty set" (no recent activity).
+  const [activeProjectsForView, setActiveProjectsForView] = useState<Record<string, number> | null>(null);
   const [recentSessions, setRecentSessions] = useState<SessionInfo[]>([]);
+  // Pagination state — drives the "load more" trigger in ConversationList.
+  const [recentTotal, setRecentTotal] = useState(0);
+  const [recentHasMore, setRecentHasMore] = useState(false);
+  const [recentLoadingMore, setRecentLoadingMore] = useState(false);
+  // Distinct from `recentLoadingMore`: true while the FIRST page (or a
+  // refetch after filter change) is in flight. Drives the skeleton
+  // shimmer state in ConversationList — without it the list is blank
+  // for the cold 1-2s walk and the user thinks the app broke.
+  const [recentLoadingFirstPage, setRecentLoadingFirstPage] = useState(true);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
   const [subagents, setSubagents] = useState<Subagent[]>([]);
@@ -173,37 +199,150 @@ export default function App() {
 
   // Build the project tree from status. LCP-strip + collapse-transparent-chains
   // gives a sensible hierarchy on any OS without hardcoded path depths.
+  // Static all-time tree from getStatus — used everywhere except Activity.
+  const [allTimeTree, setAllTimeTree] = useState<ProjectTreeNode[]>([]);
+  const [allTimeTotal, setAllTimeTotal] = useState(0);
   useEffect(() => {
     getStatus()
       .then((stats) => {
         const tree = buildProjectTree(stats.projects);
-        setProjectTree(tree);
-        setTotalProjectCount(tree.reduce((s, n) => s + n.totalCount, 0));
+        setAllTimeTree(tree);
+        setAllTimeTotal(tree.reduce((s, n) => s + n.totalCount, 0));
       })
       .catch(console.error);
   }, []);
 
-  // Keyboard shortcut for search (Cmd/Ctrl + K)
+  // Reset the active-window tree whenever the user leaves the Activity
+  // view, so re-entering it re-fetches a fresh window.
+  useEffect(() => {
+    if (view !== 'activity') setActiveProjectsForView(null);
+  }, [view]);
+
+  // Pick which tree to show: window-scoped while in Activity, all-time
+  // otherwise. The active tree's counts represent edits-in-window.
+  useEffect(() => {
+    if (view === 'activity' && activeProjectsForView) {
+      const tree = buildProjectTree(activeProjectsForView);
+      setProjectTree(tree);
+      setTotalProjectCount(tree.reduce((s, n) => s + n.totalCount, 0));
+    } else {
+      setProjectTree(allTimeTree);
+      setTotalProjectCount(allTimeTotal);
+    }
+  }, [view, activeProjectsForView, allTimeTree, allTimeTotal]);
+
+  // Keyboard shortcut for search (Cmd/Ctrl + K) and Escape-to-close
+  // for the mobile drawer (matches modal/dialog conventions).
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
         searchRef.current?.focus();
+      } else if (e.key === 'Escape' && mobileSidebarOpen) {
+        setMobileSidebarOpen(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [mobileSidebarOpen]);
 
-  // Load recent sessions when filters change
+  // Load first page of recent sessions when filters change.
+  // Page size 20 fills the viewport. The user can scroll to trigger
+  // `loadMoreRecent` for the next page (server-side pagination — no walk
+  // for un-shown rows).
+  // Page size: 20 fills the viewport. Server caches the index for 30s so
+  // any subsequent page within that window is essentially free.
+  const PAGE_SIZE = 20;
+  // Eager prefetch: after the first page lands, kick off the next pages
+  // automatically (without waiting for scroll) up to this cap. With the
+  // server-side index cache + persistent badge cache, fetching pages
+  // 2-5 costs ~50ms each, so we do them up-front. Keeps the user from
+  // hitting "load more" mid-scroll. Cap at 5 pages × 20 = 100 rows so we
+  // don't pull thousands into the DOM.
+  const PREFETCH_PAGES = 4;
   useEffect(() => {
-    getRecentSessions(50, projectFilter || undefined, toolFilter === 'all' ? undefined : toolFilter)
-      .then((sessions) => {
-        setRecentSessions(sessions);
+    let cancelled = false;
+    setRecentLoadingFirstPage(true);
+
+    const opts = {
+      limit: PAGE_SIZE,
+      projectFilter: projectFilter || undefined,
+      toolFilter: toolFilter === 'all' ? undefined : toolFilter,
+    };
+
+    // Page 1 first — show as soon as it arrives.
+    getRecentSessionsPage({ ...opts, offset: 0 })
+      .then(async (page) => {
+        if (cancelled) return;
+        setRecentSessions(page.sessions);
+        setRecentTotal(page.total);
+        setRecentHasMore(page.hasMore);
         setSearchResults([]);
+        setRecentLoadingFirstPage(false);
+
+        // Prefetch the next pages eagerly so scrolling feels instant.
+        // Each completes before the next so we don't slam the server with
+        // parallel requests; the in-process index cache makes them fast.
+        let offset = page.sessions.length;
+        let hasMore = page.hasMore;
+        for (let i = 0; i < PREFETCH_PAGES && hasMore && !cancelled; i++) {
+          try {
+            const next = await getRecentSessionsPage({ ...opts, offset });
+            if (cancelled) return;
+            // De-dupe by id — server-side mtime sort can shift slightly
+            // between requests if a session was just modified.
+            setRecentSessions((prev) => {
+              const seen = new Set(prev.map((s) => s.sessionId));
+              return [...prev, ...next.sessions.filter((s) => !seen.has(s.sessionId))];
+            });
+            setRecentTotal(next.total);
+            setRecentHasMore(next.hasMore);
+            offset += next.sessions.length;
+            hasMore = next.hasMore;
+            if (next.sessions.length === 0) break;
+          } catch (err) {
+            console.error('prefetch page failed:', err);
+            break;
+          }
+        }
       })
-      .catch(console.error);
+      .catch((err) => {
+        if (!cancelled) {
+          console.error(err);
+          setRecentLoadingFirstPage(false);
+        }
+      });
+
+    return () => { cancelled = true; };
   }, [projectFilter, toolFilter]);
+
+  // Load the next page of recent sessions. Driven by the
+  // ConversationList's bottom-of-list intersection observer.
+  const loadMoreRecent = useCallback(async () => {
+    if (recentLoadingMore || !recentHasMore) return;
+    setRecentLoadingMore(true);
+    try {
+      const page = await getRecentSessionsPage({
+        limit: PAGE_SIZE,
+        offset: recentSessions.length,
+        projectFilter: projectFilter || undefined,
+        toolFilter: toolFilter === 'all' ? undefined : toolFilter,
+      });
+      // Concat-only — never re-shuffle existing rows. If the index changed
+      // server-side between page 1 and page 2 you may briefly see a
+      // duplicate, but the dedupe-on-id below covers that.
+      setRecentSessions((prev) => {
+        const seen = new Set(prev.map(s => s.sessionId));
+        return [...prev, ...page.sessions.filter(s => !seen.has(s.sessionId))];
+      });
+      setRecentHasMore(page.hasMore);
+      setRecentTotal(page.total);
+    } catch (err) {
+      console.error('loadMoreRecent failed:', err);
+    } finally {
+      setRecentLoadingMore(false);
+    }
+  }, [recentLoadingMore, recentHasMore, recentSessions.length, projectFilter, toolFilter]);
 
   const handleSearch = useCallback(
     async (q: string) => {
@@ -300,73 +439,133 @@ export default function App() {
     return recentSessions;
   }, [searchResults, recentSessions]);
 
+  // Close the drawer whenever the user picks a project, switches views,
+  // or otherwise navigates — otherwise the drawer stays open masking the
+  // result of their action on mobile.
+  const closeMobileSidebar = useCallback(() => setMobileSidebarOpen(false), []);
+  const handleSidebarSelectProject = useCallback((p: string | null) => {
+    setProjectFilter(p);
+    setMobileSidebarOpen(false);
+  }, []);
+  const handleSidebarSelectTool = useCallback((t: string) => {
+    setToolFilter(t);
+    setMobileSidebarOpen(false);
+  }, []);
+  const handleSidebarSelectView = useCallback((v: ViewMode) => {
+    setView(v);
+    setMobileSidebarOpen(false);
+  }, []);
+
   return (
-    <div className="app">
-      <TopBar 
-        view={view} 
-        setView={setView} 
-        query={query} 
-        setQuery={setQuery} 
+    <div
+      className="app"
+      data-mobile-sidebar-open={mobileSidebarOpen ? 'true' : undefined}
+      data-has-selection={view === 'search' && selectedSessionId ? 'true' : undefined}
+    >
+      <TopBar
+        view={view}
+        setView={setView}
+        query={query}
+        setQuery={setQuery}
         searchRef={searchRef}
         onSearch={handleSearch}
+        onMobileMenu={() => setMobileSidebarOpen((v) => !v)}
+        mobileSidebarOpen={mobileSidebarOpen}
       />
-      {view === 'search' && (
-        <div className="app-row" data-testid="search-layout">
+      {/*
+       * Settings has its own full-width chrome. Every other view shares the
+       * left sidebar (Source filter + Project tree) so the tool/project
+       * filtering UX stays identical across Conversations / Memory /
+       * Toolkit / Activity / Insights.
+       */}
+      {view === 'settings' ? (
+        <div className="app-row">
+          <SettingsPage onClose={() => setView('search')} />
+        </div>
+      ) : (
+        <div className="app-row" data-testid="app-layout">
+          <div
+            className="cr-mobile-backdrop"
+            onClick={closeMobileSidebar}
+            aria-hidden="true"
+          />
           <Sidebar
             tree={projectTree}
             totalCount={totalProjectCount}
             selected={projectFilter}
-            onSelect={setProjectFilter}
+            onSelect={handleSidebarSelectProject}
             toolFilter={toolFilter}
-            setToolFilter={setToolFilter}
+            setToolFilter={handleSidebarSelectTool}
+            /* Wrap each row's onClick so view-injected filters
+             * (Memory's Type, Activity's Window, …) close the
+             * mobile drawer just like the built-in rows do. */
+            extraSections={sidebarExtras.map((sec) => ({
+              ...sec,
+              rows: sec.rows.map((row) => ({
+                ...row,
+                onClick: () => { row.onClick(); closeMobileSidebar(); },
+              })),
+            }))}
+            view={view}
+            setView={handleSidebarSelectView}
           />
-          <ConversationList
-            results={displayedSessions}
-            selected={selectedSessionId}
-            onSelect={handleSelectSession}
-            sort={sort}
-            setSort={setSort}
-          />
-          <ConversationViewer
-            sessionId={selectedSessionId}
-            messages={messages}
-            subagents={subagents}
-            loading={conversationLoading}
-            onClose={handleCloseConversation}
-            onLoadFull={handleLoadFull}
-            searchResult={selectedResult}
-            sessionInfo={selectedSessionInfo}
-          />
-        </div>
-      )}
-      {view === 'memory' && (
-        <div className="app-row">
-          <MemoryExplorer
-            onSessionClick={handleMemorySessionClick}
-          />
-        </div>
-      )}
-      {view === 'toolkit' && (
-        <div className="app-row">
-          <ToolkitExplorer />
-        </div>
-      )}
-      {view === 'dashboard' && (
-        <div className="app-row">
-          <Dashboard
-            onJumpToSession={handleMemorySessionClick}
-            onJumpToSearch={(q) => { setQuery(q); setView('search'); }}
-          />
-        </div>
-      )}
-      {view === 'activity' && (
-        <div className="app-row">
-          <ActivityTimeline onSessionClick={handleMemorySessionClick} />
-        </div>
-      )}
-      {view === 'settings' && (
-        <div className="app-row">
-          <SettingsPage onClose={() => setView('search')} />
+
+          {view === 'search' && (
+            <>
+              <ConversationList
+                results={displayedSessions}
+                selected={selectedSessionId}
+                onSelect={handleSelectSession}
+                sort={sort}
+                setSort={setSort}
+                hasMore={!query.trim() && recentHasMore}
+                loadingMore={recentLoadingMore}
+                total={recentTotal}
+                onLoadMore={loadMoreRecent}
+                /* Skeletons only when there are no rows yet AND the first
+                   page is still in flight; otherwise we'd flash skeletons
+                   over an already-populated list during a refilter. */
+                loading={recentLoadingFirstPage && !query.trim()}
+              />
+              <ConversationViewer
+                sessionId={selectedSessionId}
+                messages={messages}
+                subagents={subagents}
+                loading={conversationLoading}
+                onClose={handleCloseConversation}
+                onLoadFull={handleLoadFull}
+                searchResult={selectedResult}
+                sessionInfo={selectedSessionInfo}
+              />
+            </>
+          )}
+          {view === 'memory' && (
+            <MemoryExplorer
+              onSessionClick={handleMemorySessionClick}
+              toolFilter={toolFilter}
+              projectFilter={projectFilter}
+            />
+          )}
+          {view === 'toolkit' && (
+            <ToolkitExplorer
+              toolFilter={toolFilter}
+            />
+          )}
+          {view === 'dashboard' && (
+            <Dashboard
+              onJumpToSession={handleMemorySessionClick}
+              onJumpToSearch={(q) => { setQuery(q); setView('search'); }}
+              toolFilter={toolFilter}
+            />
+          )}
+          {view === 'activity' && (
+            <ActivityTimeline
+              onSessionClick={handleMemorySessionClick}
+              toolFilter={toolFilter}
+              projectFilter={projectFilter}
+              onActiveProjects={setActiveProjectsForView}
+            />
+          )}
         </div>
       )}
     </div>

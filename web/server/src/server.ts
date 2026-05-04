@@ -4,6 +4,7 @@
 
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import searchRouter from './routes/search.js';
@@ -22,6 +23,12 @@ const PORT = parseInt(process.env.PORT || '5000', 10);
 app.use(cors({
   origin: process.env.CORS_ORIGIN || undefined, // undefined = allow all (for local dev); set in prod
 }));
+// Gzip/deflate compression. Skips already-compressed responses (images,
+// pre-compressed assets) automatically. Threshold avoids the overhead on
+// tiny payloads where the per-response framing exceeds the savings. Most
+// of our /api/* responses are JSON in the 1KB-5MB range — exactly where
+// compression pays off (typically 70-85% wire-size reduction).
+app.use(compression({ threshold: 1024 }));
 app.use(express.json({ limit: '100kb' }));
 
 // Request logging
@@ -75,4 +82,26 @@ app.listen(PORT, HOST, () => {
   console.log(`\nChat-Recall Backend running on http://${HOST}:${PORT}`);
   console.log(`  Health: http://${HOST}:${PORT}/health`);
   console.log(`  Bind: ${HOST} (set HOST=0.0.0.0 for network access)\n`);
+
+  // Pre-warm the caches that the UI hits on first page load. Without
+  // this, the user's first /status, /analytics, /outcome calls each pay
+  // their own 1-2s cold-walk cost. Better to absorb it once at boot.
+  // All warmups run async in parallel — listen() doesn't block.
+  void import('./routes/conversations.js').then(m => m.prewarmConversationCaches());
+
+  // Warm the per-route TTL caches by hitting the actual HTTP endpoints.
+  // Going through the routes (rather than calling the service classes
+  // directly) guarantees we warm the SAME singleton instances the route
+  // handlers use — calling `new Service()` from outside creates a
+  // separate instance with its own empty cache, which doesn't help.
+  setTimeout(() => {
+    void Promise.all([
+      fetch(`http://127.0.0.1:${PORT}/api/status`).then(() => 'status'),
+      fetch(`http://127.0.0.1:${PORT}/api/analytics`).then(() => 'analytics'),
+      fetch(`http://127.0.0.1:${PORT}/api/memory/status`).then(() => 'memory/status'),
+      fetch(`http://127.0.0.1:${PORT}/api/edits/timeline?since_hours=24&limit=200`).then(() => 'edits/timeline'),
+    ]).then(results => {
+      console.log(`  Route caches warmed: ${results.filter(Boolean).join(', ')}`);
+    }).catch(() => { /* benign — first user request will pay */ });
+  }, 300);
 });

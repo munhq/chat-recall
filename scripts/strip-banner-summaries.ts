@@ -1,3 +1,4 @@
+import { getCacheDbPath } from '../src/core/paths.js';
 #!/usr/bin/env tsx
 /**
  * One-off cleanup: strip Claude Code status banners (MCP health
@@ -13,7 +14,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { stripInjectedBanners } from '../src/parsers/chunker.js';
 
-const dbPath = join(homedir(), '.claude', 'chat-recall-cache.db');
+const dbPath = getCacheDbPath();
 const db = new Database(dbPath);
 
 const rows = db

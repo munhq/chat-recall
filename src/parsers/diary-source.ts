@@ -4,14 +4,14 @@
  * Each AI agent gets a persistent diary — a session-level journal
  * for recording observations, decisions, and context across conversations.
  *
- * Storage: ~/.claude/chat-recall-index/diary/<agent_name>/<timestamp>.json
+ * Storage: <data dir>/index/diary/<agent_name>/<timestamp>.json
+ * (canonical path resolved through `src/core/paths.ts`).
  *
  * Diary entries are filed via MCP tools (recall_diary_write) and
  * discovered + indexed like any other memory source.
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, statSync } from 'fs';
-import { homedir } from 'os';
 import { join, basename } from 'path';
 
 import type {
@@ -21,6 +21,7 @@ import type {
   MemoryLink,
   SourceType,
 } from '../types/memory.js';
+import { getDiaryDir } from '../core/paths.js';
 
 const MAX_CHUNK_CHARS = 3000;
 
@@ -39,12 +40,7 @@ export class DiarySource implements MemorySource {
   private readonly diaryDir: string;
 
   constructor(diaryDir?: string) {
-    this.diaryDir = diaryDir || join(
-      homedir(),
-      '.claude',
-      'chat-recall-index',
-      'diary'
-    );
+    this.diaryDir = diaryDir || getDiaryDir();
   }
 
   /** Discover all diary entries across all agents. */
@@ -134,12 +130,7 @@ export class DiarySource implements MemorySource {
    * Write a new diary entry. Returns the entry ID.
    */
   static write(entry: DiaryEntry, diaryDir?: string): string {
-    const dir = diaryDir || join(
-      homedir(),
-      '.claude',
-      'chat-recall-index',
-      'diary'
-    );
+    const dir = diaryDir || getDiaryDir();
 
     const agentDir = join(dir, entry.agent.toLowerCase().replace(/[^a-z0-9_-]/g, '_'));
     if (!existsSync(agentDir)) {
@@ -163,12 +154,7 @@ export class DiarySource implements MemorySource {
    * Read recent diary entries for an agent.
    */
   static read(agentName: string, lastN = 10, diaryDir?: string): DiaryEntry[] {
-    const dir = diaryDir || join(
-      homedir(),
-      '.claude',
-      'chat-recall-index',
-      'diary'
-    );
+    const dir = diaryDir || getDiaryDir();
 
     const agentDir = join(dir, agentName.toLowerCase().replace(/[^a-z0-9_-]/g, '_'));
     if (!existsSync(agentDir)) return [];

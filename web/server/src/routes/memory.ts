@@ -51,10 +51,22 @@ router.post('/search', async (req, res) => {
   }
 });
 
+// In-process TTL cache for /memory/status. The aggregate counts
+// (across 9 source types) are derived from a SQL group-by — fast
+// individually but adds up to ~250ms cold. The Memory tab fires this
+// on every render; caching for 30s keeps tab switches snappy.
+let memoryStatusCache: { data: unknown; expiresAt: number } | null = null;
+const MEMORY_STATUS_TTL_MS = 30_000;
+
 // GET /api/memory/status
 router.get('/status', async (req, res) => {
   try {
+    const now = Date.now();
+    if (memoryStatusCache && memoryStatusCache.expiresAt > now) {
+      return res.json(memoryStatusCache.data);
+    }
     const status = await memoryService.getStatus();
+    memoryStatusCache = { data: status, expiresAt: now + MEMORY_STATUS_TTL_MS };
     res.json(status);
   } catch (error) {
     console.error('Memory status error:', error);

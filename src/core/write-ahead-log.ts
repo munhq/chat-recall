@@ -9,8 +9,8 @@
  */
 
 import { existsSync, mkdirSync, appendFileSync, openSync, closeSync, chmodSync } from 'fs';
-import { homedir } from 'os';
 import { join, dirname } from 'path';
+import { getWalDir } from './paths.js';
 
 export interface WALEntry {
   timestamp: string;
@@ -29,15 +29,9 @@ const MAX_PREVIEW_LENGTH = 200;
 
 export class WriteAheadLog {
   private readonly walPath: string;
-  private static readonly DEFAULT_WAL_DIR = join(
-    homedir(),
-    '.claude',
-    'chat-recall-index',
-    'wal'
-  );
 
   constructor(walDir?: string) {
-    const dir = walDir || WriteAheadLog.DEFAULT_WAL_DIR;
+    const dir = walDir || getWalDir();
 
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
