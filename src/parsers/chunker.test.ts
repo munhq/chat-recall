@@ -24,14 +24,14 @@ describe('chunkSession', () => {
     return {
       sessionId: 'sess1',
       projectPath: '/p',
-      filePath: '/p/x.jsonl',
       fullPath: '/p/x.jsonl',
       created: '2026-01-01T00:00:00Z',
       modified: '2026-01-01T00:00:00Z',
       fileMtime: 1,
       firstPrompt: 'help me',
       messageCount: 4,
-      claudeDir: '/home/user/.claude',
+      gitBranch: 'main',
+      isSidechain: false,
     };
   }
   function fakeContent(): SessionContent {

@@ -2,7 +2,7 @@
  * Session listing service.
  */
 
-import { getAllSessions, parseSessionFile, MetadataCache, MemoryStore, findCodexSessionFile } from '../imports.js';
+import { getAllSessions, parseSessionFile, MetadataCache, MemoryStore, findCodexSessionFile, extractFirstUserPromptSync } from '../imports.js';
 import type { SessionEntry, SessionMetadata, MemoryMetadataRow, MemoryLinkRow, SourceType } from '../imports.js';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -32,7 +32,16 @@ export interface SessionInfo {
   filePath: string;
   firstPrompt?: string;
   summary?: string;
-  tool?: string; // 'claude' | 'gemini' | 'opencode'
+  tool?: string; // 'claude' | 'gemini' | 'opencode' | 'codex'
+  /**
+   * Populated when summary generation has been attempted and failed
+   * (recorded by the indexer's summary worker). UI uses this to show
+   * "summary unavailable — check settings" instead of silently falling
+   * back to first-prompt with no explanation. `null`/absent means no
+   * attempt has happened yet (still pending) or the session has a
+   * successful summary.
+   */
+  summaryError?: { error: string; attemptCount: number; lastFailedAt: number };
 }
 
 /**
@@ -53,12 +62,26 @@ export async function getRecentSessions(limit = 20): Promise<SessionInfo[]> {
     if (cached) {
       firstPrompt = cached.firstPrompt;
       summary = cached.summary;
-    } else {
+    } else if (!firstPrompt) {
+      // Fallback chain when cache is cold and the index entry has no
+      // firstPrompt:
+      //   1) cheap line-by-line scan for the first user prompt — bounded
+      //      to ~500 lines, terminates early. This is the common case on
+      //      a fresh DB and is what stops list rows reading
+      //      "(no prompt captured)".
+      //   2) full `parseSessionFile` to also extract embedded summaries.
+      //      Only run when (1) finds nothing, since this walks the whole
+      //      transcript and was the bottleneck on a 200-session list.
       try {
-        const content = await parseSessionFile(filePath);
-        firstPrompt = content.firstPrompt || firstPrompt;
-        summary = content.summaries.length > 0 ? content.summaries[0] : undefined;
+        firstPrompt = extractFirstUserPromptSync(filePath, { maxLength: 200 });
       } catch {}
+      if (!firstPrompt) {
+        try {
+          const content = await parseSessionFile(filePath);
+          firstPrompt = content.firstPrompt || firstPrompt;
+          summary = content.summaries.length > 0 ? content.summaries[0] : undefined;
+        } catch {}
+      }
     }
 
     sessions.push({
@@ -98,7 +121,15 @@ export async function getRecentSessions(limit = 20): Promise<SessionInfo[]> {
               const filePath = join(dayDir, file);
               const st = statSync(filePath);
               const mtime = st.mtimeMs;
-              const sessionId = `codex_${file.replace(/^rollout-/, '').replace(/\.jsonl$/, '')}`;
+              // Canonical id uses ONLY the UUID portion of the filename
+              // (e.g. `019de782-…`), matching what the indexer (which uses
+              // `meta.id` from the session_meta event) records. If we
+              // included the timestamp prefix here too the same parent
+              // would surface twice — once from this filesystem walk,
+              // once from MemoryStore — under different ids.
+              const uuidMatch = file.match(/([a-f0-9-]{36})\.jsonl$/i);
+              if (!uuidMatch) continue;
+              const sessionId = `codex_${uuidMatch[1]}`;
               if (seenIds.has(sessionId)) continue;
 
               let firstPrompt = '';
@@ -198,6 +229,302 @@ export async function getRecentSessions(limit = 20): Promise<SessionInfo[]> {
 }
 
 /**
+ * Lightweight session index entry — just enough to sort, filter, and
+ * decide which sessions need full hydration. No firstPrompt, no summary.
+ *
+ * `sessionId` is the canonical id (with `codex_`/`gemini_`/`opencode_`
+ * prefix where applicable). `filePath` is the on-disk JSONL path when
+ * available — used to stat the file for outcome badges and for hydration.
+ */
+export interface SessionIndexEntry {
+  sessionId: string;
+  projectPath: string;
+  mtime: number;
+  tool: 'claude' | 'codex' | 'gemini' | 'opencode';
+  filePath?: string;
+  /** Pre-computed when available (Claude sessions-index.json). Used to
+   *  short-circuit hydration when the index already has it. */
+  preIndexedFirstPrompt?: string;
+}
+
+/**
+ * Build the light session index across all tools — single pass, no
+ * firstPrompt extraction. The result is what pagination filters, sorts,
+ * and slices over before hydrating only the visible page.
+ *
+ * Sorted newest-first by mtime so callers can `slice(offset, offset+limit)`
+ * directly to get the requested page.
+ */
+export async function getSessionIndex(): Promise<SessionIndexEntry[]> {
+  const out: SessionIndexEntry[] = [];
+
+  // 1. Claude sessions — walk the index entries (no parseSessionFile).
+  for (const [entry, filePath] of getAllSessions()) {
+    out.push({
+      sessionId: entry.sessionId,
+      projectPath: entry.projectPath || '',
+      mtime: entry.fileMtime || 0,
+      tool: 'claude',
+      filePath,
+      preIndexedFirstPrompt: entry.firstPrompt || undefined,
+    });
+  }
+
+  // 2. Codex sessions — read just the session_meta line for cwd; no
+  //    firstPrompt scan, no full parse.
+  try {
+    const { existsSync, readdirSync, statSync, readFileSync } = await import('fs');
+    const { join } = await import('path');
+    const codexSessionsDir = join(homedir(), '.codex', 'sessions');
+    if (existsSync(codexSessionsDir)) {
+      for (const year of readdirSync(codexSessionsDir)) {
+        for (const month of readdirSync(join(codexSessionsDir, year))) {
+          for (const day of readdirSync(join(codexSessionsDir, year, month))) {
+            const dayDir = join(codexSessionsDir, year, month, day);
+            for (const file of readdirSync(dayDir)) {
+              if (!file.endsWith('.jsonl') || !file.startsWith('rollout-')) continue;
+              const filePath = join(dayDir, file);
+              const uuidMatch = file.match(/([a-f0-9-]{36})\.jsonl$/i);
+              if (!uuidMatch) continue;
+              const sessionId = `codex_${uuidMatch[1]}`;
+              try {
+                const head = readFileSync(filePath, 'utf-8').split('\n', 5);
+                let cwd = '';
+                let isSubagent = false;
+                for (const line of head) {
+                  if (!line.trim()) continue;
+                  try {
+                    const obj = JSON.parse(line);
+                    if (obj.type === 'session_meta' && obj.payload) {
+                      cwd = obj.payload.cwd || '';
+                      if (obj.payload.source?.subagent?.thread_spawn ||
+                          obj.payload.agent_role ||
+                          obj.payload.agent_nickname) {
+                        isSubagent = true;
+                      }
+                      break;
+                    }
+                  } catch { /* skip */ }
+                }
+                if (isSubagent) continue;
+                if (!cwd) continue;
+                out.push({
+                  sessionId,
+                  projectPath: cwd,
+                  mtime: statSync(filePath).mtimeMs,
+                  tool: 'codex',
+                  filePath,
+                });
+              } catch { /* unreadable — skip */ }
+            }
+          }
+        }
+      }
+    }
+  } catch { /* codex dir missing */ }
+
+  // 3. Gemini + OpenCode — already in MemoryStore.
+  try {
+    const store = new MemoryStore();
+    try {
+      const items = store.listItems('session' as SourceType, 100_000, 0);
+      for (const item of items) {
+        let extra: Record<string, unknown> = {};
+        try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
+        const tool = extra.tool as 'gemini' | 'opencode' | undefined;
+        if (tool !== 'gemini' && tool !== 'opencode') continue;
+        out.push({
+          sessionId: item.id,
+          projectPath: item.project_path || '',
+          mtime: item.mtime || 0,
+          tool,
+          filePath: item.file_path || undefined,
+          preIndexedFirstPrompt: item.content_preview || item.title || undefined,
+        });
+      }
+    } finally {
+      store.close();
+    }
+  } catch { /* MemoryStore unavailable */ }
+
+  // Newest first. Stable enough — mtime collisions are rare.
+  out.sort((a, b) => b.mtime - a.mtime);
+  return out;
+}
+
+/**
+ * Hydrate a slice of the session index — only the requested rows get
+ * firstPrompt + summary lookups. This is what makes pagination cheap:
+ * walk all 575 sessions to build the index (fast, no parse), then
+ * extractFirstUserPromptSync only on the 20 you're actually showing.
+ */
+export async function hydrateSessions(entries: SessionIndexEntry[]): Promise<SessionInfo[]> {
+  const cache = new MetadataCache();
+  try {
+    const errors = cache.getSummaryErrors(entries.map(e => e.sessionId));
+
+    const result: SessionInfo[] = [];
+    // Sessions whose firstPrompt was extracted on this request — write
+    // them back to the cache in a single batch at the end so we never
+    // re-extract for the same (sessionId, mtime) pair. Avoids the per-
+    // request `extractFirstUserPromptSync` × N cost that was pure waste.
+    const toPersist: Array<{ sessionId: string; firstPrompt: string; mtime: number }> = [];
+
+    for (const e of entries) {
+      const cached = cache.get(e.sessionId);
+      let firstPrompt = e.preIndexedFirstPrompt || '';
+      let summary: string | undefined;
+      let needsPersist = false;
+
+      if (cached) {
+        firstPrompt = cached.firstPrompt || firstPrompt;
+        summary = cached.summary;
+      } else if (!firstPrompt && e.tool === 'claude' && e.filePath) {
+        try {
+          firstPrompt = extractFirstUserPromptSync(e.filePath, { maxLength: 200 });
+          if (firstPrompt) needsPersist = true;
+        } catch {}
+      } else if (!firstPrompt && e.preIndexedFirstPrompt) {
+        // Codex/Gemini/OpenCode: have a preIndexedFirstPrompt from the
+        // source walk but no cache row yet. Persist what we have so the
+        // summary worker can later upgrade the row with an AI summary.
+        firstPrompt = e.preIndexedFirstPrompt;
+        needsPersist = true;
+      }
+
+      if (needsPersist && firstPrompt) {
+        toPersist.push({ sessionId: e.sessionId, firstPrompt, mtime: e.mtime });
+      }
+
+      const iso = new Date(e.mtime || 0).toISOString();
+      result.push({
+        sessionId: e.sessionId,
+        projectPath: e.projectPath,
+        created: iso,
+        modified: iso,
+        fileMtime: e.mtime,
+        filePath: e.filePath || '',
+        firstPrompt: cleanBanner(firstPrompt) ?? '',
+        summary: cleanBanner(summary),
+        tool: e.tool,
+        summaryError: !summary && errors.has(e.sessionId) ? errors.get(e.sessionId)! : undefined,
+      });
+    }
+
+    // Single bulk write — never blocks the response (we've already built
+    // the result array and the persistence is best-effort future-cache).
+    for (const row of toPersist) {
+      try {
+        cache.set({
+          sessionId: row.sessionId,
+          firstPrompt: row.firstPrompt,
+          summary: '',
+          summarySource: 'original',
+          mtime: row.mtime,
+          indexedAt: Date.now(),
+        });
+      } catch { /* benign — next request will retry */ }
+    }
+
+    return result;
+  } finally {
+    cache.close();
+  }
+}
+
+/**
+ * Count sessions per project across all tools — without loading firstPrompts,
+ * summaries, or anything else expensive. Used by `/api/status` which only
+ * needs aggregate counts; loading firstPrompts via `getRecentSessions(0)`
+ * was the bottleneck that turned status into a 40+ second request after
+ * a service restart (extractFirstUserPromptSync × 574 sessions).
+ *
+ * Returns `{ projects, total }` so callers can produce the same shape the
+ * status endpoint already uses without a second pass.
+ */
+export async function getSessionProjectCounts(): Promise<{ projects: Record<string, number>; total: number }> {
+  const projects: Record<string, number> = {};
+  let total = 0;
+
+  // 1. Claude sessions — walk the index entries (no parseSessionFile, no
+  //    extractFirstUserPromptSync — just project paths).
+  for (const [entry] of getAllSessions()) {
+    const p = entry.projectPath || '';
+    if (p) projects[p] = (projects[p] || 0) + 1;
+    total++;
+  }
+
+  // 2. Codex sessions — single walk over rollout files; we need the
+  //    session_meta event for projectPath, but that's the first event in
+  //    each rollout so we can stop reading after we find it.
+  try {
+    const { existsSync, readdirSync, readFileSync } = await import('fs');
+    const { join } = await import('path');
+    const codexSessionsDir = join(homedir(), '.codex', 'sessions');
+    if (existsSync(codexSessionsDir)) {
+      for (const year of readdirSync(codexSessionsDir)) {
+        for (const month of readdirSync(join(codexSessionsDir, year))) {
+          for (const day of readdirSync(join(codexSessionsDir, year, month))) {
+            const dayDir = join(codexSessionsDir, year, month, day);
+            for (const file of readdirSync(dayDir)) {
+              if (!file.endsWith('.jsonl') || !file.startsWith('rollout-')) continue;
+              try {
+                // Read just enough to find session_meta — the first event.
+                const head = readFileSync(join(dayDir, file), 'utf-8').split('\n', 5);
+                let cwd = '';
+                let isSubagent = false;
+                for (const line of head) {
+                  if (!line.trim()) continue;
+                  try {
+                    const obj = JSON.parse(line);
+                    if (obj.type === 'session_meta' && obj.payload) {
+                      cwd = obj.payload.cwd || '';
+                      if (obj.payload.source?.subagent?.thread_spawn ||
+                          obj.payload.agent_role ||
+                          obj.payload.agent_nickname) {
+                        isSubagent = true;
+                      }
+                      break;
+                    }
+                  } catch { /* skip */ }
+                }
+                if (isSubagent) continue;
+                if (cwd) projects[cwd] = (projects[cwd] || 0) + 1;
+                total++;
+              } catch { /* skip unreadable */ }
+            }
+          }
+        }
+      }
+    }
+  } catch { /* codex dir missing or unreadable */ }
+
+  // 3. Gemini + OpenCode — already aggregated in MemoryStore as `session`
+  //    rows; query directly so we don't repeat the discovery walk.
+  try {
+    const store = new MemoryStore();
+    try {
+      // listItems pages — pass a generous cap that's larger than any
+      // realistic local session count.
+      const items = store.listItems('session' as SourceType, 100_000, 0);
+      for (const item of items) {
+        let extra: Record<string, unknown> = {};
+        try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
+        const tool = extra.tool as string | undefined;
+        if (tool !== 'gemini' && tool !== 'opencode') continue;
+        const p = item.project_path || '';
+        if (p) projects[p] = (projects[p] || 0) + 1;
+        total++;
+      }
+    } finally {
+      store.close();
+    }
+  } catch { /* MemoryStore unavailable — claude+codex counts still useful */ }
+
+  return { projects, total };
+}
+
+/**
  * Get session file path from session ID.
  */
 export function getSessionPath(sessionId: string): string {
@@ -210,6 +537,28 @@ export function getSessionPath(sessionId: string): string {
   }
 
   throw new Error(`Session not found: ${sessionId}`);
+}
+
+/**
+ * Bulk lookup: build the (sessionId → filePath) map in a SINGLE pass over
+ * `getAllSessions()`, then pluck the requested ids out of it.
+ *
+ * Why this exists: the batch outcome endpoint resolves dozens of ids per
+ * request. Calling `getSessionPath` per id walks the entire ~3000-session
+ * project tree N times — quadratic. This function turns N walks into one.
+ */
+export function getSessionPaths(sessionIds: string[]): Map<string, string> {
+  const want = new Set(sessionIds);
+  const out = new Map<string, string>();
+  if (want.size === 0) return out;
+  for (const [entry, filePath] of getAllSessions()) {
+    if (want.has(entry.sessionId)) {
+      out.set(entry.sessionId, filePath);
+      // Early exit when we've found everything we were asked about.
+      if (out.size === want.size) break;
+    }
+  }
+  return out;
 }
 
 // --- Related items ---

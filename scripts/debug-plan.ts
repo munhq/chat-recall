@@ -1,10 +1,11 @@
+import { getCacheDbPath } from '../src/core/paths.js';
 #!/usr/bin/env tsx
 import Database from 'better-sqlite3';
 import { homedir } from 'os';
 import { join } from 'path';
 import { readFileSync, existsSync } from 'fs';
 
-const db = new Database(join(homedir(), '.claude', 'chat-recall-cache.db'));
+const db = new Database(getCacheDbPath());
 
 const row = db
   .prepare(

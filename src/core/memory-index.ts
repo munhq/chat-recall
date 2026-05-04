@@ -8,13 +8,13 @@
 
 import lancedb from '@lancedb/lancedb';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { homedir } from 'os';
 import { join } from 'path';
 
 import type { Embedder } from './embedder.js';
 import type { LanceTable } from './lancedb-types.js';
 import type { SourceType, MemoryChunk, MemorySearchResult } from '../types/memory.js';
 import { MemoryStore } from './memory-store.js';
+import { getIndexDir } from './paths.js';
 
 export interface MemoryChunkRecord {
   id: string;
@@ -31,7 +31,10 @@ export interface MemoryChunkRecord {
 
 export class MemoryIndex {
   static readonly TABLE_NAME = 'memory_chunks';
-  static readonly DEFAULT_INDEX_PATH = join(homedir(), '.claude', 'chat-recall-index');
+  /** Default index directory — resolved lazily through `paths.ts` so tests
+   *  can override via `CHAT_RECALL_DATA_DIR` and the legacy migration runs
+   *  before any directory is created. */
+  static getDefaultIndexPath(): string { return getIndexDir(); }
 
   private embedder: Embedder | null;
   private indexPath: string;
@@ -50,7 +53,7 @@ export class MemoryIndex {
 
   constructor(embedder: Embedder | null, indexPath?: string) {
     this.embedder = embedder;
-    this.indexPath = indexPath || MemoryIndex.DEFAULT_INDEX_PATH;
+    this.indexPath = indexPath || MemoryIndex.getDefaultIndexPath();
     this.mtimeCachePath = join(this.indexPath, 'memory_mtime_cache.json');
 
     if (!existsSync(this.indexPath)) {

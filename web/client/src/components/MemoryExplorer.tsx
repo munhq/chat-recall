@@ -3,7 +3,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { Icon, Button, Input, SourceBadge, ToolBadge, SegmentedControl, Card, Chip } from './primitives';
+import { Icon, Button, Input, SourceBadge, ToolBadge, Card, Chip } from './primitives';
+import { useSidebarExtrasRegister } from '../context/sidebar-extras';
 import type {
   SourceType,
   MemoryMetadataRow,
@@ -55,6 +56,10 @@ function pluralizeSource(t: SourceType | 'all'): string {
 
 interface MemoryExplorerProps {
   onSessionClick?: (sessionId: string) => void;
+  /** Source filter from the global Sidebar. */
+  toolFilter?: string;
+  /** Project filter from the global Sidebar. */
+  projectFilter?: string | null;
 }
 
 type SessionToolFilter = 'all' | 'claude' | 'gemini' | 'opencode' | 'codex';
@@ -74,7 +79,7 @@ function readItemTool(item: { source_type: string; extra_json?: string }): strin
   return 'claude';
 }
 
-export default function MemoryExplorer({ onSessionClick }: MemoryExplorerProps) {
+export default function MemoryExplorer({ onSessionClick, toolFilter = 'all', projectFilter = null }: MemoryExplorerProps) {
   const [activeType, setActiveType] = useState<SourceType | 'all'>('plan');
   const [query, setQuery] = useState('');
   const [items, setItems] = useState<MemoryMetadataRow[]>([]);
@@ -83,7 +88,12 @@ export default function MemoryExplorer({ onSessionClick }: MemoryExplorerProps) 
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<MemoryStatus | null>(null);
   const [reindexing, setReindexing] = useState<Set<string>>(new Set());
-  const [sessionTool, setSessionTool] = useState<SessionToolFilter>('all');
+  // Sidebar-driven filter is the source of truth — local sessionTool state
+  // is gone; everything reads `toolFilter` from props.
+  const sessionTool = (toolFilter || 'all') as SessionToolFilter;
+  // Reserved for a future per-view project drilldown — kept on the prop
+  // surface so the layout above keeps its shape.
+  void projectFilter;
 
   useEffect(() => {
     getMemoryStatus().then(setStatus).catch(console.error);
@@ -103,12 +113,6 @@ export default function MemoryExplorer({ onSessionClick }: MemoryExplorerProps) 
       setItems([]);
     }
   }, [activeType, query]);
-
-  // Reset tool filter whenever the source-type tab changes — it doesn't
-  // travel between tabs cleanly (plans-by-claude has no meaning for paste).
-  useEffect(() => {
-    setSessionTool('all');
-  }, [activeType]);
 
   const handleSearch = () => {
     if (!query.trim()) return;
@@ -171,6 +175,24 @@ export default function MemoryExplorer({ onSessionClick }: MemoryExplorerProps) 
       setSelectedId(null);
     }
   }, [sessionTool, visibleSourceTabs, activeType]);
+
+  // Push source-type rows into the global Sidebar as a "Type" section so
+  // the horizontal SegmentedControl below can disappear.
+  useSidebarExtrasRegister(() => ([{
+    heading: 'Type',
+    rows: visibleSourceTabs.map(t => ({
+      id: `memory-type-${t.id}`,
+      label: t.label,
+      count: getTypeCount(t.id, sessionTool),
+      on: activeType === t.id,
+      onClick: () => {
+        setActiveType(t.id as SourceType | 'all');
+        setSearchResults([]);
+        setSelectedId(null);
+      },
+      testId: `memory-type-${t.id}`,
+    })),
+  }]), [visibleSourceTabs, activeType, sessionTool, status]);
 
   const rawDisplayedItems: MemoryMetadataRow[] = query
     ? searchResults.map((r) => ({
@@ -244,80 +266,20 @@ export default function MemoryExplorer({ onSessionClick }: MemoryExplorerProps) 
         </div>
       </div>
 
-      {/* Primary axis: pick a tool. Tool-first navigation hides source tabs
-          that have no rows for the selected tool. */}
+      {/* Both the Tool filter and the Type filter live in the global
+          Sidebar now. We keep just the per-type Reindex action here so it
+          stays close to the visible content. */}
       <div
-        data-testid="memory-tool-filter"
         style={{
-          padding: '10px 32px',
+          padding: '8px 32px',
           borderBottom: '1px solid var(--cr-line-1)',
           display: 'flex',
           alignItems: 'center',
-          gap: 8,
-          flexWrap: 'wrap',
-        }}
-      >
-        <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>Tool</span>
-        {(['all', 'claude', 'gemini', 'opencode', 'codex'] as SessionToolFilter[]).map(t => {
-          const on = sessionTool === t;
-          const label = t === 'all' ? 'All'
-            : t === 'claude' ? 'Claude'
-            : t === 'gemini' ? 'Gemini'
-            : t === 'opencode' ? 'OpenCode'
-            : 'Codex';
-          return (
-            <button
-              key={t}
-              onClick={() => { setSessionTool(t); setSelectedId(null); }}
-              style={{
-                height: 28,
-                padding: '0 12px',
-                background: on ? 'var(--cr-ink-3)' : 'var(--cr-ink-2)',
-                border: `1px solid ${on ? 'var(--cr-line-2)' : 'var(--cr-line-1)'}`,
-                borderRadius: 'var(--cr-radius-sm)',
-                color: on ? 'var(--cr-fg-1)' : 'var(--cr-fg-2)',
-                fontFamily: 'inherit',
-                fontSize: 12,
-                fontWeight: on ? 500 : 400,
-                cursor: 'pointer',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                transition: 'background var(--cr-dur-fast), color var(--cr-dur-fast)',
-              }}
-            >
-              {t !== 'all' && <ToolBadge tool={t} size="sm" />}
-              {t === 'all' && <span>{label}</span>}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Secondary axis: source-type tabs. Hidden tabs have 0 rows for the
-          selected tool — that's the "tool-first" rule. "Everything" stays. */}
-      <div
-        style={{
-          padding: '12px 32px',
-          borderBottom: '1px solid var(--cr-line-1)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
+          justifyContent: 'flex-end',
           gap: 12,
+          minHeight: 36,
         }}
       >
-        <SegmentedControl
-          value={activeType}
-          onChange={(v) => {
-            setActiveType(v as SourceType | 'all');
-            setSearchResults([]);
-            setSelectedId(null);
-          }}
-          options={visibleSourceTabs.map((t) => ({
-            value: t.id,
-            label: `${t.label} (${getTypeCount(t.id, sessionTool)})`,
-          }))}
-        />
-
         {activeType !== 'all' && (
           <Button
             size="sm"
@@ -332,9 +294,14 @@ export default function MemoryExplorer({ onSessionClick }: MemoryExplorerProps) 
       </div>
 
       {/* Body: list + detail */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+      <div
+        className="cr-split"
+        data-has-selection={selectedId ? 'true' : undefined}
+        style={{ flex: 1, display: 'flex', overflow: 'hidden' }}
+      >
         {/* List */}
         <div
+          className="cr-split-list"
           style={{
             width: 380,
             flexShrink: 0,
@@ -404,9 +371,20 @@ export default function MemoryExplorer({ onSessionClick }: MemoryExplorerProps) 
         </div>
 
         {/* Detail */}
-        <div style={{ flex: 1, overflowY: 'auto', background: 'var(--cr-ink-0)' }}>
+        <div className="cr-split-detail" style={{ flex: 1, overflowY: 'auto', background: 'var(--cr-ink-0)' }}>
           {selectedItem ? (
-            <MemoryDetail item={selectedItem} onSessionClick={onSessionClick} />
+            <>
+              {/* Mobile-only back button — returns to list view. */}
+              <button
+                type="button"
+                className="cr-mobile-only cr-split-back"
+                onClick={() => setSelectedId(null)}
+                aria-label="Back to list"
+              >
+                <Icon name="chevronLeft" size={14} /> Back
+              </button>
+              <MemoryDetail item={selectedItem} onSessionClick={onSessionClick} />
+            </>
           ) : (
             <div
               style={{

@@ -9,7 +9,7 @@
  */
 
 import express from 'express';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync, rmSync } from 'fs';
 import { dirname, join, basename } from 'path';
 import { homedir } from 'os';
 import { MemoryStore } from '../imports.js';
@@ -128,6 +128,11 @@ router.get('/item/:type/:id/content', (req, res) => {
 const TARGET_TOOLS = ['claude', 'gemini', 'opencode', 'codex'] as const;
 type TargetTool = (typeof TARGET_TOOLS)[number];
 
+const SUPPORTED_TARGETS: Record<'skill' | 'mcp', TargetTool[]> = {
+  skill: ['claude', 'opencode', 'codex'],          // gemini has no Skills surface
+  mcp:   ['claude', 'opencode', 'gemini', 'codex'],
+};
+
 router.post('/promote', express.json(), (req, res) => {
   const { type, sourceId, toTool } = req.body || {};
   if (!isToolkitType(type)) return res.status(400).json({ error: `Invalid type: ${type}` });
@@ -162,12 +167,23 @@ router.post('/promote', express.json(), (req, res) => {
   } finally { store.close(); }
 });
 
-function promoteSkill(item: any, extra: Record<string, unknown>, toTool: TargetTool, res: express.Response) {
+interface PromoteResult {
+  ok: boolean;
+  targetPath?: string;
+  error?: string;
+  status?: number;
+}
+
+function copySkillToTool(
+  extra: Record<string, unknown>,
+  itemFilePath: string,
+  toTool: TargetTool,
+): PromoteResult {
   if (toTool === 'gemini') {
-    return res.status(400).json({ error: 'Gemini does not have a Skills surface (use Extensions instead).' });
+    return { ok: false, status: 400, error: 'Gemini does not have a Skills surface (use Extensions instead).' };
   }
-  const skillDir = (extra.skillDir as string) || dirname(item.file_path);
-  if (!existsSync(skillDir)) return res.status(404).json({ error: `Source dir missing: ${skillDir}` });
+  const skillDir = (extra.skillDir as string) || dirname(itemFilePath);
+  if (!existsSync(skillDir)) return { ok: false, status: 404, error: `Source dir missing: ${skillDir}` };
 
   const skillName = (extra.skillName as string) || basename(skillDir);
   const targetRoot =
@@ -177,12 +193,45 @@ function promoteSkill(item: any, extra: Record<string, unknown>, toTool: TargetT
   const targetDir = join(targetRoot, skillName);
 
   if (existsSync(targetDir)) {
-    return res.status(409).json({ error: `Already exists: ${targetDir}. Remove or rename first.` });
+    return { ok: false, status: 409, error: `Already exists: ${targetDir}. Remove or rename first.` };
   }
 
-  mkdirSync(targetRoot, { recursive: true });
-  cpSync(skillDir, targetDir, { recursive: true });
-  return res.json({ ok: true, targetPath: targetDir });
+  try {
+    mkdirSync(targetRoot, { recursive: true });
+    cpSync(skillDir, targetDir, { recursive: true });
+    return { ok: true, targetPath: targetDir };
+  } catch (e) {
+    return { ok: false, status: 500, error: e instanceof Error ? e.message : 'cp failed' };
+  }
+}
+
+function promoteSkill(item: any, extra: Record<string, unknown>, toTool: TargetTool, res: express.Response) {
+  const r = copySkillToTool(extra, item.file_path, toTool);
+  if (!r.ok) return res.status(r.status || 500).json({ error: r.error });
+  return res.json({ ok: true, targetPath: r.targetPath });
+}
+
+function copyMcpToTool(
+  itemTitle: string,
+  extra: Record<string, unknown>,
+  fromTool: string,
+  toTool: TargetTool,
+): PromoteResult {
+  const name = (extra.mcpName as string) || itemTitle;
+  const command = (extra.command as string) || '';
+  const allow = Array.isArray(extra.alwaysAllow) ? (extra.alwaysAllow as string[]) : [];
+
+  const sourceCfg = readMcpEntry(fromTool, name);
+  let entry = sourceCfg;
+  if (!entry) {
+    const parts = command.split(' ').filter(Boolean);
+    entry = parts.length > 0
+      ? { command: parts[0], args: parts.slice(1), ...(allow.length ? { alwaysAllow: allow } : {}) }
+      : null;
+  }
+  if (!entry) return { ok: false, status: 404, error: `Could not read source MCP config for ${name}` };
+
+  return writeMcpEntryPure(toTool, name, entry);
 }
 
 function promoteMcp(
@@ -192,24 +241,9 @@ function promoteMcp(
   toTool: TargetTool,
   res: express.Response,
 ) {
-  const name = (extra.mcpName as string) || item.title;
-  const command = (extra.command as string) || '';
-  const allow = Array.isArray(extra.alwaysAllow) ? (extra.alwaysAllow as string[]) : [];
-
-  // Re-parse the source config to get the original entry (round-trips
-  // command/args/env shape per-tool).
-  const sourceCfg = readMcpEntry(fromTool, name);
-  if (!sourceCfg) {
-    // Fall back to a synthesized entry from extra. Loses env vars but
-    // is better than failing for promote-from-rendered-row.
-    const parts = command.split(' ').filter(Boolean);
-    const synth = parts.length > 0
-      ? { command: parts[0], args: parts.slice(1), ...(allow.length ? { alwaysAllow: allow } : {}) }
-      : null;
-    if (!synth) return res.status(404).json({ error: `Could not read source MCP config for ${name}` });
-    return writeMcpEntry(toTool, name, synth, res);
-  }
-  return writeMcpEntry(toTool, name, sourceCfg, res);
+  const r = copyMcpToTool(item.title, extra, fromTool, toTool);
+  if (!r.ok) return res.status(r.status || 500).json({ error: r.error });
+  return res.json({ ok: true, targetPath: r.targetPath });
 }
 
 function readMcpEntry(tool: string, name: string): any | null {
@@ -334,15 +368,15 @@ function writeCodexMcpEntry(path: string, name: string, entry: any): boolean {
   return true;
 }
 
-function writeMcpEntry(toTool: TargetTool, name: string, entry: any, res: express.Response) {
+function writeMcpEntryPure(toTool: TargetTool, name: string, entry: any): PromoteResult {
   const home = homedir();
 
   // Codex stores MCPs in TOML, not JSON — handle separately.
   if (toTool === 'codex') {
     const path = join(home, '.codex', 'config.toml');
     const ok = writeCodexMcpEntry(path, name, entry);
-    if (!ok) return res.status(409).json({ error: `MCP "${name}" already exists in ${path}.` });
-    return res.json({ ok: true, targetPath: path, name });
+    if (!ok) return { ok: false, status: 409, error: `MCP "${name}" already exists in ${path}.` };
+    return { ok: true, targetPath: path };
   }
 
   let path: string; let key: string;
@@ -357,27 +391,25 @@ function writeMcpEntry(toTool: TargetTool, name: string, entry: any, res: expres
   let cfg: any = {};
   if (existsSync(path)) {
     try { cfg = JSON.parse(readFileSync(path, 'utf-8')); }
-    catch { return res.status(500).json({ error: `Target config is malformed: ${path}` }); }
+    catch { return { ok: false, status: 500, error: `Target config is malformed: ${path}` }; }
   } else {
     mkdirSync(dirname(path), { recursive: true });
   }
 
   cfg[key] = cfg[key] || {};
   if (cfg[key][name]) {
-    return res.status(409).json({ error: `MCP "${name}" already exists in ${path}.` });
+    return { ok: false, status: 409, error: `MCP "${name}" already exists in ${path}.` };
   }
 
   // Normalize entry shape per target tool.
   let normalized = entry;
   if (toTool === 'opencode') {
-    // OpenCode expects { type: 'local', command: string[] } or { type: 'remote', url }.
     if (entry.url) normalized = { type: 'remote', url: entry.url };
     else if (Array.isArray(entry.command)) normalized = { type: 'local', command: entry.command };
     else if (typeof entry.command === 'string') {
       normalized = { type: 'local', command: [entry.command, ...(entry.args || [])] };
     }
   } else {
-    // Claude / Gemini expect { command, args, env? }.
     if (Array.isArray(entry.command)) {
       const [cmd, ...args] = entry.command;
       normalized = { command: cmd, args };
@@ -389,8 +421,326 @@ function writeMcpEntry(toTool: TargetTool, name: string, entry: any, res: expres
   }
 
   cfg[key][name] = normalized;
-  writeFileSync(path, JSON.stringify(cfg, null, 2));
-  return res.json({ ok: true, targetPath: path, name, normalized });
+  try {
+    writeFileSync(path, JSON.stringify(cfg, null, 2));
+    return { ok: true, targetPath: path };
+  } catch (e) {
+    return { ok: false, status: 500, error: e instanceof Error ? e.message : 'write failed' };
+  }
 }
+
+function writeMcpEntry(toTool: TargetTool, name: string, entry: any, res: express.Response) {
+  const r = writeMcpEntryPure(toTool, name, entry);
+  if (!r.ok) return res.status(r.status || 500).json({ error: r.error });
+  return res.json({ ok: true, targetPath: r.targetPath, name });
+}
+
+// ─────────────────────────────────────────────────────────────────
+// DELETE /api/toolkit/item
+//
+// Body: { type: 'skill'|'mcp', name, tool }
+// Removes one entry from one tool. For Skills, deletes the on-disk dir.
+// For MCPs in JSON-backed tools (claude/gemini/opencode), deletes the
+// keyed entry. For Codex MCPs (TOML), rewrites the file without the
+// [mcp_servers.<name>] block.
+// ─────────────────────────────────────────────────────────────────
+
+router.delete('/item', express.json(), (req, res) => {
+  const { type, name, tool } = req.body || {};
+  if (type !== 'skill' && type !== 'mcp') return res.status(400).json({ error: 'type must be "skill" or "mcp"' });
+  if (typeof name !== 'string' || !name) return res.status(400).json({ error: 'name required' });
+  if (!(TARGET_TOOLS as readonly string[]).includes(tool)) {
+    return res.status(400).json({ error: `invalid tool: ${tool}` });
+  }
+
+  try {
+    if (type === 'skill') {
+      const r = removeSkillFromTool(name, tool as TargetTool);
+      if (!r.ok) return res.status(r.status || 500).json({ error: r.error });
+      return res.json({ ok: true, removedPath: r.targetPath });
+    }
+    const r = removeMcpFromTool(name, tool as TargetTool);
+    if (!r.ok) return res.status(r.status || 500).json({ error: r.error });
+    return res.json({ ok: true, removedPath: r.targetPath });
+  } catch (error) {
+    console.error('Remove error:', error);
+    return res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
+  }
+});
+
+function removeSkillFromTool(name: string, tool: TargetTool): PromoteResult {
+  if (tool === 'gemini') return { ok: false, status: 400, error: 'Gemini has no Skills surface.' };
+  const root =
+      tool === 'claude'   ? join(homedir(), '.claude', 'skills')
+    : tool === 'opencode' ? join(homedir(), '.config', 'opencode', 'skill')
+    :                       join(homedir(), '.codex', 'skills', '.system');
+  const dir = join(root, name);
+  if (!existsSync(dir)) return { ok: false, status: 404, error: `Not found: ${dir}` };
+  try {
+    rmSync(dir, { recursive: true, force: true });
+    return { ok: true, targetPath: dir };
+  } catch (e) {
+    return { ok: false, status: 500, error: e instanceof Error ? e.message : 'rm failed' };
+  }
+}
+
+function removeMcpFromTool(name: string, tool: TargetTool): PromoteResult {
+  const home = homedir();
+
+  if (tool === 'codex') {
+    const path = join(home, '.codex', 'config.toml');
+    if (!existsSync(path)) return { ok: false, status: 404, error: 'config.toml not found' };
+    const before = readFileSync(path, 'utf-8');
+    const after = stripCodexMcpBlock(before, name);
+    if (before === after) return { ok: false, status: 404, error: `MCP "${name}" not found in ${path}` };
+    try {
+      writeFileSync(path, after);
+      return { ok: true, targetPath: path };
+    } catch (e) {
+      return { ok: false, status: 500, error: e instanceof Error ? e.message : 'write failed' };
+    }
+  }
+
+  let path: string; let key: string;
+  if (tool === 'claude') {
+    // ~/.mcp.json is the conventional global file. ~/.claude.json carries
+    // user-level entries; we only delete from the file that actually has it.
+    const cands = [
+      { path: join(home, '.mcp.json'),    key: 'mcpServers' },
+      { path: join(home, '.claude.json'), key: 'mcpServers' },
+    ];
+    for (const c of cands) {
+      if (!existsSync(c.path)) continue;
+      try {
+        const cfg = JSON.parse(readFileSync(c.path, 'utf-8'));
+        if (cfg[c.key] && cfg[c.key][name]) {
+          delete cfg[c.key][name];
+          writeFileSync(c.path, JSON.stringify(cfg, null, 2));
+          return { ok: true, targetPath: c.path };
+        }
+      } catch { /* try next */ }
+    }
+    return { ok: false, status: 404, error: `MCP "${name}" not found in claude configs` };
+  } else if (tool === 'gemini') {
+    path = join(home, '.gemini', 'settings.json'); key = 'mcpServers';
+  } else {
+    // opencode — try both possible locations
+    const cands = [
+      { path: join(home, '.config', 'opencode', 'config.json'), key: 'mcp' },
+      { path: join(home, '.opencode', 'config.json'),           key: 'mcp' },
+    ];
+    for (const c of cands) {
+      if (!existsSync(c.path)) continue;
+      try {
+        const cfg = JSON.parse(readFileSync(c.path, 'utf-8'));
+        if (cfg[c.key] && cfg[c.key][name]) {
+          delete cfg[c.key][name];
+          writeFileSync(c.path, JSON.stringify(cfg, null, 2));
+          return { ok: true, targetPath: c.path };
+        }
+      } catch { /* try next */ }
+    }
+    return { ok: false, status: 404, error: `MCP "${name}" not found in opencode configs` };
+  }
+
+  if (!existsSync(path)) return { ok: false, status: 404, error: `${path} not found` };
+  try {
+    const cfg = JSON.parse(readFileSync(path, 'utf-8'));
+    if (!cfg[key] || !cfg[key][name]) return { ok: false, status: 404, error: `MCP "${name}" not found in ${path}` };
+    delete cfg[key][name];
+    writeFileSync(path, JSON.stringify(cfg, null, 2));
+    return { ok: true, targetPath: path };
+  } catch (e) {
+    return { ok: false, status: 500, error: e instanceof Error ? e.message : 'failed' };
+  }
+}
+
+/**
+ * Strip a `[mcp_servers.<name>]` section (and its `.env` sub-section)
+ * from a Codex config.toml without disturbing other entries.
+ */
+function stripCodexMcpBlock(content: string, name: string): string {
+  const out: string[] = [];
+  let inTarget = false;
+  for (const line of content.split('\n')) {
+    const m = line.match(/^\[mcp_servers\.([^\.\]]+)(?:\.([^\]]+))?\]$/);
+    if (m) {
+      inTarget = m[1] === name;
+      if (inTarget) continue;
+    }
+    if (!inTarget) out.push(line);
+  }
+  return out.join('\n');
+}
+
+// ─────────────────────────────────────────────────────────────────
+// GET /api/toolkit/matrix
+//
+// Returns { skill, mcp } × name × tool presence map for the cross-tool
+// matrix UI. Avoids the client having to scan every row.
+// ─────────────────────────────────────────────────────────────────
+
+router.get('/matrix', (_req, res) => {
+  const store = new MemoryStore();
+  try {
+    const out: Record<'skill' | 'mcp', Record<string, Record<string, boolean>>> = { skill: {}, mcp: {} };
+    for (const type of ['skill', 'mcp'] as const) {
+      const rows = store.listItems(type as SourceType, 100_000, 0);
+      for (const row of rows) {
+        let extra: any = {};
+        try { extra = JSON.parse(row.extra_json || '{}'); } catch { /* skip */ }
+        const tool = String(extra.tool || 'claude');
+        const name = type === 'skill'
+          ? String(extra.skillName || row.title)
+          : String(extra.mcpName || row.title);
+        if (!name) continue;
+        out[type][name] = out[type][name] || {};
+        out[type][name][tool] = true;
+      }
+    }
+    res.json({
+      skill: out.skill,
+      mcp: out.mcp,
+      supportedTargets: SUPPORTED_TARGETS,
+    });
+  } catch (error) {
+    console.error('Matrix error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
+  } finally {
+    store.close();
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────
+// POST /api/toolkit/sync-all
+//
+// Body: { types?: ['skill'|'mcp'][], dryRun?: boolean }
+//
+// For each (type, name) pair the indexer knows about, decide which tools
+// should have it (every tool that supports the type) and copy the source
+// content into every tool that's missing it. Idempotent: existing entries
+// are reported as "skipped: already_exists", never overwritten. Conflicts
+// where two source tools have the same name are resolved by precedence:
+//   skill: claude > codex > opencode  (gemini has no skills surface)
+//   mcp:   claude > codex > gemini > opencode
+//
+// dryRun returns the plan without writing anything.
+// ─────────────────────────────────────────────────────────────────
+
+const SOURCE_PRECEDENCE: Record<'skill' | 'mcp', TargetTool[]> = {
+  skill: ['claude', 'codex', 'opencode'],
+  mcp:   ['claude', 'codex', 'gemini', 'opencode'],
+};
+
+interface SyncPlanEntry {
+  type: 'skill' | 'mcp';
+  name: string;
+  source: TargetTool;       // tool we'll copy from
+  presentIn: TargetTool[];  // tools that already have this row
+  copyTo: TargetTool[];     // tools we'll write to (when not dryRun)
+}
+
+interface SyncResultEntry extends SyncPlanEntry {
+  copied: { tool: TargetTool; targetPath?: string }[];
+  skipped: { tool: TargetTool; reason: string }[];
+  errors: { tool: TargetTool; error: string }[];
+}
+
+function readField(item: any, key: string): unknown {
+  try { return JSON.parse(item.extra_json || '{}')[key]; }
+  catch { return undefined; }
+}
+
+router.post('/sync-all', express.json(), (req, res) => {
+  const types: Array<'skill' | 'mcp'> = Array.isArray(req.body?.types) && req.body.types.length > 0
+    ? req.body.types.filter((t: string) => t === 'skill' || t === 'mcp')
+    : ['skill', 'mcp'];
+  const dryRun = !!req.body?.dryRun;
+
+  const store = new MemoryStore();
+  try {
+    const plan: SyncPlanEntry[] = [];
+
+    for (const type of types) {
+      // Index every (name, tool) → row for this type.
+      const rows = store.listItems(type as SourceType, 100_000, 0);
+      const byName = new Map<string, Partial<Record<TargetTool, any>>>();
+      for (const row of rows) {
+        const tool = String(readField(row, 'tool') || 'claude') as TargetTool;
+        const name = type === 'skill'
+          ? String(readField(row, 'skillName') || row.title)
+          : String(readField(row, 'mcpName') || row.title);
+        if (!name) continue;
+        const slot = byName.get(name) || {};
+        slot[tool] = row;
+        byName.set(name, slot);
+      }
+
+      for (const [name, slot] of byName.entries()) {
+        const presentIn = (Object.keys(slot) as TargetTool[]).filter(t => SUPPORTED_TARGETS[type].includes(t));
+        if (presentIn.length === 0) continue;
+        // Pick best source by precedence.
+        const source = SOURCE_PRECEDENCE[type].find(t => presentIn.includes(t));
+        if (!source) continue;
+        const copyTo = SUPPORTED_TARGETS[type].filter(t => !presentIn.includes(t));
+        if (copyTo.length === 0) continue;
+        plan.push({ type, name, source, presentIn, copyTo });
+      }
+    }
+
+    if (dryRun) {
+      return res.json({ dryRun: true, plan, totalToCopy: plan.reduce((n, p) => n + p.copyTo.length, 0) });
+    }
+
+    const results: SyncResultEntry[] = [];
+    for (const entry of plan) {
+      const sourceRow = store.listItems(entry.type as SourceType, 100_000, 0)
+        .find(r => {
+          const tool = String(readField(r, 'tool') || 'claude');
+          const name = entry.type === 'skill'
+            ? String(readField(r, 'skillName') || r.title)
+            : String(readField(r, 'mcpName') || r.title);
+          return tool === entry.source && name === entry.name;
+        });
+      if (!sourceRow) {
+        results.push({ ...entry, copied: [], skipped: [],
+          errors: entry.copyTo.map(t => ({ tool: t, error: 'source row vanished from store' })) });
+        continue;
+      }
+      const extra = (() => { try { return JSON.parse(sourceRow.extra_json || '{}'); } catch { return {}; } })();
+
+      const copied: SyncResultEntry['copied'] = [];
+      const skipped: SyncResultEntry['skipped'] = [];
+      const errors: SyncResultEntry['errors'] = [];
+
+      for (const target of entry.copyTo) {
+        const r = entry.type === 'skill'
+          ? copySkillToTool(extra, sourceRow.file_path, target)
+          : copyMcpToTool(sourceRow.title, extra, entry.source, target);
+        if (r.ok) {
+          copied.push({ tool: target, targetPath: r.targetPath });
+        } else if (r.status === 409) {
+          skipped.push({ tool: target, reason: r.error || 'already exists' });
+        } else {
+          errors.push({ tool: target, error: r.error || 'failed' });
+        }
+      }
+      results.push({ ...entry, copied, skipped, errors });
+    }
+
+    const summary = {
+      itemsConsidered: plan.length,
+      itemsCopied: results.reduce((n, r) => n + r.copied.length, 0),
+      itemsSkipped: results.reduce((n, r) => n + r.skipped.length, 0),
+      itemsFailed: results.reduce((n, r) => n + r.errors.length, 0),
+    };
+    return res.json({ dryRun: false, summary, results });
+  } catch (error) {
+    console.error('Sync-all error:', error);
+    return res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
+  } finally {
+    store.close();
+  }
+});
 
 export default router;

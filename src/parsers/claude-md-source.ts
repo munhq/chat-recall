@@ -137,14 +137,19 @@ export class ClaudeMdSource implements MemorySource {
   }
 
   async *discover(): AsyncGenerator<MemoryItem> {
+    // The dedup key must include the *tool*, not just the path. AGENTS.md
+    // is shared by OpenCode and Codex — we want both rows in the index so
+    // each tool's column in the cross-tool matrix lights up.
     const seen = new Set<string>();
+    const seenKey = (path: string, tool: string) => `${tool}:${path}`;
 
     // 1) Global notes in $HOME — only CLAUDE.md is conventional there, but
     //    look for the others too in case the user has them.
     for (const note of NOTE_FILES) {
       const p = join(homedir(), note.filename);
-      if (existsSync(p) && !seen.has(p)) {
-        seen.add(p);
+      const key = seenKey(p, note.tool);
+      if (existsSync(p) && !seen.has(key)) {
+        seen.add(key);
         const item = this.fileToItem(p, note.filename, note.tool);
         if (item) yield item;
       }
@@ -156,8 +161,9 @@ export class ClaudeMdSource implements MemorySource {
     for (const projectDir of projectDirs) {
       for (const note of NOTE_FILES) {
         const p = join(projectDir, note.filename);
-        if (existsSync(p) && !seen.has(p)) {
-          seen.add(p);
+        const key = seenKey(p, note.tool);
+        if (existsSync(p) && !seen.has(key)) {
+          seen.add(key);
           const item = this.fileToItem(p, note.filename, note.tool);
           if (item) yield item;
         }
@@ -170,8 +176,9 @@ export class ClaudeMdSource implements MemorySource {
 
       for (const note of NOTE_FILES) {
         const directPath = join(searchDir, note.filename);
-        if (existsSync(directPath) && !seen.has(directPath)) {
-          seen.add(directPath);
+        const key = seenKey(directPath, note.tool);
+        if (existsSync(directPath) && !seen.has(key)) {
+          seen.add(key);
           const item = this.fileToItem(directPath, note.filename, note.tool);
           if (item) yield item;
         }
@@ -183,8 +190,9 @@ export class ClaudeMdSource implements MemorySource {
           if (!entry.isDirectory()) continue;
           for (const note of NOTE_FILES) {
             const p = join(searchDir, entry.name, note.filename);
-            if (existsSync(p) && !seen.has(p)) {
-              seen.add(p);
+            const key = seenKey(p, note.tool);
+            if (existsSync(p) && !seen.has(key)) {
+              seen.add(key);
               const item = this.fileToItem(p, note.filename, note.tool);
               if (item) yield item;
             }

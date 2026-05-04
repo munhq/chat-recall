@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Icon, Chip, MetricCard, Card, Avatar, IconButton, ToolBadge } from './primitives';
+import { Icon, Chip, MetricCard, Card, Avatar, IconButton } from './primitives';
 import { getAnalytics, getPatterns, type AnalyticsData, type PatternsResponse } from '../services/api';
 
 type InsightsToolFilter = 'all' | 'claude' | 'gemini' | 'opencode' | 'codex';
@@ -44,14 +44,21 @@ interface DashboardProps {
   onJumpToSession?: (sessionId: string) => void;
   /** Switch to search view with this query pre-filled. */
   onJumpToSearch?: (query: string) => void;
+  /** Source filter from the global Sidebar (passed-through; Insights
+      currently shows all-tool stats but the prop is here so the App
+      doesn't have to special-case the view). */
+  toolFilter?: string;
 }
 
-export default function Dashboard({ onJumpToSession, onJumpToSearch }: DashboardProps = {}) {
+export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter: toolFilterProp = 'all' }: DashboardProps = {}) {
   const [data, setData] = useState<AnalyticsData | null>(null);
   const [patterns, setPatterns] = useState<PatternsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [toolFilter, setToolFilter] = useState<InsightsToolFilter>('all');
+  // Sidebar drives the source filter — coerce unknown strings to 'all'.
+  const toolFilter: InsightsToolFilter = (['all', 'claude', 'gemini', 'opencode', 'codex'] as const).includes(toolFilterProp as any)
+    ? (toolFilterProp as InsightsToolFilter)
+    : 'all';
 
   const load = (tool: InsightsToolFilter) => {
     setLoading(true);
@@ -109,8 +116,8 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch }: Dashboard
   }
 
   return (
-    <div style={{ flex: 1, overflowY: 'auto', background: 'var(--cr-ink-0)' }}>
-      <div style={{ maxWidth: 1280, margin: '0 auto', padding: '32px 40px 64px' }}>
+    <div className="cr-dashboard" style={{ flex: 1, overflowY: 'auto', background: 'var(--cr-ink-0)' }}>
+      <div className="cr-dashboard-inner" style={{ maxWidth: 1280, margin: '0 auto', padding: '32px 40px 64px' }}>
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 16 }}>
           <div>
@@ -124,55 +131,13 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch }: Dashboard
           </div>
         </div>
 
-        {/* Row 1: Tool filter — same pattern as Memory / Activity / Toolkit. */}
-        <div
-          data-testid="insights-tool-filter"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            flexWrap: 'wrap',
-            marginBottom: 24,
-          }}
-        >
-          <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>Tool</span>
-          {(['all', 'claude', 'gemini', 'opencode', 'codex'] as InsightsToolFilter[]).map(t => {
-            const on = toolFilter === t;
-            const label = t === 'all' ? 'All'
-              : t === 'claude' ? 'Claude'
-              : t === 'gemini' ? 'Gemini'
-              : t === 'opencode' ? 'OpenCode'
-              : 'Codex';
-            return (
-              <button
-                key={t}
-                onClick={() => setToolFilter(t)}
-                style={{
-                  height: 28,
-                  padding: '0 12px',
-                  background: on ? 'var(--cr-ink-3)' : 'var(--cr-ink-2)',
-                  border: `1px solid ${on ? 'var(--cr-line-2)' : 'var(--cr-line-1)'}`,
-                  borderRadius: 'var(--cr-radius-sm)',
-                  color: on ? 'var(--cr-fg-1)' : 'var(--cr-fg-2)',
-                  fontSize: 12,
-                  fontWeight: on ? 500 : 400,
-                  cursor: 'pointer',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: 6,
-                }}
-              >
-                {t !== 'all' && <ToolBadge tool={t} size="sm" />}
-                {t === 'all' && <span>{label}</span>}
-              </button>
-            );
-          })}
-          {toolFilter !== 'all' && (
-            <span style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginLeft: 4 }}>
-              showing {toolFilter} only — totals reflect this tool's slice
-            </span>
-          )}
-        </div>
+        {/* Tool filter is in the Sidebar. We keep just a small status
+            line here so users know which slice they're seeing. */}
+        {toolFilter !== 'all' && (
+          <div style={{ marginBottom: 16, fontSize: 12, color: 'var(--cr-fg-3)' }}>
+            showing <strong style={{ color: 'var(--cr-fg-1)' }}>{toolFilter}</strong> only — totals reflect this tool's slice
+          </div>
+        )}
 
         {/* This-week digest card */}
         <div
@@ -207,6 +172,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch }: Dashboard
               )}
             </div>
             <div
+              className="cr-stat-grid-4"
               style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 32, marginBottom: 20 }}
             >
               {[
@@ -257,7 +223,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch }: Dashboard
         </div>
 
         {/* Lifetime metric grid */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24 }}>
+        <div className="cr-stat-grid-4" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24 }}>
           <MetricCard
             label="Total sessions"
             value={String(summary.totalSessions)}
@@ -336,7 +302,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch }: Dashboard
         )}
 
         {/* Two-column: tools + projects */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <div className="cr-stat-grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           <Card style={{ padding: 24 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
               <h3>Top tools</h3>

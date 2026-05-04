@@ -11,6 +11,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join, basename } from 'path';
 import { MemoryStore } from './memory-store.js';
+import { extractFirstUserPromptSync } from './first-prompt.js';
 
 export interface ConversationContext {
   sessionId: string;
@@ -106,6 +107,10 @@ export function getRecentSessions(
         
         try {
           const stat = statSync(filePath);
+          // Cheap first-prompt extraction so titles aren't "(no prompt
+          // captured)" when sessions-index.json is missing. Bounded to the
+          // first 500 lines — first user message is almost always near the top.
+          const firstPrompt = extractFirstUserPromptSync(filePath, { maxLength: 200 });
           sessions.push({
             sessionId,
             projectPath: dir.name.replace(/-/g, '/').replace(/^\//, ''),
@@ -114,7 +119,7 @@ export function getRecentSessions(
             created: stat.birthtime.toISOString(),
             modified: stat.mtime.toISOString(),
             mtime: stat.mtimeMs,
-            firstPrompt: '',
+            firstPrompt,
             messageCount: 0,
           });
         } catch {

@@ -119,6 +119,50 @@ export class PluginsSource implements MemorySource {
         };
       }
     }
+
+    // ── Codex plugin packs — ~/.codex/.tmp/plugins/plugins/<name>/ ───
+    // Each pack carries a .codex-plugin/plugin.json manifest. Skills and
+    // MCPs bundled inside a pack are picked up by SkillsSource / McpsSource
+    // separately; here we surface the pack itself so the Toolkit Plugins
+    // tab shows what's installed.
+    const codexPluginsRoot = join(home, '.codex', '.tmp', 'plugins', 'plugins');
+    if (existsSync(codexPluginsRoot)) {
+      let entries: string[];
+      try { entries = readdirSync(codexPluginsRoot); } catch { entries = []; }
+      for (const name of entries) {
+        const pluginDir = join(codexPluginsRoot, name);
+        let st;
+        try { st = statSync(pluginDir); } catch { continue; }
+        if (!st.isDirectory()) continue;
+
+        const appJson = readJson(join(pluginDir, '.codex-plugin', '.app.json'));
+        const pluginJson = readJson(join(pluginDir, '.codex-plugin', 'plugin.json'));
+        const manifest = pluginJson || appJson || {};
+
+        // List bundled MCPs (look for .mcp.json files inside the pack).
+        let mcpServers: string[] = [];
+        const mcpJson = readJson(join(pluginDir, '.mcp.json'));
+        if (mcpJson?.mcpServers) mcpServers = Object.keys(mcpJson.mcpServers);
+
+        yield {
+          id: `codex_plugin_${manifest.name || name}`,
+          sourceType: 'plugin',
+          title: manifest.name || name,
+          projectPath: '',
+          filePath: join(pluginDir, '.codex-plugin'),
+          mtime: st.mtimeMs,
+          contentPreview: (manifest.description || '').slice(0, 300),
+          extra: {
+            tool: 'codex',
+            pluginName: manifest.name || name,
+            description: manifest.description || '',
+            version: manifest.version || '',
+            mcpServers,
+            extensionDir: pluginDir,
+          },
+        };
+      }
+    }
   }
 
   async parse(item: MemoryItem): Promise<MemoryChunk[]> {

@@ -3,10 +3,12 @@
  */
 
 import express from 'express';
-import { getRecentSessions, getSessionPath, getRelatedItems, getSessionMetadata } from '../services/sessions.js';
+import { getRecentSessions, getSessionPath, getSessionPaths, getRelatedItems, getSessionMetadata, getSessionIndex, hydrateSessions } from '../services/sessions.js';
+import type { SessionIndexEntry } from '../services/sessions.js';
 import { getConversation, getGeminiConversation, getOpenCodeConversation, getCodexConversation, getCodexSubagents, getSubagents } from '../services/parser.js';
 import type { Subagent } from '../services/parser.js';
 import {
+  MetadataCache,
   MemoryStore,
   liveScanModifiedFiles,
   replaySession,
@@ -20,9 +22,20 @@ import {
   replaySessionAny,
   getSessionCommitsAny,
   computeOutcomeAny,
+  outcomeBadge,
+  quickOutcomeStatus,
+  quickStatusEmoji,
+  quickOutcomeFromMtime,
+  detectTool,
+  OutcomeCache,
+  isFresh,
+  fingerprintFile,
+  type CachedOutcome,
+  type CachedOutcomeStatus,
 } from '../imports.js';
 import type { SourceType } from '../imports.js';
 import { matchesPrefix } from '../utils/paths.js';
+import { buildETag, maybeSendNotModified } from '../util/cacheable.js';
 
 const router = express.Router();
 
@@ -58,43 +71,80 @@ function emptyOutcome(id: string) {
   };
 }
 
-// GET /api/conversations/recent
+// GET /api/conversations/recent?limit=20&offset=0&project=...&tool=...&since_hours=...
+//
+// Single SQL query against `memory_metadata` (sorted by `idx_memory_mtime`).
+// No filesystem walk, no JS sort, no in-process index cache — the page
+// rows + total count both come back in <5ms even on a 10k-session install.
+//
+// Falls back to the legacy filesystem walk only when the index is empty
+// (fresh install before the auto-indexer has populated anything).
 router.get('/recent', async (req, res) => {
   try {
-    const limit = parseInt(req.query.limit as string) || 20;
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit as string) || 20, 200));
+    const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
     const projectFilter = req.query.project as string | undefined;
     const toolFilter = req.query.tool as string | undefined;
     const sinceHoursRaw = req.query.since_hours as string | undefined;
     const sinceHours = sinceHoursRaw ? Number(sinceHoursRaw) : undefined;
+    const sinceMs = sinceHours && Number.isFinite(sinceHours) && sinceHours > 0
+      ? Date.now() - sinceHours * 3600 * 1000
+      : undefined;
 
-    // Fetch all when any filter is active so we can apply project/tool/time
-    // checks before the final slice.
-    const needsAll = projectFilter || toolFilter || sinceHours !== undefined;
-    let sessions = await getRecentSessions(needsAll ? 0 : limit);
+    const store = new MemoryStore();
+    let totalAfterFilter: number;
+    let pageEntries: SessionIndexEntry[];
+    try {
+      const { rows, total } = store.querySessionIndex({
+        limit, offset, projectFilter, toolFilter, sinceMs,
+      });
 
-    // Filter by project — exact or folder prefix match (so clicking a
-    // folder in the sidebar tree returns all descendant sessions too).
-    if (projectFilter) {
-      sessions = sessions.filter(s => matchesPrefix(s.projectPath || '', projectFilter));
+      // Empty index → fallback to filesystem walk so we don't return
+      // an empty list during the first run before indexing completes.
+      if (total === 0 && offset === 0 && !projectFilter && !toolFilter && !sinceMs) {
+        const walked = await getSessionIndex();
+        const slice = walked.slice(0, limit);
+        const sessions = await hydrateSessions(slice);
+        return res.json({
+          sessions,
+          count: sessions.length,
+          total: walked.length,
+          offset: 0,
+          limit,
+          hasMore: walked.length > limit,
+          source: 'fs-walk-fallback',
+        });
+      }
+
+      totalAfterFilter = total;
+      pageEntries = rows.map(r => {
+        let extra: Record<string, unknown> = {};
+        try { extra = r.extra_json ? JSON.parse(r.extra_json) : {}; } catch {}
+        const tool = (extra.tool as SessionIndexEntry['tool']) || 'claude';
+        return {
+          sessionId: r.id,
+          projectPath: r.project_path || '',
+          mtime: r.mtime || 0,
+          tool,
+          filePath: r.file_path || undefined,
+          preIndexedFirstPrompt: r.content_preview || undefined,
+        };
+      });
+    } finally {
+      store.close();
     }
 
-    // Filter by tool
-    if (toolFilter) {
-      sessions = sessions.filter(s => (s.tool || 'claude') === toolFilter);
-    }
-
-    // Filter by time window
-    if (sinceHours !== undefined && Number.isFinite(sinceHours) && sinceHours > 0) {
-      const cutoff = Date.now() - sinceHours * 3600 * 1000;
-      sessions = sessions.filter(s => (s.fileMtime || 0) >= cutoff);
-    }
-
-    // Limit after filtering
-    sessions = sessions.slice(0, limit);
+    // Hydrate firstPrompts only for the page rows. Most are already in
+    // session_metadata cache so this is just N small SQLite reads.
+    const sessions = await hydrateSessions(pageEntries);
 
     res.json({
       sessions,
       count: sessions.length,
+      total: totalAfterFilter,
+      offset,
+      limit,
+      hasMore: offset + sessions.length < totalAfterFilter,
     });
   } catch (error) {
     console.error('Recent sessions error:', error);
@@ -153,8 +203,42 @@ router.get('/:id/diff', async (req, res) => {
   try {
     const { id } = req.params;
     const fileFilter = (req.query.file as string | undefined)?.trim() || undefined;
-    const result = isNonClaude(id) ? replaySessionAny(id) : replaySession(id);
+
+    // SaaS read pattern: never block on compute. Serve fresh → stale → 202.
+    const resolved = await resolveSessionForBadge(id);
+
+    // Fresh hit
+    let result: ReturnType<typeof replaySession> | null = null;
+    if (resolved) {
+      result = heavyCacheGet<ReturnType<typeof replaySession>>(`diff:${id}`, resolved.mtime);
+    }
+
+    // Stale hit
+    if (!result) {
+      const stale = getStaleHeavy<ReturnType<typeof replaySession>>(id, 'diff');
+      if (stale) {
+        if (resolved && stale.mtime !== resolved.mtime) {
+          enqueueRefresh('diff', id, resolved.mtime);
+        }
+        result = stale.data;
+      }
+    }
+
+    // No cache at all
+    if (!result) {
+      if (resolved) {
+        enqueueRefresh('diff', id, resolved.mtime);
+        return res.status(202).json({ sessionId: id, status: 'computing', message: 'Diff is being computed in the background.' });
+      }
+      return res.status(404).json({ error: 'Session not found' });
+    }
+
     if (!result.found) return res.status(404).json({ error: 'Session not found' });
+    // ETag/Cache-Control: payload is immutable per (sessionId, mtime, fileFilter).
+    if (resolved) {
+      const etag = buildETag([id, 'diff', resolved.mtime, fileFilter || '']);
+      if (maybeSendNotModified(req, res, etag)) return;
+    }
     const files = fileFilter ? result.files.filter(f => f.file === fileFilter) : result.files;
     res.json({
       sessionId: id,
@@ -195,19 +279,34 @@ router.get('/:id/diff', async (req, res) => {
 router.get('/:id/commits', async (req, res) => {
   try {
     const { id } = req.params;
-    if (isNonClaude(id)) {
-      return res.json(getSessionCommitsAny(id));
+    const resolved = await resolveSessionForBadge(id);
+
+    // Fresh hit
+    if (resolved) {
+      const fresh = heavyCacheGet<unknown>(`commits:${id}`, resolved.mtime);
+      if (fresh) {
+        const etag = buildETag([id, 'commits', resolved.mtime]);
+        if (maybeSendNotModified(req, res, etag)) return;
+        return res.json(fresh);
+      }
     }
-    const replay = replaySession(id);
-    if (!replay.found) return res.status(404).json({ error: 'Session not found' });
-    const turns = extractTurns(id, { maxTurns: 50_000 });
-    const result = getSessionCommits(
-      id,
-      replay.files.map(f => f.file),
-      turns.startMs || Date.now() - 86400_000,
-      turns.endMs || Date.now(),
-    );
-    res.json(result);
+
+    // Stale hit — return prior result, refresh in background.
+    const stale = getStaleHeavy<unknown>(id, 'commits');
+    if (stale) {
+      if (resolved && stale.mtime !== resolved.mtime) {
+        enqueueRefresh('commits', id, resolved.mtime);
+        return res.json({ ...(stale.data as object), _stale: true, _staleMtime: stale.mtime, _currentMtime: resolved.mtime });
+      }
+      return res.json(stale.data);
+    }
+
+    // No cache at all → enqueue + 202.
+    if (resolved) {
+      enqueueRefresh('commits', id, resolved.mtime);
+      return res.status(202).json({ sessionId: id, status: 'computing', message: 'Commits are being computed in the background.' });
+    }
+    return res.status(404).json({ error: 'Session not found' });
   } catch (error) {
     console.error('Commits error:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to compute commits' });
@@ -216,26 +315,663 @@ router.get('/:id/commits', async (req, res) => {
 
 // GET /api/conversations/:id/outcome
 // Structured outcome: status, decisions, blockers, claim/reaction, markers.
+// Cached by sessionId + mtime so re-opening a session's Outcome tab
+// doesn't re-run extractTurns + replaySession + getSessionCommits.
 router.get('/:id/outcome', async (req, res) => {
   try {
     const { id } = req.params;
-    const out = isNonClaude(id) ? computeOutcomeAny(id) : computeOutcome(id);
-    if (!out.found) return res.status(404).json({ error: 'Session not found' });
-    res.json(out);
+
+    // SaaS-correct read path:
+    //   1. Cache hit at current mtime → serve immediately.
+    //   2. Stale row (older mtime) → serve stale + enqueue async refresh.
+    //   3. No row at all → enqueue + 202 "computing" (rare; precompute
+    //      worker fills these proactively for ALL sessions in background).
+    // The compute path is NEVER on the request path. Reads are O(1).
+    const resolved = await resolveSessionForBadge(id);
+
+    // Step 1: fresh hit
+    if (resolved) {
+      const fresh = heavyCacheGet<unknown>(`outcome:${id}`, resolved.mtime);
+      if (fresh) {
+        const etag = buildETag([id, 'outcome', resolved.mtime]);
+        if (maybeSendNotModified(req, res, etag)) return;
+        return res.json(fresh);
+      }
+    }
+
+    // Step 2: stale hit (any mtime). Serve immediately, refresh async.
+    // No ETag on stale responses — they're transient by definition.
+    const stale = getStaleHeavy<unknown>(id, 'outcome');
+    if (stale && resolved && stale.mtime !== resolved.mtime) {
+      enqueueRefresh('outcome', id, resolved.mtime);
+      return res.json({ ...(stale.data as object), _stale: true, _staleMtime: stale.mtime, _currentMtime: resolved.mtime });
+    }
+    if (stale) {
+      // No resolved info but we have stale — serve it.
+      return res.json(stale.data);
+    }
+
+    // Step 3: no cache at all. Enqueue and tell the client "try again
+    // shortly". 202 Accepted communicates this without polluting the
+    // success path. Client should backoff-poll until it gets a 200.
+    if (resolved) {
+      enqueueRefresh('outcome', id, resolved.mtime);
+      return res.status(202).json({
+        sessionId: id,
+        status: 'computing',
+        message: 'Outcome is being computed in the background. Retry in a moment.',
+      });
+    }
+    return res.status(404).json({ error: 'Session not found' });
   } catch (error) {
     console.error('Outcome error:', error);
-    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to compute outcome' });
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to read outcome' });
+  }
+});
+
+/**
+ * Two-tier cache for heavyweight per-session computations
+ * (outcome, diff, commits, markers).
+ *
+ *   L1: in-process LRU (this map)         — sub-ms hits, lost on restart
+ *   L2: SQLite `compute_cache` table       — survives restarts, ~1ms hits
+ *
+ * `heavyCacheGet` checks L1, then L2 (and warms L1 on L2 hit).
+ * `heavyCacheSet` writes both. SQLite ceiling of 2MB per payload keeps
+ * the DB from bloating on pathological diffs; oversize payloads stay
+ * L1-only (caller treats this as "best effort persistence").
+ *
+ * mtime is the freshness invalidator — same key + different mtime → miss.
+ */
+const HEAVY_CACHE = new Map<string, { mtime: number; data: unknown }>();
+const HEAVY_CACHE_MAX = 1000;
+function parseHeavyKey(key: string): { sessionId: string; kind: string } | null {
+  const idx = key.indexOf(':');
+  if (idx < 0) return null;
+  return { kind: key.slice(0, idx), sessionId: key.slice(idx + 1) };
+}
+// Singleton MetadataCache for the heavy-cache L2. Each `new
+// MetadataCache()` opens a SQLite connection AND runs schema init
+// (CREATE TABLE IF NOT EXISTS x N, ALTER TABLE x N) — measured at
+// ~1-2s on first invocation. Reusing one instance across all heavy
+// cache reads/writes drops the L2 hit cost from 1.7s to <1ms after the
+// first warm-up. Critical for active sessions whose mtime moves often
+// and miss L1 frequently.
+let _heavyMetadataCache: MetadataCache | null = null;
+function getHeavyMetadataCache(): MetadataCache {
+  if (!_heavyMetadataCache) _heavyMetadataCache = new MetadataCache();
+  return _heavyMetadataCache;
+}
+
+function heavyCacheGet<T>(key: string, mtime: number): T | null {
+  const hit = HEAVY_CACHE.get(key);
+  if (hit && hit.mtime === mtime) {
+    HEAVY_CACHE.delete(key); HEAVY_CACHE.set(key, hit); // LRU bump
+    return hit.data as T;
+  }
+  // L1 miss → try persistent L2.
+  const parsed = parseHeavyKey(key);
+  if (!parsed) return null;
+  const persisted = getHeavyMetadataCache().getCompute<T>(parsed.sessionId, parsed.kind, mtime);
+  if (persisted) {
+    HEAVY_CACHE.set(key, { mtime, data: persisted });
+    return persisted;
+  }
+  return null;
+}
+function heavyCacheSet(key: string, mtime: number, data: unknown): void {
+  HEAVY_CACHE.set(key, { mtime, data });
+  while (HEAVY_CACHE.size > HEAVY_CACHE_MAX) {
+    const oldest = HEAVY_CACHE.keys().next().value;
+    if (!oldest) break;
+    HEAVY_CACHE.delete(oldest);
+  }
+  // Write-through to L2 — best effort, oversize payloads silently skipped.
+  const parsed = parseHeavyKey(key);
+  if (parsed) {
+    try { getHeavyMetadataCache().setCompute(parsed.sessionId, parsed.kind, mtime, data); }
+    catch { /* DB hiccup — L1 still serves */ }
+  }
+}
+
+/**
+ * Lookup the LATEST row for a session+kind regardless of its mtime. Used
+ * by the SaaS-style read path: a request never blocks on compute, it
+ * serves whatever cached row exists (even if stale), then asynchronously
+ * triggers a refresh so the next request sees fresh data.
+ */
+function getStaleHeavy<T>(sessionId: string, kind: string): { data: T; mtime: number } | null {
+  return getHeavyMetadataCache().getComputeStale<T>(sessionId, kind);
+}
+
+/**
+ * Async-refresh queue: when a stale row is served, enqueue the recompute
+ * so the worker handles it without blocking the response. Deduplicated
+ * by (sessionId, kind) so a flood of stale-reads triggers ONE refresh.
+ */
+const REFRESH_PENDING = new Set<string>();
+function enqueueRefresh(kind: 'outcome' | 'diff' | 'commits' | 'markers' | 'turns', sessionId: string, mtime: number): void {
+  const key = `${kind}:${sessionId}`;
+  if (REFRESH_PENDING.has(key)) return;
+  REFRESH_PENDING.add(key);
+  // setImmediate so the HTTP response goes out first, then the heavy work
+  // runs in the same process (no separate worker, no IPC). Errors don't
+  // surface to the user — next read will see whatever the previous
+  // (stale) cached row says, which is the correct fallback.
+  setImmediate(() => {
+    void (async () => {
+      try {
+        if (kind === 'outcome') {
+          const out = isNonClaude(sessionId) ? computeOutcomeAny(sessionId) : computeOutcome(sessionId);
+          if (out.found) heavyCacheSet(`outcome:${sessionId}`, mtime, out);
+        } else if (kind === 'diff') {
+          const replay = isNonClaude(sessionId) ? replaySessionAny(sessionId) : replaySession(sessionId);
+          if (replay.found) heavyCacheSet(`diff:${sessionId}`, mtime, replay);
+        } else if (kind === 'commits') {
+          let replay = heavyCacheGet<ReturnType<typeof replaySession>>(`diff:${sessionId}`, mtime);
+          if (!replay) {
+            replay = isNonClaude(sessionId) ? replaySessionAny(sessionId) : replaySession(sessionId);
+            if (replay.found) heavyCacheSet(`diff:${sessionId}`, mtime, replay);
+          }
+          if (replay.found) {
+            const turns = extractTurns(sessionId, { maxTurns: 50_000 });
+            const result = isNonClaude(sessionId)
+              ? getSessionCommitsAny(sessionId)
+              : getSessionCommits(sessionId, replay.files.map(f => f.file), turns.startMs || Date.now() - 86400_000, turns.endMs || Date.now());
+            heavyCacheSet(`commits:${sessionId}`, mtime, result);
+          }
+        } else if (kind === 'markers') {
+          const turns = extractTurnsAny(sessionId, { maxTurns: 50_000 });
+          if (turns.found) {
+            const prompts = turns.turns
+              .filter(t => t.kind === 'user' && t.text)
+              .map(t => ({ line: t.line, ts: t.ts, tsIso: t.tsIso, ...markPrompt(t.text!) }));
+            heavyCacheSet(`markers:${sessionId}`, mtime, { sessionId, prompts, summary: summarizeMarkers(prompts) });
+          }
+        } else if (kind === 'turns') {
+          const turns = extractTurnsAny(sessionId, { maxTurns: 50_000 });
+          if (turns.found) heavyCacheSet(`turns:${sessionId}`, mtime, turns);
+        }
+      } catch (err) {
+        console.error(`Async refresh ${kind}:${sessionId.slice(0, 8)} failed:`, err);
+      } finally {
+        REFRESH_PENDING.delete(key);
+      }
+    })();
+  });
+}
+
+// Single shared SQLite cache instance for outcome badges. Persistent across
+// server restarts (sits in cache.db — see `src/core/paths.ts` for the
+// canonical location) — once a session is classified the result lives
+// forever unless the file mtime/size changes. This is what eliminates the
+// "every refresh re-parses every session" pain.
+let _outcomeCache: OutcomeCache | null = null;
+function getOutcomeCache(): OutcomeCache {
+  if (!_outcomeCache) _outcomeCache = new OutcomeCache();
+  return _outcomeCache;
+}
+
+/**
+ * (sessionId → filePath) map served from SQLite `memory_metadata`.
+ *
+ * Was: walked the filesystem via `getAllSessions()` — O(N projects × N
+ * sessions), measured at ~1.9s for ~900 sessions. With a 10s TTL that
+ * meant every conversation switch >10s after the previous one paid the
+ * full walk again — directly responsible for the "2s loading" pain when
+ * jumping between conversations.
+ *
+ * Now: single SQL query against the index the auto-indexer already
+ * keeps fresh on every file change. <1ms cold, <1ms warm. The TTL is
+ * kept (small in-process map) only to coalesce hundreds of badge calls
+ * in the same render burst; it doesn't gate cold-path correctness.
+ */
+const SESSION_PATH_MAP_TTL_MS = 10_000;
+let sessionPathCache: { map: Map<string, string>; expiresAt: number } | null = null;
+
+async function getCachedSessionPathMap(): Promise<Map<string, string>> {
+  const now = Date.now();
+  if (sessionPathCache && sessionPathCache.expiresAt > now) {
+    return sessionPathCache.map;
+  }
+  // Primary source: indexed sessions from memory_metadata. <1ms.
+  const { MemoryStore } = await import('../imports.js');
+  const store = new MemoryStore();
+  const map = new Map<string, string>();
+  try {
+    for (const r of store.listAllSessionPaths()) map.set(r.id, r.file_path);
+  } finally {
+    store.close();
+  }
+  // Coverage fill: walk ~/.claude/projects/<encoded>/<id>.jsonl by
+  // filename only (no parse) for any session id not yet in
+  // memory_metadata. Active sessions and anything between indexer
+  // passes show up here. Pure listdir is ~2ms for ~600 files —
+  // cheaper than the 1-2s cost of the per-id `getSessionPath` fallback
+  // that this avoids on subsequent requests.
+  try {
+    const { readdirSync } = await import('fs');
+    const { join } = await import('path');
+    const { homedir } = await import('os');
+    const root = join(homedir(), '.claude', 'projects');
+    for (const proj of readdirSync(root, { withFileTypes: true })) {
+      if (!proj.isDirectory()) continue;
+      const projDir = join(root, proj.name);
+      let files: string[];
+      try { files = readdirSync(projDir); } catch { continue; }
+      for (const f of files) {
+        if (!f.endsWith('.jsonl')) continue;
+        const id = f.slice(0, -6);
+        if (!map.has(id)) map.set(id, join(projDir, f));
+      }
+    }
+  } catch { /* projects dir absent — leave map as-is */ }
+  sessionPathCache = { map, expiresAt: now + SESSION_PATH_MAP_TTL_MS };
+  return map;
+}
+
+/**
+ * Pre-warm caches at server startup so the FIRST user request after a
+ * restart isn't the one that pays for the cold walks. Without this, the
+ * /outcome (and /diff, /commits, etc.) endpoints bear the ~1.7s
+ * `getAllSessions` cost on first call — visible to the user as a
+ * "loading" spinner the first time they click any session.
+ *
+ * Called from server.ts after app.listen. Background — doesn't block
+ * the listen() and tolerates failures (next user request rebuilds).
+ */
+export async function prewarmConversationCaches(): Promise<void> {
+  try {
+    const t0 = Date.now();
+    await getCachedSessionPathMap();
+    console.log(`  Path map warmed: ${sessionPathCache?.map.size ?? 0} sessions in ${Date.now() - t0}ms`);
+  } catch (err) {
+    console.error('Path map warm-up failed:', err);
+  }
+  try {
+    // Open the heavy-metadata cache so the very first L2 read pays
+    // microseconds (DB already open) rather than 300-1500ms (open +
+    // schema init). Triggers initSchema once at boot.
+    const t0 = Date.now();
+    getHeavyMetadataCache();
+    console.log(`  Heavy metadata cache opened in ${Date.now() - t0}ms`);
+  } catch (err) {
+    console.error('Heavy metadata cache warm-up failed:', err);
+  }
+  try {
+    // Same for OutcomeCache (badge endpoint's L2 — opens on first badge
+    // request otherwise).
+    const t0 = Date.now();
+    getOutcomeCache();
+    console.log(`  Outcome cache opened in ${Date.now() - t0}ms`);
+  } catch (err) {
+    console.error('Outcome cache warm-up failed:', err);
+  }
+}
+
+/**
+ * Map a classification status to the emoji + chip color the UI shows.
+ * Centralized here so badge and batch endpoints stay in lockstep.
+ */
+function statusToEmoji(status: CachedOutcomeStatus): string {
+  switch (status) {
+    case 'shipped':     return '🚢';
+    case 'abandoned':   return '🪦';
+    case 'interrupted': return '⏸';
+    case 'in_progress': return '🟡';
+    case 'completed':   return '✓';
+    default:            return '❔';
+  }
+}
+
+interface BadgeResponse {
+  emoji: string;
+  label: CachedOutcomeStatus;
+  tooltip: string;
+  fileCount: number;
+  commits: number;
+  isFull: boolean;
+  cached: boolean;
+}
+
+function cachedToResponse(c: CachedOutcome, fromCache: boolean): BadgeResponse {
+  return {
+    emoji: statusToEmoji(c.status),
+    label: c.status,
+    tooltip: c.reason,
+    fileCount: c.fileCount,
+    commits: c.commits,
+    isFull: c.isFull,
+    cached: fromCache,
+  };
+}
+
+// GET /api/conversations/:id/outcome/badge
+//
+// Cheap status badge for list rows. Uses `quickOutcomeStatus` (mtime + tail
+// scan, no JSONL parse, no replay, no git) — orders of magnitude faster
+// than the full `computeOutcome` used by the /outcome view tab.
+//
+// Trade-off: the badge can't distinguish 'shipped' from 'abandoned' since
+// both require git-log work. The four states it does report
+// (in_progress / interrupted / completed / unknown) cover the at-a-glance
+// scanning use case; the user clicks through to the Outcome tab for the
+// full classification.
+//
+// Cached by sessionId + mtime so a list scroll over 200 rows costs at most
+// one stat() per row after the first view.
+/**
+ * Resolve a session id to (filePath, mtime, size) for the classifier.
+ *
+ * Tool dispatch:
+ *   - claude:   getSessionPath() finds the .jsonl in ~/.claude/projects.
+ *   - codex:    findCodexSessionFile() finds the rollout-*.jsonl.
+ *   - gemini:   no on-disk path exposed publicly; mtime via MemoryStore.
+ *   - opencode: stored in SQLite, no JSONL; mtime via MemoryStore.
+ *
+ * Returns `null` when the session can't be located (→ 404).
+ */
+async function resolveSessionForBadge(id: string): Promise<
+  | { kind: 'tail-scannable'; filePath: string; mtime: number; size: number; tool: string }
+  | { kind: 'mtime-only'; mtime: number; size: number; tool: string }
+  | null
+> {
+  const tool = detectTool(id);
+  const { statSync } = await import('fs');
+
+  if (tool === 'claude') {
+    // The TTL-cached map covers BOTH indexed sessions (from
+    // memory_metadata) AND unindexed-on-disk sessions (from the
+    // ~/.claude/projects listdir overlay). One ~2ms listdir per TTL
+    // window, then microsecond Map lookups per request.
+    const map = await getCachedSessionPathMap();
+    const p = map.get(id);
+    if (!p) return null;
+    let mtime = 0, size = 0;
+    try { const s = statSync(p); mtime = s.mtimeMs; size = s.size; } catch {}
+    return { kind: 'tail-scannable', filePath: p, mtime, size, tool };
+  }
+
+  if (tool === 'codex') {
+    const located = findCodexSessionFile(id);
+    if (!located) {
+      const store = new MemoryStore();
+      try {
+        const item = store.getItem(id, 'session' as SourceType);
+        if (!item) return null;
+        return { kind: 'mtime-only', mtime: item.mtime || 0, size: 0, tool };
+      } finally {
+        store.close();
+      }
+    }
+    let mtime = 0, size = 0;
+    try { const s = statSync(located.path); mtime = s.mtimeMs; size = s.size; } catch {}
+    return { kind: 'tail-scannable', filePath: located.path, mtime, size, tool };
+  }
+
+  // gemini / opencode: SQLite-indexed, no JSONL to stat — size stays 0
+  // and freshness check effectively reduces to mtime equality.
+  const store = new MemoryStore();
+  try {
+    const item = store.getItem(id, 'session' as SourceType);
+    if (!item) return null;
+    return { kind: 'mtime-only', mtime: item.mtime || 0, size: 0, tool };
+  } finally {
+    store.close();
+  }
+}
+
+/**
+ * Cache-first classification for one session. Returns the response body
+ * the badge endpoint sends. Used by both the single-id and batch endpoints
+ * so they share semantics exactly.
+ *
+ * Validity is checked in this order (cheapest first):
+ *   1. mtime + size match cached row → fast hit, return immediately.
+ *   2. mtime/size moved → compute content hash (last 4KB) → if hash
+ *      matches cached row, file is byte-identical (touch / restore /
+ *      clock skew); just refresh mtime+size and return cached.
+ *   3. Hash differs OR no cached row → run quick classifier, persist.
+ */
+function classifyOne(
+  id: string,
+  resolved: NonNullable<Awaited<ReturnType<typeof resolveSessionForBadge>>>,
+): BadgeResponse {
+  const cache = getOutcomeCache();
+  const existing = cache.get(id);
+
+  // Step 1: fast-path freshness check (mtime + size).
+  if (isFresh(existing, resolved.mtime, resolved.size)) {
+    return cachedToResponse(existing!, true);
+  }
+
+  // Step 1b: in-progress shortcut.
+  // The classification for `in_progress` is trivially derivable from mtime
+  // alone (file was touched within the last 2 hours). If the cached status
+  // was already 'in_progress' AND the file is still within that window,
+  // we don't need to fingerprint or tail-scan — just bump the cache
+  // validators to the new mtime/size. This is the hot path for sessions
+  // the user is actively using: every refresh they grow, but the classifier
+  // would always return the same answer.
+  const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+  if (
+    existing?.status === 'in_progress' &&
+    Date.now() - resolved.mtime <= TWO_HOURS_MS
+  ) {
+    cache.put({ ...existing, fileMtime: resolved.mtime, fileSize: resolved.size });
+    return cachedToResponse(existing, true);
+  }
+
+  // Step 2: hash-path freshness check — only computed when fast path
+  // missed. For mtime-only tools (Gemini/OpenCode) there's no file to
+  // hash; skip and treat as miss.
+  let contentHash = '';
+  if (resolved.kind === 'tail-scannable') {
+    contentHash = fingerprintFile(resolved.filePath);
+    if (existing && contentHash && existing.contentHash === contentHash) {
+      // Same content — refresh validators in place, return cached classification.
+      cache.put({ ...existing, fileMtime: resolved.mtime, fileSize: resolved.size, contentHash });
+      return cachedToResponse(existing, true);
+    }
+  }
+
+  // Step 3: real change (or no cached row). Run quick classifier and persist.
+  const quick = resolved.kind === 'tail-scannable'
+    ? quickOutcomeStatus(resolved.filePath, id)
+    : quickOutcomeFromMtime(id, resolved.mtime);
+
+  // Preserve rich fields from any prior is_full=1 row — a cheap re-classify
+  // after the user already paid for the heavy one shouldn't blow away the
+  // file counts and commit count. The Outcome tab will eventually re-run
+  // the full classifier and overwrite cleanly.
+  const preserveFull = existing?.isFull && existing?.fileCount;
+
+  const record: CachedOutcome = {
+    sessionId: id,
+    tool: resolved.tool,
+    status: quick.status,
+    reason: quick.reason,
+    fileMtime: resolved.mtime,
+    fileSize: resolved.size,
+    contentHash,
+    fileCount: preserveFull ? existing!.fileCount : 0,
+    linesAdded: preserveFull ? existing!.linesAdded : 0,
+    linesRemoved: preserveFull ? existing!.linesRemoved : 0,
+    commits: preserveFull ? existing!.commits : 0,
+    isFull: false,
+    classifiedAt: Date.now(),
+    lastScannedOffset: resolved.size,
+  };
+  cache.put(record);
+  return cachedToResponse(record, false);
+}
+
+router.get('/:id/outcome/badge', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const resolved = await resolveSessionForBadge(id);
+    if (!resolved) return res.status(404).json({ error: 'Session not found' });
+    res.json(classifyOne(id, resolved));
+  } catch (error) {
+    console.error('Outcome badge error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to compute outcome badge' });
+  }
+});
+
+/**
+ * POST /api/conversations/outcome/badges
+ *
+ * Batch variant of /outcome/badge — takes `{ ids: string[] }` and returns
+ * `{ badges: Record<id, BadgeResponse> }` in a single round-trip. This
+ * exists because the per-row HTTP overhead (vite proxy + tsx + express)
+ * dominates the actual classification cost: 50 sequential 600ms requests
+ * = 30 seconds of dead time, even though the underlying work is < 100ms
+ * total. The batch endpoint collapses that to one round-trip.
+ *
+ * Cache-first per id — uncached or stale ids run the quick classifier
+ * concurrently and the results are persisted in a single transaction.
+ * Missing/unknown ids are absent from the returned map (the client should
+ * treat absence as "no badge").
+ */
+router.post('/outcome/badges', async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter((x: unknown) => typeof x === 'string') as string[] : [];
+    if (ids.length === 0) return res.json({ badges: {} });
+
+    // Cap to a sane limit so a malicious or buggy client can't ask us to
+    // stat 100k sessions in one call.
+    const MAX_BATCH = 500;
+    const safeIds = ids.slice(0, MAX_BATCH);
+
+    // Single SQL fetch for all cached rows.
+    const cache = getOutcomeCache();
+    const cachedMap = cache.getMany(safeIds);
+
+    // Use the TTL-cached path map. The first batch in a 10-second window
+    // pays for the walk (~1.9s for ~600 sessions); every subsequent
+    // request reuses the same map for free. Critical for the burst that
+    // fires when a list of conversations renders.
+    const claudePathMap = await getCachedSessionPathMap();
+
+    // Resolve every id in parallel. For Claude ids we use the precomputed
+    // map; non-Claude ids still hit findCodexSessionFile / MemoryStore
+    // individually (cheap — single lookup per call).
+    const { statSync } = await import('fs');
+    const resolved = await Promise.all(
+      safeIds.map(async id => {
+        const tool = detectTool(id);
+        if (tool === 'claude') {
+          const p = claudePathMap.get(id);
+          if (!p) return { id, r: null };
+          let mtime = 0, size = 0;
+          try { const s = statSync(p); mtime = s.mtimeMs; size = s.size; } catch {}
+          return { id, r: { kind: 'tail-scannable' as const, filePath: p, mtime, size, tool } };
+        }
+        return { id, r: await resolveSessionForBadge(id) };
+      }),
+    );
+
+    const badges: Record<string, BadgeResponse> = {};
+    const newRecords: CachedOutcome[] = [];
+
+    for (const { id, r } of resolved) {
+      if (!r) continue;
+      const existing = cachedMap.get(id) ?? null;
+
+      // Fast freshness path (mtime + size).
+      if (isFresh(existing, r.mtime, r.size)) {
+        badges[id] = cachedToResponse(existing!, true);
+        continue;
+      }
+
+      // In-progress shortcut: file changed but the answer is still trivially
+      // 'in_progress' because mtime is within the 2h window. Avoids hashing
+      // and tail-scanning every active session on every refresh.
+      const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+      if (
+        existing?.status === 'in_progress' &&
+        Date.now() - r.mtime <= TWO_HOURS_MS
+      ) {
+        newRecords.push({ ...existing, fileMtime: r.mtime, fileSize: r.size });
+        badges[id] = cachedToResponse(existing, true);
+        continue;
+      }
+
+      // Hash-path freshness — only when fast path missed.
+      let contentHash = '';
+      if (r.kind === 'tail-scannable') {
+        contentHash = fingerprintFile(r.filePath);
+        if (existing && contentHash && existing.contentHash === contentHash) {
+          newRecords.push({ ...existing, fileMtime: r.mtime, fileSize: r.size, contentHash });
+          badges[id] = cachedToResponse(existing, true);
+          continue;
+        }
+      }
+
+      const quick = r.kind === 'tail-scannable'
+        ? quickOutcomeStatus(r.filePath, id)
+        : quickOutcomeFromMtime(id, r.mtime);
+
+      const preserveFull = existing?.isFull && existing?.fileCount;
+      const record: CachedOutcome = {
+        sessionId: id,
+        tool: r.tool,
+        status: quick.status,
+        reason: quick.reason,
+        fileMtime: r.mtime,
+        fileSize: r.size,
+        contentHash,
+        fileCount: preserveFull ? existing!.fileCount : 0,
+        linesAdded: preserveFull ? existing!.linesAdded : 0,
+        linesRemoved: preserveFull ? existing!.linesRemoved : 0,
+        commits: preserveFull ? existing!.commits : 0,
+        isFull: false,
+        classifiedAt: Date.now(),
+        lastScannedOffset: r.size,
+      };
+      newRecords.push(record);
+      badges[id] = cachedToResponse(record, false);
+    }
+
+    if (newRecords.length > 0) cache.putMany(newRecords);
+    res.json({ badges });
+  } catch (error) {
+    console.error('Outcome badges batch error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to compute outcome badges' });
   }
 });
 
 // GET /api/conversations/:id/turns
 // Interleaved user/assistant/tool turns with bash command + tool-result snippets.
+// mtime-cached. The compute cost is dominated by the JSONL parse, not by
+// the limit — we cache the maxed-out result and slice client-side via the
+// limit param so different limit= values share the same cached payload.
 router.get('/:id/turns', async (req, res) => {
   try {
     const { id } = req.params;
     const limit = Math.max(1, Math.min(parseInt(req.query.limit as string) || 5000, 50_000));
-    const result = extractTurnsAny(id, { maxTurns: limit });
+
+    const resolved = await resolveSessionForBadge(id);
+    let result = resolved
+      ? heavyCacheGet<ReturnType<typeof extractTurnsAny>>(`turns:${id}`, resolved.mtime)
+      : null;
+    if (!result) {
+      // Cache the full extraction (50k cap) so subsequent requests with
+      // any smaller limit can reuse the cached result and slice in JS.
+      result = extractTurnsAny(id, { maxTurns: 50_000 });
+      if (resolved && result.found) heavyCacheSet(`turns:${id}`, resolved.mtime, result);
+    }
     if (!result.found) return res.status(404).json({ error: 'Session not found' });
+
+    // ETag/Cache-Control: payload is immutable per (sessionId, mtime, limit).
+    if (resolved) {
+      const etag = buildETag([id, 'turns', resolved.mtime, limit]);
+      if (maybeSendNotModified(req, res, etag)) return;
+    }
+    // Apply the request's limit on the cached full result.
+    if (result.turns.length > limit) {
+      result = { ...result, turns: result.turns.slice(0, limit) };
+    }
     res.json(result);
   } catch (error) {
     console.error('Turns error:', error);
@@ -243,18 +979,46 @@ router.get('/:id/turns', async (req, res) => {
   }
 });
 
+// Markers wrapped on top of the same two-tier cache as outcome/diff/commits
+// — `kind: 'markers'` rows in `compute_cache`, mtime-keyed, persistent.
+// The `getCachedMarkers` / `setCachedMarkers` shims keep the call sites
+// readable while delegating to the shared helpers.
+type MarkersPayload = { sessionId: string; prompts: unknown[]; summary: unknown };
+function getCachedMarkers(id: string, mtime: number): MarkersPayload | null {
+  return heavyCacheGet<MarkersPayload>(`markers:${id}`, mtime);
+}
+function setCachedMarkers(id: string, mtime: number, data: MarkersPayload): void {
+  heavyCacheSet(`markers:${id}`, mtime, data);
+}
+
 // GET /api/conversations/:id/markers
-// Just the marked prompts + counts. Cheaper than /outcome when the UI only
-// needs the badge counts without the diff/commit work.
+// Marked prompts + counts (sentiment heuristic). Cached by file mtime so
+// repeated list scrolls don't re-walk the same transcript.
 router.get('/:id/markers', async (req, res) => {
   try {
     const { id } = req.params;
+
+    // Resolve mtime from the badge resolver — same source-of-truth that
+    // the outcome cache uses, so freshness checks match across endpoints.
+    const resolved = await resolveSessionForBadge(id);
+    if (resolved) {
+      const cached = getCachedMarkers(id, resolved.mtime);
+      if (cached) {
+        const etag = buildETag([id, 'markers', resolved.mtime]);
+        if (maybeSendNotModified(req, res, etag)) return;
+        return res.json(cached);
+      }
+    }
+
     const turns = extractTurnsAny(id, { maxTurns: 50_000 });
     if (!turns.found) return res.status(404).json({ error: 'Session not found' });
     const prompts = turns.turns
       .filter(t => t.kind === 'user' && t.text)
       .map(t => ({ line: t.line, ts: t.ts, tsIso: t.tsIso, ...markPrompt(t.text!) }));
-    res.json({ sessionId: id, prompts, summary: summarizeMarkers(prompts) });
+    const payload: MarkersPayload = { sessionId: id, prompts, summary: summarizeMarkers(prompts) };
+
+    if (resolved) setCachedMarkers(id, resolved.mtime, payload);
+    res.json(payload);
   } catch (error) {
     console.error('Markers error:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to mark prompts' });
@@ -293,9 +1057,25 @@ router.get('/:id/metadata', async (req, res) => {
 });
 
 // GET /api/conversations/:id
+//
+// Pagination: `?offset=N&limit=M` slices the cached `messages` array
+// before sending. `limit=0` (or absent + no offset) = legacy behavior:
+// return the full array. SaaS-grade defaults send a bounded window so a
+// single click on a multi-MB session doesn't ship 5 MB of JSON.
+//
+// Response shape:
+//   { sessionId, messages, subagents, count, total, offset, hasMore }
+// `count` is the number returned in this response, `total` is the
+// session's full message count. `hasMore` flags pagination state.
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
+    const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
+    const limitRaw = req.query.limit !== undefined ? parseInt(req.query.limit as string) : NaN;
+    // limit=0 is an explicit "no slice"; otherwise default to 500. The
+    // 500 ceiling covers the vast majority of sessions in one round-trip
+    // while keeping the worst-case (>5MB Claude session) bounded.
+    const limit = Number.isFinite(limitRaw) ? Math.max(0, limitRaw) : 500;
 
     const store = new MemoryStore();
     try {
@@ -349,11 +1129,18 @@ router.get('/:id', async (req, res) => {
           try {
             const parsed = JSON.parse(cached);
             if (parsed && parsed.v === PARSER_VERSION && Array.isArray(parsed.messages)) {
+              const etag = buildETag([id, 'messages', mtime, PARSER_VERSION, offset, limit]);
+              if (maybeSendNotModified(req, res, etag)) return;
+              const total = parsed.messages.length;
+              const slice = limit === 0 ? parsed.messages : parsed.messages.slice(offset, offset + limit);
               return res.json({
                 sessionId: id,
-                messages: parsed.messages,
+                messages: slice,
                 subagents: parsed.subagents ?? [],
-                count: parsed.messages.length,
+                count: slice.length,
+                total,
+                offset,
+                hasMore: limit !== 0 && offset + slice.length < total,
                 fromCache: true,
               });
             }
@@ -387,11 +1174,23 @@ router.get('/:id', async (req, res) => {
         store.setCachedContent(id, 'session', mtime, JSON.stringify({ v: PARSER_VERSION, messages, subagents }));
       }
 
+      // ETag for the freshly-parsed branch too. Same key shape as the
+      // cache-hit branch above so a client that just parsed will hit
+      // 304 on the next reload.
+      if (mtime > 0) {
+        const etag = buildETag([id, 'messages', mtime, PARSER_VERSION, offset, limit]);
+        if (maybeSendNotModified(req, res, etag)) return;
+      }
+      const total = messages.length;
+      const slice = limit === 0 ? messages : messages.slice(offset, offset + limit);
       res.json({
         sessionId: id,
-        messages,
+        messages: slice,
         subagents,
-        count: messages.length,
+        count: slice.length,
+        total,
+        offset,
+        hasMore: limit !== 0 && offset + slice.length < total,
       });
     } finally {
       store.close();
