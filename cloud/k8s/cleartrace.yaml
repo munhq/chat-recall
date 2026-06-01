@@ -1,0 +1,153 @@
+# Cleartrace cloud — deploy to the K3s GPU cluster via ArgoCD.
+# Commit this directory to the GitOps repo (k8s_gpu/ansible/argocd/manifests/cleartrace/)
+# and point an ArgoCD Application at it. Conventions match the cluster:
+# Traefik ingress, local-path storage, ArgoCD sync.
+#
+# BEFORE DEPLOY, replace placeholders:
+#   - image:      <REGISTRY>/cleartrace-cloud:<TAG>   (build from cloud/Dockerfile, push)
+#   - host:       cleartrace.<YOUR_DOMAIN>            (under the existing wildcard cert)
+#   - the two passwords in the Secrets (use sealed-secrets / vault, not plaintext, in real GitOps)
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cleartrace
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cleartrace-db
+  namespace: cleartrace
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: "CHANGE_ME_super"     # superuser (migrations only)
+  APP_PASSWORD: "CHANGE_ME_app"            # app_user (RLS-bound, NOBYPASSRLS)
+  # full URLs the workloads consume
+  MIGRATE_DATABASE_URL: "postgres://postgres:CHANGE_ME_super@cleartrace-pg:5432/cleartrace"
+  DATABASE_URL: "postgres://app_user:CHANGE_ME_app@cleartrace-pg:5432/cleartrace"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cleartrace-api
+  namespace: cleartrace
+type: Opaque
+stringData:
+  ADMIN_KEY: "CHANGE_ME_admin"             # gate for tenant/token creation
+---
+# ── Postgres (shared, per-tenant via RLS) — local-path PVC ───────────────
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cleartrace-pg
+  namespace: cleartrace
+spec:
+  serviceName: cleartrace-pg
+  replicas: 1
+  selector: { matchLabels: { app: cleartrace-pg } }
+  template:
+    metadata: { labels: { app: cleartrace-pg } }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports: [{ containerPort: 5432 }]
+          env:
+            - { name: POSTGRES_DB, value: cleartrace }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: cleartrace-db, key: POSTGRES_PASSWORD } }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "postgres", "-d", "cleartrace"] }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
+        resources: { requests: { storage: 10Gi } }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cleartrace-pg
+  namespace: cleartrace
+spec:
+  selector: { app: cleartrace-pg }
+  ports: [{ port: 5432, targetPort: 5432 }]
+---
+# ── Migration Job (ArgoCD PreSync hook) ──────────────────────────────────
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: cleartrace-migrate
+  namespace: cleartrace
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/munhq/cleartrace-cloud:v1
+          command: ["node", "migrate.mjs"]
+          envFrom: [{ secretRef: { name: cleartrace-db } }]
+---
+# ── Sync API ─────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cleartrace-api
+  namespace: cleartrace
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: cleartrace-api } }
+  template:
+    metadata: { labels: { app: cleartrace-api } }
+    spec:
+      containers:
+        - name: api
+          image: ghcr.io/munhq/cleartrace-cloud:v1
+          ports: [{ containerPort: 8080 }]
+          envFrom:
+            - { secretRef: { name: cleartrace-db } }
+            - { secretRef: { name: cleartrace-api } }
+          env: [{ name: PORT, value: "8080" }]
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits:   { cpu: 500m, memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cleartrace-api
+  namespace: cleartrace
+spec:
+  selector: { app: cleartrace-api }
+  ports: [{ port: 80, targetPort: 8080 }]
+---
+# ── Traefik ingress (TLS via the existing wildcard cert) ─────────────────
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: cleartrace-api
+  namespace: cleartrace
+spec:
+  entryPoints: ["websecure"]
+  routes:
+    - match: Host(`cleartrace.app.munhq.com`)
+      kind: Rule
+      services:
+        - name: cleartrace-api
+          port: 80
+  tls:
+    secretName: app-munhq-wildcard-tls
