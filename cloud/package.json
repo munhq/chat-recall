@@ -1,0 +1,17 @@
+{
+  "name": "cleartrace-cloud",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Cleartrace cloud sync API — shared Postgres, per-tenant RLS",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "verify:isolation": "node verify-isolation.mjs",
+    "verify:sync": "node verify-sync.mjs"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.13.1"
+  }
+}
