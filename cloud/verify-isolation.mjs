@@ -1,8 +1,8 @@
 import pg from 'pg';
 import { readFileSync } from 'fs';
 
-const SUPER = { host: 'localhost', port: 5456, user: 'postgres', password: 'dev', database: 'cleartrace' };
-const APP   = { host: 'localhost', port: 5456, user: 'app_user', password: 'app', database: 'cleartrace' };
+const SUPER = { host: 'localhost', port: 5456, user: 'postgres', password: 'dev', database: 'chat-recall' };
+const APP   = { host: 'localhost', port: 5456, user: 'app_user', password: 'app', database: 'chat-recall' };
 
 const ok = (m) => console.log('  ✓ ' + m);
 const bad = (m) => { console.log('  ✗ ' + m); process.exitCode = 1; };

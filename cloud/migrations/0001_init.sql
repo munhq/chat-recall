@@ -1,4 +1,4 @@
--- Cleartrace cloud — shared Postgres, per-tenant via RLS.
+-- chat-recall cloud — shared Postgres, per-tenant via RLS.
 -- Run as superuser (owns tables). The API connects as the NOBYPASSRLS role
 -- `app_user`, which is subject to RLS and can never see another tenant's rows.
 
