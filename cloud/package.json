@@ -1,9 +1,9 @@
 {
-  "name": "cleartrace-cloud",
+  "name": "chat-recall-cloud",
   "version": "0.1.0",
   "type": "module",
   "private": true,
-  "description": "Cleartrace cloud sync API — shared Postgres, per-tenant RLS",
+  "description": "chat-recall cloud sync API — shared Postgres, per-tenant RLS",
   "main": "server.mjs",
   "scripts": {
     "start": "node server.mjs",
