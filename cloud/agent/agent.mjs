@@ -5,10 +5,10 @@
 // chat-recall cloud on an interval. Incremental via a scanned_at watermark.
 //
 // Config (env or ~/.chat-recall/chat-recall.json):
-//   CLEARTRACE_API_URL   e.g. https://chat-recall.app.hotmun.com
-//   CLEARTRACE_TOKEN     ct_… device token (from the cloud)
+//   CHAT_RECALL_API_URL   e.g. https://chat-recall.app.hotmun.com
+//   CHAT_RECALL_TOKEN     ct_… device token (from the cloud)
 //   CHAT_RECALL_DB       default ~/.chat-recall/cache.db
-//   CLEARTRACE_INTERVAL_SEC  default 300
+//   CHAT_RECALL_INTERVAL_SEC  default 300
 // Flags: --once  (single sync then exit)
 
 import Database from 'better-sqlite3';
@@ -18,14 +18,14 @@ import { join } from 'path';
 
 const cfgPath = join(homedir(), '.chat-recall', 'chat-recall.json');
 const cfg = existsSync(cfgPath) ? JSON.parse(readFileSync(cfgPath, 'utf8')) : {};
-const API   = process.env.CLEARTRACE_API_URL || cfg.apiUrl;
-const TOKEN = process.env.CLEARTRACE_TOKEN   || cfg.token;
+const API   = process.env.CHAT_RECALL_API_URL || cfg.apiUrl;
+const TOKEN = process.env.CHAT_RECALL_TOKEN   || cfg.token;
 const DB    = process.env.CHAT_RECALL_DB     || join(homedir(), '.chat-recall', 'cache.db');
-const INTERVAL = (Number(process.env.CLEARTRACE_INTERVAL_SEC) || 300) * 1000;
+const INTERVAL = (Number(process.env.CHAT_RECALL_INTERVAL_SEC) || 300) * 1000;
 const STATE = join(homedir(), '.chat-recall', 'chat-recall-agent-state.json');
 const ONCE = process.argv.includes('--once');
 
-if (!API || !TOKEN) { console.error('Set CLEARTRACE_API_URL and CLEARTRACE_TOKEN (env or ~/.chat-recall/chat-recall.json)'); process.exit(1); }
+if (!API || !TOKEN) { console.error('Set CHAT_RECALL_API_URL and CHAT_RECALL_TOKEN (env or ~/.chat-recall/chat-recall.json)'); process.exit(1); }
 
 const loadWatermark = () => { try { return JSON.parse(readFileSync(STATE, 'utf8')).watermark || 0; } catch { return 0; } };
 const saveWatermark = (w) => { try { writeFileSync(STATE, JSON.stringify({ watermark: w, updated_at: new Date().toISOString() })); } catch {} };
