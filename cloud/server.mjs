@@ -1,4 +1,4 @@
-// Cleartrace cloud sync API — shared Postgres, per-tenant via RLS.
+// chat-recall cloud sync API — shared Postgres, per-tenant via RLS.
 // The agent on each dev's laptop POSTs redacted conversations + findings here.
 // Raw secrets never arrive: findings carry masked previews, conversations are
 // redacted client-side before upload.
@@ -15,7 +15,7 @@ import { createHash, randomBytes } from 'crypto';
 const PORT = process.env.PORT || 8080;
 const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL ||
-    'postgres://app_user:app@localhost:5456/cleartrace',
+    'postgres://app_user:app@localhost:5456/chat-recall',
   max: 10,
 });
 
@@ -140,4 +140,4 @@ app.get('/api/findings/by-project', async (req, res) => {
   res.json({ tenant: auth.tenant_slug, projects: rows });
 });
 
-app.listen(PORT, () => console.log(`cleartrace sync API on :${PORT}`));
+app.listen(PORT, () => console.log(`chat-recall sync API on :${PORT}`));
