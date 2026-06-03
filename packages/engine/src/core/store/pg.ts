@@ -1,3 +1,4 @@
+import { tenantQuery } from './pg-pool.js';
 /**
  * PgStore — Postgres StorageDriver for team/cloud mode. Real implementation
  * (no longer a stub). Every table carries a `tenant` column so one Postgres
@@ -55,7 +56,7 @@ export class PgStore implements StorageDriver {
   }
 
   private async q(sql: string, params: unknown[] = []): Promise<any[]> {
-    const r = await this.pool.query(sql, params);
+    const r = await tenantQuery(this.pool, this.tenant, sql, params);
     return r.rows;
   }
   private async one(sql: string, params: unknown[] = []): Promise<any> {
@@ -176,7 +177,7 @@ export class PgStore implements StorageDriver {
   }
 
   async updateItemProjectPath(id: string, sourceType: SourceType, projectPath: string): Promise<boolean> {
-    const r = await this.pool.query(`UPDATE memory_metadata SET project_path=$4 WHERE tenant=$1 AND id=$2 AND source_type=$3`, [this.t, id, sourceType, projectPath]);
+    const r = await tenantQuery(this.pool, this.tenant, `UPDATE memory_metadata SET project_path=$4 WHERE tenant=$1 AND id=$2 AND source_type=$3`, [this.t, id, sourceType, projectPath]);
     return r.rowCount > 0;
   }
 
@@ -228,7 +229,7 @@ export class PgStore implements StorageDriver {
     const now = Date.now();
     let written = 0;
     for (const f of findings) {
-      const r = await this.pool.query(
+      const r = await tenantQuery(this.pool, this.tenant, 
         `INSERT INTO secret_findings (tenant,session_id,detector,rule,line,preview,scanned_at,verified)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (tenant,session_id,detector,rule,line) DO NOTHING`,
         [this.t, sessionId, f.detector, f.rule, f.line, f.preview, now, f.verified === true ? 1 : f.verified === false ? 0 : null],
@@ -424,7 +425,7 @@ export class PgStore implements StorageDriver {
     return (await this.one(`SELECT value, updated_at FROM kv_store WHERE tenant=$1 AND scope=$2 AND key=$3`, [this.t, scope, key])) ?? null;
   }
   async kvDelete(scope: string, key: string): Promise<boolean> {
-    const r = await this.pool.query(`DELETE FROM kv_store WHERE tenant=$1 AND scope=$2 AND key=$3`, [this.t, scope, key]);
+    const r = await tenantQuery(this.pool, this.tenant, `DELETE FROM kv_store WHERE tenant=$1 AND scope=$2 AND key=$3`, [this.t, scope, key]);
     return r.rowCount > 0;
   }
   async kvList(scope?: string, limit = 200): Promise<Ret<'kvList'>> {

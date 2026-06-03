@@ -8,7 +8,7 @@
 
 import type { KnowledgeGraph } from '../knowledge-graph.js';
 import { resolveBackend, type CreateStoreOptions } from './index.js';
-import { openPgPool, pgTenant } from './pg-pool.js';
+import { openPgPool, pgTenant, tenantQuery } from './pg-pool.js';
 
 type AsyncMethod<M> = M extends (...args: infer A) => infer R
   ? (...args: A) => Promise<Awaited<R>>
@@ -48,7 +48,7 @@ export class PgKnowledgeGraph implements KnowledgeGraphDriver {
   private readonly t: string;
   constructor(private readonly databaseUrl?: string, tenant?: string) { this.t = pgTenant(tenant); }
   async init(): Promise<void> { this.pool = await openPgPool(this.databaseUrl); }
-  private async q(sql: string, params: unknown[] = []): Promise<any[]> { return (await this.pool.query(sql, params)).rows; }
+  private async q(sql: string, params: unknown[] = []): Promise<any[]> { return (await tenantQuery(this.pool, this.t, sql, params)).rows; }
 
   private entityId(name: string): string { return name.toLowerCase().replace(/[^a-z0-9_-]/g, '_').replace(/_+/g, '_'); }
   private async tripleId(subject: string, predicate: string, object: string): Promise<string> {
@@ -87,7 +87,7 @@ export class PgKnowledgeGraph implements KnowledgeGraphDriver {
     const subId = this.entityId(subject); const objId = this.entityId(object);
     const pred = predicate.toLowerCase().replace(/\s+/g, '_');
     const endDate = ended || new Date().toISOString().split('T')[0];
-    const r = await this.pool.query(`UPDATE kg_triples SET valid_to=$5 WHERE tenant=$1 AND subject=$2 AND predicate=$3 AND object=$4 AND valid_to IS NULL`, [this.t, subId, pred, objId, endDate]);
+    const r = await tenantQuery(this.pool, this.t, `UPDATE kg_triples SET valid_to=$5 WHERE tenant=$1 AND subject=$2 AND predicate=$3 AND object=$4 AND valid_to IS NULL`, [this.t, subId, pred, objId, endDate]);
     return r.rowCount || 0;
   }
 
