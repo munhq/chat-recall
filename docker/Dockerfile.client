@@ -2,10 +2,10 @@ FROM node:20-bookworm-slim AS builder
 
 WORKDIR /app
 
-COPY web/client/package.json web/client/package-lock.json ./
+COPY packages/server/client/package.json packages/server/client/package-lock.json ./
 RUN npm ci
 
-COPY web/client/ ./
+COPY packages/server/client/ ./
 
 # Build the Vite app - API_BASE_URL will be proxied by nginx
 RUN npm run build

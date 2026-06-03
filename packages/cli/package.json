@@ -1,0 +1,24 @@
+{
+  "name": "@chat-recall/cli",
+  "version": "0.2.0",
+  "description": "chat-recall CLI + MCP server (collects, indexes, searches chat sessions)",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "chat-recall": "./dist/cli.js",
+    "chat-recall-mcp": "./dist/mcp.js"
+  },
+  "files": ["dist", "hooks", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsc -b && node scripts/postbuild.mjs",
+    "auto-indexer": "tsx auto-indexer/indexer.ts"
+  },
+  "dependencies": {
+    "@chat-recall/engine": "*",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "chalk": "^5.3.0",
+    "chokidar": "^3.5.3",
+    "commander": "^12.0.0",
+    "dotenv": "^17.2.3"
+  }
+}
