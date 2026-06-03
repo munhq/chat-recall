@@ -14,8 +14,8 @@ import { mkdtempSync, rmSync, mkdirSync, readFileSync, writeFileSync, statSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const REPO = '/home/user/code/personal/chat-recall';
-const CLI = join(REPO, 'dist', 'cli.js');
+const REPO = process.cwd();
+const CLI = join(REPO, 'packages/cli/dist', 'cli.js');
 
 function runCli(home: string, ...args: string[]) {
   return spawnSync('node', [CLI, ...args], {
