@@ -7,18 +7,30 @@ import {
   SessionSource, PlanSource, TaskSource, ClaudeMdSource, HistorySource, PasteSource,
   GeminiSessionSource, GeminiBrainSource, OpenCodeSource, OpenCodeTodoSource, DiarySource,
   SkillsSource, McpsSource, SlashCommandsSource, SubagentsSource, HooksSource, PluginsSource,
-  CodexSessionSource,
+  CodexSessionSource, currentTenant,
 } from '../imports.js';
 import type { SourceType, MemorySearchResult, MemoryMetadataRow, MemoryLinkRow, StorageDriver, VectorStore } from '../imports.js';
 
 export class MemoryService {
-  private index!: VectorStore;
-  private store!: StorageDriver;
   private embedder: OllamaEmbedder;
   private registry: SourceRegistry;
-  /** Resolves once the async store/index drivers are constructed. Every
-   *  public method awaits this first (constructors can't be async). */
-  private ready: Promise<void>;
+  // Per-tenant store/index, built lazily in the request's ambient-tenant
+  // context (createStore/createVectorStore read currentTenant()).
+  private indexes = new Map<string, Promise<VectorStore>>();
+  private stores = new Map<string, Promise<StorageDriver>>();
+
+  private idx(): Promise<VectorStore> {
+    const t = currentTenant() ?? 'default';
+    let p = this.indexes.get(t);
+    if (!p) { p = createVectorStore(this.embedder); this.indexes.set(t, p); }
+    return p;
+  }
+  private st(): Promise<StorageDriver> {
+    const t = currentTenant() ?? 'default';
+    let p = this.stores.get(t);
+    if (!p) { p = createStore(); this.stores.set(t, p); }
+    return p;
+  }
 
   constructor() {
     this.embedder = new OllamaEmbedder();
@@ -43,14 +55,8 @@ export class MemoryService {
     this.registry.register(new SubagentsSource());
     this.registry.register(new HooksSource());
     this.registry.register(new PluginsSource());
-
-    this.ready = this.init();
   }
 
-  private async init(): Promise<void> {
-    this.index = await createVectorStore(this.embedder);
-    this.store = await createStore();
-  }
 
   async search(
     query: string,
@@ -58,21 +64,21 @@ export class MemoryService {
     sourceTypes?: SourceType[],
     projectIdFilter?: string
   ): Promise<MemorySearchResult[]> {
-    await this.ready;
-    return await this.index.search(query, { topK, sourceTypes, projectIdFilter });
+
+    return await (await this.idx()).search(query, { topK, sourceTypes, projectIdFilter });
   }
 
   async getStatus() {
-    await this.ready;
+
     let indexStats;
     try {
-      indexStats = await this.index.getStats();
+      indexStats = await (await this.idx()).getStats();
     } catch {
       // LanceDB may be corrupted — fall back to SQLite-only stats
       indexStats = { totalChunks: 0, totalItems: 0, bySourceType: {}, indexPath: '' };
     }
-    const storeStats = await this.store.getStats();
-    const linkCount = await this.store.getLinkCount();
+    const storeStats = await (await this.st()).getStats();
+    const linkCount = await (await this.st()).getLinkCount();
 
     // Per-(sourceType, tool) breakdown so the UI can hide tabs that have no
     // rows for the selected tool — the "tool-first" navigation rule.
@@ -97,7 +103,7 @@ export class MemoryService {
       'skill', 'mcp', 'command', 'agent', 'hook', 'plugin',
     ];
     for (const t of allTypes) {
-      const items = await this.store.listItems(t, 50000, 0);
+      const items = await (await this.st()).listItems(t, 50000, 0);
       const m: Record<string, number> = {};
       for (const it of items) {
         let tool = 'claude';
@@ -110,33 +116,33 @@ export class MemoryService {
   }
 
   async getItem(id: string, sourceType: SourceType): Promise<MemoryMetadataRow | null> {
-    await this.ready;
-    return this.store.getItem(id, sourceType);
+
+    return (await this.st()).getItem(id, sourceType);
   }
 
   async listItems(sourceType: SourceType, limit = 100, offset = 0): Promise<MemoryMetadataRow[]> {
-    await this.ready;
-    return this.store.listItems(sourceType, limit, offset);
+
+    return (await this.st()).listItems(sourceType, limit, offset);
   }
 
   async getLinks(sourceType: SourceType, itemId: string): Promise<MemoryLinkRow[]> {
-    await this.ready;
-    return this.store.getAllLinks(sourceType, itemId);
+
+    return (await this.st()).getAllLinks(sourceType, itemId);
   }
 
   async getLinksFrom(sourceType: SourceType, itemId: string): Promise<MemoryLinkRow[]> {
-    await this.ready;
-    return this.store.getLinksFrom(sourceType, itemId);
+
+    return (await this.st()).getLinksFrom(sourceType, itemId);
   }
 
   async getLinksTo(sourceType: SourceType, itemId: string): Promise<MemoryLinkRow[]> {
-    await this.ready;
-    return this.store.getLinksTo(sourceType, itemId);
+
+    return (await this.st()).getLinksTo(sourceType, itemId);
   }
 
   async updateItemProjectPath(id: string, sourceType: SourceType, projectPath: string): Promise<boolean> {
-    await this.ready;
-    return this.store.updateItemProjectPath(id, sourceType, projectPath);
+
+    return (await this.st()).updateItemProjectPath(id, sourceType, projectPath);
   }
 
   async reindex(sourceTypes: SourceType[], force = false): Promise<{
@@ -145,7 +151,7 @@ export class MemoryService {
     linksAdded: number;
     errors: number;
   }> {
-    await this.ready;
+
     let totalItems = 0;
     let totalChunks = 0;
     let totalLinks = 0;
@@ -165,27 +171,27 @@ export class MemoryService {
         for await (const item of source.discover()) {
           try {
             // Check if update needed (unless force)
-            if (!force && !(await this.index.needsUpdate(item.sourceType, item.id, item.mtime))) {
+            if (!force && !(await (await this.idx()).needsUpdate(item.sourceType, item.id, item.mtime))) {
               continue;
             }
 
             // Delete old data
-            await this.index.deleteItem(item.sourceType, item.id);
+            await (await this.idx()).deleteItem(item.sourceType, item.id);
 
             // Parse and buffer chunks (flushed in batches to reduce LanceDB versions)
             const chunks = await source.parse(item);
             if (chunks.length > 0) {
-              await this.index.bufferChunks(chunks);
+              await (await this.idx()).bufferChunks(chunks);
               totalChunks += chunks.length;
             }
 
             // Update metadata
-            await this.store.setItem(item);
+            await (await this.st()).setItem(item);
 
             // Extract and add links
             const links = await source.extractLinks(item);
             if (links.length > 0) {
-              await this.store.addLinks(links);
+              await (await this.st()).addLinks(links);
               totalLinks += links.length;
             }
 
@@ -203,7 +209,7 @@ export class MemoryService {
     }
 
     // Flush remaining buffered chunks and optimize
-    await this.index.flushBuffer();
+    await (await this.idx()).flushBuffer();
     // optimize() removed from auto flows to prevent data corruption
 
     return {

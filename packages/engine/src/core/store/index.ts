@@ -1,3 +1,4 @@
+import { currentTenant } from './tenant-context.js';
 /**
  * Storage factory — the one place that turns the `storage` flag into a
  * concrete StorageDriver. Callers do `const store = await createStore()` and
@@ -36,7 +37,7 @@ export function resolveBackend(opts: CreateStoreOptions = {}): StorageBackend {
 export async function createStore(opts: CreateStoreOptions = {}): Promise<StorageDriver> {
   if (resolveBackend(opts) === 'postgres') {
     const { PgStore } = await import('./pg.js');
-    const store = new PgStore(opts.databaseUrl, opts.tenant);
+    const store = new PgStore(opts.databaseUrl, opts.tenant ?? currentTenant());
     await store.init();
     return store;
   }

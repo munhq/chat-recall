@@ -1,3 +1,4 @@
+import { currentTenant } from './tenant-context.js';
 import { tenantQuery } from './pg-pool.js';
 /**
  * VectorStore driver — abstracts the embedding/vector layer behind the same
@@ -255,7 +256,7 @@ export async function createVectorStore(
   opts: CreateStoreOptions & { indexPath?: string } = {},
 ): Promise<VectorStore> {
   if (resolveBackend(opts) === 'postgres') {
-    const store = new PgVectorStore(embedder, opts.databaseUrl, opts.tenant);
+    const store = new PgVectorStore(embedder, opts.databaseUrl, opts.tenant ?? currentTenant());
     await store.init();
     return store;
   }

@@ -2,7 +2,7 @@
  * Search service — uses unified MemoryIndex for all searches.
  */
 
-import { createVectorStore, OllamaEmbedder, createMetadataCache, getAllSessions } from '../imports.js';
+import { createVectorStore, OllamaEmbedder, createMetadataCache, getAllSessions, currentTenant } from '../imports.js';
 import type { SourceType, MemorySearchResult, VectorStore } from '../imports.js';
 
 // See sessions.ts for why we strip client-injected banners here.
@@ -37,9 +37,11 @@ export interface SearchResult {
 }
 
 export class SearchService {
-  private memoryIndex!: VectorStore;
   private embedder: OllamaEmbedder;
-  private ready: Promise<void>;
+  // One vector store per tenant (built lazily in the request's ambient-tenant
+  // context). createVectorStore reads currentTenant(), so a single shared
+  // instance would leak the startup tenant ('default') to every team.
+  private indexes = new Map<string, Promise<VectorStore>>();
 
   // Cache project counts for 30 seconds to avoid scanning filesystem on every SSE tick
   private projectCountsCache: { projects: Record<string, number>; totalSessions: number } | null = null;
@@ -48,11 +50,13 @@ export class SearchService {
 
   constructor() {
     this.embedder = new OllamaEmbedder();
-    this.ready = this.init();
   }
 
-  private async init(): Promise<void> {
-    this.memoryIndex = await createVectorStore(this.embedder);
+  private index(): Promise<VectorStore> {
+    const t = currentTenant() ?? 'default';
+    let p = this.indexes.get(t);
+    if (!p) { p = createVectorStore(this.embedder); this.indexes.set(t, p); }
+    return p;
   }
 
   /**
@@ -64,8 +68,8 @@ export class SearchService {
     topK = 10,
     projectIdFilter?: string
   ): Promise<SearchResult[]> {
-    await this.ready;
-    const results = await this.memoryIndex.search(query, {
+    const idx = await this.index();
+    const results = await idx.search(query, {
       topK,
       sourceTypes: ['session'],
       projectIdFilter,
@@ -104,15 +108,15 @@ export class SearchService {
     sourceTypes?: SourceType[],
     projectIdFilter?: string
   ): Promise<MemorySearchResult[]> {
-    await this.ready;
-    return await this.memoryIndex.search(query, { topK, sourceTypes, projectIdFilter });
+    const idx = await this.index();
+    return await idx.search(query, { topK, sourceTypes, projectIdFilter });
   }
 
   async getStatus() {
-    await this.ready;
+    const idx = await this.index();
     let stats: Awaited<ReturnType<VectorStore['getStats']>>;
     try {
-      stats = await this.memoryIndex.getStats();
+      stats = await idx.getStats();
     } catch (err) {
       stats = {
         totalChunks: 0,
