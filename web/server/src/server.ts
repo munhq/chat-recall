@@ -15,6 +15,8 @@ import analyticsRouter from './routes/analytics.js';
 import settingsRouter from './routes/settings.js';
 import editsRouter from './routes/edits.js';
 import toolkitRouter from './routes/toolkit.js';
+import secretsRouter from './routes/secrets.js';
+import projectsRouter from './routes/projects.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '5000', 10);
@@ -46,6 +48,8 @@ app.use('/api/analytics', analyticsRouter);
 app.use('/api/settings', settingsRouter);
 app.use('/api/edits', editsRouter);
 app.use('/api/toolkit', toolkitRouter);
+app.use('/api/secrets', secretsRouter);
+app.use('/api/projects', projectsRouter);
 
 // Health check
 app.get('/health', (req, res) => {

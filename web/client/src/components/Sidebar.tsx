@@ -3,7 +3,6 @@ import { Icon, Avatar } from './primitives';
 import type { ProjectTreeNode } from '../App';
 
 export interface SidebarSection {
-  /** Heading shown above the rows (e.g. "Type", "Window"). */
   heading: string;
   rows: SidebarSectionRow[];
 }
@@ -12,11 +11,9 @@ export interface SidebarSectionRow {
   id: string;
   label: string;
   count?: number;
-  /** Render a small dot or icon to the left of the label. */
   swatch?: React.ReactNode;
   on: boolean;
   onClick: () => void;
-  /** Test hook for Playwright. */
   testId?: string;
 }
 
@@ -27,30 +24,18 @@ interface SidebarProps {
   onSelect: (p: string | null) => void;
   toolFilter: string;
   setToolFilter: (t: string) => void;
-  /**
-   * View-specific filter sections rendered between Source and Projects.
-   * Each top-level view (Memory / Toolkit / Activity / Insights) injects
-   * its own — e.g. Memory passes "Type" with Plans/Notes/Tasks rows,
-   * Activity passes "Window" with 1h/6h/24h/7d rows. The horizontal
-   * filter chips that used to live in each view are gone.
-   */
   extraSections?: SidebarSection[];
-  /**
-   * Mobile-only: when the drawer is open we surface the top-level nav
-   * (Conversations / Activity / Memory / …) inside the sidebar so the
-   * desktop TopBar nav can be hidden on small screens. Hidden on
-   * desktop via the `cr-mobile-only` class.
-   */
   view?: string;
-  setView?: (v: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'settings') => void;
+  setView?: (v: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'settings') => void;
 }
 
-const MOBILE_NAV_ITEMS: Array<{ id: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity'; label: string; icon: string }> = [
+const MOBILE_NAV_ITEMS: Array<{ id: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security'; label: string; icon: string }> = [
   { id: 'search', label: 'Conversations', icon: 'message' },
   { id: 'activity', label: 'Activity', icon: 'clock' },
   { id: 'memory', label: 'Memory', icon: 'brain' },
   { id: 'toolkit', label: 'Toolkit', icon: 'zap' },
   { id: 'dashboard', label: 'Insights', icon: 'chart' },
+  { id: 'security', label: 'Security', icon: 'check' },
 ];
 
 const TOOL_SOURCES = [
@@ -83,18 +68,17 @@ export default function Sidebar({
       }}
     >
       <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
-        {/* Mobile-only nav (the desktop TopBar nav is hidden under 768px). */}
         {setView && (
           <div className="cr-mobile-only" style={{ padding: '14px 12px 4px' }}>
             <div className="cr-h4" style={{ marginBottom: 10, paddingLeft: 6 }}>Navigate</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
               {MOBILE_NAV_ITEMS.map((n) => (
-                <SidebarRow
+                <SidebarRowItem
                   key={n.id}
-                  on={view === n.id}
+                  active={view === n.id}
                   onClick={() => setView(n.id)}
                   data-testid={`mobile-nav-${n.id}`}
-                  left={<Icon name={n.icon} size={14} style={{ color: view === n.id ? 'var(--cr-brand-500)' : 'var(--cr-fg-3)' }} />}
+                  icon={<Icon name={n.icon} size={14} />}
                   label={n.label}
                 />
               ))}
@@ -103,19 +87,18 @@ export default function Sidebar({
           </div>
         )}
 
-        {/* Source filter — shared by every view. */}
         <div style={{ padding: '16px 12px 10px' }}>
-          <div className="cr-h4" style={{ marginBottom: 10, paddingLeft: 6 }}>Source</div>
+          <div className="cr-sidebar-section-label">Source</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
             {TOOL_SOURCES.map((t) => (
-              <SidebarRow
+              <SidebarRowItem
                 key={t.id}
-                on={toolFilter === t.id}
+                active={toolFilter === t.id}
                 onClick={() => setToolFilter(t.id)}
                 data-testid={`tool-filter-${t.id}`}
-                left={
+                icon={
                   t.id === 'all' ? (
-                    <Icon name={t.icon} size={14} style={{ color: toolFilter === t.id ? 'var(--cr-brand-500)' : 'var(--cr-fg-3)' }} />
+                    <Icon name={t.icon} size={14} />
                   ) : (
                     <span style={{ width: 8, height: 8, borderRadius: '50%', background: t.color, flexShrink: 0 }} />
                   )
@@ -126,21 +109,20 @@ export default function Sidebar({
           </div>
         </div>
 
-        {/* View-specific sections (Type / Window / etc.) */}
         {(extraSections || []).map((section) => (
           <React.Fragment key={section.heading}>
-            <div style={{ height: 1, background: 'var(--cr-line-1)', margin: '6px 12px' }} />
-            <div style={{ padding: '10px 12px 4px' }}>
-              <div className="cr-h4" style={{ paddingLeft: 6 }}>{section.heading}</div>
+            <div style={{ height: 1, background: 'var(--cr-line-1)', margin: '6px 12px 0' }} />
+            <div style={{ padding: '10px 12px 0' }}>
+              <div className="cr-sidebar-section-label">{section.heading}</div>
             </div>
-            <div style={{ padding: '4px 12px 8px', display: 'flex', flexDirection: 'column', gap: 1 }}>
+            <div style={{ padding: '2px 12px 6px', display: 'flex', flexDirection: 'column', gap: 1 }}>
               {section.rows.map((row) => (
-                <SidebarRow
+                <SidebarRowItem
                   key={row.id}
-                  on={row.on}
+                  active={row.on}
                   onClick={row.onClick}
                   data-testid={row.testId}
-                  left={
+                  icon={
                     row.swatch ?? (
                       <span style={{
                         width: 8, height: 8, borderRadius: '50%',
@@ -157,17 +139,16 @@ export default function Sidebar({
           </React.Fragment>
         ))}
 
-        {/* Projects tree — shown for all views; clicking still scopes to a path. */}
-        <div style={{ height: 1, background: 'var(--cr-line-1)', margin: '6px 12px' }} />
+        <div style={{ height: 1, background: 'var(--cr-line-1)', margin: '6px 12px 0' }} />
         <div style={{ padding: '10px 12px 4px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div className="cr-h4" style={{ paddingLeft: 6 }}>Projects</div>
+          <div className="cr-sidebar-section-label" style={{ marginBottom: 0 }}>Projects</div>
         </div>
         <div style={{ padding: '4px 12px 16px', display: 'flex', flexDirection: 'column', gap: 1 }}>
-          <SidebarRow
-            on={selected === null}
+          <SidebarRowItem
+            active={selected === null}
             onClick={() => onSelect(null)}
             data-testid="project-all"
-            left={<Icon name="database" size={14} style={{ color: selected === null ? 'var(--cr-brand-500)' : 'var(--cr-fg-3)' }} />}
+            icon={<Icon name="database" size={14} />}
             label="All Projects"
             count={totalCount}
           />
@@ -186,17 +167,8 @@ export default function Sidebar({
   );
 }
 
-/**
- * Recursive row. If the node has children it renders as a folder:
- * the chevron toggles expansion; the rest of the row filters by path.
- * A node is always rendered once — a folder never duplicates as a
- * leaf inside its own parent.
- */
 function TreeRow({
-  node,
-  depth,
-  selected,
-  onSelect,
+  node, depth, selected, onSelect,
 }: {
   node: ProjectTreeNode;
   depth: number;
@@ -204,28 +176,85 @@ function TreeRow({
   onSelect: (p: string | null) => void;
 }) {
   const hasChildren = node.children.length > 0;
-  const [open, setOpen] = useState(true);
+  // Untracked footer + workspaces default-open=false so they don't dominate
+  // the sidebar; real workspaces (auto-detected) open so users see their
+  // repos. Anything else with children opens by default.
+  const startOpen = node.source !== 'untracked';
+  const [open, setOpen] = useState(startOpen);
   const isSelected = selected === node.fullPath;
+  const isUntracked = node.source === 'untracked' || node.source === 'path';
+  const pl = 8 + depth * 14;
 
+  // Workspace rows are a grouping affordance; clicking still filters
+  // to the workspace project_id (rollup), which is desired.
   return (
     <>
-      <SidebarRow
-        on={isSelected}
+      <div
         onClick={() => onSelect(node.fullPath)}
         data-testid={hasChildren ? 'project-folder' : 'project-item'}
         data-path={node.fullPath}
-        depth={depth}
-        left={
-          hasChildren ? (
-            <ChevronButton open={open} onToggle={() => setOpen(!open)} />
+        className={`cr-sidebar-row${isSelected ? ' active' : ''}${depth > 0 ? ' indent' : ''}`}
+        title={node.orphan ? `${node.name} (folder no longer exists)` : node.name}
+        style={{
+          paddingLeft: pl,
+          paddingRight: 8,
+          height: depth > 0 ? 28 : 32,
+          opacity: node.orphan ? 0.55 : 1,
+          fontStyle: node.orphan ? 'italic' : undefined,
+        }}
+      >
+        <span className="cr-sidebar-row-icon">
+          {hasChildren ? (
+            <>
+              <button
+                type="button"
+                data-testid="tree-chevron"
+                onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'transparent', border: 'none', padding: 0,
+                  cursor: 'pointer', width: 18, height: 18,
+                  color: 'inherit', borderRadius: 3,
+                }}
+              >
+                <Icon
+                  name="chevronRight"
+                  size={11}
+                  style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}
+                />
+              </button>
+              <Icon
+                name={isUntracked ? 'archive' : 'folder'}
+                size={13}
+                style={{ marginLeft: 2, opacity: isSelected ? 1 : 0.65 }}
+              />
+            </>
           ) : (
-            <Avatar name={node.name.split('/').pop() || node.name} size={18} />
-          )
-        }
-        label={node.name}
-        count={node.totalCount}
-        indent={depth > 0}
-      />
+            <Avatar name={(node.name.split('/').pop() || node.name)} size={18} />
+          )}
+        </span>
+        <span className="cr-sidebar-row-label">
+          {depth > 0 && !hasChildren ? (node.name.split('/').pop() || node.name) : node.name}
+          {node.orphan && (
+            <span
+              style={{
+                marginLeft: 6,
+                fontSize: 9,
+                padding: '1px 4px',
+                borderRadius: 3,
+                background: 'var(--cr-ink-2)',
+                color: 'var(--cr-fg-3)',
+                letterSpacing: '0.04em',
+                textTransform: 'uppercase',
+              }}
+              title="The original folder for this transcript no longer exists on disk"
+            >
+              orphan
+            </span>
+          )}
+        </span>
+        <span className="cr-sidebar-row-count">{node.totalCount}</span>
+      </div>
 
       {hasChildren && open &&
         node.children.map((c) => (
@@ -241,117 +270,28 @@ function TreeRow({
   );
 }
 
-function ChevronButton({ open, onToggle }: { open: boolean; onToggle: () => void }) {
-  return (
-    <button
-      type="button"
-      data-testid="tree-chevron"
-      onClick={(e) => {
-        e.stopPropagation();
-        onToggle();
-      }}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: 'transparent',
-        border: 'none',
-        padding: 0,
-        cursor: 'pointer',
-        width: 18,
-        height: 18,
-        color: 'var(--cr-fg-3)',
-      }}
-    >
-      <Icon
-        name="chevronRight"
-        size={12}
-        style={{
-          transform: open ? 'rotate(90deg)' : 'none',
-          transition: 'transform 0.15s',
-        }}
-      />
-    </button>
-  );
-}
-
-function SidebarRow({
-  on,
-  onClick,
-  left,
-  label,
-  count,
-  indent,
-  depth = 0,
+function SidebarRowItem({
+  active, onClick, icon, label, count,
   'data-testid': testId,
-  'data-path': dataPath,
 }: {
-  on: boolean;
+  active: boolean;
   onClick: () => void;
-  left: React.ReactNode;
+  icon: React.ReactNode;
   label: string;
   count?: number;
-  indent?: boolean;
-  depth?: number;
   'data-testid'?: string;
-  'data-path'?: string;
 }) {
-  const [hov, setHov] = useState(false);
-
-  // Long path labels (from collapsed transparent chains) show the last
-  // two segments with an ellipsis prefix so they stay one line.
-  const displayLabel = useMemo(() => {
-    if (!indent) return label;
-    const parts = label.split('/');
-    if (parts.length > 2) return `…/${parts.slice(-2).join('/')}`;
-    return label;
-  }, [label, indent]);
-
-  const paddingLeft = 8 + depth * 14;
-
   return (
     <div
       onClick={onClick}
-      onMouseEnter={() => setHov(true)}
-      onMouseLeave={() => setHov(false)}
       data-testid={testId}
-      data-path={dataPath}
-      aria-current={on ? 'true' : undefined}
+      className={`cr-sidebar-row${active ? ' active' : ''}`}
       title={label}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-        paddingLeft,
-        paddingRight: 8,
-        paddingTop: indent ? 4 : 6,
-        paddingBottom: indent ? 4 : 6,
-        height: indent ? 28 : 32,
-        borderRadius: 6,
-        cursor: 'pointer',
-        background: on ? 'var(--cr-ink-3)' : hov ? 'var(--cr-ink-2)' : 'transparent',
-        color: on ? 'var(--cr-fg-1)' : 'var(--cr-fg-2)',
-        transition: 'background var(--cr-dur-fast), color var(--cr-dur-fast)',
-      }}
     >
-      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        {left}
-      </div>
-      <span
-        style={{
-          flex: 1,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-          fontSize: 13,
-          fontWeight: on ? 500 : 400,
-          letterSpacing: '-0.005em',
-        }}
-      >
-        {displayLabel}
-      </span>
+      <span className="cr-sidebar-row-icon">{icon}</span>
+      <span className="cr-sidebar-row-label">{label}</span>
       {count != null && (
-        <span style={{ fontSize: 11, color: 'var(--cr-fg-3)', fontVariantNumeric: 'tabular-nums', opacity: on ? 1 : 0.7 }}>
+        <span className="cr-sidebar-row-count" style={{ opacity: active ? 1 : 0.7 }}>
           {count}
         </span>
       )}

@@ -27,12 +27,12 @@ const TIMELINE_CACHE_TTL_MS = 30_000;
 const TIMELINE_CACHE_MAX = 64;
 const timelineCache = new Map<string, { data: SessionEdit[]; expiresAt: number }>();
 
-function getCachedTimeline(opts: {
+async function getCachedTimeline(opts: {
   sinceMs: number;
   pattern?: string;
   projectFilter?: string;
   tools?: ReadonlyArray<string>;
-}): SessionEdit[] {
+}): Promise<SessionEdit[]> {
   const sinceBucket = Math.floor(opts.sinceMs / 60_000);
   const key = `${sinceBucket}|${opts.pattern || ''}|${opts.projectFilter || ''}|${(opts.tools || []).slice().sort().join(',')}`;
   const now = Date.now();
@@ -43,7 +43,7 @@ function getCachedTimeline(opts: {
   // whose cached row is fresh (mtime matches memory_metadata). Falls
   // back to a live transcript scan only for sessions whose cache is
   // missing or stale (typically just the actively-running session).
-  const data = cachedRecentEdits({
+  const data = await cachedRecentEdits({
     sinceMs: opts.sinceMs,
     pattern: opts.pattern,
     projectFilter: opts.projectFilter,
@@ -60,7 +60,7 @@ function getCachedTimeline(opts: {
 
 // GET /api/edits/timeline?since_hours=24&limit=200&pattern=foo&project=chat-recall
 //        &include_reads=false&tools=claude,opencode,gemini&group_by_repo=true
-router.get('/timeline', (req, res) => {
+router.get('/timeline', async (req, res) => {
   try {
     const sinceHoursRaw = req.query.since_hours as string | undefined;
     const sinceHours = sinceHoursRaw ? Number(sinceHoursRaw) : 24;
@@ -82,7 +82,7 @@ router.get('/timeline', (req, res) => {
       : undefined;
 
     const sinceMs = Date.now() - sinceHours * 3600 * 1000;
-    const all = getCachedTimeline({ sinceMs, pattern, projectFilter, tools });
+    const all = await getCachedTimeline({ sinceMs, pattern, projectFilter, tools });
     const filtered = includeReads ? all : all.filter(e => e.op !== 'read');
     const trimmed = filtered.slice(0, limit);
 

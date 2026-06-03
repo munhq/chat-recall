@@ -1,57 +1,58 @@
-/* Chat Recall — Design System Tokens (v2, premium rebuild) */
+/* Chat Recall — Design System Tokens */
 
-/* ────────────────────────────── Dark (default) ────────────────────────────── */
+/* ────────────────────── Dark (default) ────────────────────── */
 :root {
-  /* Ink scale */
-  --cr-ink-0: #0E1217;
-  --cr-ink-1: #161B22;
-  --cr-ink-2: #1C2128;
-  --cr-ink-3: #21262D;
-  --cr-ink-4: #30363D;
+  /* Ink scale — deep charcoal with clear layering.
+   * ink-0 (page) → ink-1 (sidebar, cards) → ink-2 (hover) → ink-3 (active, sub-cards) → ink-4 (segmented-control active, code bg accent) */
+  --cr-ink-0: #090D14;
+  --cr-ink-1: #101620;
+  --cr-ink-2: #1A2230;
+  --cr-ink-3: #243042;
+  --cr-ink-4: #324058;
 
-  /* Foreground */
-  --cr-fg-1: #E6EDF3;
-  --cr-fg-2: #8B949E;
-  --cr-fg-3: #6E7681;
+  /* Foreground — crisp white with diminishing secondary/tertiary */
+  --cr-fg-1: #EBF0F8;
+  --cr-fg-2: #8693A6;
+  --cr-fg-3: #607088;
 
   /* Lines */
-  --cr-line-1: #21262D;
-  --cr-line-2: #30363D;
-  --cr-line-3: #484F58;
+  --cr-line-1: #1B2433;
+  --cr-line-2: #2A374C;
+  --cr-line-3: #405366;
 
-  /* Brand */
+  /* Brand — warm amber/orange */
   --cr-brand-500: #F5A97F;
   --cr-brand-600: #E08D5F;
   --cr-brand-700: #C9734A;
-  --cr-brand-surf: rgba(245, 169, 127, 0.12);
-  --cr-brand-line: rgba(245, 169, 127, 0.25);
+  --cr-brand-surf: rgba(245, 169, 127, 0.10);
+  --cr-brand-line: rgba(245, 169, 127, 0.22);
 
   /* Semantic colors */
   --cr-ok-500: #3FB950;
-  --cr-ok-surf: rgba(63, 185, 80, 0.12);
-  --cr-ok-line: rgba(63, 185, 80, 0.25);
+  --cr-ok-surf: rgba(63, 185, 80, 0.10);
+  --cr-ok-line: rgba(63, 185, 80, 0.22);
 
   --cr-warn-500: #D29922;
-  --cr-warn-surf: rgba(210, 153, 34, 0.12);
-  --cr-warn-line: rgba(210, 153, 34, 0.25);
+  --cr-warn-surf: rgba(210, 153, 34, 0.10);
+  --cr-warn-line: rgba(210, 153, 34, 0.22);
 
   --cr-err-500: #F85149;
-  --cr-err-surf: rgba(248, 81, 73, 0.12);
-  --cr-err-line: rgba(248, 81, 73, 0.25);
+  --cr-err-surf: rgba(248, 81, 73, 0.10);
+  --cr-err-line: rgba(248, 81, 73, 0.22);
 
   --cr-info-500: #58A6FF;
-  --cr-info-surf: rgba(88, 166, 255, 0.12);
-  --cr-info-line: rgba(88, 166, 255, 0.25);
+  --cr-info-surf: rgba(88, 166, 255, 0.10);
+  --cr-info-line: rgba(88, 166, 255, 0.22);
 
-  /* Tool badges */
+  /* Tool colors */
   --cr-tool-claude: #D4A5FF;
-  --cr-tool-claude-surf: rgba(212, 165, 255, 0.12);
+  --cr-tool-claude-surf: rgba(212, 165, 255, 0.10);
   --cr-tool-gemini: #78C9A0;
-  --cr-tool-gemini-surf: rgba(120, 201, 160, 0.12);
+  --cr-tool-gemini-surf: rgba(120, 201, 160, 0.10);
   --cr-tool-opencode: #79C0FF;
-  --cr-tool-opencode-surf: rgba(121, 192, 255, 0.12);
+  --cr-tool-opencode-surf: rgba(121, 192, 255, 0.10);
   --cr-tool-codex: #10A37F;
-  --cr-tool-codex-surf: rgba(16, 163, 127, 0.12);
+  --cr-tool-codex-surf: rgba(16, 163, 127, 0.10);
 
   /* Radii */
   --cr-radius-xs: 4px;
@@ -62,7 +63,7 @@
   /* Motion */
   --cr-dur-fast: 120ms;
   --cr-ease: cubic-bezier(0.4, 0, 0.2, 1);
-  --cr-focus-ring: 0 0 0 3px rgba(245, 169, 127, 0.25);
+  --cr-focus-ring: 0 0 0 3px rgba(245, 169, 127, 0.22);
 
   /* Layout */
   --cr-header-h: 52px;
@@ -75,78 +76,66 @@
   --cr-font-mono: 'Fira Code', 'SF Mono', 'Courier New', monospace;
 }
 
-/* ────────────────────────────── Light ────────────────────────────── */
+/* ────────────────────── Light ────────────────────── */
 [data-theme="light"] {
-  --cr-ink-0: #FFFFFF;
-  --cr-ink-1: #F6F8FA;
-  --cr-ink-2: #EAEEF2;
-  --cr-ink-3: #D0D7DE;
-  --cr-ink-4: #C1C7CD;
+  --cr-ink-0: #FAFBFC;
+  --cr-ink-1: #EDF0F4;
+  --cr-ink-2: #DFE3E9;
+  --cr-ink-3: #CDD3DC;
+  --cr-ink-4: #B4BCC6;
 
-  --cr-fg-1: #1F2328;
-  --cr-fg-2: #57606A;
-  --cr-fg-3: #8C959F;
+  --cr-fg-1: #12151C;
+  --cr-fg-2: #4A5464;
+  --cr-fg-3: #7C8698;
 
-  --cr-line-1: #D0D7DE;
-  --cr-line-2: #C1C7CD;
-  --cr-line-3: #A0A8B0;
+  --cr-line-1: #D9DEE5;
+  --cr-line-2: #C4C9D1;
+  --cr-line-3: #A6AEB9;
 
-  --cr-brand-500: #C45D2A;
-  --cr-brand-600: #A34E22;
-  --cr-brand-700: #823E1B;
-  --cr-brand-surf: rgba(196, 93, 42, 0.08);
-  --cr-brand-line: rgba(196, 93, 42, 0.20);
+  --cr-brand-500: #D46830;
+  --cr-brand-600: #B85225;
+  --cr-brand-700: #96421C;
+  --cr-brand-surf: rgba(212, 104, 48, 0.08);
+  --cr-brand-line: rgba(212, 104, 48, 0.18);
 
-  --cr-focus-ring: 0 0 0 3px rgba(196, 93, 42, 0.20);
+  --cr-focus-ring: 0 0 0 3px rgba(212, 104, 48, 0.18);
 
-  /* Semantic colors — dark-theme defaults are pastels tuned for #0E1217
-   * backgrounds; on white they look washed out and low-contrast. Deeper,
-   * more saturated values here so chips, dots, and progress bars read
-   * properly against the light surface. */
   --cr-ok-500: #1A7F37;
-  --cr-ok-surf: rgba(26, 127, 55, 0.10);
-  --cr-ok-line: rgba(26, 127, 55, 0.28);
+  --cr-ok-surf: rgba(26, 127, 55, 0.08);
+  --cr-ok-line: rgba(26, 127, 55, 0.20);
 
   --cr-warn-500: #9A6700;
-  --cr-warn-surf: rgba(154, 103, 0, 0.10);
-  --cr-warn-line: rgba(154, 103, 0, 0.28);
+  --cr-warn-surf: rgba(154, 103, 0, 0.08);
+  --cr-warn-line: rgba(154, 103, 0, 0.20);
 
   --cr-err-500: #CF222E;
-  --cr-err-surf: rgba(207, 34, 46, 0.08);
-  --cr-err-line: rgba(207, 34, 46, 0.28);
+  --cr-err-surf: rgba(207, 34, 46, 0.07);
+  --cr-err-line: rgba(207, 34, 46, 0.22);
 
   --cr-info-500: #0969DA;
-  --cr-info-surf: rgba(9, 105, 218, 0.08);
-  --cr-info-line: rgba(9, 105, 218, 0.28);
+  --cr-info-surf: rgba(9, 105, 218, 0.07);
+  --cr-info-line: rgba(9, 105, 218, 0.20);
 
-  /* Tool colors — same story. The dark-mode pastels (D4A5FF, 78C9A0…)
-   * disappear on white, so we drop them down to mid-saturation values
-   * that read clearly as a 3px rail without being garish. */
   --cr-tool-claude: #8250DF;
-  --cr-tool-claude-surf: rgba(130, 80, 223, 0.10);
+  --cr-tool-claude-surf: rgba(130, 80, 223, 0.08);
   --cr-tool-gemini: #1A7F37;
-  --cr-tool-gemini-surf: rgba(26, 127, 55, 0.10);
+  --cr-tool-gemini-surf: rgba(26, 127, 55, 0.08);
   --cr-tool-opencode: #0969DA;
-  --cr-tool-opencode-surf: rgba(9, 105, 218, 0.10);
+  --cr-tool-opencode-surf: rgba(9, 105, 218, 0.08);
   --cr-tool-codex: #047857;
-  --cr-tool-codex-surf: rgba(4, 120, 87, 0.10);
+  --cr-tool-codex-surf: rgba(4, 120, 87, 0.08);
 }
 
-/* ────────────────────────────── Base ────────────────────────────── */
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
+/* ────────────────────── Base ────────────────────── */
+*,
+*::before,
+*::after { box-sizing: border-box; }
 
-html, body, #root {
-  height: 100%;
-}
+html, body, #root { height: 100%; margin: 0; padding: 0; }
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
   background: var(--cr-ink-0);
   color: var(--cr-fg-1);
   line-height: 1.5;
@@ -154,99 +143,47 @@ body {
   transition: background var(--cr-dur-fast) var(--cr-ease), color var(--cr-dur-fast) var(--cr-ease);
 }
 
-code, pre, kbd {
-  font-family: var(--cr-font-mono);
-}
+code, pre, kbd { font-family: var(--cr-font-mono); }
 
 /* Scrollbars */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-::-webkit-scrollbar-thumb {
-  background: var(--cr-ink-4);
-  border-radius: 4px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: var(--cr-line-3);
-}
-::-webkit-scrollbar-corner {
-  background: transparent;
-}
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--cr-ink-4); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--cr-line-3); }
 
-/* Typography helpers */
+/* Typography */
 .cr-h4 {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--cr-fg-3);
+  font-size: 11px; font-weight: 600; letter-spacing: 0.05em;
+  text-transform: uppercase; color: var(--cr-fg-3);
 }
-
-.cr-lead {
-  font-size: 14px;
-  color: var(--cr-fg-2);
-}
-
-h1, h2, h3 {
-  font-weight: 600;
-  letter-spacing: -0.015em;
-  color: var(--cr-fg-1);
-}
+h1, h2, h3 { font-weight: 600; letter-spacing: -0.015em; color: var(--cr-fg-1); }
 h1 { font-size: 24px; }
 h2 { font-size: 20px; }
 h3 { font-size: 15px; }
-
-a {
-  color: var(--cr-brand-500);
-  text-decoration: none;
-  font-size: 13px;
-}
-a:hover {
-  text-decoration: underline;
-}
-
-pre {
-  background: var(--cr-ink-1);
-  border: 1px solid var(--cr-line-1);
-  border-radius: var(--cr-radius-md);
-  padding: 14px;
-  overflow-x: auto;
-  font-size: 13px;
-  line-height: 1.5;
-}
+a { color: var(--cr-brand-500); text-decoration: none; font-size: 13px; }
+a:hover { text-decoration: underline; }
 
 /* App shell */
-.app {
-  display: flex;
-  flex-direction: column;
-  height: 100vh;
-}
-.app-row {
-  display: flex;
-  flex: 1;
-  overflow: hidden;
-}
+.app { display: flex; flex-direction: column; height: 100vh; }
+.app-row { display: flex; flex: 1; overflow: hidden; }
 
-/* ────────────────────────────── Conversation list ──────────────────────────────
- * Editorial archive treatment: tool-as-left-rail, status-as-typographic
- * prefix, first-prompt as the dominant element. See ConversationList.tsx
- * for the structure these styles dress up.
- */
-
-/* Row enter — staggered fade+slide. Driven by --cr-row-i index var so each
- * row's animation is offset; gives the list a settled-into-place feel
- * after a page load without it being a Big Animated Moment. */
+/* ────────────────────── Conversation list ────────────────────── */
 @keyframes cr-row-in {
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: none; }
 }
+@keyframes cr-shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes cr-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+
+.cr-conv-list { min-width: 0; }
 
 .cr-conv-row {
-  position: relative;
   display: grid;
   grid-template-columns: 3px 1fr auto;
   column-gap: 14px;
@@ -257,691 +194,325 @@ pre {
   animation: cr-row-in 320ms var(--cr-ease) both;
   animation-delay: calc(var(--cr-row-i, 0) * 24ms);
 }
-.cr-conv-row:hover {
-  background: var(--cr-ink-1);
-}
-.cr-conv-row[aria-current="true"] {
-  background: var(--cr-ink-2);
+.cr-conv-row:hover { background: var(--cr-ink-1); }
+.cr-conv-row[aria-current="true"] { background: var(--cr-ink-2); }
+
+.cr-conv-rail {
+  width: 3px;
+  background: var(--cr-row-tool, var(--cr-line-2));
+  transition: width var(--cr-dur-fast) var(--cr-ease), background var(--cr-dur-fast) var(--cr-ease);
 }
 .cr-conv-row[aria-current="true"] .cr-conv-rail {
   width: 4px;
   background: var(--cr-brand-500);
   box-shadow: 0 0 12px var(--cr-brand-line);
 }
-
-.cr-conv-rail {
-  /* Tool color rail. Width changes from 3 → 4px on selection; the per-tool
-   * color comes from a CSS var set inline so the rail stays a real DOM
-   * element (not pseudo) — needed so it inherits the row's animation. */
-  width: 3px;
-  background: var(--cr-row-tool, var(--cr-line-2));
-  transition: width var(--cr-dur-fast) var(--cr-ease), background var(--cr-dur-fast) var(--cr-ease);
+[data-theme="light"] .cr-conv-row[aria-current="true"] .cr-conv-rail {
+  box-shadow: 0 0 0 1px var(--cr-brand-line);
 }
 
 .cr-conv-meta {
-  /* Project / time line — quiet, monospace, sits ABOVE the title. */
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  font-family: var(--cr-font-mono);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--cr-fg-3);
-  letter-spacing: 0;
-  margin-bottom: 6px;
-  min-width: 0;
+  display: flex; align-items: baseline; gap: 10px;
+  font-family: var(--cr-font-mono); font-size: 11px; font-variant-numeric: tabular-nums;
+  color: var(--cr-fg-3); margin-bottom: 6px; min-width: 0;
 }
 .cr-conv-meta-tool {
-  color: var(--cr-row-tool, var(--cr-fg-3));
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  font-size: 10px;
-  flex-shrink: 0;
+  color: var(--cr-row-tool, var(--cr-fg-3)); font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.05em; font-size: 10px; flex-shrink: 0;
 }
-.cr-conv-meta-path {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.cr-conv-meta-time {
-  flex-shrink: 0;
-  color: var(--cr-fg-3);
-}
-
-.cr-conv-status {
-  /* Status prefix: dot + status word. Sits inline with the title. */
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  text-transform: lowercase;
-  color: var(--cr-row-status, var(--cr-fg-3));
-  margin-right: 8px;
-  vertical-align: 1px;
-  white-space: nowrap;
-}
-.cr-conv-status-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--cr-row-status, var(--cr-fg-3));
-  flex-shrink: 0;
-}
-.cr-conv-status[data-status="in_progress"] .cr-conv-status-dot {
-  /* In-progress dot pulses gently to draw the eye. */
-  animation: cr-pulse 2.4s ease-in-out infinite;
-  box-shadow: 0 0 6px var(--cr-row-status);
-}
-@keyframes cr-pulse {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0.45; }
-}
+.cr-conv-meta-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cr-conv-meta-time { flex-shrink: 0; color: var(--cr-fg-3); }
 
 .cr-conv-title {
-  /* THE dominant element — the user's first prompt or the AI summary. */
-  font-size: 14.5px;
-  font-weight: 450;
-  line-height: 1.45;
-  color: var(--cr-fg-1);
+  font-size: 14.5px; font-weight: 450; line-height: 1.45; color: var(--cr-fg-1);
   letter-spacing: -0.005em;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  word-break: break-word;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; word-break: break-word;
 }
 .cr-conv-title-faded {
-  /* When we're showing first-prompt because no summary exists yet, give
-   * it a subtle italic + slightly-faded treatment so the user knows
-   * it's the raw prompt, not a curated title. */
-  font-style: italic;
-  color: var(--cr-fg-2);
+  font-style: italic; color: var(--cr-fg-2);
+}
+/* Tiny source badge on the title line — "AI summary" or "raw" */
+.cr-conv-source {
+  margin-left: 10px; font-size: 10px; font-weight: 500; white-space: nowrap;
+  padding: 1px 5px; border-radius: 3px; vertical-align: 1px; letter-spacing: 0;
 }
 
 .cr-conv-markers {
-  /* Right-aligned marker chips. Hidden when empty. */
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-  margin-top: 22px; /* aligns roughly with the title line */
+  display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+  margin-top: 22px;
 }
 
-/* Date divider — editorial, full-width centered rule. */
+/* Status prefix dot+word */
+.cr-conv-status {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 500; letter-spacing: 0.02em;
+  text-transform: lowercase; color: var(--cr-row-status, var(--cr-fg-3));
+  margin-right: 8px; vertical-align: 1px; white-space: nowrap;
+}
+.cr-conv-status-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--cr-row-status, var(--cr-fg-3)); flex-shrink: 0;
+}
+.cr-conv-status[data-status="in_progress"] .cr-conv-status-dot {
+  animation: cr-pulse 2.4s ease-in-out infinite;
+  box-shadow: 0 0 6px var(--cr-row-status);
+}
+[data-theme="light"] .cr-conv-status[data-status="in_progress"] .cr-conv-status-dot {
+  box-shadow: 0 0 4px var(--cr-row-status);
+}
+
+/* Date divider */
 .cr-conv-divider {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  column-gap: 14px;
-  padding: 28px 18px 14px;
-  font-family: var(--cr-font-mono);
-  font-size: 10px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--cr-fg-3);
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+  column-gap: 14px; padding: 28px 18px 14px;
+  font-family: var(--cr-font-mono); font-size: 10px; letter-spacing: 0.18em;
+  text-transform: uppercase; color: var(--cr-fg-3);
 }
-.cr-conv-divider::before,
-.cr-conv-divider::after {
-  content: '';
-  height: 1px;
-  background: var(--cr-line-1);
+.cr-conv-divider::before, .cr-conv-divider::after {
+  content: ''; height: 1px; background: var(--cr-line-1);
 }
-.cr-conv-divider:first-child {
-  padding-top: 16px;
-}
+.cr-conv-divider:first-child { padding-top: 16px; }
 
-/* Skeleton shimmer */
-@keyframes cr-shimmer {
-  0%   { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
-}
+/* Skeleton */
 .cr-conv-skeleton {
-  position: relative;
-  display: grid;
-  grid-template-columns: 3px 1fr;
-  column-gap: 14px;
-  padding: 16px 18px 16px 0;
-  border-bottom: 1px solid var(--cr-line-1);
+  display: grid; grid-template-columns: 3px 1fr; column-gap: 14px;
+  padding: 16px 18px 16px 0; border-bottom: 1px solid var(--cr-line-1);
 }
-.cr-conv-skeleton-rail {
-  width: 3px;
-  background: var(--cr-line-1);
-}
+.cr-conv-skeleton-rail { width: 3px; background: var(--cr-line-1); }
 .cr-conv-skeleton-bar {
-  height: 10px;
-  border-radius: 3px;
-  background: linear-gradient(
-    90deg,
-    var(--cr-ink-1) 0%,
-    var(--cr-ink-2) 50%,
-    var(--cr-ink-1) 100%
-  );
+  height: 10px; border-radius: 3px;
+  background: linear-gradient(90deg, var(--cr-ink-1) 0%, var(--cr-ink-2) 50%, var(--cr-ink-1) 100%);
   background-size: 200% 100%;
   animation: cr-shimmer 1.6s ease-in-out infinite;
 }
+[data-theme="light"] .cr-conv-skeleton-bar {
+  background: linear-gradient(90deg, var(--cr-ink-1) 0%, var(--cr-ink-3) 50%, var(--cr-ink-1) 100%);
+  background-size: 200% 100%;
+}
+[data-theme="light"] .cr-topbar .cr-conv-skeleton-bar {
+  /* dark topbar gradient on light-theme skeleton */
+  background: linear-gradient(90deg, var(--cr-ink-2) 0%, var(--cr-ink-3) 50%, var(--cr-ink-2) 100%);
+  background-size: 200% 100%;
+}
 
-/* Sticky pagination footer */
+/* Pagination footer */
 .cr-conv-footer {
-  position: sticky;
-  bottom: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  position: sticky; bottom: 0;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
   padding: 10px 18px;
   border-top: 1px solid var(--cr-line-1);
   background: linear-gradient(to bottom, transparent, var(--cr-ink-0) 30%);
   backdrop-filter: blur(8px);
-  font-family: var(--cr-font-mono);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  color: var(--cr-fg-3);
-  letter-spacing: 0;
-  z-index: 1;
+  font-family: var(--cr-font-mono); font-size: 11px; font-variant-numeric: tabular-nums;
+  color: var(--cr-fg-3); z-index: 1;
+}
+[data-theme="light"] .cr-conv-footer {
+  background: linear-gradient(to bottom, rgba(250,251,252,0), var(--cr-ink-0) 30%);
 }
 .cr-conv-footer-progress {
-  flex: 1;
-  height: 2px;
-  background: var(--cr-line-1);
-  border-radius: 2px;
-  overflow: hidden;
+  flex: 1; height: 2px; background: var(--cr-line-1); border-radius: 2px; overflow: hidden;
 }
 .cr-conv-footer-progress-fill {
-  height: 100%;
-  background: var(--cr-brand-500);
-  transition: width 320ms var(--cr-ease);
-}
-.cr-conv-footer-action {
-  background: none;
-  border: none;
-  color: var(--cr-brand-500);
-  font: inherit;
-  cursor: pointer;
-  padding: 0;
-}
-.cr-conv-footer-action:hover {
-  color: var(--cr-brand-600);
-}
-.cr-conv-footer-action:disabled {
-  color: var(--cr-fg-3);
-  cursor: default;
+  height: 100%; background: var(--cr-brand-500); transition: width 320ms var(--cr-ease);
 }
 
-/* Reduce motion — covers both the existing list animations and the
- * new sliding mobile chrome (drawer, viewer overlay, split detail). */
+
+/* ────────────────────── Sidebar ────────────────────── */
+.cr-sidebar {}
+.cr-sidebar-section-label { font-size: 11px; font-weight: 600; color: var(--cr-fg-3); letter-spacing: 0.05em; text-transform: uppercase; padding-left: 6px; margin-bottom: 8px; }
+
+.cr-sidebar-row {
+  display: flex; align-items: center; gap: 8;
+  padding: 6px 8px; height: 32px; border-radius: 6px; cursor: pointer;
+  color: var(--cr-fg-2); transition: background var(--cr-dur-fast), color var(--cr-dur-fast);
+}
+.cr-sidebar-row:hover { background: var(--cr-ink-2); }
+.cr-sidebar-row.active { background: var(--cr-ink-3); color: var(--cr-fg-1); font-weight: 500; }
+.cr-sidebar-row.active .cr-sidebar-row-icon { color: var(--cr-brand-500); }
+
+.cr-sidebar-row-icon { flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: var(--cr-fg-3); }
+.cr-sidebar-row-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.cr-sidebar-row-count { font-size: 11px; color: var(--cr-fg-3); font-variant-numeric: tabular-nums; }
+
+/* Indented sub-row */
+.cr-sidebar-row.indent { height: 28px; padding-top: 4px; padding-bottom: 4px; }
+
+
+/* ────────────────────── Topbar ────────────────────── */
+.cr-topbar {
+  height: var(--cr-header-h); flex-shrink: 0;
+  display: flex; align-items: center;
+  background: var(--cr-ink-1); border-bottom: 1px solid var(--cr-line-1);
+  padding: 0 16px; gap: 16px; z-index: 50;
+}
+.cr-topbar-brand {
+  display: flex; align-items: center; gap: 8px;
+  min-width: var(--cr-sidebar-w); padding-left: 4px;
+}
+.cr-topbar-brand-text { font-weight: 700; font-size: 14px; color: var(--cr-fg-1); }
+.cr-topbar-brand-tag {
+  font-size: 10px; font-weight: 600; color: var(--cr-fg-3);
+  background: var(--cr-ink-2); border: 1px solid var(--cr-line-1);
+  padding: 1px 5px; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.06em;
+}
+.cr-topbar-nav { display: flex; gap: 2px; }
+.cr-topbar-nav-item {
+  border: none; background: transparent; font: inherit;
+  font-size: 12.5px; font-weight: 500; color: var(--cr-fg-2);
+  padding: 4px 10px; border-radius: 5px; cursor: pointer; white-space: nowrap;
+  transition: background var(--cr-dur-fast), color var(--cr-dur-fast);
+}
+.cr-topbar-nav-item:hover { background: var(--cr-ink-2); color: var(--cr-fg-1); }
+.cr-topbar-nav-item.active { background: var(--cr-brand-surf); color: var(--cr-brand-500); }
+.cr-topbar-search {
+  flex: 1; max-width: 420px; margin: 0 auto;
+  display: flex; align-items: center; gap: 0;
+}
+.cr-topbar-actions { display: flex; align-items: center; gap: 4px; }
+
+/* Subbar (above conv list) */
+.cr-subbar {
+  height: var(--cr-subbar-h); flex-shrink: 0;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 18px; border-bottom: 1px solid var(--cr-line-1);
+}
+
+/* ────────────────────── Split panes (Toolkit / Memory) ────────────────────── */
+.cr-split { display: flex; flex: 1; overflow: hidden; }
+.cr-split-list { flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--cr-line-1); }
+.cr-split-detail { flex: 1; overflow-y: auto; }
+.cr-split-back {
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 16px; padding: 10px 14px;
+  background: var(--cr-ink-1); border: none; border-bottom: 1px solid var(--cr-line-1);
+  color: var(--cr-fg-1); font: inherit; font-size: 13px; font-weight: 500; cursor: pointer; width: 100%;
+}
+.cr-split-back:active { background: var(--cr-ink-2); }
+
+/* ────────────────────── Page header ────────────────────── */
+.cr-page-header { padding: 24px 20px 20px; border-bottom: 1px solid var(--cr-line-1); }
+.cr-page-header-row { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
+.cr-page-header-lead { font-size: 13px; color: var(--cr-fg-2); }
+.cr-page-header-spacer { flex: 1; }
+.cr-page-pad { padding: 20px; }
+
+/* ────────────────────── Dashboard ────────────────────── */
+.cr-dashboard-inner { padding: 40px 20px 64px; max-width: 1024px; margin: 0 auto; }
+.cr-stat-grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+.cr-stat-grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+
+/* ────────────────────── Conversation viewer extras ────────────────────── */
+.cr-viewer-tokens {}
+.cr-chip-tools { white-space: nowrap; height: 22px; }
+.cr-segmented-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; margin-bottom: 20px; }
+.cr-segmented-scroll::-webkit-scrollbar { display: none; }
+
+/* ────────────────────── Reduced motion ────────────────────── */
 @media (prefers-reduced-motion: reduce) {
-  .cr-conv-row,
-  .cr-conv-skeleton-bar,
+  .cr-conv-row, .cr-conv-skeleton-bar,
   .cr-conv-status[data-status="in_progress"] .cr-conv-status-dot,
-  .cr-sidebar,
-  .cr-mobile-backdrop,
-  .conversation-column,
-  .cr-split-detail {
-    animation: none !important;
-    transition: none !important;
+  .cr-sidebar, .cr-mobile-backdrop, .conversation-column, .cr-split-detail {
+    animation: none !important; transition: none !important;
   }
 }
 
-/* ────────────────────────────── Light-mode tweaks ──────────────────────────────
- * The conversation-list defaults assume a dark surface — most things
- * adapt automatically via the var overrides above, but a few effects
- * (subtle gradients, glow shadows, shimmer contrast) need explicit
- * light-mode treatments to stay readable.
- */
-[data-theme="light"] .cr-conv-row[aria-current="true"] .cr-conv-rail {
-  /* The orange brand glow looks ghostly on white — narrow it and switch
-   * to a tighter, less smoky shadow that reads as "active highlight"
-   * rather than "smudged ink". */
-  box-shadow: 0 0 0 1px var(--cr-brand-line);
-}
-[data-theme="light"] .cr-conv-status[data-status="in_progress"] .cr-conv-status-dot {
-  /* Pulsing glow dot — drop intensity on light backgrounds. */
-  box-shadow: 0 0 4px var(--cr-row-status);
-}
-[data-theme="light"] .cr-conv-skeleton-bar {
-  /* Dark-mode shimmer goes ink-1 → ink-2 (#161B22 → #1C2128) which is a
-   * visible gradient. The light equivalents (#F6F8FA → #EAEEF2) are
-   * almost identical and produce a barely-visible shimmer. Use a
-   * stronger 3-stop gradient with the line-2 token in the middle so the
-   * skeleton actually reads. */
-  background: linear-gradient(
-    90deg,
-    var(--cr-ink-1) 0%,
-    var(--cr-line-2) 50%,
-    var(--cr-ink-1) 100%
-  );
-  background-size: 200% 100%;
-}
-[data-theme="light"] .cr-conv-footer {
-  /* The fade-to-ink-0 gradient that hides scroll content behind the
-   * sticky footer needs to be the light surface; the dark variant
-   * defaults to #0E1217 → transparent, which would draw a dark band
-   * in light mode. Re-derive from the active surface var. */
-  background: linear-gradient(to bottom, rgba(255, 255, 255, 0), var(--cr-ink-0) 30%);
-}
-
-/* ────────────────────────────── Mobile (≤ 768px) ──────────────────────────────
- * Collapse the 3-column desktop layout (sidebar | list | viewer) into a
- * single-column experience driven by app state:
- *
- *   - Sidebar: off-canvas drawer, toggled by hamburger in TopBar.
- *   - ConversationList: full-width primary pane.
- *   - ConversationViewer: full-screen overlay when a session is selected.
- *
- * Visibility is driven by data attributes on `.app`:
- *   data-mobile-sidebar-open="true"  → drawer slides in
- *   data-has-selection="true"        → viewer slides in over list
- *
- * The mobile-only nav (hamburger, mobile back button) is shown via CSS
- * media query so the desktop markup stays untouched.
- */
-
-/* Mobile-only chrome — hidden on desktop via min-width gate so the
- * mobile rules can use whatever display: value they need (flex, block,
- * grid) without fighting an !important rule. The hide rule fires when
- * BOTH width > 768px AND height > 500px — phones in landscape (≈812×375
- * on iPhone) are tall less than wide, so we still show them mobile chrome. */
+/* ────────────────────── Mobile (≤ 768px) ────────────────────── */
 @media (min-width: 769px) and (min-height: 501px) {
   .cr-mobile-only { display: none !important; }
 }
-.cr-mobile-backdrop { display: none; }
 
-/* Mobile rules fire for narrow viewports OR short viewports (landscape
- * phones). Without the height check, an iPhone in landscape (812×375)
- * lands in the desktop branch and ends up with sidebar + list + viewer
- * fighting for ~325px of vertical space. */
 @media (max-width: 768px), (max-height: 500px) {
-  /* Layout tokens override — sidebar becomes a wider drawer, list goes
-   * full-width, header height bumps for finger-friendly touch targets. */
-  :root {
-    --cr-sidebar-w: 280px;
-    --cr-convos-w: 100%;
-    --cr-header-h: 56px;
-  }
-
+  :root { --cr-sidebar-w: 280px; --cr-convos-w: 100%; --cr-header-h: 56px; }
   .cr-desktop-only { display: none !important; }
+  .app-row { position: relative; }
 
-  /* App shell — switch flex to relative positioning so panels can
-   * absolutely overlay each other without changing the desktop markup. */
-  .app-row {
-    position: relative;
-  }
-
-  /* ── TopBar ── */
-  .cr-topbar {
-    padding: 0 12px !important;
-    gap: 8px !important;
-  }
-  /* Brand block: drop the fixed sidebar-width spacer, drop "Beta" pill,
-   * keep just the logo + condensed name. The hamburger replaces the
-   * brand spacer's role on mobile. */
-  .cr-topbar-brand {
-    min-width: 0 !important;
-    padding-left: 0 !important;
-    flex-shrink: 0;
-  }
-  .cr-topbar-brand-text,
-  .cr-topbar-brand-tag {
-    display: none !important;
-  }
-  /* Hide desktop nav — its targets move into the drawer. */
-  .cr-topbar-nav {
-    display: none !important;
-  }
-  /* Search takes the remaining space; no centering wrapper needed. */
-  .cr-topbar-search {
-    flex: 1 !important;
-    margin: 0 !important;
-    max-width: none !important;
-  }
-  /* Search button drops to icon-only via narrower content; hide it
-   * entirely on the smallest screens — Enter still triggers search. */
-  .cr-topbar-search-btn {
-    display: none !important;
-  }
-  /* Right actions stay; refresh + theme can be hidden to save space. */
+  .cr-topbar { padding: 0 12px !important; gap: 8px !important; }
+  .cr-topbar-brand-text, .cr-topbar-brand-tag { display: none !important; }
+  .cr-topbar-nav { display: none !important; }
+  .cr-topbar-search { flex: 1 !important; margin: 0 !important; max-width: none !important; }
+  .cr-topbar-search-btn { display: none !important; }
   .cr-topbar-actions .cr-topbar-action-refresh,
-  .cr-topbar-actions .cr-topbar-action-theme {
-    display: none !important;
-  }
-  .cr-topbar-actions .cr-topbar-avatar {
-    display: none !important;
-  }
+  .cr-topbar-actions .cr-topbar-action-theme { display: none !important; }
+  .cr-topbar-brand { min-width: 0 !important; padding: 0 !important; margin: 0 !important; gap: 0 !important; }
+  .cr-topbar-brand-logo { display: none !important; }
 
-  /* ── Sidebar drawer ── */
   .cr-sidebar {
-    position: absolute !important;
-    top: 0;
-    left: 0;
-    bottom: 0;
-    z-index: 40;
-    flex: 0 0 var(--cr-sidebar-w) !important;
-    width: var(--cr-sidebar-w);
-    max-width: 86vw;
-    transform: translateX(-100%);
-    transition: transform 220ms var(--cr-ease);
-    box-shadow: 8px 0 24px rgba(0, 0, 0, 0.35);
+    position: absolute !important; top: 0; left: 0; bottom: 0;
+    z-index: 40; width: var(--cr-sidebar-w); max-width: 86vw;
+    transform: translateX(-100%); transition: transform 220ms var(--cr-ease);
+    box-shadow: 8px 0 24px rgba(0,0,0,0.35);
   }
-  .app[data-mobile-sidebar-open="true"] .cr-sidebar {
-    transform: translateX(0);
-  }
+  .app[data-mobile-sidebar-open="true"] .cr-sidebar { transform: translateX(0); }
+
   .cr-mobile-backdrop {
-    display: block;
-    position: absolute;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.5);
-    z-index: 35;
-    opacity: 0;
-    pointer-events: none;
+    display: block; position: absolute; inset: 0;
+    background: rgba(0,0,0,0.5); z-index: 35; opacity: 0; pointer-events: none;
     transition: opacity 220ms var(--cr-ease);
   }
-  .app[data-mobile-sidebar-open="true"] .cr-mobile-backdrop {
-    opacity: 1;
-    pointer-events: auto;
-  }
-  [data-theme="light"] .cr-mobile-backdrop {
-    background: rgba(20, 24, 30, 0.45);
-  }
+  .app[data-mobile-sidebar-open="true"] .cr-mobile-backdrop { opacity: 1; pointer-events: auto; }
+  [data-theme="light"] .cr-mobile-backdrop { background: rgba(20,24,30,0.4); }
 
-  /* ── Primary panes (list + viewer) ── */
-  .cr-conv-list,
+  .cr-conv-list, .conversation-column { flex: 1 1 100% !important; width: 100% !important; min-width: 0; border-right: none !important; }
   .conversation-column {
-    flex: 1 1 100% !important;
-    width: 100% !important;
-    min-width: 0;
-    border-right: none !important;
+    position: absolute !important; inset: 0; z-index: 20;
+    transform: translateX(100%); transition: transform 240ms var(--cr-ease);
   }
+  .app[data-has-selection="true"] .conversation-column { transform: translateX(0); }
+  .app:not([data-has-selection="true"]) .conversation-column { display: none !important; }
 
-  /* Viewer overlay: when a session is picked it slides over the list.
-   * On desktop both render side-by-side; on mobile the viewer covers
-   * the list entirely, with the back button returning to the list. */
-  .conversation-column {
-    position: absolute !important;
-    inset: 0;
-    z-index: 20;
-    transform: translateX(100%);
-    transition: transform 240ms var(--cr-ease);
-  }
-  .app[data-has-selection="true"] .conversation-column {
-    transform: translateX(0);
-  }
-  /* Empty-state viewer (no session) — leave hidden on mobile so it
-   * doesn't pop in over the list when the list is the primary view. */
-  .app:not([data-has-selection="true"]) .conversation-column {
-    display: none !important;
-  }
-
-  /* Viewer interior: tighten padding for narrow screens so content
-   * doesn't get crushed against the rails. */
-  .conversation-column > div:first-child {
-    padding: 16px 14px 96px !important;
-  }
-
-  /* ── Conversation list rows: bigger touch targets, denser meta ── */
-  .cr-conv-row {
-    padding: 14px 14px 14px 0 !important;
-    column-gap: 12px !important;
-  }
-  .cr-conv-meta {
-    font-size: 10.5px !important;
-    gap: 8px !important;
-  }
-  .cr-conv-meta-time {
-    /* Path can wrap, time stays pinned right. */
-    margin-left: auto;
-  }
-  .cr-conv-title {
-    font-size: 14px !important;
-    -webkit-line-clamp: 3 !important;
-  }
-  .cr-conv-divider {
-    padding: 20px 14px 10px !important;
-  }
-  .cr-conv-footer {
-    padding: 10px 14px !important;
-  }
-
-  /* Sub-bars (the 48px row above ConversationList & ToolkitExplorer)
-   * tighten horizontal padding; the items inside auto-shrink. */
-  .cr-subbar {
-    padding: 0 12px !important;
-  }
-
-  /* Body owns scroll on mobile — html/body can stay overflow:hidden,
-   * but enable touch momentum on scroll containers. */
-  .cr-conv-list,
-  .conversation-column,
-  .cr-sidebar > div {
-    -webkit-overflow-scrolling: touch;
-  }
-
-  /* Hide the desktop empty-state "Select a conversation" placeholder
-   * on mobile — there's no list visible alongside it to make sense of
-   * the message; the user is on the list itself. */
-  .conversation-column[data-empty="true"] {
-    display: none !important;
-  }
-
-  /* ── TopBar: drop the brand logo too on mobile ── */
-  .cr-topbar-brand-logo { display: none !important; }
-  /* And shrink the brand wrapper to nothing so search gets the room. */
-  .cr-topbar-brand {
-    min-width: 0 !important;
-    padding: 0 !important;
-    margin: 0 !important;
-    gap: 0 !important;
-  }
-
-  /* ── Page headers (Toolkit / Activity / etc.) ──
-   * Desktop puts title + lead + button on a single row. On mobile that
-   * breaks: title wraps to a thin column, button shoves the lead off
-   * the right. Force a clean stack: title row at top, lead beneath,
-   * primary action either inline or its own row. */
-  .cr-page-header {
-    padding: 16px 14px 10px !important;
-  }
-  .cr-page-header-row {
-    flex-direction: column !important;
-    align-items: stretch !important;
-    gap: 8px !important;
-  }
-  .cr-page-header-row > h1,
-  .cr-page-header-row > h2 {
-    font-size: 18px !important;
-  }
-  .cr-page-header-lead {
-    font-size: 12px !important;
-  }
-  /* Spacer is meaningless when items stack — it was a flex push to the
-   * right that now just adds an empty row before the action button. */
-  .cr-page-header-spacer { display: none !important; }
-  .cr-page-pad {
-    padding: 16px 14px !important;
-  }
-
-  /* ── Split panes (Toolkit / Memory list+detail) ──
-   * Desktop is two columns side by side. Mobile is one column at a time:
-   * the list fills the screen until the user picks an item; then the
-   * detail slides in over the list with a "Back" button to return.
-   * Driven by `data-has-selection="true"` on `.cr-split` (set by the
-   * component when its selection state is non-null). */
-  .cr-split {
-    position: relative;
-  }
-  .cr-split-list {
-    width: 100% !important;
-    flex: 1 1 auto !important;
-    border-right: none !important;
-  }
-  .cr-split-detail {
-    /* Fixed (not absolute within .cr-split) so the detail covers the
-     * Memory/Toolkit page header (search bar, "Sync across tools",
-     * Reindex button) too — when reading a plan on mobile, the search
-     * controls above are dead weight. Topbar (z 50) stays above; the
-     * sidebar drawer (z 40) and its backdrop (z 35) still win over
-     * this overlay (z 30). */
-    position: fixed;
-    top: var(--cr-header-h);
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 30;
-    overflow-y: auto;
-    background: var(--cr-ink-0);
-    transform: translateX(100%);
-    transition: transform 220ms var(--cr-ease);
-  }
-  .cr-split[data-has-selection="true"] .cr-split-detail {
-    transform: translateX(0);
-  }
-  .cr-split[data-has-selection="true"] .cr-split-list {
-    /* Keep the list in the DOM (preserves scroll position) but make
-     * it inert — both clicks AND screen reader focus skip it. The
-     * `inert` attribute is set on the JSX element; this CSS just
-     * enforces visual absence. */
-    pointer-events: none;
-    visibility: hidden;
-  }
-  /* Mobile back button inside the detail pane. */
-  .cr-split-back {
-    position: sticky;
-    top: 0;
-    z-index: 6;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    margin: 0 0 8px;
-    padding: 10px 14px;
-    background: var(--cr-ink-1);
-    border: none;
-    border-bottom: 1px solid var(--cr-line-1);
-    color: var(--cr-fg-1);
-    font: inherit;
-    font-size: 13px;
-    font-weight: 500;
-    cursor: pointer;
-    width: 100%;
-    text-align: left;
-  }
-  .cr-split-back:active { background: var(--cr-ink-2); }
-
-  /* ── Dashboard ── */
-  .cr-dashboard-inner {
-    padding: 20px 14px 64px !important;
-  }
-  .cr-stat-grid-4 {
-    grid-template-columns: repeat(2, 1fr) !important;
-    gap: 16px !important;
-  }
-  .cr-stat-grid-2 {
-    grid-template-columns: 1fr !important;
-  }
-
-  /* ── ConversationViewer ──
-   * Reclaim vertical space so the actual conversation content is
-   * above the fold on a typical phone height (≈760px usable). The
-   * desktop layout has Back row → big h1 → meta → token strip →
-   * tabs → content, which pushes the content down ~430px. On mobile
-   * we shrink each band and hide the token strip (the most expensive
-   * by pixel — 5 cells × 2 rows). The token info is still on Resume
-   * → /commands and the desktop view, just not blocking the read. */
-  .conversation-column > div:first-child {
-    padding: 12px 14px 96px !important;
-  }
-  .conversation-column > div:first-child > div:first-child {
-    /* "Back + actions" row */
-    margin-bottom: 8px !important;
-  }
-  .conversation-column h1 {
-    font-size: 16px !important;
-    line-height: 1.3 !important;
-    margin-bottom: 6px !important;
-    -webkit-line-clamp: 3;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-  /* The tool-chip + path + date row that sits under the title. */
-  .conversation-column h1 + div {
-    margin-bottom: 12px !important;
-  }
-  /* Token strip — hide on mobile. The numbers are still on the
-   * desktop view; on a phone they push content below the fold. */
+  .conversation-column > div:first-child { padding: 12px 14px 96px !important; }
+  .conversation-column h1 { font-size: 16px !important; line-height: 1.3 !important; margin-bottom: 6px !important; -webkit-line-clamp: 3; display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
+  .conversation-column > div:first-child > div:first-child { margin-bottom: 8px !important; }
+  .conversation-column h1 + div { margin-bottom: 12px !important; }
   .cr-viewer-tokens { display: none !important; }
+  .cr-chip-tools { white-space: normal !important; height: auto !important; min-height: 22px; padding: 4px 8px !important; line-height: 1.5 !important; word-break: break-word; max-width: 100%; }
 
-  /* Tools-used chip — single chip with the joined "Bash, Read, Edit,
-   * ScheduleWakeup, ToolSearch, mcp__chrome-devtools__..." string and
-   * `whiteSpace: nowrap`. Overflows the viewport on mobile. Allow it
-   * to wrap (height auto, padding around) and break on commas/long
-   * tool names. */
-  .cr-chip-tools {
-    white-space: normal !important;
-    height: auto !important;
-    min-height: 22px;
-    padding: 4px 8px !important;
-    line-height: 1.5 !important;
-    word-break: break-word;
-    max-width: 100%;
-  }
+  .cr-conv-row { padding: 14px 14px 14px 0 !important; column-gap: 12px !important; }
+  .cr-conv-meta { font-size: 10.5px !important; gap: 8px !important; }
+  .cr-conv-meta-time { margin-left: auto; }
+  .cr-conv-title { font-size: 14px !important; -webkit-line-clamp: 3 !important; }
+  .cr-conv-divider { padding: 20px 14px 10px !important; }
+  .cr-conv-footer { padding: 10px 14px !important; }
+  .cr-subbar { padding: 0 12px !important; }
 
-  /* Tabs row is wider than the viewport. Wrap it in a horizontal
-   * scroll container so the user can swipe through them. */
-  .cr-segmented-scroll {
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    scrollbar-width: none;
-    margin-bottom: 12px !important;
-  }
-  .cr-segmented-scroll::-webkit-scrollbar { display: none; }
-  .cr-segmented-scroll > * {
-    /* Force the inline-flex SegmentedControl to keep its full width
-     * inside the scrolling viewport rather than wrapping or shrinking. */
-    width: max-content;
-    max-width: none;
-  }
+  .cr-page-header { padding: 16px 14px 10px !important; }
+  .cr-page-header-row { flex-direction: column !important; align-items: stretch !important; gap: 8px !important; }
+  .cr-page-header-row > h1, .cr-page-header-row > h2 { font-size: 18px !important; }
+  .cr-page-header-lead { font-size: 12px !important; }
+  .cr-page-header-spacer { display: none !important; }
+  .cr-page-pad { padding: 16px 14px !important; }
 
-  /* Title size — global h1=24px is too big for narrow screens; the
-   * viewer's inline 18px wins anyway, but normalize the rest. */
+  .cr-split { position: relative; }
+  .cr-split-list { width: 100% !important; flex: 1 1 auto !important; border-right: none !important; }
+  .cr-split-detail {
+    position: fixed; top: var(--cr-header-h); left: 0; right: 0; bottom: 0;
+    z-index: 30; overflow-y: auto; background: var(--cr-ink-0);
+    transform: translateX(100%); transition: transform 220ms var(--cr-ease);
+  }
+  .cr-split[data-has-selection="true"] .cr-split-detail { transform: translateX(0); }
+  .cr-split[data-has-selection="true"] .cr-split-list { pointer-events: none; visibility: hidden; }
+
+  .cr-dashboard-inner { padding: 20px 14px 64px !important; }
+  .cr-stat-grid-4 { grid-template-columns: repeat(2, 1fr) !important; gap: 16px !important; }
+  .cr-stat-grid-2 { grid-template-columns: 1fr !important; }
+
   h1 { font-size: 20px; }
   h2 { font-size: 18px; }
+
+  .cr-conv-list, .conversation-column, .cr-sidebar > div { -webkit-overflow-scrolling: touch; }
 }
 
-/* Smaller phones: tighten further. */
 @media (max-width: 480px) {
-  :root {
-    --cr-header-h: 52px;
-  }
-  .cr-topbar {
-    padding: 0 8px !important;
-  }
-  .cr-conv-row {
-    padding: 12px 12px 12px 0 !important;
-  }
-  .cr-conv-title {
-    font-size: 13.5px !important;
-  }
-  /* Search input: slim placeholder so it fits. */
-  .cr-topbar-search input::placeholder {
-    font-size: 13px;
-  }
+  :root { --cr-header-h: 52px; }
+  .cr-topbar { padding: 0 8px !important; }
+  .cr-conv-row { padding: 12px 12px 12px 0 !important; }
+  .cr-conv-title { font-size: 13.5px !important; }
+  .cr-topbar-search input::placeholder { font-size: 13px; }
 }
 
-/* Touch input affordance: bump min interactive height on coarse pointers
- * for the components users actually tap with a thumb. Scoped to avoid
- * stretching small fixed-size widgets — SyncMatrix cells, pagination
- * action chips, TopBar IconButtons all have explicit sizes that this
- * rule would otherwise distort. */
+/* Touch targets */
 @media (pointer: coarse) {
-  .cr-sidebar [role="button"],
-  .cr-sidebar a,
-  .cr-conv-row,
-  .cr-split-back,
-  .cr-split-list > div[role="button"] {
-    min-height: 36px;
-  }
+  .cr-sidebar [role="button"], .cr-sidebar a,
+  .cr-conv-row, .cr-split-back, .cr-split-list > div[role="button"] { min-height: 36px; }
 }

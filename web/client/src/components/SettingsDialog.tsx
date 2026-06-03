@@ -7,12 +7,13 @@
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { Icon, Button } from './primitives';
+import ProjectsSettingsCard from './ProjectsSettingsCard';
 import {
   getSettings,
   saveSettings,
   testSettings,
-  getCodeindexStatus,
-  uninstallCodeindex,
+  fetchProviderModels,
+  type ProviderModel,
   type AppSettings,
   type SettingsResponse,
   type TestResult,
@@ -20,8 +21,40 @@ import {
   type SummarySettings,
   type EmbedderProvider,
   type SummaryProvider,
-  type CodeindexInfo,
+  type SourceSettings,
+  type SourcesEnabled,
+  type PrivacySettings,
+  type SyncSettings,
 } from '../services/api';
+
+// Defaults used when the API responds without the v2 blocks (older server,
+// or transient deploy mismatch). Mirrors the server-side defaults in
+// `src/core/settings.ts`.
+function defaultSourceSettings(): SourceSettings {
+  return {
+    enabled: {
+      claude:   { sessions: true, plans: true, tasks: true, pasteCache: true, history: true,
+                  skills: true, agents: true, commands: true, hooks: true, plugins: true },
+      gemini:   { sessions: true, plans: true, brain: true, extensions: true },
+      opencode: { sessions: true, plans: true, todos: true, skills: true },
+      codex:    { sessions: true, plugins: true, skills: true },
+      common:   { mcps: true, agentMd: true },
+    },
+  };
+}
+function defaultPrivacySettings(): PrivacySettings {
+  return {
+    redactIndex: false, projectDenylist: [],
+    redactToolOutputs: false, redactPasteCache: false, redactFilePaths: false,
+  };
+}
+function defaultSyncSettings(): SyncSettings {
+  return {
+    enabled: false,
+    upload: { findings: true, sessionMeta: true, dismissals: true, customRules: true },
+    excludeTools: [], excludeProjects: [],
+  };
+}
 
 interface Props {
   open: boolean;
@@ -34,6 +67,9 @@ export default function SettingsDialog({ open, onClose, variant = 'modal' }: Pro
   const [resp, setResp] = useState<SettingsResponse | null>(null);
   const [emb, setEmb] = useState<EmbeddingSettings | null>(null);
   const [sm, setSm] = useState<SummarySettings | null>(null);
+  const [src, setSrc] = useState<SourceSettings | null>(null);
+  const [priv, setPriv] = useState<PrivacySettings | null>(null);
+  const [snc, setSnc] = useState<SyncSettings | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
@@ -42,10 +78,6 @@ export default function SettingsDialog({ open, onClose, variant = 'modal' }: Pro
   const [smTest, setSmTest] = useState<TestResult | null>(null);
   const [embTesting, setEmbTesting] = useState(false);
   const [smTesting, setSmTesting] = useState(false);
-  const [codeindex, setCodeindex] = useState<CodeindexInfo | null>(null);
-  const [codeindexBusy, setCodeindexBusy] = useState(false);
-  const [codeindexError, setCodeindexError] = useState('');
-
   useEffect(() => {
     if (!open) return;
     setLoading(true);
@@ -58,32 +90,16 @@ export default function SettingsDialog({ open, onClose, variant = 'modal' }: Pro
         setResp(d);
         setEmb(d.settings.embedding);
         setSm(d.settings.summary);
+        // Defensive defaults: an older API server (pre-v2) responds without
+        // these blocks. Fill them in client-side so the dialog still renders
+        // — saving will then upgrade the server-side file on next request.
+        setSrc(d.settings.sources ?? defaultSourceSettings());
+        setPriv(d.settings.privacy ?? defaultPrivacySettings());
+        setSnc(d.settings.sync    ?? defaultSyncSettings());
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-    // Codeindex status loads in parallel — separate spinner so the main
-    // settings render isn't gated on it.
-    getCodeindexStatus().then(setCodeindex).catch(() => { /* tolerate older servers */ });
   }, [open]);
-
-  const refreshCodeindex = async () => {
-    setCodeindexBusy(true); setCodeindexError('');
-    try { setCodeindex(await getCodeindexStatus()); }
-    catch (e) { setCodeindexError((e as Error).message); }
-    finally { setCodeindexBusy(false); }
-  };
-
-  const handleUninstallCodeindex = async () => {
-    setCodeindexBusy(true); setCodeindexError('');
-    try {
-      await uninstallCodeindex();
-      await refreshCodeindex();
-    } catch (e) {
-      setCodeindexError((e as Error).message);
-    } finally {
-      setCodeindexBusy(false);
-    }
-  };
 
   useEffect(() => {
     if (!open) return;
@@ -95,16 +111,22 @@ export default function SettingsDialog({ open, onClose, variant = 'modal' }: Pro
   if (!open) return null;
 
   const handleSave = async () => {
-    if (!emb || !sm) return;
+    if (!emb || !sm || !src || !priv || !snc) return;
     setSaving(true); setMessage(''); setError('');
     try {
-      const r = await saveSettings({ embedding: emb, summary: sm } as Partial<AppSettings>);
+      const r = await saveSettings({
+        embedding: emb, summary: sm,
+        sources: src, privacy: priv, sync: snc,
+      } as Partial<AppSettings>);
       setMessage('Saved. ' + r.restartHint);
       // Re-pull masks from server so the input fields show ••••xxxx after save.
       const d = await getSettings();
       setResp(d);
       setEmb(d.settings.embedding);
       setSm(d.settings.summary);
+      setSrc(d.settings.sources ?? defaultSourceSettings());
+      setPriv(d.settings.privacy ?? defaultPrivacySettings());
+      setSnc(d.settings.sync    ?? defaultSyncSettings());
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -158,22 +180,34 @@ export default function SettingsDialog({ open, onClose, variant = 'modal' }: Pro
         data-testid="settings-dialog"
         style={inner}
       >
-        <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+        <header style={{
+          position: 'sticky', top: 0, zIndex: 5,
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          background: isPage ? 'var(--cr-ink-0)' : 'var(--cr-ink-1)',
+          margin: isPage ? '0 -32px 16px' : '-24px -24px 16px',
+          padding: isPage ? '12px 32px' : '16px 24px',
+          borderBottom: '1px solid var(--cr-line-1)',
+        }}>
           <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>Settings</h2>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--cr-fg-3)' }}
-          >
-            <Icon name="x" size={18} />
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Button data-testid="settings-save-top" onClick={handleSave} disabled={saving || loading}>
+              {saving ? 'Saving…' : 'Save'}
+            </Button>
+            <button
+              onClick={onClose}
+              aria-label="Close"
+              style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--cr-fg-3)' }}
+            >
+              <Icon name="x" size={18} />
+            </button>
+          </div>
         </header>
 
         {loading && <div style={{ color: 'var(--cr-fg-3)', padding: 24 }}>Loading…</div>}
         {error && <Banner kind="error">{error}</Banner>}
         {message && <Banner kind="ok">{message}</Banner>}
 
-        {resp && emb && sm && (
+        {resp && emb && sm && src && priv && snc && (
           <>
             <SummaryCard
               value={sm}
@@ -193,14 +227,10 @@ export default function SettingsDialog({ open, onClose, variant = 'modal' }: Pro
               testing={embTesting}
               onTest={runEmbTest}
             />
-
-            <CodeindexCard
-              info={codeindex}
-              busy={codeindexBusy}
-              error={codeindexError}
-              onRefresh={refreshCodeindex}
-              onUninstall={handleUninstallCodeindex}
-            />
+            <SourcesCard value={src} onChange={setSrc} />
+            <ProjectsSettingsCard />
+            <PrivacyCard value={priv} onChange={setPriv} syncEnabled={snc.enabled} />
+            <SyncCard value={snc} onChange={setSnc} privacy={priv} />
 
             <footer style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginTop: 24 }}>
               <Button
@@ -324,7 +354,8 @@ function EmbeddingCard({
         <Fields>
           <KeyField label="OPENAI_API_KEY" value={value.openaiApiKey ?? ''}
             onChange={(v) => onChange({ ...value, openaiApiKey: v })} />
-          <TextField label="Model" value={value.openaiModel ?? ''} placeholder="text-embedding-3-small"
+          <ModelField label="Model" value={value.openaiModel ?? ''} placeholder="text-embedding-3-small"
+            kind="embedding" provider="openai" apiKey={value.openaiApiKey}
             onChange={(v) => onChange({ ...value, openaiModel: v })} />
         </Fields>
       )}
@@ -334,7 +365,8 @@ function EmbeddingCard({
           <KeyField label="NVIDIA_API_KEY" value={value.nvidiaApiKey ?? ''}
             help="Free at build.nvidia.com — Nvidia hosts several embedding models including nv-embed-v1"
             onChange={(v) => onChange({ ...value, nvidiaApiKey: v })} />
-          <TextField label="Model" value={value.nvidiaModel ?? ''} placeholder="nvidia/nv-embed-v1"
+          <ModelField label="Model" value={value.nvidiaModel ?? ''} placeholder="nvidia/nv-embed-v1"
+            kind="embedding" provider="nvidia" apiKey={value.nvidiaApiKey}
             onChange={(v) => onChange({ ...value, nvidiaModel: v })} />
         </Fields>
       )}
@@ -344,8 +376,9 @@ function EmbeddingCard({
           <TextField label="Base URL" value={value.openaiCompatBaseUrl ?? ''}
             placeholder="http://localhost:8080/v1" required
             onChange={(v) => onChange({ ...value, openaiCompatBaseUrl: v })} />
-          <TextField label="Model" value={value.openaiCompatModel ?? ''}
-            placeholder="custom-model-name" required
+          <ModelField label="Model" value={value.openaiCompatModel ?? ''}
+            placeholder="custom-model-name"
+            kind="embedding" provider="openai-compat" baseUrl={value.openaiCompatBaseUrl} apiKey={value.openaiCompatApiKey}
             onChange={(v) => onChange({ ...value, openaiCompatModel: v })} />
           <NumField label="Dimension" value={value.openaiCompatDimension}
             placeholder="768" required
@@ -398,11 +431,9 @@ function buildSummaryChoices(
     apply: (s) => ({ ...s, provider: 'cli', cliPreset: p, cliCommand: cmds[p] }),
   }));
 
-  // Only providers with a working backend in summary-generator.ts.
-  // 'gemini' / 'openai' / 'nvidia' / 'ollama-cloud' / 'openai-compat' are
-  // listed by the embedding side but aren't implemented for summaries — they
-  // were exposed in the old UI and silently did nothing. Keeping them out
-  // until they're wired up.
+  // Hosted HTTP APIs. The OpenAI-compatible providers (openrouter / ollama-cloud
+  // / openai / nvidia / custom) all share one `/chat/completions` backend in
+  // summary-generator.ts — they differ only by default base URL + key.
   const cloudRows: SummaryChoice[] = [
     {
       key: 'claude-api',
@@ -411,6 +442,46 @@ function buildSummaryChoices(
       hint: 'ANTHROPIC_API_KEY',
       match: (s) => s.provider === 'claude',
       apply: (s) => ({ ...s, provider: 'claude' }),
+    },
+    {
+      key: 'openrouter',
+      group: 'cloud',
+      label: 'OpenRouter',
+      hint: 'openrouter.ai — many cheap/free models',
+      match: (s) => s.provider === 'openai-compat' && (s.apiBaseUrl || '').includes('openrouter'),
+      apply: (s) => ({ ...s, provider: 'openai-compat', apiBaseUrl: 'https://openrouter.ai/api/v1' }),
+    },
+    {
+      key: 'ollama-cloud',
+      group: 'cloud',
+      label: 'Ollama Cloud',
+      hint: 'ollama.com — hosted, no local compute',
+      match: (s) => s.provider === 'ollama-cloud',
+      apply: (s) => ({ ...s, provider: 'ollama-cloud', apiBaseUrl: 'https://ollama.com/v1' }),
+    },
+    {
+      key: 'openai-api',
+      group: 'cloud',
+      label: 'OpenAI API',
+      hint: 'api.openai.com',
+      match: (s) => s.provider === 'openai',
+      apply: (s) => ({ ...s, provider: 'openai', apiBaseUrl: 'https://api.openai.com/v1' }),
+    },
+    {
+      key: 'nvidia-api',
+      group: 'cloud',
+      label: 'NVIDIA NIM',
+      hint: 'integrate.api.nvidia.com — free credits at build.nvidia.com',
+      match: (s) => s.provider === 'nvidia',
+      apply: (s) => ({ ...s, provider: 'nvidia', apiBaseUrl: 'https://integrate.api.nvidia.com/v1' }),
+    },
+    {
+      key: 'openai-compat-custom',
+      group: 'cloud',
+      label: 'Custom OpenAI-compatible',
+      hint: 'Groq, Together, vLLM, llama.cpp, a gateway…',
+      match: (s) => s.provider === 'openai-compat' && !(s.apiBaseUrl || '').includes('openrouter'),
+      apply: (s) => ({ ...s, provider: 'openai-compat' }),
     },
   ];
 
@@ -538,6 +609,22 @@ function SummaryCard({
         </Fields>
       )}
 
+      {(value.provider === 'openai-compat' || value.provider === 'ollama-cloud' ||
+        value.provider === 'openai' || value.provider === 'nvidia') && (
+        <Fields>
+          <TextField label="Base URL" value={value.apiBaseUrl ?? ''}
+            placeholder="https://openrouter.ai/api/v1"
+            help="OpenAI-compatible endpoint. POSTs to {base}/chat/completions."
+            onChange={(v) => onChange({ ...value, apiBaseUrl: v || undefined })} />
+          <KeyField label="API key" value={value.apiKey ?? ''}
+            onChange={(v) => onChange({ ...value, apiKey: v || undefined })} />
+          <ModelField label="Model" value={value.apiModel ?? ''}
+            placeholder="e.g. anthropic/claude-3.5-haiku, deepseek/deepseek-v4-flash:free"
+            kind="summary" provider={value.provider} baseUrl={value.apiBaseUrl} apiKey={value.apiKey}
+            onChange={(v) => onChange({ ...value, apiModel: v || undefined })} />
+        </Fields>
+      )}
+
       <CardActions>
         <Button variant="outline" onClick={onTest} disabled={testing}>
           {testing ? 'Testing…' : 'Test connection'}
@@ -548,121 +635,235 @@ function SummaryCard({
   );
 }
 
-// ── Codeindex companion ─────────────────────────────────────────────────
+// ── Sources / Privacy / Sync cards ──────────────────────────────────────
 
-function CodeindexCard({
-  info, busy, error, onRefresh, onUninstall,
-}: {
-  info: CodeindexInfo | null;
-  busy: boolean;
-  error: string;
-  onRefresh: () => void;
-  onUninstall: () => void;
-}) {
-  if (!info) {
-    return (
-      <Card title="Code intelligence (codeindex)" hint="Loading status…">
-        <div style={{ height: 12 }} />
-      </Card>
-    );
-  }
-  const s = info.status;
-  return (
-    <Card
-      title="Code intelligence (codeindex)"
-      hint="A separate MCP server that gives the agent code-level lookup. chat-recall remembers what you've done; codeindex understands what's currently in your code."
-    >
-      <div data-testid="codeindex-status" style={{ marginBottom: 12 }}>
-        {s.installed ? (
-          <StatusBadge ok={true}
-            message={`Installed: ${s.path}${s.size ? ` · ${(s.size / 1024 / 1024).toFixed(1)} MB` : ''}${s.version ? ` · ${s.version}` : ''}. Auto-registered as an MCP server.`} />
-        ) : (
-          <StatusBadge ok={false} message="Not installed. chat-recall works without it; install separately to enable code-level lookups." />
-        )}
+/**
+ * Per-tool, per-source enable matrix + home-dir overrides. Disabled
+ * sources never enter the index, so toggling these is the cheapest way
+ * to scope what chat-recall sees.
+ */
+function SourcesCard({ value, onChange }: { value: SourceSettings; onChange: (v: SourceSettings) => void }) {
+  const [pathsOpen, setPathsOpen] = useState(false);
+  const setEnabled = <K extends keyof SourcesEnabled, F extends keyof SourcesEnabled[K]>(
+    group: K, field: F, on: boolean,
+  ) => {
+    const next = { ...value.enabled, [group]: { ...value.enabled[group], [field]: on } };
+    onChange({ ...value, enabled: next });
+  };
+  const groupRow = <K extends keyof SourcesEnabled>(label: string, group: K, fields: Array<keyof SourcesEnabled[K]>) => (
+    <div key={String(group)} style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase',
+        marginBottom: 6, color: 'var(--cr-fg-3)' }}>{label}</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        {fields.map((f) => {
+          const on = (value.enabled[group] as Record<string, boolean>)[f as string];
+          return (
+            <label key={String(f)} style={{
+              display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px',
+              borderRadius: 999, fontSize: 12, cursor: 'pointer',
+              background: on ? 'var(--cr-brand-surf)' : 'var(--cr-ink-1)',
+              border: `1px solid ${on ? 'var(--cr-brand-line)' : 'var(--cr-line-1)'}`,
+            }}>
+              <input type="checkbox" checked={on}
+                onChange={(e) => setEnabled(group, f, e.target.checked)} />
+              <span>{String(f)}</span>
+            </label>
+          );
+        })}
       </div>
+    </div>
+  );
 
-      {error && (
-        <div style={{ marginBottom: 12, fontSize: 12, color: 'var(--cr-warn-500)' }}>✗ {error}</div>
-      )}
+  return (
+    <Card title="Sources"
+      hint="Pick exactly which surfaces chat-recall indexes. Anything off here never enters search, summary, or sync.">
+      {groupRow('Claude Code',  'claude',
+        ['sessions','plans','tasks','pasteCache','history','skills','agents','commands','hooks','plugins'])}
+      {groupRow('Gemini',       'gemini',   ['sessions','plans','brain','extensions'])}
+      {groupRow('OpenCode',     'opencode', ['sessions','plans','todos','skills'])}
+      {groupRow('Codex',        'codex',    ['sessions','plugins','skills'])}
+      {groupRow('Cross-tool',   'common',   ['mcps','agentMd'])}
 
-      {!s.installed && (
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 12, color: 'var(--cr-fg-2)', marginBottom: 8 }}>To install, run one of:</div>
-          <CommandLine label="chat-recall CLI" command={info.installHint.cli} />
-          <CommandLine label="curl" command={info.installHint.curl} />
-          <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 8 }}>
-            Source &amp; releases: <a href={info.installHint.repo} target="_blank" rel="noreferrer" style={{ color: 'var(--cr-brand-500)' }}>{info.installHint.repo}</a>
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 4 }}>
-            After installing, click <strong>Refresh</strong>. chat-recall will detect the binary and register it as an MCP server.
-          </div>
-        </div>
-      )}
-
-      <details>
-        <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--cr-fg-2)', marginBottom: 8 }}>
-          What does it provide? ({info.capabilities.length} tools)
-        </summary>
-        <ul style={{ margin: '8px 0 0', paddingLeft: 18, fontSize: 12, color: 'var(--cr-fg-2)' }}>
-          {info.capabilities.map((c) => (
-            <li key={c.name} style={{ marginBottom: 4 }}>
-              <code style={{ fontSize: 11 }}>{c.name}</code> — {c.desc}
-            </li>
-          ))}
-        </ul>
-        <p style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 12 }}>{info.pitch}</p>
-      </details>
-
-      <CardActions>
-        <Button variant="outline" size="sm" icon="refresh" onClick={onRefresh} disabled={busy}>
-          {busy ? 'Checking…' : 'Refresh'}
-        </Button>
-        {s.installed && (
-          <Button variant="ghost" onClick={onUninstall} disabled={busy}>
-            {busy ? 'Removing…' : 'Disable / Uninstall'}
-          </Button>
-        )}
-      </CardActions>
+      <Disclosure open={pathsOpen} onToggle={setPathsOpen} label="Path overrides (advanced)">
+        <Fields>
+          <TextField label="Claude home"   value={value.claudeHome ?? ''}     placeholder="~/.claude"
+            onChange={(v) => onChange({ ...value, claudeHome: v || undefined })} />
+          <TextField label="Gemini home"   value={value.geminiHome ?? ''}     placeholder="~/.gemini"
+            onChange={(v) => onChange({ ...value, geminiHome: v || undefined })} />
+          <TextField label="Codex home"    value={value.codexHome ?? ''}      placeholder="~/.codex"
+            onChange={(v) => onChange({ ...value, codexHome: v || undefined })} />
+          <TextField label="OpenCode DB"   value={value.opencodeDbPath ?? ''} placeholder="~/.local/share/opencode/opencode.db"
+            onChange={(v) => onChange({ ...value, opencodeDbPath: v || undefined })} />
+          <TextField label="Extra Claude homes (comma-separated)"
+            value={(value.extraClaudeHomes ?? []).join(', ')}
+            placeholder="~/.claude-work, ~/.claude-personal"
+            help="Multi-install support. CHAT_RECALL_*_HOME env vars still take precedence over these."
+            onChange={(v) => onChange({
+              ...value,
+              extraClaudeHomes: v.split(',').map(s => s.trim()).filter(Boolean),
+            })} />
+        </Fields>
+      </Disclosure>
     </Card>
   );
 }
 
-function CommandLine({ label, command }: { label: string; command: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(command);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1200);
-    } catch { /* clipboard may be unavailable in non-secure contexts */ }
-  };
+/**
+ * Privacy controls. Apply at index-write time so they also constrain
+ * sync (sync can't upload what was never indexed).
+ */
+function PrivacyCard({
+  value, onChange, syncEnabled,
+}: {
+  value: PrivacySettings;
+  onChange: (v: PrivacySettings) => void;
+  syncEnabled: boolean;
+}) {
   return (
-    <div style={{ marginBottom: 6 }}>
-      <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginBottom: 2 }}>{label}</div>
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 8,
-        padding: '6px 10px', background: 'var(--cr-ink-0)',
-        border: '1px solid var(--cr-line-1)', borderRadius: 4,
-      }}>
-        <code style={{ flex: 1, fontSize: 12, fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)', whiteSpace: 'nowrap', overflow: 'auto' }}>
-          {command}
-        </code>
-        <button
-          type="button"
-          onClick={copy}
-          aria-label="Copy"
-          style={{
-            background: 'transparent', border: '1px solid var(--cr-line-1)',
-            color: 'var(--cr-fg-2)', fontSize: 11, padding: '2px 8px',
-            borderRadius: 3, cursor: 'pointer', flexShrink: 0,
-          }}
-        >
-          {copied ? 'Copied' : 'Copy'}
-        </button>
-      </div>
-    </div>
+    <Card title="Privacy"
+      hint="Strip secrets, paths, and tool output before they enter the index. Recommended ON when Sync is enabled.">
+      {syncEnabled && !value.redactIndex && (
+        <Banner kind="error">Sync is on but index redaction is off. Secrets in your index would be uploaded.</Banner>
+      )}
+      <Fields>
+        <BoolRow label="Redact secrets in indexed text"
+          help="AWS keys, tokens, JWTs, private keys. Env CHAT_RECALL_REDACT_INDEX still wins."
+          checked={value.redactIndex} onChange={(b) => onChange({ ...value, redactIndex: b })} />
+        <BoolRow label="Replace tool-call results with placeholder"
+          help="Most accidental secret leaks come from tool output (env dumps, curl bodies). Web search results are kept."
+          checked={value.redactToolOutputs} onChange={(b) => onChange({ ...value, redactToolOutputs: b })} />
+        <BoolRow label="Hash absolute file paths"
+          help="Replaces /home/me/foo with [path:abc123def456] in chunks. Search by project still works because hashes are stable."
+          checked={value.redactFilePaths} onChange={(b) => onChange({ ...value, redactFilePaths: b })} />
+        <BoolRow label="Never index paste cache"
+          help="Hard-skip ~/.claude/paste-cache regardless of the Sources toggle."
+          checked={value.redactPasteCache} onChange={(b) => onChange({ ...value, redactPasteCache: b })} />
+        <TextField label="Project denylist (one per line, supports trailing /*)"
+          value={(value.projectDenylist ?? []).join('\n')}
+          placeholder={'/home/me/secret-project\n/home/me/work/*'}
+          onChange={(v) => onChange({ ...value, projectDenylist: v.split('\n').map(s => s.trim()).filter(Boolean) })} />
+        <TextField label="Project allowlist (one per line — if non-empty, ONLY these are indexed)"
+          value={(value.projectAllowlist ?? []).join('\n')}
+          placeholder={'/home/me/code/personal/*'}
+          onChange={(v) => {
+            const list = v.split('\n').map(s => s.trim()).filter(Boolean);
+            onChange({ ...value, projectAllowlist: list.length ? list : undefined });
+          }} />
+      </Fields>
+    </Card>
   );
 }
+
+/**
+ * Sync settings. Master switch is OFF by default. The token itself is
+ * never persisted in settings.json — the user names an env var (e.g.
+ * CHAT_RECALL_SYNC_TOKEN) and the uploader reads it at request time.
+ */
+function SyncCard({
+  value, onChange, privacy,
+}: {
+  value: SyncSettings;
+  onChange: (v: SyncSettings) => void;
+  privacy: PrivacySettings;
+}) {
+  const setUpload = (k: keyof SyncSettings['upload'], on: boolean) => {
+    onChange({ ...value, upload: { ...value.upload, [k]: on } });
+  };
+  const tools: Array<'claude' | 'gemini' | 'opencode' | 'codex'> = ['claude','gemini','opencode','codex'];
+
+  return (
+    <Card title="Sync to remote"
+      hint="Upload findings + redacted metadata to a cloud endpoint. Disabled by default. Raw chat content never leaves the device unless you explicitly opt in to a Pro tier (not yet shipped).">
+      <Fields>
+        <BoolRow label="Enable sync"
+          help="Master switch. Off ⇒ nothing leaves the device, ever."
+          checked={value.enabled} onChange={(b) => onChange({ ...value, enabled: b })} />
+        {value.enabled && !privacy.redactIndex && (
+          <Banner kind="error">Index redaction is OFF. Turn it on in Privacy before enabling Sync.</Banner>
+        )}
+        <TextField label="Endpoint URL" value={value.endpoint ?? ''}
+          placeholder="https://sync.example.com/api/sync"
+          onChange={(v) => onChange({ ...value, endpoint: v || undefined })} />
+        <TextField label="Bearer token env var"
+          help="Name of the env var holding the token. The token itself is NEVER stored in settings.json."
+          value={value.tokenRef ?? ''} placeholder="CHAT_RECALL_SYNC_TOKEN"
+          onChange={(v) => onChange({ ...value, tokenRef: v || undefined })} />
+
+        <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase',
+          marginTop: 8, marginBottom: 4, color: 'var(--cr-fg-3)' }}>What leaves the device</div>
+        <BoolRow label="Findings (redacted previews of detected secrets)"
+          help="Per docs/sync-contract.md — preview is masked tail, never the raw secret."
+          checked={value.upload.findings}    onChange={(b) => setUpload('findings', b)} />
+        <BoolRow label="Session metadata (id, tool, project path, mtime — no content)"
+          checked={value.upload.sessionMeta} onChange={(b) => setUpload('sessionMeta', b)} />
+        <BoolRow label="Dismissals (rotated / false-positive marks — bidirectional)"
+          checked={value.upload.dismissals}  onChange={(b) => setUpload('dismissals', b)} />
+        <BoolRow label="Custom rules (your team's added regex rules — bidirectional)"
+          checked={value.upload.customRules} onChange={(b) => setUpload('customRules', b)} />
+
+        <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase',
+          marginTop: 8, marginBottom: 4, color: 'var(--cr-fg-3)' }}>Exclusions</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {tools.map(t => {
+            const on = value.excludeTools.includes(t);
+            return (
+              <label key={t} style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px',
+                borderRadius: 999, fontSize: 12, cursor: 'pointer',
+                background: on ? 'var(--cr-warn-surf, var(--cr-ink-1))' : 'var(--cr-ink-1)',
+                border: `1px solid ${on ? 'var(--cr-warn-line, var(--cr-line-1))' : 'var(--cr-line-1)'}`,
+              }}>
+                <input type="checkbox" checked={on}
+                  onChange={(e) => onChange({
+                    ...value,
+                    excludeTools: e.target.checked
+                      ? Array.from(new Set([...value.excludeTools, t]))
+                      : value.excludeTools.filter(x => x !== t),
+                  })} />
+                <span>Exclude {t}</span>
+              </label>
+            );
+          })}
+        </div>
+        <TextField label="Project exclusions (one per line)"
+          value={(value.excludeProjects ?? []).join('\n')}
+          placeholder={'/home/me/secret-project'}
+          onChange={(v) => onChange({ ...value, excludeProjects: v.split('\n').map(s => s.trim()).filter(Boolean) })} />
+        <TextField label="Preview pattern exclusions (regex, one per line)"
+          help="Last-line filter — any finding whose redacted preview matches one of these is dropped before upload."
+          value={(value.excludePreviewPatterns ?? []).join('\n')}
+          placeholder={'^npm_\\\\w+$'}
+          onChange={(v) => {
+            const list = v.split('\n').map(s => s.trim()).filter(Boolean);
+            onChange({ ...value, excludePreviewPatterns: list.length ? list : undefined });
+          }} />
+      </Fields>
+    </Card>
+  );
+}
+
+function BoolRow({
+  label, help, checked, onChange,
+}: {
+  label: string;
+  help?: string;
+  checked: boolean;
+  onChange: (b: boolean) => void;
+}) {
+  return (
+    <label style={{
+      display: 'flex', alignItems: 'flex-start', gap: 10, padding: '8px 0',
+      cursor: 'pointer',
+    }}>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} style={{ marginTop: 3 }} />
+      <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <span style={{ fontSize: 13, fontWeight: 500 }}>{label}</span>
+        {help && <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>{help}</span>}
+      </span>
+    </label>
+  );
+}
+
 
 // ── Form primitives ─────────────────────────────────────────────────────
 
@@ -900,6 +1101,49 @@ function SelectField(props: {
           </option>
         ))}
       </select>
+    </div>
+  );
+}
+
+/**
+ * Model input with a "Load" button that fetches the provider's catalog and
+ * populates a datalist — pick from the list or type a custom id. Used by both
+ * summary and embedding cards.
+ */
+function ModelField(props: {
+  label: string; value: string; placeholder?: string;
+  onChange: (v: string) => void;
+  kind: 'summary' | 'embedding';
+  provider: string; baseUrl?: string; apiKey?: string;
+}) {
+  const id = useMemo(() => `model-${Math.random().toString(36).slice(2, 8)}`, []);
+  const [models, setModels] = useState<ProviderModel[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true); setErr(null);
+    const r = await fetchProviderModels({ kind: props.kind, provider: props.provider, baseUrl: props.baseUrl, apiKey: props.apiKey });
+    setModels(r.models);
+    setErr(r.error || (r.models.length === 0 ? 'No models returned' : null));
+    setLoading(false);
+  };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <label htmlFor={id} style={{ fontSize: 12, color: 'var(--cr-fg-2)' }}>{props.label}</label>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <input id={id} list={`${id}-list`} value={props.value} placeholder={props.placeholder}
+          onChange={(e) => props.onChange(e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+        {/* Alphabetical; the label carries the $/M price when the provider reports it. */}
+        <datalist id={`${id}-list`}>{models.map((m) => <option key={m.id} value={m.id} label={m.label} />)}</datalist>
+        <button type="button" onClick={load} disabled={loading}
+          style={{ ...inputStyle, width: 'auto', padding: '0 12px', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+          {loading ? '…' : 'Load models'}
+        </button>
+      </div>
+      {models.length > 0 && <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>{models.length} models — pick or type</span>}
+      {err && <span style={{ fontSize: 11, color: 'var(--cr-warn-500)' }}>{err}</span>}
     </div>
   );
 }

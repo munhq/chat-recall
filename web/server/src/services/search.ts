@@ -2,8 +2,8 @@
  * Search service — uses unified MemoryIndex for all searches.
  */
 
-import { MemoryIndex, OllamaEmbedder, MetadataCache, getAllSessions } from '../imports.js';
-import type { SourceType, MemorySearchResult } from '../imports.js';
+import { createVectorStore, OllamaEmbedder, createMetadataCache, getAllSessions } from '../imports.js';
+import type { SourceType, MemorySearchResult, VectorStore } from '../imports.js';
 
 // See sessions.ts for why we strip client-injected banners here.
 const INJECTED_BANNERS: RegExp[] = [
@@ -37,8 +37,9 @@ export interface SearchResult {
 }
 
 export class SearchService {
-  private memoryIndex: MemoryIndex;
+  private memoryIndex!: VectorStore;
   private embedder: OllamaEmbedder;
+  private ready: Promise<void>;
 
   // Cache project counts for 30 seconds to avoid scanning filesystem on every SSE tick
   private projectCountsCache: { projects: Record<string, number>; totalSessions: number } | null = null;
@@ -47,7 +48,11 @@ export class SearchService {
 
   constructor() {
     this.embedder = new OllamaEmbedder();
-    this.memoryIndex = new MemoryIndex(this.embedder);
+    this.ready = this.init();
+  }
+
+  private async init(): Promise<void> {
+    this.memoryIndex = await createVectorStore(this.embedder);
   }
 
   /**
@@ -57,18 +62,21 @@ export class SearchService {
   async search(
     query: string,
     topK = 10,
-    projectFilter?: string
+    projectIdFilter?: string
   ): Promise<SearchResult[]> {
+    await this.ready;
     const results = await this.memoryIndex.search(query, {
       topK,
       sourceTypes: ['session'],
-      projectFilter,
+      projectIdFilter,
     });
 
-    // Enrich with metadata from cache (summaries, dates)
-    const cache = new MetadataCache();
-    const searchResults: SearchResult[] = results.map((r: MemorySearchResult) => {
-      const cached = cache.get(r.itemId);
+    // Enrich with metadata from cache (summaries, dates). Pre-fetch all cached
+    // rows in parallel — the driver is async, so we can't call get() inside map().
+    const cache = await createMetadataCache();
+    const cachedList = await Promise.all(results.map((r: MemorySearchResult) => cache.get(r.itemId)));
+    const searchResults: SearchResult[] = results.map((r: MemorySearchResult, i: number) => {
+      const cached = cachedList[i];
       // Use the indexed item's mtime as both created/modified — we don't track
       // created separately, and an empty string here breaks client-side date
       // grouping ("Invalid Date") and Recent-sort (NaN comparisons).
@@ -86,7 +94,7 @@ export class SearchService {
         matchedChunks: r.matchedChunks,
       };
     });
-    cache.close();
+    await cache.close();
     return searchResults;
   }
 
@@ -94,17 +102,26 @@ export class SearchService {
     query: string,
     topK = 10,
     sourceTypes?: SourceType[],
-    projectFilter?: string
+    projectIdFilter?: string
   ): Promise<MemorySearchResult[]> {
-    return await this.memoryIndex.search(query, { topK, sourceTypes, projectFilter });
+    await this.ready;
+    return await this.memoryIndex.search(query, { topK, sourceTypes, projectIdFilter });
   }
 
   async getStatus() {
-    let stats;
+    await this.ready;
+    let stats: Awaited<ReturnType<VectorStore['getStats']>>;
     try {
       stats = await this.memoryIndex.getStats();
-    } catch {
-      stats = { totalChunks: 0, totalItems: 0, bySourceType: {}, indexPath: '' };
+    } catch (err) {
+      stats = {
+        totalChunks: 0,
+        totalItems: 0,
+        bySourceType: {},
+        indexPath: '',
+        vectorOk: false,
+        vectorError: err instanceof Error ? err.message : String(err),
+      };
     }
 
     // Build project counts from all sources (Claude + Codex + Gemini + OpenCode).
@@ -132,6 +149,8 @@ export class SearchService {
       totalSessions,
       projects: projectCounts,
       indexPath: stats.indexPath,
+      vectorOk: stats.vectorOk,
+      vectorError: stats.vectorError,
     };
   }
 }

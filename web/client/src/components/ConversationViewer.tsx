@@ -17,6 +17,7 @@ import type {
   SessionDiffResponse,
   SessionCommitsResponse,
   SessionOutcomeResponse,
+  SessionSecretsResponse,
   PromptMarker,
 } from '../services/api';
 import {
@@ -26,10 +27,12 @@ import {
   getSessionDiff,
   getSessionCommits,
   getSessionOutcome,
+  getSessionSecrets,
+  regenerateSummary,
 } from '../services/api';
 import { stripInjectedBanners } from '../utils/clean';
 
-type ViewMode = 'summary' | 'firstPrompt' | 'full' | 'raw' | 'related' | 'files' | 'diff' | 'commits' | 'outcome';
+type ViewMode = 'summary' | 'firstPrompt' | 'full' | 'raw' | 'related' | 'files' | 'diff' | 'commits' | 'outcome' | 'security';
 type MessageFilter = 'all' | 'user' | 'assistant' | 'thinking' | 'tools' | 'edits';
 
 interface ConversationViewerProps {
@@ -41,6 +44,12 @@ interface ConversationViewerProps {
   onLoadFull: () => void;
   searchResult: SearchResult | null;
   sessionInfo: SessionInfo | null;
+  /**
+   * Optional hint from the caller about which tab to land on.
+   * Activity → 'diff' (the user just clicked a row of file edits);
+   * Search → undefined (defaults to 'full' = the chat itself).
+   */
+  initialTab?: string;
 }
 
 export default function ConversationViewer({
@@ -52,13 +61,18 @@ export default function ConversationViewer({
   onLoadFull,
   searchResult,
   sessionInfo,
+  initialTab,
 }: ConversationViewerProps) {
   // Default to the actual conversation messages, not the Gemini summary.
-  // Most sessions don't have a summary (worker-backfilled, can be slow or
-  // disabled entirely), so landing on the Summary tab shows "No summary
-  // available" and looks broken. The chat itself is what people clicked
-  // to read; Summary is a nice-to-have they can flip to.
-  const [viewMode, setViewMode] = useState<ViewMode>('full');
+  // Caller can override (e.g. Activity passes 'diff' since the user just
+  // clicked a row of file edits and expects to see the changes).
+  const [viewMode, setViewMode] = useState<ViewMode>((initialTab as ViewMode) || 'full');
+
+  // When the user navigates between sessions and the caller hints at a
+  // different tab (Activity → diff, Search → full), respect it.
+  useEffect(() => {
+    if (initialTab) setViewMode(initialTab as ViewMode);
+  }, [sessionId, initialTab]);
   const [filter, setFilter] = useState<MessageFilter>('all');
   const [rawData, setRawData] = useState<any[]>([]);
   const [rawLoading, setRawLoading] = useState(false);
@@ -76,6 +90,9 @@ export default function ConversationViewer({
   const [outcomeData, setOutcomeData] = useState<SessionOutcomeResponse | null>(null);
   const [outcomeLoading, setOutcomeLoading] = useState(false);
   const [outcomeError, setOutcomeError] = useState<string | null>(null);
+  const [secretsData, setSecretsData] = useState<SessionSecretsResponse | null>(null);
+  const [secretsLoading, setSecretsLoading] = useState(false);
+  const [secretsError, setSecretsError] = useState<string | null>(null);
 
   // Reset cross-section state when session changes AND immediately
   // refetch for whatever tab is currently active. Without the refetch,
@@ -87,6 +104,7 @@ export default function ConversationViewer({
     setDiffData(null); setDiffError(null);
     setCommitsData(null); setCommitsError(null);
     setOutcomeData(null); setOutcomeError(null);
+    setSecretsData(null); setSecretsError(null);
     setSessionMeta(null);
 
     // Always fetch session metadata up-front so the header title
@@ -101,6 +119,15 @@ export default function ConversationViewer({
       .then(setSessionMeta)
       .catch(() => {})
       .finally(() => setMetaLoading(false));
+
+    // Always pre-fetch secrets so the Security tab can show a count
+    // badge before the user clicks. Cheap query (single SQL) — fires
+    // alongside metadata, no perceivable cost.
+    setSecretsLoading(true);
+    getSessionSecrets(sessionId)
+      .then(setSecretsData)
+      .catch(() => {})
+      .finally(() => setSecretsLoading(false));
 
     // Re-fire the fetch for the currently-active tab so the new session's
     // data populates without requiring a second user click.
@@ -519,6 +546,21 @@ export default function ConversationViewer({
               { value: 'files', label: 'Files', icon: 'file' },
               { value: 'diff', label: 'Diff', icon: 'terminal' },
               { value: 'commits', label: 'Commits', icon: 'sparkle' },
+              {
+                value: 'security',
+                // Tab badge uses unique-finding count, not raw row count
+                // (the scanner currently writes duplicates — see
+                // SecurityPanel for the dedup logic).
+                label: (() => {
+                  if (!secretsData) return 'Security';
+                  const seen = new Set<string>();
+                  for (const det of Object.keys(secretsData.byDetector)) {
+                    for (const f of secretsData.byDetector[det]) seen.add(`${det}|${f.rule}|${f.line}`);
+                  }
+                  return seen.size > 0 ? `Security · ${seen.size}` : 'Security';
+                })(),
+                icon: 'check',
+              },
               { value: 'raw', label: 'Raw', icon: 'terminal' },
               { value: 'related', label: 'Related', icon: 'sparkle' },
             ]}
@@ -527,18 +569,15 @@ export default function ConversationViewer({
 
         {/* Content */}
         {viewMode === 'summary' && (
-          <div data-testid="conversation-summary">
-            {metaLoading && <div style={{ color: 'var(--cr-fg-3)' }}>Loading...</div>}
-            <div style={{ fontSize: 14, lineHeight: 1.6, color: 'var(--cr-fg-1)' }}>
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{summary}</ReactMarkdown>
-            </div>
-          </div>
+          <StructuredSummary
+            summary={summary}
+            loading={metaLoading}
+            sessionId={sessionId}
+          />
         )}
 
         {viewMode === 'firstPrompt' && (
-          <div data-testid="conversation-first-prompt" style={{ fontSize: 14, lineHeight: 1.6, color: 'var(--cr-fg-1)' }}>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{firstPrompt}</ReactMarkdown>
-          </div>
+          <StructuredFirstPrompt firstPrompt={firstPrompt} />
         )}
 
         {viewMode === 'full' && (
@@ -807,7 +846,135 @@ export default function ConversationViewer({
         {viewMode === 'commits' && (
           <CommitsPanel data={commitsData} loading={commitsLoading} error={commitsError} />
         )}
+
+        {viewMode === 'security' && (
+          <SecurityPanel data={secretsData} loading={secretsLoading} error={secretsError} />
+        )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * SecurityPanel: surfaces secret detector findings for the current
+ * session. Findings come from the `secret_findings` SQLite table which
+ * stores ONLY redacted previews — no raw key material is ever
+ * transported to the browser. Each row shows detector + named rule +
+ * line + masked tail (last 4 chars only) so a reviewer can locate the
+ * leak in the source without leaking it again into a UI screenshot.
+ *
+ * Detector agreement is the trust signal: when more than one detector
+ * flags the same line, the finding is high-confidence (likely a real
+ * leak); a single-detector hit is "review me" territory.
+ */
+function SecurityPanel({
+  data, loading, error,
+}: { data: SessionSecretsResponse | null; loading: boolean; error: string | null }) {
+  if (loading) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Scanning for secrets…</div>;
+  if (error) return <div style={{ padding: 20, color: 'var(--cr-err-500)' }}>Failed to load findings: {error}</div>;
+  if (!data) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>No scan data yet for this session.</div>;
+  if (data.total === 0) {
+    return (
+      <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>
+        <Icon name="check" size={28} style={{ opacity: 0.4, marginBottom: 12, color: 'var(--cr-ok-500)' }} />
+        <div style={{ fontSize: 14, marginBottom: 6 }}>No secrets detected</div>
+        <div style={{ fontSize: 12 }}>gitleaks + trufflehog ran against this session and found nothing.</div>
+      </div>
+    );
+  }
+
+  // Dedupe (detector, rule, line) — the scanner currently inserts the
+  // same match multiple times (chunker replays / repeated lines).
+  // Then aggregate by `line` so the same line gets one row even if
+  // multiple detectors name the same finding differently
+  // (gitleaks: `aws-access-token`, trufflehog: `AWS`).
+  const seen = new Set<string>();
+  // Track max cross-session count per line so we surface the BIGGEST
+  // blast radius for any preview on that line — that's the trust
+  // signal that matters ("this same key appears in 116 other chats").
+  const lineMap = new Map<number, { line: number; detectors: Set<string>; rules: Set<string>; previews: Set<string>; maxCross: number }>();
+  for (const detector of Object.keys(data.byDetector)) {
+    for (const f of data.byDetector[detector]) {
+      const dedupeKey = `${detector}|${f.rule}|${f.line}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      let entry = lineMap.get(f.line);
+      if (!entry) {
+        entry = { line: f.line, detectors: new Set(), rules: new Set(), previews: new Set(), maxCross: 0 };
+        lineMap.set(f.line, entry);
+      }
+      entry.detectors.add(detector);
+      entry.rules.add(`${detector}:${f.rule}`);
+      entry.previews.add(f.preview);
+      const cross = f.crossSessionCount || 0;
+      if (cross > entry.maxCross) entry.maxCross = cross;
+    }
+  }
+  const rows = [...lineMap.values()].sort((a, b) =>
+    b.detectors.size - a.detectors.size ||
+    a.line - b.line
+  );
+  const uniqueTotal = seen.size;
+
+  // Per-detector unique counts (after dedup) for the header chips.
+  const detectorCounts: Record<string, number> = {};
+  for (const k of seen) {
+    const d = k.split('|')[0];
+    detectorCounts[d] = (detectorCounts[d] || 0) + 1;
+  }
+
+  return (
+    <div data-testid="conversation-security" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <Card style={{ padding: 14 }}>
+        <div style={{ display: 'flex', gap: 12, fontSize: 13, color: 'var(--cr-fg-2)', flexWrap: 'wrap', alignItems: 'center' }}>
+          <strong style={{ color: 'var(--cr-err-500)' }}>{uniqueTotal} unique finding{uniqueTotal === 1 ? '' : 's'}</strong>
+          {Object.entries(detectorCounts).map(([d, n]) => (
+            <Chip key={d} kind="neutral" size="sm">{d} {n}</Chip>
+          ))}
+          <span style={{ flex: 1 }} />
+          <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>
+            previews show last 4 chars only — raw secrets are never stored
+          </span>
+        </div>
+      </Card>
+
+      {rows.map(row => {
+        const agreement = row.detectors.size;
+        const tone = agreement >= 2 ? 'err' : 'warn';
+        return (
+          <Card key={row.line} style={{ padding: 14, borderLeft: `3px solid var(--cr-${tone === 'err' ? 'err' : 'warn'}-500)` }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <Chip kind={tone} size="sm">
+                {agreement === 1 ? '1 detector' : `${agreement} detectors agree`}
+              </Chip>
+              <span style={{ fontFamily: 'var(--cr-font-mono)', fontSize: 12, color: 'var(--cr-fg-3)' }}>
+                line {row.line}
+              </span>
+              {row.maxCross > 0 && (
+                // Cross-session blast radius — same redacted key appears
+                // in N other sessions, each one a parallel leak vector.
+                <Chip kind={row.maxCross >= 10 ? 'err' : 'warn'} size="sm">
+                  ⚠ also in {row.maxCross} other session{row.maxCross === 1 ? '' : 's'}
+                </Chip>
+              )}
+              <span style={{ flex: 1 }} />
+              {[...row.detectors].map(d => (
+                <Chip key={d} kind="neutral" size="sm">{d}</Chip>
+              ))}
+            </div>
+            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {[...row.rules].map((r) => (
+                <div key={r} style={{ fontSize: 12, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)' }}>
+                  {r}
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop: 8, fontSize: 12, fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-3)', wordBreak: 'break-all' }}>
+              {[...row.previews].join('  ·  ')}
+            </div>
+          </Card>
+        );
+      })}
     </div>
   );
 }
@@ -1271,6 +1438,214 @@ function OutcomePanel({
       )}
     </div>
   );
+}
+
+/* ────────────────────────────── Structured Summary ────────────────────────────── */
+
+function StructuredSummary({
+  summary,
+  loading,
+  sessionId,
+}: { summary: string; loading: boolean; sessionId?: string | null }) {
+  const [override, setOverride] = useState<string | null>(null);
+  const [regenLoading, setRegenLoading] = useState(false);
+  const [regenError, setRegenError] = useState<string | null>(null);
+
+  // Reset local override when navigating to a different session.
+  useEffect(() => {
+    setOverride(null);
+    setRegenError(null);
+  }, [sessionId]);
+
+  const displaySummary = override ?? summary;
+  const isPlaceholder = !displaySummary
+    || /^no (summary|first prompt)( available)?$/i.test(displaySummary);
+
+  async function handleRegenerate() {
+    if (!sessionId || regenLoading) return;
+    setRegenLoading(true);
+    setRegenError(null);
+    try {
+      const r = await regenerateSummary(sessionId);
+      setOverride(r.summary);
+    } catch (err) {
+      setRegenError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRegenLoading(false);
+    }
+  }
+
+  if (loading) {
+    return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Loading…</div>;
+  }
+
+  const regenButton = sessionId ? (
+    <Button
+      onClick={handleRegenerate}
+      disabled={regenLoading}
+      style={{ marginLeft: 'auto' }}
+      title="Re-run the AI summary for this session"
+    >
+      <Icon name="zap" size={13} style={{ marginRight: 6 }} />
+      {regenLoading ? 'Regenerating…' : 'Regenerate'}
+    </Button>
+  ) : null;
+
+  if (isPlaceholder) {
+    return (
+      <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>
+        <Icon name="file" size={28} style={{ opacity: 0.3, marginBottom: 12 }} />
+        <div style={{ fontSize: 14 }}>No summary available for this session.</div>
+        <div style={{ fontSize: 12, marginTop: 6 }}>
+          Summaries are generated by your configured AI provider. Check Settings → Summary.
+        </div>
+        {regenButton && (
+          <div style={{ marginTop: 16, display: 'inline-flex' }}>{regenButton}</div>
+        )}
+        {regenError && (
+          <div style={{ marginTop: 12, fontSize: 12, color: 'var(--cr-danger, #d33)' }}>
+            {regenError}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="conversation-summary">
+      <Card style={{ padding: 20, borderColor: 'var(--cr-brand-line)' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 18 }}>
+          <span style={{
+            width: 24, height: 24, display: 'inline-flex', alignItems: 'center',
+            justifyContent: 'center', background: 'var(--cr-brand-500)',
+            borderRadius: 6, flexShrink: 0, marginTop: 1,
+          }}>
+            <Icon name="file" size={13} style={{ color: '#1A0E06' }} />
+          </span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cr-fg-1)', letterSpacing: '-0.005em' }}>
+              AI Summary
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>
+              {override
+                ? 'Just regenerated — not yet persisted to search index'
+                : "Generated summary of this session's activity"}
+            </div>
+          </div>
+          {regenButton}
+        </div>
+
+        {regenError && (
+          <div style={{ marginBottom: 12, padding: '8px 12px', background: 'var(--cr-danger-surf, #2a0f0f)',
+                        border: '1px solid var(--cr-danger-line, #5a1f1f)', borderRadius: 6,
+                        fontSize: 12, color: 'var(--cr-danger, #ff8a8a)' }}>
+            {regenError}
+          </div>
+        )}
+
+        <div style={{
+          fontSize: 13.5,
+          lineHeight: 1.7,
+          color: 'var(--cr-fg-1)',
+        }}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{displaySummary}</ReactMarkdown>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/* ────────────────────────────── Structured First Prompt ────────────────────────────── */
+
+function StructuredFirstPrompt({ firstPrompt }: { firstPrompt: string }) {
+  if (!firstPrompt || firstPrompt === 'No first prompt available') {
+    return (
+      <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>
+        <Icon name="message" size={28} style={{ opacity: 0.3, marginBottom: 12 }} />
+        <div style={{ fontSize: 14 }}>No first prompt captured.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div data-testid="conversation-first-prompt">
+      <Card style={{ padding: 20, borderColor: 'var(--cr-info-line)' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 18 }}>
+          <span style={{
+            width: 24, height: 24, display: 'inline-flex', alignItems: 'center',
+            justifyContent: 'center', background: 'var(--cr-info-500)',
+            borderRadius: 6, flexShrink: 0, marginTop: 1,
+          }}>
+            <Icon name="message" size={13} style={{ color: '#FFFFFF' }} />
+          </span>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cr-fg-1)', letterSpacing: '-0.005em' }}>
+              First Prompt
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>
+              The user's opening message for this session
+            </div>
+          </div>
+        </div>
+
+        <div style={{
+          fontSize: 14,
+          lineHeight: 1.7,
+          color: 'var(--cr-fg-1)',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+        }}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{firstPrompt}</ReactMarkdown>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function parseSummarySections(md: string): Array<{ heading: string; body: string }> {
+  const sections: Array<{ heading: string; body: string }> = [];
+  const lines = md.split('\n');
+
+  let curHeading = '';
+  let curBody: string[] = [];
+  let inHeader = true;
+
+  for (const line of lines) {
+    const hMatch = line.match(/^#{1,3}\s+(.*)\s*$/);
+    if (hMatch) {
+      if (curBody.length > 0 || curHeading) {
+        sections.push({ heading: curHeading, body: curBody.join('\n').trim() });
+      }
+      curHeading = hMatch[1].trim();
+      curBody = [];
+      inHeader = false;
+      continue;
+    }
+
+    const boldMatch = line.match(/^\*\*([^*]+)\*\*:?\s*(.*)$/);
+    if (boldMatch) {
+      if (curBody.length > 0 || curHeading) {
+        sections.push({ heading: curHeading, body: curBody.join('\n').trim() });
+      }
+      curHeading = boldMatch[1].trim();
+      curBody = boldMatch[2] ? [boldMatch[2]] : [];
+      inHeader = false;
+      continue;
+    }
+
+    if (curHeading && line.trim()) {
+      curBody.push(line);
+    } else if (!curHeading && line.trim()) {
+      curHeading = inHeader ? 'Summary' : 'Details';
+      curBody.push(line);
+    }
+  }
+
+  if (curBody.length > 0 || curHeading) {
+    sections.push({ heading: curHeading, body: curBody.join('\n').trim() });
+  }
+
+  return sections;
 }
 
 function DiffPanel({

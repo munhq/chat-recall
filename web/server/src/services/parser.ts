@@ -171,6 +171,19 @@ async function parseMessagesFromFile(sessionPath: string): Promise<Message[]> {
       });
     } else if (obj.type === 'summary' && typeof obj.summary === 'string') {
       messages.push({ line, role: 'summary', content: obj.summary });
+    } else if (obj.type === 'system' && obj.subtype === 'away_summary') {
+      // "away_summary" is a handoff/checkpoint record Claude Code writes
+      // when it captures a session's goal without persisting the turns
+      // (the conversation continued elsewhere). Some sessions consist of
+      // ONLY this record — without surfacing it the viewer shows an empty
+      // "No messages found". Content may be a plain string or text blocks.
+      const c = obj.content;
+      const text = typeof c === 'string'
+        ? c
+        : Array.isArray(c)
+          ? c.filter((b: any) => b?.type === 'text' && typeof b.text === 'string').map((b: any) => b.text).join('\n')
+          : '';
+      if (text.trim()) messages.push({ line, role: 'summary', content: stripBanners(text), timestamp });
     }
   }
   return messages;
@@ -287,15 +300,75 @@ export async function getGeminiConversation(sessionPath: string): Promise<Messag
 }
 
 /**
+ * Discover OpenCode sub-agent sessions spawned by a parent. OpenCode
+ * stores each `@explorer …` / `@general …` dispatch as its own row in
+ * the `session` table with `parent_id` pointing back at the parent —
+ * structurally the same shape as Codex sub-agent rollouts, just in
+ * SQLite instead of JSONL. Returns them in the same `Subagent` shape
+ * the UI renders for Codex/Claude so the conversation viewer can show
+ * collapsible sub-agent panels uniformly.
+ */
+export async function getOpenCodeSubagents(parentSessionId: string): Promise<Subagent[]> {
+  const Database = (await import('better-sqlite3')).default;
+  const { existsSync } = await import('fs');
+  const { opencodeBackend } = await import('../imports.js');
+
+  const dbPath = opencodeBackend.dbPath();
+  if (!existsSync(dbPath)) return [];
+
+  const realParent = parentSessionId.replace('opencode_', '');
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    const children = db.prepare(`
+      SELECT id, title, time_created
+      FROM session
+      WHERE parent_id = ? AND time_archived IS NULL
+      ORDER BY time_created ASC
+    `).all(realParent) as Array<{ id: string; title: string; time_created: number }>;
+
+    const out: Subagent[] = [];
+    for (const c of children) {
+      const childId = `opencode_${c.id}`;
+      let messages: Message[] = [];
+      try { messages = await getOpenCodeConversation(childId); }
+      catch (e) { console.error(`Failed to parse OpenCode sub-session ${c.id}:`, e); }
+      const toolUseCount = messages.reduce((n, m) => n + (m.toolCalls?.length ?? 0), 0);
+
+      // Heuristic kind from the title prefix (`@explorer`, `@general`, …).
+      const m = (c.title || '').match(/@(\w+)/);
+      const role = (m?.[1] || '').toLowerCase();
+      const kind: Subagent['kind'] =
+          role.includes('compact') ? 'compact'
+        : role.includes('aside')   ? 'aside'
+        : role.includes('explorer') || role.includes('explore') ? 'explore'
+        : 'other';
+
+      out.push({
+        id: childId,
+        kind,
+        agentType: m?.[1],
+        description: c.title,
+        filePath: '',
+        messageCount: messages.length,
+        toolUseCount,
+        messages,
+      });
+    }
+    return out;
+  } finally {
+    db.close();
+  }
+}
+
+/**
  * Parse an OpenCode session from SQLite.
  */
 export async function getOpenCodeConversation(sessionId: string): Promise<Message[]> {
   const Database = (await import('better-sqlite3')).default;
   const { existsSync } = await import('fs');
-  const { homedir } = await import('os');
-  const { join } = await import('path');
+  const { opencodeBackend } = await import('../imports.js');
 
-  const dbPath = join(homedir(), '.local', 'share', 'opencode', 'opencode.db');
+  const dbPath = opencodeBackend.dbPath();
   if (!existsSync(dbPath)) return [];
 
   const realId = sessionId.replace('opencode_', '');

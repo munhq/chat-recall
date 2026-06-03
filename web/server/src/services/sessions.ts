@@ -2,9 +2,8 @@
  * Session listing service.
  */
 
-import { getAllSessions, parseSessionFile, MetadataCache, MemoryStore, findCodexSessionFile, extractFirstUserPromptSync } from '../imports.js';
+import { getAllSessions, parseSessionFile, createMetadataCache, createStore, findCodexSessionFile, extractFirstUserPromptSync, codexBackend, getBackendForId } from '../imports.js';
 import type { SessionEntry, SessionMetadata, MemoryMetadataRow, MemoryLinkRow, SourceType } from '../imports.js';
-import { homedir } from 'os';
 import { join } from 'path';
 
 // Client banners like "MCP issues detected. Run /mcp list for status." are
@@ -50,11 +49,11 @@ export interface SessionInfo {
  */
 export async function getRecentSessions(limit = 20): Promise<SessionInfo[]> {
   const sessions: SessionInfo[] = [];
-  const cache = new MetadataCache();
+  const cache = await createMetadataCache();
 
   // 1. Claude sessions from filesystem
   for (const [entry, filePath] of getAllSessions()) {
-    const cached = cache.get(entry.sessionId);
+    const cached = await cache.get(entry.sessionId);
 
     let firstPrompt = entry.firstPrompt || '';
     let summary: string | undefined = undefined;
@@ -97,13 +96,13 @@ export async function getRecentSessions(limit = 20): Promise<SessionInfo[]> {
     });
   }
 
-  cache.close();
+  await cache.close();
 
   // 1b. Codex sessions from filesystem
   try {
     const { existsSync, readdirSync, statSync, readFileSync } = await import('fs');
     const { join } = await import('path');
-    const codexSessionsDir = join(homedir(), '.codex', 'sessions');
+    const codexSessionsDir = codexBackend.sessionsDir();
     if (existsSync(codexSessionsDir)) {
       const seenIds = new Set(sessions.map(s => s.sessionId));
       const years = readdirSync(codexSessionsDir);
@@ -190,10 +189,10 @@ export async function getRecentSessions(limit = 20): Promise<SessionInfo[]> {
   //    Summaries are looked up in MetadataCache keyed by the item id
   //    (e.g. "gemini_<sessionId>" / "opencode_<sessionId>") — populated
   //    by scripts/generate-summaries.ts once it's run.
-  const store = new MemoryStore();
-  const cache2 = new MetadataCache();
+  const store = await createStore();
+  const cache2 = await createMetadataCache();
   try {
-    const memItems = store.listItems('session' as SourceType, 5000, 0);
+    const memItems = await store.listItems('session' as SourceType, 5000, 0);
     const seenIds = new Set(sessions.map(s => s.sessionId));
 
     for (const item of memItems) {
@@ -203,7 +202,7 @@ export async function getRecentSessions(limit = 20): Promise<SessionInfo[]> {
       const tool = extra.tool as string;
       if (!tool || tool === 'claude') continue; // Only add non-Claude
 
-      const cached = cache2.get(item.id);
+      const cached = await cache2.get(item.id);
 
       sessions.push({
         sessionId: item.id,
@@ -218,8 +217,8 @@ export async function getRecentSessions(limit = 20): Promise<SessionInfo[]> {
       });
     }
   } finally {
-    store.close();
-    cache2.close();
+    await store.close();
+    await cache2.close();
   }
 
   // Sort by modification time (newest first)
@@ -275,7 +274,7 @@ export async function getSessionIndex(): Promise<SessionIndexEntry[]> {
   try {
     const { existsSync, readdirSync, statSync, readFileSync } = await import('fs');
     const { join } = await import('path');
-    const codexSessionsDir = join(homedir(), '.codex', 'sessions');
+    const codexSessionsDir = codexBackend.sessionsDir();
     if (existsSync(codexSessionsDir)) {
       for (const year of readdirSync(codexSessionsDir)) {
         for (const month of readdirSync(join(codexSessionsDir, year))) {
@@ -325,9 +324,9 @@ export async function getSessionIndex(): Promise<SessionIndexEntry[]> {
 
   // 3. Gemini + OpenCode — already in MemoryStore.
   try {
-    const store = new MemoryStore();
+    const store = await createStore();
     try {
-      const items = store.listItems('session' as SourceType, 100_000, 0);
+      const items = await store.listItems('session' as SourceType, 100_000, 0);
       for (const item of items) {
         let extra: Record<string, unknown> = {};
         try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
@@ -343,7 +342,7 @@ export async function getSessionIndex(): Promise<SessionIndexEntry[]> {
         });
       }
     } finally {
-      store.close();
+      await store.close();
     }
   } catch { /* MemoryStore unavailable */ }
 
@@ -359,9 +358,9 @@ export async function getSessionIndex(): Promise<SessionIndexEntry[]> {
  * extractFirstUserPromptSync only on the 20 you're actually showing.
  */
 export async function hydrateSessions(entries: SessionIndexEntry[]): Promise<SessionInfo[]> {
-  const cache = new MetadataCache();
+  const cache = await createMetadataCache();
   try {
-    const errors = cache.getSummaryErrors(entries.map(e => e.sessionId));
+    const errors = await cache.getSummaryErrors(entries.map(e => e.sessionId));
 
     const result: SessionInfo[] = [];
     // Sessions whose firstPrompt was extracted on this request — write
@@ -371,7 +370,7 @@ export async function hydrateSessions(entries: SessionIndexEntry[]): Promise<Ses
     const toPersist: Array<{ sessionId: string; firstPrompt: string; mtime: number }> = [];
 
     for (const e of entries) {
-      const cached = cache.get(e.sessionId);
+      const cached = await cache.get(e.sessionId);
       let firstPrompt = e.preIndexedFirstPrompt || '';
       let summary: string | undefined;
       let needsPersist = false;
@@ -415,7 +414,7 @@ export async function hydrateSessions(entries: SessionIndexEntry[]): Promise<Ses
     // the result array and the persistence is best-effort future-cache).
     for (const row of toPersist) {
       try {
-        cache.set({
+        await cache.set({
           sessionId: row.sessionId,
           firstPrompt: row.firstPrompt,
           summary: '',
@@ -428,7 +427,7 @@ export async function hydrateSessions(entries: SessionIndexEntry[]): Promise<Ses
 
     return result;
   } finally {
-    cache.close();
+    await cache.close();
   }
 }
 
@@ -460,7 +459,7 @@ export async function getSessionProjectCounts(): Promise<{ projects: Record<stri
   try {
     const { existsSync, readdirSync, readFileSync } = await import('fs');
     const { join } = await import('path');
-    const codexSessionsDir = join(homedir(), '.codex', 'sessions');
+    const codexSessionsDir = codexBackend.sessionsDir();
     if (existsSync(codexSessionsDir)) {
       for (const year of readdirSync(codexSessionsDir)) {
         for (const month of readdirSync(join(codexSessionsDir, year))) {
@@ -502,11 +501,11 @@ export async function getSessionProjectCounts(): Promise<{ projects: Record<stri
   // 3. Gemini + OpenCode — already aggregated in MemoryStore as `session`
   //    rows; query directly so we don't repeat the discovery walk.
   try {
-    const store = new MemoryStore();
+    const store = await createStore();
     try {
       // listItems pages — pass a generous cap that's larger than any
       // realistic local session count.
-      const items = store.listItems('session' as SourceType, 100_000, 0);
+      const items = await store.listItems('session' as SourceType, 100_000, 0);
       for (const item of items) {
         let extra: Record<string, unknown> = {};
         try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
@@ -517,7 +516,7 @@ export async function getSessionProjectCounts(): Promise<{ projects: Record<stri
         total++;
       }
     } finally {
-      store.close();
+      await store.close();
     }
   } catch { /* MemoryStore unavailable — claude+codex counts still useful */ }
 
@@ -606,11 +605,11 @@ function metadataToRelated(row: MemoryMetadataRow, linkType: string, confidence 
  * - Plans for the same project
  * - Sibling sessions in the same project
  */
-export function getRelatedItems(sessionId: string): RelatedItemsResponse {
-  const store = new MemoryStore();
+export async function getRelatedItems(sessionId: string): Promise<RelatedItemsResponse> {
+  const store = await createStore();
   try {
     // 1. Direct links from memory_links
-    const rawLinks = store.getAllLinks('session' as SourceType, sessionId);
+    const rawLinks = await store.getAllLinks('session' as SourceType, sessionId);
     const linkedItems: RelatedItem[] = [];
 
     for (const link of rawLinks) {
@@ -618,20 +617,20 @@ export function getRelatedItems(sessionId: string): RelatedItemsResponse {
       const otherType = (isOutgoing ? link.target_type : link.source_type) as SourceType;
       const otherId = isOutgoing ? link.target_id : link.source_id;
 
-      const meta = store.getItem(otherId, otherType);
+      const meta = await store.getItem(otherId, otherType);
       if (meta) {
         linkedItems.push(metadataToRelated(meta, link.link_type, link.confidence));
       }
     }
 
     // 2. Get the session's own metadata to find projectPath
-    const sessionMeta = store.getItem(sessionId, 'session' as SourceType);
+    const sessionMeta = await store.getItem(sessionId, 'session' as SourceType);
     const projectPath = sessionMeta?.project_path || '';
 
     // 3. CLAUDE.md for this project
     let projectClaudeMd: RelatedItem | null = null;
     if (projectPath) {
-      const claudeMdItems = store.listItemsByProject('claude_md' as SourceType, projectPath, 1);
+      const claudeMdItems = await store.listItemsByProject('claude_md' as SourceType, projectPath, 1);
       if (claudeMdItems.length > 0) {
         projectClaudeMd = metadataToRelated(claudeMdItems[0], 'project_claude_md');
       }
@@ -640,7 +639,7 @@ export function getRelatedItems(sessionId: string): RelatedItemsResponse {
     // 4. Plans for this project
     const projectPlans: RelatedItem[] = [];
     if (projectPath) {
-      const planItems = store.listItemsByProject('plan' as SourceType, projectPath, 5);
+      const planItems = await store.listItemsByProject('plan' as SourceType, projectPath, 5);
       for (const plan of planItems) {
         projectPlans.push(metadataToRelated(plan, 'project_plan'));
       }
@@ -649,12 +648,12 @@ export function getRelatedItems(sessionId: string): RelatedItemsResponse {
     // 5. Sibling sessions in same project (up to 5, excluding current)
     const siblingSessionsInProject: RelatedItemsResponse['siblingSessionsInProject'] = [];
     if (projectPath) {
-      const siblings = store.listItemsByProject('session' as SourceType, projectPath, 6);
-      const cache = new MetadataCache();
+      const siblings = await store.listItemsByProject('session' as SourceType, projectPath, 6);
+      const cache = await createMetadataCache();
       for (const sib of siblings) {
         if (sib.id === sessionId) continue;
         if (siblingSessionsInProject.length >= 5) break;
-        const cached = cache.get(sib.id);
+        const cached = await cache.get(sib.id);
         siblingSessionsInProject.push({
           sessionId: sib.id,
           firstPrompt: cleanBanner(sib.content_preview?.slice(0, 120) || sib.title) ?? '',
@@ -662,12 +661,12 @@ export function getRelatedItems(sessionId: string): RelatedItemsResponse {
           modified: new Date(sib.mtime).toISOString(),
         });
       }
-      cache.close();
+      await cache.close();
     }
 
     return { links: linkedItems, siblingSessionsInProject, projectClaudeMd, projectPlans };
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -721,9 +720,9 @@ export interface SessionMetadataResponse {
  */
 export async function getSessionMetadata(sessionId: string): Promise<SessionMetadataResponse | null> {
   // Try SQLite extra_json first (works for all tools)
-  const store = new MemoryStore();
+  const store = await createStore();
   try {
-    const meta = store.getItem(sessionId, 'session' as SourceType);
+    const meta = await store.getItem(sessionId, 'session' as SourceType);
     if (meta) {
       const extra = JSON.parse(meta.extra_json || '{}');
       // Accept any extra that has tool or inputTokens
@@ -735,14 +734,24 @@ export async function getSessionMetadata(sessionId: string): Promise<SessionMeta
       }
     }
   } finally {
-    store.close();
+    await store.close();
   }
 
   // Fall back to parsing the JSONL (Claude only)
   try {
     const sessionPath = getSessionPath(sessionId);
     const content = await parseSessionFile(sessionPath);
-    return computeMetadataResponse(content.metadata);
+    // parseSessionFile returns firstPrompt as a top-level field, NOT
+    // inside .metadata. Without merging it in, the response carries
+    // contentPreview: '' for any session not yet in memory_metadata,
+    // which cascades into "Untitled session" in the UI even though
+    // the prompt is sitting in the JSONL waiting to be read.
+    const fp = content.firstPrompt || '';
+    return computeMetadataResponse({
+      ...content.metadata,
+      _contentPreview: fp,
+      slug: content.metadata?.slug || fp.slice(0, 80),
+    });
   } catch {
     // Continue to per-tool fallbacks below.
   }
@@ -751,7 +760,7 @@ export async function getSessionMetadata(sessionId: string): Promise<SessionMeta
   // minimal response from the rollout file's session_meta + a quick scan
   // of the events. Pricing is unknown for Codex (varies by provider) so
   // estimatedCostUsd stays null and the UI renders "—".
-  if (sessionId.startsWith('codex_')) {
+  if (codexBackend.matchesId(sessionId)) {
     return await getCodexSessionMetadata(sessionId);
   }
 
@@ -759,7 +768,7 @@ export async function getSessionMetadata(sessionId: string): Promise<SessionMeta
 }
 
 async function getCodexSessionMetadata(sessionId: string): Promise<SessionMetadataResponse | null> {
-  const located = findCodexSessionFile(sessionId.replace(/^codex_/, ''));
+  const located = findCodexSessionFile(codexBackend.toRawId(sessionId));
   if (!located) return null;
 
   const { readFileSync, statSync } = await import('fs');

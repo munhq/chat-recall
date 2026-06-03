@@ -407,7 +407,7 @@ export default function MemoryExplorer({ onSessionClick, toolFilter = 'all', pro
   );
 }
 
-function MemoryDetail({ item, onSessionClick }: { item: MemoryMetadataRow; onSessionClick?: (id: string) => void }) {
+export function MemoryDetail({ item, onSessionClick }: { item: MemoryMetadataRow; onSessionClick?: (id: string) => void }) {
   const [links, setLinks] = useState<MemoryLinkRow[]>([]);
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -424,6 +424,12 @@ function MemoryDetail({ item, onSessionClick }: { item: MemoryMetadataRow; onSes
   }, [item.id, item.source_type]);
 
   const displayContent = content || item.content_preview;
+  // Some memory items (notably `history` aggregates) can be many megabytes on
+  // a single line. Handing that to ReactMarkdown + syntax highlighting freezes
+  // the whole tab. Cap what we render and fall back to plain truncated text.
+  const MAX_RENDER_CHARS = 200_000;
+  const contentTooLarge = !!displayContent && displayContent.length > MAX_RENDER_CHARS;
+  const safeContent = contentTooLarge ? displayContent!.slice(0, MAX_RENDER_CHARS) : displayContent;
 
   return (
     <div style={{ padding: '40px 40px 100px', maxWidth: 900, margin: '0 auto' }}>
@@ -511,6 +517,17 @@ function MemoryDetail({ item, onSessionClick }: { item: MemoryMetadataRow; onSes
         </div>
 
         <div className="markdown-body" style={{ fontSize: 14, lineHeight: 1.6, color: 'var(--cr-fg-1)' }}>
+          {contentTooLarge ? (
+            <>
+              <div style={{ fontSize: 12, color: 'var(--cr-warn-500)', marginBottom: 12 }}>
+                Content is {(displayContent!.length / 1_048_576).toFixed(1)} MB — showing the first
+                {' '}{Math.round(MAX_RENDER_CHARS / 1024)} KB as plain text.
+              </div>
+              <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 13, margin: 0 }}>
+                {safeContent}
+              </pre>
+            </>
+          ) : (
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             components={{
@@ -557,8 +574,9 @@ function MemoryDetail({ item, onSessionClick }: { item: MemoryMetadataRow; onSes
               ),
             }}
           >
-            {displayContent}
+            {safeContent}
           </ReactMarkdown>
+          )}
         </div>
       </div>
 
