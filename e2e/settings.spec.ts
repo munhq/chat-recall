@@ -68,19 +68,6 @@ async function mockApi(page: Page, onPut?: (body: any) => void) {
   await page.route('**/api/conversations/recent**', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: '{"sessions":[],"count":0}' })
   );
-  // Codeindex card calls this on dialog open. Stub it so the dialog renders
-  // cleanly even when no codeindex binary is on the test runner.
-  await page.route('**/api/settings/codeindex', (r: Route) =>
-    r.fulfill({
-      status: 200, contentType: 'application/json',
-      body: JSON.stringify({
-        status: { installed: false, prebuiltAvailable: false },
-        capabilities: [],
-        installHint: { cli: 'chat-recall init --with-codeindex', curl: 'curl … | sh', repo: 'https://github.com/hotmun/codeindex' },
-        pitch: '',
-      }),
-    })
-  );
   await page.route('**/api/settings', (r: Route) => {
     if (r.request().method() === 'GET') {
       return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(SETTINGS_FIXTURE) });

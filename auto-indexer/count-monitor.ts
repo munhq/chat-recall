@@ -5,20 +5,23 @@
  */
 
 import { execSync } from 'child_process';
-import { homedir } from 'os';
-import { join } from 'path';
 import { indexAllSessions } from '../src/core/indexer.js';
 import { OllamaEmbedder } from '../src/core/embedder.js';
-import { MetadataCache } from '../src/core/metadata-cache.js';
+import { createMetadataCache, type MetadataCacheDriver } from '../src/core/store/caches.js';
 import { SummaryGenerator } from '../src/core/summary-generator.js';
 import { getAllSessions, parseSessionFile } from '../src/parsers/session.js';
+import { claudeBackend } from '../src/core/backends/index.js';
 import { statSync } from 'fs';
 
 const CHECK_INTERVAL_MS = 60 * 1000;  // Check every 60 seconds
-const CLAUDE_DIR = join(homedir(), '.claude', 'projects');
+const CLAUDE_DIR = claudeBackend.projectsDir();
 
 const embedder = new OllamaEmbedder();
-const metadataCache = new MetadataCache();
+let _metadataCache: MetadataCacheDriver | null = null;
+async function getMetadataCache(): Promise<MetadataCacheDriver> {
+  if (!_metadataCache) _metadataCache = await createMetadataCache();
+  return _metadataCache;
+}
 const summaryGenerator = new SummaryGenerator({ provider: 'gemini-cli' });
 
 let lastFileCount = 0;
@@ -43,7 +46,7 @@ async function runIndexing() {
     try {
       const stat = statSync(filePath);
 
-      if (metadataCache.needsUpdate(entry.sessionId, stat.mtimeMs)) {
+      if (await (await getMetadataCache()).needsUpdate(entry.sessionId, stat.mtimeMs)) {
         const content = await parseSessionFile(filePath);
 
         let summary: string;
@@ -59,7 +62,7 @@ async function runIndexing() {
           summariesGenerated++;
         }
 
-        metadataCache.set({
+        await (await getMetadataCache()).set({
           sessionId: entry.sessionId,
           firstPrompt: content.firstPrompt,
           summary,

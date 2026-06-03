@@ -81,10 +81,15 @@ services:
     ports:
       - "${API_PORT:-5000}:5000"
     volumes:
-      - ${CLAUDE_DIR:-~/.claude}:/root/.claude
-      - ${GEMINI_DIR:-~/.gemini}:/root/.gemini
-      - ${OPENCODE_DIR:-~/.local/share/opencode}:/root/.local/share/opencode
+      # Host AI dirs, read-only. Compose expands ${HOME} (NOT ~), so defaults work.
+      - ${CLAUDE_DIR:-${HOME}/.claude}:/root/.claude:ro
+      - ${GEMINI_DIR:-${HOME}/.gemini}:/root/.gemini:ro
+      - ${CODEX_DIR:-${HOME}/.codex}:/root/.codex:ro
+      - ${OPENCODE_DIR:-${HOME}/.local/share/opencode}:/root/.local/share/opencode:ro
+      # Index + cache.db live here — named volume so they survive `compose down`.
+      - chat_recall_data:/data
     environment:
+      CHAT_RECALL_DATA_DIR: /data
       # Embedding
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
       OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
@@ -94,6 +99,15 @@ services:
       OLLAMA_MODEL: ${OLLAMA_SUMMARY_MODEL:-qwen2.5:7b}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3-flash-preview}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # OpenAI-compatible summary provider (OpenRouter / Ollama Cloud / NVIDIA / OpenAI / custom)
+      SUMMARY_API_BASE_URL: ${SUMMARY_API_BASE_URL:-}
+      SUMMARY_API_MODEL: ${SUMMARY_API_MODEL:-}
+      SUMMARY_API_KEY: ${SUMMARY_API_KEY:-}
+      # Storage backend: sqlite (default, in chat_recall_data) | postgres (team/cloud).
+      # For postgres run `docker compose --profile postgres up` and set these.
+      CHAT_RECALL_STORAGE: ${CHAT_RECALL_STORAGE:-sqlite}
+      DATABASE_URL: ${DATABASE_URL:-}
+      CHAT_RECALL_TENANT: ${CHAT_RECALL_TENANT:-default}
       # Server
       PORT: 5000
       HOST: 0.0.0.0
@@ -127,10 +141,13 @@ services:
       context: .
       dockerfile: docker/Dockerfile.server
     volumes:
-      - ${CLAUDE_DIR:-~/.claude}:/root/.claude
-      - ${GEMINI_DIR:-~/.gemini}:/root/.gemini
-      - ${OPENCODE_DIR:-~/.local/share/opencode}:/root/.local/share/opencode
+      - ${CLAUDE_DIR:-${HOME}/.claude}:/root/.claude:ro
+      - ${GEMINI_DIR:-${HOME}/.gemini}:/root/.gemini:ro
+      - ${CODEX_DIR:-${HOME}/.codex}:/root/.codex:ro
+      - ${OPENCODE_DIR:-${HOME}/.local/share/opencode}:/root/.local/share/opencode:ro
+      - chat_recall_data:/data
     environment:
+      CHAT_RECALL_DATA_DIR: /data
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
       OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
@@ -138,6 +155,12 @@ services:
       OLLAMA_MODEL: ${OLLAMA_SUMMARY_MODEL:-qwen2.5:7b}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3-flash-preview}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      SUMMARY_API_BASE_URL: ${SUMMARY_API_BASE_URL:-}
+      SUMMARY_API_MODEL: ${SUMMARY_API_MODEL:-}
+      SUMMARY_API_KEY: ${SUMMARY_API_KEY:-}
+      CHAT_RECALL_STORAGE: ${CHAT_RECALL_STORAGE:-sqlite}
+      DATABASE_URL: ${DATABASE_URL:-}
+      CHAT_RECALL_TENANT: ${CHAT_RECALL_TENANT:-default}
       NODE_ENV: production
     depends_on:
       ollama:
@@ -145,6 +168,32 @@ services:
     restart: unless-stopped
     command: ["node_modules/.bin/tsx", "auto-indexer/indexer.ts"]
 
+  # ── Postgres + pgvector (team/cloud storage backend) ──────────────────
+  # Opt-in: `docker compose --profile postgres up`. Then set in .env:
+  #   CHAT_RECALL_STORAGE=postgres
+  #   DATABASE_URL=postgres://chatrecall:chatrecall@postgres:5432/chat_recall
+  postgres:
+    image: pgvector/pgvector:pg16
+    profiles: [postgres]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-chatrecall}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chatrecall}
+      POSTGRES_DB: ${POSTGRES_DB:-chat_recall}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-chatrecall} -d ${POSTGRES_DB:-chat_recall}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 volumes:
   ollama_data:
     # Persists Ollama models between restarts
+  chat_recall_data:
+  postgres_data:
+    # Persists the Postgres (team/cloud) backend between restarts
+    # Persists the search index + cache.db (CHAT_RECALL_DATA_DIR=/data)
