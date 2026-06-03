@@ -12,10 +12,11 @@
  */
 
 import { mkdtempSync, rmSync, writeFileSync, utimesSync, appendFileSync, readdirSync, statSync } from 'fs';
-import { tmpdir, homedir } from 'os';
+import { tmpdir } from 'os';
 import { join } from 'path';
 import { quickOutcomeStatus } from '../src/core/quick-outcome.js';
 import { OutcomeCache, fingerprintFile, isFresh } from '../src/core/outcome-cache.js';
+import { claudeBackend } from '../src/core/backends/index.js';
 
 function bench(label: string, iters: number, fn: () => void): void {
   for (let i = 0; i < Math.min(iters, 3); i++) fn(); // warm V8
@@ -27,7 +28,7 @@ function bench(label: string, iters: number, fn: () => void): void {
 }
 
 async function main(): Promise<void> {
-  const dir = join(homedir(), '.claude', 'projects', '-home-user-code-personal-chat-recall');
+  const dir = join(claudeBackend.projectsDir(), '-home-user-code-personal-chat-recall');
   const files = readdirSync(dir).filter(f => f.endsWith('.jsonl'));
   console.log(`Real sessions found: ${files.length}\n`);
 

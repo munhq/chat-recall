@@ -6,13 +6,12 @@
 
 import { config } from 'dotenv';
 import { existsSync, readFileSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
 import Database from 'better-sqlite3';
+import { opencodeBackend } from '../src/core/backends/index.js';
 import { getAllSessions, parseSessionFile } from '../src/parsers/session.js';
 import type { SessionContent } from '../src/parsers/session.js';
-import { MetadataCache } from '../src/core/metadata-cache.js';
-import { MemoryStore } from '../src/core/memory-store.js';
+import { createMetadataCache } from '../src/core/store/caches.js';
+import { createStore } from '../src/core/store/index.js';
 import { SummaryGenerator } from '../src/core/summary-generator.js';
 import { stripInjectedBanners } from '../src/parsers/chunker.js';
 
@@ -46,7 +45,7 @@ async function generateSummaries(options: GenerateOptions = {}) {
   console.log();
 
   // Initialize cache and generator
-  const cache = new MetadataCache();
+  const cache = await createMetadataCache();
   const generator = new SummaryGenerator({ provider, cliCommand });
 
   // Get all sessions
@@ -66,7 +65,7 @@ async function generateSummaries(options: GenerateOptions = {}) {
     processed++;
 
     // Check if we need to process this session
-    if (!force && !cache.needsUpdate(entry.sessionId, entry.fileMtime)) {
+    if (!force && !(await cache.needsUpdate(entry.sessionId, entry.fileMtime))) {
       skipped++;
       if (showProgress && processed % 100 === 0) {
         console.log(`[${processed}/${sessions.length}] Skipped (cached): ${entry.sessionId.substring(0, 8)}...`);
@@ -113,7 +112,7 @@ async function generateSummaries(options: GenerateOptions = {}) {
       }
 
       // Save to cache
-      cache.set({
+      await cache.set({
         sessionId: entry.sessionId,
         firstPrompt: content.firstPrompt || entry.firstPrompt,
         summary,
@@ -138,10 +137,10 @@ async function generateSummaries(options: GenerateOptions = {}) {
   // --------------------------------------------------------------
   console.log();
   console.log('📚 Scanning non-Claude sessions (Gemini / OpenCode)…');
-  const store = new MemoryStore();
+  const store = await createStore();
   let ncProcessed = 0, ncGenerated = 0, ncSkipped = 0, ncErrors = 0;
   try {
-    const memItems = store.listItems('session' as any, 50000, 0);
+    const memItems = await store.listItems('session' as any, 50000, 0);
     for (const item of memItems) {
       if (limit > 0 && ncProcessed >= limit) break;
       let extra: Record<string, any> = {};
@@ -151,7 +150,7 @@ async function generateSummaries(options: GenerateOptions = {}) {
 
       ncProcessed++;
 
-      if (!force && !cache.needsUpdate(item.id, item.mtime)) {
+      if (!force && !(await cache.needsUpdate(item.id, item.mtime))) {
         ncSkipped++;
         continue;
       }
@@ -163,7 +162,7 @@ async function generateSummaries(options: GenerateOptions = {}) {
         const totalChars = (content.firstPrompt || '').length +
           content.userMessages.reduce((s, m) => s + m.text.length, 0);
         if (totalChars < 50 && content.userMessages.length < 2) {
-          cache.set({
+          await cache.set({
             sessionId: item.id,
             firstPrompt: content.firstPrompt || item.content_preview || '',
             summary: content.firstPrompt?.trim() || item.title || 'No content',
@@ -179,7 +178,7 @@ async function generateSummaries(options: GenerateOptions = {}) {
           console.log(`[${ncProcessed}] ${tool} ${item.id.slice(0, 24)}…  (${item.project_path || 'no-project'})`);
         }
         const summary = await generator.generate(content);
-        cache.set({
+        await cache.set({
           sessionId: item.id,
           firstPrompt: content.firstPrompt,
           summary,
@@ -195,7 +194,7 @@ async function generateSummaries(options: GenerateOptions = {}) {
       }
     }
   } finally {
-    store.close();
+    await store.close();
   }
   console.log(`   Non-Claude: processed=${ncProcessed} generated=${ncGenerated} skipped=${ncSkipped} errors=${ncErrors}`);
 
@@ -207,7 +206,7 @@ async function generateSummaries(options: GenerateOptions = {}) {
   console.log(`   Skipped: ${skipped + ncSkipped}`);
   console.log(`   Errors: ${errors + ncErrors}`);
 
-  const stats = cache.getStats();
+  const stats = await cache.getStats();
   console.log();
   console.log('📊 Cache Stats:');
   console.log(`   Total Sessions: ${stats.totalSessions}`);
@@ -216,7 +215,7 @@ async function generateSummaries(options: GenerateOptions = {}) {
     console.log(`     - ${source}: ${count}`);
   }
 
-  cache.close();
+  await cache.close();
 }
 
 /**
@@ -271,10 +270,8 @@ function buildNonClaudeSessionContent(
   }
 
   if (tool === 'opencode') {
-    const sessionDbId = itemId.replace(/^opencode_/, '');
-    const dbPath = filePath && existsSync(filePath)
-      ? filePath
-      : join(homedir(), '.local', 'share', 'opencode', 'opencode.db');
+    const sessionDbId = opencodeBackend.toRawId(itemId);
+    const dbPath = filePath && existsSync(filePath) ? filePath : opencodeBackend.dbPath();
     if (!existsSync(dbPath)) return null;
     const db = new Database(dbPath, { readonly: true });
     try {
