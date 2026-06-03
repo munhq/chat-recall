@@ -11,13 +11,10 @@
  *   POST /api/settings/test      → probe a provider config without saving
  */
 import express from 'express';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import {
   loadSettings, saveSettings, redactSettings, mergeSettings, applySettingsToEnv,
-  checkCodeindexStatus, uninstallCodeindex,
-  registerCodeindexMcp, unregisterCodeindexMcp,
   SUMMARY_CLI_PRESET_COMMANDS,
+  defaultApiBaseUrl,
 } from '../imports.js';
 import type { AppSettings, EmbeddingSettings, SummarySettings } from '../imports.js';
 
@@ -32,11 +29,11 @@ const PRESETS = {
   // here — Cloud's catalog has zero embedding models (chat-only). It is a
   // valid SUMMARY provider though, see below.
   embeddingProviders: ['none', 'ollama', 'nvidia', 'gemini', 'openai', 'openai-compat'] as const,
-  // Summary providers actually implemented in src/core/summary-generator.ts:
-  // 'cli' (with preset), 'ollama', 'claude' (Anthropic API), 'gemini-cli'
-  // (legacy alias), 'none'. Anything else used to render in the UI but did
-  // nothing; dropped to avoid offering dead options.
-  summaryProviders:   ['none', 'cli', 'ollama', 'claude'] as const,
+  // Summary providers implemented in src/core/summary-generator.ts:
+  // 'cli' (with preset), 'ollama' (local), 'claude' (Anthropic API), and the
+  // OpenAI-compatible HTTP family ('openai-compat' / 'ollama-cloud' / 'openai'
+  // / 'nvidia' — one /chat/completions backend), plus 'none'.
+  summaryProviders:   ['none', 'cli', 'ollama', 'claude', 'openai-compat', 'ollama-cloud', 'openai', 'nvidia'] as const,
   summaryCliPresets:  SUMMARY_CLI_PRESETS,
   // Resolved command line for each preset — surfaced to the UI so picking a
   // preset shows (and pre-fills) the actual command that will run. Without
@@ -56,6 +53,10 @@ const PRESETS = {
     cli:    { label: 'Local CLI', requires: 'Detect or pick an installed AI CLI' },
     ollama: { label: 'Ollama (local)', requires: 'Ollama + a chat model (e.g. `qwen2.5:7b`)' },
     claude: { label: 'Anthropic Claude API', requires: 'ANTHROPIC_API_KEY' },
+    'openai-compat': { label: 'OpenRouter / custom OpenAI-compatible', requires: 'Base URL + model + API key (e.g. openrouter.ai/api/v1)' },
+    'ollama-cloud':  { label: 'Ollama Cloud', requires: 'API key + model (ollama.com/v1)' },
+    openai:          { label: 'OpenAI API', requires: 'OPENAI_API_KEY + model' },
+    nvidia:          { label: 'NVIDIA NIM', requires: 'NVIDIA_API_KEY + model' },
   },
 } as const;
 
@@ -257,6 +258,29 @@ router.post('/test', async (req, res) => {
             return res.json({ ok: false, error: (err as Error).message });
           }
         }
+        case 'openai-compat':
+        case 'ollama-cloud':
+        case 'openai':
+        case 'nvidia': {
+          const base = (s.apiBaseUrl || defaultApiBaseUrl(s.provider) || '').replace(/\/+$/, '');
+          if (!base) return res.json({ ok: false, error: 'Set a base URL (e.g. https://openrouter.ai/api/v1)' });
+          if (!s.apiModel) return res.json({ ok: false, error: 'Set a model' });
+          if (!s.apiKey) return res.json({ ok: false, error: 'Set an API key' });
+          try {
+            const r = await fetch(`${base}/chat/completions`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${s.apiKey}` },
+              body: JSON.stringify({ model: s.apiModel, messages: [{ role: 'user', content: 'Reply with: ok' }], max_tokens: 5 }),
+            });
+            if (!r.ok) {
+              const body = await r.text().catch(() => '');
+              return res.json({ ok: false, error: `${base}: ${r.status} ${r.statusText} ${body.slice(0, 160)}` });
+            }
+            return res.json({ ok: true });
+          } catch (err) {
+            return res.json({ ok: false, error: (err as Error).message });
+          }
+        }
         case 'none':
           return res.json({ ok: true, note: 'No summary generator. First prompt will be used as a fallback.' });
         default:
@@ -271,61 +295,68 @@ router.post('/test', async (req, res) => {
 });
 
 /**
- * GET /api/settings/codeindex — current status, install instructions, capability preview.
- *
- * The web UI is detect-only. If codeindex is on PATH (or at ~/.local/bin/codeindex),
- * we show its status and let the user re-register or remove. If it's not installed,
- * we surface install instructions instead of pretending we can fetch a binary —
- * the codeindex release pipeline lives in a separate repo whose visibility we
- * cannot guarantee for every user.
+ * GET /api/settings/models?kind=&provider=&baseUrl=&apiKey=
+ * Lists the models a provider offers so the UI can populate a dropdown
+ * instead of hand-typing a model id. Works for both `summary` and
+ * `embedding`. Local ollama → /api/tags; everything OpenAI-compatible →
+ * {base}/models. The list is public for OpenRouter & Ollama Cloud (no key);
+ * NVIDIA/OpenAI need the key. A masked key ("••••…") resolves to the saved one.
  */
-router.get('/codeindex', (_req, res) => {
+router.get('/models', async (req, res) => {
   try {
-    const status = checkCodeindexStatus();
-    // If detected but not registered, register it on read so the agent picks
-    // it up next launch. Idempotent — registerCodeindexMcp no-ops if already in.
-    if (status.installed && status.path) {
-      try {
-        const mcpJsonPath = join(homedir(), '.mcp.json');
-        registerCodeindexMcp(mcpJsonPath, status.path);
-      } catch { /* registration is best-effort; don't fail status read */ }
-    }
-    res.json({
-      status,
-      capabilities: [
-        { name: 'find_symbol', desc: 'Locate a function/class/struct definition by name' },
-        { name: 'find_callers', desc: 'Approximate callers of a symbol with context' },
-        { name: 'get_imports', desc: 'What does this file depend on?' },
-        { name: 'get_imported_by', desc: 'Reverse deps — who imports this file?' },
-        { name: 'get_change_impact', desc: 'Transitive blast radius if you edit this file' },
-        { name: 'plan_change', desc: 'Full edit plan (definitions + callers + literals + blast radius)' },
-        { name: 'analyze', desc: 'security · dead_code · unwrap_audit · coupling · cycles · type_drift · …' },
-        { name: 'search / find_word / get_outline / get_tree', desc: 'Trigram FTS, exact-word lookup, file structure' },
-      ],
-      installHint: {
-        // CLI path is the same flag the chat-recall CLI exposes.
-        cli: 'chat-recall init --with-codeindex',
-        // Direct install via the codeindex repo's installer; only succeeds when the user has access.
-        curl: 'curl -fsSL https://raw.githubusercontent.com/hotmun/codeindex/main/install.sh | sh',
-        repo: 'https://github.com/hotmun/codeindex',
-      },
-      pitch: 'chat-recall remembers what you\'ve done. codeindex understands what\'s currently in your code. ' +
-             'Together the agent can answer "have I built this before?" and "does it already exist?" before redoing work.',
-    });
-  } catch (err) {
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
+    const kind = String(req.query.kind || 'summary');
+    const provider = String(req.query.provider || '');
+    const reqKey = req.query.apiKey ? String(req.query.apiKey) : undefined;
+    const s = loadSettings();
 
-/** POST /api/settings/codeindex/uninstall — remove the binary + MCP registration. */
-router.post('/codeindex/uninstall', (_req, res) => {
-  try {
-    const r = uninstallCodeindex();
-    const mcpJsonPath = join(homedir(), '.mcp.json');
-    const u = unregisterCodeindexMcp(mcpJsonPath);
-    res.json({ ok: true, removed: r.removed, unregistered: u.removed });
+    // Resolve the saved key when the UI sends a mask (so users don't retype).
+    const savedKey = (() => {
+      if (kind === 'summary') return s.summary.apiKey;
+      switch (provider) {
+        case 'nvidia':        return s.embedding.nvidiaApiKey;
+        case 'openai':        return s.embedding.openaiApiKey;
+        case 'gemini':        return s.embedding.geminiApiKey;
+        case 'ollama-cloud':  return s.embedding.ollamaCloudApiKey;
+        case 'openai-compat': return s.embedding.openaiCompatApiKey;
+        default:              return undefined;
+      }
+    })();
+    const key = (reqKey && reqKey.startsWith('••••')) ? savedKey : reqKey;
+
+    if (provider === 'ollama') {
+      const host = (req.query.baseUrl ? String(req.query.baseUrl) : (s.embedding.ollamaHost || 'http://localhost:11434')).replace(/\/+$/, '');
+      const r = await fetch(`${host}/api/tags`);
+      if (!r.ok) return res.json({ models: [], error: `Ollama: ${r.status} ${r.statusText}` });
+      const d = await r.json() as { models?: Array<{ name: string }> };
+      return res.json({ models: (d.models || []).map(m => ({ id: m.name })).sort((a, b) => a.id.localeCompare(b.id)) });
+    }
+
+    const reqBase = req.query.baseUrl ? String(req.query.baseUrl) : undefined;
+    const base = (reqBase
+      || (kind === 'embedding' && provider === 'openai-compat' ? s.embedding.openaiCompatBaseUrl : undefined)
+      || defaultApiBaseUrl(provider) || '').replace(/\/+$/, '');
+    if (!base) return res.json({ models: [], error: 'Set a base URL first.' });
+    const r = await fetch(`${base}/models`, { headers: key ? { Authorization: `Bearer ${key}` } : {} });
+    if (!r.ok) {
+      const body = await r.text().catch(() => '');
+      return res.json({ models: [], error: `${base}/models: ${r.status} ${r.statusText} ${body.slice(0, 120)}` });
+    }
+    // Alphabetical. Pricing, when the provider returns it (OpenRouter), is
+    // shown in the label as $/M tokens — info only, not a sort key.
+    const d = await r.json() as { data?: Array<{ id: string; pricing?: { prompt?: string; completion?: string } }> };
+    const rows = (d.data || []).filter(m => m.id).map(m => {
+      const p = m.pricing ? parseFloat(m.pricing.prompt ?? '') : NaN;
+      const c = m.pricing ? parseFloat(m.pricing.completion ?? '') : NaN;
+      const hasPrice = Number.isFinite(p) || Number.isFinite(c);
+      const label = hasPrice
+        ? ((p || 0) + (c || 0) === 0 ? `${m.id}  (free)` : `${m.id}  ($${(p * 1e6).toFixed(2)}/$${(c * 1e6).toFixed(2)} per M)`)
+        : m.id;
+      return { id: m.id, label };
+    });
+    rows.sort((a, b) => a.id.localeCompare(b.id));
+    return res.json({ models: rows });
   } catch (err) {
-    res.status(500).json({ ok: false, error: (err as Error).message });
+    res.json({ models: [], error: (err as Error).message });
   }
 });
 

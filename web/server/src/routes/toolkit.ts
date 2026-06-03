@@ -12,7 +12,7 @@ import express from 'express';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync, rmSync } from 'fs';
 import { dirname, join, basename } from 'path';
 import { homedir } from 'os';
-import { MemoryStore } from '../imports.js';
+import { createStore, claudeBackend, codexBackend, opencodeBackend } from '../imports.js';
 import type { SourceType } from '../imports.js';
 
 const router = express.Router();
@@ -26,13 +26,13 @@ function isToolkitType(t: string): t is ToolkitType {
 
 // GET /api/toolkit/status — counts per (type, tool) so the UI can render
 // "skill: 43 claude · 43 opencode · 0 gemini" without listing items.
-router.get('/status', (_req, res) => {
-  const store = new MemoryStore();
+router.get('/status', async (_req, res) => {
+  const store = await createStore();
   try {
     const out: Record<string, Record<string, number>> = {};
     for (const t of VALID_TOOLKIT_TYPES) {
       out[t] = { claude: 0, gemini: 0, opencode: 0, codex: 0 };
-      const items = store.listItems(t as SourceType, 5000, 0);
+      const items = await store.listItems(t as SourceType, 5000, 0);
       for (const it of items) {
         let tool = 'claude';
         try { tool = JSON.parse(it.extra_json || '{}').tool || 'claude'; } catch {}
@@ -43,11 +43,11 @@ router.get('/status', (_req, res) => {
   } catch (error) {
     console.error('Toolkit status error:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
-  } finally { store.close(); }
+  } finally { await store.close(); }
 });
 
 // GET /api/toolkit/browse/:type?limit=&offset=&tool=
-router.get('/browse/:type', (req, res) => {
+router.get('/browse/:type', async (req, res) => {
   const { type } = req.params;
   if (!isToolkitType(type)) {
     return res.status(400).json({ error: `Invalid toolkit type: ${type}. Allowed: ${VALID_TOOLKIT_TYPES.join(', ')}` });
@@ -56,9 +56,9 @@ router.get('/browse/:type', (req, res) => {
   const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
   const toolFilter = (req.query.tool as string | undefined)?.trim().toLowerCase();
 
-  const store = new MemoryStore();
+  const store = await createStore();
   try {
-    let items = store.listItems(type as SourceType, limit + offset + 100, 0);
+    let items = await store.listItems(type as SourceType, limit + offset + 100, 0);
     if (toolFilter && toolFilter !== 'all') {
       items = items.filter(it => {
         try { return (JSON.parse(it.extra_json || '{}').tool || 'claude') === toolFilter; }
@@ -70,35 +70,35 @@ router.get('/browse/:type', (req, res) => {
   } catch (error) {
     console.error('Toolkit browse error:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
-  } finally { store.close(); }
+  } finally { await store.close(); }
 });
 
 // GET /api/toolkit/item/:type/:id
-router.get('/item/:type/:id', (req, res) => {
+router.get('/item/:type/:id', async (req, res) => {
   const { type, id } = req.params;
   if (!isToolkitType(type)) {
     return res.status(400).json({ error: `Invalid toolkit type: ${type}` });
   }
-  const store = new MemoryStore();
+  const store = await createStore();
   try {
-    const item = store.getItem(id, type as SourceType);
+    const item = await store.getItem(id, type as SourceType);
     if (!item) return res.status(404).json({ error: 'Not found' });
     res.json(item);
   } catch (error) {
     console.error('Toolkit item error:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
-  } finally { store.close(); }
+  } finally { await store.close(); }
 });
 
 // GET /api/toolkit/item/:type/:id/content — raw file contents for editing/preview.
-router.get('/item/:type/:id/content', (req, res) => {
+router.get('/item/:type/:id/content', async (req, res) => {
   const { type, id } = req.params;
   if (!isToolkitType(type)) {
     return res.status(400).json({ error: `Invalid toolkit type: ${type}` });
   }
-  const store = new MemoryStore();
+  const store = await createStore();
   try {
-    const item = store.getItem(id, type as SourceType);
+    const item = await store.getItem(id, type as SourceType);
     if (!item) return res.status(404).json({ error: 'Not found' });
     if (!item.file_path) return res.json({ content: '' });
     let content = '';
@@ -112,7 +112,7 @@ router.get('/item/:type/:id/content', (req, res) => {
   } catch (error) {
     console.error('Toolkit content error:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
-  } finally { store.close(); }
+  } finally { await store.close(); }
 });
 
 // ─────────────────────────────────────────────────────────────────
@@ -133,7 +133,23 @@ const SUPPORTED_TARGETS: Record<'skill' | 'mcp', TargetTool[]> = {
   mcp:   ['claude', 'opencode', 'gemini', 'codex'],
 };
 
-router.post('/promote', express.json(), (req, res) => {
+/**
+ * Each backend exposes its own skillsDir() — this lookup avoids spreading
+ * tool-specific paths through the route. Throws on 'gemini' since the
+ * caller is expected to gate on `SUPPORTED_TARGETS.skill` first.
+ */
+function skillsDirFor(tool: TargetTool): string {
+  switch (tool) {
+    case 'claude':   return claudeBackend.skillsDir();
+    case 'opencode': return opencodeBackend.skillsDir();
+    case 'codex':    return codexBackend.skillsSystemDir();
+    case 'gemini':
+    default:
+      throw new Error(`No skills surface for tool '${tool}'`);
+  }
+}
+
+router.post('/promote', express.json(), async (req, res) => {
   const { type, sourceId, toTool } = req.body || {};
   if (!isToolkitType(type)) return res.status(400).json({ error: `Invalid type: ${type}` });
   if (typeof sourceId !== 'string' || !sourceId) return res.status(400).json({ error: 'sourceId required' });
@@ -141,9 +157,9 @@ router.post('/promote', express.json(), (req, res) => {
     return res.status(400).json({ error: `Invalid toTool: ${toTool}. Allowed: ${TARGET_TOOLS.join(', ')}` });
   }
 
-  const store = new MemoryStore();
+  const store = await createStore();
   try {
-    const item = store.getItem(sourceId, type as SourceType);
+    const item = await store.getItem(sourceId, type as SourceType);
     if (!item) return res.status(404).json({ error: 'Source item not found' });
 
     let extra: Record<string, unknown> = {};
@@ -164,7 +180,7 @@ router.post('/promote', express.json(), (req, res) => {
   } catch (error) {
     console.error('Promote error:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
-  } finally { store.close(); }
+  } finally { await store.close(); }
 });
 
 interface PromoteResult {
@@ -186,10 +202,7 @@ function copySkillToTool(
   if (!existsSync(skillDir)) return { ok: false, status: 404, error: `Source dir missing: ${skillDir}` };
 
   const skillName = (extra.skillName as string) || basename(skillDir);
-  const targetRoot =
-      toTool === 'claude'   ? join(homedir(), '.claude', 'skills')
-    : toTool === 'opencode' ? join(homedir(), '.config', 'opencode', 'skill')
-    :                         join(homedir(), '.codex', 'skills', '.system');
+  const targetRoot = skillsDirFor(toTool);
   const targetDir = join(targetRoot, skillName);
 
   if (existsSync(targetDir)) {
@@ -470,10 +483,7 @@ router.delete('/item', express.json(), (req, res) => {
 
 function removeSkillFromTool(name: string, tool: TargetTool): PromoteResult {
   if (tool === 'gemini') return { ok: false, status: 400, error: 'Gemini has no Skills surface.' };
-  const root =
-      tool === 'claude'   ? join(homedir(), '.claude', 'skills')
-    : tool === 'opencode' ? join(homedir(), '.config', 'opencode', 'skill')
-    :                       join(homedir(), '.codex', 'skills', '.system');
+  const root = skillsDirFor(tool);
   const dir = join(root, name);
   if (!existsSync(dir)) return { ok: false, status: 404, error: `Not found: ${dir}` };
   try {
@@ -580,12 +590,12 @@ function stripCodexMcpBlock(content: string, name: string): string {
 // matrix UI. Avoids the client having to scan every row.
 // ─────────────────────────────────────────────────────────────────
 
-router.get('/matrix', (_req, res) => {
-  const store = new MemoryStore();
+router.get('/matrix', async (_req, res) => {
+  const store = await createStore();
   try {
     const out: Record<'skill' | 'mcp', Record<string, Record<string, boolean>>> = { skill: {}, mcp: {} };
     for (const type of ['skill', 'mcp'] as const) {
-      const rows = store.listItems(type as SourceType, 100_000, 0);
+      const rows = await store.listItems(type as SourceType, 100_000, 0);
       for (const row of rows) {
         let extra: any = {};
         try { extra = JSON.parse(row.extra_json || '{}'); } catch { /* skip */ }
@@ -607,7 +617,7 @@ router.get('/matrix', (_req, res) => {
     console.error('Matrix error:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
   } finally {
-    store.close();
+    await store.close();
   }
 });
 
@@ -651,19 +661,19 @@ function readField(item: any, key: string): unknown {
   catch { return undefined; }
 }
 
-router.post('/sync-all', express.json(), (req, res) => {
+router.post('/sync-all', express.json(), async (req, res) => {
   const types: Array<'skill' | 'mcp'> = Array.isArray(req.body?.types) && req.body.types.length > 0
     ? req.body.types.filter((t: string) => t === 'skill' || t === 'mcp')
     : ['skill', 'mcp'];
   const dryRun = !!req.body?.dryRun;
 
-  const store = new MemoryStore();
+  const store = await createStore();
   try {
     const plan: SyncPlanEntry[] = [];
 
     for (const type of types) {
       // Index every (name, tool) → row for this type.
-      const rows = store.listItems(type as SourceType, 100_000, 0);
+      const rows = await store.listItems(type as SourceType, 100_000, 0);
       const byName = new Map<string, Partial<Record<TargetTool, any>>>();
       for (const row of rows) {
         const tool = String(readField(row, 'tool') || 'claude') as TargetTool;
@@ -693,8 +703,10 @@ router.post('/sync-all', express.json(), (req, res) => {
     }
 
     const results: SyncResultEntry[] = [];
+    const rowsByType = new Map<string, Awaited<ReturnType<typeof store.listItems>>>();
     for (const entry of plan) {
-      const sourceRow = store.listItems(entry.type as SourceType, 100_000, 0)
+      if (!rowsByType.has(entry.type)) rowsByType.set(entry.type, await store.listItems(entry.type as SourceType, 100_000, 0));
+      const sourceRow = rowsByType.get(entry.type)!
         .find(r => {
           const tool = String(readField(r, 'tool') || 'claude');
           const name = entry.type === 'skill'
@@ -739,7 +751,7 @@ router.post('/sync-all', express.json(), (req, res) => {
     console.error('Sync-all error:', error);
     return res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
   } finally {
-    store.close();
+    await store.close();
   }
 });
 

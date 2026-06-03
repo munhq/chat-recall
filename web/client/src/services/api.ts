@@ -12,6 +12,11 @@ export interface SearchResult {
   modified: string;
   firstPrompt: string;
   summary?: string;
+  matchedChunks?: Array<{
+    chunkType: string;
+    text: string;
+    score: number;
+  }>;
 }
 
 export interface Message {
@@ -53,6 +58,24 @@ export interface SessionInfo {
    *  exists). The list shows "summary unavailable — check settings" with
    *  the error string as a hover tooltip. */
   summaryError?: { error: string; attemptCount: number; lastFailedAt: number };
+  /** Search-only: relevance score (0..1ish) for this hit. */
+  score?: number;
+  /** Search-only: top matched chunks (snippets) — drives the result preview. */
+  matchedChunks?: Array<{ chunkType: string; text: string; score: number }>;
+  /** Search-only: the user's query, so the row can highlight matched terms. */
+  query?: string;
+  /** Search-only: what kind of memory item this is. Drives the source badge
+   *  and (for non-session items) the click-through behavior. */
+  sourceType?: 'session' | 'plan' | 'task' | 'claude_md' | 'paste' | 'history' | 'diary';
+  /**
+   * UI-only: when ≥2 adjacent sessions with the same project + same
+   * templated first prompt collapse into one feed row (e.g. PR-bot
+   * worktree runs), the surviving row carries `runCount` (the total
+   * collapsed) and `runMemberIds` (every member's id, so a later
+   * "Expand N runs" affordance can list them).
+   */
+  runCount?: number;
+  runMemberIds?: string[];
 }
 
 export interface IndexStats {
@@ -60,6 +83,11 @@ export interface IndexStats {
   totalSessions: number;
   projects: Record<string, number>;
   indexPath: string;
+  /** False when the most recent vector-index read failed. UI shows a banner
+   *  and continues to operate via FTS5 fallback. */
+  vectorOk?: boolean;
+  /** Error string from the most recent vector-index failure, if any. */
+  vectorError?: string | null;
 }
 
 export interface ProjectInfo {
@@ -86,15 +114,47 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
   }
 }
 
+/** Result item from a unified-memory search — covers non-session sources
+ *  (paste, plan, claude_md, task, history, diary) so the UI can show the
+ *  full picture of what matched a query. */
+export interface MemoryHit {
+  itemId: string;
+  sourceType: 'session' | 'plan' | 'task' | 'claude_md' | 'paste' | 'history' | 'diary';
+  title: string;
+  text: string;
+  score: number;
+  chunkType: string;
+  projectPath: string;
+  filePath: string;
+  mtime: number;
+  matchedChunks: Array<{ chunkType: string; text: string; score: number }>;
+}
+
+export interface SearchResponse {
+  sessions: SearchResult[];
+  memory: MemoryHit[];
+}
+
 export async function searchSessions(
   query: string,
   topK = 10,
   projectFilter?: string
-): Promise<SearchResult[]> {
+): Promise<SearchResponse> {
   const res = await fetchWithTimeout(`${API_BASE}/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, topK, projectFilter }),
+    body: JSON.stringify({
+      query,
+      topK,
+      projectFilter,
+      includeMemory: true,
+      // Everything except `session` (already in `results`) and `history`.
+      // A `history` item is a per-project aggregate of every shell line —
+      // a single one can be 13MB on one line, which is low-signal noise in
+      // results and froze the viewer. paste/plan/task/claude_md/diary are
+      // bounded, high-value (e.g. pasted logs), and openable.
+      sourceTypes: ['plan', 'task', 'claude_md', 'paste', 'diary'],
+    }),
   }, 30000);
 
   if (!res.ok) {
@@ -102,7 +162,10 @@ export async function searchSessions(
   }
 
   const data = await res.json();
-  return data.results;
+  return {
+    sessions: data.results || [],
+    memory: data.memoryResults || [],
+  };
 }
 
 /**
@@ -394,6 +457,30 @@ export async function getSessionMetadata(sessionId: string): Promise<SessionMeta
   return await res.json();
 }
 
+export interface RegenerateSummaryResponse {
+  sessionId: string;
+  summary: string;
+  summarySource: string;
+}
+
+export async function regenerateSummary(sessionId: string): Promise<RegenerateSummaryResponse> {
+  // Long timeout — LLM call can take 30-60s
+  const res = await fetchWithTimeout(
+    `${API_BASE}/conversations/${sessionId}/regenerate-summary`,
+    { method: 'POST' },
+    120000
+  );
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { const j = await res.json(); if (j?.error) detail = j.error; } catch {}
+    if (res.status === 429) {
+      throw new Error(`Summary provider quota exhausted: ${detail}`);
+    }
+    throw new Error(`Failed to regenerate summary: ${detail}`);
+  }
+  return await res.json();
+}
+
 // --- Memory API ---
 
 export type SourceType = 'session' | 'plan' | 'task' | 'claude_md' | 'paste' | 'history' | 'diary';
@@ -467,6 +554,28 @@ export async function searchMemory(
 
   const data = await res.json();
   return data.results;
+}
+
+export interface ProviderModel { id: string; label?: string }
+
+/** List the models a provider offers (cheapest-first when pricing is known),
+ *  to populate model dropdowns. */
+export async function fetchProviderModels(opts: {
+  kind: 'summary' | 'embedding';
+  provider: string;
+  baseUrl?: string;
+  apiKey?: string;
+}): Promise<{ models: ProviderModel[]; error?: string }> {
+  const q = new URLSearchParams({ kind: opts.kind, provider: opts.provider });
+  if (opts.baseUrl) q.set('baseUrl', opts.baseUrl);
+  if (opts.apiKey) q.set('apiKey', opts.apiKey);
+  try {
+    const res = await fetch(`${API_BASE}/settings/models?${q.toString()}`);
+    if (!res.ok) return { models: [], error: `HTTP ${res.status}` };
+    return await res.json();
+  } catch (err) {
+    return { models: [], error: (err as Error).message };
+  }
 }
 
 export async function getMemoryStatus(): Promise<MemoryStatus> {
@@ -592,12 +701,70 @@ export interface SummarySettings {
   claudeModel?: string;
   ollamaModel?: string;
   anthropicApiKey?: string;
+  // OpenAI-compatible HTTP providers (openai-compat / ollama-cloud / openai / nvidia)
+  apiBaseUrl?: string;
+  apiModel?: string;
+  apiKey?: string;
+}
+
+// --- v2 source/privacy/sync blocks (mirror src/core/settings.ts) ----------
+
+export interface SourcesEnabled {
+  claude:   { sessions: boolean; plans: boolean; tasks: boolean; pasteCache: boolean;
+              history: boolean; skills: boolean; agents: boolean; commands: boolean;
+              hooks: boolean; plugins: boolean };
+  gemini:   { sessions: boolean; plans: boolean; brain: boolean; extensions: boolean };
+  opencode: { sessions: boolean; plans: boolean; todos: boolean; skills: boolean };
+  codex:    { sessions: boolean; plugins: boolean; skills: boolean };
+  common:   { mcps: boolean; agentMd: boolean };
+}
+
+export interface SourceSettings {
+  claudeHome?: string;
+  geminiHome?: string;
+  codexHome?: string;
+  opencodeDbPath?: string;
+  extraClaudeHomes?: string[];
+  enabled: SourcesEnabled;
+}
+
+export interface UserRedactionRule {
+  label: string;
+  pattern: string;
+}
+
+export interface PrivacySettings {
+  redactIndex: boolean;
+  redactionRules?: UserRedactionRule[];
+  projectDenylist: string[];
+  projectAllowlist?: string[];
+  redactToolOutputs: boolean;
+  redactPasteCache: boolean;
+  redactFilePaths: boolean;
+}
+
+export interface SyncSettings {
+  enabled: boolean;
+  endpoint?: string;
+  tokenRef?: string;
+  upload: {
+    findings: boolean;
+    sessionMeta: boolean;
+    dismissals: boolean;
+    customRules: boolean;
+  };
+  excludeTools: Array<'claude' | 'gemini' | 'opencode' | 'codex'>;
+  excludeProjects: string[];
+  excludePreviewPatterns?: string[];
 }
 
 export interface AppSettings {
   v: number;
   embedding: EmbeddingSettings;
   summary: SummarySettings;
+  sources: SourceSettings;
+  privacy: PrivacySettings;
+  sync: SyncSettings;
 }
 
 export interface SettingsResponse {
@@ -660,36 +827,6 @@ export async function testSettings(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ kind, config }),
   }, 15000);
-  return await res.json();
-}
-
-// --- Companions / codeindex ---
-
-export interface CodeindexStatus {
-  installed: boolean;
-  path?: string;
-  version?: string;
-  size?: number;
-  prebuiltAvailable: boolean;
-  artifactName?: string;
-  unsupportedReason?: string;
-}
-
-export interface CodeindexInfo {
-  status: CodeindexStatus;
-  capabilities: Array<{ name: string; desc: string }>;
-  installHint: { cli: string; curl: string; repo: string };
-  pitch: string;
-}
-
-export async function getCodeindexStatus(): Promise<CodeindexInfo> {
-  const res = await fetchWithTimeout(`${API_BASE}/settings/codeindex`);
-  if (!res.ok) throw new Error(`Failed to load codeindex status: ${res.statusText}`);
-  return await res.json();
-}
-
-export async function uninstallCodeindex(): Promise<{ ok: boolean; removed: boolean; unregistered: boolean }> {
-  const res = await fetchWithTimeout(`${API_BASE}/settings/codeindex/uninstall`, { method: 'POST' });
   return await res.json();
 }
 
@@ -1272,5 +1409,177 @@ export async function getSessionTurns(sessionId: string, limit?: number): Promis
     if (res.status === 404) throw new Error('Session not found');
     throw new Error(`Failed to load turns: ${res.statusText}`);
   }
+  return await res.json();
+}
+
+// ── Secret findings ────────────────────────────────────────────────
+export interface SecretFinding {
+  detector: string;
+  rule: string;
+  line: number;
+  preview: string;
+  scanned_at: number;
+  /** Number of OTHER sessions that contain this same redacted key. */
+  crossSessionCount?: number;
+}
+export interface SessionSecretsResponse {
+  sessionId: string;
+  total: number;
+  byDetector: Record<string, SecretFinding[]>;
+}
+
+export async function getSessionSecrets(sessionId: string): Promise<SessionSecretsResponse> {
+  const res = await fetchWithTimeout(`${API_BASE}/secrets/session/${sessionId}`, {}, 15000);
+  if (!res.ok) throw new Error(`Failed to load secrets: ${res.statusText}`);
+  return await res.json();
+}
+
+// ── Global security view ───────────────────────────────────────────
+export interface SecretsSummary {
+  totals: Array<{ detector: string; findings: number; sessions: number }>;
+  topRules: Array<{ detector: string; rule: string; n: number }>;
+  sessionsWithFindings: number;
+}
+export interface FlaggedSession {
+  sessionId: string;
+  project: string;
+  title: string;
+  mtime: number;
+  detectors: Record<string, number>;
+  total: number;
+  agreement: number;
+}
+export async function getSecretsSummary(): Promise<SecretsSummary> {
+  const res = await fetchWithTimeout(`${API_BASE}/secrets/summary`, {}, 15000);
+  if (!res.ok) throw new Error(`Failed to load secrets summary: ${res.statusText}`);
+  return await res.json();
+}
+export async function getFlaggedSessions(minAgreement = 1): Promise<{ sessions: FlaggedSession[]; count: number }> {
+  const res = await fetchWithTimeout(`${API_BASE}/secrets/sessions?min=${minAgreement}`, {}, 15000);
+  if (!res.ok) throw new Error(`Failed to load flagged sessions: ${res.statusText}`);
+  return await res.json();
+}
+
+export interface SecretRuleRollup {
+  detector: string;
+  rule: string;
+  occurrences: number;
+  distinctSecrets: number;
+  sessions: number;
+  sampleSessions: string[];
+  samplePreviews: string[];
+}
+export async function getSecretsByRule(): Promise<{ rules: SecretRuleRollup[] }> {
+  const res = await fetchWithTimeout(`/api/secrets/by-rule`, {}, 15000);
+  if (!res.ok) throw new Error(`Failed to load rules: ${res.statusText}`);
+  return await res.json();
+}
+
+export async function dismissSecret(preview: string, status: 'rotated' | 'false_positive' | 'dismissed', reason?: string): Promise<void> {
+  const res = await fetchWithTimeout('/api/secrets/dismiss', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ preview, status, reason }),
+  }, 10000);
+  if (!res.ok) throw new Error(`Dismiss failed: ${res.statusText}`);
+}
+export async function undismissSecret(preview: string): Promise<void> {
+  const res = await fetchWithTimeout('/api/secrets/undismiss', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ preview }),
+  }, 10000);
+  if (!res.ok) throw new Error(`Undismiss failed: ${res.statusText}`);
+}
+
+/* ────────────────────────────────────────────────────────────────
+ * Projects: workspaces, declared overrides, dossier rendering.
+ * Backend: /api/projects (see web/server/src/routes/projects.ts).
+ * ──────────────────────────────────────────────────────────────── */
+
+export interface DeclaredSubProject { id: string; name?: string; path: string }
+export interface DeclaredProject {
+  id: string;
+  name?: string;
+  root: string;
+  workspace?: boolean;
+  children?: DeclaredSubProject[];
+}
+export interface ProjectsConfig {
+  projects?: DeclaredProject[];
+  ignore?: Array<{ match: string }>;
+  autoWorkspaceMinRepos?: number;
+}
+export interface AggregatedProject {
+  project_id: string;
+  display_name: string;
+  source: 'git-remote' | 'git-local' | 'auto-workspace' | 'path' | 'user' | 'ignored';
+  items: number;
+  last_mtime: number;
+  workspace_id?: string;
+  is_workspace?: boolean;
+}
+export interface ProjectsResponse {
+  config_path: string;
+  config: ProjectsConfig;
+  workspaces: AggregatedProject[];
+  standalone: AggregatedProject[];
+  all: AggregatedProject[];
+}
+
+export async function getProjects(): Promise<ProjectsResponse> {
+  const res = await fetchWithTimeout(`${API_BASE}/projects`);
+  if (!res.ok) throw new Error(`getProjects failed: ${res.statusText}`);
+  return await res.json();
+}
+
+/**
+ * Hierarchical project tree shape returned by /api/projects/tree.
+ * Workspaces nest projects; an `untracked:*` node holds the path-only
+ * buckets and any orphan transcripts (folder no longer on disk).
+ */
+export interface ProjectTreeApiNode {
+  id: string;
+  name: string;
+  count: number;
+  totalCount: number;
+  children: ProjectTreeApiNode[];
+  source?: 'git-remote' | 'git-local' | 'auto-workspace' | 'path' | 'user' | 'untracked';
+  workspace?: boolean;
+  orphan?: boolean;
+}
+export interface ProjectTreeResponse {
+  nodes: ProjectTreeApiNode[];
+  totalCount: number;
+}
+
+export async function getProjectTree(): Promise<ProjectTreeResponse> {
+  const res = await fetchWithTimeout(`${API_BASE}/projects/tree`);
+  if (!res.ok) throw new Error(`getProjectTree failed: ${res.statusText}`);
+  return await res.json();
+}
+
+export async function saveProjectsConfig(config: ProjectsConfig): Promise<{ ok: boolean; changed_rows: number }> {
+  const res = await fetchWithTimeout(`${API_BASE}/projects`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ config }),
+  }, 60000);
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`saveProjectsConfig failed: ${res.statusText} — ${err}`);
+  }
+  return await res.json();
+}
+
+export async function getProjectDossier(projectId: string, opts: { sessions?: number; tasks?: number; plans?: number } = {}): Promise<{ project_id: string; markdown: string }> {
+  const qs = new URLSearchParams();
+  if (opts.sessions) qs.set('sessions', String(opts.sessions));
+  if (opts.tasks) qs.set('tasks', String(opts.tasks));
+  if (opts.plans) qs.set('plans', String(opts.plans));
+  const id = encodeURIComponent(projectId);
+  const url = `${API_BASE}/projects/${id}/dossier${qs.toString() ? `?${qs}` : ''}`;
+  const res = await fetchWithTimeout(url, {}, 60000);
+  if (!res.ok) throw new Error(`getProjectDossier failed: ${res.statusText}`);
   return await res.json();
 }
