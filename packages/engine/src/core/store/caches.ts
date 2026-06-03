@@ -14,7 +14,7 @@ import { gzipSync, gunzipSync } from 'zlib';
 import type { MetadataCache } from '../metadata-cache.js';
 import type { OutcomeCache } from '../outcome-cache.js';
 import { resolveBackend, type CreateStoreOptions } from './index.js';
-import { openPgPool, pgTenant } from './pg-pool.js';
+import { openPgPool, pgTenant, tenantQuery } from './pg-pool.js';
 
 // Postgres BIGINT columns reject the fractional `stat.mtimeMs` values that
 // SQLite stores verbatim. Floor to whole ms at every pg bind and mtime
@@ -85,7 +85,7 @@ export class PgMetadataCache implements MetadataCacheDriver {
   private readonly t: string;
   constructor(private readonly databaseUrl?: string, tenant?: string) { this.t = pgTenant(tenant); }
   async init(): Promise<void> { this.pool = await openPgPool(this.databaseUrl); }
-  private async q(sql: string, params: unknown[] = []): Promise<any[]> { return (await this.pool.query(sql, params)).rows; }
+  private async q(sql: string, params: unknown[] = []): Promise<any[]> { return (await tenantQuery(this.pool, this.t, sql, params)).rows; }
 
   async setCompute(...a: MArgs<'setCompute'>) {
     const [sessionId, kind, mtime, data] = a;
@@ -212,7 +212,7 @@ export class PgOutcomeCache implements OutcomeCacheDriver {
   private readonly t: string;
   constructor(private readonly databaseUrl?: string, tenant?: string) { this.t = pgTenant(tenant); }
   async init(): Promise<void> { this.pool = await openPgPool(this.databaseUrl); }
-  private async q(sql: string, params: unknown[] = []): Promise<any[]> { return (await this.pool.query(sql, params)).rows; }
+  private async q(sql: string, params: unknown[] = []): Promise<any[]> { return (await tenantQuery(this.pool, this.t, sql, params)).rows; }
 
   async get(...a: OArgs<'get'>) {
     const r = (await this.q(`SELECT ${OUTCOME_COLS} FROM session_outcome_cache WHERE tenant=$1 AND session_id=$2`, [this.t, a[0]]))[0];

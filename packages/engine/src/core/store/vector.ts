@@ -1,3 +1,4 @@
+import { tenantQuery } from './pg-pool.js';
 /**
  * VectorStore driver — abstracts the embedding/vector layer behind the same
  * storage flag as the relational stores.
@@ -106,6 +107,11 @@ export class PgVectorStore implements VectorStore {
            project_path TEXT DEFAULT '', project_id TEXT DEFAULT '', file_path TEXT DEFAULT '', mtime BIGINT DEFAULT 0,
            embedding vector(${this.dim}), PRIMARY KEY (tenant, chunk_id))`);
       await this.pool.query(`CREATE INDEX IF NOT EXISTS idx_vec_item ON memory_vectors(tenant, source_type, item_id)`);
+      // RLS: memory_vectors lives outside pg-schema.ts, so wall it here too.
+      await this.pool.query(`ALTER TABLE memory_vectors ENABLE ROW LEVEL SECURITY`);
+      await this.pool.query(`ALTER TABLE memory_vectors FORCE ROW LEVEL SECURITY`);
+      await this.pool.query(`DROP POLICY IF EXISTS tenant_isolation ON memory_vectors`);
+      await this.pool.query(`CREATE POLICY tenant_isolation ON memory_vectors USING (tenant = current_setting('app.tenant', true)) WITH CHECK (tenant = current_setting('app.tenant', true))`);
       this.tableReady = true;
       this.vectorOk = !!this.embedder;
     } catch (e) {
@@ -118,7 +124,7 @@ export class PgVectorStore implements VectorStore {
     }
   }
 
-  private q(sql: string, params: unknown[] = []) { return this.pool.query(sql, params).then((r: any) => r.rows); }
+  private q(sql: string, params: unknown[] = []) { return tenantQuery(this.pool, this.t, sql, params).then((r: any) => r.rows); }
   private vecLiteral(v: number[]) { return `[${v.join(',')}]`; }
   // memory_vectors.mtime is BIGINT; stat.mtimeMs is fractional. Floor to whole
   // ms at every bind/compare (same rationale as store/pg.ts `intMs`).

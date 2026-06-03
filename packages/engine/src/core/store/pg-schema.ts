@@ -222,4 +222,30 @@ CREATE TABLE IF NOT EXISTS diary_entries (
   PRIMARY KEY (tenant, id)
 );
 CREATE INDEX IF NOT EXISTS idx_diary_agent ON diary_entries(tenant, agent);
+
+-- ── Row-Level Security: the wall between tenants ─────────────────────────
+-- Every tenant-bearing table is force-RLS'd and isolated by the per-transaction
+-- 'app.tenant' GUC the drivers set (see pg-pool.ts tenantQuery). A non-superuser
+-- DATABASE_URL role is required in multi-tenant cloud mode for FORCE RLS to
+-- bind; self-host pins tenant='default' (and a superuser DSN simply bypasses,
+-- which is harmless for a single tenant). memory_vectors is handled in vector.ts.
+DO $$
+DECLARE t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY[
+    'memory_metadata','memory_links','content_cache','kv_store','memory_chunks',
+    'secret_findings','secret_rules','secret_dismissals','session_metadata','tenants',
+    'summary_errors','compute_cache','session_outcome_cache','kg_entities','kg_triples',
+    'wal_log','diary_entries'
+  ] LOOP
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+    EXECUTE format('DROP POLICY IF EXISTS tenant_isolation ON %I', t);
+    EXECUTE format($p$
+      CREATE POLICY tenant_isolation ON %I
+        USING (tenant = current_setting('app.tenant', true))
+        WITH CHECK (tenant = current_setting('app.tenant', true))
+    $p$, t);
+  END LOOP;
+END $$;
 `;
