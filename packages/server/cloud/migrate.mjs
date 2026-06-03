@@ -10,7 +10,7 @@ const url = process.env.MIGRATE_DATABASE_URL || process.env.DATABASE_URL;
 if (!url) { console.error('MIGRATE_DATABASE_URL required'); process.exit(1); }
 const c = new pg.Client({ connectionString: url });
 await c.connect();
-for (const f of ['./migrations/0001_init.sql', './migrations/0002_messages.sql']) {
+for (const f of ['./migrations/0001_init.sql', './migrations/0002_messages.sql', './migrations/0003_teams.sql']) {
   await c.query(readFileSync(new URL(f, import.meta.url), 'utf8'));
   console.log(`applied ${f}`);
 }
