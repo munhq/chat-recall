@@ -51,3 +51,12 @@ coverage/
 # Misc
 *.tgz
 *.log
+
+# scratch screenshots from manual UI checks
+.tmp-*.png
+feed-after-dedup.png
+munbot-filter.png
+post-restart.png
+projects-page*.png
+sidebar-new-tree.png
+topbar-state.png
