@@ -3,7 +3,7 @@
  */
 
 import express from 'express';
-import { getAllSessions, parseSessionFile, MetadataCache, MemoryStore } from '../imports.js';
+import { getAllSessions, parseSessionFile, createMetadataCache, createStore } from '../imports.js';
 import type { SessionEntry, SourceType } from '../imports.js';
 import { getModelContextLimit } from '../../../../src/core/utils.js';
 
@@ -85,8 +85,8 @@ router.get('/', async (req, res) => {
       return res.json(analyticsCache);
     }
 
-    const store = new MemoryStore();
-    const cache = new MetadataCache();
+    const store = await createStore();
+    const cache = await createMetadataCache();
 
     // Per-project aggregation
     const projectStats = new Map<string, {
@@ -170,7 +170,7 @@ router.get('/', async (req, res) => {
     const contextUtilBuckets = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; // 0-10%, 10-20%, ..., 90-100%
 
     // Iterate ALL session items from MemoryStore (Claude + Gemini + OpenCode + Codex)
-    const allItems = store.listItems('session' as SourceType, 10000, 0);
+    const allItems = await store.listItems('session' as SourceType, 10000, 0);
     // Also get Claude sessions from filesystem for those not yet in the store
     const storeIds = new Set(allItems.map(i => i.id));
     const claudeOnlyEntries: Array<{ sessionId: string; filePath: string; projectPath: string; created: string; modified: string; fileMtime: number }> = [];
@@ -423,8 +423,8 @@ router.get('/', async (req, res) => {
       } catch {}
     }
 
-    store.close();
-    cache.close();
+    await store.close();
+    await cache.close();
 
     // Load CLAUDE.md descriptions for known projects
     try {
@@ -679,9 +679,9 @@ router.get('/', async (req, res) => {
  */
 router.get('/patterns', async (_req, res) => {
   try {
-    const store = new MemoryStore();
+    const store = await createStore();
     try {
-      const items = store.listItems('session' as SourceType, 5000, 0);
+      const items = await store.listItems('session' as SourceType, 5000, 0);
 
       // ── Hot files: how many distinct sessions touched this file? ─────
       const fileCount = new Map<string, {
@@ -802,14 +802,14 @@ router.get('/patterns', async (_req, res) => {
           // True session count: COUNT(DISTINCT item_id) instead of "topK
           // unique items from a 150-row LIMIT" (which capped every popular
           // keyword at ~30 — the bug Insights surfaced as identical counts).
-          const sessionCount = store.countDistinctItemsMatching(k, {
+          const sessionCount = await store.countDistinctItemsMatching(k, {
             sourceTypes: ['session' as SourceType],
           });
           if (sessionCount < 2) continue;
 
           // Sample 4 ranked hits for the topic snippet preview. We still
           // want ranked rows here, just a small batch — so cap at topK=8.
-          const hits = store.searchFTS(k, { topK: 8, sourceTypes: ['session' as SourceType] });
+          const hits = await store.searchFTS(k, { topK: 8, sourceTypes: ['session' as SourceType] });
           const seen = new Set<string>();
           const samples: { id: string; project: string; snippet: string }[] = [];
           for (const h of hits) {
@@ -843,7 +843,7 @@ router.get('/patterns', async (_req, res) => {
         },
       });
     } finally {
-      store.close();
+      await store.close();
     }
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });

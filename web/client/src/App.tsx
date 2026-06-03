@@ -7,23 +7,30 @@ import TopBar from './components/TopBar';
 import Sidebar from './components/Sidebar';
 import ConversationList from './components/ConversationList';
 import ConversationViewer from './components/ConversationViewer';
-import MemoryExplorer from './components/MemoryExplorer';
+import MemoryExplorer, { MemoryDetail } from './components/MemoryExplorer';
 import ToolkitExplorer from './components/ToolkitExplorer';
 import Dashboard from './components/Dashboard';
 import ActivityTimeline from './components/ActivityTimeline';
+import SecurityExplorer from './components/SecurityExplorer';
 import SettingsPage from './components/SettingsPage';
+import ProjectMainPane from './components/ProjectMainPane';
 import { SidebarExtrasProvider, useSidebarExtras } from './context/sidebar-extras';
 import {
   getStatus,
   getRecentSessionsPage,
   getConversationWithSubagents,
   searchSessions,
+  getProjectTree,
+  getMemoryItem,
   type SessionInfo,
   type SearchResult,
+  type MemoryHit,
+  type MemoryMetadataRow,
   type Subagent,
+  type ProjectTreeApiNode,
 } from './services/api';
 
-type ViewMode = 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'settings';
+type ViewMode = 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'settings';
 
 /**
  * Recursive tree node used by the project sidebar. One node renders as
@@ -31,124 +38,96 @@ type ViewMode = 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'se
  * a project directly at that path; an inner folder may also have
  * `count > 0` if sessions exist exactly at that path.
  */
+/**
+ * Sidebar tree node. `fullPath` is the filter key — it's now a
+ * `project_id` (e.g. `git:github.com/me/repo`, `ws:personal`,
+ * `untracked:all`) rather than a filesystem path. Kept under the
+ * `fullPath` name so the existing Sidebar/onSelect plumbing keeps
+ * working without churning every prop.
+ */
 export interface ProjectTreeNode {
-  name: string;       // display label (may include "/" from collapsed chains)
-  fullPath: string;   // absolute path used for filtering
-  count: number;      // sessions directly at this path
-  totalCount: number; // count + sum of descendants
-  children: ProjectTreeNode[];
-}
-
-// Mirror of server-side normalizeProjectPath. Kept local so the client
-// has no cross-build dependency on the server package.
-function normalizeProjectPath(p: string | null | undefined): string {
-  if (!p) return '';
-  let n = String(p).trim();
-  if (!n) return '';
-  n = n.replace(/\\/g, '/');
-  n = n.replace(/\/+/g, '/');
-  if (n.length > 1) n = n.replace(/\/+$/, '');
-  return n;
-}
-
-interface TrieNode {
   name: string;
   fullPath: string;
   count: number;
-  isProject: boolean;
-  children: Map<string, TrieNode>;
-}
-
-function buildTrie(projects: Record<string, number>): TrieNode {
-  const root: TrieNode = {
-    name: '',
-    fullPath: '',
-    count: 0,
-    isProject: false,
-    children: new Map(),
-  };
-  for (const [rawPath, count] of Object.entries(projects)) {
-    const path = normalizeProjectPath(rawPath);
-    if (!path) continue;
-    const segs = path.split('/').filter(Boolean);
-    if (segs.length === 0) continue;
-    let cur = root;
-    let acc = '';
-    for (const seg of segs) {
-      acc = acc + '/' + seg;
-      let child = cur.children.get(seg);
-      if (!child) {
-        child = { name: seg, fullPath: acc, count: 0, isProject: false, children: new Map() };
-        cur.children.set(seg, child);
-      }
-      cur = child;
-    }
-    cur.count += count;
-    cur.isProject = true;
-  }
-  return root;
+  totalCount: number;
+  children: ProjectTreeNode[];
+  /** True when this node groups other projects (visual hint, not selectable). */
+  workspace?: boolean;
+  /** True when the underlying folder no longer exists on disk. */
+  orphan?: boolean;
+  /** Resolver source tag for icon/coloring (git-remote, auto-workspace, path, …). */
+  source?: string;
 }
 
 /**
- * LCP-strip: walk down from the synthetic root while we have exactly one
- * child that is not itself a project. This strips shared structural
- * prefixes like /home/<user>/code without hardcoding any path.
- *
- * Returns the set of top-level nodes to render. If every project shares
- * a single deep path (one-project case), returns that project as a
- * single-element array.
+ * Convert the server's /api/projects/tree response into the client's
+ * ProjectTreeNode shape. The server already does grouping (workspaces →
+ * projects → untracked footer) and orphan detection; we only adapt the
+ * keys (id/count/totalCount/children) and keep nesting as-is.
  */
-function findTopLevel(root: TrieNode): TrieNode[] {
-  let cur = root;
-  while (!cur.isProject && cur.children.size === 1) {
-    cur = cur.children.values().next().value!;
-  }
-  if (cur.isProject) return [cur];
-  return Array.from(cur.children.values());
-}
-
-/**
- * Convert a TrieNode subtree into a ProjectTreeNode, collapsing any
- * transparent chain (single child + no own sessions) into the display
- * name of its descendant — so /foo/bar/baz with no projects above baz
- * renders as a single "foo/bar/baz" leaf rather than three nested rows.
- */
-function toTreeNode(node: TrieNode, namePrefix = ''): ProjectTreeNode {
-  const myName = namePrefix ? namePrefix + '/' + node.name : node.name;
-
-  if (node.children.size === 1 && !node.isProject) {
-    const only = node.children.values().next().value!;
-    return toTreeNode(only, myName);
-  }
-
-  // Folders first, then leaf discussions. Alphabetic within each group.
-  const children = Array.from(node.children.values())
-    .map((c) => toTreeNode(c))
-    .sort(compareTreeNodes);
-
-  const totalCount = node.count + children.reduce((s, c) => s + c.totalCount, 0);
-
+function nodeFromApi(n: ProjectTreeApiNode): ProjectTreeNode {
   return {
-    name: myName,
-    fullPath: node.fullPath,
-    count: node.count,
-    totalCount,
-    children,
+    name: n.name,
+    fullPath: n.id,
+    count: n.count,
+    totalCount: n.totalCount,
+    children: (n.children || []).map(nodeFromApi),
+    workspace: !!n.workspace,
+    orphan: !!n.orphan,
+    source: n.source,
   };
 }
 
-function compareTreeNodes(a: ProjectTreeNode, b: ProjectTreeNode): number {
-  const aIsFolder = a.children.length > 0;
-  const bIsFolder = b.children.length > 0;
-  if (aIsFolder !== bIsFolder) return aIsFolder ? -1 : 1;
-  return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+/** Public: convert API tree response → client tree. */
+export function projectTreeFromApi(nodes: ProjectTreeApiNode[]): ProjectTreeNode[] {
+  return nodes.map(nodeFromApi);
 }
 
-export function buildProjectTree(projects: Record<string, number>): ProjectTreeNode[] {
-  const trie = buildTrie(projects);
-  return findTopLevel(trie)
-    .map((n) => toTreeNode(n))
-    .sort(compareTreeNodes);
+/** Walk the tree to find a node's display name for a given project_id. */
+function findProjectName(tree: ProjectTreeNode[], projectId: string | null): string | undefined {
+  if (!projectId) return undefined;
+  for (const n of tree) {
+    if (n.fullPath === projectId) return n.name;
+    const inChild = findProjectName(n.children, projectId);
+    if (inChild) return inChild;
+  }
+  return undefined;
+}
+
+/**
+ * Decide whether the search view wraps in a ProjectMainPane (with the
+ * `Conversations | Dossier | Activity` tab strip) or renders the
+ * conversation list + viewer bare.
+ *
+ * Wrap when a real project is selected — i.e. a project_id (`git:*`,
+ * `git-local:*`, `ws:*`, user-declared). Skip wrapping for `untracked:`
+ * footer node, raw `path:` rows, and the "All Projects" deselected
+ * state — those don't have a dossier worth showing.
+ */
+function renderSearchView(opts: {
+  projectFilter: string | null;
+  projectDisplayName?: string;
+  conversationList: React.ReactNode;
+  conversationViewer: React.ReactNode;
+  activityPane: React.ReactNode;
+}): React.ReactNode {
+  const id = opts.projectFilter;
+  const eligible = !!id && /^(git:|git-local:|ws:|user:)/.test(id) || (!!id && !id.startsWith('untracked:') && !id.startsWith('path:') && !id.startsWith('ignored:'));
+
+  if (!id || !eligible) {
+    return <>{opts.conversationList}{opts.conversationViewer}</>;
+  }
+
+  return (
+    <ProjectMainPane
+      projectId={id}
+      displayName={opts.projectDisplayName}
+      renderConversations={() => (
+        <>{opts.conversationList}{opts.conversationViewer}</>
+      )}
+      renderActivity={() => opts.activityPane}
+    />
+  );
 }
 
 export default function App() {
@@ -190,46 +169,64 @@ function AppInner() {
   // for the cold 1-2s walk and the user thinks the app broke.
   const [recentLoadingFirstPage, setRecentLoadingFirstPage] = useState(true);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [memoryResults, setMemoryResults] = useState<MemoryHit[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
   const [subagents, setSubagents] = useState<Subagent[]>([]);
   const [conversationLoading, setConversationLoading] = useState(false);
 
   const [selectedResult, setSelectedResult] = useState<SearchResult | null>(null);
+  // Set when a non-session search hit (history/paste/plan/…) is opened in the
+  // memory-item viewer instead of the conversation viewer.
+  const [selectedMemoryItem, setSelectedMemoryItem] = useState<MemoryMetadataRow | null>(null);
   const [selectedSessionInfo, setSelectedSessionInfo] = useState<SessionInfo | null>(null);
 
-  // Build the project tree from status. LCP-strip + collapse-transparent-chains
-  // gives a sensible hierarchy on any OS without hardcoded path depths.
-  // Static all-time tree from getStatus — used everywhere except Activity.
+  // The project tree now comes from /api/projects/tree (project_id-grouped,
+  // workspace-aware, orphan-flagged). The legacy filesystem-trie was
+  // replaced because (a) it bucketed PR-bot worktrees and /tmp scratch
+  // sessions as first-class projects and (b) used path-prefix filtering
+  // that no longer matches the server's project_id contract.
+  // getStatus still drives the vector/lance health banner — its
+  // `projects` field is unused now.
   const [allTimeTree, setAllTimeTree] = useState<ProjectTreeNode[]>([]);
   const [allTimeTotal, setAllTimeTotal] = useState(0);
+  const [indexHealth, setIndexHealth] = useState<{ vectorOk: boolean; vectorError: string | null } | null>(null);
   useEffect(() => {
-    getStatus()
-      .then((stats) => {
-        const tree = buildProjectTree(stats.projects);
-        setAllTimeTree(tree);
-        setAllTimeTotal(tree.reduce((s, n) => s + n.totalCount, 0));
-      })
-      .catch(console.error);
+    let cancelled = false;
+    const refresh = () => {
+      Promise.all([getProjectTree(), getStatus()])
+        .then(([tree, stats]) => {
+          if (cancelled) return;
+          const nodes = projectTreeFromApi(tree.nodes);
+          setAllTimeTree(nodes);
+          setAllTimeTotal(tree.totalCount);
+          setIndexHealth({
+            vectorOk: stats.vectorOk !== false,
+            vectorError: stats.vectorError ?? null,
+          });
+        })
+        .catch(console.error);
+    };
+    refresh();
+    // Poll every 30s so a freshly-indexed project surfaces without a manual
+    // reload, and the vector-health banner clears once it self-heals.
+    const id = setInterval(refresh, 30_000);
+    return () => { cancelled = true; clearInterval(id); };
   }, []);
 
-  // Reset the active-window tree whenever the user leaves the Activity
-  // view, so re-entering it re-fetches a fresh window.
+  // Sidebar now shows the same project-id tree in every view. The Activity
+  // pane filters its own content by recent window; we no longer rebuild a
+  // separate window-scoped sidebar tree (the old path-keyed builder is gone
+  // along with path-prefix filtering).
+  useEffect(() => {
+    setProjectTree(allTimeTree);
+    setTotalProjectCount(allTimeTotal);
+  }, [allTimeTree, allTimeTotal]);
+
+  // Keep the activity setter alive for downstream pass-through to
+  // ActivityTimeline; the value is no longer used to rebuild the tree.
   useEffect(() => {
     if (view !== 'activity') setActiveProjectsForView(null);
   }, [view]);
-
-  // Pick which tree to show: window-scoped while in Activity, all-time
-  // otherwise. The active tree's counts represent edits-in-window.
-  useEffect(() => {
-    if (view === 'activity' && activeProjectsForView) {
-      const tree = buildProjectTree(activeProjectsForView);
-      setProjectTree(tree);
-      setTotalProjectCount(tree.reduce((s, n) => s + n.totalCount, 0));
-    } else {
-      setProjectTree(allTimeTree);
-      setTotalProjectCount(allTimeTotal);
-    }
-  }, [view, activeProjectsForView, allTimeTree, allTimeTotal]);
 
   // Keyboard shortcut for search (Cmd/Ctrl + K) and Escape-to-close
   // for the mobile drawer (matches modal/dialog conventions).
@@ -278,6 +275,7 @@ function AppInner() {
         setRecentTotal(page.total);
         setRecentHasMore(page.hasMore);
         setSearchResults([]);
+        setMemoryResults([]);
         setRecentLoadingFirstPage(false);
 
         // Prefetch the next pages eagerly so scrolling feels instant.
@@ -348,11 +346,13 @@ function AppInner() {
     async (q: string) => {
       if (!q.trim()) {
         setSearchResults([]);
+        setMemoryResults([]);
         return;
       }
       try {
-        const results = await searchSessions(q, 50, projectFilter || undefined);
-        setSearchResults(results);
+        const { sessions: hits, memory } = await searchSessions(q, 50, projectFilter || undefined);
+        setSearchResults(hits);
+        setMemoryResults(memory);
       } catch (err) {
         console.error('Search failed:', err);
       }
@@ -367,6 +367,7 @@ function AppInner() {
         handleSearch(query);
       } else {
         setSearchResults([]);
+        setMemoryResults([]);
       }
     }, 300);
     return () => clearTimeout(timer);
@@ -385,6 +386,24 @@ function AppInner() {
   }, [query]);
 
   const handleSelectSession = useCallback((sessionId: string) => {
+    // Non-session search hits (history / paste / plan / task / claude_md /
+    // diary) carry a memory itemId, not a conversation id — routing them to
+    // the session viewer 404s. Open them in the memory-item viewer instead.
+    const mem = memoryResults.find((m) => m.itemId === sessionId && m.sourceType !== 'session');
+    if (mem) {
+      setSelectedSessionId(null);
+      setSelectedSessionInfo(null);
+      setSelectedResult(null);
+      setMessages([]);
+      setSubagents([]);
+      setSelectedMemoryItem(null);
+      getMemoryItem(mem.sourceType, mem.itemId)
+        .then(setSelectedMemoryItem)
+        .catch((err) => console.error('Failed to load memory item:', err));
+      return;
+    }
+
+    setSelectedMemoryItem(null);
     setSelectedSessionId(sessionId);
     setMessages([]);
     setSubagents([]);
@@ -393,7 +412,7 @@ function AppInner() {
     setSelectedSessionInfo(info);
     const result = searchResults.find((r) => r.sessionId === sessionId) || null;
     setSelectedResult(result);
-  }, [recentSessions, searchResults]);
+  }, [recentSessions, searchResults, memoryResults]);
 
   const handleLoadFull = useCallback(async () => {
     if (!selectedSessionId) return;
@@ -411,33 +430,78 @@ function AppInner() {
 
   const handleCloseConversation = useCallback(() => {
     setSelectedSessionId(null);
+    setSelectedMemoryItem(null);
     setSelectedResult(null);
     setSelectedSessionInfo(null);
     setMessages([]);
     setSubagents([]);
   }, []);
 
-  const handleMemorySessionClick = useCallback((sessionId: string) => {
+  // Tracks the *intent* of how the user reached the conversation
+  // viewer, so the viewer can land on the most-relevant tab. Coming
+  // from Activity, they were just looking at file edits — landing on
+  // Diff matches that mental model. From Search, they want Full.
+  const [viewerInitialTab, setViewerInitialTab] = useState<string | undefined>(undefined);
+
+  const handleMemorySessionClick = useCallback((sessionId: string, opts?: { initialTab?: string }) => {
     setView('search');
+    setViewerInitialTab(opts?.initialTab);
     handleSelectSession(sessionId);
   }, [handleSelectSession]);
 
+  const handleActivitySessionClick = useCallback((sessionId: string) => {
+    handleMemorySessionClick(sessionId, { initialTab: 'diff' });
+  }, [handleMemorySessionClick]);
+
   const displayedSessions: SessionInfo[] = useMemo(() => {
-    if (searchResults.length > 0) {
-      return searchResults.map((r) => ({
-        sessionId: r.sessionId,
-        projectPath: r.projectPath,
-        modified: r.modified,
-        firstPrompt: r.firstPrompt,
-        summary: r.summary,
-        tool: '',
-        created: r.created,
-        filePath: '',
-        score: r.score,
-      } as SessionInfo & { score?: number }));
+    if (searchResults.length === 0 && memoryResults.length === 0) {
+      return recentSessions;
     }
-    return recentSessions;
-  }, [searchResults, recentSessions]);
+
+    const q = query.trim();
+
+    const sessionRows: SessionInfo[] = searchResults.map((r) => ({
+      sessionId: r.sessionId,
+      projectPath: r.projectPath,
+      modified: r.modified,
+      firstPrompt: r.firstPrompt,
+      summary: r.summary,
+      tool: '',
+      created: r.created,
+      filePath: '',
+      score: r.score,
+      matchedChunks: r.matchedChunks,
+      query: q,
+      sourceType: 'session',
+    } as SessionInfo));
+
+    // Non-session memory hits: paste / plan / claude_md / task / history / diary.
+    // We synthesize SessionInfo rows for them so they slot into the same list.
+    // Source type is preserved so the row can render a distinct badge and the
+    // click handler can route to the right viewer.
+    const seenSessions = new Set(sessionRows.map(r => r.sessionId));
+    const memoryRows: SessionInfo[] = memoryResults
+      .filter(m => m.sourceType !== 'session' || !seenSessions.has(m.itemId))
+      .map((m) => {
+        const mtimeIso = m.mtime ? new Date(m.mtime).toISOString() : '';
+        return {
+          sessionId: m.itemId,
+          projectPath: m.projectPath,
+          modified: mtimeIso,
+          created: mtimeIso,
+          filePath: m.filePath,
+          firstPrompt: m.title,
+          summary: undefined,
+          tool: '',
+          score: m.score,
+          matchedChunks: m.matchedChunks,
+          query: q,
+          sourceType: m.sourceType,
+        } as SessionInfo;
+      });
+
+    return [...sessionRows, ...memoryRows];
+  }, [searchResults, memoryResults, recentSessions, query]);
 
   // Close the drawer whenever the user picks a project, switches views,
   // or otherwise navigates — otherwise the drawer stays open masking the
@@ -460,7 +524,7 @@ function AppInner() {
     <div
       className="app"
       data-mobile-sidebar-open={mobileSidebarOpen ? 'true' : undefined}
-      data-has-selection={view === 'search' && selectedSessionId ? 'true' : undefined}
+      data-has-selection={view === 'search' && (selectedSessionId || selectedMemoryItem) ? 'true' : undefined}
     >
       <TopBar
         view={view}
@@ -472,6 +536,46 @@ function AppInner() {
         onMobileMenu={() => setMobileSidebarOpen((v) => !v)}
         mobileSidebarOpen={mobileSidebarOpen}
       />
+
+      {indexHealth && indexHealth.vectorOk === false && (
+        <div
+          role="status"
+          data-testid="index-health-banner"
+          style={{
+            background: 'var(--cr-warn-surf)',
+            color: 'var(--cr-warn-500)',
+            borderBottom: '1px solid var(--cr-warn-line)',
+            padding: '6px 14px',
+            fontSize: 12,
+            lineHeight: 1.4,
+            display: 'flex',
+            gap: 12,
+            alignItems: 'center',
+          }}
+        >
+          <strong style={{ letterSpacing: '0.04em' }}>VECTOR INDEX DEGRADED</strong>
+          <span style={{ color: 'var(--cr-fg-2)' }}>
+            Falling back to keyword (FTS5) search. Auto-indexer will recover on next compaction; reload to retry.
+          </span>
+          {indexHealth.vectorError && (
+            <span
+              title={indexHealth.vectorError}
+              style={{
+                fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)',
+                color: 'var(--cr-fg-3)',
+                fontSize: 11,
+                marginLeft: 'auto',
+                maxWidth: 480,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {indexHealth.vectorError}
+            </span>
+          )}
+        </div>
+      )}
       {/*
        * Settings has its own full-width chrome. Every other view shares the
        * left sidebar (Source filter + Project tree) so the tool/project
@@ -511,33 +615,49 @@ function AppInner() {
           />
 
           {view === 'search' && (
-            <>
-              <ConversationList
-                results={displayedSessions}
-                selected={selectedSessionId}
-                onSelect={handleSelectSession}
-                sort={sort}
-                setSort={setSort}
-                hasMore={!query.trim() && recentHasMore}
-                loadingMore={recentLoadingMore}
-                total={recentTotal}
-                onLoadMore={loadMoreRecent}
-                /* Skeletons only when there are no rows yet AND the first
-                   page is still in flight; otherwise we'd flash skeletons
-                   over an already-populated list during a refilter. */
-                loading={recentLoadingFirstPage && !query.trim()}
-              />
-              <ConversationViewer
-                sessionId={selectedSessionId}
-                messages={messages}
-                subagents={subagents}
-                loading={conversationLoading}
-                onClose={handleCloseConversation}
-                onLoadFull={handleLoadFull}
-                searchResult={selectedResult}
-                sessionInfo={selectedSessionInfo}
-              />
-            </>
+            renderSearchView({
+              projectFilter,
+              projectDisplayName: findProjectName(projectTree, projectFilter),
+              conversationList: (
+                <ConversationList
+                  results={displayedSessions}
+                  selected={selectedSessionId}
+                  onSelect={handleSelectSession}
+                  sort={sort}
+                  setSort={setSort}
+                  hasMore={!query.trim() && recentHasMore}
+                  loadingMore={recentLoadingMore}
+                  total={recentTotal}
+                  onLoadMore={loadMoreRecent}
+                  loading={recentLoadingFirstPage && !query.trim()}
+                />
+              ),
+              conversationViewer: selectedMemoryItem ? (
+                <div style={{ overflowY: 'auto', height: '100%' }}>
+                  <MemoryDetail item={selectedMemoryItem} onSessionClick={handleSelectSession} />
+                </div>
+              ) : (
+                <ConversationViewer
+                  sessionId={selectedSessionId}
+                  messages={messages}
+                  subagents={subagents}
+                  loading={conversationLoading}
+                  onClose={handleCloseConversation}
+                  onLoadFull={handleLoadFull}
+                  searchResult={selectedResult}
+                  sessionInfo={selectedSessionInfo}
+                  initialTab={viewerInitialTab}
+                />
+              ),
+              activityPane: (
+                <ActivityTimeline
+                  onSessionClick={handleActivitySessionClick}
+                  toolFilter={toolFilter}
+                  projectFilter={projectFilter}
+                  onActiveProjects={setActiveProjectsForView}
+                />
+              ),
+            })
           )}
           {view === 'memory' && (
             <MemoryExplorer
@@ -560,10 +680,15 @@ function AppInner() {
           )}
           {view === 'activity' && (
             <ActivityTimeline
-              onSessionClick={handleMemorySessionClick}
+              onSessionClick={handleActivitySessionClick}
               toolFilter={toolFilter}
               projectFilter={projectFilter}
               onActiveProjects={setActiveProjectsForView}
+            />
+          )}
+          {view === 'security' && (
+            <SecurityExplorer
+              onSessionClick={(sid) => handleMemorySessionClick(sid, { initialTab: 'security' })}
             />
           )}
         </div>

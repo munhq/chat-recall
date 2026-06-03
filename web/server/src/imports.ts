@@ -9,6 +9,13 @@
 // Core
 export { MemoryIndex, type MemoryChunkRecord } from '../../../src/core/memory-index.js';
 export { MemoryStore } from '../../../src/core/memory-store.js';
+// Storage-flag drivers (sqlite|postgres) — routes/services should prefer these
+// async factories over instantiating the concrete classes directly.
+export { createStore, type StorageDriver } from '../../../src/core/store/index.js';
+export { createVectorStore, type VectorStore } from '../../../src/core/store/vector.js';
+export { createMetadataCache, createOutcomeCache, type MetadataCacheDriver, type OutcomeCacheDriver } from '../../../src/core/store/caches.js';
+export { createKnowledgeGraph, type KnowledgeGraphDriver } from '../../../src/core/store/knowledge-graph.js';
+// Re-export the row type so route files can use it without deep paths.
 export {
   OllamaEmbedder,
   GeminiEmbedder,
@@ -64,13 +71,32 @@ export { cachedRecentEdits } from '../../../src/core/cached-timeline.js';
 export {
   extractTurnsAny,
   replaySessionAny,
-  getSessionCommitsAny,
-  computeOutcomeAny,
 } from '../../../src/core/session-multi-tool.js';
-
-// Session replay / git / sentiment / outcome (per-session deep-dive)
+// ToolBackend registry — single source of truth for per-tool paths,
+// id prefixes, format adapters, and per-session operations.
 export {
-  replaySession,
+  claudeBackend,
+  geminiBackend,
+  opencodeBackend,
+  codexBackend,
+} from '../../../src/core/backends/index.js';
+export {
+  getBackendForId,
+  getBackend,
+  listAllBackends,
+  listAvailableBackends,
+} from '../../../src/core/tool-backend.js';
+export {
+  claudeHomeDir,
+  geminiHomeDir,
+  opencodeDbPath,
+  codexHomeDir,
+} from '../../../src/core/tool-paths.js';
+
+// Session replay / git / sentiment / outcome (per-session deep-dive).
+// Use `replaySessionAny` for the registry-routed version that works
+// across every backend.
+export {
   findRepoRoot,
   type SessionDiffResult,
   type FileReplayResult,
@@ -90,7 +116,6 @@ export {
   type SessionMarkerCounts,
 } from '../../../src/core/session-sentiment.js';
 export {
-  extractTurns,
   type SessionTurn,
   type TurnKind,
   type ExtractedTurns,
@@ -121,19 +146,9 @@ export { SubagentsSource } from '../../../src/parsers/subagents-source.js';
 export { HooksSource } from '../../../src/parsers/hooks-source.js';
 export { PluginsSource } from '../../../src/parsers/plugins-source.js';
 
-// Companions (codeindex)
-export {
-  checkCodeindexStatus,
-  installCodeindex,
-  uninstallCodeindex,
-  registerCodeindexMcp,
-  unregisterCodeindexMcp,
-  CODEINDEX_BIN_PATH,
-  type CodeindexStatus,
-} from '../../../src/core/companions.js';
 
 // Summary
-export { CLI_PRESETS as SUMMARY_CLI_PRESET_COMMANDS } from '../../../src/core/summary-generator.js';
+export { CLI_PRESETS as SUMMARY_CLI_PRESET_COMMANDS, SummaryGenerator, defaultApiBaseUrl } from '../../../src/core/summary-generator.js';
 
 // Core (new features)
 export { KnowledgeGraph } from '../../../src/core/knowledge-graph.js';
@@ -141,6 +156,20 @@ export { sanitizeQuery } from '../../../src/core/query-sanitizer.js';
 export { getWAL } from '../../../src/core/write-ahead-log.js';
 export { classifyChunk, type MemoryType, type ClassificationResult } from '../../../src/core/memory-classifier.js';
 export { extractEntities, extractAndPopulateKG } from '../../../src/core/entity-extractor.js';
+export {
+  resolveProjectId,
+  resolveWorkspaceId,
+  loadProjectsConfig,
+  getProjectsConfigPath,
+  resetProjectResolverCache,
+} from '../../../src/core/project-resolver.js';
+export { buildProjectDossier } from '../../../src/core/project-dossier.js';
+export type {
+  DeclaredProject,
+  DeclaredSubProject,
+  ProjectsConfig,
+  ResolvedProject,
+} from '../../../src/types/project.js';
 
 // Types
 export type {

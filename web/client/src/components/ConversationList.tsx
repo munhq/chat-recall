@@ -73,10 +73,21 @@ export default function ConversationList({
   }, [results, effectiveSort]);
 
   // Group by date for browsing; flat list for relevance ordering.
-  const grouped =
+  const groupedRaw =
     effectiveSort === 'rel'
       ? [{ label: 'By relevance', items: sortedResults }]
       : groupByDate(sortedResults);
+
+  // Collapse adjacent template-runs. A PR-bot pushes the same first
+  // prompt against the same project many times in rapid succession;
+  // showing 150 identical-looking rows is noise. Adjacent rows with
+  // (same project, same first 80 chars of first-prompt, within the
+  // same date group) collapse into one representative row that
+  // displays a "(N runs)" badge.
+  const grouped = useMemo(() => groupedRaw.map(g => ({
+    label: g.label,
+    items: collapseAdjacentRuns(g.items),
+  })), [groupedRaw]);
 
   return (
     <section
@@ -220,24 +231,44 @@ const TOOL_LABEL: Record<string, string> = {
   opencode: 'OpenCode',
 };
 
+// Source-type badge color/label. `session` rows fall back to the tool color
+// rail and don't need a separate badge — only non-session memory hits show one.
+const SOURCE_BADGE: Record<string, { label: string; bg: string; fg: string; line: string }> = {
+  paste:     { label: 'PASTE',     bg: 'var(--cr-warn-surf)', fg: 'var(--cr-warn-500)', line: 'var(--cr-warn-line)' },
+  plan:      { label: 'PLAN',      bg: 'var(--cr-ok-surf)',   fg: 'var(--cr-ok-500)',   line: 'var(--cr-ok-line)' },
+  task:      { label: 'TASK',      bg: 'var(--cr-ink-2)',     fg: 'var(--cr-fg-2)',     line: 'var(--cr-line-1)' },
+  claude_md: { label: 'CLAUDE.md', bg: 'var(--cr-ink-2)',     fg: 'var(--cr-fg-1)',     line: 'var(--cr-line-2)' },
+  history:   { label: 'HISTORY',   bg: 'var(--cr-ink-2)',     fg: 'var(--cr-fg-3)',     line: 'var(--cr-line-1)' },
+  diary:     { label: 'DIARY',     bg: 'var(--cr-ok-surf)',   fg: 'var(--cr-ok-500)',   line: 'var(--cr-ok-line)' },
+};
+
 function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onClick: () => void; index: number }) {
   const tool = r.tool || 'claude';
   const toolColor = TOOL_COLOR[tool] || 'var(--cr-line-2)';
   const timeStr = formatTime(r.modified);
   const path = formatPath(r.projectPath);
 
-  // Three states:
-  //   1. summary present  → use it (curated title)
-  //   2. summary failed   → show "summary unavailable" caption + first
-  //                         prompt below, with the error in a tooltip
-  //   3. summary pending  → faint italic first prompt + small "↻ pending"
-  //                         marker so the user knows one is coming
   const hasSummary = !!r.summary;
   const hasSummaryError = !hasSummary && !!r.summaryError;
   const rawFirstPrompt = stripInjectedBanners(r.firstPrompt || '').trim();
   const titleText = hasSummary
     ? getShortSummary(r.summary!, 200)
     : rawFirstPrompt.slice(0, 220);
+
+  // Search-only: render every matched chunk (up to a small cap), each
+  // windowed around the first query-term hit and with the query terms
+  // highlighted. The user sees WHERE the term appears, not just one snippet.
+  const isSearchHit = r.score !== undefined && !!r.matchedChunks?.length;
+  const matchSnippets = isSearchHit
+    ? r.matchedChunks!.slice(0, 3).map((c) => buildMatchSnippet([c], r.query)).filter(Boolean)
+    : [];
+  const matchChunksMeta = isSearchHit ? r.matchedChunks!.slice(0, 3) : [];
+  const extraMatchCount = isSearchHit
+    ? Math.max(0, (r.matchedChunks!.length) - matchSnippets.length)
+    : 0;
+
+  const sourceType = r.sourceType || 'session';
+  const sourceBadge = sourceType !== 'session' ? SOURCE_BADGE[sourceType] : null;
 
   return (
     <div
@@ -266,25 +297,91 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
 
       {/* Content column */}
       <div style={{ minWidth: 0 }}>
-        {/* Meta line: TOOL · path · time */}
+        {/* Meta line: SOURCE/TOOL · path · time */}
         <div className="cr-conv-meta">
-          <span className="cr-conv-meta-tool">{TOOL_LABEL[tool] || tool}</span>
+          {sourceBadge ? (
+            <span
+              title={`Memory source: ${sourceType}`}
+              data-testid="source-badge"
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                letterSpacing: '0.06em',
+                color: sourceBadge.fg,
+                background: sourceBadge.bg,
+                border: `1px solid ${sourceBadge.line}`,
+                padding: '1px 5px',
+                borderRadius: 3,
+                textTransform: 'uppercase',
+              }}
+            >
+              {sourceBadge.label}
+            </span>
+          ) : (
+            <span className="cr-conv-meta-tool">{TOOL_LABEL[tool] || tool}</span>
+          )}
           <span style={{ color: 'var(--cr-line-3)', flexShrink: 0 }}>·</span>
           <span className="cr-conv-meta-path" title={r.projectPath}>{path}</span>
           <span className="cr-conv-meta-time">{timeStr}</span>
+          {/*
+            Collapsed-run badge. When ≥2 adjacent sessions in the same
+            project share a templated first prompt within 24h
+            (PR-bot pattern), they fold into one feed row. The badge
+            shows the run size so the user knows the work happened
+            multiple times. Clicking the row still opens the head
+            session — the rest are reachable via search by project.
+          */}
+          {r.runCount && r.runCount > 1 && (
+            <span
+              title={`${r.runCount} sessions with the same first prompt collapsed into one row (e.g. PR-bot iterations).`}
+              data-testid="run-count-badge"
+              style={{
+                fontSize: 10,
+                fontWeight: 600,
+                color: 'var(--cr-fg-2)',
+                background: 'var(--cr-ink-2)',
+                border: '1px solid var(--cr-line-1)',
+                padding: '1px 6px',
+                borderRadius: 3,
+                marginLeft: 4,
+                letterSpacing: '0.02em',
+              }}
+            >
+              ×{r.runCount} runs
+            </span>
+          )}
         </div>
 
-        {/* Title line: status prefix + title body.
-            Body branches by summary state:
-              - summary present  → render the summary in normal weight
-              - summary failed   → "summary unavailable" caption followed
-                                   by the raw first prompt; full error in
-                                   tooltip
-              - summary pending  → faded italic first prompt; the row will
-                                   re-render once the worker finishes */}
+        {/* Search-only: relevance score chip after time */}
+        {isSearchHit && (
+          <div className="cr-conv-meta" style={{ marginTop: 0 }}>
+            <span
+              title="Relevance score for this query (higher = stronger match)"
+              style={{
+                fontSize: 10,
+                fontWeight: 600,
+                letterSpacing: '0.04em',
+                color: 'var(--cr-ok-500)',
+                background: 'var(--cr-ok-surf)',
+                border: '1px solid var(--cr-ok-line)',
+                padding: '1px 5px',
+                borderRadius: 3,
+              }}
+            >
+              {scoreLabel(r.score!)}
+            </span>
+            <span style={{ color: 'var(--cr-line-3)', flexShrink: 0 }}>·</span>
+            <span style={{ color: 'var(--cr-fg-3)', fontSize: 11 }}>
+              {r.matchedChunks!.length} match{r.matchedChunks!.length === 1 ? '' : 'es'}
+            </span>
+          </div>
+        )}
+
+        {/* Title line: status prefix + title body */}
         <div className="cr-conv-title">
           <SessionStatusPrefix sessionId={r.sessionId} tool={tool} />
-          {hasSummaryError && (
+
+          {hasSummaryError ? (
             <span
               title={`${r.summaryError!.error}\n\n${r.summaryError!.attemptCount} attempt(s). Check Settings → Summary provider.`}
               data-testid="summary-unavailable"
@@ -305,19 +402,104 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
             >
               summary unavailable · check settings
             </span>
-          )}
+          ) : null}
+
           {titleText ? (
-            <span className={hasSummary ? undefined : 'cr-conv-title-faded'}>{titleText}</span>
+            <span
+              className={hasSummary ? undefined : 'cr-conv-title-faded'}
+              title={hasSummary ? 'AI-generated summary' : 'Raw first prompt'}
+            >
+              {titleText}
+            </span>
           ) : (
             <span style={{ color: 'var(--cr-fg-3)', fontStyle: 'italic', fontSize: 13 }}>
               (no preview captured for this session)
             </span>
           )}
+
+          {/* Quiet source badge: whether this is summary or raw */}
+          {titleText && (
+            <span style={{
+              marginLeft: 10,
+              fontSize: 10,
+              fontWeight: 500,
+              color: hasSummary ? 'var(--cr-ok-500)' : 'var(--cr-fg-3)',
+              background: hasSummary ? 'var(--cr-ok-surf)' : 'var(--cr-ink-2)',
+              border: `1px solid ${hasSummary ? 'var(--cr-ok-line)' : 'var(--cr-line-1)'}`,
+              padding: '1px 5px',
+              borderRadius: 3,
+              whiteSpace: 'nowrap',
+              verticalAlign: '2px',
+              letterSpacing: 0,
+            }}>
+              {hasSummary ? 'AI summary' : 'raw prompt'}
+            </span>
+          )}
         </div>
+
+        {/* Search-only: stack of matched snippets, each with the query term
+            highlighted. Click on a snippet propagates to the row's onClick so
+            the viewer opens at the matched session. */}
+        {matchSnippets.length > 0 && (
+          <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }} data-testid="search-snippets">
+            {matchSnippets.map((snip, idx) => (
+              <div
+                key={idx}
+                className="cr-conv-snippet"
+                data-testid="search-snippet"
+                title={`Matched chunk · ${matchChunksMeta[idx]?.chunkType || ''}`}
+                style={{
+                  padding: '6px 8px',
+                  borderLeft: '2px solid var(--cr-accent-500, #6cf)',
+                  background: 'var(--cr-ink-2)',
+                  color: 'var(--cr-fg-2)',
+                  fontSize: 12,
+                  lineHeight: 1.45,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  maxHeight: 96,
+                  overflow: 'hidden',
+                  fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)',
+                }}
+              >
+                <div style={{
+                  fontSize: 10,
+                  color: 'var(--cr-fg-3)',
+                  marginBottom: 3,
+                  fontFamily: 'inherit',
+                  letterSpacing: '0.04em',
+                }}>
+                  {matchChunksMeta[idx]?.chunkType} · {scoreLabel(matchChunksMeta[idx]?.score ?? 0)}
+                </div>
+                {snip!.parts.map((p, i) =>
+                  p.hit ? (
+                    <mark
+                      key={i}
+                      style={{
+                        background: 'var(--cr-warn-surf, #553)',
+                        color: 'var(--cr-warn-500, #fc6)',
+                        padding: '0 2px',
+                        borderRadius: 2,
+                      }}
+                    >
+                      {p.text}
+                    </mark>
+                  ) : (
+                    <span key={i}>{p.text}</span>
+                  ),
+                )}
+              </div>
+            ))}
+            {extraMatchCount > 0 && (
+              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', paddingLeft: 8 }}>
+                + {extraMatchCount} more match{extraMatchCount === 1 ? '' : 'es'} in this item
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Right column: marker chips. Empty when no markers — the column
-          collapses (grid auto) and the row stays clean. */}
+      {/* Right column: marker chips */}
       <div className="cr-conv-markers">
         <SessionMarkerStrip sessionId={r.sessionId} tool={tool} />
       </div>
@@ -646,6 +828,70 @@ function getShortSummary(rawSummary: string, maxLength: number = 200): string {
   return firstLine.length <= maxLength ? firstLine : firstLine.substring(0, maxLength) + '…';
 }
 
+// Search-only helpers ----------------------------------------------------
+
+function scoreLabel(score: number): string {
+  // FTS5 / vector scores live in vastly different ranges, so we just give the
+  // user a magnitude they can compare across the result list rather than a
+  // raw float that looks like noise (e.g. 0.0032).
+  if (score >= 1) return `score ${score.toFixed(2)}`;
+  if (score >= 0.01) return `score ${(score * 100).toFixed(1)}`;
+  return `score ${(score * 1000).toFixed(2)}‰`;
+}
+
+function buildMatchSnippet(
+  chunks: Array<{ chunkType: string; text: string; score: number }>,
+  query?: string,
+): { parts: Array<{ text: string; hit: boolean }> } | null {
+  if (!chunks.length) return null;
+  const best = chunks[0];
+  const text = best.text.replace(/\s+/g, ' ').trim();
+  if (!text) return null;
+
+  const terms = (query || '')
+    .split(/\s+/)
+    .map((t) => t.replace(/[^\p{L}\p{N}_-]/gu, ''))
+    .filter((t) => t.length >= 2);
+
+  const WINDOW = 220;
+  let window = text.slice(0, WINDOW);
+  if (terms.length) {
+    const lower = text.toLowerCase();
+    let firstHit = -1;
+    for (const t of terms) {
+      const i = lower.indexOf(t.toLowerCase());
+      if (i !== -1 && (firstHit === -1 || i < firstHit)) firstHit = i;
+    }
+    if (firstHit !== -1) {
+      const start = Math.max(0, firstHit - 60);
+      const end = Math.min(text.length, start + WINDOW);
+      window = (start > 0 ? '…' : '') + text.slice(start, end) + (end < text.length ? '…' : '');
+    } else if (text.length > WINDOW) {
+      window = text.slice(0, WINDOW) + '…';
+    }
+  } else if (text.length > WINDOW) {
+    window = text.slice(0, WINDOW) + '…';
+  }
+
+  if (!terms.length) return { parts: [{ text: window, hit: false }] };
+
+  // Highlight every occurrence of any term (case-insensitive).
+  const escaped = terms
+    .sort((a, b) => b.length - a.length)
+    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const re = new RegExp(`(${escaped.join('|')})`, 'gi');
+  const parts: Array<{ text: string; hit: boolean }> = [];
+  let last = 0;
+  for (const m of window.matchAll(re)) {
+    const i = m.index ?? 0;
+    if (i > last) parts.push({ text: window.slice(last, i), hit: false });
+    parts.push({ text: m[0], hit: true });
+    last = i + m[0].length;
+  }
+  if (last < window.length) parts.push({ text: window.slice(last), hit: false });
+  return { parts };
+}
+
 function formatTime(iso: string): string {
   const d = new Date(iso);
   const now = new Date();
@@ -659,6 +905,67 @@ function formatTime(iso: string): string {
   if (diffHours < 24) return `${diffHours}h`;
   if (diffDays < 7) return `${diffDays}d`;
   return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+/**
+ * Collapse adjacent rows that look like repeated runs of the same template.
+ *
+ * Use case: PR-bot worktree sessions — your bot fires N=10-150 Claude
+ * sessions per PR with an identical first prompt
+ * ("User requested: You are addressing review comments on …#393…").
+ * Each is a real distinct conversation but listing them all clogs the
+ * feed.
+ *
+ * Heuristic: two adjacent rows collapse when
+ *   - same projectPath
+ *   - same first 80 chars of the cleaned first-prompt (so the bot's
+ *     templated opener counts; user-edited follow-ups don't collapse)
+ *   - mtime within 24h of the head of the run
+ *
+ * The first member of the run is returned with `runCount` set to the
+ * group size and `runMemberIds` carrying every member's sessionId so
+ * an "Expand N runs" affordance can later list them. Subsequent
+ * members are dropped from the list.
+ */
+function collapseAdjacentRuns(items: SessionInfo[]): SessionInfo[] {
+  if (items.length < 2) return items;
+
+  // Group every row in this date bucket by (project, templated-prompt).
+  // We don't require adjacency — within "Today" all PR-bot iterations
+  // for a single PR collapse to one row regardless of how interleaved
+  // other work was. The keeper is the most recent member (first in the
+  // sorted list) so the feed still shows the latest activity timestamp.
+  const sigOf = (s: SessionInfo): string => {
+    const prompt = (s.firstPrompt || s.summary || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    // Empty-prompt sessions DO collapse — they're the most common
+    // PR-bot pattern (templated initial prompt swallowed by Claude's
+    // banner stripping). Collapsing by projectPath alone is the right
+    // call here; it's exactly what the user wants for those rows.
+    return `${s.projectPath}::${prompt}`;
+  };
+
+  const groups = new Map<string, SessionInfo[]>();
+  const order: string[] = []; // remember first-seen order so collapsed rows keep their position
+  for (const item of items) {
+    const sig = sigOf(item);
+    if (!groups.has(sig)) {
+      groups.set(sig, []);
+      order.push(sig);
+    }
+    groups.get(sig)!.push(item);
+  }
+
+  const out: SessionInfo[] = [];
+  for (const key of order) {
+    const group = groups.get(key)!;
+    if (group.length === 1) {
+      out.push(group[0]);
+    } else {
+      const memberIds = group.map(g => g.sessionId);
+      out.push({ ...group[0], runCount: group.length, runMemberIds: memberIds });
+    }
+  }
+  return out;
 }
 
 function groupByDate(items: SessionInfo[]): Array<{ label: string; items: SessionInfo[] }> {

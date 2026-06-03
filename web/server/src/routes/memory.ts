@@ -10,7 +10,7 @@
 
 import express from 'express';
 import { MemoryService } from '../services/memory.js';
-import { MemoryStore } from '../imports.js';
+import { createStore } from '../imports.js';
 import type { SourceType } from '../imports.js';
 
 const router = express.Router();
@@ -28,7 +28,10 @@ function validateSourceType(sourceType: string): sourceType is SourceType {
 // POST /api/memory/search
 router.post('/search', async (req, res) => {
   try {
-    const { query, topK: rawTopK = 10, sourceTypes, projectFilter } = req.body;
+    // `projectFilter` body field is accepted for backwards compatibility
+    // with older clients (web build pre-deploy) but now treated as a
+    // project_id, matching the rest of the system.
+    const { query, topK: rawTopK = 10, sourceTypes, projectFilter, projectIdFilter } = req.body;
     const topK = Math.min(Math.max(parseInt(rawTopK) || 10, 1), 100);
 
     if (!query) {
@@ -39,7 +42,7 @@ router.post('/search', async (req, res) => {
       query,
       topK,
       sourceTypes as SourceType[] | undefined,
-      projectFilter
+      projectIdFilter ?? projectFilter
     );
 
     res.json({ query, results, count: results.length });
@@ -83,7 +86,7 @@ router.get('/item/:sourceType/:id', async (req, res) => {
     if (!validateSourceType(sourceType)) {
       return res.status(400).json({ error: `Invalid source type: ${sourceType}` });
     }
-    const item = memoryService.getItem(id, sourceType);
+    const item = await memoryService.getItem(id, sourceType);
 
     if (!item) {
       return res.status(404).json({ error: 'Item not found' });
@@ -106,9 +109,9 @@ router.get('/item/:sourceType/:id/content', async (req, res) => {
       return res.status(400).json({ error: `Invalid source type: ${sourceType}` });
     }
     
-    const store = new MemoryStore();
+    const store = await createStore();
     try {
-      const item = store.getItem(id, sourceType);
+      const item = await store.getItem(id, sourceType);
 
       if (!item) {
         return res.status(404).json({ error: 'Item not found' });
@@ -119,7 +122,7 @@ router.get('/item/:sourceType/:id/content', async (req, res) => {
       }
 
       // 1. Try Cache
-      const cached = store.getCachedContent(id, sourceType, item.mtime);
+      const cached = await store.getCachedContent(id, sourceType, item.mtime);
       if (cached) {
         return res.json({ content: cached, fromCache: true });
       }
@@ -135,11 +138,11 @@ router.get('/item/:sourceType/:id/content', async (req, res) => {
       const content = await readFile(item.file_path, 'utf-8');
 
       // 3. Store in Cache
-      store.setCachedContent(id, sourceType, item.mtime, content);
+      await store.setCachedContent(id, sourceType, item.mtime, content);
 
       res.json({ content });
     } finally {
-      store.close();
+      await store.close();
     }
   } catch (error) {
     console.error('Memory item content error:', error);
@@ -156,7 +159,7 @@ router.get('/links/:sourceType/:id', async (req, res) => {
     if (!validateSourceType(sourceType)) {
       return res.status(400).json({ error: `Invalid source type: ${sourceType}` });
     }
-    const links = memoryService.getLinks(sourceType, id);
+    const links = await memoryService.getLinks(sourceType, id);
 
     res.json({ links, count: links.length });
   } catch (error) {
@@ -177,7 +180,7 @@ router.get('/browse/:sourceType', async (req, res) => {
     const limit = Math.min(Math.max(parseInt(req.query.limit as string || '50', 10) || 50, 1), 500);
     const offset = Math.max(parseInt(req.query.offset as string || '0', 10) || 0, 0);
 
-    const items = memoryService.listItems(sourceType, limit, offset);
+    const items = await memoryService.listItems(sourceType, limit, offset);
 
     res.json({ items, count: items.length, sourceType });
   } catch (error) {
@@ -224,7 +227,7 @@ router.patch('/item/:sourceType/:id', async (req, res) => {
       return res.status(400).json({ error: 'project_path is required' });
     }
 
-    const success = memoryService.updateItemProjectPath(
+    const success = await memoryService.updateItemProjectPath(
       id,
       sourceType as SourceType,
       project_path

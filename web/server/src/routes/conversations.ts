@@ -5,29 +5,31 @@
 import express from 'express';
 import { getRecentSessions, getSessionPath, getSessionPaths, getRelatedItems, getSessionMetadata, getSessionIndex, hydrateSessions } from '../services/sessions.js';
 import type { SessionIndexEntry } from '../services/sessions.js';
-import { getConversation, getGeminiConversation, getOpenCodeConversation, getCodexConversation, getCodexSubagents, getSubagents } from '../services/parser.js';
+import { getConversation, getGeminiConversation, getOpenCodeConversation, getOpenCodeSubagents, getCodexConversation, getCodexSubagents, getSubagents } from '../services/parser.js';
 import type { Subagent } from '../services/parser.js';
 import {
   MetadataCache,
-  MemoryStore,
+  OutcomeCache,
+  createStore,
+  createMetadataCache,
+  SummaryGenerator,
+  parseSessionFile,
+  loadSettings,
   liveScanModifiedFiles,
-  replaySession,
+  type SessionDiffResult,
   getSessionCommits,
   computeOutcome,
-  extractTurns,
   markPrompt,
   summarizeMarkers,
   findCodexSessionFile,
+  codexBackend,
   extractTurnsAny,
   replaySessionAny,
-  getSessionCommitsAny,
-  computeOutcomeAny,
   outcomeBadge,
   quickOutcomeStatus,
   quickStatusEmoji,
   quickOutcomeFromMtime,
   detectTool,
-  OutcomeCache,
   isFresh,
   fingerprintFile,
   type CachedOutcome,
@@ -83,25 +85,36 @@ router.get('/recent', async (req, res) => {
   try {
     const limit = Math.max(1, Math.min(parseInt(req.query.limit as string) || 20, 200));
     const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
-    const projectFilter = req.query.project as string | undefined;
+    // `project` is now a logical project_id (e.g. `git:github.com/me/repo`,
+    // `ws:personal`). The legacy path-prefix mode has been removed; sidebar
+    // and any external caller must pass the id from `/api/projects/tree`.
+    const projectIdFilter = req.query.project as string | undefined;
     const toolFilter = req.query.tool as string | undefined;
     const sinceHoursRaw = req.query.since_hours as string | undefined;
     const sinceHours = sinceHoursRaw ? Number(sinceHoursRaw) : undefined;
     const sinceMs = sinceHours && Number.isFinite(sinceHours) && sinceHours > 0
       ? Date.now() - sinceHours * 3600 * 1000
       : undefined;
+    // Untracked sessions (PR-bot worktrees, /tmp scratch, empty project_id)
+    // are hidden from the unfiltered feed by default. Explicit
+    // `project=untracked:all` or `?include_untracked=1` opts back in.
+    const includeUntracked =
+      req.query.include_untracked === '1' ||
+      req.query.include_untracked === 'true' ||
+      projectIdFilter === 'untracked:all' ||
+      (typeof projectIdFilter === 'string' && projectIdFilter.startsWith('path:'));
 
-    const store = new MemoryStore();
+    const store = await createStore();
     let totalAfterFilter: number;
     let pageEntries: SessionIndexEntry[];
     try {
-      const { rows, total } = store.querySessionIndex({
-        limit, offset, projectFilter, toolFilter, sinceMs,
+      const { rows, total } = await store.querySessionIndex({
+        limit, offset, projectIdFilter, toolFilter, sinceMs, includeUntracked,
       });
 
       // Empty index → fallback to filesystem walk so we don't return
       // an empty list during the first run before indexing completes.
-      if (total === 0 && offset === 0 && !projectFilter && !toolFilter && !sinceMs) {
+      if (total === 0 && offset === 0 && !projectIdFilter && !toolFilter && !sinceMs) {
         const walked = await getSessionIndex();
         const slice = walked.slice(0, limit);
         const sessions = await hydrateSessions(slice);
@@ -131,7 +144,7 @@ router.get('/recent', async (req, res) => {
         };
       });
     } finally {
-      store.close();
+      await store.close();
     }
 
     // Hydrate firstPrompts only for the page rows. Most are already in
@@ -208,14 +221,14 @@ router.get('/:id/diff', async (req, res) => {
     const resolved = await resolveSessionForBadge(id);
 
     // Fresh hit
-    let result: ReturnType<typeof replaySession> | null = null;
+    let result: SessionDiffResult | null = null;
     if (resolved) {
-      result = heavyCacheGet<ReturnType<typeof replaySession>>(`diff:${id}`, resolved.mtime);
+      result = heavyCacheGet<SessionDiffResult>(`diff:${id}`, resolved.mtime);
     }
 
     // Stale hit
     if (!result) {
-      const stale = getStaleHeavy<ReturnType<typeof replaySession>>(id, 'diff');
+      const stale = getStaleHeavy<SessionDiffResult>(id, 'diff');
       if (stale) {
         if (resolved && stale.mtime !== resolved.mtime) {
           enqueueRefresh('diff', id, resolved.mtime);
@@ -462,22 +475,26 @@ function enqueueRefresh(kind: 'outcome' | 'diff' | 'commits' | 'markers' | 'turn
     void (async () => {
       try {
         if (kind === 'outcome') {
-          const out = isNonClaude(sessionId) ? computeOutcomeAny(sessionId) : computeOutcome(sessionId);
+          // computeOutcome + replaySessionAny are tool-agnostic (registry-routed).
+          const out = computeOutcome(sessionId);
           if (out.found) heavyCacheSet(`outcome:${sessionId}`, mtime, out);
         } else if (kind === 'diff') {
-          const replay = isNonClaude(sessionId) ? replaySessionAny(sessionId) : replaySession(sessionId);
+          const replay = replaySessionAny(sessionId);
           if (replay.found) heavyCacheSet(`diff:${sessionId}`, mtime, replay);
         } else if (kind === 'commits') {
-          let replay = heavyCacheGet<ReturnType<typeof replaySession>>(`diff:${sessionId}`, mtime);
+          let replay = heavyCacheGet<SessionDiffResult>(`diff:${sessionId}`, mtime);
           if (!replay) {
-            replay = isNonClaude(sessionId) ? replaySessionAny(sessionId) : replaySession(sessionId);
+            replay = replaySessionAny(sessionId);
             if (replay.found) heavyCacheSet(`diff:${sessionId}`, mtime, replay);
           }
           if (replay.found) {
-            const turns = extractTurns(sessionId, { maxTurns: 50_000 });
-            const result = isNonClaude(sessionId)
-              ? getSessionCommitsAny(sessionId)
-              : getSessionCommits(sessionId, replay.files.map(f => f.file), turns.startMs || Date.now() - 86400_000, turns.endMs || Date.now());
+            const turns = extractTurnsAny(sessionId, { maxTurns: 50_000 });
+            const result = getSessionCommits(
+              sessionId,
+              replay.files.map(f => f.file),
+              turns.startMs || Date.now() - 86400_000,
+              turns.endMs || Date.now(),
+            );
             heavyCacheSet(`commits:${sessionId}`, mtime, result);
           }
         } else if (kind === 'markers') {
@@ -535,13 +552,12 @@ async function getCachedSessionPathMap(): Promise<Map<string, string>> {
     return sessionPathCache.map;
   }
   // Primary source: indexed sessions from memory_metadata. <1ms.
-  const { MemoryStore } = await import('../imports.js');
-  const store = new MemoryStore();
+  const store = await createStore();
   const map = new Map<string, string>();
   try {
-    for (const r of store.listAllSessionPaths()) map.set(r.id, r.file_path);
+    for (const r of await store.listAllSessionPaths()) map.set(r.id, r.file_path);
   } finally {
-    store.close();
+    await store.close();
   }
   // Coverage fill: walk ~/.claude/projects/<encoded>/<id>.jsonl by
   // filename only (no parse) for any session id not yet in
@@ -552,8 +568,8 @@ async function getCachedSessionPathMap(): Promise<Map<string, string>> {
   try {
     const { readdirSync } = await import('fs');
     const { join } = await import('path');
-    const { homedir } = await import('os');
-    const root = join(homedir(), '.claude', 'projects');
+    const { claudeBackend } = await import('../imports.js');
+    const root = claudeBackend.projectsDir();
     for (const proj of readdirSync(root, { withFileTypes: true })) {
       if (!proj.isDirectory()) continue;
       const projDir = join(root, proj.name);
@@ -695,13 +711,13 @@ async function resolveSessionForBadge(id: string): Promise<
   if (tool === 'codex') {
     const located = findCodexSessionFile(id);
     if (!located) {
-      const store = new MemoryStore();
+      const store = await createStore();
       try {
-        const item = store.getItem(id, 'session' as SourceType);
+        const item = await store.getItem(id, 'session' as SourceType);
         if (!item) return null;
         return { kind: 'mtime-only', mtime: item.mtime || 0, size: 0, tool };
       } finally {
-        store.close();
+        await store.close();
       }
     }
     let mtime = 0, size = 0;
@@ -711,13 +727,13 @@ async function resolveSessionForBadge(id: string): Promise<
 
   // gemini / opencode: SQLite-indexed, no JSONL to stat — size stays 0
   // and freshness check effectively reduces to mtime equality.
-  const store = new MemoryStore();
+  const store = await createStore();
   try {
-    const item = store.getItem(id, 'session' as SourceType);
+    const item = await store.getItem(id, 'session' as SourceType);
     if (!item) return null;
     return { kind: 'mtime-only', mtime: item.mtime || 0, size: 0, tool };
   } finally {
-    store.close();
+    await store.close();
   }
 }
 
@@ -1029,7 +1045,7 @@ router.get('/:id/markers', async (req, res) => {
 router.get('/:id/related', async (req, res) => {
   try {
     const { id } = req.params;
-    const related = getRelatedItems(id);
+    const related = await getRelatedItems(id);
     res.json(related);
   } catch (error) {
     console.error('Related items error:', error);
@@ -1056,6 +1072,48 @@ router.get('/:id/metadata', async (req, res) => {
   }
 });
 
+// POST /api/conversations/:id/regenerate-summary
+//
+// On-demand re-generation of an AI summary for a single session. Uses
+// whatever summary provider is configured in settings (CLI/Gemini/Claude/
+// Ollama). Existing cached summary (if any) is overwritten on success.
+router.post('/:id/regenerate-summary', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const path = getSessionPath(id); // throws if missing
+    const content = await parseSessionFile(path);
+
+    const settings = loadSettings();
+    const provider = (settings.summary?.provider as any) || (process.env.SUMMARY_PROVIDER as any) || 'cli';
+    const cliCommand = settings.summary?.cliCommand || process.env.SUMMARY_CLI_CMD;
+    const generator = new SummaryGenerator({ provider, cliCommand });
+
+    const summary = await generator.generate(content);
+    const cache = await createMetadataCache();
+    try {
+      await cache.set({
+        sessionId: id,
+        firstPrompt: content.firstPrompt || '',
+        summary,
+        summarySource: provider === 'gemini-cli' ? 'gemini' : (provider as any),
+        mtime: Date.now(),
+        indexedAt: Date.now(),
+      });
+      await cache.clearSummaryError(id);
+    } finally {
+      await cache.close();
+    }
+
+    res.json({ sessionId: id, summary, summarySource: provider });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    // Surface quota errors with a 429 so the UI can render a clear message
+    const status = /QUOTA_EXHAUSTED|429|exhausted your capacity|rate.?limit/i.test(msg) ? 429 : 500;
+    console.error(`regenerate-summary ${id}:`, msg.slice(0, 300));
+    res.status(status).json({ error: msg.slice(0, 500) });
+  }
+});
+
 // GET /api/conversations/:id
 //
 // Pagination: `?offset=N&limit=M` slices the cached `messages` array
@@ -1077,10 +1135,10 @@ router.get('/:id', async (req, res) => {
     // while keeping the worst-case (>5MB Claude session) bounded.
     const limit = Number.isFinite(limitRaw) ? Math.max(0, limitRaw) : 500;
 
-    const store = new MemoryStore();
+    const store = await createStore();
     try {
       // 1. Detect tool type and file path
-      const item = store.getItem(id, 'session' as SourceType);
+      const item = await store.getItem(id, 'session' as SourceType);
       let tool = 'claude';
       let filePath = '';
       let mtime = 0;
@@ -1109,7 +1167,7 @@ router.get('/:id', async (req, res) => {
         } catch {}
       } else if (tool === 'codex' && !filePath) {
         // Stripped id matches the rollout filename body: <timestamp>-<uuid>.
-        const located = findCodexSessionFile(id.replace(/^codex_/, ''));
+        const located = findCodexSessionFile(codexBackend.toRawId(id));
         if (located) {
           filePath = located.path;
           try {
@@ -1124,7 +1182,7 @@ router.get('/:id', async (req, res) => {
       // entries from older buggy parsers are ignored instead of served.
       const PARSER_VERSION = 5;
       if (mtime > 0) {
-        const cached = store.getCachedContent(id, 'session', mtime);
+        const cached = await store.getCachedContent(id, 'session', mtime);
         if (cached) {
           try {
             const parsed = JSON.parse(cached);
@@ -1158,6 +1216,7 @@ router.get('/:id', async (req, res) => {
         messages = await getGeminiConversation(filePath);
       } else if (tool === 'opencode') {
         messages = await getOpenCodeConversation(id);
+        subagents = await getOpenCodeSubagents(id);
       } else if (tool === 'codex') {
         if (!filePath) throw new Error('Session path not found');
         messages = await getCodexConversation(filePath);
@@ -1171,7 +1230,7 @@ router.get('/:id', async (req, res) => {
 
       // Store in cache (versioned envelope — see PARSER_VERSION above)
       if (mtime > 0 && messages.length > 0) {
-        store.setCachedContent(id, 'session', mtime, JSON.stringify({ v: PARSER_VERSION, messages, subagents }));
+        await store.setCachedContent(id, 'session', mtime, JSON.stringify({ v: PARSER_VERSION, messages, subagents }));
       }
 
       // ETag for the freshly-parsed branch too. Same key shape as the
@@ -1193,7 +1252,7 @@ router.get('/:id', async (req, res) => {
         hasMore: limit !== 0 && offset + slice.length < total,
       });
     } finally {
-      store.close();
+      await store.close();
     }
   } catch (error) {
     console.error('Conversation error:', error);
@@ -1215,7 +1274,7 @@ router.get('/:id/raw', async (req, res) => {
 
     // Codex — JSONL stream from ~/.codex/sessions/YYYY/MM/DD/.
     if (id.startsWith('codex_')) {
-      const located = findCodexSessionFile(id.replace(/^codex_/, ''));
+      const located = findCodexSessionFile(codexBackend.toRawId(id));
       if (!located) return res.status(404).json({ error: 'Session not found' });
       const { readFileSync } = await import('fs');
       const lines: any[] = [];
@@ -1229,9 +1288,10 @@ router.get('/:id/raw', async (req, res) => {
     // OpenCode — SQLite-backed; surface session row + its parts as the
     // canonical raw representation.
     if (id.startsWith('opencode_')) {
-      const ocId = id.replace(/^opencode_/, '');
+      const { opencodeBackend } = await import('../imports.js');
+      const ocId = opencodeBackend.toRawId(id);
       const Database = (await import('better-sqlite3')).default;
-      const path = (await import('path')).join((await import('os')).homedir(), '.local', 'share', 'opencode', 'opencode.db');
+      const path = opencodeBackend.dbPath();
       try {
         const db = new Database(path, { readonly: true, fileMustExist: true });
         try {
@@ -1253,12 +1313,12 @@ router.get('/:id/raw', async (req, res) => {
 
     // Gemini — single JSON file under ~/.gemini/tmp/<hash>/chats/.
     if (id.startsWith('gemini_')) {
-      const store = new MemoryStore();
+      const store = await createStore();
       let filePath = '';
       try {
-        const item = store.getItem(id, 'session' as SourceType);
+        const item = await store.getItem(id, 'session' as SourceType);
         if (item) filePath = item.file_path;
-      } finally { store.close(); }
+      } finally { await store.close(); }
       if (!filePath) return res.status(404).json({ error: 'Session not found' });
       const { readFileSync } = await import('fs');
       const json = JSON.parse(readFileSync(filePath, 'utf-8'));
