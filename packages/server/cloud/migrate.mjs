@@ -14,10 +14,10 @@ for (const f of ['./migrations/0001_init.sql', './migrations/0002_messages.sql']
   await c.query(readFileSync(new URL(f, import.meta.url), 'utf8'));
   console.log(`applied ${f}`);
 }
-// Optionally rotate the app_user password away from the migration default.
-if (process.env.APP_DB_PASSWORD) {
-  await c.query(`ALTER ROLE app_user PASSWORD '${process.env.APP_DB_PASSWORD.replace(/'/g, "''")}'`);
-  console.log('app_user password set from APP_DB_PASSWORD');
-}
+// NOTE: the server connects as the table-owning role (chat_recall in the
+// cluster), which is NOBYPASSRLS and subject to FORCE RLS — so RLS is enforced
+// without a separate app_user. We deliberately do NOT ALTER app_user's password
+// here: in PG16 that needs ADMIN OPTION on the role, which a CREATEROLE migrator
+// doesn't reliably hold, and it's unnecessary.
 await c.end();
 console.log('migration complete');
