@@ -11,6 +11,7 @@
 import express from 'express';
 import pg from 'pg';
 import { createHash, randomBytes } from 'crypto';
+import { createRemoteJWKSet, jwtVerify } from 'jose';
 
 const PORT = process.env.PORT || 8080;
 const pool = new pg.Pool({
@@ -46,6 +47,24 @@ async function authAgent(req) {
   return r.rows[0] || null;
 }
 
+// ── User identity (Keycloak OIDC; dev-header fallback for local tests) ──────
+const JWKS = process.env.OIDC_JWKS_URL ? createRemoteJWKSet(new URL(process.env.OIDC_JWKS_URL)) : null;
+/** Resolve the logged-in user → { sub, email } or null. */
+async function authUser(req) {
+  // Local/dev: AUTH_DEV_USER=1 lets `x-dev-user: <id>` stand in for a real login.
+  if (process.env.AUTH_DEV_USER === '1') {
+    const u = req.get('x-dev-user');
+    if (u) return { sub: u, email: `${u}@dev.local` };
+  }
+  const m = /^Bearer\s+(.+)$/.exec(req.get('authorization') || '');
+  if (!m || !JWKS) return null;
+  try {
+    const { payload } = await jwtVerify(m[1], JWKS, process.env.OIDC_ISSUER ? { issuer: process.env.OIDC_ISSUER } : {});
+    return { sub: payload.sub, email: payload.email || payload.preferred_username || null };
+  } catch { return null; }
+}
+const slugify = (s) => (s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32) || 'team') + '-' + randomBytes(3).toString('hex');
+
 const app = express();
 app.use(express.json({ limit: '16mb' }));
 
@@ -59,6 +78,84 @@ function requireAdmin(req, res) {
   }
   return true;
 }
+
+// ── Self-serve teams (authenticated users; replaces admin token minting) ────
+/** Wrap a handler so it only runs for an authenticated user (req.user set). */
+function withUser(handler) {
+  return async (req, res) => {
+    const user = await authUser(req);
+    if (!user) return res.status(401).json({ error: 'login required' });
+    req.user = user;
+    try { await handler(req, res); }
+    catch (e) { res.status(500).json({ error: String(e.message || e) }); }
+  };
+}
+async function roleOf(sub, teamSlug) {
+  const r = await pool.query('SELECT role FROM memberships WHERE user_sub=$1 AND team_slug=$2', [sub, teamSlug]);
+  return r.rows[0]?.role || null;
+}
+
+// Who am I + which teams am I in.
+app.get('/api/me', withUser(async (req, res) => {
+  const r = await pool.query(
+    `SELECT m.team_slug, t.name, m.role FROM memberships m JOIN teams t ON t.slug=m.team_slug WHERE m.user_sub=$1 ORDER BY t.name`,
+    [req.user.sub]);
+  res.json({ user: req.user, teams: r.rows });
+}));
+
+// Create a team — caller becomes owner. Also provisions the tenant.
+app.post('/api/teams', withUser(async (req, res) => {
+  const name = (req.body?.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'name required' });
+  const slug = slugify(name);
+  await pool.query('INSERT INTO tenants(slug, display_name) VALUES ($1,$2) ON CONFLICT (slug) DO NOTHING', [slug, name]);
+  await pool.query('INSERT INTO teams(slug, name, owner_sub) VALUES ($1,$2,$3)', [slug, name, req.user.sub]);
+  await pool.query('INSERT INTO memberships(user_sub, team_slug, role, email) VALUES ($1,$2,$3,$4)', [req.user.sub, slug, 'owner', req.user.email]);
+  res.json({ slug, name, role: 'owner' });
+}));
+
+// Owner generates a single-use invite token (raw shown once).
+app.post('/api/teams/:slug/invites', withUser(async (req, res) => {
+  if (await roleOf(req.user.sub, req.params.slug) !== 'owner') return res.status(403).json({ error: 'owner only' });
+  const token = 'inv_' + randomBytes(24).toString('hex');
+  const expires = new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString();
+  await pool.query(
+    'INSERT INTO invites(token_hash, team_slug, role, email_hint, created_by, expires_at) VALUES ($1,$2,$3,$4,$5,$6)',
+    [sha256(token), req.params.slug, req.body?.role === 'owner' ? 'owner' : 'member', req.body?.email || null, req.user.sub, expires]);
+  res.json({ invite: token, team_slug: req.params.slug, expires_at: expires, note: 'shown once' });
+}));
+
+// Redeem an invite → become a member.
+app.post('/api/teams/join', withUser(async (req, res) => {
+  const token = req.body?.invite || '';
+  const r = await pool.query('SELECT team_slug, role FROM invites WHERE token_hash=$1 AND used_at IS NULL AND expires_at > now()', [sha256(token)]);
+  const inv = r.rows[0];
+  if (!inv) return res.status(400).json({ error: 'invalid or expired invite' });
+  await pool.query('INSERT INTO memberships(user_sub, team_slug, role, email) VALUES ($1,$2,$3,$4) ON CONFLICT (user_sub, team_slug) DO NOTHING',
+    [req.user.sub, inv.team_slug, inv.role, req.user.email]);
+  await pool.query('UPDATE invites SET used_at=now() WHERE token_hash=$1', [sha256(token)]);
+  const t = (await pool.query('SELECT name FROM teams WHERE slug=$1', [inv.team_slug])).rows[0];
+  res.json({ team_slug: inv.team_slug, name: t?.name, role: inv.role });
+}));
+
+// List members (any member can view).
+app.get('/api/teams/:slug/members', withUser(async (req, res) => {
+  if (!await roleOf(req.user.sub, req.params.slug)) return res.status(403).json({ error: 'not a member' });
+  const r = await pool.query('SELECT user_sub, email, role, created_at FROM memberships WHERE team_slug=$1 ORDER BY role DESC, created_at', [req.params.slug]);
+  res.json({ team_slug: req.params.slug, members: r.rows });
+}));
+
+// A member mints a device token for syncing (replaces the admin-only endpoint).
+app.post('/api/teams/:slug/tokens', withUser(async (req, res) => {
+  if (!await roleOf(req.user.sub, req.params.slug)) return res.status(403).json({ error: 'not a member' });
+  const device_id = (req.body?.device_id || 'default').slice(0, 64);
+  const token = 'ct_' + randomBytes(24).toString('hex');
+  await pool.query(
+    `INSERT INTO agent_tokens(tenant_slug, device_id, token_hash, user_sub) VALUES ($1,$2,$3,$4)
+     ON CONFLICT (tenant_slug, device_id) DO UPDATE SET token_hash=EXCLUDED.token_hash, user_sub=EXCLUDED.user_sub, revoked_at=NULL`,
+    [req.params.slug, device_id, sha256(token), req.user.sub]);
+  res.json({ token, tenant_slug: req.params.slug, device_id, note: 'shown once' });
+}));
 
 app.post('/api/tenants', async (req, res) => {
   if (!requireAdmin(req, res)) return;
