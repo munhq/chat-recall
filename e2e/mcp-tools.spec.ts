@@ -11,8 +11,9 @@
 import { test, expect } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 
-const MCP = '/home/user/code/personal/chat-recall/dist/mcp.js';
+const MCP = join(process.cwd(), 'packages/cli/dist/mcp.js');
 
 class McpClient {
   private proc: ChildProcess;
