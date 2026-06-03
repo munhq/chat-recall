@@ -11,8 +11,10 @@
 import { test, expect } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 
-const MCP = '/home/user/code/personal/chat-recall/dist/mcp.js';
+const MCP = join(process.cwd(), 'packages/cli/dist/mcp.js');
 
 class Client {
   proc: ChildProcess;
@@ -80,7 +82,7 @@ test('recall_show from_end caps to last N messages and reports total', async () 
   const fetch = (await import('node:http')).default;
   // simpler: parse the cache db directly
   const Database = (await import('better-sqlite3')).default as any;
-  const db = new Database('/home/user/.claude/chat-recall-cache.db', { readonly: true });
+  const db = new Database(join(homedir(), '.claude/chat-recall-cache.db'), { readonly: true });
   let sessionId: string;
   try {
     const row = db.prepare(`SELECT id FROM memory_metadata WHERE source_type='session' ORDER BY mtime DESC LIMIT 1`).get() as { id: string } | undefined;
