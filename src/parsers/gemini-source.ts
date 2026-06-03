@@ -15,15 +15,17 @@ import type {
   MemoryChunk,
   MemoryLink,
 } from '../types/memory.js';
+import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
+import { isSourceEnabled } from '../core/settings.js';
 
 const MAX_CHUNK_CHARS = 2000;
 
 import { createHash } from 'crypto';
 
-/** Build a map of SHA-256(projectPath) -> projectPath from ~/.gemini/projects.json */
+/** Build a map of SHA-256(projectPath) -> projectPath from gemini's projects.json */
 function loadGeminiProjectMap(): Map<string, string> {
   const map = new Map<string, string>();
-  const projectsPath = join(homedir(), '.gemini', 'projects.json');
+  const projectsPath = GEMINI.projectsJson();
   if (!existsSync(projectsPath)) return map;
 
   try {
@@ -45,11 +47,12 @@ export class GeminiSessionSource implements MemorySource {
   private projectMap: Map<string, string>;
 
   constructor(geminiDir?: string) {
-    this.geminiDir = geminiDir || join(homedir(), '.gemini');
+    this.geminiDir = geminiDir || GEMINI.homeDir();
     this.projectMap = loadGeminiProjectMap();
   }
 
   async *discover(): AsyncGenerator<MemoryItem> {
+    if (!isSourceEnabled('gemini', 'sessions')) return;
     const tmpDir = join(this.geminiDir, 'tmp');
     if (!existsSync(tmpDir)) return;
 
@@ -125,7 +128,7 @@ export class GeminiSessionSource implements MemorySource {
             }
 
             yield {
-              id: `gemini_${sessionId}`,
+              id: GEMINI.toPrefixedId(sessionId),
               sourceType: 'session',
               title: firstPrompt.slice(0, 100) || `Gemini Session ${sessionId.slice(0, 8)}`,
               projectPath,

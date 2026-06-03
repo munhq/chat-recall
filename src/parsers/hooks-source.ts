@@ -21,6 +21,8 @@ import type {
   MemoryLink,
   SourceType,
 } from '../types/memory.js';
+import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
+import { isSourceEnabled } from '../core/settings.js';
 
 interface HookEntry {
   type?: string;
@@ -44,13 +46,12 @@ export class HooksSource implements MemorySource {
   readonly sourceType = 'hook' as SourceType;
 
   async *discover(): AsyncGenerator<MemoryItem> {
-    const home = homedir();
-
+    if (!isSourceEnabled('claude', 'hooks')) return;
     // 1) User-level settings.
-    yield* this.fromSettings(join(home, '.claude', 'settings.json'), 'user', '');
+    yield* this.fromSettings(CLAUDE.settingsFile(), 'user', '');
 
     // 2) Per-project .claude/settings.json — discovered via projects index.
-    const projectsRoot = join(home, '.claude', 'projects');
+    const projectsRoot = CLAUDE.projectsDir();
     if (existsSync(projectsRoot)) {
       try {
         for (const entry of readdirSync(projectsRoot, { withFileTypes: true })) {

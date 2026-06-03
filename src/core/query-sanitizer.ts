@@ -41,8 +41,11 @@ const INJECTION_PATTERNS = [
   /\bAssistant:\s*$/i,
 ];
 
-// Characters/sequences to strip (potential FTS5/SQL injection)
-const DANGEROUS_CHARS = /[;'"\\`{}|<>]/g;
+// Characters/sequences to strip (potential FTS5/SQL injection).
+// Double quotes are intentionally allowed — they are FTS5 phrase
+// syntax ("erpc logs" matches the literal phrase) and the query is
+// parameter-bound, so this can't escape into SQL.
+const DANGEROUS_CHARS = /[;'\\`{}|<>]/g;
 
 /**
  * Sanitize a search query before passing to search backends.

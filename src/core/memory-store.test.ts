@@ -106,6 +106,65 @@ describe('countDistinctItemsMatching', () => {
   });
 });
 
+describe('FTS phrase / required-token search', () => {
+  test('quoted phrase matches the literal sequence, not OR of tokens', () => {
+    store.addChunksFTS([
+      chunk('s1', 'erpc logs from the ireland production server'),
+      chunk('s2', 'logs about erpc misconfiguration unrelated'),
+      // Tokens present but not adjacent — should NOT match "erpc logs"
+      chunk('s3', 'erpc was down, see logs'),
+    ]);
+    const phraseHits = store.searchFTS('"erpc logs"', { topK: 10 });
+    const ids = phraseHits.map(h => h.itemId);
+    expect(ids).toContain('s1');
+    expect(ids).not.toContain('s3');
+  });
+
+  test('+token enforces required AND match (combined with OR group)', () => {
+    store.addChunksFTS([
+      chunk('s1', 'docker compose and kubernetes for dev'),
+      chunk('s2', 'kubernetes alone for orchestration'),
+      chunk('s3', 'docker swarm primer'),
+    ]);
+    // `+docker kubernetes` → docker AND (kubernetes) — both must match.
+    const both = store.searchFTS('+docker kubernetes', { topK: 10 });
+    const bothIds = both.map(h => h.itemId);
+    expect(bothIds).toContain('s1');
+    expect(bothIds).not.toContain('s2'); // missing required docker
+    expect(bothIds).not.toContain('s3'); // missing kubernetes from OR group
+
+    // `+docker` alone → only require docker, any other content.
+    const onlyDocker = store.searchFTS('+docker', { topK: 10 });
+    const ids = onlyDocker.map(h => h.itemId);
+    expect(ids).toContain('s1');
+    expect(ids).toContain('s3');
+    expect(ids).not.toContain('s2');
+  });
+
+  test('bare OR search keeps legacy permissive behavior', () => {
+    store.addChunksFTS([
+      chunk('s1', 'just docker'),
+      chunk('s2', 'just kubernetes'),
+    ]);
+    const hits = store.searchFTS('docker kubernetes', { topK: 10 });
+    const ids = hits.map(h => h.itemId);
+    expect(ids).toContain('s1');
+    expect(ids).toContain('s2');
+  });
+});
+
+describe('FTS dedup-on-reindex', () => {
+  test('re-inserting the same chunk_id does not create duplicate FTS rows', () => {
+    const c = chunk('s1', 'hello erpc world');
+    store.addChunksFTS([c]);
+    store.addChunksFTS([c]);
+    store.addChunksFTS([c]);
+    // 1 distinct row, not 3
+    const hits = store.searchFTS('erpc', { topK: 10 });
+    expect(hits.length).toBe(1);
+  });
+});
+
 describe('listItems', () => {
   test('returns inserted items in mtime-desc order', () => {
     // Use 'plan' (not 'session') — setItem on session triggers a

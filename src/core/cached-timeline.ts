@@ -25,12 +25,13 @@
 
 import { gunzipSync } from 'zlib';
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
-import { homedir } from 'os';
 import { join } from 'path';
-import { MemoryStore } from './memory-store.js';
-import { MetadataCache } from './metadata-cache.js';
+import { createStore } from './store/index.js';
+import { createMetadataCache } from './store/caches.js';
 import type { SessionEdit, AiTool, EditOp } from './live-session-scan.js';
-import { liveScanRecentEdits } from './live-session-scan.js';
+import { liveScanRecentEdits, detectTool } from './live-session-scan.js';
+import { claudeBackend } from './backends/claude.js';
+import './backends/index.js'; // side-effect: registers backends
 
 /**
  * Extract `cwd` from the first ~30 lines of a Claude transcript JSONL.
@@ -68,7 +69,7 @@ function readClaudeCwd(filePath: string): string | null {
  */
 function buildLiveClaudeCwdMap(sinceMs: number, alreadyKnown: Set<string>): Map<string, string> {
   const out = new Map<string, string>();
-  const root = join(homedir(), '.claude', 'projects');
+  const root = claudeBackend.projectsDir();
   if (!existsSync(root)) return out;
   try {
     for (const proj of readdirSync(root, { withFileTypes: true })) {
@@ -112,13 +113,6 @@ function toolNameToOp(name: string): EditOp {
   return 'edit';
 }
 
-function detectToolFromId(id: string): AiTool {
-  if (id.startsWith('codex_')) return 'codex';
-  if (id.startsWith('gemini_')) return 'gemini';
-  if (id.startsWith('opencode_')) return 'opencode';
-  return 'claude';
-}
-
 interface CachedDiffShape {
   found: boolean;
   sessionId?: string;
@@ -150,12 +144,12 @@ function decompressDiff(payloadGz: Buffer | null, payloadJson: string | null): C
  * sessions whose cache is fresh, live-scan for the rest (typically
  * just the actively-running session).
  */
-export function cachedRecentEdits(opts: {
+export async function cachedRecentEdits(opts: {
   sinceMs: number;
   pattern?: string;
   projectFilter?: string;
   tools?: AiTool[];
-}): SessionEdit[] {
+}): Promise<SessionEdit[]> {
   const enabled = new Set<AiTool>(opts.tools ?? ['claude', 'gemini', 'opencode', 'codex']);
   const needle = opts.pattern?.toLowerCase();
   const projectNeedle = opts.projectFilter?.toLowerCase();
@@ -164,8 +158,8 @@ export function cachedRecentEdits(opts: {
   // Sessions to fall back on (cache miss / stale / mid-write).
   const fallbackIds = new Set<string>();
 
-  const memStore = new MemoryStore();
-  const metaCache = new MetadataCache();
+  const memStore = await createStore();
+  const metaCache = await createMetadataCache();
   // (sessionId → real project_path). Live-scan's claude scanner builds
   // its `projectPath` by naively replacing every `-` with `/` in the
   // encoded dir name, which mangles legitimate hyphens — `chat-recall`
@@ -174,7 +168,7 @@ export function cachedRecentEdits(opts: {
   // truth and overlay it onto whatever live-scan emits.
   const realProjectPaths = new Map<string, string>();
   try {
-    for (const r of memStore.listAllSessionProjectPaths()) {
+    for (const r of await memStore.listAllSessionProjectPaths()) {
       realProjectPaths.set(r.id, r.project_path);
     }
   } catch { /* ignore — overlay just won't be applied */ }
@@ -183,16 +177,16 @@ export function cachedRecentEdits(opts: {
     // Find every session whose file mtime is within the window. Older
     // sessions can't have produced events newer than `sinceMs`, so we
     // skip them at the SQL layer rather than decompress and discard.
-    const candidates = memStore.listSessionsModifiedSince(opts.sinceMs);
+    const candidates = await memStore.listSessionsModifiedSince(opts.sinceMs);
 
     for (const sess of candidates) {
-      const tool = detectToolFromId(sess.id);
+      const tool = detectTool(sess.id);
       if (!enabled.has(tool)) continue;
       if (opts.projectFilter && !(sess.project_path || '').toLowerCase().includes(opts.projectFilter.toLowerCase())) continue;
 
       // Read the cached diff row. If it's stale (file mtime advanced
       // past the cached row), or missing entirely, defer to live scan.
-      const row = metaCache.getRawComputeRow(sess.id, 'diff');
+      const row = await metaCache.getRawComputeRow(sess.id, 'diff');
 
       if (!row || row.mtime < sess.mtime) {
         fallbackIds.add(sess.id);
@@ -233,8 +227,8 @@ export function cachedRecentEdits(opts: {
       }
     }
   } finally {
-    memStore.close();
-    metaCache.close();
+    await memStore.close();
+    await metaCache.close();
   }
 
   // Coverage gap: memory_metadata only knows about sessions the

@@ -21,10 +21,12 @@
  * triage signal that the gemini-summary doesn't.
  */
 
-import { extractTurns, type SessionTurn } from './session-turns.js';
+import type { SessionTurn } from './session-turns.js';
 import { markPrompt, summarizeMarkers, type SessionMarkerCounts, type MarkedPrompt } from './session-sentiment.js';
-import { replaySession } from './session-replay.js';
 import { getSessionCommits, type SessionCommitsResult } from './session-git.js';
+import { getBackendForId } from './tool-backend.js';
+// Side-effect: ensure backends are registered so getBackendForId resolves.
+import './backends/index.js';
 
 export type SessionStatus = 'shipped' | 'interrupted' | 'abandoned' | 'in_progress' | 'unknown';
 
@@ -174,19 +176,33 @@ function classifyStatus(opts: {
   return { status: 'abandoned', reason: 'edits made but no commits — work stayed local' };
 }
 
+/**
+ * Tool-agnostic outcome composer.
+ *
+ * Resolves a backend via the registry, then composes turns + (replay or
+ * fast-path stats) + commits + sentiment into a SessionOutcome. Works for
+ * every AI tool because each backend's `extractTurns` / `replay` returns
+ * canonical results post-Phase 10.
+ *
+ * Backends with a cheap pre-computed file/line summary (OpenCode stores
+ * these on the session row) can implement `preComputedOutcomeStats` to
+ * skip the full replay walk; everyone else falls through to `replay()`.
+ */
 export function computeOutcome(sessionId: string, opts: { commitBufferMinutes?: number } = {}): SessionOutcome {
-  const turnsRes = extractTurns(sessionId, { assistantMax: 2000 });
-  if (!turnsRes.found) {
-    return {
-      sessionId, found: false, status: 'unknown', reason: 'session not found',
-      startMs: 0, endMs: 0,
-      decisions: [], blockers: [], claimReaction: {},
-      prompts: [],
-      promptMarkers: { total: 0, interrupt: 0, frustrated: 0, correction: 0, approval: 0, question: 0, directive: 0, clarification_request: 0, peakIntensity: 0 },
-      commits: { sessionId, startMs: 0, endMs: 0, repos: [], totalCommits: 0 },
-      fileCount: 0, filesChanged: [], totalLinesAdded: 0, totalLinesRemoved: 0,
-    };
-  }
+  const backend = getBackendForId(sessionId);
+  const notFound: SessionOutcome = {
+    sessionId, found: false, status: 'unknown', reason: 'session not found',
+    startMs: 0, endMs: 0,
+    decisions: [], blockers: [], claimReaction: {},
+    prompts: [],
+    promptMarkers: { total: 0, interrupt: 0, frustrated: 0, correction: 0, approval: 0, question: 0, directive: 0, clarification_request: 0, peakIntensity: 0 },
+    commits: { sessionId, startMs: 0, endMs: 0, repos: [], totalCommits: 0 },
+    fileCount: 0, filesChanged: [], totalLinesAdded: 0, totalLinesRemoved: 0,
+  };
+  if (!backend) return notFound;
+
+  const turnsRes = backend.extractTurns(sessionId, { assistantMax: 2000 });
+  if (!turnsRes.found) return notFound;
 
   // Decisions and blockers, pulled from the in-order turn stream.
   const decisions: SessionDecision[] = [];
@@ -217,9 +233,24 @@ export function computeOutcome(sessionId: string, opts: { commitBufferMinutes?: 
 
   const claimReaction = findLastClaimAndReaction(turnsRes.turns);
 
-  // Replay → file changes → commits in window.
-  const replay = replaySession(sessionId);
-  const filesChanged = replay.files.map(f => f.file);
+  // File changes → commits in window. Try the backend's fast-path first
+  // (e.g. OpenCode stores summary_files/_additions/_deletions on the row);
+  // fall through to a full replay when it's not available.
+  let filesChanged: string[];
+  let totalLinesAdded: number;
+  let totalLinesRemoved: number;
+  const fast = backend.preComputedOutcomeStats?.(sessionId);
+  if (fast) {
+    filesChanged = fast.filesChanged;
+    totalLinesAdded = fast.totalLinesAdded;
+    totalLinesRemoved = fast.totalLinesRemoved;
+  } else {
+    const replay = backend.replay(sessionId);
+    filesChanged = replay.files.map(f => f.file);
+    totalLinesAdded = replay.totalLinesAdded;
+    totalLinesRemoved = replay.totalLinesRemoved;
+  }
+
   const commits = getSessionCommits(
     sessionId,
     filesChanged,
@@ -251,7 +282,7 @@ export function computeOutcome(sessionId: string, opts: { commitBufferMinutes?: 
     commits,
     fileCount: filesChanged.length,
     filesChanged,
-    totalLinesAdded: replay.totalLinesAdded,
-    totalLinesRemoved: replay.totalLinesRemoved,
+    totalLinesAdded,
+    totalLinesRemoved,
   };
 }

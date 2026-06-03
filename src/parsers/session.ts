@@ -7,6 +7,8 @@ import { createInterface } from 'readline';
 import { homedir } from 'os';
 import { join, basename } from 'path';
 import { stripInjectedBanners } from './chunker.js';
+import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
+import { estimateCostUsd, METADATA_VERSION } from '../core/model-pricing.js';
 
 export interface SessionEntry {
   sessionId: string;
@@ -41,6 +43,16 @@ export interface SessionMetadata {
   cacheCreationTokens: number;
   peakContextTokens: number;
   messageCount: number;
+  /** Estimated USD cost — `model-pricing.ts` × token totals.
+   *  Populated when at least one model in `modelsUsed` is in the pricing
+   *  table; unknown models contribute $0 (signal vs noise: clearer than
+   *  guessing). */
+  costUsd: number;
+  /** Bumped when the parser learns to extract a new field. The store's
+   *  needsUpdate() compares this with `extra.metadataVersion` so the
+   *  auto-indexer re-parses sessions automatically after an upgrade.
+   *  See `src/core/model-pricing.ts:METADATA_VERSION`. */
+  metadataVersion: number;
 }
 
 export interface SessionContent {
@@ -141,7 +153,7 @@ export function parseSessionsIndex(indexPath: string): SessionEntry[] {
 }
 
 export function* iterAllSessionIndices(claudeDir?: string): Generator<[string, SessionEntry[]]> {
-  const dir = claudeDir || join(homedir(), '.claude', 'projects');
+  const dir = claudeDir || CLAUDE.projectsDir();
   
   if (!existsSync(dir)) {
     return;
@@ -226,6 +238,32 @@ export function getSubagentProjectPath(sessionPath: string, folderDerivedPath: s
 }
 
 /**
+ * Read the first `cwd` field from a session JSONL. Used as a tiebreaker
+ * when the dir-name decoder produces a path that doesn't exist on disk
+ * (real-dash and dot-prefix folder names like `.claude-pr-bot` or
+ * `acme-infrastructure-393` get mangled by the naive `-` → `/` decode).
+ *
+ * Reads at most ~30 lines — the cwd is set on every user/attachment
+ * event so we hit it almost immediately. Returns empty string when no
+ * cwd is found (e.g. very short or malformed transcripts).
+ */
+export function readCwdFromJsonl(sessionPath: string): string {
+  try {
+    if (!existsSync(sessionPath)) return '';
+    const text = readFileSync(sessionPath, 'utf-8');
+    const lines = text.split('\n', 50);
+    for (const line of lines) {
+      if (!line || !line.includes('"cwd"')) continue;
+      try {
+        const obj = JSON.parse(line) as { cwd?: unknown };
+        if (typeof obj.cwd === 'string' && obj.cwd) return obj.cwd;
+      } catch { /* skip malformed */ }
+    }
+  } catch { /* file unreadable — give up */ }
+  return '';
+}
+
+/**
  * Get the effective mtime for a session — for new-format sessions with subagents,
  * use the newest subagent file's mtime instead of the stub's mtime.
  */
@@ -272,6 +310,8 @@ export async function parseSessionFile(
       cacheCreationTokens: 0,
       peakContextTokens: 0,
       messageCount: 0,
+      costUsd: 0,
+      metadataVersion: METADATA_VERSION,
     },
   };
 
@@ -500,6 +540,12 @@ export async function parseSessionFile(
   content.metadata.modelsUsed = [...modelsUsed];
   content.metadata.filesModified = [...filesModified];
   content.metadata.messageCount = content.userMessages.length + content.assistantMessages.length;
+  content.metadata.costUsd = estimateCostUsd(content.metadata.modelsUsed, {
+    inputTokens: content.metadata.inputTokens,
+    outputTokens: content.metadata.outputTokens,
+    cacheReadTokens: content.metadata.cacheReadTokens,
+    cacheCreationTokens: content.metadata.cacheCreationTokens,
+  });
 
   return content;
 }
@@ -579,8 +625,8 @@ export function* getAllSessions(claudeDir?: string): Generator<[SessionEntry, st
       if (existsSync(p) && !projectDirs.includes(p)) projectDirs.push(p);
     };
 
-    // Standard
-    addDir(join(home, '.claude'));
+    // Standard (env-overridable via CHAT_RECALL_CLAUDE_HOME)
+    addDir(CLAUDE.homeDir());
 
     // Discover ~/.claude-* profiles
     try {
@@ -600,7 +646,7 @@ export function* getAllSessions(claudeDir?: string): Generator<[SessionEntry, st
     }
 
     if (projectDirs.length === 0) {
-      projectDirs.push(join(home, '.claude', 'projects'));
+      projectDirs.push(CLAUDE.projectsDir());
     }
   }
 
@@ -642,11 +688,24 @@ export function* getAllSessions(claudeDir?: string): Generator<[SessionEntry, st
           // For new-format sessions, use the newest subagent file's mtime so
           // the indexer detects updates even when the stub hasn't changed.
           const effectiveMtime = getSessionMtime(fullPath);
-          // For new-format sessions, derive project path from where subagents
-          // actually did their work (most common cwd), not where the session was launched.
-          const projectPath = hasSubagentsDir(fullPath)
-            ? getSubagentProjectPath(fullPath, derivedProjectPath)
-            : derivedProjectPath;
+          // Path resolution priority — JSONL cwd is ground truth and
+          // ALWAYS wins when present. Claude's dir-name encoding is
+          // lossy by design (every `-` becomes `/`, so paths containing
+          // real hyphens or starting with `.` — `.claude-pr-bot`,
+          // `acme-infrastructure-393`, `my-project` — get mangled).
+          //
+          //   1. Subagent cwd majority (new-format only).
+          //   2. JSONL's first `cwd` event (ground truth from the tool).
+          //   3. Decoded dir name (last-resort heuristic when JSONL is
+          //      empty or malformed).
+          let projectPath = '';
+          if (hasSubagentsDir(fullPath)) {
+            projectPath = getSubagentProjectPath(fullPath, derivedProjectPath);
+          } else {
+            const fromJsonl = readCwdFromJsonl(fullPath);
+            if (fromJsonl) projectPath = fromJsonl;
+          }
+          if (!projectPath) projectPath = derivedProjectPath;
 
           const entry: SessionEntry = {
             sessionId,

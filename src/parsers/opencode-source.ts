@@ -22,6 +22,8 @@ import type {
   MemoryChunk,
   MemoryLink,
 } from '../types/memory.js';
+import { opencodeBackend as OPENCODE } from '../core/backends/opencode.js';
+import { isSourceEnabled } from '../core/settings.js';
 
 const MAX_CHUNK_CHARS = 2000;
 
@@ -31,10 +33,11 @@ export class OpenCodeSource implements MemorySource {
   private dbPath: string;
 
   constructor(dbPath?: string) {
-    this.dbPath = dbPath || join(homedir(), '.local', 'share', 'opencode', 'opencode.db');
+    this.dbPath = dbPath || OPENCODE.dbPath();
   }
 
   async *discover(): AsyncGenerator<MemoryItem> {
+    if (!isSourceEnabled('opencode', 'sessions')) return;
     if (!existsSync(this.dbPath)) return;
 
     let db: Database.Database;
@@ -45,6 +48,13 @@ export class OpenCodeSource implements MemorySource {
     }
 
     try {
+      // Exclude subagent/child sessions (parent_id IS NOT NULL). OpenCode
+      // dispatches like "@explorer find X" or "@general write Y" create
+      // child rows in the same `session` table. Without this filter they
+      // surface as standalone conversations in Recent/Activity/search,
+      // duplicating the parent's work and burying the actual top-level
+      // chats. Children are still queryable as subagents-of-parent via
+      // `getOpenCodeSubagents(parentId)` on the conversation route.
       const sessions = db.prepare(`
         SELECT s.id, s.title, s.directory, s.time_created, s.time_updated,
                s.summary_files, s.summary_additions, s.summary_deletions,
@@ -52,7 +62,7 @@ export class OpenCodeSource implements MemorySource {
                p.worktree as project_path
         FROM session s
         LEFT JOIN project p ON s.project_id = p.id
-        WHERE s.time_archived IS NULL
+        WHERE s.time_archived IS NULL AND s.parent_id IS NULL
         ORDER BY s.time_created DESC
       `).all() as Array<{
         id: string; title: string; directory: string;
@@ -124,7 +134,7 @@ export class OpenCodeSource implements MemorySource {
           : 0;
 
         yield {
-          id: `opencode_${sess.id}`,
+          id: OPENCODE.toPrefixedId(sess.id),
           sourceType: 'session',
           title: sess.title || `OpenCode Session ${sess.id.slice(4, 12)}`,
           projectPath: sess.project_path || sess.directory || '',
@@ -138,6 +148,9 @@ export class OpenCodeSource implements MemorySource {
             filesChanged: sess.summary_files || 0,
             additions: sess.summary_additions || 0,
             deletions: sess.summary_deletions || 0,
+            // OpenCode pre-computes cost; expose it under the standard
+            // `costUsd` name so the dossier reads one key across tools.
+            costUsd: costRow?.total_cost || 0,
             estimatedCostUsd: costRow?.total_cost || 0,
             inputTokens: costRow?.total_input || 0,
             outputTokens: costRow?.total_output || 0,

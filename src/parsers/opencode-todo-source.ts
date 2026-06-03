@@ -17,6 +17,8 @@ import type {
   MemoryChunk,
   MemoryLink,
 } from '../types/memory.js';
+import { opencodeBackend as OPENCODE } from '../core/backends/opencode.js';
+import { isSourceEnabled } from '../core/settings.js';
 
 export class OpenCodeTodoSource implements MemorySource {
   readonly sourceType = 'task' as const;
@@ -24,10 +26,11 @@ export class OpenCodeTodoSource implements MemorySource {
   private dbPath: string;
 
   constructor(dbPath?: string) {
-    this.dbPath = dbPath || join(homedir(), '.local', 'share', 'opencode', 'opencode.db');
+    this.dbPath = dbPath || OPENCODE.dbPath();
   }
 
   async *discover(): AsyncGenerator<MemoryItem> {
+    if (!isSourceEnabled('opencode', 'todos')) return;
     if (!existsSync(this.dbPath)) return;
 
     let db: Database.Database;
@@ -75,7 +78,7 @@ export class OpenCodeTodoSource implements MemorySource {
         const title = `${sess.session_title || 'OpenCode Tasks'} (${sess.completed_count}/${sess.todo_count} done)`;
 
         yield {
-          id: `opencode_todo_${sess.session_id}`,
+          id: `${OPENCODE.idPrefix}todo_${sess.session_id}`,
           sourceType: 'task',
           title,
           projectPath: sess.project_path || sess.directory || '',
@@ -98,7 +101,7 @@ export class OpenCodeTodoSource implements MemorySource {
   async parse(item: MemoryItem): Promise<MemoryChunk[]> {
     if (!existsSync(this.dbPath)) return [];
 
-    const sessionId = (item.extra?.sessionId as string) || item.id.replace('opencode_todo_', '');
+    const sessionId = (item.extra?.sessionId as string) || item.id.replace(`${OPENCODE.idPrefix}todo_`, '');
     const db = new Database(this.dbPath, { readonly: true });
     const chunks: MemoryChunk[] = [];
 
@@ -139,7 +142,7 @@ export class OpenCodeTodoSource implements MemorySource {
         sourceType: 'task',
         sourceId: item.id,
         targetType: 'session',
-        targetId: `opencode_${sessionId}`,
+        targetId: OPENCODE.toPrefixedId(sessionId),
         linkType: 'task_in_session',
         confidence: 1.0,
       }];

@@ -243,7 +243,10 @@ export function isFresh(
   currentContentHash?: string,
 ): boolean {
   if (!cached) return false;
-  if (cached.fileMtime === currentMtime && cached.fileSize === currentSize) return true;
+  // Compare mtime at whole-ms resolution: the Postgres backend floors mtimes
+  // into BIGINT columns while SQLite stores the fractional `stat.mtimeMs`, so a
+  // raw `===` would never match a freshly-stat'd float against a pg-stored row.
+  if (Math.floor(cached.fileMtime) === Math.floor(currentMtime) && cached.fileSize === currentSize) return true;
   // mtime/size moved. If both sides have a content hash, accept the row
   // when hashes match (touch / backup restore — content unchanged).
   if (currentContentHash && cached.contentHash && currentContentHash === cached.contentHash) {
