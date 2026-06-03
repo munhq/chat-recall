@@ -1801,4 +1801,36 @@ program
     console.log(JSON.stringify(r, null, 2));
   });
 
+program
+  .command('login <server-url>')
+  .description('Save server credentials for `chat-recall sync` (~/.chat-recall/credentials.json, 0600)')
+  .requiredOption('--token <token>', 'Bearer token issued by the server')
+  .action(async (serverUrl: string, opts: { token: string }) => {
+    const { saveCredentials } = await import('./sync-client.js');
+    saveCredentials({ serverUrl, token: opts.token });
+    console.log(chalk.green('✓ Logged in.') + chalk.dim(`  server: ${serverUrl}`));
+  });
+
+program
+  .command('sync')
+  .description('Push redacted conversations to the configured server (secrets always masked)')
+  .option('--since-hours <n>', 'Only sync sessions modified in the last N hours')
+  .option('--limit <n>', 'Max sessions to sync')
+  .option('--paths-cleartext', 'Send project paths in cleartext (self-host only; default hashes them)')
+  .action(async (opts: { sinceHours?: string; limit?: string; pathsCleartext?: boolean }) => {
+    const { syncSessions } = await import('./sync-client.js');
+    const sinceMs = opts.sinceHours ? Date.now() - Number(opts.sinceHours) * 3_600_000 : undefined;
+    try {
+      const r = await syncSessions({
+        sinceMs,
+        cleartextPaths: !!opts.pathsCleartext,
+        limit: opts.limit ? Number(opts.limit) : undefined,
+      });
+      console.log(chalk.green(`✓ Synced ${r.uploaded} session(s)`) + chalk.dim(` — ${r.skipped} skipped, ${r.redactions} secrets redacted`));
+    } catch (err) {
+      console.error(chalk.red('sync failed:'), err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
+  });
+
 program.parse();
