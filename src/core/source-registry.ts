@@ -13,6 +13,7 @@ import type {
   MemoryChunk,
   MemoryLink,
 } from '../types/memory.js';
+import { isItemAllowed } from './source-policy.js';
 
 export class SourceRegistry {
   private sources = new Map<SourceType, MemorySource[]>();
@@ -40,14 +41,21 @@ export class SourceRegistry {
     return Array.from(this.sources.keys());
   }
 
-  /** Discover all items from all registered sources */
+  /**
+   * Discover all items from all registered sources, filtered by the
+   * settings-driven policy in `source-policy.ts`. Disabled sources and
+   * denylisted projects are dropped here so plugins stay unaware of the
+   * gating logic.
+   */
   async *discoverAll(sourceTypes?: SourceType[]): AsyncGenerator<MemoryItem> {
     const types = sourceTypes || this.getRegisteredTypes();
 
     for (const type of types) {
       const sources = this.sources.get(type) || [];
       for (const source of sources) {
-        yield* source.discover();
+        for await (const item of source.discover()) {
+          if (isItemAllowed(item)) yield item;
+        }
       }
     }
   }
@@ -75,7 +83,11 @@ export class SourceRegistry {
     return [];
   }
 
-  /** Discover, parse, and extract links for all items from a source type */
+  /**
+   * Discover, parse, and extract links for all items from a source type.
+   * Same policy filter as `discoverAll` is applied before the parse step
+   * so disallowed items never get embedded.
+   */
   async *processSource(sourceType: SourceType): AsyncGenerator<{
     item: MemoryItem;
     chunks: MemoryChunk[];
@@ -85,6 +97,7 @@ export class SourceRegistry {
 
     for (const source of sources) {
       for await (const item of source.discover()) {
+        if (!isItemAllowed(item)) continue;
         const chunks = await source.parse(item);
         const links = await source.extractLinks(item);
         yield { item, chunks, links };

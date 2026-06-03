@@ -7,11 +7,12 @@
  * - Outcomes/achievements
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
-import { homedir } from 'os';
-import { join, basename } from 'path';
-import { MemoryStore } from './memory-store.js';
-import { extractFirstUserPromptSync } from './first-prompt.js';
+import { existsSync, readFileSync } from 'fs';
+import { basename } from 'path';
+
+import { listAvailableBackends } from './tool-backend.js';
+import './backends/index.js'; // side-effect: registers backends
+import type { AiTool } from './tool-backend.js';
 
 export interface ConversationContext {
   sessionId: string;
@@ -38,158 +39,47 @@ export interface RecentSession {
   mtime: number;
   firstPrompt: string;
   messageCount: number;
-  tool?: 'claude' | 'gemini' | 'opencode';
+  tool?: AiTool;
 }
 
 /**
- * Get recent sessions for a project, sorted by modification time.
+ * Get recent sessions across every registered AI-tool backend, sorted by
+ * modification time descending.
+ *
+ * The function fans out to `backend.listSessions()` for every available
+ * backend — Claude, Gemini, OpenCode, Codex — and unions the results.
+ * Adding a fifth tool is zero changes here: register a new ToolBackend
+ * and it shows up automatically.
  */
 export function getRecentSessions(
   projectFilter?: string,
-  limit = 10
+  limit = 10,
 ): RecentSession[] {
-  const claudeDir = join(homedir(), '.claude', 'projects');
-  
-  if (!existsSync(claudeDir)) {
-    return [];
-  }
-  
   const sessions: RecentSession[] = [];
-  
-  const projectDirs = readdirSync(claudeDir, { withFileTypes: true });
-  
-  for (const dir of projectDirs) {
-    if (!dir.isDirectory()) continue;
-    
-    const projectDir = join(claudeDir, dir.name);
-    
-    // Apply project filter if specified
-    if (projectFilter && !dir.name.toLowerCase().includes(projectFilter.toLowerCase())) {
-      continue;
-    }
-    
-    // Check for sessions-index.json
-    const indexPath = join(projectDir, 'sessions-index.json');
-    if (existsSync(indexPath)) {
-      try {
-        const indexData = JSON.parse(readFileSync(indexPath, 'utf-8'));
-        const entries = indexData.entries || [];
-        
-        for (const entry of entries) {
-          if (existsSync(entry.fullPath)) {
-            sessions.push({
-              sessionId: entry.sessionId,
-              projectPath: entry.projectPath || dir.name.replace(/-/g, '/').replace(/^\//, ''),
-              projectDir: dir.name,
-              fullPath: entry.fullPath,
-              created: entry.created || '',
-              modified: entry.modified || '',
-              mtime: entry.fileMtime || 0,
-              firstPrompt: entry.firstPrompt || '',
-              messageCount: entry.messageCount || 0,
-            });
-          }
-        }
-      } catch {
-        // Skip invalid index files
-      }
-    }
-    
-    // Also check for .jsonl files directly (some sessions might not be in index)
-    const files = readdirSync(projectDir);
-    for (const file of files) {
-      if (file.endsWith('.jsonl') && file !== 'sessions-index.json') {
-        const filePath = join(projectDir, file);
-        const sessionId = basename(file, '.jsonl');
-        
-        // Skip if already added from index
-        if (sessions.find(s => s.sessionId === sessionId)) continue;
-        
-        try {
-          const stat = statSync(filePath);
-          // Cheap first-prompt extraction so titles aren't "(no prompt
-          // captured)" when sessions-index.json is missing. Bounded to the
-          // first 500 lines — first user message is almost always near the top.
-          const firstPrompt = extractFirstUserPromptSync(filePath, { maxLength: 200 });
-          sessions.push({
-            sessionId,
-            projectPath: dir.name.replace(/-/g, '/').replace(/^\//, ''),
-            projectDir: dir.name,
-            fullPath: filePath,
-            created: stat.birthtime.toISOString(),
-            modified: stat.mtime.toISOString(),
-            mtime: stat.mtimeMs,
-            firstPrompt,
-            messageCount: 0,
-          });
-        } catch {
-          // Skip files we can't stat
-        }
-      }
-    }
-  }
-  
-  // Augment with Gemini + OpenCode sessions from the unified memory index.
-  // These don't live in ~/.claude/projects — they're rows in memory_metadata
-  // with extra_json.tool set to "gemini" or "opencode".
-  try {
-    const seen = new Set(sessions.map(s => s.sessionId));
-    for (const item of listNonClaudeSessionItems()) {
-      if (seen.has(item.id)) continue;
-      if (projectFilter && !item.project_path.toLowerCase().includes(projectFilter.toLowerCase())) {
-        continue;
-      }
-      let extra: Record<string, any> = {};
-      try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
-      const tool = extra.tool as 'gemini' | 'opencode' | undefined;
-      if (tool !== 'gemini' && tool !== 'opencode') continue;
-      const iso = new Date(item.mtime || 0).toISOString();
+
+  for (const backend of listAvailableBackends()) {
+    let refs;
+    try { refs = backend.listSessions({ projectFilter }); }
+    catch { continue; }
+
+    for (const ref of refs) {
       sessions.push({
-        sessionId: item.id,
-        projectPath: item.project_path || '',
-        projectDir: item.project_path ? basename(item.project_path) : tool,
-        fullPath: item.file_path || '',
-        created: iso,
-        modified: iso,
-        mtime: item.mtime || 0,
-        firstPrompt: item.content_preview || item.title || '',
-        messageCount: extra.messageCount || 0,
-        tool,
+        sessionId: ref.prefixedId,
+        projectPath: ref.projectPath,
+        projectDir: ref.projectDir,
+        fullPath: ref.fullPath,
+        created: ref.created,
+        modified: ref.modified,
+        mtime: ref.mtime,
+        firstPrompt: ref.firstPrompt,
+        messageCount: ref.messageCount,
+        tool: ref.toolId,
       });
     }
-  } catch {
-    // If the memory store isn't available, fall back to Claude-only.
   }
 
-  // Default Claude rows to tool='claude' for downstream discrimination.
-  for (const s of sessions) if (!s.tool) s.tool = 'claude';
-
-  // Sort by modification time descending
   sessions.sort((a, b) => b.mtime - a.mtime);
-
   return sessions.slice(0, limit);
-}
-
-/**
- * Lazy-load session items from the unified memory store. Kept behind a
- * try/catch in the caller so a missing/locked DB just degrades to the
- * Claude-only path instead of crashing.
- */
-function listNonClaudeSessionItems(): Array<{
-  id: string;
-  title: string;
-  project_path: string;
-  file_path: string;
-  mtime: number;
-  content_preview: string;
-  extra_json: string;
-}> {
-  const store = new MemoryStore();
-  try {
-    return store.listItems('session', 50000, 0) as any[];
-  } finally {
-    store.close();
-  }
 }
 
 /**

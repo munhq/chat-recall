@@ -11,7 +11,16 @@
  * All extraction is regex/heuristic — no LLM needed.
  */
 
-import type { KnowledgeGraph } from './knowledge-graph.js';
+/** Minimal structural type for the KG sink — satisfied by both the sync
+ *  KnowledgeGraph class and the async KnowledgeGraphDriver, so this works in
+ *  local (sqlite) and team/cloud (postgres) indexing alike. `await` handles
+ *  both a sync string return and a Promise<string>. */
+type KgSink = {
+  addTriple: (
+    subject: string, predicate: string, object: string,
+    options?: { validFrom?: string; confidence?: number; sourceSession?: string },
+  ) => unknown;
+};
 
 export interface ExtractedTriple {
   subject: string;
@@ -88,6 +97,53 @@ const DECISION_PATTERNS = [
   /\b(?:replaced|swapped)\s+([A-Za-z][A-Za-z0-9._-]{1,25})\s+(?:with|for)\s+([A-Za-z][A-Za-z0-9._-]{1,25})/gi,
 ];
 
+/**
+ * Stoplist for decision objects. The decision regex captures the next
+ * token after a trigger phrase like "chose"; without filtering we get
+ * garbage like `chose → so` or `rejected → paying`. The rule is:
+ * accept only objects that look like a proper noun, a known tool, or
+ * an identifier (dotted/hyphenated). Reject verbs, articles,
+ * prepositions, and gerunds.
+ */
+const DECISION_OBJECT_STOPWORDS = new Set([
+  // articles, prepositions, conjunctions
+  'a', 'an', 'the', 'to', 'of', 'in', 'on', 'at', 'by', 'for', 'with',
+  'from', 'as', 'into', 'onto', 'off', 'out', 'up', 'down', 'over',
+  'under', 'and', 'or', 'but', 'so', 'if', 'than', 'then', 'that',
+  'this', 'these', 'those', 'it', 'its',
+  // common verbs that follow trigger phrases
+  'use', 'using', 'do', 'doing', 'go', 'going', 'be', 'being', 'have',
+  'having', 'make', 'making', 'add', 'adding', 'remove', 'removing',
+  'paying', 'reading', 'writing', 'returning', 'summarizing',
+  // common noise nouns/adjectives
+  'wins', 'default', 'content', 'now', 'here', 'there', 'just', 'one',
+  'two', 'three', 'best', 'worst', 'good', 'bad',
+]);
+
+const KNOWN_TOOL_NAMES = new Set(
+  Object.keys(KNOWN_TOOLS).map(t => t.replace(/\\\+/g, '+').replace(/\[.\]/g, '.').replace(/\[([^\]]+)\]/g, '$1').toLowerCase()),
+);
+
+/**
+ * Decide whether a captured decision object is worth keeping. Accepts:
+ *  - known tools (postgres, react, …)
+ *  - proper nouns (starts with uppercase)
+ *  - identifier-shaped tokens (contains . or - and >= 3 chars)
+ * Rejects stoplisted tokens and bare gerunds ("-ing"), which are
+ * overwhelmingly verb captures rather than tool names.
+ */
+function looksLikeDecisionObject(raw: string): boolean {
+  const t = raw.trim();
+  if (t.length < 2) return false;
+  const lower = t.toLowerCase();
+  if (DECISION_OBJECT_STOPWORDS.has(lower)) return false;
+  if (KNOWN_TOOL_NAMES.has(lower)) return true;
+  if (/^[A-Z]/.test(t)) return true; // proper noun
+  if (/[.-]/.test(t) && t.length >= 3) return true; // identifier shape
+  if (/ing$/i.test(t)) return false; // bare gerund
+  return false;
+}
+
 // ── Project extraction from paths ────────────────────────────────
 
 const PROJECT_PATH_PATTERN = /\/(?:home|Users)\/\w+\/(?:code|projects|work|dev|src)\/(?:\w+\/)?([a-zA-Z][a-zA-Z0-9_-]{1,40})/g;
@@ -151,7 +207,9 @@ export function extractEntities(
     }
   }
 
-  // 2. Extract decisions
+  // 2. Extract decisions — only emit when the captured object passes
+  //    the noun-ish filter; otherwise the trigger phrase produces junk
+  //    like "chose → so" or "rejected → paying".
   for (const pattern of DECISION_PATTERNS) {
     pattern.lastIndex = 0;
     let match;
@@ -159,11 +217,11 @@ export function extractEntities(
       const chosen = match[1]?.trim();
       const rejected = match[2]?.trim();
 
-      if (chosen && chosen.length > 1 && chosen.length < 30) {
+      if (chosen && looksLikeDecisionObject(chosen)) {
         if (projectName) {
           addTriple(projectName, 'chose', chosen, 0.8);
         }
-        if (rejected && rejected.length > 1 && rejected.length < 30) {
+        if (rejected && looksLikeDecisionObject(rejected)) {
           addTriple(projectName || 'project', 'rejected', rejected, 0.7);
           addTriple(chosen, 'chosen_over', rejected, 0.8);
         }
@@ -205,8 +263,8 @@ export function extractEntities(
  * Extract entities from text and add them to the knowledge graph.
  * Call this during indexing for each item.
  */
-export function extractAndPopulateKG(
-  kg: KnowledgeGraph,
+export async function extractAndPopulateKG(
+  kg: KgSink,
   text: string,
   context: {
     projectPath?: string;
@@ -214,13 +272,13 @@ export function extractAndPopulateKG(
     sessionId?: string;
     validFrom?: string;
   } = {}
-): number {
+): Promise<number> {
   const triples = extractEntities(text, context);
   let added = 0;
 
   for (const triple of triples) {
     try {
-      kg.addTriple(triple.subject, triple.predicate, triple.object, {
+      await kg.addTriple(triple.subject, triple.predicate, triple.object, {
         validFrom: context.validFrom,
         confidence: triple.confidence,
         sourceSession: context.sessionId,

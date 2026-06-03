@@ -117,6 +117,8 @@ export interface MemoryMetadataRow {
   source_type: string;
   title: string;
   project_path: string;
+  /** Resolved logical project identifier (see src/core/project-resolver.ts). */
+  project_id: string;
   content_preview: string;
   file_path: string;
   mtime: number;

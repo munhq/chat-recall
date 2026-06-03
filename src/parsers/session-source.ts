@@ -17,6 +17,7 @@ import {
   type SessionEntry,
 } from './session.js';
 import { chunkSession } from './chunker.js';
+import { isSourceEnabled } from '../core/settings.js';
 
 export class SessionSource implements MemorySource {
   readonly sourceType = 'session' as const;
@@ -28,6 +29,7 @@ export class SessionSource implements MemorySource {
   }
 
   async *discover(): AsyncGenerator<MemoryItem> {
+    if (!isSourceEnabled('claude', 'sessions')) return;
     for (const [entry, sessionPath] of getAllSessions(this.claudeDir)) {
       yield this.entryToItem(entry, sessionPath);
     }

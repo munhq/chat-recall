@@ -1,28 +1,49 @@
 /**
- * Live-scan helpers for active or unindexed sessions across all four AI
- * tools — Claude Code, Gemini CLI, OpenCode, and Codex.
+ * Live-scan helpers + a few cross-tool primitives the rest of the codebase
+ * builds on:
  *
- * The indexer only updates extra_json (filesModified, toolsUsed, etc.) when a
- * session is re-indexed. For the *active* session — the one currently running
- * — those fields lag behind reality. These helpers walk the transcripts on
- * disk and pull file activity straight from each tool's native tool-call
- * format so callers can answer "what did this session just touch?" without
- * waiting for a re-index.
+ *   - `detectTool(id)` — primitive prefix→tool mapping used everywhere.
+ *   - `findSessionFile` (Claude), `findGeminiSessionFile`, `findCodexSessionFile`
+ *     — file locators each backend uses to resolve a raw id.
+ *   - `liveScanSessionEdits(id)` / `liveScanModifiedFiles(id)` /
+ *     `liveScanRecentEdits(opts)` — registry-routed dispatchers that fan
+ *     out to whichever backend owns the id (or to all backends, in the
+ *     "recent" case).
  *
- * Per-tool sources:
- *   - claude:    ~/.claude/projects/<encoded>/<uuid>.jsonl (+ subagents/)
- *   - gemini:    ~/.gemini/tmp/<sha256>/chats/session-*.json
- *   - opencode:  ~/.local/share/opencode/opencode.db (SQLite, `part` table)
+ * Per-tool *implementations* live in `src/core/backends/<tool>.ts` —
+ * adding a fifth tool needs zero edits in this file.
  */
 
-import Database from 'better-sqlite3';
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
-import { homedir } from 'os';
 import { join, basename } from 'path';
 import { createHash } from 'crypto';
 import { hasSubagentsDir } from '../parsers/session.js';
+import { getBackendForId, listAvailableBackends } from './tool-backend.js';
+import {
+  claudeHomeDir,
+  geminiHomeDir,
+  opencodeDbPath,
+  codexHomeDir,
+} from './tool-paths.js';
+// Side-effect import: bootstraps the four ToolBackend implementations into
+// the registry so getBackendForId works at call time. Loaded here because
+// `liveScanSessionEdits` dispatches through the registry; without this,
+// any caller that hasn't already imported a backend would see found:false.
+// The cycle (live-session-scan → backends → live-session-scan) is safe
+// under ESM because backends only USE the imports at function call time,
+// not at module-init time.
+import './backends/index.js';
 
 export type AiTool = 'claude' | 'gemini' | 'opencode' | 'codex';
+
+// Path subdirs — defaults + env-var overrides come from `tool-paths.ts`
+// so backends and this dispatcher share a single source of truth.
+
+function lazyClaudeProjectsDir(): string { return join(claudeHomeDir(), 'projects'); }
+function lazyGeminiTmpDir(): string { return join(geminiHomeDir(), 'tmp'); }
+function lazyGeminiProjectsJson(): string { return join(geminiHomeDir(), 'projects.json'); }
+function lazyOpencodeDb(): string { return opencodeDbPath(); }
+function lazyCodexSessionsDir(): string { return join(codexHomeDir(), 'sessions'); }
 
 export type EditOp = 'edit' | 'write' | 'multi_edit' | 'notebook_edit' | 'read';
 
@@ -38,41 +59,15 @@ export interface SessionEdit {
   line: number;        // line number in transcript (claude) or 0 for stores w/o lines
 }
 
-// ── Claude ─────────────────────────────────────────────────────────
-const CLAUDE_FILE_TOOLS: Record<string, EditOp> = {
-  Edit: 'edit',
-  Write: 'write',
-  MultiEdit: 'multi_edit',
-  NotebookEdit: 'notebook_edit',
-  Read: 'read',
-};
-
-// ── Gemini ─────────────────────────────────────────────────────────
-const GEMINI_FILE_TOOLS: Record<string, EditOp> = {
-  write_file: 'write',
-  replace: 'edit',
-  read_file: 'read',
-  read_many_files: 'read',
-};
-
-// ── OpenCode ───────────────────────────────────────────────────────
-const OPENCODE_FILE_TOOLS: Record<string, EditOp> = {
-  edit: 'edit',
-  write: 'write',
-  read: 'read',
-};
-
 /**
- * Tool-of-origin for a session id. Mirrors the prefix scheme the indexer uses:
- *   - "claude":    bare uuid
- *   - "gemini":    "gemini_<id>"
- *   - "opencode":  "opencode_<id>"
+ * Tool-of-origin for a session id. Routes through the registry — each
+ * backend declares its `idPrefix` once, and this helper just asks
+ * `getBackendForId` to do the lookup. Falls back to 'claude' for
+ * anything that doesn't match a registered prefix (Claude has no
+ * prefix; raw uuids land here).
  */
 export function detectTool(sessionId: string): AiTool {
-  if (sessionId.startsWith('opencode_')) return 'opencode';
-  if (sessionId.startsWith('gemini_')) return 'gemini';
-  if (sessionId.startsWith('codex_')) return 'codex';
-  return 'claude';
+  return getBackendForId(sessionId)?.id ?? 'claude';
 }
 
 /**
@@ -85,7 +80,7 @@ export function findSessionFile(sessionId: string): {
   projectDir: string;
   projectPath: string;
 } | null {
-  const root = join(homedir(), '.claude', 'projects');
+  const root = lazyClaudeProjectsDir();
   if (!existsSync(root)) return null;
 
   for (const entry of readdirSync(root, { withFileTypes: true })) {
@@ -118,23 +113,6 @@ export function resolveSessionContentPaths(sessionFile: string): string[] {
   return subPaths.length > 0 ? subPaths : [sessionFile];
 }
 
-function extractFilePathFromInput(toolName: string, input: unknown): string | null {
-  if (!input || typeof input !== 'object') return null;
-  const inp = input as Record<string, unknown>;
-  // Common field names across Claude file tools
-  const candidates = [
-    inp.file_path,
-    inp.path,
-    inp.notebook_path,
-    inp.target_file,
-  ];
-  for (const c of candidates) {
-    if (typeof c === 'string' && c.trim().length > 0) return c.trim();
-  }
-  void toolName;
-  return null;
-}
-
 /**
  * Walk a session's transcript and yield every file-touching tool call.
  * Dispatches to the right per-tool implementation based on the session id
@@ -149,84 +127,20 @@ export function liveScanSessionEdits(sessionId: string): {
   fileMtime: number;
   tool: AiTool;
 } {
+  // Route through the registry — every backend implements liveScanEdits
+  // directly, so this stays tool-agnostic. The detectTool() fallback
+  // covers the brief window during module-init before backends register.
+  const backend = getBackendForId(sessionId);
+  if (backend) return backend.liveScanEdits(sessionId);
   const tool = detectTool(sessionId);
-  const empty = { found: false, projectPath: '', projectDir: '', edits: [], fileMtime: 0, tool };
-  switch (tool) {
-    case 'claude':   return scanClaudeSession(sessionId);
-    case 'gemini':   return scanGeminiSession(sessionId.replace(/^gemini_/, ''));
-    case 'opencode': return scanOpenCodeSession(sessionId.replace(/^opencode_/, ''));
-    case 'codex':    return scanCodexSession(sessionId);
-    default:         return empty;
-  }
-}
-
-function scanClaudeSession(sessionId: string) {
-  const located = findSessionFile(sessionId);
-  if (!located) {
-    return { found: false, projectPath: '', projectDir: '', edits: [], fileMtime: 0, tool: 'claude' as const };
-  }
-  const paths = resolveSessionContentPaths(located.path);
-  let fileMtime = 0;
-  try { fileMtime = statSync(located.path).mtimeMs; } catch { /* ignore */ }
-
-  const edits: SessionEdit[] = [];
-  for (const filePath of paths) {
-    let raw: string;
-    try { raw = readFileSync(filePath, 'utf-8'); } catch { continue; }
-
-    const lines = raw.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      if (!line.trim()) continue;
-      let obj: Record<string, unknown>;
-      try { obj = JSON.parse(line); } catch { continue; }
-
-      if (obj.type !== 'assistant') continue;
-      const msg = obj.message as Record<string, unknown> | undefined;
-      if (!msg || typeof msg !== 'object') continue;
-      const content = msg.content;
-      if (!Array.isArray(content)) continue;
-
-      const tsIso = typeof obj.timestamp === 'string' ? (obj.timestamp as string) : undefined;
-      const ts = tsIso ? Date.parse(tsIso) || fileMtime : fileMtime;
-
-      for (const item of content) {
-        if (!item || typeof item !== 'object') continue;
-        const it = item as Record<string, unknown>;
-        if (it.type !== 'tool_use') continue;
-        const toolName = it.name as string;
-        if (!toolName || !(toolName in CLAUDE_FILE_TOOLS)) continue;
-        const file = extractFilePathFromInput(toolName, it.input);
-        if (!file) continue;
-
-        edits.push({
-          ts, tsIso, sessionId,
-          projectPath: located.projectPath,
-          file,
-          op: CLAUDE_FILE_TOOLS[toolName],
-          toolName,
-          tool: 'claude',
-          line: i + 1,
-        });
-      }
-    }
-  }
-
-  return {
-    found: true,
-    projectPath: located.projectPath,
-    projectDir: located.projectDir,
-    edits,
-    fileMtime,
-    tool: 'claude' as const,
-  };
+  return { found: false, projectPath: '', projectDir: '', edits: [], fileMtime: 0, tool };
 }
 
 let geminiProjectMapCache: Map<string, string> | null = null;
 function loadGeminiProjectMap(): Map<string, string> {
   if (geminiProjectMapCache) return geminiProjectMapCache;
   const map = new Map<string, string>();
-  const projectsPath = join(homedir(), '.gemini', 'projects.json');
+  const projectsPath = lazyGeminiProjectsJson();
   if (existsSync(projectsPath)) {
     try {
       const data = JSON.parse(readFileSync(projectsPath, 'utf-8'));
@@ -239,10 +153,25 @@ function loadGeminiProjectMap(): Map<string, string> {
   return map;
 }
 
-function findGeminiSessionFile(sessionIdOrFileBase: string): { path: string; projectDir: string; projectPath: string } | null {
-  const tmpRoot = join(homedir(), '.gemini', 'tmp');
+export function findGeminiSessionFile(sessionIdOrFileBase: string): { path: string; projectDir: string; projectPath: string; format: 'json' | 'jsonl' } | null {
+  const tmpRoot = lazyGeminiTmpDir();
   if (!existsSync(tmpRoot)) return null;
   const projMap = loadGeminiProjectMap();
+
+  // Newer Gemini CLI builds write `.jsonl` (one event per line); older builds
+  // wrote a single-blob `.json`. Match either.
+  const isGeminiChat = (f: string) =>
+    f.startsWith('session-') && (f.endsWith('.json') || f.endsWith('.jsonl'));
+  const stripExt = (f: string) => f.replace(/\.jsonl?$/, '');
+  const fmt = (f: string): 'json' | 'jsonl' => f.endsWith('.jsonl') ? 'jsonl' : 'json';
+
+  // Many Gemini IDs are short hex tails the CLI tacks onto the basename
+  // (e.g. file "session-2026-05-06T06-37-de4e8d4c.jsonl" → tail "de4e8d4c").
+  // Accept full-uuid prefix matches against the file's tail too.
+  const tailMatches = (fileBase: string, query: string): boolean => {
+    const tail = fileBase.split('-').pop() || '';
+    return tail.length >= 4 && query.startsWith(tail);
+  };
 
   for (const proj of readdirSync(tmpRoot, { withFileTypes: true })) {
     if (!proj.isDirectory()) continue;
@@ -251,12 +180,12 @@ function findGeminiSessionFile(sessionIdOrFileBase: string): { path: string; pro
     let files: string[];
     try { files = readdirSync(chats); } catch { continue; }
     for (const f of files) {
-      if (!f.startsWith('session-') || !f.endsWith('.json')) continue;
-      const fileBase = f.replace(/\.json$/, '');
+      if (!isGeminiChat(f)) continue;
+      const fileBase = stripExt(f);
       // Match either by file basename (preferred) or by the sessionId stored
       // inside the JSON. We try basename first since it's free.
-      if (fileBase === sessionIdOrFileBase) {
-        return { path: join(chats, f), projectDir: proj.name, projectPath: projMap.get(proj.name) || '' };
+      if (fileBase === sessionIdOrFileBase || tailMatches(fileBase, sessionIdOrFileBase)) {
+        return { path: join(chats, f), projectDir: proj.name, projectPath: projMap.get(proj.name) || '', format: fmt(f) };
       }
     }
   }
@@ -270,12 +199,12 @@ function findGeminiSessionFile(sessionIdOrFileBase: string): { path: string; pro
     let files: string[];
     try { files = readdirSync(chats); } catch { continue; }
     for (const f of files) {
-      if (!f.startsWith('session-') || !f.endsWith('.json')) continue;
+      if (!isGeminiChat(f)) continue;
       const path = join(chats, f);
       try {
-        const json = JSON.parse(readFileSync(path, 'utf-8'));
-        if (json.sessionId === sessionIdOrFileBase) {
-          return { path, projectDir: proj.name, projectPath: projMap.get(proj.name) || '' };
+        const innerId = readGeminiSessionIdFromFile(path, fmt(f));
+        if (innerId && innerId === sessionIdOrFileBase) {
+          return { path, projectDir: proj.name, projectPath: projMap.get(proj.name) || '', format: fmt(f) };
         }
       } catch { /* skip */ }
     }
@@ -283,129 +212,59 @@ function findGeminiSessionFile(sessionIdOrFileBase: string): { path: string; pro
   return null;
 }
 
-function scanGeminiSession(sessionId: string) {
-  const located = findGeminiSessionFile(sessionId);
-  if (!located) {
-    return { found: false, projectPath: '', projectDir: '', edits: [], fileMtime: 0, tool: 'gemini' as const };
+/** Pull the sessionId out of either format without reading the whole file. */
+function readGeminiSessionIdFromFile(path: string, format: 'json' | 'jsonl'): string | null {
+  if (format === 'json') {
+    try { return JSON.parse(readFileSync(path, 'utf-8'))?.sessionId ?? null; } catch { return null; }
   }
-  let fileMtime = 0;
-  try { fileMtime = statSync(located.path).mtimeMs; } catch { /* ignore */ }
-
-  const edits: SessionEdit[] = [];
-  let json: any;
-  try { json = JSON.parse(readFileSync(located.path, 'utf-8')); }
-  catch {
-    return { found: true, projectPath: located.projectPath, projectDir: located.projectDir, edits, fileMtime, tool: 'gemini' as const };
-  }
-
-  const messages = Array.isArray(json.messages) ? json.messages : [];
-  for (const m of messages) {
-    if (m?.type !== 'gemini') continue;
-    const tcs = Array.isArray(m.toolCalls) ? m.toolCalls : [];
-    const tsIso = typeof m.timestamp === 'string' ? m.timestamp : undefined;
-    const ts = tsIso ? Date.parse(tsIso) || fileMtime : fileMtime;
-    for (const tc of tcs) {
-      const name = tc?.name as string;
-      if (!name || !(name in GEMINI_FILE_TOOLS)) continue;
-      const args = tc.args || {};
-      const file = args.file_path || args.absolute_path || args.path;
-      // read_many_files passes an array of paths — emit one edit per path.
-      const files = Array.isArray(args.paths) ? args.paths : (typeof file === 'string' ? [file] : []);
-      for (const f of files) {
-        if (typeof f !== 'string' || !f.trim()) continue;
-        edits.push({
-          ts, tsIso,
-          sessionId: `gemini_${json.sessionId || basename(located.path, '.json')}`,
-          projectPath: located.projectPath,
-          file: f,
-          op: GEMINI_FILE_TOOLS[name],
-          toolName: name,
-          tool: 'gemini',
-          line: 0,
-        });
-      }
-    }
-  }
-
-  return {
-    found: true,
-    projectPath: located.projectPath,
-    projectDir: located.projectDir,
-    edits,
-    fileMtime,
-    tool: 'gemini' as const,
-  };
-}
-
-function openOpenCodeDb(): Database.Database | null {
-  const dbPath = join(homedir(), '.local', 'share', 'opencode', 'opencode.db');
-  if (!existsSync(dbPath)) return null;
-  try { return new Database(dbPath, { readonly: true, fileMustExist: true }); }
-  catch { return null; }
-}
-
-function scanOpenCodeSession(sessionId: string) {
-  const db = openOpenCodeDb();
-  if (!db) {
-    return { found: false, projectPath: '', projectDir: '', edits: [], fileMtime: 0, tool: 'opencode' as const };
-  }
+  // .jsonl — only the first line carries sessionId.
   try {
-    const sess = db.prepare(`
-      SELECT s.id, s.directory, s.time_updated,
-             p.worktree as project_path
-      FROM session s LEFT JOIN project p ON s.project_id = p.id
-      WHERE s.id = ?
-    `).get(sessionId) as { id: string; directory: string | null; time_updated: number; project_path: string | null } | undefined;
-    if (!sess) {
-      return { found: false, projectPath: '', projectDir: '', edits: [], fileMtime: 0, tool: 'opencode' as const };
-    }
-    const projectPath = sess.project_path || sess.directory || '';
-    const parts = db.prepare(`
-      SELECT time_created, data
-      FROM part
-      WHERE session_id = ? AND data LIKE '%"type":"tool"%'
-      ORDER BY time_created ASC
-    `).all(sessionId) as Array<{ time_created: number; data: string }>;
+    const head = readFileSync(path, 'utf-8').split('\n', 1)[0] || '';
+    return JSON.parse(head)?.sessionId ?? null;
+  } catch { return null; }
+}
 
-    const edits: SessionEdit[] = [];
-    for (const p of parts) {
-      let d: any;
-      try { d = JSON.parse(p.data); } catch { continue; }
-      const name = d?.tool as string;
-      if (!name || !(name in OPENCODE_FILE_TOOLS)) continue;
-      const inp = d?.state?.input || {};
-      const file = inp.filePath || inp.file_path || inp.path;
-      if (typeof file !== 'string' || !file.trim()) continue;
-      edits.push({
-        ts: p.time_created,
-        tsIso: new Date(p.time_created).toISOString(),
-        sessionId: `opencode_${sessionId}`,
-        projectPath,
-        file,
-        op: OPENCODE_FILE_TOOLS[name],
-        toolName: name,
-        tool: 'opencode',
-        line: 0,
-      });
-    }
+interface GeminiMessage {
+  id?: string;
+  timestamp?: string;
+  type?: string;
+  content?: unknown;
+  text?: string;
+  toolCalls?: unknown[];
+  thoughts?: unknown;
+  model?: string;
+}
 
-    return {
-      found: true,
-      projectPath,
-      projectDir: '',
-      edits,
-      fileMtime: sess.time_updated || 0,
-      tool: 'opencode' as const,
-    };
-  } finally {
-    db.close();
+/** Yield messages from either `.json` (single blob) or `.jsonl` (line per event). */
+export function readGeminiMessages(path: string, format: 'json' | 'jsonl'): GeminiMessage[] {
+  if (format === 'json') {
+    try {
+      const json = JSON.parse(readFileSync(path, 'utf-8'));
+      return Array.isArray(json.messages) ? json.messages as GeminiMessage[] : [];
+    } catch { return []; }
   }
+  // .jsonl — first line is metadata, subsequent lines are messages or
+  // mongo-style {"$set": ...} updates we skip.
+  const out: GeminiMessage[] = [];
+  let raw: string;
+  try { raw = readFileSync(path, 'utf-8'); } catch { return out; }
+  let isFirst = true;
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue;
+    if (isFirst) { isFirst = false; continue; } // metadata header
+    let obj: GeminiMessage;
+    try { obj = JSON.parse(line); } catch { continue; }
+    if (!obj || typeof obj !== 'object') continue;
+    if (!obj.type) continue; // skip $set updates
+    out.push(obj);
+  }
+  return out;
 }
 
 // ── Codex ──────────────────────────────────────────────────────────
 
 export function findCodexSessionFile(sessionId: string): { path: string; projectPath: string } | null {
-  const root = join(homedir(), '.codex', 'sessions');
+  const root = lazyCodexSessionsDir();
   if (!existsSync(root)) return null;
 
   // Walk YYYY/MM/DD directories
@@ -455,105 +314,6 @@ export function findCodexSessionFile(sessionId: string): { path: string; project
   return scanDir(root);
 }
 
-function scanCodexSession(sessionId: string) {
-  const id = sessionId.replace(/^codex_/, '');
-  const located = findCodexSessionFile(id);
-  if (!located) {
-    return { found: false, projectPath: '', projectDir: '', edits: [], fileMtime: 0, tool: 'codex' as const };
-  }
-  let fileMtime = 0;
-  try { fileMtime = statSync(located.path).mtimeMs; } catch { /* ignore */ }
-
-  const edits: SessionEdit[] = [];
-  let raw: string;
-  try { raw = readFileSync(located.path, 'utf-8'); } catch {
-    return { found: true, projectPath: located.projectPath, projectDir: '', edits, fileMtime, tool: 'codex' as const };
-  }
-
-  const lines = raw.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.trim()) continue;
-    let obj: Record<string, unknown>;
-    try { obj = JSON.parse(line); } catch { continue; }
-
-    const tsIso = typeof obj.timestamp === 'string' ? obj.timestamp : undefined;
-    const ts = tsIso ? Date.parse(tsIso) || fileMtime : fileMtime;
-
-    const type = obj.type;
-    const payload = obj.payload as Record<string, unknown> | undefined;
-
-    if (type === 'event_msg' && payload && typeof payload === 'object') {
-      if (payload.type !== 'exec_command_end') continue;
-      const parsedCmd = payload.parsed_cmd as Array<Record<string, unknown>> | undefined;
-      if (!Array.isArray(parsedCmd)) continue;
-
-      for (const cmd of parsedCmd) {
-        const cmdType = (cmd.type as string) || '';
-        let op: EditOp | null = null;
-        if (cmdType.includes('read')) op = 'read';
-        else if (cmdType.includes('write')) op = 'write';
-        else if (cmdType.includes('edit')) op = 'edit';
-        if (!op) continue;
-
-        let file = (cmd.file as string) || (cmd.path as string) || (cmd.file_path as string) || '';
-        if (!file) {
-          const stdout = (payload.stdout as string) || (payload.aggregated_output as string) || '';
-          const match = stdout.match(/(?:^|[\s\n])([~\/\.\w-]+\.[a-zA-Z0-9]+)/);
-          if (match) file = match[1];
-        }
-        if (!file) continue;
-
-        edits.push({
-          ts, tsIso,
-          sessionId: `codex_${id}`,
-          projectPath: located.projectPath,
-          file,
-          op,
-          toolName: cmdType,
-          tool: 'codex',
-          line: i + 1,
-        });
-      }
-    }
-
-    if (type === 'response_item' && payload && typeof payload === 'object') {
-      if (payload.type !== 'function_call') continue;
-      const name = (payload.name as string) || '';
-      if (!name) continue;
-      let op: EditOp | null = null;
-      if (name.includes('read')) op = 'read';
-      else if (name.includes('write')) op = 'write';
-      else if (name.includes('edit')) op = 'edit';
-      if (!op) continue;
-
-      const args = payload.arguments as Record<string, unknown> || {};
-      const file = (args.file as string) || (args.path as string) || (args.file_path as string) || (args.target_file as string) || '';
-      if (!file) continue;
-
-      edits.push({
-        ts, tsIso,
-        sessionId: `codex_${id}`,
-        projectPath: located.projectPath,
-        file,
-        op,
-        toolName: name,
-        tool: 'codex',
-        line: i + 1,
-      });
-    }
-  }
-
-  return {
-    found: true,
-    projectPath: located.projectPath,
-    projectDir: '',
-    edits,
-    fileMtime,
-    tool: 'codex' as const,
-  };
-}
-
 /**
  * Convenience wrapper — returns just the deduped list of files modified
  * (write/edit/multi_edit/notebook_edit). Mirrors the shape the indexer's
@@ -598,243 +358,26 @@ export function liveScanRecentEdits(opts: {
   pattern?: string;
   projectFilter?: string;
   limitSessions?: number;
-  tools?: AiTool[]; // default: all four
+  tools?: AiTool[]; // default: every registered backend
 }): SessionEdit[] {
-  const enabled = new Set(opts.tools ?? ['claude', 'gemini', 'opencode', 'codex'] as AiTool[]);
-  const allEdits: SessionEdit[] = [];
+  const enabled = opts.tools ? new Set(opts.tools) : null;
   const needle = opts.pattern?.toLowerCase();
-
   const accept = (e: SessionEdit) => {
     if (e.ts < opts.sinceMs) return false;
     if (needle && !e.file.toLowerCase().includes(needle)) return false;
     return true;
   };
 
-  if (enabled.has('claude')) collectClaudeRecentEdits(opts, allEdits, accept);
-  if (enabled.has('gemini')) collectGeminiRecentEdits(opts, allEdits, accept);
-  if (enabled.has('opencode')) collectOpenCodeRecentEdits(opts, allEdits, accept);
-  if (enabled.has('codex')) collectCodexRecentEdits(opts, allEdits, accept);
-
+  const allEdits: SessionEdit[] = [];
+  for (const backend of listAvailableBackends()) {
+    if (enabled && !enabled.has(backend.id)) continue;
+    const backendEdits = backend.collectRecentEdits({
+      sinceMs: opts.sinceMs,
+      projectFilter: opts.projectFilter,
+      limitSessions: opts.limitSessions,
+    });
+    for (const e of backendEdits) if (accept(e)) allEdits.push(e);
+  }
   allEdits.sort((a, b) => b.ts - a.ts);
   return allEdits;
-}
-
-function collectClaudeRecentEdits(
-  opts: { sinceMs: number; projectFilter?: string; limitSessions?: number },
-  out: SessionEdit[],
-  accept: (e: SessionEdit) => boolean,
-): void {
-  const root = join(homedir(), '.claude', 'projects');
-  if (!existsSync(root)) return;
-
-  const candidates: { sessionId: string; mtime: number }[] = [];
-  for (const projEntry of readdirSync(root, { withFileTypes: true })) {
-    if (!projEntry.isDirectory()) continue;
-    const projDir = projEntry.name;
-    if (opts.projectFilter && !projDir.toLowerCase().includes(opts.projectFilter.toLowerCase())) continue;
-    const projPath = join(root, projDir);
-    let files: string[];
-    try { files = readdirSync(projPath); } catch { continue; }
-    for (const f of files) {
-      if (!f.endsWith('.jsonl') || f === 'sessions-index.json') continue;
-      const fp = join(projPath, f);
-      try {
-        const st = statSync(fp);
-        let mtime = st.mtimeMs;
-        const subDir = join(projPath, f.slice(0, -6), 'subagents');
-        if (existsSync(subDir)) {
-          for (const sub of readdirSync(subDir)) {
-            try {
-              const subSt = statSync(join(subDir, sub));
-              if (subSt.mtimeMs > mtime) mtime = subSt.mtimeMs;
-            } catch { /* ignore */ }
-          }
-        }
-        if (mtime < opts.sinceMs) continue;
-        candidates.push({ sessionId: basename(f, '.jsonl'), mtime });
-      } catch { /* skip */ }
-    }
-  }
-
-  candidates.sort((a, b) => b.mtime - a.mtime);
-  const limited = opts.limitSessions ? candidates.slice(0, opts.limitSessions) : candidates;
-  for (const c of limited) {
-    const scan = scanClaudeSession(c.sessionId);
-    for (const e of scan.edits) if (accept(e)) out.push(e);
-  }
-}
-
-function collectGeminiRecentEdits(
-  opts: { sinceMs: number; projectFilter?: string; limitSessions?: number },
-  out: SessionEdit[],
-  accept: (e: SessionEdit) => boolean,
-): void {
-  const tmpRoot = join(homedir(), '.gemini', 'tmp');
-  if (!existsSync(tmpRoot)) return;
-  const projMap = loadGeminiProjectMap();
-
-  const candidates: { fileBase: string; projectDir: string; mtime: number }[] = [];
-  for (const proj of readdirSync(tmpRoot, { withFileTypes: true })) {
-    if (!proj.isDirectory()) continue;
-    const projectPath = projMap.get(proj.name) || '';
-    if (opts.projectFilter) {
-      // Match either against the encoded dir name or the resolved path.
-      const haystack = (projectPath + ' ' + proj.name).toLowerCase();
-      if (!haystack.includes(opts.projectFilter.toLowerCase())) continue;
-    }
-    const chats = join(tmpRoot, proj.name, 'chats');
-    if (!existsSync(chats)) continue;
-    let files: string[];
-    try { files = readdirSync(chats); } catch { continue; }
-    for (const f of files) {
-      if (!f.startsWith('session-') || !f.endsWith('.json')) continue;
-      try {
-        const st = statSync(join(chats, f));
-        if (st.mtimeMs < opts.sinceMs) continue;
-        candidates.push({ fileBase: f.slice(0, -5), projectDir: proj.name, mtime: st.mtimeMs });
-      } catch { /* skip */ }
-    }
-  }
-
-  candidates.sort((a, b) => b.mtime - a.mtime);
-  const limited = opts.limitSessions ? candidates.slice(0, opts.limitSessions) : candidates;
-  for (const c of limited) {
-    const scan = scanGeminiSession(c.fileBase);
-    for (const e of scan.edits) if (accept(e)) out.push(e);
-  }
-}
-
-function collectOpenCodeRecentEdits(
-  opts: { sinceMs: number; projectFilter?: string; limitSessions?: number },
-  out: SessionEdit[],
-  accept: (e: SessionEdit) => boolean,
-): void {
-  const db = openOpenCodeDb();
-  if (!db) return;
-  try {
-    // One pass: pull every part newer than sinceMs whose data smells like a
-    // file-touching tool call. Cheaper than scanning sessions one-by-one.
-    const sql = `
-      SELECT
-        p.session_id,
-        p.time_created,
-        p.data,
-        s.directory,
-        pr.worktree AS project_path
-      FROM part p
-      JOIN session s ON s.id = p.session_id
-      LEFT JOIN project pr ON pr.id = s.project_id
-      WHERE p.time_created >= ?
-        AND p.data LIKE '%"type":"tool"%'
-        AND (p.data LIKE '%"tool":"edit"%' OR p.data LIKE '%"tool":"write"%' OR p.data LIKE '%"tool":"read"%')
-      ORDER BY p.time_created DESC
-    `;
-    const rows = db.prepare(sql).all(opts.sinceMs) as Array<{
-      session_id: string;
-      time_created: number;
-      data: string;
-      directory: string | null;
-      project_path: string | null;
-    }>;
-
-    for (const r of rows) {
-      const projectPath = r.project_path || r.directory || '';
-      if (opts.projectFilter && !projectPath.toLowerCase().includes(opts.projectFilter.toLowerCase())) continue;
-
-      let d: any;
-      try { d = JSON.parse(r.data); } catch { continue; }
-      const name = d?.tool as string;
-      if (!name || !(name in OPENCODE_FILE_TOOLS)) continue;
-      const inp = d?.state?.input || {};
-      const file = inp.filePath || inp.file_path || inp.path;
-      if (typeof file !== 'string' || !file.trim()) continue;
-
-      const e: SessionEdit = {
-        ts: r.time_created,
-        tsIso: new Date(r.time_created).toISOString(),
-        sessionId: `opencode_${r.session_id}`,
-        projectPath,
-        file,
-        op: OPENCODE_FILE_TOOLS[name],
-        toolName: name,
-        tool: 'opencode',
-        line: 0,
-      };
-      if (accept(e)) out.push(e);
-    }
-  } finally {
-    db.close();
-  }
-}
-function collectCodexRecentEdits(
-  opts: { sinceMs: number; projectFilter?: string; limitSessions?: number },
-  out: SessionEdit[],
-  accept: (e: SessionEdit) => boolean,
-): void {
-  const root = join(homedir(), '.codex', 'sessions');
-  if (!existsSync(root)) return;
-
-  const candidates: {
-    sessionId: string;
-    mtime: number;
-    projectPath: string;
-    isSubagent: boolean;
-    parentId: string | null;
-  }[] = [];
-
-  function scanDir(dir: string): void {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.isDirectory()) {
-        scanDir(join(dir, entry.name));
-      } else if (entry.name.endsWith('.jsonl')) {
-        const p = join(dir, entry.name);
-        try {
-          const st = statSync(p);
-          if (st.mtimeMs < opts.sinceMs) continue;
-          // Extract UUID from filename: rollout-...-<uuid>.jsonl
-          const uuidMatch = entry.name.match(/([a-f0-9-]{36})\.jsonl$/);
-          const sessionId = uuidMatch ? uuidMatch[1] : '';
-          if (!sessionId) continue;
-          // Read first line for cwd (projectPath) + sub-agent detection.
-          // Codex spawns one rollout per sub-agent dispatch — those carry
-          // thread_spawn / agent_role and should not surface as separate
-          // sessions in the activity timeline. Their edits get rolled into
-          // the parent session below.
-          let projectPath = '';
-          let parentId: string | null = null;
-          let isSubagent = false;
-          try {
-            const first = readFileSync(p, 'utf-8').split('\n')[0];
-            if (first) {
-              const meta = JSON.parse(first);
-              const payload = meta?.payload || {};
-              projectPath = payload.cwd || '';
-              const spawn = payload.source?.subagent?.thread_spawn;
-              if (spawn || payload.agent_role || payload.agent_nickname) {
-                isSubagent = true;
-                parentId = spawn?.parent_thread_id || null;
-              }
-            }
-          } catch { /* ignore */ }
-          if (opts.projectFilter && !projectPath.toLowerCase().includes(opts.projectFilter.toLowerCase())) continue;
-          candidates.push({ sessionId, mtime: st.mtimeMs, projectPath, isSubagent, parentId });
-        } catch { /* skip */ }
-      }
-    }
-  }
-
-  scanDir(root);
-
-  candidates.sort((a, b) => b.mtime - a.mtime);
-  const limited = opts.limitSessions ? candidates.slice(0, opts.limitSessions) : candidates;
-  for (const c of limited) {
-    const scan = scanCodexSession(c.sessionId);
-    // Re-attribute sub-agent edits to their parent so the timeline groups
-    // them under the user-facing conversation rather than fanning out.
-    const reattribute = c.isSubagent && c.parentId ? `codex_${c.parentId}` : null;
-    for (const e of scan.edits) {
-      const edit = reattribute ? { ...e, sessionId: reattribute } : e;
-      if (accept(edit)) out.push(edit);
-    }
-  }
 }

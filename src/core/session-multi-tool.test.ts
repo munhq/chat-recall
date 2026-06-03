@@ -5,9 +5,8 @@ import { join } from 'path';
 import {
   extractTurnsAny,
   replaySessionAny,
-  computeOutcomeAny,
-  getSessionCommitsAny,
 } from './session-multi-tool.js';
+import { computeOutcome } from './session-outcome.js';
 
 let tmpHome: string;
 const origHome = process.env.HOME;
@@ -51,19 +50,10 @@ describe('replaySessionAny', () => {
   });
 });
 
-describe('computeOutcomeAny', () => {
+describe('computeOutcome (registry-routed)', () => {
   test('returns shape with status field for unknown session', () => {
-    const r = computeOutcomeAny('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
+    const r = computeOutcome('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
     expect(r).toHaveProperty('status');
   });
 });
 
-describe('getSessionCommitsAny', () => {
-  test('returns a SessionCommitsResult shape for unknown session', () => {
-    const r = getSessionCommitsAny('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee');
-    // The exact field names depend on the result shape (commits or commitsByRepo).
-    // Just check we got an object and it didn't throw.
-    expect(typeof r).toBe('object');
-    expect(r).not.toBeNull();
-  });
-});

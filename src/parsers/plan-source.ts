@@ -24,6 +24,10 @@ import type {
   MemoryLink,
 } from '../types/memory.js';
 import { splitByHeaders, discoverSubdirs } from '../core/utils.js';
+import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
+import { opencodeBackend as OPENCODE } from '../core/backends/opencode.js';
+import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
+import { isSourceEnabled } from '../core/settings.js';
 
 const MAX_CHUNK_CHARS = 2000;
 
@@ -42,7 +46,7 @@ export class PlanSource implements MemorySource {
   private getKnownProjectDirs(): string[] {
     if (this._knownProjectDirs) return this._knownProjectDirs;
 
-    const projectsDir = join(homedir(), '.claude', 'projects');
+    const projectsDir = CLAUDE.projectsDir();
     this._knownProjectDirs = [];
 
     if (!existsSync(projectsDir)) return this._knownProjectDirs;
@@ -65,6 +69,22 @@ export class PlanSource implements MemorySource {
 
   async *discover(): AsyncGenerator<MemoryItem> {
     // 1) Claude plans (~/.claude/plans/*.md and any ~/.claude-*/plans/)
+    if (isSourceEnabled('claude', 'plans')) {
+      yield* this.discoverClaudePlans();
+    }
+
+    // 2) Gemini plans — ~/.gemini/tmp/<sha256>/<uuid>/plans/*.md
+    if (isSourceEnabled('gemini', 'plans')) {
+      yield* this.discoverGeminiPlans();
+    }
+
+    // 3) OpenCode plans — ~/.local/share/opencode/plans/*.md
+    if (isSourceEnabled('opencode', 'plans')) {
+      yield* this.discoverOpenCodePlans();
+    }
+  }
+
+  private async *discoverClaudePlans(): AsyncGenerator<MemoryItem> {
     const seenClaude = new Set<string>();
     for (const plansDir of this.plansDirs) {
       if (!existsSync(plansDir)) continue;
@@ -103,16 +123,10 @@ export class PlanSource implements MemorySource {
         }
       }
     }
-
-    // 2) Gemini plans — ~/.gemini/tmp/<sha256>/<uuid>/plans/*.md
-    yield* this.discoverGeminiPlans();
-
-    // 3) OpenCode plans — ~/.local/share/opencode/plans/*.md
-    yield* this.discoverOpenCodePlans();
   }
 
   private async *discoverOpenCodePlans(): AsyncGenerator<MemoryItem> {
-    const plansDir = join(homedir(), '.local', 'share', 'opencode', 'plans');
+    const plansDir = OPENCODE.plansDir();
     if (!existsSync(plansDir)) return;
 
     let files: string[];
@@ -124,7 +138,7 @@ export class PlanSource implements MemorySource {
         const stat = statSync(filePath);
         const content = readFileSync(filePath, 'utf-8');
         const firstLine = content.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim() || file;
-        const planName = `opencode_plan_${basename(file, '.md')}`;
+        const planName = `${OPENCODE.idPrefix}plan_${basename(file, '.md')}`;
 
         // OpenCode plans don't carry per-project metadata in the file itself;
         // we leave projectPath empty and let the existing extractor try.
@@ -149,12 +163,12 @@ export class PlanSource implements MemorySource {
 
   /** Walk Gemini's per-session plan directories and yield each .md file. */
   private async *discoverGeminiPlans(): AsyncGenerator<MemoryItem> {
-    const tmpRoot = join(homedir(), '.gemini', 'tmp');
+    const tmpRoot = GEMINI.tmpDir();
     if (!existsSync(tmpRoot)) return;
 
     // Resolve project hashes back to paths the same way GeminiSessionSource does.
     const projMap = new Map<string, string>();
-    const projectsPath = join(homedir(), '.gemini', 'projects.json');
+    const projectsPath = GEMINI.projectsJson();
     if (existsSync(projectsPath)) {
       try {
         const data = JSON.parse(readFileSync(projectsPath, 'utf-8'));
@@ -185,7 +199,7 @@ export class PlanSource implements MemorySource {
             const stat = statSync(filePath);
             const content = readFileSync(filePath, 'utf-8');
             const firstLine = content.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim() || file;
-            const planName = `gemini_plan_${sess}_${basename(file, '.md')}`;
+            const planName = `${GEMINI.idPrefix}plan_${sess}_${basename(file, '.md')}`;
 
             yield {
               id: planName,

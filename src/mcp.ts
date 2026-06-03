@@ -24,20 +24,29 @@ import { getRecentSessions, extractConversationContext, formatContext } from './
 import { getCacheDbPath, getIdentityFilePath } from './core/paths.js';
 import { parseSessionFile } from './parsers/session.js';
 import {
+  detectTool,
   liveScanModifiedFiles,
   liveScanRecentEdits,
   liveScanSessionEdits,
   type SessionEdit,
 } from './core/live-session-scan.js';
-import { replaySession, findRepoRoot } from './core/session-replay.js';
+import { findRepoRoot } from './core/session-replay.js';
 import { getSessionCommits } from './core/session-git.js';
-import { extractTurns } from './core/session-turns.js';
-import { markPrompt, summarizeMarkers } from './core/session-sentiment.js';
+import { extractTurnsAny, replaySessionAny } from './core/session-multi-tool.js';
 import { computeOutcome } from './core/session-outcome.js';
+// Side-effect import: registers the four ToolBackend implementations so
+// getBackendForId(...) works everywhere downstream.
+import './core/backends/index.js';
+import { claudeBackend } from './core/backends/claude.js';
+import { listAvailableBackends, getBackendForId } from './core/tool-backend.js';
+import type { SessionTurn } from './core/session-turns.js';
+import { markPrompt, summarizeMarkers } from './core/session-sentiment.js';
 import { tierFor } from './core/score-tier.js';
 import { outcomeOneLiner, statusEmoji } from './core/outcome-display.js';
-import { MemoryIndex } from './core/memory-index.js';
-import { MemoryStore } from './core/memory-store.js';
+import { MemoryIndex } from './core/memory-index.js'; // static helpers only
+import { createVectorStore } from './core/store/vector.js';
+import { createStore } from './core/store/index.js';
+import { buildProjectDossier } from './core/project-dossier.js';
 import { SourceRegistry } from './core/source-registry.js';
 import { SessionSource } from './parsers/session-source.js';
 import { PlanSource } from './parsers/plan-source.js';
@@ -50,8 +59,8 @@ import { GeminiBrainSource } from './parsers/gemini-brain-source.js';
 import { OpenCodeSource } from './parsers/opencode-source.js';
 import { OpenCodeTodoSource } from './parsers/opencode-todo-source.js';
 import { CodexSessionSource } from './parsers/codex-session-source.js';
-import { MetadataCache } from './core/metadata-cache.js';
-import { KnowledgeGraph } from './core/knowledge-graph.js';
+import { createMetadataCache } from './core/store/caches.js';
+import { createKnowledgeGraph } from './core/store/knowledge-graph.js';
 import { classifyChunk } from './core/memory-classifier.js';
 import { extractAndPopulateKG } from './core/entity-extractor.js';
 import { sanitizeQuery } from './core/query-sanitizer.js';
@@ -103,6 +112,58 @@ function withCodeindexHint(body: string, kind: 'files' | 'redundancy' | 'session
     session:    '\n\n_Tip: codeindex is also installed — call `get_outline` on each file for its current symbol structure._',
   };
   return body + hints[kind];
+}
+
+interface ShowMessage {
+  line: number;
+  role: string;
+  text: string;
+}
+
+/**
+ * Render any backend's session into the `ShowMessage[]` shape `recall_show`
+ * consumes. Reads canonical events directly from the backend (not turns),
+ * so Claude session-summary entries surface as `role: 'Summary'` rows
+ * alongside user/assistant/tool turns — same as before the unification.
+ *
+ * Returns null when no backend recognizes `sessionId` or when the session
+ * has no readable events.
+ */
+function loadMessagesViaRegistry(sessionId: string, includeCode: boolean): ShowMessage[] | null {
+  const backend = getBackendForId(sessionId);
+  if (!backend) return null;
+  const events = backend.readEvents(backend.toRawId(sessionId));
+  if (events.length === 0) return null;
+
+  const messages: ShowMessage[] = [];
+  for (const e of events) {
+    let role = '';
+    let text = '';
+    if (e.kind === 'user') {
+      role = 'User';
+      text = e.text || '';
+    } else if (e.kind === 'assistant_text') {
+      role = backend.displayName;
+      text = e.text || '';
+      if (!includeCode) text = text.replace(/```[\s\S]*?```/g, '[code block]');
+    } else if (e.kind === 'summary') {
+      role = 'Summary';
+      text = e.text || '';
+    } else if (e.kind === 'tool_use') {
+      role = 'Tool';
+      const name = e.toolName || '';
+      text = e.command ? `${name} $ ${e.command}` : name;
+    } else if (e.kind === 'tool_result') {
+      // Skip noisy successful outputs unless include_code asked for them.
+      if (!includeCode && !e.resultIsError) continue;
+      role = 'ToolResult';
+      const body = (e.resultBody || '').slice(0, 8000);
+      text = e.resultIsError ? `[error] ${body}` : body;
+    }
+    if (!text.trim()) continue;
+    messages.push({ line: e.line, role, text });
+  }
+  return messages;
 }
 
 // Tool schemas
@@ -213,6 +274,13 @@ const RecallSmartResumeSchema = z.object({
 const RecallProjectContextSchema = z.object({
   project_path: z.string().describe('Project path or substring (e.g., "munbot", "chat-recall", "/home/user/code/personal/poly")'),
   limit: z.number().optional().default(5).describe('Number of recent sessions to include'),
+});
+
+const RecallProjectDossierSchema = z.object({
+  project: z.string().describe('project_id (e.g. "git:github.com/me/repo", "ws:inco") OR an absolute path that resolves to one'),
+  sessions: z.number().optional().default(10).describe('Max sessions to enumerate'),
+  tasks: z.number().optional().default(20).describe('Max open tasks to list'),
+  plans: z.number().optional().default(20).describe('Max plans to list'),
 });
 
 const RecallWeeklyDigestSchema = z.object({
@@ -708,6 +776,35 @@ Use at the START of a new session to understand what's been happening in a proje
         },
       },
       {
+        name: 'recall_project_dossier',
+        description: `Generate a full project dossier as markdown.
+
+Aggregates everything the index knows about one project into a single report:
+overview (from CLAUDE.md), tech stack (KG uses), architecture / deployment / security
+sections (from CLAUDE.md), decisions log (KG chose/rejected), recent session activity,
+open tasks, plans, agent diary conclusions, and cost rollup.
+
+Input MUST be a logical project_id (one of:
+  - "git:<host>/<owner>/<repo>"   (e.g. "git:github.com/me/munbot")
+  - "ws:<name>"                   (workspace rollup)
+  - "git-local:<sha1>"            (local-only git repo)
+  - "user:<custom>"               (declared in ~/.chat-recall/projects.json)
+
+Get the list of valid ids from \`recall_project_context\` or the web UI's
+sidebar (each leaf has its project_id). Path inputs are no longer accepted
+— pass the id, not the folder.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'project_id — must start with git:, ws:, git-local:, or user:' },
+            sessions: { type: 'number', default: 10 },
+            tasks: { type: 'number', default: 20 },
+            plans: { type: 'number', default: 20 },
+          },
+          required: ['project'],
+        },
+      },
+      {
         name: 'recall_weekly_digest',
         description: `Get a weekly activity digest across all projects.
 
@@ -1030,6 +1127,21 @@ Scope namespaces keys so per-project state doesn't collide.`,
         },
       },
       {
+        name: 'recall_help',
+        description: `Catalog of recall options grouped by intent.
+
+Call this first when you need to remember something but aren't sure which recall_*
+tool fits. Returns the full menu of available tools, what each one is for, and
+which one to reach for in common situations (resume work, search past sessions,
+inspect a session, see recent edits, query the knowledge graph, etc.).
+
+No arguments — just call it.`,
+        inputSchema: {
+          type: 'object',
+          properties: {},
+        },
+      },
+      {
         name: 'recall_kv_list',
         description: `List keys in a scope (or across all scopes). Useful for the agent to
 discover what state has been recorded without remembering specific keys.`,
@@ -1072,16 +1184,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let results;
         try {
           const searchTopK = params.skip_ranking ? params.top_k : params.top_k * 4;
-          const memoryIndex = new MemoryIndex(embedder);
+          const memoryIndex = await createVectorStore(embedder);
           const memResults = await memoryIndex.search(searchQuery, {
             topK: searchTopK,
             sourceTypes: ['session'],
-            projectFilter: params.project_filter,
+            projectIdFilter: params.project_filter,
           });
           // Transform MemorySearchResult to the legacy format used below
-          const cache = new MetadataCache();
-          results = memResults.map(r => {
-            const cached = cache.get(r.itemId);
+          const cache = await createMetadataCache();
+          const cachedList = await Promise.all(memResults.map(r => cache.get(r.itemId)));
+          results = memResults.map((r, i) => {
+            const cached = cachedList[i];
             return {
               sessionId: r.itemId,
               score: r.score,
@@ -1095,7 +1208,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               matchedChunks: r.matchedChunks,
             };
           });
-          cache.close();
+          await cache.close();
         } catch (err) {
           if (err instanceof Error && err.message.includes('not found')) {
             return { content: [{ type: 'text', text: 'Error: Index not found. Run \'node dist/cli.js memory index\' first.' }] };
@@ -1192,8 +1305,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         // Use unified memory indexing with all source types
-        const memoryIndex = new MemoryIndex(embedder);
-        const store = new MemoryStore();
+        const memoryIndex = await createVectorStore(embedder);
+        const store = await createStore();
         const registry = new SourceRegistry();
         registry.register(new SessionSource());
         registry.register(new PlanSource());
@@ -1215,7 +1328,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         registry.register(new PluginsSource());
 
         // Open KG for entity extraction during indexing
-        const kg = new KnowledgeGraph();
+        const kg = await createKnowledgeGraph();
         let totalItems = 0, totalChunks = 0, totalErrors = 0, totalKGTriples = 0;
         for (const sourceType of registry.getRegisteredTypes()) {
           const sources = registry.getAll(sourceType);
@@ -1223,7 +1336,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           for (const source of sources) {
           for await (const item of source.discover()) {
             try {
-              if (!params.force && !memoryIndex.needsUpdate(item.sourceType, item.id, item.mtime)) continue;
+              if (!params.force && !(await memoryIndex.needsUpdate(item.sourceType, item.id, item.mtime))) continue;
               await memoryIndex.deleteItem(item.sourceType, item.id);
               const chunks = await source.parse(item);
               // Classify chunks and enrich chunkType with memory type + importance
@@ -1233,7 +1346,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                   chunk.chunkType = `${chunk.chunkType}:${classification.memoryType}:imp${classification.importance}`;
                 }
                 // Auto-extract entities into KG
-                totalKGTriples += extractAndPopulateKG(kg, chunk.text, {
+                totalKGTriples += await extractAndPopulateKG(kg, chunk.text, {
                   projectPath: item.projectPath,
                   sourceType: item.sourceType,
                   sessionId: item.id,
@@ -1243,18 +1356,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 await memoryIndex.bufferChunks(chunks);
                 totalChunks += chunks.length;
               }
-              store.setItem(item);
+              await store.setItem(item);
               const links = await source.extractLinks(item);
-              if (links.length > 0) store.addLinks(links);
+              if (links.length > 0) await store.addLinks(links);
               totalItems++;
             } catch { totalErrors++; }
           }
           }
         }
         await memoryIndex.flushBuffer();
-        kg.close();
+        await kg.close();
         // Note: optimize() removed from auto flows — run `node dist/cli.js optimize` manually
-        store.close();
+        await store.close();
 
         return {
           content: [{
@@ -1266,12 +1379,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       
       case 'recall_status': {
         const dummyEmbedder = { embed: async () => [], embedQuery: async () => [], dimension: 768 };
-        const memIdx = new MemoryIndex(dummyEmbedder as any);
+        const memIdx = await createVectorStore(dummyEmbedder as any);
         const stats = await memIdx.getStats();
-        const store = new MemoryStore();
-        const linkCount = store.getLinkCount();
-        const ftsCount = store.getFTSCount();
-        store.close();
+        const store = await createStore();
+        const linkCount = await store.getLinkCount();
+        const ftsCount = await store.getFTSCount();
+        await store.close();
 
         const lines = [
           'Chat-Recall Index Status',
@@ -1295,112 +1408,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'recall_show': {
         const params = RecallShowSchema.parse(args);
 
-        // Find the session file
-        const claudeDir = join(homedir(), '.claude', 'projects');
-        let sessionFile: string | null = null;
-
-        try {
-          const entries = readdirSync(claudeDir, { withFileTypes: true });
-          for (const entry of entries) {
-            if (!entry.isDirectory()) continue;
-            const candidate = join(claudeDir, entry.name, `${params.session_id}.jsonl`);
-            if (existsSync(candidate)) {
-              sessionFile = candidate;
-              break;
-            }
-          }
-        } catch {
+        // Single registry-routed path — every backend's readEvents emits
+        // canonical events (Claude includes its `type:'summary'` lines as
+        // 'summary' events), and `loadMessagesViaRegistry` formats them
+        // for display.
+        const messagesList = loadMessagesViaRegistry(params.session_id, params.include_code);
+        if (messagesList === null || messagesList.length === 0) {
           return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
-        }
-
-        if (!sessionFile) {
-          return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
-        }
-
-        interface Message {
-          line: number;
-          role: string;
-          text: string;
-        }
-
-        // Parse messages
-        const messagesList: Message[] = [];
-        const lines = readFileSync(sessionFile, 'utf-8').split('\n');
-
-        for (let lineNum = 0; lineNum < lines.length; lineNum++) {
-          const line = lines[lineNum];
-          if (!line.trim()) continue;
-
-          try {
-            const obj = JSON.parse(line) as Record<string, unknown>;
-            const msgType = obj.type as string;
-
-            if (msgType === 'user') {
-              const msg = obj.message as Record<string, unknown>;
-              if (msg && typeof msg === 'object') {
-                const content = msg.content;
-                let text = '';
-
-                if (typeof content === 'string') {
-                  text = content;
-                } else if (Array.isArray(content)) {
-                  const textParts: string[] = [];
-                  for (const item of content) {
-                    if (typeof item === 'object' && item !== null && (item as Record<string, unknown>).type === 'text') {
-                      textParts.push((item as Record<string, unknown>).text as string || '');
-                    }
-                  }
-                  text = textParts.join('\n');
-                }
-
-                if (text && !text.includes('<system-reminder>')) {
-                  messagesList.push({
-                    line: lineNum + 1,
-                    role: 'User',
-                    text,
-                  });
-                }
-              }
-            } else if (msgType === 'assistant') {
-              const msg = obj.message as Record<string, unknown>;
-              if (msg && typeof msg === 'object') {
-                const content = msg.content;
-                if (Array.isArray(content)) {
-                  for (const item of content) {
-                    if (typeof item === 'object' && item !== null && (item as Record<string, unknown>).type === 'text') {
-                      let text = (item as Record<string, unknown>).text as string || '';
-                      if (text) {
-                        if (!params.include_code) {
-                          text = text.replace(/```[\s\S]*?```/g, '[code block]');
-                        }
-                        messagesList.push({
-                          line: lineNum + 1,
-                          role: 'Claude',
-                          text,
-                        });
-                        break;
-                      }
-                    }
-                  }
-                }
-              }
-            } else if (msgType === 'summary') {
-              const summary = obj.summary as string;
-              if (summary) {
-                messagesList.push({
-                  line: lineNum + 1,
-                  role: 'Summary',
-                  text: summary,
-                });
-              }
-            }
-          } catch {
-            continue;
-          }
-        }
-
-        if (messagesList.length === 0) {
-          return { content: [{ type: 'text', text: 'No messages found in session.' }] };
         }
 
         // Filter messages
@@ -1474,8 +1488,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         // Get summaries from metadata cache
-        const Database = (await import('better-sqlite3')).default;
-        const cacheDb = new Database(getCacheDbPath(), { readonly: true });
+        const metaCache = await createMetadataCache();
 
         const lines = ['# Recent Sessions\n'];
 
@@ -1493,7 +1506,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
 
             // Try to get Gemini summary
-            const row = cacheDb.prepare('SELECT summary FROM session_metadata WHERE session_id = ?').get(session.sessionId) as { summary: string } | undefined;
+            const row = await metaCache.get(session.sessionId);
 
             let displayText: string;
             if (row && row.summary) {
@@ -1524,7 +1537,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             lines.push('');
           }
         } finally {
-          cacheDb.close();
+          await metaCache.close();
         }
 
         return { content: [{ type: 'text', text: lines.join('\n') }] };
@@ -1533,33 +1546,54 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'recall_context': {
         const params = RecallContextSchema.parse(args);
 
-        // Find the session file
-        const claudeDir = join(homedir(), '.claude', 'projects');
-        let sessionFile: string | null = null;
-
-        try {
-          const entries = readdirSync(claudeDir, { withFileTypes: true });
-          for (const entry of entries) {
-            if (!entry.isDirectory()) continue;
-            const candidate = join(claudeDir, entry.name, `${params.session_id}.jsonl`);
-            if (existsSync(candidate)) {
-              sessionFile = candidate;
-              break;
-            }
+        // Single registry-routed path for all four backends. Build the
+        // ConversationContext-shaped dump from canonical turns + the
+        // file-edit live scan. Token/cost metadata is appended below
+        // for Claude only — other tools don't expose comparable counters
+        // on disk, so the section is skipped silently for them.
+        const backend = getBackendForId(params.session_id);
+        if (!backend) {
+          return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
+        }
+        const turns = extractTurnsAny(params.session_id, { maxTurns: 5000 });
+        if (!turns.found) {
+          return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
+        }
+        const userInputs: string[] = [];
+        const assistantWork: string[] = [];
+        const toolsUsed = new Set<string>();
+        const live = liveScanModifiedFiles(params.session_id);
+        for (const t of turns.turns) {
+          if (t.kind === 'user' && t.text) {
+            const text = t.text.length > 240 ? t.text.slice(0, 240) + '…' : t.text;
+            userInputs.push(text.replace(/\n/g, ' '));
+          } else if (t.kind === 'assistant_text' && t.text) {
+            const text = t.text.length > 240 ? t.text.slice(0, 240) + '…' : t.text;
+            assistantWork.push(text.replace(/\n/g, ' '));
+          } else if (t.kind === 'tool_use' && t.toolName) {
+            toolsUsed.add(t.toolName);
           }
-        } catch {
-          return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
         }
+        let formatted = formatContext({
+          sessionId: params.session_id,
+          projectPath: live.projectPath || '',
+          created: '',
+          modified: '',
+          userInputs: userInputs.slice(0, 50),
+          claudeWork: assistantWork.slice(0, 20),
+          decisions: [],
+          toolsUsed: [...toolsUsed],
+          filesChanged: live.found ? live.files : [],
+        });
 
-        if (!sessionFile) {
-          return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
-        }
-
-        const context = extractConversationContext(sessionFile);
-        let formatted = formatContext(context);
-
-        // Append token/cost metadata
+        // Append token/cost metadata when the backend exposes a Claude-style
+        // session JSONL we can parse. Other tools don't expose comparable
+        // per-session telemetry, so the section is skipped silently.
         try {
+          const sessionFile = backend.id === 'claude'
+            ? claudeBackend.findSession(params.session_id)?.path ?? null
+            : null;
+          if (!sessionFile) throw new Error('skip');
           const content = await parseSessionFile(sessionFile);
           const m = content.metadata;
           if (m.inputTokens > 0) {
@@ -1587,7 +1621,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // agent actually said and what tool output came back.
         if (params.include_turns) {
           try {
-            const turns = extractTurns(params.session_id, { maxTurns: params.turns_limit });
+            const turns = extractTurnsAny(params.session_id, { maxTurns: params.turns_limit });
             if (turns.found && turns.turns.length > 0) {
               const lines: string[] = ['', '## Turn-by-turn'];
               for (const t of turns.turns.slice(0, params.turns_limit)) {
@@ -1620,15 +1654,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'recall_summary': {
         const params = RecallSummarySchema.parse(args);
 
-        // 1. Pull the cached AI summary if one was generated.
-        const Database = (await import('better-sqlite3')).default;
-        const cacheDb = new Database(getCacheDbPath(), { readonly: true });
+        // 1. Pull the cached AI summary if one was generated. Sessions from
+        // gemini/opencode/codex are stored under prefixed ids (e.g.
+        // "gemini_<uuid>"), so try both shapes — callers may pass either.
+        const metaCache = await createMetadataCache();
         let aiSummary: { summary: string; summary_source: string } | null = null;
         try {
-          aiSummary = (cacheDb.prepare('SELECT summary, summary_source FROM session_metadata WHERE session_id = ?')
-            .get(params.session_id) as { summary: string; summary_source: string } | undefined) ?? null;
+          // Cache rows are stored under each backend's prefixed id. Try the
+          // raw id first, then every backend's toPrefixedId(rawId) — the
+          // registry decides what prefixes exist, so this works for any
+          // future tool too.
+          const seen = new Set<string>([params.session_id]);
+          const candidateIds: string[] = [params.session_id];
+          for (const b of listAvailableBackends()) {
+            const candidate = b.toPrefixedId(params.session_id);
+            if (!seen.has(candidate)) { candidateIds.push(candidate); seen.add(candidate); }
+          }
+          for (const id of candidateIds) {
+            const m = await metaCache.get(id);
+            if (m) { aiSummary = { summary: m.summary, summary_source: m.summarySource }; break; }
+          }
         } finally {
-          cacheDb.close();
+          await metaCache.close();
         }
 
         // Legacy mode: just the AI summary.
@@ -1652,7 +1699,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           ].join('\n') }] };
         }
 
-        // 2. Compute the structured outcome from the transcript.
+        // 2. Compute the structured outcome from the transcript. Use the
+        // multi-tool dispatcher so gemini/opencode/codex sessions work too.
         const outcome = computeOutcome(params.session_id);
         if (!outcome.found && !aiSummary) {
           return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
@@ -1742,7 +1790,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_diff': {
         const params = RecallDiffSchema.parse(args);
-        const result = replaySession(params.session_id);
+        const result = replaySessionAny(params.session_id);
         if (!result.found) {
           return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
         }
@@ -1777,11 +1825,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_commits': {
         const params = RecallCommitsSchema.parse(args);
-        const replay = replaySession(params.session_id);
+        const replay = replaySessionAny(params.session_id);
         if (!replay.found) {
           return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
         }
-        const turns = extractTurns(params.session_id, { maxTurns: 50_000 });
+        const turns = extractTurnsAny(params.session_id, { maxTurns: 50_000 });
         const result = getSessionCommits(
           params.session_id,
           replay.files.map(f => f.file),
@@ -1860,7 +1908,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_markers': {
         const params = RecallMarkersSchema.parse(args);
-        const turns = extractTurns(params.session_id, { maxTurns: 50_000 });
+        const turns = extractTurnsAny(params.session_id, { maxTurns: 50_000 });
         if (!turns.found) {
           return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
         }
@@ -1908,14 +1956,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         let results;
         try {
-          const memIdx = new MemoryIndex(embedder);
+          const memIdx = await createVectorStore(embedder);
           const memResults = await memIdx.search(params.current_task, {
             topK: params.top_k,
             sourceTypes: ['session'],
           });
-          const cache = new MetadataCache();
-          results = memResults.map(r => {
-            const cached = cache.get(r.itemId);
+          const cache = await createMetadataCache();
+          const cachedList = await Promise.all(memResults.map(r => cache.get(r.itemId)));
+          results = memResults.map((r, i) => {
+            const cached = cachedList[i];
             return {
               sessionId: r.itemId,
               score: r.score,
@@ -1928,7 +1977,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               matchedChunks: r.matchedChunks,
             };
           });
-          cache.close();
+          await cache.close();
         } catch (err) {
           if (err instanceof Error && err.message.includes('not found')) {
             return { content: [{ type: 'text', text: 'Error: Index not found. Run \'node dist/cli.js memory index\' first.' }] };
@@ -1941,8 +1990,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         // Get summaries from metadata cache
-        const Database = (await import('better-sqlite3')).default;
-        const cacheDb = new Database(getCacheDbPath(), { readonly: true });
+        const metaCache = await createMetadataCache();
 
         const output = [
           `# Suggested Conversations to Resume`,
@@ -1953,7 +2001,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         try {
           for (let i = 0; i < results.length; i++) {
             const result = results[i];
-            const row = cacheDb.prepare('SELECT summary FROM session_metadata WHERE session_id = ?').get(result.sessionId) as { summary: string } | undefined;
+            const row = await metaCache.get(result.sessionId);
 
             output.push(`## ${i + 1}. Session ${result.sessionId.substring(0, 8)}...`);
             output.push(`**Project:** ${result.projectPath.replace(homedir(), '~')}`);
@@ -1986,7 +2034,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             output.push('');
           }
         } finally {
-          cacheDb.close();
+          await metaCache.close();
         }
 
         return { content: [{ type: 'text', text: output.join('\n') }] };
@@ -2008,11 +2056,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           embedder = null;
         }
 
-        const memoryIndex = new MemoryIndex(embedder);
+        const memoryIndex = await createVectorStore(embedder);
         const results = await memoryIndex.search(memSearchQuery, {
           topK: params.top_k,
           sourceTypes: params.source_types as SourceType[] | undefined,
-          projectFilter: params.project_filter,
+          projectIdFilter: params.project_filter,
         });
 
         if (results.length === 0) {
@@ -2055,13 +2103,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           dimension: 768,
         };
 
-        const memoryIndex = new MemoryIndex(dummyEmbedder);
-        const memoryStore = new MemoryStore();
+        const memoryIndex = await createVectorStore(dummyEmbedder);
+        const memoryStore = await createStore();
 
         const indexStats = await memoryIndex.getStats();
-        const storeStats = memoryStore.getStats();
-        const linkCount = memoryStore.getLinkCount();
-        const ftsCount = memoryStore.getFTSCount();
+        const storeStats = await memoryStore.getStats();
+        const linkCount = await memoryStore.getLinkCount();
+        const ftsCount = await memoryStore.getFTSCount();
 
         const lines = [
           '# Memory System Status\n',
@@ -2079,17 +2127,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         }
 
-        memoryStore.close();
+        await memoryStore.close();
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
       case 'recall_plans': {
         const params = RecallPlansSchema.parse(args);
-        const memoryStore = new MemoryStore();
-        const items = memoryStore.listItems('plan', params.limit);
+        const memoryStore = await createStore();
+        const items = await memoryStore.listItems('plan', params.limit);
 
         if (items.length === 0) {
-          memoryStore.close();
+          await memoryStore.close();
           return { content: [{ type: 'text', text: 'No plans indexed. Run `chat-recall memory index` first.' }] };
         }
 
@@ -2101,7 +2149,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (item.content_preview) {
             lines.push(`  ${item.content_preview.slice(0, 120)}...`);
           }
-          const links = memoryStore.getLinksFrom('plan', item.id);
+          const links = await memoryStore.getLinksFrom('plan', item.id);
           for (const link of links) {
             if (link.target_type === 'session') {
               lines.push(`  **Session:** \`claude --resume ${link.target_id}\``);
@@ -2109,14 +2157,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         }
 
-        memoryStore.close();
+        await memoryStore.close();
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
       case 'recall_plan_show': {
         const params = RecallPlanShowSchema.parse(args);
-        const plansDir = join(homedir(), '.claude', 'plans');
-        const filePath = join(plansDir, `${params.plan_id}.md`);
+        const filePath = join(claudeBackend.plansDir(), `${params.plan_id}.md`);
 
         if (!existsSync(filePath)) {
           return { content: [{ type: 'text', text: `Plan not found: ${params.plan_id}` }] };
@@ -2128,11 +2175,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_tasks': {
         const params = RecallTasksSchema.parse(args);
-        const memoryStore = new MemoryStore();
-        const items = memoryStore.listItems('task', params.limit);
+        const memoryStore = await createStore();
+        const items = await memoryStore.listItems('task', params.limit);
 
         if (items.length === 0) {
-          memoryStore.close();
+          await memoryStore.close();
           return { content: [{ type: 'text', text: 'No tasks indexed. Run `chat-recall memory index` first.' }] };
         }
 
@@ -2148,7 +2195,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           lines.push(`**Subjects:** ${item.title}`);
 
           // Show links to session
-          const links = memoryStore.getLinksFrom('task', item.id);
+          const links = await memoryStore.getLinksFrom('task', item.id);
           for (const link of links) {
             if (link.target_type === 'session') {
               lines.push(`**Resume:** \`claude --resume ${link.target_id}\``);
@@ -2158,31 +2205,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           lines.push('');
         }
 
-        memoryStore.close();
+        await memoryStore.close();
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
       case 'recall_smart_resume': {
         const params = RecallSmartResumeSchema.parse(args);
 
-        // Find the session file
-        const claudeDirSR = join(homedir(), '.claude', 'projects');
+        // Find the session file (Claude only — gemini/opencode/codex take
+        // the memory_metadata fallback below).
         let sessionFileSR: string | null = null;
         let projectPathSR = '';
 
-        try {
-          const entries = readdirSync(claudeDirSR, { withFileTypes: true });
-          for (const entry of entries) {
-            if (!entry.isDirectory()) continue;
-            const candidate = join(claudeDirSR, entry.name, `${params.session_id}.jsonl`);
-            if (existsSync(candidate)) {
-              sessionFileSR = candidate;
-              projectPathSR = entry.name.replace(/-/g, '/').replace(/^\//, '/');
-              break;
-            }
+        if (detectTool(params.session_id) === 'claude') {
+          const located = claudeBackend.findSession(params.session_id);
+          if (located) {
+            sessionFileSR = located.path;
+            projectPathSR = located.projectPath;
           }
-        } catch {
-          return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
         }
 
         // Fallback: session may be a Gemini or OpenCode item indexed in the
@@ -2190,14 +2230,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // resume dossier built from memory_metadata + cached summary so the
         // tool is useful across all three backends.
         if (!sessionFileSR) {
-          const fbStore = new MemoryStore();
+          const fbStore = await createStore();
           try {
-            // Accept either raw id ("<uuid>") or prefixed id ("gemini_<uuid>", "opencode_<uuid>").
-            const candidates = [
-              params.session_id,
-              `gemini_${params.session_id}`,
-              `opencode_${params.session_id}`,
-            ];
+            // Accept either raw id ("<uuid>") or any backend's prefixed
+            // form. Driven off the registry so a new tool added later
+            // works automatically.
+            const seen = new Set<string>([params.session_id]);
+            const candidates: string[] = [params.session_id];
+            for (const b of listAvailableBackends()) {
+              const candidate = b.toPrefixedId(params.session_id);
+              if (!seen.has(candidate)) { candidates.push(candidate); seen.add(candidate); }
+            }
             let item: any = null;
             for (const id of candidates) {
               item = fbStore.getItem(id, 'session' as SourceType);
@@ -2208,12 +2251,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
             let extra: any = {};
             try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
-            const DatabaseFB = (await import('better-sqlite3')).default;
-            const cacheDbFB = new DatabaseFB(getCacheDbPath(), { readonly: true });
-            const row = cacheDbFB
-              .prepare('SELECT summary, first_prompt FROM session_metadata WHERE session_id = ?')
-              .get(item.id) as { summary: string; first_prompt: string } | undefined;
-            cacheDbFB.close();
+            const metaCacheFB = await (await import('./core/store/caches.js')).createMetadataCache();
+            const mFB = await metaCacheFB.get(item.id);
+            await metaCacheFB.close();
+            const row = mFB ? { summary: mFB.summary, first_prompt: mFB.firstPrompt } : undefined;
             const lines: string[] = [];
             lines.push(`# Resume — ${item.title || item.id}`);
             lines.push(`Tool: ${extra.tool || 'unknown'}   Project: ${item.project_path || '(unknown)'}`);
@@ -2241,19 +2282,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const meta = sessionContent.metadata;
 
         // Get summary
-        const DatabaseSR = (await import('better-sqlite3')).default;
-        const cacheDbSR = new DatabaseSR(getCacheDbPath(), { readonly: true });
-        const summaryRow = cacheDbSR.prepare('SELECT summary FROM session_metadata WHERE session_id = ?')
-          .get(params.session_id) as { summary: string } | undefined;
-        cacheDbSR.close();
+        const metaCacheSR = await (await import('./core/store/caches.js')).createMetadataCache();
+        const summaryRow = await metaCacheSR.get(params.session_id);
+        await metaCacheSR.close();
 
         // Get tasks for this session
-        const storeSR = new MemoryStore();
-        const taskLinks = storeSR.getLinksTo('session' as SourceType, params.session_id);
+        const storeSR = await createStore();
+        const taskLinks = await storeSR.getLinksTo('session' as SourceType, params.session_id);
         const taskItems: Array<{ title: string; completed: number; total: number; subjects: string[] }> = [];
         for (const link of taskLinks) {
           if (link.source_type === 'task') {
-            const taskMeta = storeSR.getItem(link.source_id, 'task' as SourceType);
+            const taskMeta = await storeSR.getItem(link.source_id, 'task' as SourceType);
             if (taskMeta) {
               const extra = JSON.parse(taskMeta.extra_json || '{}');
               taskItems.push({
@@ -2265,7 +2304,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
           }
         }
-        storeSR.close();
+        await storeSR.close();
 
         // Extract context
         const context = extractConversationContext(sessionFileSR);
@@ -2347,8 +2386,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Known facts from knowledge graph about this project
         if (projName) {
           try {
-            const kgResume = new KnowledgeGraph();
-            const projFacts = kgResume.queryEntity(projName);
+            const kgResume = await createKnowledgeGraph();
+            const projFacts = await kgResume.queryEntity(projName);
             const currentFacts = projFacts.filter(f => f.current);
             if (currentFacts.length > 0) {
               lines.push('## Known Facts (Knowledge Graph)');
@@ -2358,7 +2397,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               }
               lines.push('');
             }
-            kgResume.close();
+            await kgResume.close();
           } catch { /* KG not available, skip */ }
         }
 
@@ -2465,20 +2504,47 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
+      case 'recall_project_dossier': {
+        const params = RecallProjectDossierSchema.parse(args);
+        // Reject absolute paths and other non-id inputs. Resolving a path
+        // here used to silently produce empty/orphan dossiers when the cwd
+        // no longer existed (PR-bot worktrees, /tmp). Force the caller to
+        // pass a stable identifier they got from `recall_project_context`
+        // or the web sidebar.
+        if (!/^(git:|git-local:|ws:|user:)/.test(params.project)) {
+          return {
+            content: [{
+              type: 'text',
+              text:
+                `Invalid project id: \`${params.project}\`.\n\n` +
+                `Use a project_id from \`recall_project_context\` or the web UI sidebar.\n` +
+                `Examples:\n  - git:github.com/me/munbot\n  - ws:personal\n  - git-local:26ccc83b2b1b\n`,
+            }],
+            isError: true,
+          };
+        }
+        const md = await buildProjectDossier(params.project, {
+          recentSessionLimit: params.sessions,
+          taskLimit: params.tasks,
+          planLimit: params.plans,
+        });
+        return { content: [{ type: 'text', text: md }] };
+      }
+
       case 'recall_project_context': {
         const params = RecallProjectContextSchema.parse(args);
-        const store = new MemoryStore();
+        const store = await createStore();
 
         // Get recent sessions for this project
         const sessions = getRecentSessions(params.project_path, params.limit);
-        const cache = new MetadataCache();
+        const cache = await createMetadataCache();
 
         const lines = [`# Project Context: ${params.project_path}\n`];
 
         if (sessions.length === 0) {
           lines.push('No sessions found for this project.');
-          store.close();
-          cache.close();
+          await store.close();
+          await cache.close();
           return { content: [{ type: 'text', text: lines.join('\n') }] };
         }
 
@@ -2490,8 +2556,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const allModels = new Set<string>();
         const allFilesModified = new Set<string>();
 
-        const Database = (await import('better-sqlite3')).default;
-        const cacheDb = new Database(getCacheDbPath(), { readonly: true });
+        const metaCache = await createMetadataCache();
 
         try {
           for (let i = 0; i < sessions.length; i++) {
@@ -2499,11 +2564,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const modified = session.modified ? session.modified.slice(0, 16).replace('T', ' ') : 'unknown';
 
             // Get summary
-            const row = cacheDb.prepare('SELECT summary FROM session_metadata WHERE session_id = ?')
-              .get(session.sessionId) as { summary: string } | undefined;
+            const row = await metaCache.get(session.sessionId);
 
             // Get metadata from store
-            const meta = store.getItem(session.sessionId, 'session' as SourceType);
+            const meta = await store.getItem(session.sessionId, 'session' as SourceType);
             let extra: Record<string, unknown> = {};
             if (meta?.extra_json) {
               try { extra = JSON.parse(meta.extra_json); } catch { /* skip */ }
@@ -2540,7 +2604,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             lines.push('');
           }
         } finally {
-          cacheDb.close();
+          await metaCache.close();
         }
 
         // Overall stats
@@ -2551,7 +2615,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         lines.push('');
 
         // Open tasks for this project
-        const taskItems = store.listItemsByProject('task' as SourceType, params.project_path, 5);
+        const taskItems = await store.listItemsByProject('task' as SourceType, params.project_path, 5);
         if (taskItems.length > 0) {
           lines.push('## Open Tasks\n');
           for (const task of taskItems) {
@@ -2564,7 +2628,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         // Related plans
-        const planItems = store.listItemsByProject('plan' as SourceType, params.project_path, 5);
+        const planItems = await store.listItemsByProject('plan' as SourceType, params.project_path, 5);
         if (planItems.length > 0) {
           lines.push('## Related Plans\n');
           for (const plan of planItems) {
@@ -2577,8 +2641,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Knowledge graph facts for this project
         const projectSlug = params.project_path.split('/').filter(Boolean).pop() || params.project_path;
         try {
-          const kgCtx = new KnowledgeGraph();
-          const projectFacts = kgCtx.queryEntity(projectSlug);
+          const kgCtx = await createKnowledgeGraph();
+          const projectFacts = await kgCtx.queryEntity(projectSlug);
           const currentFacts = projectFacts.filter(f => f.current);
           if (currentFacts.length > 0) {
             lines.push('## Known Facts (Knowledge Graph)\n');
@@ -2588,7 +2652,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
             lines.push('');
           }
-          kgCtx.close();
+          await kgCtx.close();
         } catch { /* KG not available */ }
 
         // Files modified
@@ -2629,8 +2693,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Cross-project intelligence: find related work in other projects
         // Use the project's recent session summaries as search queries against other projects
         if (sessions.length > 0) {
-          const ftsStore = new MemoryStore();
-          const ftsCount = ftsStore.getFTSCount();
+          const ftsStore = await createStore();
+          const ftsCount = await ftsStore.getFTSCount();
 
           if (ftsCount > 0) {
             // Extract key terms from this project's recent work
@@ -2645,7 +2709,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
             if (searchTerms.length > 0) {
               // Search for these terms but EXCLUDE the current project
-              const crossResults = ftsStore.searchFTS(
+              const crossResults = await ftsStore.searchFTS(
                 searchTerms.slice(0, 8).join(' '),
                 { topK: 20, sourceTypes: ['session'] }
               );
@@ -2671,17 +2735,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
           }
 
-          ftsStore.close();
+          await ftsStore.close();
         }
 
-        store.close();
-        cache.close();
+        await store.close();
+        await cache.close();
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
       case 'recall_weekly_digest': {
         const params = RecallWeeklyDigestSchema.parse(args);
-        const store = new MemoryStore();
+        const store = await createStore();
 
         // Calculate week boundaries (Monday-based)
         const now = new Date();
@@ -2706,10 +2770,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const dateRange = `${weekStart.toISOString().slice(0, 10)} — ${weekEnd.toISOString().slice(0, 10)}`;
 
         // Get all sessions in the time range from metadata
-        const Database = (await import('better-sqlite3')).default;
-        const cacheDb = new Database(getCacheDbPath(), { readonly: true });
+        const metaCache = await createMetadataCache();
 
-        const allSessions = store.listItems('session' as SourceType, 1000);
+        const allSessions = await store.listItems('session' as SourceType, 1000);
         const weekSessions = allSessions.filter(s => s.mtime >= weekStart.getTime() && s.mtime < weekEnd.getTime());
         const prevWeekSessions = allSessions.filter(s => s.mtime >= prevWeekStart.getTime() && s.mtime < weekStart.getTime());
 
@@ -2717,8 +2780,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         if (weekSessions.length === 0) {
           lines.push('No sessions found for this period.');
-          store.close();
-          cacheDb.close();
+          await store.close();
+          await metaCache.close();
           return { content: [{ type: 'text', text: lines.join('\n') }] };
         }
 
@@ -2764,14 +2827,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           ps.cost += cost;
 
           // Get summary
-          const row = cacheDb.prepare('SELECT summary FROM session_metadata WHERE session_id = ?')
-            .get(session.id) as { summary: string } | undefined;
+          const row = await metaCache.get(session.id);
           if (row?.summary) {
             ps.summaries.push(row.summary.slice(0, 80));
           }
         }
 
-        cacheDb.close();
+        await metaCache.close();
 
         const durationHours = Math.round(totalDuration / 3_600_000 * 10) / 10;
         const cacheHitRate = totalInputTokens > 0
@@ -2825,7 +2887,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         // Open tasks
-        const taskItems = store.listItems('task' as SourceType, 20);
+        const taskItems = await store.listItems('task' as SourceType, 20);
         const recentTasks = taskItems.filter(t => t.mtime >= weekStart.getTime());
         if (recentTasks.length > 0) {
           lines.push('## Open Tasks\n');
@@ -2840,8 +2902,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         // Knowledge graph stats
         try {
-          const kgDigest = new KnowledgeGraph();
-          const kgS = kgDigest.stats();
+          const kgDigest = await createKnowledgeGraph();
+          const kgS = await kgDigest.stats();
           if (kgS.triples > 0) {
             lines.push('## Knowledge Graph\n');
             lines.push(`Entities: ${kgS.entities} | Facts: ${kgS.current_facts} current, ${kgS.expired_facts} expired`);
@@ -2850,10 +2912,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
             lines.push('');
           }
-          kgDigest.close();
+          await kgDigest.close();
         } catch { /* KG not available */ }
 
-        store.close();
+        await store.close();
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
@@ -2861,9 +2923,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_kg_query': {
         const params = RecallKGQuerySchema.parse(args);
-        const kg = new KnowledgeGraph();
-        const facts = kg.queryEntity(params.entity, params.as_of, params.direction);
-        kg.close();
+        const kg = await createKnowledgeGraph();
+        const facts = await kg.queryEntity(params.entity, params.as_of, params.direction);
+        await kg.close();
 
         if (facts.length === 0) {
           return { content: [{ type: 'text', text: `No facts found for entity: "${params.entity}"${params.as_of ? ` as of ${params.as_of}` : ''}` }] };
@@ -2887,12 +2949,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const wal = getWAL();
         wal.log('kg_add', { subject: params.subject, predicate: params.predicate, object: params.object, valid_from: params.valid_from });
 
-        const kg = new KnowledgeGraph();
-        const tripleId = kg.addTriple(params.subject, params.predicate, params.object, {
+        const kg = await createKnowledgeGraph();
+        const tripleId = await kg.addTriple(params.subject, params.predicate, params.object, {
           validFrom: params.valid_from,
           sourceSession: params.source_session,
         });
-        kg.close();
+        await kg.close();
 
         return { content: [{ type: 'text', text: `Added: ${params.subject} → ${params.predicate} → ${params.object} (id: ${tripleId})` }] };
       }
@@ -2902,9 +2964,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const wal = getWAL();
         wal.log('kg_invalidate', { subject: params.subject, predicate: params.predicate, object: params.object, ended: params.ended });
 
-        const kg = new KnowledgeGraph();
-        const count = kg.invalidate(params.subject, params.predicate, params.object, params.ended);
-        kg.close();
+        const kg = await createKnowledgeGraph();
+        const count = await kg.invalidate(params.subject, params.predicate, params.object, params.ended);
+        await kg.close();
 
         const endDate = params.ended || new Date().toISOString().split('T')[0];
         return { content: [{ type: 'text', text: `Invalidated ${count} fact(s): ${params.subject} → ${params.predicate} → ${params.object} (ended: ${endDate})` }] };
@@ -2912,9 +2974,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_kg_timeline': {
         const params = RecallKGTimelineSchema.parse(args);
-        const kg = new KnowledgeGraph();
-        const entries = kg.timeline(params.entity, params.limit);
-        kg.close();
+        const kg = await createKnowledgeGraph();
+        const entries = await kg.timeline(params.entity, params.limit);
+        await kg.close();
 
         if (entries.length === 0) {
           return { content: [{ type: 'text', text: `No timeline entries found${params.entity ? ` for "${params.entity}"` : ''}.` }] };
@@ -2931,9 +2993,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'recall_kg_stats': {
-        const kg = new KnowledgeGraph();
-        const s = kg.stats();
-        kg.close();
+        const kg = await createKnowledgeGraph();
+        const s = await kg.stats();
+        await kg.close();
 
         const lines = [
           '# Knowledge Graph Stats\n',
@@ -2986,9 +3048,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // ── Subagent search ────────────────────────────────────────
       case 'recall_subagent_search': {
+        // Subagents are a Claude-CLI-specific concept (the .jsonl-per-subtask
+        // tree under <session>/subagents/), so this handler is intentionally
+        // bound to ClaudeBackend.
         const params = RecallSubagentSearchSchema.parse(args);
         const { readdirSync: rd, readFileSync: rf, statSync: st } = await import('fs');
-        const projectsRoot = join(homedir(), '.claude', 'projects');
+        const projectsRoot = claudeBackend.projectsDir();
 
         // Collect candidate session directories. If session_id given, narrow to that.
         const sessionDirs: string[] = [];
@@ -3055,13 +3120,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'recall_files_touched': {
         const params = RecallFilesTouchedSchema.parse(args);
         const cutoff = Date.now() - params.since_days * 86400 * 1000;
-        const store = new MemoryStore();
+        const store = await createStore();
         type Match = { sessionId: string; project: string; mtime: number; matchedFiles: string[]; live?: boolean };
         const matchesById = new Map<string, Match>();
 
         const needle = params.pattern.toLowerCase();
         try {
-          const items = store.listItems('session' as SourceType, 5000, 0);
+          const items = await store.listItems('session' as SourceType, 5000, 0);
 
           for (const item of items) {
             if (item.mtime < cutoff) continue;
@@ -3078,7 +3143,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             });
           }
         } finally {
-          store.close();
+          await store.close();
         }
 
         // Live-scan recent sessions so the active session (and anything else
@@ -3134,6 +3199,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const allEdits = liveScanRecentEdits({
           sinceMs,
           pattern: params.pattern,
+          // Live edits API still uses path-based filtering — it operates
+          // on filesystem session paths (not the indexed memory_metadata).
           projectFilter: params.project_filter,
           tools: params.tools,
         });
@@ -3192,7 +3259,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             lines.push('|---|---|---|---|---|');
             for (const e of limited) {
               const ts = (e.tsIso || new Date(e.ts).toISOString()).replace('T', ' ').slice(0, 19);
-              const idForDisplay = e.sessionId.replace(/^(opencode_|gemini_)/, '');
+              const idForDisplay = getBackendForId(e.sessionId)?.toRawId(e.sessionId) ?? e.sessionId;
               const sid = idForDisplay.slice(0, 8);
               const rel = e.file.startsWith(repo + '/') ? e.file.slice(repo.length + 1) : e.file;
               lines.push(`| ${ts} | ${e.tool} | \`${sid}\` | ${e.op} | ${rel} |`);
@@ -3217,7 +3284,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const ts = (e.tsIso || new Date(e.ts).toISOString()).replace('T', ' ').slice(0, 19);
           // Strip the tool prefix when rendering the session id so the column
           // stays compact — the Tool column already carries that info.
-          const idForDisplay = e.sessionId.replace(/^(opencode_|gemini_)/, '');
+          const idForDisplay = getBackendForId(e.sessionId)?.toRawId(e.sessionId) ?? e.sessionId;
           const sid = idForDisplay.slice(0, 8);
           lines.push(`| ${ts} | ${e.tool} | \`${sid}\` | ${e.op} | ${e.file} | ${e.projectPath} |`);
         }
@@ -3233,7 +3300,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'recall_user_prompts': {
         const params = RecallUserPromptsSchema.parse(args);
         const { readdirSync: rd, readFileSync: rf, statSync: st } = await import('fs');
-        const projectsRoot = join(homedir(), '.claude', 'projects');
+        const projectsRoot = claudeBackend.projectsDir();
 
         // Banner stripper mirrors web parser
         const BANNERS = [
@@ -3247,58 +3314,108 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return out.replace(/[ \t]{2,}/g, ' ').trim();
         };
 
-        const cutoff = Date.now() - params.since_days * 86400 * 1000;
-        const candidates: { path: string; sessionId: string; mtime: number }[] = [];
-        try {
-          for (const proj of rd(projectsRoot, { withFileTypes: true })) {
-            if (!proj.isDirectory()) continue;
-            const projPath = join(projectsRoot, proj.name);
-            let files: string[] = [];
-            try { files = rd(projPath).filter(f => f.endsWith('.jsonl')); } catch { continue; }
-            for (const f of files) {
-              const sessionId = f.replace(/\.jsonl$/i, '');
-              if (params.session_id && sessionId !== params.session_id) continue;
-              const fp = join(projPath, f);
-              try {
-                const s = st(fp);
-                if (!params.session_id && s.mtimeMs < cutoff) continue;
-                candidates.push({ path: fp, sessionId, mtime: s.mtimeMs });
-              } catch { /* skip */ }
-            }
+        // Single-session lookup — route uniformly through the registry so
+        // every backend returns prompts the same way. Avoids two parallel
+        // implementations (Claude on-disk vs *Any extractor) for the same
+        // job.
+        if (params.session_id) {
+          const backend = getBackendForId(params.session_id);
+          if (!backend) {
+            return { content: [{ type: 'text', text: `Session ${params.session_id} not found.` }] };
           }
-        } catch { /* projects missing */ }
-
-        candidates.sort((a, b) => b.mtime - a.mtime);
-        if (params.session_id && candidates.length === 0) {
-          return { content: [{ type: 'text', text: `Session ${params.session_id} not found.` }] };
+          const turns = backend.extractTurns(params.session_id, { maxTurns: 5000 });
+          if (!turns.found) {
+            return { content: [{ type: 'text', text: `Session ${params.session_id} not found.` }] };
+          }
+          const prompts = turns.turns
+            .filter(t => t.kind === 'user' && t.text)
+            .map(t => ({ sessionId: params.session_id!, line: t.line, ts: t.tsIso, text: stripBanners(t.text || '') }))
+            .filter(p => p.text)
+            .slice(0, params.limit);
+          if (prompts.length === 0) {
+            return { content: [{ type: 'text', text: 'No user prompts found.' }] };
+          }
+          const lines = [`# User prompts (${prompts.length})\n`];
+          for (const p of prompts) {
+            const t = p.ts?.slice(0, 16).replace('T', ' ') || '';
+            const snippet = p.text.length > 240 ? p.text.slice(0, 240) + '…' : p.text;
+            let markerSuffix = '';
+            if (params.with_markers) {
+              const m = markPrompt(p.text);
+              if (m.markers.length) markerSuffix = ` _[${m.markers.join(', ')}]_`;
+            }
+            lines.push(`- **${p.sessionId}** L${p.line}${t ? ` · ${t}` : ''}${markerSuffix}`);
+            lines.push(`  ${snippet.replace(/\n/g, ' ')}`);
+          }
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
         }
+
+        const cutoff = Date.now() - params.since_days * 86400 * 1000;
+
+        // Bulk mode — fan out across every registered AI-tool backend so
+        // gemini/opencode/codex sessions' prompts surface alongside Claude's.
+        // Per-backend SessionRefs come back already mtime-desc sorted; we
+        // merge and re-sort to interleave correctly.
+        type Cand = { sessionRef: import('./core/tool-backend.js').SessionRef };
+        const cands: Cand[] = [];
+        for (const backend of listAvailableBackends()) {
+          let refs;
+          try { refs = backend.listSessions({ sinceMs: cutoff }); }
+          catch { continue; }
+          for (const r of refs) cands.push({ sessionRef: r });
+        }
+        cands.sort((a, b) => b.sessionRef.mtime - a.sessionRef.mtime);
 
         type Prompt = { sessionId: string; line: number; ts?: string; text: string };
         const prompts: Prompt[] = [];
-        outer: for (const c of candidates) {
-          let lineNo = 0;
-          for (const raw of rf(c.path, 'utf-8').split('\n')) {
-            lineNo++;
-            if (!raw.trim()) continue;
+        outer: for (const c of cands) {
+          const ref = c.sessionRef;
+          if (ref.toolId === 'claude') {
+            // Claude: stream the .jsonl directly — keeps us off the
+            // multi-MB-load that extractTurns would do for very long
+            // sessions.
+            let lineNo = 0;
             try {
-              const obj = JSON.parse(raw);
-              if (obj?.type !== 'user') continue;
-              const content = obj.message?.content;
-              let text = '';
-              if (typeof content === 'string') text = content;
-              else if (Array.isArray(content)) {
-                text = content
-                  .filter((b: any) => b?.type === 'text' && typeof b.text === 'string')
-                  .map((b: any) => b.text)
-                  .join('\n');
+              for (const raw of rf(ref.fullPath, 'utf-8').split('\n')) {
+                lineNo++;
+                if (!raw.trim()) continue;
+                try {
+                  const obj = JSON.parse(raw);
+                  if (obj?.type !== 'user') continue;
+                  const content = obj.message?.content;
+                  let text = '';
+                  if (typeof content === 'string') text = content;
+                  else if (Array.isArray(content)) {
+                    text = content
+                      .filter((b: any) => b?.type === 'text' && typeof b.text === 'string')
+                      .map((b: any) => b.text)
+                      .join('\n');
+                  }
+                  text = stripBanners(text);
+                  if (!text) continue;
+                  prompts.push({ sessionId: ref.prefixedId, line: lineNo, ts: obj.timestamp, text });
+                  if (prompts.length >= params.limit) break outer;
+                } catch { /* skip malformed line */ }
               }
-              text = stripBanners(text);
+            } catch { /* unreadable — skip */ }
+          } else {
+            // Non-Claude: route through the backend's own turn extractor.
+            let turns;
+            try { turns = getBackendForId(ref.prefixedId)?.extractTurns(ref.prefixedId, { maxTurns: 5000 }); }
+            catch { continue; }
+            if (!turns?.found) continue;
+            for (const t of turns.turns) {
+              if (t.kind !== 'user' || !t.text) continue;
+              const text = stripBanners(t.text);
               if (!text) continue;
-              prompts.push({ sessionId: c.sessionId, line: lineNo, ts: obj.timestamp, text });
+              prompts.push({ sessionId: ref.prefixedId, line: t.line, ts: t.tsIso, text });
               if (prompts.length >= params.limit) break outer;
-            } catch { /* skip malformed line */ }
+            }
           }
         }
+        // The `st` import becomes unused after this refactor — referenced via
+        // a void to keep tsc happy without rewiring the destructure shape.
+        void st;
 
         if (prompts.length === 0) {
           return { content: [{ type: 'text', text: 'No user prompts found.' }] };
@@ -3325,20 +3442,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         wal.log('decision_record', { subject: params.subject, importance: params.importance });
 
         // 1) Knowledge-graph triple — durable, queryable, time-validated
-        const kg = new KnowledgeGraph();
+        const kg = await createKnowledgeGraph();
         try {
-          kg.addTriple(params.subject, 'decided', params.decision, {
+          await kg.addTriple(params.subject, 'decided', params.decision, {
             confidence: Math.min(1, params.importance / 5),
             sourceSession: params.session_id,
           });
           if (params.reason) {
-            kg.addTriple(params.subject, 'because', params.reason, {
+            await kg.addTriple(params.subject, 'because', params.reason, {
               confidence: Math.min(1, params.importance / 5),
               sourceSession: params.session_id,
             });
           }
         } finally {
-          kg.close();
+          await kg.close();
         }
 
         // 2) Diary entry — readable narrative for the agent's own future reads
@@ -3381,9 +3498,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return null;
         };
 
-        const store = new MemoryStore();
+        const store = await createStore();
         try {
-          const items = store.listItems('session' as SourceType, 5000, 0);
+          const items = await store.listItems('session' as SourceType, 5000, 0);
           let totalSessions = 0;
           let totalCost = 0;
           let sessionsWithoutPricing = 0;
@@ -3470,7 +3587,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           ];
           return { content: [{ type: 'text', text: lines.join('\n') }] };
         } finally {
-          store.close();
+          await store.close();
         }
       }
 
@@ -3484,9 +3601,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let excludeSessionId: string | undefined;
         if (params.session_id) {
           excludeSessionId = params.session_id;
-          const store = new MemoryStore();
+          const store = await createStore();
           try {
-            const item = store.getItem(params.session_id, 'session' as SourceType);
+            const item = await store.getItem(params.session_id, 'session' as SourceType);
             if (!item) {
               return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
             }
@@ -3494,7 +3611,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               const extra = JSON.parse(item.extra_json || '{}');
               searchText = extra.firstPrompt || extra.contentPreview || item.content_preview || item.title || '';
             } catch { searchText = item.content_preview || item.title || ''; }
-          } finally { store.close(); }
+          } finally { await store.close(); }
         }
         if (!searchText.trim()) {
           return { content: [{ type: 'text', text: 'No search text could be derived. Provide `query` or a session_id with prompt content.' }] };
@@ -3506,11 +3623,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let embedder: Awaited<ReturnType<typeof getEmbedder>> | null = null;
         try { embedder = getEmbedder(provider); } catch { embedder = null; }
 
-        const memoryIndex = new MemoryIndex(embedder);
+        const memoryIndex = await createVectorStore(embedder);
         const raw = await memoryIndex.search(cleaned, {
           topK: params.top_k * 4,
           sourceTypes: ['session'],
-          projectFilter: params.project_filter,
+          projectIdFilter: params.project_filter,
         });
 
         const filtered = raw.filter(r => r.itemId !== excludeSessionId);
@@ -3556,14 +3673,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // ── Session files ──────────────────────────────────────────
       case 'recall_session_files': {
         const params = RecallSessionFilesSchema.parse(args);
-        const store = new MemoryStore();
+        const store = await createStore();
         let projectPath = '';
         let files: string[] = [];
         let tools: string[] = [];
         let source: 'index' | 'live' = 'index';
 
         try {
-          const item = store.getItem(params.session_id, 'session' as SourceType);
+          const item = await store.getItem(params.session_id, 'session' as SourceType);
           if (item) {
             projectPath = item.project_path || '';
             try {
@@ -3572,7 +3689,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               if (Array.isArray(extra.toolsUsed)) tools = extra.toolsUsed;
             } catch { /* ignore corrupt json */ }
           }
-        } finally { store.close(); }
+        } finally { await store.close(); }
 
         // Fall back to a live transcript scan when the metadata is empty.
         // This is exactly the gap the user hit on an active session — the
@@ -3633,9 +3750,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const targetBase = target.split('/').pop() || target;
         const targetStem = targetBase.replace(/\.[^.]+$/, '').toLowerCase();
 
-        const store = new MemoryStore();
+        const store = await createStore();
         try {
-          const items = store.listItems('session' as SourceType, 5000, 0);
+          const items = await store.listItems('session' as SourceType, 5000, 0);
           // Score each historical filename: exact-basename > stem-match > path-overlap.
           type Hit = {
             file: string; sessionId: string; project: string; mtime: number; score: number; reason: string;
@@ -3715,7 +3832,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           // Append the codeindex composition hint only when it's actually
           // installed — keeps the output honest when the user has only chat-recall.
           return { content: [{ type: 'text', text: withCodeindexHint(lines.join('\n'), 'redundancy') }] };
-        } finally { store.close(); }
+        } finally { await store.close(); }
       }
 
       // ── KV store ───────────────────────────────────────────────
@@ -3724,18 +3841,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const wal = getWAL();
         wal.log('kv_set', { scope: params.scope, key: params.key });
 
-        const store = new MemoryStore();
-        try { store.kvSet(params.scope, params.key, params.value); }
-        finally { store.close(); }
+        const store = await createStore();
+        try { await store.kvSet(params.scope, params.key, params.value); }
+        finally { await store.close(); }
 
         return { content: [{ type: 'text', text: `Set ${params.scope}:${params.key} (${params.value.length} chars)` }] };
       }
 
       case 'recall_get': {
         const params = RecallGetSchema.parse(args);
-        const store = new MemoryStore();
+        const store = await createStore();
         try {
-          const row = store.kvGet(params.scope, params.key);
+          const row = await store.kvGet(params.scope, params.key);
           if (!row) return { content: [{ type: 'text', text: `(no value at ${params.scope}:${params.key})` }] };
           const ago = Math.floor((Date.now() - row.updated_at) / 1000);
           return {
@@ -3744,14 +3861,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               text: `${params.scope}:${params.key} (set ${ago}s ago)\n\n${row.value}`,
             }],
           };
-        } finally { store.close(); }
+        } finally { await store.close(); }
       }
 
       case 'recall_kv_list': {
         const params = RecallKvListSchema.parse(args);
-        const store = new MemoryStore();
+        const store = await createStore();
         try {
-          const rows = store.kvList(params.scope, params.limit);
+          const rows = await store.kvList(params.scope, params.limit);
           if (rows.length === 0) {
             return {
               content: [{
@@ -3767,7 +3884,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             lines.push(`- **${r.scope}:${r.key}** — ${preview}  _(${ago}s ago)_`);
           }
           return { content: [{ type: 'text', text: lines.join('\n') }] };
-        } finally { store.close(); }
+        } finally { await store.close(); }
       }
 
       // ── Wake-up context ────────────────────────────────────────
@@ -3800,11 +3917,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // When a project_filter is supplied, narrow the FTS5 search by
         // project_path so wake-up doesn't leak unrelated decisions/milestones
         // from other repos.
-        const store = new MemoryStore();
+        const store = await createStore();
         try {
-          const hits = store.searchFTS('decision preference milestone', {
+          const hits = await store.searchFTS('decision preference milestone', {
             topK: 60,
-            projectFilter: params.project_filter,
+            // project_filter at the MCP layer is a project_id; the FTS5
+            // store now filters strictly on that column.
+            projectIdFilter: params.project_filter,
           });
           const high = hits
             .filter(r => r.chunkType.includes(':imp4') || r.chunkType.includes(':imp5'))
@@ -3823,7 +3942,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             lines.push('');
           }
         } finally {
-          store.close();
+          await store.close();
         }
 
         // Currently-valid KG facts (temporal validity respected by KG.timeline).
@@ -3831,11 +3950,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // contains the filter substring — this keeps "redis", "docker", etc.
         // generic-tool facts from drowning out project-specific knowledge.
         try {
-          const kg = new KnowledgeGraph();
+          const kg = await createKnowledgeGraph();
           try {
-            const stats = kg.stats();
+            const stats = await kg.stats();
             if (stats.current_facts > 0) {
-              const all = kg.timeline(undefined, 500).filter(e => e.current);
+              const all = (await kg.timeline(undefined, 500)).filter(e => e.current);
               const filtered = params.project_filter
                 ? all.filter(f => {
                     const needle = params.project_filter!.toLowerCase();
@@ -3860,11 +3979,79 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               }
             }
           } finally {
-            kg.close();
+            await kg.close();
           }
         } catch { /* KG unavailable */ }
 
         return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_help': {
+        const text = [
+          '# chat-recall: how to recall',
+          '',
+          'Pick a tool by what you actually want to do. Most flows start with one of the first three.',
+          '',
+          '## I want to pick up where I left off',
+          '- `recall_smart_resume` — structured resume bundle (completed work, pending items, files, budget, KG facts). Best default for "continue".',
+          '- `recall_suggest_resume` — finds the most relevant past session for a free-text current task.',
+          '- `recall_recent` — list latest sessions (optionally `project_filter`, `since_hours`). Use when you just want the list.',
+          '- `recall_wake_up` — high-importance classifier facts + current KG snapshot. Fast cold-start identity/context.',
+          '',
+          '## I want to search past conversations',
+          '- `recall_search` — semantic + FTS5 over sessions. Returns session IDs to drill into.',
+          '- `recall_memory_search` — search across ALL memory types (sessions, plans, tasks, CLAUDE.md, paste, history, diary).',
+          '- `recall_similar_sessions` — given a session id, find sessions like it.',
+          '- `recall_subagent_search` — search subagent transcripts specifically.',
+          '- `recall_user_prompts` — search what the user actually typed (not assistant output).',
+          '',
+          '## I want details on one specific session',
+          '- `recall_context` — structured context dump for a session id.',
+          '- `recall_summary` — AI-generated summary.',
+          '- `recall_show` — raw conversation slice (`from_end: N`, `around_line`, `include_code`).',
+          '- `recall_diff` — what files changed in that session.',
+          '- `recall_commits` — git commits associated with the session window.',
+          '- `recall_outcome` — success/failure/abandonment classification.',
+          '- `recall_markers` — milestone/decision markers extracted from the session.',
+          '- `recall_session_files` — files touched in a session.',
+          '',
+          '## I want to know what was changed recently',
+          '- `recall_edits_timeline` — chronological file edits across Claude/Gemini/OpenCode/Codex. Try `since_hours: 2`.',
+          '- `recall_files_touched` — aggregate file activity over a window.',
+          '- `recall_redundant_files` — detect about-to-create-duplicate before writing a new file.',
+          '',
+          '## Project-level context',
+          '- `recall_project_context` — rich dump for a project (sessions, tasks, plans, commits, cost, KG).',
+          '- `recall_weekly_digest` — weekly activity digest.',
+          '- `recall_analytics_summary` — token/cost/tool analytics.',
+          '- `recall_plans` / `recall_plan_show` — list and inspect plans.',
+          '- `recall_tasks` — list tasks (optionally per session).',
+          '',
+          '## Temporal knowledge graph (facts with validity windows)',
+          '- `recall_kg_query` — query entity relationships (`as_of` for time-travel).',
+          '- `recall_kg_timeline` — chronological facts.',
+          '- `recall_kg_stats` — graph overview.',
+          '- `recall_kg_add` — assert a new fact triple.',
+          '- `recall_kg_invalidate` — mark a fact no longer true.',
+          '',
+          '## Persistent agent notes',
+          '- `recall_diary_write` / `recall_diary_read` — per-agent diary across sessions.',
+          '- `recall_decision_record` — record an architectural decision.',
+          '- `recall_set` / `recall_get` / `recall_kv_list` — scoped KV store for arbitrary state.',
+          '',
+          '## Index management',
+          '- `recall_index` — re-index sources (incremental by default; `force: true` for full).',
+          '- `recall_status` — index stats (counts by source type, FTS5/vector).',
+          '- `recall_memory_status` — memory-system stats.',
+          '',
+          '## Decision shortcuts',
+          '- "continue our last conversation" → `recall_recent` then `recall_context`/`recall_show`.',
+          '- "remember when we discussed X" → `recall_memory_search`.',
+          '- "what was I doing 2h ago" → `recall_edits_timeline` `since_hours: 2`.',
+          '- "what do you know about me/this project" → `recall_wake_up` (+ `project_filter`).',
+          '- "did we already decide on X" → `recall_kg_query` then `recall_decision_record`.',
+        ].join('\n');
+        return { content: [{ type: 'text', text }] };
       }
 
       default:
