@@ -131,8 +131,10 @@ export function _resetRedactorCache(): void { cache = null; }
  * `count` is mutated: callers can roll up "we redacted N strings
  * across this session" for telemetry.
  */
-export function redactSecrets(text: string, opts: { rules?: RedactionRule[]; count?: { redactions: number } } = {}): string {
-  if (!isRedactionEnabled()) return text;
+export function redactSecrets(text: string, opts: { rules?: RedactionRule[]; count?: { redactions: number }; force?: boolean } = {}): string {
+  // `force` bypasses the global toggle — the sync uploader must ALWAYS redact
+  // before anything leaves the machine, even when index-time redaction is off.
+  if (!opts.force && !isRedactionEnabled()) return text;
   if (!text) return text;
   // Default rule set = baseline + user-added rules from settings. Caller
   // can still override entirely via `opts.rules` if they need a clean set.
