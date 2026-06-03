@@ -60,3 +60,6 @@ post-restart.png
 projects-page*.png
 sidebar-new-tree.png
 topbar-state.png
+
+# TS project-reference build cache
+*.tsbuildinfo

@@ -2,92 +2,54 @@
   "name": "chat-recall",
   "version": "0.2.0",
   "description": "Cross-tool memory + MCP for Claude Code, Gemini CLI, and OpenCode sessions",
+  "private": true,
   "type": "module",
   "author": "darkkraft",
   "homepage": "https://github.com/darkkraft/chat-recall#readme",
-  "bugs": {
-    "url": "https://github.com/darkkraft/chat-recall/issues"
-  },
   "repository": {
     "type": "git",
     "url": "https://github.com/darkkraft/chat-recall.git"
   },
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
-  "bin": {
-    "chat-recall": "./dist/cli.js",
-    "chat-recall-mcp": "./dist/mcp.js"
-  },
-  "files": [
-    "dist",
-    "hooks",
-    "README.md",
-    "LICENSE"
+  "workspaces": [
+    "packages/engine",
+    "packages/cli",
+    "packages/server"
   ],
   "scripts": {
-    "build": "tsc && node scripts/postbuild.mjs",
-    "dev": "tsc --watch",
-    "start": "node dist/cli.js",
-    "mcp": "node dist/mcp.js",
-    "index": "tsx scripts/full-index.ts",
-    "verify": "tsx scripts/verify-index.ts",
-    "backfill:project-id": "tsx scripts/backfill-project-id.ts",
-    "cleanup:kg": "tsx scripts/cleanup-kg-triples.ts",
-    "generate-summaries": "tsx scripts/generate-summaries.ts",
-    "auto-indexer": "tsx auto-indexer/indexer.ts",
-    "web:server:dev": "cd web/server && npm run dev",
-    "web:server:build": "cd web/server && npm run build",
-    "web:client:dev": "cd web/client && npm run dev",
-    "web:client:build": "cd web/client && npm run build",
-    "web:dev": "concurrently \"npm run web:server:dev\" \"npm run web:client:dev\"",
-    "web:build": "npm run web:server:build && npm run web:client:build",
-    "web:install": "cd web/server && npm install && cd ../client && npm install",
+    "build": "tsc -b",
+    "dev": "tsc -b --watch",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:cov": "vitest run --coverage",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:report": "playwright show-report",
+    "web:server:dev": "npm run dev -w @chat-recall/server",
+    "web:server:build": "npm run build -w @chat-recall/server",
+    "web:client:dev": "cd packages/server/client && npm run dev",
+    "web:client:build": "cd packages/server/client && npm run build",
+    "web:dev": "concurrently \"npm run web:server:dev\" \"npm run web:client:dev\"",
+    "web:build": "npm run web:server:build && npm run web:client:build",
+    "web:install": "cd packages/server/client && npm install",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "docker:build": "docker compose build",
-    "docker:logs": "docker compose logs -f",
-    "prepublishOnly": "npm run build"
+    "docker:logs": "docker compose logs -f"
   },
   "engines": {
     "node": ">=18.0.0"
   },
-  "keywords": [
-    "claude",
-    "claude-code",
-    "mcp",
-    "semantic-search",
-    "vector-search",
-    "recall",
-    "embeddings",
-    "ollama",
-    "web-ui"
-  ],
-  "license": "MIT",
-  "dependencies": {
-    "@lancedb/lancedb": "^0.13.0",
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "@noble/ciphers": "^2.2.0",
-    "@noble/hashes": "^2.2.0",
-    "better-sqlite3": "^12.6.2",
-    "chalk": "^5.3.0",
-    "chokidar": "^3.5.3",
-    "commander": "^12.0.0",
-    "diff": "^9.0.0",
-    "dotenv": "^17.2.3",
-    "zod": "^3.22.0"
+  "overrides": {
+    "@types/express": "^4.17.21"
   },
+  "license": "SEE LICENSE IN packages/*/LICENSE",
   "devDependencies": {
     "@playwright/test": "^1.58.2",
     "@types/better-sqlite3": "^7.6.13",
     "@types/diff": "^7.0.2",
-    "@types/express": "^5.0.6",
+    "@types/express": "^4.17.21",
     "@types/node": "^20.0.0",
+    "@types/pg": "^8.11.0",
     "@types/supertest": "^7.2.0",
     "@vitest/coverage-v8": "^3.2.4",
     "concurrently": "^8.2.2",

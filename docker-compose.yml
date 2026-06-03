@@ -166,7 +166,7 @@ services:
       ollama:
         condition: service_healthy
     restart: unless-stopped
-    command: ["node_modules/.bin/tsx", "auto-indexer/indexer.ts"]
+    command: ["node_modules/.bin/tsx", "packages/cli/auto-indexer/indexer.ts"]
 
   # ── Postgres + pgvector (team/cloud storage backend) ──────────────────
   # Opt-in: `docker compose --profile postgres up`. Then set in .env:
