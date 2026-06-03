@@ -16,6 +16,8 @@ import type {
   MemoryChunk,
   MemoryLink,
 } from '../types/memory.js';
+import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
+import { isSourceEnabled } from '../core/settings.js';
 
 const MAX_CHUNK_CHARS = 2000;
 const MAX_FILE_SIZE = 50_000; // Skip very large paste files
@@ -33,7 +35,7 @@ export class PasteSource implements MemorySource {
       const home = homedir();
       const dirs: string[] = [];
       const tryAdd = (p: string) => { if (existsSync(p) && !dirs.includes(p)) dirs.push(p); };
-      tryAdd(join(home, '.claude', 'paste-cache'));
+      tryAdd(CLAUDE.pasteCacheDir());
       try {
         for (const entry of readdirSync(home, { withFileTypes: true })) {
           if (entry.isDirectory() && entry.name.startsWith('.claude-') && entry.name !== '.claude-code') {
@@ -41,11 +43,12 @@ export class PasteSource implements MemorySource {
           }
         }
       } catch {}
-      this.cacheDirs = dirs.length > 0 ? dirs : [join(home, '.claude', 'paste-cache')];
+      this.cacheDirs = dirs.length > 0 ? dirs : [CLAUDE.pasteCacheDir()];
     }
   }
 
   async *discover(): AsyncGenerator<MemoryItem> {
+    if (!isSourceEnabled('claude', 'pasteCache')) return;
     const seen = new Set<string>();
     for (const cacheDir of this.cacheDirs) {
       if (!existsSync(cacheDir)) continue;

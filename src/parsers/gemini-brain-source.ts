@@ -18,7 +18,9 @@ import type {
   MemoryChunk,
   MemoryLink,
 } from '../types/memory.js';
+import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
 import { splitByHeaders } from '../core/utils.js';
+import { isSourceEnabled } from '../core/settings.js';
 
 const MAX_CHUNK_CHARS = 2000;
 
@@ -28,10 +30,11 @@ export class GeminiBrainSource implements MemorySource {
   private brainDir: string;
 
   constructor(brainDir?: string) {
-    this.brainDir = brainDir || join(homedir(), '.gemini', 'antigravity', 'brain');
+    this.brainDir = brainDir || GEMINI.antigravityBrainDir();
   }
 
   async *discover(): AsyncGenerator<MemoryItem> {
+    if (!isSourceEnabled('gemini', 'brain')) return;
     if (!existsSync(this.brainDir)) return;
 
     const sessions = readdirSync(this.brainDir, { withFileTypes: true });
@@ -64,7 +67,7 @@ export class GeminiBrainSource implements MemorySource {
           }
 
           const artifactType = file.replace('.md', '');
-          const itemId = `gemini_brain_${entry.name}_${artifactType}`;
+          const itemId = `${GEMINI.idPrefix}brain_${entry.name}_${artifactType}`;
 
           yield {
             id: itemId,
@@ -124,7 +127,7 @@ export class GeminiBrainSource implements MemorySource {
         sourceType: 'plan',
         sourceId: item.id,
         targetType: 'session',
-        targetId: `gemini_${brainId}`,
+        targetId: GEMINI.toPrefixedId(brainId),
         linkType: 'brain_artifact_for_session',
         confidence: 0.8,
       }];

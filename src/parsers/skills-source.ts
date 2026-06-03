@@ -31,6 +31,9 @@ import type {
   MemoryLink,
   SourceType,
 } from '../types/memory.js';
+import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
+import { codexBackend as CODEX } from '../core/backends/codex.js';
+import { isSourceEnabled } from '../core/settings.js';
 
 const MAX_CHUNK_CHARS = 2000;
 
@@ -40,14 +43,23 @@ interface SkillRoot {
 }
 
 function resolveRoots(): SkillRoot[] {
+  // Per-tool skill toggles — emit only the roots whose tool is enabled.
   const home = homedir();
-  return [
-    { path: join(home, '.claude', 'skills'),         tool: 'claude' as const },
-    { path: join(home, '.config', 'opencode', 'skill'),  tool: 'opencode' as const },
-    { path: join(home, '.opencode', 'skill'),        tool: 'opencode' as const },
-    { path: join(home, '.opencode', 'skills'),       tool: 'opencode' as const },
-    { path: join(home, '.codex', 'skills', '.system'), tool: 'codex' as const },
-  ].filter(r => existsSync(r.path));
+  const all: SkillRoot[] = [];
+  if (isSourceEnabled('claude', 'skills')) {
+    all.push({ path: CLAUDE.skillsDir(), tool: 'claude' });
+  }
+  if (isSourceEnabled('opencode', 'skills')) {
+    all.push(
+      { path: join(home, '.config', 'opencode', 'skill'), tool: 'opencode' },
+      { path: join(home, '.opencode', 'skill'),           tool: 'opencode' },
+      { path: join(home, '.opencode', 'skills'),          tool: 'opencode' },
+    );
+  }
+  if (isSourceEnabled('codex', 'skills')) {
+    all.push({ path: CODEX.skillsSystemDir(), tool: 'codex' });
+  }
+  return all.filter(r => existsSync(r.path));
 }
 
 /** Pull `name`/`description` out of a SKILL.md yaml frontmatter block. */
@@ -76,7 +88,8 @@ export class SkillsSource implements MemorySource {
 
     // Codex plugin skills live at ~/.codex/.tmp/plugins/plugins/<plugin>/skills/<name>/SKILL.md
     // — the doubled "plugins" segment is intentional in Codex's on-disk layout.
-    const codexPluginsDir = join(homedir(), '.codex', '.tmp', 'plugins', 'plugins');
+    if (!isSourceEnabled('codex', 'skills')) return;
+    const codexPluginsDir = CODEX.pluginsDir();
     if (existsSync(codexPluginsDir)) {
       for (const pluginName of readdirSync(codexPluginsDir)) {
         const skillsDir = join(codexPluginsDir, pluginName, 'skills');

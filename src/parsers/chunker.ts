@@ -10,6 +10,7 @@
  */
 
 import type { SessionEntry, SessionContent } from './session.js';
+import { isToolOutputRedactionEnabled, redactToolResultBody } from '../core/secret-redactor.js';
 
 export interface SessionChunk {
   chunkId: string; // session_id + chunk_type + index
@@ -55,14 +56,39 @@ function cleanText(text: string): string {
   return result.trim();
 }
 
+/**
+ * Split a long message into 500-char windows so the searchable surface
+ * actually covers the whole text instead of only its first ~2 KB.
+ *
+ * Windows overlap by 80 chars so a term that lands on a boundary
+ * isn't split between two chunks and made unfindable. We cap windows
+ * per message so a 200 KB pasted log doesn't generate hundreds of
+ * chunks per single message.
+ */
+function windowText(text: string, maxChars: number, maxWindows = 12): string[] {
+  const clean = cleanText(text);
+  if (clean.length <= maxChars) return clean ? [clean] : [];
+  const out: string[] = [];
+  const overlap = 80;
+  const step = Math.max(1, maxChars - overlap);
+  for (let i = 0; i < clean.length && out.length < maxWindows; i += step) {
+    out.push(clean.slice(i, i + maxChars));
+  }
+  return out;
+}
+
 export function chunkSession(
   entry: SessionEntry,
   content: SessionContent,
-  maxChunks = 8,
+  // Cap raised from 8 → 80. The old cap meant only the opening of every
+  // session was searchable; mid-conversation technical content (CPU
+  // models, error codes, deep tool output) was silently dropped from
+  // FTS5 and the vector index.
+  maxChunks = 80,
   maxTokensPerChunk = 500
 ): SessionChunk[] {
   const chunks: SessionChunk[] = [];
-  
+
   // Estimate ~4 chars per token
   const maxChars = maxTokensPerChunk * 4;
   
@@ -124,66 +150,86 @@ export function chunkSession(
     return chunks.slice(0, maxChunks);
   }
   
-  // 3. Combined user messages for context
-  if (content.userMessages.length > 0) {
-    const messagesToUse = firstPrompt
-      ? content.userMessages.slice(1, 6)
-      : content.userMessages.slice(0, 5);
-    
-    if (messagesToUse.length > 0) {
-      const combined = messagesToUse.map(msg => msg.text.slice(0, 500)).join('\n\n');
-      if (combined.trim()) {
-        chunks.push({
-          chunkId: `${entry.sessionId}_user_context`,
-          chunkType: 'user_context',
-          text: cleanText(combined.slice(0, maxChars)),
-          sourceLine: messagesToUse[0].lineNumber,
-          ...baseData,
-        });
-      }
-    }
-  }
-  
-  if (chunks.length >= maxChunks) {
-    return chunks.slice(0, maxChunks);
-  }
-  
-  // 4. Assistant key responses (what Claude discovered/explained)
-  for (let i = 0; i < Math.min(3, content.assistantMessages.length); i++) {
+  // 3. Per-message user chunks for FULL conversation coverage.
+  //    The old "combined first 5 user messages × 500 chars" scheme threw
+  //    away everything past message #5 and truncated each at 500 chars,
+  //    so any technical content (CPU models, error strings, etc.) past
+  //    the opening turns was unsearchable. Now every user message gets
+  //    its own chunk, and long messages get windowed.
+  const userStart = firstPrompt ? 1 : 0;
+  for (let i = userStart; i < content.userMessages.length; i++) {
     if (chunks.length >= maxChunks) break;
-    
-    const msg = content.assistantMessages[i];
-    if (msg.text.trim() && msg.text.length > 50) {
+    const msg = content.userMessages[i];
+    if (!msg.text.trim()) continue;
+    const windows = windowText(msg.text, maxChars);
+    for (let w = 0; w < windows.length; w++) {
+      if (chunks.length >= maxChunks) break;
       chunks.push({
-        chunkId: `${entry.sessionId}_assistant_${i}`,
-        chunkType: 'assistant',
-        text: cleanText(msg.text.slice(0, maxChars)),
+        chunkId: `${entry.sessionId}_user_${i}_${w}`,
+        chunkType: 'user_context',
+        text: windows[w],
         sourceLine: msg.lineNumber,
         ...baseData,
       });
     }
   }
-  
+
   if (chunks.length >= maxChunks) {
     return chunks.slice(0, maxChunks);
   }
-  
-  // 5. Tool results (web searches are especially valuable)
+
+  // 4. Per-message assistant chunks. Same logic — keep all messages,
+  //    window the long ones. Drop tiny acks (< 50 chars) which are
+  //    purely conversational noise.
+  for (let i = 0; i < content.assistantMessages.length; i++) {
+    if (chunks.length >= maxChunks) break;
+    const msg = content.assistantMessages[i];
+    if (!msg.text.trim() || msg.text.length <= 50) continue;
+    const windows = windowText(msg.text, maxChars);
+    for (let w = 0; w < windows.length; w++) {
+      if (chunks.length >= maxChunks) break;
+      chunks.push({
+        chunkId: `${entry.sessionId}_assistant_${i}_${w}`,
+        chunkType: 'assistant',
+        text: windows[w],
+        sourceLine: msg.lineNumber,
+        ...baseData,
+      });
+    }
+  }
+
+  if (chunks.length >= maxChunks) {
+    return chunks.slice(0, maxChunks);
+  }
+
+  // 5. Tool results — keep more of them, but still privilege web searches.
   if (content.toolResults.length > 0) {
     const webSearches = content.toolResults.filter(r => r.contentType === 'web_search');
     const otherResults = content.toolResults.filter(r => r.contentType !== 'web_search');
-    
-    const resultsToProcess = [...webSearches.slice(0, 2), ...otherResults.slice(0, 1)];
-    
+
+    // Bumped from (2 web + 1 other) → (5 web + 10 other). The old limit
+    // meant deep tool output (which often contains the literal terms the
+    // user would later search for) was almost entirely thrown away.
+    const resultsToProcess = [...webSearches.slice(0, 5), ...otherResults.slice(0, 10)];
+
+    // Privacy gate: when on, replace non-web tool result bodies with a
+    // placeholder before chunking so the index never sees command output
+    // (most common accidental-secret carrier). Web search results stay —
+    // they're public data and useful for retrieval.
+    const stripBodies = isToolOutputRedactionEnabled();
+
     for (let i = 0; i < resultsToProcess.length; i++) {
       if (chunks.length >= maxChunks) break;
-      
+
       const result = resultsToProcess[i];
       if (result.text.trim()) {
+        const body = stripBodies && result.contentType !== 'web_search'
+          ? redactToolResultBody(result.contentType, result.text)
+          : result.text.slice(0, maxChars);
         chunks.push({
           chunkId: `${entry.sessionId}_${result.contentType}_${i}`,
           chunkType: result.contentType as SessionChunk['chunkType'],
-          text: cleanText(result.text.slice(0, maxChars)),
+          text: cleanText(body),
           sourceLine: result.lineNumber,
           ...baseData,
         });

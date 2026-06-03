@@ -15,7 +15,7 @@ beforeEach(() => {
   db.exec(`
     CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT, name TEXT);
     CREATE TABLE session (
-      id TEXT PRIMARY KEY, project_id TEXT, title TEXT, directory TEXT,
+      id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, title TEXT, directory TEXT,
       summary_files INTEGER, summary_additions INTEGER, summary_deletions INTEGER,
       summary_diffs TEXT, time_created INTEGER, time_updated INTEGER, time_archived INTEGER
     );

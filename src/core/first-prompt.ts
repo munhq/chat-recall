@@ -7,7 +7,7 @@
  * showing "(no prompt captured)" when sessions-index.json isn't present.
  */
 
-import { createReadStream, existsSync } from 'fs';
+import { createReadStream, existsSync, readFileSync } from 'fs';
 import { createInterface } from 'readline';
 
 const BANNERS: RegExp[] = [
@@ -130,8 +130,7 @@ export function extractFirstUserPromptSync(
 
   let raw: string;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    raw = require('fs').readFileSync(filePath, 'utf-8') as string;
+    raw = readFileSync(filePath, 'utf-8');
   } catch {
     return '';
   }

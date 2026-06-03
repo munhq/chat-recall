@@ -29,6 +29,9 @@ import type {
   MemoryLink,
   SourceType,
 } from '../types/memory.js';
+import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
+import { codexBackend as CODEX } from '../core/backends/codex.js';
+import { isSourceEnabled } from '../core/settings.js';
 
 interface McpConfig {
   command?: string;
@@ -61,6 +64,7 @@ export class McpsSource implements MemorySource {
   readonly sourceType = 'mcp' as SourceType;
 
   async *discover(): AsyncGenerator<MemoryItem> {
+    if (!isSourceEnabled('common', 'mcps')) return;
     const home = homedir();
 
     // Claude — ~/.mcp.json (project/global) and ~/.claude.json (user)
@@ -88,17 +92,17 @@ export class McpsSource implements MemorySource {
     }
 
     // Gemini — settings.json mcpServers
-    const gemSettings = readJson(join(home, '.gemini', 'settings.json'));
+    const geminiSettings = GEMINI.settingsFile();
+    const gemSettings = readJson(geminiSettings);
     yield* this.fromObject(gemSettings?.mcpServers, {
       tool: 'gemini',
-      filePath: join(home, '.gemini', 'settings.json'),
+      filePath: geminiSettings,
       scope: 'user',
     });
 
-    // Codex — ~/.codex/config.toml [mcp_servers.*] + per-plugin .mcp.json
-    // files. Plugins live at the doubled-"plugins" path on disk.
-    yield* this.fromCodexToml(join(home, '.codex', 'config.toml'));
-    const pluginsDir = join(home, '.codex', '.tmp', 'plugins', 'plugins');
+    // Codex — config.toml [mcp_servers.*] + per-plugin .mcp.json files
+    yield* this.fromCodexToml(CODEX.configToml());
+    const pluginsDir = CODEX.pluginsDir();
     if (existsSync(pluginsDir)) {
       for (const plugin of readdirSync(pluginsDir)) {
         const mcpPath = join(pluginsDir, plugin, '.mcp.json');

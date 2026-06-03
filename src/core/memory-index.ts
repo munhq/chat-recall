@@ -13,7 +13,8 @@ import { join } from 'path';
 import type { Embedder } from './embedder.js';
 import type { LanceTable } from './lancedb-types.js';
 import type { SourceType, MemoryChunk, MemorySearchResult } from '../types/memory.js';
-import { MemoryStore } from './memory-store.js';
+import { createStore } from './store/index.js';
+import { resolveProjectId } from './project-resolver.js';
 import { getIndexDir } from './paths.js';
 
 export interface MemoryChunkRecord {
@@ -25,6 +26,13 @@ export interface MemoryChunkRecord {
   text: string;
   chunk_type: string;
   project_path: string;
+  /**
+   * Logical project identifier resolved by `project-resolver.resolveProjectId`.
+   * Wide search/filter calls bucket on this column instead of `project_path`.
+   * Added in the project-id migration; older tables that lack it trigger a
+   * one-shot table drop+rebuild on `MemoryIndex.connect()`.
+   */
+  project_id: string;
   file_path: string;
   mtime: number;
 }
@@ -51,6 +59,15 @@ export class MemoryIndex {
   /** Buffered chunks waiting to be flushed to FTS5 */
   private pendingFTSChunks: MemoryChunk[] = [];
 
+  /** Last Lance read error (string) — surfaced by getStats() so the UI can
+   *  warn the user that vector search is degraded. Cleared on the next
+   *  successful Lance read. */
+  private lastLanceError: string | null = null;
+  /** Bumped each time we drop a cached `db`/`table` after a Lance failure,
+   *  so we don't loop forever auto-healing inside a single search call. */
+  private lanceReopenAttempts = 0;
+  private static readonly MAX_REOPEN_ATTEMPTS = 1;
+
   constructor(embedder: Embedder | null, indexPath?: string) {
     this.embedder = embedder;
     this.indexPath = indexPath || MemoryIndex.getDefaultIndexPath();
@@ -70,7 +87,41 @@ export class MemoryIndex {
       const tableNames = await this.db.tableNames();
       if (tableNames.includes(MemoryIndex.TABLE_NAME)) {
         this.table = await this.db.openTable(MemoryIndex.TABLE_NAME) as unknown as LanceTable;
+        await this.maybeMigrateTableForProjectId();
       }
+    }
+  }
+
+  /**
+   * LanceDB tables don't support online schema migration. When the existing
+   * table predates the `project_id` column, the cleanest path is to drop it
+   * — the auto-indexer's next pass will rebuild the table from
+   * `memory_metadata` + freshly-embedded chunks. Until then, search
+   * transparently falls back to FTS5 (already FTS5-first in `search()`).
+   *
+   * We detect "needs migration" by reading one row's keys; if `project_id`
+   * isn't present, the table is from before the migration.
+   */
+  private async maybeMigrateTableForProjectId(): Promise<void> {
+    if (!this.table || !this.db) return;
+    try {
+      const arrow = await this.table.toArrow();
+      const sample = arrow.toArray()[0];
+      if (sample && Object.prototype.hasOwnProperty.call(sample, 'project_id')) {
+        return; // already migrated
+      }
+      // Old schema — drop the table. Rebuild happens on next addChunks call.
+      // eslint-disable-next-line no-console
+      console.error('[chat-recall] LanceDB table predates project_id column; dropping for rebuild');
+      await (this.db as unknown as { dropTable(name: string): Promise<void> }).dropTable(MemoryIndex.TABLE_NAME);
+      this.table = null;
+      // Force re-index of all chunks by clearing the mtime cache so
+      // needsUpdate() returns true for every item on the next sweep.
+      this.mtimeCache = {};
+      this.saveMtimeCache();
+    } catch {
+      // Empty table or read failure: leave alone — addChunks will recreate
+      // from scratch the next time it's called.
     }
   }
 
@@ -108,9 +159,9 @@ export class MemoryIndex {
 
     // Write to FTS5 (always, unless already done by flushBuffer)
     if (!options?.skipFTS) {
-      const store = new MemoryStore();
-      store.addChunksFTS(validChunks);
-      store.close();
+      const store = await createStore();
+      await store.addChunksFTS(validChunks);
+      await store.close();
     }
 
     // Write to LanceDB if embedder available
@@ -120,18 +171,26 @@ export class MemoryIndex {
       const texts = validChunks.map(c => c.text);
       const embeddings = await this.embedder.embed(texts);
 
-      const records: MemoryChunkRecord[] = validChunks.map((chunk, i) => ({
-        id: chunk.chunkId,
-        item_id: chunk.itemId,
-        source_type: chunk.sourceType,
-        title: chunk.title,
-        vector: embeddings[i],
-        text: chunk.text,
-        chunk_type: chunk.chunkType,
-        project_path: chunk.projectPath,
-        file_path: chunk.filePath,
-        mtime: chunk.mtime,
-      }));
+      const records: MemoryChunkRecord[] = validChunks.map((chunk, i) => {
+        // Resolve project_id once per chunk. Resolver is cached so the
+        // per-chunk cost is just a Map lookup after the first hit per
+        // projectPath; even on a 200-chunk batch this stays in the µs range.
+        const resolved = chunk.projectPath ? resolveProjectId(chunk.projectPath) : null;
+        const projectId = resolved && resolved.source !== 'ignored' ? resolved.id : '';
+        return {
+          id: chunk.chunkId,
+          item_id: chunk.itemId,
+          source_type: chunk.sourceType,
+          title: chunk.title,
+          vector: embeddings[i],
+          text: chunk.text,
+          chunk_type: chunk.chunkType,
+          project_path: chunk.projectPath,
+          project_id: projectId,
+          file_path: chunk.filePath,
+          mtime: chunk.mtime,
+        };
+      });
 
       if (this.table === null) {
         this.table = await this.db!.createTable(
@@ -186,9 +245,9 @@ export class MemoryIndex {
     if (this.pendingFTSChunks.length > 0) {
       const ftsChunks = this.pendingFTSChunks;
       this.pendingFTSChunks = [];
-      const store = new MemoryStore();
-      store.addChunksFTS(ftsChunks);
-      store.close();
+      const store = await createStore();
+      await store.addChunksFTS(ftsChunks);
+      await store.close();
     }
 
     // Flush LanceDB (skip FTS5 since we just did it)
@@ -212,9 +271,9 @@ export class MemoryIndex {
 
   async deleteItem(sourceType: string, itemId: string): Promise<void> {
     // Delete from FTS5
-    const store = new MemoryStore();
-    store.deleteItemFTS(sourceType, itemId);
-    store.close();
+    const store = await createStore();
+    await store.deleteItemFTS(sourceType, itemId);
+    await store.close();
 
     // Delete from LanceDB
     await this.connect();
@@ -251,26 +310,50 @@ export class MemoryIndex {
    * Compact and optimize the LanceDB table.
    * Merges small data files, removes old versions and transactions.
    * Can reclaim significant disk space (e.g., 18GB → 2GB).
+   *
+   * Holds an exclusive index lock for the duration so a concurrent
+   * writer can't slip a fragment in mid-compaction. Returns
+   * `{ skipped: 'busy' | 'no-table' }` instead of throwing when the
+   * caller can't run — auto-callers want to no-op in that case.
+   *
+   * `cleanupOlderThan` defaults to 24h. The old default of 1h was too
+   * aggressive when the MCP server, indexer, and CLI share the index —
+   * a long-running session can hold a 2h-old read snapshot. 24h is the
+   * minimum that's safe across all our access patterns.
    */
-  async optimize(): Promise<{ compactedFragments: number; prunedFiles: number }> {
+  async optimize(opts: {
+    /** Drop versions older than this. Default 24h. */
+    cleanupOlderThanMs?: number;
+    /** Diagnostic label written into the lock file. */
+    lockKind?: string;
+  } = {}): Promise<
+    | { compactedFragments: number; prunedFiles: number; skipped?: undefined }
+    | { skipped: 'busy' | 'no-table'; compactedFragments?: undefined; prunedFiles?: undefined }
+  > {
     await this.connect();
-
     if (this.table === null) {
-      return { compactedFragments: 0, prunedFiles: 0 };
+      return { skipped: 'no-table' };
     }
 
-    // Keep versions from the last hour to avoid deleting data files
-    // still referenced by recent writes
-    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
-    const stats = await this.table.optimize({
-      cleanupOlderThan: oneHourAgo,
-      deleteUnverified: false, // Don't delete unverified data files — too aggressive
-    });
+    const { acquireIndexLock } = await import('./index-lock.js');
+    const lock = acquireIndexLock({ kind: opts.lockKind ?? 'optimize' });
+    if (!lock) {
+      return { skipped: 'busy' };
+    }
 
-    return {
-      compactedFragments: stats.compaction?.fragmentsRemoved || 0,
-      prunedFiles: stats.prune?.oldVersionsRemoved || 0,
-    };
+    try {
+      const cutoff = new Date(Date.now() - (opts.cleanupOlderThanMs ?? 24 * 60 * 60 * 1000));
+      const stats = await this.table.optimize({
+        cleanupOlderThan: cutoff,
+        deleteUnverified: false, // Don't delete unverified data files — too aggressive
+      });
+      return {
+        compactedFragments: stats.compaction?.fragmentsRemoved || 0,
+        prunedFiles: stats.prune?.oldVersionsRemoved || 0,
+      };
+    } finally {
+      lock.release();
+    }
   }
 
   async search(
@@ -278,65 +361,113 @@ export class MemoryIndex {
     options: {
       topK?: number;
       sourceTypes?: SourceType[];
-      projectFilter?: string;
+      projectIdFilter?: string;
     } = {}
   ): Promise<MemorySearchResult[]> {
-    const { topK = 20, sourceTypes, projectFilter } = options;
+    const { topK = 20, sourceTypes, projectIdFilter } = options;
 
-    // If no embedder, use FTS5 search
+    // ── Hybrid search ──────────────────────────────────────────────────
+    // Always run FTS5 first. Reasons:
+    //   1. Vector search returns nearest-neighbor regardless of similarity,
+    //      so a query for a literal token like "6438M" (CPU model, error
+    //      code, hex id) returns nonsense top-N when no semantically
+    //      similar chunk exists. FTS5 either matches the literal or
+    //      returns zero rows — never garbage.
+    //   2. FTS5 ranks by BM25, which weights rare tokens heavily, which
+    //      is exactly what the user wants when typing a specific term.
+    // The vector results are then unioned in as additional context. FTS5
+    // hits keep their natural position; vector hits fill the rest.
+    const ftsStore = await createStore();
+    let ftsResults: MemorySearchResult[] = [];
+    try {
+      ftsResults = await ftsStore.searchFTS(query, { topK, sourceTypes, projectIdFilter });
+    } finally {
+      await ftsStore.close();
+    }
+
     if (!this.embedder) {
-      const store = new MemoryStore();
-      const results = store.searchFTS(query, { topK, sourceTypes, projectFilter });
-      store.close();
-      return results;
+      return ftsResults;
     }
 
-    // Vector search path (existing behavior)
-    await this.connect();
+    // Vector search path. Wrapped in try/catch so a stale Lance table handle
+    // (common after auto-indexer compaction rewrites data files while the API
+    // process holds an open table) auto-heals: we drop the cached handle,
+    // re-open the table, and retry once. If retry also fails, we degrade to
+    // FTS5 and record the error for the status UI.
+    const validTypes: string[] = ['session', 'plan', 'task', 'claude_md', 'paste', 'history', 'diary'];
+    const safeSourceTypes = sourceTypes && sourceTypes.length > 0
+      ? sourceTypes.filter(t => validTypes.includes(t))
+      : undefined;
+    // Strip lance-unsafe characters; project_id never legitimately
+    // contains backslashes or quotes, but defence-in-depth.
+    const safeProjectId = projectIdFilter ? projectIdFilter.replace(/["'\\]/g, '') : undefined;
 
-    if (this.table === null) {
-      // Fall back to FTS5 if LanceDB table doesn't exist yet
-      const store = new MemoryStore();
-      const results = store.searchFTS(query, { topK, sourceTypes, projectFilter });
-      store.close();
-      return results;
-    }
-
-    const queryVector = await this.embedder.embedQuery(query);
-
-    const limit = topK * 5;
-
-    let searchQuery = this.table.search(queryVector);
-
-    // Build filter
-    const filters: string[] = [];
-    if (sourceTypes && sourceTypes.length > 0) {
-      // Validate source types against known values to prevent injection
-      const validTypes: string[] = ['session', 'plan', 'task', 'claude_md', 'paste', 'history'];
-      const safeTypes = sourceTypes.filter(t => validTypes.includes(t));
-      if (safeTypes.length > 0) {
-        const typeList = safeTypes.map(t => `"${t}"`).join(', ');
-        filters.push(`source_type IN (${typeList})`);
-      }
-    }
-    if (projectFilter) {
-      // Sanitize: strip quotes and backslashes to prevent LanceDB filter injection
-      const safeFilter = projectFilter.replace(/["'\\%_]/g, '');
-      if (safeFilter) {
-        filters.push(`project_path LIKE "%${safeFilter}%"`);
-      }
-    }
-    if (filters.length > 0) {
-      const filter = filters.join(' AND ');
-      if (searchQuery.where) {
-        searchQuery = searchQuery.where(filter);
-      }
-    }
-
-    const results = await searchQuery.limit(limit).toArray() as Array<{
+    const runVectorSearch = async (): Promise<Array<{
       item_id: string; source_type: string; title: string; _distance: number;
       chunk_type: string; text: string; project_path: string; file_path: string; mtime: number;
-    }>;
+    }>> => {
+      await this.connect();
+      if (this.table === null) return [];
+
+      const queryVector = await this.embedder!.embedQuery(query);
+      let searchQuery = this.table.search(queryVector);
+
+      const filters: string[] = [];
+      if (safeSourceTypes && safeSourceTypes.length > 0) {
+        const typeList = safeSourceTypes.map(t => `"${t}"`).join(', ');
+        filters.push(`source_type IN (${typeList})`);
+      }
+      if (safeProjectId) {
+        filters.push(`project_id = "${safeProjectId}"`);
+      }
+      if (filters.length > 0 && searchQuery.where) {
+        searchQuery = searchQuery.where(filters.join(' AND '));
+      }
+      return await searchQuery.limit(topK * 5).toArray() as any;
+    };
+
+    let results: Array<{
+      item_id: string; source_type: string; title: string; _distance: number;
+      chunk_type: string; text: string; project_path: string; file_path: string; mtime: number;
+    }> = [];
+
+    try {
+      results = await runVectorSearch();
+      // Vector path succeeded — table is healthy again.
+      this.lastLanceError = null;
+      this.lanceReopenAttempts = 0;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.lastLanceError = msg;
+      // Auto-heal: drop cached handle and retry once. This recovers from the
+      // common "stale data file" error after the auto-indexer compacts.
+      if (this.lanceReopenAttempts < MemoryIndex.MAX_REOPEN_ATTEMPTS) {
+        this.lanceReopenAttempts += 1;
+        // eslint-disable-next-line no-console
+        console.error(`[chat-recall] Lance read failed (${msg}); reopening table and retrying once`);
+        this.db = null;
+        this.table = null;
+        try {
+          results = await runVectorSearch();
+          this.lastLanceError = null;
+          this.lanceReopenAttempts = 0;
+        } catch (err2) {
+          const msg2 = err2 instanceof Error ? err2.message : String(err2);
+          this.lastLanceError = msg2;
+          // eslint-disable-next-line no-console
+          console.error(`[chat-recall] Lance retry failed (${msg2}); falling back to FTS5`);
+          const store = await createStore();
+          const fts = await store.searchFTS(query, { topK, sourceTypes, projectIdFilter });
+          await store.close();
+          return fts;
+        }
+      } else {
+        const store = await createStore();
+        const fts = await store.searchFTS(query, { topK, sourceTypes, projectIdFilter });
+        await store.close();
+        return fts;
+      }
+    }
 
     if (results.length === 0) {
       return [];
@@ -405,7 +536,41 @@ export class MemoryIndex {
 
     searchResults.sort((a, b) => b.score - a.score);
 
+    // Merge FTS5 hits in front of vector hits. FTS5 found literal-token
+    // matches that vector almost never ranks correctly, and they're the
+    // ones the user actually wanted. Vector hits backfill any remaining
+    // topK slots after dedupe by (sourceType, itemId).
+    if (ftsResults.length > 0) {
+      const seen = new Set<string>();
+      const merged: MemorySearchResult[] = [];
+      for (const r of ftsResults) {
+        const k = `${r.sourceType}:${r.itemId}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        merged.push(r);
+        if (merged.length >= topK) break;
+      }
+      for (const r of searchResults) {
+        if (merged.length >= topK) break;
+        const k = `${r.sourceType}:${r.itemId}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        merged.push(r);
+      }
+      return merged;
+    }
+
     return searchResults.slice(0, topK);
+  }
+
+  /** Returns the current Lance/vector index health. `ok` is true unless the
+   *  most recent read raised. */
+  getHealth(): { vectorOk: boolean; lastError: string | null; embedderConfigured: boolean } {
+    return {
+      vectorOk: this.lastLanceError === null,
+      lastError: this.lastLanceError,
+      embedderConfigured: this.embedder !== null,
+    };
   }
 
   async getStats(): Promise<{
@@ -413,20 +578,44 @@ export class MemoryIndex {
     totalItems: number;
     bySourceType: Record<string, { items: number; chunks: number }>;
     indexPath: string;
+    vectorOk: boolean;
+    vectorError: string | null;
   }> {
-    await this.connect();
+    let table: LanceTable | null = null;
+    try {
+      await this.connect();
+      table = this.table;
+    } catch (err) {
+      this.lastLanceError = err instanceof Error ? err.message : String(err);
+    }
 
-    if (this.table === null) {
+    if (table === null) {
       return {
         totalChunks: 0,
         totalItems: 0,
         bySourceType: {},
         indexPath: this.indexPath,
+        vectorOk: this.lastLanceError === null,
+        vectorError: this.lastLanceError,
       };
     }
 
-    const data = await this.table.toArrow();
-    const rows = data.toArray() as Array<{ item_id: string; source_type: string }>;
+    let rows: Array<{ item_id: string; source_type: string }> = [];
+    try {
+      const data = await table.toArrow();
+      rows = data.toArray() as Array<{ item_id: string; source_type: string }>;
+      this.lastLanceError = null;
+    } catch (err) {
+      this.lastLanceError = err instanceof Error ? err.message : String(err);
+      return {
+        totalChunks: 0,
+        totalItems: 0,
+        bySourceType: {},
+        indexPath: this.indexPath,
+        vectorOk: false,
+        vectorError: this.lastLanceError,
+      };
+    }
 
     const itemsByType = new Map<string, Set<string>>();
     const chunksByType = new Map<string, number>();
@@ -456,6 +645,8 @@ export class MemoryIndex {
       totalItems,
       bySourceType,
       indexPath: this.indexPath,
+      vectorOk: this.lastLanceError === null,
+      vectorError: this.lastLanceError,
     };
   }
 

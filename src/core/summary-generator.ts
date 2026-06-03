@@ -7,7 +7,87 @@
  * - ollama: Local Ollama (requires Ollama running + a chat model)
  */
 
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
+
+/**
+ * Promise-based shell exec. Replaces `execSync` for summary generation
+ * so the auto-indexer's main event loop isn't frozen for the duration
+ * of long-running CLI calls (gemini-cli's quota waits used to freeze
+ * everything for hours). Captures stdout up to a generous buffer,
+ * enforces a wall-clock timeout, and rejects on non-zero exit so
+ * callers see the same error semantics as before.
+ */
+// Module-level set of every live shell child we've spawned, so the
+// indexer can reap them all on shutdown. Without this, SIGTERM to the
+// indexer leaves orphan gemini procs reparented to systemd-user that
+// never exit on their own. Each entry is the *negative* PID of the
+// shell child — i.e. its process group id, since we spawn detached.
+const liveShellGroups = new Set<number>();
+
+function killGroup(pgid: number, signal: NodeJS.Signals = 'SIGKILL'): void {
+  try { process.kill(-pgid, signal); } catch { /* gone */ }
+}
+
+/**
+ * Reap every shell child this module has ever spawned. Called by the
+ * indexer's shutdown hooks. Safe to call multiple times. Sends SIGTERM
+ * first so well-behaved children flush, then SIGKILL after a short
+ * grace.
+ */
+export function reapShellChildren(): void {
+  if (liveShellGroups.size === 0) return;
+  for (const pgid of liveShellGroups) killGroup(pgid, 'SIGTERM');
+  setTimeout(() => {
+    for (const pgid of liveShellGroups) killGroup(pgid, 'SIGKILL');
+  }, 1000).unref();
+}
+
+function runShellAsync(cmd: string, timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    // detached: true puts the child in its own process group, so a
+    // single process.kill(-pid) signals the whole tree (bash AND its
+    // gemini grandchild). Without this, SIGKILL on the bash wrapper
+    // leaves gemini reparented to PID 1 and burning RAM until the next
+    // reboot.
+    const child = spawn('/bin/bash', ['-c', cmd], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: process.platform === 'win32' ? undefined : '/tmp',
+      detached: process.platform !== 'win32',
+    });
+    const pgid = child.pid!;
+    liveShellGroups.add(pgid);
+    let out = '';
+    let err = '';
+    const MAX_BYTES = 10 * 1024 * 1024;
+    let killed = false;
+    const timer = setTimeout(() => {
+      killed = true;
+      killGroup(pgid, 'SIGKILL');
+      reject(new Error(`CLI summary timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    child.stdout.on('data', (d: Buffer) => {
+      if (out.length < MAX_BYTES) out += d.toString();
+    });
+    child.stderr.on('data', (d: Buffer) => {
+      if (err.length < MAX_BYTES) err += d.toString();
+    });
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      liveShellGroups.delete(pgid);
+      reject(e);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      liveShellGroups.delete(pgid);
+      if (killed) return; // already rejected by timeout
+      if (code !== 0) {
+        reject(new Error(`CLI exit ${code}: ${err.slice(0, 400)}`));
+      } else {
+        resolve(out);
+      }
+    });
+  });
+}
 import { writeFileSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -21,7 +101,7 @@ export interface SummaryGeneratorConfig {
    * - `ollama`     — POST to local Ollama at `OLLAMA_HOST`.
    * - `claude`     — Anthropic HTTP API (requires `ANTHROPIC_API_KEY`).
    */
-  provider: 'cli' | 'gemini-cli' | 'claude' | 'ollama';
+  provider: 'cli' | 'gemini-cli' | 'claude' | 'ollama' | 'openai-compat' | 'ollama-cloud' | 'openai' | 'nvidia';
   /** Shell command for the generic `cli` provider. Prompt is piped via stdin.
    *  Example: `gemini -p " "`, `claude -p " "`, `codex chat`, `aichat`. */
   cliCommand?: string;
@@ -29,6 +109,12 @@ export interface SummaryGeneratorConfig {
   geminiModel?: string;
   claudeModel?: string;
   ollamaModel?: string;
+  /** OpenAI-compatible HTTP providers (openai-compat / ollama-cloud / openai /
+   *  nvidia). One `/chat/completions` shape, three knobs: base URL, model, key.
+   *  Covers OpenRouter, Ollama Cloud, Groq, Together, NVIDIA NIM, etc. */
+  apiBaseUrl?: string;
+  apiModel?: string;
+  apiKey?: string;
 }
 
 /**
@@ -58,19 +144,31 @@ function cleanCliOutput(raw: string): string {
   return out;
 }
 
+/** Default `/chat/completions` base URL per HTTP provider. `openai-compat` has
+ *  no default — the user supplies any OpenAI-compatible endpoint (OpenRouter,
+ *  Groq, Together, a self-hosted gateway, …). */
+export function defaultApiBaseUrl(provider?: string): string | undefined {
+  switch (provider) {
+    case 'openai':       return 'https://api.openai.com/v1';
+    case 'ollama-cloud': return 'https://ollama.com/v1';
+    case 'nvidia':       return 'https://integrate.api.nvidia.com/v1';
+    default:             return undefined; // openai-compat → explicit base URL
+  }
+}
+
 export const CLI_PRESETS: Record<string, string> = {
   // Coding-agent CLIs that take the message as a positional arg
   opencode: 'opencode run "$(cat {prompt_file})"',
   kilocode: 'kilocode run "$(cat {prompt_file})"',
-  // Stdin-friendly CLIs (the prompt is piped in, command gets an empty "-p").
-  // `--skip-trust` is required for Gemini CLI: it refuses to run in
-  // directories not on its trusted-folder list, which the indexer's working
-  // dir typically isn't. Without this flag every summary errored out with
-  // "not running in a trusted directory". The flag is safe in this context
-  // because we're only piping our own generated prompt, never reading the
-  // workspace files.
-  gemini: 'gemini --skip-trust -p " "',
-  'claude-cli': 'claude -p " "',
+  // Gemini CLI: pass the prompt as the `-p` argument (it ignores stdin
+  // when `-p` already has a value, which previously made every summary
+  // a hallucination of Gemini's session memory rather than our prompt).
+  // `--skip-trust` is required because Gemini refuses to run in
+  // directories not on its trusted-folder list.
+  gemini: 'gemini --skip-trust -p "$(cat {prompt_file})"',
+  // Claude CLI: same pattern — prompt as -p arg.
+  'claude-cli': 'claude -p "$(cat {prompt_file})"',
+  // Truly stdin-friendly CLIs: prompt piped in, no -p flag.
   llm: 'llm --no-stream',
   aichat: 'aichat --no-stream',
 };
@@ -93,6 +191,9 @@ export class SummaryGenerator {
       geminiModel: config?.geminiModel || process.env.GEMINI_MODEL || 'gemini-3-flash-preview',
       claudeModel: config?.claudeModel || 'claude-3-5-haiku-20241022',
       ollamaModel: config?.ollamaModel || 'qwen2.5:7b',
+      apiBaseUrl: config?.apiBaseUrl || process.env.SUMMARY_API_BASE_URL || defaultApiBaseUrl(config?.provider || (process.env.SUMMARY_PROVIDER as any)),
+      apiModel: config?.apiModel || process.env.SUMMARY_API_MODEL,
+      apiKey: config?.apiKey || process.env.SUMMARY_API_KEY,
     };
   }
 
@@ -106,15 +207,70 @@ export class SummaryGenerator {
     // Generate summary based on provider
     switch (this.config.provider) {
       case 'cli':
-        return this.generateWithCLI(context);
+        return this.generateWithCLIAsync(context);
       case 'gemini-cli':
-        return this.generateWithGeminiCLI(context);
+        return this.generateWithGeminiCLIAsync(context);
       case 'claude':
         return this.generateWithClaude(context);
       case 'ollama':
         return this.generateWithOllama(context);
+      case 'openai-compat':
+      case 'ollama-cloud':
+      case 'openai':
+      case 'nvidia':
+        return this.generateWithOpenAICompatible(context);
       default:
         throw new Error(`Unknown provider: ${this.config.provider}`);
+    }
+  }
+
+  /**
+   * Async wrapper for `generateWithCLI`. The original used `execSync` —
+   * which blocks Node's main event loop for the entire subprocess
+   * duration. When the configured CLI (e.g. gemini-cli) hangs on a
+   * quota wait or an unbounded retry, the auto-indexer's file watcher,
+   * heartbeat, and HTTP server all freeze. Switching to `spawn` keeps
+   * the event loop responsive while the child runs.
+   */
+  private async generateWithCLIAsync(context: string): Promise<string> {
+    const cmd = this.config.cliCommand?.trim();
+    if (!cmd) {
+      throw new Error(
+        "provider='cli' needs SUMMARY_CLI_CMD or SUMMARY_CLI_PRESET " +
+          `(known presets: ${Object.keys(CLI_PRESETS).join(', ')})`
+      );
+    }
+    const prompt = this.buildPrompt(context);
+    const tempFile = join(tmpdir(), `summary-prompt-${Date.now()}-${process.pid}.txt`);
+    writeFileSync(tempFile, prompt, 'utf-8');
+    try {
+      const shellCmd = cmd.includes('{prompt_file}')
+        ? cmd.replace(/\{prompt_file\}/g, tempFile)
+        : `cat "${tempFile}" | ${cmd}`;
+      const raw = await runShellAsync(shellCmd, this.config.cliTimeoutMs ?? 120_000);
+      const summary = cleanCliOutput(raw);
+      if (!summary || summary.length < 10) throw new Error('Generated summary too short');
+      return summary;
+    } finally {
+      try { unlinkSync(tempFile); } catch { /* swallow */ }
+    }
+  }
+
+  /** Async equivalent of `generateWithGeminiCLI` — same change as above. */
+  private async generateWithGeminiCLIAsync(context: string): Promise<string> {
+    const prompt = this.buildPrompt(context);
+    const tempFile = join(tmpdir(), `gemini-prompt-${Date.now()}.txt`);
+    writeFileSync(tempFile, prompt, 'utf-8');
+    try {
+      const model = (this.config.geminiModel || 'gemini-2.0-flash-exp').replace(/[^a-zA-Z0-9._-]/g, '');
+      // Same shell form as the sync path so semantics are identical.
+      const shellCmd = `gemini -m ${model} -p "$(cat ${tempFile})"`;
+      const raw = await runShellAsync(shellCmd, this.config.cliTimeoutMs ?? 120_000);
+      const summary = cleanCliOutput(raw);
+      if (!summary || summary.length < 10) throw new Error('Generated summary too short');
+      return summary;
+    } finally {
+      try { unlinkSync(tempFile); } catch { /* swallow */ }
     }
   }
 
@@ -219,8 +375,11 @@ export class SummaryGenerator {
         // tools (grep_search, list_directory) instead of just summarizing the
         // piped text. Running from /tmp prevents it from detecting a project.
         const model = (this.config.geminiModel || 'gemini-2.0-flash-exp').replace(/[^a-zA-Z0-9._-]/g, '');
+        // Gemini ignores stdin when `-p` has a value, so pass the prompt
+        // as the -p argument via $(cat ...) instead of piping. Previously
+        // every summary was a hallucination of Gemini's session memory.
         const result = execSync(
-          `cat "${tempFile}" | gemini -m "${model}" -p " "`,
+          `gemini -m "${model}" -p "$(cat "${tempFile}")"`,
           {
             encoding: 'utf-8',
             maxBuffer: 10 * 1024 * 1024, // 10MB
@@ -347,6 +506,57 @@ export class SummaryGenerator {
       throw new Error('Ollama returned empty summary');
     }
     return text;
+  }
+
+  /**
+   * OpenAI-compatible `/chat/completions` provider. One implementation serves
+   * `openai-compat` (any base URL — OpenRouter, Groq, Together, …),
+   * `ollama-cloud`, `openai`, and `nvidia` — they differ only in default base
+   * URL + which key. Key/base/model come from config (settings → env).
+   */
+  private async generateWithOpenAICompatible(context: string): Promise<string> {
+    const baseUrl = (this.config.apiBaseUrl || '').replace(/\/+$/, '');
+    const model = this.config.apiModel;
+    const apiKey = this.config.apiKey;
+    if (!baseUrl) throw new Error(`Provider '${this.config.provider}' needs a base URL (settings → summary apiBaseUrl / SUMMARY_API_BASE_URL)`);
+    if (!model) throw new Error(`Provider '${this.config.provider}' needs a model (settings → summary apiModel / SUMMARY_API_MODEL)`);
+    if (!apiKey) throw new Error(`Provider '${this.config.provider}' needs an API key (settings → summary apiKey / SUMMARY_API_KEY)`);
+
+    const prompt = this.buildPrompt(context);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.config.cliTimeoutMs ?? 120_000);
+    try {
+      const response = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.3,
+          // Generous cap: reasoning models (e.g. stepfun/step-flash, deepseek-r1)
+          // spend most of the budget on hidden `reasoning_content`, leaving the
+          // visible answer empty at a low cap. Non-reasoning models stop early
+          // (finish_reason=stop) and bill only what they use, so this is safe.
+          max_tokens: 4000,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => '');
+        throw new Error(`${this.config.provider} API error: ${response.status} ${response.statusText} ${body.slice(0, 200)}`);
+      }
+
+      const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+      const text = data.choices?.[0]?.message?.content?.trim();
+      if (!text || text.length < 10) throw new Error(`${this.config.provider} returned empty summary`);
+      return text;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private buildPrompt(context: string): string {

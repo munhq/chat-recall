@@ -20,6 +20,8 @@ import type {
   MemoryLink,
   SourceType,
 } from '../types/memory.js';
+import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
+import { isSourceEnabled } from '../core/settings.js';
 
 const MAX_CHUNK_CHARS = 2000;
 
@@ -42,13 +44,13 @@ export class SlashCommandsSource implements MemorySource {
   readonly sourceType = 'command' as SourceType;
 
   async *discover(): AsyncGenerator<MemoryItem> {
-    const home = homedir();
+    if (!isSourceEnabled('claude', 'commands')) return;
     const roots: { path: string; scope: string }[] = [
-      { path: join(home, '.claude', 'commands'), scope: 'user' },
+      { path: CLAUDE.commandsDir(), scope: 'user' },
     ];
 
     // Per-project .claude/commands/ — discover from known project dirs.
-    const projectsRoot = join(home, '.claude', 'projects');
+    const projectsRoot = CLAUDE.projectsDir();
     if (existsSync(projectsRoot)) {
       try {
         for (const entry of readdirSync(projectsRoot, { withFileTypes: true })) {

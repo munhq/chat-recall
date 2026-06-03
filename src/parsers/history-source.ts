@@ -23,6 +23,8 @@ import type {
   MemoryLink,
 } from '../types/memory.js';
 import { discoverSubdirs } from '../core/utils.js';
+import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
+import { isSourceEnabled } from '../core/settings.js';
 
 const MAX_CHUNK_CHARS = 2000;
 
@@ -56,7 +58,7 @@ export class HistorySource implements MemorySource {
       const home = homedir();
       const paths: string[] = [];
       const tryAdd = (p: string) => { if (existsSync(p) && !paths.includes(p)) paths.push(p); };
-      tryAdd(join(home, '.claude', 'history.jsonl'));
+      tryAdd(CLAUDE.historyFile());
       try {
         for (const entry of readdirSync(home, { withFileTypes: true })) {
           if (entry.isDirectory() && entry.name.startsWith('.claude-') && entry.name !== '.claude-code') {
@@ -69,6 +71,7 @@ export class HistorySource implements MemorySource {
   }
 
   async *discover(): AsyncGenerator<MemoryItem> {
+    if (!isSourceEnabled('claude', 'history')) return;
     // Use the first existing history file for stat/mtime
     const historyPath = this.historyPaths.find(p => existsSync(p));
     if (!historyPath) return;

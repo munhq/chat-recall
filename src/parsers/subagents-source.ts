@@ -24,6 +24,8 @@ import type {
   MemoryLink,
   SourceType,
 } from '../types/memory.js';
+import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
+import { isSourceEnabled } from '../core/settings.js';
 
 const MAX_CHUNK_CHARS = 2000;
 
@@ -47,12 +49,12 @@ export class SubagentsSource implements MemorySource {
   readonly sourceType = 'agent' as SourceType;
 
   async *discover(): AsyncGenerator<MemoryItem> {
-    const home = homedir();
+    if (!isSourceEnabled('claude', 'agents')) return;
     const roots: { path: string; scope: string; projectPath: string }[] = [
-      { path: join(home, '.claude', 'agents'), scope: 'user', projectPath: '' },
+      { path: CLAUDE.agentsDir(), scope: 'user', projectPath: '' },
     ];
 
-    const projectsRoot = join(home, '.claude', 'projects');
+    const projectsRoot = CLAUDE.projectsDir();
     if (existsSync(projectsRoot)) {
       try {
         for (const entry of readdirSync(projectsRoot, { withFileTypes: true })) {

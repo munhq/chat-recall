@@ -12,10 +12,11 @@ import { join, basename } from 'path';
 import { execSync } from 'child_process';
 
 import { getEmbedder, type EmbedderProvider } from './core/embedder.js';
-import { MemoryIndex } from './core/memory-index.js';
-import { MetadataCache } from './core/metadata-cache.js';
+import { createVectorStore } from './core/store/vector.js';
+import { MemoryIndex } from './core/memory-index.js'; // static helpers (getDefaultIndexPath) only
+import { createMetadataCache } from './core/store/caches.js';
 import { getDataDir, getIdentityFilePath, getHooksDir, getIndexDir } from './core/paths.js';
-import { MemoryStore } from './core/memory-store.js';
+import { createStore } from './core/store/index.js';
 import { SourceRegistry } from './core/source-registry.js';
 import { SessionSource } from './parsers/session-source.js';
 import { PlanSource } from './parsers/plan-source.js';
@@ -35,9 +36,14 @@ import { SlashCommandsSource } from './parsers/slash-commands-source.js';
 import { SubagentsSource } from './parsers/subagents-source.js';
 import { HooksSource } from './parsers/hooks-source.js';
 import { PluginsSource } from './parsers/plugins-source.js';
+import { claudeBackend } from './core/backends/claude.js';
+import { getBackendForId } from './core/tool-backend.js';
+import './core/backends/index.js'; // side-effect: registers backends
 import { classifyChunk } from './core/memory-classifier.js';
 import { extractAndPopulateKG } from './core/entity-extractor.js';
-import { KnowledgeGraph } from './core/knowledge-graph.js';
+import { createKnowledgeGraph } from './core/store/knowledge-graph.js';
+import { buildProjectDossier } from './core/project-dossier.js';
+import { resolveProjectId } from './core/project-resolver.js';
 import type { SourceType } from './types/memory.js';
 
 // Load .env configuration
@@ -115,8 +121,8 @@ program
 
       // Step 3: Index all sources
       console.log(chalk.bold('3. Indexing all sources...'));
-      const memoryIndex = new MemoryIndex(embedder);
-      const store = new MemoryStore();
+      const memoryIndex = await createVectorStore(embedder);
+      const store = await createStore();
       const registry = new SourceRegistry();
       registry.register(new SessionSource());
       registry.register(new PlanSource());
@@ -137,7 +143,7 @@ program
       registry.register(new HooksSource());
       registry.register(new PluginsSource());
 
-      const kg = new KnowledgeGraph();
+      const kg = await createKnowledgeGraph();
       let totalItems = 0, totalChunks = 0, totalErrors = 0;
       const typeCounts: Record<string, number> = {};
 
@@ -148,7 +154,7 @@ program
         for (const source of sources) {
           for await (const item of source.discover()) {
             try {
-              if (!memoryIndex.needsUpdate(item.sourceType, item.id, item.mtime)) continue;
+              if (!(await memoryIndex.needsUpdate(item.sourceType, item.id, item.mtime))) continue;
               await memoryIndex.deleteItem(item.sourceType, item.id);
               const chunks = await source.parse(item);
               for (const chunk of chunks) {
@@ -156,7 +162,7 @@ program
                 if (cls.memoryType !== 'general') {
                   chunk.chunkType = `${chunk.chunkType}:${cls.memoryType}:imp${cls.importance}`;
                 }
-                extractAndPopulateKG(kg, chunk.text, {
+                await extractAndPopulateKG(kg, chunk.text, {
                   projectPath: item.projectPath, sourceType: item.sourceType, sessionId: item.id,
                 });
               }
@@ -164,9 +170,9 @@ program
                 await memoryIndex.bufferChunks(chunks);
                 totalChunks += chunks.length;
               }
-              store.setItem(item);
+              await store.setItem(item);
               const links = await source.extractLinks(item);
-              if (links.length > 0) store.addLinks(links);
+              if (links.length > 0) await store.addLinks(links);
               totalItems++;
               typeItems++;
             } catch { totalErrors++; }
@@ -175,8 +181,8 @@ program
         await memoryIndex.flushBuffer();
         if (typeItems > 0) typeCounts[sourceType] = typeItems;
       }
-      kg.close();
-      store.close();
+      await kg.close();
+      await store.close();
 
       for (const [type, count] of Object.entries(typeCounts)) {
         console.log(`   ${type}: ${count} items`);
@@ -339,8 +345,8 @@ program
 
       const embedder = getEmbedder(provider);
       // Use unified memory indexing for all source types
-      const memoryIndex = new MemoryIndex(embedder);
-      const store = new MemoryStore();
+      const memoryIndex = await createVectorStore(embedder);
+      const store = await createStore();
       const registry = new SourceRegistry();
       registry.register(new SessionSource());
       registry.register(new PlanSource());
@@ -361,7 +367,7 @@ program
       registry.register(new HooksSource());
       registry.register(new PluginsSource());
 
-      const kg = new KnowledgeGraph();
+      const kg = await createKnowledgeGraph();
       let totalItems = 0, totalSkipped = 0, totalChunks = 0, totalErrors = 0, totalKGTriples = 0;
       for (const sourceType of registry.getRegisteredTypes()) {
         const sources = registry.getAll(sourceType);
@@ -370,7 +376,7 @@ program
         for (const source of sources) {
         for await (const item of source.discover()) {
           try {
-            if (!options.force && !memoryIndex.needsUpdate(item.sourceType, item.id, item.mtime)) {
+            if (!options.force && !(await memoryIndex.needsUpdate(item.sourceType, item.id, item.mtime))) {
               totalSkipped++;
               continue;
             }
@@ -381,7 +387,7 @@ program
               if (cls.memoryType !== 'general') {
                 chunk.chunkType = `${chunk.chunkType}:${cls.memoryType}:imp${cls.importance}`;
               }
-              totalKGTriples += extractAndPopulateKG(kg, chunk.text, {
+              totalKGTriples += await extractAndPopulateKG(kg, chunk.text, {
                 projectPath: item.projectPath, sourceType: item.sourceType, sessionId: item.id,
               });
             }
@@ -389,18 +395,18 @@ program
               await memoryIndex.bufferChunks(chunks);
               totalChunks += chunks.length;
             }
-            store.setItem(item);
+            await store.setItem(item);
             const links = await source.extractLinks(item);
-            if (links.length > 0) store.addLinks(links);
+            if (links.length > 0) await store.addLinks(links);
             totalItems++;
           } catch { totalErrors++; }
         }
         }
         await memoryIndex.flushBuffer();
       }
-      kg.close();
+      await kg.close();
       // optimize() removed from auto flows to prevent data corruption
-      store.close();
+      await store.close();
 
       console.log();
       console.log(chalk.green('Indexing complete!'));
@@ -437,16 +443,17 @@ program
       }
       const topK = parseInt(options.top, 10);
 
-      const memoryIndex = new MemoryIndex(embedder);
+      const memoryIndex = await createVectorStore(embedder);
       const memResults = await memoryIndex.search(query, {
         topK: options.noRank ? topK : topK * 4,
         sourceTypes: ['session'],
-        projectFilter: options.project,
+        projectIdFilter: options.project,
       });
       // Transform to legacy format
-      const cache = new MetadataCache();
-      const results = memResults.map(r => {
-        const cached = cache.get(r.itemId);
+      const cache = await createMetadataCache();
+      const cachedList = await Promise.all(memResults.map(r => cache.get(r.itemId)));
+      const results = memResults.map((r, i) => {
+        const cached = cachedList[i];
         return {
           sessionId: r.itemId, score: r.score,
           chunkType: r.matchedChunks[0]?.chunkType || 'unknown',
@@ -458,7 +465,7 @@ program
           matchedChunks: r.matchedChunks,
         };
       });
-      cache.close();
+      await cache.close();
       
       if (results.length === 0) {
         console.log(chalk.yellow('No matching sessions found.'));
@@ -548,12 +555,12 @@ program
 
     try {
       const dummyEmbedder = { embed: async () => [], embedQuery: async () => [], dimension: 768 };
-      const memoryIndex = new MemoryIndex(dummyEmbedder as any);
+      const memoryIndex = await createVectorStore(dummyEmbedder as any);
       const stats = await memoryIndex.getStats();
-      const store = new MemoryStore();
-      const linkCount = store.getLinkCount();
-      const ftsCount = store.getFTSCount();
-      store.close();
+      const store = await createStore();
+      const linkCount = await store.getLinkCount();
+      const ftsCount = await store.getFTSCount();
+      await store.close();
 
       console.log(chalk.bold('Chat-Recall Index Status'));
       console.log();
@@ -587,13 +594,23 @@ program
         embedQuery: async () => [],
         dimension: 768,
       };
-      const index = new MemoryIndex(embedder as any);
+      const index = await createVectorStore(embedder as any);
 
       console.log(chalk.bold('Optimizing LanceDB index...'));
       console.log('This compacts data files and removes old versions/transactions.');
       console.log();
 
-      const stats = await index.optimize();
+      const stats = await index.optimize({ lockKind: 'cli' });
+      if (stats.skipped) {
+        if (stats.skipped === 'busy') {
+          console.log(chalk.yellow('Skipped: index is locked by another process.'));
+          console.log(chalk.dim('  The auto-indexer or another `chat-recall optimize` is running.'));
+          console.log(chalk.dim('  Try again in a minute, or stop the daemon: systemctl --user stop chat-recall-indexer'));
+        } else {
+          console.log(chalk.dim('Skipped: no LanceDB table found (vector index not initialized).'));
+        }
+        process.exit(1);
+      }
       console.log(chalk.green('Done!'));
       console.log(`  Compacted fragments: ${stats.compactedFragments}`);
       console.log(`  Pruned old versions: ${stats.prunedFiles}`);
@@ -612,30 +629,22 @@ program
   .option('-m, --messages <number>', 'Number of messages to show', '10')
   .option('-f, --full', 'Show full conversation (all messages)', false)
   .action(async (sessionId, options) => {
-    // Find the session file
-    const claudeDir = join(homedir(), '.claude', 'projects');
-    let sessionFile: string | null = null;
-    
-    try {
-      const entries = readdirSync(claudeDir, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue;
-        const candidate = join(claudeDir, entry.name, `${sessionId}.jsonl`);
-        if (existsSync(candidate)) {
-          sessionFile = candidate;
-          break;
-        }
-      }
-    } catch {
+    // Find the session via the backend registry — this works for Claude
+    // raw uuids and for prefixed ids ('gemini_<uuid>', 'opencode_<id>',
+    // 'codex_<id>') alike.
+    const backend = getBackendForId(sessionId);
+    const located = backend?.findSession(sessionId);
+    if (!backend || !located) {
       console.error(chalk.red('Session not found:'), sessionId);
       process.exit(1);
     }
-    
-    if (!sessionFile) {
-      console.error(chalk.red('Session not found:'), sessionId);
+    if (located.format !== 'jsonl') {
+      console.error(chalk.red('CLI `show` only renders JSONL transcripts.'));
+      console.error(chalk.dim(`This session uses '${located.format}' format. Use the MCP server's recall_show instead.`));
       process.exit(1);
     }
-    
+    const sessionFile: string = located.path;
+
     console.log(chalk.bold('Session:'), sessionId);
     console.log(chalk.dim('File:'), sessionFile);
     console.log();
@@ -795,8 +804,8 @@ memory
         console.log(`Using search: ${chalk.bold('FTS5 (full-text)')}`);
       }
 
-      const memoryIndex = new MemoryIndex(embedder);
-      const memoryStore = new MemoryStore();
+      const memoryIndex = await createVectorStore(embedder);
+      const memoryStore = await createStore();
 
       const registry = new SourceRegistry();
       registry.register(new SessionSource());
@@ -826,7 +835,7 @@ memory
       if (options.force) console.log('Force mode: re-indexing everything');
       console.log();
 
-      const kgLegacy = new KnowledgeGraph();
+      const kgLegacy = await createKnowledgeGraph();
       let totalItems = 0;
       let totalChunks = 0;
       let totalLinks = 0;
@@ -843,7 +852,7 @@ memory
         try {
           for await (const item of source.discover()) {
             try {
-              if (!options.force && !memoryIndex.needsUpdate(item.sourceType, item.id, item.mtime)) {
+              if (!options.force && !(await memoryIndex.needsUpdate(item.sourceType, item.id, item.mtime))) {
                 totalSkipped++;
                 continue;
               }
@@ -855,7 +864,7 @@ memory
                 if (cls.memoryType !== 'general') {
                   chunk.chunkType = `${chunk.chunkType}:${cls.memoryType}:imp${cls.importance}`;
                 }
-                extractAndPopulateKG(kgLegacy, chunk.text, {
+                await extractAndPopulateKG(kgLegacy, chunk.text, {
                   projectPath: item.projectPath, sourceType: item.sourceType, sessionId: item.id,
                 });
               }
@@ -865,11 +874,11 @@ memory
                 totalChunks += added;
               }
 
-              memoryStore.setItem(item);
+              await memoryStore.setItem(item);
 
               const links = await source.extractLinks(item);
               if (links.length > 0) {
-                memoryStore.addLinks(links);
+                await memoryStore.addLinks(links);
                 totalLinks += links.length;
               }
 
@@ -899,8 +908,8 @@ memory
       console.log(`  Links: ${totalLinks}`);
       if (totalErrors > 0) console.log(chalk.yellow(`  Errors: ${totalErrors}`));
 
-      kgLegacy.close();
-      memoryStore.close();
+      await kgLegacy.close();
+      await memoryStore.close();
     } catch (err) {
       console.error(chalk.red('Error:'), err);
       process.exit(1);
@@ -923,7 +932,7 @@ memory
       } catch {
         embedder = null;
       }
-      const memoryIndex = new MemoryIndex(embedder);
+      const memoryIndex = await createVectorStore(embedder);
 
       const topK = parseInt(options.top, 10);
       const sourceTypes = options.types
@@ -933,7 +942,7 @@ memory
       const results = await memoryIndex.search(query, {
         topK,
         sourceTypes,
-        projectFilter: options.project,
+        projectIdFilter: options.project,
       });
 
       if (results.length === 0) {
@@ -1002,12 +1011,12 @@ memory
         dimension: 768,
       };
 
-      const memoryIndex = new MemoryIndex(dummyEmbedder);
-      const memoryStore = new MemoryStore();
+      const memoryIndex = await createVectorStore(dummyEmbedder);
+      const memoryStore = await createStore();
 
       const indexStats = await memoryIndex.getStats();
-      const storeStats = memoryStore.getStats();
-      const linkCount = memoryStore.getLinkCount();
+      const storeStats = await memoryStore.getStats();
+      const linkCount = await memoryStore.getLinkCount();
 
       console.log(chalk.bold('Memory System Status'));
       console.log();
@@ -1032,7 +1041,7 @@ memory
         }
       }
 
-      memoryStore.close();
+      await memoryStore.close();
     } catch (err) {
       console.error(chalk.red('Error:'), err);
       process.exit(1);
@@ -1044,12 +1053,12 @@ memory
   .description('Show relationships for a memory item')
   .action(async (sourceType: string, itemId: string) => {
     try {
-      const memoryStore = new MemoryStore();
-      const links = memoryStore.getAllLinks(sourceType as SourceType, itemId);
+      const memoryStore = await createStore();
+      const links = await memoryStore.getAllLinks(sourceType as SourceType, itemId);
 
       if (links.length === 0) {
         console.log(chalk.yellow('No links found.'));
-        memoryStore.close();
+        await memoryStore.close();
         return;
       }
 
@@ -1065,7 +1074,7 @@ memory
         console.log(`  ${direction} ${chalk.bold(otherType)}:${otherId.slice(0, 20)} [${link.link_type}] (${confidence}%)`);
       }
 
-      memoryStore.close();
+      await memoryStore.close();
     } catch (err) {
       console.error(chalk.red('Error:'), err);
       process.exit(1);
@@ -1098,8 +1107,8 @@ memory
 
       // High-importance facts from FTS5 index (memory classifier output)
       try {
-        const store = new MemoryStore();
-        const impChunks = store.searchFTS('decision preference milestone', { topK: 30 });
+        const store = await createStore();
+        const impChunks = await store.searchFTS('decision preference milestone', { topK: 30 });
         const highImp = impChunks
           .filter(r => r.chunkType.includes(':imp4') || r.chunkType.includes(':imp5'))
           .slice(0, 10);
@@ -1114,15 +1123,15 @@ memory
           }
           lines.push('');
         }
-        store.close();
+        await store.close();
       } catch { /* FTS not available */ }
 
       // Knowledge graph snapshot — current facts only
       try {
-        const kgWake = new KnowledgeGraph();
-        const kgStats = kgWake.stats();
+        const kgWake = await createKnowledgeGraph();
+        const kgStats = await kgWake.stats();
         if (kgStats.current_facts > 0) {
-          const timeline = kgWake.timeline(undefined, 20);
+          const timeline = await kgWake.timeline(undefined, 20);
           const currentFacts = timeline.filter(e => e.current);
           if (currentFacts.length > 0) {
             lines.push(chalk.bold('## Knowledge Graph'));
@@ -1133,7 +1142,7 @@ memory
             lines.push('');
           }
         }
-        kgWake.close();
+        await kgWake.close();
       } catch { /* KG not available */ }
 
       console.log(lines.join('\n'));
@@ -1163,23 +1172,23 @@ program
 
     // Index
     try {
-      const store = new MemoryStore();
+      const store = await createStore();
       try {
-        const items = store.listItems('session' as SourceType, 1, 0);
-        const total = store.listItems('session' as SourceType, 5000, 0).length;
+        const items = await store.listItems('session' as SourceType, 1, 0);
+        const total = (await store.listItems('session' as SourceType, 5000, 0)).length;
         note(items.length > 0, 'SQLite + FTS5 index', `${total} sessions indexed`);
-      } finally { store.close(); }
+      } finally { await store.close(); }
     } catch (err) {
       note(false, 'SQLite + FTS5 index', `error: ${err}`);
     }
 
     // Knowledge graph
     try {
-      const kg = new KnowledgeGraph();
+      const kg = await createKnowledgeGraph();
       try {
-        const stats = kg.stats();
+        const stats = await kg.stats();
         note(stats.entities > 0, 'Knowledge graph', `${stats.entities} entities, ${stats.current_facts} current facts`);
-      } finally { kg.close(); }
+      } finally { await kg.close(); }
     } catch (err) {
       note(false, 'Knowledge graph', `error: ${err}`);
     }
@@ -1198,8 +1207,8 @@ program
       note(false, `Embedder (${embProvider})`, `not configured: ${(err as Error).message}`);
     }
 
-    // Hooks
-    const hooksJson = join(homedir(), '.claude', 'hooks.json');
+    // Hooks (Claude-specific)
+    const hooksJson = claudeBackend.hooksFile();
     if (!existsSync(hooksJson)) {
       note(false, 'Claude Code hooks', `no ${hooksJson} — run \`chat-recall install-hooks\``);
     } else {
@@ -1347,6 +1356,305 @@ companions
     if (u.removed) console.log(chalk.dim(`  Unregistered MCP server from ${mcpJsonPath}`));
   });
 
+// ── Team toolkit sync ───────────────────────────────────────────────────
+//
+// All commands talk to the team-server over HTTP. Config (server URL,
+// team id, token env var name) lives in settings.team.*; the bearer
+// token itself lives in the env var named by settings.team.tokenRef so
+// tokens never land in shell history or settings.json.
+const team = program
+  .command('team')
+  .description('Sync team toolkit (skills, CLAUDE.md, MCPs, agents, commands)');
+
+/** Common error funnel — converts typed client errors to a clean CLI exit. */
+async function runTeam(label: string, fn: () => Promise<void>): Promise<void> {
+  const { TeamConfigError, TeamAuthError, TeamHttpError } = await import('./core/team-client.js');
+  try { await fn(); }
+  catch (err) {
+    if (err instanceof TeamConfigError) {
+      console.error(chalk.red(`${label}: ${err.message}`));
+    } else if (err instanceof TeamAuthError) {
+      console.error(chalk.red(`${label}: auth failed — ${err.message}`));
+      console.error(chalk.dim('  Check the env var named in settings.team.tokenRef holds a valid Keycloak access token.'));
+    } else if (err instanceof TeamHttpError) {
+      console.error(chalk.red(`${label}: ${err.message}`));
+    } else {
+      throw err;
+    }
+    process.exit(1);
+  }
+}
+
+team
+  .command('whoami')
+  .description('Show the user + team memberships the server sees for your token')
+  .action(async () => runTeam('team whoami', async () => {
+    const { teamMe } = await import('./core/team-client.js');
+    const me = await teamMe();
+    console.log(chalk.bold(me.user.email) + chalk.dim(`  (${me.user.id})`));
+    if (me.memberships.length === 0) {
+      console.log(chalk.dim('  no team memberships yet — run `chat-recall team create <name>` or `team join <token>`'));
+      return;
+    }
+    for (const m of me.memberships) {
+      const role = m.role === 'owner' ? chalk.yellow(m.role) : chalk.dim(m.role);
+      console.log(`  ${chalk.cyan(m.teamName)}  ${role}  ${chalk.dim(m.plan)}  ${chalk.dim(m.teamId)}`);
+    }
+  }));
+
+team
+  .command('create <name>')
+  .description('Create a new team. You become the owner. Stores teamId in settings.')
+  .action(async (name: string) => runTeam('team create', async () => {
+    const { teamCreate } = await import('./core/team-client.js');
+    const t = await teamCreate(name);
+    console.log(chalk.green(`✓ Team created: ${chalk.bold(t.name)}`));
+    console.log(chalk.dim(`  id: ${t.id}`));
+    console.log(chalk.dim(`  Now generate an invite: chat-recall team invite`));
+  }));
+
+team
+  .command('invite')
+  .description('Generate a single-use invite token for your team (owner-only)')
+  .option('--email <hint>', 'Display hint (e.g. teammate@company.com); not validated')
+  .action(async (opts: { email?: string }) => runTeam('team invite', async () => {
+    const { teamInvite } = await import('./core/team-client.js');
+    const r = await teamInvite(opts.email);
+    console.log(chalk.bold('Invite token (copy now — shown once):'));
+    console.log('  ' + chalk.cyan(r.inviteToken));
+    console.log(chalk.dim(`  expires: ${r.expiresAt}`));
+    console.log();
+    console.log(chalk.dim('Recipient runs:  chat-recall team join <token>'));
+  }));
+
+team
+  .command('join <invite-token>')
+  .description('Accept a team invite. Stores team id locally.')
+  .action(async (inviteToken: string) => runTeam('team join', async () => {
+    const { teamJoin } = await import('./core/team-client.js');
+    const t = await teamJoin(inviteToken);
+    console.log(chalk.green(`✓ Joined team: ${chalk.bold(t.name)}`));
+    console.log(chalk.dim(`  id: ${t.id}`));
+    console.log(chalk.dim('  Run `chat-recall team pull` to fetch the team library.'));
+  }));
+
+team
+  .command('pull')
+  .description('Pull artifacts changed since the last pull and write them into your local ~/.claude/, ~/.gemini/, ~/.codex/ dirs')
+  .option('--dry-run', "Fetch but don't write to disk (preview only)")
+  .action(async (opts: { dryRun?: boolean }) => runTeam('team pull', async () => {
+    const { teamPull } = await import('./core/team-client.js');
+    const r = await teamPull();
+    if (r.pulled.length === 0 && r.removed.length === 0) {
+      console.log(chalk.dim('Up to date.'));
+      return;
+    }
+    for (const a of r.pulled) {
+      console.log(`  ${chalk.green('+')} ${chalk.cyan(a.type + '/' + a.name)} v${a.version} ${chalk.dim('(' + a.tool + ')')}`);
+    }
+    for (const id of r.removed) {
+      console.log(`  ${chalk.red('-')} ${chalk.dim(id + ' (revoked)')}`);
+    }
+    if (opts.dryRun) {
+      console.log(chalk.dim(`Watermark: ${r.serverNow}  (dry-run — nothing written)`));
+      return;
+    }
+    const { mergePullResult } = await import('./core/team-merge.js');
+    const m = mergePullResult({ pulled: r.pulled, removed: r.removed });
+    console.log();
+    if (m.written.length)  console.log(chalk.green(`✓ Wrote ${m.written.length} file${m.written.length === 1 ? '' : 's'}`));
+    if (m.skipped.length)  console.log(chalk.dim(`  Skipped ${m.skipped.length} (unchanged or no target tool)`));
+    if (m.removed.length)  console.log(chalk.yellow(`  Removed ${m.removed.length} revoked file${m.removed.length === 1 ? '' : 's'}`));
+    for (const f of m.failures) {
+      console.log(chalk.red(`  ! ${f.path}: ${f.error}`));
+    }
+    console.log(chalk.dim(`Watermark: ${r.serverNow}`));
+  }));
+
+team
+  .command('publish <type> <name> <file>')
+  .description('Publish a local file as an artifact (skill|command|agent|mcp|plan|plugin|instructions|hook)')
+  .option('--tool <tool>', 'Target tool: claude|gemini|opencode|codex|cross_tool', 'cross_tool')
+  .option('--pinned-to <glob>', 'Limit which projects pull this artifact')
+  .action(async (type: string, name: string, file: string, opts: { tool: string; pinnedTo?: string }) => runTeam('team publish', async () => {
+    const validTypes = ['skill','command','agent','mcp','plan','plugin','instructions','hook'] as const;
+    if (!(validTypes as readonly string[]).includes(type)) {
+      console.error(chalk.red(`Invalid type: ${type}. Must be one of: ${validTypes.join(', ')}`));
+      process.exit(1);
+    }
+    const validTools = ['claude','gemini','opencode','codex','cross_tool'] as const;
+    if (!(validTools as readonly string[]).includes(opts.tool)) {
+      console.error(chalk.red(`Invalid tool: ${opts.tool}. Must be one of: ${validTools.join(', ')}`));
+      process.exit(1);
+    }
+    const { readFileSync } = await import('fs');
+    const body = readFileSync(file);
+    const { teamPublish } = await import('./core/team-client.js');
+    const a = await teamPublish({
+      type: type as any, tool: opts.tool as any, name, body, pinnedTo: opts.pinnedTo,
+    });
+    console.log(chalk.green(`✓ Published ${chalk.bold(type + '/' + name)} v${a.version}`));
+    console.log(chalk.dim(`  id: ${a.id}`));
+    console.log(chalk.dim(`  sha256: ${a.sha256}`));
+  }));
+
+team
+  .command('list')
+  .description('List artifacts in the team library (metadata only, no bodies)')
+  .action(async () => runTeam('team list', async () => {
+    const { teamList } = await import('./core/team-client.js');
+    const items = await teamList();
+    if (items.length === 0) {
+      console.log(chalk.dim('Library is empty. Try `chat-recall team publish <type> <name> <file>`.'));
+      return;
+    }
+    for (const a of items) {
+      const pinned = a.pinnedTo ? chalk.dim(` pinned=${a.pinnedTo}`) : '';
+      console.log(`  ${chalk.cyan(a.type + '/' + a.name)} v${a.version} ${chalk.dim('(' + a.tool + ', ' + a.bytes + ' bytes)')}${pinned}`);
+    }
+  }));
+
+team
+  .command('revoke <artifact-id>')
+  .alias('unpublish')
+  .description('Revoke an artifact from the team library (owner-only)')
+  .action(async (artifactId: string) => runTeam('team revoke', async () => {
+    const { teamRevoke } = await import('./core/team-client.js');
+    const r = await teamRevoke(artifactId);
+    console.log(chalk.green(`✓ Revoked ${chalk.bold(r.type + '/' + r.name)} (${r.id})`));
+  }));
+
+team
+  .command('leave')
+  .description('Clear local team config (does not delete pulled artifacts; does not remove your server-side membership)')
+  .action(async () => runTeam('team leave', async () => {
+    const { teamLeave } = await import('./core/team-client.js');
+    await teamLeave();
+    console.log(chalk.green('✓ Local team config cleared.'));
+    console.log(chalk.dim('  Server-side membership unchanged. Owner must remove you to fully leave.'));
+  }));
+
+// ── Vault: encrypted multi-device chat backup ──────────────────────────
+//
+// E2EE: passphrase → Argon2id → master key (32 bytes), used to
+// XChaCha20-Poly1305 encrypt each chat session as a blob. Server holds
+// ciphertext + integrity hash; cannot decrypt. Multi-device parity
+// requires the same passphrase on each device.
+const vault = program
+  .command('vault')
+  .description('Encrypted multi-device chat backup (E2EE — server cannot decrypt)');
+
+async function runVault(label: string, fn: () => Promise<void>): Promise<void> {
+  const { VaultConfigError, VaultAuthError, VaultHttpError } = await import('./core/vault-client.js');
+  try { await fn(); }
+  catch (err) {
+    if (err instanceof VaultConfigError)      console.error(chalk.red(`${label}: ${err.message}`));
+    else if (err instanceof VaultAuthError)   console.error(chalk.red(`${label}: auth failed — ${err.message}`));
+    else if (err instanceof VaultHttpError)   console.error(chalk.red(`${label}: ${err.message}`));
+    else throw err;
+    process.exit(1);
+  }
+}
+
+/** Read passphrase from CLI prompt, env, or `--passphrase` flag. */
+async function resolvePassphrase(opts: { passphrase?: string; envVar?: string }): Promise<string> {
+  if (opts.passphrase) return opts.passphrase;
+  if (opts.envVar) {
+    const v = process.env[opts.envVar];
+    if (v) return v;
+    console.error(chalk.red(`Env var ${opts.envVar} is not set.`));
+    process.exit(1);
+  }
+  // Interactive prompt (silent) — uses readline-sync style by reading stdin
+  // with echoing off. Done with built-in node so no extra dep.
+  const readline = await import('readline');
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  return await new Promise<string>((resolve) => {
+    process.stdout.write('Vault passphrase: ');
+    // @ts-expect-error — _writeToOutput is internal but the only way to silence echoing.
+    rl._writeToOutput = (s: string) => { if (s.startsWith('\n')) process.stdout.write(s); };
+    rl.question('', (answer) => { rl.close(); process.stdout.write('\n'); resolve(answer); });
+  });
+}
+
+vault
+  .command('enable')
+  .description('Set up the Vault on this device. Generates a per-user salt; derives the master key from your passphrase.')
+  .option('--passphrase <s>', 'Passphrase (insecure — prefer interactive or --passphrase-env)')
+  .option('--passphrase-env <name>', 'Read passphrase from this env var')
+  .option('--existing-salt <hex>', 'Reuse a salt from another device (64 hex chars)')
+  .action(async (opts: { passphrase?: string; passphraseEnv?: string; existingSalt?: string }) => runVault('vault enable', async () => {
+    const passphrase = await resolvePassphrase({ passphrase: opts.passphrase, envVar: opts.passphraseEnv });
+    const { vaultEnable } = await import('./core/vault-client.js');
+    const r = vaultEnable(passphrase, { existingSaltHex: opts.existingSalt });
+    console.log(chalk.green('✓ Vault enabled on this device.'));
+    console.log(chalk.dim(`  keyId: ${r.keyId}`));
+    console.log(chalk.dim(`  salt:  ${r.saltHex}`));
+    console.log();
+    console.log(chalk.yellow('To set up another device, run there:'));
+    console.log(`  chat-recall vault enable --existing-salt ${r.saltHex}`);
+    console.log(chalk.yellow('Then enter the SAME passphrase. Lose the passphrase = lose chat history. There is no recovery.'));
+  }));
+
+vault
+  .command('sync')
+  .description('Walk local chat sources, encrypt new/changed sessions, upload ciphertext to the server')
+  .option('--passphrase <s>', 'Passphrase (insecure — prefer interactive or --passphrase-env)')
+  .option('--passphrase-env <name>', 'Read passphrase from this env var')
+  .action(async (opts: { passphrase?: string; passphraseEnv?: string }) => runVault('vault sync', async () => {
+    const passphrase = await resolvePassphrase({ passphrase: opts.passphrase, envVar: opts.passphraseEnv });
+    const { vaultSync } = await import('./core/vault-client.js');
+    const r = await vaultSync(passphrase);
+    if (r.uploaded.length === 0 && r.skipped.length === 0 && r.failures.length === 0) {
+      console.log(chalk.dim('No chat sources found.'));
+      return;
+    }
+    if (r.uploaded.length) console.log(chalk.green(`✓ Uploaded ${r.uploaded.length} session${r.uploaded.length === 1 ? '' : 's'}`));
+    if (r.skipped.length)  console.log(chalk.dim(`  Skipped ${r.skipped.length} (unchanged or denylisted)`));
+    for (const f of r.failures) {
+      console.log(chalk.red(`  ! ${f.tool}/${f.sessionId}: ${f.error}`));
+    }
+  }));
+
+vault
+  .command('restore')
+  .description('Pull encrypted blobs from the server, decrypt locally, write them where chat-recall can index them')
+  .option('--passphrase <s>', 'Passphrase (insecure — prefer interactive or --passphrase-env)')
+  .option('--passphrase-env <name>', 'Read passphrase from this env var')
+  .option('--since <ms>', 'Only restore blobs uploaded after this ms-epoch (default 0 = all)')
+  .action(async (opts: { passphrase?: string; passphraseEnv?: string; since?: string }) => runVault('vault restore', async () => {
+    const passphrase = await resolvePassphrase({ passphrase: opts.passphrase, envVar: opts.passphraseEnv });
+    const { vaultRestore } = await import('./core/vault-client.js');
+    const r = await vaultRestore(passphrase, { since: opts.since ? Number(opts.since) : undefined });
+    if (r.restored.length === 0 && r.skipped.length === 0 && r.failures.length === 0) {
+      console.log(chalk.dim('No blobs to restore.'));
+      return;
+    }
+    if (r.restored.length) console.log(chalk.green(`✓ Restored ${r.restored.length} session${r.restored.length === 1 ? '' : 's'}`));
+    if (r.skipped.length)  console.log(chalk.dim(`  Skipped ${r.skipped.length} (unchanged or different key)`));
+    for (const f of r.failures) {
+      console.log(chalk.red(`  ! ${f.tool}/${f.sessionId}: ${f.error}`));
+    }
+  }));
+
+vault
+  .command('status')
+  .description('Show whether the Vault is enabled, salt fingerprint, last sync time')
+  .action(async () => runVault('vault status', async () => {
+    const { vaultStatus } = await import('./core/vault-client.js');
+    const s = vaultStatus();
+    if (!s.enabled) {
+      console.log(chalk.dim('Vault: disabled. Run `chat-recall vault enable`.'));
+      return;
+    }
+    console.log(chalk.green('Vault: enabled'));
+    console.log(chalk.dim(`  keyId:        ${s.keyId ?? '(unknown — re-enable)'}`));
+    console.log(chalk.dim(`  salt:         ${s.saltHex ? s.saltHex.slice(0, 16) + '…' : '(missing)'}`));
+    console.log(chalk.dim(`  lastSyncAt:   ${s.lastSyncAt ? new Date(s.lastSyncAt).toISOString() : 'never'}`));
+    console.log(chalk.dim(`  syncTools:    ${s.syncTools.join(', ')}`));
+    console.log(chalk.dim(`  excludeProj:  ${s.excludeProjects.length ? s.excludeProjects.join(', ') : '(none)'}`));
+  }));
+
 program
   .command('install-hooks')
   .description('Install Claude Code hooks (Stop + PreCompact + UserPromptSubmit)')
@@ -1376,7 +1684,7 @@ program
     const hooksDir = getHooksDir();
     const installedSaveHook = join(hooksDir, 'chat_recall_save_hook.sh');
     const installedResumeHook = join(hooksDir, 'chat_recall_resume_hook.sh');
-    const hooksJson = join(homedir(), '.claude', 'hooks.json');
+    const hooksJson = claudeBackend.hooksFile();
 
     // Read existing hooks.json or start fresh.
     let config: any = {};
@@ -1462,6 +1770,35 @@ program
     if (!installResume) {
       console.log(chalk.dim('(--no-resume-hint passed — UserPromptSubmit hook skipped)'));
     }
+  });
+
+program
+  .command('dossier <project>')
+  .description('Generate a project dossier (overview/architecture/decisions/etc) as markdown')
+  .option('--sessions <n>', 'Max sessions to enumerate', '10')
+  .option('--tasks <n>', 'Max open tasks to list', '20')
+  .option('--plans <n>', 'Max plans to list', '20')
+  .option('--out <file>', 'Write report to this file instead of stdout')
+  .action(async (project, options) => {
+    const md = await buildProjectDossier(project, {
+      recentSessionLimit: Number(options.sessions) || 10,
+      taskLimit: Number(options.tasks) || 20,
+      planLimit: Number(options.plans) || 20,
+    });
+    if (options.out) {
+      writeFileSync(options.out, md);
+      console.log(chalk.green(`Wrote dossier to ${options.out} (${md.length} chars)`));
+    } else {
+      console.log(md);
+    }
+  });
+
+program
+  .command('project-id <path>')
+  .description('Show the resolved project_id for a path (debug helper)')
+  .action((path) => {
+    const r = resolveProjectId(path);
+    console.log(JSON.stringify(r, null, 2));
   });
 
 program.parse();

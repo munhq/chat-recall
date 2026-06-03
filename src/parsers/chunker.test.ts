@@ -48,6 +48,7 @@ describe('chunkSession', () => {
         toolsUsed: [], gitBranch: '', slug: '', durationMs: 0, lastStopReason: '',
         filesModified: [], modelsUsed: [], inputTokens: 0, outputTokens: 0,
         cacheReadTokens: 0, cacheCreationTokens: 0, peakContextTokens: 0, messageCount: 2,
+        costUsd: 0, metadataVersion: 0,
       },
     };
   }

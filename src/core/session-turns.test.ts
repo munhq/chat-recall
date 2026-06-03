@@ -2,7 +2,8 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { extractTurns } from './session-turns.js';
+import { extractTurnsAny as extractTurns } from './session-multi-tool.js';
+import type { SessionTurn } from './session-turns.js';
 
 let tmpHome: string;
 const origHome = process.env.HOME;
@@ -37,7 +38,7 @@ describe('extractTurns', () => {
     const r = extractTurns(sid);
     expect(r.found).toBe(true);
     expect(r.turns.length).toBeGreaterThanOrEqual(2);
-    const kinds = r.turns.map(t => t.kind);
+    const kinds = r.turns.map((t: SessionTurn) => t.kind);
     expect(kinds).toEqual(expect.arrayContaining(['user', 'assistant_text', 'tool_use']));
   });
 

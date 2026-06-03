@@ -31,10 +31,17 @@ describe('sanitizeQuery', () => {
     expect(r.cleanQuery.toLowerCase()).not.toMatch(/you are a/);
   });
 
-  test('removes SQL/FTS5-dangerous characters', () => {
+  test('removes SQL/FTS5-dangerous characters (except FTS5 phrase quotes)', () => {
     const r = sanitizeQuery(`name'); DROP TABLE memory_chunks; --`);
-    expect(r.cleanQuery).not.toMatch(/[;'"`\\{}|<>]/);
+    // Double quotes are intentionally preserved (FTS5 phrase syntax)
+    expect(r.cleanQuery).not.toMatch(/[;'`\\{}|<>]/);
     expect(r.wasSanitized).toBe(true);
+  });
+
+  test('preserves FTS5 phrase quotes for exact-phrase search', () => {
+    const r = sanitizeQuery('"erpc logs" tdx');
+    expect(r.cleanQuery).toContain('"erpc logs"');
+    expect(r.wasSanitized).toBe(false);
   });
 
   test('collapses whitespace', () => {

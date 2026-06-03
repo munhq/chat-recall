@@ -24,6 +24,10 @@ import type {
   MemoryLink,
   SourceType,
 } from '../types/memory.js';
+import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
+import { codexBackend as CODEX } from '../core/backends/codex.js';
+import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
+import { isSourceEnabled } from '../core/settings.js';
 
 interface ClaudeInstalledPlugin {
   scope?: string;
@@ -47,8 +51,8 @@ export class PluginsSource implements MemorySource {
     const home = homedir();
 
     // ── Claude — installed_plugins.json manifest ─────────────────────
-    const claudePluginsManifest = join(home, '.claude', 'plugins', 'installed_plugins.json');
-    const claudeJson = readJson(claudePluginsManifest);
+    const claudePluginsManifest = CLAUDE.pluginsManifestPath();
+    const claudeJson = isSourceEnabled('claude', 'plugins') ? readJson(claudePluginsManifest) : null;
     if (claudeJson?.plugins && typeof claudeJson.plugins === 'object') {
       let mtime = 0;
       try { mtime = statSync(claudePluginsManifest).mtimeMs; } catch { /* ignore */ }
@@ -81,8 +85,8 @@ export class PluginsSource implements MemorySource {
     }
 
     // ── Gemini — ~/.gemini/extensions/<name>/gemini-extension.json ───
-    const gemRoot = join(home, '.gemini', 'extensions');
-    if (existsSync(gemRoot)) {
+    const gemRoot = GEMINI.extensionsDir();
+    if (isSourceEnabled('gemini', 'extensions') && existsSync(gemRoot)) {
       let entries: string[];
       try { entries = readdirSync(gemRoot); } catch { entries = []; }
       for (const name of entries) {
@@ -100,7 +104,7 @@ export class PluginsSource implements MemorySource {
 
         const mcpServers = manifest.mcpServers ? Object.keys(manifest.mcpServers) : [];
         yield {
-          id: `gemini_plugin_${manifest.name || name}`,
+          id: `${GEMINI.idPrefix}plugin_${manifest.name || name}`,
           sourceType: 'plugin',
           title: manifest.name || name,
           projectPath: '',
@@ -125,8 +129,8 @@ export class PluginsSource implements MemorySource {
     // MCPs bundled inside a pack are picked up by SkillsSource / McpsSource
     // separately; here we surface the pack itself so the Toolkit Plugins
     // tab shows what's installed.
-    const codexPluginsRoot = join(home, '.codex', '.tmp', 'plugins', 'plugins');
-    if (existsSync(codexPluginsRoot)) {
+    const codexPluginsRoot = CODEX.pluginsDir();
+    if (isSourceEnabled('codex', 'plugins') && existsSync(codexPluginsRoot)) {
       let entries: string[];
       try { entries = readdirSync(codexPluginsRoot); } catch { entries = []; }
       for (const name of entries) {
@@ -145,7 +149,7 @@ export class PluginsSource implements MemorySource {
         if (mcpJson?.mcpServers) mcpServers = Object.keys(mcpJson.mcpServers);
 
         yield {
-          id: `codex_plugin_${manifest.name || name}`,
+          id: `${CODEX.idPrefix}plugin_${manifest.name || name}`,
           sourceType: 'plugin',
           title: manifest.name || name,
           projectPath: '',

@@ -15,6 +15,8 @@ import type {
   MemoryChunk,
   MemoryLink,
 } from '../types/memory.js';
+import { codexBackend as CODEX } from '../core/backends/codex.js';
+import { isSourceEnabled } from '../core/settings.js';
 
 const MAX_CHUNK_CHARS = 2000;
 
@@ -50,7 +52,7 @@ interface CodexEvent {
 }
 
 function getCodexSessionsDir(): string {
-  return join(homedir(), '.codex', 'sessions');
+  return CODEX.sessionsDir();
 }
 
 function extractTextFromContent(content?: Array<{ type?: string; text?: string }>): string {
@@ -99,6 +101,7 @@ export class CodexSessionSource implements MemorySource {
   }
 
   async *discover(): AsyncGenerator<MemoryItem> {
+    if (!isSourceEnabled('codex', 'sessions')) return;
     if (!existsSync(this.sessionsDir)) return;
 
     const jsonlFiles = this.collectJsonlFiles(this.sessionsDir);
@@ -120,7 +123,7 @@ export class CodexSessionSource implements MemorySource {
         if (meta.agent_role || meta.agent_nickname) continue;
 
         const sessionId = meta.id || basename(filePath).replace(/^rollout-/, '').replace(/\.jsonl$/, '');
-        const itemId = `codex_${sessionId}`;
+        const itemId = CODEX.toPrefixedId(sessionId);
 
         const events = readJsonlLines(filePath);
 

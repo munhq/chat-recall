@@ -29,6 +29,10 @@ import type {
   MemoryLink,
 } from '../types/memory.js';
 import { splitByHeaders } from '../core/utils.js';
+import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
+import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
+import { isSourceEnabled } from '../core/settings.js';
+import { opencodeBackend as OPENCODE } from '../core/backends/opencode.js';
 
 const MAX_CHUNK_CHARS = 2000;
 
@@ -79,8 +83,8 @@ function discoverProjectDirs(claudeDir?: string): string[] {
 
   const home = homedir();
 
-  // 1) ~/.claude/projects/
-  scanProjectsDir(join(home, '.claude', 'projects'));
+  // 1) Claude project directories
+  scanProjectsDir(CLAUDE.projectsDir());
 
   // 2) Multi-profile ~/.claude-*/projects/
   try {
@@ -93,7 +97,7 @@ function discoverProjectDirs(claudeDir?: string): string[] {
 
   // 3) Gemini CLI projects — listed by full path in ~/.gemini/projects.json.
   //    We don't need the SHA mapping here, just the resolved paths.
-  const gemProjects = join(home, '.gemini', 'projects.json');
+  const gemProjects = GEMINI.projectsJson();
   if (existsSync(gemProjects)) {
     try {
       const data = JSON.parse(readFileSync(gemProjects, 'utf-8'));
@@ -103,7 +107,7 @@ function discoverProjectDirs(claudeDir?: string): string[] {
 
   // 4) OpenCode projects — `project.worktree` in opencode.db. Surface them
   //    via the same path-as-id convention.
-  const ocDb = join(home, '.local', 'share', 'opencode', 'opencode.db');
+  const ocDb = OPENCODE.dbPath();
   if (existsSync(ocDb)) {
     try {
       // Lazy require so missing better-sqlite3 doesn't break Claude-only setups.
@@ -137,6 +141,7 @@ export class ClaudeMdSource implements MemorySource {
   }
 
   async *discover(): AsyncGenerator<MemoryItem> {
+    if (!isSourceEnabled('common', 'agentMd')) return;
     // The dedup key must include the *tool*, not just the path. AGENTS.md
     // is shared by OpenCode and Codex — we want both rows in the index so
     // each tool's column in the cross-tool matrix lights up.

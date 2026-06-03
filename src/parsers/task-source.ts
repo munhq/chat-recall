@@ -17,6 +17,8 @@ import type {
   MemoryLink,
 } from '../types/memory.js';
 import { discoverSubdirs } from '../core/utils.js';
+import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
+import { isSourceEnabled } from '../core/settings.js';
 
 interface TaskJson {
   id: string;
@@ -44,6 +46,7 @@ export class TaskSource implements MemorySource {
   }
 
   async *discover(): AsyncGenerator<MemoryItem> {
+    if (!isSourceEnabled('claude', 'tasks')) return;
     for (const tasksDir of this.tasksDirs) {
       yield* this.discoverInDir(tasksDir);
     }
@@ -54,7 +57,7 @@ export class TaskSource implements MemorySource {
   }
 
   private async *discoverClaudeTodos(): AsyncGenerator<MemoryItem> {
-    const todosDir = join(homedir(), '.claude', 'todos');
+    const todosDir = CLAUDE.todosDir();
     if (!existsSync(todosDir)) return;
 
     let files: string[];

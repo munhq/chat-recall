@@ -31,4 +31,32 @@ describe('extractEntities', () => {
       expect(t.confidence).toBeLessThanOrEqual(1);
     }
   });
+
+  test('decision filter drops verbs/stopwords as objects', () => {
+    // These trigger phrases used to produce junk triples like
+    // "chose -> so" and "rejected -> paying". Should now be filtered.
+    const ts = extractEntities(
+      'we chose so to keep it simple and rejected paying for the upgrade',
+      { projectPath: '/p/x' },
+    );
+    expect(ts.find(t => t.predicate === 'chose' && t.object.toLowerCase() === 'so')).toBeUndefined();
+    expect(ts.find(t => t.predicate === 'rejected' && t.object.toLowerCase() === 'paying')).toBeUndefined();
+  });
+
+  test('decision filter keeps known tools as objects', () => {
+    const ts = extractEntities('we chose postgres for storage', { projectPath: '/p/myapp' });
+    const dec = ts.find(t => t.predicate === 'chose' && t.object.toLowerCase() === 'postgres');
+    expect(dec).toBeDefined();
+  });
+
+  test('decision filter keeps proper nouns as objects', () => {
+    const ts = extractEntities('switched to React from Vue', { projectPath: '/p/myapp' });
+    const dec = ts.find(t => t.predicate === 'chose' && t.object === 'React');
+    expect(dec).toBeDefined();
+  });
+
+  test('decision filter drops bare gerunds', () => {
+    const ts = extractEntities('we chose summarizing over reading', { projectPath: '/p/x' });
+    expect(ts.find(t => t.predicate === 'chose' && t.object.toLowerCase() === 'summarizing')).toBeUndefined();
+  });
 });
