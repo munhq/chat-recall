@@ -14,7 +14,7 @@ describe('normalizeProjectPath', () => {
   });
 
   test('collapses multiple slashes to a single slash', () => {
-    expect(normalizeProjectPath('/home//adi///code')).toBe('/home/user/code');
+    expect(normalizeProjectPath('/home//user///code')).toBe('/home/user/code');
   });
 
   test('trims trailing slash', () => {
@@ -38,7 +38,7 @@ describe('matchesPrefix', () => {
   });
 
   test('matching is case-sensitive (paths are case-sensitive on Linux)', () => {
-    expect(matchesPrefix('/HOME/adi/code', '/home/user/code')).toBe(false);
+    expect(matchesPrefix('/HOME/user/code', '/home/user/code')).toBe(false);
   });
 
   test('handles empty inputs', () => {
