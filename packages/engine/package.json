@@ -1,0 +1,26 @@
+{
+  "name": "@chat-recall/engine",
+  "version": "0.2.0",
+  "description": "chat-recall engine — parsers, storage drivers, KG, classifier (shared library)",
+  "type": "module",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./*": { "types": "./dist/*", "default": "./dist/*" }
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@lancedb/lancedb": "^0.13.0",
+    "@noble/ciphers": "^2.2.0",
+    "@noble/hashes": "^2.2.0",
+    "better-sqlite3": "^12.6.2",
+    "diff": "^9.0.0",
+    "dotenv": "^17.2.3",
+    "pg": "^8.13.0",
+    "zod": "^3.22.0"
+  }
+}
