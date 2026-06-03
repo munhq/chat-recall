@@ -13,8 +13,8 @@ import { config } from 'dotenv';
 config();
 
 import { getEmbedder, type EmbedderProvider } from '../src/core/embedder.js';
-import { MemoryIndex } from '../src/core/memory-index.js';
-import { MemoryStore } from '../src/core/memory-store.js';
+import { createVectorStore } from '../src/core/store/vector.js';
+import { createStore } from '../src/core/store/index.js';
 import { SourceRegistry } from '../src/core/source-registry.js';
 import { SessionSource } from '../src/parsers/session-source.js';
 import { PlanSource } from '../src/parsers/plan-source.js';
@@ -46,13 +46,13 @@ if (providerArg) {
 
 async function main() {
   const embedder = getEmbedder(provider);
-  const memoryIndex = new MemoryIndex(embedder);
-  const memoryStore = new MemoryStore();
+  const memoryIndex = await createVectorStore(embedder);
+  const memoryStore = await createStore();
 
   if (statusOnly) {
     const stats = await memoryIndex.getStats();
-    const storeStats = memoryStore.getStats();
-    const linkCount = memoryStore.getLinkCount();
+    const storeStats = await memoryStore.getStats();
+    const linkCount = await memoryStore.getLinkCount();
 
     console.log('Memory Index Status');
     console.log('===================');
@@ -73,7 +73,7 @@ async function main() {
       console.log(`  ${type}: ${count} items`);
     }
 
-    memoryStore.close();
+    await memoryStore.close();
     return;
   }
 
@@ -130,7 +130,7 @@ async function main() {
       for await (const item of source.discover()) {
         try {
           // Check if needs update
-          if (!force && !memoryIndex.needsUpdate(item.sourceType, item.id, item.mtime)) {
+          if (!force && !(await memoryIndex.needsUpdate(item.sourceType, item.id, item.mtime))) {
             typeSkipped++;
             continue;
           }
@@ -147,12 +147,12 @@ async function main() {
           }
 
           // Store metadata
-          memoryStore.setItem(item);
+          await memoryStore.setItem(item);
 
           // Extract and store links
           const links = await source.extractLinks(item);
           if (links.length > 0) {
-            memoryStore.addLinks(links);
+            await memoryStore.addLinks(links);
             typeLinks += links.length;
           }
 
@@ -201,7 +201,7 @@ async function main() {
     console.log(`  Compacted ${optimizeStats.compactedFragments} fragments, pruned ${optimizeStats.prunedFiles} old versions`);
   }
 
-  memoryStore.close();
+  await memoryStore.close();
 }
 
 main().catch((err) => {

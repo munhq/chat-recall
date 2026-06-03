@@ -175,22 +175,30 @@ The web UI binds to localhost. There is no telemetry, no account, no upload. The
 
 ```
 src/
-├── core/           Indexing, storage, embeddings, summaries, KG, classifier
-├── parsers/        One *-source.ts plugin per data type (11 sources)
-├── cli.ts          CLI
-└── mcp.ts          MCP server (27 tools)
+├── core/
+│   ├── backends/        ToolBackend per AI tool (claude, gemini, opencode, codex)
+│   ├── tool-backend.ts  Registry interface — single source of truth for tool identity
+│   ├── tool-paths.ts    Env-overridable default paths for each tool
+│   ├── generic-engine.ts  Shared turn extraction / edit scan / replay (canonical events)
+│   └── …                Indexing, storage, embeddings, summaries, KG, classifier
+├── parsers/             *-source.ts plugins per content type (sessions, plans, tasks, …)
+├── cli.ts               CLI
+└── mcp.ts               MCP server
 
 web/
-├── server/         Express API
-└── client/         React + Vite UI
+├── server/              Express API
+└── client/              React + Vite UI
 
-auto-indexer/       chokidar-based watcher daemon (systemd-friendly)
-hooks/              Claude Code save hook (install via `chat-recall install-hooks`)
-docker/             Dockerfiles + nginx
-e2e/                Playwright tests
+auto-indexer/            chokidar-based watcher daemon (systemd-friendly)
+hooks/                   Claude Code save hook (install via `chat-recall install-hooks`)
+docker/                  Dockerfiles + nginx
+e2e/                     Playwright tests
 ```
 
-Adding a new source = one `MemorySource` implementation + one `.register()` call. The interface is `discover()` → `parse()` → `extractLinks()`.
+Two extension points, both registry-driven:
+
+- **Adding a new content type** (e.g. another file format to index) — implement `MemorySource` (`discover` → `parse` → `extractLinks`) and register it in the `SourceRegistry`.
+- **Adding a new AI tool** (a fifth backend alongside Claude/Gemini/OpenCode/Codex) — implement `ToolBackend` (paths, ID handling, `readEvents`, `fileToolMap`, `extractEditDelta`) and register it in `src/core/backends/index.ts`. Walkthrough: [`docs/ADDING_A_TOOL.md`](docs/ADDING_A_TOOL.md). All paths are env-overridable via `CHAT_RECALL_{CLAUDE,GEMINI,CODEX}_HOME` / `CHAT_RECALL_OPENCODE_DB`.
 
 ## Requirements
 

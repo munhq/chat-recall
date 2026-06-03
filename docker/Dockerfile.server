@@ -1,11 +1,14 @@
 FROM node:20-bookworm-slim
 
-# Install build tools for native Node.js modules (better-sqlite3, lancedb)
+# Build tools for native modules (better-sqlite3, lancedb) + git, which the
+# project resolver shells out to (`git remote get-url`) to derive project_id.
+# Without git, every repo falls back to a path: bucket and workspace nesting breaks.
 RUN apt-get update && apt-get install -y \
     python3 \
     make \
     g++ \
     curl \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
