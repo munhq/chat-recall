@@ -175,3 +175,6 @@ export type {
   MemoryLinkRow,
 } from './types/memory.js';
 export { CodexSessionSource } from './parsers/codex-session-source.js';
+
+// Ambient tenant context (server auth middleware → store factories)
+export { runWithTenant, currentTenant } from './core/store/tenant-context.js';

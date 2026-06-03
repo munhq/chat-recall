@@ -1,3 +1,4 @@
+import { currentTenant } from './tenant-context.js';
 /**
  * Async drivers for the two other cache.db-backed stores:
  *   - MetadataCache — session metadata, summaries, per-session compute cache,
@@ -162,7 +163,7 @@ export class PgMetadataCache implements MetadataCacheDriver {
 
 export async function createMetadataCache(opts: CreateStoreOptions = {}): Promise<MetadataCacheDriver> {
   if (resolveBackend(opts) === 'postgres') {
-    const store = new PgMetadataCache(opts.databaseUrl, opts.tenant);
+    const store = new PgMetadataCache(opts.databaseUrl, opts.tenant ?? currentTenant());
     await store.init();
     return store;
   }
@@ -250,7 +251,7 @@ export class PgOutcomeCache implements OutcomeCacheDriver {
 
 export async function createOutcomeCache(opts: CreateStoreOptions = {}): Promise<OutcomeCacheDriver> {
   if (resolveBackend(opts) === 'postgres') {
-    const store = new PgOutcomeCache(opts.databaseUrl, opts.tenant);
+    const store = new PgOutcomeCache(opts.databaseUrl, opts.tenant ?? currentTenant());
     await store.init();
     return store;
   }

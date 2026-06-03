@@ -16,6 +16,7 @@ import settingsRouter from './routes/settings.js';
 import editsRouter from './routes/edits.js';
 import toolkitRouter from './routes/toolkit.js';
 import secretsRouter from './routes/secrets.js';
+import { tenantAuth } from './middleware/auth.js';
 import projectsRouter from './routes/projects.js';
 
 const app = express();
@@ -38,6 +39,11 @@ app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   next();
 });
+
+// Tenant auth: resolves req.tenant and makes it ambient for the request (see
+// middleware/auth.ts). Scoped to /api so /health + the static client stay open.
+// Provider is 'none' by default (self-host single-tenant, tenant='default').
+app.use('/api', tenantAuth);
 
 // Routes
 app.use('/api/search', searchRouter);

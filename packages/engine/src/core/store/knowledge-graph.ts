@@ -1,3 +1,4 @@
+import { currentTenant } from './tenant-context.js';
 /**
  * Async driver for the temporal knowledge graph (knowledge_graph.db, a
  * separate SQLite file from cache.db). Same pattern as StorageDriver:
@@ -149,7 +150,7 @@ export class PgKnowledgeGraph implements KnowledgeGraphDriver {
 
 export async function createKnowledgeGraph(opts: CreateStoreOptions = {}): Promise<KnowledgeGraphDriver> {
   if (resolveBackend(opts) === 'postgres') {
-    const store = new PgKnowledgeGraph(opts.databaseUrl, opts.tenant);
+    const store = new PgKnowledgeGraph(opts.databaseUrl, opts.tenant ?? currentTenant());
     await store.init();
     return store;
   }
