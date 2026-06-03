@@ -14,7 +14,7 @@ import { createHash } from 'crypto';
 import { WriteAheadLog } from '../write-ahead-log.js';
 import { DiarySource } from '../../parsers/diary-source.js';
 import { resolveBackend, type CreateStoreOptions } from './index.js';
-import { openPgPool, pgTenant } from './pg-pool.js';
+import { openPgPool, pgTenant, tenantQuery } from './pg-pool.js';
 
 type AsyncMethod<M> = M extends (...args: infer A) => infer R
   ? (...args: A) => Promise<Awaited<R>>
@@ -43,7 +43,7 @@ export class PgWal implements WalDriver {
   async init(): Promise<void> { this.pool = await openPgPool(this.databaseUrl); }
   async log(...a: WArgs<'log'>): Promise<void> {
     const [operation, params, result] = a;
-    await this.pool.query(`INSERT INTO wal_log (tenant, ts, operation, payload) VALUES ($1,$2,$3,$4)`,
+    await tenantQuery(this.pool, this.t, `INSERT INTO wal_log (tenant, ts, operation, payload) VALUES ($1,$2,$3,$4)`,
       [this.t, Date.now(), operation, JSON.stringify({ params, result: result ?? null })]);
   }
   async logWithResult(...a: WArgs<'logWithResult'>): Promise<void> {
@@ -84,14 +84,14 @@ export class PgDiary implements DiaryDriver {
   async init(): Promise<void> { this.pool = await openPgPool(this.databaseUrl); }
   async write(entry: DiaryEntryArg): Promise<string> {
     const id = `d_${createHash('sha256').update(`${entry.agent}|${entry.timestamp}|${entry.content}`).digest('hex').slice(0, 16)}`;
-    await this.pool.query(
+    await tenantQuery(this.pool, this.t, 
       `INSERT INTO diary_entries (tenant,id,agent,topic,content,ts,session_id,project_path) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
        ON CONFLICT (tenant,id) DO UPDATE SET content=excluded.content, topic=excluded.topic`,
       [this.t, id, entry.agent, entry.topic ?? '', entry.content, entry.timestamp, entry.sessionId ?? null, entry.projectPath ?? null]);
     return id;
   }
   async read(agentName: string, lastN = 10): Promise<DiaryEntryOut> {
-    const rows = (await this.pool.query(`SELECT agent, topic, content, ts, session_id, project_path FROM diary_entries WHERE tenant=$1 AND agent=$2 ORDER BY ts DESC LIMIT $3`, [this.t, agentName, lastN])).rows;
+    const rows = (await tenantQuery(this.pool, this.t, `SELECT agent, topic, content, ts, session_id, project_path FROM diary_entries WHERE tenant=$1 AND agent=$2 ORDER BY ts DESC LIMIT $3`, [this.t, agentName, lastN])).rows;
     return rows.map((r: any) => ({ agent: r.agent, topic: r.topic, content: r.content, timestamp: r.ts, sessionId: r.session_id ?? undefined, projectPath: r.project_path ?? undefined })) as DiaryEntryOut;
   }
   async close(): Promise<void> { if (this.pool) await this.pool.end(); }
