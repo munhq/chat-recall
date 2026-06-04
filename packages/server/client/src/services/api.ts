@@ -1,6 +1,7 @@
 /**
  * API client for backend.
  */
+import { getAccessToken } from './auth';
 
 export interface SearchResult {
   sessionId: string;
@@ -96,7 +97,10 @@ export interface ProjectInfo {
   count: number;
 }
 
-const API_BASE = '/api';
+// Local mode proxies '/api' to the local server (vite proxy). Cloud mode sets
+// VITE_API_BASE to the cloud API origin (e.g. https://chat-recall.munhq.com/api)
+// and every request carries the Keycloak Bearer.
+const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
 // Fetch with a timeout — prevents infinite hanging when server is down.
 // Default raised to 30s because the first request after a service restart
@@ -108,7 +112,10 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    // Cloud mode: attach the Keycloak Bearer (no-op in local mode).
+    const token = await getAccessToken();
+    const headers = token ? { ...options.headers, Authorization: `Bearer ${token}` } : options.headers;
+    return await fetch(url, { ...options, headers, signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }
