@@ -1803,12 +1803,60 @@ program
 
 program
   .command('login <server-url>')
-  .description('Save server credentials for `chat-recall sync` (~/.chat-recall/credentials.json, 0600)')
-  .requiredOption('--token <token>', 'Bearer token issued by the server')
-  .action(async (serverUrl: string, opts: { token: string }) => {
+  .description('Log in via Keycloak (device flow) and mint a sync device token → ~/.chat-recall/credentials.json (0600)')
+  .option('--token <token>', 'Self-host: skip OIDC and save this device token directly')
+  .option('--issuer <url>', 'OIDC issuer (default: hotmun realm)')
+  .option('--client-id <id>', 'OIDC client id (default: chat-recall-web)')
+  .option('--team <slug>', 'Team to mint the device token for (default: your only team)')
+  .option('--device-id <id>', 'Device id for this machine (default: hostname)')
+  .action(async (serverUrl: string, opts: { token?: string; issuer?: string; clientId?: string; team?: string; deviceId?: string }) => {
     const { saveCredentials } = await import('./sync-client.js');
-    saveCredentials({ serverUrl, token: opts.token });
-    console.log(chalk.green('✓ Logged in.') + chalk.dim(`  server: ${serverUrl}`));
+    const base = serverUrl.replace(/\/+$/, '');
+
+    // Self-host escape hatch: token supplied directly, no OIDC.
+    if (opts.token) {
+      saveCredentials({ serverUrl, token: opts.token });
+      console.log(chalk.green('✓ Logged in.') + chalk.dim(`  server: ${serverUrl}`));
+      return;
+    }
+
+    try {
+      const { deviceLogin } = await import('./device-auth.js');
+      const tokens = await deviceLogin({ issuer: opts.issuer, clientId: opts.clientId }, (p) => {
+        console.log();
+        console.log(chalk.bold('To log in, open:'));
+        console.log('  ' + chalk.cyan(p.url));
+        console.log(chalk.dim(`  (if prompted, enter code: ${chalk.bold(p.userCode)} at ${p.verificationUri})`));
+        console.log(chalk.dim('Waiting for approval…'));
+      });
+
+      const authHdr = { authorization: `Bearer ${tokens.accessToken}`, 'content-type': 'application/json' };
+
+      // Which team? Use --team, else the user's sole team; bail with guidance otherwise.
+      const me = await fetch(`${base}/api/me`, { headers: authHdr }).then((r) => r.json() as Promise<{ teams: { team_slug: string; name: string }[] }>);
+      const teams = me.teams || [];
+      let slug = opts.team;
+      if (!slug) {
+        if (teams.length === 1) slug = teams[0].team_slug;
+        else if (teams.length === 0) { console.error(chalk.red('No team yet. Create one:') + ' chat-recall team create <name>, then re-run login.'); process.exit(1); }
+        else { console.error(chalk.red('You belong to multiple teams — pass --team <slug>:')); teams.forEach((t) => console.error(`  ${t.team_slug}  ${chalk.dim(t.name)}`)); process.exit(1); }
+      }
+
+      // Mint a per-device sync token for that team.
+      const deviceId = opts.deviceId || (await import('node:os')).hostname();
+      const mint = await fetch(`${base}/api/teams/${encodeURIComponent(slug!)}/tokens`, {
+        method: 'POST', headers: authHdr, body: JSON.stringify({ device_id: deviceId }),
+      });
+      if (!mint.ok) throw new Error(`token mint failed: HTTP ${mint.status} ${await mint.text().catch(() => '')}`);
+      const { token } = (await mint.json()) as { token: string };
+
+      saveCredentials({ serverUrl, token });
+      console.log(chalk.green(`✓ Logged in to ${chalk.bold(slug!)}`) + chalk.dim(`  (device: ${deviceId})  server: ${serverUrl}`));
+      console.log(chalk.dim('Run `chat-recall sync` to push redacted conversations.'));
+    } catch (err) {
+      console.error(chalk.red('login failed:'), err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
   });
 
 program
