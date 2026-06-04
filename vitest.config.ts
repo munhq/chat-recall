@@ -7,6 +7,13 @@ import { fileURLToPath } from 'node:url';
 // handles the barrel.
 const engineSrc = fileURLToPath(new URL('./packages/engine/src/', import.meta.url));
 
+// The Postgres-backed tests (store.test.ts, isolation.test.ts) share one
+// `public` schema on DATABASE_URL; run in parallel they race on table
+// creation / role grants. Postgres mode is opt-in (gated on DATABASE_URL),
+// so only there do we serialize files — the default SQLite run keeps full
+// parallelism.
+const pgMode = !!(process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL);
+
 export default defineConfig({
   resolve: {
     alias: [
@@ -19,6 +26,8 @@ export default defineConfig({
     environment: 'node',
     isolate: true,
     pool: 'forks',
+    // Serialize files only when the shared Postgres is in play (see above).
+    fileParallelism: !pgMode,
     testTimeout: 15000,
     coverage: {
       provider: 'v8',
