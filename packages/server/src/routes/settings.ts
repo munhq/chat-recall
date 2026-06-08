@@ -175,6 +175,25 @@ router.put('/', (req, res) => {
 router.post('/test', async (req, res) => {
   const { kind, config } = req.body || {};
   try {
+    // Resolve masked keys ("••••…") the UI sends back to the saved secret, so a
+    // Test never ships the mask as a Bearer token — '•' is U+2022, outside
+    // latin1, so it throws "Cannot convert argument to a ByteString" when the
+    // Authorization header is built. Mirrors the GET /models resolution.
+    if (config) {
+      const saved = loadSettings();
+      const unmask = (v: unknown, s: string | undefined) =>
+        (typeof v === 'string' && v.startsWith('••••')) ? s : v;
+      if (kind === 'summary') {
+        config.apiKey = unmask(config.apiKey, saved.summary.apiKey);
+        config.anthropicApiKey = unmask(config.anthropicApiKey, saved.summary.anthropicApiKey);
+      } else if (kind === 'embedding') {
+        config.nvidiaApiKey = unmask(config.nvidiaApiKey, saved.embedding.nvidiaApiKey);
+        config.openaiApiKey = unmask(config.openaiApiKey, saved.embedding.openaiApiKey);
+        config.geminiApiKey = unmask(config.geminiApiKey, saved.embedding.geminiApiKey);
+        config.ollamaCloudApiKey = unmask(config.ollamaCloudApiKey, saved.embedding.ollamaCloudApiKey);
+        config.openaiCompatApiKey = unmask(config.openaiCompatApiKey, saved.embedding.openaiCompatApiKey);
+      }
+    }
     if (kind === 'embedding') {
       const e = config as EmbeddingSettings;
       // For each provider, do a minimal "is this thing reachable" check.
