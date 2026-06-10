@@ -5,12 +5,12 @@
  * packages/server/cloud/server.mjs). Credentials live in a 0600 file, never in
  * settings.json.
  */
-import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { redactSecrets } from '@chat-recall/engine/core/secret-redactor.js';
 import { loadSettings, saveSettings } from '@chat-recall/engine/core/settings.js';
+import { getDataDir } from '@chat-recall/engine/core/paths.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
 import { extractTurnsAny } from '@chat-recall/engine/core/session-multi-tool.js';
 import { createStore, type StorageDriver } from '@chat-recall/engine/core/store/index.js';
@@ -24,14 +24,16 @@ function localStore(): Promise<StorageDriver> {
   return _localStore;
 }
 
-const CRED_PATH = join(homedir(), '.chat-recall', 'credentials.json');
+// Lives under the data dir so CHAT_RECALL_DATA_DIR isolates credentials the
+// same way it isolates the index (tests, multi-profile setups).
+const credPath = () => join(getDataDir(), 'credentials.json');
 
 export interface Credentials { serverUrl: string; token: string; }
 
 export function saveCredentials(c: Credentials): void {
-  mkdirSync(dirname(CRED_PATH), { recursive: true });
-  writeFileSync(CRED_PATH, JSON.stringify(c, null, 2));
-  try { chmodSync(CRED_PATH, 0o600); } catch { /* windows */ }
+  mkdirSync(dirname(credPath()), { recursive: true });
+  writeFileSync(credPath(), JSON.stringify(c, null, 2));
+  try { chmodSync(credPath(), 0o600); } catch { /* windows */ }
   // Logging in IS the sync opt-in: enable background sync and record the
   // endpoint so the watch daemon starts pushing without further setup.
   try {
@@ -42,7 +44,7 @@ export function saveCredentials(c: Credentials): void {
   } catch { /* settings unwritable — manual `chat-recall sync` still works */ }
 }
 export function loadCredentials(): Credentials | null {
-  try { return JSON.parse(readFileSync(CRED_PATH, 'utf-8')) as Credentials; } catch { return null; }
+  try { return JSON.parse(readFileSync(credPath(), 'utf-8')) as Credentials; } catch { return null; }
 }
 
 /** Tokenize an absolute project path so the server can group by project
@@ -116,9 +118,15 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
 
   const base = cred.serverUrl.replace(/\/$/, '');
   let uploaded = 0;
-  const BATCH = 50;
-  for (let i = 0; i < conversations.length; i += BATCH) {
-    const batch = conversations.slice(i, i + BATCH);
+  // Byte-aware batching: cap each POST at ~8MB of serialized payload (and 50
+  // items) so a run of transcript-heavy sessions can't blow the server's body
+  // limit. A single conversation larger than the cap still ships alone.
+  const MAX_BATCH_BYTES = 8 * 1024 * 1024;
+  const MAX_BATCH_ITEMS = 50;
+  let batch: any[] = [];
+  let batchBytes = 0;
+  const flush = async () => {
+    if (batch.length === 0) return;
     const res = await fetch(`${base}/api/sync`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${cred.token}` },
@@ -126,7 +134,18 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
     });
     if (!res.ok) throw new Error(`sync failed: HTTP ${res.status} ${await res.text().catch(() => '')}`);
     uploaded += batch.length;
+    batch = [];
+    batchBytes = 0;
+  };
+  for (const cv of conversations) {
+    const size = JSON.stringify(cv).length;
+    if (batch.length > 0 && (batchBytes + size > MAX_BATCH_BYTES || batch.length >= MAX_BATCH_ITEMS)) {
+      await flush();
+    }
+    batch.push(cv);
+    batchBytes += size;
   }
+  await flush();
   return { uploaded, skipped, redactions };
 }
 
