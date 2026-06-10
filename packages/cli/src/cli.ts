@@ -211,9 +211,16 @@ program
         if (mcpServers['chat-recall']) {
           console.log(`   MCP server: ${chalk.green('already configured')} in ${mcpJsonPath}`);
         } else {
+          // Prefer the installed `chat-recall-mcp` bin (on PATH after `npm i -g`
+          // or a packaged binary) so the config is portable. Only fall back to
+          // the source-checkout path when running from an un-installed dev tree.
+          let mcpBinOnPath = false;
+          try { execSync('command -v chat-recall-mcp', { stdio: 'ignore' }); mcpBinOnPath = true; } catch { /* not installed */ }
+          const launch = mcpBinOnPath
+            ? { command: 'chat-recall-mcp' as const }
+            : { command: 'node' as const, args: [join(projectRoot, 'dist', 'mcp.js')] };
           mcpServers['chat-recall'] = {
-            command: 'node',
-            args: [join(projectRoot, 'dist', 'mcp.js')],
+            ...launch,
             alwaysAllow: [
               'recall_search', 'recall_show', 'recall_index', 'recall_status',
               'recall_recent', 'recall_context', 'recall_summary', 'recall_suggest_resume',
