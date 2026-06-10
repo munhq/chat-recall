@@ -1,49 +1,55 @@
-# Chat-Recall — one container does everything: serves the UI + API and indexes
-# your sessions in the background.
+# Chat-Recall SELF-HOST SERVER — the docker compose option for people who
+# don't use the SaaS. One container: dashboard UI + API, store-only.
 #
-# Quick start (zero config, FTS keyword search, no API keys):
-#   docker compose up -d
-#   open http://localhost:8080
+# This is NOT the local app. The local product is the native `chat-recall`
+# binary (npm i -g chat-recall) — it indexes your machine and pushes redacted
+# conversations here. This compose never mounts ~/.claude or your code.
 #
-# Optional semantic search + local summaries via Ollama (auto-pulls both models):
-#   EMBEDDING_PROVIDER=ollama SUMMARY_PROVIDER=ollama OLLAMA_MODEL=qwen2.5:3b \
-#     docker compose --profile ollama up -d
+# Quick start:
+#   1. echo "ADMIN_KEY=$(openssl rand -hex 24)" >> .env
+#   2. docker compose up -d --build
+#   3. Mint a device token for your machine(s):
+#        curl -XPOST localhost:8080/api/tenants -H "x-admin-key: $ADMIN_KEY" \
+#             -H 'content-type: application/json' -d '{"slug":"me","display_name":"Me"}'
+#        curl -XPOST localhost:8080/api/tenants/me/tokens -H "x-admin-key: $ADMIN_KEY" \
+#             -H 'content-type: application/json' -d '{"device_id":"laptop"}'
+#   4. On each machine:  chat-recall login http://<host>:8080 --token <ct_…>
+#      (the watch daemon then syncs continuously; `chat-recall sync` is manual)
+#   5. open http://localhost:8080
 #
-# Optional Postgres backend (team/cloud):
-#   docker compose --profile postgres up -d   # + set CHAT_RECALL_STORAGE=postgres, DATABASE_URL
+# Storage is a flag: SQLite (default — zero deps, lives in the data volume)
+# or Postgres for teams:
+#   CHAT_RECALL_STORAGE=postgres \
+#   DATABASE_URL=postgres://chatrecall:chatrecall@postgres:5432/chat_recall \
+#     docker compose --profile postgres up -d
 
 services:
-  app:
+  server:
     build:
       context: .
       dockerfile: docker/Dockerfile.server
     ports:
       - "${WEB_PORT:-8080}:5000"
     volumes:
-      # Your AI tool dirs, read-only — the index is built from these. Compose
-      # expands ${HOME} (not ~), so the defaults work as-is.
-      - ${CLAUDE_DIR:-${HOME}/.claude}:/root/.claude:ro
-      - ${GEMINI_DIR:-${HOME}/.gemini}:/root/.gemini:ro
-      - ${CODEX_DIR:-${HOME}/.codex}:/root/.codex:ro
-      - ${OPENCODE_DIR:-${HOME}/.local/share/opencode}:/root/.local/share/opencode:ro
-      # Index + cache.db — named volume so they survive `compose down`.
+      # Index + caches — named volume so they survive `compose down`.
       - chat_recall_data:/data
     environment:
       CHAT_RECALL_DATA_DIR: /data
+      CHAT_RECALL_SERVER_MODE: server
+      CHAT_RECALL_EDITION: ${CHAT_RECALL_EDITION:-selfhost}
       HOST: 0.0.0.0
       PORT: 5000
-      # Search backend. Default 'none' = FTS5 keyword search, zero deps/keys.
-      # Set 'ollama' (+ --profile ollama) or 'gemini' (+ GEMINI_API_KEY) for vectors.
-      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-none}
-      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      # Summaries. Default 'none' = first prompt used as the title (no keys).
-      SUMMARY_PROVIDER: ${SUMMARY_PROVIDER:-none}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      # Storage. sqlite (default, in the data volume) | postgres (team/cloud).
+      # Required for minting device tokens; unset ⇒ those endpoints are
+      # disabled (fail-closed) and the binary can never log in.
+      ADMIN_KEY: ${ADMIN_KEY:?set ADMIN_KEY in .env (e.g. openssl rand -hex 24)}
+      # Storage: sqlite (default, in the data volume) | postgres (teams).
       CHAT_RECALL_STORAGE: ${CHAT_RECALL_STORAGE:-sqlite}
       DATABASE_URL: ${DATABASE_URL:-}
-      CHAT_RECALL_TENANT: ${CHAT_RECALL_TENANT:-default}
+      # Dashboard auth: none (default; bind to localhost or your VPN!) |
+      # static-token | keycloak (set OIDC_JWKS_URL / OIDC_ISSUER too).
+      AUTH_PROVIDER: ${AUTH_PROVIDER:-none}
+      OIDC_JWKS_URL: ${OIDC_JWKS_URL:-}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
       NODE_ENV: production
     restart: unless-stopped
     healthcheck:
@@ -53,44 +59,7 @@ services:
       retries: 5
       start_period: 15s
 
-  # ── Optional: local Ollama for semantic/vector search ─────────────────────────
-  # `docker compose --profile ollama up -d` (set EMBEDDING_PROVIDER=ollama).
-  ollama:
-    image: ollama/ollama:latest
-    profiles: [ollama]
-    ports:
-      - "${OLLAMA_PORT:-11434}:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-
-  # Pulls the embedding model (+ the summary model if SUMMARY_PROVIDER=ollama)
-  # on first start, so `--profile ollama` is one command with no manual pulls.
-  ollama-init:
-    image: curlimages/curl:latest
-    profiles: [ollama]
-    depends_on:
-      ollama:
-        condition: service_healthy
-    restart: "no"
-    entrypoint: >
-      sh -c '
-        echo "Pulling embedding model: nomic-embed-text…"
-        curl -s http://ollama:11434/api/pull -d "{\"name\": \"nomic-embed-text\"}" | tail -1
-        if [ "${SUMMARY_PROVIDER:-}" = "ollama" ]; then
-          echo "Pulling summary model: ${OLLAMA_MODEL:-qwen2.5:3b}…"
-          curl -s http://ollama:11434/api/pull -d "{\"name\": \"${OLLAMA_MODEL:-qwen2.5:3b}\"}" | tail -1
-        fi
-        echo "Models ready."
-      '
-
-  # ── Optional: Postgres + pgvector (team/cloud storage backend) ────────────────
+  # ── Optional: Postgres + pgvector (team storage backend) ──────────────────
   # `docker compose --profile postgres up -d` + set CHAT_RECALL_STORAGE=postgres,
   #   DATABASE_URL=postgres://chatrecall:chatrecall@postgres:5432/chat_recall
   postgres:
@@ -113,5 +82,4 @@ services:
 
 volumes:
   chat_recall_data:
-  ollama_data:
   postgres_data:
