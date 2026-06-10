@@ -1,176 +1,76 @@
-# Chat-Recall Docker Compose
+# Chat-Recall — one container does everything: serves the UI + API and indexes
+# your sessions in the background.
 #
-# Quick start:
-#   cp .env.example .env          # Edit with your settings
-#   docker compose up -d          # Start all services
-#   open http://localhost:8080     # Web UI
+# Quick start (zero config, FTS keyword search, no API keys):
+#   docker compose up -d
+#   open http://localhost:8080
 #
-# Profiles:
-#   docker compose up -d                          # Default: starts Ollama + all services
-#   docker compose --profile gpu up -d            # With GPU acceleration for Ollama
-#   docker compose up -d --scale ollama=0         # Skip Ollama (use external/host Ollama)
+# Optional semantic (vector) search via local Ollama:
+#   EMBEDDING_PROVIDER=ollama docker compose --profile ollama up -d
 #
-# To use your host Ollama instead of the container:
-#   Set OLLAMA_HOST=http://host.docker.internal:11434 in .env
-#   Then: docker compose up -d --scale ollama=0
+# Optional Postgres backend (team/cloud):
+#   docker compose --profile postgres up -d   # + set CHAT_RECALL_STORAGE=postgres, DATABASE_URL
 
 services:
-  # ── Ollama: Local embedding model server ──────────────────────────────
-  ollama:
-    image: ollama/ollama:latest
-    ports:
-      - "${OLLAMA_PORT:-11434}:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    restart: unless-stopped
-    healthcheck:
-      # ollama's bundled `ollama list` exits 0 when the daemon answers; the
-      # image doesn't ship curl/wget so this is the cheapest probe.
-      test: ["CMD", "ollama", "list"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-
-  # Ollama with GPU support (use --profile gpu)
-  ollama-gpu:
-    image: ollama/ollama:latest
-    profiles: [gpu]
-    ports:
-      - "${OLLAMA_PORT:-11434}:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    restart: unless-stopped
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-
-  # ── Model init: Pull required models on first start ───────────────────
-  ollama-init:
-    image: curlimages/curl:latest
-    depends_on:
-      ollama:
-        condition: service_healthy
-    restart: "no"
-    entrypoint: >
-      sh -c '
-        echo "Pulling embedding model: nomic-embed-text..."
-        curl -s http://ollama:11434/api/pull -d "{\"name\": \"nomic-embed-text\"}" | tail -1
-        if [ -n "${OLLAMA_SUMMARY_MODEL:-}" ]; then
-          echo "Pulling summary model: ${OLLAMA_SUMMARY_MODEL}..."
-          curl -s http://ollama:11434/api/pull -d "{\"name\": \"${OLLAMA_SUMMARY_MODEL}\"}" | tail -1
-        fi
-        echo "Models ready."
-      '
-
-  # ── Backend API server ────────────────────────────────────────────────
-  server:
+  app:
     build:
       context: .
       dockerfile: docker/Dockerfile.server
     ports:
-      - "${API_PORT:-5000}:5000"
+      - "${WEB_PORT:-8080}:5000"
     volumes:
-      # Host AI dirs, read-only. Compose expands ${HOME} (NOT ~), so defaults work.
+      # Your AI tool dirs, read-only — the index is built from these. Compose
+      # expands ${HOME} (not ~), so the defaults work as-is.
       - ${CLAUDE_DIR:-${HOME}/.claude}:/root/.claude:ro
       - ${GEMINI_DIR:-${HOME}/.gemini}:/root/.gemini:ro
       - ${CODEX_DIR:-${HOME}/.codex}:/root/.codex:ro
       - ${OPENCODE_DIR:-${HOME}/.local/share/opencode}:/root/.local/share/opencode:ro
-      # Index + cache.db live here — named volume so they survive `compose down`.
+      # Index + cache.db — named volume so they survive `compose down`.
       - chat_recall_data:/data
     environment:
       CHAT_RECALL_DATA_DIR: /data
-      # Embedding
-      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
+      HOST: 0.0.0.0
+      PORT: 5000
+      # Search backend. Default 'none' = FTS5 keyword search, zero deps/keys.
+      # Set 'ollama' (+ --profile ollama) or 'gemini' (+ GEMINI_API_KEY) for vectors.
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-none}
       OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      # Summaries
-      SUMMARY_PROVIDER: ${SUMMARY_PROVIDER:-ollama}
-      OLLAMA_MODEL: ${OLLAMA_SUMMARY_MODEL:-qwen2.5:7b}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3-flash-preview}
+      # Summaries. Default 'none' = first prompt used as the title (no keys).
+      SUMMARY_PROVIDER: ${SUMMARY_PROVIDER:-none}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      # OpenAI-compatible summary provider (OpenRouter / Ollama Cloud / NVIDIA / OpenAI / custom)
-      SUMMARY_API_BASE_URL: ${SUMMARY_API_BASE_URL:-}
-      SUMMARY_API_MODEL: ${SUMMARY_API_MODEL:-}
-      SUMMARY_API_KEY: ${SUMMARY_API_KEY:-}
-      # Storage backend: sqlite (default, in chat_recall_data) | postgres (team/cloud).
-      # For postgres run `docker compose --profile postgres up` and set these.
+      # Storage. sqlite (default, in the data volume) | postgres (team/cloud).
       CHAT_RECALL_STORAGE: ${CHAT_RECALL_STORAGE:-sqlite}
       DATABASE_URL: ${DATABASE_URL:-}
       CHAT_RECALL_TENANT: ${CHAT_RECALL_TENANT:-default}
-      # Server
-      PORT: 5000
-      HOST: 0.0.0.0
       NODE_ENV: production
-    depends_on:
-      ollama:
-        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 15s
 
-  # ── Web frontend (React + nginx) ─────────────────────────────────────
-  client:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.client
+  # ── Optional: local Ollama for semantic/vector search ─────────────────────────
+  # `docker compose --profile ollama up -d` (set EMBEDDING_PROVIDER=ollama).
+  ollama:
+    image: ollama/ollama:latest
+    profiles: [ollama]
     ports:
-      - "${WEB_PORT:-8080}:80"
-    depends_on:
-      server:
-        condition: service_healthy
-    restart: unless-stopped
-
-  # ── Auto-indexer daemon ───────────────────────────────────────────────
-  indexer:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.server
+      - "${OLLAMA_PORT:-11434}:11434"
     volumes:
-      - ${CLAUDE_DIR:-${HOME}/.claude}:/root/.claude:ro
-      - ${GEMINI_DIR:-${HOME}/.gemini}:/root/.gemini:ro
-      - ${CODEX_DIR:-${HOME}/.codex}:/root/.codex:ro
-      - ${OPENCODE_DIR:-${HOME}/.local/share/opencode}:/root/.local/share/opencode:ro
-      - chat_recall_data:/data
-    environment:
-      CHAT_RECALL_DATA_DIR: /data
-      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
-      OLLAMA_HOST: ${OLLAMA_HOST:-http://ollama:11434}
-      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      SUMMARY_PROVIDER: ${SUMMARY_PROVIDER:-ollama}
-      OLLAMA_MODEL: ${OLLAMA_SUMMARY_MODEL:-qwen2.5:7b}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3-flash-preview}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      SUMMARY_API_BASE_URL: ${SUMMARY_API_BASE_URL:-}
-      SUMMARY_API_MODEL: ${SUMMARY_API_MODEL:-}
-      SUMMARY_API_KEY: ${SUMMARY_API_KEY:-}
-      CHAT_RECALL_STORAGE: ${CHAT_RECALL_STORAGE:-sqlite}
-      DATABASE_URL: ${DATABASE_URL:-}
-      CHAT_RECALL_TENANT: ${CHAT_RECALL_TENANT:-default}
-      NODE_ENV: production
-    depends_on:
-      ollama:
-        condition: service_healthy
+      - ollama_data:/root/.ollama
     restart: unless-stopped
-    command: ["node_modules/.bin/tsx", "packages/cli/auto-indexer/indexer.ts"]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
-  # ── Postgres + pgvector (team/cloud storage backend) ──────────────────
-  # Opt-in: `docker compose --profile postgres up`. Then set in .env:
-  #   CHAT_RECALL_STORAGE=postgres
+  # ── Optional: Postgres + pgvector (team/cloud storage backend) ────────────────
+  # `docker compose --profile postgres up -d` + set CHAT_RECALL_STORAGE=postgres,
   #   DATABASE_URL=postgres://chatrecall:chatrecall@postgres:5432/chat_recall
   postgres:
     image: pgvector/pgvector:pg16
@@ -191,9 +91,6 @@ services:
       retries: 5
 
 volumes:
-  ollama_data:
-    # Persists Ollama models between restarts
   chat_recall_data:
+  ollama_data:
   postgres_data:
-    # Persists the Postgres (team/cloud) backend between restarts
-    # Persists the search index + cache.db (CHAT_RECALL_DATA_DIR=/data)
