@@ -12,6 +12,9 @@ import express from 'express';
 import pg from 'pg';
 import { createHash, randomBytes } from 'crypto';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
+import { existsSync } from 'fs';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
 const PORT = process.env.PORT || 8080;
 const pool = new pg.Pool({
@@ -236,5 +239,17 @@ app.get('/api/findings/by-project', async (req, res) => {
              FROM secret_findings GROUP BY 1 ORDER BY live DESC, distinct_secrets DESC`).then(r => r.rows));
   res.json({ tenant: auth.tenant_slug, projects: rows });
 });
+
+// ── Static dashboard (bundled React SPA) ───────────────────────────────────
+// In the cloud image the built client lives at STATIC_DIR (default /app/client,
+// see Dockerfile). Serve it same-origin so VITE_API_BASE='/api' just works, and
+// fall back to index.html for client-side routes. /api and /health are matched
+// above, so the SPA catch-all never shadows them.
+const STATIC_DIR = process.env.STATIC_DIR || resolve(dirname(fileURLToPath(import.meta.url)), 'client');
+if (existsSync(STATIC_DIR)) {
+  app.use(express.static(STATIC_DIR));
+  app.get(/^\/(?!api\/|health\b).*/, (_req, res) => res.sendFile(resolve(STATIC_DIR, 'index.html')));
+  console.log(`Serving dashboard from ${STATIC_DIR}`);
+}
 
 app.listen(PORT, () => console.log(`chat-recall sync API on :${PORT}`));
