@@ -906,14 +906,18 @@ export class MemoryStore {
       where.push('project_id = ?');
       params.push(opts.projectIdFilter);
     } else if (!opts.includeUntracked) {
-      // Default: hide only the truly-unmappable `path:` bucket from the
-      // unfiltered feed. Real repos with `git:` ids stay; the user can
-      // opt into untracked via `?include_untracked=1` or by clicking
-      // the "Untracked locations" node. Empty project_id rows are
-      // tasks/plans/etc with no project association by data design
-      // (linked via UUID, not path) — those are filtered separately by
-      // source_type='session'.
-      where.push("project_id NOT LIKE 'path:%'");
+      // Default: hide only the genuine noise buckets — PR-bot worktrees and
+      // /tmp scratch. Real local projects resolve to `path:<dir>` whenever git
+      // metadata isn't available (e.g. the repo isn't mounted, as in the
+      // Docker image), so blanket-hiding `path:%` would bury the user's actual
+      // work. Keep those visible; only the known-templated/scratch paths are
+      // hidden. Users can still see everything via `?include_untracked=1`.
+      where.push(
+        "project_id NOT LIKE 'path:%.claude-pr-bot' " +
+        "AND project_id NOT LIKE 'path:%/.claude-pr-bot/%' " +
+        "AND project_id NOT LIKE 'path:/tmp/%' " +
+        "AND project_id NOT LIKE 'path:/var/tmp/%'"
+      );
     }
     if (opts.toolFilter) {
       // Default tool when extra_json doesn't carry one is 'claude' — match
