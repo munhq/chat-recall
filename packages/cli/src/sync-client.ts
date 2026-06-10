@@ -13,7 +13,16 @@ import { redactSecrets } from '@chat-recall/engine/core/secret-redactor.js';
 import { loadSettings, saveSettings } from '@chat-recall/engine/core/settings.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
 import { extractTurnsAny } from '@chat-recall/engine/core/session-multi-tool.js';
+import { createStore, type StorageDriver } from '@chat-recall/engine/core/store/index.js';
 import '@chat-recall/engine/core/backends/index.js'; // register the tool backends
+
+// Local store handle for telemetry lookups during a sync walk. Opened once,
+// closed by the caller's process exit (CLI) / kept by the daemon.
+let _localStore: Promise<StorageDriver> | null = null;
+function localStore(): Promise<StorageDriver> {
+  if (!_localStore) _localStore = createStore();
+  return _localStore;
+}
 
 const CRED_PATH = join(homedir(), '.chat-recall', 'credentials.json');
 
@@ -61,19 +70,46 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
     let turns;
     try { turns = extractTurnsAny(ref.prefixedId, { maxTurns: 5000 }); } catch { skipped++; continue; }
     if (!turns.found) { skipped++; continue; }
-    const text = turns.turns
-      .filter((t) => (t.kind === 'user' || t.kind === 'assistant_text') && t.text)
-      .map((t) => t.text)
-      .join('\n');
-    if (!text.trim()) { skipped++; continue; }
+
+    // Structured per-turn payload (each turn redacted independently) — the
+    // server indexes turns into chunks and serves them back as the
+    // conversation view. `redacted_text` stays for the legacy sync server.
     const count = { redactions: 0 };
-    const redacted = redactSecrets(text, { force: true, count });
+    const structured: Array<{ role: 'user' | 'assistant'; text: string; ts?: number }> = [];
+    for (const t of turns.turns) {
+      if ((t.kind !== 'user' && t.kind !== 'assistant_text') || !t.text) continue;
+      structured.push({
+        role: t.kind === 'user' ? 'user' : 'assistant',
+        text: redactSecrets(t.text, { force: true, count }),
+        ts: t.ts || undefined,
+      });
+    }
+    if (structured.length === 0) { skipped++; continue; }
     redactions += count.redactions;
+
+    // Session telemetry for server-side analytics — copied from the local
+    // index's extra_json (tokens/models/cost/duration carry no content).
+    let meta: Record<string, unknown> = { messageCount: structured.length };
+    try {
+      const row = await (await localStore()).getItem(ref.prefixedId, 'session');
+      if (row?.extra_json) {
+        const extra = JSON.parse(row.extra_json);
+        for (const k of ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens',
+                         'peakContextTokens', 'costUsd', 'durationMs', 'modelsUsed', 'toolsUsed',
+                         'messageCount', 'gitBranch'] as const) {
+          if (extra[k] !== undefined) meta[k] = extra[k];
+        }
+      }
+    } catch { /* meta is best-effort */ }
+
     conversations.push({
       session_id: ref.prefixedId,
       tool: ref.toolId,
       project_path: opts.cleartextPaths ? ref.projectPath : hashPath(ref.projectPath),
-      redacted_text: redacted,
+      redacted_text: structured.map((t) => t.text).join('\n'),
+      turns: structured,
+      first_prompt: structured.find((t) => t.role === 'user')?.text.slice(0, 200),
+      meta,
       mtime: Math.floor(ref.mtime) || 0,
     });
   }

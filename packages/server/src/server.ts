@@ -18,6 +18,9 @@ import toolkitRouter from './routes/toolkit.js';
 import secretsRouter from './routes/secrets.js';
 import { tenantAuth } from './middleware/auth.js';
 import projectsRouter from './routes/projects.js';
+import syncRouter from './routes/sync.js';
+import teamsRouter from './routes/teams.js';
+import { capabilities, isServerMode } from './util/mode.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '5000', 10);
@@ -40,6 +43,17 @@ app.use((req, res, next) => {
   next();
 });
 
+// Open metadata: lets the client decide which views to render before auth.
+app.get('/api/capabilities', (_req, res) => res.json(capabilities()));
+
+// Self-authenticating surfaces, mounted BEFORE tenantAuth:
+//   /api/sync       — agent (device) token; resolves + scopes its own tenant.
+//   /api (teams)    — /me, /teams*, /tenants* verify the Keycloak user or the
+//                     admin key directly; they map identity → tenant, so they
+//                     run before any tenant exists for the request.
+app.use('/api/sync', syncRouter);
+app.use('/api', teamsRouter);
+
 // Tenant auth: resolves req.tenant and makes it ambient for the request (see
 // middleware/auth.ts). Scoped to /api so /health + the static client stay open.
 // Provider is 'none' by default (self-host single-tenant, tenant='default').
@@ -51,11 +65,17 @@ app.use('/api/conversations', conversationsRouter);
 app.use('/api/status', statusRouter);
 app.use('/api/memory', memoryRouter);
 app.use('/api/analytics', analyticsRouter);
-app.use('/api/settings', settingsRouter);
-app.use('/api/edits', editsRouter);
-app.use('/api/toolkit', toolkitRouter);
 app.use('/api/secrets', secretsRouter);
-app.use('/api/projects', projectsRouter);
+
+// FS-backed routers exist only in local mode: in a server deployment data
+// arrives via /api/sync and there is no ~/.claude to walk, no settings file
+// the UI should edit, no toolkit files to write, no projects.json.
+if (!isServerMode()) {
+  app.use('/api/settings', settingsRouter);
+  app.use('/api/edits', editsRouter);
+  app.use('/api/toolkit', toolkitRouter);
+  app.use('/api/projects', projectsRouter);
+}
 
 // Health check
 app.get('/health', (req, res) => {
@@ -93,25 +113,33 @@ app.listen(PORT, HOST, () => {
   console.log(`  Health: http://${HOST}:${PORT}/health`);
   console.log(`  Bind: ${HOST} (set HOST=0.0.0.0 for network access)\n`);
 
-  // Pre-warm the caches that the UI hits on first page load. Without
-  // this, the user's first /status, /analytics, /outcome calls each pay
-  // their own 1-2s cold-walk cost. Better to absorb it once at boot.
-  // All warmups run async in parallel — listen() doesn't block.
-  void import('./routes/conversations.js').then(m => m.prewarmConversationCaches());
+  const caps = capabilities();
+  console.log(`  Mode: ${caps.mode} · edition: ${caps.edition}`);
 
-  // Warm the per-route TTL caches by hitting the actual HTTP endpoints.
-  // Going through the routes (rather than calling the service classes
-  // directly) guarantees we warm the SAME singleton instances the route
-  // handlers use — calling `new Service()` from outside creates a
-  // separate instance with its own empty cache, which doesn't help.
-  setTimeout(() => {
-    void Promise.all([
-      fetch(`http://127.0.0.1:${PORT}/api/status`).then(() => 'status'),
-      fetch(`http://127.0.0.1:${PORT}/api/analytics`).then(() => 'analytics'),
-      fetch(`http://127.0.0.1:${PORT}/api/memory/status`).then(() => 'memory/status'),
-      fetch(`http://127.0.0.1:${PORT}/api/edits/timeline?since_hours=24&limit=200`).then(() => 'edits/timeline'),
-    ]).then(results => {
-      console.log(`  Route caches warmed: ${results.filter(Boolean).join(', ')}`);
-    }).catch(() => { /* benign — first user request will pay */ });
-  }, 300);
+  // Cache prewarming only makes sense in local mode — in server mode there
+  // is no filesystem to walk and (with keycloak auth) the warm fetches
+  // would just 401.
+  if (!isServerMode()) {
+    // Pre-warm the caches that the UI hits on first page load. Without
+    // this, the user's first /status, /analytics, /outcome calls each pay
+    // their own 1-2s cold-walk cost. Better to absorb it once at boot.
+    // All warmups run async in parallel — listen() doesn't block.
+    void import('./routes/conversations.js').then(m => m.prewarmConversationCaches());
+
+    // Warm the per-route TTL caches by hitting the actual HTTP endpoints.
+    // Going through the routes (rather than calling the service classes
+    // directly) guarantees we warm the SAME singleton instances the route
+    // handlers use — calling `new Service()` from outside creates a
+    // separate instance with its own empty cache, which doesn't help.
+    setTimeout(() => {
+      void Promise.all([
+        fetch(`http://127.0.0.1:${PORT}/api/status`).then(() => 'status'),
+        fetch(`http://127.0.0.1:${PORT}/api/analytics`).then(() => 'analytics'),
+        fetch(`http://127.0.0.1:${PORT}/api/memory/status`).then(() => 'memory/status'),
+        fetch(`http://127.0.0.1:${PORT}/api/edits/timeline?since_hours=24&limit=200`).then(() => 'edits/timeline'),
+      ]).then(results => {
+        console.log(`  Route caches warmed: ${results.filter(Boolean).join(', ')}`);
+      }).catch(() => { /* benign — first user request will pay */ });
+    }, 300);
+  }
 });

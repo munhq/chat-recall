@@ -50,7 +50,7 @@ export class PgWal implements WalDriver {
     const [operation, params, result] = a;
     await this.log(operation, params, result);
   }
-  async close(): Promise<void> { if (this.pool) await this.pool.end(); }
+  async close(): Promise<void> { /* pooled connection is shared (pg-pool.ts) — closePgPools() ends it */ }
 }
 
 export async function createWal(opts: CreateStoreOptions = {}): Promise<WalDriver> {
@@ -94,7 +94,7 @@ export class PgDiary implements DiaryDriver {
     const rows = (await tenantQuery(this.pool, this.t, `SELECT agent, topic, content, ts, session_id, project_path FROM diary_entries WHERE tenant=$1 AND agent=$2 ORDER BY ts DESC LIMIT $3`, [this.t, agentName, lastN])).rows;
     return rows.map((r: any) => ({ agent: r.agent, topic: r.topic, content: r.content, timestamp: r.ts, sessionId: r.session_id ?? undefined, projectPath: r.project_path ?? undefined })) as DiaryEntryOut;
   }
-  async close(): Promise<void> { if (this.pool) await this.pool.end(); }
+  async close(): Promise<void> { /* pooled connection is shared (pg-pool.ts) — closePgPools() ends it */ }
 }
 
 export async function createDiary(opts: CreateStoreOptions = {}): Promise<DiaryDriver> {

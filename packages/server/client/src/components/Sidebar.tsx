@@ -27,6 +27,8 @@ interface SidebarProps {
   extraSections?: SidebarSection[];
   view?: string;
   setView?: (v: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'settings') => void;
+  /** Views this deployment supports (/api/capabilities). Absent = all. */
+  enabledViews?: Set<string>;
 }
 
 const MOBILE_NAV_ITEMS: Array<{ id: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security'; label: string; icon: string }> = [
@@ -51,7 +53,9 @@ export default function Sidebar({
   toolFilter, setToolFilter,
   extraSections,
   view, setView,
+  enabledViews,
 }: SidebarProps) {
+  const navItems = MOBILE_NAV_ITEMS.filter((n) => !enabledViews || enabledViews.has(n.id));
   return (
     <aside
       id="cr-sidebar-drawer"
@@ -72,7 +76,7 @@ export default function Sidebar({
           <div className="cr-mobile-only" style={{ padding: '14px 12px 4px' }}>
             <div className="cr-h4" style={{ marginBottom: 10, paddingLeft: 6 }}>Navigate</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-              {MOBILE_NAV_ITEMS.map((n) => (
+              {navItems.map((n) => (
                 <SidebarRowItem
                   key={n.id}
                   active={view === n.id}

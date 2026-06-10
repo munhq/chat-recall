@@ -30,9 +30,6 @@ type Ret<M extends keyof MemoryStore> = MemoryStore[M] extends (...a: any) => in
 // cache would never hit).
 export function intMs(x: unknown): number { return Math.floor(Number(x) || 0); }
 
-// node-postgres returns BIGINT (int8, oid 20) as string by default; parse to
-// number so rows match the SQLite numeric shape callers expect.
-let int8ParserSet = false;
 
 export class PgStore implements StorageDriver {
   private pool: any;
@@ -46,12 +43,10 @@ export class PgStore implements StorageDriver {
   }
 
   async init(): Promise<void> {
-    const pg = (await import('pg')).default;
-    if (!int8ParserSet) { pg.types.setTypeParser(20, (v: string | null) => (v === null ? null : parseInt(v, 10))); int8ParserSet = true; }
     if (!this.databaseUrl) throw new Error('PgStore: no DATABASE_URL configured');
-    this.pool = new pg.Pool({ connectionString: this.databaseUrl, max: 8 });
-    const { PG_SCHEMA } = await import('./pg-schema.js');
-    await this.pool.query(PG_SCHEMA);
+    // Shared per-URL pool (schema bootstrap + int8 parser handled inside).
+    const { openPgPool } = await import('./pg-pool.js');
+    this.pool = await openPgPool(this.databaseUrl);
     await this.q(`INSERT INTO tenants (tenant, created_at) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [this.tenant, Date.now()]);
   }
 
@@ -433,7 +428,7 @@ export class PgStore implements StorageDriver {
     return this.q(`SELECT scope, key, value, updated_at FROM kv_store WHERE tenant=$1 AND scope=$2 ORDER BY updated_at DESC LIMIT $3`, [this.t, scope, limit]) as any;
   }
 
-  async close(): Promise<void> { if (this.pool) await this.pool.end(); }
+  async close(): Promise<void> { /* pooled connection is shared (pg-pool.ts) — closePgPools() ends it */ }
 }
 
 /** Group chunk rows by item — same shape/logic as MemoryStore.searchFTS. */
