@@ -1818,6 +1818,68 @@ program
   });
 
 program
+  .command('watch')
+  .description('Run the live indexer daemon (watches all AI-tool session stores, generates summaries, precomputes, syncs when logged in)')
+  .option('--install-service', 'Install + start a systemd user service instead of running in the foreground (Linux only)')
+  .action(async (opts: { installService?: boolean }) => {
+    if (opts.installService) {
+      if (process.platform !== 'linux') {
+        console.error(chalk.red('--install-service currently supports Linux (systemd --user) only.'));
+        console.error(chalk.dim('Run `chat-recall watch` in the foreground, or use your OS scheduler to run `chat-recall-watch`.'));
+        process.exit(1);
+      }
+      const { fileURLToPath } = await import('url');
+      const { mkdirSync, writeFileSync } = await import('fs');
+      // The daemon entry sits next to this file in dist/ — resolve it so the
+      // unit survives npm prefix moves better than relying on PATH at boot.
+      const watchJs = fileURLToPath(new URL('./watch.js', import.meta.url));
+      const unitDir = join(homedir(), '.config', 'systemd', 'user');
+      const unitPath = join(unitDir, 'chat-recall-watch.service');
+      const unit = [
+        '[Unit]',
+        'Description=chat-recall live indexer (sessions → local index, optional server sync)',
+        'After=default.target',
+        '',
+        '[Service]',
+        `ExecStart=${process.execPath} ${watchJs}`,
+        'Restart=on-failure',
+        'RestartSec=10',
+        'Nice=10',
+        '',
+        '[Install]',
+        'WantedBy=default.target',
+        '',
+      ].join('\n');
+      mkdirSync(unitDir, { recursive: true });
+      writeFileSync(unitPath, unit);
+      try {
+        execSync('systemctl --user daemon-reload && systemctl --user enable --now chat-recall-watch.service', { stdio: 'inherit' });
+        console.log(chalk.green('✓ chat-recall-watch service installed and started.'));
+        console.log(chalk.dim('  status:  systemctl --user status chat-recall-watch'));
+        console.log(chalk.dim('  logs:    journalctl --user -u chat-recall-watch -f'));
+      } catch {
+        console.error(chalk.red('Unit written but systemctl failed.') + chalk.dim(`  Unit: ${unitPath}`));
+        process.exit(1);
+      }
+      return;
+    }
+    // Foreground: the daemon module starts its watchers + workers on import.
+    // Non-literal specifier so esbuild does NOT inline the daemon into cli.js
+    // — in the published package it lives at dist/watch.js next to this file;
+    // in the dev tree it's the raw auto-indexer source.
+    const candidates = [
+      new URL('./watch.js', import.meta.url).href,
+      new URL('../auto-indexer/indexer.js', import.meta.url).href,
+    ];
+    let lastErr: unknown;
+    for (const spec of candidates) {
+      try { await import(spec); return; } catch (err) { lastErr = err; }
+    }
+    console.error(chalk.red('Could not load the watch daemon:'), lastErr instanceof Error ? lastErr.message : lastErr);
+    process.exit(1);
+  });
+
+program
   .command('login <server-url>')
   .description('Log in via Keycloak (device flow) and mint a sync device token → ~/.chat-recall/credentials.json (0600)')
   .option('--token <token>', 'Self-host: skip OIDC and save this device token directly')
@@ -1877,14 +1939,27 @@ program
 
 program
   .command('sync')
-  .description('Push redacted conversations to the configured server (secrets always masked)')
+  .description('Push redacted conversations to the configured server (secrets always masked). Bare `sync` is incremental (watermark-based); flags force an explicit window.')
   .option('--since-hours <n>', 'Only sync sessions modified in the last N hours')
   .option('--limit <n>', 'Max sessions to sync')
+  .option('--full', 'Ignore the watermark and push everything')
   .option('--paths-cleartext', 'Send project paths in cleartext (self-host only; default hashes them)')
-  .action(async (opts: { sinceHours?: string; limit?: string; pathsCleartext?: boolean }) => {
-    const { syncSessions } = await import('./sync-client.js');
-    const sinceMs = opts.sinceHours ? Date.now() - Number(opts.sinceHours) * 3_600_000 : undefined;
+  .action(async (opts: { sinceHours?: string; limit?: string; full?: boolean; pathsCleartext?: boolean }) => {
+    const { syncSessions, syncIncremental } = await import('./sync-client.js');
     try {
+      // Bare `chat-recall sync` = incremental: only sessions modified since
+      // the last successful sync, watermark advanced on success. Any explicit
+      // flag switches to the manual one-shot path (watermark untouched).
+      if (!opts.sinceHours && !opts.limit && !opts.full && !opts.pathsCleartext) {
+        const r = await syncIncremental();
+        if (r === null) {
+          console.error(chalk.red('Not logged in (or sync disabled) — run `chat-recall login <server-url>` first.'));
+          process.exit(1);
+        }
+        console.log(chalk.green(`✓ Synced ${r.uploaded} session(s)`) + chalk.dim(` — ${r.skipped} skipped, ${r.redactions} secrets redacted (incremental)`));
+        return;
+      }
+      const sinceMs = opts.sinceHours ? Date.now() - Number(opts.sinceHours) * 3_600_000 : undefined;
       const r = await syncSessions({
         sinceMs,
         cleartextPaths: !!opts.pathsCleartext,

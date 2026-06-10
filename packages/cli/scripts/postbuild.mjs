@@ -8,7 +8,7 @@
  */
 import { chmodSync } from 'node:fs';
 
-for (const path of ['dist/cli.js', 'dist/mcp.js']) {
+for (const path of ['dist/cli.js', 'dist/mcp.js', 'dist/watch.js']) {
   try {
     chmodSync(path, 0o755);
   } catch (err) {
