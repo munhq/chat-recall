@@ -47,7 +47,9 @@ export class PgStore implements StorageDriver {
     // Shared per-URL pool (schema bootstrap + int8 parser handled inside).
     const { openPgPool } = await import('./pg-pool.js');
     this.pool = await openPgPool(this.databaseUrl);
-    await this.q(`INSERT INTO tenants (tenant, created_at) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [this.tenant, Date.now()]);
+    // display_name = tenant keeps migrated databases happy (legacy schema
+    // declared the column NOT NULL).
+    await this.q(`INSERT INTO tenants (tenant, display_name, created_at) VALUES ($1, $1, $2) ON CONFLICT DO NOTHING`, [this.tenant, Date.now()]);
   }
 
   private async q(sql: string, params: unknown[] = []): Promise<any[]> {

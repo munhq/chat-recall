@@ -53,6 +53,11 @@ COPY --from=build /app/packages/server/dist ./packages/server/dist
 # The built SPA, served same-origin from STATIC_DIR.
 COPY --from=client /client/dist ./client
 
+# Migration runner + SQL — the k8s migrate initContainer runs
+# `node migrate/migrate.mjs` from this same image (pg comes from node_modules).
+COPY packages/server/cloud/migrate.mjs ./migrate/migrate.mjs
+COPY packages/server/cloud/migrations ./migrate/migrations
+
 EXPOSE 5000
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
