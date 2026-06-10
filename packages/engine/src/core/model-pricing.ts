@@ -134,7 +134,56 @@ export function pricingFor(modelId: string): PriceEntry | null {
  * the most-expensive matching entry to the whole token bundle — close
  * enough for billing-context purposes, exact per-model breakdown would
  * require per-message token attribution which the JSONL doesn't carry.
+ *
+ * Token semantics match `SessionMetadata` (see parsers/session.ts):
+ * `inputTokens` is the TOTAL context (un-cached input + cacheRead +
+ * cacheCreate summed per message), so the un-cached portion billed at
+ * the full input rate is `inputTokens - cacheReadTokens -
+ * cacheCreationTokens`. Charging the full total at the input rate AND
+ * the cache tokens again at cache rates double-bills every cached
+ * token — on Claude Code sessions (cache-dominated) that inflated
+ * costUsd by 5-10x.
+ *
+ * Returns `null` when no model in the set has a published price
+ * (Gemini-CLI local, Ollama, custom endpoints) so callers can report
+ * "unpriced" instead of a fabricated $0.
  */
+export function estimateCostUsdOrNull(
+  modelsUsed: string[],
+  tokens: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheCreationTokens: number;
+  },
+): number | null {
+  // Pick the most-expensive model in the set (defensive upper bound;
+  // most sessions use a single model so this collapses to that model).
+  let best: PriceEntry | null = null;
+  let bestRate = -1;
+  for (const m of modelsUsed) {
+    if (!m || m === '<synthetic>') continue;
+    const p = pricingFor(m);
+    if (p && p.output > bestRate) {
+      best = p;
+      bestRate = p.output;
+    }
+  }
+  if (!best) return null;
+  const nonCachedInput = Math.max(
+    0,
+    tokens.inputTokens - tokens.cacheReadTokens - tokens.cacheCreationTokens,
+  );
+  const cost =
+    (nonCachedInput / 1_000_000) * best.input +
+    (tokens.outputTokens / 1_000_000) * best.output +
+    (tokens.cacheReadTokens / 1_000_000) * best.cacheRead +
+    (tokens.cacheCreationTokens / 1_000_000) * best.cacheCreate;
+  return Math.round(cost * 100) / 100;
+}
+
+/** Like `estimateCostUsdOrNull` but collapses "unpriced" to 0 for callers
+ *  that store a plain number (SessionMetadata.costUsd). */
 export function estimateCostUsd(
   modelsUsed: string[],
   tokens: {
@@ -144,29 +193,11 @@ export function estimateCostUsd(
     cacheCreationTokens: number;
   },
 ): number {
-  if (modelsUsed.length === 0) return 0;
-  // Pick the most-expensive model in the set (defensive upper bound;
-  // most sessions use a single model so this collapses to that model).
-  let best: PriceEntry | null = null;
-  let bestRate = -1;
-  for (const m of modelsUsed) {
-    const p = pricingFor(m);
-    if (p && p.output > bestRate) {
-      best = p;
-      bestRate = p.output;
-    }
-  }
-  if (!best) return 0;
-  const cost =
-    (tokens.inputTokens / 1_000_000) * best.input +
-    (tokens.outputTokens / 1_000_000) * best.output +
-    (tokens.cacheReadTokens / 1_000_000) * best.cacheRead +
-    (tokens.cacheCreationTokens / 1_000_000) * best.cacheCreate;
-  return Math.round(cost * 100) / 100;
+  return estimateCostUsdOrNull(modelsUsed, tokens) ?? 0;
 }
 
 /** Single source of truth for the parser metadata-schema version. Bump
  *  whenever a parser adds a new `extra.*` field so the auto-indexer
  *  re-parses existing sessions on the next sweep without needing
  *  `--force`. See src/core/memory-store.ts `needsUpdate`. */
-export const METADATA_VERSION = 2;
+export const METADATA_VERSION = 3; // v3: costUsd no longer double-bills cached tokens

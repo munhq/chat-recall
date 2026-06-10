@@ -41,6 +41,18 @@ npm run web:install                 # install web deps
 npm run web:dev                     # API on :5000, UI on :5173
 ```
 
+### Keep the index live (+ optional server sync)
+
+```bash
+chat-recall watch                    # foreground daemon: watches all 4 tools, summaries, precompute
+chat-recall watch --install-service  # Linux: install + start a systemd user service
+```
+
+When you're logged in to a chat-recall server (`chat-recall login <url>`), the
+daemon also pushes redacted conversations incrementally after each indexing
+batch — secrets are always masked client-side before anything leaves the
+machine. `chat-recall sync` does the same push once, on demand.
+
 ## Hook it up to Claude Code
 
 `chat-recall init` does this for you. Manual equivalent in `~/.mcp.json`:

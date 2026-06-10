@@ -64,6 +64,7 @@ import { createKnowledgeGraph } from '@chat-recall/engine/core/store/knowledge-g
 import { classifyChunk } from '@chat-recall/engine/core/memory-classifier.js';
 import { extractAndPopulateKG } from '@chat-recall/engine/core/entity-extractor.js';
 import { sanitizeQuery } from '@chat-recall/engine/core/query-sanitizer.js';
+import { estimateCostUsdOrNull } from '@chat-recall/engine/core/model-pricing.js';
 import { getWAL } from '@chat-recall/engine/core/write-ahead-log.js';
 import { DiarySource } from '@chat-recall/engine/parsers/diary-source.js';
 import { SkillsSource } from '@chat-recall/engine/parsers/skills-source.js';
@@ -2581,9 +2582,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             const modelsUsed = (extra.modelsUsed as string[]) || [];
             const durationMs = (extra.durationMs as number) || 0;
 
-            // Calculate cost (rough estimate)
-            const costEstimate = (inputTokens * 3 / 1_000_000) + (outputTokens * 15 / 1_000_000)
-              - (cacheReadTokens * 2.7 / 1_000_000);
+            // Engine pricing table — prefer the parser's stored costUsd,
+            // fall back to estimating from tokens for pre-costUsd rows.
+            const costEstimate = typeof extra.costUsd === 'number' && extra.costUsd > 0
+              ? extra.costUsd
+              : estimateCostUsdOrNull(modelsUsed, {
+                  inputTokens, outputTokens, cacheReadTokens,
+                  cacheCreationTokens: (extra.cacheCreationTokens as number) || 0,
+                }) ?? 0;
             totalCost += costEstimate;
             totalInputTokens += inputTokens;
             totalOutputTokens += outputTokens;
@@ -2804,8 +2810,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const filesModified = (extra.filesModified as string[]) || [];
           const modelsUsed = (extra.modelsUsed as string[]) || [];
 
-          const cost = (inputTokens * 3 / 1_000_000) + (outputTokens * 15 / 1_000_000)
-            - (cacheReadTokens * 2.7 / 1_000_000);
+          const cost = typeof extra.costUsd === 'number' && extra.costUsd > 0
+            ? extra.costUsd
+            : estimateCostUsdOrNull(modelsUsed, {
+                inputTokens, outputTokens, cacheReadTokens,
+                cacheCreationTokens: (extra.cacheCreationTokens as number) || 0,
+              }) ?? 0;
           totalCost += cost;
           totalDuration += durationMs;
           totalInputTokens += inputTokens;
@@ -2872,10 +2882,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           let prevCost = 0;
           for (const s of prevWeekSessions) {
             const extra = JSON.parse(s.extra_json || '{}');
-            const inp = (extra.inputTokens as number) || 0;
-            const out = (extra.outputTokens as number) || 0;
-            const cache = (extra.cacheReadTokens as number) || 0;
-            prevCost += (inp * 3 / 1_000_000) + (out * 15 / 1_000_000) - (cache * 2.7 / 1_000_000);
+            prevCost += typeof extra.costUsd === 'number' && extra.costUsd > 0
+              ? extra.costUsd
+              : estimateCostUsdOrNull((extra.modelsUsed as string[]) || [], {
+                  inputTokens: (extra.inputTokens as number) || 0,
+                  outputTokens: (extra.outputTokens as number) || 0,
+                  cacheReadTokens: (extra.cacheReadTokens as number) || 0,
+                  cacheCreationTokens: (extra.cacheCreationTokens as number) || 0,
+                }) ?? 0;
           }
           const pctChange = prevCost > 0 ? Math.round(((totalCost - prevCost) / prevCost) * 100) : 0;
           const arrow = pctChange > 0 ? '+' : '';
@@ -3482,22 +3496,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'recall_analytics_summary': {
         RecallAnalyticsSummarySchema.parse(args);
 
-        // Pricing for known Claude models. Mirrors web/server analytics.
-        // Models we don't have published prices for (Gemini, Ollama, custom)
-        // are tracked in `noPricing` so we never fabricate dollars.
-        const PRICING: Record<string, { input: number; output: number; cacheRead: number }> = {
-          'claude-opus-4-6':   { input: 15,  output: 75, cacheRead: 1.5 },
-          'claude-sonnet-4-6': { input: 3,   output: 15, cacheRead: 0.3 },
-          'claude-haiku-4-5':  { input: 0.8, output: 4,  cacheRead: 0.08 },
-          'claude-sonnet-4-5': { input: 3,   output: 15, cacheRead: 0.3 },
-        };
-        const priceFor = (m: string) => {
-          if (!m || m === '<synthetic>') return null;
-          if (PRICING[m]) return PRICING[m];
-          for (const [k, v] of Object.entries(PRICING)) if (m.startsWith(k)) return v;
-          return null;
-        };
-
         const store = await createStore();
         try {
           const items = await store.listItems('session' as SourceType, 5000, 0);
@@ -3519,23 +3517,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             let extra: any = {};
             try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
             const models: string[] = (extra.modelsUsed || []).filter((m: string) => m && m !== '<synthetic>');
-            let pricing: ReturnType<typeof priceFor> = null;
-            for (const m of models) { pricing = priceFor(m); if (pricing) break; }
 
-            let cost = 0;
-            if (pricing) {
-              const input = extra.inputTokens || 0;
-              const output = extra.outputTokens || 0;
-              const cacheRead = extra.cacheReadTokens || 0;
-              const cacheCreate = extra.cacheCreationTokens || 0;
-              const nonCached = Math.max(0, input - cacheRead - cacheCreate);
-              cost = (nonCached / 1e6) * pricing.input
-                   + (output / 1e6) * pricing.output
-                   + (cacheRead / 1e6) * pricing.cacheRead
-                   + (cacheCreate / 1e6) * (pricing.input * 1.25);
-            } else {
-              sessionsWithoutPricing++;
-            }
+            // Single pricing source: engine model-pricing. null = no published
+            // price for any model in the session (Gemini local, Ollama, custom)
+            // — counted separately so we never fabricate dollars.
+            const estimated = estimateCostUsdOrNull(models, {
+              inputTokens: extra.inputTokens || 0,
+              outputTokens: extra.outputTokens || 0,
+              cacheReadTokens: extra.cacheReadTokens || 0,
+              cacheCreationTokens: extra.cacheCreationTokens || 0,
+            });
+            const cost = estimated ?? 0;
+            if (estimated === null) sessionsWithoutPricing++;
             totalCost += cost;
 
             const proj = item.project_path?.split('/').pop() || item.project_path || '(unknown)';

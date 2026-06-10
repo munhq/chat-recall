@@ -1,4 +1,4 @@
-#!/usr/bin/env tsx
+#!/usr/bin/env node
 /**
  * Auto-indexer daemon for chat-recall.
  * Watches ~/.claude/projects/ for changes and auto-indexes new/modified sessions.
@@ -440,7 +440,43 @@ async function runIndexing() {
   await runSessionIndexing();
   await runMemoryIndexing();
   await maybeAutoCompact();
+  await maybeSyncToServer();
 }
+
+// ── Continuous server sync ──────────────────────────────────────────
+// When the user has run `chat-recall login` (credentials.json exists),
+// push redacted conversations to the configured server after each batch.
+// Watermark-based (settings.sync.lastSyncAt) so each run only uploads
+// sessions modified since the previous successful sync. Min-interval
+// guard keeps a chatty session from hammering the server; failures log
+// and retry on the next batch (the watermark only advances on success).
+const SYNC_MIN_INTERVAL_MS = Number(process.env.CHAT_RECALL_SYNC_INTERVAL_MS ?? 60_000);
+let lastSyncAttemptAt = 0;
+let syncInFlight = false;
+
+async function maybeSyncToServer(): Promise<void> {
+  if (syncInFlight) return;
+  if (Date.now() - lastSyncAttemptAt < SYNC_MIN_INTERVAL_MS) return;
+  syncInFlight = true;
+  lastSyncAttemptAt = Date.now();
+  try {
+    const { syncIncremental } = await import('../src/sync-client.js');
+    const r = await syncIncremental();
+    if (r === null) return; // not logged in — feature off
+    if (r.uploaded > 0) {
+      console.log(`[${new Date().toISOString()}] Sync: ${r.uploaded} session(s) pushed (${r.redactions} secrets redacted, ${r.skipped} skipped)`);
+    }
+  } catch (err) {
+    console.error(`[${new Date().toISOString()}] Sync failed (will retry next batch): ${(err as Error).message?.slice(0, 200)}`);
+  } finally {
+    syncInFlight = false;
+  }
+}
+
+// Also sync on a slow heartbeat so a quiet machine still converges even if
+// no file events fire (e.g. sessions written while the daemon was down).
+setInterval(() => { void maybeSyncToServer(); }, 15 * 60 * 1000).unref();
+setTimeout(() => { void maybeSyncToServer(); }, 20_000);
 
 /**
  * Run a LanceDB compaction in the daemon's idle window if we've written

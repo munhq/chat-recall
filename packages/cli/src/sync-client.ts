@@ -10,7 +10,7 @@ import { join, dirname } from 'node:path';
 import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { redactSecrets } from '@chat-recall/engine/core/secret-redactor.js';
-import { loadSettings } from '@chat-recall/engine/core/settings.js';
+import { loadSettings, saveSettings } from '@chat-recall/engine/core/settings.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
 import { extractTurnsAny } from '@chat-recall/engine/core/session-multi-tool.js';
 import '@chat-recall/engine/core/backends/index.js'; // register the tool backends
@@ -23,6 +23,14 @@ export function saveCredentials(c: Credentials): void {
   mkdirSync(dirname(CRED_PATH), { recursive: true });
   writeFileSync(CRED_PATH, JSON.stringify(c, null, 2));
   try { chmodSync(CRED_PATH, 0o600); } catch { /* windows */ }
+  // Logging in IS the sync opt-in: enable background sync and record the
+  // endpoint so the watch daemon starts pushing without further setup.
+  try {
+    const s = loadSettings();
+    s.sync.enabled = true;
+    s.sync.endpoint = c.serverUrl;
+    saveSettings(s);
+  } catch { /* settings unwritable — manual `chat-recall sync` still works */ }
 }
 export function loadCredentials(): Credentials | null {
   try { return JSON.parse(readFileSync(CRED_PATH, 'utf-8')) as Credentials; } catch { return null; }
@@ -84,4 +92,40 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
     uploaded += batch.length;
   }
   return { uploaded, skipped, redactions };
+}
+
+/**
+ * Incremental sync for the watch daemon and parameterless `chat-recall sync`:
+ * push only sessions modified after `settings.sync.lastSyncAt`, then advance
+ * the watermark. The watermark is captured BEFORE the walk so sessions that
+ * change mid-sync are re-pushed next time instead of being skipped forever.
+ *
+ * Returns null when sync isn't configured (no credentials) — callers treat
+ * that as "feature off", not an error.
+ */
+export async function syncIncremental(): Promise<SyncResult | null> {
+  const cred = loadCredentials();
+  if (!cred) return null;
+  let settings = loadSettings();
+  // Master switch (settings.sync.enabled) — `chat-recall login` flips it on;
+  // the user can turn background sync off without logging out. Legacy logins
+  // (credentials.json written before login set the flag) have enabled=false
+  // AND no endpoint recorded: treat that as consent (the only way to get
+  // credentials is an explicit login) and migrate the settings once. An
+  // endpoint WITH enabled=false means the user deliberately paused — respect it.
+  if (!settings.sync.enabled) {
+    if (settings.sync.endpoint) return null; // user paused
+    settings.sync.enabled = true;
+    settings.sync.endpoint = cred.serverUrl;
+    saveSettings(settings);
+    settings = loadSettings();
+  }
+  const startedAt = Date.now();
+  const sinceMs = settings.sync.lastSyncAt;
+  const result = await syncSessions({ sinceMs });
+  // Re-load before saving so we don't clobber settings written mid-sync.
+  const fresh = loadSettings();
+  fresh.sync.lastSyncAt = startedAt;
+  saveSettings(fresh);
+  return result;
 }
