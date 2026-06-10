@@ -1,0 +1,56 @@
+# Self-host chat-recall sync server — the local binary syncs HERE instead of the
+# SaaS. Multi-tenant cloud server (server.mjs) + Postgres. Run from this dir:
+#   docker compose up -d --build
+# Then mint a device token (admin-key, no Keycloak needed for self-host):
+#   curl -XPOST localhost:8090/api/tenants -H 'x-admin-key: dev-admin' \
+#        -H 'content-type: application/json' -d '{"slug":"me","display_name":"Me"}'
+#   curl -XPOST localhost:8090/api/tenants/me/tokens -H 'x-admin-key: dev-admin' \
+#        -H 'content-type: application/json' -d '{"device_id":"laptop"}'
+#   chat-recall login http://localhost:8090 --token <ct_...> ; chat-recall sync
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: chatrecall
+      POSTGRES_PASSWORD: chatrecall
+      POSTGRES_DB: chat_recall
+    volumes:
+      - crdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chatrecall -d chat_recall"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: cloud/Dockerfile
+    command: ["node", "migrate.mjs"]
+    environment:
+      MIGRATE_DATABASE_URL: postgres://chatrecall:chatrecall@db:5432/chat_recall
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  server:
+    build:
+      context: ..
+      dockerfile: cloud/Dockerfile
+    command: ["node", "server.mjs"]
+    environment:
+      DATABASE_URL: postgres://chatrecall:chatrecall@db:5432/chat_recall
+      ADMIN_KEY: ${ADMIN_KEY:-dev-admin}
+      PORT: "8080"
+    ports:
+      - "${SELFHOST_PORT:-8091}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  crdata:
