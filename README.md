@@ -2,12 +2,12 @@
 
 > Search, browse, and resume past AI coding sessions across Claude Code, Gemini CLI, and OpenCode — and let the agent search its own history via MCP.
 
-`chat-recall` indexes the JSONL/JSON/SQLite transcripts your AI tools already write to disk, gives you a web UI to browse them, and exposes them to Claude Code through **35 MCP tools** so the agent can recall its own past work without you copy-pasting context. Local-first by default, no account, no upload.
+`chat-recall` indexes the JSONL/JSON/SQLite transcripts your AI tools already write to disk, gives you a web UI to browse them, and exposes them to Claude Code through **42 MCP tools** so the agent can recall its own past work without you copy-pasting context. Local-first by default, no account, no upload.
 
 ## Four things it actually does
 
 1. **Cross-tool unified memory.** One index, one search, one UI for Claude Code (`~/.claude/projects/`), Gemini CLI (`~/.gemini/tmp/`), and OpenCode (`~/.local/share/opencode/`). Sessions, plans, tasks, CLAUDE.md, paste cache, command history, and agent diaries all share a single pluggable `MemorySource` interface.
-2. **The agent recalls itself.** 35 MCP tools so Claude Code can `recall_smart_resume`, `recall_similar_sessions`, `recall_files_touched`, `recall_subagent_search`, `recall_redundant_files`, etc., instead of you describing what happened last time. It can also write decisions back via `recall_decision_record` and stash small state via `recall_set` / `recall_get`.
+2. **The agent recalls itself.** 42 MCP tools so Claude Code can `recall_smart_resume`, `recall_similar_sessions`, `recall_files_touched`, `recall_subagent_search`, `recall_redundant_files`, etc., instead of you describing what happened last time. It can also write decisions back via `recall_decision_record` and stash small state via `recall_set` / `recall_get`.
 3. **Warns before redoing work.** A `UserPromptSubmit` hook fires on every prompt you type, runs a quick search for similar past sessions, and injects a brief "you've worked on this before in session X" notice into the agent's context. Pair with the bundled **codeindex** companion (see below) to also warn when the new code you're about to write looks like code that already exists.
 4. **Temporal knowledge graph.** Decisions and tool/library mentions become entity-relationship triples with `valid_from`/`valid_to` windows, so you (and the agent) can ask "what did we decide about X in March, and is it still true?".
 
@@ -16,49 +16,40 @@
 ```bash
 git clone <repo-url>
 cd chat-recall
-npm install
-npm run build
-node dist/cli.js index              # build the FTS5 index from on-disk sessions
-node dist/cli.js search "auth bug"  # try it
+./install.sh                  # builds the monorepo, links the `chat-recall` binary, runs init
+chat-recall search "auth bug" # try it
 ```
 
-That works right now. **No Ollama, no Gemini key, no Claude key.** SQLite FTS5 is the default search backend; vector search and summaries are upgrades, not requirements.
+That works right now. **No Ollama, no Gemini key, no Claude key.** SQLite FTS5 is the default search backend; vector search and summaries are upgrades, not requirements. `chat-recall init` also registers the MCP server in `~/.mcp.json` automatically.
 
 ### Optional: vector search
 
 ```bash
 ollama pull nomic-embed-text
-node dist/cli.js index --force      # this time chunks are embedded into LanceDB
+chat-recall index --force     # this time chunks are embedded into LanceDB
 ```
 
-…or set `EMBEDDING_PROVIDER=gemini` with `GEMINI_API_KEY` if you'd rather use a hosted embedder. Without either, search falls back to FTS5 — same UI, slightly less semantic.
+…or set `EMBEDDING_PROVIDER=gemini` with `GEMINI_API_KEY` if you'd rather use a hosted embedder. Without either, search falls back to FTS5 — same results surface, slightly less semantic.
 
-### Optional: web UI
+### Optional: web dashboard (server-side, separate from the local binary)
+
+The React dashboard belongs to the server product (SaaS or self-host docker
+compose) — the local binary itself has no UI. For dashboard development:
 
 ```bash
 npm run web:install                 # install web deps
 npm run web:dev                     # API on :5000, UI on :5173
 ```
 
-### Optional: Docker
-
-```bash
-cp .env.example .env
-docker compose up -d                # bundles server + client + Ollama + auto-indexer
-```
-
-UI at http://localhost:8080. First start pulls the embedding model (~270MB).
-
 ## Hook it up to Claude Code
 
-Add the MCP server to `~/.mcp.json` (or `~/.claude/settings.local.json`):
+`chat-recall init` does this for you. Manual equivalent in `~/.mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "chat-recall": {
-      "command": "node",
-      "args": ["/path/to/chat-recall/dist/mcp.js"]
+      "command": "chat-recall-mcp"
     }
   }
 }
@@ -67,14 +58,14 @@ Add the MCP server to `~/.mcp.json` (or `~/.claude/settings.local.json`):
 Then install the hooks (one command sets up auto-save, pre-compact backup, and the resume-hint that warns when you're about to redo work):
 
 ```bash
-node dist/cli.js install-hooks                # registers Stop + PreCompact + UserPromptSubmit
-node dist/cli.js install-hooks --no-resume-hint  # skip the resume warning if you don't want it
-node dist/cli.js install-hooks --uninstall     # remove all of ours, leave third-party hooks alone
+chat-recall install-hooks                # registers Stop + PreCompact + UserPromptSubmit
+chat-recall install-hooks --no-resume-hint  # skip the resume warning if you don't want it
+chat-recall install-hooks --uninstall     # remove all of ours, leave third-party hooks alone
 ```
 
 | Hook | When it fires | What it does |
 |---|---|---|
-| `Stop` | After every assistant turn | Auto-saves topics, decisions, and tools to `~/.claude/chat-recall-memory/` |
+| `Stop` | After every assistant turn | Auto-saves topics, decisions, and tools to `~/.chat-recall/memory/` |
 | `PreCompact` | Before Claude Code compacts context | Emergency save so nothing is lost to compaction |
 | `UserPromptSubmit` | When you type a prompt | Searches past sessions; if a similar one exists, injects "you've worked on this before" into the agent's context |
 
@@ -113,9 +104,9 @@ The codeindex release artifacts are currently in a private repo, so `--with-code
 | **CLAUDE.md** | Auto-discovered from project hashes | Linked to sessions in same project |
 | **History** | `~/.claude/history.jsonl` | Shell history, optionally tied to a session |
 | **Paste** | `~/.claude/paste-cache/*.txt` | Large pasted blobs |
-| **Diary** | `~/.claude/chat-recall-index/diary/<agent>/*.json` | What the agent told its future self via `recall_diary_write` |
+| **Diary** | `~/.chat-recall/index/diary/<agent>/*.json` | What the agent told its future self via `recall_diary_write` |
 
-## MCP tools (35)
+## MCP tools (42)
 
 **Search & retrieve** — `recall_search`, `recall_memory_search`, `recall_recent`, `recall_show`, `recall_context`, `recall_summary`, `recall_suggest_resume`, `recall_smart_resume`, `recall_project_context`, `recall_weekly_digest`, `recall_analytics_summary`, `recall_wake_up`.
 
@@ -147,7 +138,7 @@ Cost in USD is computed from token usage when at least one model in the session 
 ## Wake-up context
 
 ```bash
-node dist/cli.js memory wake-up
+chat-recall memory wake-up
 ```
 
 Builds a small bundle for an AI session: optional identity blurb, the top 10 chunks the classifier flagged as decisions/preferences/milestones at importance ≥ 4, and a snapshot of currently-valid knowledge-graph facts. No magic compression — just the highest-signal items the indexer already tags.
@@ -156,20 +147,20 @@ Builds a small bundle for an AI session: optional identity blurb, the top 10 chu
 
 | Path | What |
 |------|------|
-| `~/.claude/chat-recall-index/lancedb/` | Vector index (optional) |
-| `~/.claude/chat-recall-index/metadata.db` | SQLite metadata + FTS5 + content cache |
-| `~/.claude/chat-recall-index/knowledge_graph.db` | Temporal KG |
-| `~/.claude/chat-recall-index/wal/write_log.jsonl` | Write-ahead audit log (mode 0600, secrets redacted) |
-| `~/.claude/chat-recall-index/diary/<agent>/` | Per-agent diary entries |
-| `~/.claude/chat-recall-hooks/` | Installed save hook (after `install-hooks`) |
+| `~/.chat-recall/index/lancedb/` | Vector index (optional) |
+| `~/.chat-recall/index/metadata.db` | SQLite metadata + FTS5 + content cache |
+| `~/.chat-recall/index/knowledge_graph.db` | Temporal KG |
+| `~/.chat-recall/index/wal/write_log.jsonl` | Write-ahead audit log (mode 0600, secrets redacted) |
+| `~/.chat-recall/index/diary/<agent>/` | Per-agent diary entries |
+| `~/.chat-recall/hooks/` | Installed save hook (after `install-hooks`) |
 
-Wipe everything with `rm -rf ~/.claude/chat-recall-index ~/.claude/chat-recall-hooks` and a re-`index`.
+Wipe everything with `rm -rf ~/.chat-recall/index ~/.chat-recall/hooks` and a re-`index`.
 
 ## Privacy
 
 By default everything stays on your machine. The only point at which session text leaves your laptop is summary generation **if you opt into the `claude` or `gemini` (API-based) summary provider** — and even then only the summary prompt + a snippet, not full transcripts. The default summary provider is `ollama` (local) or none (no summaries).
 
-The web UI binds to localhost. There is no telemetry, no account, no upload. There is also currently no built-in sync — your index lives in `~/.claude/chat-recall-index/`; back it up however you like.
+The web UI binds to localhost. There is no telemetry, no account, no upload. There is also currently no built-in sync — your index lives in `~/.chat-recall/index/`; back it up however you like.
 
 ## Architecture
 
