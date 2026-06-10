@@ -74,7 +74,7 @@ router.get('/timeline', async (req, res) => {
     const includeReads = (req.query.include_reads as string | undefined) === 'true';
     const groupByRepo = (req.query.group_by_repo as string | undefined) === 'true';
 
-    const validTools = ['claude', 'gemini', 'opencode'] as const;
+    const validTools = ['claude', 'gemini', 'opencode', 'codex'] as const;
     type AiTool = typeof validTools[number];
     const toolsParam = (req.query.tools as string | undefined)?.trim();
     const tools: AiTool[] | undefined = toolsParam

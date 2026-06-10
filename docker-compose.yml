@@ -5,8 +5,9 @@
 #   docker compose up -d
 #   open http://localhost:8080
 #
-# Optional semantic (vector) search via local Ollama:
-#   EMBEDDING_PROVIDER=ollama docker compose --profile ollama up -d
+# Optional semantic search + local summaries via Ollama (auto-pulls both models):
+#   EMBEDDING_PROVIDER=ollama SUMMARY_PROVIDER=ollama OLLAMA_MODEL=qwen2.5:3b \
+#     docker compose --profile ollama up -d
 #
 # Optional Postgres backend (team/cloud):
 #   docker compose --profile postgres up -d   # + set CHAT_RECALL_STORAGE=postgres, DATABASE_URL
@@ -68,6 +69,26 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+
+  # Pulls the embedding model (+ the summary model if SUMMARY_PROVIDER=ollama)
+  # on first start, so `--profile ollama` is one command with no manual pulls.
+  ollama-init:
+    image: curlimages/curl:latest
+    profiles: [ollama]
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: >
+      sh -c '
+        echo "Pulling embedding model: nomic-embed-text…"
+        curl -s http://ollama:11434/api/pull -d "{\"name\": \"nomic-embed-text\"}" | tail -1
+        if [ "${SUMMARY_PROVIDER:-}" = "ollama" ]; then
+          echo "Pulling summary model: ${OLLAMA_MODEL:-qwen2.5:3b}…"
+          curl -s http://ollama:11434/api/pull -d "{\"name\": \"${OLLAMA_MODEL:-qwen2.5:3b}\"}" | tail -1
+        fi
+        echo "Models ready."
+      '
 
   # ── Optional: Postgres + pgvector (team/cloud storage backend) ────────────────
   # `docker compose --profile postgres up -d` + set CHAT_RECALL_STORAGE=postgres,
