@@ -485,7 +485,9 @@ export class MemoryIndex {
     }
 
     if (results.length === 0) {
-      return [];
+      // No vector hits (empty/new Lance table, or genuinely nothing near) —
+      // the FTS hits are still valid results, not something to discard.
+      return ftsResults.slice(0, topK);
     }
 
     // Group by item_id + source_type

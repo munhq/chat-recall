@@ -4,6 +4,8 @@ import { Icon, IconButton, Input, Logo, Button, Avatar } from './primitives';
 interface TopBarProps {
   view: string;
   setView: (v: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'settings') => void;
+  /** Views this deployment supports (/api/capabilities). Absent = all. */
+  enabledViews?: Set<string>;
   query: string;
   setQuery: (q: string) => void;
   searchRef?: React.RefObject<HTMLInputElement>;
@@ -15,7 +17,7 @@ interface TopBarProps {
   mobileSidebarOpen?: boolean;
 }
 
-export default function TopBar({ view, setView, query, setQuery, searchRef, onSearch, onMobileMenu, mobileSidebarOpen }: TopBarProps) {
+export default function TopBar({ view, setView, enabledViews, query, setQuery, searchRef, onSearch, onMobileMenu, mobileSidebarOpen }: TopBarProps) {
   const [theme, setTheme] = useState(() =>
     document.documentElement.getAttribute('data-theme') || 'dark'
   );
@@ -35,14 +37,14 @@ export default function TopBar({ view, setView, query, setQuery, searchRef, onSe
     requestAnimationFrame(() => requestAnimationFrame(() => killer.remove()));
   };
 
-  const navItems: Array<{ id: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security'; label: string; icon: string }> = [
+  const navItems: Array<{ id: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security'; label: string; icon: string }> = ([
     { id: 'search', label: 'Conversations', icon: 'message' },
     { id: 'activity', label: 'Activity', icon: 'clock' },
     { id: 'memory', label: 'Memory', icon: 'brain' },
     { id: 'toolkit', label: 'Toolkit', icon: 'zap' },
     { id: 'dashboard', label: 'Insights', icon: 'chart' },
     { id: 'security', label: 'Security', icon: 'check' },
-  ];
+  ] as const).filter((n) => !enabledViews || enabledViews.has(n.id)) as Array<{ id: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security'; label: string; icon: string }>;
 
   return (
     <header
@@ -171,15 +173,17 @@ export default function TopBar({ view, setView, query, setQuery, searchRef, onSe
           onClick={toggleTheme}
           className="cr-topbar-action-theme"
         />
-        <IconButton
-          icon="settings"
-          title="Settings"
-          onClick={() => setView('settings')}
-          data-testid="open-settings"
-          // Visual cue when already on the settings page so the user can see
-          // the gear icon is the current location, not just a button.
-          style={view === 'settings' ? { color: 'var(--cr-brand-500)' } : undefined}
-        />
+        {(!enabledViews || enabledViews.has('settings')) && (
+          <IconButton
+            icon="settings"
+            title="Settings"
+            onClick={() => setView('settings')}
+            data-testid="open-settings"
+            // Visual cue when already on the settings page so the user can see
+            // the gear icon is the current location, not just a button.
+            style={view === 'settings' ? { color: 'var(--cr-brand-500)' } : undefined}
+          />
+        )}
         <div className="cr-topbar-avatar" style={{ marginLeft: 4 }}>
           <Avatar name="User" size={28} />
         </div>

@@ -158,7 +158,7 @@ export class PgMetadataCache implements MetadataCacheDriver {
     for (const r of await this.q(`SELECT summary_source, COUNT(*)::int AS count FROM session_metadata WHERE tenant=$1 GROUP BY summary_source`, [this.t])) bySources[r.summary_source] = r.count;
     return { totalSessions: total, bySources };
   }
-  async close(..._a: MArgs<'close'>) { if (this.pool) await this.pool.end(); }
+  async close(..._a: MArgs<'close'>) { /* shared pool — see pg-pool.ts closePgPools */ }
 }
 
 export async function createMetadataCache(opts: CreateStoreOptions = {}): Promise<MetadataCacheDriver> {
@@ -246,7 +246,7 @@ export class PgOutcomeCache implements OutcomeCacheDriver {
   async invalidate(...a: OArgs<'invalidate'>) {
     await this.q(`DELETE FROM session_outcome_cache WHERE tenant=$1 AND session_id=$2`, [this.t, a[0]]);
   }
-  async close(..._a: OArgs<'close'>) { if (this.pool) await this.pool.end(); }
+  async close(..._a: OArgs<'close'>) { /* shared pool — see pg-pool.ts closePgPools */ }
 }
 
 export async function createOutcomeCache(opts: CreateStoreOptions = {}): Promise<OutcomeCacheDriver> {

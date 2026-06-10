@@ -38,8 +38,19 @@ import {
 import type { SourceType } from '../imports.js';
 import { matchesPrefix } from '../utils/paths.js';
 import { buildETag, maybeSendNotModified } from '../util/cacheable.js';
+import { requireLocalMode } from '../util/mode.js';
 
 const router = express.Router();
+
+// FS-dependent endpoints (transcript replay, live scans, git, raw files,
+// summary regeneration, outcome badges) only exist in local mode. In server
+// mode the data arrived via /api/sync — conversation list, message view,
+// related items and metadata still work because they read the stores.
+router.use([
+  '/:id/files-live', '/:id/diff', '/:id/commits', '/:id/outcome',
+  '/:id/outcome/badge', '/outcome/badges', '/:id/turns', '/:id/markers',
+  '/:id/raw', '/:id/regenerate-summary',
+], requireLocalMode);
 
 /**
  * The per-session features below — diff replay, git commits, outcome,

@@ -132,6 +132,48 @@ CREATE TABLE IF NOT EXISTS tenants (
   tenant      TEXT PRIMARY KEY,
   created_at  BIGINT NOT NULL
 );
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS display_name TEXT;
+
+-- ── Control plane: identity → tenant mapping ────────────────────────────
+-- Deliberately NOT in the RLS loop below: these rows are looked up BEFORE a
+-- tenant is established (token → tenant, user → memberships). The server
+-- queries them by verified token hash / Keycloak sub only.
+CREATE TABLE IF NOT EXISTS agent_tokens (
+  id          BIGSERIAL PRIMARY KEY,
+  tenant      TEXT NOT NULL,
+  device_id   TEXT NOT NULL,
+  token_hash  TEXT NOT NULL,          -- sha256(raw token); raw shown once
+  user_sub    TEXT,
+  created_at  BIGINT NOT NULL,
+  revoked_at  BIGINT,
+  UNIQUE (tenant, device_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_tokens_hash ON agent_tokens(token_hash);
+
+CREATE TABLE IF NOT EXISTS teams (
+  slug        TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  owner_sub   TEXT NOT NULL,
+  created_at  BIGINT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS memberships (
+  user_sub    TEXT NOT NULL,
+  team_slug   TEXT NOT NULL,
+  role        TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner','member')),
+  email       TEXT,
+  created_at  BIGINT NOT NULL,
+  PRIMARY KEY (user_sub, team_slug)
+);
+CREATE INDEX IF NOT EXISTS idx_memberships_team ON memberships(team_slug);
+CREATE TABLE IF NOT EXISTS invites (
+  token_hash  TEXT PRIMARY KEY,       -- sha256(raw invite)
+  team_slug   TEXT NOT NULL,
+  role        TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner','member')),
+  email_hint  TEXT,
+  created_by  TEXT NOT NULL,
+  expires_at  BIGINT NOT NULL,
+  used_at     BIGINT
+);
 
 -- MetadataCache: per-session compute cache + summary-error tracking.
 CREATE TABLE IF NOT EXISTS summary_errors (

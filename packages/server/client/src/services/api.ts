@@ -121,6 +121,52 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
   }
 }
 
+/** Server capabilities — which views this deployment supports. Local mode
+ *  exposes everything; server mode (self-host compose / SaaS) disables the
+ *  filesystem-backed views (activity, toolkit, settings, projects). */
+export interface ServerCapabilities {
+  mode: 'local' | 'server';
+  edition: 'selfhost' | 'cloud';
+  features: {
+    conversations: boolean;
+    search: boolean;
+    memory: boolean;
+    analytics: boolean;
+    security: boolean;
+    activity: boolean;
+    sessionDeepDive: boolean;
+    toolkit: boolean;
+    settings: boolean;
+    projects: boolean;
+    teams: boolean;
+  };
+}
+
+const LOCAL_CAPABILITIES: ServerCapabilities = {
+  mode: 'local',
+  edition: 'selfhost',
+  features: {
+    conversations: true, search: true, memory: true, analytics: true,
+    security: true, activity: true, sessionDeepDive: true, toolkit: true,
+    settings: true, projects: true, teams: false,
+  },
+};
+
+/** Fetch /api/capabilities. Falls back to "everything on" (the pre-
+ *  capabilities behavior) when the endpoint is missing or unreachable, so
+ *  older servers and flaky startups never blank the UI. */
+export async function getCapabilities(): Promise<ServerCapabilities> {
+  try {
+    const res = await fetchWithTimeout(`${API_BASE}/capabilities`, {}, 5000);
+    if (!res.ok) return LOCAL_CAPABILITIES;
+    const body = await res.json();
+    if (!body || typeof body !== 'object' || !body.features) return LOCAL_CAPABILITIES;
+    return { ...LOCAL_CAPABILITIES, ...body, features: { ...LOCAL_CAPABILITIES.features, ...body.features } };
+  } catch {
+    return LOCAL_CAPABILITIES;
+  }
+}
+
 /** Result item from a unified-memory search — covers non-session sources
  *  (paste, plan, claude_md, task, history, diary) so the UI can show the
  *  full picture of what matched a query. */
