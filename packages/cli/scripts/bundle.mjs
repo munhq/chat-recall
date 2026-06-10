@@ -21,7 +21,14 @@ const external = [
 ].filter((d) => d !== '@chat-recall/engine');
 
 await build({
-  entryPoints: ['src/cli.ts', 'src/mcp.ts'],
+  entryPoints: [
+    { in: 'src/cli.ts', out: 'cli' },
+    { in: 'src/mcp.ts', out: 'mcp' },
+    // The auto-indexer daemon ships as its own bin (`chat-recall-watch`) so
+    // installed users get live indexing + continuous sync without a repo
+    // checkout and tsx.
+    { in: 'auto-indexer/indexer.ts', out: 'watch' },
+  ],
   outdir: 'dist',
   bundle: true,
   platform: 'node',
@@ -33,4 +40,4 @@ await build({
   logLevel: 'info',
 });
 
-console.log(`bundled cli.js + mcp.js (externals: ${external.length})`);
+console.log(`bundled cli.js + mcp.js + watch.js (externals: ${external.length})`);

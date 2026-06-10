@@ -6,6 +6,7 @@ import express from 'express';
 import { getAllSessions, parseSessionFile, createMetadataCache, createStore } from '../imports.js';
 import type { SessionEntry, SourceType } from '../imports.js';
 import { getModelContextLimit } from '@chat-recall/engine/core/utils.js';
+import { estimateCostUsdOrNull } from '@chat-recall/engine/core/model-pricing.js';
 
 const router = express.Router();
 
@@ -30,46 +31,20 @@ function extToLang(ext: string): string {
   return map[ext.toLowerCase()] || ext.toUpperCase();
 }
 
-/** Pricing table (cost per million tokens). Only models we have published prices for. */
-const PRICING: Record<string, { input: number; output: number; cacheRead: number }> = {
-  'claude-opus-4-6':   { input: 15,  output: 75,  cacheRead: 1.5 },
-  'claude-sonnet-4-6': { input: 3,   output: 15,  cacheRead: 0.3 },
-  'claude-haiku-4-5':  { input: 0.8, output: 4,   cacheRead: 0.08 },
-  'claude-sonnet-4-5': { input: 3,   output: 15,  cacheRead: 0.3 },
-};
-
-/** Returns pricing for a model, or null if unknown (Gemini, Ollama, custom). */
-function getModelPricing(model: string): { input: number; output: number; cacheRead: number } | null {
-  if (!model) return null;
-  if (PRICING[model]) return PRICING[model];
-  for (const [key, val] of Object.entries(PRICING)) {
-    if (model.startsWith(key)) return val;
-  }
-  return null;
-}
-
 /**
- * Estimate session cost from tokens. Returns null when no model in the session
- * has a known price — we don't fabricate dollars. Synthetic models are skipped
- * before falling through to "no price."
+ * Estimate session cost from tokens via the engine's single pricing table
+ * (`model-pricing.ts`). Returns null when no model in the session has a
+ * known price — we don't fabricate dollars. Prefers the parser's stored
+ * costUsd when present (computed at index time from the same table).
  */
 function estimateCost(meta: Record<string, any>): number | null {
-  const models: string[] = (meta.modelsUsed || []).filter((m: string) => m && m !== '<synthetic>');
-  let pricing: ReturnType<typeof getModelPricing> = null;
-  for (const m of models) {
-    pricing = getModelPricing(m);
-    if (pricing) break;
-  }
-  if (!pricing) return null;
-  const input = meta.inputTokens || 0;
-  const output = meta.outputTokens || 0;
-  const cacheRead = meta.cacheReadTokens || 0;
-  const cacheCreate = meta.cacheCreationTokens || 0;
-  const nonCached = Math.max(0, input - cacheRead - cacheCreate);
-  return (nonCached / 1e6) * pricing.input +
-         (output / 1e6) * pricing.output +
-         (cacheRead / 1e6) * pricing.cacheRead +
-         (cacheCreate / 1e6) * (pricing.input * 1.25);
+  if (typeof meta.costUsd === 'number' && meta.costUsd > 0) return meta.costUsd;
+  return estimateCostUsdOrNull((meta.modelsUsed || []) as string[], {
+    inputTokens: meta.inputTokens || 0,
+    outputTokens: meta.outputTokens || 0,
+    cacheReadTokens: meta.cacheReadTokens || 0,
+    cacheCreationTokens: meta.cacheCreationTokens || 0,
+  });
 }
 
 // GET /api/analytics

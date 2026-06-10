@@ -202,6 +202,12 @@ export interface SyncSettings {
   excludeProjects: string[];
   /** Last-line regex filter on the redacted `preview` field. */
   excludePreviewPatterns?: string[];
+  /**
+   * Watermark (ms epoch) of the last successful conversation sync. The
+   * watch daemon and `chat-recall sync` only push sessions modified after
+   * this, then advance it. Absent = full sync on the next run.
+   */
+  lastSyncAt?: number;
 }
 
 /**
