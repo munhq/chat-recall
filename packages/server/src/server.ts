@@ -35,7 +35,11 @@ app.use(cors({
 // of our /api/* responses are JSON in the 1KB-5MB range — exactly where
 // compression pays off (typically 70-85% wire-size reduction).
 app.use(compression({ threshold: 1024 }));
-app.use(express.json({ limit: '100kb' }));
+// /api/sync carries whole (redacted) conversation batches — it gets its own
+// 32mb parser below; everything else keeps the tight 100kb bound.
+const smallJson = express.json({ limit: '100kb' });
+app.use((req, res, next) => (req.path.startsWith('/api/sync') ? next() : smallJson(req, res, next)));
+app.use('/api/sync', express.json({ limit: '32mb' }));
 
 // Request logging
 app.use((req, res, next) => {
