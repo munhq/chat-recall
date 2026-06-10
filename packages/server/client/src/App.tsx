@@ -22,6 +22,8 @@ import {
   searchSessions,
   getProjectTree,
   getMemoryItem,
+  getCapabilities,
+  type ServerCapabilities,
   type SessionInfo,
   type SearchResult,
   type MemoryHit,
@@ -141,6 +143,30 @@ export default function App() {
 function AppInner() {
   const sidebarExtras = useSidebarExtras();
   const [view, setView] = useState<ViewMode>('search');
+  // Deployment capabilities — server mode / SaaS disables the FS-backed
+  // views (activity, toolkit, settings, projects). Defaults to everything-on
+  // until /api/capabilities answers, so local mode renders unchanged.
+  const [capabilities, setCapabilities] = useState<ServerCapabilities | null>(null);
+  useEffect(() => { void getCapabilities().then(setCapabilities); }, []);
+  const enabledViews = useMemo<Set<ViewMode>>(() => {
+    const f = capabilities?.features;
+    if (!f) return new Set<ViewMode>(['search', 'memory', 'toolkit', 'dashboard', 'activity', 'security', 'settings']);
+    const out = new Set<ViewMode>();
+    if (f.conversations) out.add('search');
+    if (f.activity) out.add('activity');
+    if (f.memory) out.add('memory');
+    if (f.toolkit) out.add('toolkit');
+    if (f.analytics) out.add('dashboard');
+    if (f.security) out.add('security');
+    if (f.settings) out.add('settings');
+    return out;
+  }, [capabilities]);
+  // If the current view got disabled by a late capabilities answer, fall
+  // back to Conversations instead of rendering a dead panel.
+  useEffect(() => {
+    if (!enabledViews.has(view)) setView('search');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabledViews]);
   const [toolFilter, setToolFilter] = useState<string>('all');
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
   const [query, setQuery] = useState('');
@@ -529,6 +555,7 @@ function AppInner() {
       <TopBar
         view={view}
         setView={setView}
+        enabledViews={enabledViews}
         query={query}
         setQuery={setQuery}
         searchRef={searchRef}
@@ -612,6 +639,7 @@ function AppInner() {
             }))}
             view={view}
             setView={handleSidebarSelectView}
+            enabledViews={enabledViews}
           />
 
           {view === 'search' && (

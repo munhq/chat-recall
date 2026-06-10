@@ -145,7 +145,7 @@ export class PgKnowledgeGraph implements KnowledgeGraphDriver {
     return rows.map(r => ({ ...r, properties: JSON.parse(r.properties) }));
   }
 
-  async close(..._a: Args<'close'>) { if (this.pool) await this.pool.end(); }
+  async close(..._a: Args<'close'>) { /* shared pool — see pg-pool.ts closePgPools */ }
 }
 
 export async function createKnowledgeGraph(opts: CreateStoreOptions = {}): Promise<KnowledgeGraphDriver> {
