@@ -276,7 +276,7 @@ DECLARE t TEXT;
 BEGIN
   FOREACH t IN ARRAY ARRAY[
     'memory_metadata','memory_links','content_cache','kv_store','memory_chunks',
-    'secret_findings','secret_rules','secret_dismissals','session_metadata','tenants',
+    'secret_findings','secret_rules','secret_dismissals','session_metadata',
     'summary_errors','compute_cache','session_outcome_cache','kg_entities','kg_triples',
     'wal_log','diary_entries'
   ] LOOP
@@ -290,4 +290,11 @@ BEGIN
     $p$, t);
   END LOOP;
 END $$;
+
+-- tenants is control-plane (identity-to-tenant mapping, queried BEFORE any
+-- tenant context exists), so it must NOT be RLS-walled. Earlier versions
+-- included it in the loop above — undo that on upgraded databases.
+DROP POLICY IF EXISTS tenant_isolation ON tenants;
+ALTER TABLE tenants NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE tenants DISABLE ROW LEVEL SECURITY;
 `;
