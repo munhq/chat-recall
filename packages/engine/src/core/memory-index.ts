@@ -39,6 +39,8 @@ export interface MemoryChunkRecord {
 
 export class MemoryIndex {
   static readonly TABLE_NAME = 'memory_chunks';
+  /** Warn once when the embedder is unreachable and we fall back to FTS. */
+  private static embedWarned = false;
   /** Default index directory — resolved lazily through `paths.ts` so tests
    *  can override via `CHAT_RECALL_DATA_DIR` and the legacy migration runs
    *  before any directory is created. */
@@ -169,6 +171,7 @@ export class MemoryIndex {
     // "no embedder" so FTS-only mode indexes cleanly instead of aborting each
     // item before it's registered.
     if (this.embedder && this.embedder.dimension > 0) {
+      try {
       await this.connect();
 
       const texts = validChunks.map(c => c.text);
@@ -202,6 +205,15 @@ export class MemoryIndex {
         ) as unknown as LanceTable;
       } else {
         await this.table.add(records as unknown as Record<string, unknown>[]);
+      }
+      } catch (err) {
+        // Embedder unreachable (e.g. Ollama not running) — FTS5 is already
+        // written above, so degrade to keyword-only for this batch instead of
+        // failing the whole item. Warn once to avoid log spam.
+        if (!MemoryIndex.embedWarned) {
+          MemoryIndex.embedWarned = true;
+          console.warn(`  Vector indexing unavailable (${(err as Error).message}) — using FTS5 keyword search. Start Ollama or set EMBEDDING_PROVIDER to enable semantic search.`);
+        }
       }
     }
 
