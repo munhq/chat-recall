@@ -164,8 +164,11 @@ export class MemoryIndex {
       await store.close();
     }
 
-    // Write to LanceDB if embedder available
-    if (this.embedder) {
+    // Write to LanceDB only with a real embedder. The `none` provider yields a
+    // NoneEmbedder (dimension 0) whose embed() throws — treat dimension-0 as
+    // "no embedder" so FTS-only mode indexes cleanly instead of aborting each
+    // item before it's registered.
+    if (this.embedder && this.embedder.dimension > 0) {
       await this.connect();
 
       const texts = validChunks.map(c => c.text);

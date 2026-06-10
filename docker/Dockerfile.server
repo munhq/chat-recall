@@ -1,3 +1,17 @@
+# Single image: builds the React SPA, then runs the server (which serves the
+# SPA + API) and the in-process indexer. One container — no nginx, no separate
+# indexer service.
+
+# ── Stage 1: build the React client → static dist ─────────────────────────────
+FROM node:20-bookworm-slim AS client
+WORKDIR /client
+COPY packages/server/client/package.json packages/server/client/package-lock.json* ./
+RUN npm ci || npm install
+COPY packages/server/client/ ./
+# No VITE_* env → local mode (same-origin /api, no external auth).
+RUN npm run build
+
+# ── Stage 2: the app ──────────────────────────────────────────────────────────
 FROM node:20-bookworm-slim
 
 # Build tools for native modules (better-sqlite3, lancedb) + git, which the
@@ -22,16 +36,25 @@ COPY packages/server/package.json ./packages/server/
 RUN npm ci
 
 # Copy TypeScript sources (engine is the server's @chat-recall/engine dep,
-# resolved via the workspace symlink npm ci created)
+# resolved via the workspace symlink npm ci created). Full cli/ so the
+# entrypoint can run `cli.ts memory index` for the initial backfill.
 COPY tsconfig.base.json tsconfig.json ./
 COPY packages/engine/ ./packages/engine/
-COPY packages/cli/auto-indexer/ ./packages/cli/auto-indexer/
+COPY packages/cli/ ./packages/cli/
 COPY packages/server/ ./packages/server/
+
+# The built SPA, served by the server from STATIC_DIR.
+COPY --from=client /client/dist ./packages/server/client/dist
+
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 EXPOSE 5000
 
 ENV HOME=/root
 ENV NODE_ENV=production
+ENV HOST=0.0.0.0
+ENV STATIC_DIR=/app/packages/server/client/dist
 
-# Run TypeScript directly with tsx (avoids a separate build step in the image)
-CMD ["node_modules/.bin/tsx", "packages/server/src/server.ts"]
+# Serve UI + API and keep the index fresh (see entrypoint.sh).
+CMD ["/entrypoint.sh"]
