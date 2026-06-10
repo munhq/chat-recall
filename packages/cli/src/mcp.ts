@@ -21,7 +21,7 @@ import { execSync as _execSync } from 'child_process';
 
 import { getEmbedder, type EmbedderProvider } from '@chat-recall/engine/core/embedder.js';
 import { getRecentSessions, extractConversationContext, formatContext } from '@chat-recall/engine/core/context.js';
-import { getCacheDbPath, getIdentityFilePath } from '@chat-recall/engine/core/paths.js';
+import { getCacheDbPath, getIdentityFilePath, getDataDir } from '@chat-recall/engine/core/paths.js';
 import { parseSessionFile } from '@chat-recall/engine/parsers/session.js';
 import {
   detectTool,
@@ -167,6 +167,43 @@ function loadMessagesViaRegistry(sessionId: string, includeCode: boolean): ShowM
   return messages;
 }
 
+// ── Remote scope (chat-recall server) ───────────────────────────────
+// When the user has run `chat-recall login`, search tools can query the
+// synced server instead of the local index — cross-device (and team)
+// recall from inside the agent. Local stays the default: it's offline,
+// faster, and always present.
+
+function remoteCredentials(): { base: string; token: string } | null {
+  try {
+    const raw = readFileSync(join(getDataDir(), 'credentials.json'), 'utf-8');
+    const c = JSON.parse(raw) as { serverUrl?: string; token?: string };
+    if (!c.serverUrl || !c.token) return null;
+    return { base: c.serverUrl.replace(/\/+$/, ''), token: c.token };
+  } catch { return null; }
+}
+
+async function remotePost<T>(path: string, body: unknown): Promise<T> {
+  const cred = remoteCredentials();
+  if (!cred) throw new Error('scope "server" needs a login — run `chat-recall login <server-url>` first.');
+  const res = await fetch(cred.base + path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${cred.token}` },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
+  return res.json() as Promise<T>;
+}
+
+async function remoteGet<T>(path: string): Promise<T> {
+  const cred = remoteCredentials();
+  if (!cred) throw new Error('scope "server" needs a login — run `chat-recall login <server-url>` first.');
+  const res = await fetch(cred.base + path, {
+    headers: { authorization: `Bearer ${cred.token}` },
+  });
+  if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
+  return res.json() as Promise<T>;
+}
+
 // Tool schemas
 const RecallSearchSchema = z.object({
   query: z.string().describe('What you\'re looking for (e.g., "OAuth implementation", "React hooks")'),
@@ -174,6 +211,8 @@ const RecallSearchSchema = z.object({
   project_filter: z.string().optional().describe('Optional filter by project path substring'),
   skip_ranking: z.boolean().optional().default(false).describe('Skip Claude ranking for faster results'),
   provider: z.enum(['ollama', 'gemini']).optional().default('ollama').describe('Embedding provider'),
+  scope: z.enum(['local', 'server']).optional().default('local')
+    .describe('local = this machine\'s index (default, offline). server = the synced chat-recall server (cross-device/team history; needs `chat-recall login`).'),
 });
 
 const RecallIndexSchema = z.object({
@@ -196,6 +235,8 @@ const RecallRecentSchema = z.object({
   limit: z.number().optional().default(10).describe('Number of recent sessions to show'),
   since_hours: z.number().optional()
     .describe('Only include sessions modified in the last N hours. Combine with limit for "last 6h, top 20".'),
+  scope: z.enum(['local', 'server']).optional().default('local')
+    .describe('local = this machine (default). server = the synced chat-recall server (needs `chat-recall login`).'),
 });
 
 const RecallEditsTimelineSchema = z.object({
@@ -264,6 +305,8 @@ const RecallMemorySearchSchema = z.object({
     .describe('Filter by source types (default: all)'),
   project_filter: z.string().optional().describe('Filter by project path'),
   provider: z.enum(['ollama', 'gemini']).optional().default('ollama'),
+  scope: z.enum(['local', 'server']).optional().default('local')
+    .describe('local = this machine (default). server = the synced chat-recall server (needs `chat-recall login`).'),
 });
 
 const RecallMemoryStatusSchema = z.object({});
@@ -465,7 +508,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         description: `Search for relevant Claude Code sessions to resume.
 
 Find past conversations that are semantically similar to your current task.
-Returns session IDs that can be used with \`claude --resume <session_id>\`.`,
+Returns session IDs that can be used with \`claude --resume <session_id>\`.
+
+Pass \`scope: "server"\` to search the synced chat-recall server instead —
+your history across every logged-in device (and your team's, when on a team
+plan). Needs a prior \`chat-recall login\`.`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -474,6 +521,7 @@ Returns session IDs that can be used with \`claude --resume <session_id>\`.`,
             project_filter: { type: 'string', description: 'Optional filter by project path substring' },
             skip_ranking: { type: 'boolean', default: false, description: 'Skip Claude ranking for faster results' },
             provider: { type: 'string', enum: ['ollama', 'gemini'], default: 'ollama', description: 'Embedding provider' },
+            scope: { type: 'string', enum: ['local', 'server'], default: 'local', description: 'local = this machine (default, offline). server = synced cross-device history.' },
           },
           required: ['query'],
         },
@@ -535,6 +583,7 @@ Pass \`since_hours: N\` to restrict to sessions modified in the last N hours.`,
             project_filter: { type: 'string', description: 'Filter by project name (e.g., "inco", "poly")' },
             limit:          { type: 'number', default: 10, description: 'Number of recent sessions to show' },
             since_hours:    { type: 'number', description: 'Only include sessions modified in the last N hours.' },
+            scope:          { type: 'string', enum: ['local', 'server'], default: 'local', description: 'server = synced cross-device history (needs chat-recall login).' },
           },
         },
       },
@@ -722,6 +771,7 @@ Returns results from any memory source, ranked by relevance. Use source_types to
             },
             project_filter: { type: 'string', description: 'Filter by project path' },
             provider: { type: 'string', enum: ['ollama', 'gemini'], default: 'ollama' },
+            scope: { type: 'string', enum: ['local', 'server'], default: 'local', description: 'server = synced cross-device history (needs chat-recall login).' },
           },
           required: ['query'],
         },
@@ -1171,6 +1221,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const sanitized = sanitizeQuery(params.query);
         const searchQuery = sanitized.cleanQuery;
 
+        // Remote scope: query the synced chat-recall server (cross-device /
+        // team history). Falls back to a clear error rather than silently
+        // searching local — the user asked for the server view specifically.
+        if (params.scope === 'server') {
+          const remote = await remotePost<{ results: Array<{ sessionId: string; score: number; projectPath: string; firstPrompt: string; summary?: string; matchedChunks?: Array<{ chunkType: string; text: string }> }>; count: number }>(
+            '/api/search', { query: searchQuery, topK: params.top_k, projectFilter: params.project_filter },
+          );
+          if (!remote.results?.length) {
+            return { content: [{ type: 'text', text: `No matching sessions on the server for "${params.query}".` }] };
+          }
+          const lines = [`# Server results for: "${params.query}"`, '_(synced history across your devices)_', ''];
+          for (let i = 0; i < remote.results.length; i++) {
+            const r = remote.results[i];
+            const title = (r.firstPrompt || '(no prompt)').replace(/\n/g, ' ').slice(0, 100);
+            lines.push(`## #${i + 1}: ${title}`);
+            lines.push(`**Project:** ${r.projectPath || '(hashed)'}  ·  **Session:** \`${r.sessionId}\``);
+            if (r.summary) lines.push(`**Summary:** ${r.summary.slice(0, 300)}`);
+            const snippet = r.matchedChunks?.[0]?.text?.replace(/\n/g, ' ').slice(0, 240);
+            if (snippet) lines.push(`> ${snippet}`);
+            lines.push('');
+          }
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+
         // Use provided param, env var, or default to ollama (local)
         const provider = (params.provider || process.env.EMBEDDING_PROVIDER || 'ollama') as EmbedderProvider;
 
@@ -1467,6 +1541,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_recent': {
         const params = RecallRecentSchema.parse(args);
+
+        if (params.scope === 'server') {
+          const qs = new URLSearchParams({ limit: String(params.limit) });
+          if (params.since_hours) qs.set('since_hours', String(params.since_hours));
+          const remote = await remoteGet<{ sessions: Array<{ sessionId: string; projectPath: string; modified: string; firstPrompt: string; summary?: string; tool?: string }>; total: number }>(
+            `/api/conversations/recent?${qs.toString()}`,
+          );
+          if (!remote.sessions?.length) {
+            return { content: [{ type: 'text', text: 'No sessions on the server yet — run `chat-recall sync` on your machines.' }] };
+          }
+          const lines = [`# Recent sessions (server — ${remote.total} total synced)\n`];
+          for (let i = 0; i < remote.sessions.length; i++) {
+            const s = remote.sessions[i];
+            const display = (s.summary || s.firstPrompt || '(no prompt)').replace(/\n/g, ' ').slice(0, 120);
+            lines.push(`## #${i + 1}: ${display}`);
+            lines.push(`**Tool:** ${s.tool || 'claude'}  ·  **Project:** ${s.projectPath || '(hashed)'}  ·  **Modified:** ${(s.modified || '').slice(0, 16).replace('T', ' ')}`);
+            lines.push(`**Session ID:** \`${s.sessionId}\``);
+            lines.push('');
+          }
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
 
         // When since_hours is set, pull a wider pool first and time-filter
         // before applying the limit — otherwise a small limit could miss
@@ -2047,6 +2142,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Sanitize query to prevent prompt injection
         const sanitizedMem = sanitizeQuery(params.query);
         const memSearchQuery = sanitizedMem.cleanQuery;
+
+        if (params.scope === 'server') {
+          const remote = await remotePost<{ results: Array<{ itemId: string; sourceType: string; title: string; text: string; score: number; projectPath?: string }>; count: number }>(
+            '/api/memory/search', { query: memSearchQuery, topK: params.top_k, sourceTypes: params.source_types, projectIdFilter: params.project_filter },
+          );
+          if (!remote.results?.length) {
+            return { content: [{ type: 'text', text: `No server-side matches for "${params.query}".` }] };
+          }
+          const lines = [`# Server memory search: "${params.query}"`, '_(synced history across your devices)_', ''];
+          for (let i = 0; i < remote.results.length; i++) {
+            const r = remote.results[i];
+            lines.push(`## #${i + 1} [${r.sourceType}] ${(r.title || r.itemId).slice(0, 90)}`);
+            if (r.projectPath) lines.push(`**Project:** ${r.projectPath}`);
+            lines.push((r.text || '').replace(/\n/g, ' ').slice(0, 300));
+            lines.push('');
+          }
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
 
         const provider = (params.provider || process.env.EMBEDDING_PROVIDER || 'ollama') as EmbedderProvider;
 
