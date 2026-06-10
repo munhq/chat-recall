@@ -224,11 +224,18 @@ program
             alwaysAllow: [
               'recall_search', 'recall_show', 'recall_index', 'recall_status',
               'recall_recent', 'recall_context', 'recall_summary', 'recall_suggest_resume',
-              'recall_memory_search', 'recall_memory_status', 'recall_plans', 'recall_tasks',
-              'recall_smart_resume', 'recall_project_context', 'recall_weekly_digest',
+              'recall_memory_search', 'recall_memory_status', 'recall_plans', 'recall_plan_show',
+              'recall_tasks', 'recall_smart_resume', 'recall_project_context',
+              'recall_project_dossier', 'recall_weekly_digest',
               'recall_kg_query', 'recall_kg_add', 'recall_kg_invalidate',
               'recall_kg_timeline', 'recall_kg_stats',
               'recall_diary_write', 'recall_diary_read',
+              'recall_diff', 'recall_commits', 'recall_outcome', 'recall_markers',
+              'recall_edits_timeline', 'recall_subagent_search', 'recall_files_touched',
+              'recall_user_prompts', 'recall_decision_record', 'recall_analytics_summary',
+              'recall_wake_up', 'recall_similar_sessions', 'recall_session_files',
+              'recall_redundant_files', 'recall_set', 'recall_get', 'recall_kv_list',
+              'recall_help',
             ],
           };
           mcpConfig.mcpServers = mcpServers;
@@ -309,15 +316,17 @@ program
       // Done
       console.log(chalk.green.bold('Setup complete!'));
       console.log();
-      console.log('chat-recall MCP tools (34): recall_search, recall_recent, recall_context,');
+      console.log('chat-recall MCP tools (42): recall_search, recall_recent, recall_context,');
       console.log('  recall_summary, recall_show, recall_suggest_resume, recall_smart_resume,');
-      console.log('  recall_project_context, recall_weekly_digest, recall_status, recall_index,');
-      console.log('  recall_memory_search, recall_memory_status, recall_plans, recall_plan_show,');
-      console.log('  recall_tasks, recall_kg_query/add/invalidate/timeline/stats,');
+      console.log('  recall_project_context, recall_project_dossier, recall_weekly_digest,');
+      console.log('  recall_status, recall_index, recall_memory_search, recall_memory_status,');
+      console.log('  recall_plans, recall_plan_show, recall_tasks, recall_diff, recall_commits,');
+      console.log('  recall_outcome, recall_markers, recall_edits_timeline, recall_help,');
+      console.log('  recall_kg_query/add/invalidate/timeline/stats,');
       console.log('  recall_diary_write/read, recall_subagent_search, recall_files_touched,');
       console.log('  recall_user_prompts, recall_decision_record, recall_set/get/kv_list,');
       console.log('  recall_analytics_summary, recall_wake_up, recall_similar_sessions,');
-      console.log('  recall_session_files');
+      console.log('  recall_session_files, recall_redundant_files');
       // List codeindex's tools too if it's available — detected above.
       if (!skipCodeindex) {
         const { checkCodeindexStatus } = await import('@chat-recall/engine/core/companions.js');
@@ -556,7 +565,7 @@ program
     if (!existsSync(indexPath)) {
       console.log(chalk.yellow('Index not found.'));
       console.log(`Expected at: ${indexPath}`);
-      console.log('\nRun', chalk.bold('node dist/cli.js index'), 'to build the index.');
+      console.log('\nRun', chalk.bold('chat-recall index'), 'to build the index.');
       process.exit(0);
     }
 

@@ -1211,7 +1211,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           await cache.close();
         } catch (err) {
           if (err instanceof Error && err.message.includes('not found')) {
-            return { content: [{ type: 'text', text: 'Error: Index not found. Run \'node dist/cli.js memory index\' first.' }] };
+            return { content: [{ type: 'text', text: 'Error: Index not found. Run \'chat-recall memory index\' first.' }] };
           }
           throw err;
         }
@@ -1366,7 +1366,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         await memoryIndex.flushBuffer();
         await kg.close();
-        // Note: optimize() removed from auto flows — run `node dist/cli.js optimize` manually
+        // Note: optimize() removed from auto flows — run `chat-recall optimize` manually
         await store.close();
 
         return {
@@ -1980,7 +1980,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           await cache.close();
         } catch (err) {
           if (err instanceof Error && err.message.includes('not found')) {
-            return { content: [{ type: 'text', text: 'Error: Index not found. Run \'node dist/cli.js memory index\' first.' }] };
+            return { content: [{ type: 'text', text: 'Error: Index not found. Run \'chat-recall memory index\' first.' }] };
           }
           throw err;
         }
@@ -2243,7 +2243,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
             let item: any = null;
             for (const id of candidates) {
-              item = fbStore.getItem(id, 'session' as SourceType);
+              item = await fbStore.getItem(id, 'session' as SourceType);
               if (item) break;
             }
             if (!item) {
@@ -2273,7 +2273,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             }
             return { content: [{ type: 'text', text: lines.join('\n') }] };
           } finally {
-            fbStore.close();
+            await fbStore.close();
           }
         }
 

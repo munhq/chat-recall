@@ -52,14 +52,13 @@ coverage/
 *.tgz
 *.log
 
-# scratch screenshots from manual UI checks
+# scratch screenshots from manual UI checks — never track root-level PNGs
+/*.png
 .tmp-*.png
-feed-after-dedup.png
-munbot-filter.png
-post-restart.png
-projects-page*.png
-sidebar-new-tree.png
-topbar-state.png
+
+# design exports (kept locally, not part of the repo)
+Chat Recall Design System.zip
+chat-recall-design-system/
 
 # TS project-reference build cache
 *.tsbuildinfo
