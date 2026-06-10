@@ -63,3 +63,4 @@ topbar-state.png
 
 # TS project-reference build cache
 *.tsbuildinfo
+docker-compose.local.yml
