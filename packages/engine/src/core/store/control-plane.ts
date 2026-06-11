@@ -32,6 +32,20 @@ export interface AgentTokenInfo { tenant: string; deviceId: string }
 export interface Membership { team_slug: string; name: string; role: 'owner' | 'member' }
 export interface TeamMember { user_sub: string; email: string | null; role: string; created_at: number }
 
+export interface ArtifactMeta {
+  id: string;
+  type: string;
+  tool: string;
+  name: string;
+  version: number;
+  authorId: string;
+  sha256: string;
+  pinnedTo: string | null;
+  updatedAt: number;
+  bytes: number;
+}
+export interface ArtifactBody extends ArtifactMeta { bodyB64: string }
+
 export interface ControlPlane {
   ensureTenant(tenant: string, displayName?: string): Promise<void>;
   /** Resolve a raw bearer token → tenant/device, or null (unknown / revoked). */
@@ -46,7 +60,24 @@ export interface ControlPlane {
   createInvite(teamSlug: string, role: 'owner' | 'member', emailHint: string | null, createdBy: string): Promise<{ invite: string; expiresAt: number }>;
   redeemInvite(userSub: string, email: string | null, rawInvite: string): Promise<Membership | null>;
   listMembers(teamSlug: string): Promise<TeamMember[]>;
+
+  // ── Team toolkit artifacts ──
+  /** Publish (or re-publish: version bump in place) an artifact. */
+  publishArtifact(teamSlug: string, a: { type: string; tool: string; name: string; bodyB64: string; pinnedTo?: string | null; authorSub: string }): Promise<ArtifactMeta>;
+  /** Latest non-revoked artifacts (metadata only). */
+  listArtifacts(teamSlug: string): Promise<ArtifactMeta[]>;
+  /** Changes since `sinceMs`: updated artifacts with bodies + revoked ids. */
+  pullArtifacts(teamSlug: string, sinceMs: number, limit?: number): Promise<{ pulled: ArtifactBody[]; removed: string[] }>;
+  /** Soft-revoke; returns the artifact identity or null when unknown. */
+  revokeArtifact(teamSlug: string, artifactId: string): Promise<{ id: string; type: string; name: string } | null>;
+
   close(): Promise<void>;
+}
+
+/** Deterministic artifact id: same (team,type,tool,name) ⇒ same id, so
+ *  re-publishing bumps the version instead of multiplying rows. */
+function artifactId(teamSlug: string, type: string, tool: string, name: string): string {
+  return 'a_' + sha256(`${teamSlug}|${type}|${tool}|${name}`).slice(0, 16);
 }
 
 /** Team slug: readable prefix + 6 hex chars of entropy (matches server.mjs). */
@@ -90,6 +121,15 @@ class SqliteControlPlane implements ControlPlane {
         role TEXT NOT NULL DEFAULT 'member', email_hint TEXT, created_by TEXT NOT NULL,
         expires_at INTEGER NOT NULL, used_at INTEGER
       );
+      CREATE TABLE IF NOT EXISTS cp_team_artifacts (
+        team_slug TEXT NOT NULL, id TEXT NOT NULL,
+        type TEXT NOT NULL, tool TEXT NOT NULL, name TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1, author_sub TEXT NOT NULL,
+        sha256 TEXT NOT NULL, pinned_to TEXT, body_b64 TEXT NOT NULL,
+        bytes INTEGER NOT NULL, updated_at INTEGER NOT NULL, revoked_at INTEGER,
+        PRIMARY KEY (team_slug, id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_cp_artifacts_updated ON cp_team_artifacts(team_slug, updated_at);
     `);
   }
 
@@ -175,7 +215,60 @@ class SqliteControlPlane implements ControlPlane {
     ).all(teamSlug) as TeamMember[];
   }
 
+  async publishArtifact(teamSlug: string, a: { type: string; tool: string; name: string; bodyB64: string; pinnedTo?: string | null; authorSub: string }): Promise<ArtifactMeta> {
+    const id = artifactId(teamSlug, a.type, a.tool, a.name);
+    const raw = Buffer.from(a.bodyB64, 'base64');
+    const digest = sha256(raw.toString('binary'));
+    const now = Date.now();
+    const existing = this.db.prepare(`SELECT version FROM cp_team_artifacts WHERE team_slug = ? AND id = ?`).get(teamSlug, id) as { version: number } | undefined;
+    const version = (existing?.version ?? 0) + 1;
+    this.db.prepare(
+      `INSERT INTO cp_team_artifacts (team_slug, id, type, tool, name, version, author_sub, sha256, pinned_to, body_b64, bytes, updated_at, revoked_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+       ON CONFLICT (team_slug, id) DO UPDATE SET
+         version=excluded.version, author_sub=excluded.author_sub, sha256=excluded.sha256,
+         pinned_to=excluded.pinned_to, body_b64=excluded.body_b64, bytes=excluded.bytes,
+         updated_at=excluded.updated_at, revoked_at=NULL`,
+    ).run(teamSlug, id, a.type, a.tool, a.name, version, a.authorSub, digest, a.pinnedTo ?? null, a.bodyB64, raw.length, now);
+    return { id, type: a.type, tool: a.tool, name: a.name, version, authorId: a.authorSub, sha256: digest, pinnedTo: a.pinnedTo ?? null, updatedAt: now, bytes: raw.length };
+  }
+
+  async listArtifacts(teamSlug: string): Promise<ArtifactMeta[]> {
+    return (this.db.prepare(
+      `SELECT id, type, tool, name, version, author_sub, sha256, pinned_to, updated_at, bytes
+       FROM cp_team_artifacts WHERE team_slug = ? AND revoked_at IS NULL ORDER BY type, name`,
+    ).all(teamSlug) as any[]).map(rowToMeta);
+  }
+
+  async pullArtifacts(teamSlug: string, sinceMs: number, limit = 500): Promise<{ pulled: ArtifactBody[]; removed: string[] }> {
+    const pulled = (this.db.prepare(
+      `SELECT id, type, tool, name, version, author_sub, sha256, pinned_to, updated_at, bytes, body_b64
+       FROM cp_team_artifacts WHERE team_slug = ? AND revoked_at IS NULL AND updated_at > ?
+       ORDER BY updated_at ASC LIMIT ?`,
+    ).all(teamSlug, sinceMs, limit) as any[]).map((r) => ({ ...rowToMeta(r), bodyB64: r.body_b64 }));
+    const removed = (this.db.prepare(
+      `SELECT id FROM cp_team_artifacts WHERE team_slug = ? AND revoked_at IS NOT NULL AND revoked_at > ?`,
+    ).all(teamSlug, sinceMs) as any[]).map((r) => r.id as string);
+    return { pulled, removed };
+  }
+
+  async revokeArtifact(teamSlug: string, artifactIdArg: string): Promise<{ id: string; type: string; name: string } | null> {
+    const row = this.db.prepare(`SELECT id, type, name FROM cp_team_artifacts WHERE team_slug = ? AND id = ?`).get(teamSlug, artifactIdArg) as { id: string; type: string; name: string } | undefined;
+    if (!row) return null;
+    this.db.prepare(`UPDATE cp_team_artifacts SET revoked_at = ? WHERE team_slug = ? AND id = ?`).run(Date.now(), teamSlug, artifactIdArg);
+    return row;
+  }
+
   async close(): Promise<void> { this.db.close(); }
+}
+
+/** Shared row → ArtifactMeta mapping (column names match in both backends). */
+function rowToMeta(r: any): ArtifactMeta {
+  return {
+    id: r.id, type: r.type, tool: r.tool, name: r.name, version: r.version,
+    authorId: r.author_sub, sha256: r.sha256, pinnedTo: r.pinned_to ?? null,
+    updatedAt: r.updated_at, bytes: r.bytes,
+  };
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -281,6 +374,55 @@ class PgControlPlane implements ControlPlane {
       `SELECT user_sub, email, role, created_at FROM memberships WHERE team_slug = $1 ORDER BY role DESC, created_at`,
       [teamSlug],
     ) as Promise<TeamMember[]>;
+  }
+
+  async publishArtifact(teamSlug: string, a: { type: string; tool: string; name: string; bodyB64: string; pinnedTo?: string | null; authorSub: string }): Promise<ArtifactMeta> {
+    const id = artifactId(teamSlug, a.type, a.tool, a.name);
+    const raw = Buffer.from(a.bodyB64, 'base64');
+    const digest = sha256(raw.toString('binary'));
+    const now = Date.now();
+    const existing = (await this.q(`SELECT version FROM team_artifacts WHERE team_slug = $1 AND id = $2`, [teamSlug, id]))[0];
+    const version = ((existing?.version as number) ?? 0) + 1;
+    await this.q(
+      `INSERT INTO team_artifacts (team_slug, id, type, tool, name, version, author_sub, sha256, pinned_to, body_b64, bytes, updated_at, revoked_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NULL)
+       ON CONFLICT (team_slug, id) DO UPDATE SET
+         version=excluded.version, author_sub=excluded.author_sub, sha256=excluded.sha256,
+         pinned_to=excluded.pinned_to, body_b64=excluded.body_b64, bytes=excluded.bytes,
+         updated_at=excluded.updated_at, revoked_at=NULL`,
+      [teamSlug, id, a.type, a.tool, a.name, version, a.authorSub, digest, a.pinnedTo ?? null, a.bodyB64, raw.length, now],
+    );
+    return { id, type: a.type, tool: a.tool, name: a.name, version, authorId: a.authorSub, sha256: digest, pinnedTo: a.pinnedTo ?? null, updatedAt: now, bytes: raw.length };
+  }
+
+  async listArtifacts(teamSlug: string): Promise<ArtifactMeta[]> {
+    const rows = await this.q(
+      `SELECT id, type, tool, name, version, author_sub, sha256, pinned_to, updated_at, bytes
+       FROM team_artifacts WHERE team_slug = $1 AND revoked_at IS NULL ORDER BY type, name`,
+      [teamSlug],
+    );
+    return rows.map(rowToMeta);
+  }
+
+  async pullArtifacts(teamSlug: string, sinceMs: number, limit = 500): Promise<{ pulled: ArtifactBody[]; removed: string[] }> {
+    const pulled = (await this.q(
+      `SELECT id, type, tool, name, version, author_sub, sha256, pinned_to, updated_at, bytes, body_b64
+       FROM team_artifacts WHERE team_slug = $1 AND revoked_at IS NULL AND updated_at > $2
+       ORDER BY updated_at ASC LIMIT $3`,
+      [teamSlug, sinceMs, limit],
+    )).map((r: any) => ({ ...rowToMeta(r), bodyB64: r.body_b64 }));
+    const removed = (await this.q(
+      `SELECT id FROM team_artifacts WHERE team_slug = $1 AND revoked_at IS NOT NULL AND revoked_at > $2`,
+      [teamSlug, sinceMs],
+    )).map((r: any) => r.id as string);
+    return { pulled, removed };
+  }
+
+  async revokeArtifact(teamSlug: string, artifactIdArg: string): Promise<{ id: string; type: string; name: string } | null> {
+    const row = (await this.q(`SELECT id, type, name FROM team_artifacts WHERE team_slug = $1 AND id = $2`, [teamSlug, artifactIdArg]))[0];
+    if (!row) return null;
+    await this.q(`UPDATE team_artifacts SET revoked_at = $1 WHERE team_slug = $2 AND id = $3`, [Date.now(), teamSlug, artifactIdArg]);
+    return { id: row.id, type: row.type, name: row.name };
   }
 
   async close(): Promise<void> { /* shared pool — see pg-pool.ts closePgPools */ }
