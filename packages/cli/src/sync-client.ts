@@ -217,27 +217,29 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
     const mtime = Math.floor(ref.mtime) || 0;
     syncedSessionIds.add(ref.prefixedId);
 
-    // Session telemetry for server-side analytics — copied from the local
-    // index's extra_json (tokens/models/cost/duration carry no content).
+    // Local index row: real project path + telemetry. The backend's
+    // ref.projectPath is decoded from the encoded dir name (every '-'
+    // becomes '/', so `chat-recall` → `chat/recall`); memory_metadata
+    // stores the real cwd read from inside the transcript — prefer it.
+    let projectPath = ref.projectPath;
     let meta: Record<string, unknown> = { messageCount: structured.length };
-    if (upload.sessionMeta) {
-      try {
-        const row = await store.getItem(ref.prefixedId, 'session');
-        if (row?.extra_json) {
-          const extra = JSON.parse(row.extra_json);
-          for (const k of ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens',
-                           'peakContextTokens', 'costUsd', 'durationMs', 'modelsUsed', 'toolsUsed',
-                           'messageCount', 'gitBranch'] as const) {
-            if (extra[k] !== undefined) meta[k] = extra[k];
-          }
+    try {
+      const row = await store.getItem(ref.prefixedId, 'session');
+      if (row?.project_path) projectPath = row.project_path;
+      if (upload.sessionMeta && row?.extra_json) {
+        const extra = JSON.parse(row.extra_json);
+        for (const k of ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens',
+                         'peakContextTokens', 'costUsd', 'durationMs', 'modelsUsed', 'toolsUsed',
+                         'messageCount', 'gitBranch'] as const) {
+          if (extra[k] !== undefined) meta[k] = extra[k];
         }
-      } catch { /* meta is best-effort */ }
-    }
+      }
+    } catch { /* row is best-effort */ }
 
     await convBatch.add({
       session_id: ref.prefixedId,
       tool: ref.toolId,
-      project_path: mapPath(ref.projectPath),
+      project_path: mapPath(projectPath),
       redacted_text: structured.map((t) => t.text).join('\n'),
       turns: structured,
       first_prompt: structured.find((t) => t.role === 'user')?.text.slice(0, 200),
