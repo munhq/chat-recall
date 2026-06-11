@@ -175,6 +175,28 @@ CREATE TABLE IF NOT EXISTS invites (
   used_at     BIGINT
 );
 
+-- Team toolkit library: one row per artifact (latest version only; publishing
+-- the same (type,tool,name) bumps version in place). Bodies are small
+-- (skills/commands/CLAUDE.md — capped at the API layer), base64-encoded.
+-- Access is membership-checked at the route layer (control plane), not RLS.
+CREATE TABLE IF NOT EXISTS team_artifacts (
+  team_slug   TEXT NOT NULL,
+  id          TEXT NOT NULL,          -- a_<sha256(team|type|tool|name)[:16]>
+  type        TEXT NOT NULL,
+  tool        TEXT NOT NULL,
+  name        TEXT NOT NULL,
+  version     INTEGER NOT NULL DEFAULT 1,
+  author_sub  TEXT NOT NULL,
+  sha256      TEXT NOT NULL,          -- of the raw (decoded) body
+  pinned_to   TEXT,
+  body_b64    TEXT NOT NULL,
+  bytes       INTEGER NOT NULL,
+  updated_at  BIGINT NOT NULL,
+  revoked_at  BIGINT,
+  PRIMARY KEY (team_slug, id)
+);
+CREATE INDEX IF NOT EXISTS idx_team_artifacts_updated ON team_artifacts(team_slug, updated_at);
+
 -- MetadataCache: per-session compute cache + summary-error tracking.
 CREATE TABLE IF NOT EXISTS summary_errors (
   tenant          TEXT NOT NULL DEFAULT 'default',
