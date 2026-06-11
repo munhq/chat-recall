@@ -180,7 +180,11 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
     }
     if (throttleMs > 0) await sleep(throttleMs);
   };
-  const makeBatcher = (field: string, maxItems: number) => {
+  // `flatten`: each add() is a GROUP of rows that must land in the same
+  // POST (e.g. one session's findings — the server replaces a session's
+  // findings wholesale, so splitting a session across two batches would
+  // lose the first half).
+  const makeBatcher = (field: string, maxItems: number, flatten = false) => {
     let batch: any[] = [];
     let batchBytes = 0;
     return {
@@ -193,7 +197,7 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
       },
       async drain(): Promise<void> {
         if (batch.length === 0) return;
-        const rows = batch;
+        const rows = flatten ? batch.flat() : batch;
         batch = [];
         batchBytes = 0;
         await post({ [field]: rows });
@@ -204,7 +208,7 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
   const convBatch = makeBatcher('conversations', 25);
   const itemsBatch = makeBatcher('items', 100);
   const linksBatch = makeBatcher('links', 2000);
-  const findingsBatch = makeBatcher('findings', 5000);
+  const findingsBatch = makeBatcher('findings', 200, true); // 200 session-groups per POST
   const derivedBatch = makeBatcher('derived', 50);
   const kgEntityBatch = makeBatcher('kg_entities', 2000);
   const kgTripleBatch = makeBatcher('kg_triples', 1000);
@@ -270,9 +274,10 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
     // previews, never raw secrets). Replace-wholesale server-side.
     if (upload.findings) {
       try {
-        for (const f of await store.secretFindingsForSession(ref.prefixedId)) {
-          await findingsBatch.add({ session_id: ref.prefixedId, detector: f.detector, rule: f.rule, line: f.line, preview: f.preview });
-        }
+        const rows = (await store.secretFindingsForSession(ref.prefixedId))
+          .map((f) => ({ session_id: ref.prefixedId, detector: f.detector, rule: f.rule, line: f.line, preview: f.preview }));
+        // One add() per session — the whole group lands in one POST.
+        if (rows.length > 0) await findingsBatch.add(rows);
       } catch { /* findings are best-effort */ }
     }
 
