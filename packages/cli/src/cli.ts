@@ -1964,6 +1964,8 @@ program
         sinceMs,
         cleartextPaths: !!opts.pathsCleartext,
         limit: opts.limit ? Number(opts.limit) : undefined,
+        // Backfills hit the server's ingest pipeline hard — pace them.
+        throttleMs: opts.full ? 3000 : undefined,
       });
       console.log(chalk.green(`✓ Synced ${r.uploaded} session(s)`) + chalk.dim(` — ${r.skipped} skipped, ${r.redactions} secrets redacted`));
     } catch (err) {
