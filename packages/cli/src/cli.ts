@@ -208,39 +208,43 @@ program
         const mcpServers = (mcpConfig.mcpServers || {}) as Record<string, unknown>;
         const projectRoot = join(import.meta.dirname, '..');
 
-        if (mcpServers['chat-recall']) {
+        // Prefer the installed `chat-recall-mcp` bin (on PATH after `npm i -g`
+        // or a packaged binary). Fall back to the source-checkout path only in
+        // an un-installed dev tree. Re-running `init` REPAIRS a stale entry
+        // (e.g. an old `node <checkout>/dist/mcp.js`) instead of skipping it.
+        let mcpBinOnPath = false;
+        try { execSync('command -v chat-recall-mcp', { stdio: 'ignore' }); mcpBinOnPath = true; } catch { /* not installed */ }
+        const launch: { command: string; args?: string[] } = mcpBinOnPath
+          ? { command: 'chat-recall-mcp' }
+          : { command: 'node', args: [join(projectRoot, 'dist', 'mcp.js')] };
+        const DEFAULT_ALLOW = [
+          'recall_search', 'recall_show', 'recall_index', 'recall_status',
+          'recall_recent', 'recall_context', 'recall_summary', 'recall_suggest_resume',
+          'recall_memory_search', 'recall_memory_status', 'recall_plans', 'recall_plan_show',
+          'recall_tasks', 'recall_smart_resume', 'recall_project_context',
+          'recall_project_dossier', 'recall_weekly_digest',
+          'recall_kg_query', 'recall_kg_add', 'recall_kg_invalidate',
+          'recall_kg_timeline', 'recall_kg_stats',
+          'recall_diary_write', 'recall_diary_read',
+          'recall_diff', 'recall_commits', 'recall_outcome', 'recall_markers',
+          'recall_edits_timeline', 'recall_subagent_search', 'recall_files_touched',
+          'recall_user_prompts', 'recall_decision_record', 'recall_analytics_summary',
+          'recall_wake_up', 'recall_similar_sessions', 'recall_session_files',
+          'recall_redundant_files', 'recall_set', 'recall_get', 'recall_kv_list',
+          'recall_help',
+        ];
+        const existing = mcpServers['chat-recall'] as { command?: string; args?: string[]; alwaysAllow?: string[] } | undefined;
+        const isCurrent = !!existing && existing.command === launch.command &&
+          JSON.stringify(existing.args ?? null) === JSON.stringify(launch.args ?? null);
+        if (isCurrent) {
           console.log(`   MCP server: ${chalk.green('already configured')} in ${mcpJsonPath}`);
         } else {
-          // Prefer the installed `chat-recall-mcp` bin (on PATH after `npm i -g`
-          // or a packaged binary) so the config is portable. Only fall back to
-          // the source-checkout path when running from an un-installed dev tree.
-          let mcpBinOnPath = false;
-          try { execSync('command -v chat-recall-mcp', { stdio: 'ignore' }); mcpBinOnPath = true; } catch { /* not installed */ }
-          const launch = mcpBinOnPath
-            ? { command: 'chat-recall-mcp' as const }
-            : { command: 'node' as const, args: [join(projectRoot, 'dist', 'mcp.js')] };
-          mcpServers['chat-recall'] = {
-            ...launch,
-            alwaysAllow: [
-              'recall_search', 'recall_show', 'recall_index', 'recall_status',
-              'recall_recent', 'recall_context', 'recall_summary', 'recall_suggest_resume',
-              'recall_memory_search', 'recall_memory_status', 'recall_plans', 'recall_plan_show',
-              'recall_tasks', 'recall_smart_resume', 'recall_project_context',
-              'recall_project_dossier', 'recall_weekly_digest',
-              'recall_kg_query', 'recall_kg_add', 'recall_kg_invalidate',
-              'recall_kg_timeline', 'recall_kg_stats',
-              'recall_diary_write', 'recall_diary_read',
-              'recall_diff', 'recall_commits', 'recall_outcome', 'recall_markers',
-              'recall_edits_timeline', 'recall_subagent_search', 'recall_files_touched',
-              'recall_user_prompts', 'recall_decision_record', 'recall_analytics_summary',
-              'recall_wake_up', 'recall_similar_sessions', 'recall_session_files',
-              'recall_redundant_files', 'recall_set', 'recall_get', 'recall_kv_list',
-              'recall_help',
-            ],
-          };
+          const entry: Record<string, unknown> = { command: launch.command, alwaysAllow: existing?.alwaysAllow ?? DEFAULT_ALLOW };
+          if (launch.args) entry.args = launch.args;
+          mcpServers['chat-recall'] = entry;
           mcpConfig.mcpServers = mcpServers;
           writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2));
-          console.log(`   MCP server: ${chalk.green('configured')} in ${mcpJsonPath}`);
+          console.log(`   MCP server: ${chalk.green(existing ? 'repaired' : 'configured')} (→ ${launch.command}) in ${mcpJsonPath}`);
         }
       } else {
         console.log(chalk.bold('4. Skipping MCP configuration (--skip-mcp)'));
