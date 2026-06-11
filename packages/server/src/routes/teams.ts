@@ -142,4 +142,16 @@ router.post('/tenants/:slug/tokens', async (req, res) => {
   } finally { await cp.close(); }
 });
 
+// Purge a tenant and ALL of its data (control plane + tenant-scoped rows).
+// Irreversible; admin-key only. Exists to clean up test tenants.
+router.delete('/tenants/:slug', async (req, res) => {
+  if (!adminOk(req, res)) return;
+  const cp = await createControlPlane();
+  try {
+    const deleted = await cp.deleteTenant(req.params.slug);
+    if (!deleted) return res.status(404).json({ error: 'tenant not found' });
+    res.json({ ok: true, deleted: req.params.slug });
+  } finally { await cp.close(); }
+});
+
 export default router;

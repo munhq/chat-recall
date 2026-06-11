@@ -22,7 +22,7 @@
 import { createHash, randomBytes } from 'crypto';
 import Database from 'better-sqlite3';
 import { resolveBackend, type CreateStoreOptions } from './index.js';
-import { openPgPool } from './pg-pool.js';
+import { openPgPool, tenantQuery } from './pg-pool.js';
 import { getCacheDbPath } from '../paths.js';
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -60,6 +60,14 @@ export interface ControlPlane {
   createInvite(teamSlug: string, role: 'owner' | 'member', emailHint: string | null, createdBy: string): Promise<{ invite: string; expiresAt: number }>;
   redeemInvite(userSub: string, email: string | null, rawInvite: string): Promise<Membership | null>;
   listMembers(teamSlug: string): Promise<TeamMember[]>;
+
+  /**
+   * Remove a tenant and everything keyed to it: control-plane rows (tokens,
+   * team, memberships, invites, artifacts) AND the tenant's data rows in the
+   * tenant-scoped stores. Admin-only surface — used to purge test tenants.
+   * Returns false when the tenant doesn't exist.
+   */
+  deleteTenant(tenant: string): Promise<boolean>;
 
   // ── Team toolkit artifacts ──
   /** Publish (or re-publish: version bump in place) an artifact. */
@@ -259,6 +267,21 @@ class SqliteControlPlane implements ControlPlane {
     return row;
   }
 
+  async deleteTenant(tenant: string): Promise<boolean> {
+    const exists = this.db.prepare(`SELECT 1 FROM cp_tenants WHERE tenant = ?`).get(tenant);
+    if (!exists) return false;
+    // Control-plane rows. The sqlite backend is single-box: tenant-scoped
+    // data tables have no tenant column, so there is nothing more to purge —
+    // documented limitation of sqlite mode (one logical tenant per volume).
+    this.db.prepare(`DELETE FROM cp_agent_tokens   WHERE tenant = ?`).run(tenant);
+    this.db.prepare(`DELETE FROM cp_memberships    WHERE team_slug = ?`).run(tenant);
+    this.db.prepare(`DELETE FROM cp_invites        WHERE team_slug = ?`).run(tenant);
+    this.db.prepare(`DELETE FROM cp_team_artifacts WHERE team_slug = ?`).run(tenant);
+    this.db.prepare(`DELETE FROM cp_teams          WHERE slug = ?`).run(tenant);
+    this.db.prepare(`DELETE FROM cp_tenants        WHERE tenant = ?`).run(tenant);
+    return true;
+  }
+
   async close(): Promise<void> { this.db.close(); }
 }
 
@@ -423,6 +446,34 @@ class PgControlPlane implements ControlPlane {
     if (!row) return null;
     await this.q(`UPDATE team_artifacts SET revoked_at = $1 WHERE team_slug = $2 AND id = $3`, [Date.now(), teamSlug, artifactIdArg]);
     return { id: row.id, type: row.type, name: row.name };
+  }
+
+  async deleteTenant(tenant: string): Promise<boolean> {
+    const exists = (await this.q(`SELECT 1 FROM tenants WHERE tenant = $1`, [tenant]))[0];
+    if (!exists) return false;
+    // Tenant-scoped data tables (these all carry a `tenant` column in pg).
+    // Connection role is the table owner / superuser-ish migrator, but rows
+    // are deleted with an explicit predicate — no GUC games needed since we
+    // bypass tenantQuery on purpose for this admin operation.
+    for (const t of [
+      'memory_metadata', 'memory_links', 'content_cache', 'kv_store', 'memory_chunks',
+      'secret_findings', 'secret_rules', 'secret_dismissals', 'session_metadata',
+      'summary_errors', 'compute_cache', 'session_outcome_cache', 'kg_entities',
+      'kg_triples', 'wal_log', 'diary_entries',
+    ]) {
+      // FORCE RLS applies to the owner too — scope the GUC to this tenant so
+      // the policy permits the delete.
+      await tenantQuery(this.pool, tenant, `DELETE FROM ${t} WHERE tenant = $1`, [tenant]);
+    }
+    try { await tenantQuery(this.pool, tenant, `DELETE FROM memory_vectors WHERE tenant = $1`, [tenant]); } catch { /* table absent without pgvector */ }
+    // Control-plane rows (not RLS-walled).
+    await this.q(`DELETE FROM agent_tokens   WHERE tenant = $1`, [tenant]);
+    await this.q(`DELETE FROM memberships    WHERE team_slug = $1`, [tenant]);
+    await this.q(`DELETE FROM invites        WHERE team_slug = $1`, [tenant]);
+    await this.q(`DELETE FROM team_artifacts WHERE team_slug = $1`, [tenant]);
+    await this.q(`DELETE FROM teams          WHERE slug = $1`, [tenant]);
+    await this.q(`DELETE FROM tenants        WHERE tenant = $1`, [tenant]);
+    return true;
   }
 
   async close(): Promise<void> { /* shared pool — see pg-pool.ts closePgPools */ }
