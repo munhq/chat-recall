@@ -12,6 +12,7 @@ import {
   OutcomeCache,
   createStore,
   createMetadataCache,
+  createOutcomeCache,
   SummaryGenerator,
   parseSessionFile,
   loadSettings,
@@ -38,18 +39,17 @@ import {
 import type { SourceType } from '../imports.js';
 import { matchesPrefix } from '../utils/paths.js';
 import { buildETag, maybeSendNotModified } from '../util/cacheable.js';
-import { requireLocalMode } from '../util/mode.js';
+import { requireLocalMode, isServerMode } from '../util/mode.js';
 
 const router = express.Router();
 
-// FS-dependent endpoints (transcript replay, live scans, git, raw files,
-// summary regeneration, outcome badges) only exist in local mode. In server
-// mode the data arrived via /api/sync — conversation list, message view,
-// related items and metadata still work because they read the stores.
+// Genuinely FS/model-dependent endpoints only exist in local mode: live
+// file scans, raw transcript serving, summary regeneration. Everything
+// else — diff, commits, outcome (+badges), markers, turns — serves from
+// the synced compute_cache / session_outcome_cache rows in server mode
+// (the CLI computes them; the server never recomputes).
 router.use([
-  '/:id/files-live', '/:id/diff', '/:id/commits', '/:id/outcome',
-  '/:id/outcome/badge', '/outcome/badges', '/:id/turns', '/:id/markers',
-  '/:id/raw', '/:id/regenerate-summary',
+  '/:id/files-live', '/:id/raw', '/:id/regenerate-summary',
 ], requireLocalMode);
 
 /**
@@ -125,7 +125,10 @@ router.get('/recent', async (req, res) => {
 
       // Empty index → fallback to filesystem walk so we don't return
       // an empty list during the first run before indexing completes.
-      if (total === 0 && offset === 0 && !projectIdFilter && !toolFilter && !sinceMs) {
+      // Local mode only: a server deployment must never walk the server
+      // host's own ~/.claude (that would leak the operator's sessions
+      // into a tenant's view).
+      if (total === 0 && offset === 0 && !projectIdFilter && !toolFilter && !sinceMs && !isServerMode()) {
         const walked = await getSessionIndex();
         const slice = walked.slice(0, limit);
         const sessions = await hydrateSessions(slice);
@@ -234,12 +237,12 @@ router.get('/:id/diff', async (req, res) => {
     // Fresh hit
     let result: SessionDiffResult | null = null;
     if (resolved) {
-      result = heavyCacheGet<SessionDiffResult>(`diff:${id}`, resolved.mtime);
+      result = await heavyCacheGet<SessionDiffResult>(`diff:${id}`, resolved.mtime);
     }
 
     // Stale hit
     if (!result) {
-      const stale = getStaleHeavy<SessionDiffResult>(id, 'diff');
+      const stale = await getStaleHeavy<SessionDiffResult>(id, 'diff');
       if (stale) {
         if (resolved && stale.mtime !== resolved.mtime) {
           enqueueRefresh('diff', id, resolved.mtime);
@@ -307,7 +310,7 @@ router.get('/:id/commits', async (req, res) => {
 
     // Fresh hit
     if (resolved) {
-      const fresh = heavyCacheGet<unknown>(`commits:${id}`, resolved.mtime);
+      const fresh = await heavyCacheGet<unknown>(`commits:${id}`, resolved.mtime);
       if (fresh) {
         const etag = buildETag([id, 'commits', resolved.mtime]);
         if (maybeSendNotModified(req, res, etag)) return;
@@ -316,7 +319,7 @@ router.get('/:id/commits', async (req, res) => {
     }
 
     // Stale hit — return prior result, refresh in background.
-    const stale = getStaleHeavy<unknown>(id, 'commits');
+    const stale = await getStaleHeavy<unknown>(id, 'commits');
     if (stale) {
       if (resolved && stale.mtime !== resolved.mtime) {
         enqueueRefresh('commits', id, resolved.mtime);
@@ -355,7 +358,7 @@ router.get('/:id/outcome', async (req, res) => {
 
     // Step 1: fresh hit
     if (resolved) {
-      const fresh = heavyCacheGet<unknown>(`outcome:${id}`, resolved.mtime);
+      const fresh = await heavyCacheGet<unknown>(`outcome:${id}`, resolved.mtime);
       if (fresh) {
         const etag = buildETag([id, 'outcome', resolved.mtime]);
         if (maybeSendNotModified(req, res, etag)) return;
@@ -365,7 +368,7 @@ router.get('/:id/outcome', async (req, res) => {
 
     // Step 2: stale hit (any mtime). Serve immediately, refresh async.
     // No ETag on stale responses — they're transient by definition.
-    const stale = getStaleHeavy<unknown>(id, 'outcome');
+    const stale = await getStaleHeavy<unknown>(id, 'outcome');
     if (stale && resolved && stale.mtime !== resolved.mtime) {
       enqueueRefresh('outcome', id, resolved.mtime);
       return res.json({ ...(stale.data as object), _stale: true, _staleMtime: stale.mtime, _currentMtime: resolved.mtime });
@@ -427,7 +430,17 @@ function getHeavyMetadataCache(): MetadataCache {
   return _heavyMetadataCache;
 }
 
-function heavyCacheGet<T>(key: string, mtime: number): T | null {
+async function heavyCacheGet<T>(key: string, mtime: number): Promise<T | null> {
+  // Server mode: L2 is the tenant-scoped store (synced compute_cache rows,
+  // Postgres or SQLite per deployment). The in-process L1 is skipped — its
+  // keys aren't tenant-qualified and a driver hit is ~1ms anyway.
+  if (isServerMode()) {
+    const parsed = parseHeavyKey(key);
+    if (!parsed) return null;
+    const cache = await createMetadataCache();
+    try { return await cache.getCompute<T>(parsed.sessionId, parsed.kind, mtime); }
+    finally { await cache.close(); }
+  }
   const hit = HEAVY_CACHE.get(key);
   if (hit && hit.mtime === mtime) {
     HEAVY_CACHE.delete(key); HEAVY_CACHE.set(key, hit); // LRU bump
@@ -443,7 +456,11 @@ function heavyCacheGet<T>(key: string, mtime: number): T | null {
   }
   return null;
 }
-function heavyCacheSet(key: string, mtime: number, data: unknown): void {
+async function heavyCacheSet(key: string, mtime: number, data: unknown): Promise<void> {
+  // Server mode never computes, so it never writes here — ingest writes
+  // arrive through /api/sync. Guard anyway so a stray call can't poison
+  // the local-SQLite cache inside a server deployment.
+  if (isServerMode()) return;
   HEAVY_CACHE.set(key, { mtime, data });
   while (HEAVY_CACHE.size > HEAVY_CACHE_MAX) {
     const oldest = HEAVY_CACHE.keys().next().value;
@@ -464,7 +481,12 @@ function heavyCacheSet(key: string, mtime: number, data: unknown): void {
  * serves whatever cached row exists (even if stale), then asynchronously
  * triggers a refresh so the next request sees fresh data.
  */
-function getStaleHeavy<T>(sessionId: string, kind: string): { data: T; mtime: number } | null {
+async function getStaleHeavy<T>(sessionId: string, kind: string): Promise<{ data: T; mtime: number } | null> {
+  if (isServerMode()) {
+    const cache = await createMetadataCache();
+    try { return await cache.getComputeStale<T>(sessionId, kind); }
+    finally { await cache.close(); }
+  }
   return getHeavyMetadataCache().getComputeStale<T>(sessionId, kind);
 }
 
@@ -475,6 +497,9 @@ function getStaleHeavy<T>(sessionId: string, kind: string): { data: T; mtime: nu
  */
 const REFRESH_PENDING = new Set<string>();
 function enqueueRefresh(kind: 'outcome' | 'diff' | 'commits' | 'markers' | 'turns', sessionId: string, mtime: number): void {
+  // Server mode has no FS/git to recompute from — the synced row is final
+  // until the CLI pushes a fresher one.
+  if (isServerMode()) return;
   const key = `${kind}:${sessionId}`;
   if (REFRESH_PENDING.has(key)) return;
   REFRESH_PENDING.add(key);
@@ -488,15 +513,15 @@ function enqueueRefresh(kind: 'outcome' | 'diff' | 'commits' | 'markers' | 'turn
         if (kind === 'outcome') {
           // computeOutcome + replaySessionAny are tool-agnostic (registry-routed).
           const out = computeOutcome(sessionId);
-          if (out.found) heavyCacheSet(`outcome:${sessionId}`, mtime, out);
+          if (out.found) await heavyCacheSet(`outcome:${sessionId}`, mtime, out);
         } else if (kind === 'diff') {
           const replay = replaySessionAny(sessionId);
-          if (replay.found) heavyCacheSet(`diff:${sessionId}`, mtime, replay);
+          if (replay.found) await heavyCacheSet(`diff:${sessionId}`, mtime, replay);
         } else if (kind === 'commits') {
-          let replay = heavyCacheGet<SessionDiffResult>(`diff:${sessionId}`, mtime);
+          let replay = await heavyCacheGet<SessionDiffResult>(`diff:${sessionId}`, mtime);
           if (!replay) {
             replay = replaySessionAny(sessionId);
-            if (replay.found) heavyCacheSet(`diff:${sessionId}`, mtime, replay);
+            if (replay.found) await heavyCacheSet(`diff:${sessionId}`, mtime, replay);
           }
           if (replay.found) {
             const turns = extractTurnsAny(sessionId, { maxTurns: 50_000 });
@@ -506,7 +531,7 @@ function enqueueRefresh(kind: 'outcome' | 'diff' | 'commits' | 'markers' | 'turn
               turns.startMs || Date.now() - 86400_000,
               turns.endMs || Date.now(),
             );
-            heavyCacheSet(`commits:${sessionId}`, mtime, result);
+            await heavyCacheSet(`commits:${sessionId}`, mtime, result);
           }
         } else if (kind === 'markers') {
           const turns = extractTurnsAny(sessionId, { maxTurns: 50_000 });
@@ -514,11 +539,11 @@ function enqueueRefresh(kind: 'outcome' | 'diff' | 'commits' | 'markers' | 'turn
             const prompts = turns.turns
               .filter(t => t.kind === 'user' && t.text)
               .map(t => ({ line: t.line, ts: t.ts, tsIso: t.tsIso, ...markPrompt(t.text!) }));
-            heavyCacheSet(`markers:${sessionId}`, mtime, { sessionId, prompts, summary: summarizeMarkers(prompts) });
+            await heavyCacheSet(`markers:${sessionId}`, mtime, { sessionId, prompts, summary: summarizeMarkers(prompts) });
           }
         } else if (kind === 'turns') {
           const turns = extractTurnsAny(sessionId, { maxTurns: 50_000 });
-          if (turns.found) heavyCacheSet(`turns:${sessionId}`, mtime, turns);
+          if (turns.found) await heavyCacheSet(`turns:${sessionId}`, mtime, turns);
         }
       } catch (err) {
         console.error(`Async refresh ${kind}:${sessionId.slice(0, 8)} failed:`, err);
@@ -704,6 +729,21 @@ async function resolveSessionForBadge(id: string): Promise<
   | null
 > {
   const tool = detectTool(id);
+
+  // Server mode: nothing to stat — the synced memory_metadata mtime is the
+  // freshness key (it's the same mtime the CLI stamped on every synced
+  // compute_cache row, so fresh-hits and ETags line up exactly).
+  if (isServerMode()) {
+    const store = await createStore();
+    try {
+      const item = await store.getItem(id, 'session' as SourceType);
+      if (!item) return null;
+      return { kind: 'mtime-only', mtime: item.mtime || 0, size: 0, tool };
+    } finally {
+      await store.close();
+    }
+  }
+
   const { statSync } = await import('fs');
 
   if (tool === 'claude') {
@@ -836,6 +876,18 @@ function classifyOne(
 router.get('/:id/outcome/badge', async (req, res) => {
   try {
     const { id } = req.params;
+    // Server mode: badges come from the synced session_outcome_cache rows —
+    // there's no file to stat or tail-scan.
+    if (isServerMode()) {
+      const cache = await createOutcomeCache();
+      try {
+        const row = await cache.get(id);
+        if (!row) return res.status(404).json({ error: 'No synced outcome for this session' });
+        return res.json(cachedToResponse(row, true));
+      } finally {
+        await cache.close();
+      }
+    }
     const resolved = await resolveSessionForBadge(id);
     if (!resolved) return res.status(404).json({ error: 'Session not found' });
     res.json(classifyOne(id, resolved));
@@ -869,6 +921,20 @@ router.post('/outcome/badges', async (req, res) => {
     // stat 100k sessions in one call.
     const MAX_BATCH = 500;
     const safeIds = ids.slice(0, MAX_BATCH);
+
+    // Server mode: one tenant-scoped fetch over the synced rows. No file
+    // stats, no quick classification — absent ids simply get no badge.
+    if (isServerMode()) {
+      const driverCache = await createOutcomeCache();
+      try {
+        const rows = await driverCache.getMany(safeIds);
+        const badges: Record<string, BadgeResponse> = {};
+        for (const [id, row] of rows) badges[id] = cachedToResponse(row, true);
+        return res.json({ badges });
+      } finally {
+        await driverCache.close();
+      }
+    }
 
     // Single SQL fetch for all cached rows.
     const cache = getOutcomeCache();
@@ -980,13 +1046,37 @@ router.get('/:id/turns', async (req, res) => {
 
     const resolved = await resolveSessionForBadge(id);
     let result = resolved
-      ? heavyCacheGet<ReturnType<typeof extractTurnsAny>>(`turns:${id}`, resolved.mtime)
+      ? await heavyCacheGet<ReturnType<typeof extractTurnsAny>>(`turns:${id}`, resolved.mtime)
       : null;
+    if (!result && isServerMode()) {
+      // No transcript on the server — rebuild user/assistant turns from the
+      // synced per-turn chunks. Tool/bash turns aren't synced, so this is a
+      // conversation-only view (same fidelity as the message list).
+      const store = await createStore();
+      try {
+        const chunks = await store.listChunksByItem('session', id);
+        if (chunks.length === 0) return res.status(404).json({ error: 'Session not found' });
+        result = {
+          sessionId: id,
+          found: true,
+          turns: chunks.map((c, i) => ({
+            kind: c.chunk_type.startsWith('user') ? 'user' : 'assistant_text',
+            text: c.text,
+            ts: 0,
+            line: i + 1,
+          })) as any,
+          startMs: 0,
+          endMs: 0,
+        };
+      } finally {
+        await store.close();
+      }
+    }
     if (!result) {
       // Cache the full extraction (50k cap) so subsequent requests with
       // any smaller limit can reuse the cached result and slice in JS.
       result = extractTurnsAny(id, { maxTurns: 50_000 });
-      if (resolved && result.found) heavyCacheSet(`turns:${id}`, resolved.mtime, result);
+      if (resolved && result.found) await heavyCacheSet(`turns:${id}`, resolved.mtime, result);
     }
     if (!result.found) return res.status(404).json({ error: 'Session not found' });
 
@@ -1011,11 +1101,11 @@ router.get('/:id/turns', async (req, res) => {
 // The `getCachedMarkers` / `setCachedMarkers` shims keep the call sites
 // readable while delegating to the shared helpers.
 type MarkersPayload = { sessionId: string; prompts: unknown[]; summary: unknown };
-function getCachedMarkers(id: string, mtime: number): MarkersPayload | null {
+function getCachedMarkers(id: string, mtime: number): Promise<MarkersPayload | null> {
   return heavyCacheGet<MarkersPayload>(`markers:${id}`, mtime);
 }
-function setCachedMarkers(id: string, mtime: number, data: MarkersPayload): void {
-  heavyCacheSet(`markers:${id}`, mtime, data);
+async function setCachedMarkers(id: string, mtime: number, data: MarkersPayload): Promise<void> {
+  await heavyCacheSet(`markers:${id}`, mtime, data);
 }
 
 // GET /api/conversations/:id/markers
@@ -1029,12 +1119,20 @@ router.get('/:id/markers', async (req, res) => {
     // the outcome cache uses, so freshness checks match across endpoints.
     const resolved = await resolveSessionForBadge(id);
     if (resolved) {
-      const cached = getCachedMarkers(id, resolved.mtime);
+      const cached = await getCachedMarkers(id, resolved.mtime);
       if (cached) {
         const etag = buildETag([id, 'markers', resolved.mtime]);
         if (maybeSendNotModified(req, res, etag)) return;
         return res.json(cached);
       }
+    }
+
+    // Server mode: no transcript to extract from — serve the latest synced
+    // row (any mtime) or report not-yet-synced.
+    if (isServerMode()) {
+      const stale = await getStaleHeavy<MarkersPayload>(id, 'markers');
+      if (stale) return res.json(stale.data);
+      return res.status(404).json({ error: 'No synced markers for this session' });
     }
 
     const turns = extractTurnsAny(id, { maxTurns: 50_000 });
@@ -1044,7 +1142,7 @@ router.get('/:id/markers', async (req, res) => {
       .map(t => ({ line: t.line, ts: t.ts, tsIso: t.tsIso, ...markPrompt(t.text!) }));
     const payload: MarkersPayload = { sessionId: id, prompts, summary: summarizeMarkers(prompts) };
 
-    if (resolved) setCachedMarkers(id, resolved.mtime, payload);
+    if (resolved) await setCachedMarkers(id, resolved.mtime, payload);
     res.json(payload);
   } catch (error) {
     console.error('Markers error:', error);
@@ -1217,6 +1315,38 @@ router.get('/:id', async (req, res) => {
             // fall through and reparse
           }
         }
+      }
+
+      // 2b. Server mode: there is no JSONL on disk and the full-conversation
+      // JSON is deliberately never synced — rebuild the message list from
+      // the synced per-turn chunks (`<id>:sync:<i>`, role encoded in
+      // chunk_type). Long turns were split into ~2KB chunks at ingest, so
+      // boundaries are approximate; content and order are exact.
+      if (isServerMode()) {
+        const chunks = await store.listChunksByItem('session', id);
+        if (chunks.length === 0) {
+          return res.status(404).json({ error: 'Session not synced' });
+        }
+        const messages = chunks.map((c, i) => ({
+          line: i + 1,
+          role: c.chunk_type.startsWith('user') ? 'user' : 'assistant',
+          content: c.text,
+        }));
+        const etag = buildETag([id, 'messages-chunks', mtime, messages.length, offset, limit]);
+        if (maybeSendNotModified(req, res, etag)) return;
+        const total = messages.length;
+        const slice = limit === 0 ? messages : messages.slice(offset, offset + limit);
+        return res.json({
+          sessionId: id,
+          messages: slice,
+          subagents: [],
+          count: slice.length,
+          total,
+          offset,
+          hasMore: limit !== 0 && offset + slice.length < total,
+          fromCache: true,
+          rebuiltFromChunks: true,
+        });
       }
 
       // 3. Parse and cache

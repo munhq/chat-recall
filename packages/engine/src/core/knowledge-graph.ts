@@ -208,6 +208,47 @@ export class KnowledgeGraph {
     return tripleId;
   }
 
+  /**
+   * Idempotent triple import for sync ingest: inserts only when no triple
+   * with the same (subject, predicate, object, valid_from, valid_to)
+   * exists — unlike addTriple, expired facts (valid_to set) are matched
+   * too, so re-syncing the same export never duplicates rows.
+   */
+  importTriple(t: {
+    subject: string;
+    predicate: string;
+    object: string;
+    valid_from?: string | null;
+    valid_to?: string | null;
+    confidence?: number;
+    source_session?: string | null;
+  }): 'inserted' | 'exists' {
+    const subId = this.entityId(t.subject);
+    const objId = this.entityId(t.object);
+    const pred = t.predicate.toLowerCase().replace(/\s+/g, '_');
+
+    this.db.prepare('INSERT OR IGNORE INTO entities (id, name) VALUES (?, ?)').run(subId, t.subject);
+    this.db.prepare('INSERT OR IGNORE INTO entities (id, name) VALUES (?, ?)').run(objId, t.object);
+
+    const existing = this.db.prepare(`
+      SELECT id FROM triples
+      WHERE subject = ? AND predicate = ? AND object = ?
+        AND COALESCE(valid_from, '') = ? AND COALESCE(valid_to, '') = ?
+    `).get(subId, pred, objId, t.valid_from ?? '', t.valid_to ?? '') as { id: string } | undefined;
+    if (existing) return 'exists';
+
+    this.db.prepare(`
+      INSERT INTO triples (id, subject, predicate, object, valid_from, valid_to, confidence, source_session, source_file)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+    `).run(
+      this.tripleId(t.subject, pred, t.object),
+      subId, pred, objId,
+      t.valid_from ?? null, t.valid_to ?? null,
+      t.confidence ?? 1.0, t.source_session ?? null,
+    );
+    return 'inserted';
+  }
+
   /** Mark a relationship as no longer valid (set valid_to date). */
   invalidate(
     subject: string,

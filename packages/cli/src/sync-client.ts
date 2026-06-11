@@ -1,9 +1,25 @@
 /**
- * The one conversation-sync client: walk local sessions, redact secrets
- * (ALWAYS — `force:true`, never gated on the index-time toggle), optionally
- * hash project paths, and push to the server's `/api/sync` (the contract in
- * packages/server/cloud/server.mjs). Credentials live in a 0600 file, never in
- * settings.json.
+ * The one sync client: walk local sessions AND every other memory source,
+ * redact secrets (ALWAYS — `force:true`, never gated on the index-time
+ * toggle), optionally hash project paths, and push to the server's
+ * `/api/sync` (packages/server/src/routes/sync.ts). Credentials live in a
+ * 0600 file, never in settings.json.
+ *
+ * What ships (the local index stays the source of truth):
+ *   conversations — per-turn redacted session transcripts + telemetry meta
+ *   items/links   — every non-session source type (plan, task, claude_md,
+ *                   history, paste, diary, skill, mcp, command, agent,
+ *                   hook, plugin) with redacted chunks + relationships
+ *   findings      — secret-scanner findings        (toggle: upload.findings)
+ *   derived       — compute_cache rows (diff/outcome/commits/markers) +
+ *                   outcome-badge rows             (toggle: upload.sessionMeta)
+ *   kg            — knowledge-graph entities/triples (toggle: upload.sessionMeta)
+ *   dismissals    — secret dismissals              (toggle: upload.dismissals)
+ *   custom_rules  — custom secret rules            (toggle: upload.customRules)
+ *
+ * What does NOT ship, by design: the full-conversation JSON blob
+ * (content_cache) and embeddings. The server reconstructs the conversation
+ * view from the per-turn chunks.
  */
 import { join, dirname } from 'node:path';
 import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
@@ -12,8 +28,13 @@ import { redactSecrets } from '@chat-recall/engine/core/secret-redactor.js';
 import { loadSettings, saveSettings } from '@chat-recall/engine/core/settings.js';
 import { getDataDir } from '@chat-recall/engine/core/paths.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
-import { extractTurnsAny } from '@chat-recall/engine/core/session-multi-tool.js';
+import { extractTurnsAny, replaySessionAny } from '@chat-recall/engine/core/session-multi-tool.js';
+import { computeOutcome } from '@chat-recall/engine/core/session-outcome.js';
+import { markPrompt, summarizeMarkers } from '@chat-recall/engine/core/session-sentiment.js';
 import { createStore, type StorageDriver } from '@chat-recall/engine/core/store/index.js';
+import { createMetadataCache, createOutcomeCache } from '@chat-recall/engine/core/store/caches.js';
+import { createKnowledgeGraph } from '@chat-recall/engine/core/store/knowledge-graph.js';
+import { buildSourceRegistry } from '@chat-recall/engine/parsers/all-sources.js';
 import '@chat-recall/engine/core/backends/index.js'; // register the tool backends
 
 // Local store handle for telemetry lookups during a sync walk. Opened once,
@@ -51,7 +72,40 @@ export function loadCredentials(): Credentials | null {
  *  without learning the developer's filesystem layout. */
 const hashPath = (p: string): string => (p ? 'p_' + createHash('sha256').update(p).digest('hex').slice(0, 12) : '');
 
-export interface SyncResult { uploaded: number; skipped: number; redactions: number; }
+/** Redact every string anywhere inside a JSON-serializable value. Used for
+ *  derived payloads (diffs carry file content; outcomes carry prompt text)
+ *  where field-by-field redaction would be fragile. */
+function redactDeep<T>(v: T, count: { redactions: number }): T {
+  if (typeof v === 'string') return redactSecrets(v, { force: true, count }) as unknown as T;
+  if (Array.isArray(v)) return v.map((x) => redactDeep(x, count)) as unknown as T;
+  if (v && typeof v === 'object') {
+    const o: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) o[k] = redactDeep(val, count);
+    return o as unknown as T;
+  }
+  return v;
+}
+
+export interface SyncResult {
+  uploaded: number;
+  skipped: number;
+  redactions: number;
+  items: number;
+  links: number;
+  findings: number;
+  derived: number;
+  kgEntities: number;
+  kgTriples: number;
+}
+
+/** compute_cache kinds shipped to the server. Must stay in step with the
+ *  kinds the server's conversation routes read (heavyCacheGet keys). */
+const COMPUTE_KINDS = ['diff', 'outcome', 'commits', 'markers'] as const;
+
+/** Per-row ceiling for derived payloads — matches the local heavy-cache L2
+ *  ceiling (metadata-cache.ts) so we never ship a row the server-side
+ *  SQLite edition couldn't store anyway. */
+const MAX_DERIVED_ROW_BYTES = 2 * 1024 * 1024;
 
 export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number } = {}): Promise<SyncResult> {
   const cred = loadCredentials();
@@ -59,16 +113,88 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
   const sync = loadSettings().sync;
   const excludeTools = new Set(sync?.excludeTools ?? []);
   const excludeProjects = sync?.excludeProjects ?? [];
+  // Upload category toggles (settings.sync.upload, all default true).
+  const upload = {
+    findings: sync?.upload?.findings !== false,
+    sessionMeta: sync?.upload?.sessionMeta !== false,
+    dismissals: sync?.upload?.dismissals !== false,
+    customRules: sync?.upload?.customRules !== false,
+  };
+  // Cleartext paths: explicit flag wins, else the persistent setting
+  // (sync.pathsCleartext — what the watch daemon uses).
+  const cleartext = opts.cleartextPaths ?? sync?.pathsCleartext === true;
+  const mapPath = (p: string): string => (cleartext ? p : hashPath(p));
+  const excluded = (projectPath: string): boolean =>
+    excludeProjects.some((x) => x && projectPath.includes(x));
 
   const refs = listAvailableBackends().flatMap((b) => {
     try { return b.listSessions({ sinceMs: opts.sinceMs }); } catch { return []; }
   });
 
-  const conversations: any[] = [];
-  let skipped = 0, redactions = 0;
+  const store = await localStore();
+  const metaCache = await createMetadataCache();
+  const outcomeCache = await createOutcomeCache();
+
+  // ── Upload plumbing, created up-front so the walks below can stream.
+  // Byte-aware batching: cap each POST at ~4MB of serialized payload (and a
+  // per-field item cap) so transcript-heavy runs can't blow the server's
+  // body limit. A single row larger than the cap still ships alone.
+  //
+  // Streaming matters: a 5k-session backfill with diff payloads would be
+  // gigabytes if accumulated before upload. Each batcher flushes as soon as
+  // its window fills, so memory stays bounded at ~one batch per category.
+  //
+  // Throttle: server-side ingest does real work per row (chunking,
+  // classification, FTS inserts) — an unthrottled 10k-session backfill can
+  // brown out a small server/database (it took down a node on 2026-06-11).
+  // Default 1s between batches; bulk callers pass more.
+  const base = cred.serverUrl.replace(/\/$/, '');
+  const MAX_BATCH_BYTES = 4 * 1024 * 1024;
+  const throttleMs = opts.throttleMs ?? 1000;
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const post = async (body: Record<string, unknown>): Promise<void> => {
+    const res = await fetch(`${base}/api/sync`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${cred.token}` },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`sync failed: HTTP ${res.status} ${await res.text().catch(() => '')}`);
+    if (throttleMs > 0) await sleep(throttleMs);
+  };
+  const makeBatcher = (field: string, maxItems: number) => {
+    let batch: any[] = [];
+    let batchBytes = 0;
+    return {
+      sent: 0,
+      async add(row: any): Promise<void> {
+        const size = JSON.stringify(row).length;
+        if (batch.length > 0 && (batchBytes + size > MAX_BATCH_BYTES || batch.length >= maxItems)) await this.drain();
+        batch.push(row);
+        batchBytes += size;
+      },
+      async drain(): Promise<void> {
+        if (batch.length === 0) return;
+        const rows = batch;
+        batch = [];
+        batchBytes = 0;
+        await post({ [field]: rows });
+        this.sent += rows.length;
+      },
+    };
+  };
+  const convBatch = makeBatcher('conversations', 25);
+  const itemsBatch = makeBatcher('items', 100);
+  const linksBatch = makeBatcher('links', 2000);
+  const findingsBatch = makeBatcher('findings', 5000);
+  const derivedBatch = makeBatcher('derived', 50);
+  const kgEntityBatch = makeBatcher('kg_entities', 2000);
+  const kgTripleBatch = makeBatcher('kg_triples', 1000);
+
+  let skipped = 0, redactions = 0, walked = 0;
+  const syncedSessionIds = new Set<string>();
   for (const ref of refs.slice(0, opts.limit ?? refs.length)) {
     if (excludeTools.has(ref.toolId as any)) { skipped++; continue; }
-    if (excludeProjects.some((x) => x && ref.projectPath.includes(x))) { skipped++; continue; }
+    if (excluded(ref.projectPath)) { skipped++; continue; }
     let turns;
     try { turns = extractTurnsAny(ref.prefixedId, { maxTurns: 5000 }); } catch { skipped++; continue; }
     if (!turns.found) { skipped++; continue; }
@@ -88,73 +214,266 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
     }
     if (structured.length === 0) { skipped++; continue; }
     redactions += count.redactions;
+    const mtime = Math.floor(ref.mtime) || 0;
+    syncedSessionIds.add(ref.prefixedId);
 
     // Session telemetry for server-side analytics — copied from the local
     // index's extra_json (tokens/models/cost/duration carry no content).
     let meta: Record<string, unknown> = { messageCount: structured.length };
-    try {
-      const row = await (await localStore()).getItem(ref.prefixedId, 'session');
-      if (row?.extra_json) {
-        const extra = JSON.parse(row.extra_json);
-        for (const k of ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens',
-                         'peakContextTokens', 'costUsd', 'durationMs', 'modelsUsed', 'toolsUsed',
-                         'messageCount', 'gitBranch'] as const) {
-          if (extra[k] !== undefined) meta[k] = extra[k];
+    if (upload.sessionMeta) {
+      try {
+        const row = await store.getItem(ref.prefixedId, 'session');
+        if (row?.extra_json) {
+          const extra = JSON.parse(row.extra_json);
+          for (const k of ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens',
+                           'peakContextTokens', 'costUsd', 'durationMs', 'modelsUsed', 'toolsUsed',
+                           'messageCount', 'gitBranch'] as const) {
+            if (extra[k] !== undefined) meta[k] = extra[k];
+          }
         }
-      }
-    } catch { /* meta is best-effort */ }
+      } catch { /* meta is best-effort */ }
+    }
 
-    conversations.push({
+    await convBatch.add({
       session_id: ref.prefixedId,
       tool: ref.toolId,
-      project_path: opts.cleartextPaths ? ref.projectPath : hashPath(ref.projectPath),
+      project_path: mapPath(ref.projectPath),
       redacted_text: structured.map((t) => t.text).join('\n'),
       turns: structured,
       first_prompt: structured.find((t) => t.role === 'user')?.text.slice(0, 200),
       meta,
-      mtime: Math.floor(ref.mtime) || 0,
+      mtime,
     });
+
+    // Secret findings — already redacted previews (the scanner stores
+    // previews, never raw secrets). Replace-wholesale server-side.
+    if (upload.findings) {
+      try {
+        for (const f of await store.secretFindingsForSession(ref.prefixedId)) {
+          await findingsBatch.add({ session_id: ref.prefixedId, detector: f.detector, rule: f.rule, line: f.line, preview: f.preview });
+        }
+      } catch { /* findings are best-effort */ }
+    }
+
+    // Derived data — the CLI has the FS/git/transcript, the server doesn't.
+    // Ship cached compute rows; compute the missing ones here so the hosted
+    // dashboard is complete (diff/outcome/commits/markers + badge row).
+    if (upload.sessionMeta) {
+      try {
+        await derivedBatch.add(await collectDerived(ref, mtime, turns, metaCache, outcomeCache, count));
+        redactions += count.redactions;
+      } catch { /* derived is best-effort — the conversation itself shipped */ }
+    }
+
+    walked++;
+    if (walked % 250 === 0) console.error(`[sync] ${walked} sessions processed…`);
   }
 
-  const base = cred.serverUrl.replace(/\/$/, '');
-  let uploaded = 0;
-  // Byte-aware batching: cap each POST at ~4MB of serialized payload (and 25
-  // items) so a run of transcript-heavy sessions can't blow the server's body
-  // limit. A single conversation larger than the cap still ships alone.
-  //
-  // Throttle: server-side ingest does real work per conversation (chunking,
-  // classification, FTS inserts) — an unthrottled 10k-session backfill can
-  // brown out a small server/database (it took down a node on 2026-06-11).
-  // Default 1s between batches; bulk callers pass more.
-  const MAX_BATCH_BYTES = 4 * 1024 * 1024;
-  const MAX_BATCH_ITEMS = 25;
-  const throttleMs = opts.throttleMs ?? 1000;
-  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  let batch: any[] = [];
-  let batchBytes = 0;
-  const flush = async () => {
-    if (batch.length === 0) return;
-    const res = await fetch(`${base}/api/sync`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${cred.token}` },
-      body: JSON.stringify({ conversations: batch }),
-    });
-    if (!res.ok) throw new Error(`sync failed: HTTP ${res.status} ${await res.text().catch(() => '')}`);
-    uploaded += batch.length;
-    batch = [];
-    batchBytes = 0;
-    if (throttleMs > 0) await sleep(throttleMs);
-  };
-  for (const cv of conversations) {
-    const size = JSON.stringify(cv).length;
-    if (batch.length > 0 && (batchBytes + size > MAX_BATCH_BYTES || batch.length >= MAX_BATCH_ITEMS)) {
-      await flush();
+  // ── Non-session sources: plan/task/claude_md/history/paste/diary/skill/
+  //    mcp/command/agent/hook/plugin. Same registry the indexer uses, so
+  //    sync coverage tracks index coverage automatically. Session-type
+  //    sources are skipped — sessions ship as conversations above.
+  //    (excludeTools is session-only: source plugins don't carry a tool id.)
+  const registry = buildSourceRegistry();
+  for (const sourceType of registry.getRegisteredTypes()) {
+    if (sourceType === 'session') continue;
+    for (const source of registry.getAll(sourceType)) {
+      let discovered: AsyncGenerator<any>;
+      try { discovered = source.discover(); } catch { continue; }
+      try {
+        for await (const item of discovered) {
+          if ((item.mtime || 0) < (opts.sinceMs ?? 0)) continue;
+          if (excluded(item.projectPath || '')) continue;
+          const count = { redactions: 0 };
+          let chunks: any[] = [];
+          try { chunks = await source.parse(item); } catch { /* unparseable item still ships metadata */ }
+          await itemsBatch.add({
+            id: item.id,
+            source_type: item.sourceType,
+            title: redactSecrets(item.title || '', { force: true, count }),
+            project_path: mapPath(item.projectPath || ''),
+            content_preview: redactSecrets(item.contentPreview || '', { force: true, count }),
+            mtime: Math.floor(item.mtime) || 0,
+            extra: item.extra ? redactDeep(item.extra, count) : undefined,
+            chunks: chunks
+              .filter((c) => c.text?.trim())
+              .map((c) => ({
+                text: redactSecrets(c.text, { force: true, count }),
+                chunk_type: c.chunkType || '',
+                title: c.title || '',
+              })),
+          });
+          try {
+            for (const l of await source.extractLinks(item)) {
+              await linksBatch.add({
+                source_type: l.sourceType, source_id: l.sourceId,
+                target_type: l.targetType, target_id: l.targetId,
+                link_type: l.linkType, confidence: l.confidence,
+              });
+            }
+          } catch { /* links are best-effort */ }
+          redactions += count.redactions;
+        }
+      } catch { /* one broken source must not kill the sync */ }
     }
-    batch.push(cv);
-    batchBytes += size;
   }
-  await flush();
-  return { uploaded, skipped, redactions };
+
+  // ── Knowledge graph. Full export on a full sync; on incremental syncs
+  //    only triples sourced from the sessions in this walk (manual
+  //    `recall_kg_add` facts ride along on the next full sync).
+  if (upload.sessionMeta) {
+    try {
+      const kg = await createKnowledgeGraph();
+      const fullExport = !opts.sinceMs;
+      const entities = await kg.listEntities(1_000_000);
+      const seenTriples = new Set<string>();
+      const wantedEntities = new Set<string>();
+      for (const e of entities) {
+        for (const t of await kg.queryEntity(e.name, undefined, 'outgoing')) {
+          if (!fullExport && !(t.source_session && syncedSessionIds.has(t.source_session))) continue;
+          const key = `${t.subject}|${t.predicate}|${t.object}|${t.valid_from ?? ''}`;
+          if (seenTriples.has(key)) continue;
+          seenTriples.add(key);
+          const count = { redactions: 0 };
+          await kgTripleBatch.add(redactDeep({
+            subject: t.subject, predicate: t.predicate, object: t.object,
+            valid_from: t.valid_from ?? null, valid_to: t.valid_to ?? null,
+            confidence: t.confidence ?? 1.0, source_session: t.source_session ?? null,
+          }, count));
+          wantedEntities.add(t.subject); wantedEntities.add(t.object);
+          redactions += count.redactions;
+        }
+      }
+      for (const e of entities) {
+        if (!fullExport && !wantedEntities.has(e.name)) continue;
+        const count = { redactions: 0 };
+        await kgEntityBatch.add(redactDeep({ name: e.name, type: e.type, properties: e.properties ?? {} }, count));
+        redactions += count.redactions;
+      }
+      await kg.close();
+    } catch { /* KG is best-effort */ }
+  }
+
+  // ── Dismissals + custom rules: small tables, shipped whole (idempotent
+  //    upserts server-side).
+  const dismissals: any[] = [];
+  const customRules: any[] = [];
+  if (upload.dismissals) {
+    try {
+      for (const [preview, d] of await store.getSecretDismissals()) {
+        dismissals.push({ preview, status: d.status, reason: d.reason ?? null });
+      }
+    } catch { /* best-effort */ }
+  }
+  if (upload.customRules) {
+    try {
+      for (const r of await store.listSecretRules()) {
+        customRules.push({ name: r.name, regex: r.regex, severity: r.severity, description: r.description ?? null, enabled: !!r.enabled });
+      }
+    } catch { /* best-effort */ }
+  }
+
+  // ── Drain every batcher (the walks above flushed full windows already;
+  // this ships the tails) + the small whole-table payloads.
+  await convBatch.drain();
+  await itemsBatch.drain();
+  await linksBatch.drain();
+  await findingsBatch.drain();
+  await derivedBatch.drain();
+  await kgEntityBatch.drain();
+  await kgTripleBatch.drain();
+  if (dismissals.length > 0 || customRules.length > 0) {
+    await post({ dismissals, custom_rules: customRules });
+  }
+
+  await metaCache.close();
+  await outcomeCache.close();
+
+  return {
+    uploaded: convBatch.sent, skipped, redactions,
+    items: itemsBatch.sent, links: linksBatch.sent, findings: findingsBatch.sent, derived: derivedBatch.sent,
+    kgEntities: kgEntityBatch.sent, kgTriples: kgTripleBatch.sent,
+  };
+}
+
+/**
+ * Per-session derived payload: the four compute_cache kinds the server's
+ * deep-dive routes read (diff/outcome/commits/markers) + the outcome-badge
+ * row. Cached rows ship as-is; missing/stale ones are computed here and
+ * written back to the local cache (so the local dashboard warms too).
+ * Everything is deep-redacted — diffs carry file content.
+ */
+async function collectDerived(
+  ref: { prefixedId: string; toolId: string; mtime: number },
+  mtime: number,
+  turns: { turns: any[]; startMs: number; endMs: number },
+  metaCache: Awaited<ReturnType<typeof createMetadataCache>>,
+  outcomeCache: Awaited<ReturnType<typeof createOutcomeCache>>,
+  count: { redactions: number },
+): Promise<{ session_id: string; mtime: number; compute: Array<{ kind: string; mtime: number; data: unknown }>; outcome_row: unknown | null }> {
+  const id = ref.prefixedId;
+  const compute: Array<{ kind: string; mtime: number; data: unknown }> = [];
+  let fullOutcome: ReturnType<typeof computeOutcome> | null = null;
+
+  for (const kind of COMPUTE_KINDS) {
+    let data = await metaCache.getCompute<unknown>(id, kind, mtime);
+    if (data === null) {
+      try {
+        if (kind === 'diff') {
+          const replay = replaySessionAny(id);
+          if (replay.found) data = replay;
+        } else if (kind === 'outcome') {
+          fullOutcome = computeOutcome(id);
+          if (fullOutcome.found) data = fullOutcome;
+        } else if (kind === 'commits') {
+          // computeOutcome already ran git for the session window — reuse.
+          if (!fullOutcome) fullOutcome = computeOutcome(id);
+          if (fullOutcome.found) data = fullOutcome.commits;
+        } else if (kind === 'markers') {
+          const prompts = turns.turns
+            .filter((t) => t.kind === 'user' && t.text)
+            .map((t) => ({ line: t.line, ts: t.ts, tsIso: t.tsIso, ...markPrompt(t.text) }));
+          data = { sessionId: id, prompts, summary: summarizeMarkers(prompts) };
+        }
+      } catch { data = null; }
+      if (data !== null) {
+        try { await metaCache.setCompute(id, kind, mtime, data); } catch { /* local warm is best-effort */ }
+      }
+    }
+    if (data === null) continue;
+    const redacted = redactDeep(data, count);
+    if (JSON.stringify(redacted).length > MAX_DERIVED_ROW_BYTES) continue;
+    compute.push({ kind, mtime, data: redacted });
+  }
+
+  // Outcome-badge row (session_outcome_cache) — what the list badges read.
+  let outcomeRow = await outcomeCache.get(id);
+  if (!outcomeRow && fullOutcome?.found) {
+    outcomeRow = {
+      sessionId: id,
+      tool: ref.toolId,
+      status: fullOutcome.status as any,
+      reason: fullOutcome.reason,
+      fileMtime: mtime,
+      fileSize: 0,
+      contentHash: '',
+      fileCount: fullOutcome.fileCount,
+      linesAdded: fullOutcome.totalLinesAdded,
+      linesRemoved: fullOutcome.totalLinesRemoved,
+      commits: fullOutcome.commits?.totalCommits ?? 0,
+      isFull: true,
+      classifiedAt: Date.now(),
+      lastScannedOffset: 0,
+    };
+    try { await outcomeCache.put(outcomeRow); } catch { /* local warm is best-effort */ }
+  }
+
+  return {
+    session_id: id,
+    mtime,
+    compute,
+    outcome_row: outcomeRow ? redactDeep({ ...outcomeRow, sessionId: undefined }, count) : null,
+  };
 }
 
 /**

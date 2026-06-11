@@ -86,6 +86,7 @@ export interface StorageDriver {
 
   // ── FTS5 full-text search ──
   addChunksFTS: AsyncMethod<MemoryStore['addChunksFTS']>;
+  listChunksByItem: AsyncMethod<MemoryStore['listChunksByItem']>;
   deleteItemFTS: AsyncMethod<MemoryStore['deleteItemFTS']>;
   rebuildFTS: AsyncMethod<MemoryStore['rebuildFTS']>;
   clearFTS: AsyncMethod<MemoryStore['clearFTS']>;

@@ -17,25 +17,7 @@ import { MemoryIndex } from '@chat-recall/engine/core/memory-index.js'; // stati
 import { createMetadataCache } from '@chat-recall/engine/core/store/caches.js';
 import { getDataDir, getIdentityFilePath, getHooksDir, getIndexDir } from '@chat-recall/engine/core/paths.js';
 import { createStore } from '@chat-recall/engine/core/store/index.js';
-import { SourceRegistry } from '@chat-recall/engine/core/source-registry.js';
-import { SessionSource } from '@chat-recall/engine/parsers/session-source.js';
-import { PlanSource } from '@chat-recall/engine/parsers/plan-source.js';
-import { TaskSource } from '@chat-recall/engine/parsers/task-source.js';
-import { ClaudeMdSource } from '@chat-recall/engine/parsers/claude-md-source.js';
-import { HistorySource } from '@chat-recall/engine/parsers/history-source.js';
-import { PasteSource } from '@chat-recall/engine/parsers/paste-source.js';
-import { GeminiSessionSource } from '@chat-recall/engine/parsers/gemini-source.js';
-import { GeminiBrainSource } from '@chat-recall/engine/parsers/gemini-brain-source.js';
-import { OpenCodeSource } from '@chat-recall/engine/parsers/opencode-source.js';
-import { OpenCodeTodoSource } from '@chat-recall/engine/parsers/opencode-todo-source.js';
-import { CodexSessionSource } from '@chat-recall/engine/parsers/codex-session-source.js';
-import { DiarySource } from '@chat-recall/engine/parsers/diary-source.js';
-import { SkillsSource } from '@chat-recall/engine/parsers/skills-source.js';
-import { McpsSource } from '@chat-recall/engine/parsers/mcps-source.js';
-import { SlashCommandsSource } from '@chat-recall/engine/parsers/slash-commands-source.js';
-import { SubagentsSource } from '@chat-recall/engine/parsers/subagents-source.js';
-import { HooksSource } from '@chat-recall/engine/parsers/hooks-source.js';
-import { PluginsSource } from '@chat-recall/engine/parsers/plugins-source.js';
+import { buildSourceRegistry } from '@chat-recall/engine/parsers/all-sources.js';
 import { claudeBackend } from '@chat-recall/engine/core/backends/claude.js';
 import { getBackendForId } from '@chat-recall/engine/core/tool-backend.js';
 import '@chat-recall/engine/core/backends/index.js'; // side-effect: registers backends
@@ -123,25 +105,7 @@ program
       console.log(chalk.bold('3. Indexing all sources...'));
       const memoryIndex = await createVectorStore(embedder);
       const store = await createStore();
-      const registry = new SourceRegistry();
-      registry.register(new SessionSource());
-      registry.register(new PlanSource());
-      registry.register(new TaskSource());
-      registry.register(new ClaudeMdSource());
-      registry.register(new HistorySource());
-      registry.register(new PasteSource());
-      registry.register(new GeminiSessionSource());
-      registry.register(new GeminiBrainSource());
-      registry.register(new OpenCodeSource());
-      registry.register(new OpenCodeTodoSource());
-      registry.register(new CodexSessionSource());
-      registry.register(new DiarySource());
-      registry.register(new SkillsSource());
-      registry.register(new McpsSource());
-      registry.register(new SlashCommandsSource());
-      registry.register(new SubagentsSource());
-      registry.register(new HooksSource());
-      registry.register(new PluginsSource());
+      const registry = buildSourceRegistry();
 
       const kg = await createKnowledgeGraph();
       let totalItems = 0, totalChunks = 0, totalErrors = 0;
@@ -367,25 +331,7 @@ program
       // Use unified memory indexing for all source types
       const memoryIndex = await createVectorStore(embedder);
       const store = await createStore();
-      const registry = new SourceRegistry();
-      registry.register(new SessionSource());
-      registry.register(new PlanSource());
-      registry.register(new TaskSource());
-      registry.register(new ClaudeMdSource());
-      registry.register(new HistorySource());
-      registry.register(new PasteSource());
-      registry.register(new GeminiSessionSource());
-      registry.register(new GeminiBrainSource());
-      registry.register(new OpenCodeSource());
-      registry.register(new OpenCodeTodoSource());
-      registry.register(new CodexSessionSource());
-      registry.register(new DiarySource());
-      registry.register(new SkillsSource());
-      registry.register(new McpsSource());
-      registry.register(new SlashCommandsSource());
-      registry.register(new SubagentsSource());
-      registry.register(new HooksSource());
-      registry.register(new PluginsSource());
+      const registry = buildSourceRegistry();
 
       const kg = await createKnowledgeGraph();
       let totalItems = 0, totalSkipped = 0, totalChunks = 0, totalErrors = 0, totalKGTriples = 0;
@@ -827,25 +773,7 @@ memory
       const memoryIndex = await createVectorStore(embedder);
       const memoryStore = await createStore();
 
-      const registry = new SourceRegistry();
-      registry.register(new SessionSource());
-      registry.register(new PlanSource());
-      registry.register(new TaskSource());
-      registry.register(new ClaudeMdSource());
-      registry.register(new HistorySource());
-      registry.register(new PasteSource());
-      registry.register(new GeminiSessionSource());
-      registry.register(new GeminiBrainSource());
-      registry.register(new OpenCodeSource());
-      registry.register(new OpenCodeTodoSource());
-      registry.register(new CodexSessionSource());
-      registry.register(new DiarySource());
-      registry.register(new SkillsSource());
-      registry.register(new McpsSource());
-      registry.register(new SlashCommandsSource());
-      registry.register(new SubagentsSource());
-      registry.register(new HooksSource());
-      registry.register(new PluginsSource());
+      const registry = buildSourceRegistry();
 
       const requestedTypes: SourceType[] = options.types
         ? options.types.split(',') as SourceType[]
@@ -1948,30 +1876,34 @@ program
   .option('--limit <n>', 'Max sessions to sync')
   .option('--full', 'Ignore the watermark and push everything')
   .option('--paths-cleartext', 'Send project paths in cleartext (self-host only; default hashes them)')
-  .action(async (opts: { sinceHours?: string; limit?: string; full?: boolean; pathsCleartext?: boolean }) => {
+  .option('--throttle <ms>', 'Pause between upload batches in ms (default: 1000, or 3000 with --full)')
+  .action(async (opts: { sinceHours?: string; limit?: string; full?: boolean; pathsCleartext?: boolean; throttle?: string }) => {
     const { syncSessions, syncIncremental } = await import('./sync-client.js');
     try {
       // Bare `chat-recall sync` = incremental: only sessions modified since
       // the last successful sync, watermark advanced on success. Any explicit
       // flag switches to the manual one-shot path (watermark untouched).
-      if (!opts.sinceHours && !opts.limit && !opts.full && !opts.pathsCleartext) {
+      if (!opts.sinceHours && !opts.limit && !opts.full && !opts.pathsCleartext && !opts.throttle) {
         const r = await syncIncremental();
         if (r === null) {
           console.error(chalk.red('Not logged in (or sync disabled) — run `chat-recall login <server-url>` first.'));
           process.exit(1);
         }
-        console.log(chalk.green(`✓ Synced ${r.uploaded} session(s)`) + chalk.dim(` — ${r.skipped} skipped, ${r.redactions} secrets redacted (incremental)`));
+        console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.findings} findings, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted (incremental)`));
         return;
       }
       const sinceMs = opts.sinceHours ? Date.now() - Number(opts.sinceHours) * 3_600_000 : undefined;
       const r = await syncSessions({
         sinceMs,
-        cleartextPaths: !!opts.pathsCleartext,
+        // undefined (not false) when the flag is absent so the persistent
+        // sync.pathsCleartext setting can take effect.
+        cleartextPaths: opts.pathsCleartext ? true : undefined,
         limit: opts.limit ? Number(opts.limit) : undefined,
         // Backfills hit the server's ingest pipeline hard — pace them.
-        throttleMs: opts.full ? 3000 : undefined,
+        // Explicit --throttle wins (e.g. 100 for a localhost server).
+        throttleMs: opts.throttle !== undefined ? Number(opts.throttle) : (opts.full ? 3000 : undefined),
       });
-      console.log(chalk.green(`✓ Synced ${r.uploaded} session(s)`) + chalk.dim(` — ${r.skipped} skipped, ${r.redactions} secrets redacted`));
+      console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.findings} findings, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted`));
     } catch (err) {
       console.error(chalk.red('sync failed:'), err instanceof Error ? err.message : err);
       process.exit(1);

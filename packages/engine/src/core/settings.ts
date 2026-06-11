@@ -196,6 +196,13 @@ export interface SyncSettings {
     dismissals: boolean;
     customRules: boolean;
   };
+  /**
+   * Send project paths in cleartext instead of sha-hashed tokens.
+   * Off by default (SaaS privacy); turn on for self-host servers you
+   * control so the dashboard's project tree shows real paths. Honored
+   * by both manual `chat-recall sync` and the watch daemon.
+   */
+  pathsCleartext?: boolean;
   /** Tools whose findings/meta never leave the device. */
   excludeTools: Array<'claude' | 'gemini' | 'codex' | 'opencode'>;
   /** Project paths whose findings/meta never leave the device. */

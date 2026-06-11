@@ -8,7 +8,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { join, basename } from 'path';
-import { claudeHomeDir } from '../tool-paths.js';
+import { claudeHomeDir, claudeProjectDirs } from '../tool-paths.js';
 
 import type {
   ToolBackend,
@@ -94,12 +94,29 @@ export class ClaudeBackend implements ToolBackend {
   }
 
   listSessions(opts: ListSessionsOpts = {}): SessionRef[] {
-    const root = this.projectsDir();
-    if (!existsSync(root)) return [];
     const cutoff = opts.sinceMs ?? 0;
     const filter = opts.projectFilter?.toLowerCase();
     const seen = new Set<string>();
     const out: SessionRef[] = [];
+
+    // All configured homes (~/.claude, ~/.claude-* profiles, CLAUDE_DIRS) —
+    // same set the indexer scans, so index and sync stay consistent.
+    for (const root of claudeProjectDirs()) {
+      this.collectSessionsFromRoot(root, cutoff, filter, seen, out);
+    }
+
+    out.sort((a, b) => b.mtime - a.mtime);
+    return opts.limit ? out.slice(0, opts.limit) : out;
+  }
+
+  private collectSessionsFromRoot(
+    root: string,
+    cutoff: number,
+    filter: string | undefined,
+    seen: Set<string>,
+    out: SessionRef[],
+  ): void {
+    if (!existsSync(root)) return;
 
     for (const proj of readdirSync(root, { withFileTypes: true })) {
       if (!proj.isDirectory()) continue;
@@ -174,9 +191,6 @@ export class ClaudeBackend implements ToolBackend {
         });
       }
     }
-
-    out.sort((a, b) => b.mtime - a.mtime);
-    return opts.limit ? out.slice(0, opts.limit) : out;
   }
 
   // ── Generic-engine inputs ───────────────────────────────────────
@@ -375,34 +389,34 @@ export class ClaudeBackend implements ToolBackend {
    * with quiet main + active subagents still surfaces.
    */
   collectRecentEdits(opts: CollectRecentEditsOpts): SessionEdit[] {
-    const root = this.projectsDir();
-    if (!existsSync(root)) return [];
-
     const candidates: { rawId: string; mtime: number }[] = [];
-    for (const projEntry of readdirSync(root, { withFileTypes: true })) {
-      if (!projEntry.isDirectory()) continue;
-      if (opts.projectFilter && !projEntry.name.toLowerCase().includes(opts.projectFilter.toLowerCase())) continue;
-      const projPath = join(root, projEntry.name);
-      let files: string[];
-      try { files = readdirSync(projPath); } catch { continue; }
-      for (const f of files) {
-        if (!f.endsWith('.jsonl') || f === 'sessions-index.json') continue;
-        const fp = join(projPath, f);
-        try {
-          const st = statSync(fp);
-          let mtime = st.mtimeMs;
-          const subDir = join(projPath, f.slice(0, -6), 'subagents');
-          if (existsSync(subDir)) {
-            for (const sub of readdirSync(subDir)) {
-              try {
-                const subSt = statSync(join(subDir, sub));
-                if (subSt.mtimeMs > mtime) mtime = subSt.mtimeMs;
-              } catch { /* ignore */ }
+    for (const root of claudeProjectDirs()) {
+      if (!existsSync(root)) continue;
+      for (const projEntry of readdirSync(root, { withFileTypes: true })) {
+        if (!projEntry.isDirectory()) continue;
+        if (opts.projectFilter && !projEntry.name.toLowerCase().includes(opts.projectFilter.toLowerCase())) continue;
+        const projPath = join(root, projEntry.name);
+        let files: string[];
+        try { files = readdirSync(projPath); } catch { continue; }
+        for (const f of files) {
+          if (!f.endsWith('.jsonl') || f === 'sessions-index.json') continue;
+          const fp = join(projPath, f);
+          try {
+            const st = statSync(fp);
+            let mtime = st.mtimeMs;
+            const subDir = join(projPath, f.slice(0, -6), 'subagents');
+            if (existsSync(subDir)) {
+              for (const sub of readdirSync(subDir)) {
+                try {
+                  const subSt = statSync(join(subDir, sub));
+                  if (subSt.mtimeMs > mtime) mtime = subSt.mtimeMs;
+                } catch { /* ignore */ }
+              }
             }
-          }
-          if (mtime < opts.sinceMs) continue;
-          candidates.push({ rawId: basename(f, '.jsonl'), mtime });
-        } catch { /* skip */ }
+            if (mtime < opts.sinceMs) continue;
+            candidates.push({ rawId: basename(f, '.jsonl'), mtime });
+          } catch { /* skip */ }
+        }
       }
     }
 

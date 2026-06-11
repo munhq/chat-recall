@@ -73,14 +73,18 @@ app.use('/api/memory', memoryRouter);
 app.use('/api/analytics', analyticsRouter);
 app.use('/api/secrets', secretsRouter);
 
+// Store-backed in both modes: the edits timeline reads synced compute_cache
+// diff rows, the projects tree reads memory_metadata project_ids.
+app.use('/api/edits', editsRouter);
+app.use('/api/projects', projectsRouter);
+
 // FS-backed routers exist only in local mode: in a server deployment data
-// arrives via /api/sync and there is no ~/.claude to walk, no settings file
-// the UI should edit, no toolkit files to write, no projects.json.
+// arrives via /api/sync and there is no settings file the UI should edit
+// and no toolkit files to write. (Projects config PUT is guarded inside
+// the projects router.)
 if (!isServerMode()) {
   app.use('/api/settings', settingsRouter);
-  app.use('/api/edits', editsRouter);
   app.use('/api/toolkit', toolkitRouter);
-  app.use('/api/projects', projectsRouter);
 }
 
 // Health check

@@ -8,6 +8,7 @@ import { homedir } from 'os';
 import { join, basename } from 'path';
 import { stripInjectedBanners } from './chunker.js';
 import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
+import { claudeProjectDirs } from '../core/tool-paths.js';
 import { estimateCostUsd, METADATA_VERSION } from '../core/model-pricing.js';
 
 export interface SessionEntry {
@@ -613,42 +614,10 @@ function decodeDirName(dirName: string): string {
 export function* getAllSessions(claudeDir?: string): Generator<[SessionEntry, string]> {
   const seenSessionIds = new Set<string>();
 
-  // Determine which project directories to scan
-  const projectDirs: string[] = [];
-  if (claudeDir) {
-    projectDirs.push(claudeDir);
-  } else {
-    // Auto-discover all Claude directories (~/.claude, ~/.claude-work, etc.)
-    const home = homedir();
-    const addDir = (d: string) => {
-      const p = join(d, 'projects');
-      if (existsSync(p) && !projectDirs.includes(p)) projectDirs.push(p);
-    };
-
-    // Standard (env-overridable via CHAT_RECALL_CLAUDE_HOME)
-    addDir(CLAUDE.homeDir());
-
-    // Discover ~/.claude-* profiles
-    try {
-      for (const entry of readdirSync(home, { withFileTypes: true })) {
-        if (entry.isDirectory() && entry.name.startsWith('.claude-') && entry.name !== '.claude-code') {
-          addDir(join(home, entry.name));
-        }
-      }
-    } catch {}
-
-    // CLAUDE_DIRS env var override
-    if (process.env.CLAUDE_DIRS) {
-      for (const d of process.env.CLAUDE_DIRS.split(',')) {
-        const trimmed = d.trim();
-        if (trimmed) addDir(trimmed.startsWith('~/') ? join(home, trimmed.slice(2)) : trimmed);
-      }
-    }
-
-    if (projectDirs.length === 0) {
-      projectDirs.push(CLAUDE.projectsDir());
-    }
-  }
+  // Project dirs to scan: an explicit override, else the shared, config-driven
+  // discovery (claudeProjectDirs — also used by the Claude backend's
+  // listSessions and findSessionFile, so index/sync/lookup stay consistent).
+  const projectDirs: string[] = claudeDir ? [claudeDir] : claudeProjectDirs();
 
   for (const dir of projectDirs) {
     // Yield sessions from sessions-index.json files

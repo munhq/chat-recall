@@ -149,6 +149,14 @@ export async function cachedRecentEdits(opts: {
   pattern?: string;
   projectFilter?: string;
   tools?: AiTool[];
+  /**
+   * Live transcript scan for sessions the cache missed. Default on (local
+   * dashboard — catches the actively-running session). Server deployments
+   * pass false: there are no transcripts on disk and walking the server
+   * host's own ~/.claude would leak the operator's sessions into every
+   * tenant's timeline.
+   */
+  liveFallback?: boolean;
 }): Promise<SessionEdit[]> {
   const enabled = new Set<AiTool>(opts.tools ?? ['claude', 'gemini', 'opencode', 'codex']);
   const needle = opts.pattern?.toLowerCase();
@@ -248,25 +256,27 @@ export async function cachedRecentEdits(opts: {
   // matches a real path filter (`/home/user/code/...`). We do the
   // uniform filter on the merged `SessionEdit.projectPath` below
   // (real paths are populated on every emitted edit).
-  const covered = new Set(out.map(e => e.sessionId));
-  const live = liveScanRecentEdits({
-    sinceMs: opts.sinceMs,
-    pattern: opts.pattern,
-    tools: opts.tools,
-  });
-  // Second-tier fallback for unindexed (typically *active*) Claude
-  // sessions: read `cwd` from inside the JSONL. memory_metadata won't
-  // know about them yet but the file itself does.
-  const liveCwd = buildLiveClaudeCwdMap(opts.sinceMs, new Set(realProjectPaths.keys()));
-  for (const e of live) {
-    if (covered.has(e.sessionId)) continue;
-    // Overlay real project_path: prefer memory_metadata, then JSONL
-    // cwd, only fall back to live-scan's mangled value as a last
-    // resort. Fixes the chat-recall → chat/recall mangling that the
-    // live-scan claude decoder produces from encoded directory names.
-    const real = realProjectPaths.get(e.sessionId) || liveCwd.get(e.sessionId);
-    const fixed = real ? { ...e, projectPath: real } : e;
-    out.push(fixed);
+  if (opts.liveFallback !== false) {
+    const covered = new Set(out.map(e => e.sessionId));
+    const live = liveScanRecentEdits({
+      sinceMs: opts.sinceMs,
+      pattern: opts.pattern,
+      tools: opts.tools,
+    });
+    // Second-tier fallback for unindexed (typically *active*) Claude
+    // sessions: read `cwd` from inside the JSONL. memory_metadata won't
+    // know about them yet but the file itself does.
+    const liveCwd = buildLiveClaudeCwdMap(opts.sinceMs, new Set(realProjectPaths.keys()));
+    for (const e of live) {
+      if (covered.has(e.sessionId)) continue;
+      // Overlay real project_path: prefer memory_metadata, then JSONL
+      // cwd, only fall back to live-scan's mangled value as a last
+      // resort. Fixes the chat-recall → chat/recall mangling that the
+      // live-scan claude decoder produces from encoded directory names.
+      const real = realProjectPaths.get(e.sessionId) || liveCwd.get(e.sessionId);
+      const fixed = real ? { ...e, projectPath: real } : e;
+      out.push(fixed);
+    }
   }
 
   // Uniform project filter: matches against the real `projectPath`

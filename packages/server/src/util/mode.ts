@@ -59,11 +59,15 @@ export function capabilities(): Capabilities {
       memory: true,
       analytics: true,
       security: securityEnabled,
-      activity: !server,
-      sessionDeepDive: !server,
+      // Served from synced store rows in server mode (sync ships items for
+      // every source type + derived compute rows), so these stay on. Only
+      // toolkit writes and settings editing remain local-only (they mutate
+      // the local filesystem).
+      activity: true,
+      sessionDeepDive: true,
+      projects: true,
       toolkit: !server,
       settings: !server,
-      projects: !server,
       teams: ed === 'cloud',
     },
   };

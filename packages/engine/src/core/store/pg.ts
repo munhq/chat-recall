@@ -394,6 +394,14 @@ export class PgStore implements StorageDriver {
     }
     return valid.length;
   }
+  async listChunksByItem(sourceType: string, itemId: string): Promise<Array<{ chunk_id: string; title: string; text: string; chunk_type: string; mtime: number }>> {
+    const rows = await this.q(
+      `SELECT chunk_id, title, text, chunk_type, mtime FROM memory_chunks WHERE tenant=$1 AND source_type=$2 AND item_id=$3`,
+      [this.t, sourceType, itemId]);
+    const idx = (c: string) => { const m = /:(\d+)$/.exec(c); return m ? Number(m[1]) : 0; };
+    rows.sort((a: any, b: any) => idx(a.chunk_id) - idx(b.chunk_id));
+    return rows.map((r: any) => ({ chunk_id: r.chunk_id, title: r.title, text: r.text, chunk_type: r.chunk_type, mtime: Number(r.mtime) }));
+  }
   async deleteItemFTS(sourceType: string, itemId: string): Promise<void> {
     await this.q(`DELETE FROM memory_chunks WHERE tenant=$1 AND source_type=$2 AND item_id=$3`, [this.t, sourceType, itemId]);
   }

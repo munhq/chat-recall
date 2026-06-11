@@ -18,6 +18,7 @@ type AsyncMethod<M> = M extends (...args: infer A) => infer R
 export interface KnowledgeGraphDriver {
   addEntity: AsyncMethod<KnowledgeGraph['addEntity']>;
   addTriple: AsyncMethod<KnowledgeGraph['addTriple']>;
+  importTriple: AsyncMethod<KnowledgeGraph['importTriple']>;
   invalidate: AsyncMethod<KnowledgeGraph['invalidate']>;
   queryEntity: AsyncMethod<KnowledgeGraph['queryEntity']>;
   queryRelationship: AsyncMethod<KnowledgeGraph['queryRelationship']>;
@@ -35,6 +36,7 @@ export class SqliteKnowledgeGraph implements KnowledgeGraphDriver {
 
   async addEntity(...a: Args<'addEntity'>) { return this.inner.addEntity(...a); }
   async addTriple(...a: Args<'addTriple'>) { return this.inner.addTriple(...a); }
+  async importTriple(...a: Args<'importTriple'>) { return this.inner.importTriple(...a); }
   async invalidate(...a: Args<'invalidate'>) { return this.inner.invalidate(...a); }
   async queryEntity(...a: Args<'queryEntity'>) { return this.inner.queryEntity(...a); }
   async queryRelationship(...a: Args<'queryRelationship'>) { return this.inner.queryRelationship(...a); }
@@ -81,6 +83,23 @@ export class PgKnowledgeGraph implements KnowledgeGraphDriver {
       `INSERT INTO kg_triples (tenant,id,subject,predicate,object,valid_from,valid_to,confidence,source_session,source_file) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
       [this.t, id, subId, pred, objId, options.validFrom || null, options.validTo || null, options.confidence ?? 1.0, options.sourceSession || null, options.sourceFile || null]);
     return id;
+  }
+
+  async importTriple(...a: Args<'importTriple'>) {
+    const [t] = a;
+    const subId = this.entityId(t.subject); const objId = this.entityId(t.object);
+    const pred = t.predicate.toLowerCase().replace(/\s+/g, '_');
+    await this.q(`INSERT INTO kg_entities (tenant,id,name) VALUES ($1,$2,$3) ON CONFLICT (tenant,id) DO NOTHING`, [this.t, subId, t.subject]);
+    await this.q(`INSERT INTO kg_entities (tenant,id,name) VALUES ($1,$2,$3) ON CONFLICT (tenant,id) DO NOTHING`, [this.t, objId, t.object]);
+    const existing = (await this.q(
+      `SELECT id FROM kg_triples WHERE tenant=$1 AND subject=$2 AND predicate=$3 AND object=$4 AND COALESCE(valid_from,'')=$5 AND COALESCE(valid_to,'')=$6`,
+      [this.t, subId, pred, objId, t.valid_from ?? '', t.valid_to ?? '']))[0];
+    if (existing) return 'exists' as const;
+    const id = await this.tripleId(t.subject, pred, t.object);
+    await this.q(
+      `INSERT INTO kg_triples (tenant,id,subject,predicate,object,valid_from,valid_to,confidence,source_session,source_file) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL)`,
+      [this.t, id, subId, pred, objId, t.valid_from ?? null, t.valid_to ?? null, t.confidence ?? 1.0, t.source_session ?? null]);
+    return 'inserted' as const;
   }
 
   async invalidate(...a: Args<'invalidate'>) {
