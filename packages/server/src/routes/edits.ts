@@ -7,6 +7,7 @@
 import express from 'express';
 import { cachedRecentEdits, findRepoRoot } from '../imports.js';
 import type { SessionEdit } from '../imports.js';
+import { isServerMode } from '../util/mode.js';
 
 const router = express.Router();
 
@@ -48,6 +49,9 @@ async function getCachedTimeline(opts: {
     pattern: opts.pattern,
     projectFilter: opts.projectFilter,
     tools: opts.tools as ('claude' | 'gemini' | 'opencode' | 'codex')[] | undefined,
+    // Server deployments serve synced diff rows only — never live-scan the
+    // server host's own filesystem.
+    liveFallback: !isServerMode(),
   });
   timelineCache.set(key, { data, expiresAt: now + TIMELINE_CACHE_TTL_MS });
   while (timelineCache.size > TIMELINE_CACHE_MAX) {

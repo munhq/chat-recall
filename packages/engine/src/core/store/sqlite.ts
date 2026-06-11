@@ -80,6 +80,7 @@ export class SqliteStore implements StorageDriver {
 
   // ── FTS5 ──
   async addChunksFTS(...a: Args<'addChunksFTS'>) { return this.inner.addChunksFTS(...a); }
+  async listChunksByItem(...a: Args<'listChunksByItem'>) { return this.inner.listChunksByItem(...a); }
   async deleteItemFTS(...a: Args<'deleteItemFTS'>) { return this.inner.deleteItemFTS(...a); }
   async rebuildFTS(...a: Args<'rebuildFTS'>) { return this.inner.rebuildFTS(...a); }
   async clearFTS(...a: Args<'clearFTS'>) { return this.inner.clearFTS(...a); }

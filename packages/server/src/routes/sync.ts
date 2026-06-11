@@ -1,36 +1,43 @@
 /**
  * /api/sync — the one ingestion surface the local binary calls.
  *
- * Replaces cloud/server.mjs's blob-into-a-table approach with a real
- * server-side index: every uploaded conversation is chunked, classified,
- * and written through the SAME engine stores the dashboard reads
- * (memory_metadata + FTS chunks + session_metadata + content_cache), so
- * search / recent / conversation view / analytics work on synced data
- * with no separate read path.
+ * Every uploaded conversation is chunked, classified, and written through
+ * the SAME engine stores the dashboard reads (memory_metadata + FTS chunks
+ * + session_metadata), so search / recent / conversation view / analytics
+ * work on synced data with no separate read path.
  *
  * Auth: agent (device) bearer token only — resolved here, NOT by the
  * tenantAuth middleware, because the nested runWithTenant() below must
  * scope the writes to the token's tenant regardless of what the outer
  * middleware resolved.
  *
- * Payload (from packages/cli/src/sync-client.ts):
- *   conversations: [{
- *     session_id, tool, project_path,        // path may be sha-hashed client-side
- *     redacted_text,                         // legacy single-blob (kept for compat)
- *     turns?: [{ role, text, ts? }],         // structured + per-turn redacted
- *     first_prompt?, mtime,
- *     meta?: { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens,
- *              modelsUsed, costUsd, durationMs, messageCount }
- *   }],
- *   findings: [{ session_id, detector, rule, line, preview, verified_at? }]
+ * Payload (from packages/cli/src/sync-client.ts) — every field optional,
+ * batches arrive as separate POSTs:
+ *   conversations: [{ session_id, tool, project_path, redacted_text,
+ *                     turns?: [{role,text,ts?}], first_prompt?, mtime, meta? }]
+ *   items:       [{ id, source_type, title, project_path, content_preview,
+ *                   mtime, extra?, chunks: [{text, chunk_type, title}] }]
+ *   links:       [{ source_type, source_id, target_type, target_id,
+ *                   link_type, confidence }]
+ *   findings:    [{ session_id, detector, rule, line, preview, verified_at? }]
+ *   derived:     [{ session_id, mtime, compute: [{kind, mtime, data}],
+ *                   outcome_row? }]
+ *   kg_entities: [{ name, type, properties }]
+ *   kg_triples:  [{ subject, predicate, object, valid_from, valid_to,
+ *                   confidence, source_session }]
+ *   dismissals:  [{ preview, status, reason }]
+ *   custom_rules:[{ name, regex, severity, description, enabled }]
  *
  * Everything in the payload was redacted client-side (`redactSecrets` with
  * force:true) before it hit the wire; the server never sees raw secrets.
+ * The full-conversation JSON (content_cache) is deliberately NOT synced —
+ * the conversation view is reconstructed from the per-turn chunks.
  */
 
 import express from 'express';
 import {
-  createControlPlane, createStore, createMetadataCache, runWithTenant, classifyChunk,
+  createControlPlane, createStore, createMetadataCache, createOutcomeCache,
+  createKnowledgeGraph, runWithTenant, classifyChunk,
 } from '../imports.js';
 import type { SourceType } from '../imports.js';
 
@@ -47,6 +54,24 @@ interface SyncConversation {
   mtime?: number;
   meta?: Record<string, unknown>;
 }
+interface SyncItem {
+  id: string;
+  source_type: string;
+  title?: string;
+  project_path?: string;
+  content_preview?: string;
+  mtime?: number;
+  extra?: Record<string, unknown>;
+  chunks?: Array<{ text: string; chunk_type?: string; title?: string }>;
+}
+interface SyncLink {
+  source_type: string;
+  source_id: string;
+  target_type: string;
+  target_id: string;
+  link_type: string;
+  confidence?: number;
+}
 interface SyncFinding {
   session_id: string;
   detector: string;
@@ -55,6 +80,37 @@ interface SyncFinding {
   preview: string;
   verified_at?: string | null;
 }
+interface SyncDerived {
+  session_id: string;
+  mtime?: number;
+  compute?: Array<{ kind: string; mtime: number; data: unknown }>;
+  outcome_row?: Record<string, unknown> | null;
+}
+interface SyncKgEntity { name: string; type?: string; properties?: Record<string, unknown> }
+interface SyncKgTriple {
+  subject: string;
+  predicate: string;
+  object: string;
+  valid_from?: string | null;
+  valid_to?: string | null;
+  confidence?: number;
+  source_session?: string | null;
+}
+interface SyncDismissal { preview: string; status: string; reason?: string | null }
+interface SyncCustomRule { name: string; regex: string; severity: string; description?: string | null; enabled?: boolean }
+
+/** Non-session source types the items[] path accepts. Sessions must come
+ *  through conversations[] (they carry turns + telemetry meta). */
+const ITEM_SOURCE_TYPES = new Set<string>([
+  'plan', 'task', 'claude_md', 'paste', 'history', 'diary',
+  'skill', 'mcp', 'command', 'agent', 'hook', 'plugin',
+]);
+
+/** compute_cache kinds the conversation deep-dive routes read. */
+const COMPUTE_KINDS = new Set(['diff', 'outcome', 'commits', 'markers']);
+
+const DISMISSAL_STATUSES = new Set(['rotated', 'false_positive', 'dismissed']);
+const RULE_SEVERITIES = new Set(['critical', 'high', 'medium', 'low']);
 
 /** Chunk a conversation's turns for FTS. Mirrors the local chunker's
  *  granularity goal (search hits land on a turn, not a 140KB blob) without
@@ -92,9 +148,7 @@ function chunksFromTurns(
   return out;
 }
 
-/** The {v, messages} envelope the conversations/:id route serves from
- *  content_cache — version must match its PARSER_VERSION. */
-const PARSER_VERSION = 5;
+const arr = <T>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
 
 router.post('/', async (req, res) => {
   // Agent-token auth (ct_…). The tenantAuth middleware may have resolved a
@@ -107,14 +161,21 @@ router.post('/', async (req, res) => {
   finally { await cp.close(); }
   if (!agent) return res.status(401).json({ error: 'invalid agent token' });
 
-  const conversations = (Array.isArray(req.body?.conversations) ? req.body.conversations : []) as SyncConversation[];
-  const findings = (Array.isArray(req.body?.findings) ? req.body.findings : []) as SyncFinding[];
+  const conversations = arr<SyncConversation>(req.body?.conversations);
+  const items = arr<SyncItem>(req.body?.items);
+  const links = arr<SyncLink>(req.body?.links);
+  const findings = arr<SyncFinding>(req.body?.findings);
+  const derived = arr<SyncDerived>(req.body?.derived);
+  const kgEntities = arr<SyncKgEntity>(req.body?.kg_entities);
+  const kgTriples = arr<SyncKgTriple>(req.body?.kg_triples);
+  const dismissals = arr<SyncDismissal>(req.body?.dismissals);
+  const customRules = arr<SyncCustomRule>(req.body?.custom_rules);
 
   try {
     const result = await runWithTenant(agent.tenant, async () => {
       const store = await createStore();
       const metaCache = await createMetadataCache();
-      let conv = 0, find = 0, chunks = 0;
+      let conv = 0, item = 0, link = 0, find = 0, der = 0, kgE = 0, kgT = 0, chunks = 0;
       try {
         for (const cv of conversations) {
           if (!cv.session_id) continue;
@@ -146,8 +207,11 @@ router.post('/', async (req, res) => {
             },
           } as Parameters<typeof store.setItem>[0]);
 
-          // 2. FTS chunks — what search reads. Replace-then-insert semantics
-          // come from addChunksFTS itself (it deletes the item's rows first).
+          // 2. FTS chunks — what search AND the conversation view read.
+          // Replace-then-insert semantics come from addChunksFTS itself (it
+          // deletes the item's rows first). NOTE: no content_cache write —
+          // the full-conversation JSON deliberately never reaches the
+          // server; conversations/:id rebuilds the view from these chunks.
           const cks = chunksFromTurns(cv.session_id, turns, projectPath, mtime);
           if (cks.length > 0) chunks += await store.addChunksFTS(cks);
 
@@ -160,21 +224,66 @@ router.post('/', async (req, res) => {
             mtime,
             indexedAt: Date.now(),
           });
-
-          // 4. Parsed-messages envelope — what conversations/:id serves.
-          if (turns.length > 0) {
-            const messages = turns.map((t, idx) => ({
-              line: idx + 1,
-              role: t.role,
-              content: t.text,
-              timestamp: t.ts ? new Date(t.ts).toISOString() : undefined,
-            }));
-            await store.setCachedContent(
-              cv.session_id, 'session', mtime,
-              JSON.stringify({ v: PARSER_VERSION, messages, subagents: [] }),
-            );
-          }
           conv++;
+        }
+
+        // Non-session source items (plan/task/claude_md/skill/…): metadata
+        // row + FTS chunks, same write path the local indexer uses.
+        for (const it of items) {
+          if (!it.id || !ITEM_SOURCE_TYPES.has(it.source_type)) continue;
+          const mtime = Math.floor(Number(it.mtime) || 0);
+          const sourceType = it.source_type as SourceType;
+          await store.setItem({
+            id: it.id,
+            sourceType,
+            title: (it.title || '').slice(0, 200),
+            projectPath: it.project_path || '',
+            contentPreview: (it.content_preview || '').slice(0, 500),
+            filePath: '',
+            mtime,
+            extra: {
+              synced: true,
+              syncedDeviceId: agent.deviceId,
+              ...(it.extra && typeof it.extra === 'object' ? it.extra : {}),
+            },
+          } as Parameters<typeof store.setItem>[0]);
+
+          const cks = (it.chunks ?? [])
+            .filter((c) => c.text?.trim())
+            .map((c, i) => {
+              let chunkType = c.chunk_type || sourceType;
+              const cls = classifyChunk(c.text);
+              if (cls.memoryType !== 'general') chunkType = `${chunkType}:${cls.memoryType}:imp${cls.importance}`;
+              return {
+                chunkId: `${it.id}:sync:${i}`,
+                itemId: it.id,
+                sourceType,
+                title: c.title || it.title || '',
+                text: c.text,
+                chunkType,
+                projectPath: it.project_path || '',
+                filePath: '',
+                mtime,
+              };
+            });
+          if (cks.length > 0) chunks += await store.addChunksFTS(cks);
+          item++;
+        }
+
+        // Relationship links — upsert semantics (pg ON CONFLICT) make
+        // re-syncs idempotent.
+        const validLinks = links.filter((l) =>
+          l.source_type && l.source_id && l.target_type && l.target_id && l.link_type);
+        if (validLinks.length > 0) {
+          await store.addLinks(validLinks.map((l) => ({
+            sourceType: l.source_type as SourceType,
+            sourceId: l.source_id,
+            targetType: l.target_type as SourceType,
+            targetId: l.target_id,
+            linkType: l.link_type as any,
+            confidence: typeof l.confidence === 'number' ? l.confidence : 1.0,
+          })));
+          link += validLinks.length;
         }
 
         // Findings: group per session, replace wholesale (idempotent re-sync).
@@ -193,11 +302,86 @@ router.post('/', async (req, res) => {
           })));
           find += r.written;
         }
+
+        // Derived data: compute_cache rows (what the diff/outcome/commits/
+        // markers routes serve via the heavy cache) + outcome-badge rows.
+        // The server never recomputes these — it has no FS/git; the CLI is
+        // the only producer.
+        if (derived.length > 0) {
+          const outcomeCache = await createOutcomeCache();
+          try {
+            for (const d of derived) {
+              if (!d.session_id) continue;
+              for (const c of d.compute ?? []) {
+                if (!COMPUTE_KINDS.has(c.kind) || c.data == null) continue;
+                await metaCache.setCompute(d.session_id, c.kind, Math.floor(Number(c.mtime) || 0), c.data);
+                der++;
+              }
+              const row = d.outcome_row;
+              if (row && typeof row === 'object' && typeof row.status === 'string') {
+                await outcomeCache.put({
+                  sessionId: d.session_id,
+                  tool: String(row.tool ?? 'claude'),
+                  status: row.status as any,
+                  reason: String(row.reason ?? ''),
+                  fileMtime: Math.floor(Number(row.fileMtime) || 0),
+                  fileSize: Number(row.fileSize) || 0,
+                  contentHash: String(row.contentHash ?? ''),
+                  fileCount: Number(row.fileCount) || 0,
+                  linesAdded: Number(row.linesAdded) || 0,
+                  linesRemoved: Number(row.linesRemoved) || 0,
+                  commits: Number(row.commits) || 0,
+                  isFull: !!row.isFull,
+                  classifiedAt: Number(row.classifiedAt) || Date.now(),
+                  lastScannedOffset: Number(row.lastScannedOffset) || 0,
+                });
+                der++;
+              }
+            }
+          } finally {
+            await outcomeCache.close();
+          }
+        }
+
+        // Knowledge graph: idempotent imports (importTriple matches expired
+        // facts too, so re-syncs never duplicate).
+        if (kgEntities.length > 0 || kgTriples.length > 0) {
+          const kg = await createKnowledgeGraph();
+          try {
+            for (const e of kgEntities) {
+              if (!e.name) continue;
+              await kg.addEntity(e.name, e.type ?? 'unknown', e.properties ?? {});
+              kgE++;
+            }
+            for (const t of kgTriples) {
+              if (!t.subject || !t.predicate || !t.object) continue;
+              if (await kg.importTriple(t) === 'inserted') kgT++;
+            }
+          } finally {
+            await kg.close();
+          }
+        }
+
+        // Secret dismissals + custom rules — small tables, upserted whole.
+        for (const d of dismissals) {
+          if (!d.preview || !DISMISSAL_STATUSES.has(d.status)) continue;
+          await store.setSecretDismissal(d.preview, d.status as any, d.reason ?? undefined);
+        }
+        for (const r of customRules) {
+          if (!r.name || !r.regex || !RULE_SEVERITIES.has(r.severity)) continue;
+          await store.upsertSecretRule({
+            name: r.name,
+            regex: r.regex,
+            severity: r.severity,
+            description: r.description ?? undefined,
+            enabled: r.enabled !== false,
+          });
+        }
       } finally {
         await metaCache.close();
         await store.close();
       }
-      return { conv, find, chunks };
+      return { conv, item, link, find, der, kgE, kgT, chunks };
     });
 
     res.json({ ok: true, ...result, tenant: agent.tenant, ack_at: new Date().toISOString() });

@@ -77,11 +77,38 @@ describe('POST /api/sync (ingest)', () => {
         findings: [
           { session_id: sessionId, detector: 'gitleaks', rule: 'aws-key', line: 3, preview: '****QVGY' },
         ],
+        items: [{
+          id: 'plan-test-1',
+          source_type: 'plan',
+          title: 'Test plan',
+          project_path: 'p_abcdef123456',
+          content_preview: 'Ship the flux capacitor',
+          mtime,
+          chunks: [{ text: 'Step 1: replace the zorbofrang coil', chunk_type: 'plan_section' }],
+        }],
+        links: [{
+          source_type: 'plan', source_id: 'plan-test-1',
+          target_type: 'session', target_id: sessionId,
+          link_type: 'plan_for_session', confidence: 1,
+        }],
+        derived: [{
+          session_id: sessionId,
+          mtime,
+          compute: [{ kind: 'markers', mtime, data: { sessionId, prompts: [], summary: { total: 0 } } }],
+          outcome_row: { tool: 'claude', status: 'completed', reason: 'test', fileMtime: mtime, isFull: true },
+        }],
+        kg_entities: [{ name: 'zorbofrang', type: 'tool' }],
+        kg_triples: [{ subject: 'project', predicate: 'uses', object: 'zorbofrang' }],
       });
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.conv).toBe(1);
     expect(res.body.find).toBe(1);
+    expect(res.body.item).toBe(1);
+    expect(res.body.link).toBe(1);
+    expect(res.body.der).toBe(2);
+    expect(res.body.kgE).toBe(1);
+    expect(res.body.kgT).toBe(1);
     expect(res.body.chunks).toBeGreaterThan(0);
 
     // 1. Metadata row exists with the synced telemetry.
@@ -97,12 +124,22 @@ describe('POST /api/sync (ingest)', () => {
     expect(hits.some(h => h.itemId === sessionId)).toBe(true);
 
     // 3. The parsed-messages envelope serves the viewer.
+    // The full-conversation JSON is deliberately NOT cached server-side —
+    // the conversation view rebuilds from the per-turn chunks.
     const cached = await store.getCachedContent(sessionId, 'session', mtime);
-    expect(cached).not.toBeNull();
-    const envelope = JSON.parse(cached!);
-    expect(envelope.v).toBe(5);
-    expect(envelope.messages).toHaveLength(2);
-    expect(envelope.messages[0].role).toBe('user');
+    expect(cached).toBeNull();
+    const chunks = await store.listChunksByItem('session', sessionId);
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0].chunk_type.startsWith('user')).toBe(true);
+    expect(chunks[1].text).toContain('zorbofrang coil');
+
+    const planItem = await store.getItem('plan-test-1', 'plan');
+    expect(planItem).not.toBeNull();
+    const planChunks = await store.listChunksByItem('plan', 'plan-test-1');
+    expect(planChunks).toHaveLength(1);
+    const links = await store.getLinksFrom('plan', 'plan-test-1');
+    expect(links).toHaveLength(1);
+    expect(links[0].target_id).toBe(sessionId);
 
     // 4. Secret finding landed (masked preview only).
     const findings = await store.secretFindingsForSession(sessionId);
