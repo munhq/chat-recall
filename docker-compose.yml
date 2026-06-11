@@ -17,11 +17,10 @@
 #      (the watch daemon then syncs continuously; `chat-recall sync` is manual)
 #   5. open http://localhost:8080
 #
-# Storage is a flag: SQLite (default — zero deps, lives in the data volume)
-# or Postgres for teams:
-#   CHAT_RECALL_STORAGE=postgres \
-#   DATABASE_URL=postgres://chatrecall:chatrecall@postgres:5432/chat_recall \
-#     docker compose --profile postgres up -d
+# Storage: SQLite, in the data volume. (The engine also supports
+# CHAT_RECALL_STORAGE=postgres + DATABASE_URL if you bring your own Postgres
+# — that's how the hosted SaaS runs — but the self-host compose ships
+# SQLite-only on purpose: one container, zero dependencies.)
 
 services:
   server:
@@ -42,9 +41,7 @@ services:
       # Required for minting device tokens; unset ⇒ those endpoints are
       # disabled (fail-closed) and the binary can never log in.
       ADMIN_KEY: ${ADMIN_KEY:?set ADMIN_KEY in .env (e.g. openssl rand -hex 24)}
-      # Storage: sqlite (default, in the data volume) | postgres (teams).
-      CHAT_RECALL_STORAGE: ${CHAT_RECALL_STORAGE:-sqlite}
-      DATABASE_URL: ${DATABASE_URL:-}
+      CHAT_RECALL_STORAGE: sqlite
       # Dashboard auth: none (default; bind to localhost or your VPN!) |
       # static-token | keycloak (set OIDC_JWKS_URL / OIDC_ISSUER too).
       AUTH_PROVIDER: ${AUTH_PROVIDER:-none}
@@ -59,27 +56,5 @@ services:
       retries: 5
       start_period: 15s
 
-  # ── Optional: Postgres + pgvector (team storage backend) ──────────────────
-  # `docker compose --profile postgres up -d` + set CHAT_RECALL_STORAGE=postgres,
-  #   DATABASE_URL=postgres://chatrecall:chatrecall@postgres:5432/chat_recall
-  postgres:
-    image: pgvector/pgvector:pg16
-    profiles: [postgres]
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-chatrecall}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chatrecall}
-      POSTGRES_DB: ${POSTGRES_DB:-chat_recall}
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-chatrecall} -d ${POSTGRES_DB:-chat_recall}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
 volumes:
   chat_recall_data:
-  postgres_data:
