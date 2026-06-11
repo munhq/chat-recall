@@ -53,7 +53,7 @@ const hashPath = (p: string): string => (p ? 'p_' + createHash('sha256').update(
 
 export interface SyncResult { uploaded: number; skipped: number; redactions: number; }
 
-export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number } = {}): Promise<SyncResult> {
+export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number } = {}): Promise<SyncResult> {
   const cred = loadCredentials();
   if (!cred) throw new Error('Not logged in — run `chat-recall login <server-url> --token <token>`');
   const sync = loadSettings().sync;
@@ -118,11 +118,18 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
 
   const base = cred.serverUrl.replace(/\/$/, '');
   let uploaded = 0;
-  // Byte-aware batching: cap each POST at ~8MB of serialized payload (and 50
+  // Byte-aware batching: cap each POST at ~4MB of serialized payload (and 25
   // items) so a run of transcript-heavy sessions can't blow the server's body
   // limit. A single conversation larger than the cap still ships alone.
-  const MAX_BATCH_BYTES = 8 * 1024 * 1024;
-  const MAX_BATCH_ITEMS = 50;
+  //
+  // Throttle: server-side ingest does real work per conversation (chunking,
+  // classification, FTS inserts) — an unthrottled 10k-session backfill can
+  // brown out a small server/database (it took down a node on 2026-06-11).
+  // Default 1s between batches; bulk callers pass more.
+  const MAX_BATCH_BYTES = 4 * 1024 * 1024;
+  const MAX_BATCH_ITEMS = 25;
+  const throttleMs = opts.throttleMs ?? 1000;
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   let batch: any[] = [];
   let batchBytes = 0;
   const flush = async () => {
@@ -136,6 +143,7 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
     uploaded += batch.length;
     batch = [];
     batchBytes = 0;
+    if (throttleMs > 0) await sleep(throttleMs);
   };
   for (const cv of conversations) {
     const size = JSON.stringify(cv).length;
