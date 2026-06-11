@@ -143,7 +143,18 @@ export class PgStore implements StorageDriver {
     const where: string[] = [`tenant=$1`, `source_type='session'`];
     const params: unknown[] = [this.t];
     if (opts.projectIdFilter) { params.push(opts.projectIdFilter); where.push(`project_id=$${params.length}`); }
-    else if (!opts.includeUntracked) { where.push(`project_id NOT LIKE 'path:%'`); }
+    else if (!opts.includeUntracked) {
+      // Mirror MemoryStore.querySessionIndex: hide only the genuine noise
+      // buckets (PR-bot worktrees, /tmp scratch). Blanket-hiding 'path:%'
+      // buried every synced session — hashed project paths (p_…) resolve to
+      // path: ids by design.
+      where.push(
+        `project_id NOT LIKE 'path:%.claude-pr-bot' ` +
+        `AND project_id NOT LIKE 'path:%/.claude-pr-bot/%' ` +
+        `AND project_id NOT LIKE 'path:/tmp/%' ` +
+        `AND project_id NOT LIKE 'path:/var/tmp/%'`,
+      );
+    }
     if (opts.toolFilter) {
       if (opts.toolFilter === 'claude') where.push(`((extra_json::jsonb->>'tool') IS NULL OR (extra_json::jsonb->>'tool')='claude')`);
       else { params.push(opts.toolFilter); where.push(`(extra_json::jsonb->>'tool')=$${params.length}`); }
