@@ -10,6 +10,7 @@ import {
   CodexSessionSource, currentTenant,
 } from '../imports.js';
 import type { SourceType, MemorySearchResult, MemoryMetadataRow, MemoryLinkRow, StorageDriver, VectorStore } from '../imports.js';
+import { isServerMode } from '../util/mode.js';
 
 export class MemoryService {
   private embedder: OllamaEmbedder;
@@ -35,8 +36,13 @@ export class MemoryService {
   constructor() {
     this.embedder = new OllamaEmbedder();
 
-    // Initialize source registry
+    // Initialize source registry. In server mode there is no local
+    // filesystem to discover from (data arrives via /api/sync) and several
+    // source constructors mkdir their watch dirs — which EACCESes in a
+    // read-only/non-root container. Keep the registry empty there; reindex
+    // becomes a no-op with a clear count of zero.
     this.registry = new SourceRegistry();
+    if (isServerMode()) return;
     this.registry.register(new SessionSource());
     this.registry.register(new PlanSource());
     this.registry.register(new TaskSource());
