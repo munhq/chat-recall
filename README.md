@@ -41,6 +41,18 @@ npm run web:install                 # install web deps
 npm run web:dev                     # API on :5000, UI on :5173
 ```
 
+### Self-host the server (docker compose)
+
+One container, SQLite storage in a named volume — see the quick start at the
+top of `docker-compose.yml` (set `ADMIN_KEY`, mint a device token, then
+`chat-recall login <url> --token <ct_…>` from each machine).
+
+Bring-your-own-Postgres is supported by the engine (it's how the hosted SaaS
+runs): point the container at it with `CHAT_RECALL_STORAGE=postgres` and
+`DATABASE_URL=postgres://…` — needs Postgres 16+; install the `pgvector`
+extension only if you want server-side semantic vectors (everything degrades
+to FTS without it). The compose deliberately doesn't ship a Postgres service.
+
 ### Keep the index live (+ optional server sync)
 
 ```bash
