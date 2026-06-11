@@ -20,6 +20,7 @@ import { tenantAuth } from './middleware/auth.js';
 import projectsRouter from './routes/projects.js';
 import syncRouter from './routes/sync.js';
 import teamsRouter from './routes/teams.js';
+import teamArtifactsRouter from './routes/team-artifacts.js';
 import { capabilities, isServerMode } from './util/mode.js';
 
 const app = express();
@@ -56,6 +57,7 @@ app.get('/api/capabilities', (_req, res) => res.json(capabilities()));
 //                     admin key directly; they map identity → tenant, so they
 //                     run before any tenant exists for the request.
 app.use('/api/sync', syncRouter);
+app.use('/api/team', teamArtifactsRouter);  // toolkit library (team-client.ts contract)
 app.use('/api', teamsRouter);
 
 // Tenant auth: resolves req.tenant and makes it ambient for the request (see
