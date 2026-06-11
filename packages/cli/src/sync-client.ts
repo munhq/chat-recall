@@ -152,13 +152,32 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
   const MAX_BATCH_BYTES = 4 * 1024 * 1024;
   const throttleMs = opts.throttleMs ?? 1000;
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  // Retries: a multi-hour backfill must survive a transient connection
+  // reset or a 5xx — one blip at batch 200/210 must not throw away the
+  // whole run. 4xx (bad token, oversized body) stays fatal: retrying
+  // can't fix it.
   const post = async (body: Record<string, unknown>): Promise<void> => {
-    const res = await fetch(`${base}/api/sync`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${cred.token}` },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) throw new Error(`sync failed: HTTP ${res.status} ${await res.text().catch(() => '')}`);
+    const payload = JSON.stringify(body);
+    const RETRY_DELAYS_MS = [2000, 8000, 30000];
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const res = await fetch(`${base}/api/sync`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${cred.token}` },
+          body: payload,
+        });
+        if (res.ok) break;
+        const text = await res.text().catch(() => '');
+        if (res.status < 500) throw new Error(`sync failed: HTTP ${res.status} ${text}`);
+        if (attempt >= RETRY_DELAYS_MS.length) throw new Error(`sync failed after ${attempt + 1} attempts: HTTP ${res.status} ${text}`);
+      } catch (err) {
+        const fatal = err instanceof Error && /HTTP 4\d\d|sync failed after/.test(err.message);
+        if (fatal || attempt >= RETRY_DELAYS_MS.length) throw err;
+        console.error(`[sync] upload attempt ${attempt + 1} failed (${err instanceof Error ? err.message : err}) — retrying in ${RETRY_DELAYS_MS[attempt] / 1000}s`);
+        await sleep(RETRY_DELAYS_MS[attempt]);
+        continue;
+      }
+    }
     if (throttleMs > 0) await sleep(throttleMs);
   };
   const makeBatcher = (field: string, maxItems: number) => {
