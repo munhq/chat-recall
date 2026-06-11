@@ -47,6 +47,9 @@ services:
       AUTH_PROVIDER: ${AUTH_PROVIDER:-none}
       OIDC_JWKS_URL: ${OIDC_JWKS_URL:-}
       OIDC_ISSUER: ${OIDC_ISSUER:-}
+      # Security dashboard (secret findings). On by default; set to "0" to
+      # hide the Security tab and its API surface.
+      CHAT_RECALL_FEATURE_SECURITY: ${CHAT_RECALL_FEATURE_SECURITY:-1}
       NODE_ENV: production
     restart: unless-stopped
     healthcheck:

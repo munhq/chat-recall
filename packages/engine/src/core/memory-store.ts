@@ -185,7 +185,11 @@ export class MemoryStore {
     // setItem is only called when the indexer decides the item needs updating,
     // so unconditional clear here is safe.
     if (item.sourceType === 'session') {
-      this.db.prepare('DELETE FROM session_metadata WHERE session_id = ?').run(item.id);
+      // session_metadata is owned by MetadataCache (same db file, separate
+      // schema init) — on a virgin db it doesn't exist yet, and a missing
+      // table just means there's no stale summary to clear.
+      try { this.db.prepare('DELETE FROM session_metadata WHERE session_id = ?').run(item.id); }
+      catch { /* table not created yet */ }
     }
 
     // Resolve project_id from the path. Pure + cached in the resolver, so
@@ -990,7 +994,9 @@ export class MemoryStore {
 
     // Invalidate cached summary so stale content doesn't survive a session resume/rewrite
     if (sourceType === 'session') {
-      this.db.prepare(`DELETE FROM session_metadata WHERE session_id = ?`).run(id);
+      // Owned by MetadataCache — may not exist on a virgin db (see setItem).
+      try { this.db.prepare(`DELETE FROM session_metadata WHERE session_id = ?`).run(id); }
+      catch { /* table not created yet */ }
     }
   }
 
@@ -1078,6 +1084,23 @@ export class MemoryStore {
 
     transaction(valid);
     return valid.length;
+  }
+
+  /**
+   * All chunks for one item, ordered by the numeric index in the chunk id
+   * (`<itemId>:sync:<i>` / `<itemId>:<type>:<i>`). Server mode uses this to
+   * rebuild a synced conversation's message list — the full-conversation
+   * JSON (content_cache) is never synced, the per-turn chunks are the
+   * canonical server-side copy.
+   */
+  listChunksByItem(sourceType: string, itemId: string): Array<{ chunk_id: string; title: string; text: string; chunk_type: string; mtime: number }> {
+    const rows = this.db.prepare(`
+      SELECT chunk_id, title, text, chunk_type, mtime
+      FROM memory_chunks_fts WHERE source_type = ? AND item_id = ?
+    `).all(sourceType, itemId) as Array<{ chunk_id: string; title: string; text: string; chunk_type: string; mtime: number }>;
+    const idx = (c: string) => { const m = /:(\d+)$/.exec(c); return m ? Number(m[1]) : 0; };
+    rows.sort((a, b) => idx(a.chunk_id) - idx(b.chunk_id));
+    return rows;
   }
 
   /** Delete all FTS5 entries for an item */

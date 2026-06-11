@@ -20,7 +20,7 @@ import { createHash } from 'crypto';
 import { hasSubagentsDir } from '../parsers/session.js';
 import { getBackendForId, listAvailableBackends } from './tool-backend.js';
 import {
-  claudeHomeDir,
+  claudeProjectDirs,
   geminiHomeDir,
   opencodeDbPath,
   codexHomeDir,
@@ -39,7 +39,6 @@ export type AiTool = 'claude' | 'gemini' | 'opencode' | 'codex';
 // Path subdirs — defaults + env-var overrides come from `tool-paths.ts`
 // so backends and this dispatcher share a single source of truth.
 
-function lazyClaudeProjectsDir(): string { return join(claudeHomeDir(), 'projects'); }
 function lazyGeminiTmpDir(): string { return join(geminiHomeDir(), 'tmp'); }
 function lazyGeminiProjectsJson(): string { return join(geminiHomeDir(), 'projects.json'); }
 function lazyOpencodeDb(): string { return opencodeDbPath(); }
@@ -80,19 +79,21 @@ export function findSessionFile(sessionId: string): {
   projectDir: string;
   projectPath: string;
 } | null {
-  const root = lazyClaudeProjectsDir();
-  if (!existsSync(root)) return null;
-
-  for (const entry of readdirSync(root, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const candidate = join(root, entry.name, `${sessionId}.jsonl`);
-    if (existsSync(candidate)) {
-      return {
-        path: candidate,
-        projectDir: entry.name,
-        // Project path is encoded by replacing slashes with dashes.
-        projectPath: entry.name.replace(/-/g, '/').replace(/^\//, '/'),
-      };
+  // All configured homes (~/.claude, ~/.claude-* profiles, CLAUDE_DIRS) —
+  // same set the indexer and backend listSessions scan.
+  for (const root of claudeProjectDirs()) {
+    if (!existsSync(root)) continue;
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const candidate = join(root, entry.name, `${sessionId}.jsonl`);
+      if (existsSync(candidate)) {
+        return {
+          path: candidate,
+          projectDir: entry.name,
+          // Project path is encoded by replacing slashes with dashes.
+          projectPath: entry.name.replace(/-/g, '/').replace(/^\//, '/'),
+        };
+      }
     }
   }
   return null;

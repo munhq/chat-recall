@@ -13,6 +13,7 @@
  * `discover()` and path resolution see consistent values.
  */
 
+import { existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { loadSourceSettings, _resetSourceSettingsCache } from './settings.js';
@@ -27,6 +28,46 @@ export function claudeHomeDir(): string {
   return process.env.CHAT_RECALL_CLAUDE_HOME
     || sources().claudeHome
     || join(homedir(), '.claude');
+}
+
+/**
+ * Every Claude `projects/` dir to scan — config-driven, NOT hardcoded:
+ *   1. the resolved claude home (env CHAT_RECALL_CLAUDE_HOME / settings / default)
+ *   2. all sibling `~/.claude-*` profiles (e.g. `.claude-work`), except
+ *      `.claude-code` — ONLY when no explicit home override is set: an
+ *      override (env/settings) pins the scan set, which is what tests, CI
+ *      and isolated setups rely on. Add profiles back via CLAUDE_DIRS.
+ *   3. anything in CLAUDE_DIRS (comma-separated; leading `~/` expanded)
+ * De-duped, existing dirs only. Shared by getAllSessions (index), the Claude
+ * backend's listSessions (sync) and findSessionFile (lookup) so all three see
+ * the same set — index, sync, and read stay consistent across profiles.
+ */
+export function claudeProjectDirs(): string[] {
+  const home = homedir();
+  const dirs: string[] = [];
+  const addHome = (d: string) => {
+    const p = join(d, 'projects');
+    if (existsSync(p) && !dirs.includes(p)) dirs.push(p);
+  };
+  addHome(claudeHomeDir());
+  const homeOverridden = !!(process.env.CHAT_RECALL_CLAUDE_HOME || sources().claudeHome);
+  if (!homeOverridden) {
+    try {
+      for (const entry of readdirSync(home, { withFileTypes: true })) {
+        if (entry.isDirectory() && entry.name.startsWith('.claude-') && entry.name !== '.claude-code') {
+          addHome(join(home, entry.name));
+        }
+      }
+    } catch { /* home unreadable */ }
+  }
+  if (process.env.CLAUDE_DIRS) {
+    for (const d of process.env.CLAUDE_DIRS.split(',')) {
+      const t = d.trim();
+      if (t) addHome(t.startsWith('~/') ? join(home, t.slice(2)) : t);
+    }
+  }
+  if (dirs.length === 0) dirs.push(join(claudeHomeDir(), 'projects'));
+  return dirs;
 }
 
 /** Gemini CLI root (`~/.gemini` by default). */

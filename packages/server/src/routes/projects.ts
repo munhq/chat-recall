@@ -24,6 +24,7 @@ import {
   type ProjectsConfig,
 } from '../imports.js';
 import { getCacheDbPath } from '@chat-recall/engine/core/paths.js';
+import { requireLocalMode } from '../util/mode.js';
 
 const router = Router();
 
@@ -84,7 +85,7 @@ router.get('/', async (_req, res) => {
  * grouping immediately.
  * --------------------------------------------------------------------- */
 
-router.put('/', (req, res) => {
+router.put('/', requireLocalMode, (req, res) => {
   try {
     const body = req.body as { config?: ProjectsConfig };
     if (!body || typeof body !== 'object' || !body.config) {
