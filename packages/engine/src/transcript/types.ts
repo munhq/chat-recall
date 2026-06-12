@@ -44,4 +44,4 @@ export interface Transcript {
 /** Version stamp for the content_cache envelope `{v, messages, subagents}`.
  *  Bump when TranscriptMessage's shape changes so stale envelopes from older
  *  parsers are re-parsed instead of served. */
-export const TRANSCRIPT_VERSION = 5;
+export const TRANSCRIPT_VERSION = 6;

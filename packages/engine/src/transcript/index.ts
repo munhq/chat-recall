@@ -37,10 +37,31 @@ export async function parseTranscript(sessionId: string): Promise<ParsedTranscri
   if (tool === 'claude') {
     const located = findSessionFile(sessionId);
     if (!located) return null;
-    const [messages, subagents] = await Promise.all([
+    const [tail, allSubagents] = await Promise.all([
       parseClaudeTranscript(located.path),
       parseClaudeSubagents(located.path),
     ]);
+    // Compaction stitching: when Claude Code compacts, the prior history
+    // moves into agent-acompact-* sidecars and the main JSONL keeps only
+    // the tail. `--resume` reconstructs the whole conversation; so do we —
+    // compact sidecars are spliced inline (chronological, before the tail)
+    // instead of hidden in side panels, with a divider message so the seam
+    // is visible. Non-compact subagents stay as panels.
+    const compacts = allSubagents.filter((s) => s.kind === 'compact');
+    const subagents = allSubagents.filter((s) => s.kind !== 'compact');
+    let messages = tail;
+    if (compacts.length > 0) {
+      const stitched: TranscriptMessage[] = [];
+      for (const c of compacts) {
+        stitched.push(...c.messages);
+        stitched.push({
+          line: 0,
+          role: 'summary',
+          content: `— conversation compacted here (${c.id}) — earlier history above is the compaction record —`,
+        });
+      }
+      messages = [...stitched, ...tail].map((m, i) => ({ ...m, line: i + 1 }));
+    }
     return { messages, subagents, mtime: safeMtime(located.path) };
   }
 
