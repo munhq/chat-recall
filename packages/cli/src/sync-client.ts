@@ -54,21 +54,46 @@ const credPath = () => join(getDataDir(), 'credentials.json');
 
 export interface Credentials { serverUrl: string; token: string; }
 
+/**
+ * Multi-target: logging in ADDS a server (or updates its token). Every
+ * sync pushes to ALL targets; the per-server ledger keeps coverage
+ * independent. File shape is {targets:[...]} with the legacy single-object
+ * form still readable.
+ */
 export function saveCredentials(c: Credentials): void {
   mkdirSync(dirname(credPath()), { recursive: true });
-  writeFileSync(credPath(), JSON.stringify(c, null, 2));
+  const targets = loadAllCredentials().filter((t) => t.serverUrl !== c.serverUrl);
+  targets.push(c);
+  writeFileSync(credPath(), JSON.stringify({ targets }, null, 2));
   try { chmodSync(credPath(), 0o600); } catch { /* windows */ }
-  // Logging in IS the sync opt-in: enable background sync and record the
-  // endpoint so the watch daemon starts pushing without further setup.
   try {
     const s = loadSettings();
     s.sync.enabled = true;
-    s.sync.endpoint = c.serverUrl;
+    s.sync.endpoint = targets.map((t) => t.serverUrl).join(',');
     saveSettings(s);
   } catch { /* settings unwritable — manual `chat-recall sync` still works */ }
 }
+
+export function loadAllCredentials(): Credentials[] {
+  try {
+    const parsed = JSON.parse(readFileSync(credPath(), 'utf-8'));
+    if (Array.isArray(parsed?.targets)) return parsed.targets.filter((t: any) => t?.serverUrl && t?.token);
+    if (parsed?.serverUrl && parsed?.token) return [parsed]; // legacy single
+  } catch { /* none */ }
+  return [];
+}
+
+/** Legacy single-target accessor — first target. */
 export function loadCredentials(): Credentials | null {
-  try { return JSON.parse(readFileSync(credPath(), 'utf-8')) as Credentials; } catch { return null; }
+  return loadAllCredentials()[0] ?? null;
+}
+
+export function removeCredentials(serverUrl: string): boolean {
+  const targets = loadAllCredentials();
+  const kept = targets.filter((t) => t.serverUrl !== serverUrl);
+  if (kept.length === targets.length) return false;
+  writeFileSync(credPath(), JSON.stringify({ targets: kept }, null, 2));
+  return true;
 }
 
 /** Tokenize an absolute project path so the server can group by project
@@ -111,8 +136,28 @@ const COMPUTE_KINDS = ['diff', 'outcome', 'commits', 'markers'] as const;
 const MAX_DERIVED_ROW_BYTES = 2 * 1024 * 1024;
 
 export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number; prune?: boolean; useLedger?: boolean } = {}): Promise<SyncResult> {
-  const cred = loadCredentials();
-  if (!cred) throw new Error('Not logged in — run `chat-recall login <server-url> --token <token>`');
+  const targets = loadAllCredentials();
+  if (targets.length === 0) throw new Error('Not logged in — run `chat-recall login <server-url> --token <token>`');
+  let agg: SyncResult | null = null;
+  const errors: string[] = [];
+  for (const cred of targets) {
+    try {
+      const r = await syncToTarget(cred, opts);
+      agg = agg ? {
+        uploaded: agg.uploaded + r.uploaded, skipped: agg.skipped + r.skipped, redactions: agg.redactions + r.redactions,
+        items: agg.items + r.items, links: agg.links + r.links, findings: agg.findings + r.findings,
+        derived: agg.derived + r.derived, kgEntities: agg.kgEntities + r.kgEntities, kgTriples: agg.kgTriples + r.kgTriples,
+      } : r;
+    } catch (e) {
+      errors.push(`${cred.serverUrl}: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+  if (!agg) throw new Error(`sync failed for all targets:\n  ${errors.join('\n  ')}`);
+  if (errors.length > 0) console.error(`[sync] ${errors.length} target(s) failed (others succeeded):\n  ${errors.join('\n  ')}`);
+  return agg;
+}
+
+async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number; prune?: boolean; useLedger?: boolean } = {}): Promise<SyncResult> {
   const sync = loadSettings().sync;
   const excludeTools = new Set(sync?.excludeTools ?? []);
   const excludeProjects = sync?.excludeProjects ?? [];

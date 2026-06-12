@@ -1885,6 +1885,20 @@ program
   });
 
 program
+  .command('logout <server-url>')
+  .description('Remove one sync target (other targets keep syncing)')
+  .action(async (serverUrl: string) => {
+    const { removeCredentials, loadAllCredentials } = await import('./sync-client.js');
+    if (removeCredentials(serverUrl)) {
+      const left = loadAllCredentials();
+      console.log(chalk.green(`✓ Removed ${serverUrl}`) + chalk.dim(` — ${left.length} target(s) remain`));
+    } else {
+      console.error(chalk.red(`No such target: ${serverUrl}`));
+      process.exit(1);
+    }
+  });
+
+program
   .command('delete <session-id>')
   .description('Delete a session from chat-recall everywhere: local index, raw archive, and (via tombstone on next sync) every server. Does NOT touch the AI tool\'s own transcript file.')
   .action(async (sessionId: string) => {
