@@ -171,6 +171,7 @@ function AppInner() {
   const [projectFilter, setProjectFilter] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [selectionNonce, setSelectionNonce] = useState(0);
   const [sort, setSort] = useState('recent');
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
 
@@ -432,6 +433,7 @@ function AppInner() {
 
     setSelectedMemoryItem(null);
     setSelectedSessionId(sessionId);
+    setSelectionNonce((n) => n + 1);
     setMessages([]);
     setSubagents([]);
     // Find session info
@@ -691,6 +693,7 @@ function AppInner() {
                 </div>
               ) : (
                 <ConversationViewer
+                  selectionNonce={selectionNonce}
                   sessionId={selectedSessionId}
                   messages={messages}
                   subagents={subagents}

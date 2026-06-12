@@ -36,6 +36,10 @@ type ViewMode = 'summary' | 'firstPrompt' | 'full' | 'raw' | 'related' | 'files'
 type MessageFilter = 'all' | 'user' | 'assistant' | 'thinking' | 'tools' | 'edits';
 
 interface ConversationViewerProps {
+  /** Incremented by the parent on EVERY selection — even re-selecting the
+   *  same session. Forces a refetch so a long-lived tab can never serve
+   *  hours-old in-memory messages for a session whose data has changed. */
+  selectionNonce?: number;
   sessionId: string | null;
   messages: Message[];
   subagents?: Subagent[];
@@ -54,6 +58,7 @@ interface ConversationViewerProps {
 
 export default function ConversationViewer({
   sessionId,
+  selectionNonce,
   messages,
   subagents = [],
   loading,
@@ -193,7 +198,7 @@ export default function ConversationViewer({
   // session can auto-load too.
   useEffect(() => {
     autoLoadedFor.current.clear();
-  }, [sessionId]);
+  }, [sessionId, selectionNonce]);
 
   const isEdit = (m: Message) => m.toolCalls?.some(tc => 
     ['write', 'replace', 'insert', 'edit', 'patch', 'create'].some(keyword => tc.name.toLowerCase().includes(keyword))
