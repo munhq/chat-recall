@@ -161,5 +161,7 @@ function readSavedTab(key: string): ProjectTab {
       return saved;
     }
   } catch { /* private mode */ }
-  return 'dossier';
+  // Default: conversations — the thing you're here for. The dossier is a
+  // tab, not a gate. (Per-project choice persists in localStorage.)
+  return 'conversations';
 }
