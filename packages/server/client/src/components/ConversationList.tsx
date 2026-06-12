@@ -350,6 +350,25 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
               ×{r.runCount} runs
             </span>
           )}
+          {r.oneShot && (
+            <span
+              title="Single-prompt invocation — likely a batch/bot run, not an interactive conversation."
+              data-testid="one-shot-badge"
+              style={{
+                fontSize: 10,
+                fontWeight: 600,
+                color: 'var(--cr-fg-3)',
+                background: 'var(--cr-ink-2)',
+                border: '1px dashed var(--cr-line-1)',
+                padding: '1px 6px',
+                borderRadius: 3,
+                marginLeft: 4,
+                letterSpacing: '0.02em',
+              }}
+            >
+              one-shot
+            </span>
+          )}
         </div>
 
         {/* Search-only: relevance score chip after time */}
