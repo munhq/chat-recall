@@ -18,6 +18,7 @@ import { createMetadataCache } from '@chat-recall/engine/core/store/caches.js';
 import { getDataDir, getIdentityFilePath, getHooksDir, getIndexDir } from '@chat-recall/engine/core/paths.js';
 import { createStore } from '@chat-recall/engine/core/store/index.js';
 import { buildSourceRegistry } from '@chat-recall/engine/parsers/all-sources.js';
+import { writeTranscriptEnvelope } from '@chat-recall/engine/transcript/index.js';
 import { claudeBackend } from '@chat-recall/engine/core/backends/claude.js';
 import { getBackendForId } from '@chat-recall/engine/core/tool-backend.js';
 import '@chat-recall/engine/core/backends/index.js'; // side-effect: registers backends
@@ -135,6 +136,14 @@ program
                 totalChunks += chunks.length;
               }
               await store.setItem(item);
+            if (item.sourceType === 'session') {
+              try { await writeTranscriptEnvelope(store, item.id); } catch { /* rebuilt on demand */ }
+            }
+              // R2: materialize the canonical conversation envelope at
+              // index time — what every dashboard renders and sync ships.
+              if (item.sourceType === 'session') {
+                try { await writeTranscriptEnvelope(store, item.id); } catch { /* rebuilt on demand */ }
+              }
               const links = await source.extractLinks(item);
               if (links.length > 0) await store.addLinks(links);
               totalItems++;
@@ -823,6 +832,9 @@ memory
               }
 
               await memoryStore.setItem(item);
+              if (item.sourceType === 'session') {
+                try { await writeTranscriptEnvelope(memoryStore, item.id); } catch { /* rebuilt on demand */ }
+              }
 
               const links = await source.extractLinks(item);
               if (links.length > 0) {
