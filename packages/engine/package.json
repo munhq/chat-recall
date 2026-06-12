@@ -17,7 +17,7 @@
     "@lancedb/lancedb": "^0.13.0",
     "@noble/ciphers": "^2.2.0",
     "@noble/hashes": "^2.2.0",
-    "better-sqlite3": "^12.6.2",
+    "better-sqlite3": "12.9.0",
     "diff": "^9.0.0",
     "dotenv": "^17.2.3",
     "pg": "^8.13.0",
