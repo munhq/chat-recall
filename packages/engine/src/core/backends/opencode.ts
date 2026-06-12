@@ -427,10 +427,8 @@ export class OpencodeBackend implements ToolBackend {
     // DB-based tool: a deterministic JSONL dump of this session's rows —
     // one line per row, stable ordering — so the archive is independent of
     // OpenCode's mutable SQLite file (vacuum/compaction/deletion).
-    const { existsSync } = require('fs') as typeof import('fs');
     const dbPath = this.dbPath();
     if (!existsSync(dbPath)) return null;
-    const Database = (require('better-sqlite3') as typeof import('better-sqlite3'));
     const realId = this.toRawId(id);
     const db = new Database(dbPath, { readonly: true });
     try {

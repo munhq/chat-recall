@@ -131,12 +131,17 @@ function isCodexInjectedWrapper(text: string): boolean {
  * Parse a Codex session from JSONL.
  */
 export async function parseCodexTranscript(sessionPath: string): Promise<Message[]> {
-    const file = await open(sessionPath);
+  const { readFile } = await import('fs/promises');
+  return parseCodexTranscriptText(await readFile(sessionPath, 'utf-8'));
+}
+
+/** Same parse over in-memory text — what the server runs on archived raw. */
+export function parseCodexTranscriptText(text: string): Message[] {
   const messages: Message[] = [];
   let lineNum = 0;
 
-  try {
-    for await (const line of file.readLines()) {
+  {
+    for (const line of text.split('\n')) {
       lineNum++;
       if (!line.trim()) continue;
       try {
@@ -193,8 +198,6 @@ export async function parseCodexTranscript(sessionPath: string): Promise<Message
         // skip malformed lines
       }
     }
-  } finally {
-    await file.close();
   }
   return messages;
 }
