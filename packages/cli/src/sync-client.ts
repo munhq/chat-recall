@@ -36,6 +36,7 @@ import { createStore, type StorageDriver } from '@chat-recall/engine/core/store/
 import { createMetadataCache, createOutcomeCache } from '@chat-recall/engine/core/store/caches.js';
 import { createKnowledgeGraph } from '@chat-recall/engine/core/store/knowledge-graph.js';
 import { buildSourceRegistry } from '@chat-recall/engine/parsers/all-sources.js';
+import { getSyncedMtimes, markSynced } from './sync-ledger.js';
 import '@chat-recall/engine/core/backends/index.js'; // register the tool backends
 
 // Local store handle for telemetry lookups during a sync walk. Opened once,
@@ -108,7 +109,7 @@ const COMPUTE_KINDS = ['diff', 'outcome', 'commits', 'markers'] as const;
  *  SQLite edition couldn't store anyway. */
 const MAX_DERIVED_ROW_BYTES = 2 * 1024 * 1024;
 
-export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number; prune?: boolean } = {}): Promise<SyncResult> {
+export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number; prune?: boolean; useLedger?: boolean } = {}): Promise<SyncResult> {
   const cred = loadCredentials();
   if (!cred) throw new Error('Not logged in — run `chat-recall login <server-url> --token <token>`');
   const sync = loadSettings().sync;
@@ -128,8 +129,11 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
   const excluded = (projectPath: string): boolean =>
     excludeProjects.some((x) => x && projectPath.includes(x));
 
+  // Ledger mode walks ALL sessions (the ledger does the skipping — that's
+  // what lets a previously-failed session retry no matter how old it is).
+  // Watermark mode keeps the cheap bounded walk for explicit --since runs.
   const refs = listAvailableBackends().flatMap((b) => {
-    try { return b.listSessions({ sinceMs: opts.sinceMs }); } catch { return []; }
+    try { return b.listSessions({ sinceMs: opts.useLedger ? undefined : opts.sinceMs }); } catch { return []; }
   });
 
   const store = await localStore();
@@ -149,7 +153,6 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
   // classification, FTS inserts) — an unthrottled 10k-session backfill can
   // brown out a small server/database (it took down a node on 2026-06-11).
   // Default 1s between batches; bulk callers pass more.
-  const base = cred.serverUrl.replace(/\/$/, '');
   const MAX_BATCH_BYTES = 4 * 1024 * 1024;
   const throttleMs = opts.throttleMs ?? 1000;
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -185,7 +188,7 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
   // POST (e.g. one session's findings — the server replaces a session's
   // findings wholesale, so splitting a session across two batches would
   // lose the first half).
-  const makeBatcher = (field: string, maxItems: number, flatten = false) => {
+  const makeBatcher = (field: string, maxItems: number, flatten = false, onFlush?: (rows: any[]) => void) => {
     let batch: any[] = [];
     let batchBytes = 0;
     return {
@@ -203,10 +206,19 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
         batchBytes = 0;
         await post({ [field]: rows });
         this.sent += rows.length;
+        onFlush?.(rows);
       },
     };
   };
-  const convBatch = makeBatcher('conversations', 25);
+  const base = cred.serverUrl.replace(/\/$/, '');
+  const ledger = opts.useLedger ? getSyncedMtimes(base) : null;
+  const convBatch = makeBatcher('conversations', 25, false, (rows) => {
+    // Server acked this batch — record exactly these sessions at exactly
+    // the mtimes that were shipped. Failures never reach here, so an
+    // unsynced session stays unsynced and retries next tick.
+    try { markSynced(base, rows.map((r: any) => ({ id: r.session_id, mtime: r.mtime }))); }
+    catch { /* ledger is local bookkeeping — never fail an upload over it */ }
+  });
   const itemsBatch = makeBatcher('items', 100);
   const linksBatch = makeBatcher('links', 2000);
   const findingsBatch = makeBatcher('findings', 200, true); // 200 session-groups per POST
@@ -219,6 +231,10 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
   for (const ref of refs.slice(0, opts.limit ?? refs.length)) {
     if (excludeTools.has(ref.toolId as any)) { skipped++; continue; }
     if (excluded(ref.projectPath)) { skipped++; continue; }
+    // Ledger mode: this exact session at this exact version already acked
+    // by this server → nothing to do. Anything not covered (new, changed,
+    // or previously failed) flows through.
+    if (ledger && (ledger.get(ref.prefixedId) ?? -1) >= Math.floor(ref.mtime)) { skipped++; continue; }
     // Canonical envelope (R3): the index-time copy when fresh, else parse
     // now with THE parser and warm the index. Sync never re-parses with a
     // different tool — what ships is exactly what the local dashboard shows.
@@ -563,8 +579,11 @@ export async function syncIncremental(): Promise<SyncResult | null> {
     settings = loadSettings();
   }
   const startedAt = Date.now();
-  const sinceMs = settings.sync.lastSyncAt;
-  const result = await syncSessions({ sinceMs });
+  // Per-session ledger replaces the global watermark for sessions: every
+  // tick walks ALL sessions and the ledger skips acked ones — so a session
+  // that failed once retries forever until it lands. The watermark is kept
+  // only to bound the non-session items walk.
+  const result = await syncSessions({ useLedger: true, sinceMs: settings.sync.lastSyncAt });
   // Re-load before saving so we don't clobber settings written mid-sync.
   const fresh = loadSettings();
   fresh.sync.lastSyncAt = startedAt;
