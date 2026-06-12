@@ -134,6 +134,20 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
   // Ledger mode walks ALL sessions (the ledger does the skipping — that's
   // what lets a previously-failed session retry no matter how old it is).
   // Watermark mode keeps the cheap bounded walk for explicit --since runs.
+  // Version handshake: refuse loudly instead of silently degrading. An old
+  // server ignores payload fields it doesn't know — which looks like
+  // success and produces gutted data (lived experience, June 2026).
+  const MIN_SERVER_API = 2;
+  try {
+    const caps = await fetch(`${cred.serverUrl.replace(/\/$/, '')}/api/capabilities`).then((r) => r.json()) as { apiVersion?: number };
+    if ((caps.apiVersion ?? 0) < MIN_SERVER_API) {
+      throw new Error(`server too old: apiVersion ${caps.apiVersion ?? 'none'} < required ${MIN_SERVER_API} — update the server image before syncing`);
+    }
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith('server too old')) throw e;
+    throw new Error(`cannot verify server version (${e instanceof Error ? e.message : e}) — refusing to sync blind`);
+  }
+
   const refs = listAvailableBackends().flatMap((b) => {
     try { return b.listSessions({ sinceMs: opts.useLedger ? undefined : opts.sinceMs }); } catch { return []; }
   });
