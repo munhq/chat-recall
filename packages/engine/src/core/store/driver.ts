@@ -96,6 +96,11 @@ export interface StorageDriver {
   getFTSCount: AsyncMethod<MemoryStore['getFTSCount']>;
   countDistinctItemsMatching: AsyncMethod<MemoryStore['countDistinctItemsMatching']>;
 
+  // ── tombstones / purge ──
+  addTombstone: AsyncMethod<MemoryStore['addTombstone']>;
+  listTombstones: AsyncMethod<MemoryStore['listTombstones']>;
+  purgeSession: AsyncMethod<MemoryStore['purgeSession']>;
+
   // ── raw session archive ──
   putRawSession: AsyncMethod<MemoryStore['putRawSession']>;
   getRawSession: AsyncMethod<MemoryStore['getRawSession']>;

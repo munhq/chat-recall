@@ -446,6 +446,28 @@ export class PgStore implements StorageDriver {
     try { return (await this.one(sql, params))?.n ?? 0; } catch { return 0; }
   }
 
+  // ── tombstones / purge ──
+  async addTombstone(sessionId: string): Promise<void> {
+    await this.q(`INSERT INTO session_tombstones (tenant, session_id, deleted_at) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+      [this.t, sessionId, Date.now()]);
+  }
+  async listTombstones(): Promise<Array<{ session_id: string; deleted_at: number }>> {
+    const rows = await this.q(`SELECT session_id, deleted_at FROM session_tombstones WHERE tenant=$1`, [this.t]);
+    return rows.map((r: any) => ({ session_id: r.session_id, deleted_at: Number(r.deleted_at) }));
+  }
+  async purgeSession(sessionId: string): Promise<void> {
+    const run = async (sql: string, params: unknown[]) => { try { await this.q(sql, params); } catch { /* absent */ } };
+    await run(`DELETE FROM memory_metadata WHERE tenant=$1 AND id=$2 AND source_type='session'`, [this.t, sessionId]);
+    await run(`DELETE FROM memory_chunks WHERE tenant=$1 AND item_id=$2 AND source_type='session'`, [this.t, sessionId]);
+    await run(`DELETE FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type='session'`, [this.t, sessionId]);
+    await run(`DELETE FROM raw_sessions WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
+    await run(`DELETE FROM secret_findings WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
+    await run(`DELETE FROM session_metadata WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
+    await run(`DELETE FROM compute_cache WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
+    await run(`DELETE FROM session_outcome_cache WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
+    await run(`DELETE FROM memory_links WHERE tenant=$1 AND ((source_type='session' AND source_id=$2) OR (target_type='session' AND target_id=$2))`, [this.t, sessionId]);
+  }
+
   // ── raw session archive (shrink-protected — see memory-store.ts) ──
   async putRawSession(sessionId: string, tool: string, mtime: number, gz: Buffer, uncompressedSize: number): Promise<'stored' | 'shrink-protected' | 'unchanged'> {
     const existing = await this.one(`SELECT size, mtime FROM raw_sessions WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);

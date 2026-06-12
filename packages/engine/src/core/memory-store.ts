@@ -1103,6 +1103,46 @@ export class MemoryStore {
     return rows;
   }
 
+  // ── Tombstones + purge ─────────────────────────────────────────
+  // Deleting a session is a first-class, propagating operation: the local
+  // delete writes a tombstone; sync ships tombstones; every server purges
+  // the session AND remembers the tombstone so no later sync (stale ledger,
+  // second machine) can resurrect it.
+  ensureTombstonesTable(): void {
+    this.db.exec(`CREATE TABLE IF NOT EXISTS session_tombstones (
+      session_id TEXT PRIMARY KEY, deleted_at INTEGER NOT NULL);`);
+  }
+
+  addTombstone(sessionId: string): void {
+    this.ensureTombstonesTable();
+    this.db.prepare(`INSERT OR IGNORE INTO session_tombstones (session_id, deleted_at) VALUES (?, ?)`)
+      .run(sessionId, Date.now());
+  }
+
+  listTombstones(): Array<{ session_id: string; deleted_at: number }> {
+    this.ensureTombstonesTable();
+    return this.db.prepare(`SELECT session_id, deleted_at FROM session_tombstones`).all() as any;
+  }
+
+  /** Remove every trace of a session from this store (all tables that key
+   *  on session/item id). Foreign-class tables (compute/outcome/metadata
+   *  caches share the db file) are cleared best-effort. */
+  purgeSession(sessionId: string): void {
+    const run = (sql: string) => { try { this.db.prepare(sql).run(sessionId); } catch { /* table absent */ } };
+    run(`DELETE FROM memory_metadata WHERE id = ? AND source_type = 'session'`);
+    run(`DELETE FROM memory_chunks_fts WHERE item_id = ? AND source_type = 'session'`);
+    run(`DELETE FROM content_cache WHERE id = ? AND source_type = 'session'`);
+    run(`DELETE FROM raw_sessions WHERE session_id = ?`);
+    run(`DELETE FROM secret_findings WHERE session_id = ?`);
+    run(`DELETE FROM session_metadata WHERE session_id = ?`);
+    run(`DELETE FROM compute_cache WHERE session_id = ?`);
+    run(`DELETE FROM session_outcome_cache WHERE session_id = ?`);
+    try {
+      this.db.prepare(`DELETE FROM memory_links WHERE (source_type='session' AND source_id=?) OR (target_type='session' AND target_id=?)`)
+        .run(sessionId, sessionId);
+    } catch { /* absent */ }
+  }
+
   // ── Raw session archive ────────────────────────────────────────
   // The immutable source of truth (Phase 2). Claude Code REWRITES
   // transcripts in place on compaction; this archive is what survives.

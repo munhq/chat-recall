@@ -157,4 +157,42 @@ describe('POST /api/sync (ingest)', () => {
     expect(row?.firstPrompt).toContain('flux capacitor');
     await cache.close();
   });
+
+  test('tombstones purge a session everywhere and make it resurrection-proof', async () => {
+    const { createControlPlane, createStore } = await import('../imports.js');
+    const syncRouter = (await import('./sync.js')).default;
+    const app = express();
+    app.use(express.json({ limit: '16mb' }));
+    app.use('/api/sync', syncRouter);
+    const cp = await createControlPlane();
+    const token = await cp.mintAgentToken('default', 'tombstone-test');
+    await cp.close();
+
+    const sessionId = '99999999-aaaa-bbbb-cccc-dddddddddddd';
+    const mtime = 1750000500000;
+    const conv = { session_id: sessionId, tool: 'claude', project_path: '/tmp/ts', mtime,
+      envelope: { v: 6, messages: [{ line: 1, role: 'user', content: 'delete me later' }], subagents: [] } };
+
+    // Seed it.
+    let res = await request(app).post('/api/sync').set('authorization', `Bearer ${token}`)
+      .send({ conversations: [conv] });
+    expect(res.body.conv).toBe(1);
+    const store = await createStore();
+    expect(await store.getItem(sessionId, 'session')).not.toBeNull();
+
+    // Tombstone it — purged everywhere.
+    res = await request(app).post('/api/sync').set('authorization', `Bearer ${token}`)
+      .send({ tombstones: [{ session_id: sessionId }] });
+    expect(res.body.dead).toBe(1);
+    expect(await store.getItem(sessionId, 'session')).toBeNull();
+    expect(await store.getCachedContent(sessionId, 'session', mtime)).toBeNull();
+    expect(await store.listChunksByItem('session', sessionId)).toHaveLength(0);
+
+    // Resurrection attempt (stale client re-ships it) — refused.
+    res = await request(app).post('/api/sync').set('authorization', `Bearer ${token}`)
+      .send({ conversations: [conv] });
+    expect(res.status).toBe(200);
+    expect(await store.getItem(sessionId, 'session')).toBeNull();
+    await store.close();
+  });
 });
