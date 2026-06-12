@@ -56,11 +56,22 @@ interface SyncTurn {
   /** tool_result only */
   is_error?: boolean;
 }
+interface SyncEnvelopeMessage {
+  line?: number;
+  role: 'user' | 'assistant' | 'summary';
+  content?: string;
+  thinking?: string;
+  toolCalls?: Array<{ name: string; input?: unknown; result?: unknown; isError?: boolean }>;
+  timestamp?: string;
+}
 interface SyncConversation {
   session_id: string;
   tool?: string;
   project_path?: string;
   redacted_text?: string;
+  /** Canonical transcript envelope (R3) — preferred. Stored verbatim. */
+  envelope?: { v: number; messages: SyncEnvelopeMessage[]; subagents?: unknown[] };
+  /** Legacy per-turn payload (older clients). */
   turns?: SyncTurn[];
   first_prompt?: string;
   mtime?: number;
@@ -247,13 +258,24 @@ router.post('/', async (req, res) => {
           if (!cv.session_id) continue;
           const mtime = Math.floor(Number(cv.mtime) || 0);
           const projectPath = cv.project_path || '';
-          const turns: SyncTurn[] = Array.isArray(cv.turns) && cv.turns.length > 0
-            ? cv.turns
-            : cv.redacted_text
-              ? [{ role: 'assistant', text: cv.redacted_text }]
-              : [];
+          // Canonical envelope (preferred): stored verbatim, chunked for
+          // search from its text messages. Legacy turns/redacted_text
+          // payloads are converted via envelopeFromTurns.
+          const envelope = cv.envelope && cv.envelope.v === PARSER_VERSION && Array.isArray(cv.envelope.messages)
+            ? { v: PARSER_VERSION, messages: cv.envelope.messages, subagents: cv.envelope.subagents ?? [] }
+            : null;
+          const turns: SyncTurn[] = envelope
+            ? []
+            : Array.isArray(cv.turns) && cv.turns.length > 0
+              ? cv.turns
+              : cv.redacted_text
+                ? [{ role: 'assistant', text: cv.redacted_text }]
+                : [];
+          const textSource: Array<{ role: string; text: string }> = envelope
+            ? envelope.messages.filter((m) => m.content?.trim()).map((m) => ({ role: m.role, text: m.content! }))
+            : turns.filter((t) => t.role === 'user' || t.role === 'assistant').map((t) => ({ role: t.role, text: t.text }));
           const firstPrompt = (cv.first_prompt
-            || turns.find((t) => t.role === 'user')?.text
+            || textSource.find((t) => t.role === 'user')?.text
             || '').slice(0, 200);
 
           // 1. Metadata row — what recent/analytics/search enrichment read.
@@ -276,7 +298,11 @@ router.post('/', async (req, res) => {
           // 2. FTS chunks — what search reads (text turns only; see
           // chunksFromTurns). Replace-then-insert semantics come from
           // addChunksFTS itself (it deletes the item's rows first).
-          const cks = chunksFromTurns(cv.session_id, turns, projectPath, mtime);
+          const cks = chunksFromTurns(
+            cv.session_id,
+            textSource.map((t) => ({ role: t.role as SyncTurn['role'], text: t.text })),
+            projectPath, mtime,
+          );
           if (cks.length > 0) chunks += await store.addChunksFTS(cks);
 
           // 3. First-prompt cache — what the conversation list hydrates from.
@@ -293,7 +319,9 @@ router.post('/', async (req, res) => {
           // (text + tool calls + result snippets), NOT the raw transcript.
           // Upsert by (id, source_type): re-syncs replace any stale
           // envelope a previous ingest version left behind.
-          if (turns.length > 0) {
+          if (envelope) {
+            await store.setCachedContent(cv.session_id, 'session', mtime, JSON.stringify(envelope));
+          } else if (turns.length > 0) {
             await store.setCachedContent(
               cv.session_id, 'session', mtime,
               JSON.stringify({ v: PARSER_VERSION, messages: envelopeFromTurns(turns), subagents: [] }),

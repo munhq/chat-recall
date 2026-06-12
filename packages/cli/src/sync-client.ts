@@ -29,6 +29,7 @@ import { loadSettings, saveSettings } from '@chat-recall/engine/core/settings.js
 import { getDataDir } from '@chat-recall/engine/core/paths.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
 import { extractTurnsAny, replaySessionAny } from '@chat-recall/engine/core/session-multi-tool.js';
+import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION } from '@chat-recall/engine/transcript/index.js';
 import { computeOutcome } from '@chat-recall/engine/core/session-outcome.js';
 import { markPrompt, summarizeMarkers } from '@chat-recall/engine/core/session-sentiment.js';
 import { createStore, type StorageDriver } from '@chat-recall/engine/core/store/index.js';
@@ -218,61 +219,56 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
   for (const ref of refs.slice(0, opts.limit ?? refs.length)) {
     if (excludeTools.has(ref.toolId as any)) { skipped++; continue; }
     if (excluded(ref.projectPath)) { skipped++; continue; }
-    let turns;
-    try { turns = extractTurnsAny(ref.prefixedId, { maxTurns: 5000 }); } catch { skipped++; continue; }
-    if (!turns.found) { skipped++; continue; }
-
-    // Structured per-turn payload (each turn redacted independently).
-    // Text turns become FTS chunks + the conversation view; tool turns
-    // (calls + result snippets, NOT raw outputs) ride along so the synced
-    // conversation has the same mass as the local one — a tool-heavy
-    // session is 90% tool activity and looked gutted without them.
-    // `redacted_text` stays for the legacy sync server.
-    const count = { redactions: 0 };
-    const structured: Array<Record<string, unknown>> = [];
-    let textTurns = 0;
-    for (const t of turns.turns) {
-      if ((t.kind === 'user' || t.kind === 'assistant_text') && t.text) {
-        textTurns++;
-        structured.push({
-          role: t.kind === 'user' ? 'user' : 'assistant',
-          text: redactSecrets(t.text, { force: true, count }),
-          ts: t.ts || undefined,
-        });
-      } else if (t.kind === 'tool_use') {
-        structured.push({
-          role: 'tool_use',
-          tool_name: t.toolName || 'tool',
-          tool_use_id: t.toolUseId || undefined,
-          text: redactSecrets((t.command || t.toolInputSummary || '').slice(0, 2000), { force: true, count }),
-          ts: t.ts || undefined,
-        });
-      } else if (t.kind === 'tool_result') {
-        structured.push({
-          role: 'tool_result',
-          tool_use_id: t.toolUseId || undefined,
-          text: redactSecrets((t.resultSummary || '').slice(0, 2000), { force: true, count }),
-          is_error: t.resultIsError || undefined,
-          ts: t.ts || undefined,
-        });
-      }
-    }
-    if (textTurns === 0) { skipped++; continue; }
-    redactions += count.redactions;
+    // Canonical envelope (R3): the index-time copy when fresh, else parse
+    // now with THE parser and warm the index. Sync never re-parses with a
+    // different tool — what ships is exactly what the local dashboard shows.
+    let transcript: { messages: any[]; subagents: any[] } | null = null;
     const mtime = Math.floor(ref.mtime) || 0;
+    try {
+      const cached = await store.getCachedContent(ref.prefixedId, 'session', mtime);
+      if (cached) {
+        const env = JSON.parse(cached);
+        if (env?.v === TRANSCRIPT_VERSION && Array.isArray(env.messages)) {
+          transcript = { messages: env.messages, subagents: env.subagents ?? [] };
+        }
+      }
+    } catch { /* fall through to parse */ }
+    if (!transcript) {
+      try {
+        const t = await parseTranscript(ref.prefixedId);
+        if (t && (t.messages.length > 0 || t.subagents.length > 0)) {
+          transcript = t;
+          try {
+            await store.setCachedContent(ref.prefixedId, 'session', Math.floor(t.mtime),
+              JSON.stringify({ v: TRANSCRIPT_VERSION, messages: t.messages, subagents: t.subagents }));
+          } catch { /* warm is best-effort */ }
+        }
+      } catch { /* unparseable */ }
+    }
+    if (!transcript) { skipped++; continue; }
+    const textMessages = transcript.messages.filter((m) => m.role !== 'summary' && m.content?.trim());
+    if (textMessages.length === 0 && !transcript.messages.some((m) => m.toolCalls?.length)) { skipped++; continue; }
+
+    // Trim payload bodies (tool inputs/results, thinking — raw replay never
+    // ships), then redact every string. Counts are preserved exactly.
+    const count = { redactions: 0 };
+    const envelope = redactDeep(
+      { v: TRANSCRIPT_VERSION, ...trimTranscriptForSync(transcript) },
+      count,
+    ) as { v: number; messages: any[]; subagents: any[] };
+    redactions += count.redactions;
     syncedSessionIds.add(ref.prefixedId);
 
     // Local index row: real project path + telemetry. The backend's
     // ref.projectPath is decoded from the encoded dir name (every '-'
     // becomes '/', so `chat-recall` → `chat/recall`); memory_metadata
     // stores the real cwd read from inside the transcript — prefer it.
-    const textOnly = structured.filter((t) => t.role === 'user' || t.role === 'assistant');
     let projectPath = ref.projectPath;
-    let meta: Record<string, unknown> = { messageCount: textTurns };
+    let meta: Record<string, unknown> = { messageCount: textMessages.length };
     // Single-prompt invocations (batch/bot runs — e.g. thousands of one-shot
     // Gemini CLI calls) sync like everything else but carry a flag so the
     // UI can badge them and lists can de-emphasize them.
-    if (textOnly.filter((t) => t.role === 'user').length <= 1) meta.oneShot = true;
+    if (textMessages.filter((m) => m.role === 'user').length <= 1) meta.oneShot = true;
     try {
       const row = await store.getItem(ref.prefixedId, 'session');
       if (row?.project_path) projectPath = row.project_path;
@@ -286,13 +282,14 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
       }
     } catch { /* row is best-effort */ }
 
+    const envTexts = envelope.messages.filter((m) => m.content?.trim());
     await convBatch.add({
       session_id: ref.prefixedId,
       tool: ref.toolId,
       project_path: mapPath(projectPath),
-      redacted_text: textOnly.map((t) => t.text).join('\n'),
-      turns: structured,
-      first_prompt: (textOnly.find((t) => t.role === 'user')?.text as string | undefined)?.slice(0, 200),
+      redacted_text: envTexts.map((m) => m.content).join('\n'),
+      envelope,
+      first_prompt: (envTexts.find((m) => m.role === 'user')?.content as string | undefined)?.slice(0, 200),
       meta,
       mtime,
     });
@@ -313,7 +310,7 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
     // dashboard is complete (diff/outcome/commits/markers + badge row).
     if (upload.sessionMeta) {
       try {
-        await derivedBatch.add(await collectDerived(ref, mtime, turns, metaCache, outcomeCache, count));
+        await derivedBatch.add(await collectDerived(ref, mtime, metaCache, outcomeCache, count));
         redactions += count.redactions;
       } catch { /* derived is best-effort — the conversation itself shipped */ }
     }
@@ -459,7 +456,6 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
 async function collectDerived(
   ref: { prefixedId: string; toolId: string; mtime: number },
   mtime: number,
-  turns: { turns: any[]; startMs: number; endMs: number },
   metaCache: Awaited<ReturnType<typeof createMetadataCache>>,
   outcomeCache: Awaited<ReturnType<typeof createOutcomeCache>>,
   count: { redactions: number },
@@ -483,9 +479,12 @@ async function collectDerived(
           if (!fullOutcome) fullOutcome = computeOutcome(id);
           if (fullOutcome.found) data = fullOutcome.commits;
         } else if (kind === 'markers') {
+          // Analysis-only use of the turns extractor (R4) — markers need
+          // per-prompt line/ts, not render fidelity.
+          const turns = extractTurnsAny(id, { maxTurns: 50_000 });
           const prompts = turns.turns
             .filter((t) => t.kind === 'user' && t.text)
-            .map((t) => ({ line: t.line, ts: t.ts, tsIso: t.tsIso, ...markPrompt(t.text) }));
+            .map((t) => ({ line: t.line, ts: t.ts, tsIso: t.tsIso, ...markPrompt(t.text!) }));
           data = { sessionId: id, prompts, summary: summarizeMarkers(prompts) };
         }
       } catch { data = null; }

@@ -75,24 +75,21 @@ function writeFixtureTranscript(): string {
   return path;
 }
 
-/** Client-side turn shaping — same rules as packages/cli/src/sync-client.ts. */
-async function buildClientTurns(): Promise<Array<Record<string, unknown>>> {
-  const { extractTurnsAny } = await import('@chat-recall/engine/core/session-multi-tool.js');
+/** Client-side envelope building — same pipeline as packages/cli/src/sync-client.ts (R3). */
+async function buildClientEnvelope(): Promise<{ v: number; messages: any[]; subagents: any[] }> {
+  const { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION } = await import('@chat-recall/engine/transcript/index.js');
   const { redactSecrets } = await import('@chat-recall/engine/core/secret-redactor.js');
-  const turns = extractTurnsAny(SESSION_ID, { maxTurns: 50_000 });
-  expect(turns.found).toBe(true);
-  const count = { redactions: 0 };
-  const structured: Array<Record<string, unknown>> = [];
-  for (const t of turns.turns) {
-    if ((t.kind === 'user' || t.kind === 'assistant_text') && t.text) {
-      structured.push({ role: t.kind === 'user' ? 'user' : 'assistant', text: redactSecrets(t.text, { force: true, count }), ts: t.ts || undefined });
-    } else if (t.kind === 'tool_use') {
-      structured.push({ role: 'tool_use', tool_name: t.toolName || 'tool', tool_use_id: t.toolUseId || undefined, text: redactSecrets((t.command || t.toolInputSummary || '').slice(0, 2000), { force: true, count }), ts: t.ts || undefined });
-    } else if (t.kind === 'tool_result') {
-      structured.push({ role: 'tool_result', tool_use_id: t.toolUseId || undefined, text: redactSecrets((t.resultSummary || '').slice(0, 2000), { force: true, count }), is_error: t.resultIsError || undefined, ts: t.ts || undefined });
+  const t = await parseTranscript(SESSION_ID);
+  expect(t).not.toBeNull();
+  const redactDeep = (v: any): any => {
+    if (typeof v === 'string') return redactSecrets(v, { force: true });
+    if (Array.isArray(v)) return v.map(redactDeep);
+    if (v && typeof v === 'object') {
+      const o: any = {}; for (const [k, val] of Object.entries(v)) o[k] = redactDeep(val); return o;
     }
-  }
-  return structured;
+    return v;
+  };
+  return redactDeep({ v: TRANSCRIPT_VERSION, ...trimTranscriptForSync(t!) });
 }
 
 beforeAll(() => {
@@ -137,11 +134,11 @@ describe('sync parity — synced conversation == local conversation', () => {
     // 5-setup: plant a STALE envelope from a hypothetical older ingest.
     await store.setCachedContent(SESSION_ID, 'session', mtime, JSON.stringify({ v: 5, messages: [{ line: 1, role: 'assistant', content: 'STALE OLD VIEW' }], subagents: [] }));
 
-    const turns = await buildClientTurns();
+    const clientEnvelope = await buildClientEnvelope();
     const res = await request(app)
       .post('/api/sync')
       .set('authorization', `Bearer ${token}`)
-      .send({ conversations: [{ session_id: SESSION_ID, tool: 'claude', project_path: '/tmp/parity-proj', mtime, turns }] });
+      .send({ conversations: [{ session_id: SESSION_ID, tool: 'claude', project_path: '/tmp/parity-proj', mtime, envelope: clientEnvelope }] });
     expect(res.status).toBe(200);
     expect(res.body.conv).toBe(1); // 1. one conversation, not N
 
@@ -152,11 +149,9 @@ describe('sync parity — synced conversation == local conversation', () => {
     // 5. stale envelope was REPLACED by the re-sync
     expect(JSON.stringify(envelope)).not.toContain('STALE OLD VIEW');
 
-    // 2. text-message parity with the local parser. The local parser merges
-    // a text block and its tool_use blocks from the same API turn into one
-    // message; the turn stream keeps them separate, so synced may have a
-    // few extra content-less carrier messages — but NEVER fewer messages,
-    // and the text itself must match 1:1.
+    // 2. EXACT message parity with the local parser — one parser produces
+    // both sides now (R1), so this is equality, not approximation.
+    expect(envelope.messages.length).toBe(localMessages.length);
     const localTexts = localMessages.filter(m => m.content?.trim()).map(m => m.content.trim());
     const syncedTexts = envelope.messages.filter((m: any) => m.content?.trim()).map((m: any) => m.content.trim());
     expect(syncedTexts.length).toBe(localTexts.length);
