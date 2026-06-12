@@ -68,6 +68,8 @@ interface SyncConversation {
   session_id: string;
   tool?: string;
   project_path?: string;
+  /** Locally-resolved logical project id (git:…/ws:…) — stored verbatim. */
+  project_id?: string;
   redacted_text?: string;
   /** Canonical transcript envelope (R3) — preferred. Stored verbatim. */
   envelope?: { v: number; messages: SyncEnvelopeMessage[]; subagents?: unknown[] };
@@ -82,6 +84,7 @@ interface SyncItem {
   source_type: string;
   title?: string;
   project_path?: string;
+  project_id?: string;
   content_preview?: string;
   mtime?: number;
   extra?: Record<string, unknown>;
@@ -143,7 +146,8 @@ function chunksFromTurns(
   turns: SyncTurn[],
   projectPath: string,
   mtime: number,
-): Array<{ chunkId: string; itemId: string; sourceType: SourceType; title: string; text: string; chunkType: string; projectPath: string; filePath: string; mtime: number }> {
+  projectId?: string,
+): Array<{ chunkId: string; itemId: string; sourceType: SourceType; title: string; text: string; chunkType: string; projectPath: string; projectId?: string; filePath: string; mtime: number }> {
   const MAX_CHARS = 2000;
   const out: ReturnType<typeof chunksFromTurns> = [];
   let i = 0;
@@ -167,6 +171,7 @@ function chunksFromTurns(
         text,
         chunkType,
         projectPath,
+        projectId,
         filePath: '',
         mtime,
       });
@@ -284,6 +289,7 @@ router.post('/', async (req, res) => {
             sourceType: 'session' as SourceType,
             title: firstPrompt.slice(0, 100),
             projectPath,
+            projectId: cv.project_id || undefined,
             contentPreview: firstPrompt,
             filePath: '',
             mtime,
@@ -301,7 +307,7 @@ router.post('/', async (req, res) => {
           const cks = chunksFromTurns(
             cv.session_id,
             textSource.map((t) => ({ role: t.role as SyncTurn['role'], text: t.text })),
-            projectPath, mtime,
+            projectPath, mtime, cv.project_id || undefined,
           );
           if (cks.length > 0) chunks += await store.addChunksFTS(cks);
 
@@ -341,6 +347,7 @@ router.post('/', async (req, res) => {
             sourceType,
             title: (it.title || '').slice(0, 200),
             projectPath: it.project_path || '',
+            projectId: it.project_id || undefined,
             contentPreview: (it.content_preview || '').slice(0, 500),
             filePath: '',
             mtime,
@@ -484,7 +491,13 @@ router.post('/', async (req, res) => {
         await metaCache.close();
         await store.close();
       }
-      return { conv, item, link, find, der, kgE, kgT, chunks };
+      // Maintenance: drop unopenable ghost session rows (no envelope, no
+      // chunks) — e.g. rows seeded from a stale local copy. Opt-in per POST.
+      let pruned = 0;
+      if (req.body?.prune_empty_sessions === true) {
+        try { pruned = await store.pruneEmptySessions(); } catch { /* best-effort */ }
+      }
+      return { conv, item, link, find, der, kgE, kgT, chunks, pruned };
     });
 
     res.json({ ok: true, ...result, tenant: agent.tenant, ack_at: new Date().toISOString() });

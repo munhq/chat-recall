@@ -195,8 +195,8 @@ export class MemoryStore {
     // Resolve project_id from the path. Pure + cached in the resolver, so
     // this stays cheap even on bulk writes. `ignored` short-circuits to
     // empty so dossier queries naturally skip these rows.
-    const resolved = item.projectPath ? resolveProjectId(item.projectPath) : null;
-    const projectId = resolved && resolved.source !== 'ignored' ? resolved.id : '';
+    const resolved = !item.projectId && item.projectPath ? resolveProjectId(item.projectPath) : null;
+    const projectId = item.projectId ?? (resolved && resolved.source !== 'ignored' ? resolved.id : '');
 
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO memory_metadata
@@ -1101,6 +1101,19 @@ export class MemoryStore {
     const idx = (c: string) => { const m = /:(\d+)$/.exec(c); return m ? Number(m[1]) : 0; };
     rows.sort((a, b) => idx(a.chunk_id) - idx(b.chunk_id));
     return rows;
+  }
+
+  /**
+   * Remove session metadata rows that have neither a conversation envelope
+   * nor search chunks — unopenable ghost rows (e.g. seeded from a stale
+   * copy, or content-empty sessions). Returns rows deleted.
+   */
+  pruneEmptySessions(): number {
+    return this.db.prepare(`
+      DELETE FROM memory_metadata WHERE source_type='session'
+        AND id NOT IN (SELECT id FROM content_cache WHERE source_type='session')
+        AND id NOT IN (SELECT item_id FROM memory_chunks_fts WHERE source_type='session')
+    `).run().changes;
   }
 
   /** Delete all FTS5 entries for an item */
