@@ -82,10 +82,24 @@ function safeMtime(path: string): number {
  * Counts are preserved exactly; only payload bodies are truncated.
  */
 export function trimTranscriptForSync(t: Transcript, capChars = 2000): Transcript {
+  // Preserve structure: objects (Edit inputs with old_string/new_string,
+  // tool results) stay objects when they fit — the viewer renders real
+  // diffs from them. Only oversized values degrade to truncated strings.
   const cap = (v: unknown): unknown => {
-    const s = typeof v === 'string' ? v : v === undefined ? undefined : JSON.stringify(v);
-    if (s === undefined) return undefined;
-    return s.length > capChars ? s.slice(0, capChars) + `… [+${s.length - capChars} chars]` : s;
+    if (v === undefined) return undefined;
+    if (typeof v === 'string') {
+      return v.length > capChars ? v.slice(0, capChars) + `… [+${v.length - capChars} chars]` : v;
+    }
+    let s = '';
+    try { s = JSON.stringify(v) ?? ''; } catch { return undefined; }
+    if (s.length <= capChars * 4) return v; // structured + reasonably sized → keep as-is
+    if (Array.isArray(v)) return s.slice(0, capChars) + `… [+${s.length - capChars} chars]`;
+    if (v && typeof v === 'object') {
+      const o: Record<string, unknown> = {};
+      for (const [k, val] of Object.entries(v as Record<string, unknown>)) o[k] = cap(val);
+      return o;
+    }
+    return v;
   };
   const trimMsg = (m: TranscriptMessage): TranscriptMessage => ({
     ...m,

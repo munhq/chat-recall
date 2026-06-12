@@ -375,6 +375,7 @@ function AppInner() {
         setMemoryResults([]);
         return;
       }
+      if (looksLikeSessionId(q)) { openById(q); return; }
       try {
         const { sessions: hits, memory } = await searchSessions(q, 50, projectFilter || undefined);
         setSearchResults(hits);
@@ -439,6 +440,30 @@ function AppInner() {
     const result = searchResults.find((r) => r.sessionId === sessionId) || null;
     setSelectedResult(result);
   }, [recentSessions, searchResults, memoryResults]);
+
+  // ── Open-by-id ──────────────────────────────────────────────────
+  // A pasted session id IS source-qualified: bare UUID → Claude,
+  // `gemini_…` / `opencode_…` / `codex_…` → that tool. Supported via
+  // (a) the ?session=<id> URL param (deep link) and (b) pasting the id
+  // into the search box and pressing Enter.
+  const SESSION_ID_RE = /^(gemini_|opencode_|codex_)?[0-9a-f-]{8,}.*$/i;
+  const looksLikeSessionId = (s: string) =>
+    /^(gemini_|opencode_|codex_)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s.trim()) ||
+    /^(gemini_|opencode_|codex_)\S{8,}$/i.test(s.trim());
+  const openById = useCallback((id: string) => {
+    setView('search');
+    handleSelectSession(id.trim());
+    const url = new URL(window.location.href);
+    url.searchParams.set('session', id.trim());
+    window.history.replaceState({}, '', url);
+  }, [handleSelectSession]);
+  useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get('session');
+    if (id && looksLikeSessionId(id)) handleSelectSession(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  void SESSION_ID_RE;
+
 
   const handleLoadFull = useCallback(async () => {
     if (!selectedSessionId) return;
