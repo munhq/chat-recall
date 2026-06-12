@@ -24,8 +24,18 @@ export function edition(): 'selfhost' | 'cloud' {
   return (process.env.CHAT_RECALL_EDITION || 'selfhost').toLowerCase() === 'cloud' ? 'cloud' : 'selfhost';
 }
 
+/**
+ * Wire-contract version between sync client and server. Bump when the
+ * ingest contract changes such that an old server would SILENTLY mishandle
+ * a new client's payload (the failure mode this exists to kill: v6
+ * envelopes ignored by a v5 server produced metadata-only ghost rows).
+ *   2 — raw containers + canonical envelopes + project_id passthrough
+ */
+export const API_VERSION = 2;
+
 export interface Capabilities {
   mode: 'local' | 'server';
+  apiVersion: number;
   edition: 'selfhost' | 'cloud';
   /** Per-feature switches the client consumes to show/hide views. */
   features: {
@@ -52,6 +62,7 @@ export function capabilities(): Capabilities {
   const securityEnabled = (process.env.CHAT_RECALL_FEATURE_SECURITY ?? '1') !== '0';
   return {
     mode: server ? 'server' : 'local',
+    apiVersion: API_VERSION,
     edition: ed,
     features: {
       conversations: true,
