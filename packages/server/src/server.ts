@@ -99,9 +99,17 @@ const STATIC_DIR = resolve(
   process.env.STATIC_DIR || '../client/dist',
 );
 if (existsSync(STATIC_DIR)) {
-  app.use(express.static(STATIC_DIR));
+  // index.html must NEVER be cached: a browser running a stale app shell
+  // renders current data with outdated code — the worst kind of lie
+  // (hashed JS/CSS assets stay cacheable; their names change per build).
+  app.use(express.static(STATIC_DIR, {
+    setHeaders: (res, path) => {
+      if (path.endsWith('index.html')) res.setHeader('Cache-Control', 'no-store');
+    },
+  }));
   // SPA fallback — any non-API path returns index.html so client-side routes work.
   app.get(/^\/(?!api|health).*/, (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
     res.sendFile(resolve(STATIC_DIR, 'index.html'));
   });
   console.log(`Serving client from ${STATIC_DIR}`);
