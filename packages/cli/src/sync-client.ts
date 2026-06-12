@@ -108,7 +108,7 @@ const COMPUTE_KINDS = ['diff', 'outcome', 'commits', 'markers'] as const;
  *  SQLite edition couldn't store anyway. */
 const MAX_DERIVED_ROW_BYTES = 2 * 1024 * 1024;
 
-export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number } = {}): Promise<SyncResult> {
+export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number; prune?: boolean } = {}): Promise<SyncResult> {
   const cred = loadCredentials();
   if (!cred) throw new Error('Not logged in — run `chat-recall login <server-url> --token <token>`');
   const sync = loadSettings().sync;
@@ -264,6 +264,7 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
     // becomes '/', so `chat-recall` → `chat/recall`); memory_metadata
     // stores the real cwd read from inside the transcript — prefer it.
     let projectPath = ref.projectPath;
+    let projectId = '';
     let meta: Record<string, unknown> = { messageCount: textMessages.length };
     // Single-prompt invocations (batch/bot runs — e.g. thousands of one-shot
     // Gemini CLI calls) sync like everything else but carry a flag so the
@@ -272,6 +273,7 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
     try {
       const row = await store.getItem(ref.prefixedId, 'session');
       if (row?.project_path) projectPath = row.project_path;
+      if (row?.project_id) projectId = row.project_id;
       if (upload.sessionMeta && row?.extra_json) {
         const extra = JSON.parse(row.extra_json);
         for (const k of ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens',
@@ -287,6 +289,9 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
       session_id: ref.prefixedId,
       tool: ref.toolId,
       project_path: mapPath(projectPath),
+      // Resolved on THIS machine (git/FS available) — the server stores it
+      // verbatim; it cannot resolve paths it can't see.
+      project_id: projectId || undefined,
       redacted_text: envTexts.map((m) => m.content).join('\n'),
       envelope,
       first_prompt: (envTexts.find((m) => m.role === 'user')?.content as string | undefined)?.slice(0, 200),
@@ -337,9 +342,11 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
           const count = { redactions: 0 };
           let chunks: any[] = [];
           try { chunks = await source.parse(item); } catch { /* unparseable item still ships metadata */ }
+          const itemRow = await store.getItem(item.id, item.sourceType).catch(() => null);
           await itemsBatch.add({
             id: item.id,
             source_type: item.sourceType,
+            project_id: itemRow?.project_id || undefined,
             title: redactSecrets(item.title || '', { force: true, count }),
             project_path: mapPath(item.projectPath || ''),
             content_preview: redactSecrets(item.contentPreview || '', { force: true, count }),
@@ -435,6 +442,7 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
   if (dismissals.length > 0 || customRules.length > 0) {
     await post({ dismissals, custom_rules: customRules });
   }
+  if (opts.prune) await post({ prune_empty_sessions: true });
 
   await metaCache.close();
   await outcomeCache.close();

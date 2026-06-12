@@ -24,6 +24,10 @@ export interface MemoryItem {
   title: string;
   /** Associated project path (if any) */
   projectPath: string;
+  /** Pre-resolved logical project id (git:…/ws:…/path:…). When set, stores
+   *  use it verbatim instead of re-resolving — a sync target has no FS/git
+   *  to resolve against, so the producer's resolution is authoritative. */
+  projectId?: string;
   /** File path on disk */
   filePath: string;
   /** File modification time (ms since epoch) */
@@ -50,6 +54,8 @@ export interface MemoryChunk {
   chunkType: string;
   /** Associated project path */
   projectPath: string;
+  /** Pre-resolved logical project id — see MemoryItem.projectId. */
+  projectId?: string;
   /** File path on disk */
   filePath: string;
   /** File modification time (ms since epoch) */

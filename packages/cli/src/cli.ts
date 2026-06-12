@@ -1889,13 +1889,14 @@ program
   .option('--full', 'Ignore the watermark and push everything')
   .option('--paths-cleartext', 'Send project paths in cleartext (self-host only; default hashes them)')
   .option('--throttle <ms>', 'Pause between upload batches in ms (default: 1000, or 3000 with --full)')
-  .action(async (opts: { sinceHours?: string; limit?: string; full?: boolean; pathsCleartext?: boolean; throttle?: string }) => {
+  .option('--prune', 'After syncing, drop server-side session rows that have no content (ghost rows)')
+  .action(async (opts: { sinceHours?: string; limit?: string; full?: boolean; pathsCleartext?: boolean; throttle?: string; prune?: boolean }) => {
     const { syncSessions, syncIncremental } = await import('./sync-client.js');
     try {
       // Bare `chat-recall sync` = incremental: only sessions modified since
       // the last successful sync, watermark advanced on success. Any explicit
       // flag switches to the manual one-shot path (watermark untouched).
-      if (!opts.sinceHours && !opts.limit && !opts.full && !opts.pathsCleartext && !opts.throttle) {
+      if (!opts.sinceHours && !opts.limit && !opts.full && !opts.pathsCleartext && !opts.throttle && !opts.prune) {
         const r = await syncIncremental();
         if (r === null) {
           console.error(chalk.red('Not logged in (or sync disabled) — run `chat-recall login <server-url>` first.'));
@@ -1914,6 +1915,7 @@ program
         // Backfills hit the server's ingest pipeline hard — pace them.
         // Explicit --throttle wins (e.g. 100 for a localhost server).
         throttleMs: opts.throttle !== undefined ? Number(opts.throttle) : (opts.full ? 3000 : undefined),
+        prune: !!opts.prune,
       });
       console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.findings} findings, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted`));
     } catch (err) {
