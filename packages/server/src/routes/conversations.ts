@@ -1324,6 +1324,30 @@ router.get('/:id', async (req, res) => {
       // chunk_type). Long turns were split into ~2KB chunks at ingest, so
       // boundaries are approximate; content and order are exact.
       if (isServerMode()) {
+        // Prefer the LATEST envelope even when its mtime lags the metadata
+        // row (mid-backfill, or an active session that grew since the last
+        // sync). A complete snapshot beats the text-only chunk fallback.
+        const stale = await store.getCachedContentStale(id, 'session');
+        if (stale) {
+          try {
+            const parsed = JSON.parse(stale.content);
+            if (parsed && Array.isArray(parsed.messages) && parsed.messages.length > 0) {
+              const total = parsed.messages.length;
+              const slice = limit === 0 ? parsed.messages : parsed.messages.slice(offset, offset + limit);
+              return res.json({
+                sessionId: id,
+                messages: slice,
+                subagents: parsed.subagents ?? [],
+                count: slice.length,
+                total,
+                offset,
+                hasMore: limit !== 0 && offset + slice.length < total,
+                fromCache: true,
+                snapshotMtime: stale.mtime,
+              });
+            }
+          } catch { /* corrupt row — fall through to chunks */ }
+        }
         const chunks = await store.listChunksByItem('session', id);
         if (chunks.length === 0) {
           return res.status(404).json({ error: 'Session not synced' });

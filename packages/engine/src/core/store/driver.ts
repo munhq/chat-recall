@@ -58,6 +58,7 @@ export interface StorageDriver {
 
   // ── content cache ──
   getCachedContent: AsyncMethod<MemoryStore['getCachedContent']>;
+  getCachedContentStale: AsyncMethod<MemoryStore['getCachedContentStale']>;
   setCachedContent: AsyncMethod<MemoryStore['setCachedContent']>;
 
   // ── secret findings (security dashboard) ──
