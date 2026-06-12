@@ -23,6 +23,7 @@ import type {
   CanonicalEvent,
   EditDelta,
   CollectRecentEditsOpts,
+  RawSessionExport,
 } from '../tool-backend.js';
 import type { ExtractedTurns } from '../session-turns.js';
 import type { SessionDiffResult } from '../session-replay.js';
@@ -485,6 +486,44 @@ export class CodexBackend implements ToolBackend {
     bufferMinutes?: number,
   ): SessionCommitsResult {
     return getSessionCommits(this.toPrefixedId(id), files, startMs, endMs, bufferMinutes);
+  }
+  exportRawSession(id: string): RawSessionExport | null {
+    const loc = this.findSession(id);
+    if (!loc) return null;
+    const { readFileSync, statSync, readdirSync, openSync, readSync, closeSync } = require('fs') as typeof import('fs');
+    const { basename, dirname, join } = require('path') as typeof import('path');
+    const files: RawSessionExport['files'] = [];
+    let mtime = 0;
+    const push = (path: string, name: string) => {
+      try {
+        const st = statSync(path);
+        files.push({ name, bytes: readFileSync(path) });
+        if (st.mtimeMs > mtime) mtime = st.mtimeMs;
+      } catch { /* skip unreadable part */ }
+    };
+    push(loc.path, basename(loc.path));
+    // Sibling sub-agent rollouts: same day-dir, first-line session_meta
+    // whose thread_spawn.parent_thread_id names this session.
+    const parentId = basename(loc.path).match(/([a-f0-9-]{36})\.jsonl$/i)?.[1];
+    if (parentId) {
+      const dayDir = dirname(loc.path);
+      try {
+        for (const f of readdirSync(dayDir)) {
+          if (!f.endsWith('.jsonl') || !f.startsWith('rollout-')) continue;
+          const p = join(dayDir, f);
+          if (p === loc.path) continue;
+          try {
+            const fd = openSync(p, 'r');
+            const buf = Buffer.alloc(4096);
+            const n = readSync(fd, buf, 0, 4096, 0);
+            closeSync(fd);
+            const head = buf.toString('utf-8', 0, n);
+            if (head.includes(parentId) && head.includes('parent_thread_id')) push(p, `subagents/${f}`);
+          } catch { /* skip */ }
+        }
+      } catch { /* day dir unreadable */ }
+    }
+    return files.length > 0 ? { tool: 'codex', mtime, files } : null;
   }
 }
 

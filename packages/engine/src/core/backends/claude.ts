@@ -12,6 +12,7 @@ import { claudeHomeDir, claudeProjectDirs } from '../tool-paths.js';
 
 import type {
   ToolBackend,
+  RawSessionExport,
   SessionLocation,
   SessionRef,
   ListSessionsOpts,
@@ -438,6 +439,28 @@ export class ClaudeBackend implements ToolBackend {
     bufferMinutes?: number,
   ): SessionCommitsResult {
     return getSessionCommits(this.toRawId(id), files, startMs, endMs, bufferMinutes);
+  }
+
+  exportRawSession(id: string): RawSessionExport | null {
+    const located = findSessionFile(this.toRawId(id));
+    if (!located) return null;
+    const files: RawSessionExport['files'] = [];
+    let mtime = 0;
+    const push = (path: string, name: string) => {
+      try {
+        const st = statSync(path);
+        files.push({ name, bytes: readFileSync(path) });
+        if (st.mtimeMs > mtime) mtime = st.mtimeMs;
+      } catch { /* part unreadable — capture the rest */ }
+    };
+    push(located.path, basename(located.path));
+    const subDir = join(located.path.slice(0, -6), 'subagents');
+    if (existsSync(subDir)) {
+      for (const f of readdirSync(subDir)) {
+        push(join(subDir, f), `subagents/${f}`);
+      }
+    }
+    return files.length > 0 ? { tool: 'claude', mtime, files } : null;
   }
 }
 
