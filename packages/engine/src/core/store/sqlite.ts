@@ -90,6 +90,11 @@ export class SqliteStore implements StorageDriver {
   async getFTSCount(...a: Args<'getFTSCount'>) { return this.inner.getFTSCount(...a); }
   async countDistinctItemsMatching(...a: Args<'countDistinctItemsMatching'>) { return this.inner.countDistinctItemsMatching(...a); }
 
+  // ── raw archive ──
+  async putRawSession(...a: Args<'putRawSession'>) { return this.inner.putRawSession(...a); }
+  async getRawSession(...a: Args<'getRawSession'>) { return this.inner.getRawSession(...a); }
+  async listRawSessionVersions(...a: Args<'listRawSessionVersions'>) { return this.inner.listRawSessionVersions(...a); }
+
   // ── KV ──
   async kvSet(...a: Args<'kvSet'>) { return this.inner.kvSet(...a); }
   async kvGet(...a: Args<'kvGet'>) { return this.inner.kvGet(...a); }
