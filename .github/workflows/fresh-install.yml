@@ -11,6 +11,7 @@ on:
     paths:
       - 'packages/**'
       - '.github/workflows/fresh-install.yml'
+      - '.github/scripts/mcp-boot-check.cjs'
   workflow_dispatch:
 
 jobs:
@@ -50,6 +51,7 @@ jobs:
         run: |
           chat-recall --version
           chat-recall index
-          # MCP must boot and stay alive (timeout 124 = survived; 0 = clean stdin close)
-          timeout 5 bash -c 'echo "" | chat-recall-mcp' >/dev/null 2>&1 || [ $? -eq 124 ]
+          # MCP must boot and stay alive — portable check (GNU `timeout` is
+          # missing on macOS runners and broken under Git bash on Windows)
+          node .github/scripts/mcp-boot-check.cjs
           echo "fresh install OK on ${{ runner.os }}"
