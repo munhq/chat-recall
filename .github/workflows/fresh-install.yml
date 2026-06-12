@@ -1,0 +1,55 @@
+# The fresh-machine gate: install the packed npm artifact on a pristine
+# runner (Linux + macOS + Windows), index a fixture session, and boot the
+# MCP server. This exact flow caught the unbundled-tarball crash that every
+# unit test missed — it is the only check that exercises what a customer
+# actually runs.
+name: Fresh-machine install gate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/**'
+      - '.github/workflows/fresh-install.yml'
+  workflow_dispatch:
+
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build + pack the real artifact
+        run: |
+          npm ci
+          npm run build
+          cd packages/cli && npm pack
+
+      - name: Install globally from tarball (what a customer runs)
+        shell: bash
+        run: npm install -g packages/cli/chat-recall-*.tgz
+
+      - name: Fixture session
+        shell: bash
+        run: |
+          mkdir -p ~/.claude/projects/-tmp-fresh
+          cat > ~/.claude/projects/-tmp-fresh/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl <<'EOF'
+          {"type":"user","timestamp":"2026-06-12T10:00:00Z","cwd":"/tmp/fresh","sessionId":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","message":{"role":"user","content":"hello from a fresh machine"}}
+          {"type":"assistant","timestamp":"2026-06-12T10:00:05Z","cwd":"/tmp/fresh","sessionId":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","message":{"role":"assistant","content":[{"type":"text","text":"fresh install works"}]}}
+          EOF
+
+      - name: Version, index, MCP boot
+        shell: bash
+        run: |
+          chat-recall --version
+          chat-recall index
+          # MCP must boot and stay alive (timeout 124 = survived; 0 = clean stdin close)
+          timeout 5 bash -c 'echo "" | chat-recall-mcp' >/dev/null 2>&1 || [ $? -eq 124 ]
+          echo "fresh install OK on ${{ runner.os }}"
