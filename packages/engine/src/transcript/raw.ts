@@ -160,3 +160,20 @@ export function parseTranscriptFromContainer(c: RawContainer): Transcript {
 
   return { messages: [], subagents: [] };
 }
+
+/**
+ * Archive a session's raw capture into the local store (index-time hook).
+ * Shrink-protection lives in the store; this is fire-and-forget per session.
+ */
+export async function archiveRawSession(
+  store: { putRawSession(id: string, tool: string, mtime: number, gz: Buffer, size: number): Promise<'stored' | 'shrink-protected' | 'unchanged'> | ('stored' | 'shrink-protected' | 'unchanged') },
+  sessionId: string,
+): Promise<'stored' | 'shrink-protected' | 'unchanged' | 'unavailable'> {
+  const { getBackendForId, getBackend } = await import('../core/tool-backend.js');
+  const backend = getBackendForId(sessionId) ?? getBackend('claude');
+  let exp: RawSessionExport | null = null;
+  try { exp = backend.exportRawSession(sessionId); } catch { /* unavailable */ }
+  if (!exp) return 'unavailable';
+  const { gz, size } = gzipContainer(buildRawContainer(exp));
+  return await store.putRawSession(sessionId, exp.tool, Math.floor(exp.mtime), gz, size);
+}

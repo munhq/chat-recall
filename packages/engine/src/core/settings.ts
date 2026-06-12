@@ -195,6 +195,9 @@ export interface SyncSettings {
     sessionMeta: boolean;
     dismissals: boolean;
     customRules: boolean;
+    /** Redacted raw transcript captures (Phase 2 archive). Default true.
+     *  Turn off to ship derived views only (envelope/chunks/derived). */
+    raw?: boolean;
   };
   /**
    * Send project paths in cleartext instead of sha-hashed tokens.
@@ -324,7 +327,7 @@ function defaultPrivacy(): PrivacySettings {
 function defaultSync(): SyncSettings {
   return {
     enabled: false,
-    upload: { findings: true, sessionMeta: true, dismissals: true, customRules: true },
+    upload: { findings: true, sessionMeta: true, dismissals: true, customRules: true, raw: true },
     excludeTools: [],
     excludeProjects: [],
   };
