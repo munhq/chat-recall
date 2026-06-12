@@ -182,7 +182,7 @@ function chunksFromTurns(
 
 /** The {v, messages} envelope the conversations/:id route serves from
  *  content_cache — version must match its PARSER_VERSION. */
-const PARSER_VERSION = 5;
+const PARSER_VERSION = 6;
 
 /**
  * Rebuild the conversation envelope the dashboard renders, in the SAME

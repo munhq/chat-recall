@@ -1290,7 +1290,7 @@ router.get('/:id', async (req, res) => {
       // 2. Try Cache
       // PARSER_VERSION: bump when parser output shape changes so stale cache
       // entries from older buggy parsers are ignored instead of served.
-      const PARSER_VERSION = 5;
+      const PARSER_VERSION = 6;
       if (mtime > 0) {
         const cached = await store.getCachedContent(id, 'session', mtime);
         if (cached) {
