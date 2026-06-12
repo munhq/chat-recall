@@ -94,6 +94,21 @@ export default function TopBar({ view, setView, enabledViews, query, setQuery, s
         >
           Beta
         </span>
+        <span
+          title="Build time (UTC) of the dashboard your tab is running. If this is older than the latest deploy, your browser is serving a stale copy."
+          style={{
+            padding: '2px 6px',
+            fontSize: 10,
+            fontWeight: 500,
+            letterSpacing: '0.02em',
+            color: 'var(--cr-fg-3)',
+            border: '1px dashed var(--cr-line-1)',
+            borderRadius: 4,
+            fontFamily: 'monospace',
+          }}
+        >
+          {typeof __BUILD_STAMP__ !== 'undefined' ? __BUILD_STAMP__ : 'dev'}
+        </span>
       </div>
 
       {/* Nav */}
