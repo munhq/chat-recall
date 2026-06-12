@@ -221,12 +221,34 @@ function buildTreeFromSummaries(
     if (isWorkspaceId(n)) ensureWorkspace(n.id);
   }
 
+  // String-only workspace nesting fallback for server mode: the FS-based
+  // resolver (realpath + git toplevel) can't run against paths that only
+  // exist on the producer's machine. Derive each known workspace's root
+  // from its own pathMap entry (the path prefix up to the segment matching
+  // the workspace name), then nest children by plain prefix. Longest root
+  // wins so nested workspaces resolve correctly.
+  const wsRoots: Array<{ id: string; root: string }> = [];
+  for (const n of annotated) {
+    if (!isWorkspaceId(n) || !n.id.startsWith('ws:')) continue;
+    const wsName = n.id.slice(3);
+    const samplePath = n.projectPath || pathMap.get(n.id) || '';
+    const segs = samplePath.split('/');
+    const idx = segs.indexOf(wsName);
+    if (idx > 0) wsRoots.push({ id: n.id, root: segs.slice(0, idx + 1).join('/') });
+  }
+  wsRoots.sort((a, b) => b.root.length - a.root.length);
+  const wsIdByPrefix = (path: string): string | null => {
+    if (!path) return null;
+    for (const w of wsRoots) if (path === w.root || path.startsWith(w.root + '/')) return w.id;
+    return null;
+  };
+
   const standaloneGit: TreeNode[] = [];
   const untracked: TreeNode[] = [];
   for (const n of annotated) {
     if (n.workspace || isWorkspaceId(n)) continue;
     if (n.source === 'path') { untracked.push(n); continue; }
-    const wsId = n.projectPath ? resolveWorkspaceId(n.projectPath) : null;
+    const wsId = (n.projectPath ? resolveWorkspaceId(n.projectPath) : null) ?? wsIdByPrefix(n.projectPath);
     if (wsId) {
       const w = ensureWorkspace(wsId);
       w.children.push(n);
