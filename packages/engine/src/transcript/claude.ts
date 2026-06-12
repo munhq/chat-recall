@@ -36,6 +36,18 @@ export async function parseClaudeTranscript(sessionPath: string): Promise<Messag
   return parseMessagesFromFile(sessionPath);
 }
 
+/** Same parse over in-memory text — what the server runs on archived raw. */
+export function parseClaudeTranscriptText(text: string): Message[] {
+  const raw: Array<{ line: number; obj: any }> = [];
+  let lineNumber = 0;
+  for (const line of text.split('\n')) {
+    lineNumber++;
+    if (!line.trim()) continue;
+    try { raw.push({ line: lineNumber, obj: JSON.parse(line) }); } catch { /* malformed line */ }
+  }
+  return messagesFromRawLines(raw);
+}
+
 async function parseMessagesFromFile(sessionPath: string): Promise<Message[]> {
   const file = await open(sessionPath);
   const raw: Array<{ line: number; obj: any }> = [];
@@ -53,6 +65,10 @@ async function parseMessagesFromFile(sessionPath: string): Promise<Message[]> {
   } finally {
     await file.close();
   }
+  return messagesFromRawLines(raw);
+}
+
+function messagesFromRawLines(raw: Array<{ line: number; obj: any }>): Message[] {
 
   const toolResults = new Map<string, { content: any; isError?: boolean }>();
   for (const { obj } of raw) {
