@@ -256,7 +256,7 @@ router.get('/:id/diff', async (req, res) => {
     if (!result) {
       if (resolved) {
         enqueueRefresh('diff', id, resolved.mtime);
-        return res.status(202).json({ sessionId: id, status: 'computing', message: 'Diff is being computed in the background.' });
+        return res.status(202).json({ sessionId: id, status: isServerMode() ? 'pending-sync' : 'computing', message: isServerMode() ? 'Not synced yet — this session\'s diff arrives with the next sync from its machine.' : 'Diff is being computed in the background.' });
       }
       return res.status(404).json({ error: 'Session not found' });
     }
@@ -332,7 +332,7 @@ router.get('/:id/commits', async (req, res) => {
     // No cache at all → enqueue + 202.
     if (resolved) {
       enqueueRefresh('commits', id, resolved.mtime);
-      return res.status(202).json({ sessionId: id, status: 'computing', message: 'Commits are being computed in the background.' });
+      return res.status(202).json({ sessionId: id, status: isServerMode() ? 'pending-sync' : 'computing', message: isServerMode() ? 'Not synced yet — commits arrive with the next sync from this session\'s machine.' : 'Commits are being computed in the background.' });
     }
     return res.status(404).json({ error: 'Session not found' });
   } catch (error) {
@@ -386,8 +386,10 @@ router.get('/:id/outcome', async (req, res) => {
       enqueueRefresh('outcome', id, resolved.mtime);
       return res.status(202).json({
         sessionId: id,
-        status: 'computing',
-        message: 'Outcome is being computed in the background. Retry in a moment.',
+        status: isServerMode() ? 'pending-sync' : 'computing',
+        message: isServerMode()
+          ? 'Not synced yet — the outcome arrives with the next sync from this session\'s machine.'
+          : 'Outcome is being computed in the background. Retry in a moment.',
       });
     }
     return res.status(404).json({ error: 'Session not found' });

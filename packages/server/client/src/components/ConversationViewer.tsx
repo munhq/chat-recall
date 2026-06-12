@@ -36,6 +36,10 @@ type ViewMode = 'summary' | 'firstPrompt' | 'full' | 'raw' | 'related' | 'files'
 type MessageFilter = 'all' | 'user' | 'assistant' | 'thinking' | 'tools' | 'edits';
 
 interface ConversationViewerProps {
+  /** True total on the server (may exceed messages.length when paginated). */
+  totalMessages?: number;
+  hasMoreMessages?: boolean;
+  onLoadMoreMessages?: () => void;
   /** Incremented by the parent on EVERY selection — even re-selecting the
    *  same session. Forces a refetch so a long-lived tab can never serve
    *  hours-old in-memory messages for a session whose data has changed. */
@@ -59,6 +63,9 @@ interface ConversationViewerProps {
 export default function ConversationViewer({
   sessionId,
   selectionNonce,
+  totalMessages,
+  hasMoreMessages,
+  onLoadMoreMessages,
   messages,
   subagents = [],
   loading,
@@ -604,7 +611,17 @@ export default function ConversationViewer({
                   Filter conversation
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>
-                  Showing {filteredMessages.length} of {messages.length} messages
+                  Showing {filteredMessages.length} of {Math.max(totalMessages ?? 0, messages.length)} messages
+                  {hasMoreMessages && onLoadMoreMessages && (
+                    <button
+                      onClick={onLoadMoreMessages}
+                      style={{ marginLeft: 8, fontSize: 11, padding: '1px 8px', borderRadius: 4,
+                               border: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-2)',
+                               color: 'var(--cr-fg-2)', cursor: 'pointer' }}
+                    >
+                      load {Math.max((totalMessages ?? 0) - messages.length, 0)} more
+                    </button>
+                  )}
                   {subagents.length > 0 && (
                     <>
                       {' · '}

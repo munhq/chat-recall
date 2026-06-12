@@ -198,6 +198,8 @@ function AppInner() {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [memoryResults, setMemoryResults] = useState<MemoryHit[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
+  const [conversationTotal, setConversationTotal] = useState(0);
+  const [conversationHasMore, setConversationHasMore] = useState(false);
   const [subagents, setSubagents] = useState<Subagent[]>([]);
   const [conversationLoading, setConversationLoading] = useState(false);
 
@@ -493,13 +495,28 @@ function AppInner() {
   void SESSION_ID_RE;
 
 
+  const handleLoadMoreMessages = useCallback(async () => {
+    if (!selectedSessionId || !conversationHasMore) return;
+    try {
+      const { getConversationPage } = await import('./services/api');
+      const page = await getConversationPage(selectedSessionId, messages.length);
+      setMessages((prev) => [...prev, ...page.messages]);
+      setConversationTotal(page.total);
+      setConversationHasMore(page.hasMore);
+    } catch (err) {
+      console.error('load more messages failed:', err);
+    }
+  }, [selectedSessionId, conversationHasMore, messages.length]);
+
   const handleLoadFull = useCallback(async () => {
     if (!selectedSessionId) return;
     setConversationLoading(true);
     try {
-      const { messages: msgs, subagents: subs } = await getConversationWithSubagents(selectedSessionId);
+      const { messages: msgs, subagents: subs, total, hasMore } = await getConversationWithSubagents(selectedSessionId);
       setMessages(msgs);
       setSubagents(subs);
+      setConversationTotal(total ?? msgs.length);
+      setConversationHasMore(!!hasMore);
     } catch (err) {
       console.error('Failed to load conversation:', err);
     } finally {
@@ -720,6 +737,9 @@ function AppInner() {
               ) : (
                 <ConversationViewer
                   selectionNonce={selectionNonce}
+                  totalMessages={conversationTotal}
+                  hasMoreMessages={conversationHasMore}
+                  onLoadMoreMessages={handleLoadMoreMessages}
                   sessionId={selectedSessionId}
                   messages={messages}
                   subagents={subagents}
