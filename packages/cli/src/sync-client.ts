@@ -244,12 +244,15 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
 
   let skipped = 0, redactions = 0, walked = 0;
   const syncedSessionIds = new Set<string>();
+  let deadIds = new Set<string>();
+  try { deadIds = new Set((await store.listTombstones()).map((t) => t.session_id)); } catch { /* none */ }
   for (const ref of refs.slice(0, opts.limit ?? refs.length)) {
     if (excludeTools.has(ref.toolId as any)) { skipped++; continue; }
     if (excluded(ref.projectPath)) { skipped++; continue; }
     // Ledger mode: this exact session at this exact version already acked
     // by this server → nothing to do. Anything not covered (new, changed,
     // or previously failed) flows through.
+    if (deadIds.has(ref.prefixedId)) { skipped++; continue; } // deleted by the user — never re-ship
     if (ledger && (ledger.get(ref.prefixedId) ?? -1) >= Math.floor(ref.mtime)) { skipped++; continue; }
     // Canonical envelope (R3): the index-time copy when fresh, else parse
     // now with THE parser and warm the index. Sync never re-parses with a
@@ -517,6 +520,15 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
   if (dismissals.length > 0 || customRules.length > 0) {
     await post({ dismissals, custom_rules: customRules });
   }
+  // Tombstones: full list every sync (small, idempotent) — a server that
+  // missed the original delete catches up; resurrection is impossible
+  // because ingest checks tombstones before any conversation write.
+  try {
+    const tombstones = await store.listTombstones();
+    if (tombstones.length > 0) {
+      await post({ tombstones: tombstones.map((t) => ({ session_id: t.session_id, deleted_at: t.deleted_at })) });
+    }
+  } catch { /* best-effort */ }
   if (opts.prune) await post({ prune_empty_sessions: true });
 
   await metaCache.close();
