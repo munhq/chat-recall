@@ -343,8 +343,6 @@ export class GeminiBackend implements ToolBackend {
     const loc = this.findSession(id);
     if (!loc) return null;
     try {
-      const { readFileSync, statSync } = require('fs') as typeof import('fs');
-      const { basename } = require('path') as typeof import('path');
       return {
         tool: 'gemini',
         mtime: statSync(loc.path).mtimeMs,

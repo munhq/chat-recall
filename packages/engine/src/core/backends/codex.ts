@@ -9,8 +9,8 @@
  * IDs are prefixed: 'codex_<session-uuid>'.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
-import { basename, join } from 'path';
+import { existsSync, readdirSync, readFileSync, statSync, openSync, readSync, closeSync } from 'fs';
+import { basename, dirname, join } from 'path';
 import { codexHomeDir } from '../tool-paths.js';
 
 import type {
@@ -490,8 +490,6 @@ export class CodexBackend implements ToolBackend {
   exportRawSession(id: string): RawSessionExport | null {
     const loc = this.findSession(id);
     if (!loc) return null;
-    const { readFileSync, statSync, readdirSync, openSync, readSync, closeSync } = require('fs') as typeof import('fs');
-    const { basename, dirname, join } = require('path') as typeof import('path');
     const files: RawSessionExport['files'] = [];
     let mtime = 0;
     const push = (path: string, name: string) => {

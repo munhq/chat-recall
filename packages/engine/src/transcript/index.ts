@@ -19,6 +19,11 @@ import { parseOpenCodeTranscript, parseOpenCodeSubagents } from './opencode.js';
 import { parseCodexTranscript, parseCodexSubagents } from './codex.js';
 
 export * from './types.js';
+export {
+  buildRawContainer, gzipContainer, gunzipContainer, mapContainerText,
+  parseTranscriptFromContainer, parseOpenCodeDumpText,
+  type RawContainer,
+} from './raw.js';
 export { parseClaudeTranscript, parseClaudeSubagents } from './claude.js';
 export { parseGeminiTranscript } from './gemini.js';
 export { parseOpenCodeTranscript, parseOpenCodeSubagents } from './opencode.js';

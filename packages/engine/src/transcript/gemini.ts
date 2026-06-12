@@ -8,7 +8,13 @@ import type { TranscriptMessage as Message, Subagent, ToolCall } from './types.j
  */
 export async function parseGeminiTranscript(sessionPath: string): Promise<Message[]> {
   const { readFileSync } = await import('fs');
-  const content = JSON.parse(readFileSync(sessionPath, 'utf-8'));
+  return parseGeminiTranscriptText(readFileSync(sessionPath, 'utf-8'));
+}
+
+/** Same parse over in-memory text — what the server runs on archived raw. */
+export function parseGeminiTranscriptText(text: string): Message[] {
+  let content: any;
+  try { content = JSON.parse(text); } catch { return []; }
   const messages: Message[] = [];
 
   for (let i = 0; i < (content.messages || []).length; i++) {
