@@ -25,6 +25,7 @@ import type {
   CanonicalEvent,
   EditDelta,
   CollectRecentEditsOpts,
+  RawSessionExport,
 } from '../tool-backend.js';
 import type { ExtractedTurns } from '../session-turns.js';
 import type { SessionDiffResult } from '../session-replay.js';
@@ -337,6 +338,19 @@ export class GeminiBackend implements ToolBackend {
       }
     } catch { /* projects.json malformed — empty map is fine */ }
     return map;
+  }
+  exportRawSession(id: string): RawSessionExport | null {
+    const loc = this.findSession(id);
+    if (!loc) return null;
+    try {
+      const { readFileSync, statSync } = require('fs') as typeof import('fs');
+      const { basename } = require('path') as typeof import('path');
+      return {
+        tool: 'gemini',
+        mtime: statSync(loc.path).mtimeMs,
+        files: [{ name: basename(loc.path), bytes: readFileSync(loc.path) }],
+      };
+    } catch { return null; }
   }
 }
 

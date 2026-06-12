@@ -248,6 +248,24 @@ export interface ToolBackend {
     endMs: number,
     bufferMinutes?: number,
   ): SessionCommitsResult;
+
+  /**
+   * The session's raw capture for the archive (Phase 2): every byte needed
+   * to re-render it later, independent of the tool's mutable storage.
+   * File-based tools return their transcript (+ subagent sidecars) verbatim;
+   * DB-based tools (OpenCode) return a deterministic JSONL dump of the
+   * session's rows. Returns null when the session can't be located.
+   */
+  exportRawSession(id: string): RawSessionExport | null;
+}
+
+/** A raw capture: named parts so multi-file sessions (main + subagents)
+ *  round-trip. `name` is the relative filename (or synthetic for DB dumps). */
+export interface RawSessionExport {
+  tool: AiTool;
+  /** Source mtime (ms) of the newest part — the archive freshness key. */
+  mtime: number;
+  files: Array<{ name: string; bytes: Buffer }>;
 }
 
 // ── Registry ─────────────────────────────────────────────────────────
