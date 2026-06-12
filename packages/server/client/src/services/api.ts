@@ -76,6 +76,8 @@ export interface SessionInfo {
    * "Expand N runs" affordance can list them).
    */
   runCount?: number;
+  /** Single-prompt invocation (batch/bot run) — synced flag. */
+  oneShot?: boolean;
   runMemberIds?: string[];
 }
 

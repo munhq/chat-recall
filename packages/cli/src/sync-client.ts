@@ -222,20 +222,42 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
     try { turns = extractTurnsAny(ref.prefixedId, { maxTurns: 5000 }); } catch { skipped++; continue; }
     if (!turns.found) { skipped++; continue; }
 
-    // Structured per-turn payload (each turn redacted independently) — the
-    // server indexes turns into chunks and serves them back as the
-    // conversation view. `redacted_text` stays for the legacy sync server.
+    // Structured per-turn payload (each turn redacted independently).
+    // Text turns become FTS chunks + the conversation view; tool turns
+    // (calls + result snippets, NOT raw outputs) ride along so the synced
+    // conversation has the same mass as the local one — a tool-heavy
+    // session is 90% tool activity and looked gutted without them.
+    // `redacted_text` stays for the legacy sync server.
     const count = { redactions: 0 };
-    const structured: Array<{ role: 'user' | 'assistant'; text: string; ts?: number }> = [];
+    const structured: Array<Record<string, unknown>> = [];
+    let textTurns = 0;
     for (const t of turns.turns) {
-      if ((t.kind !== 'user' && t.kind !== 'assistant_text') || !t.text) continue;
-      structured.push({
-        role: t.kind === 'user' ? 'user' : 'assistant',
-        text: redactSecrets(t.text, { force: true, count }),
-        ts: t.ts || undefined,
-      });
+      if ((t.kind === 'user' || t.kind === 'assistant_text') && t.text) {
+        textTurns++;
+        structured.push({
+          role: t.kind === 'user' ? 'user' : 'assistant',
+          text: redactSecrets(t.text, { force: true, count }),
+          ts: t.ts || undefined,
+        });
+      } else if (t.kind === 'tool_use') {
+        structured.push({
+          role: 'tool_use',
+          tool_name: t.toolName || 'tool',
+          tool_use_id: t.toolUseId || undefined,
+          text: redactSecrets((t.command || t.toolInputSummary || '').slice(0, 2000), { force: true, count }),
+          ts: t.ts || undefined,
+        });
+      } else if (t.kind === 'tool_result') {
+        structured.push({
+          role: 'tool_result',
+          tool_use_id: t.toolUseId || undefined,
+          text: redactSecrets((t.resultSummary || '').slice(0, 2000), { force: true, count }),
+          is_error: t.resultIsError || undefined,
+          ts: t.ts || undefined,
+        });
+      }
     }
-    if (structured.length === 0) { skipped++; continue; }
+    if (textTurns === 0) { skipped++; continue; }
     redactions += count.redactions;
     const mtime = Math.floor(ref.mtime) || 0;
     syncedSessionIds.add(ref.prefixedId);
@@ -244,8 +266,13 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
     // ref.projectPath is decoded from the encoded dir name (every '-'
     // becomes '/', so `chat-recall` → `chat/recall`); memory_metadata
     // stores the real cwd read from inside the transcript — prefer it.
+    const textOnly = structured.filter((t) => t.role === 'user' || t.role === 'assistant');
     let projectPath = ref.projectPath;
-    let meta: Record<string, unknown> = { messageCount: structured.length };
+    let meta: Record<string, unknown> = { messageCount: textTurns };
+    // Single-prompt invocations (batch/bot runs — e.g. thousands of one-shot
+    // Gemini CLI calls) sync like everything else but carry a flag so the
+    // UI can badge them and lists can de-emphasize them.
+    if (textOnly.filter((t) => t.role === 'user').length <= 1) meta.oneShot = true;
     try {
       const row = await store.getItem(ref.prefixedId, 'session');
       if (row?.project_path) projectPath = row.project_path;
@@ -263,9 +290,9 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
       session_id: ref.prefixedId,
       tool: ref.toolId,
       project_path: mapPath(projectPath),
-      redacted_text: structured.map((t) => t.text).join('\n'),
+      redacted_text: textOnly.map((t) => t.text).join('\n'),
       turns: structured,
-      first_prompt: structured.find((t) => t.role === 'user')?.text.slice(0, 200),
+      first_prompt: (textOnly.find((t) => t.role === 'user')?.text as string | undefined)?.slice(0, 200),
       meta,
       mtime,
     });

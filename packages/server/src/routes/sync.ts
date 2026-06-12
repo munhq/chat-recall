@@ -30,8 +30,10 @@
  *
  * Everything in the payload was redacted client-side (`redactSecrets` with
  * force:true) before it hit the wire; the server never sees raw secrets.
- * The full-conversation JSON (content_cache) is deliberately NOT synced —
- * the conversation view is reconstructed from the per-turn chunks.
+ * The RAW transcript JSON never ships. The conversation view is rebuilt
+ * server-side from the redacted turn stream (text + tool calls + result
+ * snippets) into content_cache; the per-turn chunks remain the search
+ * index and the fallback view.
  */
 
 import express from 'express';
@@ -43,7 +45,17 @@ import type { SourceType } from '../imports.js';
 
 const router = express.Router();
 
-interface SyncTurn { role: 'user' | 'assistant'; text: string; ts?: number }
+interface SyncTurn {
+  role: 'user' | 'assistant' | 'tool_use' | 'tool_result';
+  text: string;
+  ts?: number;
+  /** tool_use only */
+  tool_name?: string;
+  /** correlates a tool_result with its tool_use */
+  tool_use_id?: string;
+  /** tool_result only */
+  is_error?: boolean;
+}
 interface SyncConversation {
   session_id: string;
   tool?: string;
@@ -125,6 +137,10 @@ function chunksFromTurns(
   const out: ReturnType<typeof chunksFromTurns> = [];
   let i = 0;
   for (const t of turns) {
+    // Text turns only — 545 Bash outputs in the FTS table would bury the
+    // conversational content in every search ranking. Tool turns are
+    // served from the conversation envelope instead.
+    if (t.role !== 'user' && t.role !== 'assistant') continue;
     if (!t.text?.trim()) continue;
     // Split very long turns so a single wall-of-text doesn't dominate BM25.
     for (let off = 0; off < t.text.length; off += MAX_CHARS) {
@@ -146,6 +162,56 @@ function chunksFromTurns(
     }
   }
   return out;
+}
+
+/** The {v, messages} envelope the conversations/:id route serves from
+ *  content_cache — version must match its PARSER_VERSION. */
+const PARSER_VERSION = 5;
+
+/**
+ * Rebuild the conversation envelope the dashboard renders, in the SAME
+ * shape the local parser produces (services/parser.ts Message): text
+ * messages with tool calls folded into the preceding assistant message's
+ * `toolCalls` array, results attached by tool_use_id. This is what makes
+ * a synced tool-heavy session (90%+ tool activity) look like the local
+ * one instead of a gutted text skeleton.
+ */
+interface EnvelopeMessage {
+  line: number;
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp?: string;
+  toolCalls?: Array<{ name: string; input: unknown; result?: unknown; isError?: boolean }>;
+}
+function envelopeFromTurns(turns: SyncTurn[]): EnvelopeMessage[] {
+  const messages: EnvelopeMessage[] = [];
+  const callsById = new Map<string, NonNullable<EnvelopeMessage['toolCalls']>[number]>();
+  let line = 0;
+  for (const t of turns) {
+    const timestamp = t.ts ? new Date(t.ts).toISOString() : undefined;
+    if (t.role === 'user' || t.role === 'assistant') {
+      messages.push({ line: ++line, role: t.role, content: t.text || '', timestamp });
+    } else if (t.role === 'tool_use') {
+      // Fold into the preceding assistant message; tool calls at the very
+      // start (or right after a user turn) get a content-less assistant
+      // carrier message, mirroring how the local parser groups them.
+      let last = messages[messages.length - 1];
+      if (!last || last.role !== 'assistant') {
+        last = { line: ++line, role: 'assistant', content: '', timestamp };
+        messages.push(last);
+      }
+      const call = { name: t.tool_name || 'tool', input: t.text || '' };
+      (last.toolCalls ??= []).push(call);
+      if (t.tool_use_id) callsById.set(t.tool_use_id, call);
+    } else if (t.role === 'tool_result') {
+      const call = t.tool_use_id ? callsById.get(t.tool_use_id) : undefined;
+      if (call) {
+        call.result = t.text || '';
+        if (t.is_error) call.isError = true;
+      }
+    }
+  }
+  return messages;
 }
 
 const arr = <T>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
@@ -207,11 +273,9 @@ router.post('/', async (req, res) => {
             },
           } as Parameters<typeof store.setItem>[0]);
 
-          // 2. FTS chunks — what search AND the conversation view read.
-          // Replace-then-insert semantics come from addChunksFTS itself (it
-          // deletes the item's rows first). NOTE: no content_cache write —
-          // the full-conversation JSON deliberately never reaches the
-          // server; conversations/:id rebuilds the view from these chunks.
+          // 2. FTS chunks — what search reads (text turns only; see
+          // chunksFromTurns). Replace-then-insert semantics come from
+          // addChunksFTS itself (it deletes the item's rows first).
           const cks = chunksFromTurns(cv.session_id, turns, projectPath, mtime);
           if (cks.length > 0) chunks += await store.addChunksFTS(cks);
 
@@ -224,6 +288,17 @@ router.post('/', async (req, res) => {
             mtime,
             indexedAt: Date.now(),
           });
+
+          // 4. Conversation envelope — the complete redacted turn view
+          // (text + tool calls + result snippets), NOT the raw transcript.
+          // Upsert by (id, source_type): re-syncs replace any stale
+          // envelope a previous ingest version left behind.
+          if (turns.length > 0) {
+            await store.setCachedContent(
+              cv.session_id, 'session', mtime,
+              JSON.stringify({ v: PARSER_VERSION, messages: envelopeFromTurns(turns), subagents: [] }),
+            );
+          }
           conv++;
         }
 
