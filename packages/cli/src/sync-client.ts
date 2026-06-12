@@ -365,6 +365,22 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
       } catch { /* derived is best-effort — the conversation itself shipped */ }
     }
 
+    // Fork lineage link (collected at index time too; shipping here keeps
+    // sync self-sufficient for sessions the indexer hasn't visited).
+    try {
+      const { detectForkPredecessor } = await import('@chat-recall/engine/transcript/raw.js');
+      if (ref.fullPath) {
+        const predecessor = detectForkPredecessor(ref.fullPath);
+        if (predecessor) {
+          await linksBatch.add({
+            source_type: 'session', source_id: ref.prefixedId,
+            target_type: 'session', target_id: predecessor,
+            link_type: 'forked_from', confidence: 1.0,
+          });
+        }
+      }
+    } catch { /* best-effort */ }
+
     walked++;
     if (walked % 250 === 0) console.error(`[sync] ${walked} sessions processed…`);
   }
