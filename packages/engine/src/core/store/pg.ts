@@ -446,6 +446,31 @@ export class PgStore implements StorageDriver {
     try { return (await this.one(sql, params))?.n ?? 0; } catch { return 0; }
   }
 
+  // ── raw session archive (shrink-protected — see memory-store.ts) ──
+  async putRawSession(sessionId: string, tool: string, mtime: number, gz: Buffer, uncompressedSize: number): Promise<'stored' | 'shrink-protected' | 'unchanged'> {
+    const existing = await this.one(`SELECT size, mtime FROM raw_sessions WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
+    if (existing) {
+      if (Number(existing.size) === uncompressedSize && Number(existing.mtime) >= intMs(mtime)) return 'unchanged';
+      if (uncompressedSize < Number(existing.size)) return 'shrink-protected';
+    }
+    await this.q(
+      `INSERT INTO raw_sessions (tenant, session_id, tool, mtime, size, gz, captured_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (tenant, session_id) DO UPDATE SET
+         tool=excluded.tool, mtime=excluded.mtime, size=excluded.size,
+         gz=excluded.gz, captured_at=excluded.captured_at`,
+      [this.t, sessionId, tool, intMs(mtime), uncompressedSize, gz, Date.now()]);
+    return 'stored';
+  }
+  async getRawSession(sessionId: string): Promise<{ tool: string; mtime: number; size: number; gz: Buffer; captured_at: number } | null> {
+    const r = await this.one(`SELECT tool, mtime, size, gz, captured_at FROM raw_sessions WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
+    return r ? { tool: r.tool, mtime: Number(r.mtime), size: Number(r.size), gz: r.gz, captured_at: Number(r.captured_at) } : null;
+  }
+  async listRawSessionVersions(): Promise<Array<{ session_id: string; mtime: number; size: number }>> {
+    const rows = await this.q(`SELECT session_id, mtime, size FROM raw_sessions WHERE tenant=$1`, [this.t]);
+    return rows.map((r: any) => ({ session_id: r.session_id, mtime: Number(r.mtime), size: Number(r.size) }));
+  }
+
   // ── KV ──
   async kvSet(scope: string, key: string, value: string): Promise<void> {
     await this.q(`INSERT INTO kv_store (tenant,scope,key,value,updated_at) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (tenant,scope,key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`, [this.t, scope, key, value, Date.now()]);
