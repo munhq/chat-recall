@@ -219,6 +219,10 @@ export class PgStore implements StorageDriver {
     const row = await this.one(`SELECT content_json FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type=$3 AND mtime>=$4`, [this.t, id, sourceType, intMs(mtime)]);
     return row?.content_json || null;
   }
+  async getCachedContentStale(id: string, sourceType: string): Promise<{ content: string; mtime: number } | null> {
+    const row = await this.one(`SELECT content_json, mtime FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type=$3`, [this.t, id, sourceType]);
+    return row ? { content: row.content_json, mtime: Number(row.mtime) } : null;
+  }
   async setCachedContent(id: string, sourceType: string, mtime: number, content: string): Promise<void> {
     await this.q(
       `INSERT INTO content_cache (tenant,id,source_type,content_json,mtime) VALUES ($1,$2,$3,$4,$5)

@@ -52,6 +52,7 @@ export class SqliteStore implements StorageDriver {
 
   // ── content cache ──
   async getCachedContent(...a: Args<'getCachedContent'>) { return this.inner.getCachedContent(...a); }
+  async getCachedContentStale(...a: Args<'getCachedContentStale'>) { return this.inner.getCachedContentStale(...a); }
   async setCachedContent(...a: Args<'setCachedContent'>) { return this.inner.setCachedContent(...a); }
 
   // ── secret findings ──

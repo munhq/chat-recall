@@ -1103,6 +1103,14 @@ export class MemoryStore {
     return rows;
   }
 
+  /** Latest cached content for an item regardless of mtime — the
+   *  stale-serving read: a snapshot from the last sync beats degrading
+   *  to a lossier representation while a re-sync is mid-flight. */
+  getCachedContentStale(id: string, sourceType: string): { content: string; mtime: number } | null {
+    const r = this.db.prepare(`SELECT content_json, mtime FROM content_cache WHERE id = ? AND source_type = ?`).get(id, sourceType) as { content_json: string; mtime: number } | undefined;
+    return r ? { content: r.content_json, mtime: r.mtime } : null;
+  }
+
   /**
    * Remove session metadata rows that have neither a conversation envelope
    * nor search chunks — unopenable ghost rows (e.g. seeded from a stale
