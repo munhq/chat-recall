@@ -155,6 +155,7 @@ router.get('/recent', async (req, res) => {
           tool,
           filePath: r.file_path || undefined,
           preIndexedFirstPrompt: r.content_preview || undefined,
+          oneShot: extra.oneShot === true || undefined,
         };
       });
     } finally {

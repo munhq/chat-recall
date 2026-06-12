@@ -32,6 +32,8 @@ export interface SessionInfo {
   firstPrompt?: string;
   summary?: string;
   tool?: string; // 'claude' | 'gemini' | 'opencode' | 'codex'
+  /** Single-prompt invocation (batch/bot run). UI shows a "one-shot" badge. */
+  oneShot?: boolean;
   /**
    * Populated when summary generation has been attempted and failed
    * (recorded by the indexer's summary worker). UI uses this to show
@@ -244,6 +246,8 @@ export interface SessionIndexEntry {
   /** Pre-computed when available (Claude sessions-index.json). Used to
    *  short-circuit hydration when the index already has it. */
   preIndexedFirstPrompt?: string;
+  /** Single-prompt invocation (batch/bot run) — synced flag from extra_json. */
+  oneShot?: boolean;
 }
 
 /**
@@ -406,6 +410,7 @@ export async function hydrateSessions(entries: SessionIndexEntry[]): Promise<Ses
         firstPrompt: cleanBanner(firstPrompt) ?? '',
         summary: cleanBanner(summary),
         tool: e.tool,
+        oneShot: e.oneShot,
         summaryError: !summary && errors.has(e.sessionId) ? errors.get(e.sessionId)! : undefined,
       });
     }
