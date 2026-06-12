@@ -17,192 +17,36 @@ interface TopBarProps {
   mobileSidebarOpen?: boolean;
 }
 
-export default function TopBar({ view, setView, enabledViews, query, setQuery, searchRef, onSearch, onMobileMenu, mobileSidebarOpen }: TopBarProps) {
-  const [theme, setTheme] = useState(() =>
-    document.documentElement.getAttribute('data-theme') || 'dark'
-  );
-
-  const toggleTheme = () => {
-    const next = theme === 'dark' ? 'light' : 'dark';
-    const killer = document.createElement('style');
-    killer.textContent = '*,*::before,*::after{transition:none !important;animation:none !important}';
-    document.head.appendChild(killer);
-    setTheme(next);
-    if (next === 'light') {
-      document.documentElement.setAttribute('data-theme', 'light');
-    } else {
-      document.documentElement.removeAttribute('data-theme');
-    }
-    try { localStorage.setItem('cr-theme', next); } catch (e) {}
-    requestAnimationFrame(() => requestAnimationFrame(() => killer.remove()));
-  };
-
-  const navItems: Array<{ id: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security'; label: string; icon: string }> = ([
-    { id: 'search', label: 'Conversations', icon: 'message' },
-    { id: 'activity', label: 'Activity', icon: 'clock' },
-    { id: 'memory', label: 'Memory', icon: 'brain' },
-    { id: 'toolkit', label: 'Toolkit', icon: 'zap' },
-    { id: 'dashboard', label: 'Insights', icon: 'chart' },
-    { id: 'security', label: 'Security', icon: 'check' },
-  ] as const).filter((n) => !enabledViews || enabledViews.has(n.id)) as Array<{ id: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security'; label: string; icon: string }>;
-
+/**
+ * Live data-coverage chip: sessions held, raw-archived count, freshness of
+ * the newest session. Trust-by-glance — replaces "is it synced?" arguments.
+ */
+function SyncStatusChip() {
+  const [s, setS] = React.useState<{ sessions: number; rawArchived: number; newestSessionAgeMs: number | null } | null>(null);
+  React.useEffect(() => {
+    let dead = false;
+    const load = () => fetch('/api/status/sync').then(r => r.json()).then(d => { if (!dead) setS(d); }).catch(() => {});
+    load();
+    const t = setInterval(load, 60_000);
+    return () => { dead = true; clearInterval(t); };
+  }, []);
+  if (!s) return null;
+  const age = s.newestSessionAgeMs == null ? '—'
+    : s.newestSessionAgeMs < 120_000 ? 'live'
+    : s.newestSessionAgeMs < 3_600_000 ? `${Math.round(s.newestSessionAgeMs / 60_000)}m behind`
+    : `${Math.round(s.newestSessionAgeMs / 3_600_000)}h behind`;
   return (
-    <header
-      className="cr-topbar"
+    <span
+      title={`${s.sessions} sessions held · ${s.rawArchived} raw-archived · newest data ${age}`}
       style={{
-        height: 'var(--cr-header-h)',
-        flexShrink: 0,
-        background: 'var(--cr-ink-1)',
-        borderBottom: '1px solid var(--cr-line-1)',
-        display: 'flex',
-        alignItems: 'center',
-        padding: '0 16px',
-        gap: 16,
+        padding: '2px 6px', fontSize: 10, fontWeight: 500, letterSpacing: '0.02em',
+        color: 'var(--cr-fg-3)', border: '1px solid var(--cr-line-1)', borderRadius: 4,
+        fontFamily: 'monospace',
       }}
     >
-      {/* Mobile hamburger — opens the sidebar drawer. Hidden on desktop. */}
-      <IconButton
-        icon="menu"
-        title={mobileSidebarOpen ? 'Close menu' : 'Open menu'}
-        onClick={onMobileMenu}
-        className="cr-mobile-only"
-        aria-label={mobileSidebarOpen ? 'Close menu' : 'Open menu'}
-        aria-expanded={mobileSidebarOpen}
-        aria-controls="cr-sidebar-drawer"
-        data-testid="open-mobile-menu"
-      />
-
-      {/* Brand */}
-      <div className="cr-topbar-brand" style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 'var(--cr-sidebar-w)', paddingLeft: 4 }}>
-        <span className="cr-topbar-brand-logo"><Logo size={26} /></span>
-        <span data-testid="brand" className="cr-topbar-brand-text" style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--cr-fg-1)' }}>
-          Chat Recall
-        </span>
-        <span
-          className="cr-topbar-brand-tag"
-          style={{
-            padding: '2px 6px',
-            fontSize: 10,
-            fontWeight: 500,
-            letterSpacing: '0.04em',
-            color: 'var(--cr-fg-3)',
-            background: 'var(--cr-ink-2)',
-            border: '1px solid var(--cr-line-1)',
-            borderRadius: 4,
-            textTransform: 'uppercase',
-          }}
-        >
-          Beta
-        </span>
-        <span
-          title="Build time (UTC) of the dashboard your tab is running. If this is older than the latest deploy, your browser is serving a stale copy."
-          style={{
-            padding: '2px 6px',
-            fontSize: 10,
-            fontWeight: 500,
-            letterSpacing: '0.02em',
-            color: 'var(--cr-fg-3)',
-            border: '1px dashed var(--cr-line-1)',
-            borderRadius: 4,
-            fontFamily: 'monospace',
-          }}
-        >
-          {typeof __BUILD_STAMP__ !== 'undefined' ? __BUILD_STAMP__ : 'dev'}
-        </span>
-      </div>
-
-      {/* Nav */}
-      <nav className="cr-topbar-nav" style={{ display: 'flex', gap: 2 }}>
-        {navItems.map((n) => {
-          const on = view === n.id;
-          return (
-            <button
-              key={n.id}
-              onClick={() => setView(n.id)}
-              data-testid={`nav-${n.id}`}
-              style={{
-                height: 32,
-                padding: '0 12px',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 7,
-                background: on ? 'var(--cr-ink-2)' : 'transparent',
-                color: on ? 'var(--cr-fg-1)' : 'var(--cr-fg-2)',
-                border: 'none',
-                borderRadius: 6,
-                fontFamily: 'inherit',
-                fontSize: 13,
-                fontWeight: on ? 500 : 400,
-                cursor: 'pointer',
-                transition: 'background var(--cr-dur-fast), color var(--cr-dur-fast)',
-              }}
-              onMouseEnter={(e) => {
-                if (!on) (e.currentTarget as HTMLButtonElement).style.color = 'var(--cr-fg-1)';
-              }}
-              onMouseLeave={(e) => {
-                if (!on) (e.currentTarget as HTMLButtonElement).style.color = 'var(--cr-fg-2)';
-              }}
-            >
-              <Icon name={n.icon} size={14} />
-              {n.label}
-            </button>
-          );
-        })}
-      </nav>
-
-      {/* Global search */}
-      <div className="cr-topbar-search" style={{ flex: 1, display: 'flex', justifyContent: 'center', maxWidth: 640, margin: '0 auto', gap: 8 }}>
-        <Input
-          ref={searchRef}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
-            if (e.key === 'Enter' && query.trim()) onSearch?.(query);
-          }}
-          placeholder={'Search… (use "exact phrase" or +keyword)'}
-          title='Search syntax: "exact phrase" for literal match, +keyword to require a term, bare words for permissive OR.'
-          onClear={query ? () => setQuery('') : undefined}
-          kbd="⌘K"
-          inputSize="md"
-          style={{ width: '100%' }}
-          data-testid="search-input"
-        />
-        <Button
-          variant="primary"
-          size="md"
-          disabled={!query.trim()}
-          data-testid="search-button"
-          onClick={() => onSearch?.(query)}
-          className="cr-topbar-search-btn"
-        >
-          Search
-        </Button>
-      </div>
-
-      {/* Right actions */}
-      <div className="cr-topbar-actions" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <IconButton icon="refresh" title="Refresh index" className="cr-topbar-action-refresh" />
-        <IconButton
-          icon={theme === 'dark' ? 'sun' : 'moon'}
-          title={theme === 'dark' ? 'Switch to light' : 'Switch to dark'}
-          onClick={toggleTheme}
-          className="cr-topbar-action-theme"
-        />
-        {(!enabledViews || enabledViews.has('settings')) && (
-          <IconButton
-            icon="settings"
-            title="Settings"
-            onClick={() => setView('settings')}
-            data-testid="open-settings"
-            // Visual cue when already on the settings page so the user can see
-            // the gear icon is the current location, not just a button.
-            style={view === 'settings' ? { color: 'var(--cr-brand-500)' } : undefined}
-          />
-        )}
-        <div className="cr-topbar-avatar" style={{ marginLeft: 4 }}>
-          <Avatar name="User" size={28} />
-        </div>
-      </div>
-    </header>
+      {s.sessions.toLocaleString()} sess · {s.rawArchived.toLocaleString()} raw · {age}
+    </span>
   );
 }
+
+export

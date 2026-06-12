@@ -8,6 +8,35 @@ import { SearchService } from '../services/search.js';
 const router = express.Router();
 const searchService = new SearchService();
 
+// GET /api/status/sync — the trust panel's data: what fraction of reality
+// this server holds. In local mode it can also see the disk (sessions the
+// indexer knows about); in server mode it reports its own store coverage.
+router.get('/sync', async (_req, res) => {
+  try {
+    const { createStore } = await import('../imports.js');
+    const store = await createStore();
+    try {
+      const stats = await store.getStats();
+      const raw = await store.listRawSessionVersions();
+      const sessions = Number((stats as Record<string, number>).session || 0);
+      // Most recent session row mtime = how fresh this store is.
+      const recent = await store.querySessionIndex({ limit: 1, offset: 0, includeUntracked: true });
+      const newestMtime = recent.rows[0]?.mtime ?? 0;
+      res.json({
+        sessions,
+        rawArchived: raw.length,
+        rawBytes: 0, // size omitted from the cheap listing; panel shows counts
+        newestSessionAgeMs: newestMtime ? Date.now() - newestMtime : null,
+        sourceTypes: stats,
+      });
+    } finally {
+      await store.close();
+    }
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'sync status failed' });
+  }
+});
+
 // GET /api/status
 router.get('/', async (req, res) => {
   try {
