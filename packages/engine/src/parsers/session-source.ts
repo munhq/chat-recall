@@ -63,9 +63,23 @@ export class SessionSource implements MemorySource {
     }));
   }
 
-  async extractLinks(_item: MemoryItem): Promise<MemoryLink[]> {
-    // Sessions are the hub - other sources link TO sessions.
-    // No outgoing links needed from sessions themselves.
+  async extractLinks(item: MemoryItem): Promise<MemoryLink[]> {
+    // Fork lineage: a resumed/forked session's head parentUuid lives in a
+    // predecessor file. Collected as a first-class link so chain stitching
+    // is a graph lookup, not a filesystem hunt.
+    if (item.filePath) {
+      try {
+        const { detectForkPredecessor } = await import('../transcript/raw.js');
+        const predecessor = detectForkPredecessor(item.filePath);
+        if (predecessor) {
+          return [{
+            sourceType: 'session', sourceId: item.id,
+            targetType: 'session', targetId: predecessor,
+            linkType: 'forked_from', confidence: 1.0,
+          }];
+        }
+      } catch { /* lineage is best-effort */ }
+    }
     return [];
   }
 
