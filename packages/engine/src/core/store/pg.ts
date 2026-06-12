@@ -66,8 +66,8 @@ export class PgStore implements StorageDriver {
     if (item.sourceType === 'session') {
       await this.q(`DELETE FROM session_metadata WHERE tenant=$1 AND session_id=$2`, [this.t, item.id]);
     }
-    const resolved = item.projectPath ? resolveProjectId(item.projectPath) : null;
-    const projectId = resolved && resolved.source !== 'ignored' ? resolved.id : '';
+    const resolved = !item.projectId && item.projectPath ? resolveProjectId(item.projectPath) : null;
+    const projectId = item.projectId ?? (resolved && resolved.source !== 'ignored' ? resolved.id : '');
     await this.q(
       `INSERT INTO memory_metadata (tenant,id,source_type,title,project_path,project_id,content_preview,file_path,mtime,indexed_at,extra_json)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
@@ -384,8 +384,8 @@ export class PgStore implements StorageDriver {
       await this.q(`DELETE FROM memory_chunks WHERE tenant=$1 AND source_type=$2 AND item_id=$3`, [this.t, sourceType, itemId]);
     }
     for (const c of valid) {
-      const resolved = c.projectPath ? resolveProjectId(c.projectPath) : null;
-      const projectId = resolved && resolved.source !== 'ignored' ? resolved.id : '';
+      const resolved = !c.projectId && c.projectPath ? resolveProjectId(c.projectPath) : null;
+      const projectId = c.projectId ?? (resolved && resolved.source !== 'ignored' ? resolved.id : '');
       await this.q(
         `INSERT INTO memory_chunks (tenant,chunk_id,item_id,source_type,title,text,chunk_type,project_path,project_id,file_path,mtime)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
@@ -402,6 +402,15 @@ export class PgStore implements StorageDriver {
     rows.sort((a: any, b: any) => idx(a.chunk_id) - idx(b.chunk_id));
     return rows.map((r: any) => ({ chunk_id: r.chunk_id, title: r.title, text: r.text, chunk_type: r.chunk_type, mtime: Number(r.mtime) }));
   }
+  async pruneEmptySessions(): Promise<number> {
+    const r = await tenantQuery(this.pool, this.t,
+      `DELETE FROM memory_metadata m WHERE m.tenant=$1 AND m.source_type='session'
+         AND NOT EXISTS (SELECT 1 FROM content_cache c WHERE c.tenant=m.tenant AND c.id=m.id AND c.source_type='session')
+         AND NOT EXISTS (SELECT 1 FROM memory_chunks f WHERE f.tenant=m.tenant AND f.item_id=m.id AND f.source_type='session')`,
+      [this.t]);
+    return r.rowCount || 0;
+  }
+
   async deleteItemFTS(sourceType: string, itemId: string): Promise<void> {
     await this.q(`DELETE FROM memory_chunks WHERE tenant=$1 AND source_type=$2 AND item_id=$3`, [this.t, sourceType, itemId]);
   }
