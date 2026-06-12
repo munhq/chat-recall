@@ -32,12 +32,17 @@ import type { SourceType } from '@chat-recall/engine/types/memory.js';
 // Load .env configuration
 config();
 
+// Resolves to packages/cli/package.json from both src/ and the bundled dist/
+const pkgVersion: string = JSON.parse(
+  readFileSync(new URL('../package.json', import.meta.url), 'utf-8')
+).version;
+
 const program = new Command();
 
 program
   .name('chat-recall')
   .description('Semantic search for Claude Code sessions - recall and resume past conversations')
-  .version('0.1.0');
+  .version(pkgVersion);
 
 program
   .command('init')
