@@ -16,7 +16,7 @@
     "packages/server"
   ],
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && npm run build -w chat-recall",
     "dev": "tsc -b --watch",
     "test": "vitest run",
     "test:watch": "vitest",
