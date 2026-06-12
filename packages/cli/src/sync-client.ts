@@ -29,7 +29,8 @@ import { loadSettings, saveSettings } from '@chat-recall/engine/core/settings.js
 import { getDataDir } from '@chat-recall/engine/core/paths.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
 import { extractTurnsAny, replaySessionAny } from '@chat-recall/engine/core/session-multi-tool.js';
-import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION } from '@chat-recall/engine/transcript/index.js';
+import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION, gunzipContainer, gzipContainer, mapContainerText, buildRawContainer } from '@chat-recall/engine/transcript/index.js';
+import { getBackendForId, getBackend } from '@chat-recall/engine/core/tool-backend.js';
 import { computeOutcome } from '@chat-recall/engine/core/session-outcome.js';
 import { markPrompt, summarizeMarkers } from '@chat-recall/engine/core/session-sentiment.js';
 import { createStore, type StorageDriver } from '@chat-recall/engine/core/store/index.js';
@@ -117,6 +118,7 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
   const excludeProjects = sync?.excludeProjects ?? [];
   // Upload category toggles (settings.sync.upload, all default true).
   const upload = {
+    raw: sync?.upload?.raw !== false,
     findings: sync?.upload?.findings !== false,
     sessionMeta: sync?.upload?.sessionMeta !== false,
     dismissals: sync?.upload?.dismissals !== false,
@@ -300,6 +302,31 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
       }
     } catch { /* row is best-effort */ }
 
+    // Raw capture (Phase 2): the redacted source bytes ride along so the
+    // server archives them (shrink-protected) and derives everything from
+    // them — parser improvements never need a client resync again.
+    let raw_b64: string | undefined;
+    let raw_size: number | undefined;
+    if (upload.raw) {
+      try {
+        let container = null as ReturnType<typeof gunzipContainer>;
+        const archived = await store.getRawSession(ref.prefixedId);
+        if (archived && archived.mtime >= mtime) container = gunzipContainer(archived.gz);
+        if (!container) {
+          const backend = getBackendForId(ref.prefixedId) ?? getBackend('claude');
+          const exp = backend.exportRawSession(ref.prefixedId);
+          if (exp) container = buildRawContainer(exp);
+        }
+        if (container) {
+          const count2 = { redactions: 0 };
+          const redacted = mapContainerText(container, (t) => redactSecrets(t, { force: true, count: count2 }));
+          redactions += count2.redactions;
+          const { gz, size } = gzipContainer(redacted);
+          if (gz.length <= 8 * 1024 * 1024) { raw_b64 = gz.toString('base64'); raw_size = size; }
+        }
+      } catch { /* raw is additive — conversation still ships */ }
+    }
+
     const envTexts = envelope.messages.filter((m) => m.content?.trim());
     await convBatch.add({
       session_id: ref.prefixedId,
@@ -310,6 +337,8 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
       project_id: projectId || undefined,
       redacted_text: envTexts.map((m) => m.content).join('\n'),
       envelope,
+      raw_b64,
+      raw_size,
       first_prompt: (envTexts.find((m) => m.role === 'user')?.content as string | undefined)?.slice(0, 200),
       meta,
       mtime,

@@ -21,7 +21,7 @@ import { parseCodexTranscript, parseCodexSubagents } from './codex.js';
 export * from './types.js';
 export {
   buildRawContainer, gzipContainer, gunzipContainer, mapContainerText,
-  parseTranscriptFromContainer, parseOpenCodeDumpText,
+  parseTranscriptFromContainer, parseOpenCodeDumpText, archiveRawSession,
   type RawContainer,
 } from './raw.js';
 export { parseClaudeTranscript, parseClaudeSubagents } from './claude.js';

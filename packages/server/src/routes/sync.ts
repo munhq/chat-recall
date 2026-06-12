@@ -40,6 +40,7 @@ import express from 'express';
 import {
   createControlPlane, createStore, createMetadataCache, createOutcomeCache,
   createKnowledgeGraph, runWithTenant, classifyChunk,
+  gunzipContainer, parseTranscriptFromContainer,
 } from '../imports.js';
 import type { SourceType } from '../imports.js';
 
@@ -73,6 +74,11 @@ interface SyncConversation {
   redacted_text?: string;
   /** Canonical transcript envelope (R3) — preferred. Stored verbatim. */
   envelope?: { v: number; messages: SyncEnvelopeMessage[]; subagents?: unknown[] };
+  /** Redacted raw container, gzipped+base64 (Phase 2 archive). When present
+   *  the server stores it shrink-protected and derives the envelope+chunks
+   *  from it — the client envelope becomes a fallback. */
+  raw_b64?: string;
+  raw_size?: number;
   /** Legacy per-turn payload (older clients). */
   turns?: SyncTurn[];
   first_prompt?: string;
@@ -263,12 +269,26 @@ router.post('/', async (req, res) => {
           if (!cv.session_id) continue;
           const mtime = Math.floor(Number(cv.mtime) || 0);
           const projectPath = cv.project_path || '';
-          // Canonical envelope (preferred): stored verbatim, chunked for
-          // search from its text messages. Legacy turns/redacted_text
-          // payloads are converted via envelopeFromTurns.
-          const envelope = cv.envelope && cv.envelope.v === PARSER_VERSION && Array.isArray(cv.envelope.messages)
-            ? { v: PARSER_VERSION, messages: cv.envelope.messages, subagents: cv.envelope.subagents ?? [] }
-            : null;
+          // Raw container (highest fidelity): archive shrink-protected and
+          // derive the envelope from the bytes with the canonical parser.
+          // Falls back to the client envelope, then legacy turns.
+          let envelope: { v: number; messages: SyncEnvelopeMessage[]; subagents: unknown[] } | null = null;
+          if (cv.raw_b64) {
+            try {
+              const gz = Buffer.from(cv.raw_b64, 'base64');
+              const container = gunzipContainer(gz);
+              if (container) {
+                await store.putRawSession(cv.session_id, container.tool, mtime, gz, Number(cv.raw_size) || gz.length);
+                const t = parseTranscriptFromContainer(container);
+                if (t.messages.length > 0 || t.subagents.length > 0) {
+                  envelope = { v: PARSER_VERSION, messages: t.messages as any, subagents: t.subagents };
+                }
+              }
+            } catch { /* corrupt raw — derived fallbacks below still apply */ }
+          }
+          if (!envelope && cv.envelope && cv.envelope.v === PARSER_VERSION && Array.isArray(cv.envelope.messages)) {
+            envelope = { v: PARSER_VERSION, messages: cv.envelope.messages, subagents: cv.envelope.subagents ?? [] };
+          }
           const turns: SyncTurn[] = envelope
             ? []
             : Array.isArray(cv.turns) && cv.turns.length > 0
