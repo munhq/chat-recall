@@ -26,6 +26,7 @@ import type {
   CanonicalEvent,
   EditDelta,
   CollectRecentEditsOpts,
+  RawSessionExport,
 } from '../tool-backend.js';
 import type { ExtractedTurns } from '../session-turns.js';
 import type { SessionDiffResult } from '../session-replay.js';
@@ -421,6 +422,35 @@ export class OpencodeBackend implements ToolBackend {
     bufferMinutes?: number,
   ): SessionCommitsResult {
     return getSessionCommits(this.toPrefixedId(id), files, startMs, endMs, bufferMinutes);
+  }
+  exportRawSession(id: string): RawSessionExport | null {
+    // DB-based tool: a deterministic JSONL dump of this session's rows —
+    // one line per row, stable ordering — so the archive is independent of
+    // OpenCode's mutable SQLite file (vacuum/compaction/deletion).
+    const { existsSync } = require('fs') as typeof import('fs');
+    const dbPath = this.dbPath();
+    if (!existsSync(dbPath)) return null;
+    const Database = (require('better-sqlite3') as typeof import('better-sqlite3'));
+    const realId = this.toRawId(id);
+    const db = new Database(dbPath, { readonly: true });
+    try {
+      const session = db.prepare(`SELECT * FROM session WHERE id = ?`).get(realId);
+      if (!session) return null;
+      const rows = db.prepare(`
+        SELECT m.id AS message_id, m.data AS message_data, p.id AS part_id, p.data AS part_data, p.time_created
+        FROM part p JOIN message m ON p.message_id = m.id
+        WHERE p.session_id = ?
+        ORDER BY p.time_created ASC, p.id ASC
+      `).all(realId);
+      const lines: string[] = [JSON.stringify({ kind: 'session', row: session })];
+      for (const r of rows) lines.push(JSON.stringify({ kind: 'part', row: r }));
+      const mtime = (session as any).time_updated || (session as any).time_created || Date.now();
+      return {
+        tool: 'opencode',
+        mtime: Number(mtime),
+        files: [{ name: `${realId}.dump.jsonl`, bytes: Buffer.from(lines.join('\n') + '\n', 'utf-8') }],
+      };
+    } catch { return null; } finally { db.close(); }
   }
 }
 
