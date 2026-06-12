@@ -130,7 +130,7 @@ describe('POST /api/sync (ingest)', () => {
     const cached = await store.getCachedContent(sessionId, 'session', mtime);
     expect(cached).not.toBeNull();
     const envelope = JSON.parse(cached!);
-    expect(envelope.v).toBe(5);
+    expect(envelope.v).toBe(6);
     expect(envelope.messages).toHaveLength(2);
     const chunks = await store.listChunksByItem('session', sessionId);
     expect(chunks).toHaveLength(2);
