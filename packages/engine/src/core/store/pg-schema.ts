@@ -267,6 +267,13 @@ CREATE INDEX IF NOT EXISTS idx_kgt_object ON kg_triples(tenant, object);
 CREATE INDEX IF NOT EXISTS idx_kgt_predicate ON kg_triples(tenant, predicate);
 
 -- WAL audit + agent diary
+CREATE TABLE IF NOT EXISTS session_tombstones (
+  tenant     TEXT NOT NULL DEFAULT 'default',
+  session_id TEXT NOT NULL,
+  deleted_at BIGINT NOT NULL,
+  PRIMARY KEY (tenant, session_id)
+);
+
 CREATE TABLE IF NOT EXISTS raw_sessions (
   tenant       TEXT NOT NULL DEFAULT 'default',
   session_id   TEXT NOT NULL,

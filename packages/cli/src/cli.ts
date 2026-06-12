@@ -1885,6 +1885,20 @@ program
   });
 
 program
+  .command('delete <session-id>')
+  .description('Delete a session from chat-recall everywhere: local index, raw archive, and (via tombstone on next sync) every server. Does NOT touch the AI tool\'s own transcript file.')
+  .action(async (sessionId: string) => {
+    const store = await createStore();
+    try {
+      await store.purgeSession(sessionId);
+      await store.addTombstone(sessionId);
+      console.log(chalk.green(`✓ Deleted ${sessionId} locally`) + chalk.dim(' — tombstone recorded; servers purge on next sync'));
+    } finally {
+      await store.close();
+    }
+  });
+
+program
   .command('sync')
   .description('Push redacted conversations to the configured server (secrets always masked). Bare `sync` is incremental (watermark-based); flags force an explicit window.')
   .option('--since-hours <n>', 'Only sync sessions modified in the last N hours')

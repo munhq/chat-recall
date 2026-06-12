@@ -90,6 +90,11 @@ export class SqliteStore implements StorageDriver {
   async getFTSCount(...a: Args<'getFTSCount'>) { return this.inner.getFTSCount(...a); }
   async countDistinctItemsMatching(...a: Args<'countDistinctItemsMatching'>) { return this.inner.countDistinctItemsMatching(...a); }
 
+  // ── tombstones / purge ──
+  async addTombstone(...a: Args<'addTombstone'>) { return this.inner.addTombstone(...a); }
+  async listTombstones(...a: Args<'listTombstones'>) { return this.inner.listTombstones(...a); }
+  async purgeSession(...a: Args<'purgeSession'>) { return this.inner.purgeSession(...a); }
+
   // ── raw archive ──
   async putRawSession(...a: Args<'putRawSession'>) { return this.inner.putRawSession(...a); }
   async getRawSession(...a: Args<'getRawSession'>) { return this.inner.getRawSession(...a); }

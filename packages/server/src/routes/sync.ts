@@ -128,6 +128,7 @@ interface SyncKgTriple {
   confidence?: number;
   source_session?: string | null;
 }
+interface SyncTombstone { session_id: string; deleted_at?: number }
 interface SyncDismissal { preview: string; status: string; reason?: string | null }
 interface SyncCustomRule { name: string; regex: string; severity: string; description?: string | null; enabled?: boolean }
 
@@ -256,6 +257,7 @@ router.post('/', async (req, res) => {
   const derived = arr<SyncDerived>(req.body?.derived);
   const kgEntities = arr<SyncKgEntity>(req.body?.kg_entities);
   const kgTriples = arr<SyncKgTriple>(req.body?.kg_triples);
+  const tombstones = arr<SyncTombstone>(req.body?.tombstones);
   const dismissals = arr<SyncDismissal>(req.body?.dismissals);
   const customRules = arr<SyncCustomRule>(req.body?.custom_rules);
 
@@ -263,10 +265,21 @@ router.post('/', async (req, res) => {
     const result = await runWithTenant(agent.tenant, async () => {
       const store = await createStore();
       const metaCache = await createMetadataCache();
-      let conv = 0, item = 0, link = 0, find = 0, der = 0, kgE = 0, kgT = 0, chunks = 0;
+      let conv = 0, item = 0, link = 0, find = 0, der = 0, kgE = 0, kgT = 0, chunks = 0, dead = 0;
       try {
+        // Tombstones first: purge + remember, and build the do-not-write set
+        // so nothing in THIS payload resurrects a deleted session.
+        for (const t of tombstones) {
+          if (!t.session_id) continue;
+          await store.purgeSession(t.session_id);
+          await store.addTombstone(t.session_id);
+          dead++;
+        }
+        const deadSet = new Set((await store.listTombstones()).map((t) => t.session_id));
+
         for (const cv of conversations) {
           if (!cv.session_id) continue;
+          if (deadSet.has(cv.session_id)) continue; // deleted — never resurrect
           const mtime = Math.floor(Number(cv.mtime) || 0);
           const projectPath = cv.project_path || '';
           // Raw container (highest fidelity): archive shrink-protected and
@@ -517,7 +530,7 @@ router.post('/', async (req, res) => {
       if (req.body?.prune_empty_sessions === true) {
         try { pruned = await store.pruneEmptySessions(); } catch { /* best-effort */ }
       }
-      return { conv, item, link, find, der, kgE, kgT, chunks, pruned };
+      return { conv, item, link, find, der, kgE, kgT, chunks, dead, pruned };
     });
 
     res.json({ ok: true, ...result, tenant: agent.tenant, ack_at: new Date().toISOString() });
