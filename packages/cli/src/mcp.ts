@@ -20,6 +20,7 @@ import { join } from 'path';
 import { execSync as _execSync } from 'child_process';
 
 import { getEmbedder, type EmbedderProvider } from '@chat-recall/engine/core/embedder.js';
+import { acquireIndexLock } from '@chat-recall/engine/core/index-lock.js';
 import { getRecentSessions, extractConversationContext, formatContext } from '@chat-recall/engine/core/context.js';
 import { getCacheDbPath, getIdentityFilePath, getDataDir } from '@chat-recall/engine/core/paths.js';
 import { parseSessionFile } from '@chat-recall/engine/parsers/session.js';
@@ -4168,9 +4169,40 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
+/**
+ * Background freshness loop — the architecture's writer. The binary IS the
+ * MCP + indexer + sync; there is no separate daemon to install on any OS.
+ * Claude Code spawns this process for every session (Windows/macOS/Linux
+ * alike, via mcp.json), so it runs exactly while the user works — which is
+ * exactly when transcripts change. Each tick pushes the incremental delta
+ * via syncIncremental(); the index-lock elects ONE writer among concurrent
+ * sessions' MCP processes; the settings watermark makes ticks idempotent.
+ * Not logged in → no-op. The 15s startup tick flushes whatever the
+ * previous session left behind.
+ */
+const SYNC_TICK_MS = 3 * 60_000;
+function startBackgroundSync(): void {
+  const tick = async () => {
+    let lock: ReturnType<typeof acquireIndexLock> = null;
+    try {
+      lock = acquireIndexLock({ kind: 'mcp-background-sync', staleAfterMs: SYNC_TICK_MS * 3 });
+      if (!lock) return; // another session's MCP is the writer this tick
+      const { syncIncremental } = await import('./sync-client.js');
+      await syncIncremental();
+    } catch (err) {
+      console.error('[mcp] background sync tick failed:', err instanceof Error ? err.message : err);
+    } finally {
+      lock?.release();
+    }
+  };
+  setInterval(() => { void tick(); }, SYNC_TICK_MS).unref();
+  setTimeout(() => { void tick(); }, 15_000).unref();
+}
+
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  startBackgroundSync();
 }
 
 main().catch(console.error);
