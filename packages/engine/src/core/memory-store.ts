@@ -1103,6 +1103,54 @@ export class MemoryStore {
     return rows;
   }
 
+  // ── Raw session archive ────────────────────────────────────────
+  // The immutable source of truth (Phase 2). Claude Code REWRITES
+  // transcripts in place on compaction; this archive is what survives.
+  // Shrink-protected: a capture smaller than the archived latest never
+  // replaces it — compaction must not propagate into the archive.
+  ensureRawSessionsTable(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS raw_sessions (
+        session_id  TEXT NOT NULL,
+        tool        TEXT NOT NULL,
+        mtime       INTEGER NOT NULL,
+        size        INTEGER NOT NULL,
+        gz          BLOB NOT NULL,
+        captured_at INTEGER NOT NULL,
+        PRIMARY KEY (session_id)
+      );
+    `);
+  }
+
+  /** Archive a raw capture. Returns 'stored' | 'shrink-protected' | 'unchanged'. */
+  putRawSession(sessionId: string, tool: string, mtime: number, gz: Buffer, uncompressedSize: number): 'stored' | 'shrink-protected' | 'unchanged' {
+    this.ensureRawSessionsTable();
+    const existing = this.db.prepare(`SELECT size, mtime FROM raw_sessions WHERE session_id = ?`).get(sessionId) as { size: number; mtime: number } | undefined;
+    if (existing) {
+      if (existing.size === uncompressedSize && existing.mtime >= Math.floor(mtime)) return 'unchanged';
+      if (uncompressedSize < existing.size) return 'shrink-protected';
+    }
+    this.db.prepare(`
+      INSERT INTO raw_sessions (session_id, tool, mtime, size, gz, captured_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        tool = excluded.tool, mtime = excluded.mtime, size = excluded.size,
+        gz = excluded.gz, captured_at = excluded.captured_at
+    `).run(sessionId, tool, Math.floor(mtime), uncompressedSize, gz, Date.now());
+    return 'stored';
+  }
+
+  getRawSession(sessionId: string): { tool: string; mtime: number; size: number; gz: Buffer; captured_at: number } | null {
+    this.ensureRawSessionsTable();
+    return (this.db.prepare(`SELECT tool, mtime, size, gz, captured_at FROM raw_sessions WHERE session_id = ?`).get(sessionId) as any) ?? null;
+  }
+
+  /** session_id → archived (mtime, size) for sync-ledger style skipping. */
+  listRawSessionVersions(): Array<{ session_id: string; mtime: number; size: number }> {
+    this.ensureRawSessionsTable();
+    return this.db.prepare(`SELECT session_id, mtime, size FROM raw_sessions`).all() as any;
+  }
+
   /** Latest cached content for an item regardless of mtime — the
    *  stale-serving read: a snapshot from the last sync beats degrading
    *  to a lossier representation while a re-sync is mid-flight. */

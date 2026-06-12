@@ -96,6 +96,11 @@ export interface StorageDriver {
   getFTSCount: AsyncMethod<MemoryStore['getFTSCount']>;
   countDistinctItemsMatching: AsyncMethod<MemoryStore['countDistinctItemsMatching']>;
 
+  // ── raw session archive ──
+  putRawSession: AsyncMethod<MemoryStore['putRawSession']>;
+  getRawSession: AsyncMethod<MemoryStore['getRawSession']>;
+  listRawSessionVersions: AsyncMethod<MemoryStore['listRawSessionVersions']>;
+
   // ── KV store ──
   kvSet: AsyncMethod<MemoryStore['kvSet']>;
   kvGet: AsyncMethod<MemoryStore['kvGet']>;
