@@ -71,7 +71,8 @@ export type LinkType =
   | 'plan_for_project'     // Plan references project file paths
   | 'agent_plan_for_session' // Agent plan filename contains session hash
   | 'brain_artifact_for_session' // Gemini brain artifact linked to session
-  | 'diary_for_session'; // Agent diary entry linked to session
+  | 'diary_for_session'
+  | 'forked_from'          // session resumed/forked from a predecessor session (head parentUuid); // Agent diary entry linked to session
 
 /** A discovered relationship between two memory items */
 export interface MemoryLink {

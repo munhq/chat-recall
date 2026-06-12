@@ -177,3 +177,57 @@ export async function archiveRawSession(
   const { gz, size } = gzipContainer(buildRawContainer(exp));
   return await store.putRawSession(sessionId, exp.tool, Math.floor(exp.mtime), gz, size);
 }
+
+/**
+ * Fork-lineage detection (Phase 2 step 2). A resumed/forked Claude session's
+ * FIRST content line carries a parentUuid that exists only in the
+ * predecessor session's file. Returns the predecessor session id when the
+ * head parent is dangling and a sibling file in the same project dir
+ * contains it; null otherwise (no fork, or predecessor pruned).
+ */
+export function detectForkPredecessor(sessionPath: string): string | null {
+  // Lazy fs/path to keep this module import-light for the server bundle.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { readFileSync, readdirSync } = requireFs();
+  const { dirname, join, basename } = requirePath();
+  let text: string;
+  try { text = readFileSync(sessionPath, 'utf-8'); } catch { return null; }
+  const lines = text.split('\n');
+  let headParent: string | null = null;
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    try {
+      const o = JSON.parse(line);
+      if ((o.type === 'user' || o.type === 'assistant') && o.message) {
+        headParent = typeof o.parentUuid === 'string' ? o.parentUuid : null;
+        break;
+      }
+    } catch { /* skip */ }
+  }
+  if (!headParent) return null;
+  if (text.includes(`"uuid":"${headParent}"`)) return null; // parent is in-file: not a fork head
+  const dir = dirname(sessionPath);
+  const self = basename(sessionPath);
+  let entries: string[];
+  try { entries = readdirSync(dir); } catch { return null; }
+  for (const f of entries) {
+    if (!f.endsWith('.jsonl') || f === self || f === 'sessions-index.json') continue;
+    try {
+      if (readFileSync(join(dir, f), 'utf-8').includes(`"uuid":"${headParent}"`)) {
+        return basename(f, '.jsonl');
+      }
+    } catch { /* unreadable sibling */ }
+  }
+  return null; // predecessor pruned or elsewhere
+}
+
+function requireFs(): typeof import('fs') {
+  // node:module createRequire keeps ESM compatibility for sync requires
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  return fsMod;
+}
+function requirePath(): typeof import('path') {
+  return pathMod;
+}
+import * as fsMod from 'fs';
+import * as pathMod from 'path';
