@@ -491,7 +491,10 @@ const RecallKvListSchema = z.object({
 const server = new Server(
   {
     name: 'chat-recall',
-    version: '0.1.0',
+    // Resolves to packages/cli/package.json from both src/ and the bundled dist/
+    version: JSON.parse(
+      readFileSync(new URL('../package.json', import.meta.url), 'utf-8')
+    ).version,
   },
   {
     capabilities: {
