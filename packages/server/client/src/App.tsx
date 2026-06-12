@@ -434,6 +434,15 @@ function AppInner() {
     setSelectedMemoryItem(null);
     setSelectedSessionId(sessionId);
     setSelectionNonce((n) => n + 1);
+    // The URL always names what you're looking at — every conversation is
+    // a shareable link, and back/forward walk your selection history.
+    try {
+      const url = new URL(window.location.href);
+      if (url.searchParams.get('session') !== sessionId) {
+        url.searchParams.set('session', sessionId);
+        window.history.pushState({ session: sessionId }, '', url);
+      }
+    } catch { /* URL state is best-effort */ }
     setMessages([]);
     setSubagents([]);
     // Find session info
@@ -454,16 +463,33 @@ function AppInner() {
     /^(gemini_|opencode_|codex_)\S{8,}$/i.test(s.trim());
   const openById = useCallback((id: string) => {
     setView('search');
-    handleSelectSession(id.trim());
-    const url = new URL(window.location.href);
-    url.searchParams.set('session', id.trim());
-    window.history.replaceState({}, '', url);
+    handleSelectSession(id.trim()); // writes ?session= itself
   }, [handleSelectSession]);
   useEffect(() => {
-    const id = new URLSearchParams(window.location.search).get('session');
+    const params = new URLSearchParams(window.location.search);
+    const v = params.get('view');
+    if (v && ['search', 'activity', 'memory', 'insights', 'security'].includes(v)) setView(v as ViewMode);
+    const id = params.get('session');
     if (id && looksLikeSessionId(id)) handleSelectSession(id);
+    // Back/forward restore the selection they recorded.
+    const onPop = () => {
+      const sid = new URLSearchParams(window.location.search).get('session');
+      if (sid && looksLikeSessionId(sid)) handleSelectSession(sid);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // Keep ?view= current (replace, not push — tab switches aren't history).
+  useEffect(() => {
+    try {
+      const url = new URL(window.location.href);
+      if (url.searchParams.get('view') !== view) {
+        url.searchParams.set('view', view);
+        window.history.replaceState(window.history.state, '', url);
+      }
+    } catch { /* best-effort */ }
+  }, [view]);
   void SESSION_ID_RE;
 
 
