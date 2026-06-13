@@ -3079,9 +3079,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_kg_query': {
         const params = RecallKGQuerySchema.parse(args);
-        const kg = await createKnowledgeGraph();
-        const facts = await kg.queryEntity(params.entity, params.as_of, params.direction);
-        await kg.close();
+        requireRemote();
+        const { facts } = await remotePost<{ facts: Array<{ subject: string; predicate: string; object: string; direction: string; current: boolean; valid_from?: string; valid_to?: string }> }>(
+          '/api/kg/query', { entity: params.entity, as_of: params.as_of, direction: params.direction });
 
         if (facts.length === 0) {
           return { content: [{ type: 'text', text: `No facts found for entity: "${params.entity}"${params.as_of ? ` as of ${params.as_of}` : ''}` }] };
@@ -3105,12 +3105,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const wal = getWAL();
         wal.log('kg_add', { subject: params.subject, predicate: params.predicate, object: params.object, valid_from: params.valid_from });
 
-        const kg = await createKnowledgeGraph();
-        const tripleId = await kg.addTriple(params.subject, params.predicate, params.object, {
-          validFrom: params.valid_from,
-          sourceSession: params.source_session,
+        requireRemote();
+        const { id: tripleId } = await remotePost<{ id: string }>('/api/kg/add', {
+          subject: params.subject, predicate: params.predicate, object: params.object,
+          valid_from: params.valid_from, source_session: params.source_session,
         });
-        await kg.close();
 
         return { content: [{ type: 'text', text: `Added: ${params.subject} → ${params.predicate} → ${params.object} (id: ${tripleId})` }] };
       }
@@ -3120,9 +3119,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const wal = getWAL();
         wal.log('kg_invalidate', { subject: params.subject, predicate: params.predicate, object: params.object, ended: params.ended });
 
-        const kg = await createKnowledgeGraph();
-        const count = await kg.invalidate(params.subject, params.predicate, params.object, params.ended);
-        await kg.close();
+        requireRemote();
+        const { invalidated: count } = await remotePost<{ invalidated: number }>('/api/kg/invalidate', {
+          subject: params.subject, predicate: params.predicate, object: params.object, ended: params.ended,
+        });
 
         const endDate = params.ended || new Date().toISOString().split('T')[0];
         return { content: [{ type: 'text', text: `Invalidated ${count} fact(s): ${params.subject} → ${params.predicate} → ${params.object} (ended: ${endDate})` }] };
@@ -3130,9 +3130,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_kg_timeline': {
         const params = RecallKGTimelineSchema.parse(args);
-        const kg = await createKnowledgeGraph();
-        const entries = await kg.timeline(params.entity, params.limit);
-        await kg.close();
+        requireRemote();
+        const { entries } = await remoteGetQS<{ entries: Array<{ subject: string; predicate: string; object: string; current: boolean; valid_from?: string }> }>(
+          '/api/kg/timeline', { entity: params.entity, limit: params.limit });
 
         if (entries.length === 0) {
           return { content: [{ type: 'text', text: `No timeline entries found${params.entity ? ` for "${params.entity}"` : ''}.` }] };
@@ -3149,9 +3149,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'recall_kg_stats': {
-        const kg = await createKnowledgeGraph();
-        const s = await kg.stats();
-        await kg.close();
+        requireRemote();
+        const s = await remoteGet<{ entities: number; triples: number; current_facts: number; expired_facts: number; relationship_types: string[] }>('/api/kg/stats');
 
         const lines = [
           '# Knowledge Graph Stats\n',
@@ -3171,13 +3170,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const wal = getWAL();
         wal.log('diary_write', { agent: params.agent_name, topic: params.topic });
 
-        const entryId = DiarySource.write({
-          agent: params.agent_name,
+        requireRemote();
+        const { id: entryId } = await remotePost<{ id: string }>('/api/diary/write', {
+          agent_name: params.agent_name,
           topic: params.topic,
-          content: params.entry,
-          timestamp: new Date().toISOString(),
-          sessionId: params.session_id,
-          projectPath: params.project_path,
+          entry: params.entry,
+          session_id: params.session_id,
+          project_path: params.project_path,
         });
 
         return { content: [{ type: 'text', text: `Diary entry saved: ${entryId}` }] };
@@ -3185,7 +3184,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_diary_read': {
         const params = RecallDiaryReadSchema.parse(args);
-        const entries = DiarySource.read(params.agent_name, params.last_n);
+        requireRemote();
+        const { entries } = await remoteGetQS<{ entries: Array<{ timestamp?: string; topic: string; content: string }> }>(
+          '/api/diary/read', { agent: params.agent_name, last_n: params.last_n });
 
         if (entries.length === 0) {
           return { content: [{ type: 'text', text: `No diary entries for agent "${params.agent_name}".` }] };
@@ -3976,50 +3977,47 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const wal = getWAL();
         wal.log('kv_set', { scope: params.scope, key: params.key });
 
-        const store = await createStore();
-        try { await store.kvSet(params.scope, params.key, params.value); }
-        finally { await store.close(); }
+        requireRemote();
+        await remotePost('/api/kv/set', { scope: params.scope, key: params.key, value: params.value });
 
         return { content: [{ type: 'text', text: `Set ${params.scope}:${params.key} (${params.value.length} chars)` }] };
       }
 
       case 'recall_get': {
         const params = RecallGetSchema.parse(args);
-        const store = await createStore();
-        try {
-          const row = await store.kvGet(params.scope, params.key);
-          if (!row) return { content: [{ type: 'text', text: `(no value at ${params.scope}:${params.key})` }] };
-          const ago = Math.floor((Date.now() - row.updated_at) / 1000);
-          return {
-            content: [{
-              type: 'text',
-              text: `${params.scope}:${params.key} (set ${ago}s ago)\n\n${row.value}`,
-            }],
-          };
-        } finally { await store.close(); }
+        requireRemote();
+        const { entry: row } = await remoteGetQS<{ entry: { value: string; updated_at: number } | null }>(
+          '/api/kv/get', { scope: params.scope, key: params.key });
+        if (!row) return { content: [{ type: 'text', text: `(no value at ${params.scope}:${params.key})` }] };
+        const ago = Math.floor((Date.now() - row.updated_at) / 1000);
+        return {
+          content: [{
+            type: 'text',
+            text: `${params.scope}:${params.key} (set ${ago}s ago)\n\n${row.value}`,
+          }],
+        };
       }
 
       case 'recall_kv_list': {
         const params = RecallKvListSchema.parse(args);
-        const store = await createStore();
-        try {
-          const rows = await store.kvList(params.scope, params.limit);
-          if (rows.length === 0) {
-            return {
-              content: [{
-                type: 'text',
-                text: params.scope ? `No keys in scope "${params.scope}".` : 'No KV entries yet.',
-              }],
-            };
-          }
-          const lines = [`# KV entries (${rows.length})\n`];
-          for (const r of rows) {
-            const preview = r.value.length > 80 ? r.value.slice(0, 80) + '…' : r.value;
-            const ago = Math.floor((Date.now() - r.updated_at) / 1000);
-            lines.push(`- **${r.scope}:${r.key}** — ${preview}  _(${ago}s ago)_`);
-          }
-          return { content: [{ type: 'text', text: lines.join('\n') }] };
-        } finally { await store.close(); }
+        requireRemote();
+        const { entries: rows } = await remoteGetQS<{ entries: Array<{ scope: string; key: string; value: string; updated_at: number }> }>(
+          '/api/kv/list', { scope: params.scope, limit: params.limit });
+        if (rows.length === 0) {
+          return {
+            content: [{
+              type: 'text',
+              text: params.scope ? `No keys in scope "${params.scope}".` : 'No KV entries yet.',
+            }],
+          };
+        }
+        const lines = [`# KV entries (${rows.length})\n`];
+        for (const r of rows) {
+          const preview = r.value.length > 80 ? r.value.slice(0, 80) + '…' : r.value;
+          const ago = Math.floor((Date.now() - r.updated_at) / 1000);
+          lines.push(`- **${r.scope}:${r.key}** — ${preview}  _(${ago}s ago)_`);
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
       // ── Wake-up context ────────────────────────────────────────
@@ -4048,75 +4046,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           lines.push('');
         }
 
-        // High-importance facts the classifier already tagged during indexing.
-        // When a project_filter is supplied, narrow the FTS5 search by
-        // project_path so wake-up doesn't leak unrelated decisions/milestones
-        // from other repos.
-        const store = await createStore();
-        try {
-          const hits = await store.searchFTS('decision preference milestone', {
-            topK: 60,
-            // project_filter at the MCP layer is a project_id; the FTS5
-            // store now filters strictly on that column.
-            projectIdFilter: params.project_filter,
-          });
-          const high = hits
-            .filter(r => r.chunkType.includes(':imp4') || r.chunkType.includes(':imp5'))
-            .slice(0, params.max_facts);
-          if (high.length > 0) {
-            lines.push('## High-importance facts');
-            for (const c of high) {
-              const m = c.chunkType.match(/:(\w+):imp/);
-              const t = c.text.replace(/\n/g, ' ').trim().slice(0, 150);
-              lines.push(`  [${m?.[1] ?? 'fact'}] ${t}`);
-            }
-            lines.push('');
-          } else if (params.project_filter) {
-            lines.push('## High-importance facts');
-            lines.push(`  _no classifier hits for project filter \`${params.project_filter}\`_`);
-            lines.push('');
-          }
-        } finally {
-          await store.close();
+        // High-importance facts (classifier-tagged) + current KG snapshot, both
+        // computed server-side from the synced store (the collector has no local
+        // index). Identity stays local above — it's a tiny per-machine file.
+        requireRemote();
+        const wake = await remoteGetQS<{
+          highFacts: Array<{ type: string; text: string }>;
+          kg: { stats: { entities?: number; current_facts?: number }; facts: Array<{ subject: string; predicate: string; object: string }> };
+        }>('/api/memory/wake-up', {
+          project_filter: params.project_filter, max_facts: params.max_facts, max_kg_facts: params.max_kg_facts,
+        });
+
+        if (wake.highFacts.length > 0) {
+          lines.push('## High-importance facts');
+          for (const c of wake.highFacts) lines.push(`  [${c.type}] ${c.text}`);
+          lines.push('');
+        } else if (params.project_filter) {
+          lines.push('## High-importance facts');
+          lines.push(`  _no classifier hits for project filter \`${params.project_filter}\`_`);
+          lines.push('');
         }
 
-        // Currently-valid KG facts (temporal validity respected by KG.timeline).
-        // With a project_filter, scope to triples whose subject OR object name
-        // contains the filter substring — this keeps "redis", "docker", etc.
-        // generic-tool facts from drowning out project-specific knowledge.
-        try {
-          const kg = await createKnowledgeGraph();
-          try {
-            const stats = await kg.stats();
-            if (stats.current_facts > 0) {
-              const all = (await kg.timeline(undefined, 500)).filter(e => e.current);
-              const filtered = params.project_filter
-                ? all.filter(f => {
-                    const needle = params.project_filter!.toLowerCase();
-                    return f.subject.toLowerCase().includes(needle) ||
-                           f.object.toLowerCase().includes(needle);
-                  })
-                : all;
-              const display = filtered.slice(0, params.max_kg_facts);
-              if (display.length > 0) {
-                lines.push('## Knowledge graph (current facts)');
-                if (params.project_filter) {
-                  lines.push(`  ${display.length} of ${filtered.length} facts matching \`${params.project_filter}\` (graph total: ${stats.entities} entities, ${stats.current_facts} facts)`);
-                } else {
-                  lines.push(`  ${stats.entities} entities, ${stats.current_facts} current facts`);
-                }
-                for (const f of display) lines.push(`  ${f.subject} → ${f.predicate} → ${f.object}`);
-                lines.push('');
-              } else if (params.project_filter) {
-                lines.push('## Knowledge graph (current facts)');
-                lines.push(`  _no facts matching \`${params.project_filter}\` (graph has ${stats.entities} entities)_`);
-                lines.push('');
-              }
-            }
-          } finally {
-            await kg.close();
-          }
-        } catch { /* KG unavailable */ }
+        if (wake.kg.facts.length > 0) {
+          lines.push('## Knowledge graph (current facts)');
+          lines.push(`  ${wake.kg.stats.entities ?? 0} entities, ${wake.kg.stats.current_facts ?? 0} current facts`);
+          for (const f of wake.kg.facts) lines.push(`  ${f.subject} → ${f.predicate} → ${f.object}`);
+          lines.push('');
+        }
 
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
