@@ -246,4 +246,46 @@ router.patch('/item/:sourceType/:id', async (req, res) => {
   }
 });
 
+// GET /api/memory/wake-up?project_filter=&max_facts=&max_kg_facts=
+// Server-side wake-up context for the thin-collector MCP: the high-importance
+// facts the classifier tagged during indexing (FTS chunks at imp4/imp5) plus
+// the current knowledge-graph snapshot. Identity (a tiny local file) stays on
+// the MCP side; the server only supplies the data it holds.
+router.get('/wake-up', async (req, res) => {
+  const projectFilter = typeof req.query.project_filter === 'string' ? req.query.project_filter : undefined;
+  const maxFacts = req.query.max_facts ? parseInt(String(req.query.max_facts), 10) : 10;
+  const maxKgFacts = req.query.max_kg_facts ? parseInt(String(req.query.max_kg_facts), 10) : 15;
+  const { createStore, createKnowledgeGraph } = await import('../imports.js');
+  const store = await createStore();
+  try {
+    const hits = await store.searchFTS('decision preference milestone', { topK: 60, projectIdFilter: projectFilter });
+    const highFacts = hits
+      .filter((r) => r.chunkType.includes(':imp4') || r.chunkType.includes(':imp5'))
+      .slice(0, Number.isFinite(maxFacts) ? maxFacts : 10)
+      .map((c) => ({ type: c.chunkType.match(/:(\w+):imp/)?.[1] ?? 'fact', text: c.text.replace(/\n/g, ' ').trim().slice(0, 150) }));
+
+    let kg: { stats: unknown; facts: Array<{ subject: string; predicate: string; object: string }> } = { stats: {}, facts: [] };
+    const graph = await createKnowledgeGraph();
+    try {
+      const stats = await graph.stats();
+      let facts: Array<{ subject: string; predicate: string; object: string }> = [];
+      if (stats.current_facts > 0) {
+        const all = (await graph.timeline(undefined, 500)).filter((e) => e.current);
+        const filtered = projectFilter
+          ? all.filter((f) => f.subject.toLowerCase().includes(projectFilter.toLowerCase()) || f.object.toLowerCase().includes(projectFilter.toLowerCase()))
+          : all;
+        facts = filtered.slice(0, Number.isFinite(maxKgFacts) ? maxKgFacts : 15).map((f) => ({ subject: f.subject, predicate: f.predicate, object: f.object }));
+      }
+      kg = { stats, facts };
+    } finally {
+      await graph.close();
+    }
+    res.json({ highFacts, kg });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'wake-up failed' });
+  } finally {
+    await store.close();
+  }
+});
+
 export default router;

@@ -61,4 +61,12 @@ describe('Memory route validator', () => {
     // bySourceAndTool is the per-tool breakdown my work added.
     expect(res.body).toHaveProperty('bySourceAndTool');
   });
+
+  test('GET /api/memory/wake-up returns highFacts + kg shape', async () => {
+    const res = await request(app).get('/api/memory/wake-up');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.highFacts)).toBe(true);
+    expect(res.body).toHaveProperty('kg');
+    expect(Array.isArray(res.body.kg.facts)).toBe(true);
+  });
 });
