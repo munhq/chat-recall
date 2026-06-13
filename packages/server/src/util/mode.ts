@@ -39,7 +39,7 @@ export const API_VERSION = 2;
  * (the sync/ingest contract): bump when adding recall endpoints the MCP relies
  * on, so an MCP hitting an older server can say "update your server (needs
  * recall API ≥ N)" instead of surfacing a raw 404.
- *   1 — /api/kg/*, /api/kv/*
+ *   1 — /api/kg/*, /api/kv/*, /api/diary/*
  */
 export const RECALL_API_VERSION = 1;
 
