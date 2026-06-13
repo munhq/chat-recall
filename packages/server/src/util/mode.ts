@@ -33,9 +33,21 @@ export function edition(): 'selfhost' | 'cloud' {
  */
 export const API_VERSION = 2;
 
+/**
+ * Generation of the recall read/write HTTP surface (KG, KV, diary, conversation
+ * views, etc.) that the thin-collector MCP queries. Independent of API_VERSION
+ * (the sync/ingest contract): bump when adding recall endpoints the MCP relies
+ * on, so an MCP hitting an older server can say "update your server (needs
+ * recall API ≥ N)" instead of surfacing a raw 404.
+ *   1 — /api/kg/*, /api/kv/*
+ */
+export const RECALL_API_VERSION = 1;
+
 export interface Capabilities {
   mode: 'local' | 'server';
   apiVersion: number;
+  /** Generation of the recall HTTP surface the thin-collector MCP consumes. */
+  recallApi: number;
   edition: 'selfhost' | 'cloud';
   /** Per-feature switches the client consumes to show/hide views. */
   features: {
@@ -63,6 +75,7 @@ export function capabilities(): Capabilities {
   return {
     mode: server ? 'server' : 'local',
     apiVersion: API_VERSION,
+    recallApi: RECALL_API_VERSION,
     edition: ed,
     features: {
       conversations: true,
