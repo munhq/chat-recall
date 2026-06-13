@@ -18,6 +18,8 @@ import toolkitRouter from './routes/toolkit.js';
 import secretsRouter from './routes/secrets.js';
 import { tenantAuth } from './middleware/auth.js';
 import projectsRouter from './routes/projects.js';
+import kgRouter from './routes/kg.js';
+import kvRouter from './routes/kv.js';
 import syncRouter from './routes/sync.js';
 import teamsRouter from './routes/teams.js';
 import teamArtifactsRouter from './routes/team-artifacts.js';
@@ -77,6 +79,12 @@ app.use('/api/secrets', secretsRouter);
 // diff rows, the projects tree reads memory_metadata project_ids.
 app.use('/api/edits', editsRouter);
 app.use('/api/projects', projectsRouter);
+
+// Recall surfaces for the thin-collector MCP: knowledge graph + key-value.
+// Tenant-scoped via the same tenantAuth above; readable/writable over HTTP so
+// the MCP server needs no local store.
+app.use('/api/kg', kgRouter);
+app.use('/api/kv', kvRouter);
 
 // FS-backed routers exist only in local mode: in a server deployment data
 // arrives via /api/sync and there is no settings file the UI should edit

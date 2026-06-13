@@ -205,6 +205,31 @@ async function remoteGet<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/**
+ * Throw the uniform "you must log in" error when no credentials exist.
+ * Every server-backed tool calls this at entry so the agent always gets the
+ * same actionable message instead of a raw fetch failure.
+ */
+function requireRemote(): { base: string; token: string } {
+  const cred = remoteCredentials();
+  if (!cred) {
+    throw new Error(
+      'chat-recall is not logged in. Run `chat-recall login <server-url>` to connect this machine to your chat-recall server (self-host or cloud), then retry.',
+    );
+  }
+  return cred;
+}
+
+/** GET with a query string built from params (undefined/null values are dropped). */
+async function remoteGetQS<T>(path: string, params: Record<string, string | number | boolean | undefined | null>): Promise<T> {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
+  }
+  const query = qs.toString();
+  return remoteGet<T>(query ? `${path}?${query}` : path);
+}
+
 // Tool schemas
 const RecallSearchSchema = z.object({
   query: z.string().describe('What you\'re looking for (e.g., "OAuth implementation", "React hooks")'),
