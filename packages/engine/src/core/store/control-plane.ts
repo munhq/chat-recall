@@ -29,6 +29,27 @@ const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 const INVITE_TTL_MS = 7 * 24 * 3600 * 1000;
 
 export interface AgentTokenInfo { tenant: string; deviceId: string }
+
+/**
+ * Per-tenant subscription state — the billing spine. A tenant is "entitled"
+ * (may use the paid surface) when status is active/trialing AND the period
+ * hasn't lapsed. Mirrors Stripe's subscription lifecycle so a webhook can map
+ * straight onto it.
+ *
+ * `status: 'none'` is the explicit not-subscribed state (no Stripe customer
+ * yet) — distinct from a row simply being absent, which getEntitlement returns
+ * as null. Both mean "not entitled" on cloud; the enforcement lives in the
+ * server's billing util, not here (the store is provider-agnostic).
+ */
+export type EntitlementStatus = 'active' | 'trialing' | 'past_due' | 'canceled' | 'none';
+export interface Entitlement {
+  tenant: string;
+  plan: string | null;
+  status: EntitlementStatus;
+  currentPeriodEnd: number | null;
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+}
 export interface Membership { team_slug: string; name: string; role: 'owner' | 'member' }
 export interface TeamMember { user_sub: string; email: string | null; role: string; created_at: number }
 
@@ -78,6 +99,18 @@ export interface ControlPlane {
   pullArtifacts(teamSlug: string, sinceMs: number, limit?: number): Promise<{ pulled: ArtifactBody[]; removed: string[] }>;
   /** Soft-revoke; returns the artifact identity or null when unknown. */
   revokeArtifact(teamSlug: string, artifactId: string): Promise<{ id: string; type: string; name: string } | null>;
+
+  // ── Billing / entitlement ──
+  /** Current subscription state for a tenant, or null if never recorded. */
+  getEntitlement(tenant: string): Promise<Entitlement | null>;
+  /**
+   * Upsert subscription state. Partial: only the supplied fields change, the
+   * rest are preserved (Stripe webhooks arrive piecemeal — e.g. a
+   * subscription.updated carries status + period but not the customer id we
+   * already stored at checkout). `tenant` is the key and is required via the
+   * method arg, so the patch never needs to carry it.
+   */
+  setEntitlement(tenant: string, e: Partial<Omit<Entitlement, 'tenant'>>): Promise<void>;
 
   close(): Promise<void>;
 }
@@ -138,6 +171,15 @@ class SqliteControlPlane implements ControlPlane {
         PRIMARY KEY (team_slug, id)
       );
       CREATE INDEX IF NOT EXISTS idx_cp_artifacts_updated ON cp_team_artifacts(team_slug, updated_at);
+      CREATE TABLE IF NOT EXISTS cp_entitlements (
+        tenant                 TEXT PRIMARY KEY,
+        plan                   TEXT,
+        status                 TEXT,
+        current_period_end     INTEGER,
+        stripe_customer_id     TEXT,
+        stripe_subscription_id TEXT,
+        updated_at             INTEGER
+      );
     `);
   }
 
@@ -267,6 +309,34 @@ class SqliteControlPlane implements ControlPlane {
     return row;
   }
 
+  async getEntitlement(tenant: string): Promise<Entitlement | null> {
+    const r = this.db.prepare(
+      `SELECT tenant, plan, status, current_period_end, stripe_customer_id, stripe_subscription_id
+       FROM cp_entitlements WHERE tenant = ?`,
+    ).get(tenant) as Record<string, unknown> | undefined;
+    return r ? rowToEntitlement(r) : null;
+  }
+
+  async setEntitlement(tenant: string, e: Partial<Omit<Entitlement, 'tenant'>>): Promise<void> {
+    // Read-modify-write so a partial patch preserves untouched columns. SQLite
+    // is synchronous and single-writer here, so there's no interleaving to fear
+    // between the SELECT and the upsert within this process.
+    const prev = await this.getEntitlement(tenant);
+    const next = mergeEntitlement(tenant, prev, e);
+    this.db.prepare(
+      `INSERT INTO cp_entitlements
+         (tenant, plan, status, current_period_end, stripe_customer_id, stripe_subscription_id, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (tenant) DO UPDATE SET
+         plan=excluded.plan, status=excluded.status, current_period_end=excluded.current_period_end,
+         stripe_customer_id=excluded.stripe_customer_id, stripe_subscription_id=excluded.stripe_subscription_id,
+         updated_at=excluded.updated_at`,
+    ).run(
+      next.tenant, next.plan, next.status, next.currentPeriodEnd,
+      next.stripeCustomerId, next.stripeSubscriptionId, Date.now(),
+    );
+  }
+
   async deleteTenant(tenant: string): Promise<boolean> {
     const exists = this.db.prepare(`SELECT 1 FROM cp_tenants WHERE tenant = ?`).get(tenant);
     if (!exists) return false;
@@ -277,6 +347,7 @@ class SqliteControlPlane implements ControlPlane {
     this.db.prepare(`DELETE FROM cp_memberships    WHERE team_slug = ?`).run(tenant);
     this.db.prepare(`DELETE FROM cp_invites        WHERE team_slug = ?`).run(tenant);
     this.db.prepare(`DELETE FROM cp_team_artifacts WHERE team_slug = ?`).run(tenant);
+    this.db.prepare(`DELETE FROM cp_entitlements   WHERE tenant = ?`).run(tenant);
     this.db.prepare(`DELETE FROM cp_teams          WHERE slug = ?`).run(tenant);
     this.db.prepare(`DELETE FROM cp_tenants        WHERE tenant = ?`).run(tenant);
     return true;
@@ -291,6 +362,49 @@ function rowToMeta(r: any): ArtifactMeta {
     id: r.id, type: r.type, tool: r.tool, name: r.name, version: r.version,
     authorId: r.author_sub, sha256: r.sha256, pinnedTo: r.pinned_to ?? null,
     updatedAt: r.updated_at, bytes: r.bytes,
+  };
+}
+
+const ENTITLEMENT_STATUSES: ReadonlySet<string> = new Set([
+  'active', 'trialing', 'past_due', 'canceled', 'none',
+]);
+
+/** Narrow an untrusted DB/string value to a known status, defaulting to 'none'
+ *  so a corrupt/unknown value fails CLOSED (not entitled) rather than open. */
+function coerceStatus(s: unknown): EntitlementStatus {
+  return typeof s === 'string' && ENTITLEMENT_STATUSES.has(s) ? (s as EntitlementStatus) : 'none';
+}
+
+/** Shared row → Entitlement mapping (column names match in both backends). */
+function rowToEntitlement(r: Record<string, unknown>): Entitlement {
+  return {
+    tenant: String(r.tenant),
+    plan: (r.plan as string | null) ?? null,
+    status: coerceStatus(r.status),
+    currentPeriodEnd: r.current_period_end == null ? null : Number(r.current_period_end),
+    stripeCustomerId: (r.stripe_customer_id as string | null) ?? null,
+    stripeSubscriptionId: (r.stripe_subscription_id as string | null) ?? null,
+  };
+}
+
+/** Fold a partial patch onto the previous row (or sane defaults if none),
+ *  shared by both backends so upsert semantics can't drift between them. */
+function mergeEntitlement(
+  tenant: string,
+  prev: Entitlement | null,
+  patch: Partial<Omit<Entitlement, 'tenant'>>,
+): Entitlement {
+  const base: Entitlement = prev ?? {
+    tenant, plan: null, status: 'none', currentPeriodEnd: null,
+    stripeCustomerId: null, stripeSubscriptionId: null,
+  };
+  return {
+    tenant,
+    plan: patch.plan !== undefined ? patch.plan : base.plan,
+    status: patch.status !== undefined ? coerceStatus(patch.status) : base.status,
+    currentPeriodEnd: patch.currentPeriodEnd !== undefined ? patch.currentPeriodEnd : base.currentPeriodEnd,
+    stripeCustomerId: patch.stripeCustomerId !== undefined ? patch.stripeCustomerId : base.stripeCustomerId,
+    stripeSubscriptionId: patch.stripeSubscriptionId !== undefined ? patch.stripeSubscriptionId : base.stripeSubscriptionId,
   };
 }
 
@@ -448,6 +562,33 @@ class PgControlPlane implements ControlPlane {
     return { id: row.id, type: row.type, name: row.name };
   }
 
+  async getEntitlement(tenant: string): Promise<Entitlement | null> {
+    const r = (await this.q(
+      `SELECT tenant, plan, status, current_period_end, stripe_customer_id, stripe_subscription_id
+       FROM entitlements WHERE tenant = $1`,
+      [tenant],
+    ))[0] as Record<string, unknown> | undefined;
+    return r ? rowToEntitlement(r) : null;
+  }
+
+  async setEntitlement(tenant: string, e: Partial<Omit<Entitlement, 'tenant'>>): Promise<void> {
+    const prev = await this.getEntitlement(tenant);
+    const next = mergeEntitlement(tenant, prev, e);
+    await this.q(
+      `INSERT INTO entitlements
+         (tenant, plan, status, current_period_end, stripe_customer_id, stripe_subscription_id, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (tenant) DO UPDATE SET
+         plan=excluded.plan, status=excluded.status, current_period_end=excluded.current_period_end,
+         stripe_customer_id=excluded.stripe_customer_id, stripe_subscription_id=excluded.stripe_subscription_id,
+         updated_at=excluded.updated_at`,
+      [
+        next.tenant, next.plan, next.status, next.currentPeriodEnd,
+        next.stripeCustomerId, next.stripeSubscriptionId, Date.now(),
+      ],
+    );
+  }
+
   async deleteTenant(tenant: string): Promise<boolean> {
     const exists = (await this.q(`SELECT 1 FROM tenants WHERE tenant = $1`, [tenant]))[0];
     if (!exists) return false;
@@ -471,6 +612,7 @@ class PgControlPlane implements ControlPlane {
     await this.q(`DELETE FROM memberships    WHERE team_slug = $1`, [tenant]);
     await this.q(`DELETE FROM invites        WHERE team_slug = $1`, [tenant]);
     await this.q(`DELETE FROM team_artifacts WHERE team_slug = $1`, [tenant]);
+    await this.q(`DELETE FROM entitlements   WHERE tenant = $1`, [tenant]);
     await this.q(`DELETE FROM teams          WHERE slug = $1`, [tenant]);
     await this.q(`DELETE FROM tenants        WHERE tenant = $1`, [tenant]);
     return true;
