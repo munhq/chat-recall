@@ -12,53 +12,61 @@
  * Keyed by server URL so switching endpoints (self-host ↔ SaaS) restarts
  * coverage for the new target without forgetting the old one.
  *
- * This is deliberately NOT part of the StorageDriver contract — it's
- * local client state, meaningless on a server.
+ * Storage is a plain JSON file under the data dir — NOT SQLite. The thin
+ * collector has no local database, and this is local client state (it's
+ * meaningless on a server and not part of the StorageDriver contract). Keeping
+ * it as JSON is what lets the collector ship with zero native modules.
+ *
+ * Shape: { "<serverUrl>": { "<sessionId>": <syncedMtime>, ... }, ... }
  */
-import Database from 'better-sqlite3';
-import { getCacheDbPath } from '@chat-recall/engine/core/paths.js';
+import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { getDataDir } from '@chat-recall/engine/core/paths.js';
 
-let db: Database.Database | null = null;
-function handle(): Database.Database {
-  if (!db) {
-    db = new Database(getCacheDbPath());
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS sync_ledger (
-        server       TEXT NOT NULL,
-        session_id   TEXT NOT NULL,
-        synced_mtime INTEGER NOT NULL,
-        synced_at    INTEGER NOT NULL,
-        PRIMARY KEY (server, session_id)
-      );
-    `);
+type Ledger = Record<string, Record<string, number>>;
+
+const ledgerPath = (): string => join(getDataDir(), 'sync-ledger.json');
+
+// In-memory cache so a sync walk doesn't re-read the file per batch. Loaded
+// lazily; writes go through atomic tmp+rename so a crash mid-write can't
+// corrupt the ledger (worst case: a session re-uploads, which is safe).
+let cache: Ledger | null = null;
+
+function load(): Ledger {
+  if (cache) return cache;
+  try {
+    const parsed = JSON.parse(readFileSync(ledgerPath(), 'utf-8'));
+    cache = parsed && typeof parsed === 'object' ? (parsed as Ledger) : {};
+  } catch {
+    cache = {};
   }
-  return db;
+  return cache;
+}
+
+function persist(data: Ledger): void {
+  const path = ledgerPath();
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify(data));
+  renameSync(tmp, path);
 }
 
 /** session_id → mtime the server has acked, for one target server. */
 export function getSyncedMtimes(server: string): Map<string, number> {
-  const out = new Map<string, number>();
-  for (const r of handle().prepare(
-    `SELECT session_id, synced_mtime FROM sync_ledger WHERE server = ?`,
-  ).all(server) as Array<{ session_id: string; synced_mtime: number }>) {
-    out.set(r.session_id, r.synced_mtime);
-  }
-  return out;
+  const data = load();
+  return new Map(Object.entries(data[server] || {}));
 }
 
 /** Mark sessions as synced at the given mtimes (after a server ack). */
 export function markSynced(server: string, rows: Array<{ id: string; mtime: number }>): void {
   if (rows.length === 0) return;
-  const stmt = handle().prepare(`
-    INSERT INTO sync_ledger (server, session_id, synced_mtime, synced_at)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(server, session_id) DO UPDATE SET
-      synced_mtime = excluded.synced_mtime,
-      synced_at = excluded.synced_at
-  `);
-  const now = Date.now();
-  const tx = handle().transaction((batch: typeof rows) => {
-    for (const r of batch) stmt.run(server, r.id, Math.floor(r.mtime), now);
-  });
-  tx(rows);
+  const data = load();
+  const forServer = data[server] || (data[server] = {});
+  for (const r of rows) forServer[r.id] = Math.floor(r.mtime);
+  persist(data);
+}
+
+/** Test-only: drop the in-memory cache so a fresh file read happens next call. */
+export function _resetLedgerCacheForTests(): void {
+  cache = null;
 }

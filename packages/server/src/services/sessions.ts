@@ -717,6 +717,10 @@ export interface SessionMetadataResponse {
   // (e.g. Gemini, Ollama, custom). UI should render "—" not "$0".
   estimatedCostUsd: number | null;
   cacheSavingsUsd: number | null;
+  /** AI-generated session summary (synced from the producer; attached by
+   *  getSessionMetadata from the metadata cache — computeMetadataResponse
+   *  itself doesn't populate it). recall_summary / recall_smart_resume read it. */
+  summary?: string;
 }
 
 /**
@@ -735,7 +739,17 @@ export async function getSessionMetadata(sessionId: string): Promise<SessionMeta
         // Carry over contentPreview and title from the store item
         extra._contentPreview = meta.content_preview || meta.title || '';
         extra._title = meta.title || '';
-        return computeMetadataResponse(extra);
+        const response = computeMetadataResponse(extra);
+        // Attach the synced AI summary (computeMetadataResponse doesn't know
+        // about it — it lives in the metadata cache, populated by sync ingest).
+        // This is what recall_summary / recall_smart_resume read.
+        try {
+          const cache = await createMetadataCache();
+          const cached = await cache.get(sessionId);
+          await cache.close();
+          if (cached?.summary) response.summary = cleanBanner(cached.summary);
+        } catch { /* summary is best-effort */ }
+        return response;
       }
     }
   } finally {

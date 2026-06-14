@@ -34,23 +34,23 @@ jobs:
           cd packages/cli && npm pack
 
       - name: Install globally from tarball (what a customer runs)
+        # --omit=optional skips better-sqlite3 entirely: the thin collector is
+        # native-module-free, so install must succeed and the CLI/MCP must run
+        # even on a machine with no C++ toolchain and no prebuilt binary.
         shell: bash
-        run: npm install -g packages/cli/chat-recall-*.tgz
+        run: npm install -g --omit=optional packages/cli/chat-recall-*.tgz
 
-      - name: Fixture session
-        shell: bash
-        run: |
-          mkdir -p ~/.claude/projects/-tmp-fresh
-          cat > ~/.claude/projects/-tmp-fresh/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl <<'EOF'
-          {"type":"user","timestamp":"2026-06-12T10:00:00Z","cwd":"/tmp/fresh","sessionId":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","message":{"role":"user","content":"hello from a fresh machine"}}
-          {"type":"assistant","timestamp":"2026-06-12T10:00:05Z","cwd":"/tmp/fresh","sessionId":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","message":{"role":"assistant","content":[{"type":"text","text":"fresh install works"}]}}
-          EOF
-
-      - name: Version, index, MCP boot
+      - name: Version, status, MCP boot (native-free)
         shell: bash
         run: |
           chat-recall --version
-          chat-recall index
+          # `status` is server-backed now; with no login it must exit non-zero
+          # with a clean "not logged in" message — NOT crash on a missing native
+          # module. We assert it ran without a native/module-load error.
+          out="$(chat-recall status 2>&1 || true)"
+          echo "$out"
+          echo "$out" | grep -qi "not logged in" || { echo "status did not produce the expected not-logged-in message"; exit 1; }
+          echo "$out" | grep -qiE "better-sqlite3|MODULE_NOT_FOUND|ERR_DLOPEN" && { echo "native-module error leaked — collector is not native-free"; exit 1; }
           # MCP must boot and stay alive — portable check (GNU `timeout` is
           # missing on macOS runners and broken under Git bash on Windows)
           node .github/scripts/mcp-boot-check.cjs

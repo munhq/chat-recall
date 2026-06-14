@@ -1,25 +1,34 @@
 /**
- * The one sync client: walk local sessions AND every other memory source,
- * redact secrets (ALWAYS — `force:true`, never gated on the index-time
- * toggle), optionally hash project paths, and push to the server's
- * `/api/sync` (packages/server/src/routes/sync.ts). Credentials live in a
- * 0600 file, never in settings.json.
+ * The one sync client (thin collector): walk local sessions AND every other
+ * memory source, computing EVERYTHING live from the raw session files —
+ * reading NOTHING from the local SQLite store. Redact secrets (ALWAYS —
+ * `force:true`, never gated on the index-time toggle), optionally hash
+ * project paths, and push to the server's `/api/sync`
+ * (packages/server/src/routes/sync.ts). Credentials live in a 0600 file,
+ * never in settings.json.
  *
- * What ships (the local index stays the source of truth):
- *   conversations — per-turn redacted session transcripts + telemetry meta
+ * Thin-collector contract: the collector owns NO derived state. It reads the
+ * raw transcripts (which it must read anyway to ship them) and derives
+ * telemetry, project ids, KG triples, diffs, outcomes, commits and markers on
+ * the spot. The server is the source of truth for everything stateful
+ * (tombstones, summaries, secret findings/rules/dismissals) — the collector
+ * neither reads nor writes those locally.
+ *
+ * What ships (all live-computed from the session files):
+ *   conversations — per-turn redacted session transcripts + live telemetry meta
  *   items/links   — every non-session source type (plan, task, claude_md,
  *                   history, paste, diary, skill, mcp, command, agent,
  *                   hook, plugin) with redacted chunks + relationships
- *   findings      — secret-scanner findings        (toggle: upload.findings)
- *   derived       — compute_cache rows (diff/outcome/commits/markers) +
- *                   outcome-badge rows             (toggle: upload.sessionMeta)
- *   kg            — knowledge-graph entities/triples (toggle: upload.sessionMeta)
- *   dismissals    — secret dismissals              (toggle: upload.dismissals)
- *   custom_rules  — custom secret rules            (toggle: upload.customRules)
+ *   derived       — compute rows (diff/outcome/commits/markers) computed live
+ *                   + outcome-badge row             (toggle: upload.sessionMeta)
+ *   kg            — knowledge-graph entities/triples extracted live from the
+ *                   redacted text                   (toggle: upload.sessionMeta)
  *
  * What does NOT ship, by design: the full-conversation JSON blob
  * (content_cache) and embeddings. The server reconstructs the conversation
- * view from the per-turn chunks.
+ * view from the per-turn chunks. Tombstones, AI summaries, and secret
+ * findings/dismissals/custom-rules are NOT shipped by the collector — the
+ * server owns them.
  */
 import { join, dirname } from 'node:path';
 import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
@@ -29,24 +38,16 @@ import { loadSettings, saveSettings } from '@chat-recall/engine/core/settings.js
 import { getDataDir } from '@chat-recall/engine/core/paths.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
 import { extractTurnsAny, replaySessionAny } from '@chat-recall/engine/core/session-multi-tool.js';
-import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION, gunzipContainer, gzipContainer, mapContainerText, buildRawContainer } from '@chat-recall/engine/transcript/index.js';
-import { getBackendForId, getBackend } from '@chat-recall/engine/core/tool-backend.js';
+import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION, gzipContainer, mapContainerText, buildRawContainer } from '@chat-recall/engine/transcript/index.js';
+import { getBackendForId, getBackend, type SessionRef } from '@chat-recall/engine/core/tool-backend.js';
 import { computeOutcome } from '@chat-recall/engine/core/session-outcome.js';
 import { markPrompt, summarizeMarkers } from '@chat-recall/engine/core/session-sentiment.js';
-import { createStore, type StorageDriver } from '@chat-recall/engine/core/store/index.js';
-import { createMetadataCache, createOutcomeCache } from '@chat-recall/engine/core/store/caches.js';
-import { createKnowledgeGraph } from '@chat-recall/engine/core/store/knowledge-graph.js';
+import { parseSessionFile, readCwdFromJsonl } from '@chat-recall/engine/parsers/session.js';
+import { resolveProjectId } from '@chat-recall/engine/core/project-resolver.js';
+import { extractEntities } from '@chat-recall/engine/core/entity-extractor.js';
 import { buildSourceRegistry } from '@chat-recall/engine/parsers/all-sources.js';
 import { getSyncedMtimes, markSynced } from './sync-ledger.js';
 import '@chat-recall/engine/core/backends/index.js'; // register the tool backends
-
-// Local store handle for telemetry lookups during a sync walk. Opened once,
-// closed by the caller's process exit (CLI) / kept by the daemon.
-let _localStore: Promise<StorageDriver> | null = null;
-function localStore(): Promise<StorageDriver> {
-  if (!_localStore) _localStore = createStore();
-  return _localStore;
-}
 
 // Lives under the data dir so CHAT_RECALL_DATA_DIR isolates credentials the
 // same way it isolates the index (tests, multi-profile setups).
@@ -162,12 +163,12 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
   const excludeTools = new Set(sync?.excludeTools ?? []);
   const excludeProjects = sync?.excludeProjects ?? [];
   // Upload category toggles (settings.sync.upload, all default true).
+  // Secret findings / dismissals / custom-rules are no longer shipped by the
+  // collector (the server owns secret-scanning state), so those toggles are
+  // gone. Redaction of shipped text still always runs.
   const upload = {
     raw: sync?.upload?.raw !== false,
-    findings: sync?.upload?.findings !== false,
     sessionMeta: sync?.upload?.sessionMeta !== false,
-    dismissals: sync?.upload?.dismissals !== false,
-    customRules: sync?.upload?.customRules !== false,
   };
   // Cleartext paths: explicit flag wins, else the persistent setting
   // (sync.pathsCleartext — what the watch daemon uses).
@@ -196,10 +197,6 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
   const refs = listAvailableBackends().flatMap((b) => {
     try { return b.listSessions({ sinceMs: opts.useLedger ? undefined : opts.sinceMs }); } catch { return []; }
   });
-
-  const store = await localStore();
-  const metaCache = await createMetadataCache();
-  const outcomeCache = await createOutcomeCache();
 
   // ── Upload plumbing, created up-front so the walks below can stream.
   // Byte-aware batching: cap each POST at ~4MB of serialized payload (and a
@@ -282,147 +279,62 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
   });
   const itemsBatch = makeBatcher('items', 100);
   const linksBatch = makeBatcher('links', 2000);
-  const findingsBatch = makeBatcher('findings', 200, true); // 200 session-groups per POST
   const derivedBatch = makeBatcher('derived', 50);
   const kgEntityBatch = makeBatcher('kg_entities', 2000);
   const kgTripleBatch = makeBatcher('kg_triples', 1000);
 
+  // ── Live KG accumulator. Triples are extracted on the spot from each
+  //    item's redacted text (no local knowledge-graph DB is read). Dedupe by
+  //    subject|predicate|object|valid_from; entity types come from `is_a`
+  //    triples seen in the same pass, defaulting to 'unknown' otherwise.
+  const kgSeen = new Set<string>();
+  const kgEntityType = new Map<string, string>();
+  const kgRows: Array<{ subject: string; predicate: string; object: string; valid_from: string | null; valid_to: string | null; confidence: number; source_session: string | null }> = [];
+  const accumulateKg = (triples: ReturnType<typeof extractEntities>, sourceSession: string | null): void => {
+    for (const t of triples) {
+      const key = `${t.subject}|${t.predicate}|${t.object}|${t.validFrom ?? ''}`;
+      if (kgSeen.has(key)) continue;
+      kgSeen.add(key);
+      if (t.predicate === 'is_a' && !kgEntityType.has(t.subject)) kgEntityType.set(t.subject, t.object);
+      kgRows.push({
+        subject: t.subject, predicate: t.predicate, object: t.object,
+        valid_from: t.validFrom ?? null, valid_to: null,
+        confidence: t.confidence ?? 1.0, source_session: sourceSession,
+      });
+    }
+  };
+
   let skipped = 0, redactions = 0, walked = 0;
-  const syncedSessionIds = new Set<string>();
-  let deadIds = new Set<string>();
-  try { deadIds = new Set((await store.listTombstones()).map((t) => t.session_id)); } catch { /* none */ }
   for (const ref of refs.slice(0, opts.limit ?? refs.length)) {
     if (excludeTools.has(ref.toolId as any)) { skipped++; continue; }
     if (excluded(ref.projectPath)) { skipped++; continue; }
     // Ledger mode: this exact session at this exact version already acked
     // by this server → nothing to do. Anything not covered (new, changed,
     // or previously failed) flows through.
-    if (deadIds.has(ref.prefixedId)) { skipped++; continue; } // deleted by the user — never re-ship
     if (ledger && (ledger.get(ref.prefixedId) ?? -1) >= Math.floor(ref.mtime)) { skipped++; continue; }
-    // Canonical envelope (R3): the index-time copy when fresh, else parse
-    // now with THE parser and warm the index. Sync never re-parses with a
-    // different tool — what ships is exactly what the local dashboard shows.
-    let transcript: { messages: any[]; subagents: any[] } | null = null;
+    // Canonical envelope (live): parse the transcript NOW with THE parser —
+    // no local content cache is read or warmed. What ships is exactly what
+    // the local dashboard would render for the same file.
     const mtime = Math.floor(ref.mtime) || 0;
-    try {
-      const cached = await store.getCachedContent(ref.prefixedId, 'session', mtime);
-      if (cached) {
-        const env = JSON.parse(cached);
-        if (env?.v === TRANSCRIPT_VERSION && Array.isArray(env.messages)) {
-          transcript = { messages: env.messages, subagents: env.subagents ?? [] };
-        }
-      }
-    } catch { /* fall through to parse */ }
-    if (!transcript) {
-      try {
-        const t = await parseTranscript(ref.prefixedId);
-        if (t && (t.messages.length > 0 || t.subagents.length > 0)) {
-          transcript = t;
-          try {
-            await store.setCachedContent(ref.prefixedId, 'session', Math.floor(t.mtime),
-              JSON.stringify({ v: TRANSCRIPT_VERSION, messages: t.messages, subagents: t.subagents }));
-          } catch { /* warm is best-effort */ }
-        }
-      } catch { /* unparseable */ }
-    }
-    if (!transcript) { skipped++; continue; }
-    const textMessages = transcript.messages.filter((m) => m.role !== 'summary' && m.content?.trim());
-    if (textMessages.length === 0 && !transcript.messages.some((m) => m.toolCalls?.length)) { skipped++; continue; }
+    const built = await buildConversationSync(ref, mtime, { mapPath, includeRaw: upload.raw, includeMeta: upload.sessionMeta });
+    if (!built) { skipped++; continue; }
+    redactions += built.redactions;
 
-    // Trim payload bodies (tool inputs/results, thinking — raw replay never
-    // ships), then redact every string. Counts are preserved exactly.
-    const count = { redactions: 0 };
-    const envelope = redactDeep(
-      { v: TRANSCRIPT_VERSION, ...trimTranscriptForSync(transcript) },
-      count,
-    ) as { v: number; messages: any[]; subagents: any[] };
-    redactions += count.redactions;
-    syncedSessionIds.add(ref.prefixedId);
+    await convBatch.add(built.conv);
 
-    // Local index row: real project path + telemetry. The backend's
-    // ref.projectPath is decoded from the encoded dir name (every '-'
-    // becomes '/', so `chat-recall` → `chat/recall`); memory_metadata
-    // stores the real cwd read from inside the transcript — prefer it.
-    let projectPath = ref.projectPath;
-    let projectId = '';
-    let meta: Record<string, unknown> = { messageCount: textMessages.length };
-    // Single-prompt invocations (batch/bot runs — e.g. thousands of one-shot
-    // Gemini CLI calls) sync like everything else but carry a flag so the
-    // UI can badge them and lists can de-emphasize them.
-    if (textMessages.filter((m) => m.role === 'user').length <= 1) meta.oneShot = true;
-    try {
-      const row = await store.getItem(ref.prefixedId, 'session');
-      if (row?.project_path) projectPath = row.project_path;
-      if (row?.project_id) projectId = row.project_id;
-      if (upload.sessionMeta && row?.extra_json) {
-        const extra = JSON.parse(row.extra_json);
-        for (const k of ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens',
-                         'peakContextTokens', 'costUsd', 'durationMs', 'modelsUsed', 'toolsUsed',
-                         'messageCount', 'gitBranch'] as const) {
-          if (extra[k] !== undefined) meta[k] = extra[k];
-        }
-      }
-    } catch { /* row is best-effort */ }
-
-    // Raw capture (Phase 2): the redacted source bytes ride along so the
-    // server archives them (shrink-protected) and derives everything from
-    // them — parser improvements never need a client resync again.
-    let raw_b64: string | undefined;
-    let raw_size: number | undefined;
-    if (upload.raw) {
-      try {
-        let container = null as ReturnType<typeof gunzipContainer>;
-        const archived = await store.getRawSession(ref.prefixedId);
-        if (archived && archived.mtime >= mtime) container = gunzipContainer(archived.gz);
-        if (!container) {
-          const backend = getBackendForId(ref.prefixedId) ?? getBackend('claude');
-          const exp = backend.exportRawSession(ref.prefixedId);
-          if (exp) container = buildRawContainer(exp);
-        }
-        if (container) {
-          const count2 = { redactions: 0 };
-          const redacted = mapContainerText(container, (t) => redactSecrets(t, { force: true, count: count2 }));
-          redactions += count2.redactions;
-          const { gz, size } = gzipContainer(redacted);
-          if (gz.length <= 8 * 1024 * 1024) { raw_b64 = gz.toString('base64'); raw_size = size; }
-        }
-      } catch { /* raw is additive — conversation still ships */ }
-    }
-
-    const envTexts = envelope.messages.filter((m) => m.content?.trim());
-    await convBatch.add({
-      session_id: ref.prefixedId,
-      tool: ref.toolId,
-      project_path: mapPath(projectPath),
-      // Resolved on THIS machine (git/FS available) — the server stores it
-      // verbatim; it cannot resolve paths it can't see.
-      project_id: projectId || undefined,
-      redacted_text: envTexts.map((m) => m.content).join('\n'),
-      envelope,
-      raw_b64,
-      raw_size,
-      first_prompt: (envTexts.find((m) => m.role === 'user')?.content as string | undefined)?.slice(0, 200),
-      meta,
-      mtime,
-    });
-
-    // Secret findings — already redacted previews (the scanner stores
-    // previews, never raw secrets). Replace-wholesale server-side.
-    if (upload.findings) {
-      try {
-        const rows = (await store.secretFindingsForSession(ref.prefixedId))
-          .map((f) => ({ session_id: ref.prefixedId, detector: f.detector, rule: f.rule, line: f.line, preview: f.preview }));
-        // One add() per session — the whole group lands in one POST.
-        if (rows.length > 0) await findingsBatch.add(rows);
-      } catch { /* findings are best-effort */ }
+    // Knowledge graph: extract triples live from the redacted conversation
+    // text (no local KG DB is read). Accumulated + deduped, flushed at the end.
+    if (upload.sessionMeta) {
+      accumulateKg(extractEntities(built.kgText, { projectPath: built.projectPath, sourceType: 'session', sessionId: ref.prefixedId }), ref.prefixedId);
     }
 
     // Derived data — the CLI has the FS/git/transcript, the server doesn't.
-    // Ship cached compute rows; compute the missing ones here so the hosted
-    // dashboard is complete (diff/outcome/commits/markers + badge row).
+    // Always computed live (diff/outcome/commits/markers + badge row); no
+    // local compute/outcome cache is read or warmed.
     if (upload.sessionMeta) {
       try {
-        await derivedBatch.add(await collectDerived(ref, mtime, metaCache, outcomeCache, count));
+        const count = { redactions: 0 };
+        await derivedBatch.add(collectDerived(ref, mtime, count));
         redactions += count.redactions;
       } catch { /* derived is best-effort — the conversation itself shipped */ }
     }
@@ -465,24 +377,35 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
           const count = { redactions: 0 };
           let chunks: any[] = [];
           try { chunks = await source.parse(item); } catch { /* unparseable item still ships metadata */ }
-          const itemRow = await store.getItem(item.id, item.sourceType).catch(() => null);
+          // Project id resolved live on THIS machine (git/FS available); the
+          // server stores it verbatim. `ignored:` rules mean "no project".
+          const resolved = resolveProjectId(item.projectPath || '');
+          const projectId = resolved.source === 'ignored' ? '' : resolved.id;
+          const redactedChunks = chunks
+            .filter((c) => c.text?.trim())
+            .map((c) => ({
+              text: redactSecrets(c.text, { force: true, count }),
+              chunk_type: c.chunkType || '',
+              title: c.title || '',
+            }));
           await itemsBatch.add({
             id: item.id,
             source_type: item.sourceType,
-            project_id: itemRow?.project_id || undefined,
+            project_id: projectId || undefined,
             title: redactSecrets(item.title || '', { force: true, count }),
             project_path: mapPath(item.projectPath || ''),
             content_preview: redactSecrets(item.contentPreview || '', { force: true, count }),
             mtime: Math.floor(item.mtime) || 0,
             extra: item.extra ? redactDeep(item.extra, count) : undefined,
-            chunks: chunks
-              .filter((c) => c.text?.trim())
-              .map((c) => ({
-                text: redactSecrets(c.text, { force: true, count }),
-                chunk_type: c.chunkType || '',
-                title: c.title || '',
-              })),
+            chunks: redactedChunks,
           });
+          // KG: extract triples live from this item's redacted chunk text.
+          if (upload.sessionMeta && redactedChunks.length > 0) {
+            accumulateKg(
+              extractEntities(redactedChunks.map((c) => c.text).join('\n'), { projectPath: item.projectPath || '', sourceType: item.sourceType }),
+              null,
+            );
+          }
           try {
             for (const l of await source.extractLinks(item)) {
               await linksBatch.add({
@@ -498,140 +421,212 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
     }
   }
 
-  // ── Knowledge graph. Full export on a full sync; on incremental syncs
-  //    only triples sourced from the sessions in this walk (manual
-  //    `recall_kg_add` facts ride along on the next full sync).
-  if (upload.sessionMeta) {
-    try {
-      const kg = await createKnowledgeGraph();
-      const fullExport = !opts.sinceMs;
-      const entities = await kg.listEntities(1_000_000);
-      const seenTriples = new Set<string>();
-      const wantedEntities = new Set<string>();
-      for (const e of entities) {
-        for (const t of await kg.queryEntity(e.name, undefined, 'outgoing')) {
-          if (!fullExport && !(t.source_session && syncedSessionIds.has(t.source_session))) continue;
-          const key = `${t.subject}|${t.predicate}|${t.object}|${t.valid_from ?? ''}`;
-          if (seenTriples.has(key)) continue;
-          seenTriples.add(key);
-          const count = { redactions: 0 };
-          await kgTripleBatch.add(redactDeep({
-            subject: t.subject, predicate: t.predicate, object: t.object,
-            valid_from: t.valid_from ?? null, valid_to: t.valid_to ?? null,
-            confidence: t.confidence ?? 1.0, source_session: t.source_session ?? null,
-          }, count));
-          wantedEntities.add(t.subject); wantedEntities.add(t.object);
-          redactions += count.redactions;
-        }
-      }
-      for (const e of entities) {
-        if (!fullExport && !wantedEntities.has(e.name)) continue;
-        const count = { redactions: 0 };
-        await kgEntityBatch.add(redactDeep({ name: e.name, type: e.type, properties: e.properties ?? {} }, count));
-        redactions += count.redactions;
-      }
-      await kg.close();
-    } catch { /* KG is best-effort */ }
-  }
-
-  // ── Dismissals + custom rules: small tables, shipped whole (idempotent
-  //    upserts server-side).
-  const dismissals: any[] = [];
-  const customRules: any[] = [];
-  if (upload.dismissals) {
-    try {
-      for (const [preview, d] of await store.getSecretDismissals()) {
-        dismissals.push({ preview, status: d.status, reason: d.reason ?? null });
-      }
-    } catch { /* best-effort */ }
-  }
-  if (upload.customRules) {
-    try {
-      for (const r of await store.listSecretRules()) {
-        customRules.push({ name: r.name, regex: r.regex, severity: r.severity, description: r.description ?? null, enabled: !!r.enabled });
-      }
-    } catch { /* best-effort */ }
+  // ── Knowledge graph (live). Triples were extracted on the spot from each
+  //    session/item's redacted text during the walks above — so what ships is
+  //    exactly the facts derivable from the sessions in THIS sync (which is
+  //    also the incremental-correct set: no manual-fact replay, no local KG
+  //    DB). Entities are derived from the triple subjects/objects, typed from
+  //    any `is_a` triple seen in the same pass.
+  if (upload.sessionMeta && kgRows.length > 0) {
+    const entityNames = new Set<string>();
+    for (const t of kgRows) {
+      const count = { redactions: 0 };
+      await kgTripleBatch.add(redactDeep(t, count));
+      redactions += count.redactions;
+      entityNames.add(t.subject);
+      entityNames.add(t.object);
+    }
+    for (const name of entityNames) {
+      const count = { redactions: 0 };
+      await kgEntityBatch.add(redactDeep({ name, type: kgEntityType.get(name) ?? 'unknown', properties: {} }, count));
+      redactions += count.redactions;
+    }
   }
 
   // ── Drain every batcher (the walks above flushed full windows already;
-  // this ships the tails) + the small whole-table payloads.
+  // this ships the tails).
   await convBatch.drain();
   await itemsBatch.drain();
   await linksBatch.drain();
-  await findingsBatch.drain();
   await derivedBatch.drain();
   await kgEntityBatch.drain();
   await kgTripleBatch.drain();
-  if (dismissals.length > 0 || customRules.length > 0) {
-    await post({ dismissals, custom_rules: customRules });
-  }
-  // Tombstones: full list every sync (small, idempotent) — a server that
-  // missed the original delete catches up; resurrection is impossible
-  // because ingest checks tombstones before any conversation write.
-  try {
-    const tombstones = await store.listTombstones();
-    if (tombstones.length > 0) {
-      await post({ tombstones: tombstones.map((t) => ({ session_id: t.session_id, deleted_at: t.deleted_at })) });
-    }
-  } catch { /* best-effort */ }
   if (opts.prune) await post({ prune_empty_sessions: true });
-
-  await metaCache.close();
-  await outcomeCache.close();
 
   return {
     uploaded: convBatch.sent, skipped, redactions,
-    items: itemsBatch.sent, links: linksBatch.sent, findings: findingsBatch.sent, derived: derivedBatch.sent,
+    items: itemsBatch.sent, links: linksBatch.sent, findings: 0, derived: derivedBatch.sent,
     kgEntities: kgEntityBatch.sent, kgTriples: kgTripleBatch.sent,
   };
 }
 
 /**
- * Per-session derived payload: the four compute_cache kinds the server's
- * deep-dive routes read (diff/outcome/commits/markers) + the outcome-badge
- * row. Cached rows ship as-is; missing/stale ones are computed here and
- * written back to the local cache (so the local dashboard warms too).
- * Everything is deep-redacted — diffs carry file content.
+ * Build the live per-session conversation payload — the THIN-COLLECTOR core.
+ * Reads ONLY the raw transcript (via `parseTranscript` + `parseSessionFile`),
+ * never the local store. Returns the conversation row exactly as the server
+ * ingest expects it, plus the redacted plain text (for live KG extraction)
+ * and the redaction count. Returns null when there's nothing worth shipping.
+ *
+ * Exported so the payload can be exercised in tests with no server and no
+ * pre-populated index (see sync-client.test.ts).
  */
-async function collectDerived(
+export interface BuiltConversation {
+  conv: Record<string, unknown>;
+  /** Redacted conversation text — feed to `extractEntities` for the KG. */
+  kgText: string;
+  /** Real project path resolved from the transcript cwd (for KG context). */
+  projectPath: string;
+  redactions: number;
+}
+
+export async function buildConversationSync(
+  ref: SessionRef,
+  mtime: number,
+  opts: { mapPath?: (p: string) => string; includeRaw?: boolean; includeMeta?: boolean } = {},
+): Promise<BuiltConversation | null> {
+  const mapPath = opts.mapPath ?? ((p: string) => p);
+  const includeRaw = opts.includeRaw !== false;
+  const includeMeta = opts.includeMeta !== false;
+
+  // Parse the transcript live — this is the single canonical parse; the
+  // envelope and the redacted text both come from it.
+  let transcript: { messages: any[]; subagents: any[] } | null = null;
+  try {
+    const t = await parseTranscript(ref.prefixedId);
+    if (t && (t.messages.length > 0 || t.subagents.length > 0)) transcript = t;
+  } catch { /* unparseable */ }
+  if (!transcript) return null;
+
+  const textMessages = transcript.messages.filter((m) => m.role !== 'summary' && m.content?.trim());
+  if (textMessages.length === 0 && !transcript.messages.some((m) => m.toolCalls?.length)) return null;
+
+  // Trim payload bodies (tool inputs/results, thinking — raw replay never
+  // ships), then redact every string. Counts are preserved exactly.
+  const count = { redactions: 0 };
+  const envelope = redactDeep(
+    { v: TRANSCRIPT_VERSION, ...trimTranscriptForSync(transcript) },
+    count,
+  ) as { v: number; messages: any[]; subagents: any[] };
+
+  // Live telemetry: parse the raw session file with THE metadata parser
+  // (tokens/cost/models/tools/duration/branch/files). Replaces the former
+  // local-store `extra_json` read. The metadata parser is Claude-JSONL shaped;
+  // for other tools the fields it can't read stay at their zero defaults,
+  // which is the same behaviour as an un-indexed session.
+  let projectPath = ref.projectPath;
+  const meta: Record<string, unknown> = { messageCount: textMessages.length };
+  // Single-prompt invocations (batch/bot runs) carry a flag so the UI can
+  // badge them and lists can de-emphasize them.
+  if (textMessages.filter((m) => m.role === 'user').length <= 1) meta.oneShot = true;
+  // Real project path: the cwd read live from inside the transcript wins over
+  // the decoded dir name (`chat-recall` → `chat/recall` mangling).
+  try {
+    const cwd = ref.fullPath ? readCwdFromJsonl(ref.fullPath) : '';
+    if (cwd) projectPath = cwd;
+  } catch { /* fall back to ref.projectPath */ }
+  const resolved = resolveProjectId(projectPath);
+  const projectId = resolved.source === 'ignored' ? '' : resolved.id;
+  if (includeMeta && ref.fullPath) {
+    try {
+      const parsed = await parseSessionFile(ref.fullPath);
+      const m = parsed.metadata;
+      const live: Record<string, unknown> = {
+        inputTokens: m.inputTokens, outputTokens: m.outputTokens,
+        cacheReadTokens: m.cacheReadTokens, cacheCreationTokens: m.cacheCreationTokens,
+        peakContextTokens: m.peakContextTokens, costUsd: m.costUsd, durationMs: m.durationMs,
+        modelsUsed: m.modelsUsed, toolsUsed: m.toolsUsed, gitBranch: m.gitBranch,
+      };
+      for (const [k, v] of Object.entries(live)) {
+        if (v === undefined) continue;
+        if (Array.isArray(v) && v.length === 0) continue; // empty models/tools = un-parseable for this tool
+        meta[k] = v;
+      }
+    } catch { /* telemetry is best-effort — the conversation still ships */ }
+  }
+
+  // Raw capture: the redacted source bytes ride along so the server archives
+  // them and can re-derive everything from them. Always exported live from the
+  // backend (no local raw-session archive is read).
+  let raw_b64: string | undefined;
+  let raw_size: number | undefined;
+  if (includeRaw) {
+    try {
+      const backend = getBackendForId(ref.prefixedId) ?? getBackend('claude');
+      const exp = backend.exportRawSession(ref.prefixedId);
+      const container = exp ? buildRawContainer(exp) : null;
+      if (container) {
+        const count2 = { redactions: 0 };
+        const redacted = mapContainerText(container, (t) => redactSecrets(t, { force: true, count: count2 }));
+        count.redactions += count2.redactions;
+        const { gz, size } = gzipContainer(redacted);
+        if (gz.length <= 8 * 1024 * 1024) { raw_b64 = gz.toString('base64'); raw_size = size; }
+      }
+    } catch { /* raw is additive — conversation still ships */ }
+  }
+
+  const envTexts = envelope.messages.filter((m) => m.content?.trim());
+  const redactedText = envTexts.map((m) => m.content).join('\n');
+  return {
+    conv: {
+      session_id: ref.prefixedId,
+      tool: ref.toolId,
+      project_path: mapPath(projectPath),
+      // Resolved on THIS machine (git/FS available) — the server stores it
+      // verbatim; it cannot resolve paths it can't see.
+      project_id: projectId || undefined,
+      redacted_text: redactedText,
+      envelope,
+      raw_b64,
+      raw_size,
+      first_prompt: (envTexts.find((m) => m.role === 'user')?.content as string | undefined)?.slice(0, 200),
+      meta,
+      mtime,
+    },
+    kgText: redactedText,
+    projectPath,
+    redactions: count.redactions,
+  };
+}
+
+/**
+ * Per-session derived payload: the four compute kinds the server's deep-dive
+ * routes read (diff/outcome/commits/markers) + the outcome-badge row. ALWAYS
+ * computed live from the transcript/git (no local compute/outcome cache is
+ * read or warmed — thin collector). Everything is deep-redacted — diffs carry
+ * file content.
+ */
+function collectDerived(
   ref: { prefixedId: string; toolId: string; mtime: number },
   mtime: number,
-  metaCache: Awaited<ReturnType<typeof createMetadataCache>>,
-  outcomeCache: Awaited<ReturnType<typeof createOutcomeCache>>,
   count: { redactions: number },
-): Promise<{ session_id: string; mtime: number; compute: Array<{ kind: string; mtime: number; data: unknown }>; outcome_row: unknown | null }> {
+): { session_id: string; mtime: number; compute: Array<{ kind: string; mtime: number; data: unknown }>; outcome_row: unknown | null } {
   const id = ref.prefixedId;
   const compute: Array<{ kind: string; mtime: number; data: unknown }> = [];
   let fullOutcome: ReturnType<typeof computeOutcome> | null = null;
 
   for (const kind of COMPUTE_KINDS) {
-    let data = await metaCache.getCompute<unknown>(id, kind, mtime);
-    if (data === null) {
-      try {
-        if (kind === 'diff') {
-          const replay = replaySessionAny(id);
-          if (replay.found) data = replay;
-        } else if (kind === 'outcome') {
-          fullOutcome = computeOutcome(id);
-          if (fullOutcome.found) data = fullOutcome;
-        } else if (kind === 'commits') {
-          // computeOutcome already ran git for the session window — reuse.
-          if (!fullOutcome) fullOutcome = computeOutcome(id);
-          if (fullOutcome.found) data = fullOutcome.commits;
-        } else if (kind === 'markers') {
-          // Analysis-only use of the turns extractor (R4) — markers need
-          // per-prompt line/ts, not render fidelity.
-          const turns = extractTurnsAny(id, { maxTurns: 50_000 });
-          const prompts = turns.turns
-            .filter((t) => t.kind === 'user' && t.text)
-            .map((t) => ({ line: t.line, ts: t.ts, tsIso: t.tsIso, ...markPrompt(t.text!) }));
-          data = { sessionId: id, prompts, summary: summarizeMarkers(prompts) };
-        }
-      } catch { data = null; }
-      if (data !== null) {
-        try { await metaCache.setCompute(id, kind, mtime, data); } catch { /* local warm is best-effort */ }
+    let data: unknown = null;
+    try {
+      if (kind === 'diff') {
+        const replay = replaySessionAny(id);
+        if (replay.found) data = replay;
+      } else if (kind === 'outcome') {
+        fullOutcome = computeOutcome(id);
+        if (fullOutcome.found) data = fullOutcome;
+      } else if (kind === 'commits') {
+        // computeOutcome already ran git for the session window — reuse.
+        if (!fullOutcome) fullOutcome = computeOutcome(id);
+        if (fullOutcome.found) data = fullOutcome.commits;
+      } else if (kind === 'markers') {
+        // Analysis-only use of the turns extractor (R4) — markers need
+        // per-prompt line/ts, not render fidelity.
+        const turns = extractTurnsAny(id, { maxTurns: 50_000 });
+        const prompts = turns.turns
+          .filter((t) => t.kind === 'user' && t.text)
+          .map((t) => ({ line: t.line, ts: t.ts, tsIso: t.tsIso, ...markPrompt(t.text!) }));
+        data = { sessionId: id, prompts, summary: summarizeMarkers(prompts) };
       }
-    }
+    } catch { data = null; }
     if (data === null) continue;
     const redacted = redactDeep(data, count);
     if (JSON.stringify(redacted).length > MAX_DERIVED_ROW_BYTES) continue;
@@ -639,8 +634,9 @@ async function collectDerived(
   }
 
   // Outcome-badge row (session_outcome_cache) — what the list badges read.
-  let outcomeRow = await outcomeCache.get(id);
-  if (!outcomeRow && fullOutcome?.found) {
+  // Computed live from the outcome we already ran above.
+  let outcomeRow: Record<string, unknown> | null = null;
+  if (fullOutcome?.found) {
     outcomeRow = {
       sessionId: id,
       tool: ref.toolId,
@@ -657,7 +653,6 @@ async function collectDerived(
       classifiedAt: Date.now(),
       lastScannedOffset: 0,
     };
-    try { await outcomeCache.put(outcomeRow); } catch { /* local warm is best-effort */ }
   }
 
   return {

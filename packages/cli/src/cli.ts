@@ -6,31 +6,87 @@
 import { config } from 'dotenv';
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
-import { join, basename } from 'path';
+import { join } from 'path';
 import { execSync } from 'child_process';
 
-import { getEmbedder, type EmbedderProvider } from '@chat-recall/engine/core/embedder.js';
-import { createVectorStore } from '@chat-recall/engine/core/store/vector.js';
-import { MemoryIndex } from '@chat-recall/engine/core/memory-index.js'; // static helpers (getDefaultIndexPath) only
-import { createMetadataCache } from '@chat-recall/engine/core/store/caches.js';
-import { getDataDir, getIdentityFilePath, getHooksDir, getIndexDir } from '@chat-recall/engine/core/paths.js';
-import { createStore } from '@chat-recall/engine/core/store/index.js';
-import { buildSourceRegistry } from '@chat-recall/engine/parsers/all-sources.js';
-import { writeTranscriptEnvelope, archiveRawSession } from '@chat-recall/engine/transcript/index.js';
+import { getDataDir, getIdentityFilePath, getHooksDir } from '@chat-recall/engine/core/paths.js';
 import { claudeBackend } from '@chat-recall/engine/core/backends/claude.js';
-import { getBackendForId } from '@chat-recall/engine/core/tool-backend.js';
-import '@chat-recall/engine/core/backends/index.js'; // side-effect: registers backends
-import { classifyChunk } from '@chat-recall/engine/core/memory-classifier.js';
-import { extractAndPopulateKG } from '@chat-recall/engine/core/entity-extractor.js';
-import { createKnowledgeGraph } from '@chat-recall/engine/core/store/knowledge-graph.js';
-import { buildProjectDossier } from '@chat-recall/engine/core/project-dossier.js';
 import { resolveProjectId } from '@chat-recall/engine/core/project-resolver.js';
-import type { SourceType } from '@chat-recall/engine/types/memory.js';
+import { loadAllCredentials, type Credentials } from './sync-client.js';
 
 // Load .env configuration
 config();
+
+// ── Remote scope (chat-recall server) ───────────────────────────────────────
+// The CLI is a thin collector: it ships local sessions to a server (`sync`)
+// and reads everything else back from that server over HTTP. It deliberately
+// imports ZERO local-store / index / embedder code so the published binary
+// has no native dependencies. Read commands therefore require a login.
+//
+// We talk to the FIRST logged-in target (the same one `loadCredentials()`
+// resolves). Multi-target fan-out only applies to writes (sync/delete); reads
+// have a single source of truth.
+
+interface RemoteTarget { base: string; token: string; }
+
+/** First logged-in target with its trailing slashes stripped, or null. */
+function firstTarget(): RemoteTarget | null {
+  const cred: Credentials | undefined = loadAllCredentials()[0];
+  if (!cred) return null;
+  return { base: cred.serverUrl.replace(/\/+$/, ''), token: cred.token };
+}
+
+/**
+ * Resolve the first target or exit with the uniform "you must log in" message.
+ * Every server-backed read command calls this so the user always gets the same
+ * actionable error instead of a raw fetch failure.
+ */
+function requireTarget(): RemoteTarget {
+  const t = firstTarget();
+  if (!t) {
+    console.error(chalk.red('Not logged in.'), 'Run', chalk.bold('chat-recall login <server-url>'), 'first.');
+    process.exit(1);
+  }
+  return t;
+}
+
+/** GET <path> on the first target and parse JSON. Throws on non-2xx. */
+async function serverGet<T>(path: string): Promise<T> {
+  const t = requireTarget();
+  const res = await fetch(t.base + path, { headers: { authorization: `Bearer ${t.token}` } });
+  if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
+  return res.json() as Promise<T>;
+}
+
+/**
+ * GET that tolerates 202 (pending-sync — the session's compute hasn't shipped
+ * from its origin machine yet) and 404 (unknown id), returning the status so
+ * callers render a friendly note instead of a stack trace.
+ */
+async function serverGetSoft<T>(path: string): Promise<{ status: number; data: T | null; message?: string }> {
+  const t = requireTarget();
+  const res = await fetch(t.base + path, { headers: { authorization: `Bearer ${t.token}` } });
+  if (res.status === 202 || res.status === 404) {
+    const body = await res.json().catch(() => ({}));
+    return { status: res.status, data: null, message: (body as { message?: string }).message };
+  }
+  if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
+  return { status: res.status, data: (await res.json()) as T };
+}
+
+/** POST <path> with a JSON body on the first target and parse JSON. Throws on non-2xx. */
+async function serverPost<T>(path: string, body: unknown): Promise<T> {
+  const t = requireTarget();
+  const res = await fetch(t.base + path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${t.token}` },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
+  return res.json() as Promise<T>;
+}
 
 // Resolves to packages/cli/package.json from both src/ and the bundled dist/
 const pkgVersion: string = JSON.parse(
@@ -46,10 +102,11 @@ program
 
 program
   .command('init')
-  .description('Set up chat-recall: index all sources, detect AI tools, configure MCP server, install codeindex companion')
-  .option('--vector', 'Enable vector search (requires Ollama or Gemini API key)')
-  .option('--provider <provider>', 'Embedding provider for vector search (ollama or gemini)')
+  .description('Set up chat-recall: connect to your server, configure MCP, ship your local sessions')
+  .option('--server <url>', 'chat-recall server URL to connect this machine to')
+  .option('--token <token>', 'Self-host device token (skips the interactive OIDC login)')
   .option('--skip-mcp', 'Skip MCP server configuration')
+  .option('--skip-sync', 'Skip the first session sync')
   .option('--with-codeindex', 'Force-download the codeindex binary during init. Default behavior is to detect an already-installed codeindex on PATH and register it as an MCP server.')
   .option('--skip-codeindex', 'Skip the codeindex companion entirely (no detection, no registration).')
   .action(async (options) => {
@@ -57,13 +114,15 @@ program
       console.log(chalk.bold('chat-recall init'));
       console.log();
 
-      // Step 1: Detect available AI CLIs for summaries
+      // Step 1: Detect available AI CLIs (so the user can see which tools'
+      // sessions this machine will ship). No summary generation happens in the
+      // thin collector — that's the server's job.
       console.log(chalk.bold('1. Detecting AI tools...'));
       const clis: { name: string; cmd: string; available: boolean }[] = [
         { name: 'Gemini CLI', cmd: 'gemini', available: false },
         { name: 'Claude CLI', cmd: 'claude', available: false },
         { name: 'OpenCode', cmd: 'opencode', available: false },
-        { name: 'Ollama', cmd: 'ollama', available: false },
+        { name: 'Codex', cmd: 'codex', available: false },
       ];
 
       for (const cli of clis) {
@@ -77,98 +136,23 @@ program
         const icon = cli.available ? chalk.green('found') : chalk.dim('not found');
         console.log(`   ${cli.name}: ${icon}`);
       }
-
-      const summaryCli = clis.find(c => c.available);
-      if (summaryCli) {
-        console.log(`   Summary generation: ${chalk.green(summaryCli.name)}`);
-      } else {
-        console.log(`   Summary generation: ${chalk.yellow('none (first prompt will be used as summary)')}`);
-      }
       console.log();
 
-      // Step 2: Detect embedder for vector search
-      let embedder: Awaited<ReturnType<typeof getEmbedder>> | null = null;
-      if (options.vector) {
-        console.log(chalk.bold('2. Setting up vector search...'));
-        const provider = (options.provider || process.env.EMBEDDING_PROVIDER || 'ollama') as EmbedderProvider;
-        try {
-          embedder = getEmbedder(provider);
-          // Test that it actually works
-          await embedder.embedQuery('test');
-          console.log(`   Vector search: ${chalk.green('enabled')} (${provider})`);
-        } catch (err) {
-          console.log(`   Vector search: ${chalk.yellow('failed')} — ${err}`);
-          console.log(`   Continuing with text search only.`);
-          embedder = null;
-        }
-      } else {
-        console.log(chalk.bold('2. Search mode: FTS5 (full-text search)'));
-        console.log(`   ${chalk.dim('Use --vector to enable semantic vector search')}`);
+      // Step 2: Connect to a server. If a URL was supplied (or none is logged
+      // in yet) we drive the same login flow the `login` command uses, so
+      // there's a single source of truth for credential minting. An existing
+      // login is reused untouched.
+      console.log(chalk.bold('2. Connecting to your server...'));
+      let target = firstTarget();
+      if (options.server) {
+        await runLogin(options.server, { token: options.token });
+        target = firstTarget();
+      } else if (!target) {
+        console.log(`   ${chalk.yellow('Not logged in.')} Pass ${chalk.bold('--server <url>')} to connect, or run ${chalk.bold('chat-recall login <server-url>')} now.`);
       }
-      console.log();
-
-      // Step 3: Index all sources
-      console.log(chalk.bold('3. Indexing all sources...'));
-      const memoryIndex = await createVectorStore(embedder);
-      const store = await createStore();
-      const registry = buildSourceRegistry();
-
-      const kg = await createKnowledgeGraph();
-      let totalItems = 0, totalChunks = 0, totalErrors = 0;
-      const typeCounts: Record<string, number> = {};
-
-      for (const sourceType of registry.getRegisteredTypes()) {
-        const sources = registry.getAll(sourceType);
-        if (sources.length === 0) continue;
-        let typeItems = 0;
-        for (const source of sources) {
-          for await (const item of source.discover()) {
-            try {
-              if (!(await memoryIndex.needsUpdate(item.sourceType, item.id, item.mtime))) continue;
-              await memoryIndex.deleteItem(item.sourceType, item.id);
-              const chunks = await source.parse(item);
-              for (const chunk of chunks) {
-                const cls = classifyChunk(chunk.text);
-                if (cls.memoryType !== 'general') {
-                  chunk.chunkType = `${chunk.chunkType}:${cls.memoryType}:imp${cls.importance}`;
-                }
-                await extractAndPopulateKG(kg, chunk.text, {
-                  projectPath: item.projectPath, sourceType: item.sourceType, sessionId: item.id,
-                });
-              }
-              if (chunks.length > 0) {
-                await memoryIndex.bufferChunks(chunks);
-                totalChunks += chunks.length;
-              }
-              await store.setItem(item);
-            if (item.sourceType === 'session') {
-              try { await writeTranscriptEnvelope(store, item.id); } catch { /* rebuilt on demand */ }
-              try { await archiveRawSession(store, item.id); } catch { /* archive is best-effort */ }
-            }
-              // R2: materialize the canonical conversation envelope at
-              // index time — what every dashboard renders and sync ships.
-              if (item.sourceType === 'session') {
-                try { await writeTranscriptEnvelope(store, item.id); } catch { /* rebuilt on demand */ }
-                try { await archiveRawSession(store, item.id); } catch { /* archive is best-effort */ }
-              }
-              const links = await source.extractLinks(item);
-              if (links.length > 0) await store.addLinks(links);
-              totalItems++;
-              typeItems++;
-            } catch { totalErrors++; }
-          }
-        }
-        await memoryIndex.flushBuffer();
-        if (typeItems > 0) typeCounts[sourceType] = typeItems;
+      if (target) {
+        console.log(`   ${chalk.green('Connected')} → ${target.base}`);
       }
-      await kg.close();
-      await store.close();
-
-      for (const [type, count] of Object.entries(typeCounts)) {
-        console.log(`   ${type}: ${count} items`);
-      }
-      console.log(`   Total: ${totalItems} items, ${totalChunks} chunks`);
-      if (totalErrors > 0) console.log(`   ${chalk.yellow(`Errors: ${totalErrors}`)}`);
       console.log();
 
       // Step 4: Configure MCP server
@@ -297,6 +281,26 @@ program
       }
       console.log();
 
+      // Step 6: First sync — collect this machine's local sessions and ship
+      // them to the server. Skipped when there's no login (nothing to ship to)
+      // or when --skip-sync is passed.
+      if (!options.skipSync && firstTarget()) {
+        console.log(chalk.bold('6. Shipping local sessions to your server...'));
+        try {
+          const { syncSessions } = await import('./sync-client.js');
+          const r = await syncSessions();
+          console.log(`   ${chalk.green(`Synced ${r.uploaded} session(s), ${r.items} item(s)`)} ${chalk.dim(`— ${r.links} links, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted`)}`);
+        } catch (err) {
+          console.log(`   ${chalk.yellow('Sync failed')} — ${err instanceof Error ? err.message : err}`);
+          console.log(`   ${chalk.dim('Re-run `chat-recall sync` once your server is reachable.')}`);
+        }
+      } else if (!options.skipSync) {
+        console.log(chalk.bold('6. Skipping first sync (not logged in)'));
+      } else {
+        console.log(chalk.bold('6. Skipping first sync (--skip-sync)'));
+      }
+      console.log();
+
       // Done
       console.log(chalk.green.bold('Setup complete!'));
       console.log();
@@ -323,9 +327,7 @@ program
         }
       }
       console.log();
-      if (!options.vector) {
-        console.log(`${chalk.dim('Tip: Run with --vector to enable semantic search (needs Ollama or Gemini API key)')}`);
-      }
+      console.log(`${chalk.dim('Tip: run `chat-recall sync` whenever you want to ship new sessions, or `chat-recall watch` to do it continuously.')}`);
     } catch (err) {
       console.error(chalk.red('Error:'), err);
       process.exit(1);
@@ -334,433 +336,199 @@ program
 
 program
   .command('index')
-  .description('Index all Claude Code sessions for semantic search')
-  .option('-f, --force', 'Force re-index all sessions', false)
-  .option('-p, --provider <provider>', 'Embedding provider (ollama or gemini) - overrides EMBEDDING_PROVIDER env var')
-  .action(async (options) => {
+  .description('Collect local sessions and ship them to your server (alias for sync)')
+  .option('-f, --force', 'Ignore the per-server ledger and re-ship everything', false)
+  .action(async (options: { force?: boolean }) => {
     try {
-      // Use CLI flag if provided, otherwise read from .env, default to ollama (local)
-      const provider = (options.provider || process.env.EMBEDDING_PROVIDER || 'ollama') as EmbedderProvider;
-      console.log(`Using embedding provider: ${chalk.bold(provider)}`);
-
-      const embedder = getEmbedder(provider);
-      // Use unified memory indexing for all source types
-      const memoryIndex = await createVectorStore(embedder);
-      const store = await createStore();
-      const registry = buildSourceRegistry();
-
-      const kg = await createKnowledgeGraph();
-      let totalItems = 0, totalSkipped = 0, totalChunks = 0, totalErrors = 0, totalKGTriples = 0;
-      for (const sourceType of registry.getRegisteredTypes()) {
-        const sources = registry.getAll(sourceType);
-        if (sources.length === 0) continue;
-        console.log(`Indexing ${sourceType}...`);
-        for (const source of sources) {
-        for await (const item of source.discover()) {
-          try {
-            if (!options.force && !(await memoryIndex.needsUpdate(item.sourceType, item.id, item.mtime))) {
-              totalSkipped++;
-              continue;
-            }
-            await memoryIndex.deleteItem(item.sourceType, item.id);
-            const chunks = await source.parse(item);
-            for (const chunk of chunks) {
-              const cls = classifyChunk(chunk.text);
-              if (cls.memoryType !== 'general') {
-                chunk.chunkType = `${chunk.chunkType}:${cls.memoryType}:imp${cls.importance}`;
-              }
-              totalKGTriples += await extractAndPopulateKG(kg, chunk.text, {
-                projectPath: item.projectPath, sourceType: item.sourceType, sessionId: item.id,
-              });
-            }
-            if (chunks.length > 0) {
-              await memoryIndex.bufferChunks(chunks);
-              totalChunks += chunks.length;
-            }
-            await store.setItem(item);
-            const links = await source.extractLinks(item);
-            if (links.length > 0) await store.addLinks(links);
-            totalItems++;
-          } catch { totalErrors++; }
-        }
-        }
-        await memoryIndex.flushBuffer();
-      }
-      await kg.close();
-      // optimize() removed from auto flows to prevent data corruption
-      await store.close();
-
-      console.log();
-      console.log(chalk.green('Indexing complete!'));
-      console.log(`  Items processed: ${totalItems}`);
-      console.log(`  Items skipped (unchanged): ${totalSkipped}`);
-      console.log(`  Total chunks indexed: ${totalChunks}`);
-      console.log(`  KG triples extracted: ${totalKGTriples}`);
-
-      if (totalErrors > 0) {
-        console.log(chalk.yellow(`  Errors: ${totalErrors}`));
-      }
+      // The thin collector has no local index to build. `index` stays as a
+      // familiar verb but is now a collect-and-ship: --force walks every
+      // session (ledger disabled) so a previously-shipped session re-uploads.
+      const { syncSessions } = await import('./sync-client.js');
+      const r = await syncSessions(options.force ? { useLedger: false } : {});
+      console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted`));
     } catch (err) {
-      console.error(chalk.red('Error:'), err);
+      console.error(chalk.red('Error:'), err instanceof Error ? err.message : err);
       process.exit(1);
     }
   });
 
 program
   .command('search <query>')
-  .description('Search for relevant sessions by semantic similarity')
+  .description('Search your server for relevant sessions (requires login)')
   .option('-n, --top <number>', 'Number of results to show', '5')
   .option('-p, --project <path>', 'Filter by project path (substring match)')
-  .option('--provider <provider>', 'Embedding provider (ollama or gemini) - overrides EMBEDDING_PROVIDER env var')
-  .option('--no-rank', 'Skip Claude ranking (faster, but less accurate)')
-  .action(async (query, options) => {
+  .action(async (query, options: { top: string; project?: string }) => {
     try {
-      // Use CLI flag if provided, otherwise read from .env, default to ollama (local)
-      const provider = (options.provider || process.env.EMBEDDING_PROVIDER || 'ollama') as EmbedderProvider;
-      let embedder: Awaited<ReturnType<typeof getEmbedder>> | null;
-      try {
-        embedder = getEmbedder(provider);
-      } catch {
-        embedder = null;
-      }
       const topK = parseInt(options.top, 10);
+      // Server-backed: POST /api/search runs the server's FTS/vector search and
+      // returns display-ready rows (firstPrompt, summary, matched chunks).
+      const remote = await serverPost<{
+        results: Array<{
+          sessionId: string;
+          score: number;
+          projectPath: string;
+          firstPrompt: string;
+          summary?: string;
+          matchedChunks?: Array<{ chunkType: string; text: string }>;
+        }>;
+        count: number;
+      }>('/api/search', { query, topK, projectFilter: options.project });
 
-      const memoryIndex = await createVectorStore(embedder);
-      const memResults = await memoryIndex.search(query, {
-        topK: options.noRank ? topK : topK * 4,
-        sourceTypes: ['session'],
-        projectIdFilter: options.project,
-      });
-      // Transform to legacy format
-      const cache = await createMetadataCache();
-      const cachedList = await Promise.all(memResults.map(r => cache.get(r.itemId)));
-      const results = memResults.map((r, i) => {
-        const cached = cachedList[i];
-        return {
-          sessionId: r.itemId, score: r.score,
-          chunkType: r.matchedChunks[0]?.chunkType || 'unknown',
-          text: r.matchedChunks[0]?.text || r.title,
-          projectPath: r.projectPath,
-          created: '', modified: '',
-          firstPrompt: cached?.firstPrompt || r.title,
-          summary: cached?.summary,
-          matchedChunks: r.matchedChunks,
-        };
-      });
-      await cache.close();
-      
+      const results = remote.results;
       if (results.length === 0) {
         console.log(chalk.yellow('No matching sessions found.'));
         process.exit(0);
       }
-      
-      // Truncate if needed
-      const displayResults = results.slice(0, topK);
 
       console.log();
       console.log(`${chalk.bold('Results for:')} "${query}"`);
       console.log();
 
-      for (let i = 0; i < displayResults.length; i++) {
-        const result = displayResults[i];
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i];
 
-        // Truncate project path
-        let projectPath = result.projectPath;
-        if (projectPath.length > 50) {
-          projectPath = '...' + projectPath.slice(-47);
-        }
+        let projectPath = result.projectPath || '';
+        if (projectPath.length > 50) projectPath = '...' + projectPath.slice(-47);
 
-        // Title from first prompt
-        let title = result.firstPrompt.replace(/\n/g, ' ').trim();
-        if (title.length > 80) {
-          title = title.slice(0, 80) + '...';
-        }
+        let title = (result.firstPrompt || '').replace(/\n/g, ' ').trim();
+        if (title.length > 80) title = title.slice(0, 80) + '...';
 
         const scorePct = Math.round(result.score * 100);
 
         console.log(`${chalk.bold.cyan(`#${i + 1}`)} ${title}`);
-        console.log(`   ${chalk.dim('Project:')} ${projectPath}`);
-        console.log(`   ${chalk.dim('Created:')} ${result.created.slice(0, 10)}  ${chalk.dim('Score:')} ${scorePct}/100`);
+        if (projectPath) console.log(`   ${chalk.dim('Project:')} ${projectPath}`);
+        console.log(`   ${chalk.dim('Score:')} ${scorePct}/100`);
 
-        // Show summary if available
         if (result.summary) {
           let summary = result.summary.replace(/\n/g, ' ').trim();
-          if (summary.length > 200) {
-            summary = summary.slice(0, 200) + '...';
-          }
+          if (summary.length > 200) summary = summary.slice(0, 200) + '...';
           console.log(`   ${chalk.yellow('Summary:')} ${summary}`);
         }
 
-        // Show key context from matched chunks
-        if (result.matchedChunks && result.matchedChunks.length > 0) {
-          for (const chunk of result.matchedChunks.slice(0, 1)) {
-            if (chunk.chunkType !== 'summary' && chunk.chunkType !== 'first_prompt') {
-              const label = chunk.chunkType === 'assistant' ? 'Discussed' :
-                           chunk.chunkType === 'user_context' ? 'Asked about' :
-                           chunk.chunkType === 'tool_result' ? 'Tool result' :
-                           'Context';
-              let text = chunk.text.replace(/\n/g, ' ').trim();
-              if (text.length > 150) {
-                text = text.slice(0, 150) + '...';
-              }
-              console.log(`   ${chalk.magenta(label + ':')} ${text}`);
-            }
-          }
+        // First non-title matched chunk gives a hint of where the hit landed.
+        const chunk = (result.matchedChunks || []).find(
+          (c) => c.chunkType !== 'summary' && c.chunkType !== 'first_prompt',
+        );
+        if (chunk) {
+          const label = chunk.chunkType === 'assistant' ? 'Discussed' :
+                        chunk.chunkType === 'user_context' ? 'Asked about' :
+                        chunk.chunkType === 'tool_result' ? 'Tool result' :
+                        'Context';
+          let text = chunk.text.replace(/\n/g, ' ').trim();
+          if (text.length > 150) text = text.slice(0, 150) + '...';
+          console.log(`   ${chalk.magenta(label + ':')} ${text}`);
         }
 
         console.log(`   ${chalk.green('Resume:')} claude --resume ${result.sessionId}`);
         console.log();
       }
     } catch (err) {
-      if (err instanceof Error && err.message.includes('Index not found')) {
-        console.error(chalk.red('Error:'), err.message);
-        console.log('\nRun', chalk.bold('chat-recall index'), 'first to build the index.');
-      } else {
-        console.error(chalk.red('Error:'), err);
-      }
+      console.error(chalk.red('Error:'), err instanceof Error ? err.message : err);
       process.exit(1);
     }
   });
 
 program
   .command('status')
-  .description('Show index status and statistics')
+  .description('Show your server\'s sync status and statistics (requires login)')
   .action(async () => {
-    const indexPath = MemoryIndex.getDefaultIndexPath();
-
-    if (!existsSync(indexPath)) {
-      console.log(chalk.yellow('Index not found.'));
-      console.log(`Expected at: ${indexPath}`);
-      console.log('\nRun', chalk.bold('chat-recall index'), 'to build the index.');
-      process.exit(0);
-    }
-
     try {
-      const dummyEmbedder = { embed: async () => [], embedQuery: async () => [], dimension: 768 };
-      const memoryIndex = await createVectorStore(dummyEmbedder as any);
-      const stats = await memoryIndex.getStats();
-      const store = await createStore();
-      const linkCount = await store.getLinkCount();
-      const ftsCount = await store.getFTSCount();
-      await store.close();
+      // Two cheap server reads mirror the MCP recall_status: /api/status gives
+      // chunk + per-project session counts; /api/status/sync gives the
+      // coverage/freshness panel. There is no local index to report.
+      const status = await serverGet<{ totalChunks: number; totalSessions: number; projects: Record<string, number> }>('/api/status');
+      const sync = await serverGet<{ sessions: number; sourceTypes: Record<string, number>; rawArchived: number; newestSessionAgeMs: number | null }>('/api/status/sync');
 
-      console.log(chalk.bold('Chat-Recall Index Status'));
+      console.log(chalk.bold('Chat-Recall Server Status'));
       console.log();
-      console.log(`Index path: ${stats.indexPath}`);
-      console.log(`Total items: ${stats.totalItems}`);
-      console.log(`Vector chunks: ${stats.totalChunks}`);
-      console.log(`FTS5 chunks: ${ftsCount}`);
-      console.log(`Total links: ${linkCount}`);
+      console.log(`Synced sessions: ${sync.sessions}`);
+      console.log(`FTS5 chunks: ${status.totalChunks}`);
+      console.log(`Raw archives: ${sync.rawArchived}`);
+      if (sync.newestSessionAgeMs !== null) {
+        const mins = Math.round(sync.newestSessionAgeMs / 60000);
+        console.log(`Freshness: newest synced session ${mins} min ago`);
+      }
 
-      if (Object.keys(stats.bySourceType).length > 0) {
+      const types = Object.entries(sync.sourceTypes).filter(([, n]) => Number(n) > 0);
+      if (types.length > 0) {
         console.log();
         console.log(chalk.bold('By source type:'));
-        for (const [type, data] of Object.entries(stats.bySourceType)) {
-          console.log(`  ${type}: ${data.items} items, ${data.chunks} chunks`);
-        }
+        for (const [type, n] of types) console.log(`  ${type}: ${n} items`);
+      }
+
+      const projects = Object.entries(status.projects || {}).sort((a, b) => b[1] - a[1]).slice(0, 10);
+      if (projects.length > 0) {
+        console.log();
+        console.log(chalk.bold('Top projects:'));
+        for (const [proj, n] of projects) console.log(`  ${proj}: ${n} sessions`);
       }
     } catch (err) {
-      console.error(chalk.red('Error:'), err);
+      console.error(chalk.red('Error:'), err instanceof Error ? err.message : err);
       process.exit(1);
     }
   });
 
 program
   .command('optimize')
-  .description('Compact and optimize the LanceDB index to reclaim disk space')
-  .action(async () => {
-    try {
-      const { MemoryIndex } = await import('@chat-recall/engine/core/memory-index.js');
-      const embedder = {
-        embed: async () => [],
-        embedQuery: async () => [],
-        dimension: 768,
-      };
-      const index = await createVectorStore(embedder as any);
-
-      console.log(chalk.bold('Optimizing LanceDB index...'));
-      console.log('This compacts data files and removes old versions/transactions.');
-      console.log();
-
-      const stats = await index.optimize({ lockKind: 'cli' });
-      if (stats.skipped) {
-        if (stats.skipped === 'busy') {
-          console.log(chalk.yellow('Skipped: index is locked by another process.'));
-          console.log(chalk.dim('  The auto-indexer or another `chat-recall optimize` is running.'));
-          console.log(chalk.dim('  Try again in a minute, or stop the daemon: systemctl --user stop chat-recall-indexer'));
-        } else {
-          console.log(chalk.dim('Skipped: no LanceDB table found (vector index not initialized).'));
-        }
-        process.exit(1);
-      }
-      console.log(chalk.green('Done!'));
-      console.log(`  Compacted fragments: ${stats.compactedFragments}`);
-      console.log(`  Pruned old versions: ${stats.prunedFiles}`);
-      console.log();
-      console.log('Run', chalk.bold(`du -sh ${getIndexDir()}`), 'to check the new size.');
-    } catch (err) {
-      console.error(chalk.red('Error:'), err);
-      process.exit(1);
-    }
+  .description('Deprecated: storage is server-side now, nothing to optimize locally')
+  .action(() => {
+    // The thin collector keeps no local LanceDB/SQLite index — all storage and
+    // compaction live on the server. Kept as a no-op so existing scripts and
+    // cron jobs that call it don't error out.
+    console.log(chalk.dim('Storage is server-side now; there is no local index to optimize.'));
+    console.log(chalk.dim('Run `chat-recall sync` to ship sessions; the server manages its own storage.'));
+    process.exit(0);
   });
 
 program
   .command('show <session_id>')
-  .description('Show conversation content from a session')
-  .option('-l, --line <number>', 'Show context around this line number')
+  .description('Show conversation content from a session (requires login)')
   .option('-m, --messages <number>', 'Number of messages to show', '10')
   .option('-f, --full', 'Show full conversation (all messages)', false)
-  .action(async (sessionId, options) => {
-    // Find the session via the backend registry — this works for Claude
-    // raw uuids and for prefixed ids ('gemini_<uuid>', 'opencode_<id>',
-    // 'codex_<id>') alike.
-    const backend = getBackendForId(sessionId);
-    const located = backend?.findSession(sessionId);
-    if (!backend || !located) {
-      console.error(chalk.red('Session not found:'), sessionId);
-      process.exit(1);
-    }
-    if (located.format !== 'jsonl') {
-      console.error(chalk.red('CLI `show` only renders JSONL transcripts.'));
-      console.error(chalk.dim(`This session uses '${located.format}' format. Use the MCP server's recall_show instead.`));
-      process.exit(1);
-    }
-    const sessionFile: string = located.path;
+  .action(async (sessionId: string, options: { messages: string; full?: boolean }) => {
+    try {
+      // Server holds the full message list (rebuilt from synced chunks). limit=0
+      // returns the whole session; each row's `content` is already display text.
+      const soft = await serverGetSoft<{
+        sessionId: string;
+        messages: Array<{ line: number; role: string; content: string }>;
+        total: number;
+      }>(`/api/conversations/${encodeURIComponent(sessionId)}?limit=0`);
 
-    console.log(chalk.bold('Session:'), sessionId);
-    console.log(chalk.dim('File:'), sessionFile);
-    console.log();
-    
-    interface Message {
-      line: number;
-      role: 'user' | 'assistant' | 'summary';
-      text: string;
-    }
-    
-    // Parse messages
-    const messagesList: Message[] = [];
-    const lines = readFileSync(sessionFile, 'utf-8').split('\n');
-    
-    for (let lineNum = 0; lineNum < lines.length; lineNum++) {
-      const line = lines[lineNum];
-      if (!line.trim()) continue;
-      
-      try {
-        const obj = JSON.parse(line) as Record<string, unknown>;
-        const msgType = obj.type as string;
-        
-        if (msgType === 'user') {
-          const msg = obj.message as Record<string, unknown>;
-          if (msg && typeof msg === 'object') {
-            const content = msg.content;
-            let text = '';
-            
-            if (typeof content === 'string') {
-              text = content;
-            } else if (Array.isArray(content)) {
-              const textParts: string[] = [];
-              for (const item of content) {
-                if (typeof item === 'object' && item !== null && (item as Record<string, unknown>).type === 'text') {
-                  textParts.push((item as Record<string, unknown>).text as string || '');
-                }
-              }
-              text = textParts.join('\n');
-            }
-            
-            if (text && !text.includes('<system-reminder>')) {
-              messagesList.push({
-                line: lineNum + 1,
-                role: 'user',
-                text,
-              });
-            }
-          }
-        } else if (msgType === 'assistant') {
-          const msg = obj.message as Record<string, unknown>;
-          if (msg && typeof msg === 'object') {
-            const content = msg.content;
-            if (Array.isArray(content)) {
-              for (const item of content) {
-                if (typeof item === 'object' && item !== null && (item as Record<string, unknown>).type === 'text') {
-                  let text = (item as Record<string, unknown>).text as string || '';
-                  if (text) {
-                    // Remove code blocks for cleaner display
-                    text = text.replace(/```[\s\S]*?```/g, '[code block]');
-                    messagesList.push({
-                      line: lineNum + 1,
-                      role: 'assistant',
-                      text,
-                    });
-                    break;
-                  }
-                }
-              }
-            } else if (typeof content === 'string') {
-              messagesList.push({
-                line: lineNum + 1,
-                role: 'assistant',
-                text: content,
-              });
-            }
-          }
-        } else if (msgType === 'summary') {
-          const summary = obj.summary as string;
-          if (summary) {
-            messagesList.push({
-              line: lineNum + 1,
-              role: 'summary',
-              text: summary,
-            });
-          }
-        }
-      } catch {
-        continue;
+      if (!soft.data || soft.data.messages.length === 0) {
+        console.log(chalk.yellow(soft.message || `Session not found: ${sessionId}`));
+        process.exit(soft.status === 404 ? 1 : 0);
       }
-    }
-    
-    if (messagesList.length === 0) {
-      console.log(chalk.yellow('No messages found in session.'));
-      process.exit(0);
-    }
-    
-    // Filter messages based on options
-    let displayMessages = messagesList;
-    const maxMessages = parseInt(options.messages, 10);
-    const aroundLine = options.line ? parseInt(options.line, 10) : null;
-    
-    if (aroundLine) {
-      const window = Math.floor(maxMessages / 2);
-      const filtered = messagesList.filter(msg => Math.abs(msg.line - aroundLine) <= window * 10);
-      if (filtered.length > 0) {
-        displayMessages = filtered.slice(0, maxMessages);
-      } else {
-        displayMessages = messagesList.filter(msg => msg.line <= aroundLine + 50).slice(-maxMessages);
-      }
-    } else if (!options.full) {
-      displayMessages = messagesList.slice(0, maxMessages);
-    }
-    
-    // Display messages
-    for (const msg of displayMessages) {
-      let text = msg.text;
-      if (!options.full && text.length > 1000) {
-        text = text.slice(0, 1000) + '...';
-      }
-      
-      if (msg.role === 'user') {
-        console.log(`${chalk.bold.blue('User')} ${chalk.dim(`(line ${msg.line})`)}`);
-      } else if (msg.role === 'assistant') {
-        console.log(`${chalk.bold.green('Claude')} ${chalk.dim(`(line ${msg.line})`)}`);
-      } else if (msg.role === 'summary') {
-        console.log(chalk.bold.yellow('Summary'));
-      }
-      
-      console.log(text);
+      const messagesList = soft.data.messages;
+
+      console.log(chalk.bold('Session:'), sessionId);
       console.log();
+
+      // Without --full, show the first N messages (server returns them in order).
+      const maxMessages = parseInt(options.messages, 10);
+      const displayMessages = options.full ? messagesList : messagesList.slice(0, maxMessages);
+
+      for (const msg of displayMessages) {
+        let text = msg.content;
+        if (!options.full && text.length > 1000) text = text.slice(0, 1000) + '...';
+
+        if (msg.role === 'user') {
+          console.log(`${chalk.bold.blue('User')} ${chalk.dim(`(line ${msg.line})`)}`);
+        } else if (msg.role === 'assistant') {
+          console.log(`${chalk.bold.green('Assistant')} ${chalk.dim(`(line ${msg.line})`)}`);
+        } else {
+          console.log(chalk.bold.yellow(msg.role));
+        }
+        console.log(text);
+        console.log();
+      }
+
+      console.log(chalk.dim(`Showing ${displayMessages.length} of ${messagesList.length} messages. Use --full for the complete conversation.`));
+      console.log(chalk.dim(`Resume: claude --resume ${sessionId}`));
+    } catch (err) {
+      console.error(chalk.red('Error:'), err instanceof Error ? err.message : err);
+      process.exit(1);
     }
-    
-    console.log(chalk.dim(`Showing ${displayMessages.length} messages. Use --full for complete conversation.`));
-    console.log(chalk.dim(`Resume: claude --resume ${sessionId}`));
   });
 
 // --- Memory command group ---
@@ -770,149 +538,40 @@ const memory = program
 
 memory
   .command('index')
-  .description('Index all memory sources (plans, tasks, CLAUDE.md, history, paste, sessions)')
-  .option('-f, --force', 'Force re-index all items', false)
-  .option('-t, --types <types>', 'Comma-separated source types to index (e.g. plan,task)')
-  .option('-p, --provider <provider>', 'Embedding provider (ollama or gemini)')
-  .action(async (options) => {
+  .description('Collect local sessions and ship them to your server (alias for sync)')
+  .option('-f, --force', 'Ignore the per-server ledger and re-ship everything', false)
+  .action(async (options: { force?: boolean }) => {
     try {
-      const provider = (options.provider || process.env.EMBEDDING_PROVIDER || 'ollama') as EmbedderProvider;
-      let embedder: Awaited<ReturnType<typeof getEmbedder>> | null;
-      try {
-        embedder = getEmbedder(provider);
-        console.log(`Using embedding provider: ${chalk.bold(provider)}`);
-      } catch {
-        embedder = null;
-        console.log(`Using search: ${chalk.bold('FTS5 (full-text)')}`);
-      }
-
-      const memoryIndex = await createVectorStore(embedder);
-      const memoryStore = await createStore();
-
-      const registry = buildSourceRegistry();
-
-      const requestedTypes: SourceType[] = options.types
-        ? options.types.split(',') as SourceType[]
-        : registry.getRegisteredTypes();
-
-      console.log(`Indexing: ${requestedTypes.join(', ')}`);
-      if (options.force) console.log('Force mode: re-indexing everything');
-      console.log();
-
-      const kgLegacy = await createKnowledgeGraph();
-      let totalItems = 0;
-      let totalChunks = 0;
-      let totalLinks = 0;
-      let totalSkipped = 0;
-      let totalErrors = 0;
-
-      for (const sourceType of requestedTypes) {
-        const source = registry.get(sourceType);
-        if (!source) continue;
-
-        console.log(chalk.bold(`--- ${sourceType} ---`));
-        let typeItems = 0;
-
-        try {
-          for await (const item of source.discover()) {
-            try {
-              if (!options.force && !(await memoryIndex.needsUpdate(item.sourceType, item.id, item.mtime))) {
-                totalSkipped++;
-                continue;
-              }
-
-              await memoryIndex.deleteItem(item.sourceType, item.id);
-              const chunks = await source.parse(item);
-              for (const chunk of chunks) {
-                const cls = classifyChunk(chunk.text);
-                if (cls.memoryType !== 'general') {
-                  chunk.chunkType = `${chunk.chunkType}:${cls.memoryType}:imp${cls.importance}`;
-                }
-                await extractAndPopulateKG(kgLegacy, chunk.text, {
-                  projectPath: item.projectPath, sourceType: item.sourceType, sessionId: item.id,
-                });
-              }
-
-              if (chunks.length > 0) {
-                const added = await memoryIndex.addChunks(chunks);
-                totalChunks += added;
-              }
-
-              await memoryStore.setItem(item);
-              if (item.sourceType === 'session') {
-                try { await writeTranscriptEnvelope(memoryStore, item.id); } catch { /* rebuilt on demand */ }
-                try { await archiveRawSession(memoryStore, item.id); } catch { /* archive is best-effort */ }
-              }
-
-              const links = await source.extractLinks(item);
-              if (links.length > 0) {
-                await memoryStore.addLinks(links);
-                totalLinks += links.length;
-              }
-
-              typeItems++;
-              totalItems++;
-
-              let titlePreview = item.title;
-              if (titlePreview.length > 60) titlePreview = titlePreview.slice(0, 57) + '...';
-              console.log(`  ${titlePreview} (${chunks.length} chunks)`);
-            } catch (err) {
-              totalErrors++;
-              console.error(chalk.yellow(`  Error: ${item.id}: ${err}`));
-            }
-          }
-        } catch (err) {
-          totalErrors++;
-          console.error(chalk.red(`  Discovery error: ${err}`));
-        }
-
-        console.log(chalk.dim(`  => ${typeItems} items`));
-        console.log();
-      }
-
-      console.log(chalk.green('Memory indexing complete!'));
-      console.log(`  Items: ${totalItems} processed, ${totalSkipped} skipped`);
-      console.log(`  Chunks: ${totalChunks}`);
-      console.log(`  Links: ${totalLinks}`);
-      if (totalErrors > 0) console.log(chalk.yellow(`  Errors: ${totalErrors}`));
-
-      await kgLegacy.close();
-      await memoryStore.close();
+      // No local memory index in the thin collector — `memory index` ships the
+      // same way `sync`/`index` do. All source-type extraction + chunking now
+      // happens on the server when it ingests the synced sessions.
+      const { syncSessions } = await import('./sync-client.js');
+      const r = await syncSessions(options.force ? { useLedger: false } : {});
+      console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted`));
     } catch (err) {
-      console.error(chalk.red('Error:'), err);
+      console.error(chalk.red('Error:'), err instanceof Error ? err.message : err);
       process.exit(1);
     }
   });
 
 memory
   .command('search <query>')
-  .description('Search across all memory types')
+  .description('Search across all memory types on your server (requires login)')
   .option('-n, --top <number>', 'Number of results', '10')
   .option('-t, --types <types>', 'Filter by source types (comma-separated)')
-  .option('-p, --project <path>', 'Filter by project path')
-  .option('--provider <provider>', 'Embedding provider')
-  .action(async (query, options) => {
+  .action(async (query: string, options: { top: string; types?: string }) => {
     try {
-      const provider = (options.provider || process.env.EMBEDDING_PROVIDER || 'ollama') as EmbedderProvider;
-      let embedder: Awaited<ReturnType<typeof getEmbedder>> | null;
-      try {
-        embedder = getEmbedder(provider);
-      } catch {
-        embedder = null;
-      }
-      const memoryIndex = await createVectorStore(embedder);
-
       const topK = parseInt(options.top, 10);
-      const sourceTypes = options.types
-        ? options.types.split(',') as SourceType[]
-        : undefined;
+      const sourceTypes = options.types ? options.types.split(',') : undefined;
 
-      const results = await memoryIndex.search(query, {
-        topK,
-        sourceTypes,
-        projectIdFilter: options.project,
-      });
+      // Server-backed: POST /api/memory/search returns ranked rows across every
+      // source type (session, plan, task, claude_md, history, paste, diary).
+      const remote = await serverPost<{
+        results: Array<{ itemId: string; sourceType: string; title: string; text: string; score: number; projectPath?: string; chunkType?: string }>;
+        count: number;
+      }>('/api/memory/search', { query, topK, sourceTypes });
 
+      const results = remote.results;
       if (results.length === 0) {
         console.log(chalk.yellow('No matching results found.'));
         process.exit(0);
@@ -938,7 +597,7 @@ memory
 
         const typeBadge = typeColor(`[${r.sourceType}]`);
 
-        let title = r.title.replace(/\n/g, ' ').trim();
+        let title = (r.title || '').replace(/\n/g, ' ').trim();
         if (title.length > 70) title = title.slice(0, 67) + '...';
 
         console.log(`${chalk.bold.cyan(`#${i + 1}`)} ${typeBadge} ${title}`);
@@ -949,12 +608,12 @@ memory
           console.log(`   ${chalk.dim('Project:')} ${pp}`);
         }
 
-        console.log(`   ${chalk.dim('Score:')} ${scorePct}/100  ${chalk.dim('Type:')} ${r.chunkType}`);
+        const typeSuffix = r.chunkType ? `  ${chalk.dim('Type:')} ${r.chunkType}` : '';
+        console.log(`   ${chalk.dim('Score:')} ${scorePct}/100${typeSuffix}`);
 
-        // Show preview text
-        let preview = r.text.replace(/\n/g, ' ').trim();
+        let preview = (r.text || '').replace(/\n/g, ' ').trim();
         if (preview.length > 150) preview = preview.slice(0, 147) + '...';
-        console.log(`   ${preview}`);
+        if (preview) console.log(`   ${preview}`);
 
         if (r.sourceType === 'session') {
           console.log(`   ${chalk.green('Resume:')} claude --resume ${r.itemId}`);
@@ -963,70 +622,72 @@ memory
         console.log();
       }
     } catch (err) {
-      console.error(chalk.red('Error:'), err);
+      console.error(chalk.red('Error:'), err instanceof Error ? err.message : err);
       process.exit(1);
     }
   });
 
 memory
   .command('status')
-  .description('Show memory index statistics across all source types')
+  .description('Show your server\'s memory statistics across all source types (requires login)')
   .action(async () => {
     try {
-      const dummyEmbedder = {
-        embed: async () => [] as number[][],
-        embedQuery: async () => [] as number[],
-        dimension: 768,
-      };
-
-      const memoryIndex = await createVectorStore(dummyEmbedder);
-      const memoryStore = await createStore();
-
-      const indexStats = await memoryIndex.getStats();
-      const storeStats = await memoryStore.getStats();
-      const linkCount = await memoryStore.getLinkCount();
+      // Server-backed aggregate. Vector/index-path fields are local-only and
+      // don't exist in the thin collector — only FTS5 chunk count and the
+      // per-(source,tool) breakdown come back from the server.
+      const status = await serverGet<{
+        totalChunks: number;
+        totalItems: number;
+        linkCount: number;
+        bySourceType: Record<string, { items: number; chunks: number }>;
+        bySourceAndTool: Record<string, Record<string, number>>;
+      }>('/api/memory/status');
 
       console.log(chalk.bold('Memory System Status'));
       console.log();
-      console.log(`Index path: ${indexStats.indexPath}`);
-      console.log(`Total items: ${indexStats.totalItems}`);
-      console.log(`Total chunks: ${indexStats.totalChunks}`);
-      console.log(`Total links: ${linkCount}`);
-      console.log();
+      console.log(`Total items: ${status.totalItems}`);
+      console.log(`FTS5 chunks: ${status.totalChunks}`);
+      console.log(`Total links: ${status.linkCount}`);
 
-      if (Object.keys(indexStats.bySourceType).length > 0) {
-        console.log(chalk.bold('Vector index by source type:'));
-        for (const [type, data] of Object.entries(indexStats.bySourceType)) {
+      const bySource = Object.entries(status.bySourceType || {});
+      if (bySource.length > 0) {
+        console.log();
+        console.log(chalk.bold('By source type:'));
+        for (const [type, data] of bySource) {
           console.log(`  ${type}: ${data.items} items, ${data.chunks} chunks`);
         }
-        console.log();
       }
 
-      if (Object.keys(storeStats).length > 0) {
-        console.log(chalk.bold('Metadata store by source type:'));
-        for (const [type, count] of Object.entries(storeStats)) {
-          console.log(`  ${type}: ${count} items`);
+      const byTool = Object.entries(status.bySourceAndTool || {});
+      if (byTool.length > 0) {
+        console.log();
+        console.log(chalk.bold('By source type and tool:'));
+        for (const [type, tools] of byTool) {
+          const parts = Object.entries(tools).map(([t, n]) => `${t}: ${n}`).join(', ');
+          console.log(`  ${type}: ${parts}`);
         }
       }
-
-      await memoryStore.close();
     } catch (err) {
-      console.error(chalk.red('Error:'), err);
+      console.error(chalk.red('Error:'), err instanceof Error ? err.message : err);
       process.exit(1);
     }
   });
 
 memory
   .command('links <source_type> <item_id>')
-  .description('Show relationships for a memory item')
+  .description('Show relationships for a memory item (requires login)')
   .action(async (sourceType: string, itemId: string) => {
     try {
-      const memoryStore = await createStore();
-      const links = await memoryStore.getAllLinks(sourceType as SourceType, itemId);
+      // Server-backed: GET /api/memory/links/:type/:id returns the same
+      // MemoryLinkRow shape the local store used to (source/target type+id,
+      // link_type, confidence).
+      const { links } = await serverGet<{
+        links: Array<{ source_type: string; source_id: string; target_type: string; target_id: string; link_type: string; confidence: number }>;
+        count: number;
+      }>(`/api/memory/links/${encodeURIComponent(sourceType)}/${encodeURIComponent(itemId)}`);
 
       if (links.length === 0) {
         console.log(chalk.yellow('No links found.'));
-        await memoryStore.close();
         return;
       }
 
@@ -1041,23 +702,22 @@ memory
 
         console.log(`  ${direction} ${chalk.bold(otherType)}:${otherId.slice(0, 20)} [${link.link_type}] (${confidence}%)`);
       }
-
-      await memoryStore.close();
     } catch (err) {
-      console.error(chalk.red('Error:'), err);
+      console.error(chalk.red('Error:'), err instanceof Error ? err.message : err);
       process.exit(1);
     }
   });
 
 memory
   .command('wake-up')
-  .description('Generate wake-up context (high-importance facts + knowledge graph snapshot) for an AI session')
-  .option('-s, --session <id>', 'Session ID to focus on')
-  .action(async (_options: { session?: string }) => {
+  .description('Generate wake-up context (high-importance facts + knowledge graph snapshot) for an AI session (requires login)')
+  .option('-p, --project <filter>', 'Restrict facts/KG to a project (substring match)')
+  .action(async (options: { project?: string }) => {
     try {
-      const { readdirSync, existsSync, readFileSync } = await import('fs');
-
-      // Identity (optional, static)
+      // Identity stays local — it's a tiny user-owned file the server never
+      // sees. Everything else (high-importance facts, KG snapshot) is fetched
+      // from /api/memory/wake-up, which runs the same classifier-filtered FTS
+      // query + current-facts timeline server-side.
       const identityFile = getIdentityFilePath();
       let identity = 'AI coding assistant';
       if (existsSync(identityFile)) {
@@ -1073,49 +733,35 @@ memory
         '',
       ];
 
-      // High-importance facts from FTS5 index (memory classifier output)
-      try {
-        const store = await createStore();
-        const impChunks = await store.searchFTS('decision preference milestone', { topK: 30 });
-        const highImp = impChunks
-          .filter(r => r.chunkType.includes(':imp4') || r.chunkType.includes(':imp5'))
-          .slice(0, 10);
+      const qs = options.project ? `?project_filter=${encodeURIComponent(options.project)}` : '';
+      const wake = await serverGet<{
+        highFacts: Array<{ type: string; text: string }>;
+        kg: { stats: { entities?: number; current_facts?: number }; facts: Array<{ subject: string; predicate: string; object: string }> };
+      }>(`/api/memory/wake-up${qs}`);
 
-        if (highImp.length > 0) {
-          lines.push(chalk.bold('## High-Importance Facts'));
-          for (const chunk of highImp) {
-            const typeMatch = chunk.chunkType.match(/:(\w+):imp/);
-            const memType = typeMatch ? typeMatch[1] : 'fact';
-            const text = chunk.text.replace(/\n/g, ' ').trim().slice(0, 150);
-            lines.push(`  [${memType}] ${text}`);
-          }
-          lines.push('');
+      if (wake.highFacts.length > 0) {
+        lines.push(chalk.bold('## High-Importance Facts'));
+        for (const fact of wake.highFacts) {
+          lines.push(`  [${fact.type}] ${fact.text}`);
         }
-        await store.close();
-      } catch { /* FTS not available */ }
+        lines.push('');
+      }
 
-      // Knowledge graph snapshot — current facts only
-      try {
-        const kgWake = await createKnowledgeGraph();
-        const kgStats = await kgWake.stats();
-        if (kgStats.current_facts > 0) {
-          const timeline = await kgWake.timeline(undefined, 20);
-          const currentFacts = timeline.filter(e => e.current);
-          if (currentFacts.length > 0) {
-            lines.push(chalk.bold('## Knowledge Graph'));
-            lines.push(chalk.dim(`${kgStats.entities} entities, ${kgStats.current_facts} current facts`));
-            for (const fact of currentFacts.slice(0, 15)) {
-              lines.push(`  ${fact.subject} → ${fact.predicate} → ${fact.object}`);
-            }
-            lines.push('');
-          }
+      if (wake.kg.facts.length > 0) {
+        lines.push(chalk.bold('## Knowledge Graph'));
+        const { entities, current_facts } = wake.kg.stats;
+        if (entities !== undefined || current_facts !== undefined) {
+          lines.push(chalk.dim(`${entities ?? 0} entities, ${current_facts ?? 0} current facts`));
         }
-        await kgWake.close();
-      } catch { /* KG not available */ }
+        for (const fact of wake.kg.facts) {
+          lines.push(`  ${fact.subject} → ${fact.predicate} → ${fact.object}`);
+        }
+        lines.push('');
+      }
 
       console.log(lines.join('\n'));
     } catch (err) {
-      console.error(chalk.red('Error:'), err);
+      console.error(chalk.red('Error:'), err instanceof Error ? err.message : err);
       process.exit(1);
     }
   });
@@ -1129,8 +775,9 @@ memory
  */
 program
   .command('doctor')
-  .description('Quick health check across index, embedder, hooks, MCP server, and codeindex')
-  .action(async () => {
+  .description('Quick health check across login, server, credentials, hooks, MCP server, and codeindex')
+  .option('--purge-local', 'Remove the legacy local index (cache.db + vector/KG files) left by pre-thin-collector versions — storage is server-side now. Requires login; keeps credentials, sync ledger, identity, and the audit log.')
+  .action(async (opts: { purgeLocal?: boolean }) => {
     const { existsSync, readFileSync, statSync } = await import('fs');
     const { execSync } = await import('child_process');
 
@@ -1138,41 +785,43 @@ program
     const rows: Row[] = [];
     const note = (ok: boolean, label: string, detail?: string) => rows.push({ ok, label, detail });
 
-    // Index
-    try {
-      const store = await createStore();
-      try {
-        const items = await store.listItems('session' as SourceType, 1, 0);
-        const total = (await store.listItems('session' as SourceType, 5000, 0)).length;
-        note(items.length > 0, 'SQLite + FTS5 index', `${total} sessions indexed`);
-      } finally { await store.close(); }
-    } catch (err) {
-      note(false, 'SQLite + FTS5 index', `error: ${err}`);
+    // Login — the thin collector reads everything back from a server, so a
+    // login is the precondition for every read command.
+    const targets = loadAllCredentials();
+    const target = targets[0] ? { base: targets[0].serverUrl.replace(/\/+$/, ''), token: targets[0].token } : null;
+    if (!target) {
+      note(false, 'Logged in', 'no credentials — run `chat-recall login <server-url>`');
+    } else {
+      note(true, 'Logged in', `${targets.length} target(s); primary: ${target.base}`);
     }
 
-    // Knowledge graph
-    try {
-      const kg = await createKnowledgeGraph();
+    // Server reachability — GET /api/capabilities is unauthenticated and cheap,
+    // and confirms the server is up and speaks a version we can sync to.
+    if (target) {
       try {
-        const stats = await kg.stats();
-        note(stats.entities > 0, 'Knowledge graph', `${stats.entities} entities, ${stats.current_facts} current facts`);
-      } finally { await kg.close(); }
-    } catch (err) {
-      note(false, 'Knowledge graph', `error: ${err}`);
-    }
-
-    // Embedder (vector search)
-    const embProvider = (process.env.EMBEDDING_PROVIDER || 'ollama') as EmbedderProvider;
-    try {
-      const embedder = getEmbedder(embProvider);
-      try {
-        const v = await embedder.embedQuery('healthcheck');
-        note(Array.isArray(v) && v.length > 0, `Embedder (${embProvider})`, `dim=${v.length}`);
+        const caps = await fetch(`${target.base}/api/capabilities`).then((r) => r.json() as Promise<{ apiVersion?: number; edition?: string }>);
+        note((caps.apiVersion ?? 0) >= 2, 'Server reachable', `apiVersion ${caps.apiVersion ?? 'unknown'}${caps.edition ? `, edition ${caps.edition}` : ''}`);
       } catch (err) {
-        note(false, `Embedder (${embProvider})`, `unreachable: ${(err as Error).message}`);
+        note(false, 'Server reachable', `unreachable: ${err instanceof Error ? err.message : err}`);
       }
-    } catch (err) {
-      note(false, `Embedder (${embProvider})`, `not configured: ${(err as Error).message}`);
+    } else {
+      note(false, 'Server reachable', 'N/A (not logged in)');
+    }
+
+    // Credentials file perms — the token grants sync access, so it must be 0600.
+    const credFile = join(getDataDir(), 'credentials.json');
+    if (!existsSync(credFile)) {
+      note(false, 'Credentials file', `missing — run \`chat-recall login <server-url>\``);
+    } else {
+      try {
+        const mode = statSync(credFile).mode & 0o777;
+        // 0o600 (owner-only) is the safe default saveCredentials sets. Group/
+        // world-readable bits expose the bearer token to other local users.
+        const safe = (mode & 0o077) === 0;
+        note(safe, 'Credentials file', `${credFile} (mode ${mode.toString(8).padStart(3, '0')}${safe ? '' : ' — should be 600'})`);
+      } catch (err) {
+        note(false, 'Credentials file', `error: ${err}`);
+      }
     }
 
     // Hooks (Claude-specific)
@@ -1221,13 +870,45 @@ program
       note(false, 'codeindex companion', `error: ${err}`);
     }
 
-    // Auto-indexer process detection (best effort — looks for the daemon)
-    let autoIndexerRunning = false;
+    // Watch daemon detection (best effort — the live collector that auto-syncs)
+    let watchRunning = false;
     try {
-      const out = execSync('pgrep -fc "auto-indexer/indexer" 2>/dev/null || true', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
-      autoIndexerRunning = parseInt(out, 10) > 0;
+      const out = execSync('pgrep -fc "chat-recall.*watch" 2>/dev/null || true', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+      watchRunning = parseInt(out, 10) > 0;
     } catch { /* tolerate */ }
-    note(autoIndexerRunning, 'Auto-indexer daemon', autoIndexerRunning ? 'running' : 'not running (run `npm run auto-indexer` to enable live indexing)');
+    note(watchRunning, 'Watch daemon', watchRunning ? 'running' : 'not running (run `chat-recall watch` to auto-ship new sessions)');
+
+    // Legacy local index — pre-thin-collector versions kept a local SQLite
+    // store + vector/KG files here. The thin collector stores everything
+    // server-side, so these are dead weight. We never auto-delete them; the
+    // opt-in --purge-local flag (plus a login check, so history is already on
+    // the server) is the explicit approval. Credentials, the sync ledger,
+    // identity, and the WAL audit log are NOT touched.
+    const dataDir = getDataDir();
+    const legacyPaths = [
+      join(dataDir, 'cache.db'), join(dataDir, 'cache.db-wal'), join(dataDir, 'cache.db-shm'),
+      join(dataDir, 'index', 'lancedb'), join(dataDir, 'index', 'knowledge_graph.db'), join(dataDir, 'index', 'metadata.db'),
+    ];
+    const legacyPresent = legacyPaths.filter((p) => existsSync(p));
+
+    if (opts.purgeLocal) {
+      if (!target) {
+        note(false, 'Purge legacy index', 'refused — log in and `chat-recall sync` first, so your history is on the server before removing local copies');
+      } else if (legacyPresent.length === 0) {
+        note(true, 'Purge legacy index', 'nothing to remove');
+      } else {
+        const { rmSync } = await import('fs');
+        let removed = 0;
+        for (const p of legacyPresent) {
+          try { rmSync(p, { recursive: true, force: true }); removed++; } catch { /* leave the rest */ }
+        }
+        note(removed === legacyPresent.length, 'Purge legacy index', `removed ${removed}/${legacyPresent.length} legacy item(s); kept credentials, ledger, identity, audit log`);
+      }
+    } else if (legacyPresent.length > 0) {
+      note(true, 'Legacy local index', `${legacyPresent.length} unused item(s) from old versions — reclaim space with \`chat-recall doctor --purge-local\``);
+    } else {
+      note(true, 'Legacy local index', 'none (clean)');
+    }
 
     // Render
     console.log(chalk.bold('\nchat-recall doctor\n'));
@@ -1240,7 +921,7 @@ program
     if (failures === 0) {
       console.log(chalk.green('All systems green.'));
     } else {
-      console.log(chalk.dim(`${failures} item${failures === 1 ? '' : 's'} need attention. None are fatal — chat-recall still works.`));
+      console.log(chalk.dim(`${failures} item${failures === 1 ? '' : 's'} need attention.`));
     }
   });
 
@@ -1742,22 +1423,34 @@ program
 
 program
   .command('dossier <project>')
-  .description('Generate a project dossier (overview/architecture/decisions/etc) as markdown')
+  .description('Generate a project dossier (overview/architecture/decisions/etc) as markdown (requires login)')
   .option('--sessions <n>', 'Max sessions to enumerate', '10')
   .option('--tasks <n>', 'Max open tasks to list', '20')
   .option('--plans <n>', 'Max plans to list', '20')
   .option('--out <file>', 'Write report to this file instead of stdout')
-  .action(async (project, options) => {
-    const md = await buildProjectDossier(project, {
-      recentSessionLimit: Number(options.sessions) || 10,
-      taskLimit: Number(options.tasks) || 20,
-      planLimit: Number(options.plans) || 20,
-    });
-    if (options.out) {
-      writeFileSync(options.out, md);
-      console.log(chalk.green(`Wrote dossier to ${options.out} (${md.length} chars)`));
-    } else {
-      console.log(md);
+  .action(async (project: string, options: { sessions: string; tasks: string; plans: string; out?: string }) => {
+    try {
+      // Server-backed: the dossier route resolves a path/id into a project_id
+      // (via the engine's resolveProjectId) and aggregates sessions, tasks,
+      // plans, commits and KG facts into markdown — all from synced data.
+      const qs = new URLSearchParams({
+        sessions: String(Number(options.sessions) || 10),
+        tasks: String(Number(options.tasks) || 20),
+        plans: String(Number(options.plans) || 20),
+      });
+      const dossier = await serverGet<{ project_id: string; markdown: string }>(
+        `/api/projects/${encodeURIComponent(project)}/dossier?${qs.toString()}`,
+      );
+      const md = dossier.markdown;
+      if (options.out) {
+        writeFileSync(options.out, md);
+        console.log(chalk.green(`Wrote dossier to ${options.out} (${md.length} chars)`));
+      } else {
+        console.log(md);
+      }
+    } catch (err) {
+      console.error(chalk.red('Error:'), err instanceof Error ? err.message : err);
+      process.exit(1);
     }
   });
 
@@ -1831,6 +1524,65 @@ program
     process.exit(1);
   });
 
+/**
+ * Shared login flow used by both `chat-recall login` and `chat-recall init`.
+ * Either saves a self-host device token directly (--token) or runs the OIDC
+ * device flow, picks a team, mints a per-device sync token and saves it.
+ * Exits the process on failure so callers don't have to.
+ */
+async function runLogin(
+  serverUrl: string,
+  opts: { token?: string; issuer?: string; clientId?: string; team?: string; deviceId?: string },
+): Promise<void> {
+  const { saveCredentials } = await import('./sync-client.js');
+  const base = serverUrl.replace(/\/+$/, '');
+
+  // Self-host escape hatch: token supplied directly, no OIDC.
+  if (opts.token) {
+    saveCredentials({ serverUrl, token: opts.token });
+    console.log(chalk.green('✓ Logged in.') + chalk.dim(`  server: ${serverUrl}`));
+    return;
+  }
+
+  try {
+    const { deviceLogin } = await import('./device-auth.js');
+    const tokens = await deviceLogin({ issuer: opts.issuer, clientId: opts.clientId }, (p) => {
+      console.log();
+      console.log(chalk.bold('To log in, open:'));
+      console.log('  ' + chalk.cyan(p.url));
+      console.log(chalk.dim(`  (if prompted, enter code: ${chalk.bold(p.userCode)} at ${p.verificationUri})`));
+      console.log(chalk.dim('Waiting for approval…'));
+    });
+
+    const authHdr = { authorization: `Bearer ${tokens.accessToken}`, 'content-type': 'application/json' };
+
+    // Which team? Use --team, else the user's sole team; bail with guidance otherwise.
+    const me = await fetch(`${base}/api/me`, { headers: authHdr }).then((r) => r.json() as Promise<{ teams: { team_slug: string; name: string }[] }>);
+    const teams = me.teams || [];
+    let slug = opts.team;
+    if (!slug) {
+      if (teams.length === 1) slug = teams[0].team_slug;
+      else if (teams.length === 0) { console.error(chalk.red('No team yet. Create one:') + ' chat-recall team create <name>, then re-run login.'); process.exit(1); }
+      else { console.error(chalk.red('You belong to multiple teams — pass --team <slug>:')); teams.forEach((t) => console.error(`  ${t.team_slug}  ${chalk.dim(t.name)}`)); process.exit(1); }
+    }
+
+    // Mint a per-device sync token for that team.
+    const deviceId = opts.deviceId || (await import('node:os')).hostname();
+    const mint = await fetch(`${base}/api/teams/${encodeURIComponent(slug!)}/tokens`, {
+      method: 'POST', headers: authHdr, body: JSON.stringify({ device_id: deviceId }),
+    });
+    if (!mint.ok) throw new Error(`token mint failed: HTTP ${mint.status} ${await mint.text().catch(() => '')}`);
+    const { token } = (await mint.json()) as { token: string };
+
+    saveCredentials({ serverUrl, token });
+    console.log(chalk.green(`✓ Logged in to ${chalk.bold(slug!)}`) + chalk.dim(`  (device: ${deviceId})  server: ${serverUrl}`));
+    console.log(chalk.dim('Run `chat-recall sync` to push redacted conversations.'));
+  } catch (err) {
+    console.error(chalk.red('login failed:'), err instanceof Error ? err.message : err);
+    process.exit(1);
+  }
+}
+
 program
   .command('login <server-url>')
   .description('Log in via Keycloak (device flow) and mint a sync device token → ~/.chat-recall/credentials.json (0600)')
@@ -1839,55 +1591,8 @@ program
   .option('--client-id <id>', 'OIDC client id (default: chat-recall-web)')
   .option('--team <slug>', 'Team to mint the device token for (default: your only team)')
   .option('--device-id <id>', 'Device id for this machine (default: hostname)')
-  .action(async (serverUrl: string, opts: { token?: string; issuer?: string; clientId?: string; team?: string; deviceId?: string }) => {
-    const { saveCredentials } = await import('./sync-client.js');
-    const base = serverUrl.replace(/\/+$/, '');
-
-    // Self-host escape hatch: token supplied directly, no OIDC.
-    if (opts.token) {
-      saveCredentials({ serverUrl, token: opts.token });
-      console.log(chalk.green('✓ Logged in.') + chalk.dim(`  server: ${serverUrl}`));
-      return;
-    }
-
-    try {
-      const { deviceLogin } = await import('./device-auth.js');
-      const tokens = await deviceLogin({ issuer: opts.issuer, clientId: opts.clientId }, (p) => {
-        console.log();
-        console.log(chalk.bold('To log in, open:'));
-        console.log('  ' + chalk.cyan(p.url));
-        console.log(chalk.dim(`  (if prompted, enter code: ${chalk.bold(p.userCode)} at ${p.verificationUri})`));
-        console.log(chalk.dim('Waiting for approval…'));
-      });
-
-      const authHdr = { authorization: `Bearer ${tokens.accessToken}`, 'content-type': 'application/json' };
-
-      // Which team? Use --team, else the user's sole team; bail with guidance otherwise.
-      const me = await fetch(`${base}/api/me`, { headers: authHdr }).then((r) => r.json() as Promise<{ teams: { team_slug: string; name: string }[] }>);
-      const teams = me.teams || [];
-      let slug = opts.team;
-      if (!slug) {
-        if (teams.length === 1) slug = teams[0].team_slug;
-        else if (teams.length === 0) { console.error(chalk.red('No team yet. Create one:') + ' chat-recall team create <name>, then re-run login.'); process.exit(1); }
-        else { console.error(chalk.red('You belong to multiple teams — pass --team <slug>:')); teams.forEach((t) => console.error(`  ${t.team_slug}  ${chalk.dim(t.name)}`)); process.exit(1); }
-      }
-
-      // Mint a per-device sync token for that team.
-      const deviceId = opts.deviceId || (await import('node:os')).hostname();
-      const mint = await fetch(`${base}/api/teams/${encodeURIComponent(slug!)}/tokens`, {
-        method: 'POST', headers: authHdr, body: JSON.stringify({ device_id: deviceId }),
-      });
-      if (!mint.ok) throw new Error(`token mint failed: HTTP ${mint.status} ${await mint.text().catch(() => '')}`);
-      const { token } = (await mint.json()) as { token: string };
-
-      saveCredentials({ serverUrl, token });
-      console.log(chalk.green(`✓ Logged in to ${chalk.bold(slug!)}`) + chalk.dim(`  (device: ${deviceId})  server: ${serverUrl}`));
-      console.log(chalk.dim('Run `chat-recall sync` to push redacted conversations.'));
-    } catch (err) {
-      console.error(chalk.red('login failed:'), err instanceof Error ? err.message : err);
-      process.exit(1);
-    }
-  });
+  .action((serverUrl: string, opts: { token?: string; issuer?: string; clientId?: string; team?: string; deviceId?: string }) =>
+    runLogin(serverUrl, opts));
 
 program
   .command('logout <server-url>')
@@ -1905,16 +1610,28 @@ program
 
 program
   .command('delete <session-id>')
-  .description('Delete a session from chat-recall everywhere: local index, raw archive, and (via tombstone on next sync) every server. Does NOT touch the AI tool\'s own transcript file.')
+  .description('Delete a session from chat-recall everywhere: purges it on every logged-in server and tombstones it so it can\'t resurrect on the next sync. Does NOT touch the AI tool\'s own transcript file.')
   .action(async (sessionId: string) => {
-    const store = await createStore();
-    try {
-      await store.purgeSession(sessionId);
-      await store.addTombstone(sessionId);
-      console.log(chalk.green(`✓ Deleted ${sessionId} locally`) + chalk.dim(' — tombstone recorded; servers purge on next sync'));
-    } finally {
-      await store.close();
+    const { loadAllCredentials } = await import('./sync-client.js');
+    const targets = loadAllCredentials();
+    if (targets.length === 0) {
+      console.error(chalk.red('Not logged in — run `chat-recall login <server-url>` first.'));
+      process.exit(1);
     }
+    let ok = 0;
+    for (const t of targets) {
+      try {
+        const res = await fetch(`${t.serverUrl.replace(/\/+$/, '')}/api/conversations/${encodeURIComponent(sessionId)}`, {
+          method: 'DELETE', headers: { authorization: `Bearer ${t.token}` },
+        });
+        if (res.ok) { ok++; console.log(chalk.green(`✓ Deleted on ${t.serverUrl}`)); }
+        else console.error(chalk.red(`✗ ${t.serverUrl}: HTTP ${res.status}`));
+      } catch (e) {
+        console.error(chalk.red(`✗ ${t.serverUrl}: ${e instanceof Error ? e.message : 'failed'}`));
+      }
+    }
+    if (ok === 0) process.exit(1);
+    console.log(chalk.dim(`Tombstoned on ${ok}/${targets.length} server(s) — re-sync cannot resurrect it.`));
   });
 
 program
@@ -1938,7 +1655,7 @@ program
           console.error(chalk.red('Not logged in (or sync disabled) — run `chat-recall login <server-url>` first.'));
           process.exit(1);
         }
-        console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.findings} findings, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted (incremental)`));
+        console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted (incremental)`));
         return;
       }
       const sinceMs = opts.sinceHours ? Date.now() - Number(opts.sinceHours) * 3_600_000 : undefined;
@@ -1953,7 +1670,7 @@ program
         throttleMs: opts.throttle !== undefined ? Number(opts.throttle) : (opts.full ? 3000 : undefined),
         prune: !!opts.prune,
       });
-      console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.findings} findings, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted`));
+      console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted`));
     } catch (err) {
       console.error(chalk.red('sync failed:'), err instanceof Error ? err.message : err);
       process.exit(1);
