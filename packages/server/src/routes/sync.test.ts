@@ -72,7 +72,7 @@ describe('POST /api/sync (ingest)', () => {
             { role: 'user', text: 'fix the flux capacitor in zorbofrang mode', ts: mtime - 1000 },
             { role: 'assistant', text: 'Decided: we will replace the zorbofrang coil entirely.', ts: mtime },
           ],
-          meta: { inputTokens: 1000, outputTokens: 200, modelsUsed: ['claude-sonnet-4-6'] },
+          meta: { inputTokens: 1000, outputTokens: 200, modelsUsed: ['claude-sonnet-4-6'], summary: 'Replaced the zorbofrang coil and shipped.', summarySource: 'gemini' },
         }],
         findings: [
           { session_id: sessionId, detector: 'gitleaks', rule: 'aws-key', line: 3, preview: '****QVGY' },
@@ -151,10 +151,13 @@ describe('POST /api/sync (ingest)', () => {
     expect(findings[0].preview).toBe('****QVGY');
     await store.close();
 
-    // 5. First-prompt cache hydrates the list.
+    // 5. First-prompt cache hydrates the list, and the shipped AI summary is
+    // stored (so /api/conversations/:id/metadata serves it to recall_summary).
     const cache = await createMetadataCache();
     const row = await cache.get(sessionId);
     expect(row?.firstPrompt).toContain('flux capacitor');
+    expect(row?.summary).toBe('Replaced the zorbofrang coil and shipped.');
+    expect(row?.summarySource).toBe('gemini');
     await cache.close();
   });
 
