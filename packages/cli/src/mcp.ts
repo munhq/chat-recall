@@ -2255,14 +2255,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_plan_show': {
         const params = RecallPlanShowSchema.parse(args);
-        const filePath = join(claudeBackend.plansDir(), `${params.plan_id}.md`);
 
-        if (!existsSync(filePath)) {
-          return { content: [{ type: 'text', text: `Plan not found: ${params.plan_id}` }] };
+        // Server-backed: the content endpoint serves the plan from its stored
+        // FTS chunks when there's no local file (the synced case) — see
+        // packages/server/src/routes/memory.ts. 404 → plan not on the server.
+        const soft = await remoteGetSoft<{ content: string }>(
+          `/api/memory/item/plan/${encodeURIComponent(params.plan_id)}/content`);
+        if (!soft.data) {
+          return { content: [{ type: 'text', text:
+            soft.status === 404 ? `Plan not found: ${params.plan_id}` : (soft.message || `Plan not synced yet: ${params.plan_id}.`) }] };
         }
-
-        const content = readFileSync(filePath, 'utf-8');
-        return { content: [{ type: 'text', text: content }] };
+        return { content: [{ type: 'text', text: soft.data.content }] };
       }
 
       case 'recall_tasks': {
@@ -2291,184 +2294,142 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_smart_resume': {
         const params = RecallSmartResumeSchema.parse(args);
+        const sid = params.session_id;
+        const enc = encodeURIComponent(sid);
 
-        // Find the session file (Claude only — gemini/opencode/codex take
-        // the memory_metadata fallback below).
-        let sessionFileSR: string | null = null;
-        let projectPathSR = '';
+        // Server-backed resume dossier, composed from the synced endpoints.
+        // Works for ANY tool's session id (claude/gemini/opencode/codex) — the
+        // server resolves the id the same way for all of them.
+        //
+        // Telemetry + summary come from /metadata; the structured outcome
+        // (status, decisions, blockers, claim/reaction) from /outcome; linked
+        // tasks/plans from /related; and current project facts from the KG.
+        // Data NOT reproduced from the old local version, because no server
+        // endpoint exposes it (we don't fabricate it):
+        //   - per-task completion counts (completed/total): /related's task
+        //     links carry title only, never the task-list breakdown.
+        //   - TODO/FIXME scraping from raw assistant text: the raw transcript
+        //     never ships to the server, so there's nothing to scan.
+        //   - git-log of commits during the session window: the server has no
+        //     checkout of the producer's repo. Use `recall_commits` for the
+        //     synced commit rollup if you need it.
 
-        if (detectTool(params.session_id) === 'claude') {
-          const located = claudeBackend.findSession(params.session_id);
-          if (located) {
-            sessionFileSR = located.path;
-            projectPathSR = located.projectPath;
-          }
+        // ── Metadata (telemetry + AI summary) ─────────────────────────
+        type Meta = {
+          tool: string; slug: string; contentPreview: string;
+          durationMs: number; messageCount: number;
+          inputTokens: number; outputTokens: number; peakContextTokens: number;
+          modelsUsed: string[]; filesModified: string[];
+          estimatedCostUsd: number | null;
+          // Present at runtime when the producer shipped a generated summary.
+          summary?: string;
+          project_path?: string; projectPath?: string;
+        };
+        const metaSoft = await remoteGetSoft<Meta>(`/api/conversations/${enc}/metadata`);
+        if (!metaSoft.data) {
+          return { content: [{ type: 'text', text:
+            metaSoft.message || (metaSoft.status === 404
+              ? `Session not found: ${sid}`
+              : `Session not synced yet: ${sid} — it arrives with the next sync from its machine.`) }] };
         }
+        const meta = metaSoft.data;
 
-        // Fallback: session may be a Gemini or OpenCode item indexed in the
-        // memory store rather than a Claude .jsonl on disk. Return a minimal
-        // resume dossier built from memory_metadata + cached summary so the
-        // tool is useful across all three backends.
-        if (!sessionFileSR) {
-          const fbStore = await createStore();
-          try {
-            // Accept either raw id ("<uuid>") or any backend's prefixed
-            // form. Driven off the registry so a new tool added later
-            // works automatically.
-            const seen = new Set<string>([params.session_id]);
-            const candidates: string[] = [params.session_id];
-            for (const b of listAvailableBackends()) {
-              const candidate = b.toPrefixedId(params.session_id);
-              if (!seen.has(candidate)) { candidates.push(candidate); seen.add(candidate); }
-            }
-            let item: any = null;
-            for (const id of candidates) {
-              item = await fbStore.getItem(id, 'session' as SourceType);
-              if (item) break;
-            }
-            if (!item) {
-              return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
-            }
-            let extra: any = {};
-            try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
-            const metaCacheFB = await (await import('@chat-recall/engine/core/store/caches.js')).createMetadataCache();
-            const mFB = await metaCacheFB.get(item.id);
-            await metaCacheFB.close();
-            const row = mFB ? { summary: mFB.summary, first_prompt: mFB.firstPrompt } : undefined;
-            const lines: string[] = [];
-            lines.push(`# Resume — ${item.title || item.id}`);
-            lines.push(`Tool: ${extra.tool || 'unknown'}   Project: ${item.project_path || '(unknown)'}`);
-            if (row?.summary) {
-              lines.push('');
-              lines.push('## Summary');
-              lines.push(row.summary);
-            } else {
-              lines.push('');
-              lines.push('(No AI summary yet — run `npm run generate-summaries` to produce one.)');
-            }
-            if (row?.first_prompt || item.content_preview) {
-              lines.push('');
-              lines.push('## First prompt');
-              lines.push(row?.first_prompt || item.content_preview);
-            }
-            return { content: [{ type: 'text', text: lines.join('\n') }] };
-          } finally {
-            await fbStore.close();
-          }
-        }
+        // ── Outcome (status / decisions / blockers / claim-reaction) ──
+        type Outcome = {
+          status: string; reason: string;
+          fileCount: number; totalLinesAdded: number; totalLinesRemoved: number;
+          commits: { totalCommits: number; repos: Array<{ repoName: string; commits: unknown[] }> };
+          decisions: Array<{ text: string }>;
+          blockers: Array<{ kind: string; text: string }>;
+          claimReaction: { claim?: { text: string }; reaction?: { text: string; markers: string[] } };
+        };
+        const outcomeSoft = await remoteGetSoft<Outcome>(`/api/conversations/${enc}/outcome`);
+        const outcome = outcomeSoft.data; // null if 202 (not yet computed) / 404
 
-        // Parse the session for structured resume data
-        const sessionContent = await parseSessionFile(sessionFileSR);
-        const meta = sessionContent.metadata;
+        // ── Related (linked tasks/plans for this session) ─────────────
+        type RelatedItem = { id: string; sourceType: string; title: string; contentPreview: string; linkType: string };
+        type Related = {
+          links: RelatedItem[];
+          projectPlans: RelatedItem[];
+          projectClaudeMd: RelatedItem | null;
+        };
+        const relatedSoft = await remoteGetSoft<Related>(`/api/conversations/${enc}/related`);
+        const related = relatedSoft.data;
+        const linkedTasks = (related?.links ?? []).filter(l => l.sourceType === 'task');
 
-        // Get summary
-        const metaCacheSR = await (await import('@chat-recall/engine/core/store/caches.js')).createMetadataCache();
-        const summaryRow = await metaCacheSR.get(params.session_id);
-        await metaCacheSR.close();
-
-        // Get tasks for this session
-        const storeSR = await createStore();
-        const taskLinks = await storeSR.getLinksTo('session' as SourceType, params.session_id);
-        const taskItems: Array<{ title: string; completed: number; total: number; subjects: string[] }> = [];
-        for (const link of taskLinks) {
-          if (link.source_type === 'task') {
-            const taskMeta = await storeSR.getItem(link.source_id, 'task' as SourceType);
-            if (taskMeta) {
-              const extra = JSON.parse(taskMeta.extra_json || '{}');
-              taskItems.push({
-                title: taskMeta.title,
-                completed: extra.completedCount || 0,
-                total: extra.taskCount || 0,
-                subjects: (extra.subjects as string[]) || [],
-              });
-            }
-          }
-        }
-        await storeSR.close();
-
-        // Extract context
-        const context = extractConversationContext(sessionFileSR);
-
-        // Build output
+        // ── Build output ──────────────────────────────────────────────
         const lines: string[] = [];
-        const slug = meta.slug || params.session_id.slice(0, 8);
-        const projName = projectPathSR.split('/').pop() || projectPathSR;
+        const projectPath = meta.project_path ?? meta.projectPath ?? '';
+        const projName = projectPath ? (projectPath.split('/').pop() || projectPath) : '';
+        const slug = meta.slug || meta.contentPreview?.slice(0, 60) || sid.slice(0, 8);
         const durationMin = meta.durationMs > 0 ? Math.round(meta.durationMs / 60000) : 0;
-        const peakK = Math.round(meta.peakContextTokens / 1000);
-        const peakPct = Math.round(meta.peakContextTokens / 200000 * 100); // Assume 200k context
+        const peakK = Math.round((meta.peakContextTokens || 0) / 1000);
+        const peakPct = Math.round((meta.peakContextTokens || 0) / 200000 * 100); // 200k context assumed
 
         lines.push(`# Resume: ${slug}`);
-        lines.push(`**Project:** ${projName} | **Duration:** ${durationMin}min | **Messages:** ${meta.messageCount}`);
+        lines.push(`**Tool:** ${meta.tool || 'unknown'} | **Project:** ${projName || '(unknown)'} | **Duration:** ${durationMin}min | **Messages:** ${meta.messageCount || 0}`);
         lines.push('');
 
-        // Summary
-        if (summaryRow?.summary) {
+        // What happened — AI summary if the producer generated and synced one.
+        if (meta.summary && meta.summary.trim()) {
           lines.push('## What Happened');
-          lines.push(summaryRow.summary);
+          lines.push(meta.summary.trim());
           lines.push('');
         }
 
-        // Outcome status — uses the same heuristic as `recall_outcome` so
-        // smart_resume and outcome agree on whether work shipped. Replaces
-        // the older `context.claudeWork` extraction which surfaced raw
-        // assistant fragments ("Let me check what's done…") as if they were
-        // milestones.
-        let outcomeStatus: string | null = null;
-        try {
-          const outcome = computeOutcome(params.session_id);
-          if (outcome.found) {
-            outcomeStatus = `${statusEmoji(outcome.status)} **${outcome.status}** — ${outcome.reason}`;
-            lines.push('## Outcome');
-            lines.push(outcomeOneLiner(outcome));
+        // Outcome — same shape `recall_outcome` consumes, so the two agree.
+        if (outcome) {
+          // Same status→emoji mapping as recall_outcome / recall_summary (the
+          // server sends a plain string, not the engine's SessionStatus enum).
+          const oEmoji =
+            outcome.status === 'shipped' ? '🚢' :
+            outcome.status === 'interrupted' ? '⏸' :
+            outcome.status === 'abandoned' ? '🪦' :
+            outcome.status === 'in_progress' ? '🟡' : '❔';
+          lines.push('## Outcome');
+          lines.push(`${oEmoji} **${outcome.status}** — ${outcome.reason}`);
+          if (outcome.fileCount > 0) {
+            lines.push(`Edits: ${outcome.fileCount} file(s) · +${outcome.totalLinesAdded} / −${outcome.totalLinesRemoved} lines`);
+          }
+          if (outcome.commits.totalCommits > 0) {
+            lines.push(`Commits: ${outcome.commits.totalCommits} (${outcome.commits.repos.map(r => `${r.repoName}:${r.commits.length}`).join(', ')})`);
+          }
+          lines.push('');
+
+          if (outcome.decisions.length > 0) {
+            lines.push('## Decisions');
+            for (const d of outcome.decisions.slice(0, 8)) lines.push(`- ${d.text.slice(0, 200)}`);
             lines.push('');
-
-            if (outcome.decisions.length > 0) {
-              lines.push('## Decisions');
-              for (const d of outcome.decisions.slice(0, 8)) {
-                lines.push(`- ${d.text.slice(0, 200)}`);
-              }
-              lines.push('');
-            }
-
-            if (outcome.blockers.length > 0) {
-              lines.push('## Blockers');
-              for (const b of outcome.blockers.slice(0, 6)) {
-                lines.push(`- _${b.kind}_: ${b.text.slice(0, 200)}`);
-              }
-              lines.push('');
-            }
-
-            if (outcome.claimReaction.claim) {
-              lines.push('## Final claim vs reaction');
-              lines.push(`- **claim:** ${outcome.claimReaction.claim.text.slice(0, 240)}`);
-              if (outcome.claimReaction.reaction) {
-                const r = outcome.claimReaction.reaction;
-                const m = r.markers.length ? ` _[${r.markers.join(', ')}]_` : '';
-                lines.push(`- **reaction:** ${r.text.slice(0, 240)}${m}`);
-              } else {
-                lines.push(`- **reaction:** _none — session ended on this claim_`);
-              }
-              lines.push('');
-            }
           }
-        } catch { /* outcome is best-effort; fall through to legacy fields */ }
-
-        // Fall back to the older claudeWork extraction only when the outcome
-        // classifier returned nothing usable — keeps legacy callers working.
-        if (!outcomeStatus && context.claudeWork.length > 0) {
-          lines.push('## Completed Work');
-          for (const work of context.claudeWork.slice(0, 8)) {
-            lines.push(`- ${work}`);
+          if (outcome.blockers.length > 0) {
+            lines.push('## Blockers');
+            for (const b of outcome.blockers.slice(0, 6)) lines.push(`- _${b.kind}_: ${b.text.slice(0, 200)}`);
+            lines.push('');
           }
+          if (outcome.claimReaction.claim) {
+            lines.push('## Final claim vs reaction');
+            lines.push(`- **claim:** ${outcome.claimReaction.claim.text.slice(0, 240)}`);
+            if (outcome.claimReaction.reaction) {
+              const r = outcome.claimReaction.reaction;
+              const m = r.markers.length ? ` _[${r.markers.join(', ')}]_` : '';
+              lines.push(`- **reaction:** ${r.text.slice(0, 240)}${m}`);
+            } else {
+              lines.push(`- **reaction:** _none — session ended on this claim_`);
+            }
+            lines.push('');
+          }
+        } else if (outcomeSoft.status === 202) {
+          lines.push('## Outcome');
+          lines.push(`_${outcomeSoft.message || 'Not computed yet — arrives with the next sync from this session\'s machine.'}_`);
           lines.push('');
         }
 
-        // Known facts from knowledge graph about this project
+        // Known facts from the knowledge graph about this project.
         if (projName) {
           try {
-            const kgResume = await createKnowledgeGraph();
-            const projFacts = await kgResume.queryEntity(projName);
-            const currentFacts = projFacts.filter(f => f.current);
+            const kg = await remotePost<{ facts: Array<{ subject: string; predicate: string; object: string; direction: string; current: boolean }> }>(
+              '/api/kg/query', { entity: projName, direction: 'both' });
+            const currentFacts = (kg.facts ?? []).filter(f => f.current);
             if (currentFacts.length > 0) {
               lines.push('## Known Facts (Knowledge Graph)');
               for (const fact of currentFacts.slice(0, 15)) {
@@ -2477,68 +2438,41 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               }
               lines.push('');
             }
-            await kgResume.close();
-          } catch { /* KG not available, skip */ }
+          } catch { /* KG optional — skip if unavailable */ }
         }
 
-        // What's pending (tasks, TODOs)
-        const pendingItems: string[] = [];
-        for (const task of taskItems) {
-          const pending = task.total - task.completed;
-          if (pending > 0) {
-            pendingItems.push(`${task.title} (${task.completed}/${task.total} done)`);
+        // Linked tasks/plans. /related exposes task LINKS (id + title) but not
+        // the per-task completion breakdown, so we list them without inventing
+        // a "(N/M done)" count we can't actually know server-side.
+        if (linkedTasks.length > 0) {
+          lines.push('## Linked Task Lists');
+          for (const t of linkedTasks.slice(0, 10)) {
+            const preview = t.contentPreview ? ` — ${t.contentPreview.slice(0, 100)}` : '';
+            lines.push(`- ${t.title}${preview}`);
           }
+          lines.push('_(per-task completion counts aren\'t exposed by the server — open the task list for the full breakdown.)_');
+          lines.push('');
         }
-
-        // Also scan for TODO/FIXME in assistant messages
-        const sessionLines = readFileSync(sessionFileSR, 'utf-8').split('\n');
-        const todoPattern = /(?:TODO|FIXME|HACK|PENDING|still need to|not yet|haven't|remaining)[:. ]+([^.!?\n]{10,100})/gi;
-        const todos = new Set<string>();
-        for (const line of sessionLines.slice(-200)) {
-          try {
-            const obj = JSON.parse(line) as Record<string, unknown>;
-            if (obj.type === 'assistant') {
-              const msg = obj.message as Record<string, unknown>;
-              if (msg && Array.isArray(msg.content)) {
-                for (const item of msg.content) {
-                  if (typeof item === 'object' && item !== null && (item as Record<string, unknown>).type === 'text') {
-                    const text = (item as Record<string, unknown>).text as string;
-                    if (text) {
-                      const matches = text.matchAll(todoPattern);
-                      for (const match of matches) {
-                        const todo = match[1].trim();
-                        if (todo.length > 10) todos.add(todo);
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          } catch { /* skip */ }
-        }
-        for (const todo of todos) pendingItems.push(todo);
-
-        if (pendingItems.length > 0) {
-          lines.push('## Pending / Unfinished');
-          for (const item of pendingItems.slice(0, 10)) {
-            lines.push(`- ${item}`);
-          }
+        if (related && related.projectPlans.length > 0) {
+          lines.push('## Project Plans');
+          for (const p of related.projectPlans.slice(0, 6)) lines.push(`- ${p.title}`);
           lines.push('');
         }
 
-        // Files modified
-        if (meta.filesModified.length > 0) {
+        // Files modified (from synced telemetry).
+        if (meta.filesModified && meta.filesModified.length > 0) {
           lines.push('## Files Modified');
-          for (const f of meta.filesModified.slice(0, 15)) {
-            lines.push(`- ${f}`);
-          }
+          for (const f of meta.filesModified.slice(0, 15)) lines.push(`- ${f}`);
           lines.push('');
         }
 
-        // Context budget
+        // Context budget.
         lines.push('## Context Budget');
-        lines.push(`Input: ${(meta.inputTokens / 1_000_000).toFixed(1)}M | Output: ${(meta.outputTokens / 1000).toFixed(0)}k | Peak: ${peakK}k`);
-        if (meta.modelsUsed.length > 0) {
+        lines.push(`Input: ${((meta.inputTokens || 0) / 1_000_000).toFixed(1)}M | Output: ${((meta.outputTokens || 0) / 1000).toFixed(0)}k | Peak: ${peakK}k`);
+        if (meta.estimatedCostUsd !== null && meta.estimatedCostUsd !== undefined) {
+          lines.push(`Estimated cost: $${meta.estimatedCostUsd.toFixed(2)}`);
+        }
+        if (meta.modelsUsed && meta.modelsUsed.length > 0) {
           lines.push(`Models: ${meta.modelsUsed.filter(m => m !== '<synthetic>').join(', ')}`);
         }
         if (peakPct > 80) {
@@ -2546,40 +2480,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         lines.push('');
 
-        // Git commits made during this session
-        try {
-          if (projectPathSR && existsSync(projectPathSR)) {
-            const { execSync } = await import('child_process');
-            // Find the session start/end times
-            const firstLine = sessionLines[0];
-            const lastLine = sessionLines[sessionLines.length - 1] || sessionLines[sessionLines.length - 2];
-            let startTime = '', endTime = '';
-            try {
-              const first = JSON.parse(firstLine);
-              const last = JSON.parse(lastLine || '{}');
-              startTime = first.timestamp || '';
-              endTime = last.timestamp || '';
-            } catch { /* skip */ }
-
-            if (startTime && endTime) {
-              const gitLog = execSync(
-                `git -C "${projectPathSR}" log --oneline --after="${startTime}" --before="${endTime}" 2>/dev/null`,
-                { encoding: 'utf-8', timeout: 5000 }
-              ).trim();
-              if (gitLog) {
-                const commitLines = gitLog.split('\n');
-                lines.push('## Git Commits During Session');
-                lines.push(`${commitLines.length} commits:`);
-                lines.push('```');
-                lines.push(gitLog);
-                lines.push('```');
-                lines.push('');
-              }
-            }
-          }
-        } catch { /* no git or not a repo */ }
-
-        lines.push(`**Resume:** \`claude --resume ${params.session_id}\``);
+        lines.push(`**Resume:** \`${meta.tool === 'claude' ? 'claude --resume ' : ''}${sid}\``);
 
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }

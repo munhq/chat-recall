@@ -159,6 +159,13 @@ describe('POST /api/sync (ingest)', () => {
     expect(row?.summary).toBe('Replaced the zorbofrang coil and shipped.');
     expect(row?.summarySource).toBe('gemini');
     await cache.close();
+
+    // 6. The /metadata service attaches the synced summary (the actual path
+    // recall_summary / recall_smart_resume read — computeMetadataResponse
+    // alone drops it, so this guards that regression).
+    const { getSessionMetadata } = await import('../services/sessions.js');
+    const md = await getSessionMetadata(sessionId);
+    expect(md?.summary).toBe('Replaced the zorbofrang coil and shipped.');
   });
 
   test('tombstones purge a session everywhere and make it resurrection-proof', async () => {
