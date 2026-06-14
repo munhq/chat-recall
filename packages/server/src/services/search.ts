@@ -4,6 +4,7 @@
 
 import { createVectorStore, OllamaEmbedder, createMetadataCache, getAllSessions, currentTenant } from '../imports.js';
 import type { SourceType, MemorySearchResult, VectorStore } from '../imports.js';
+import { QueryExpander } from './query-expander.js';
 
 // See sessions.ts for why we strip client-injected banners here.
 const INJECTED_BANNERS: RegExp[] = [
@@ -48,6 +49,14 @@ export class SearchService {
   private projectCountsCacheTime = 0;
   private static readonly CACHE_TTL_MS = 30_000;
 
+  // LLM query expansion ("semantic without embeddings"). Shared across tenants —
+  // it holds no tenant state, only a query→terms cache keyed by the query text.
+  private expander = new QueryExpander();
+  // Per-tenant cache of "is the vector path actually serving semantic results?"
+  // Expansion is the keyword-mode booster; when real embeddings are active it
+  // steps aside (embedding a keyword-soup query is worse than the natural one).
+  private vectorOkCache = new Map<string, { ok: boolean; t: number }>();
+
   constructor() {
     this.embedder = new OllamaEmbedder();
   }
@@ -57,6 +66,27 @@ export class SearchService {
     let p = this.indexes.get(t);
     if (!p) { p = createVectorStore(this.embedder); this.indexes.set(t, p); }
     return p;
+  }
+
+  /** True when the tenant's vector store is serving real semantic results
+   *  (pgvector active + embedder). Cached 60s; falls back to false on error. */
+  private async vectorActive(): Promise<boolean> {
+    const t = currentTenant() ?? 'default';
+    const cached = this.vectorOkCache.get(t);
+    const now = Date.now();
+    if (cached && now - cached.t < 60_000) return cached.ok;
+    let ok = false;
+    try { ok = (await (await this.index()).getStats()).vectorOk === true; } catch { ok = false; }
+    this.vectorOkCache.set(t, { ok, t: now });
+    return ok;
+  }
+
+  /** Expand the query with related keywords iff expansion is enabled AND the
+   *  store is in keyword (FTS) mode. Always returns a usable query string. */
+  private async expandIfKeyword(query: string): Promise<string> {
+    if (!this.expander.isEnabled) return query;
+    if (await this.vectorActive()) return query;
+    return (await this.expander.expand(query)).expanded;
   }
 
   /**
@@ -69,7 +99,7 @@ export class SearchService {
     projectIdFilter?: string
   ): Promise<SearchResult[]> {
     const idx = await this.index();
-    const results = await idx.search(query, {
+    const results = await idx.search(await this.expandIfKeyword(query), {
       topK,
       sourceTypes: ['session'],
       projectIdFilter,
@@ -109,7 +139,7 @@ export class SearchService {
     projectIdFilter?: string
   ): Promise<MemorySearchResult[]> {
     const idx = await this.index();
-    return await idx.search(query, { topK, sourceTypes, projectIdFilter });
+    return await idx.search(await this.expandIfKeyword(query), { topK, sourceTypes, projectIdFilter });
   }
 
   async getStatus() {
