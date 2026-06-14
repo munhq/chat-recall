@@ -3427,92 +3427,37 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'recall_redundant_files': {
         const params = RecallRedundantFilesSchema.parse(args);
         const target = params.filename.trim();
-        const targetBase = target.split('/').pop() || target;
-        const targetStem = targetBase.replace(/\.[^.]+$/, '').toLowerCase();
+        requireRemote();
+        const { hits: ranked } = await remoteGetQS<{ hits: Array<{ file: string; sessionId: string; project: string; mtime: number; score: number; reason: string }> }>(
+          '/api/files/redundant', { filename: target, project: params.project_path, limit: params.limit });
 
-        const store = await createStore();
-        try {
-          const items = await store.listItems('session' as SourceType, 5000, 0);
-          // Score each historical filename: exact-basename > stem-match > path-overlap.
-          type Hit = {
-            file: string; sessionId: string; project: string; mtime: number; score: number; reason: string;
+        if (ranked.length === 0) {
+          return {
+            content: [{
+              type: 'text',
+              text: `No similar filenames found in synced sessions for "${target}".\n\n` +
+                    `For *code-level* redundancy (existing symbols/functions matching what you're about to write), ` +
+                    `call codeindex's \`find_symbol\` or \`search\` against the same project.`,
+            }],
           };
-          const hits: Hit[] = [];
+        }
 
-          for (const item of items) {
-            if (params.project_path && !item.project_path?.includes(params.project_path)) continue;
-            let extra: any = {};
-            try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
-            const files: string[] = Array.isArray(extra.filesModified) ? extra.filesModified : [];
+        const lines = [
+          `# Filename redundancy check: "${target}"`,
+          '',
+          `Found **${ranked.length}** similar file${ranked.length === 1 ? '' : 's'} touched by past sessions.`,
+          params.project_path ? `Scoped to project: \`${params.project_path}\`` : '_Searched across all projects._',
+          '',
+        ];
+        for (const h of ranked) {
+          const date = new Date(h.mtime).toISOString().slice(0, 10);
+          lines.push(`- **${h.file}**`);
+          lines.push(`  ${h.reason} · session ${h.sessionId.slice(0, 8)} · ${h.project} · ${date} · score ${h.score.toFixed(2)}`);
+        }
+        lines.push('');
+        lines.push('_Tip: read the matching file before creating new code that may duplicate it._');
 
-            for (const f of files) {
-              const fbase = f.split('/').pop() || f;
-              const fstem = fbase.replace(/\.[^.]+$/, '').toLowerCase();
-              let score = 0;
-              let reason = '';
-              // Substring matching only kicks in when both stems are at least
-              // 4 chars — otherwise dotfiles like ".env" match everything via
-              // `"foo".includes("")` (empty string is a substring of every string).
-              const stemsMatchable = fstem.length >= 4 && targetStem.length >= 4;
-              if (fbase === targetBase)        { score = 1.0; reason = 'exact basename match'; }
-              else if (fstem === targetStem)   { score = 0.85; reason = 'same name, different extension'; }
-              else if (stemsMatchable && (fstem.includes(targetStem) || targetStem.includes(fstem))) {
-                                                 score = 0.6; reason = 'stem substring match'; }
-              else if (target.includes('/') && f.includes(target.split('/').slice(0, -1).join('/'))) {
-                                                 score = 0.4; reason = 'same directory'; }
-              if (score > 0) {
-                hits.push({
-                  file: f,
-                  sessionId: item.id,
-                  project: item.project_path || '(unknown)',
-                  mtime: item.mtime,
-                  score,
-                  reason,
-                });
-              }
-            }
-          }
-
-          // Dedup by file path (we want the most-recent session that touched it).
-          const byFile = new Map<string, Hit>();
-          for (const h of hits) {
-            const cur = byFile.get(h.file);
-            if (!cur || h.mtime > cur.mtime || h.score > cur.score) byFile.set(h.file, h);
-          }
-          const ranked = [...byFile.values()]
-            .sort((a, b) => b.score - a.score || b.mtime - a.mtime)
-            .slice(0, params.limit);
-
-          if (ranked.length === 0) {
-            return {
-              content: [{
-                type: 'text',
-                text: `No similar filenames found in indexed sessions for "${target}".\n\n` +
-                      `For *code-level* redundancy (existing symbols/functions matching what you're about to write), ` +
-                      `call codeindex's \`find_symbol\` or \`search\` against the same project.`,
-              }],
-            };
-          }
-
-          const lines = [
-            `# Filename redundancy check: "${target}"`,
-            '',
-            `Found **${ranked.length}** similar file${ranked.length === 1 ? '' : 's'} touched by past sessions.`,
-            params.project_path ? `Scoped to project: \`${params.project_path}\`` : '_Searched across all projects._',
-            '',
-          ];
-          for (const h of ranked) {
-            const date = new Date(h.mtime).toISOString().slice(0, 10);
-            lines.push(`- **${h.file}**`);
-            lines.push(`  ${h.reason} · session ${h.sessionId.slice(0, 8)} · ${h.project} · ${date} · score ${h.score.toFixed(2)}`);
-          }
-          lines.push('');
-          lines.push('_Tip: read the matching file before creating new code that may duplicate it._');
-
-          // Append the codeindex composition hint only when it's actually
-          // installed — keeps the output honest when the user has only chat-recall.
-          return { content: [{ type: 'text', text: withCodeindexHint(lines.join('\n'), 'redundancy') }] };
-        } finally { await store.close(); }
+        return { content: [{ type: 'text', text: withCodeindexHint(lines.join('\n'), 'redundancy') }] };
       }
 
       // ── KV store ───────────────────────────────────────────────
