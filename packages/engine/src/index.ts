@@ -11,7 +11,7 @@ export { createStore, type StorageDriver } from './core/store/index.js';
 export { createVectorStore, type VectorStore } from './core/store/vector.js';
 export { createMetadataCache, createOutcomeCache, type MetadataCacheDriver, type OutcomeCacheDriver } from './core/store/caches.js';
 export { createKnowledgeGraph, type KnowledgeGraphDriver } from './core/store/knowledge-graph.js';
-export { createControlPlane, type ControlPlane, type Membership, type TeamMember, type ArtifactMeta, type ArtifactBody } from './core/store/control-plane.js';
+export { createControlPlane, type ControlPlane, type Membership, type TeamMember, type ArtifactMeta, type ArtifactBody, type Entitlement, type EntitlementStatus } from './core/store/control-plane.js';
 export { closePgPools } from './core/store/pg-pool.js';
 // Re-export the row type so route files can use it without deep paths.
 export {
@@ -38,7 +38,7 @@ export {
 } from './core/settings.js';
 
 // Parsers
-export { getAllSessions, parseSessionFile, type SessionEntry, type SessionMetadata } from './parsers/session.js';
+export { getAllSessions, parseSessionFile, type SessionEntry, type SessionMetadata, type SessionContent, type ExtractedContent } from './parsers/session.js';
 
 // Cheap first-prompt extractor (used as fallback when sessions-index.json is missing)
 export { extractFirstUserPromptSync } from './core/first-prompt.js';
@@ -146,7 +146,7 @@ export { PluginsSource } from './parsers/plugins-source.js';
 
 
 // Summary
-export { CLI_PRESETS as SUMMARY_CLI_PRESET_COMMANDS, SummaryGenerator, defaultApiBaseUrl } from './core/summary-generator.js';
+export { CLI_PRESETS as SUMMARY_CLI_PRESET_COMMANDS, SummaryGenerator, defaultApiBaseUrl, type SummaryGeneratorConfig } from './core/summary-generator.js';
 
 // Core (new features)
 export { KnowledgeGraph } from './core/knowledge-graph.js';

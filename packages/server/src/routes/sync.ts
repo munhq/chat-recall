@@ -342,14 +342,40 @@ router.post('/', async (req, res) => {
             textSource.map((t) => ({ role: t.role as SyncTurn['role'], text: t.text })),
             projectPath, mtime, cv.project_id || undefined,
           );
-          if (cks.length > 0) chunks += await store.addChunksFTS(cks);
+          // Subagent chunks — the envelope carries each subagent's (redacted,
+          // trimmed) messages; index them as `subagent:<kind>` chunks so
+          // recall_subagent_search can query them server-side (chunkId encodes
+          // the subagent id for result rendering). MUST go in the SAME
+          // addChunksFTS call as the turn chunks: addChunksFTS deletes all of an
+          // item's rows first, so a second call for the same session would wipe
+          // the turn chunks.
+          type EnvSubagent = { id?: string; kind?: string; messages?: Array<{ content?: string }> };
+          const subagents = (envelope?.subagents ?? []) as EnvSubagent[];
+          const subChunks = subagents.flatMap((sa) => {
+            const text = (sa.messages ?? []).map((m) => m.content).filter((c): c is string => !!c && c.trim().length > 0).join('\n');
+            if (!text.trim() || !sa.id) return [];
+            const kind = sa.kind || 'other';
+            return [{
+              chunkId: `${cv.session_id}:subagent:${sa.id}`,
+              itemId: cv.session_id,
+              sourceType: 'session' as SourceType,
+              title: `subagent ${sa.id} [${kind}]`,
+              text: text.slice(0, 200_000), // FTS-friendly cap; samples are short
+              chunkType: `subagent:${kind}`,
+              projectPath,
+              filePath: '',
+              mtime,
+            }];
+          });
+          const allChunks = subChunks.length > 0 ? [...cks, ...subChunks] : cks;
+          if (allChunks.length > 0) chunks += await store.addChunksFTS(allChunks);
 
           // 3. First-prompt cache — what the conversation list hydrates from.
           await metaCache.set({
             sessionId: cv.session_id,
             firstPrompt,
-            summary: '',
-            summarySource: 'original',
+            summary: (cv.meta?.summary as string) || '',
+            summarySource: ((cv.meta?.summarySource as string) || 'original') as 'original' | 'gemini' | 'claude' | 'ollama',
             mtime,
             indexedAt: Date.now(),
           });

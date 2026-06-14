@@ -36,21 +36,49 @@ import {
   type CachedOutcome,
   type CachedOutcomeStatus,
 } from '../imports.js';
-import type { SourceType } from '../imports.js';
+import type { SourceType, SessionContent } from '../imports.js';
+import {
+  serverSummaryConfig,
+  envelopeToSessionContent,
+  providerToSource,
+  type CachedEnvelope,
+} from '../services/summary-worker.js';
 import { matchesPrefix } from '../utils/paths.js';
 import { buildETag, maybeSendNotModified } from '../util/cacheable.js';
 import { requireLocalMode, isServerMode } from '../util/mode.js';
 
 const router = express.Router();
 
-// Genuinely FS/model-dependent endpoints only exist in local mode: live
-// file scans, raw transcript serving, summary regeneration. Everything
-// else — diff, commits, outcome (+badges), markers, turns — serves from
-// the synced compute_cache / session_outcome_cache rows in server mode
-// (the CLI computes them; the server never recomputes).
+// Genuinely FS-dependent endpoints only exist in local mode: live file scans
+// and raw transcript serving read the on-disk JSONL directly. Everything
+// else — diff, commits, outcome (+badges), markers, turns, regenerate-summary
+// — serves from / writes to the synced store rows in server mode (the CLI
+// computes diffs/outcomes; regenerate-summary rebuilds SessionContent from the
+// synced envelope and summarizes with the server-configured provider).
 router.use([
-  '/:id/files-live', '/:id/raw', '/:id/regenerate-summary',
+  '/:id/files-live', '/:id/raw',
 ], requireLocalMode);
+
+// DELETE /api/conversations/:id — purge a session everywhere and tombstone it
+// so the next sync from any device can't resurrect it. The thin collector's
+// `chat-recall delete` calls this directly (deletion is a server operation,
+// not local state). Tenant-scoped via tenantAuth → runWithTenant.
+router.delete('/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const { createStore } = await import('../imports.js');
+    const store = await createStore();
+    try {
+      await store.purgeSession(id);
+      await store.addTombstone(id);
+      res.json({ deleted: id, tombstoned: true });
+    } finally {
+      await store.close();
+    }
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'delete failed' });
+  }
+});
 
 /**
  * The per-session features below — diff replay, git commits, outcome,
@@ -1186,28 +1214,72 @@ router.get('/:id/metadata', async (req, res) => {
 
 // POST /api/conversations/:id/regenerate-summary
 //
-// On-demand re-generation of an AI summary for a single session. Uses
-// whatever summary provider is configured in settings (CLI/Gemini/Claude/
-// Ollama). Existing cached summary (if any) is overwritten on success.
+// On-demand re-generation of an AI summary for a single session.
+//
+//   local mode  — parse the on-disk JSONL and summarize with the provider
+//                 configured in settings (CLI/Gemini/Claude/Ollama).
+//   server mode — there is no JSONL on disk; rebuild SessionContent from the
+//                 synced content_cache envelope and summarize with the
+//                 server-configured provider (serverSummaryConfig / env).
+//
+// Existing cached summary (if any) is overwritten on success.
 router.post('/:id/regenerate-summary', async (req, res) => {
   const { id } = req.params;
   try {
-    const path = getSessionPath(id); // throws if missing
-    const content = await parseSessionFile(path);
+    let content: Awaited<ReturnType<typeof parseSessionFile>> | SessionContent;
+    let summary: string;
+    let summarySource: string;
 
-    const settings = loadSettings();
-    const provider = (settings.summary?.provider as any) || (process.env.SUMMARY_PROVIDER as any) || 'cli';
-    const cliCommand = settings.summary?.cliCommand || process.env.SUMMARY_CLI_CMD;
-    const generator = new SummaryGenerator({ provider, cliCommand });
+    if (isServerMode()) {
+      // No filesystem: rebuild from the synced envelope, summarize with the
+      // server's configured provider. Same path the background sweep uses.
+      const config = serverSummaryConfig();
+      if (!config) {
+        return res.status(501).json({
+          error: 'summary generation not configured',
+          detail: 'Set SUMMARY_PROVIDER (and a key/model) on the server to enable summary regeneration.',
+        });
+      }
 
-    const summary = await generator.generate(content);
+      const store = await createStore();
+      let raw: string | null;
+      try {
+        // mtime >= 0 → latest synced envelope regardless of metadata mtime.
+        raw = await store.getCachedContent(id, 'session', 0);
+      } finally {
+        await store.close();
+      }
+      if (!raw) return res.status(404).json({ error: 'Session not synced' });
+
+      const envelope = JSON.parse(raw) as CachedEnvelope;
+      const built = envelopeToSessionContent(id, envelope);
+      if (!built) return res.status(422).json({ error: 'Session has no summarizable content' });
+      content = built;
+
+      const generator = new SummaryGenerator(config);
+      summary = await generator.generate(built);
+      summarySource = providerToSource(config.provider);
+    } else {
+      const path = getSessionPath(id); // throws if missing
+      const parsed = await parseSessionFile(path);
+      content = parsed;
+
+      const settings = loadSettings();
+      const provider = (settings.summary?.provider as any) || (process.env.SUMMARY_PROVIDER as any) || 'cli';
+      const cliCommand = settings.summary?.cliCommand || process.env.SUMMARY_CLI_CMD;
+      const generator = new SummaryGenerator({ provider, cliCommand });
+
+      summary = await generator.generate(parsed);
+      summarySource = provider === 'gemini-cli' ? 'gemini' : provider;
+    }
+
     const cache = await createMetadataCache();
     try {
       await cache.set({
         sessionId: id,
         firstPrompt: content.firstPrompt || '',
         summary,
-        summarySource: provider === 'gemini-cli' ? 'gemini' : (provider as any),
+        summarySource: summarySource as any,
         mtime: Date.now(),
         indexedAt: Date.now(),
       });
@@ -1216,7 +1288,7 @@ router.post('/:id/regenerate-summary', async (req, res) => {
       await cache.close();
     }
 
-    res.json({ sessionId: id, summary, summarySource: provider });
+    res.json({ sessionId: id, summary, summarySource });
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     // Surface quota errors with a 429 so the UI can render a clear message

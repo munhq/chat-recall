@@ -18,10 +18,17 @@ import toolkitRouter from './routes/toolkit.js';
 import secretsRouter from './routes/secrets.js';
 import { tenantAuth } from './middleware/auth.js';
 import projectsRouter from './routes/projects.js';
+import kgRouter from './routes/kg.js';
+import kvRouter from './routes/kv.js';
+import diaryRouter from './routes/diary.js';
+import filesRouter from './routes/files.js';
+import subagentsRouter from './routes/subagents.js';
 import syncRouter from './routes/sync.js';
 import teamsRouter from './routes/teams.js';
 import teamArtifactsRouter from './routes/team-artifacts.js';
+import billingRouter from './routes/billing.js';
 import { capabilities, isServerMode } from './util/mode.js';
+import { generateMissingSummaries, serverSummaryConfig } from './services/summary-worker.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '5000', 10);
@@ -39,7 +46,15 @@ app.use(compression({ threshold: 1024 }));
 // /api/sync carries whole (redacted) conversation batches — it gets its own
 // 32mb parser below; everything else keeps the tight 100kb bound.
 const smallJson = express.json({ limit: '100kb' });
-app.use((req, res, next) => (req.path.startsWith('/api/sync') ? next() : smallJson(req, res, next)));
+// /api/sync gets a big parser; /api/billing/webhook must stay RAW (Stripe's
+// signature is over the exact bytes — a JSON re-serialize would break it), so
+// the billing router owns express.raw for that one path and we skip the global
+// JSON parser for it here.
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/sync')) return next();
+  if (req.path === '/api/billing/webhook') return next();
+  return smallJson(req, res, next);
+});
 app.use('/api/sync', express.json({ limit: '32mb' }));
 
 // Request logging
@@ -59,6 +74,10 @@ app.get('/api/capabilities', (_req, res) => res.json(capabilities()));
 app.use('/api/sync', syncRouter);
 app.use('/api/team', teamArtifactsRouter);  // toolkit library (team-client.ts contract)
 app.use('/api', teamsRouter);
+// Billing is self-authenticating: /checkout verifies the Keycloak user
+// (requireUser) and the webhook verifies a Stripe signature — both map to a
+// tenant themselves, so this mounts BEFORE tenantAuth like teams.
+app.use('/api/billing', billingRouter);
 
 // Tenant auth: resolves req.tenant and makes it ambient for the request (see
 // middleware/auth.ts). Scoped to /api so /health + the static client stay open.
@@ -77,6 +96,15 @@ app.use('/api/secrets', secretsRouter);
 // diff rows, the projects tree reads memory_metadata project_ids.
 app.use('/api/edits', editsRouter);
 app.use('/api/projects', projectsRouter);
+
+// Recall surfaces for the thin-collector MCP: knowledge graph + key-value.
+// Tenant-scoped via the same tenantAuth above; readable/writable over HTTP so
+// the MCP server needs no local store.
+app.use('/api/kg', kgRouter);
+app.use('/api/kv', kvRouter);
+app.use('/api/diary', diaryRouter);
+app.use('/api/files', filesRouter);
+app.use('/api/subagents', subagentsRouter);
 
 // FS-backed routers exist only in local mode: in a server deployment data
 // arrives via /api/sync and there is no settings file the UI should edit
@@ -133,6 +161,42 @@ app.listen(PORT, HOST, () => {
 
   const caps = capabilities();
   console.log(`  Mode: ${caps.mode} · edition: ${caps.edition}`);
+
+  // Server-side AI summary generation. Synced sessions arrive without an AI
+  // summary (the thin collector only ships raw content + structured outcome);
+  // this periodic sweep fills them in using the operator-configured provider.
+  // Gated twice: server mode only (local mode generates summaries during its
+  // own indexing), and only when a provider is actually configured — otherwise
+  // it's a no-op and we say so once instead of spinning a useless timer.
+  if (isServerMode()) {
+    if (serverSummaryConfig()) {
+      const SUMMARY_SWEEP_MS = 3 * 60 * 1000; // every 3 minutes
+      const SUMMARY_BATCH = 10;                // small batch per tick
+      let sweepInFlight = false;               // guard against overlap on slow LLMs
+      const sweep = async (): Promise<void> => {
+        if (sweepInFlight) return;
+        sweepInFlight = true;
+        try {
+          const r = await generateMissingSummaries({ limit: SUMMARY_BATCH });
+          if (r.generated > 0 || r.failed > 0) {
+            console.log(`  Summary sweep: ${r.generated} generated, ${r.failed} failed, ${r.skipped} skipped`);
+          }
+        } catch (err) {
+          console.error('Summary sweep failed:', err);
+        } finally {
+          sweepInFlight = false;
+        }
+      };
+      // unref so the timer never keeps the process alive on its own.
+      setInterval(() => { void sweep(); }, SUMMARY_SWEEP_MS).unref();
+      // Kick one sweep shortly after boot so the first batch doesn't wait a
+      // full interval.
+      setTimeout(() => { void sweep(); }, 5000).unref();
+      console.log('  Summary worker: enabled (server mode)');
+    } else {
+      console.log('  Summary worker: disabled (no SUMMARY_PROVIDER configured)');
+    }
+  }
 
   // Cache prewarming only makes sense in local mode — in server mode there
   // is no filesystem to walk and (with keycloak auth) the warm fetches

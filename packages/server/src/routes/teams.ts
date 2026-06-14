@@ -24,6 +24,7 @@
 import express from 'express';
 import { createControlPlane } from '../imports.js';
 import { requireUser } from '../middleware/auth.js';
+import { entitledOr402 } from '../util/billing.js';
 
 const router = express.Router();
 
@@ -94,6 +95,8 @@ router.post('/teams/:slug/invites', async (req, res) => {
     if ((await cp.roleOf(user.sub, req.params.slug)) !== 'owner') {
       return res.status(403).json({ error: 'owner only' });
     }
+    // Inviting teammates grants paid value — gate on the team's subscription.
+    if (!(await entitledOr402(res, req.params.slug))) return;
     const role = req.body?.role === 'owner' ? 'owner' as const : 'member' as const;
     const r = await cp.createInvite(req.params.slug, role, req.body?.email || null, user.sub);
     res.json({
