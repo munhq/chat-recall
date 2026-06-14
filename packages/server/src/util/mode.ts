@@ -15,6 +15,7 @@
  * unsupported tabs instead of rendering dead panels.
  */
 import type { Request, Response, NextFunction } from 'express';
+import { queryExpansionEnabled } from '../services/query-expander.js';
 
 export function isServerMode(): boolean {
   return (process.env.CHAT_RECALL_SERVER_MODE || 'local').toLowerCase() === 'server';
@@ -53,6 +54,9 @@ export interface Capabilities {
   features: {
     conversations: boolean;
     search: boolean;
+    /** LLM query expansion is active — keyword search is meaning-aware. Lets
+     *  the client honestly signal "semantic-ish" search without embeddings. */
+    queryExpansion: boolean;
     memory: boolean;
     analytics: boolean;
     security: boolean;
@@ -80,6 +84,7 @@ export function capabilities(): Capabilities {
     features: {
       conversations: true,
       search: true,
+      queryExpansion: queryExpansionEnabled(),
       memory: true,
       analytics: true,
       security: securityEnabled,
