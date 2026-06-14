@@ -6,10 +6,8 @@
  * Groups todos by session for discovery.
  */
 
-import Database from 'better-sqlite3';
+import { createRequire } from 'node:module';
 import { existsSync } from 'fs';
-import { homedir } from 'os';
-import { join } from 'path';
 
 import type {
   MemorySource,
@@ -19,6 +17,23 @@ import type {
 } from '../types/memory.js';
 import { opencodeBackend as OPENCODE } from '../core/backends/opencode.js';
 import { isSourceEnabled } from '../core/settings.js';
+
+const require = createRequire(import.meta.url);
+
+// Lazy + optional: indexing OpenCode todos requires reading its SQLite DB via
+// better-sqlite3, which the thin collector ships without by default
+// (optionalDependency). Load on first use and degrade gracefully — yielding
+// nothing — when it isn't installed, instead of crashing on boot/import.
+type BetterSqlite3Ctor = typeof import('better-sqlite3');
+type BetterSqlite3Db = import('better-sqlite3').Database;
+let _Database: BetterSqlite3Ctor | null | undefined;
+function loadBetterSqlite3(): BetterSqlite3Ctor | null {
+  if (_Database === undefined) {
+    try { _Database = require('better-sqlite3') as BetterSqlite3Ctor; }
+    catch { _Database = null; }
+  }
+  return _Database;
+}
 
 export class OpenCodeTodoSource implements MemorySource {
   readonly sourceType = 'task' as const;
@@ -32,10 +47,12 @@ export class OpenCodeTodoSource implements MemorySource {
   async *discover(): AsyncGenerator<MemoryItem> {
     if (!isSourceEnabled('opencode', 'todos')) return;
     if (!existsSync(this.dbPath)) return;
+    const DB = loadBetterSqlite3();
+    if (!DB) return;
 
-    let db: Database.Database;
+    let db: BetterSqlite3Db;
     try {
-      db = new Database(this.dbPath, { readonly: true });
+      db = new DB(this.dbPath, { readonly: true });
     } catch {
       return;
     }
@@ -100,9 +117,11 @@ export class OpenCodeTodoSource implements MemorySource {
 
   async parse(item: MemoryItem): Promise<MemoryChunk[]> {
     if (!existsSync(this.dbPath)) return [];
+    const DB = loadBetterSqlite3();
+    if (!DB) return [];
 
     const sessionId = (item.extra?.sessionId as string) || item.id.replace(`${OPENCODE.idPrefix}todo_`, '');
-    const db = new Database(this.dbPath, { readonly: true });
+    const db = new DB(this.dbPath, { readonly: true });
     const chunks: MemoryChunk[] = [];
 
     try {
