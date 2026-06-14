@@ -2055,98 +2055,64 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'recall_suggest_resume': {
         const params = RecallSuggestResumeSchema.parse(args);
 
-        // Use provided param, env var, or default to ollama (local)
-        const provider = (params.provider || process.env.EMBEDDING_PROVIDER || 'ollama') as EmbedderProvider;
-
-        // Search for relevant sessions
-        let embedder: Awaited<ReturnType<typeof getEmbedder>> | null;
-        try {
-          embedder = getEmbedder(provider);
-        } catch {
-          embedder = null;
-        }
-
-        let results;
-        try {
-          const memIdx = await createVectorStore(embedder);
-          const memResults = await memIdx.search(params.current_task, {
-            topK: params.top_k,
-            sourceTypes: ['session'],
-          });
-          const cache = await createMetadataCache();
-          const cachedList = await Promise.all(memResults.map(r => cache.get(r.itemId)));
-          results = memResults.map((r, i) => {
-            const cached = cachedList[i];
-            return {
-              sessionId: r.itemId,
-              score: r.score,
-              chunkType: r.matchedChunks[0]?.chunkType || 'unknown',
-              text: r.matchedChunks[0]?.text || r.title,
-              projectPath: r.projectPath,
-              created: '', modified: '',
-              firstPrompt: cached?.firstPrompt || r.title,
-              summary: cached?.summary,
-              matchedChunks: r.matchedChunks,
-            };
-          });
-          await cache.close();
-        } catch (err) {
-          if (err instanceof Error && err.message.includes('not found')) {
-            return { content: [{ type: 'text', text: 'Error: Index not found. Run \'chat-recall memory index\' first.' }] };
-          }
-          throw err;
-        }
+        // Server-backed: POST /api/search (FTS) using the current task text as
+        // the query — a keyword degrade of the local vector match (noted in the
+        // header). Per-result outcome one-liners come from the synced
+        // /outcome endpoint (best-effort; skipped when not synced yet).
+        const cleaned = sanitizeQuery(params.current_task).cleanQuery;
+        type SearchResp = {
+          results: Array<{ sessionId: string; score: number; projectPath: string; summary?: string; firstPrompt?: string; text?: string }>;
+        };
+        const search = await remotePost<SearchResp>('/api/search', {
+          query: cleaned,
+          topK: params.top_k,
+        });
+        const results = search.results || [];
 
         if (results.length === 0) {
           return { content: [{ type: 'text', text: 'No relevant past conversations found.' }] };
         }
 
-        // Get summaries from metadata cache
-        const metaCache = await createMetadataCache();
-
         const output = [
           `# Suggested Conversations to Resume`,
           `Based on: "${params.current_task}"`,
+          '_Keyword (FTS) match against the synced server index._',
           '',
         ];
 
-        try {
-          for (let i = 0; i < results.length; i++) {
-            const result = results[i];
-            const row = await metaCache.get(result.sessionId);
+        // Outcome shape (subset) — same endpoint recall_outcome consumes.
+        type Outcome = { status: string; reason: string; fileCount: number; totalLinesAdded: number; totalLinesRemoved: number };
+        const statusEmoji = (s: string) =>
+          s === 'shipped' ? '🚢' : s === 'interrupted' ? '⏸' : s === 'abandoned' ? '🪦' : s === 'in_progress' ? '🟡' : '❔';
 
-            output.push(`## ${i + 1}. Session ${result.sessionId.substring(0, 8)}...`);
-            output.push(`**Project:** ${result.projectPath.replace(homedir(), '~')}`);
-            output.push(`**Relevance:** ${(result.score * 100).toFixed(1)}%`);
-            output.push('');
+        for (let i = 0; i < results.length; i++) {
+          const result = results[i];
 
-            if (row && row.summary) {
-              // Show first 300 chars of summary
-              const shortSummary = row.summary.length > 300 ? row.summary.substring(0, 300) + '...' : row.summary;
-              output.push(shortSummary);
-            } else {
-              output.push(result.text.substring(0, 200) + '...');
-            }
+          output.push(`## ${i + 1}. Session ${result.sessionId.substring(0, 8)}...`);
+          output.push(`**Project:** ${(result.projectPath || '').replace(homedir(), '~')}`);
+          output.push(`**Relevance:** ${(result.score * 100).toFixed(1)}%`);
+          output.push('');
 
-            // Outcome one-liner — far more actionable than the previous
-            // "Known: uses redis, uses docker, uses git" listing, which was
-            // global-tool noise that appeared identical on every session.
-            // Status tells you at a glance whether resuming this session is
-            // worth it (shipped → probably done; in_progress → real work to
-            // continue; abandoned → ghosts).
-            try {
-              const outcome = computeOutcome(result.sessionId);
-              if (outcome.found) {
-                output.push(`**Outcome:** ${outcomeOneLiner(outcome)}`);
-              }
-            } catch { /* outcome best-effort */ }
-
-            output.push('');
-            output.push(`**Resume:** \`claude --resume ${result.sessionId}\``);
-            output.push('');
+          if (result.summary) {
+            const shortSummary = result.summary.length > 300 ? result.summary.substring(0, 300) + '...' : result.summary;
+            output.push(shortSummary);
+          } else {
+            output.push((result.text || result.firstPrompt || '').substring(0, 200) + '...');
           }
-        } finally {
-          await metaCache.close();
+
+          // Outcome one-liner — status tells you at a glance whether resuming
+          // this session is worth it. Best-effort: skip on 202/404.
+          try {
+            const soft = await remoteGetSoft<Outcome>(`/api/conversations/${encodeURIComponent(result.sessionId)}/outcome`);
+            if (soft.data) {
+              const o = soft.data;
+              output.push(`**Outcome:** ${statusEmoji(o.status)} ${o.status} — ${o.reason} · ${o.fileCount} file(s) +${o.totalLinesAdded}/−${o.totalLinesRemoved}`);
+            }
+          } catch { /* outcome best-effort */ }
+
+          output.push('');
+          output.push(`**Resume:** \`claude --resume ${result.sessionId}\``);
+          output.push('');
         }
 
         return { content: [{ type: 'text', text: output.join('\n') }] };
@@ -2637,229 +2603,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             isError: true,
           };
         }
-        const md = await buildProjectDossier(params.project, {
-          recentSessionLimit: params.sessions,
-          taskLimit: params.tasks,
-          planLimit: params.plans,
-        });
-        return { content: [{ type: 'text', text: md }] };
+        const dossier = await remoteGetQS<{ project_id: string; markdown: string }>(
+          `/api/projects/${encodeURIComponent(params.project)}/dossier`,
+          { sessions: params.sessions, tasks: params.tasks, plans: params.plans },
+        );
+        return { content: [{ type: 'text', text: dossier.markdown }] };
       }
 
       case 'recall_project_context': {
         const params = RecallProjectContextSchema.parse(args);
-        const store = await createStore();
 
-        // Get recent sessions for this project
-        const sessions = getRecentSessions(params.project_path, params.limit);
-        const cache = await createMetadataCache();
-
-        const lines = [`# Project Context: ${params.project_path}\n`];
-
-        if (sessions.length === 0) {
-          lines.push('No sessions found for this project.');
-          await store.close();
-          await cache.close();
-          return { content: [{ type: 'text', text: lines.join('\n') }] };
-        }
-
-        // Recent sessions with summaries and metadata
-        lines.push('## Recent Sessions\n');
-        let totalCost = 0;
-        let totalInputTokens = 0;
-        let totalOutputTokens = 0;
-        const allModels = new Set<string>();
-        const allFilesModified = new Set<string>();
-
-        const metaCache = await createMetadataCache();
-
-        try {
-          for (let i = 0; i < sessions.length; i++) {
-            const session = sessions[i];
-            const modified = session.modified ? session.modified.slice(0, 16).replace('T', ' ') : 'unknown';
-
-            // Get summary
-            const row = await metaCache.get(session.sessionId);
-
-            // Get metadata from store
-            const meta = await store.getItem(session.sessionId, 'session' as SourceType);
-            let extra: Record<string, unknown> = {};
-            if (meta?.extra_json) {
-              try { extra = JSON.parse(meta.extra_json); } catch { /* skip */ }
-            }
-
-            const inputTokens = (extra.inputTokens as number) || 0;
-            const outputTokens = (extra.outputTokens as number) || 0;
-            const cacheReadTokens = (extra.cacheReadTokens as number) || 0;
-            const peakContext = (extra.peakContextTokens as number) || 0;
-            const filesModified = (extra.filesModified as string[]) || [];
-            const modelsUsed = (extra.modelsUsed as string[]) || [];
-            const durationMs = (extra.durationMs as number) || 0;
-
-            // Engine pricing table — prefer the parser's stored costUsd,
-            // fall back to estimating from tokens for pre-costUsd rows.
-            const costEstimate = typeof extra.costUsd === 'number' && extra.costUsd > 0
-              ? extra.costUsd
-              : estimateCostUsdOrNull(modelsUsed, {
-                  inputTokens, outputTokens, cacheReadTokens,
-                  cacheCreationTokens: (extra.cacheCreationTokens as number) || 0,
-                }) ?? 0;
-            totalCost += costEstimate;
-            totalInputTokens += inputTokens;
-            totalOutputTokens += outputTokens;
-            for (const m of modelsUsed) { if (m !== '<synthetic>') allModels.add(m); }
-            for (const f of filesModified) allFilesModified.add(f);
-
-            let summaryText = row?.summary
-              ? (row.summary.length > 200 ? row.summary.slice(0, 200) + '...' : row.summary)
-              : session.firstPrompt.replace(/\n/g, ' ').slice(0, 100) || '(no prompt)';
-
-            const durationMin = durationMs > 0 ? `${Math.round(durationMs / 60000)}min` : '';
-            const peakPct = peakContext > 0 ? `${Math.round(peakContext / 2000)}%` : '';
-
-            lines.push(`**${i + 1}. ${modified}** ${durationMin ? `(${durationMin})` : ''}`);
-            lines.push(`   ${summaryText}`);
-            if (peakPct) lines.push(`   Context: ${peakPct} | Cost: ~$${costEstimate.toFixed(2)}`);
-            lines.push(`   Resume: \`claude --resume ${session.sessionId}\``);
-            lines.push('');
-          }
-        } finally {
-          await metaCache.close();
-        }
-
-        // Overall stats
-        lines.push('## Stats\n');
-        lines.push(`Sessions: ${sessions.length} | Cost: ~$${totalCost.toFixed(2)}`);
-        lines.push(`Input: ${(totalInputTokens / 1_000_000).toFixed(1)}M tokens | Output: ${(totalOutputTokens / 1000).toFixed(0)}k tokens`);
-        if (allModels.size > 0) lines.push(`Models: ${Array.from(allModels).join(', ')}`);
-        lines.push('');
-
-        // Open tasks for this project
-        const taskItems = await store.listItemsByProject('task' as SourceType, params.project_path, 5);
-        if (taskItems.length > 0) {
-          lines.push('## Open Tasks\n');
-          for (const task of taskItems) {
-            const extra = JSON.parse(task.extra_json || '{}');
-            const completed = extra.completedCount || 0;
-            const total = extra.taskCount || '?';
-            lines.push(`- ${task.title} (${completed}/${total} done)`);
-          }
-          lines.push('');
-        }
-
-        // Related plans
-        const planItems = await store.listItemsByProject('plan' as SourceType, params.project_path, 5);
-        if (planItems.length > 0) {
-          lines.push('## Related Plans\n');
-          for (const plan of planItems) {
-            const date = new Date(plan.mtime).toISOString().slice(0, 10);
-            lines.push(`- ${plan.title} (${date})`);
-          }
-          lines.push('');
-        }
-
-        // Knowledge graph facts for this project
-        const projectSlug = params.project_path.split('/').filter(Boolean).pop() || params.project_path;
-        try {
-          const kgCtx = await createKnowledgeGraph();
-          const projectFacts = await kgCtx.queryEntity(projectSlug);
-          const currentFacts = projectFacts.filter(f => f.current);
-          if (currentFacts.length > 0) {
-            lines.push('## Known Facts (Knowledge Graph)\n');
-            for (const fact of currentFacts.slice(0, 20)) {
-              const arrow = fact.direction === 'outgoing' ? '→' : '←';
-              lines.push(`- ${fact.subject} ${arrow} **${fact.predicate}** ${arrow} ${fact.object}`);
-            }
-            lines.push('');
-          }
-          await kgCtx.close();
-        } catch { /* KG not available */ }
-
-        // Files modified
-        if (allFilesModified.size > 0) {
-          lines.push('## Files Modified Recently\n');
-          const sorted = Array.from(allFilesModified).slice(0, 15);
-          for (const f of sorted) {
-            lines.push(`- ${f}`);
-          }
-          lines.push('');
-        }
-
-        // Try to get recent git commits
-        try {
-          // Resolve the actual project path from the filter
-          let actualPath = '';
-          if (sessions.length > 0) {
-            // Try to derive from the project directory name
-            const dirName = sessions[0].projectDir;
-            actualPath = dirName.replace(/-/g, '/').replace(/^\//, '/');
-          }
-          if (actualPath && existsSync(actualPath)) {
-            const { execSync } = await import('child_process');
-            const gitLog = execSync(
-              `git -C "${actualPath}" log --oneline -10 --since="2 weeks ago" 2>/dev/null`,
-              { encoding: 'utf-8', timeout: 5000 }
-            ).trim();
-            if (gitLog) {
-              lines.push('## Recent Git Commits\n');
-              lines.push('```');
-              lines.push(gitLog);
-              lines.push('```');
-              lines.push('');
-            }
-          }
-        } catch { /* no git or not a git repo */ }
-
-        // Cross-project intelligence: find related work in other projects
-        // Use the project's recent session summaries as search queries against other projects
-        if (sessions.length > 0) {
-          const ftsStore = await createStore();
-          const ftsCount = await ftsStore.getFTSCount();
-
-          if (ftsCount > 0) {
-            // Extract key terms from this project's recent work
-            const projectName = params.project_path.split('/').pop() || params.project_path;
-            const searchTerms: string[] = [];
-
-            // Get top topics from session summaries/titles
-            for (const s of sessions.slice(0, 3)) {
-              const words = (s.firstPrompt || '').split(/\s+/).filter(w => w.length > 4).slice(0, 5);
-              searchTerms.push(...words);
-            }
-
-            if (searchTerms.length > 0) {
-              // Search for these terms but EXCLUDE the current project
-              const crossResults = await ftsStore.searchFTS(
-                searchTerms.slice(0, 8).join(' '),
-                { topK: 20, sourceTypes: ['session'] }
-              );
-
-              // Filter out results from the same project
-              const otherProjectResults = crossResults.filter(r =>
-                !r.projectPath.includes(params.project_path) &&
-                !params.project_path.includes(r.projectPath.split('/').pop() || '')
-              );
-
-              if (otherProjectResults.length > 0) {
-                lines.push('## Related Work in Other Projects\n');
-                const seen = new Set<string>();
-                for (const r of otherProjectResults.slice(0, 5)) {
-                  const proj = r.projectPath.split('/').pop() || r.projectPath;
-                  if (seen.has(proj)) continue;
-                  seen.add(proj);
-                  let title = r.title.replace(/\n/g, ' ').slice(0, 80);
-                  lines.push(`- **${proj}**: ${title}`);
-                }
-                lines.push('');
-              }
-            }
-          }
-
-          await ftsStore.close();
-        }
-
-        await store.close();
-        await cache.close();
-        return { content: [{ type: 'text', text: lines.join('\n') }] };
+        // Server-backed: the dossier route resolves a path/id into a
+        // project_id (via the engine's resolveProjectId) and aggregates
+        // everything the synced index knows — recent sessions w/ summaries,
+        // cost/token rollup, open tasks, plans, and current knowledge-graph
+        // facts (decisions + tech stack). That is the substance of the old
+        // local project_context. Two of the old extras are intentionally NOT
+        // reproduced because no server endpoint exposes them:
+        //   - "Recent Git Commits": came from shelling out to `git log` on the
+        //     local repo; the server has no checkout of the producer's repo.
+        //   - "Related Work in Other Projects": a cross-project FTS sweep over
+        //     the local index; the dossier endpoint is single-project scoped.
+        const dossier = await remoteGetQS<{ project_id: string; markdown: string }>(
+          `/api/projects/${encodeURIComponent(params.project_path)}/dossier`,
+          { sessions: params.limit },
+        );
+        return { content: [{ type: 'text', text: dossier.markdown }] };
       }
 
       case 'recall_weekly_digest': {
@@ -3179,59 +2948,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // ── Files touched ──────────────────────────────────────────
       case 'recall_files_touched': {
         const params = RecallFilesTouchedSchema.parse(args);
-        const cutoff = Date.now() - params.since_days * 86400 * 1000;
-        const store = await createStore();
-        type Match = { sessionId: string; project: string; mtime: number; matchedFiles: string[]; live?: boolean };
+
+        // Server-backed: /api/edits/timeline with a pattern filter returns the
+        // edit rows (file/session/project/ts) across recent sessions, sourced
+        // from synced diff rows (cache-first). We group them by session to get
+        // the "which sessions touched files matching X" view. Edits are
+        // returned newest-first and capped at 1000 server-side; for a normal
+        // pattern that comfortably covers `limit` sessions.
+        const sinceHours = params.since_days * 24;
+        type Edit = { sessionId: string; projectPath: string; file: string; ts: number };
+        type TimelineResp = { total: number; edits: Edit[] };
+        const resp = await remoteGetQS<TimelineResp>('/api/edits/timeline', {
+          since_hours: sinceHours,
+          pattern: params.pattern,
+          limit: 1000,
+          include_reads: false,
+        });
+
+        type Match = { sessionId: string; project: string; mtime: number; matchedFiles: string[] };
         const matchesById = new Map<string, Match>();
-
-        const needle = params.pattern.toLowerCase();
-        try {
-          const items = await store.listItems('session' as SourceType, 5000, 0);
-
-          for (const item of items) {
-            if (item.mtime < cutoff) continue;
-            let extra: any = {};
-            try { extra = JSON.parse(item.extra_json || '{}'); } catch { /* skip */ }
-            const files: string[] = Array.isArray(extra.filesModified) ? extra.filesModified : [];
-            const matched = files.filter((f: string) => typeof f === 'string' && f.toLowerCase().includes(needle));
-            if (matched.length === 0) continue;
-            matchesById.set(item.id, {
-              sessionId: item.id,
-              project: item.project_path || '(unknown)',
-              mtime: item.mtime,
-              matchedFiles: matched,
-            });
+        for (const e of resp.edits || []) {
+          const existing = matchesById.get(e.sessionId);
+          if (existing) {
+            if (!existing.matchedFiles.includes(e.file)) existing.matchedFiles.push(e.file);
+            if (e.ts > existing.mtime) existing.mtime = e.ts;
+            continue;
           }
-        } finally {
-          await store.close();
-        }
-
-        // Live-scan recent sessions so the active session (and anything else
-        // not yet re-indexed) shows up. We cap the time window so we don't
-        // sweep the entire archive on every call.
-        const liveWindowMs = Math.min(params.since_days, 7) * 86400 * 1000;
-        const liveSinceMs = Math.max(cutoff, Date.now() - liveWindowMs);
-        try {
-          const liveEdits = liveScanRecentEdits({
-            sinceMs: liveSinceMs,
-            pattern: params.pattern,
+          matchesById.set(e.sessionId, {
+            sessionId: e.sessionId,
+            project: e.projectPath || '(unknown)',
+            mtime: e.ts,
+            matchedFiles: [e.file],
           });
-          for (const e of liveEdits) {
-            const existing = matchesById.get(e.sessionId);
-            if (existing) {
-              if (!existing.matchedFiles.includes(e.file)) existing.matchedFiles.push(e.file);
-              if (e.ts > existing.mtime) existing.mtime = e.ts;
-              continue;
-            }
-            matchesById.set(e.sessionId, {
-              sessionId: e.sessionId,
-              project: e.projectPath || '(unknown)',
-              mtime: e.ts,
-              matchedFiles: [e.file],
-              live: true,
-            });
-          }
-        } catch { /* live scan is best-effort */ }
+        }
 
         const matches = [...matchesById.values()].sort((a, b) => b.mtime - a.mtime);
         const trimmed = matches.slice(0, params.limit);
@@ -3243,8 +2992,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const lines = [`# Files touched: "${params.pattern}" (${matches.length} session${matches.length === 1 ? '' : 's'} in last ${params.since_days}d)\n`];
         for (const m of trimmed) {
           const date = new Date(m.mtime).toISOString().slice(0, 10);
-          const tag = m.live ? ' (live)' : '';
-          lines.push(`- **${m.sessionId}** ${date}${tag} — ${m.project}`);
+          lines.push(`- **${m.sessionId}** ${date} — ${m.project}`);
           for (const f of m.matchedFiles.slice(0, 5)) lines.push(`  · ${f}`);
           if (m.matchedFiles.length > 5) lines.push(`  · …and ${m.matchedFiles.length - 5} more`);
         }
@@ -3254,22 +3002,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // ── Edits timeline (chronological tool_use list across recent sessions) ──
       case 'recall_edits_timeline': {
         const params = RecallEditsTimelineSchema.parse(args);
-        const sinceMs = Date.now() - params.since_hours * 3600 * 1000;
 
-        const allEdits = liveScanRecentEdits({
-          sinceMs,
+        // Server-backed: /api/edits/timeline runs the same cached/live edit
+        // scan the Activity panel uses (cache-first from synced diff rows,
+        // live-fallback only in local mode). It applies include_reads,
+        // tool/project/pattern filters, the limit cap, and group_by_repo
+        // tallies server-side, so we just format its response.
+        type Edit = {
+          ts: number; tsIso?: string; sessionId: string; projectPath: string;
+          repoRoot: string | null; repoName: string | null; file: string;
+          op: string; toolName: string; tool: string; line?: number;
+        };
+        type TimelineResp = {
+          sinceHours: number; total: number; truncated: boolean;
+          byTool: Record<string, number>;
+          byProject: Record<string, number>;
+          byRepo?: Record<string, { name: string; count: number; sample: string }>;
+          edits: Edit[];
+        };
+        const resp = await remoteGetQS<TimelineResp>('/api/edits/timeline', {
+          since_hours: params.since_hours,
+          limit: params.limit,
           pattern: params.pattern,
-          // Live edits API still uses path-based filtering — it operates
-          // on filesystem session paths (not the indexed memory_metadata).
-          projectFilter: params.project_filter,
-          tools: params.tools,
+          project: params.project_filter,
+          include_reads: params.include_reads,
+          tools: params.tools?.join(','),
+          group_by_repo: params.group_by_repo,
         });
 
-        const filtered: SessionEdit[] = params.include_reads
-          ? allEdits
-          : allEdits.filter(e => e.op !== 'read');
-
-        if (filtered.length === 0) {
+        if (resp.total === 0) {
           return {
             content: [{
               type: 'text',
@@ -3280,53 +3041,57 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           };
         }
 
-        // Per-tool tally for the header so the agent sees the spread at a glance.
-        const byTool: Record<string, number> = {};
-        for (const e of filtered) byTool[e.tool] = (byTool[e.tool] || 0) + 1;
-        const toolSummary = Object.entries(byTool)
+        // Header tool tally — comes straight off the server (computed over
+        // the full filtered set, not just the returned page).
+        const toolSummary = Object.entries(resp.byTool)
           .sort((a, b) => b[1] - a[1])
           .map(([k, n]) => `${n} ${k}`).join(' · ');
 
-        const trimmed = filtered.slice(0, params.limit);
+        const sid = (sessionId: string) =>
+          (getBackendForId(sessionId)?.toRawId(sessionId) ?? sessionId).slice(0, 8);
+        const fmtTs = (e: Edit) =>
+          (e.tsIso || new Date(e.ts).toISOString()).replace('T', ' ').slice(0, 19);
 
         if (params.group_by_repo) {
-          // Group every filtered edit (not just the trimmed ones) by detected
-          // repo root so the agent sees the full multi-repo footprint.
-          const repoCache = new Map<string, string | null>();
-          const repos = new Map<string, SessionEdit[]>();
+          // The server returns the authoritative per-repo counts (over the full
+          // filtered set) in `byRepo`; the actual edit rows are the returned
+          // page (`edits`, already limit-capped server-side). Group the page by
+          // repoRoot for the table bodies, fall back to byRepo counts for the
+          // true per-repo totals.
+          const byRepo = resp.byRepo || {};
+          const rowsByRepo = new Map<string, Edit[]>();
           let unmatched = 0;
-          for (const e of filtered) {
-            let repo = repoCache.get(e.file);
-            if (repo === undefined) { repo = findRepoRoot(e.file); repoCache.set(e.file, repo); }
-            if (!repo) { unmatched++; continue; }
-            if (!repos.has(repo)) repos.set(repo, []);
-            repos.get(repo)!.push(e);
+          for (const e of resp.edits) {
+            if (!e.repoRoot) { unmatched++; continue; }
+            if (!rowsByRepo.has(e.repoRoot)) rowsByRepo.set(e.repoRoot, []);
+            rowsByRepo.get(e.repoRoot)!.push(e);
           }
-          const sortedRepos = Array.from(repos.entries())
-            .sort((a, b) => b[1].length - a[1].length);
+          const repoOrder = Object.entries(byRepo)
+            .sort((a, b) => b[1].count - a[1].count)
+            .map(([repo]) => repo);
+          // Include any repo present in the page but missing from byRepo (defensive).
+          for (const repo of rowsByRepo.keys()) if (!repoOrder.includes(repo)) repoOrder.push(repo);
 
           const lines = [
-            `# Edits timeline — last ${params.since_hours}h (${filtered.length} edit${filtered.length === 1 ? '' : 's'})`,
+            `# Edits timeline — last ${params.since_hours}h (${resp.total} edit${resp.total === 1 ? '' : 's'})`,
             `_${toolSummary}_`,
-            `_${sortedRepos.length} repo(s)${unmatched ? ` · ${unmatched} edit(s) outside any git repo` : ''}_`,
+            `_${repoOrder.length} repo(s)${unmatched ? ` · ${unmatched} edit(s) outside any git repo` : ''}_`,
             '',
           ];
-          for (const [repo, edits] of sortedRepos) {
-            const repoName = repo.split('/').filter(Boolean).pop() || repo;
-            const limited = edits.slice(0, params.limit);
-            lines.push(`## ${repoName}  \`${repo}\` — ${edits.length} edit(s)`);
+          for (const repo of repoOrder) {
+            const repoName = byRepo[repo]?.name || repo.split('/').filter(Boolean).pop() || repo;
+            const total = byRepo[repo]?.count ?? (rowsByRepo.get(repo)?.length ?? 0);
+            const rows = rowsByRepo.get(repo) || [];
+            lines.push(`## ${repoName}  \`${repo}\` — ${total} edit(s)`);
             lines.push('| Time (UTC) | Tool | Session | Op | File |');
             lines.push('|---|---|---|---|---|');
-            for (const e of limited) {
-              const ts = (e.tsIso || new Date(e.ts).toISOString()).replace('T', ' ').slice(0, 19);
-              const idForDisplay = getBackendForId(e.sessionId)?.toRawId(e.sessionId) ?? e.sessionId;
-              const sid = idForDisplay.slice(0, 8);
+            for (const e of rows) {
               const rel = e.file.startsWith(repo + '/') ? e.file.slice(repo.length + 1) : e.file;
-              lines.push(`| ${ts} | ${e.tool} | \`${sid}\` | ${e.op} | ${rel} |`);
+              lines.push(`| ${fmtTs(e)} | ${e.tool} | \`${sid(e.sessionId)}\` | ${e.op} | ${rel} |`);
             }
-            if (edits.length > limited.length) {
+            if (total > rows.length) {
               lines.push('');
-              lines.push(`…${edits.length - limited.length} more in this repo (raise \`limit\`).`);
+              lines.push(`…${total - rows.length} more in this repo (raise \`limit\`).`);
             }
             lines.push('');
           }
@@ -3334,23 +3099,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
 
         const lines = [
-          `# Edits timeline — last ${params.since_hours}h (${filtered.length} edit${filtered.length === 1 ? '' : 's'})`,
+          `# Edits timeline — last ${params.since_hours}h (${resp.total} edit${resp.total === 1 ? '' : 's'})`,
           `_${toolSummary}_`,
           '',
           '| Time (UTC) | Tool | Session | Op | File | Project |',
           '|---|---|---|---|---|---|',
         ];
-        for (const e of trimmed) {
-          const ts = (e.tsIso || new Date(e.ts).toISOString()).replace('T', ' ').slice(0, 19);
-          // Strip the tool prefix when rendering the session id so the column
-          // stays compact — the Tool column already carries that info.
-          const idForDisplay = getBackendForId(e.sessionId)?.toRawId(e.sessionId) ?? e.sessionId;
-          const sid = idForDisplay.slice(0, 8);
-          lines.push(`| ${ts} | ${e.tool} | \`${sid}\` | ${e.op} | ${e.file} | ${e.projectPath} |`);
+        for (const e of resp.edits) {
+          lines.push(`| ${fmtTs(e)} | ${e.tool} | \`${sid(e.sessionId)}\` | ${e.op} | ${e.file} | ${e.projectPath} |`);
         }
-        if (filtered.length > trimmed.length) {
+        if (resp.total > resp.edits.length) {
           lines.push('');
-          lines.push(`…${filtered.length - trimmed.length} more edits truncated (raise \`limit\`).`);
+          lines.push(`…${resp.total - resp.edits.length} more edits truncated (raise \`limit\`).`);
         }
 
         return { content: [{ type: 'text', text: lines.join('\n') }] };
@@ -3431,39 +3191,44 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const wal = getWAL();
         wal.log('decision_record', { subject: params.subject, importance: params.importance });
 
-        // 1) Knowledge-graph triple — durable, queryable, time-validated
-        const kg = await createKnowledgeGraph();
-        try {
-          await kg.addTriple(params.subject, 'decided', params.decision, {
-            confidence: Math.min(1, params.importance / 5),
-            sourceSession: params.session_id,
+        const confidence = Math.min(1, params.importance / 5);
+
+        // 1) Knowledge-graph triple — durable, queryable, time-validated.
+        // Server-backed via POST /api/kg/add (tenant-scoped on the server).
+        await remotePost<{ id: string }>('/api/kg/add', {
+          subject: params.subject,
+          predicate: 'decided',
+          object: params.decision,
+          confidence,
+          source_session: params.session_id,
+        });
+        if (params.reason) {
+          await remotePost<{ id: string }>('/api/kg/add', {
+            subject: params.subject,
+            predicate: 'because',
+            object: params.reason,
+            confidence,
+            source_session: params.session_id,
           });
-          if (params.reason) {
-            await kg.addTriple(params.subject, 'because', params.reason, {
-              confidence: Math.min(1, params.importance / 5),
-              sourceSession: params.session_id,
-            });
-          }
-        } finally {
-          await kg.close();
         }
 
-        // 2) Diary entry — readable narrative for the agent's own future reads
+        // 2) Diary entry — readable narrative for the agent's own future reads.
+        // Server-backed via POST /api/diary/write (stored as a synced diary
+        // memory item, read back through recall_diary_read).
         const diaryText = params.reason
           ? `Decided: ${params.decision}\nSubject: ${params.subject}\nWhy: ${params.reason}`
           : `Decided: ${params.decision}\nSubject: ${params.subject}`;
-        const entryId = DiarySource.write({
-          agent: params.agent_name,
+        const diary = await remotePost<{ id: string }>('/api/diary/write', {
+          agent_name: params.agent_name,
           topic: 'decision',
-          content: diaryText,
-          timestamp: new Date().toISOString(),
-          sessionId: params.session_id,
+          entry: diaryText,
+          session_id: params.session_id,
         });
 
         return {
           content: [{
             type: 'text',
-            text: `Decision recorded.\n- KG: ${params.subject} → decided → ${params.decision}\n- Diary entry: ${entryId} (importance ${params.importance})`,
+            text: `Decision recorded.\n- KG: ${params.subject} → decided → ${params.decision}\n- Diary entry: ${diary.id} (importance ${params.importance})`,
           }],
         };
       }
@@ -3530,42 +3295,37 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'recall_similar_sessions': {
         const params = RecallSimilarSessionsSchema.parse(args);
 
-        // Resolve search text: either the explicit query, or the first user
-        // prompt of the referenced session.
+        // Resolve search text: either the explicit query, or the source
+        // session's first-prompt/preview pulled from its metadata on the
+        // server (the synced session's content preview).
         let searchText = params.query ?? '';
         let excludeSessionId: string | undefined;
         if (params.session_id) {
           excludeSessionId = params.session_id;
-          const store = await createStore();
-          try {
-            const item = await store.getItem(params.session_id, 'session' as SourceType);
-            if (!item) {
-              return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
-            }
-            try {
-              const extra = JSON.parse(item.extra_json || '{}');
-              searchText = extra.firstPrompt || extra.contentPreview || item.content_preview || item.title || '';
-            } catch { searchText = item.content_preview || item.title || ''; }
-          } finally { await store.close(); }
+          const meta = await remoteGetSoft<{ contentPreview?: string; slug?: string }>(
+            `/api/conversations/${encodeURIComponent(params.session_id)}/metadata`);
+          if (!meta.data) {
+            return { content: [{ type: 'text', text: meta.message || (meta.status === 404 ? `Session not found: ${params.session_id}` : `Session ${params.session_id} not synced yet.`) }] };
+          }
+          searchText = meta.data.contentPreview || meta.data.slug || '';
         }
         if (!searchText.trim()) {
           return { content: [{ type: 'text', text: 'No search text could be derived. Provide `query` or a session_id with prompt content.' }] };
         }
 
-        // Sanitize then search across sessions only.
+        // Sanitize then search across sessions only. Server search is FTS —
+        // a keyword degrade of the local vector clustering (noted below).
         const cleaned = sanitizeQuery(searchText).cleanQuery;
-        const provider = (process.env.EMBEDDING_PROVIDER || 'ollama') as EmbedderProvider;
-        let embedder: Awaited<ReturnType<typeof getEmbedder>> | null = null;
-        try { embedder = getEmbedder(provider); } catch { embedder = null; }
-
-        const memoryIndex = await createVectorStore(embedder);
-        const raw = await memoryIndex.search(cleaned, {
+        type SearchResp = {
+          results: Array<{ sessionId: string; score: number; projectPath: string; modified: string; title?: string; firstPrompt?: string; text?: string; matchedChunks?: Array<{ text: string }> }>;
+        };
+        const search = await remotePost<SearchResp>('/api/search', {
+          query: cleaned,
           topK: params.top_k * 4,
-          sourceTypes: ['session'],
-          projectIdFilter: params.project_filter,
+          projectFilter: params.project_filter,
         });
 
-        const filtered = raw.filter(r => r.itemId !== excludeSessionId);
+        const filtered = (search.results || []).filter(r => r.sessionId !== excludeSessionId);
         const trimmed = filtered.slice(0, params.top_k);
 
         if (trimmed.length === 0) {
@@ -3582,14 +3342,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const lines = [
           `# Similar past work (${trimmed.length} session${trimmed.length === 1 ? '' : 's'} returned, ${filtered.length} total matches across ${byProject.size} project${byProject.size === 1 ? '' : 's'})`,
           '',
-          embedder ? '_Vector match._' : '_Keyword match (no embedder configured — install Ollama or set OPENAI_API_KEY for semantic clustering)._',
+          '_Keyword (FTS) match against the synced server index — server search is keyword-based, not vector clustering._',
           '',
         ];
         for (const r of trimmed) {
-          const date = new Date(r.mtime).toISOString().slice(0, 10);
+          const date = (r.modified || '').slice(0, 10) || '?';
           const proj = (r.projectPath || '').split('/').slice(-2).join('/') || '(unknown)';
-          const snippet = (r.matchedChunks?.[0]?.text || r.title || '').replace(/\s+/g, ' ').trim().slice(0, 160);
-          lines.push(`- **${r.itemId.slice(0, 8)}** · ${proj} · ${date} · score ${r.score.toFixed(3)}`);
+          const snippet = (r.matchedChunks?.[0]?.text || r.text || r.firstPrompt || r.title || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+          lines.push(`- **${r.sessionId.slice(0, 8)}** · ${proj} · ${date} · score ${r.score.toFixed(3)}`);
           if (snippet) lines.push(`  ${snippet}…`);
         }
 
@@ -3608,46 +3368,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // ── Session files ──────────────────────────────────────────
       case 'recall_session_files': {
         const params = RecallSessionFilesSchema.parse(args);
-        const store = await createStore();
-        let projectPath = '';
-        let files: string[] = [];
-        let tools: string[] = [];
-        let source: 'index' | 'live' = 'index';
 
-        try {
-          const item = await store.getItem(params.session_id, 'session' as SourceType);
-          if (item) {
-            projectPath = item.project_path || '';
-            try {
-              const extra = JSON.parse(item.extra_json || '{}');
-              if (Array.isArray(extra.filesModified)) files = extra.filesModified;
-              if (Array.isArray(extra.toolsUsed)) tools = extra.toolsUsed;
-            } catch { /* ignore corrupt json */ }
-          }
-        } finally { await store.close(); }
+        // Server-backed: the per-session diff endpoint replays the session's
+        // Edit/Write/MultiEdit/NotebookEdit tool calls into a per-file diff.
+        // The set of modified files is `files[].file`; the tools used come from
+        // each file's `events[].toolName`. Served from the synced compute cache
+        // (202 "pending-sync" until the session's machine ships its diff).
+        type DiffFile = { file: string; events?: Array<{ toolName: string }> };
+        type DiffResp = { projectPath: string; files: DiffFile[] };
+        const soft = await remoteGetSoft<DiffResp>(`/api/conversations/${encodeURIComponent(params.session_id)}/diff`);
+        if (!soft.data) {
+          return { content: [{ type: 'text', text: soft.message || (soft.status === 404 ? `Session not found: ${params.session_id}` : `Files not synced yet for ${params.session_id}.`) }] };
+        }
 
-        // Fall back to a live transcript scan when the metadata is empty.
-        // This is exactly the gap the user hit on an active session — the
-        // indexer hasn't run yet, but the .jsonl on disk already has tool_use
-        // blocks we can read.
+        const projectPath = soft.data.projectPath || '';
+        const files = soft.data.files.map(f => f.file);
+        const tools = [...new Set(soft.data.files.flatMap(f => (f.events || []).map(e => e.toolName)))];
+
         if (files.length === 0) {
-          const live = liveScanModifiedFiles(params.session_id);
-          if (!live.found) {
-            return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
-          }
-          if (live.files.length === 0 && live.reads.length === 0) {
-            return {
-              content: [{
-                type: 'text',
-                text: `Session ${params.session_id} exists but no file activity is recorded yet ` +
-                      `(no Edit/Write/MultiEdit/NotebookEdit tool_uses found in the transcript).`,
-              }],
-            };
-          }
-          files = live.files;
-          tools = [...new Set(live.edits.map(e => e.toolName))];
-          if (!projectPath) projectPath = live.projectPath;
-          source = 'live';
+          return {
+            content: [{
+              type: 'text',
+              text: `Session ${params.session_id} exists but no file activity is recorded ` +
+                    `(no Edit/Write/MultiEdit/NotebookEdit tool_uses found).`,
+            }],
+          };
         }
 
         // Bucket by extension to give the agent a quick "what kind of work was this".
@@ -3664,7 +3409,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           `**Project:** ${projectPath || '(unknown)'}`,
           `**Files modified:** ${files.length}`,
           `**Tools used:** ${tools.join(', ') || '(none recorded)'}`,
-          `**Source:** ${source === 'live' ? 'live transcript scan (session not yet re-indexed)' : 'indexed metadata'}`,
+          `**Source:** synced diff replay`,
           '',
           '## By extension',
         ];
