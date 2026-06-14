@@ -117,30 +117,38 @@ router.get('/item/:sourceType/:id/content', async (req, res) => {
         return res.status(404).json({ error: 'Item not found' });
       }
 
-      if (!item.file_path) {
-        return res.status(400).json({ error: 'Item has no associated file path' });
-      }
-
       // 1. Try Cache
       const cached = await store.getCachedContent(id, sourceType, item.mtime);
       if (cached) {
         return res.json({ content: cached, fromCache: true });
       }
 
-      // 2. Read from disk
-      const { readFile } = await import('fs/promises');
       const { existsSync } = await import('fs');
 
-      if (!existsSync(item.file_path)) {
-        return res.status(404).json({ error: `File not found at path: ${item.file_path}` });
+      // 2. Local mode: read the source file from disk when it exists.
+      if (item.file_path && existsSync(item.file_path)) {
+        const { readFile } = await import('fs/promises');
+        const content = await readFile(item.file_path, 'utf-8');
+        await store.setCachedContent(id, sourceType, item.mtime, content);
+        return res.json({ content });
       }
 
-      const content = await readFile(item.file_path, 'utf-8');
+      // 3. Server mode: synced items have no local file. Reconstruct the
+      // content from the stored FTS chunks (the canonical server-side copy),
+      // joined in chunk order. This covers plans/items synced from a client.
+      const chunks = await store.listChunksByItem(sourceType, id);
+      if (chunks.length > 0) {
+        const content = chunks.map((c) => c.text).join('\n\n');
+        await store.setCachedContent(id, sourceType, item.mtime, content);
+        return res.json({ content, fromChunks: true });
+      }
 
-      // 3. Store in Cache
-      await store.setCachedContent(id, sourceType, item.mtime, content);
-
-      res.json({ content });
+      // 4. Nothing on disk, nothing in chunks — genuinely unavailable.
+      return res.status(404).json({
+        error: item.file_path
+          ? `File not found at path: ${item.file_path}`
+          : 'Item has no content (no file and no chunks)',
+      });
     } finally {
       await store.close();
     }
