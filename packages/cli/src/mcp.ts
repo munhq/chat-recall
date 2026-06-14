@@ -2294,31 +2294,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_plans': {
         const params = RecallPlansSchema.parse(args);
-        const memoryStore = await createStore();
-        const items = await memoryStore.listItems('plan', params.limit);
+        requireRemote();
+        const { items } = await remoteGetQS<{ items: Array<{ id: string; title: string; mtime: number; content_preview: string }> }>(
+          '/api/memory/browse/plan', { limit: params.limit });
 
         if (items.length === 0) {
-          await memoryStore.close();
-          return { content: [{ type: 'text', text: 'No plans indexed. Run `chat-recall memory index` first.' }] };
+          return { content: [{ type: 'text', text: 'No plans synced yet.' }] };
         }
 
-        const lines = [`# Indexed Plans (${items.length})\n`];
-
+        const lines = [`# Plans (${items.length})\n`];
         for (const item of items) {
           const date = new Date(item.mtime).toISOString().slice(0, 10);
           lines.push(`- **${item.title}** (${date})`);
-          if (item.content_preview) {
-            lines.push(`  ${item.content_preview.slice(0, 120)}...`);
-          }
-          const links = await memoryStore.getLinksFrom('plan', item.id);
-          for (const link of links) {
-            if (link.target_type === 'session') {
-              lines.push(`  **Session:** \`claude --resume ${link.target_id}\``);
-            }
-          }
+          if (item.content_preview) lines.push(`  ${item.content_preview.slice(0, 120)}...`);
         }
-
-        await memoryStore.close();
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
@@ -2336,37 +2325,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_tasks': {
         const params = RecallTasksSchema.parse(args);
-        const memoryStore = await createStore();
-        const items = await memoryStore.listItems('task', params.limit);
+        requireRemote();
+        const { items } = await remoteGetQS<{ items: Array<{ id: string; title: string; extra_json: string }> }>(
+          '/api/memory/browse/task', { limit: params.limit });
 
         if (items.length === 0) {
-          await memoryStore.close();
-          return { content: [{ type: 'text', text: 'No tasks indexed. Run `chat-recall memory index` first.' }] };
+          return { content: [{ type: 'text', text: 'No tasks synced yet.' }] };
         }
 
-        const lines = [`# Indexed Task Groups (${items.length})\n`];
-
+        const lines = [`# Task Groups (${items.length})\n`];
         for (const item of items) {
           const extra = JSON.parse(item.extra_json || '{}');
           const taskCount = extra.taskCount || '?';
           const completedCount = extra.completedCount || 0;
-
           lines.push(`## Session ${item.id.slice(0, 8)}...`);
           lines.push(`**Tasks:** ${completedCount}/${taskCount} completed`);
           lines.push(`**Subjects:** ${item.title}`);
-
-          // Show links to session
-          const links = await memoryStore.getLinksFrom('task', item.id);
-          for (const link of links) {
-            if (link.target_type === 'session') {
-              lines.push(`**Resume:** \`claude --resume ${link.target_id}\``);
-            }
-          }
-
+          lines.push(`**Resume:** \`claude --resume ${item.id.replace(/^[a-z]+_/, '')}\``);
           lines.push('');
         }
-
-        await memoryStore.close();
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
