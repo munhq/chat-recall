@@ -27,6 +27,7 @@ import syncRouter from './routes/sync.js';
 import teamsRouter from './routes/teams.js';
 import teamArtifactsRouter from './routes/team-artifacts.js';
 import { capabilities, isServerMode } from './util/mode.js';
+import { generateMissingSummaries, serverSummaryConfig } from './services/summary-worker.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '5000', 10);
@@ -147,6 +148,42 @@ app.listen(PORT, HOST, () => {
 
   const caps = capabilities();
   console.log(`  Mode: ${caps.mode} · edition: ${caps.edition}`);
+
+  // Server-side AI summary generation. Synced sessions arrive without an AI
+  // summary (the thin collector only ships raw content + structured outcome);
+  // this periodic sweep fills them in using the operator-configured provider.
+  // Gated twice: server mode only (local mode generates summaries during its
+  // own indexing), and only when a provider is actually configured — otherwise
+  // it's a no-op and we say so once instead of spinning a useless timer.
+  if (isServerMode()) {
+    if (serverSummaryConfig()) {
+      const SUMMARY_SWEEP_MS = 3 * 60 * 1000; // every 3 minutes
+      const SUMMARY_BATCH = 10;                // small batch per tick
+      let sweepInFlight = false;               // guard against overlap on slow LLMs
+      const sweep = async (): Promise<void> => {
+        if (sweepInFlight) return;
+        sweepInFlight = true;
+        try {
+          const r = await generateMissingSummaries({ limit: SUMMARY_BATCH });
+          if (r.generated > 0 || r.failed > 0) {
+            console.log(`  Summary sweep: ${r.generated} generated, ${r.failed} failed, ${r.skipped} skipped`);
+          }
+        } catch (err) {
+          console.error('Summary sweep failed:', err);
+        } finally {
+          sweepInFlight = false;
+        }
+      };
+      // unref so the timer never keeps the process alive on its own.
+      setInterval(() => { void sweep(); }, SUMMARY_SWEEP_MS).unref();
+      // Kick one sweep shortly after boot so the first batch doesn't wait a
+      // full interval.
+      setTimeout(() => { void sweep(); }, 5000).unref();
+      console.log('  Summary worker: enabled (server mode)');
+    } else {
+      console.log('  Summary worker: disabled (no SUMMARY_PROVIDER configured)');
+    }
+  }
 
   // Cache prewarming only makes sense in local mode — in server mode there
   // is no filesystem to walk and (with keycloak auth) the warm fetches
