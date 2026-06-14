@@ -1725,6 +1725,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           meta = m.data;
         } catch { /* metadata optional */ }
 
+        // Decisions come from the synced structured outcome (not a live scan).
+        let decisions: string[] = [];
+        try {
+          const o = await remoteGetSoft<{ decisions?: Array<{ text: string }> }>(`/api/conversations/${encodeURIComponent(params.session_id)}/outcome`);
+          if (o.data?.decisions) decisions = o.data.decisions.map(d => d.text);
+        } catch { /* outcome optional */ }
+
         const userInputs: string[] = [];
         const assistantWork: string[] = [];
         for (const msg of convo.data.messages) {
@@ -1743,7 +1750,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           modified: '',
           userInputs: userInputs.slice(0, 50),
           claudeWork: assistantWork.slice(0, 20),
-          decisions: [],
+          decisions,
           toolsUsed: meta?.toolsUsed ?? [],
           filesChanged: meta?.filesModified ?? [],
         });
@@ -1788,10 +1795,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const params = RecallSummarySchema.parse(args);
 
         // Server-backed: the structured outcome (status, decisions, blockers,
-        // claim/reaction, prompt markers) is computed by the session's
-        // machine at sync time and served from the synced outcome cache. The
-        // free-form AI narrative summary isn't exposed via a server GET, so
-        // the rendered summary is built entirely from the outcome compute.
+        // claim/reaction, prompt markers) plus the free-form AI summary, both
+        // synced and served from the store. The AI narrative comes from the
+        // metadata endpoint (`summary`, populated when the session's machine
+        // shipped a generated summary); the structured part from /outcome.
+        const aiSummary = await remoteGetSoft<{ summary?: string }>(`/api/conversations/${encodeURIComponent(params.session_id)}/metadata`)
+          .then(r => r.data?.summary?.trim() || '')
+          .catch(() => '');
         type Outcome = {
           found?: boolean; status: string; reason: string;
           fileCount: number; totalLinesAdded: number; totalLinesRemoved: number;
@@ -1813,13 +1823,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           outcome.status === 'abandoned' ? '🪦' :
           outcome.status === 'in_progress' ? '🟡' : '❔';
 
-        // Legacy short mode: just the status + reason headline.
+        // Legacy short mode: the AI summary if we have one, else the headline.
         if (!params.rich) {
           return { content: [{ type: 'text', text: [
             `# 📋 Summary`,
             '',
             `**Session:** ${params.session_id.substring(0, 8)}...`,
-            `**Status:** ${statusEmoji} ${outcome.status} — ${outcome.reason}`,
+            aiSummary ? `\n${aiSummary}\n` : `**Status:** ${statusEmoji} ${outcome.status} — ${outcome.reason}`,
             '',
             '---',
             '',
@@ -1830,6 +1840,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const lines: string[] = [];
         lines.push(`# 📋 Summary — ${params.session_id.substring(0, 8)}…`);
         lines.push('');
+        if (aiSummary) { lines.push(aiSummary); lines.push(''); }
 
         // Status header line — most useful single signal.
         lines.push(`**Status:** ${statusEmoji} ${outcome.status} — ${outcome.reason}`);
@@ -2953,6 +2964,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
           lines.push('');
         }
+
+        // Knowledge-graph snapshot (server-side) — re-added from the local digest.
+        try {
+          const kg = await remoteGet<{ entities: number; current_facts: number; relationship_types: string[] }>('/api/kg/stats');
+          if (kg.entities > 0) {
+            lines.push('## Knowledge Graph\n');
+            lines.push(`${kg.entities} entities · ${kg.current_facts} current facts · ${kg.relationship_types.length} relationship types`);
+            lines.push('');
+          }
+        } catch { /* kg optional */ }
 
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }

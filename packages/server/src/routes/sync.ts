@@ -348,8 +348,8 @@ router.post('/', async (req, res) => {
           await metaCache.set({
             sessionId: cv.session_id,
             firstPrompt,
-            summary: '',
-            summarySource: 'original',
+            summary: (cv.meta?.summary as string) || '',
+            summarySource: ((cv.meta?.summarySource as string) || 'original') as 'original' | 'gemini' | 'claude' | 'ollama',
             mtime,
             indexedAt: Date.now(),
           });
