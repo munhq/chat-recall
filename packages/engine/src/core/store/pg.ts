@@ -423,10 +423,12 @@ export class PgStore implements StorageDriver {
 
   async searchFTS(query: string, options: Args<'searchFTS'>[1] = {}): Promise<MemorySearchResult[]> {
     const { topK = 20, sourceTypes, projectIdFilter } = options;
-    const params: unknown[] = [this.t, query];
+    const tsq = orPrefixTsQuery(query);
+    if (!tsq) return [];
+    const params: unknown[] = [this.t, tsq];
     let sql = `SELECT chunk_id, item_id, source_type, title, text, chunk_type, project_path, file_path, mtime,
-                      ts_rank(tsv, websearch_to_tsquery('english',$2)) AS rank
-               FROM memory_chunks WHERE tenant=$1 AND tsv @@ websearch_to_tsquery('english',$2)`;
+                      ts_rank(tsv, to_tsquery('english',$2)) AS rank
+               FROM memory_chunks WHERE tenant=$1 AND tsv @@ to_tsquery('english',$2)`;
     if (sourceTypes && sourceTypes.length > 0) { params.push(sourceTypes); sql += ` AND source_type = ANY($${params.length})`; }
     if (projectIdFilter) { params.push(projectIdFilter); sql += ` AND project_id=$${params.length}`; }
     params.push(topK * 5); sql += ` ORDER BY rank DESC LIMIT $${params.length}`;
@@ -439,8 +441,10 @@ export class PgStore implements StorageDriver {
     return (await this.one(`SELECT COUNT(*)::int AS count FROM memory_chunks WHERE tenant=$1`, [this.t])).count;
   }
   async countDistinctItemsMatching(query: string, options: Args<'countDistinctItemsMatching'>[1] = {}): Promise<number> {
-    const params: unknown[] = [this.t, query];
-    let sql = `SELECT COUNT(DISTINCT item_id)::int AS n FROM memory_chunks WHERE tenant=$1 AND tsv @@ websearch_to_tsquery('english',$2)`;
+    const tsq = orPrefixTsQuery(query);
+    if (!tsq) return 0;
+    const params: unknown[] = [this.t, tsq];
+    let sql = `SELECT COUNT(DISTINCT item_id)::int AS n FROM memory_chunks WHERE tenant=$1 AND tsv @@ to_tsquery('english',$2)`;
     if (options.sourceTypes && options.sourceTypes.length > 0) { params.push(options.sourceTypes); sql += ` AND source_type = ANY($${params.length})`; }
     if (options.projectFilter) { params.push(`%${options.projectFilter}%`); sql += ` AND project_path LIKE $${params.length}`; }
     try { return (await this.one(sql, params))?.n ?? 0; } catch { return 0; }
@@ -510,6 +514,22 @@ export class PgStore implements StorageDriver {
   }
 
   async close(): Promise<void> { /* pooled connection is shared (pg-pool.ts) — closePgPools() ends it */ }
+}
+
+/**
+ * Build an OR-ed, prefix-matched tsquery from free text. `websearch_to_tsquery`
+ * ANDs every word, so a natural-language query like "Solana node covalidator
+ * enclave demo" requires ALL five in one chunk and returns nothing. OR-ing the
+ * terms (and prefix-matching with `:*`) returns chunks matching ANY term, and
+ * `ts_rank` orders them so chunks hitting more terms float to the top — which
+ * is what makes multi-word recall actually find things. Returns null when the
+ * query has no usable terms (caller returns []).
+ */
+function orPrefixTsQuery(query: string): string | null {
+  const words = query.toLowerCase().match(/[a-z0-9_]{2,}/g) || [];
+  if (words.length === 0) return null;
+  // Dedupe and cap so a pathological query can't build a huge tsquery.
+  return [...new Set(words)].slice(0, 24).map((w) => `${w}:*`).join(' | ');
 }
 
 /** Group chunk rows by item — same shape/logic as MemoryStore.searchFTS. */
