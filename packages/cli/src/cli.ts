@@ -776,7 +776,8 @@ memory
 program
   .command('doctor')
   .description('Quick health check across login, server, credentials, hooks, MCP server, and codeindex')
-  .action(async () => {
+  .option('--purge-local', 'Remove the legacy local index (cache.db + vector/KG files) left by pre-thin-collector versions — storage is server-side now. Requires login; keeps credentials, sync ledger, identity, and the audit log.')
+  .action(async (opts: { purgeLocal?: boolean }) => {
     const { existsSync, readFileSync, statSync } = await import('fs');
     const { execSync } = await import('child_process');
 
@@ -876,6 +877,38 @@ program
       watchRunning = parseInt(out, 10) > 0;
     } catch { /* tolerate */ }
     note(watchRunning, 'Watch daemon', watchRunning ? 'running' : 'not running (run `chat-recall watch` to auto-ship new sessions)');
+
+    // Legacy local index — pre-thin-collector versions kept a local SQLite
+    // store + vector/KG files here. The thin collector stores everything
+    // server-side, so these are dead weight. We never auto-delete them; the
+    // opt-in --purge-local flag (plus a login check, so history is already on
+    // the server) is the explicit approval. Credentials, the sync ledger,
+    // identity, and the WAL audit log are NOT touched.
+    const dataDir = getDataDir();
+    const legacyPaths = [
+      join(dataDir, 'cache.db'), join(dataDir, 'cache.db-wal'), join(dataDir, 'cache.db-shm'),
+      join(dataDir, 'index', 'lancedb'), join(dataDir, 'index', 'knowledge_graph.db'), join(dataDir, 'index', 'metadata.db'),
+    ];
+    const legacyPresent = legacyPaths.filter((p) => existsSync(p));
+
+    if (opts.purgeLocal) {
+      if (!target) {
+        note(false, 'Purge legacy index', 'refused — log in and `chat-recall sync` first, so your history is on the server before removing local copies');
+      } else if (legacyPresent.length === 0) {
+        note(true, 'Purge legacy index', 'nothing to remove');
+      } else {
+        const { rmSync } = await import('fs');
+        let removed = 0;
+        for (const p of legacyPresent) {
+          try { rmSync(p, { recursive: true, force: true }); removed++; } catch { /* leave the rest */ }
+        }
+        note(removed === legacyPresent.length, 'Purge legacy index', `removed ${removed}/${legacyPresent.length} legacy item(s); kept credentials, ledger, identity, audit log`);
+      }
+    } else if (legacyPresent.length > 0) {
+      note(true, 'Legacy local index', `${legacyPresent.length} unused item(s) from old versions — reclaim space with \`chat-recall doctor --purge-local\``);
+    } else {
+      note(true, 'Legacy local index', 'none (clean)');
+    }
 
     // Render
     console.log(chalk.bold('\nchat-recall doctor\n'));
