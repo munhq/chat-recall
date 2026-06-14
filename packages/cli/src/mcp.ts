@@ -230,6 +230,26 @@ async function remoteGetQS<T>(path: string, params: Record<string, string | numb
   return remoteGet<T>(query ? `${path}?${query}` : path);
 }
 
+/**
+ * GET that does NOT throw on 202/404 — the conversation deep-dive endpoints
+ * answer 202 "pending-sync" (the session's compute hasn't been shipped from its
+ * machine yet) or 404 (unknown session). Returns the status so the caller can
+ * render a friendly message instead of a stack trace.
+ */
+async function remoteGetSoft<T>(path: string, params: Record<string, string | number | boolean | undefined | null> = {}): Promise<{ status: number; data: T | null; message?: string }> {
+  const cred = requireRemote();
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
+  const q = qs.toString();
+  const res = await fetch(cred.base + (q ? `${path}?${q}` : path), { headers: { authorization: `Bearer ${cred.token}` } });
+  if (res.status === 202 || res.status === 404) {
+    const body = await res.json().catch(() => ({}));
+    return { status: res.status, data: null, message: (body as { message?: string }).message };
+  }
+  if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
+  return { status: res.status, data: (await res.json()) as T };
+}
+
 // Tool schemas
 const RecallSearchSchema = z.object({
   query: z.string().describe('What you\'re looking for (e.g., "OAuth implementation", "React hooks")'),
@@ -1915,11 +1935,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_diff': {
         const params = RecallDiffSchema.parse(args);
-        const result = replaySessionAny(params.session_id);
-        if (!result.found) {
-          return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
+        const soft = await remoteGetSoft<{ totalLinesAdded: number; totalLinesRemoved: number; files: Array<{ file: string; diff: string; linesAdded: number; linesRemoved: number; reverted: boolean; succeededEvents: number; failedEvents: number; initialKnown: boolean; events: unknown[] }> }>(
+          `/api/conversations/${encodeURIComponent(params.session_id)}/diff`, { file: params.file });
+        if (!soft.data) {
+          return { content: [{ type: 'text', text: soft.message || (soft.status === 404 ? `Session not found: ${params.session_id}` : `Diff not synced yet for ${params.session_id}.`) }] };
         }
-        const files = params.file ? result.files.filter(f => f.file === params.file) : result.files;
+        const result = soft.data;
+        const files = result.files;
         if (files.length === 0) {
           return { content: [{ type: 'text', text: `No edits found${params.file ? ` for file ${params.file}` : ''} in session ${params.session_id}.` }] };
         }
@@ -1950,18 +1972,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_commits': {
         const params = RecallCommitsSchema.parse(args);
-        const replay = replaySessionAny(params.session_id);
-        if (!replay.found) {
-          return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
+        const soft = await remoteGetSoft<{ totalCommits: number; repos: Array<{ repoName: string; commits: Array<{ shortSha: string; authorIso: string; subject: string; matchedSessionFiles: string[]; linesAdded: number; linesRemoved: number; files: unknown[] }> }> }>(
+          `/api/conversations/${encodeURIComponent(params.session_id)}/commits`, { buffer_minutes: params.buffer_minutes });
+        if (!soft.data) {
+          return { content: [{ type: 'text', text: soft.message || (soft.status === 404 ? `Session not found: ${params.session_id}` : `Commits not synced yet for ${params.session_id}.`) }] };
         }
-        const turns = extractTurnsAny(params.session_id, { maxTurns: 50_000 });
-        const result = getSessionCommits(
-          params.session_id,
-          replay.files.map(f => f.file),
-          turns.startMs || Date.now() - 86_400_000,
-          turns.endMs || Date.now(),
-          params.buffer_minutes,
-        );
+        const result = soft.data;
         if (result.totalCommits === 0) {
           return { content: [{ type: 'text', text: `No commits in window for ${params.session_id} across ${result.repos.length} repo(s).\n\n_Edits stayed local or window was off — try increasing buffer_minutes._` }] };
         }
@@ -1985,10 +2001,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_outcome': {
         const params = RecallOutcomeSchema.parse(args);
-        const o = computeOutcome(params.session_id);
-        if (!o.found) {
-          return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
+        const soft = await remoteGetSoft<{ status: string; reason: string; startMs?: number; endMs?: number; fileCount: number; totalLinesAdded: number; totalLinesRemoved: number; commits: { totalCommits: number; repos: Array<{ repoName: string; commits: unknown[] }> }; decisions: Array<{ text: string }>; blockers: Array<{ kind: string; text: string }>; claimReaction: { claim?: { text: string }; reaction?: { text: string; markers: string[] } } }>(
+          `/api/conversations/${encodeURIComponent(params.session_id)}/outcome`);
+        if (!soft.data) {
+          return { content: [{ type: 'text', text: soft.message || (soft.status === 404 ? `Session not found: ${params.session_id}` : `Outcome not synced yet for ${params.session_id}.`) }] };
         }
+        const o = soft.data;
         const statusEmoji =
           o.status === 'shipped' ? '🚢' :
           o.status === 'interrupted' ? '⏸' :
@@ -2033,15 +2051,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_markers': {
         const params = RecallMarkersSchema.parse(args);
-        const turns = extractTurnsAny(params.session_id, { maxTurns: 50_000 });
-        if (!turns.found) {
-          return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
+        type MarkerPrompt = { ts?: number; tsIso?: string; line: number; markers: string[]; text: string };
+        type MarkerSummary = { total: number; peakIntensity: number; frustrated?: number; correction?: number; interrupt?: number; approval?: number; directive?: number; question?: number; clarification_request?: number };
+        const soft = await remoteGetSoft<{ prompts: MarkerPrompt[]; summary: MarkerSummary }>(
+          `/api/conversations/${encodeURIComponent(params.session_id)}/markers`);
+        if (!soft.data) {
+          return { content: [{ type: 'text', text: soft.message || (soft.status === 404 ? `Session not found: ${params.session_id}` : `Markers not synced yet for ${params.session_id}.`) }] };
         }
-        const prompts = turns.turns
-          .filter(t => t.kind === 'user' && t.text)
-          .slice(0, params.limit)
-          .map(t => ({ ts: t.ts, tsIso: t.tsIso, line: t.line, ...markPrompt(t.text!) }));
-        const summary = summarizeMarkers(prompts);
+        const prompts = soft.data.prompts.slice(0, params.limit);
+        const summary = soft.data.summary;
         const lines: string[] = [];
         lines.push(`# 🎚 Prompt markers — ${params.session_id.substring(0, 8)}…`);
         lines.push(`${summary.total} prompt(s) · peak intensity ${summary.peakIntensity.toFixed(2)}`);
