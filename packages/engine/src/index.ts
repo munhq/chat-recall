@@ -11,7 +11,7 @@ export { createStore, type StorageDriver } from './core/store/index.js';
 export { createVectorStore, type VectorStore } from './core/store/vector.js';
 export { createMetadataCache, createOutcomeCache, type MetadataCacheDriver, type OutcomeCacheDriver } from './core/store/caches.js';
 export { createKnowledgeGraph, type KnowledgeGraphDriver } from './core/store/knowledge-graph.js';
-export { createControlPlane, type ControlPlane, type Membership, type TeamMember, type ArtifactMeta, type ArtifactBody } from './core/store/control-plane.js';
+export { createControlPlane, type ControlPlane, type Membership, type TeamMember, type ArtifactMeta, type ArtifactBody, type Entitlement, type EntitlementStatus } from './core/store/control-plane.js';
 export { closePgPools } from './core/store/pg-pool.js';
 // Re-export the row type so route files can use it without deep paths.
 export {
