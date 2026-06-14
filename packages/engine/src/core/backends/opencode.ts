@@ -10,11 +10,39 @@
  * IDs are prefixed: 'opencode_<session-id>'.
  */
 
-import Database from 'better-sqlite3';
+import { createRequire } from 'node:module';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { opencodeDbPath } from '../tool-paths.js';
+
+const require = createRequire(import.meta.url);
+
+// Lazy + optional: OpenCode keeps its sessions in its own SQLite DB, so
+// reading them needs better-sqlite3. The thin collector ships without it by
+// default (optionalDependency); load on first use and degrade gracefully
+// (skip OpenCode) if it isn't installed, instead of crashing on boot.
+//
+// better-sqlite3 uses `export =` (CommonJS), so the module value is the
+// constructor itself — `typeof import(...)` is that callable type. The
+// instance type is the nested `.Database` interface.
+type BetterSqlite3Ctor = typeof import('better-sqlite3');
+type BetterSqlite3Db = import('better-sqlite3').Database;
+let _Database: BetterSqlite3Ctor | null | undefined;
+function loadBetterSqlite3(): BetterSqlite3Ctor | null {
+  // `undefined` = never tried; `null` = tried and absent. Cache both so the
+  // require() (and its potential failure) happens at most once per process.
+  if (_Database === undefined) {
+    try { _Database = require('better-sqlite3') as BetterSqlite3Ctor; }
+    catch {
+      _Database = null;
+      process.stderr.write(
+        '[chat-recall] better-sqlite3 not installed — OpenCode sessions will be skipped.\n',
+      );
+    }
+  }
+  return _Database;
+}
 
 import type {
   ToolBackend,
@@ -73,7 +101,9 @@ export class OpencodeBackend implements ToolBackend {
     return join(process.env.HOME || homedir(), '.config', 'opencode', 'skill');
   }
 
-  isAvailable(): boolean { return existsSync(this.dbPath()); }
+  // Available only when both the DB exists AND better-sqlite3 can be loaded —
+  // without the driver we cannot read it, so OpenCode is effectively absent.
+  isAvailable(): boolean { return existsSync(this.dbPath()) && loadBetterSqlite3() !== null; }
 
   // ── ID handling ────────────────────────────────────────────────
   matchesId(id: string): boolean { return id.startsWith(PREFIX); }
@@ -429,8 +459,10 @@ export class OpencodeBackend implements ToolBackend {
     // OpenCode's mutable SQLite file (vacuum/compaction/deletion).
     const dbPath = this.dbPath();
     if (!existsSync(dbPath)) return null;
+    const DB = loadBetterSqlite3();
+    if (!DB) return null;
     const realId = this.toRawId(id);
-    const db = new Database(dbPath, { readonly: true });
+    const db = new DB(dbPath, { readonly: true });
     try {
       const session = db.prepare(`SELECT * FROM session WHERE id = ?`).get(realId);
       if (!session) return null;
@@ -456,7 +488,9 @@ export const opencodeBackend = new OpencodeBackend();
 
 // ── Local helpers ────────────────────────────────────────────────────
 
-function openReadonly(path: string): Database.Database | null {
-  try { return new Database(path, { readonly: true, fileMustExist: true }); }
+function openReadonly(path: string): BetterSqlite3Db | null {
+  const DB = loadBetterSqlite3();
+  if (!DB) return null;
+  try { return new DB(path, { readonly: true, fileMustExist: true }); }
   catch { return null; }
 }
