@@ -1502,27 +1502,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       
       case 'recall_status': {
-        const dummyEmbedder = { embed: async () => [], embedQuery: async () => [], dimension: 768 };
-        const memIdx = await createVectorStore(dummyEmbedder as any);
-        const stats = await memIdx.getStats();
-        const store = await createStore();
-        const linkCount = await store.getLinkCount();
-        const ftsCount = await store.getFTSCount();
-        await store.close();
+        requireRemote();
+        // Two cheap server reads: /api/status (chunks + per-project session
+        // counts) and /api/status/sync (the trust-panel coverage: synced
+        // sessions, raw archives, freshness). Local index-path / vector
+        // fields don't exist server-side and are dropped.
+        const status = await remoteGet<{ totalChunks: number; totalSessions: number; projects: Record<string, number> }>('/api/status');
+        const sync = await remoteGet<{ sessions: number; sourceTypes: Record<string, number>; rawArchived: number; newestSessionAgeMs: number | null }>('/api/status/sync');
 
         const lines = [
-          'Chat-Recall Index Status',
-          `Index path: ${stats.indexPath}`,
-          `Total items: ${stats.totalItems}`,
-          `Vector chunks: ${stats.totalChunks}`,
-          `FTS5 chunks: ${ftsCount}`,
-          `Total links: ${linkCount}`,
+          'Chat-Recall Server Status',
+          `Synced sessions: ${sync.sessions}`,
+          `FTS5 chunks: ${status.totalChunks}`,
+          `Raw archives: ${sync.rawArchived}`,
         ];
+        if (sync.newestSessionAgeMs !== null) {
+          const mins = Math.round(sync.newestSessionAgeMs / 60000);
+          lines.push(`Freshness: newest synced session ${mins} min ago`);
+        }
 
-        if (Object.keys(stats.bySourceType).length > 0) {
+        const types = Object.entries(sync.sourceTypes).filter(([, n]) => Number(n) > 0);
+        if (types.length > 0) {
           lines.push('\nBy source type:');
-          for (const [type, data] of Object.entries(stats.bySourceType)) {
-            lines.push(`  ${type}: ${data.items} items, ${data.chunks} chunks`);
+          for (const [type, n] of types) {
+            lines.push(`  ${type}: ${n} items`);
+          }
+        }
+
+        const projects = Object.entries(status.projects || {}).sort((a, b) => b[1] - a[1]).slice(0, 10);
+        if (projects.length > 0) {
+          lines.push('\nTop projects:');
+          for (const [proj, n] of projects) {
+            lines.push(`  ${proj}: ${n} sessions`);
           }
         }
 
@@ -1532,14 +1543,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'recall_show': {
         const params = RecallShowSchema.parse(args);
 
-        // Single registry-routed path — every backend's readEvents emits
-        // canonical events (Claude includes its `type:'summary'` lines as
-        // 'summary' events), and `loadMessagesViaRegistry` formats them
-        // for display.
-        const messagesList = loadMessagesViaRegistry(params.session_id, params.include_code);
-        if (messagesList === null || messagesList.length === 0) {
-          return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
+        // Server holds the full message list (rebuilt from synced chunks in
+        // server mode, parsed transcript in local mode). limit=0 = whole
+        // session; the server's `content` field is already display text.
+        const soft = await remoteGetSoft<{ sessionId: string; messages: Array<{ line: number; role: string; content: string }>; total: number }>(
+          `/api/conversations/${encodeURIComponent(params.session_id)}`, { limit: 0 });
+        if (!soft.data || soft.data.messages.length === 0) {
+          return { content: [{ type: 'text', text: soft.message || `Session not found: ${params.session_id}` }] };
         }
+        const messagesList = soft.data.messages;
 
         // Filter messages
         let displayMessages = messagesList;
@@ -1575,7 +1587,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         for (const msg of displayMessages) {
           output.push(`**${msg.role}** (line ${msg.line})`);
-          let text = msg.text;
+          let text = msg.content;
           if (text.length > truncAt) {
             text = text.slice(0, truncAt) + '...';
           }
@@ -1691,106 +1703,82 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'recall_context': {
         const params = RecallContextSchema.parse(args);
 
-        // Single registry-routed path for all four backends. Build the
-        // ConversationContext-shaped dump from canonical turns + the
-        // file-edit live scan. Token/cost metadata is appended below
-        // for Claude only — other tools don't expose comparable counters
-        // on disk, so the section is skipped silently for them.
-        const backend = getBackendForId(params.session_id);
-        if (!backend) {
-          return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
+        // Server-backed: the message list + session metadata are enough to
+        // rebuild the ConversationContext dump. Live-FS-only bits
+        // (liveScanModifiedFiles) don't exist server-side — filesModified
+        // comes from the metadata telemetry instead.
+        const convo = await remoteGetSoft<{ sessionId: string; messages: Array<{ line: number; role: string; content: string }>; total: number }>(
+          `/api/conversations/${encodeURIComponent(params.session_id)}`, { limit: 0 });
+        if (!convo.data || convo.data.messages.length === 0) {
+          return { content: [{ type: 'text', text: convo.message || `Session not found: ${params.session_id}` }] };
         }
-        const turns = extractTurnsAny(params.session_id, { maxTurns: 5000 });
-        if (!turns.found) {
-          return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
+
+        interface SessionMeta {
+          tool: string; slug: string; durationMs: number; messageCount: number;
+          filesModified: string[]; modelsUsed: string[]; toolsUsed: string[];
+          inputTokens: number; outputTokens: number; cacheReadTokens: number; peakContextTokens: number;
+          contentPreview: string;
         }
+        let meta: SessionMeta | null = null;
+        try {
+          const m = await remoteGetSoft<SessionMeta>(`/api/conversations/${encodeURIComponent(params.session_id)}/metadata`);
+          meta = m.data;
+        } catch { /* metadata optional */ }
+
         const userInputs: string[] = [];
         const assistantWork: string[] = [];
-        const toolsUsed = new Set<string>();
-        const live = liveScanModifiedFiles(params.session_id);
-        for (const t of turns.turns) {
-          if (t.kind === 'user' && t.text) {
-            const text = t.text.length > 240 ? t.text.slice(0, 240) + '…' : t.text;
-            userInputs.push(text.replace(/\n/g, ' '));
-          } else if (t.kind === 'assistant_text' && t.text) {
-            const text = t.text.length > 240 ? t.text.slice(0, 240) + '…' : t.text;
-            assistantWork.push(text.replace(/\n/g, ' '));
-          } else if (t.kind === 'tool_use' && t.toolName) {
-            toolsUsed.add(t.toolName);
+        for (const msg of convo.data.messages) {
+          const clipped = msg.content.length > 240 ? msg.content.slice(0, 240) + '…' : msg.content;
+          if (msg.role === 'user') {
+            userInputs.push(clipped.replace(/\n/g, ' '));
+          } else {
+            assistantWork.push(clipped.replace(/\n/g, ' '));
           }
         }
+
         let formatted = formatContext({
           sessionId: params.session_id,
-          projectPath: live.projectPath || '',
+          projectPath: '',
           created: '',
           modified: '',
           userInputs: userInputs.slice(0, 50),
           claudeWork: assistantWork.slice(0, 20),
           decisions: [],
-          toolsUsed: [...toolsUsed],
-          filesChanged: live.found ? live.files : [],
+          toolsUsed: meta?.toolsUsed ?? [],
+          filesChanged: meta?.filesModified ?? [],
         });
 
-        // Append token/cost metadata when the backend exposes a Claude-style
-        // session JSONL we can parse. Other tools don't expose comparable
-        // per-session telemetry, so the section is skipped silently.
-        try {
-          const sessionFile = backend.id === 'claude'
-            ? claudeBackend.findSession(params.session_id)?.path ?? null
-            : null;
-          if (!sessionFile) throw new Error('skip');
-          const content = await parseSessionFile(sessionFile);
-          const m = content.metadata;
-          if (m.inputTokens > 0) {
-            const lines: string[] = ['## Context Budget'];
-            if (m.slug) lines.push(`Session: ${m.slug}`);
-            if (m.durationMs > 0) {
-              const mins = Math.round(m.durationMs / 60000);
-              lines.push(`Duration: ~${mins} min | ${m.messageCount} messages`);
-            }
-            lines.push(`Input: ${(m.inputTokens / 1_000_000).toFixed(1)}M tokens | Output: ${(m.outputTokens / 1000).toFixed(1)}k tokens`);
-            lines.push(`Cache reads: ${(m.cacheReadTokens / 1_000_000).toFixed(1)}M | Peak context: ${(m.peakContextTokens / 1000).toFixed(0)}k`);
-            if (m.filesModified.length > 0) {
-              lines.push(`Files modified: ${m.filesModified.length}`);
-            }
-            if (m.modelsUsed.length > 0) {
-              lines.push(`Models: ${m.modelsUsed.filter(x => x !== '<synthetic>').join(', ')}`);
-            }
-            formatted += '\n\n' + lines.join('\n');
+        // Append token/cost metadata from the server's session telemetry.
+        // Tools without comparable per-session counters report inputTokens=0,
+        // so the section is skipped silently for them.
+        if (meta && meta.inputTokens > 0) {
+          const lines: string[] = ['## Context Budget'];
+          if (meta.slug) lines.push(`Session: ${meta.slug}`);
+          if (meta.durationMs > 0) {
+            const mins = Math.round(meta.durationMs / 60000);
+            lines.push(`Duration: ~${mins} min | ${meta.messageCount} messages`);
           }
-        } catch {
-          // Non-critical, continue without metadata
+          lines.push(`Input: ${(meta.inputTokens / 1_000_000).toFixed(1)}M tokens | Output: ${(meta.outputTokens / 1000).toFixed(1)}k tokens`);
+          lines.push(`Cache reads: ${(meta.cacheReadTokens / 1_000_000).toFixed(1)}M | Peak context: ${(meta.peakContextTokens / 1000).toFixed(0)}k`);
+          if (meta.filesModified.length > 0) {
+            lines.push(`Files modified: ${meta.filesModified.length}`);
+          }
+          if (meta.modelsUsed.length > 0) {
+            lines.push(`Models: ${meta.modelsUsed.filter(x => x !== '<synthetic>').join(', ')}`);
+          }
+          formatted += '\n\n' + lines.join('\n');
         }
 
-        // Optional: append in-order turn dump so reviewers can see what the
-        // agent actually said and what tool output came back.
+        // Optional: append an in-order message dump (server doesn't expose the
+        // tool_use/tool_result granularity, so this is a user/assistant view).
         if (params.include_turns) {
-          try {
-            const turns = extractTurnsAny(params.session_id, { maxTurns: params.turns_limit });
-            if (turns.found && turns.turns.length > 0) {
-              const lines: string[] = ['', '## Turn-by-turn'];
-              for (const t of turns.turns.slice(0, params.turns_limit)) {
-                const stamp = t.tsIso ? t.tsIso.slice(11, 19) : '';
-                if (t.kind === 'user' && t.text) {
-                  lines.push(`- ${stamp} **user** — ${t.text.replace(/\n/g, ' ')}`);
-                } else if (t.kind === 'assistant_text' && t.text) {
-                  const trimmed = t.text.length > 400 ? t.text.slice(0, 400) + '…' : t.text;
-                  lines.push(`- ${stamp} **assistant** — ${trimmed.replace(/\n/g, ' ')}`);
-                } else if (t.kind === 'tool_use' && t.toolName) {
-                  const sum = t.toolInputSummary ? ` ${t.toolInputSummary.replace(/\n/g, ' ').slice(0, 160)}` : '';
-                  lines.push(`- ${stamp} **${t.toolName}**${sum}`);
-                } else if (t.kind === 'tool_result') {
-                  const flag = t.resultIsError ? '❌' : '✓';
-                  const exit = t.resultExitCode !== undefined ? ` exit=${t.resultExitCode}` : '';
-                  const snip = t.resultSummary ? ` ${t.resultSummary.replace(/\n/g, ' ').slice(0, 200)}` : '';
-                  lines.push(`  ${flag} result${exit}${snip}`);
-                }
-              }
-              formatted += '\n' + lines.join('\n');
-            }
-          } catch {
-            // Non-critical — keep the response usable.
+          const lines: string[] = ['', '## Turn-by-turn'];
+          for (const msg of convo.data.messages.slice(0, params.turns_limit)) {
+            const role = msg.role === 'user' ? 'user' : 'assistant';
+            const trimmed = msg.content.length > 400 ? msg.content.slice(0, 400) + '…' : msg.content;
+            lines.push(`- **${role}** — ${trimmed.replace(/\n/g, ' ')}`);
           }
+          formatted += '\n' + lines.join('\n');
         }
 
         return { content: [{ type: 'text', text: formatted }] };
@@ -1799,44 +1787,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'recall_summary': {
         const params = RecallSummarySchema.parse(args);
 
-        // 1. Pull the cached AI summary if one was generated. Sessions from
-        // gemini/opencode/codex are stored under prefixed ids (e.g.
-        // "gemini_<uuid>"), so try both shapes — callers may pass either.
-        const metaCache = await createMetadataCache();
-        let aiSummary: { summary: string; summary_source: string } | null = null;
-        try {
-          // Cache rows are stored under each backend's prefixed id. Try the
-          // raw id first, then every backend's toPrefixedId(rawId) — the
-          // registry decides what prefixes exist, so this works for any
-          // future tool too.
-          const seen = new Set<string>([params.session_id]);
-          const candidateIds: string[] = [params.session_id];
-          for (const b of listAvailableBackends()) {
-            const candidate = b.toPrefixedId(params.session_id);
-            if (!seen.has(candidate)) { candidateIds.push(candidate); seen.add(candidate); }
-          }
-          for (const id of candidateIds) {
-            const m = await metaCache.get(id);
-            if (m) { aiSummary = { summary: m.summary, summary_source: m.summarySource }; break; }
-          }
-        } finally {
-          await metaCache.close();
+        // Server-backed: the structured outcome (status, decisions, blockers,
+        // claim/reaction, prompt markers) is computed by the session's
+        // machine at sync time and served from the synced outcome cache. The
+        // free-form AI narrative summary isn't exposed via a server GET, so
+        // the rendered summary is built entirely from the outcome compute.
+        type Outcome = {
+          found?: boolean; status: string; reason: string;
+          fileCount: number; totalLinesAdded: number; totalLinesRemoved: number;
+          commits: { totalCommits: number; repos: Array<{ repoName: string; commits: unknown[] }> };
+          decisions: Array<{ text: string }>;
+          blockers: Array<{ kind: string; text: string }>;
+          claimReaction: { claim?: { text: string }; reaction?: { text: string; markers: string[] } };
+          promptMarkers: { total: number; frustrated?: number; correction?: number; interrupt?: number; approval?: number; directive?: number; question?: number };
+        };
+        const soft = await remoteGetSoft<Outcome>(`/api/conversations/${encodeURIComponent(params.session_id)}/outcome`);
+        if (!soft.data) {
+          return { content: [{ type: 'text', text: soft.message || (soft.status === 404 ? `Session not found: ${params.session_id}` : `Summary not synced yet for ${params.session_id}.`) }] };
         }
+        const outcome = soft.data;
 
-        // Legacy mode: just the AI summary.
+        const statusEmoji =
+          outcome.status === 'shipped' ? '🚢' :
+          outcome.status === 'interrupted' ? '⏸' :
+          outcome.status === 'abandoned' ? '🪦' :
+          outcome.status === 'in_progress' ? '🟡' : '❔';
+
+        // Legacy short mode: just the status + reason headline.
         if (!params.rich) {
-          if (!aiSummary) {
-            return { content: [{ type: 'text', text: `No summary found for session: ${params.session_id}\n\nRun 'npm run generate-summaries' to generate summaries.` }] };
-          }
           return { content: [{ type: 'text', text: [
             `# 📋 Summary`,
             '',
             `**Session:** ${params.session_id.substring(0, 8)}...`,
-            `**Source:** ${aiSummary.summary_source}`,
-            '',
-            '---',
-            '',
-            aiSummary.summary,
+            `**Status:** ${statusEmoji} ${outcome.status} — ${outcome.reason}`,
             '',
             '---',
             '',
@@ -1844,86 +1827,61 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           ].join('\n') }] };
         }
 
-        // 2. Compute the structured outcome from the transcript. Use the
-        // multi-tool dispatcher so gemini/opencode/codex sessions work too.
-        const outcome = computeOutcome(params.session_id);
-        if (!outcome.found && !aiSummary) {
-          return { content: [{ type: 'text', text: `Session not found: ${params.session_id}` }] };
-        }
-
         const lines: string[] = [];
         lines.push(`# 📋 Summary — ${params.session_id.substring(0, 8)}…`);
         lines.push('');
 
         // Status header line — most useful single signal.
-        if (outcome.found) {
-          const statusEmoji =
-            outcome.status === 'shipped' ? '🚢' :
-            outcome.status === 'interrupted' ? '⏸' :
-            outcome.status === 'abandoned' ? '🪦' :
-            outcome.status === 'in_progress' ? '🟡' : '❔';
-          lines.push(`**Status:** ${statusEmoji} ${outcome.status} — ${outcome.reason}`);
-          if (outcome.fileCount > 0) {
-            lines.push(`**Edits:** ${outcome.fileCount} file(s) · +${outcome.totalLinesAdded} / −${outcome.totalLinesRemoved} lines`);
-          }
-          if (outcome.commits.totalCommits > 0) {
-            const repoNames = outcome.commits.repos.map(r => `${r.repoName} (${r.commits.length})`).join(', ');
-            lines.push(`**Commits:** ${outcome.commits.totalCommits} across ${outcome.commits.repos.length} repo(s) — ${repoNames}`);
+        lines.push(`**Status:** ${statusEmoji} ${outcome.status} — ${outcome.reason}`);
+        if (outcome.fileCount > 0) {
+          lines.push(`**Edits:** ${outcome.fileCount} file(s) · +${outcome.totalLinesAdded} / −${outcome.totalLinesRemoved} lines`);
+        }
+        if (outcome.commits.totalCommits > 0) {
+          const repoNames = outcome.commits.repos.map(r => `${r.repoName} (${r.commits.length})`).join(', ');
+          lines.push(`**Commits:** ${outcome.commits.totalCommits} across ${outcome.commits.repos.length} repo(s) — ${repoNames}`);
+        }
+        lines.push('');
+
+        if (outcome.decisions.length > 0) {
+          lines.push('## Decisions');
+          for (const d of outcome.decisions.slice(0, 8)) {
+            lines.push(`- ${d.text}`);
           }
           lines.push('');
         }
-
-        // AI summary (verbatim) — keep for narrative context.
-        if (aiSummary) {
-          lines.push('## AI Summary');
-          lines.push(`*Source: ${aiSummary.summary_source}*`);
-          lines.push('');
-          lines.push(aiSummary.summary);
+        if (outcome.blockers.length > 0) {
+          lines.push('## Blockers');
+          for (const b of outcome.blockers.slice(0, 8)) {
+            const tag = b.kind === 'tool_error' ? '⚠ tool error' : b.kind === 'interrupt' ? '⏸ interrupt' : '⚠';
+            lines.push(`- ${tag}: ${b.text}`);
+          }
           lines.push('');
         }
-
-        if (outcome.found) {
-          if (outcome.decisions.length > 0) {
-            lines.push('## Decisions');
-            for (const d of outcome.decisions.slice(0, 8)) {
-              lines.push(`- ${d.text}`);
-            }
-            lines.push('');
+        if (outcome.claimReaction.claim) {
+          lines.push('## Last claim vs user reaction');
+          lines.push(`- **claim:** ${outcome.claimReaction.claim.text.slice(0, 240)}`);
+          if (outcome.claimReaction.reaction) {
+            const r = outcome.claimReaction.reaction;
+            const markers = r.markers.length ? ` _[${r.markers.join(', ')}]_` : '';
+            lines.push(`- **reaction:** ${r.text.slice(0, 240)}${markers}`);
+          } else {
+            lines.push(`- **reaction:** _(no follow-up — session ended on this claim)_`);
           }
-          if (outcome.blockers.length > 0) {
-            lines.push('## Blockers');
-            for (const b of outcome.blockers.slice(0, 8)) {
-              const tag = b.kind === 'tool_error' ? '⚠ tool error' : b.kind === 'interrupt' ? '⏸ interrupt' : '⚠';
-              lines.push(`- ${tag}: ${b.text}`);
-            }
+          lines.push('');
+        }
+        if (outcome.promptMarkers.total > 0) {
+          const m = outcome.promptMarkers;
+          const parts: string[] = [];
+          if (m.frustrated) parts.push(`⚠ ${m.frustrated} frustrated`);
+          if (m.correction) parts.push(`↩ ${m.correction} correction`);
+          if (m.interrupt) parts.push(`⏸ ${m.interrupt} interrupt`);
+          if (m.approval) parts.push(`✓ ${m.approval} approval`);
+          if (m.directive) parts.push(`▸ ${m.directive} directive`);
+          if (m.question) parts.push(`? ${m.question} question`);
+          if (parts.length) {
+            lines.push('## Prompt markers');
+            lines.push(parts.join(' · '));
             lines.push('');
-          }
-          if (outcome.claimReaction.claim) {
-            lines.push('## Last claim vs user reaction');
-            lines.push(`- **claim:** ${outcome.claimReaction.claim.text.slice(0, 240)}`);
-            if (outcome.claimReaction.reaction) {
-              const r = outcome.claimReaction.reaction;
-              const markers = r.markers.length ? ` _[${r.markers.join(', ')}]_` : '';
-              lines.push(`- **reaction:** ${r.text.slice(0, 240)}${markers}`);
-            } else {
-              lines.push(`- **reaction:** _(no follow-up — session ended on this claim)_`);
-            }
-            lines.push('');
-          }
-          if (outcome.promptMarkers.total > 0) {
-            const m = outcome.promptMarkers;
-            const parts: string[] = [];
-            if (m.frustrated) parts.push(`⚠ ${m.frustrated} frustrated`);
-            if (m.correction) parts.push(`↩ ${m.correction} correction`);
-            if (m.interrupt) parts.push(`⏸ ${m.interrupt} interrupt`);
-            if (m.approval) parts.push(`✓ ${m.approval} approval`);
-            if (m.directive) parts.push(`▸ ${m.directive} directive`);
-            if (m.question) parts.push(`? ${m.question} question`);
-            if (parts.length) {
-              lines.push('## Prompt markers');
-              lines.push(parts.join(' · '));
-              lines.push('');
-            }
           }
         }
 
@@ -2258,37 +2216,44 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       case 'recall_memory_status': {
-        const dummyEmbedder = {
-          embed: async () => [] as number[][],
-          embedQuery: async () => [] as number[],
-          dimension: 768,
-        };
-
-        const memoryIndex = await createVectorStore(dummyEmbedder);
-        const memoryStore = await createStore();
-
-        const indexStats = await memoryIndex.getStats();
-        const storeStats = await memoryStore.getStats();
-        const linkCount = await memoryStore.getLinkCount();
-        const ftsCount = await memoryStore.getFTSCount();
+        requireRemote();
+        // Server's aggregate memory stats. Vector/index-path fields are
+        // local-only and dropped; FTS5 chunk count and per-(source,tool)
+        // breakdown come straight from the server.
+        const status = await remoteGet<{
+          totalChunks: number;
+          totalItems: number;
+          linkCount: number;
+          bySourceType: Record<string, { items: number; chunks: number }>;
+          bySourceAndTool: Record<string, Record<string, number>>;
+        }>('/api/memory/status');
 
         const lines = [
           '# Memory System Status\n',
-          `Total items: ${indexStats.totalItems}`,
-          `Vector chunks: ${indexStats.totalChunks}`,
-          `FTS5 chunks: ${ftsCount}`,
-          `Total links: ${linkCount}`,
+          `Total items: ${status.totalItems}`,
+          `FTS5 chunks: ${status.totalChunks}`,
+          `Total links: ${status.linkCount}`,
           '',
         ];
 
-        if (Object.keys(indexStats.bySourceType).length > 0) {
+        const bySource = Object.entries(status.bySourceType || {});
+        if (bySource.length > 0) {
           lines.push('**By source type:**');
-          for (const [type, data] of Object.entries(indexStats.bySourceType)) {
+          for (const [type, data] of bySource) {
             lines.push(`- ${type}: ${data.items} items, ${data.chunks} chunks`);
+          }
+          lines.push('');
+        }
+
+        const byTool = Object.entries(status.bySourceAndTool || {});
+        if (byTool.length > 0) {
+          lines.push('**By source type and tool:**');
+          for (const [type, tools] of byTool) {
+            const parts = Object.entries(tools).map(([t, n]) => `${t}: ${n}`).join(', ');
+            lines.push(`- ${type}: ${parts}`);
           }
         }
 
-        await memoryStore.close();
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
@@ -2888,185 +2853,107 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_weekly_digest': {
         const params = RecallWeeklyDigestSchema.parse(args);
-        const store = await createStore();
+        requireRemote();
 
-        // Calculate week boundaries (Monday-based)
-        const now = new Date();
-        const dayOfWeek = now.getDay();
-        const mondayOffset = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+        // Server-backed digest off the same analytics aggregate the dashboard
+        // renders. The server computes per-week (Sunday-start, UTC) trends; we
+        // pick the requested week from `weeklyTrends` / `periodComparison`.
+        // Project / model breakdowns aren't week-scoped server-side, so they
+        // are shown as overall-fleet context (clearly labelled). KG stats and
+        // open-task scans are local-only and dropped.
+        type Analytics = {
+          summary: { totalSessions: number; totalCostUsd: number; totalDurationMin: number; totalCacheReadTokens: number; totalInputTokens: number };
+          projects: Array<{ name: string; sessions: number; totalCost: number; description?: string }>;
+          models: Array<{ model: string; sessions: number }>;
+          weeklyTrends: Array<{ week: string; cost: number; sessions: number; cacheRate: number }>;
+          periodComparison: {
+            thisWeek: { sessions: number; cost: number; cacheRate: number };
+            lastWeek: { sessions: number; cost: number; cacheRate: number };
+          };
+        };
+        const a = await remoteGet<Analytics>('/api/analytics');
 
-        const weekStart = new Date(now);
-        weekStart.setDate(weekStart.getDate() - mondayOffset - (params.weeks_back * 7));
-        weekStart.setHours(0, 0, 0, 0);
-
-        const weekEnd = new Date(weekStart);
-        weekEnd.setDate(weekEnd.getDate() + 7);
-
-        const prevWeekStart = new Date(weekStart);
-        prevWeekStart.setDate(prevWeekStart.getDate() - 7);
-
+        // Resolve which week the caller asked for. weeks_back 0/1 map directly
+        // to periodComparison; older weeks come from the weeklyTrends series
+        // (which is sorted ascending and capped at the last 12 weeks).
+        const trendsDesc = [...(a.weeklyTrends || [])].reverse(); // newest first
         const weekLabel = params.weeks_back === 0
           ? 'This Week'
           : params.weeks_back === 1
             ? 'Last Week'
             : `${params.weeks_back} Weeks Ago`;
-        const dateRange = `${weekStart.toISOString().slice(0, 10)} — ${weekEnd.toISOString().slice(0, 10)}`;
 
-        // Get all sessions in the time range from metadata
-        const metaCache = await createMetadataCache();
+        let weekSessions = 0, weekCost = 0, weekCacheRate = 0, weekLabelDate = '';
+        let prevSessions = 0, prevCost = 0;
+        if (params.weeks_back === 0) {
+          weekSessions = a.periodComparison.thisWeek.sessions;
+          weekCost = a.periodComparison.thisWeek.cost;
+          weekCacheRate = a.periodComparison.thisWeek.cacheRate;
+          prevSessions = a.periodComparison.lastWeek.sessions;
+          prevCost = a.periodComparison.lastWeek.cost;
+          weekLabelDate = trendsDesc[0]?.week || '';
+        } else if (params.weeks_back === 1) {
+          weekSessions = a.periodComparison.lastWeek.sessions;
+          weekCost = a.periodComparison.lastWeek.cost;
+          weekCacheRate = a.periodComparison.lastWeek.cacheRate;
+          const wk = trendsDesc[2];
+          prevSessions = wk?.sessions || 0;
+          prevCost = wk?.cost || 0;
+          weekLabelDate = trendsDesc[1]?.week || '';
+        } else {
+          const wk = trendsDesc[params.weeks_back];
+          const prev = trendsDesc[params.weeks_back + 1];
+          weekSessions = wk?.sessions || 0;
+          weekCost = wk?.cost || 0;
+          weekCacheRate = wk?.cacheRate || 0;
+          weekLabelDate = wk?.week || '';
+          prevSessions = prev?.sessions || 0;
+          prevCost = prev?.cost || 0;
+        }
 
-        const allSessions = await store.listItems('session' as SourceType, 1000);
-        const weekSessions = allSessions.filter(s => s.mtime >= weekStart.getTime() && s.mtime < weekEnd.getTime());
-        const prevWeekSessions = allSessions.filter(s => s.mtime >= prevWeekStart.getTime() && s.mtime < weekStart.getTime());
+        const dateRange = weekLabelDate ? `week of ${weekLabelDate}` : '';
+        const lines = [`# ${weekLabel}${dateRange ? `: ${dateRange}` : ''}\n`];
 
-        const lines = [`# ${weekLabel}: ${dateRange}\n`];
-
-        if (weekSessions.length === 0) {
+        if (weekSessions === 0 && weekCost === 0) {
           lines.push('No sessions found for this period.');
-          await store.close();
-          await metaCache.close();
           return { content: [{ type: 'text', text: lines.join('\n') }] };
         }
 
-        // Aggregate stats
-        let totalCost = 0;
-        let totalDuration = 0;
-        let totalInputTokens = 0;
-        let totalOutputTokens = 0;
-        let totalCacheTokens = 0;
-        const projectStats = new Map<string, { sessions: number; cost: number; summaries: string[] }>();
-        const modelCounts = new Map<string, number>();
-        const allFiles = new Set<string>();
-
-        for (const session of weekSessions) {
-          const extra = JSON.parse(session.extra_json || '{}');
-          const inputTokens = (extra.inputTokens as number) || 0;
-          const outputTokens = (extra.outputTokens as number) || 0;
-          const cacheReadTokens = (extra.cacheReadTokens as number) || 0;
-          const durationMs = (extra.durationMs as number) || 0;
-          const filesModified = (extra.filesModified as string[]) || [];
-          const modelsUsed = (extra.modelsUsed as string[]) || [];
-
-          const cost = typeof extra.costUsd === 'number' && extra.costUsd > 0
-            ? extra.costUsd
-            : estimateCostUsdOrNull(modelsUsed, {
-                inputTokens, outputTokens, cacheReadTokens,
-                cacheCreationTokens: (extra.cacheCreationTokens as number) || 0,
-              }) ?? 0;
-          totalCost += cost;
-          totalDuration += durationMs;
-          totalInputTokens += inputTokens;
-          totalOutputTokens += outputTokens;
-          totalCacheTokens += cacheReadTokens;
-          for (const f of filesModified) allFiles.add(f);
-          for (const m of modelsUsed) {
-            if (m !== '<synthetic>') modelCounts.set(m, (modelCounts.get(m) || 0) + 1);
-          }
-
-          // Project aggregation
-          const proj = session.project_path || 'unknown';
-          const projName = proj.split('/').pop() || proj;
-          if (!projectStats.has(projName)) {
-            projectStats.set(projName, { sessions: 0, cost: 0, summaries: [] });
-          }
-          const ps = projectStats.get(projName)!;
-          ps.sessions++;
-          ps.cost += cost;
-
-          // Get summary
-          const row = await metaCache.get(session.id);
-          if (row?.summary) {
-            ps.summaries.push(row.summary.slice(0, 80));
-          }
-        }
-
-        await metaCache.close();
-
-        const durationHours = Math.round(totalDuration / 3_600_000 * 10) / 10;
-        const cacheHitRate = totalInputTokens > 0
-          ? Math.round((totalCacheTokens / (totalInputTokens + totalCacheTokens)) * 100)
-          : 0;
-
         // Overview
-        lines.push(`**${weekSessions.length} sessions** · **$${totalCost.toFixed(0)}** · **${durationHours}h** coding time`);
-        if (cacheHitRate > 0) lines.push(`Cache hit rate: ${cacheHitRate}%`);
+        lines.push(`**${weekSessions} sessions** · **$${weekCost.toFixed(0)}**`);
+        if (weekCacheRate > 0) lines.push(`Cache hit rate: ${weekCacheRate}%`);
         lines.push('');
 
-        // Top projects
-        lines.push('## Top Projects\n');
-        const sortedProjects = Array.from(projectStats.entries())
-          .sort((a, b) => b[1].sessions - a[1].sessions);
-
-        for (const [name, stats] of sortedProjects.slice(0, 8)) {
-          const summaryHint = stats.summaries.length > 0
-            ? ` — ${stats.summaries[0]}` : '';
-          lines.push(`**${name}** · ${stats.sessions} sessions · $${stats.cost.toFixed(0)}${summaryHint}`);
-        }
+        // vs previous week
+        const pctChange = prevCost > 0 ? Math.round(((weekCost - prevCost) / prevCost) * 100) : 0;
+        const arrow = pctChange > 0 ? '+' : '';
+        lines.push('## vs Previous Week\n');
+        lines.push(`This period: ${weekSessions} sessions, $${weekCost.toFixed(0)}`);
+        lines.push(`Prior period: ${prevSessions} sessions, $${prevCost.toFixed(0)}`);
+        lines.push(`Change: ${arrow}${pctChange}%`);
         lines.push('');
 
-        // Models used
-        if (modelCounts.size > 0) {
-          lines.push('## Models Used\n');
-          for (const [model, count] of Array.from(modelCounts.entries()).sort((a, b) => b[1] - a[1])) {
-            const shortModel = model.replace(/^claude-/, '').replace(/^models\//, '');
-            lines.push(`- ${shortModel}: ${count} sessions`);
+        // Top projects (overall fleet — analytics doesn't expose per-week
+        // project slices).
+        if (a.projects.length > 0) {
+          lines.push('## Top Projects (overall)\n');
+          for (const p of a.projects.slice(0, 8)) {
+            const desc = p.description ? ` — ${p.description.slice(0, 80)}` : '';
+            lines.push(`**${p.name}** · ${p.sessions} sessions · $${p.totalCost.toFixed(0)}${desc}`);
           }
           lines.push('');
         }
 
-        // Cost comparison
-        if (prevWeekSessions.length > 0) {
-          let prevCost = 0;
-          for (const s of prevWeekSessions) {
-            const extra = JSON.parse(s.extra_json || '{}');
-            prevCost += typeof extra.costUsd === 'number' && extra.costUsd > 0
-              ? extra.costUsd
-              : estimateCostUsdOrNull((extra.modelsUsed as string[]) || [], {
-                  inputTokens: (extra.inputTokens as number) || 0,
-                  outputTokens: (extra.outputTokens as number) || 0,
-                  cacheReadTokens: (extra.cacheReadTokens as number) || 0,
-                  cacheCreationTokens: (extra.cacheCreationTokens as number) || 0,
-                }) ?? 0;
-          }
-          const pctChange = prevCost > 0 ? Math.round(((totalCost - prevCost) / prevCost) * 100) : 0;
-          const arrow = pctChange > 0 ? '+' : '';
-          lines.push('## vs Previous Week\n');
-          lines.push(`This week: ${weekSessions.length} sessions, $${totalCost.toFixed(0)}`);
-          lines.push(`Last week: ${prevWeekSessions.length} sessions, $${prevCost.toFixed(0)}`);
-          lines.push(`Change: ${arrow}${pctChange}%`);
-          lines.push('');
-        }
-
-        // Open tasks
-        const taskItems = await store.listItems('task' as SourceType, 20);
-        const recentTasks = taskItems.filter(t => t.mtime >= weekStart.getTime());
-        if (recentTasks.length > 0) {
-          lines.push('## Open Tasks\n');
-          for (const task of recentTasks.slice(0, 10)) {
-            const extra = JSON.parse(task.extra_json || '{}');
-            const completed = extra.completedCount || 0;
-            const total = extra.taskCount || '?';
-            lines.push(`- ${task.title} (${completed}/${total})`);
+        // Models used (overall)
+        if (a.models.length > 0) {
+          lines.push('## Models Used (overall)\n');
+          for (const m of a.models) {
+            const shortModel = m.model.replace(/^claude-/, '').replace(/^models\//, '');
+            lines.push(`- ${shortModel}: ${m.sessions} sessions`);
           }
           lines.push('');
         }
 
-        // Knowledge graph stats
-        try {
-          const kgDigest = await createKnowledgeGraph();
-          const kgS = await kgDigest.stats();
-          if (kgS.triples > 0) {
-            lines.push('## Knowledge Graph\n');
-            lines.push(`Entities: ${kgS.entities} | Facts: ${kgS.current_facts} current, ${kgS.expired_facts} expired`);
-            if (kgS.relationship_types.length > 0) {
-              lines.push(`Relationships: ${kgS.relationship_types.join(', ')}`);
-            }
-            lines.push('');
-          }
-          await kgDigest.close();
-        } catch { /* KG not available */ }
-
-        await store.close();
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
@@ -3451,140 +3338,70 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // ── User prompts only ─────────────────────────────────────
       case 'recall_user_prompts': {
         const params = RecallUserPromptsSchema.parse(args);
-        const { readdirSync: rd, readFileSync: rf, statSync: st } = await import('fs');
-        const projectsRoot = claudeBackend.projectsDir();
+        requireRemote();
 
-        // Banner stripper mirrors web parser
-        const BANNERS = [
-          /MCP issues detected\. ?Run \/mcp list for status\.?/g,
-          /Context low[^\n]*Run \/compact[^\n]*/g,
-          /API Error:[^\n]{0,120}/g,
-        ];
-        const stripBanners = (s: string) => {
-          let out = s;
-          for (const re of BANNERS) out = out.replace(re, ' ');
-          return out.replace(/[ \t]{2,}/g, ' ').trim();
-        };
+        // There's no dedicated user-prompts endpoint server-side — the user
+        // prompts are derived from the markers compute, which the session's
+        // machine ships at sync time. Each prompt already carries its
+        // sentiment `markers`, so `with_markers` is rendered from the server's
+        // data (no local markPrompt re-run needed).
+        type MarkerPrompt = { line: number; ts?: number; tsIso?: string; markers: string[]; text: string };
+        type MarkersResp = { prompts: MarkerPrompt[]; summary: unknown };
 
-        // Single-session lookup — route uniformly through the registry so
-        // every backend returns prompts the same way. Avoids two parallel
-        // implementations (Claude on-disk vs *Any extractor) for the same
-        // job.
-        if (params.session_id) {
-          const backend = getBackendForId(params.session_id);
-          if (!backend) {
-            return { content: [{ type: 'text', text: `Session ${params.session_id} not found.` }] };
-          }
-          const turns = backend.extractTurns(params.session_id, { maxTurns: 5000 });
-          if (!turns.found) {
-            return { content: [{ type: 'text', text: `Session ${params.session_id} not found.` }] };
-          }
-          const prompts = turns.turns
-            .filter(t => t.kind === 'user' && t.text)
-            .map(t => ({ sessionId: params.session_id!, line: t.line, ts: t.tsIso, text: stripBanners(t.text || '') }))
-            .filter(p => p.text)
-            .slice(0, params.limit);
-          if (prompts.length === 0) {
-            return { content: [{ type: 'text', text: 'No user prompts found.' }] };
-          }
-          const lines = [`# User prompts (${prompts.length})\n`];
-          for (const p of prompts) {
-            const t = p.ts?.slice(0, 16).replace('T', ' ') || '';
+        const renderPrompts = (rows: Array<{ sessionId: string; line: number; tsIso?: string; markers: string[]; text: string }>): string => {
+          const lines = [`# User prompts (${rows.length})\n`];
+          for (const p of rows) {
+            const t = p.tsIso?.slice(0, 16).replace('T', ' ') || '';
             const snippet = p.text.length > 240 ? p.text.slice(0, 240) + '…' : p.text;
-            let markerSuffix = '';
-            if (params.with_markers) {
-              const m = markPrompt(p.text);
-              if (m.markers.length) markerSuffix = ` _[${m.markers.join(', ')}]_`;
-            }
+            const markerSuffix = params.with_markers && p.markers.length ? ` _[${p.markers.join(', ')}]_` : '';
             lines.push(`- **${p.sessionId}** L${p.line}${t ? ` · ${t}` : ''}${markerSuffix}`);
             lines.push(`  ${snippet.replace(/\n/g, ' ')}`);
           }
-          return { content: [{ type: 'text', text: lines.join('\n') }] };
-        }
+          return lines.join('\n');
+        };
 
-        const cutoff = Date.now() - params.since_days * 86400 * 1000;
-
-        // Bulk mode — fan out across every registered AI-tool backend so
-        // gemini/opencode/codex sessions' prompts surface alongside Claude's.
-        // Per-backend SessionRefs come back already mtime-desc sorted; we
-        // merge and re-sort to interleave correctly.
-        type Cand = { sessionRef: import('@chat-recall/engine/core/tool-backend.js').SessionRef };
-        const cands: Cand[] = [];
-        for (const backend of listAvailableBackends()) {
-          let refs;
-          try { refs = backend.listSessions({ sinceMs: cutoff }); }
-          catch { continue; }
-          for (const r of refs) cands.push({ sessionRef: r });
-        }
-        cands.sort((a, b) => b.sessionRef.mtime - a.sessionRef.mtime);
-
-        type Prompt = { sessionId: string; line: number; ts?: string; text: string };
-        const prompts: Prompt[] = [];
-        outer: for (const c of cands) {
-          const ref = c.sessionRef;
-          if (ref.toolId === 'claude') {
-            // Claude: stream the .jsonl directly — keeps us off the
-            // multi-MB-load that extractTurns would do for very long
-            // sessions.
-            let lineNo = 0;
-            try {
-              for (const raw of rf(ref.fullPath, 'utf-8').split('\n')) {
-                lineNo++;
-                if (!raw.trim()) continue;
-                try {
-                  const obj = JSON.parse(raw);
-                  if (obj?.type !== 'user') continue;
-                  const content = obj.message?.content;
-                  let text = '';
-                  if (typeof content === 'string') text = content;
-                  else if (Array.isArray(content)) {
-                    text = content
-                      .filter((b: any) => b?.type === 'text' && typeof b.text === 'string')
-                      .map((b: any) => b.text)
-                      .join('\n');
-                  }
-                  text = stripBanners(text);
-                  if (!text) continue;
-                  prompts.push({ sessionId: ref.prefixedId, line: lineNo, ts: obj.timestamp, text });
-                  if (prompts.length >= params.limit) break outer;
-                } catch { /* skip malformed line */ }
-              }
-            } catch { /* unreadable — skip */ }
-          } else {
-            // Non-Claude: route through the backend's own turn extractor.
-            let turns;
-            try { turns = getBackendForId(ref.prefixedId)?.extractTurns(ref.prefixedId, { maxTurns: 5000 }); }
-            catch { continue; }
-            if (!turns?.found) continue;
-            for (const t of turns.turns) {
-              if (t.kind !== 'user' || !t.text) continue;
-              const text = stripBanners(t.text);
-              if (!text) continue;
-              prompts.push({ sessionId: ref.prefixedId, line: t.line, ts: t.tsIso, text });
-              if (prompts.length >= params.limit) break outer;
-            }
+        // Single-session lookup — one markers call.
+        if (params.session_id) {
+          const soft = await remoteGetSoft<MarkersResp>(`/api/conversations/${encodeURIComponent(params.session_id)}/markers`);
+          if (!soft.data) {
+            return { content: [{ type: 'text', text: soft.message || (soft.status === 404 ? `Session ${params.session_id} not found.` : `Prompts not synced yet for ${params.session_id}.`) }] };
           }
+          const rows = soft.data.prompts
+            .filter(p => p.text && p.text.trim())
+            .slice(0, params.limit)
+            .map(p => ({ sessionId: params.session_id!, line: p.line, tsIso: p.tsIso, markers: p.markers || [], text: p.text }));
+          if (rows.length === 0) {
+            return { content: [{ type: 'text', text: 'No user prompts found.' }] };
+          }
+          return { content: [{ type: 'text', text: renderPrompts(rows) }] };
         }
-        // The `st` import becomes unused after this refactor — referenced via
-        // a void to keep tsc happy without rewiring the destructure shape.
-        void st;
 
-        if (prompts.length === 0) {
+        // Cross-session mode — pull the recent feed inside the time window,
+        // then fan markers per session (newest first) until we hit the limit.
+        const sinceHours = params.since_days * 24;
+        const recent = await remoteGetQS<{ sessions: Array<{ sessionId: string }> }>(
+          '/api/conversations/recent', { limit: 200, since_hours: sinceHours });
+        const sessionIds = (recent.sessions || []).map(s => s.sessionId);
+        if (sessionIds.length === 0) {
           return { content: [{ type: 'text', text: 'No user prompts found.' }] };
         }
-        const lines = [`# User prompts (${prompts.length})\n`];
-        for (const p of prompts) {
-          const t = p.ts?.slice(0, 16).replace('T', ' ') || '';
-          const snippet = p.text.length > 240 ? p.text.slice(0, 240) + '…' : p.text;
-          let markerSuffix = '';
-          if (params.with_markers) {
-            const m = markPrompt(p.text);
-            if (m.markers.length) markerSuffix = ` _[${m.markers.join(', ')}]_`;
+
+        const collected: Array<{ sessionId: string; line: number; tsIso?: string; markers: string[]; text: string }> = [];
+        for (const sid of sessionIds) {
+          if (collected.length >= params.limit) break;
+          const soft = await remoteGetSoft<MarkersResp>(`/api/conversations/${encodeURIComponent(sid)}/markers`);
+          if (!soft.data) continue; // not synced yet / 404 — skip
+          for (const p of soft.data.prompts) {
+            if (!p.text || !p.text.trim()) continue;
+            collected.push({ sessionId: sid, line: p.line, tsIso: p.tsIso, markers: p.markers || [], text: p.text });
+            if (collected.length >= params.limit) break;
           }
-          lines.push(`- **${p.sessionId}** L${p.line}${t ? ` · ${t}` : ''}${markerSuffix}`);
-          lines.push(`  ${snippet.replace(/\n/g, ' ')}`);
         }
-        return { content: [{ type: 'text', text: lines.join('\n') }] };
+
+        if (collected.length === 0) {
+          return { content: [{ type: 'text', text: 'No user prompts found (none of the recent sessions have synced markers yet).' }] };
+        }
+        return { content: [{ type: 'text', text: renderPrompts(collected) }] };
       }
 
       // ── Decision recording ────────────────────────────────────
@@ -3633,93 +3450,59 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // ── Analytics summary ──────────────────────────────────────
       case 'recall_analytics_summary': {
         RecallAnalyticsSummarySchema.parse(args);
+        requireRemote();
 
-        const store = await createStore();
-        try {
-          const items = await store.listItems('session' as SourceType, 5000, 0);
-          let totalSessions = 0;
-          let totalCost = 0;
-          let sessionsWithoutPricing = 0;
-          const projectCost = new Map<string, number>();
-          const projectSessions = new Map<string, number>();
-          const toolCount = new Map<string, number>();
-          const modelCount = new Map<string, number>();
-          let weekNow = 0;
-          let weekPrev = 0;
+        // Same analytics aggregate the dashboard renders. The server already
+        // computed all per-project / per-tool / per-model rollups (single
+        // engine pricing source), so we just format its fields.
+        type Analytics = {
+          summary: { totalSessions: number; totalCostUsd: number; avgCostPerSession: number; sessionsWithoutPricing: number };
+          projects: Array<{ name: string; sessions: number; totalCost: number }>;
+          tools: Array<{ tool: string; sessions: number }>;
+          models: Array<{ model: string; sessions: number }>;
+          periodComparison: {
+            thisWeek: { sessions: number; cost: number };
+            lastWeek: { sessions: number; cost: number };
+          };
+        };
+        const a = await remoteGet<Analytics>('/api/analytics');
+        const s = a.summary;
 
-          const now = Date.now();
-          const weekMs = 7 * 86400 * 1000;
+        const topByCost = [...a.projects]
+          .sort((x, y) => y.totalCost - x.totalCost).slice(0, 5)
+          .map(p => `  ${p.name.padEnd(28)} $${p.totalCost.toFixed(2).padStart(8)}  (${p.sessions} sessions)`);
+        const topTools = a.tools.slice(0, 5)
+          .map(t => `  ${t.tool.padEnd(15)} ${t.sessions}`);
+        const topModels = a.models.slice(0, 5)
+          .map(m => `  ${m.model.padEnd(35)} ${m.sessions} sessions`);
 
-          for (const item of items) {
-            totalSessions++;
-            let extra: any = {};
-            try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
-            const models: string[] = (extra.modelsUsed || []).filter((m: string) => m && m !== '<synthetic>');
+        const weekNow = a.periodComparison.thisWeek.cost;
+        const weekPrev = a.periodComparison.lastWeek.cost;
+        const delta = weekPrev > 0 ? ((weekNow - weekPrev) / weekPrev) * 100 : null;
+        const deltaStr = delta === null
+          ? '(no prior-week data)'
+          : `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}% vs last week`;
 
-            // Single pricing source: engine model-pricing. null = no published
-            // price for any model in the session (Gemini local, Ollama, custom)
-            // — counted separately so we never fabricate dollars.
-            const estimated = estimateCostUsdOrNull(models, {
-              inputTokens: extra.inputTokens || 0,
-              outputTokens: extra.outputTokens || 0,
-              cacheReadTokens: extra.cacheReadTokens || 0,
-              cacheCreationTokens: extra.cacheCreationTokens || 0,
-            });
-            const cost = estimated ?? 0;
-            if (estimated === null) sessionsWithoutPricing++;
-            totalCost += cost;
-
-            const proj = item.project_path?.split('/').pop() || item.project_path || '(unknown)';
-            projectCost.set(proj, (projectCost.get(proj) || 0) + cost);
-            projectSessions.set(proj, (projectSessions.get(proj) || 0) + 1);
-
-            for (const t of (extra.toolsUsed || [])) toolCount.set(t, (toolCount.get(t) || 0) + 1);
-            for (const m of models) modelCount.set(m, (modelCount.get(m) || 0) + 1);
-
-            const age = now - item.mtime;
-            if (age >= 0 && age < weekMs) weekNow += cost;
-            else if (age < 2 * weekMs) weekPrev += cost;
-          }
-          const priced = totalSessions - sessionsWithoutPricing;
-
-          const topByCost = [...projectCost.entries()]
-            .sort((a, b) => b[1] - a[1]).slice(0, 5)
-            .map(([name, cost]) => `  ${name.padEnd(28)} $${cost.toFixed(2).padStart(8)}  (${projectSessions.get(name)} sessions)`);
-          const topTools = [...toolCount.entries()]
-            .sort((a, b) => b[1] - a[1]).slice(0, 5)
-            .map(([name, n]) => `  ${name.padEnd(15)} ${n}`);
-          const topModels = [...modelCount.entries()]
-            .sort((a, b) => b[1] - a[1]).slice(0, 5)
-            .map(([name, n]) => `  ${name.padEnd(35)} ${n} sessions`);
-
-          const delta = weekPrev > 0 ? ((weekNow - weekPrev) / weekPrev) * 100 : null;
-          const deltaStr = delta === null
-            ? '(no prior-week data)'
-            : `${delta >= 0 ? '+' : ''}${delta.toFixed(1)}% vs last week`;
-
-          const lines = [
-            '# Analytics Summary',
-            '',
-            `**Total sessions:** ${totalSessions}`,
-            `**Total cost (priced):** $${totalCost.toFixed(2)}`,
-            `**Avg / priced session:** $${priced > 0 ? (totalCost / priced).toFixed(2) : '0.00'}`,
-            `**Sessions without pricing:** ${sessionsWithoutPricing} (Gemini / Ollama / custom — cost not estimated)`,
-            '',
-            `**This week:** $${weekNow.toFixed(2)} · ${deltaStr}`,
-            '',
-            '## Top projects by cost',
-            ...(topByCost.length ? topByCost : ['  (none)']),
-            '',
-            '## Top tools used',
-            ...(topTools.length ? topTools : ['  (none)']),
-            '',
-            '## Top models',
-            ...(topModels.length ? topModels : ['  (none)']),
-          ];
-          return { content: [{ type: 'text', text: lines.join('\n') }] };
-        } finally {
-          await store.close();
-        }
+        const lines = [
+          '# Analytics Summary',
+          '',
+          `**Total sessions:** ${s.totalSessions}`,
+          `**Total cost (priced):** $${s.totalCostUsd.toFixed(2)}`,
+          `**Avg / priced session:** $${s.avgCostPerSession.toFixed(2)}`,
+          `**Sessions without pricing:** ${s.sessionsWithoutPricing} (Gemini / Ollama / custom — cost not estimated)`,
+          '',
+          `**This week:** $${weekNow.toFixed(2)} · ${deltaStr}`,
+          '',
+          '## Top projects by cost',
+          ...(topByCost.length ? topByCost : ['  (none)']),
+          '',
+          '## Top tools used',
+          ...(topTools.length ? topTools : ['  (none)']),
+          '',
+          '## Top models',
+          ...(topModels.length ? topModels : ['  (none)']),
+        ];
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
       // ── Similar sessions ───────────────────────────────────────
