@@ -14,7 +14,7 @@ import {
   ToolSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { existsSync, readdirSync, readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { execSync as _execSync } from 'child_process';
@@ -36,8 +36,7 @@ import { computeOutcome } from '@chat-recall/engine/core/session-outcome.js';
 // Side-effect import: registers the four ToolBackend implementations so
 // getBackendForId(...) works everywhere downstream.
 import '@chat-recall/engine/core/backends/index.js';
-import { claudeBackend } from '@chat-recall/engine/core/backends/claude.js';
-import { listAvailableBackends, getBackendForId } from '@chat-recall/engine/core/tool-backend.js';
+import { getBackendForId } from '@chat-recall/engine/core/tool-backend.js';
 import type { SessionTurn } from '@chat-recall/engine/core/session-turns.js';
 import { markPrompt, summarizeMarkers } from '@chat-recall/engine/core/session-sentiment.js';
 import { outcomeOneLiner, statusEmoji } from '@chat-recall/engine/core/outcome-display.js';
@@ -2388,60 +2387,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // ── Subagent search ────────────────────────────────────────
       case 'recall_subagent_search': {
-        // Subagents are a Claude-CLI-specific concept (the .jsonl-per-subtask
-        // tree under <session>/subagents/), so this handler is intentionally
-        // bound to ClaudeBackend.
+        // Server-backed: subagents ship in the session envelope and are indexed
+        // as `subagent:<kind>` FTS chunks at sync time, so this searches synced
+        // (cross-device) history rather than local JSONL files.
         const params = RecallSubagentSearchSchema.parse(args);
-        const { readdirSync: rd, readFileSync: rf, statSync: st } = await import('fs');
-        const projectsRoot = claudeBackend.projectsDir();
-
-        // Collect candidate session directories. If session_id given, narrow to that.
-        const sessionDirs: string[] = [];
-        try {
-          for (const proj of rd(projectsRoot, { withFileTypes: true })) {
-            if (!proj.isDirectory()) continue;
-            const projPath = join(projectsRoot, proj.name);
-            for (const entry of rd(projPath, { withFileTypes: true })) {
-              if (!entry.isDirectory()) continue;
-              if (params.session_id && !entry.name.startsWith(params.session_id)) continue;
-              const subDir = join(projPath, entry.name, 'subagents');
-              if (existsSync(subDir)) sessionDirs.push(subDir);
-            }
-          }
-        } catch { /* projects dir missing */ }
-
-        const needle = params.query.toLowerCase();
-        type Hit = { sessionDir: string; subagent: string; kind: string; lineHits: number; sample: string };
-        const hits: Hit[] = [];
-
-        for (const dir of sessionDirs) {
-          let files: string[] = [];
-          try { files = rd(dir).filter(f => f.endsWith('.jsonl')); } catch { continue; }
-          for (const f of files) {
-            const id = f.replace(/\.jsonl$/i, '');
-            const kind: string = id.includes('acompact')
-              ? 'compact'
-              : id.includes('aside_question')
-                ? 'aside'
-                : 'explore';
-            if (params.kind && kind !== params.kind) continue;
-
-            const filePath = join(dir, f);
-            try {
-              if (st(filePath).size > 50 * 1024 * 1024) continue; // skip files >50MB
-              const text = rf(filePath, 'utf-8');
-              const lower = text.toLowerCase();
-              if (!lower.includes(needle)) continue;
-
-              const lineHits = (lower.match(new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
-              const idx = lower.indexOf(needle);
-              const sample = text.slice(Math.max(0, idx - 60), idx + 140).replace(/\s+/g, ' ').trim();
-              hits.push({ sessionDir: dir, subagent: id, kind, lineHits, sample });
-              if (hits.length >= params.limit) break;
-            } catch { /* unreadable */ }
-          }
-          if (hits.length >= params.limit) break;
-        }
+        requireRemote();
+        const { hits } = await remoteGetQS<{ hits: Array<{ sessionId: string; subagent: string; kind: string; lineHits: number; sample: string }> }>(
+          '/api/subagents/search', { query: params.query, session_id: params.session_id, kind: params.kind, limit: params.limit });
 
         if (hits.length === 0) {
           return { content: [{ type: 'text', text: `No subagent matches for "${params.query}".` }] };
@@ -2449,8 +2401,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         const lines = [`# Subagent search: "${params.query}" (${hits.length} hits)\n`];
         for (const h of hits) {
-          const sessionId = h.sessionDir.split('/').slice(-2, -1)[0];
-          lines.push(`- **${sessionId}** / ${h.subagent} [${h.kind}] (${h.lineHits} match${h.lineHits === 1 ? '' : 'es'})`);
+          lines.push(`- **${h.sessionId.slice(0, 8)}** / ${h.subagent} [${h.kind}] (${h.lineHits} match${h.lineHits === 1 ? '' : 'es'})`);
           lines.push(`  …${h.sample}…`);
         }
         return { content: [{ type: 'text', text: lines.join('\n') }] };

@@ -22,6 +22,7 @@ import kgRouter from './routes/kg.js';
 import kvRouter from './routes/kv.js';
 import diaryRouter from './routes/diary.js';
 import filesRouter from './routes/files.js';
+import subagentsRouter from './routes/subagents.js';
 import syncRouter from './routes/sync.js';
 import teamsRouter from './routes/teams.js';
 import teamArtifactsRouter from './routes/team-artifacts.js';
@@ -89,6 +90,7 @@ app.use('/api/kg', kgRouter);
 app.use('/api/kv', kvRouter);
 app.use('/api/diary', diaryRouter);
 app.use('/api/files', filesRouter);
+app.use('/api/subagents', subagentsRouter);
 
 // FS-backed routers exist only in local mode: in a server deployment data
 // arrives via /api/sync and there is no settings file the UI should edit
