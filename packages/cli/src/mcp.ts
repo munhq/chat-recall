@@ -19,11 +19,9 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { execSync as _execSync } from 'child_process';
 
-import { getEmbedder, type EmbedderProvider } from '@chat-recall/engine/core/embedder.js';
 import { acquireIndexLock } from '@chat-recall/engine/core/index-lock.js';
-import { getRecentSessions, extractConversationContext, formatContext } from '@chat-recall/engine/core/context.js';
+import { extractConversationContext, formatContext } from '@chat-recall/engine/core/context.js';
 import { getCacheDbPath, getIdentityFilePath, getDataDir } from '@chat-recall/engine/core/paths.js';
-import { parseSessionFile } from '@chat-recall/engine/parsers/session.js';
 import {
   detectTool,
   liveScanModifiedFiles,
@@ -42,39 +40,11 @@ import { claudeBackend } from '@chat-recall/engine/core/backends/claude.js';
 import { listAvailableBackends, getBackendForId } from '@chat-recall/engine/core/tool-backend.js';
 import type { SessionTurn } from '@chat-recall/engine/core/session-turns.js';
 import { markPrompt, summarizeMarkers } from '@chat-recall/engine/core/session-sentiment.js';
-import { tierFor } from '@chat-recall/engine/core/score-tier.js';
 import { outcomeOneLiner, statusEmoji } from '@chat-recall/engine/core/outcome-display.js';
-import { MemoryIndex } from '@chat-recall/engine/core/memory-index.js'; // static helpers only
-import { createVectorStore } from '@chat-recall/engine/core/store/vector.js';
-import { createStore } from '@chat-recall/engine/core/store/index.js';
 import { buildProjectDossier } from '@chat-recall/engine/core/project-dossier.js';
-import { SourceRegistry } from '@chat-recall/engine/core/source-registry.js';
-import { SessionSource } from '@chat-recall/engine/parsers/session-source.js';
-import { PlanSource } from '@chat-recall/engine/parsers/plan-source.js';
-import { TaskSource } from '@chat-recall/engine/parsers/task-source.js';
-import { ClaudeMdSource } from '@chat-recall/engine/parsers/claude-md-source.js';
-import { HistorySource } from '@chat-recall/engine/parsers/history-source.js';
-import { PasteSource } from '@chat-recall/engine/parsers/paste-source.js';
-import { GeminiSessionSource } from '@chat-recall/engine/parsers/gemini-source.js';
-import { GeminiBrainSource } from '@chat-recall/engine/parsers/gemini-brain-source.js';
-import { OpenCodeSource } from '@chat-recall/engine/parsers/opencode-source.js';
-import { OpenCodeTodoSource } from '@chat-recall/engine/parsers/opencode-todo-source.js';
-import { CodexSessionSource } from '@chat-recall/engine/parsers/codex-session-source.js';
-import { createMetadataCache } from '@chat-recall/engine/core/store/caches.js';
-import { createKnowledgeGraph } from '@chat-recall/engine/core/store/knowledge-graph.js';
-import { classifyChunk } from '@chat-recall/engine/core/memory-classifier.js';
-import { extractAndPopulateKG } from '@chat-recall/engine/core/entity-extractor.js';
 import { sanitizeQuery } from '@chat-recall/engine/core/query-sanitizer.js';
 import { estimateCostUsdOrNull } from '@chat-recall/engine/core/model-pricing.js';
 import { getWAL } from '@chat-recall/engine/core/write-ahead-log.js';
-import { DiarySource } from '@chat-recall/engine/parsers/diary-source.js';
-import { SkillsSource } from '@chat-recall/engine/parsers/skills-source.js';
-import { McpsSource } from '@chat-recall/engine/parsers/mcps-source.js';
-import { SlashCommandsSource } from '@chat-recall/engine/parsers/slash-commands-source.js';
-import { SubagentsSource } from '@chat-recall/engine/parsers/subagents-source.js';
-import { HooksSource } from '@chat-recall/engine/parsers/hooks-source.js';
-import { PluginsSource } from '@chat-recall/engine/parsers/plugins-source.js';
-import type { SourceType } from '@chat-recall/engine/types/memory.js';
 
 // Load .env configuration
 config();
@@ -114,58 +84,6 @@ function withCodeindexHint(body: string, kind: 'files' | 'redundancy' | 'session
     session:    '\n\n_Tip: codeindex is also installed — call `get_outline` on each file for its current symbol structure._',
   };
   return body + hints[kind];
-}
-
-interface ShowMessage {
-  line: number;
-  role: string;
-  text: string;
-}
-
-/**
- * Render any backend's session into the `ShowMessage[]` shape `recall_show`
- * consumes. Reads canonical events directly from the backend (not turns),
- * so Claude session-summary entries surface as `role: 'Summary'` rows
- * alongside user/assistant/tool turns — same as before the unification.
- *
- * Returns null when no backend recognizes `sessionId` or when the session
- * has no readable events.
- */
-function loadMessagesViaRegistry(sessionId: string, includeCode: boolean): ShowMessage[] | null {
-  const backend = getBackendForId(sessionId);
-  if (!backend) return null;
-  const events = backend.readEvents(backend.toRawId(sessionId));
-  if (events.length === 0) return null;
-
-  const messages: ShowMessage[] = [];
-  for (const e of events) {
-    let role = '';
-    let text = '';
-    if (e.kind === 'user') {
-      role = 'User';
-      text = e.text || '';
-    } else if (e.kind === 'assistant_text') {
-      role = backend.displayName;
-      text = e.text || '';
-      if (!includeCode) text = text.replace(/```[\s\S]*?```/g, '[code block]');
-    } else if (e.kind === 'summary') {
-      role = 'Summary';
-      text = e.text || '';
-    } else if (e.kind === 'tool_use') {
-      role = 'Tool';
-      const name = e.toolName || '';
-      text = e.command ? `${name} $ ${e.command}` : name;
-    } else if (e.kind === 'tool_result') {
-      // Skip noisy successful outputs unless include_code asked for them.
-      if (!includeCode && !e.resultIsError) continue;
-      role = 'ToolResult';
-      const body = (e.resultBody || '').slice(0, 8000);
-      text = e.resultIsError ? `[error] ${body}` : body;
-    }
-    if (!text.trim()) continue;
-    messages.push({ line: e.line, role, text });
-  }
-  return messages;
 }
 
 // ── Remote scope (chat-recall server) ───────────────────────────────
@@ -1270,233 +1188,45 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const sanitized = sanitizeQuery(params.query);
         const searchQuery = sanitized.cleanQuery;
 
-        // Remote scope: query the synced chat-recall server (cross-device /
-        // team history). Falls back to a clear error rather than silently
-        // searching local — the user asked for the server view specifically.
-        if (params.scope === 'server') {
-          const remote = await remotePost<{ results: Array<{ sessionId: string; score: number; projectPath: string; firstPrompt: string; summary?: string; matchedChunks?: Array<{ chunkType: string; text: string }> }>; count: number }>(
-            '/api/search', { query: searchQuery, topK: params.top_k, projectFilter: params.project_filter },
-          );
-          if (!remote.results?.length) {
-            return { content: [{ type: 'text', text: `No matching sessions on the server for "${params.query}".` }] };
-          }
-          const lines = [`# Server results for: "${params.query}"`, '_(synced history across your devices)_', ''];
-          for (let i = 0; i < remote.results.length; i++) {
-            const r = remote.results[i];
-            const title = (r.firstPrompt || '(no prompt)').replace(/\n/g, ' ').slice(0, 100);
-            lines.push(`## #${i + 1}: ${title}`);
-            lines.push(`**Project:** ${r.projectPath || '(hashed)'}  ·  **Session:** \`${r.sessionId}\``);
-            if (r.summary) lines.push(`**Summary:** ${r.summary.slice(0, 300)}`);
-            const snippet = r.matchedChunks?.[0]?.text?.replace(/\n/g, ' ').slice(0, 240);
-            if (snippet) lines.push(`> ${snippet}`);
-            lines.push('');
-          }
-          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        // Thin collector: search always runs against the synced chat-recall
+        // server (cross-device / team history). The `scope` param is accepted
+        // for back-compat but ignored — there is no local index to query.
+        requireRemote();
+        const remote = await remotePost<{ results: Array<{ sessionId: string; score: number; projectPath: string; firstPrompt: string; summary?: string; matchedChunks?: Array<{ chunkType: string; text: string }> }>; count: number }>(
+          '/api/search', { query: searchQuery, topK: params.top_k, projectFilter: params.project_filter },
+        );
+        if (!remote.results?.length) {
+          return { content: [{ type: 'text', text: `No matching sessions on the server for "${params.query}".` }] };
         }
-
-        // Use provided param, env var, or default to ollama (local)
-        const provider = (params.provider || process.env.EMBEDDING_PROVIDER || 'ollama') as EmbedderProvider;
-
-        let embedder: Awaited<ReturnType<typeof getEmbedder>> | null;
-        try {
-          embedder = getEmbedder(provider);
-        } catch {
-          // No embedder available — will use FTS5 fallback
-          embedder = null;
-        }
-
-        let results;
-        try {
-          const searchTopK = params.skip_ranking ? params.top_k : params.top_k * 4;
-          const memoryIndex = await createVectorStore(embedder);
-          const memResults = await memoryIndex.search(searchQuery, {
-            topK: searchTopK,
-            sourceTypes: ['session'],
-            projectIdFilter: params.project_filter,
-          });
-          // Transform MemorySearchResult to the legacy format used below
-          const cache = await createMetadataCache();
-          const cachedList = await Promise.all(memResults.map(r => cache.get(r.itemId)));
-          results = memResults.map((r, i) => {
-            const cached = cachedList[i];
-            return {
-              sessionId: r.itemId,
-              score: r.score,
-              chunkType: r.matchedChunks[0]?.chunkType || 'unknown',
-              text: r.matchedChunks[0]?.text || r.title,
-              projectPath: r.projectPath,
-              created: '',
-              modified: '',
-              firstPrompt: cached?.firstPrompt || r.title,
-              summary: cached?.summary,
-              matchedChunks: r.matchedChunks,
-            };
-          });
-          await cache.close();
-        } catch (err) {
-          if (err instanceof Error && err.message.includes('not found')) {
-            return { content: [{ type: 'text', text: 'Error: Index not found. Run \'chat-recall memory index\' first.' }] };
-          }
-          throw err;
-        }
-        
-        if (results.length === 0) {
-          return { content: [{ type: 'text', text: 'No matching sessions found.' }] };
-        }
-
-        // Truncate results
-        const displayResults = results.slice(0, params.top_k);
-
-        // Score normalization: BM25 ranks and vector L2 distances live in
-        // wildly different absolute ranges, so `score * 100` rounded to 0/100
-        // for vectors. We tier within *this* result set instead — see
-        // `core/score-tier.ts` for the rationale.
-        const topScore = displayResults[0]?.score ?? 0;
-
-        // Format results with rich context
-        const lines = [`# Results for: "${params.query}"\n`];
-
-        for (let i = 0; i < displayResults.length; i++) {
-          const result = displayResults[i];
-
-          let projectPath = result.projectPath;
-          if (projectPath.length > 50) {
-            projectPath = '...' + projectPath.slice(-47);
-          }
-
-          // Title from first prompt
-          let title = result.firstPrompt.replace(/\n/g, ' ').trim();
-          if (title.length > 100) {
-            title = title.slice(0, 100) + '...';
-          }
-
+        const lines = [`# Server results for: "${params.query}"`, '_(synced history across your devices)_', ''];
+        for (let i = 0; i < remote.results.length; i++) {
+          const r = remote.results[i];
+          const title = (r.firstPrompt || '(no prompt)').replace(/\n/g, ' ').slice(0, 100);
           lines.push(`## #${i + 1}: ${title}`);
-          lines.push(`**Project:** ${projectPath}`);
-          lines.push(`**Created:** ${result.created.slice(0, 10)} | **Match:** ${tierFor(result.score, topScore)} (#${i + 1} of ${displayResults.length})`);
-          lines.push(`**Resume:** \`claude --resume ${result.sessionId}\``);
-
-          // Show summary if available
-          if (result.summary) {
-            lines.push('');
-            lines.push('**Summary:**');
-            let summary = result.summary;
-            if (summary.length > 500) {
-              summary = summary.slice(0, 500) + '...';
-            }
-            lines.push(summary);
-          }
-
-          // Show matched context (what was discussed/decided)
-          if (result.matchedChunks && result.matchedChunks.length > 0) {
-            lines.push('');
-            lines.push('**Relevant Context:**');
-            for (const chunk of result.matchedChunks.slice(0, 2)) {
-              const chunkLabel = chunk.chunkType === 'assistant' ? 'Claude said' :
-                                 chunk.chunkType === 'user_context' ? 'User asked' :
-                                 chunk.chunkType === 'tool_result' ? 'Tool output' :
-                                 chunk.chunkType === 'web_search' ? 'Web search' :
-                                 chunk.chunkType;
-              let text = chunk.text.replace(/\n/g, ' ').trim();
-              if (text.length > 300) {
-                text = text.slice(0, 300) + '...';
-              }
-              if (chunk.chunkType !== 'summary') { // Don't repeat summary
-                lines.push(`- *${chunkLabel}:* ${text}`);
-              }
-            }
-          }
-
-          lines.push('');
-          lines.push('---');
+          lines.push(`**Project:** ${r.projectPath || '(hashed)'}  ·  **Session:** \`${r.sessionId}\``);
+          if (r.summary) lines.push(`**Summary:** ${r.summary.slice(0, 300)}`);
+          const snippet = r.matchedChunks?.[0]?.text?.replace(/\n/g, ' ').slice(0, 240);
+          if (snippet) lines.push(`> ${snippet}`);
           lines.push('');
         }
-
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
       
       case 'recall_index': {
         const params = RecallIndexSchema.parse(args);
         const wal = getWAL();
-        wal.log('index', { force: params.force, provider: params.provider });
-        const provider = (params.provider || process.env.EMBEDDING_PROVIDER || 'ollama') as EmbedderProvider;
-
-        let embedder: Awaited<ReturnType<typeof getEmbedder>> | null;
-        try {
-          embedder = getEmbedder(provider);
-        } catch {
-          // No embedder — index FTS5 only
-          embedder = null;
-        }
-
-        // Use unified memory indexing with all source types
-        const memoryIndex = await createVectorStore(embedder);
-        const store = await createStore();
-        const registry = new SourceRegistry();
-        registry.register(new SessionSource());
-        registry.register(new PlanSource());
-        registry.register(new TaskSource());
-        registry.register(new ClaudeMdSource());
-        registry.register(new HistorySource());
-        registry.register(new PasteSource());
-        registry.register(new GeminiSessionSource());
-        registry.register(new GeminiBrainSource());
-        registry.register(new OpenCodeSource());
-        registry.register(new OpenCodeTodoSource());
-        registry.register(new CodexSessionSource());
-        registry.register(new DiarySource());
-        registry.register(new SkillsSource());
-        registry.register(new McpsSource());
-        registry.register(new SlashCommandsSource());
-        registry.register(new SubagentsSource());
-        registry.register(new HooksSource());
-        registry.register(new PluginsSource());
-
-        // Open KG for entity extraction during indexing
-        const kg = await createKnowledgeGraph();
-        let totalItems = 0, totalChunks = 0, totalErrors = 0, totalKGTriples = 0;
-        for (const sourceType of registry.getRegisteredTypes()) {
-          const sources = registry.getAll(sourceType);
-          if (sources.length === 0) continue;
-          for (const source of sources) {
-          for await (const item of source.discover()) {
-            try {
-              if (!params.force && !(await memoryIndex.needsUpdate(item.sourceType, item.id, item.mtime))) continue;
-              await memoryIndex.deleteItem(item.sourceType, item.id);
-              const chunks = await source.parse(item);
-              // Classify chunks and enrich chunkType with memory type + importance
-              for (const chunk of chunks) {
-                const classification = classifyChunk(chunk.text);
-                if (classification.memoryType !== 'general') {
-                  chunk.chunkType = `${chunk.chunkType}:${classification.memoryType}:imp${classification.importance}`;
-                }
-                // Auto-extract entities into KG
-                totalKGTriples += await extractAndPopulateKG(kg, chunk.text, {
-                  projectPath: item.projectPath,
-                  sourceType: item.sourceType,
-                  sessionId: item.id,
-                });
-              }
-              if (chunks.length > 0) {
-                await memoryIndex.bufferChunks(chunks);
-                totalChunks += chunks.length;
-              }
-              await store.setItem(item);
-              const links = await source.extractLinks(item);
-              if (links.length > 0) await store.addLinks(links);
-              totalItems++;
-            } catch { totalErrors++; }
-          }
-          }
-        }
-        await memoryIndex.flushBuffer();
-        await kg.close();
-        // Note: optimize() removed from auto flows — run `chat-recall optimize` manually
-        await store.close();
-
+        wal.log('index', { force: params.force });
+        // Thin collector: "index" = collect local sessions and SHIP them to the
+        // server (which stores + indexes). There is no local index to build.
+        requireRemote();
+        const { syncSessions } = await import('./sync-client.js');
+        const r = await syncSessions(params.force ? { useLedger: false } : {});
         return {
           content: [{
             type: 'text',
-            text: `Indexing complete!\nItems processed: ${totalItems}\nChunks indexed: ${totalChunks}\nKG triples extracted: ${totalKGTriples}\nErrors: ${totalErrors}`,
+            text: `Collected + shipped to your chat-recall server.\n` +
+                  `Sessions: ${r.uploaded} · items: ${r.items} · derived rows: ${r.derived} · ` +
+                  `KG triples: ${r.kgTriples} · skipped (already synced): ${r.skipped} · secrets redacted: ${r.redactions}`,
           }],
         };
       }
@@ -1603,100 +1333,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'recall_recent': {
         const params = RecallRecentSchema.parse(args);
 
-        if (params.scope === 'server') {
-          const qs = new URLSearchParams({ limit: String(params.limit) });
-          if (params.since_hours) qs.set('since_hours', String(params.since_hours));
-          const remote = await remoteGet<{ sessions: Array<{ sessionId: string; projectPath: string; modified: string; firstPrompt: string; summary?: string; tool?: string }>; total: number }>(
-            `/api/conversations/recent?${qs.toString()}`,
-          );
-          if (!remote.sessions?.length) {
-            return { content: [{ type: 'text', text: 'No sessions on the server yet — run `chat-recall sync` on your machines.' }] };
-          }
-          const lines = [`# Recent sessions (server — ${remote.total} total synced)\n`];
-          for (let i = 0; i < remote.sessions.length; i++) {
-            const s = remote.sessions[i];
-            const display = (s.summary || s.firstPrompt || '(no prompt)').replace(/\n/g, ' ').slice(0, 120);
-            lines.push(`## #${i + 1}: ${display}`);
-            lines.push(`**Tool:** ${s.tool || 'claude'}  ·  **Project:** ${s.projectPath || '(hashed)'}  ·  **Modified:** ${(s.modified || '').slice(0, 16).replace('T', ' ')}`);
-            lines.push(`**Session ID:** \`${s.sessionId}\``);
-            lines.push('');
-          }
-          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        // Thin collector: recent sessions always come from the synced server.
+        // The `scope` param is accepted for back-compat but ignored.
+        requireRemote();
+        const qs = new URLSearchParams({ limit: String(params.limit) });
+        if (params.since_hours) qs.set('since_hours', String(params.since_hours));
+        if (params.project_filter) qs.set('project', params.project_filter);
+        const remote = await remoteGet<{ sessions: Array<{ sessionId: string; projectPath: string; modified: string; firstPrompt: string; summary?: string; tool?: string }>; total: number }>(
+          `/api/conversations/recent?${qs.toString()}`,
+        );
+        if (!remote.sessions?.length) {
+          return { content: [{ type: 'text', text: 'No sessions on the server yet — run `chat-recall sync` on your machines.' }] };
         }
-
-        // When since_hours is set, pull a wider pool first and time-filter
-        // before applying the limit — otherwise a small limit could miss
-        // sessions inside the window that happen to be older than the top-N.
-        const pool = params.since_hours !== undefined
-          ? getRecentSessions(params.project_filter, Math.max(params.limit, 200))
-          : getRecentSessions(params.project_filter, params.limit);
-
-        let sessions = pool;
-        if (params.since_hours !== undefined) {
-          const cutoff = Date.now() - params.since_hours * 3600 * 1000;
-          sessions = pool.filter(s => s.mtime >= cutoff).slice(0, params.limit);
+        const lines = [`# Recent sessions (server — ${remote.total} total synced)\n`];
+        for (let i = 0; i < remote.sessions.length; i++) {
+          const s = remote.sessions[i];
+          const display = (s.summary || s.firstPrompt || '(no prompt)').replace(/\n/g, ' ').slice(0, 120);
+          lines.push(`## #${i + 1}: ${display}`);
+          lines.push(`**Tool:** ${s.tool || 'claude'}  ·  **Project:** ${s.projectPath || '(hashed)'}  ·  **Modified:** ${(s.modified || '').slice(0, 16).replace('T', ' ')}`);
+          lines.push(`**Session ID:** \`${s.sessionId}\``);
+          lines.push('');
         }
-
-        if (sessions.length === 0) {
-          const window = params.since_hours !== undefined
-            ? ` in the last ${params.since_hours}h`
-            : '';
-          return { content: [{ type: 'text', text: `No recent sessions found${window}.` }] };
-        }
-
-        // Get summaries from metadata cache
-        const metaCache = await createMetadataCache();
-
-        const lines = ['# Recent Sessions\n'];
-
-        if (params.project_filter) {
-          lines.push(`Filtered by: "${params.project_filter}"\n`);
-        }
-
-        try {
-          for (let i = 0; i < sessions.length; i++) {
-            const session = sessions[i];
-
-            let projectPath = session.projectPath;
-            if (projectPath.length > 50) {
-              projectPath = '...' + projectPath.slice(-47);
-            }
-
-            // Try to get Gemini summary
-            const row = await metaCache.get(session.sessionId);
-
-            let displayText: string;
-            if (row && row.summary) {
-              // Show first 150 chars of Gemini summary
-              displayText = row.summary.length > 150 ? row.summary.substring(0, 150) + '...' : row.summary;
-            } else {
-              // Fallback to first prompt
-              displayText = session.firstPrompt.replace(/\n/g, ' ').trim();
-              if (displayText.length > 80) {
-                displayText = displayText.substring(0, 80) + '...';
-              }
-              if (!displayText) {
-                displayText = '(no prompt captured)';
-              }
-            }
-
-            const modified = session.modified ? session.modified.slice(0, 16).replace('T', ' ') : 'unknown';
-
-            lines.push(`## #${i + 1}: ${displayText}`);
-            lines.push(`**Project:** ${projectPath}`);
-            lines.push(`**Modified:** ${modified}`);
-            lines.push(`**Messages:** ${session.messageCount || 'unknown'}`);
-            lines.push(`**Session ID:** \`${session.sessionId}\``);
-            lines.push(`**Resume:** \`claude --resume ${session.sessionId}\``);
-            if (row && row.summary) {
-              lines.push(`**Full Summary:** Use \`recall_summary\` for complete Gemini summary`);
-            }
-            lines.push('');
-          }
-        } finally {
-          await metaCache.close();
-        }
-
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
@@ -2125,70 +1782,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const sanitizedMem = sanitizeQuery(params.query);
         const memSearchQuery = sanitizedMem.cleanQuery;
 
-        if (params.scope === 'server') {
-          const remote = await remotePost<{ results: Array<{ itemId: string; sourceType: string; title: string; text: string; score: number; projectPath?: string }>; count: number }>(
-            '/api/memory/search', { query: memSearchQuery, topK: params.top_k, sourceTypes: params.source_types, projectIdFilter: params.project_filter },
-          );
-          if (!remote.results?.length) {
-            return { content: [{ type: 'text', text: `No server-side matches for "${params.query}".` }] };
-          }
-          const lines = [`# Server memory search: "${params.query}"`, '_(synced history across your devices)_', ''];
-          for (let i = 0; i < remote.results.length; i++) {
-            const r = remote.results[i];
-            lines.push(`## #${i + 1} [${r.sourceType}] ${(r.title || r.itemId).slice(0, 90)}`);
-            if (r.projectPath) lines.push(`**Project:** ${r.projectPath}`);
-            lines.push((r.text || '').replace(/\n/g, ' ').slice(0, 300));
-            lines.push('');
-          }
-          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        // Thin collector: memory search always runs against the synced server.
+        // The `scope` param is accepted for back-compat but ignored.
+        requireRemote();
+        const remote = await remotePost<{ results: Array<{ itemId: string; sourceType: string; title: string; text: string; score: number; projectPath?: string }>; count: number }>(
+          '/api/memory/search', { query: memSearchQuery, topK: params.top_k, sourceTypes: params.source_types, projectIdFilter: params.project_filter },
+        );
+        if (!remote.results?.length) {
+          return { content: [{ type: 'text', text: `No server-side matches for "${params.query}".` }] };
         }
-
-        const provider = (params.provider || process.env.EMBEDDING_PROVIDER || 'ollama') as EmbedderProvider;
-
-        let embedder: Awaited<ReturnType<typeof getEmbedder>> | null;
-        try {
-          embedder = getEmbedder(provider);
-        } catch {
-          embedder = null;
-        }
-
-        const memoryIndex = await createVectorStore(embedder);
-        const results = await memoryIndex.search(memSearchQuery, {
-          topK: params.top_k,
-          sourceTypes: params.source_types as SourceType[] | undefined,
-          projectIdFilter: params.project_filter,
-        });
-
-        if (results.length === 0) {
-          return { content: [{ type: 'text', text: 'No matching results found across any memory type.' }] };
-        }
-
-        const lines = [`# Memory Search: "${params.query}"\n`];
-
-        for (let i = 0; i < results.length; i++) {
-          const r = results[i];
-          const scorePct = Math.round(r.score * 100);
-
-          lines.push(`## #${i + 1} [${r.sourceType}] ${r.title}`);
-          if (r.projectPath) {
-            let pp = r.projectPath;
-            if (pp.length > 50) pp = '...' + pp.slice(-47);
-            lines.push(`**Project:** ${pp}`);
-          }
-          lines.push(`**Score:** ${scorePct}/100 | **Type:** ${r.chunkType}`);
-
-          let text = r.text.replace(/\n/g, ' ').trim();
-          if (text.length > 400) text = text.slice(0, 400) + '...';
+        const lines = [`# Server memory search: "${params.query}"`, '_(synced history across your devices)_', ''];
+        for (let i = 0; i < remote.results.length; i++) {
+          const r = remote.results[i];
+          lines.push(`## #${i + 1} [${r.sourceType}] ${(r.title || r.itemId).slice(0, 90)}`);
+          if (r.projectPath) lines.push(`**Project:** ${r.projectPath}`);
+          lines.push((r.text || '').replace(/\n/g, ' ').slice(0, 300));
           lines.push('');
-          lines.push(text);
-
-          if (r.sourceType === 'session') {
-            lines.push(`\n**Resume:** \`claude --resume ${r.itemId}\``);
-          }
-
-          lines.push('\n---\n');
         }
-
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
