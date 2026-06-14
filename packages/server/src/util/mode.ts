@@ -92,6 +92,11 @@ export function capabilities(): Capabilities {
       projects: true,
       toolkit: !server,
       settings: !server,
+      // Edition hint only: "the teams feature exists in this build". This is
+      // PRE-AUTH (capabilities() runs before any tenant is resolved), so it
+      // CANNOT reflect whether a given tenant has paid. Per-tenant enforcement
+      // lives in requireEntitlement / entitledOr402 (util/billing.ts), applied
+      // to the paid write paths (team publish + invite).
       teams: ed === 'cloud',
     },
   };

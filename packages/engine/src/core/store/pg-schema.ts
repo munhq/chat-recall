@@ -197,6 +197,21 @@ CREATE TABLE IF NOT EXISTS team_artifacts (
 );
 CREATE INDEX IF NOT EXISTS idx_team_artifacts_updated ON team_artifacts(team_slug, updated_at);
 
+-- Billing / entitlement: per-tenant subscription state, flipped by Stripe
+-- webhooks. Control-plane (NOT RLS-walled): the billing gate reads it by
+-- verified tenant id to decide access BEFORE running a tenant-scoped query,
+-- and the webhook writes it with no tenant GUC in context (the tenant comes
+-- from Stripe's client_reference_id / subscription metadata).
+CREATE TABLE IF NOT EXISTS entitlements (
+  tenant                 TEXT PRIMARY KEY,
+  plan                   TEXT,
+  status                 TEXT,
+  current_period_end     BIGINT,
+  stripe_customer_id     TEXT,
+  stripe_subscription_id TEXT,
+  updated_at             BIGINT
+);
+
 -- MetadataCache: per-session compute cache + summary-error tracking.
 CREATE TABLE IF NOT EXISTS summary_errors (
   tenant          TEXT NOT NULL DEFAULT 'default',

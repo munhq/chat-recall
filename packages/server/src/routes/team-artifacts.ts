@@ -26,6 +26,7 @@
 import express from 'express';
 import { createControlPlane } from '../imports.js';
 import { requireUser } from '../middleware/auth.js';
+import { entitledOr402 } from '../util/billing.js';
 
 const router = express.Router();
 
@@ -50,6 +51,11 @@ router.get('/me', async (req, res) => {
 });
 
 router.post('/', async (req, res) => {
+  // Team CREATION is intentionally NOT entitlement-gated: it's the on-ramp to
+  // subscribing. A cloud user logs in with no tenant, creates a team (= tenant),
+  // THEN runs /api/billing/checkout for it. Gating creation would deadlock that
+  // (checkout needs a membership to bill). The paid value — PUBLISH and INVITE —
+  // is gated below via entitledOr402, which is what actually unlocks the library.
   const user = await requireUser(req, res);
   if (!user) return;
   const name = (req.body?.name || '').trim();
@@ -81,6 +87,8 @@ router.post('/:teamId/invite', async (req, res) => {
     if ((await cp.roleOf(user.sub, req.params.teamId)) !== 'owner') {
       return res.status(403).json({ error: 'owner only' });
     }
+    // Inviting teammates is paid value (grows the team) — gate on entitlement.
+    if (!(await entitledOr402(res, req.params.teamId))) return;
     const r = await cp.createInvite(req.params.teamId, 'member', req.body?.emailHint || null, user.sub);
     res.json({ inviteToken: r.invite, expiresAt: new Date(r.expiresAt).toISOString() });
   } finally { await cp.close(); }
@@ -140,6 +148,9 @@ router.post('/:teamId/publish', async (req, res) => {
   try {
     const role = await cp.roleOf(user.sub, req.params.teamId);
     if (!role) return res.status(403).json({ error: 'not a member' });
+    // Publishing to the shared library is the core paid action — gate it on the
+    // team's subscription (self-host: always entitled).
+    if (!(await entitledOr402(res, req.params.teamId))) return;
     // Hooks execute code on every member's machine on pull — owner-only.
     if (type === 'hook' && role !== 'owner') {
       return res.status(403).json({ error: 'publishing hooks is owner-only' });

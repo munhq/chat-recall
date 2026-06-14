@@ -26,6 +26,7 @@ import subagentsRouter from './routes/subagents.js';
 import syncRouter from './routes/sync.js';
 import teamsRouter from './routes/teams.js';
 import teamArtifactsRouter from './routes/team-artifacts.js';
+import billingRouter from './routes/billing.js';
 import { capabilities, isServerMode } from './util/mode.js';
 import { generateMissingSummaries, serverSummaryConfig } from './services/summary-worker.js';
 
@@ -45,7 +46,15 @@ app.use(compression({ threshold: 1024 }));
 // /api/sync carries whole (redacted) conversation batches — it gets its own
 // 32mb parser below; everything else keeps the tight 100kb bound.
 const smallJson = express.json({ limit: '100kb' });
-app.use((req, res, next) => (req.path.startsWith('/api/sync') ? next() : smallJson(req, res, next)));
+// /api/sync gets a big parser; /api/billing/webhook must stay RAW (Stripe's
+// signature is over the exact bytes — a JSON re-serialize would break it), so
+// the billing router owns express.raw for that one path and we skip the global
+// JSON parser for it here.
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/sync')) return next();
+  if (req.path === '/api/billing/webhook') return next();
+  return smallJson(req, res, next);
+});
 app.use('/api/sync', express.json({ limit: '32mb' }));
 
 // Request logging
@@ -65,6 +74,10 @@ app.get('/api/capabilities', (_req, res) => res.json(capabilities()));
 app.use('/api/sync', syncRouter);
 app.use('/api/team', teamArtifactsRouter);  // toolkit library (team-client.ts contract)
 app.use('/api', teamsRouter);
+// Billing is self-authenticating: /checkout verifies the Keycloak user
+// (requireUser) and the webhook verifies a Stripe signature — both map to a
+// tenant themselves, so this mounts BEFORE tenantAuth like teams.
+app.use('/api/billing', billingRouter);
 
 // Tenant auth: resolves req.tenant and makes it ambient for the request (see
 // middleware/auth.ts). Scoped to /api so /health + the static client stay open.
