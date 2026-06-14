@@ -133,6 +133,13 @@ function behaviorSuite(label: string, setup: () => Promise<Harness>) {
       expect((await store.searchFTS('oauth')).map(h => h.itemId)).toContain('p1');
       expect(await store.getFTSCount()).toBe(2);
       expect(await store.countDistinctItemsMatching('postgres')).toBe(1);
+      // Multi-word natural-language query matches ANY term (OR), not ALL (AND).
+      // No single chunk contains both "oauth" and "postgres"; the old pg path
+      // used websearch_to_tsquery, which ANDs terms and returned nothing here.
+      const multi = (await store.searchFTS('oauth postgres')).map(h => h.itemId);
+      expect(multi).toContain('p1');
+      expect(multi).toContain('p2');
+      expect(await store.countDistinctItemsMatching('oauth postgres')).toBe(2);
     });
 
     test('content cache set/get with mtime gate', async () => {
