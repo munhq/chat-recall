@@ -364,6 +364,17 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
       }
     } catch { /* row is best-effort */ }
 
+    // AI summary: ship the locally-generated summary so the server serves it
+    // (the metadata endpoint already returns `summary`, but ingest stored '').
+    // Generation itself stays where the provider/key is (local worker today,
+    // server-side worker later) — here we just carry whatever's been made.
+    if (upload.sessionMeta) {
+      try {
+        const sm = await metaCache.get(ref.prefixedId);
+        if (sm?.summary) { meta.summary = sm.summary; meta.summarySource = sm.summarySource; }
+      } catch { /* summary is best-effort */ }
+    }
+
     // Raw capture (Phase 2): the redacted source bytes ride along so the
     // server archives them (shrink-protected) and derives everything from
     // them — parser improvements never need a client resync again.
