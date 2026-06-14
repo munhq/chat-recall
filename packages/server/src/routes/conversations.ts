@@ -52,6 +52,27 @@ router.use([
   '/:id/files-live', '/:id/raw', '/:id/regenerate-summary',
 ], requireLocalMode);
 
+// DELETE /api/conversations/:id — purge a session everywhere and tombstone it
+// so the next sync from any device can't resurrect it. The thin collector's
+// `chat-recall delete` calls this directly (deletion is a server operation,
+// not local state). Tenant-scoped via tenantAuth → runWithTenant.
+router.delete('/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const { createStore } = await import('../imports.js');
+    const store = await createStore();
+    try {
+      await store.purgeSession(id);
+      await store.addTombstone(id);
+      res.json({ deleted: id, tombstoned: true });
+    } finally {
+      await store.close();
+    }
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'delete failed' });
+  }
+});
+
 /**
  * The per-session features below — diff replay, git commits, outcome,
  * turns, markers — read Claude's tool_use shape directly from JSONL.

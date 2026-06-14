@@ -1905,16 +1905,28 @@ program
 
 program
   .command('delete <session-id>')
-  .description('Delete a session from chat-recall everywhere: local index, raw archive, and (via tombstone on next sync) every server. Does NOT touch the AI tool\'s own transcript file.')
+  .description('Delete a session from chat-recall everywhere: purges it on every logged-in server and tombstones it so it can\'t resurrect on the next sync. Does NOT touch the AI tool\'s own transcript file.')
   .action(async (sessionId: string) => {
-    const store = await createStore();
-    try {
-      await store.purgeSession(sessionId);
-      await store.addTombstone(sessionId);
-      console.log(chalk.green(`✓ Deleted ${sessionId} locally`) + chalk.dim(' — tombstone recorded; servers purge on next sync'));
-    } finally {
-      await store.close();
+    const { loadAllCredentials } = await import('./sync-client.js');
+    const targets = loadAllCredentials();
+    if (targets.length === 0) {
+      console.error(chalk.red('Not logged in — run `chat-recall login <server-url>` first.'));
+      process.exit(1);
     }
+    let ok = 0;
+    for (const t of targets) {
+      try {
+        const res = await fetch(`${t.serverUrl.replace(/\/+$/, '')}/api/conversations/${encodeURIComponent(sessionId)}`, {
+          method: 'DELETE', headers: { authorization: `Bearer ${t.token}` },
+        });
+        if (res.ok) { ok++; console.log(chalk.green(`✓ Deleted on ${t.serverUrl}`)); }
+        else console.error(chalk.red(`✗ ${t.serverUrl}: HTTP ${res.status}`));
+      } catch (e) {
+        console.error(chalk.red(`✗ ${t.serverUrl}: ${e instanceof Error ? e.message : 'failed'}`));
+      }
+    }
+    if (ok === 0) process.exit(1);
+    console.log(chalk.dim(`Tombstoned on ${ok}/${targets.length} server(s) — re-sync cannot resurrect it.`));
   });
 
 program
@@ -1938,7 +1950,7 @@ program
           console.error(chalk.red('Not logged in (or sync disabled) — run `chat-recall login <server-url>` first.'));
           process.exit(1);
         }
-        console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.findings} findings, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted (incremental)`));
+        console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted (incremental)`));
         return;
       }
       const sinceMs = opts.sinceHours ? Date.now() - Number(opts.sinceHours) * 3_600_000 : undefined;
@@ -1953,7 +1965,7 @@ program
         throttleMs: opts.throttle !== undefined ? Number(opts.throttle) : (opts.full ? 3000 : undefined),
         prune: !!opts.prune,
       });
-      console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.findings} findings, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted`));
+      console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted`));
     } catch (err) {
       console.error(chalk.red('sync failed:'), err instanceof Error ? err.message : err);
       process.exit(1);
