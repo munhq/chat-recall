@@ -213,7 +213,9 @@ export class PgVectorStore implements VectorStore {
                       1/(1+(embedding <=> $2::vector)) AS score
                FROM memory_vectors WHERE tenant=$1 AND embedding IS NOT NULL`;
     if ((options as any).sourceTypes?.length) { params.push((options as any).sourceTypes); sql += ` AND source_type = ANY($${params.length})`; }
-    if ((options as any).projectIdFilter) { params.push((options as any).projectIdFilter); sql += ` AND project_id=$${params.length}`; }
+    // Path SUBSTRING, not an exact project_id — see searchFTS (pg.ts). Keeps the
+    // vector path consistent with FTS so `-p` filters identically either way.
+    if ((options as any).projectIdFilter) { params.push(`%${(options as any).projectIdFilter}%`); sql += ` AND project_path ILIKE $${params.length}`; }
     params.push(topK * 5); sql += ` ORDER BY embedding <=> $2::vector ASC LIMIT $${params.length}`;
     const rows = await this.q(sql, params);
     // Group by item (best score wins), mirroring the FTS grouping.
