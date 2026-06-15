@@ -430,7 +430,11 @@ export class PgStore implements StorageDriver {
                       ts_rank(tsv, to_tsquery('english',$2)) AS rank
                FROM memory_chunks WHERE tenant=$1 AND tsv @@ to_tsquery('english',$2)`;
     if (sourceTypes && sourceTypes.length > 0) { params.push(sourceTypes); sql += ` AND source_type = ANY($${params.length})`; }
-    if (projectIdFilter) { params.push(projectIdFilter); sql += ` AND project_id=$${params.length}`; }
+    // `-p`/projectFilter is a cleartext PATH SUBSTRING (e.g. "acme-monorepo"),
+    // not a resolved project_id — match it against project_path, case-insensitive.
+    // Exact project_id match here meant a substring never matched and `-p`
+    // silently returned nothing for every project.
+    if (projectIdFilter) { params.push(`%${projectIdFilter}%`); sql += ` AND project_path ILIKE $${params.length}`; }
     params.push(topK * 5); sql += ` ORDER BY rank DESC LIMIT $${params.length}`;
     let rows: any[];
     try { rows = await this.q(sql, params); } catch { return []; }

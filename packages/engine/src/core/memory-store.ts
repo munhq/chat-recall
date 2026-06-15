@@ -1264,8 +1264,11 @@ export class MemoryStore {
     }
 
     if (projectIdFilter) {
-      sql += ` AND project_id = ?`;
-      params.push(projectIdFilter);
+      // `-p`/projectFilter is a cleartext PATH SUBSTRING, not a resolved
+      // project_id. Match against project_path (LIKE is case-insensitive for
+      // ASCII in SQLite); exact project_id match made `-p` always return nothing.
+      sql += ` AND project_path LIKE ?`;
+      params.push(`%${projectIdFilter}%`);
     }
 
     sql += ` ORDER BY rank LIMIT ?`;

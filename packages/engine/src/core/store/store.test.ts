@@ -142,6 +142,22 @@ function behaviorSuite(label: string, setup: () => Promise<Harness>) {
       expect(await store.countDistinctItemsMatching('oauth postgres')).toBe(2);
     });
 
+    test('project filter is a path SUBSTRING, not an exact project_id', async () => {
+      // `-p` sends a cleartext path substring; it must match project_path, not
+      // an exact project_id (the bug: exact-id match returned nothing for every
+      // real query). Two chunks in different project paths:
+      const base = { chunkType: 'body', filePath: '/x.ts', mtime: 1000, sourceType: 'plan' as const };
+      await store.addChunksFTS([
+        { ...base, chunkId: 'a_c1', itemId: 'a1', title: 'a1', text: 'oauth login', projectPath: '/home/me/code/alpha' },
+        { ...base, chunkId: 'b_c1', itemId: 'b1', title: 'b1', text: 'oauth login', projectPath: '/home/me/code/beta' },
+      ]);
+      const hits = (await store.searchFTS('oauth', { projectIdFilter: 'code/alpha' })).map(h => h.itemId);
+      expect(hits).toContain('a1');
+      expect(hits).not.toContain('b1');
+      // A substring matching neither narrows to empty.
+      expect((await store.searchFTS('oauth', { projectIdFilter: 'nonexistent-proj' })).length).toBe(0);
+    });
+
     test('content cache set/get with mtime gate', async () => {
       await store.setCachedContent('p1', 'plan', 1000, '{"x":1}');
       expect(await store.getCachedContent('p1', 'plan', 1000)).toBe('{"x":1}');
