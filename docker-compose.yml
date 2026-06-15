@@ -1,12 +1,18 @@
 # Chat-Recall SELF-HOST SERVER — the docker compose option for people who
-# don't use the SaaS. One container: dashboard UI + API, store-only.
+# don't use the SaaS. Two containers: Postgres + the server (dashboard UI + API,
+# store-only).
 #
 # This is NOT the local app. The local product is the native `chat-recall`
 # binary (npm i -g chat-recall) — it indexes your machine and pushes redacted
 # conversations here. This compose never mounts ~/.claude or your code.
 #
+# Storage: POSTGRES (bundled). The server is Postgres-only — SQLite was removed
+# from the server path. The bundled `db` service means self-host is still a
+# single `docker compose up` with no external database to provision.
+#
 # Quick start:
-#   1. echo "ADMIN_KEY=$(openssl rand -hex 24)" >> .env
+#   1. echo "ADMIN_KEY=$(openssl rand -hex 24)"        >> .env
+#      echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)" >> .env
 #   2. docker compose up -d --build
 #   3. Mint a device token for your machine(s):
 #        curl -XPOST localhost:8080/api/tenants -H "x-admin-key: $ADMIN_KEY" \
@@ -16,21 +22,40 @@
 #   4. On each machine:  chat-recall login http://<host>:8080 --token <ct_…>
 #      (the watch daemon then syncs continuously; `chat-recall sync` is manual)
 #   5. open http://localhost:8080
-#
-# Storage: SQLite, in the data volume. (The engine also supports
-# CHAT_RECALL_STORAGE=postgres + DATABASE_URL if you bring your own Postgres
-# — that's how the hosted SaaS runs — but the self-host compose ships
-# SQLite-only on purpose: one container, zero dependencies.)
 
 services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: chat_recall
+      POSTGRES_DB: chat_recall
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (e.g. openssl rand -hex 24)}
+    volumes:
+      # Postgres data lives on the big disk (bind-mount, default /data — 3.7T)
+      # rather than a docker volume on the small root fs. Override with
+      # PG_DATA_DIR in .env. postgres:18 wants the mount at /var/lib/postgresql
+      # (data lands in a versioned subdir); mounting .../data fails to init.
+      - ${PG_DATA_DIR:-/data/chat-recall/pg}:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chat_recall -d chat_recall"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
   server:
     build:
       context: .
       dockerfile: docker/Dockerfile.server
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "${WEB_PORT:-8080}:5000"
     volumes:
-      # Index + caches — named volume so they survive `compose down`.
+      # Scratch for CHAT_RECALL_DATA_DIR — incidental engine-side mkdirs (diary
+      # dir, settings reads). All real data lives in Postgres.
       - chat_recall_data:/data
     environment:
       CHAT_RECALL_DATA_DIR: /data
@@ -41,12 +66,21 @@ services:
       # Required for minting device tokens; unset ⇒ those endpoints are
       # disabled (fail-closed) and the binary can never log in.
       ADMIN_KEY: ${ADMIN_KEY:?set ADMIN_KEY in .env (e.g. openssl rand -hex 24)}
-      CHAT_RECALL_STORAGE: sqlite
+      # Postgres-only. The server creates its schema on first connect.
+      CHAT_RECALL_STORAGE: postgres
+      DATABASE_URL: postgres://chat_recall:${POSTGRES_PASSWORD}@db:5432/chat_recall
       # Dashboard auth: none (default; bind to localhost or your VPN!) |
       # static-token | keycloak (set OIDC_JWKS_URL / OIDC_ISSUER too).
       AUTH_PROVIDER: ${AUTH_PROVIDER:-none}
       OIDC_JWKS_URL: ${OIDC_JWKS_URL:-}
       OIDC_ISSUER: ${OIDC_ISSUER:-}
+      # Optional: LLM query expansion (semantic-ish keyword search). Set
+      # QUERY_EXPANSION=on plus a SUMMARY_PROVIDER (+ key) to enable.
+      QUERY_EXPANSION: ${QUERY_EXPANSION:-}
+      SUMMARY_PROVIDER: ${SUMMARY_PROVIDER:-}
+      SUMMARY_API_KEY: ${SUMMARY_API_KEY:-}
+      SUMMARY_MODEL: ${SUMMARY_MODEL:-}
+      SUMMARY_BASE_URL: ${SUMMARY_BASE_URL:-}
       # Security dashboard (secret findings). On by default; set to "0" to
       # hide the Security tab and its API surface.
       CHAT_RECALL_FEATURE_SECURITY: ${CHAT_RECALL_FEATURE_SECURITY:-1}
