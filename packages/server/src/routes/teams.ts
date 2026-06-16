@@ -25,6 +25,7 @@ import express from 'express';
 import { createControlPlane } from '../imports.js';
 import { requireUser } from '../middleware/auth.js';
 import { entitledOr402 } from '../util/billing.js';
+import { sensitiveLimiter } from '../middleware/rate-limit.js';
 
 const router = express.Router();
 
@@ -108,7 +109,7 @@ router.post('/teams/:slug/invites', async (req, res) => {
   } finally { await cp.close(); }
 });
 
-router.post('/teams/:slug/tokens', async (req, res) => {
+router.post('/teams/:slug/tokens', sensitiveLimiter, async (req, res) => {
   const user = await requireUser(req, res);
   if (!user) return;
   const cp = await createControlPlane();
@@ -124,7 +125,7 @@ router.post('/teams/:slug/tokens', async (req, res) => {
 
 // ── Admin bootstrap (self-host without Keycloak) ────────────────────────
 
-router.post('/tenants', async (req, res) => {
+router.post('/tenants', sensitiveLimiter, async (req, res) => {
   if (!adminOk(req, res)) return;
   const { slug, display_name } = req.body || {};
   if (!slug || !display_name) return res.status(400).json({ error: 'slug + display_name required' });
@@ -135,7 +136,7 @@ router.post('/tenants', async (req, res) => {
   } finally { await cp.close(); }
 });
 
-router.post('/tenants/:slug/tokens', async (req, res) => {
+router.post('/tenants/:slug/tokens', sensitiveLimiter, async (req, res) => {
   if (!adminOk(req, res)) return;
   const deviceId = (req.body?.device_id || 'default').slice(0, 64);
   const cp = await createControlPlane();
