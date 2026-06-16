@@ -16,16 +16,24 @@ import { join } from 'node:path';
 
 let dataDir: string;
 let prevDataDir: string | undefined;
+let prevAuth: string | undefined;
 
 beforeAll(() => {
   prevDataDir = process.env.CHAT_RECALL_DATA_DIR;
   dataDir = mkdtempSync(join(tmpdir(), 'cr-sync-test-'));
   process.env.CHAT_RECALL_DATA_DIR = dataDir;
+  // Default these tests to an auth-REQUIRED mode so "no token → 401" holds.
+  // (Agent ct_ tokens authorize in every mode.) The self-host none-mode path,
+  // which accepts a tokenless push, has its own dedicated test below.
+  prevAuth = process.env.AUTH_PROVIDER;
+  process.env.AUTH_PROVIDER = 'keycloak';
 });
 
 afterAll(() => {
   if (prevDataDir === undefined) delete process.env.CHAT_RECALL_DATA_DIR;
   else process.env.CHAT_RECALL_DATA_DIR = prevDataDir;
+  if (prevAuth === undefined) delete process.env.AUTH_PROVIDER;
+  else process.env.AUTH_PROVIDER = prevAuth;
   rmSync(dataDir, { recursive: true, force: true });
 });
 
@@ -204,5 +212,38 @@ describe('POST /api/sync (ingest)', () => {
     expect(res.status).toBe(200);
     expect(await store.getItem(sessionId, 'session')).toBeNull();
     await store.close();
+  });
+
+  test('self-host none-mode accepts a TOKENLESS push as the default tenant', async () => {
+    const prev = process.env.AUTH_PROVIDER;
+    process.env.AUTH_PROVIDER = 'none';
+    try {
+      const { createStore } = await import('../imports.js');
+      const syncRouter = (await import('./sync.js')).default;
+      const app = express();
+      app.use(express.json({ limit: '16mb' }));
+      app.use('/api/sync', syncRouter);
+
+      const sessionId = '11112222-3333-4444-5555-666677778888';
+      const mtime = 1750001000000;
+      // No Authorization header at all.
+      const res = await request(app).post('/api/sync').send({
+        conversations: [{
+          session_id: sessionId, tool: 'claude', project_path: '/tmp/local', mtime,
+          turns: [{ role: 'user', text: 'tokenless localhost ingest works', ts: mtime }],
+        }],
+      });
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.tenant).toBe('default');
+      expect(res.body.conv).toBe(1);
+
+      const store = await createStore();
+      expect(await store.getItem(sessionId, 'session')).not.toBeNull();
+      await store.close();
+    } finally {
+      if (prev === undefined) delete process.env.AUTH_PROVIDER;
+      else process.env.AUTH_PROVIDER = prev;
+    }
   });
 });

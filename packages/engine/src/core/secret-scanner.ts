@@ -127,11 +127,46 @@ function runTrufflehog(binary: string, filePath: string, opts: RunOpts = {}): Ar
   return out;
 }
 
+export interface ScanFinding { detector: string; rule: string; line: number; preview: string; verified?: boolean; }
+
 /**
- * Bootstrap the schema + indexes. Idempotent — safe to call on every
- * scanner invocation. The unique index makes re-scans cheap (rows
- * collapse via INSERT OR IGNORE instead of accumulating duplicates).
+ * Scan a single file with whatever detectors are installed on PATH (+ optional
+ * tenant rules). Returns MASKED findings — raw secrets never leave this
+ * function. Empty array when no detector binaries are present (the feature is
+ * opt-in: install gitleaks/trufflehog and it lights up).
+ *
+ * Store-free by design: the thin collector calls this on the raw session file
+ * (where the secrets actually are, before redaction) and SHIPS the findings in
+ * the sync envelope; the server persists them via `replaceSecretFindings`.
+ * `scanSessionForSecrets` below is the store-writing wrapper for local/in-process use.
  */
+export function scanFileForSecrets(
+  filePath: string,
+  opts: { verifyOnly?: boolean; tenantRules?: Array<{ name: string; regex: string }> } = {},
+): ScanFinding[] {
+  if (!existsSync(filePath)) return [];
+  const gitleaks = which('gitleaks');
+  const trufflehog = which('trufflehog');
+  const out: ScanFinding[] = [];
+  if (gitleaks) for (const f of runGitleaks(gitleaks, filePath)) out.push({ detector: 'gitleaks', ...f });
+  if (trufflehog) for (const f of runTrufflehog(trufflehog, filePath, { verifyOnly: opts.verifyOnly })) out.push({ detector: 'trufflehog', ...f });
+  for (const r of opts.tenantRules ?? []) {
+    let re: RegExp;
+    try { re = new RegExp(r.regex, 'g'); } catch { continue; }
+    try {
+      const lines = readFileSync(filePath, 'utf-8').split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(lines[i])) !== null) {
+          if (!looksLikeUuid(m[0])) out.push({ detector: 'tenant', rule: r.name, line: i + 1, preview: mask(m[0]) });
+          if (re.lastIndex === m.index) re.lastIndex++;
+        }
+      }
+    } catch { /* unreadable */ }
+  }
+  return out;
+}
+
 // secret_findings schema now lives in MemoryStore.ensureSecretFindingsTable()
 // so the scanner writer + dashboard readers share one StorageDriver path.
 

@@ -49,7 +49,20 @@ export interface RedactionRule {
 export const DEFAULT_REDACTION_RULES: RedactionRule[] = [
   // AWS access tokens. Prefix-anchored: AKIA, ASIA, ABIA (long-term,
   // STS, EC2). Always exactly 16 hex/alphanumeric after the prefix.
+  // NOTE: this matches only the access-key-ID, NOT the secret key value —
+  // the `env-secret` rule below covers AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN.
   { label: 'aws-access-token', pattern: /\b(?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\b/g },
+  // Env/shell-assignment secrets — a VAR whose name ends in KEY/SECRET/TOKEN/
+  // PASSWORD/CREDENTIAL, then `=`/`:`, then the value. Zero-width lookbehind so
+  // only the VALUE is redacted (the var name stays for context). This is the
+  // dominant real-world leak vector (`export` dumps, .env files, `curl -H`,
+  // tool output) and is exactly what leaked AWS_SECRET_ACCESS_KEY and
+  // AWS_SESSION_TOKEN in cleartext while the access-key-ID rule above caught
+  // only the (least-sensitive) ID.
+  { label: 'env-secret',       pattern: /(?<=\b[A-Z][A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL)S?["']?[ \t]{0,3}[:=][ \t]{0,3}["']?)[A-Za-z0-9/+_.~=-]{12,}/g },
+  // Credentials embedded in a connection URL: scheme://user:PASSWORD@host.
+  // Redacts only the password segment (keeps scheme/user/host for context).
+  { label: 'url-password',     pattern: /(?<=\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|mariadb):\/\/[^:@\s/]{1,64}:)[^@\s/]{1,256}(?=@)/g },
   // GitHub personal access tokens.
   { label: 'github-pat',       pattern: /\bghp_[A-Za-z0-9]{36}\b/g },
   // GitHub fine-grained PATs.
@@ -147,6 +160,42 @@ export function redactSecrets(text: string, opts: { rules?: RedactionRule[]; cou
     });
   }
   return out;
+}
+
+/** Masked finding from the in-process pattern engine. */
+export interface RedactorFinding { rule: string; line: number; preview: string; }
+
+/** Last-4-only mask — the raw secret is never returned. */
+function maskSecret(s: string): string {
+  if (!s) return '';
+  if (s.length <= 4) return '*'.repeat(s.length);
+  return '*'.repeat(Math.min(s.length - 4, 60)) + s.slice(-4);
+}
+
+/**
+ * Run the redaction rule set over `text` as a DETECTOR: one masked finding per
+ * match (rule label + 1-based line + last-4 preview). Same patterns that drive
+ * redaction, but REPORTED instead of (or in addition to) being masked.
+ *
+ * This is the UNIVERSAL scanner: pure in-process regex, zero external
+ * dependencies, so EVERY user (incl. vanilla SaaS users) gets secret findings —
+ * unlike the optional gitleaks/trufflehog binaries which most users won't have.
+ * The collector ships these to the server's `secret_findings`.
+ */
+export function scanTextForFindings(text: string, opts: { rules?: RedactionRule[] } = {}): RedactorFinding[] {
+  if (!text) return [];
+  const rules = opts.rules || settingsView().rules;
+  const findings: RedactorFinding[] = [];
+  for (const r of rules) {
+    const re = new RegExp(r.pattern.source, r.pattern.flags.includes('g') ? r.pattern.flags : r.pattern.flags + 'g');
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const line = text.slice(0, m.index).split('\n').length; // 1-based, handles multi-line patterns
+      findings.push({ rule: r.label, line, preview: maskSecret(m[0]) });
+      if (re.lastIndex === m.index) re.lastIndex++; // guard zero-width (lookbehind matches)
+    }
+  }
+  return findings;
 }
 
 // ---------------------------------------------------------------------------
