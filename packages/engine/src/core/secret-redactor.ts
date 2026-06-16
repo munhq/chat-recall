@@ -52,6 +52,12 @@ export const DEFAULT_REDACTION_RULES: RedactionRule[] = [
   // NOTE: this matches only the access-key-ID, NOT the secret key value —
   // the `env-secret` rule below covers AWS_SECRET_ACCESS_KEY / AWS_SESSION_TOKEN.
   { label: 'aws-access-token', pattern: /\b(?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\b/g },
+  // AWS STS session tokens. These are long base64 blobs with NO `NAME=` context
+  // when pasted bare into prose/code, so `env-secret` misses them — but they
+  // reliably start with one of a handful of base64 prefixes (the encoded
+  // `{"...` JSON header). Prefix-anchored → low false-positive. This is the
+  // bare-value form that leaked (`search('IQoJEXAMPLEfakeSESSIONtokenNOTreal01234567890abcDEF==...')`).
+  { label: 'aws-session-token', pattern: /\b(?:IQoJ|FwoG|FwoH|FQoG|FQoH|FwoD)[A-Za-z0-9/+]{40,}={0,2}/g },
   // Env/shell-assignment secrets — a VAR whose name ends in KEY/SECRET/TOKEN/
   // PASSWORD/CREDENTIAL, then `=`/`:`, then the value. Zero-width lookbehind so
   // only the VALUE is redacted (the var name stays for context). This is the
@@ -63,6 +69,15 @@ export const DEFAULT_REDACTION_RULES: RedactionRule[] = [
   // Credentials embedded in a connection URL: scheme://user:PASSWORD@host.
   // Redacts only the password segment (keeps scheme/user/host for context).
   { label: 'url-password',     pattern: /(?<=\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|mariadb):\/\/[^:@\s/]{1,64}:)[^@\s/]{1,256}(?=@)/g },
+  // Bare AWS secret-access-key VALUE: EXACTLY 40 base64 chars, word-bounded,
+  // containing upper+lower+digit. This is the gitleaks heuristic — the mixed-case
+  // requirement excludes 40-char lowercase-hex git SHAs, and the exact-40 bound
+  // excludes longer blobs/tokens. It catches the value when it appears bare in
+  // prose with NO `NAME=` and NO nearby context word (e.g. inside a markdown
+  // table or quoted in analysis) — the residual leak path the env-secret and
+  // contextual rules both miss. Placed AFTER env-secret/url-password so the
+  // keyed/URL forms keep their more-specific labels.
+  { label: 'aws-secret-key',   pattern: /(?<![A-Za-z0-9/+])(?=[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+]))(?=[A-Za-z0-9/+]*[a-z])(?=[A-Za-z0-9/+]*[A-Z])(?=[A-Za-z0-9/+]*[0-9])[A-Za-z0-9/+]{40}/g },
   // GitHub personal access tokens.
   { label: 'github-pat',       pattern: /\bghp_[A-Za-z0-9]{36}\b/g },
   // GitHub fine-grained PATs.
@@ -90,6 +105,60 @@ export const DEFAULT_REDACTION_RULES: RedactionRule[] = [
   // npm tokens (uuid-shaped — overlap with our UUID filter; intentional).
   { label: 'npm-token',        pattern: /\bnpm_[A-Za-z0-9]{36}\b/g },
 ];
+
+// ---------------------------------------------------------------------------
+// Contextual bare-secret detection.
+//
+// The rules above need the secret to be SHAPED (recognizable prefix) or KEYED
+// (`NAME=value`). Neither catches a bare AWS-secret-key VALUE pasted into
+// prose/code — exactly how the real leak escaped: `search('Fake0Secret0Example0Key0NotReal0abcdEF12…')`
+// with no `AWS_SECRET_ACCESS_KEY=` in front of it. A naive "redact any 40-char
+// base64" rule would shred git SHAs, base64 blobs, and ids. So instead we
+// require BOTH: (a) a secret-context word shortly before the token, and (b) the
+// token itself looking like a real secret (>=32 base64 chars, mixed case + a
+// digit — which excludes lowercase-hex SHAs and all-lower base64url ids).
+// ---------------------------------------------------------------------------
+const SECRET_CONTEXT_RE = /\b(?:secret|password|passwd|credential|access[ _-]?key|private[ _-]?key|api[ _-]?key|auth(?:oriz\w*)?|bearer|token)\b/gi;
+const HIGH_ENTROPY_TOKEN_RE = /[A-Za-z0-9/+]{32,}/g;
+
+/** A bare token is "secret-shaped" when long + mixed-case + has a digit. */
+function looksLikeSecretToken(t: string): boolean {
+  return t.length >= 32 && /[A-Z]/.test(t) && /[a-z]/.test(t) && /[0-9]/.test(t);
+}
+
+/**
+ * Find bare high-entropy secret VALUES that sit just after a secret-context
+ * word (within an 80-char window). Returns absolute [start,end) ranges in
+ * `text`, de-duplicated and non-overlapping. Used by BOTH the redactor and the
+ * detector so redaction and `secret_findings` stay in lockstep.
+ */
+export function findContextualSecrets(text: string): { start: number; end: number }[] {
+  if (!text) return [];
+  const ranges: { start: number; end: number }[] = [];
+  let m: RegExpExecArray | null;
+  SECRET_CONTEXT_RE.lastIndex = 0;
+  while ((m = SECRET_CONTEXT_RE.exec(text)) !== null) {
+    const winStart = m.index + m[0].length;
+    const window = text.slice(winStart, winStart + 80);
+    HIGH_ENTROPY_TOKEN_RE.lastIndex = 0;
+    let tm: RegExpExecArray | null;
+    while ((tm = HIGH_ENTROPY_TOKEN_RE.exec(window)) !== null) {
+      if (looksLikeSecretToken(tm[0])) {
+        ranges.push({ start: winStart + tm.index, end: winStart + tm.index + tm[0].length });
+        break; // first qualifying token per context word is enough
+      }
+    }
+  }
+  // De-dupe / drop overlaps (multiple context words can point at the same token).
+  ranges.sort((a, b) => a.start - b.start);
+  const out: { start: number; end: number }[] = [];
+  for (const r of ranges) {
+    const last = out[out.length - 1];
+    if (last && r.start < last.end) { last.end = Math.max(last.end, r.end); continue; }
+    out.push({ ...r });
+  }
+  return out;
+}
 
 /** Truthy when redaction is requested via env. Env wins over settings. */
 function isEnvRedactionRequested(): boolean | null {
@@ -159,6 +228,16 @@ export function redactSecrets(text: string, opts: { rules?: RedactionRule[]; cou
       return `[REDACTED:${r.label}]`;
     });
   }
+  // Second pass: bare secret values near a context word (not caught by the
+  // shape/keyed rules above). Replace right-to-left so earlier indices stay
+  // valid as we splice. Runs on the post-rule string — keyed values are already
+  // sentinels by now, so this only fires on what the rules missed.
+  const ctx = findContextualSecrets(out);
+  for (let i = ctx.length - 1; i >= 0; i--) {
+    const { start, end } = ctx[i];
+    if (opts.count) opts.count.redactions++;
+    out = out.slice(0, start) + '[REDACTED:secret-context]' + out.slice(end);
+  }
   return out;
 }
 
@@ -194,6 +273,11 @@ export function scanTextForFindings(text: string, opts: { rules?: RedactionRule[
       findings.push({ rule: r.label, line, preview: maskSecret(m[0]) });
       if (re.lastIndex === m.index) re.lastIndex++; // guard zero-width (lookbehind matches)
     }
+  }
+  // Contextual bare-secret findings (same detector the redactor uses).
+  for (const { start, end } of findContextualSecrets(text)) {
+    const line = text.slice(0, start).split('\n').length;
+    findings.push({ rule: 'secret-context', line, preview: maskSecret(text.slice(start, end)) });
   }
   return findings;
 }
