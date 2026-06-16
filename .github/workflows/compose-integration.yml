@@ -1,0 +1,98 @@
+# End-to-end gate for the thing a self-host customer actually runs:
+# `docker compose up` (server + Postgres) → mint a device token → point the
+# real CLI at it → sync a session → search it back. Unit tests mock the
+# transport; this is the only check that the CLI and the Postgres-backed
+# server agree over the wire. Mirrors the manual quick-start in
+# docker-compose.yml's header.
+name: Compose integration (CLI ↔ self-host server)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/**'
+      - 'docker/Dockerfile.server'
+      - 'docker-compose.yml'
+      - '.github/workflows/compose-integration.yml'
+  workflow_dispatch:
+
+jobs:
+  compose-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      ADMIN_KEY: ci-admin-0123456789abcdef0123
+      # Make the collector read a throwaway fixture tree, never the runner's home.
+      CHAT_RECALL_CLAUDE_HOME: ${{ github.workspace }}/.cifake/claude
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build the CLI (native-free collector bundle)
+        run: |
+          npm ci
+          npm run build
+
+      - name: Boot compose — server (built from source) + Postgres
+        run: |
+          echo "ADMIN_KEY=$ADMIN_KEY" > .env
+          docker compose up -d --build
+          # Wait for the server to answer /api/capabilities.
+          for i in $(seq 1 90); do
+            if curl -fsS http://localhost:8080/api/capabilities >/dev/null 2>&1; then
+              echo "server up after ${i}x2s"; break
+            fi
+            sleep 2
+            if [ "$i" = "90" ]; then echo "server never came up"; docker compose logs --tail 80; exit 1; fi
+          done
+
+      - name: Mint a tenant + device token (admin-key path)
+        run: |
+          curl -fsS -XPOST localhost:8080/api/tenants \
+            -H "x-admin-key: $ADMIN_KEY" -H 'content-type: application/json' \
+            -d '{"slug":"ci","display_name":"CI"}'
+          CT=$(curl -fsS -XPOST localhost:8080/api/tenants/ci/tokens \
+            -H "x-admin-key: $ADMIN_KEY" -H 'content-type: application/json' \
+            -d '{"device_id":"ci"}' \
+            | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).token||""))')
+          test -n "$CT" || { echo "no token minted"; exit 1; }
+          echo "::add-mask::$CT"
+          echo "CT=$CT" >> "$GITHUB_ENV"
+
+      - name: Plant a fixture Claude session
+        run: |
+          node -e '
+            const fs = require("fs");
+            const dir = process.env.CHAT_RECALL_CLAUDE_HOME + "/projects/-tmp-ci-proj";
+            fs.mkdirSync(dir, { recursive: true });
+            const sid = "11111111-1111-4111-8111-111111111111";
+            const line = (role, content, uuid, parent) => JSON.stringify({
+              parentUuid: parent, isSidechain: false, type: role,
+              message: { role, content },
+              uuid, timestamp: "2026-06-16T12:00:00.000Z",
+              cwd: "/tmp/ci-proj", sessionId: sid, version: "2.0.0", gitBranch: "main",
+            });
+            fs.writeFileSync(dir + "/" + sid + ".jsonl",
+              line("user", "ci-fixture-marker investigate the auth bug in the login flow", "u1", null) + "\n" +
+              line("assistant", "Found the ci-fixture-marker issue in the auth handler and fixed it.", "a1", "u1") + "\n");
+            console.log("planted fixture session", sid);
+          '
+
+      - name: Login → sync → assert search returns the fixture
+        run: |
+          CLI="node packages/cli/dist/cli.js"
+          $CLI login http://localhost:8080 --token "$CT"
+          $CLI sync --paths-cleartext
+          out="$($CLI search 'ci-fixture-marker' 2>&1)"
+          echo "$out"
+          echo "$out" | grep -qi 'ci-fixture-marker' || {
+            echo "FAIL: the session synced to the server was not searchable back through the CLI";
+            docker compose logs --tail 80; exit 1;
+          }
+          echo "PASS: CLI ↔ compose server round-trip (sync + search) works"
+
+      - name: Teardown
+        if: always()
+        run: docker compose down -v
