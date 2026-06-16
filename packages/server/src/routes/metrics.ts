@@ -14,7 +14,7 @@
  * allowlist.
  */
 import express from 'express';
-import { openPgPool } from '@chat-recall/engine/core/store/pg-pool.js';
+import { openPgPool, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
 
 const router = express.Router();
 
@@ -31,18 +31,30 @@ router.get('/', async (req, res) => {
   const out: string[] = [];
   try {
     const pool = await openPgPool(process.env.DATABASE_URL || '');
-    const count = async (sql: string): Promise<number> =>
-      Number((await pool.query(sql)).rows[0]?.c ?? 0);
 
-    // Server-wide totals (across all tenants). Cheap COUNTs on indexed tables.
-    const [sessions, chunks, raw, findings, verified, tenants] = await Promise.all([
-      count("SELECT count(*) c FROM memory_metadata WHERE source_type='session'"),
-      count('SELECT count(*) c FROM memory_chunks'),
-      count('SELECT count(*) c FROM raw_sessions'),
-      count('SELECT count(*) c FROM secret_findings'),
-      count('SELECT count(*) c FROM secret_findings WHERE verified = 1'),
-      count('SELECT count(*) c FROM tenants'),
-    ]);
+    // The data tables (memory_metadata, memory_chunks, raw_sessions,
+    // secret_findings) are Row-Level-Security-scoped by the `app.tenant` GUC, so
+    // a plain server-wide COUNT returns 0 on an RLS deployment (the cloud). We
+    // sum per tenant INSIDE each tenant's RLS context (via tenantQuery) AND
+    // filter explicitly on `tenant=$1` — the explicit filter keeps the totals
+    // correct on self-host where RLS isn't enforced (otherwise every per-tenant
+    // pass would see all rows and we'd multiply by the tenant count).
+    const slugs: string[] = (await pool.query('SELECT tenant FROM tenants')).rows.map((r: any) => r.tenant);
+
+    let sessions = 0, chunks = 0, raw = 0, findings = 0, verified = 0;
+    for (const t of slugs) {
+      const r = (await tenantQuery(pool, t, `
+        SELECT
+          (SELECT count(*) FROM memory_metadata WHERE tenant=$1 AND source_type='session') AS sessions,
+          (SELECT count(*) FROM memory_chunks   WHERE tenant=$1) AS chunks,
+          (SELECT count(*) FROM raw_sessions    WHERE tenant=$1) AS raw,
+          (SELECT count(*) FROM secret_findings WHERE tenant=$1) AS findings,
+          (SELECT count(*) FROM secret_findings WHERE tenant=$1 AND verified=1) AS verified
+      `, [t])).rows[0];
+      sessions += Number(r.sessions); chunks += Number(r.chunks); raw += Number(r.raw);
+      findings += Number(r.findings); verified += Number(r.verified);
+    }
+    const tenants = slugs.length;
 
     out.push(line('chatrecall_up', '1 when the server can read its database', 1));
     out.push(line('chatrecall_sessions_total', 'Indexed sessions across all tenants', sessions));
