@@ -43,6 +43,7 @@ import {
   gunzipContainer, parseTranscriptFromContainer,
 } from '../imports.js';
 import type { SourceType } from '../imports.js';
+import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js';
 
 const router = express.Router();
 
@@ -466,8 +467,10 @@ router.post('/', async (req, res) => {
         }
 
         // Findings: group per session, replace wholesale (idempotent re-sync).
+        // Drop fuzzy/low-precision rules on the way in too (defense for older
+        // collectors that still ship them); CHAT_RECALL_INCLUDE_FUZZY=1 keeps them.
         const bySession = new Map<string, SyncFinding[]>();
-        for (const f of findings) {
+        for (const f of dropFuzzyFindings(findings, (x) => ({ detector: x.detector, rule: x.rule }))) {
           if (!f.session_id || !f.detector || !f.rule) continue;
           (bySession.get(f.session_id) ?? bySession.set(f.session_id, []).get(f.session_id)!).push(f);
         }

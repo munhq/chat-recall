@@ -37,6 +37,7 @@ import { createHash } from 'node:crypto';
 import { redactSecrets, scanTextForFindings } from '@chat-recall/engine/core/secret-redactor.js';
 import { scanFileForSecrets, isSecretScannerAvailable } from '@chat-recall/engine/core/secret-scanner.js';
 import { isInternalToolPrompt } from '@chat-recall/engine/core/internal-prompts.js';
+import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js';
 import { loadSettings, saveSettings } from '@chat-recall/engine/core/settings.js';
 import { getDataDir } from '@chat-recall/engine/core/paths.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
@@ -634,6 +635,12 @@ export async function buildConversationSync(
     }
     scanMs = performance.now() - t0;
   }
+  // High-precision default: drop fuzzy/low-precision detector findings
+  // (generic-api-key, Box, URI, …) before shipping so the Security view isn't
+  // buried in false positives. Opt back in with CHAT_RECALL_INCLUDE_FUZZY=1.
+  const keptFindings = dropFuzzyFindings(findings, (f) => ({ detector: f.detector, rule: f.rule }));
+  findings.length = 0;
+  findings.push(...keptFindings);
 
   // Raw archive: redact the SAME container so secrets never reach the server.
   let raw_b64: string | undefined;
