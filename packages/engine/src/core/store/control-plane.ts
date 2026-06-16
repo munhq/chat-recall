@@ -112,6 +112,10 @@ export interface ControlPlane {
    */
   setEntitlement(tenant: string, e: Partial<Omit<Entitlement, 'tenant'>>): Promise<void>;
 
+  // ── Tenant settings ──
+  getTenantSetting(tenant: string, key: string): Promise<string | null>;
+  setTenantSetting(tenant: string, key: string, value: string): Promise<void>;
+
   close(): Promise<void>;
 }
 
@@ -179,6 +183,13 @@ class SqliteControlPlane implements ControlPlane {
         stripe_customer_id     TEXT,
         stripe_subscription_id TEXT,
         updated_at             INTEGER
+      );
+      CREATE TABLE IF NOT EXISTS cp_tenant_settings (
+        tenant     TEXT NOT NULL,
+        key        TEXT NOT NULL,
+        value      TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (tenant, key)
       );
     `);
   }
@@ -337,19 +348,29 @@ class SqliteControlPlane implements ControlPlane {
     );
   }
 
+  async getTenantSetting(tenant: string, key: string): Promise<string | null> {
+    const r = this.db.prepare(`SELECT value FROM cp_tenant_settings WHERE tenant = ? AND key = ?`).get(tenant, key) as { value: string } | undefined;
+    return r?.value ?? null;
+  }
+
+  async setTenantSetting(tenant: string, key: string, value: string): Promise<void> {
+    this.db.prepare(`INSERT INTO cp_tenant_settings (tenant, key, value, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (tenant, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`).run(tenant, key, value, Date.now());
+  }
+
   async deleteTenant(tenant: string): Promise<boolean> {
     const exists = this.db.prepare(`SELECT 1 FROM cp_tenants WHERE tenant = ?`).get(tenant);
     if (!exists) return false;
     // Control-plane rows. The sqlite backend is single-box: tenant-scoped
     // data tables have no tenant column, so there is nothing more to purge —
     // documented limitation of sqlite mode (one logical tenant per volume).
-    this.db.prepare(`DELETE FROM cp_agent_tokens   WHERE tenant = ?`).run(tenant);
-    this.db.prepare(`DELETE FROM cp_memberships    WHERE team_slug = ?`).run(tenant);
-    this.db.prepare(`DELETE FROM cp_invites        WHERE team_slug = ?`).run(tenant);
-    this.db.prepare(`DELETE FROM cp_team_artifacts WHERE team_slug = ?`).run(tenant);
-    this.db.prepare(`DELETE FROM cp_entitlements   WHERE tenant = ?`).run(tenant);
-    this.db.prepare(`DELETE FROM cp_teams          WHERE slug = ?`).run(tenant);
-    this.db.prepare(`DELETE FROM cp_tenants        WHERE tenant = ?`).run(tenant);
+    this.db.prepare(`DELETE FROM cp_agent_tokens     WHERE tenant = ?`).run(tenant);
+    this.db.prepare(`DELETE FROM cp_memberships      WHERE team_slug = ?`).run(tenant);
+    this.db.prepare(`DELETE FROM cp_invites          WHERE team_slug = ?`).run(tenant);
+    this.db.prepare(`DELETE FROM cp_team_artifacts   WHERE team_slug = ?`).run(tenant);
+    this.db.prepare(`DELETE FROM cp_entitlements     WHERE tenant = ?`).run(tenant);
+    this.db.prepare(`DELETE FROM cp_tenant_settings  WHERE tenant = ?`).run(tenant);
+    this.db.prepare(`DELETE FROM cp_teams            WHERE slug = ?`).run(tenant);
+    this.db.prepare(`DELETE FROM cp_tenants          WHERE tenant = ?`).run(tenant);
     return true;
   }
 
@@ -589,6 +610,19 @@ class PgControlPlane implements ControlPlane {
     );
   }
 
+  async getTenantSetting(tenant: string, key: string): Promise<string | null> {
+    const r = (await this.q(`SELECT value FROM tenant_settings WHERE tenant = $1 AND key = $2`, [tenant, key]))[0] as { value: string } | undefined;
+    return r?.value ?? null;
+  }
+
+  async setTenantSetting(tenant: string, key: string, value: string): Promise<void> {
+    await this.q(
+      `INSERT INTO tenant_settings (tenant, key, value, updated_at) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (tenant, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+      [tenant, key, value, Date.now()],
+    );
+  }
+
   async deleteTenant(tenant: string): Promise<boolean> {
     const exists = (await this.q(`SELECT 1 FROM tenants WHERE tenant = $1`, [tenant]))[0];
     if (!exists) return false;
@@ -608,13 +642,14 @@ class PgControlPlane implements ControlPlane {
     }
     try { await tenantQuery(this.pool, tenant, `DELETE FROM memory_vectors WHERE tenant = $1`, [tenant]); } catch { /* table absent without pgvector */ }
     // Control-plane rows (not RLS-walled).
-    await this.q(`DELETE FROM agent_tokens   WHERE tenant = $1`, [tenant]);
-    await this.q(`DELETE FROM memberships    WHERE team_slug = $1`, [tenant]);
-    await this.q(`DELETE FROM invites        WHERE team_slug = $1`, [tenant]);
-    await this.q(`DELETE FROM team_artifacts WHERE team_slug = $1`, [tenant]);
-    await this.q(`DELETE FROM entitlements   WHERE tenant = $1`, [tenant]);
-    await this.q(`DELETE FROM teams          WHERE slug = $1`, [tenant]);
-    await this.q(`DELETE FROM tenants        WHERE tenant = $1`, [tenant]);
+    await this.q(`DELETE FROM agent_tokens     WHERE tenant = $1`, [tenant]);
+    await this.q(`DELETE FROM memberships      WHERE team_slug = $1`, [tenant]);
+    await this.q(`DELETE FROM invites          WHERE team_slug = $1`, [tenant]);
+    await this.q(`DELETE FROM team_artifacts   WHERE team_slug = $1`, [tenant]);
+    await this.q(`DELETE FROM entitlements     WHERE tenant = $1`, [tenant]);
+    await this.q(`DELETE FROM tenant_settings  WHERE tenant = $1`, [tenant]);
+    await this.q(`DELETE FROM teams            WHERE slug = $1`, [tenant]);
+    await this.q(`DELETE FROM tenants          WHERE tenant = $1`, [tenant]);
     return true;
   }
 

@@ -94,9 +94,23 @@ function withCodeindexHint(body: string, kind: 'files' | 'redundancy' | 'session
 function remoteCredentials(): { base: string; token: string } | null {
   try {
     const raw = readFileSync(join(getDataDir(), 'credentials.json'), 'utf-8');
-    const c = JSON.parse(raw) as { serverUrl?: string; token?: string };
-    if (!c.serverUrl || !c.token) return null;
-    return { base: c.serverUrl.replace(/\/+$/, ''), token: c.token };
+    const parsed = JSON.parse(raw) as {
+      targets?: Array<{ serverUrl?: string; token?: string }>;
+      serverUrl?: string; token?: string;
+    };
+    // New multi-target format ({targets:[...]}, written by `chat-recall login`).
+    // Prefer a LOCAL self-host target (offline, fast, and tokenless self-host
+    // is valid with an empty token) over the cloud. This is the format the MCP
+    // previously failed to read — it only knew the legacy single-target shape,
+    // so every server-scope recall reported "not logged in" despite a login.
+    if (Array.isArray(parsed.targets) && parsed.targets.length) {
+      const valid = parsed.targets.filter((t) => t?.serverUrl);
+      const pick = valid.find((t) => /\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)\b/.test(t.serverUrl!)) ?? valid[0];
+      return pick?.serverUrl ? { base: pick.serverUrl.replace(/\/+$/, ''), token: pick.token || '' } : null;
+    }
+    // Legacy single-target format. Empty token is valid (tokenless self-host).
+    if (parsed.serverUrl) return { base: parsed.serverUrl.replace(/\/+$/, ''), token: parsed.token || '' };
+    return null;
   } catch { return null; }
 }
 
@@ -448,6 +462,33 @@ const RecallKvListSchema = z.object({
   scope: z.string().optional()
     .describe('Filter by scope. Omit to list across all scopes.'),
   limit: z.number().optional().default(50),
+});
+
+// ── Security / Secret Findings Schemas ─────────────────────────────
+
+const RecallSecuritySummarySchema = z.object({
+  include_dismissed: z.boolean().optional().default(false)
+    .describe('Show secrets the user already marked as rotated / false_positive / dismissed'),
+  top_k: z.number().optional().default(20).describe('Max distinct secrets to return'),
+});
+
+const RecallSecuritySessionSchema = z.object({
+  session_id: z.string().describe('Session ID from search results or the security dashboard'),
+});
+
+const RecallSecurityDismissSchema = z.object({
+  preview: z.string().describe('The masked secret preview (e.g. "************************ZeMa")'),
+  status: z.enum(['rotated', 'false_positive', 'dismissed'])
+    .describe('Why this finding is no longer actionable'),
+  reason: z.string().optional().describe('Optional note'),
+});
+
+const RecallSecurityRulesSchema = z.object({
+  action: z.enum(['list', 'test']).optional().default('list')
+    .describe('list = return tenant rules; test = try a regex against sample text (does not persist)'),
+  name: z.string().optional().describe('For test: rule name'),
+  regex: z.string().optional().describe('For test: regex to evaluate'),
+  sample: z.string().optional().describe('For test: text to match against'),
 });
 
 const server = new Server(
@@ -1161,12 +1202,76 @@ No arguments — just call it.`,
       {
         name: 'recall_kv_list',
         description: `List keys in a scope (or across all scopes). Useful for the agent to
-discover what state has been recorded without remembering specific keys.`,
+        discover what state has been recorded without remembering specific keys.`,
         inputSchema: {
           type: 'object',
           properties: {
             scope: { type: 'string', description: 'Filter by scope. Omit for all.' },
             limit: { type: 'number', default: 50 },
+          },
+        },
+      },
+      // ── Security / Secret Findings Tools ─────────────────────────
+      {
+        name: 'recall_security_summary',
+        description: `Get a security overview from the synced chat-recall server.
+
+Returns the action-required list of distinct leaked secrets (grouped by redacted
+preview), plus per-detector totals and top rules. Use this when the user asks
+"do we have any leaked secrets?" or "security findings" or "what should I rotate".
+
+Call this first; then call recall_security_session for specific sessions.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            include_dismissed: { type: 'boolean', default: false, description: 'Show previously dismissed findings' },
+            top_k: { type: 'number', default: 20, description: 'Max distinct secrets to list' },
+          },
+        },
+      },
+      {
+        name: 'recall_security_session',
+        description: `Get secret findings for a specific session.
+
+Use after recall_search or recall_security_summary to show exactly which lines
+in a session matched which detector.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            session_id: { type: 'string', description: 'Session ID from search results' },
+          },
+          required: ['session_id'],
+        },
+      },
+      {
+        name: 'recall_security_dismiss',
+        description: `Mark a secret finding as rotated, false_positive, or dismissed.
+
+Use when the user confirms a key was rotated or that the match is not a real
+secret. The dismissal syncs across devices.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            preview: { type: 'string', description: 'Masked secret preview from the security dashboard' },
+            status: { type: 'string', enum: ['rotated', 'false_positive', 'dismissed'], description: 'Resolution status' },
+            reason: { type: 'string', description: 'Optional note' },
+          },
+          required: ['preview', 'status'],
+        },
+      },
+      {
+        name: 'recall_security_rules',
+        description: `List tenant custom secret-detection rules, or test a regex in the sandbox.
+
+Tenant rules are configured in the chat-recall dashboard; this tool exposes them
+to the agent and lets you test new regexes without persisting them.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            action: { type: 'string', enum: ['list', 'test'], default: 'list', description: 'list = existing rules; test = regex sandbox' },
+            name: { type: 'string', description: 'For test: rule name' },
+            regex: { type: 'string', description: 'For test: regex to evaluate' },
+            sample: { type: 'string', description: 'For test: text to match against' },
           },
         },
       },
@@ -3086,6 +3191,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           '- `recall_status` — index stats (counts by source type, FTS5/vector).',
           '- `recall_memory_status` — memory-system stats.',
           '',
+          '## Security / secret findings',
+          '- `recall_security_summary` — action-required leaked secrets overview.',
+          '- `recall_security_session` — per-session findings.',
+          '- `recall_security_dismiss` — mark a finding rotated / false_positive / dismissed.',
+          '- `recall_security_rules` — list tenant custom rules or test a regex.',
+          '',
           '## Decision shortcuts',
           '- "continue our last conversation" → `recall_recent` then `recall_context`/`recall_show`.',
           '- "remember when we discussed X" → `recall_memory_search`.',
@@ -3094,6 +3205,80 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           '- "did we already decide on X" → `recall_kg_query` then `recall_decision_record`.',
         ].join('\n');
         return { content: [{ type: 'text', text }] };
+      }
+
+      case 'recall_security_summary': {
+        const params = RecallSecuritySummarySchema.parse(args);
+        requireRemote();
+        const [summary, distinct] = await Promise.all([
+          remoteGet<{ detectors: any[]; total: number; verified: number; bySeverity?: Record<string, number> }>('/api/secrets/summary'),
+          remoteGetQS<any>('/api/secrets/distinct', { include_dismissed: params.include_dismissed }),
+        ]);
+        const lines = ['# Security findings summary'];
+        lines.push(`Total findings: ${summary.total} · Verified live: ${summary.verified}`);
+        if (summary.bySeverity) {
+          const sev = Object.entries(summary.bySeverity).filter(([, n]) => n > 0).map(([k, n]) => `${k}: ${n}`).join(' · ');
+          if (sev) lines.push(`By severity: ${sev}`);
+        }
+        const list = (distinct.secrets || []).slice(0, params.top_k);
+        if (list.length === 0) {
+          lines.push('\nNo actionable secrets found.');
+        } else {
+          lines.push(`\n## Action-required secrets (${list.length} shown)`);
+          for (const s of list) {
+            const rules = (s.rules as Array<{ detector: string; rule: string }>).map((r) => `${r.detector}/${r.rule}`).join(', ');
+            lines.push(`- \`${s.preview}\` — ${rules} · ${s.sessionCount} session(s) · ${s.occurrences} occurrence(s)`);
+          }
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_security_session': {
+        const params = RecallSecuritySessionSchema.parse(args);
+        requireRemote();
+        type SessionSecretFinding = { rule: string; line: number; preview: string; crossSessionCount: number };
+        type SessionSecretResponse = { sessionId: string; total: number; byDetector: Record<string, SessionSecretFinding[]> };
+        const data = await remoteGet<SessionSecretResponse>(`/api/secrets/session/${encodeURIComponent(params.session_id)}`);
+        const lines = [`# Secret findings for ${data.sessionId}`, `Total: ${data.total}`];
+        for (const [detector, findings] of Object.entries(data.byDetector)) {
+          lines.push(`\n## ${detector}`);
+          for (const f of findings) {
+            lines.push(`- line ${f.line}: \`${f.preview}\` (${f.rule}) — appears in ${f.crossSessionCount} other session(s)`);
+          }
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_security_dismiss': {
+        const params = RecallSecurityDismissSchema.parse(args);
+        requireRemote();
+        await remotePost('/api/secrets/dismiss', {
+          preview: params.preview,
+          status: params.status,
+          reason: params.reason ?? '',
+        });
+        return { content: [{ type: 'text', text: `Dismissed \`${params.preview}\` as ${params.status}.` }] };
+      }
+
+      case 'recall_security_rules': {
+        const params = RecallSecurityRulesSchema.parse(args);
+        requireRemote();
+        if (params.action === 'test') {
+          if (!params.regex || params.sample === undefined) {
+            return { content: [{ type: 'text', text: 'test action requires `regex` and `sample`.' }] };
+          }
+          const r = await remotePost<{ count: number; matches: Array<{ match: string; index: number }> }>('/api/secrets/rules/test', { regex: params.regex, sample: params.sample });
+          const lines = [`Regex matches: ${r.count}`];
+          for (const m of r.matches.slice(0, 20)) lines.push(`- index ${m.index}: \`${m.match}\``);
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+        const data = await remoteGet<{ rules: Array<{ id: number; name: string; regex: string; severity: string; enabled: boolean; description?: string }> }>('/api/secrets/rules');
+        const lines = ['# Tenant secret-detection rules'];
+        for (const rule of data.rules) {
+          lines.push(`- ${rule.enabled ? '✓' : '✗'} **${rule.name}** (${rule.severity}) \`${rule.regex}\`${rule.description ? ' — ' + rule.description : ''}`);
+        }
+        if (data.rules.length === 0) lines.push('_No custom rules configured._');
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
       default:

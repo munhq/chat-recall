@@ -27,7 +27,13 @@ const router = express.Router();
 router.get('/summary', async (_req, res) => {
   const store = await createStore();
   try {
-    res.json(await store.secretFindingsSummary());
+    const base = await store.secretFindingsSummary();
+    const distinct = await store.secretFindingsByDistinctSecret();
+    const dismissals = await store.getSecretDismissals();
+    const total = distinct.reduce((n, s) => n + s.occurrences, 0);
+    const verified = distinct.filter(s => s.verified === true).length;
+    const actionRequired = distinct.filter(s => !dismissals.has(s.preview)).length;
+    res.json({ ...base, total, verified, actionRequired, distinct: distinct.length });
   } finally { await store.close(); }
 });
 
