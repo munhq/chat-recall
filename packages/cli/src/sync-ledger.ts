@@ -57,6 +57,19 @@ export function getSyncedMtimes(server: string): Map<string, number> {
   return new Map(Object.entries(data[server] || {}));
 }
 
+/** Raw data for one server, useful when you need to mutate (e.g. tombstones). */
+export function getLedgerData(server: string): Record<string, number> {
+  const data = load();
+  return data[server] || {};
+}
+
+/** Persist mutated data for one server. */
+export function persistLedgerData(server: string, serverData: Record<string, number>): void {
+  const data = load();
+  data[server] = serverData;
+  persist(data);
+}
+
 /** Mark sessions as synced at the given mtimes (after a server ack). */
 export function markSynced(server: string, rows: Array<{ id: string; mtime: number }>): void {
   if (rows.length === 0) return;

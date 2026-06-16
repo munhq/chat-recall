@@ -51,7 +51,7 @@ function defaultPrivacySettings(): PrivacySettings {
 function defaultSyncSettings(): SyncSettings {
   return {
     enabled: false,
-    upload: { findings: true, sessionMeta: true, dismissals: true, customRules: true },
+    upload: { raw: true, findings: true, sessionMeta: true, dismissals: true, customRules: true },
     excludeTools: [], excludeProjects: [],
   };
 }
@@ -773,7 +773,7 @@ function SyncCard({
 
   return (
     <Card title="Sync to remote"
-      hint="Upload findings + redacted metadata to a cloud endpoint. Disabled by default. Raw chat content never leaves the device unless you explicitly opt in to a Pro tier (not yet shipped).">
+      hint="Upload redacted session data to a chat-recall server (SaaS or self-host). Raw chat content is redacted before it leaves the device; disable Raw archives if you only want derived summaries.">
       <Fields>
         <BoolRow label="Enable sync"
           help="Master switch. Off ⇒ nothing leaves the device, ever."
@@ -792,13 +792,19 @@ function SyncCard({
         <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase',
           marginTop: 8, marginBottom: 4, color: 'var(--cr-fg-3)' }}>What leaves the device</div>
         <BoolRow label="Findings (redacted previews of detected secrets)"
-          help="Per docs/sync-contract.md — preview is masked tail, never the raw secret."
+          help="Preview is masked tail, never the raw secret."
           checked={value.upload.findings}    onChange={(b) => setUpload('findings', b)} />
-        <BoolRow label="Session metadata (id, tool, project path, mtime — no content)"
+        <BoolRow label="Session metadata (derived rows: diff, outcome, commits, markers)"
+          help="Also gates KG triple extraction and the raw transcript archive."
           checked={value.upload.sessionMeta} onChange={(b) => setUpload('sessionMeta', b)} />
-        <BoolRow label="Dismissals (rotated / false-positive marks — bidirectional)"
+        <BoolRow label="Raw transcript archives (gzipped + redacted)"
+          help="Ship the full redacted conversation archive so the dashboard can replay sessions."
+          checked={value.upload.raw !== false} onChange={(b) => setUpload('raw', b)} />
+        <BoolRow label="Dismissals (rotated / false-positive marks)"
+          help="Dismissals live on the server and sync through the dashboard / MCP."
           checked={value.upload.dismissals}  onChange={(b) => setUpload('dismissals', b)} />
-        <BoolRow label="Custom rules (your team's added regex rules — bidirectional)"
+        <BoolRow label="Custom rules (server-managed tenant regex rules)"
+          help="Rules are configured in the dashboard and fetched by each collector."
           checked={value.upload.customRules} onChange={(b) => setUpload('customRules', b)} />
 
         <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase',

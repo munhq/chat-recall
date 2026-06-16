@@ -26,6 +26,7 @@ import subagentsRouter from './routes/subagents.js';
 import syncRouter from './routes/sync.js';
 import teamsRouter from './routes/teams.js';
 import teamArtifactsRouter from './routes/team-artifacts.js';
+import securityConfigRouter from './routes/security-config.js';
 import billingRouter from './routes/billing.js';
 import { capabilities, isServerMode } from './util/mode.js';
 import { generateMissingSummaries, serverSummaryConfig } from './services/summary-worker.js';
@@ -83,6 +84,10 @@ app.use('/api/billing', billingRouter);
 // middleware/auth.ts). Scoped to /api so /health + the static client stay open.
 // Provider is 'none' by default (self-host single-tenant, tenant='default').
 app.use('/api', tenantAuth);
+
+// Tenant-scoped security configuration read by the sync collector.
+// Mounted after tenantAuth so req.tenant is already resolved.
+app.use('/api/teams/security-config', securityConfigRouter);
 
 // Routes
 app.use('/api/search', searchRouter);
