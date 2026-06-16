@@ -55,7 +55,7 @@ function requireTarget(): RemoteTarget {
 /** GET <path> on the first target and parse JSON. Throws on non-2xx. */
 async function serverGet<T>(path: string): Promise<T> {
   const t = requireTarget();
-  const res = await fetch(t.base + path, { headers: { authorization: `Bearer ${t.token}` } });
+  const res = await fetch(t.base + path, { headers: t.token ? { authorization: `Bearer ${t.token}` } : {} });
   if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
   return res.json() as Promise<T>;
 }
@@ -67,7 +67,7 @@ async function serverGet<T>(path: string): Promise<T> {
  */
 async function serverGetSoft<T>(path: string): Promise<{ status: number; data: T | null; message?: string }> {
   const t = requireTarget();
-  const res = await fetch(t.base + path, { headers: { authorization: `Bearer ${t.token}` } });
+  const res = await fetch(t.base + path, { headers: t.token ? { authorization: `Bearer ${t.token}` } : {} });
   if (res.status === 202 || res.status === 404) {
     const body = await res.json().catch(() => ({}));
     return { status: res.status, data: null, message: (body as { message?: string }).message };
@@ -81,7 +81,9 @@ async function serverPost<T>(path: string, body: unknown): Promise<T> {
   const t = requireTarget();
   const res = await fetch(t.base + path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${t.token}` },
+    headers: t.token
+      ? { 'content-type': 'application/json', authorization: `Bearer ${t.token}` }
+      : { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
@@ -289,7 +291,7 @@ program
         try {
           const { syncSessions } = await import('./sync-client.js');
           const r = await syncSessions();
-          console.log(`   ${chalk.green(`Synced ${r.uploaded} session(s), ${r.items} item(s)`)} ${chalk.dim(`— ${r.links} links, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted`)}`);
+          console.log(`   ${chalk.green(`Synced ${r.uploaded} session(s), ${r.items} item(s)`)} ${chalk.dim(`— ${r.links} links, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted, ${r.findings} secret findings${r.scanned ? ` (scanned ${r.scanned} in ${r.scanMs}ms)` : ''}`)}`);
         } catch (err) {
           console.log(`   ${chalk.yellow('Sync failed')} — ${err instanceof Error ? err.message : err}`);
           console.log(`   ${chalk.dim('Re-run `chat-recall sync` once your server is reachable.')}`);
@@ -345,7 +347,7 @@ program
       // session (ledger disabled) so a previously-shipped session re-uploads.
       const { syncSessions } = await import('./sync-client.js');
       const r = await syncSessions(options.force ? { useLedger: false } : {});
-      console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted`));
+      console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted, ${r.findings} secret findings${r.scanned ? ` (scanned ${r.scanned} in ${r.scanMs}ms)` : ''}`));
     } catch (err) {
       console.error(chalk.red('Error:'), err instanceof Error ? err.message : err);
       process.exit(1);
@@ -547,7 +549,7 @@ memory
       // happens on the server when it ingests the synced sessions.
       const { syncSessions } = await import('./sync-client.js');
       const r = await syncSessions(options.force ? { useLedger: false } : {});
-      console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted`));
+      console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted, ${r.findings} secret findings${r.scanned ? ` (scanned ${r.scanned} in ${r.scanMs}ms)` : ''}`));
     } catch (err) {
       console.error(chalk.red('Error:'), err instanceof Error ? err.message : err);
       process.exit(1);
@@ -1544,6 +1546,20 @@ async function runLogin(
     return;
   }
 
+  // Local self-host (AUTH_PROVIDER=none) needs NO token: a tenant-scoped request
+  // with no auth resolves to the single 'default' tenant — which is also what the
+  // no-auth dashboard reads, so collector and dashboard always agree. Detect it
+  // (a no-auth /api/status returns 200; an auth-required server returns 401) and
+  // save a tokenless target instead of forcing the OIDC flow.
+  try {
+    const probe = await fetch(`${base}/api/status`, { signal: AbortSignal.timeout(8000) });
+    if (probe.status === 200) {
+      saveCredentials({ serverUrl, token: '' });
+      console.log(chalk.green('✓ Logged in.') + chalk.dim(`  ${serverUrl} (local server — no auth, no token needed)`));
+      return;
+    }
+  } catch { /* unreachable or not a no-auth server — fall through to OIDC */ }
+
   try {
     const { deviceLogin } = await import('./device-auth.js');
     const tokens = await deviceLogin({ issuer: opts.issuer, clientId: opts.clientId }, (p) => {
@@ -1655,7 +1671,7 @@ program
           console.error(chalk.red('Not logged in (or sync disabled) — run `chat-recall login <server-url>` first.'));
           process.exit(1);
         }
-        console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted (incremental)`));
+        console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted, ${r.findings} secret findings${r.scanned ? ` (scanned ${r.scanned} in ${r.scanMs}ms)` : ''} (incremental)`));
         return;
       }
       const sinceMs = opts.sinceHours ? Date.now() - Number(opts.sinceHours) * 3_600_000 : undefined;
@@ -1670,7 +1686,7 @@ program
         throttleMs: opts.throttle !== undefined ? Number(opts.throttle) : (opts.full ? 3000 : undefined),
         prune: !!opts.prune,
       });
-      console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted`));
+      console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted, ${r.findings} secret findings${r.scanned ? ` (scanned ${r.scanned} in ${r.scanMs}ms)` : ''}`));
     } catch (err) {
       console.error(chalk.red('sync failed:'), err instanceof Error ? err.message : err);
       process.exit(1);
