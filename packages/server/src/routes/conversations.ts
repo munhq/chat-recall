@@ -179,6 +179,10 @@ router.get('/recent', async (req, res) => {
         return {
           sessionId: r.id,
           projectPath: r.project_path || '',
+          // Logical project id (cleartext, e.g. `git:github.com/me/repo`). The
+          // UI groups/displays by this — project_path may be a privacy hash on
+          // the SaaS, which would otherwise show users meaningless hashes.
+          projectId: r.project_id || '',
           mtime: r.mtime || 0,
           tool,
           filePath: r.file_path || undefined,

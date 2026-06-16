@@ -246,7 +246,7 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
   const tool = r.tool || 'claude';
   const toolColor = TOOL_COLOR[tool] || 'var(--cr-line-2)';
   const timeStr = formatTime(r.modified);
-  const path = formatPath(r.projectPath);
+  const path = formatProject(r);
 
   const hasSummary = !!r.summary;
   const hasSummaryError = !hasSummary && !!r.summaryError;
@@ -835,6 +835,28 @@ function formatPath(path: string): string {
   return parts[0] || path;
 }
 
+/**
+ * Display label for a session's project. Prefers the logical, cleartext
+ * `projectId` (e.g. `git:github.com/me/repo`) over `projectPath`, which on the
+ * SaaS is a privacy hash that would render as meaningless characters. Falls
+ * back to the path for legacy rows that have no project_id.
+ */
+function formatProject(r: SessionInfo): string {
+  const id = r.projectId;
+  if (id) {
+    if (id.startsWith('git:')) {
+      const segs = id.slice(4).split('/').filter(Boolean);
+      return segs.slice(-2).join('/') || id.slice(4);
+    }
+    if (id.startsWith('path:')) {
+      const segs = id.slice(5).replace(/\\/g, '/').split('/').filter(Boolean);
+      return segs[segs.length - 1] || id.slice(5);
+    }
+    return id;
+  }
+  return formatPath(r.projectPath);
+}
+
 function getShortSummary(rawSummary: string, maxLength: number = 200): string {
   if (!rawSummary) return '';
   const summary = stripInjectedBanners(rawSummary);
@@ -956,11 +978,14 @@ function collapseAdjacentRuns(items: SessionInfo[]): SessionInfo[] {
   // sorted list) so the feed still shows the latest activity timestamp.
   const sigOf = (s: SessionInfo): string => {
     const prompt = (s.firstPrompt || s.summary || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    // Group by the logical project id when present (cleartext, stable across
+    // devices) and fall back to the path for legacy rows.
+    const project = s.projectId || s.projectPath;
     // Empty-prompt sessions DO collapse — they're the most common
     // PR-bot pattern (templated initial prompt swallowed by Claude's
     // banner stripping). Collapsing by projectPath alone is the right
     // call here; it's exactly what the user wants for those rows.
-    return `${s.projectPath}::${prompt}`;
+    return `${project}::${prompt}`;
   };
 
   const groups = new Map<string, SessionInfo[]>();

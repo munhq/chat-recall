@@ -644,7 +644,7 @@ interface MetricCardProps {
   value: string;
   sub?: string;
   delta?: string;
-  tone?: 'neutral' | 'brand' | 'cost' | 'savings';
+  tone?: 'neutral' | 'brand' | 'cost' | 'savings' | 'ok' | 'err';
   icon?: string;
 }
 
@@ -654,6 +654,8 @@ export function MetricCard({ label, value, sub, delta, tone = 'neutral', icon }:
     brand: 'var(--cr-brand-500)',
     cost: 'var(--cr-warn-500)',
     savings: 'var(--cr-ok-500)',
+    ok: 'var(--cr-ok-500)',
+    err: 'var(--cr-err-500)',
   };
   return (
     <div

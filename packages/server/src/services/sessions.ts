@@ -25,6 +25,9 @@ function cleanBanner(text: string | undefined): string | undefined {
 export interface SessionInfo {
   sessionId: string;
   projectPath: string;
+  /** Logical cleartext project id (e.g. `git:github.com/me/repo`). The UI
+   *  groups/displays by this so users never see a privacy-hashed path. */
+  projectId?: string;
   created: string;
   modified: string;
   fileMtime: number;
@@ -240,6 +243,8 @@ export async function getRecentSessions(limit = 20): Promise<SessionInfo[]> {
 export interface SessionIndexEntry {
   sessionId: string;
   projectPath: string;
+  /** Logical cleartext project id, passed through to the hydrated SessionInfo. */
+  projectId?: string;
   mtime: number;
   tool: 'claude' | 'codex' | 'gemini' | 'opencode';
   filePath?: string;
@@ -403,6 +408,7 @@ export async function hydrateSessions(entries: SessionIndexEntry[]): Promise<Ses
       result.push({
         sessionId: e.sessionId,
         projectPath: e.projectPath,
+        projectId: e.projectId || '',
         created: iso,
         modified: iso,
         fileMtime: e.mtime,
