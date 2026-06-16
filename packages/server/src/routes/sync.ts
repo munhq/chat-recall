@@ -242,13 +242,23 @@ const arr = <T>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
 router.post('/', async (req, res) => {
   // Agent-token auth (ct_…). The tenantAuth middleware may have resolved a
   // different tenant for this request; the token's tenant wins for writes.
+  // Agent-token auth (ct_…) normally. But local self-host (AUTH_PROVIDER=none)
+  // is single-tenant and already trusts the network (the dashboard has no auth
+  // either), so a TOKENLESS push is accepted and written to the single
+  // 'default' tenant the dashboard reads — that's how a local collector syncs
+  // with no token. Any other auth mode still requires a valid agent token.
   const m = /^Bearer\s+(.+)$/.exec(req.get('authorization') || '');
-  if (!m) return res.status(401).json({ error: 'agent token required' });
-  const cp = await createControlPlane();
   let agent: { tenant: string; deviceId: string } | null;
-  try { agent = await cp.resolveAgentToken(m[1]); }
-  finally { await cp.close(); }
-  if (!agent) return res.status(401).json({ error: 'invalid agent token' });
+  if (m) {
+    const cp = await createControlPlane();
+    try { agent = await cp.resolveAgentToken(m[1]); }
+    finally { await cp.close(); }
+    if (!agent) return res.status(401).json({ error: 'invalid agent token' });
+  } else if ((process.env.AUTH_PROVIDER || 'none').toLowerCase() === 'none') {
+    agent = { tenant: 'default', deviceId: 'local' };
+  } else {
+    return res.status(401).json({ error: 'agent token required' });
+  }
 
   const conversations = arr<SyncConversation>(req.body?.conversations);
   const items = arr<SyncItem>(req.body?.items);

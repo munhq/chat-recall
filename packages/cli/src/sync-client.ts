@@ -31,9 +31,11 @@
  * server owns them.
  */
 import { join, dirname } from 'node:path';
-import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { redactSecrets } from '@chat-recall/engine/core/secret-redactor.js';
+import { redactSecrets, scanTextForFindings } from '@chat-recall/engine/core/secret-redactor.js';
+import { scanFileForSecrets, isSecretScannerAvailable } from '@chat-recall/engine/core/secret-scanner.js';
 import { loadSettings, saveSettings } from '@chat-recall/engine/core/settings.js';
 import { getDataDir } from '@chat-recall/engine/core/paths.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
@@ -78,8 +80,10 @@ export function saveCredentials(c: Credentials): void {
 export function loadAllCredentials(): Credentials[] {
   try {
     const parsed = JSON.parse(readFileSync(credPath(), 'utf-8'));
-    if (Array.isArray(parsed?.targets)) return parsed.targets.filter((t: any) => t?.serverUrl && t?.token);
-    if (parsed?.serverUrl && parsed?.token) return [parsed]; // legacy single
+    // token may be '' for a no-auth local self-host server (AUTH_PROVIDER=none) —
+    // such a target is valid and pushes without an Authorization header.
+    if (Array.isArray(parsed?.targets)) return parsed.targets.filter((t: any) => t?.serverUrl).map((t: any) => ({ serverUrl: t.serverUrl, token: t.token || '' }));
+    if (parsed?.serverUrl) return [{ serverUrl: parsed.serverUrl, token: parsed.token || '' }]; // legacy single
   } catch { /* none */ }
   return [];
 }
@@ -125,6 +129,10 @@ export interface SyncResult {
   derived: number;
   kgEntities: number;
   kgTriples: number;
+  /** Sessions secret-scanned this run. */
+  scanned: number;
+  /** Total wall-clock ms spent scanning this run. */
+  scanMs: number;
 }
 
 /** compute_cache kinds shipped to the server. Must stay in step with the
@@ -148,6 +156,7 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
         uploaded: agg.uploaded + r.uploaded, skipped: agg.skipped + r.skipped, redactions: agg.redactions + r.redactions,
         items: agg.items + r.items, links: agg.links + r.links, findings: agg.findings + r.findings,
         derived: agg.derived + r.derived, kgEntities: agg.kgEntities + r.kgEntities, kgTriples: agg.kgTriples + r.kgTriples,
+        scanned: Math.max(agg.scanned, r.scanned), scanMs: Math.max(agg.scanMs, r.scanMs),
       } : r;
     } catch (e) {
       errors.push(`${cred.serverUrl}: ${e instanceof Error ? e.message : e}`);
@@ -225,7 +234,11 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
       try {
         const res = await fetch(`${base}/api/sync`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${cred.token}` },
+          // No token ⇒ no auth header: a no-auth local server (AUTH_PROVIDER=none)
+          // accepts it as the single 'default' tenant.
+          headers: cred.token
+            ? { 'content-type': 'application/json', authorization: `Bearer ${cred.token}` }
+            : { 'content-type': 'application/json' },
           body: payload,
         });
         if (res.ok) break;
@@ -282,6 +295,13 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
   const derivedBatch = makeBatcher('derived', 50);
   const kgEntityBatch = makeBatcher('kg_entities', 2000);
   const kgTripleBatch = makeBatcher('kg_triples', 1000);
+  // Secret findings ship per-session as a GROUP (flatten=true) — the server
+  // replaces a session's findings wholesale, so they must land in one POST.
+  const findingsBatch = makeBatcher('findings', 200, true);
+  // Scanning lights up automatically when a detector binary (gitleaks/
+  // trufflehog) is on PATH. Resolved once (each check spawns `which`).
+  // CHAT_RECALL_SCAN_SECRETS=0 opts out (e.g. to keep a huge backfill fast).
+  const scanSecrets = isSecretScannerAvailable() && process.env.CHAT_RECALL_SCAN_SECRETS !== '0';
 
   // ── Live KG accumulator. Triples are extracted on the spot from each
   //    item's redacted text (no local knowledge-graph DB is read). Dedupe by
@@ -305,6 +325,7 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
   };
 
   let skipped = 0, redactions = 0, walked = 0;
+  let scanMs = 0, scanned = 0; // secret-scan metrics
   for (const ref of refs.slice(0, opts.limit ?? refs.length)) {
     if (excludeTools.has(ref.toolId as any)) { skipped++; continue; }
     if (excluded(ref.projectPath)) { skipped++; continue; }
@@ -316,11 +337,14 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
     // no local content cache is read or warmed. What ships is exactly what
     // the local dashboard would render for the same file.
     const mtime = Math.floor(ref.mtime) || 0;
-    const built = await buildConversationSync(ref, mtime, { mapPath, includeRaw: upload.raw, includeMeta: upload.sessionMeta });
+    const built = await buildConversationSync(ref, mtime, { mapPath, includeRaw: upload.raw, includeMeta: upload.sessionMeta, scanSecrets });
     if (!built) { skipped++; continue; }
     redactions += built.redactions;
 
     await convBatch.add(built.conv);
+    // Ship this session's secret findings as one group (server replaces wholesale).
+    if (built.findings.length > 0) await findingsBatch.add(built.findings);
+    if (built.scanMs > 0) { scanMs += built.scanMs; scanned++; }
 
     // Knowledge graph: extract triples live from the redacted conversation
     // text (no local KG DB is read). Accumulated + deduped, flushed at the end.
@@ -451,12 +475,14 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
   await derivedBatch.drain();
   await kgEntityBatch.drain();
   await kgTripleBatch.drain();
+  await findingsBatch.drain();
   if (opts.prune) await post({ prune_empty_sessions: true });
 
   return {
     uploaded: convBatch.sent, skipped, redactions,
-    items: itemsBatch.sent, links: linksBatch.sent, findings: 0, derived: derivedBatch.sent,
+    items: itemsBatch.sent, links: linksBatch.sent, findings: findingsBatch.sent, derived: derivedBatch.sent,
     kgEntities: kgEntityBatch.sent, kgTriples: kgTripleBatch.sent,
+    scanned, scanMs: Math.round(scanMs),
   };
 }
 
@@ -477,12 +503,17 @@ export interface BuiltConversation {
   /** Real project path resolved from the transcript cwd (for KG context). */
   projectPath: string;
   redactions: number;
+  /** Masked secret findings from the raw session (built-in regex always, plus
+   *  gitleaks/trufflehog when installed), shipped to the server's secret_findings. */
+  findings: Array<{ session_id: string; detector: string; rule: string; line: number; preview: string }>;
+  /** Wall-clock ms spent scanning this session (0 if nothing to scan). */
+  scanMs: number;
 }
 
 export async function buildConversationSync(
   ref: SessionRef,
   mtime: number,
-  opts: { mapPath?: (p: string) => string; includeRaw?: boolean; includeMeta?: boolean } = {},
+  opts: { mapPath?: (p: string) => string; includeRaw?: boolean; includeMeta?: boolean; scanSecrets?: boolean } = {},
 ): Promise<BuiltConversation | null> {
   const mapPath = opts.mapPath ?? ((p: string) => p);
   const includeRaw = opts.includeRaw !== false;
@@ -544,23 +575,57 @@ export async function buildConversationSync(
     } catch { /* telemetry is best-effort — the conversation still ships */ }
   }
 
-  // Raw capture: the redacted source bytes ride along so the server archives
-  // them and can re-derive everything from them. Always exported live from the
-  // backend (no local raw-session archive is read).
+  // Materialize the raw session ONCE — uniform across ALL vendors: Claude/
+  // Gemini/Codex file bytes AND the OpenCode row-dump are all UTF-8 text in the
+  // container. Reused for BOTH the secret scan (pre-redaction) and the raw_b64
+  // archive. (Scanning ref.fullPath was wrong for OpenCode — that's the DB.)
+  let container: ReturnType<typeof buildRawContainer> | null = null;
+  try {
+    const backend = getBackendForId(ref.prefixedId) ?? getBackend('claude');
+    const exp = backend.exportRawSession(ref.prefixedId);
+    container = exp ? buildRawContainer(exp) : null;
+  } catch { /* export unavailable — conversation still ships */ }
+
+  // Secret SCAN on the materialized raw text (where secrets actually are,
+  // pre-redaction). MASKED findings (last-4) ship to the server's secret_findings.
+  //   1. BUILT-IN regex engine (same rules as the redactor) — EVERY user, zero
+  //      deps. This is what gives vanilla SaaS users real secret detection.
+  //   2. gitleaks/trufflehog — OPTIONAL deeper engines, only when installed.
+  const findings: BuiltConversation['findings'] = [];
+  let scanMs = 0;
+  if (container) {
+    const t0 = performance.now();
+    const rawText = container.files.map((f) => f.text).join('\n');
+    try {
+      for (const f of scanTextForFindings(rawText)) {
+        findings.push({ session_id: ref.prefixedId, detector: 'builtin', rule: f.rule, line: f.line, preview: f.preview });
+      }
+    } catch { /* best-effort */ }
+    if (opts.scanSecrets) {
+      // gitleaks/trufflehog take a file path — write the materialized text once.
+      let tmp: string | null = null;
+      try {
+        tmp = join(tmpdir(), `cr-scan-${ref.prefixedId.replace(/[^A-Za-z0-9_-]/g, '')}-${mtime}.txt`);
+        writeFileSync(tmp, rawText);
+        for (const f of scanFileForSecrets(tmp)) {
+          findings.push({ session_id: ref.prefixedId, detector: f.detector, rule: f.rule, line: f.line, preview: f.preview });
+        }
+      } catch { /* detector error — never block the sync */ }
+      finally { if (tmp) { try { unlinkSync(tmp); } catch { /* already gone */ } } }
+    }
+    scanMs = performance.now() - t0;
+  }
+
+  // Raw archive: redact the SAME container so secrets never reach the server.
   let raw_b64: string | undefined;
   let raw_size: number | undefined;
-  if (includeRaw) {
+  if (includeRaw && container) {
     try {
-      const backend = getBackendForId(ref.prefixedId) ?? getBackend('claude');
-      const exp = backend.exportRawSession(ref.prefixedId);
-      const container = exp ? buildRawContainer(exp) : null;
-      if (container) {
-        const count2 = { redactions: 0 };
-        const redacted = mapContainerText(container, (t) => redactSecrets(t, { force: true, count: count2 }));
-        count.redactions += count2.redactions;
-        const { gz, size } = gzipContainer(redacted);
-        if (gz.length <= 8 * 1024 * 1024) { raw_b64 = gz.toString('base64'); raw_size = size; }
-      }
+      const count2 = { redactions: 0 };
+      const redacted = mapContainerText(container, (t) => redactSecrets(t, { force: true, count: count2 }));
+      count.redactions += count2.redactions;
+      const { gz, size } = gzipContainer(redacted);
+      if (gz.length <= 8 * 1024 * 1024) { raw_b64 = gz.toString('base64'); raw_size = size; }
     } catch { /* raw is additive — conversation still ships */ }
   }
 
@@ -585,6 +650,8 @@ export async function buildConversationSync(
     kgText: redactedText,
     projectPath,
     redactions: count.redactions,
+    findings,
+    scanMs,
   };
 }
 
