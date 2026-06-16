@@ -227,10 +227,17 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
   // reset or a 5xx — one blip at batch 200/210 must not throw away the
   // whole run. 4xx (bad token, oversized body) stays fatal: retrying
   // can't fix it.
+  // Per-attempt upload timeout. WITHOUT this, a half-open/slow connection makes
+  // `fetch` hang FOREVER (Node fetch has no default timeout) — observed as a
+  // sync stuck for 20-40min at idle CPU with zero progress. With it, a hung
+  // upload aborts, surfaces as an error, and goes through the retry path below.
+  const UPLOAD_TIMEOUT_MS = Number(process.env.CHAT_RECALL_UPLOAD_TIMEOUT_MS) || 90_000;
   const post = async (body: Record<string, unknown>): Promise<void> => {
     const payload = JSON.stringify(body);
     const RETRY_DELAYS_MS = [2000, 8000, 30000];
     for (let attempt = 0; ; attempt++) {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(new Error(`upload timed out after ${UPLOAD_TIMEOUT_MS}ms`)), UPLOAD_TIMEOUT_MS);
       try {
         const res = await fetch(`${base}/api/sync`, {
           method: 'POST',
@@ -240,6 +247,7 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
             ? { 'content-type': 'application/json', authorization: `Bearer ${cred.token}` }
             : { 'content-type': 'application/json' },
           body: payload,
+          signal: ac.signal,
         });
         if (res.ok) break;
         const text = await res.text().catch(() => '');
@@ -251,6 +259,8 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
         console.error(`[sync] upload attempt ${attempt + 1} failed (${err instanceof Error ? err.message : err}) — retrying in ${RETRY_DELAYS_MS[attempt] / 1000}s`);
         await sleep(RETRY_DELAYS_MS[attempt]);
         continue;
+      } finally {
+        clearTimeout(timer);
       }
     }
     if (throttleMs > 0) await sleep(throttleMs);

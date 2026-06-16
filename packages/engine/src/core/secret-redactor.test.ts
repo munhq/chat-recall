@@ -4,23 +4,33 @@ import { redactSecrets, scanTextForFindings } from './secret-redactor.js';
 // All tests force redaction on (the sync path always passes force:true).
 const r = (s: string) => redactSecrets(s, { force: true });
 
+// SYNTHETIC fixtures — shape-valid but NEVER real credentials. (An earlier
+// version of this file hardcoded a real leaked AWS key; these replace it so the
+// suite stops re-propagating a live secret into git/index. They still trigger
+// every rule because the rules are shape-based.)
+const FAKE_SECRET = 'Fake0Secret0Example0Key0NotReal0abcdEF12';            // 40-char AWS-secret shape
+const FAKE_SESSION = 'IQoJEXAMPLEfakeSESSIONtokenNOTreal01234567890abcDEF=='; // AWS STS session-token shape
+const FAKE_ASIA = 'ASIAEXAMPLE0NOTREAL0';                                  // ASIA + 16 access-key-id shape
+
 describe('secret redactor — AWS / env / url (the leak fix)', () => {
-  // The exact shape that leaked today: access-key-ID was redacted, but the
-  // SECRET key and SESSION token went out in cleartext.
+  // The exact shape that leaked: access-key-ID was redacted, but the SECRET key
+  // and SESSION token went out in cleartext.
   const awsBlock = [
-    'export AWS_ACCESS_KEY_ID="ASIAEXAMPLE0NOTREAL0"',
-    'export AWS_SECRET_ACCESS_KEY="Fake0Secret0Example0Key0NotReal0abcdEF12"',
-    'export AWS_SESSION_TOKEN="IQoJEXAMPLEfakeSESSIONtokenNOTreal01234567890abcDEF=="',
+    `export AWS_ACCESS_KEY_ID="${FAKE_ASIA}"`,
+    `export AWS_SECRET_ACCESS_KEY="${FAKE_SECRET}"`,
+    `export AWS_SESSION_TOKEN="${FAKE_SESSION}"`,
   ].join('\n');
 
   test('redacts AWS secret key AND session token AND access-key-id', () => {
     const out = r(awsBlock);
-    expect(out).not.toContain('Fake0Secret0Example0Key0NotReal0abcdEF12'); // secret key
-    expect(out).not.toContain('IQoJEXAMPLEfakeSESSIONtokenNOTreal01234567890abcDEF==');                            // session token
-    expect(out).not.toContain('ASIAEXAMPLE0NOTREAL0');                    // access key id
+    expect(out).not.toContain(FAKE_SECRET);  // secret key
+    expect(out).not.toContain('IQoJEXAMPLE'); // session token
+    expect(out).not.toContain(FAKE_ASIA);    // access key id
     // var names stay (they aren't secret) so the redaction is legible:
     expect(out).toContain('AWS_SECRET_ACCESS_KEY="[REDACTED:env-secret]"');
-    expect(out).toContain('AWS_SESSION_TOKEN="[REDACTED:env-secret]"');
+    // session token is claimed by the more-specific prefix rule (IQoJ…) before
+    // env-secret can — still fully redacted, just a more accurate label:
+    expect(out).toContain('AWS_SESSION_TOKEN="[REDACTED:aws-session-token]"');
     expect(out).toContain('AWS_ACCESS_KEY_ID="[REDACTED:aws-access-token]"');
   });
 
@@ -50,11 +60,53 @@ describe('secret redactor — AWS / env / url (the leak fix)', () => {
   });
 });
 
+describe('secret redactor — BARE values in prose (the gap that actually leaked)', () => {
+  // The real leak: the secret value pasted bare into prose/code, no `NAME=` and
+  // — critically — NO nearby context word (markdown table, quoted in analysis).
+  // The exact-40 `aws-secret-key` rule must catch it with zero context.
+  test('redacts a bare full AWS secret value with NO surrounding context at all', () => {
+    const out = r(`| col | ${FAKE_SECRET} | done |`); // table cell, no "secret"/"aws" nearby
+    expect(out).not.toContain(FAKE_SECRET);
+    expect(out).toContain('[REDACTED:aws-secret-key]');
+  });
+
+  test('redacts a non-40 secret value sitting after a context word (contextual pass)', () => {
+    const SECRET36 = 'Zb7Kq2Mw9Rt4Vx1Np6Lc3Hd8Fg5Js0Ay2Qe'; // 36 chars → not the exact-40 rule
+    const out = r(`the api_key for the job is ${SECRET36} ok`);
+    expect(out).not.toContain(SECRET36);
+    expect(out).toContain('[REDACTED:secret-context]');
+  });
+
+  test('redacts a bare AWS session token by prefix (no context word needed)', () => {
+    const out = r(`then I ran search('${FAKE_SESSION}') to check the cloud`);
+    expect(out).not.toContain('IQoJEXAMPLE');
+    expect(out).toContain('[REDACTED:aws-session-token]');
+  });
+
+  test('does NOT over-redact: git SHA, longer blob, or token-near-context that is not secret-shaped', () => {
+    // 40-char lowercase-hex git SHA → not mixed-case → kept by BOTH the exact-40 and contextual rules
+    expect(r('the secret commit is a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0')).toContain('a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0');
+    // 43-char blob with NO context word nearby → kept (not exactly 40, no context)
+    const blob = 'AbC123dEf456GhI789jKlM012nOpQ345rStU678vWxY';
+    expect(r(`here is a base64 chunk ${blob} unrelated`)).toContain(blob);
+    // the word "token" appears but no secret-shaped value follows → untouched
+    expect(r('peakContextTokens was 98007 this run')).toBe('peakContextTokens was 98007 this run');
+  });
+
+  test('scanner reports the bare full secret as a finding (masked)', () => {
+    const f = scanTextForFindings(`the value is ${FAKE_SECRET} here`);
+    const hit = f.find((x) => x.rule === 'aws-secret-key');
+    expect(hit).toBeTruthy();
+    expect(hit!.preview).not.toContain('Fake0Secret'); // raw never leaks
+    expect(hit!.preview.endsWith('EF12')).toBe(true);  // last-4 visible
+  });
+});
+
 describe('scanTextForFindings — the universal in-process scanner (no binaries)', () => {
   const block = [
     'line one is harmless prose',
-    'export AWS_SECRET_ACCESS_KEY="Fake0Secret0Example0Key0NotReal0abcdEF12"',
-    'export AWS_ACCESS_KEY_ID="ASIAEXAMPLE0NOTREAL0"',
+    `export AWS_SECRET_ACCESS_KEY="${FAKE_SECRET}"`,
+    `export AWS_ACCESS_KEY_ID="${FAKE_ASIA}"`,
   ].join('\n');
 
   test('reports findings (rule + 1-based line + masked preview) instead of masking', () => {
@@ -63,8 +115,8 @@ describe('scanTextForFindings — the universal in-process scanner (no binaries)
     const env = f.find((x) => x.rule === 'env-secret');
     expect(env).toBeTruthy();
     expect(env!.line).toBe(2);                     // 1-based line of the secret key
-    expect(env!.preview.endsWith('IUeQ')).toBe(true);   // last-4 visible
-    expect(env!.preview).not.toContain('9oVgPkNZ');     // raw secret never leaks
+    expect(env!.preview.endsWith('EF12')).toBe(true);   // last-4 visible
+    expect(env!.preview).not.toContain('Fake0Secret');  // raw secret never leaks
     expect(f.some((x) => x.rule === 'aws-access-token' && x.line === 3)).toBe(true);
   });
 
