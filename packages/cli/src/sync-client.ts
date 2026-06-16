@@ -36,6 +36,7 @@ import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { redactSecrets, scanTextForFindings } from '@chat-recall/engine/core/secret-redactor.js';
 import { scanFileForSecrets, isSecretScannerAvailable } from '@chat-recall/engine/core/secret-scanner.js';
+import { isInternalToolPrompt } from '@chat-recall/engine/core/internal-prompts.js';
 import { loadSettings, saveSettings } from '@chat-recall/engine/core/settings.js';
 import { getDataDir } from '@chat-recall/engine/core/paths.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
@@ -540,6 +541,14 @@ export async function buildConversationSync(
 
   const textMessages = transcript.messages.filter((m) => m.role !== 'summary' && m.content?.trim());
   if (textMessages.length === 0 && !transcript.messages.some((m) => m.toolCalls?.length)) return null;
+
+  // Skip chat-recall's OWN LLM invocations that the AI CLI logged as sessions —
+  // summary generation and health-check pings. On this machine ~half of all
+  // "sessions" were these internal calls; indexing them buries the real
+  // conversation list. Anchored to the first user message so a real chat that
+  // merely quotes the prompt is not dropped.
+  const firstUser = textMessages.find((m) => m.role === 'user');
+  if (isInternalToolPrompt(firstUser?.content)) return null;
 
   // Trim payload bodies (tool inputs/results, thinking — raw replay never
   // ships), then redact every string. Counts are preserved exactly.
