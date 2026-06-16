@@ -2,7 +2,7 @@
 
 > Search, browse, and resume past AI coding sessions across Claude Code, Gemini CLI, and OpenCode — and let the agent search its own history via MCP.
 
-`chat-recall` indexes the JSONL/JSON/SQLite transcripts your AI tools already write to disk, gives you a web UI to browse them, and exposes them to Claude Code through **42 MCP tools** so the agent can recall its own past work without you copy-pasting context. Local-first by default, no account, no upload.
+`chat-recall` is a **CLI** that indexes the transcripts your AI tools already write to disk, redacts secrets, and syncs them to a **chat-recall server**. The server runs **either locally with Postgres (Docker Compose) or as the hosted SaaS** — it gives you a web UI to browse everything and exposes it to Claude Code through **42 MCP tools** so the agent can recall its own past work without you copy-pasting context. There is no local store and no offline mode: the CLI always talks to a server.
 
 ## Four things it actually does
 
@@ -11,30 +11,37 @@
 3. **Warns before redoing work.** A `UserPromptSubmit` hook fires on every prompt you type, runs a quick search for similar past sessions, and injects a brief "you've worked on this before in session X" notice into the agent's context. Pair with the bundled **codeindex** companion (see below) to also warn when the new code you're about to write looks like code that already exists.
 4. **Temporal knowledge graph.** Decisions and tool/library mentions become entity-relationship triples with `valid_from`/`valid_to` windows, so you (and the agent) can ask "what did we decide about X in March, and is it still true?".
 
-## Quickstart (no API keys, no Ollama)
+## Quickstart
 
+chat-recall is a **collector + server**. Stand up a server, point the collector at it, sync.
+
+**Self-host (Docker Compose — Postgres-backed server on `:8080`):**
 ```bash
-git clone <repo-url>
-cd chat-recall
-./install.sh                  # builds the monorepo, links the `chat-recall` binary, runs init
-chat-recall search "auth bug" # try it
+git clone <repo-url> && cd chat-recall
+docker compose up -d                        # server + Postgres
+./install.sh                                # builds the monorepo, links the `chat-recall` collector
+chat-recall login http://localhost:8080     # (add --token <ct_…> if AUTH_PROVIDER isn't `none`)
+chat-recall sync                            # ship your sessions
+chat-recall search "auth bug"               # query the server
 ```
 
-That works right now. **No Ollama, no Gemini key, no Claude key.** SQLite FTS5 is the default search backend; vector search and summaries are upgrades, not requirements. `chat-recall init` also registers the MCP server in `~/.mcp.json` automatically.
+**Hosted SaaS:** skip Docker — `chat-recall login https://chat-recall.hotmun.com`, then `sync`.
+
+No API keys required: the server's Postgres FTS is the default search backend; vector search and summaries are upgrades, not requirements. `chat-recall init` also registers the MCP server in `~/.mcp.json` automatically.
 
 ### Optional: vector search
 
 ```bash
 ollama pull nomic-embed-text
-chat-recall index --force     # this time chunks are embedded into LanceDB
+chat-recall sync --full       # re-ships; the server embeds chunks into pgvector
 ```
 
-…or set `EMBEDDING_PROVIDER=gemini` with `GEMINI_API_KEY` if you'd rather use a hosted embedder. Without either, search falls back to FTS5 — same results surface, slightly less semantic.
+…or set `EMBEDDING_PROVIDER=gemini` with `GEMINI_API_KEY` if you'd rather use a hosted embedder. Without either, search falls back to Postgres FTS — same results surface, slightly less semantic.
 
-### Optional: web dashboard (server-side, separate from the local binary)
+### Optional: web dashboard
 
-The React dashboard belongs to the server product (SaaS or self-host docker
-compose) — the local binary itself has no UI. For dashboard development:
+The React dashboard is part of the **server** (SaaS or self-host docker
+compose) — the CLI itself has no UI. For dashboard development:
 
 ```bash
 npm run web:install                 # install web deps
@@ -43,8 +50,9 @@ npm run web:dev                     # API on :5000, UI on :5173
 
 ### Self-host the server (docker compose)
 
-One container, SQLite storage in a named volume — see the quick start at the
-top of `docker-compose.yml` (set `ADMIN_KEY`, mint a device token, then
+Two containers — the server plus a bundled **Postgres** (the compose is
+Postgres-only; data bind-mounts to `${PG_DATA_DIR}`). See the quick start at
+the top of `docker-compose.yml` (set `ADMIN_KEY`, mint a device token, then
 `chat-recall login <url> --token <ct_…>` from each machine).
 
 Bring-your-own-Postgres is supported by the engine (it's how the hosted SaaS
@@ -148,12 +156,12 @@ When the codeindex companion is installed, the agent *also* gets 16 code-level t
 
 ## Search architecture
 
-Two backends, FTS5 is the default:
+Search runs **on the server**. Two backends, Postgres FTS is the default:
 
-- **FTS5 (SQLite)** — zero external dependencies. Keyword search with BM25 ranking. Always available.
-- **Vector (LanceDB)** — opt-in. 768-dim embeddings via Ollama (`nomic-embed-text`) or Gemini (`text-embedding-004`).
+- **Postgres FTS** — zero extra setup. Keyword search with ranking. Always available.
+- **Vector (pgvector)** — opt-in. 768-dim embeddings via Ollama (`nomic-embed-text`) or Gemini (`text-embedding-004`).
 
-Both indexes are maintained in parallel when an embedder is configured. If neither is, every search tool transparently falls back to FTS5.
+The CLI ships redacted chunks to the server, which indexes them. If no embedder is configured, every search tool transparently falls back to FTS.
 
 ## Cost tracking
 
@@ -169,22 +177,21 @@ Builds a small bundle for an AI session: optional identity blurb, the top 10 chu
 
 ## Data locations
 
+The **CLI** keeps almost nothing locally — just what it needs to reach the server:
+
 | Path | What |
 |------|------|
-| `~/.chat-recall/index/lancedb/` | Vector index (optional) |
-| `~/.chat-recall/index/metadata.db` | SQLite metadata + FTS5 + content cache |
-| `~/.chat-recall/index/knowledge_graph.db` | Temporal KG |
-| `~/.chat-recall/index/wal/write_log.jsonl` | Write-ahead audit log (mode 0600, secrets redacted) |
-| `~/.chat-recall/index/diary/<agent>/` | Per-agent diary entries |
+| `~/.chat-recall/credentials.json` | Server target(s) + device token (mode 0600) |
+| `~/.chat-recall/sync-ledger.json` | Per-server sync watermark (what's already shipped) |
 | `~/.chat-recall/hooks/` | Installed save hook (after `install-hooks`) |
 
-Wipe everything with `rm -rf ~/.chat-recall/index ~/.chat-recall/hooks` and a re-`index`.
+All indexed content — chunks, FTS, vectors, knowledge graph, secret findings, diary — lives **on the server** (Postgres for self-host and SaaS). Reset it by wiping the server's Postgres data, not anything under `~/.chat-recall`.
 
 ## Privacy
 
-By default everything stays on your machine. The only point at which session text leaves your laptop is summary generation **if you opt into the `claude` or `gemini` (API-based) summary provider** — and even then only the summary prompt + a snippet, not full transcripts. The default summary provider is `ollama` (local) or none (no summaries).
+Your sessions sync to a chat-recall server — either one **you self-host** (your own box, your own Postgres) or the **SaaS**. Before anything leaves the CLI it is **redacted**: secrets are masked client-side, so the server never receives raw credentials. Self-hosting keeps all data on infrastructure you control; the SaaS is the hosted alternative.
 
-The web UI binds to localhost. There is no telemetry, no account, no upload. There is also currently no built-in sync — your index lives in `~/.chat-recall/index/`; back it up however you like.
+No telemetry. Your data lives in **your** server's Postgres — back that up however you like. On the SaaS it lives in the hosted Postgres; self-host if you'd rather keep it entirely on your own infrastructure.
 
 ## Architecture
 
