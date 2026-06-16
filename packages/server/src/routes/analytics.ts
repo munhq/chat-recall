@@ -504,6 +504,20 @@ router.get('/', async (req, res) => {
         totalOutputTokens: totalOutput,
         totalCacheReadTokens: totalCacheRead,
         totalDurationMin: Math.round(totalDuration / 60000),
+        // Hours per week over the last 7 days of session activity.
+        hoursPerWeek: (() => {
+          const since = Date.now() - 7 * 24 * 60 * 60 * 1000;
+          let weekMs = 0;
+          for (const item of allItems) {
+            if (item.mtime >= since) {
+              try {
+                const extra = JSON.parse(item.extra_json || '{}');
+                weekMs += (extra.durationMs as number) || 0;
+              } catch { /* ignore */ }
+            }
+          }
+          return Math.round((weekMs / 3600000) * 10) / 10;
+        })(),
         // Average is across sessions that DID have a known model price; otherwise
         // a flood of Gemini/Ollama sessions would drag the avg toward zero.
         avgCostPerSession: (() => {

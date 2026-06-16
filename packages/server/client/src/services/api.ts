@@ -355,6 +355,22 @@ export async function getStatus(): Promise<IndexStats> {
   return await res.json();
 }
 
+export interface SyncStatus {
+  sessions: number;
+  rawArchived: number;
+  rawBytes: number;
+  newestSessionAgeMs: number | null;
+  sourceTypes: Record<string, number>;
+}
+
+export async function getSyncStatus(): Promise<SyncStatus> {
+  const res = await fetchWithTimeout(`${API_BASE}/status/sync`);
+  if (!res.ok) {
+    throw new Error(`Failed to get sync status: ${res.statusText}`);
+  }
+  return await res.json();
+}
+
 export function subscribeToStatus(
   onUpdate: (stats: IndexStats) => void,
   onError?: (error: Error) => void
@@ -389,6 +405,7 @@ export interface AnalyticsData {
     totalOutputTokens: number;
     totalCacheReadTokens: number;
     totalDurationMin: number;
+    hoursPerWeek: number;
     avgCostPerSession: number;
     avgDurationMin: number;
     sessionsWithoutPricing: number;
@@ -803,6 +820,7 @@ export interface SyncSettings {
   endpoint?: string;
   tokenRef?: string;
   upload: {
+    raw?: boolean;
     findings: boolean;
     sessionMeta: boolean;
     dismissals: boolean;
@@ -1494,6 +1512,30 @@ export interface SecretsSummary {
   totals: Array<{ detector: string; findings: number; sessions: number }>;
   topRules: Array<{ detector: string; rule: string; n: number }>;
   sessionsWithFindings: number;
+  total: number;
+  verified: number;
+  actionRequired: number;
+  distinct: number;
+}
+
+export interface DistinctSecretsResponse {
+  secrets: Array<{
+    preview: string;
+    rules: Array<{ detector: string; rule: string }>;
+    detectors: string[];
+    sessions: Array<{ sessionId: string; project: string; lines: number[] }>;
+    sessionCount: number;
+    occurrences: number;
+    verified?: boolean | null;
+  }>;
+  dismissedCount: number;
+}
+
+export async function getDistinctSecrets(includeDismissed = false): Promise<DistinctSecretsResponse> {
+  const qp = includeDismissed ? '?include_dismissed=true' : '';
+  const res = await fetchWithTimeout(`${API_BASE}/secrets/distinct${qp}`, {}, 15000);
+  if (!res.ok) throw new Error(`Failed to load distinct secrets: ${res.statusText}`);
+  return await res.json();
 }
 export interface FlaggedSession {
   sessionId: string;

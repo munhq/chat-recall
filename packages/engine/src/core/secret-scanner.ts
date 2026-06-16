@@ -140,6 +140,29 @@ export interface ScanFinding { detector: string; rule: string; line: number; pre
  * the sync envelope; the server persists them via `replaceSecretFindings`.
  * `scanSessionForSecrets` below is the store-writing wrapper for local/in-process use.
  */
+/**
+ * Apply tenant-configurable regex rules directly to text. Used both by the
+ * binary scanner (gitleaks/trufflehog) path and by callers that already have
+ * raw text in memory and want in-process tenant-rule matching.
+ */
+export function scanTenantRules(text: string, tenantRules: Array<{ name: string; regex: string }>): ScanFinding[] {
+  const out: ScanFinding[] = [];
+  const lines = text.split('\n');
+  for (const r of tenantRules) {
+    let re: RegExp;
+    try { re = new RegExp(r.regex, 'g'); } catch { continue; }
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(line)) !== null) {
+        if (!looksLikeUuid(m[0])) out.push({ detector: 'tenant', rule: r.name, line: i + 1, preview: mask(m[0]) });
+        if (re.lastIndex === m.index) re.lastIndex++; // guard zero-width
+      }
+    }
+  }
+  return out;
+}
+
 export function scanFileForSecrets(
   filePath: string,
   opts: { verifyOnly?: boolean; tenantRules?: Array<{ name: string; regex: string }> } = {},
@@ -150,18 +173,10 @@ export function scanFileForSecrets(
   const out: ScanFinding[] = [];
   if (gitleaks) for (const f of runGitleaks(gitleaks, filePath)) out.push({ detector: 'gitleaks', ...f });
   if (trufflehog) for (const f of runTrufflehog(trufflehog, filePath, { verifyOnly: opts.verifyOnly })) out.push({ detector: 'trufflehog', ...f });
-  for (const r of opts.tenantRules ?? []) {
-    let re: RegExp;
-    try { re = new RegExp(r.regex, 'g'); } catch { continue; }
+  if (opts.tenantRules && opts.tenantRules.length > 0) {
     try {
-      const lines = readFileSync(filePath, 'utf-8').split('\n');
-      for (let i = 0; i < lines.length; i++) {
-        let m: RegExpExecArray | null;
-        while ((m = re.exec(lines[i])) !== null) {
-          if (!looksLikeUuid(m[0])) out.push({ detector: 'tenant', rule: r.name, line: i + 1, preview: mask(m[0]) });
-          if (re.lastIndex === m.index) re.lastIndex++;
-        }
-      }
+      const text = readFileSync(filePath, 'utf-8');
+      out.push(...scanTenantRules(text, opts.tenantRules));
     } catch { /* unreadable */ }
   }
   return out;

@@ -35,7 +35,7 @@ import { readFileSync, writeFileSync, mkdirSync, chmodSync, unlinkSync } from 'n
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { redactSecrets, scanTextForFindings } from '@chat-recall/engine/core/secret-redactor.js';
-import { scanFileForSecrets, isSecretScannerAvailable } from '@chat-recall/engine/core/secret-scanner.js';
+import { scanFileForSecrets, scanTenantRules, isSecretScannerAvailable } from '@chat-recall/engine/core/secret-scanner.js';
 import { isInternalToolPrompt } from '@chat-recall/engine/core/internal-prompts.js';
 import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js';
 import { loadSettings, saveSettings } from '@chat-recall/engine/core/settings.js';
@@ -50,7 +50,7 @@ import { parseSessionFile, readCwdFromJsonl } from '@chat-recall/engine/parsers/
 import { resolveProjectId } from '@chat-recall/engine/core/project-resolver.js';
 import { extractEntities } from '@chat-recall/engine/core/entity-extractor.js';
 import { buildSourceRegistry } from '@chat-recall/engine/parsers/all-sources.js';
-import { getSyncedMtimes, markSynced } from './sync-ledger.js';
+import { getSyncedMtimes, markSynced, getLedgerData, persistLedgerData } from './sync-ledger.js';
 import '@chat-recall/engine/core/backends/index.js'; // register the tool backends
 
 // Lives under the data dir so CHAT_RECALL_DATA_DIR isolates credentials the
@@ -88,6 +88,60 @@ export function loadAllCredentials(): Credentials[] {
     if (parsed?.serverUrl) return [{ serverUrl: parsed.serverUrl, token: parsed.token || '' }]; // legacy single
   } catch { /* none */ }
   return [];
+}
+
+interface TenantSecurityConfig {
+  tenantRules: Array<{ name: string; regex: string }>;
+  verifySecrets: boolean;
+}
+
+// In-memory cache for tenant security configuration. Fetched at the start of
+// each `sync` call, but for the watch daemon we refresh only every 5 minutes
+// so repeated incremental syncs don't hammer the server.
+const _securityConfigCache = new Map<string, { fetchedAt: number; config: TenantSecurityConfig }>();
+const SECURITY_CONFIG_TTL_MS = 5 * 60 * 1000;
+
+async function fetchTenantSecurityConfig(cred: Credentials): Promise<TenantSecurityConfig> {
+  const base = cred.serverUrl.replace(/\/+$/, '');
+  const cached = _securityConfigCache.get(base);
+  if (cached && Date.now() - cached.fetchedAt < SECURITY_CONFIG_TTL_MS) return cached.config;
+
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (cred.token) headers.authorization = `Bearer ${cred.token}`;
+
+  try {
+    const [rulesRes, settingsRes] = await Promise.all([
+      fetch(`${base}/api/secrets/rules`, { headers }),
+      fetch(`${base}/api/teams/security-config`, { headers }).catch(() => null),
+    ]);
+
+    let tenantRules: Array<{ name: string; regex: string }> = [];
+    if (rulesRes.ok) {
+      const body = await rulesRes.json().catch(() => ({})) as { rules?: Array<{ name: string; regex: string; enabled?: boolean }> };
+      tenantRules = (body.rules || []).filter((r) => r.enabled !== false);
+    }
+
+    // Default verification ON. The server endpoint may not exist yet (older
+    // servers), so we fail open to "verified enabled" — this is the product default.
+    let verifySecrets = true;
+    if (settingsRes?.ok) {
+      const body = await settingsRes.json().catch(() => ({})) as { verifySecrets?: boolean };
+      if (typeof body.verifySecrets === 'boolean') verifySecrets = body.verifySecrets;
+    }
+
+    const config: TenantSecurityConfig = { tenantRules, verifySecrets };
+    _securityConfigCache.set(base, { fetchedAt: Date.now(), config });
+    return config;
+  } catch {
+    // If the server is unreachable or the endpoints don't exist, fall back to
+    // no tenant rules and verification enabled. This keeps the collector
+    // working during transient outages and with older server images.
+    return { tenantRules: [], verifySecrets: true };
+  }
+}
+
+export function _resetTenantSecurityConfigCache(): void {
+  _securityConfigCache.clear();
 }
 
 /** Legacy single-target accessor — first target. */
@@ -174,12 +228,11 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
   const excludeTools = new Set(sync?.excludeTools ?? []);
   const excludeProjects = sync?.excludeProjects ?? [];
   // Upload category toggles (settings.sync.upload, all default true).
-  // Secret findings / dismissals / custom-rules are no longer shipped by the
-  // collector (the server owns secret-scanning state), so those toggles are
-  // gone. Redaction of shipped text still always runs.
+  // Redaction of shipped text always runs regardless of toggles.
   const upload = {
     raw: sync?.upload?.raw !== false,
     sessionMeta: sync?.upload?.sessionMeta !== false,
+    findings: sync?.upload?.findings !== false,
   };
   // Cleartext paths: explicit flag wins, else the persistent setting
   // (sync.pathsCleartext — what the watch daemon uses).
@@ -194,18 +247,25 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
   // Version handshake: refuse loudly instead of silently degrading. An old
   // server ignores payload fields it doesn't know — which looks like
   // success and produces gutted data (lived experience, June 2026).
-  const MIN_SERVER_API = 2;
-  try {
-    const caps = await fetch(`${cred.serverUrl.replace(/\/$/, '')}/api/capabilities`).then((r) => r.json()) as { apiVersion?: number };
-    if ((caps.apiVersion ?? 0) < MIN_SERVER_API) {
-      throw new Error(`server too old: apiVersion ${caps.apiVersion ?? 'none'} < required ${MIN_SERVER_API} — update the server image before syncing`);
-    }
-  } catch (e) {
-    if (e instanceof Error && e.message.startsWith('server too old')) throw e;
-    throw new Error(`cannot verify server version (${e instanceof Error ? e.message : e}) — refusing to sync blind`);
+const MIN_SERVER_API = 2;
+try {
+  const caps = await fetch(`${cred.serverUrl.replace(/\/$/, '')}/api/capabilities`).then((r) => r.json()) as { apiVersion?: number };
+  if ((caps.apiVersion ?? 0) < MIN_SERVER_API) {
+    throw new Error(`server too old: apiVersion ${caps.apiVersion ?? 'none'} < required ${MIN_SERVER_API} — update the server image before syncing`);
   }
+} catch (e) {
+  if (e instanceof Error && e.message.startsWith('server too old')) throw e;
+  throw new Error(`cannot verify server version (${e instanceof Error ? e.message : e}) — refusing to sync blind`);
+}
 
-  const refs = listAvailableBackends().flatMap((b) => {
+// Fetch tenant-specific secret-scan configuration from the server. Rules are
+// configured in the dashboard and must be applied to raw session text on the
+// client (the server never sees unredacted secrets). Verification live-checks
+// matched keys with their issuers (e.g. AWS, GitHub) — on by default, but a
+// tenant admin can disable it.
+const { tenantRules, verifySecrets } = await fetchTenantSecurityConfig(cred);
+
+const refs = listAvailableBackends().flatMap((b) => {
     try { return b.listSessions({ sinceMs: opts.useLedger ? undefined : opts.sinceMs }); } catch { return []; }
   });
 
@@ -267,6 +327,13 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
     }
     if (throttleMs > 0) await sleep(throttleMs);
   };
+  // Track every local session id we see this sync. After the walk, any
+  // session id recorded in the per-server ledger but missing locally is a
+  // deletion → ship a tombstone so the server removes it. This only covers
+  // sessions this device previously synced; deletions on other devices are
+  // handled by their own collectors.
+  const localSessionIds = new Set<string>();
+
   // `flatten`: each add() is a GROUP of rows that must land in the same
   // POST (e.g. one session's findings — the server replaces a session's
   // findings wholesale, so splitting a session across two batches would
@@ -313,7 +380,9 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
   // Scanning lights up automatically when a detector binary (gitleaks/
   // trufflehog) is on PATH. Resolved once (each check spawns `which`).
   // CHAT_RECALL_SCAN_SECRETS=0 opts out (e.g. to keep a huge backfill fast).
-  const scanSecrets = isSecretScannerAvailable() && process.env.CHAT_RECALL_SCAN_SECRETS !== '0';
+  // upload.findings=false also disables secret scanning/shipping.
+  const scanSecrets = isSecretScannerAvailable() && upload.findings && process.env.CHAT_RECALL_SCAN_SECRETS !== '0';
+  const verifySecretsScan = verifySecrets;
 
   // ── Live KG accumulator. Triples are extracted on the spot from each
   //    item's redacted text (no local knowledge-graph DB is read). Dedupe by
@@ -339,6 +408,7 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
   let skipped = 0, redactions = 0, walked = 0;
   let scanMs = 0, scanned = 0; // secret-scan metrics
   for (const ref of refs.slice(0, opts.limit ?? refs.length)) {
+    localSessionIds.add(ref.prefixedId);
     if (excludeTools.has(ref.toolId as any)) { skipped++; continue; }
     if (excluded(ref.projectPath)) { skipped++; continue; }
     // Ledger mode: this exact session at this exact version already acked
@@ -349,7 +419,7 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
     // no local content cache is read or warmed. What ships is exactly what
     // the local dashboard would render for the same file.
     const mtime = Math.floor(ref.mtime) || 0;
-    const built = await buildConversationSync(ref, mtime, { mapPath, includeRaw: upload.raw, includeMeta: upload.sessionMeta, scanSecrets });
+    const built = await buildConversationSync(ref, mtime, { mapPath, includeRaw: upload.raw, includeMeta: upload.sessionMeta, scanSecrets, verifySecrets: verifySecretsScan, tenantRules });
     if (!built) { skipped++; continue; }
     redactions += built.redactions;
 
@@ -488,6 +558,27 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
   await kgEntityBatch.drain();
   await kgTripleBatch.drain();
   await findingsBatch.drain();
+
+  // ── Tombstones for sessions this device previously synced but that no
+  //    longer exist locally (deleted transcript file, cleared cache, etc).
+  //    We only tombstone sessions we have a ledger record for — never data
+  //    from other devices.
+  if (ledger) {
+    const tombstones: Array<{ session_id: string; deleted_at: number }> = [];
+    for (const [sessionId] of ledger) {
+      if (!localSessionIds.has(sessionId)) {
+        tombstones.push({ session_id: sessionId, deleted_at: Date.now() });
+      }
+    }
+    if (tombstones.length > 0) {
+      await post({ tombstones });
+      // Remove tombstoned ids from the ledger so we don't keep shipping them.
+      const data = getLedgerData(base);
+      for (const t of tombstones) delete data[t.session_id];
+      persistLedgerData(base, data);
+    }
+  }
+
   if (opts.prune) await post({ prune_empty_sessions: true });
 
   return {
@@ -516,8 +607,8 @@ export interface BuiltConversation {
   projectPath: string;
   redactions: number;
   /** Masked secret findings from the raw session (built-in regex always, plus
-   *  gitleaks/trufflehog when installed), shipped to the server's secret_findings. */
-  findings: Array<{ session_id: string; detector: string; rule: string; line: number; preview: string }>;
+   *  gitleaks/trufflehog/tenant rules when installed), shipped to the server's secret_findings. */
+  findings: Array<{ session_id: string; detector: string; rule: string; line: number; preview: string; verified_at?: string | null }>;
   /** Wall-clock ms spent scanning this session (0 if nothing to scan). */
   scanMs: number;
 }
@@ -525,7 +616,7 @@ export interface BuiltConversation {
 export async function buildConversationSync(
   ref: SessionRef,
   mtime: number,
-  opts: { mapPath?: (p: string) => string; includeRaw?: boolean; includeMeta?: boolean; scanSecrets?: boolean } = {},
+  opts: { mapPath?: (p: string) => string; includeRaw?: boolean; includeMeta?: boolean; scanSecrets?: boolean; verifySecrets?: boolean; tenantRules?: Array<{ name: string; regex: string }> } = {},
 ): Promise<BuiltConversation | null> {
   const mapPath = opts.mapPath ?? ((p: string) => p);
   const includeRaw = opts.includeRaw !== false;
@@ -611,6 +702,8 @@ export async function buildConversationSync(
   //   1. BUILT-IN regex engine (same rules as the redactor) — EVERY user, zero
   //      deps. This is what gives vanilla SaaS users real secret detection.
   //   2. gitleaks/trufflehog — OPTIONAL deeper engines, only when installed.
+  //   3. TENANT rules configured in the dashboard — fetched from the server and
+  //      applied to the raw text on the client so unredacted secrets stay local.
   const findings: BuiltConversation['findings'] = [];
   let scanMs = 0;
   if (container) {
@@ -627,11 +720,20 @@ export async function buildConversationSync(
       try {
         tmp = join(tmpdir(), `cr-scan-${ref.prefixedId.replace(/[^A-Za-z0-9_-]/g, '')}-${mtime}.txt`);
         writeFileSync(tmp, rawText);
-        for (const f of scanFileForSecrets(tmp)) {
-          findings.push({ session_id: ref.prefixedId, detector: f.detector, rule: f.rule, line: f.line, preview: f.preview });
+        for (const f of scanFileForSecrets(tmp, { verifyOnly: opts.verifySecrets, tenantRules: opts.tenantRules })) {
+          const verifiedAt = f.verified ? new Date().toISOString() : null;
+          findings.push({ session_id: ref.prefixedId, detector: f.detector, rule: f.rule, line: f.line, preview: f.preview, verified_at: verifiedAt });
         }
       } catch { /* detector error — never block the sync */ }
       finally { if (tmp) { try { unlinkSync(tmp); } catch { /* already gone */ } } }
+    } else if (opts.tenantRules && opts.tenantRules.length > 0) {
+      // Tenant rules run even when gitleaks/trufflehog are absent — they are
+      // pure regex and complement the built-in scanner.
+      try {
+        for (const f of scanTenantRules(rawText, opts.tenantRules)) {
+          findings.push({ session_id: ref.prefixedId, detector: f.detector, rule: f.rule, line: f.line, preview: f.preview });
+        }
+      } catch { /* best-effort */ }
     }
     scanMs = performance.now() - t0;
   }

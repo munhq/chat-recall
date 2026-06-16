@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Icon, Chip, MetricCard, Card, Avatar, IconButton } from './primitives';
-import { getAnalytics, getPatterns, type AnalyticsData, type PatternsResponse } from '../services/api';
+import { getAnalytics, getPatterns, getSyncStatus, getSecretsSummary, type AnalyticsData, type PatternsResponse, type SyncStatus, type SecretsSummary } from '../services/api';
 
 type InsightsToolFilter = 'all' | 'claude' | 'gemini' | 'opencode' | 'codex';
 
@@ -53,6 +53,8 @@ interface DashboardProps {
 export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter: toolFilterProp = 'all' }: DashboardProps = {}) {
   const [data, setData] = useState<AnalyticsData | null>(null);
   const [patterns, setPatterns] = useState<PatternsResponse | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
+  const [securitySummary, setSecuritySummary] = useState<SecretsSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Sidebar drives the source filter — coerce unknown strings to 'all'.
@@ -65,8 +67,9 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
     setError(null);
     getAnalytics(tool)
       .then(setData)
-      .catch((err) => setError(err.message || 'Failed to load analytics'))
-      .finally(() => setLoading(false));
+      .catch((err) => setError(err.message || 'Failed to load analytics'));
+    getSyncStatus().then(setSyncStatus).catch(() => { /* tolerate */ });
+    getSecretsSummary().then(setSecuritySummary).catch(() => { /* tolerate */ });
     // Patterns are global (not yet tool-filterable); load once on mount.
     if (tool === 'all') {
       getPatterns().then(setPatterns).catch(() => { /* tolerate */ });
@@ -256,6 +259,29 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
             sub="Saved vs. re-uploading"
             tone="savings"
             icon="zap"
+          />
+          <MetricCard
+            label="Hours this week"
+            value={String(summary.hoursPerWeek)}
+            sub="Active AI session time"
+            icon="clock"
+          />
+          <MetricCard
+            label="Synced sessions"
+            value={syncStatus ? String(syncStatus.sessions) : '—'}
+            sub={syncStatus?.newestSessionAgeMs != null
+              ? `newest ${Math.max(0, Math.round(syncStatus.newestSessionAgeMs / 60000))} min ago`
+              : 'Server coverage'}
+            icon="cloud"
+          />
+          <MetricCard
+            label="Security findings"
+            value={securitySummary ? String(securitySummary.actionRequired) : '—'}
+            sub={securitySummary
+              ? `${securitySummary.verified} verified live · ${securitySummary.distinct} distinct`
+              : 'No scan data yet'}
+            tone={securitySummary && securitySummary.actionRequired > 0 ? 'err' : 'ok'}
+            icon="shield"
           />
         </div>
 

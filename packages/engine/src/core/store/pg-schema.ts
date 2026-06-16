@@ -212,6 +212,16 @@ CREATE TABLE IF NOT EXISTS entitlements (
   updated_at             BIGINT
 );
 
+-- Per-tenant product settings (key/value, controlled from the dashboard).
+CREATE TABLE IF NOT EXISTS tenant_settings (
+  tenant       TEXT NOT NULL,
+  key          TEXT NOT NULL,
+  value        TEXT NOT NULL,
+  updated_at   BIGINT NOT NULL,
+  PRIMARY KEY (tenant, key)
+);
+-- Not RLS-walled: read by the sync client before tenant context is established.
+
 -- MetadataCache: per-session compute cache + summary-error tracking.
 CREATE TABLE IF NOT EXISTS summary_errors (
   tenant          TEXT NOT NULL DEFAULT 'default',
