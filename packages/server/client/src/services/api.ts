@@ -48,6 +48,9 @@ export interface Subagent {
 export interface SessionInfo {
   sessionId: string;
   projectPath: string;
+  /** Logical cleartext project id (e.g. `git:github.com/me/repo`). Preferred
+   *  over projectPath for grouping/display — projectPath can be a privacy hash. */
+  projectId?: string;
   created: string;
   modified: string;
   filePath: string;
