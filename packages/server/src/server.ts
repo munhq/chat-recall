@@ -18,6 +18,7 @@ import toolkitRouter from './routes/toolkit.js';
 import secretsRouter from './routes/secrets.js';
 import { tenantAuth } from './middleware/auth.js';
 import { apiLimiter } from './middleware/rate-limit.js';
+import metricsRouter from './routes/metrics.js';
 import projectsRouter from './routes/projects.js';
 import kgRouter from './routes/kg.js';
 import kvRouter from './routes/kv.js';
@@ -74,6 +75,11 @@ app.use((req, res, next) => {
 // batches + the /api/capabilities probe — see middleware/rate-limit.ts).
 // Credential-minting endpoints get a tighter limiter applied at their routes.
 app.use('/api', apiLimiter);
+
+// Prometheus metrics — top-level, before tenantAuth, so a cluster scraper hits
+// it without a tenant context (optionally gated by METRICS_TOKEN). Mounted
+// before the /api rate-limiter too.
+app.use('/metrics', metricsRouter);
 
 // Open metadata: lets the client decide which views to render before auth.
 app.get('/api/capabilities', (_req, res) => res.json(capabilities()));
