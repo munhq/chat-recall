@@ -17,6 +17,7 @@ import editsRouter from './routes/edits.js';
 import toolkitRouter from './routes/toolkit.js';
 import secretsRouter from './routes/secrets.js';
 import { tenantAuth } from './middleware/auth.js';
+import { apiLimiter } from './middleware/rate-limit.js';
 import projectsRouter from './routes/projects.js';
 import kgRouter from './routes/kg.js';
 import kvRouter from './routes/kv.js';
@@ -33,6 +34,11 @@ import { generateMissingSummaries, serverSummaryConfig } from './services/summar
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '5000', 10);
+
+// Behind an ingress/Traefik/Cloudflare the client IP is in X-Forwarded-For.
+// Trust the first proxy hop so rate limiting keys on the real client, not the
+// proxy's single IP. (No proxy in local dev → harmless.)
+app.set('trust proxy', 1);
 
 // Middleware
 app.use(cors({
@@ -63,6 +69,11 @@ app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   next();
 });
+
+// Rate limiting: generous per-IP ceiling on the API surface (skips /api/sync
+// batches + the /api/capabilities probe — see middleware/rate-limit.ts).
+// Credential-minting endpoints get a tighter limiter applied at their routes.
+app.use('/api', apiLimiter);
 
 // Open metadata: lets the client decide which views to render before auth.
 app.get('/api/capabilities', (_req, res) => res.json(capabilities()));
