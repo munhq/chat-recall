@@ -55,7 +55,7 @@ function bearer(req: Request): string | null {
 let _jwks: ReturnType<typeof import('jose').createRemoteJWKSet> | null = null;
 let _jwtVerify: typeof import('jose').jwtVerify | null = null;
 
-async function verifyKeycloakJwt(token: string): Promise<{ sub: string; email: string | null } | null> {
+async function verifyKeycloakJwt(token: string): Promise<{ sub: string; email: string | null; roles: string[] } | null> {
   const jwksUrl = process.env.OIDC_JWKS_URL;
   if (!jwksUrl) return null;
   if (!_jwks || !_jwtVerify) {
@@ -71,10 +71,49 @@ async function verifyKeycloakJwt(token: string): Promise<{ sub: string; email: s
     );
     if (typeof payload.sub !== 'string') return null;
     const email = (payload.email || payload.preferred_username) as string | undefined;
-    return { sub: payload.sub, email: email ?? null };
+    // Keycloak realm roles live in `realm_access.roles`. Used by requireAdmin
+    // to gate platform-operator endpoints on the `chat-recall-admin` role.
+    const realmAccess = payload.realm_access as { roles?: unknown } | undefined;
+    const roles = Array.isArray(realmAccess?.roles)
+      ? (realmAccess!.roles as unknown[]).filter((r): r is string => typeof r === 'string')
+      : [];
+    return { sub: payload.sub, email: email ?? null, roles };
   } catch {
     return null;
   }
+}
+
+/** Realm role that marks a Keycloak user as a chat-recall platform operator. */
+export const ADMIN_ROLE = 'chat-recall-admin';
+
+/**
+ * Gate a route for platform operators (cross-tenant, mounted BEFORE tenantAuth).
+ *
+ *   keycloak provider → the Bearer JWT must carry the `chat-recall-admin` realm
+ *                        role (`AUTH_DEV_USER=1` + `x-dev-admin: 1` is a local
+ *                        escape hatch, same pattern as requireUser()).
+ *   any other provider → x-admin-key must equal ADMIN_KEY. Unset ADMIN_KEY ⇒
+ *                        the endpoint is disabled (fail-closed), mirroring the
+ *                        team-bootstrap admin guard in routes/teams.ts.
+ *
+ * Returns true when allowed; otherwise sends 401/403 and returns false.
+ */
+export async function requireAdmin(req: Request, res: Response): Promise<boolean> {
+  if (provider() === 'keycloak') {
+    if (process.env.AUTH_DEV_USER === '1' && req.get('x-dev-admin') === '1') return true;
+    const tok = bearer(req);
+    const user = tok ? await verifyKeycloakJwt(tok) : null;
+    if (!user) { res.status(401).json({ error: 'login required' }); return false; }
+    if (!user.roles.includes(ADMIN_ROLE)) {
+      res.status(403).json({ error: `requires the '${ADMIN_ROLE}' realm role` });
+      return false;
+    }
+    return true;
+  }
+  const key = process.env.ADMIN_KEY;
+  if (!key) { res.status(403).json({ error: 'admin endpoints disabled (ADMIN_KEY not set)' }); return false; }
+  if ((req.get('x-admin-key') || '') !== key) { res.status(401).json({ error: 'admin key required' }); return false; }
+  return true;
 }
 
 /** Resolve a Keycloak user (JWT) for routes that need identity, not a tenant

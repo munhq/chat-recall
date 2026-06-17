@@ -19,6 +19,7 @@ import secretsRouter from './routes/secrets.js';
 import { tenantAuth } from './middleware/auth.js';
 import { apiLimiter } from './middleware/rate-limit.js';
 import metricsRouter from './routes/metrics.js';
+import adminRouter from './routes/admin.js';
 import projectsRouter from './routes/projects.js';
 import kgRouter from './routes/kg.js';
 import kvRouter from './routes/kv.js';
@@ -96,6 +97,12 @@ app.use('/api', teamsRouter);
 // (requireUser) and the webhook verifies a Stripe signature — both map to a
 // tenant themselves, so this mounts BEFORE tenantAuth like teams.
 app.use('/api/billing', billingRouter);
+
+// Admin surface (P1-10): cross-tenant operator metrics. Self-authenticating via
+// the Keycloak `chat-recall-admin` realm role (or the ADMIN_KEY header on
+// self-host), so it mounts BEFORE tenantAuth — it must not run inside one
+// tenant's RLS context.
+app.use('/api/admin', adminRouter);
 
 // Tenant auth: resolves req.tenant and makes it ambient for the request (see
 // middleware/auth.ts). Scoped to /api so /health + the static client stay open.
