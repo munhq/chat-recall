@@ -187,6 +187,32 @@ function behaviorSuite(label: string, setup: () => Promise<Harness>) {
       await store.clearSourceType('plan');
       expect((await store.listItems('plan', 10)).length).toBe(0);
     });
+
+    test('querySessionIndex project filter: bare term = substring, typed id = exact', async () => {
+      // A bare human term (CLI/MCP `recall_recent project_filter:repo`) must
+      // match project_path as a substring — exact `project_id=` matched nothing,
+      // which is why the filtered feed always came back empty.
+      await store.setItem({ ...item('s1', 'session'), projectPath: '/home/u/code/chat-recall' });
+      await store.setItem({ ...item('s2', 'session'), projectPath: '/home/u/code/inco-monorepo' });
+
+      const bare = await store.querySessionIndex({ limit: 10, offset: 0, projectIdFilter: 'chat-recall', includeUntracked: true });
+      expect(bare.total).toBe(1);
+      expect(bare.rows[0].id).toBe('s1');
+
+      // Case-insensitive substring.
+      const ci = await store.querySessionIndex({ limit: 10, offset: 0, projectIdFilter: 'INCO', includeUntracked: true });
+      expect(ci.total).toBe(1);
+      expect(ci.rows[0].id).toBe('s2');
+
+      // No match → genuinely empty (the MCP now says "no match", not "no data").
+      const none = await store.querySessionIndex({ limit: 10, offset: 0, projectIdFilter: 'does-not-exist', includeUntracked: true });
+      expect(none.total).toBe(0);
+
+      // A typed logical id (contains a scheme colon) stays an exact match, so the
+      // sidebar's `path:`/`git:`/`ws:` filters don't accidentally substring.
+      const typed = await store.querySessionIndex({ limit: 10, offset: 0, projectIdFilter: 'path:/no/such/id', includeUntracked: true });
+      expect(typed.total).toBe(0);
+    });
   });
 }
 

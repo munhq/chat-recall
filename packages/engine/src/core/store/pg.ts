@@ -142,7 +142,22 @@ export class PgStore implements StorageDriver {
   async querySessionIndex(opts: Args<'querySessionIndex'>[0]): Promise<Ret<'querySessionIndex'>> {
     const where: string[] = [`tenant=$1`, `source_type='session'`];
     const params: unknown[] = [this.t];
-    if (opts.projectIdFilter) { params.push(opts.projectIdFilter); where.push(`project_id=$${params.length}`); }
+    if (opts.projectIdFilter) {
+      // A *typed* logical id (sidebar) contains a scheme colon (`path:`, `git:`,
+      // `ws:`, `untracked:`) or is a privacy hash (`p_…`) → exact match. A bare
+      // human term from the CLI/MCP (`chat-recall`, `inco`) is a substring →
+      // match it against project_path AND project_id, case-insensitive. Exact
+      // `project_id=` on a bare term matched nothing, which is why
+      // `recall_recent project_filter:<name>` always came back empty and the MCP
+      // mislabeled it as "no sessions on the server yet". Mirrors PgVectorStore
+      // search's `-p` ILIKE behaviour so the feed and search agree.
+      const f = opts.projectIdFilter;
+      if (f.includes(':') || /^p_/.test(f)) {
+        params.push(f); where.push(`project_id=$${params.length}`);
+      } else {
+        params.push(`%${f}%`); where.push(`(project_path ILIKE $${params.length} OR project_id ILIKE $${params.length})`);
+      }
+    }
     else if (!opts.includeUntracked) {
       // Mirror MemoryStore.querySessionIndex: hide only the genuine noise
       // buckets (PR-bot worktrees, /tmp scratch). Blanket-hiding 'path:%'

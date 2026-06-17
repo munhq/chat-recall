@@ -1447,7 +1447,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           `/api/conversations/recent?${qs.toString()}`,
         );
         if (!remote.sessions?.length) {
-          return { content: [{ type: 'text', text: 'No sessions on the server yet — run `chat-recall sync` on your machines.' }] };
+          // Distinguish "filter matched nothing" from "no data at all" — the old
+          // single message claimed the server was empty even when a too-narrow
+          // project_filter was the real cause (1000+ sessions synced, 0 matched).
+          const empty = (params.project_filter || params.since_hours)
+            ? `No sessions match${params.project_filter ? ` project filter "${params.project_filter}"` : ''}${params.since_hours ? ` in the last ${params.since_hours}h` : ''}. The project filter is a case-insensitive substring of the project path — try a broader term, or drop it.`
+            : 'No sessions on the server yet — run `chat-recall sync` on your machines.';
+          return { content: [{ type: 'text', text: empty }] };
         }
         const lines = [`# Recent sessions (server — ${remote.total} total synced)\n`];
         for (let i = 0; i < remote.sessions.length; i++) {

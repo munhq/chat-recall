@@ -242,11 +242,16 @@ export class PgVectorStore implements VectorStore {
     return { vectorOk: this.vectorOk, lastError: this.lastError, embedderConfigured: !!this.embedder };
   }
   async getStats(..._a: Args<'getStats'>) {
-    if (!this.tableReady) return { totalChunks: 0, totalItems: 0, bySourceType: {}, indexPath: 'postgres', vectorOk: false, vectorError: this.lastError ?? undefined } as any;
-    const totalChunks = (await this.q(`SELECT COUNT(*)::int AS n FROM memory_vectors WHERE tenant=$1`, [this.t]))[0]?.n ?? 0;
-    const totalItems = (await this.q(`SELECT COUNT(DISTINCT item_id)::int AS n FROM memory_vectors WHERE tenant=$1`, [this.t]))[0]?.n ?? 0;
+    // `totalChunks`/`totalItems` count the FTS table `memory_chunks`, NOT
+    // `memory_vectors`. On the default deployment no embedder is configured, so
+    // `memory_vectors` is empty even though search works off thousands of FTS
+    // chunks — counting vectors made `/api/status` report `totalChunks: 0` while
+    // data was fully searchable. `vectorOk`/`vectorError` still describe the
+    // vector subsystem; the counts describe what's actually indexed and queryable.
+    const totalChunks = (await this.q(`SELECT COUNT(*)::int AS n FROM memory_chunks WHERE tenant=$1`, [this.t]))[0]?.n ?? 0;
+    const totalItems = (await this.q(`SELECT COUNT(DISTINCT item_id)::int AS n FROM memory_chunks WHERE tenant=$1`, [this.t]))[0]?.n ?? 0;
     const bySourceType: Record<string, { items: number; chunks: number }> = {};
-    for (const r of await this.q(`SELECT source_type, COUNT(*)::int AS chunks, COUNT(DISTINCT item_id)::int AS items FROM memory_vectors WHERE tenant=$1 GROUP BY source_type`, [this.t]))
+    for (const r of await this.q(`SELECT source_type, COUNT(*)::int AS chunks, COUNT(DISTINCT item_id)::int AS items FROM memory_chunks WHERE tenant=$1 GROUP BY source_type`, [this.t]))
       bySourceType[r.source_type] = { items: r.items, chunks: r.chunks };
     return { totalChunks, totalItems, bySourceType, indexPath: 'postgres', vectorOk: this.vectorOk, vectorError: this.lastError ?? undefined } as any;
   }
