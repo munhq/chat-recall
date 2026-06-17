@@ -907,8 +907,19 @@ export class MemoryStore {
     const params: (string | number)[] = [];
 
     if (opts.projectIdFilter) {
-      where.push('project_id = ?');
-      params.push(opts.projectIdFilter);
+      // Typed logical id (sidebar: `path:`/`git:`/`ws:`/`untracked:` or a `p_…`
+      // privacy hash) → exact match. Bare human term (CLI/MCP: `chat-recall`,
+      // `acme`) → substring against project_path AND project_id. Exact match on
+      // a bare term matched nothing, leaving `recall_recent`'s project filter
+      // silently empty. Mirror the pg store + search `-p` behaviour.
+      const f = opts.projectIdFilter;
+      if (f.includes(':') || /^p_/.test(f)) {
+        where.push('project_id = ?');
+        params.push(f);
+      } else {
+        where.push('(project_path LIKE ? OR project_id LIKE ?)');
+        params.push(`%${f}%`, `%${f}%`);
+      }
     } else if (!opts.includeUntracked) {
       // Default: hide only the genuine noise buckets — PR-bot worktrees and
       // /tmp scratch. Real local projects resolve to `path:<dir>` whenever git
