@@ -46,8 +46,74 @@ import {
 import { matchesPrefix } from '../utils/paths.js';
 import { buildETag, maybeSendNotModified } from '../util/cacheable.js';
 import { requireLocalMode, isServerMode } from '../util/mode.js';
+import { openPgPool, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
 
 const router = express.Router();
+
+/**
+ * Expand a partial session id (a unique prefix) to the full one. The recall
+ * tools (recall_context/summary/show/diff/...) all route through
+ * `/api/conversations/:id`, so resolving the prefix once here fixes every one:
+ * `recall_summary e3105b00` used to 404 because the lookup was exact-match only.
+ *
+ *   - exact id              → returned unchanged (one PK-indexed probe; the
+ *                             common case stays fast).
+ *   - unique prefix         → expanded to the full id.
+ *   - ambiguous prefix      → { ambiguous: [...candidates] } so the caller gets
+ *                             the choices instead of a silent wrong/empty hit.
+ *   - no match / no DB      → null (handlers fall through to their own 404).
+ *
+ * Postgres-direct + tenant-scoped (RLS-safe via tenantQuery), matching the
+ * pattern in routes/metrics.ts and routes/admin.ts. The server is Postgres-only;
+ * with no DATABASE_URL (unit tests) this is a no-op and the id passes through.
+ */
+export async function expandSessionId(
+  tenant: string,
+  id: string,
+): Promise<{ resolved: string } | { ambiguous: string[] } | null> {
+  if (!process.env.DATABASE_URL) return null;
+  const pool = await openPgPool(process.env.DATABASE_URL);
+  // Exact first — hits the (tenant,id) primary key, so a full id costs one probe.
+  const exact = await tenantQuery(
+    pool, tenant,
+    `SELECT 1 FROM memory_metadata WHERE tenant=$1 AND source_type='session' AND id=$2 LIMIT 1`,
+    [tenant, id],
+  );
+  if (exact.rows.length) return { resolved: id };
+  // Prefix fallback. `left(id, char_length($2)) = $2` is an exact character
+  // prefix (no LIKE wildcards — session ids contain `_`, which LIKE would treat
+  // as a wildcard). Shortest id first is the tightest match.
+  const rows = (await tenantQuery(
+    pool, tenant,
+    `SELECT id FROM memory_metadata
+       WHERE tenant=$1 AND source_type='session' AND left(id, char_length($2)) = $2
+       ORDER BY char_length(id) ASC
+       LIMIT 5`,
+    [tenant, id],
+  )).rows as Array<{ id: string }>;
+  if (rows.length === 0) return null;
+  if (rows.length === 1) return { resolved: rows[0].id };
+  return { ambiguous: rows.map((r) => r.id) };
+}
+
+// Rewrite a unique-prefix :id to its full session id before any handler runs.
+// Ambiguous prefixes short-circuit with the candidate list; everything else
+// (exact, unknown, no DB) passes through untouched.
+router.param('id', (req, res, next, id) => {
+  expandSessionId(req.tenant || 'default', String(id))
+    .then((r) => {
+      if (r && 'ambiguous' in r) {
+        res.status(409).json({
+          error: `ambiguous session id prefix "${id}" — matches ${r.ambiguous.length} sessions`,
+          candidates: r.ambiguous,
+        });
+        return;
+      }
+      if (r && 'resolved' in r && r.resolved !== id) req.params.id = r.resolved;
+      next();
+    })
+    .catch(() => next()); // never block a request on the expansion probe
+});
 
 // Genuinely FS-dependent endpoints only exist in local mode: live file scans
 // and raw transcript serving read the on-disk JSONL directly. Everything
