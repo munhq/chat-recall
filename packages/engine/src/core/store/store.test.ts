@@ -240,6 +240,33 @@ else describe.skip('StorageDriver behavior — postgres (DATABASE_URL not set)',
   });
 });
 
+// ── Postgres FTS: recency tiebreaker ──────────────────────────────
+// Near-equal relevance → newer session wins; clearly stronger relevance still
+// wins across bands (recency only breaks ties, never overrides a better match).
+(PG_URL ? describe : describe.skip)('Postgres FTS — recency tiebreaker', () => {
+  test('newer wins among near-equal relevance; stronger relevance still wins', async () => {
+    const store = await createStore({ backend: 'postgres', databaseUrl: PG_URL, tenant: `fts_${process.pid}` } as any);
+    const ftsChunk = (id: string, text: string, mtime: number): MemoryChunk => ({
+      chunkId: `${id}_c1`, itemId: id, sourceType: 'session', title: id, text,
+      chunkType: 'body', projectPath: '/x', filePath: `/x/${id}`, mtime,
+    });
+    try {
+      await store.clearFTS();
+      await store.addChunksFTS([
+        ftsChunk('newer', 'alpha beta', 2000),                 // same text as older →
+        ftsChunk('older', 'alpha beta', 1000),                 // same rank → same band
+        ftsChunk('strong_old', 'alpha alpha alpha beta', 500), // higher rank → higher band
+      ]);
+      await store.flushBuffer();
+      const order = (await store.searchFTS('alpha', { topK: 10 })).map(r => r.itemId);
+      // Stronger match ranks first even though it is the oldest (relevance > recency across bands).
+      expect(order[0]).toBe('strong_old');
+      // Equal relevance → the newer session ranks above the older one.
+      expect(order.indexOf('newer')).toBeLessThan(order.indexOf('older'));
+    } finally { await store.close(); }
+  });
+});
+
 // ── Wiring parity (sqlite-only: compares against the wrapped MemoryStore) ──
 describe('SqliteStore — wiring parity (wrapper === inner)', () => {
   let store: SqliteStore;
