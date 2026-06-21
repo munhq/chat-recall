@@ -120,7 +120,12 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
     // Cloud mode: attach the Keycloak Bearer (no-op in local mode).
     const token = await getAccessToken();
     const headers = token ? { ...options.headers, Authorization: `Bearer ${token}` } : options.headers;
-    return await fetch(url, { ...options, headers, signal: controller.signal });
+    const res = await fetch(url, { ...options, headers, signal: controller.signal });
+    // 402 from any value route = subscription required. Broadcast once so the
+    // app shell can drop the user onto the Subscribe screen instead of each
+    // caller surfacing a dead error.
+    if (res.status === 402) window.dispatchEvent(new CustomEvent('cr:payment-required'));
+    return res;
   } finally {
     clearTimeout(timer);
   }
@@ -144,6 +149,7 @@ export interface ServerCapabilities {
     settings: boolean;
     projects: boolean;
     teams: boolean;
+    account: boolean;
   };
 }
 
@@ -153,7 +159,7 @@ const LOCAL_CAPABILITIES: ServerCapabilities = {
   features: {
     conversations: true, search: true, memory: true, analytics: true,
     security: true, activity: true, sessionDeepDive: true, toolkit: true,
-    settings: true, projects: true, teams: false,
+    settings: true, projects: true, teams: false, account: false,
   },
 };
 
@@ -1682,4 +1688,97 @@ export async function getProjectDossier(projectId: string, opts: { sessions?: nu
   const res = await fetchWithTimeout(url, {}, 60000);
   if (!res.ok) throw new Error(`getProjectDossier failed: ${res.statusText}`);
   return await res.json();
+}
+
+// ── Account / billing / alerts (cloud) ───────────────────────────────────
+
+export interface MeInfo {
+  user: { sub: string; email: string | null };
+  teams: Array<{ team_slug: string; name?: string; role?: string }>;
+}
+export interface Entitlement {
+  billingEnabled: boolean;
+  tenant: string;
+  status: 'active' | 'trialing' | 'past_due' | 'canceled' | 'none';
+  plan: string | null;
+  currentPeriodEnd: number | null;
+  hasSubscription: boolean;
+}
+export interface PlanInfo {
+  configured: boolean;
+  trialDays: number;
+  amount?: number | null;
+  currency?: string;
+  interval?: string | null;
+  productName?: string | null;
+}
+
+/** Current Keycloak user + team memberships (self-authenticating route). */
+export async function getMe(): Promise<MeInfo> {
+  const res = await fetchWithTimeout(`${API_BASE}/me`);
+  if (!res.ok) throw new Error(`getMe failed: ${res.statusText}`);
+  return await res.json();
+}
+
+/** Create a personal workspace (team == tenant). Used by first-run onboarding.
+ *  The server derives the slug from the name; returns { slug, name, role }. */
+export async function createTeam(name: string): Promise<{ slug: string; name: string; role: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/teams`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `createTeam failed: ${res.statusText}`);
+  return await res.json();
+}
+
+/** Current subscription/entitlement for the caller's tenant. Throws with the
+ *  server's error message (e.g. "no team yet …") so the gate can branch on it. */
+export async function getEntitlement(): Promise<Entitlement> {
+  const res = await fetchWithTimeout(`${API_BASE}/billing`);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `getEntitlement failed: ${res.statusText}`);
+  return await res.json();
+}
+
+/** Public — Stripe-driven pricing for the landing page. Never throws on config. */
+export async function getPlan(): Promise<PlanInfo> {
+  const res = await fetchWithTimeout(`${API_BASE}/billing/plan`, {}, 15000);
+  if (!res.ok) return { configured: false, trialDays: 14 };
+  return await res.json();
+}
+
+/** Start a Stripe Checkout (card-required trial) → returns the hosted URL. */
+export async function startCheckout(): Promise<string> {
+  const res = await fetchWithTimeout(`${API_BASE}/billing/checkout`, { method: 'POST' });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `checkout failed: ${res.statusText}`);
+  return body.url as string;
+}
+
+/** Open the Stripe Billing Portal (manage / cancel) → returns the hosted URL. */
+export async function openBillingPortal(): Promise<string> {
+  const res = await fetchWithTimeout(`${API_BASE}/billing/portal`, { method: 'POST' });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `portal failed: ${res.statusText}`);
+  return body.url as string;
+}
+
+/** Secret-alert webhook config. */
+export async function getAlertConfig(): Promise<{ webhookUrl: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/account/alerts`);
+  if (!res.ok) throw new Error(`getAlertConfig failed: ${res.statusText}`);
+  return await res.json();
+}
+export async function setAlertConfig(webhookUrl: string): Promise<{ webhookUrl: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/account/alerts`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ webhookUrl }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `setAlertConfig failed: ${res.statusText}`);
+  return body;
+}
+export async function testAlertWebhook(webhookUrl?: string): Promise<{ ok: boolean; status?: number; error?: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/account/alerts/test`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(webhookUrl ? { webhookUrl } : {}),
+  });
+  return await res.json().catch(() => ({ ok: false, error: res.statusText }));
 }

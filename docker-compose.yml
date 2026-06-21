@@ -84,6 +84,15 @@ services:
       # Security dashboard (secret findings). On by default; set to "0" to
       # hide the Security tab and its API surface.
       CHAT_RECALL_FEATURE_SECURITY: ${CHAT_RECALL_FEATURE_SECURITY:-1}
+      # Billing (cloud SaaS only). Unset ⇒ billing OFF: every tenant is entitled
+      # and nothing is gated (self-host is the free tier). Set all four to gate
+      # the app behind a Stripe subscription with a card-required trial.
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_PRICE_ID: ${STRIPE_PRICE_ID:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_TRIAL_DAYS: ${STRIPE_TRIAL_DAYS:-14}
+      STRIPE_SUCCESS_URL: ${STRIPE_SUCCESS_URL:-}
+      STRIPE_CANCEL_URL: ${STRIPE_CANCEL_URL:-}
       NODE_ENV: production
     restart: unless-stopped
     healthcheck:

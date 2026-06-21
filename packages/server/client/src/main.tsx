@@ -1,31 +1,34 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
+import LandingPage from './components/LandingPage';
 import ErrorBoundary from './components/ErrorBoundary';
-import { isCloud, ensureLogin } from './services/auth';
+import { isCloud, ensureLogin, hasStoredSession, isAuthCallback, beginLogin } from './services/auth';
 import './index.css';
 
-function render() {
-  ReactDOM.createRoot(document.getElementById('root')!).render(
-    <React.StrictMode>
-      <ErrorBoundary>
-        <App />
-      </ErrorBoundary>
-    </React.StrictMode>
-  );
+const root = ReactDOM.createRoot(document.getElementById('root')!);
+
+function render(node: React.ReactNode) {
+  root.render(<React.StrictMode><ErrorBoundary>{node}</ErrorBoundary></React.StrictMode>);
 }
 
-// Cloud mode: complete the Keycloak login (handles the redirect callback and,
-// if needed, redirects to the IdP) before rendering. ensureLogin() resolves
-// with a token when authenticated, or navigates away to log in. Local mode is
-// a no-op and renders immediately.
+// Cloud mode routing on first paint:
+//   - logged out (no token) and NOT returning from the IdP → public landing.
+//     The static shell + /api/capabilities + /api/billing/plan are all public,
+//     so the marketing page renders with zero auth.
+//   - otherwise → complete login (handles ?code callback / refresh) then app.
+// Local mode renders the app immediately (no auth at all).
 if (isCloud()) {
-  ensureLogin()
-    .then((token) => { if (token) render(); })
-    .catch((err) => {
-      document.getElementById('root')!.innerHTML =
-        `<div style="font-family:system-ui;padding:2rem;color:#b00">Login failed: ${String(err)}</div>`;
-    });
+  if (!hasStoredSession() && !isAuthCallback()) {
+    render(<LandingPage onGetStarted={() => beginLogin()} />);
+  } else {
+    ensureLogin()
+      .then((token) => { if (token) render(<App />); })
+      .catch((err) => {
+        document.getElementById('root')!.innerHTML =
+          `<div style="font-family:system-ui;padding:2rem;color:#b00">Login failed: ${String(err)}</div>`;
+      });
+  }
 } else {
-  render();
+  render(<App />);
 }

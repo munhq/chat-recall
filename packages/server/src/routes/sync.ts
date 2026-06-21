@@ -44,6 +44,7 @@ import {
 } from '../imports.js';
 import type { SourceType } from '../imports.js';
 import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js';
+import { notifyVerifiedSecrets, type VerifiedHit } from '../services/notify.js';
 
 const router = express.Router();
 
@@ -474,6 +475,7 @@ router.post('/', async (req, res) => {
           if (!f.session_id || !f.detector || !f.rule) continue;
           (bySession.get(f.session_id) ?? bySession.set(f.session_id, []).get(f.session_id)!).push(f);
         }
+        const verifiedHits: VerifiedHit[] = [];
         for (const [sessionId, fs] of bySession) {
           const r = await store.replaceSecretFindings(sessionId, fs.map((f) => ({
             detector: f.detector,
@@ -483,6 +485,15 @@ router.post('/', async (req, res) => {
             verified: f.verified_at ? true : undefined,
           })));
           find += r.written;
+          for (const f of fs) {
+            if (f.verified_at && f.preview) verifiedHits.push({ sessionId, detector: f.detector, rule: f.rule, preview: f.preview });
+          }
+        }
+        // Fire customer alerts for newly-seen verified-live secrets. Paid +
+        // deduped + non-blocking — a webhook hiccup must never fail a sync.
+        if (verifiedHits.length > 0) {
+          try { await notifyVerifiedSecrets(agent.tenant, verifiedHits); }
+          catch (e) { console.error('[sync] secret alert failed:', e instanceof Error ? e.message : e); }
         }
 
         // Derived data: compute_cache rows (what the diff/outcome/commits/

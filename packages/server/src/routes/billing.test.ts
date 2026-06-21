@@ -15,9 +15,12 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import express from 'express';
+import request from 'supertest';
 import { createControlPlane } from '../imports.js';
 import { billingEnabled, isEntitled } from '../util/billing.js';
 import { applyStripeEvent } from './billing.js';
+import billingRouter from './billing.js';
 
 let dataDir: string;
 const saved: Record<string, string | undefined> = {};
@@ -169,5 +172,28 @@ describe('applyStripeEvent webhook mapping', () => {
     const event = { type: 'invoice.paid', data: { object: { client_reference_id: 't' } } };
     expect(await applyStripeEvent(event, fakeCp)).toBeNull();
     expect(wrote).toBe(false);
+  });
+});
+
+describe('GET /api/billing/plan (public)', () => {
+  test('Stripe unset → { configured:false } with the trial length, no auth', async () => {
+    setEnv('STRIPE_SECRET_KEY', undefined);
+    setEnv('STRIPE_TRIAL_DAYS', '14');
+    const app = express();
+    app.use('/api/billing', billingRouter);
+    const res = await request(app).get('/api/billing/plan');
+    expect(res.status).toBe(200);
+    expect(res.body.configured).toBe(false);
+    expect(res.body.trialDays).toBe(14);
+  });
+});
+
+describe('POST /api/billing/checkout guards', () => {
+  test('501 when billing is not enabled', async () => {
+    setEnv('STRIPE_SECRET_KEY', undefined);
+    const app = express();
+    app.use('/api/billing', billingRouter);
+    const res = await request(app).post('/api/billing/checkout');
+    expect(res.status).toBe(501);
   });
 });

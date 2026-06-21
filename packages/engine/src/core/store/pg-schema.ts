@@ -117,6 +117,17 @@ CREATE TABLE IF NOT EXISTS secret_dismissals (
   PRIMARY KEY (tenant, preview)
 );
 
+-- Once-only ledger for verified-live secret alerts. The sync route
+-- DELETE/re-INSERTs findings on every sync, so it can't tell "new" from
+-- "re-seen"; an INSERT ... ON CONFLICT DO NOTHING here gives genuine
+-- fire-once-per-(tenant,preview) semantics for the alert path.
+CREATE TABLE IF NOT EXISTS alerted_secrets (
+  tenant     TEXT NOT NULL DEFAULT 'default',
+  preview    TEXT NOT NULL,
+  alerted_at BIGINT NOT NULL,
+  PRIMARY KEY (tenant, preview)
+);
+
 CREATE TABLE IF NOT EXISTS session_metadata (
   tenant         TEXT NOT NULL DEFAULT 'default',
   session_id     TEXT NOT NULL,
@@ -341,7 +352,7 @@ DECLARE t TEXT;
 BEGIN
   FOREACH t IN ARRAY ARRAY[
     'memory_metadata','memory_links','content_cache','kv_store','memory_chunks',
-    'secret_findings','secret_rules','secret_dismissals','session_metadata',
+    'secret_findings','secret_rules','secret_dismissals','alerted_secrets','session_metadata',
     'summary_errors','compute_cache','session_outcome_cache','kg_entities','kg_triples',
     'wal_log','diary_entries'
   ] LOOP

@@ -164,6 +164,35 @@ export async function applyStripeEvent(
 
 // ── Routes ──────────────────────────────────────────────────────────────
 
+/** Resolve which tenant a billing action applies to from the Keycloak user's
+ *  team membership (a team IS a tenant; slug = tenant id). `x-team` selects when
+ *  there are several; the sole membership is used otherwise. Returns null after
+ *  sending the appropriate 4xx (no team → 403, ambiguous → 400). Shared by
+ *  checkout, GET /, and portal so they resolve identically. */
+async function resolveBillingTenant(
+  req: express.Request,
+  res: express.Response,
+  cp: { listMemberships(sub: string): Promise<Array<{ team_slug: string }>> },
+  userSub: string,
+): Promise<string | null> {
+  const memberships = await cp.listMemberships(userSub);
+  if (memberships.length === 0) {
+    res.status(403).json({ error: 'no team yet — create one via POST /api/teams' });
+    return null;
+  }
+  const wanted = req.get('x-team');
+  if (wanted) {
+    if (!memberships.some((m) => m.team_slug === wanted)) {
+      res.status(403).json({ error: `not a member of team '${wanted}'` });
+      return null;
+    }
+    return wanted;
+  }
+  if (memberships.length === 1) return memberships[0].team_slug;
+  res.status(400).json({ error: 'multiple teams — pass the x-team header', teams: memberships.map((m) => m.team_slug) });
+  return null;
+}
+
 /**
  * POST /api/billing/checkout — start a subscription for the caller's tenant.
  * Behind requireUser (Keycloak/dev-user identity → memberships); we use the
@@ -185,29 +214,15 @@ router.post('/checkout', async (req, res) => {
   // tenant (slug = tenant id). Use x-team when given, else the sole membership.
   const cp = await createControlPlane();
   try {
-    const memberships = await cp.listMemberships(user.sub);
-    if (memberships.length === 0) {
-      return res.status(403).json({ error: 'no team yet — create one via POST /api/teams' });
-    }
-    const wanted = req.get('x-team');
-    let tenant: string;
-    if (wanted) {
-      if (!memberships.some((m) => m.team_slug === wanted)) {
-        return res.status(403).json({ error: `not a member of team '${wanted}'` });
-      }
-      tenant = wanted;
-    } else if (memberships.length === 1) {
-      tenant = memberships[0].team_slug;
-    } else {
-      return res.status(400).json({
-        error: 'multiple teams — pass the x-team header',
-        teams: memberships.map((m) => m.team_slug),
-      });
-    }
+    const tenant = await resolveBillingTenant(req, res, cp, user.sub);
+    if (!tenant) return; // 4xx already sent
 
     const stripe = await getStripe();
     if (!stripe) return res.status(501).json({ error: 'billing not enabled' });
 
+    // Card-required free trial: the customer enters a card now, gets
+    // TRIAL_DAYS free, then auto-converts to paid. No free tier, minimal abuse.
+    const trialDays = Number(process.env.STRIPE_TRIAL_DAYS) || 14;
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       line_items: [{ price: priceId, quantity: 1 }],
@@ -215,9 +230,9 @@ router.post('/checkout', async (req, res) => {
       // we also stamp it into the subscription metadata so later subscription.*
       // events (which lack client_reference_id) can resolve the tenant.
       client_reference_id: tenant,
-      subscription_data: { metadata: { tenant } },
-      success_url: process.env.STRIPE_SUCCESS_URL || 'https://example.com/billing/success',
-      cancel_url: process.env.STRIPE_CANCEL_URL || 'https://example.com/billing/cancel',
+      subscription_data: { metadata: { tenant }, trial_period_days: trialDays },
+      success_url: process.env.STRIPE_SUCCESS_URL || 'https://chat-recall.munhq.com/?view=account&checkout=success',
+      cancel_url: process.env.STRIPE_CANCEL_URL || 'https://chat-recall.munhq.com/?view=account&checkout=cancel',
     });
 
     if (!session.url) {
@@ -270,6 +285,93 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
     res.status(500).json({ error: 'webhook processing failed', detail: (err as Error).message });
   } finally {
     await cp.close();
+  }
+});
+
+/**
+ * GET /api/billing — the caller tenant's current entitlement (plan/status/period).
+ * Drives the Account page's subscription panel and the client-side app gate.
+ */
+router.get('/', async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const cp = await createControlPlane();
+  try {
+    const tenant = await resolveBillingTenant(req, res, cp, user.sub);
+    if (!tenant) return;
+    const ent = await cp.getEntitlement(tenant);
+    res.json({
+      billingEnabled: billingEnabled(),
+      tenant,
+      status: ent?.status ?? 'none',
+      plan: ent?.plan ?? null,
+      currentPeriodEnd: ent?.currentPeriodEnd ?? null,
+      hasSubscription: !!ent?.stripeCustomerId,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'entitlement lookup failed', detail: (err as Error).message });
+  } finally {
+    await cp.close();
+  }
+});
+
+/**
+ * POST /api/billing/portal — open the Stripe Billing Portal so a subscriber can
+ * update payment method / cancel. Needs an existing Stripe customer (from a prior
+ * checkout); 409 if the tenant has never subscribed.
+ */
+router.post('/portal', async (req, res) => {
+  if (!billingEnabled()) return res.status(501).json({ error: 'billing not enabled' });
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const cp = await createControlPlane();
+  try {
+    const tenant = await resolveBillingTenant(req, res, cp, user.sub);
+    if (!tenant) return;
+    const ent = await cp.getEntitlement(tenant);
+    if (!ent?.stripeCustomerId) {
+      return res.status(409).json({ error: 'no subscription to manage — subscribe first' });
+    }
+    const stripe = await getStripe();
+    if (!stripe) return res.status(501).json({ error: 'billing not enabled' });
+    const session = await stripe.billingPortal.sessions.create({
+      customer: ent.stripeCustomerId,
+      return_url: process.env.STRIPE_PORTAL_RETURN_URL || 'https://chat-recall.munhq.com/?view=account',
+    });
+    res.json({ url: session.url });
+  } catch (err) {
+    res.status(502).json({ error: 'Stripe portal failed', detail: (err as Error).message });
+  } finally {
+    await cp.close();
+  }
+});
+
+/**
+ * GET /api/billing/plan — PUBLIC (mounted before tenantAuth). Returns the Stripe
+ * price so the pricing page is driven by Stripe truth, never a hardcoded amount.
+ * Returns `{ configured: false }` (200) when Stripe isn't set up, so the landing
+ * page can render a "coming soon"/contact state instead of erroring.
+ */
+router.get('/plan', async (_req, res) => {
+  const priceId = process.env.STRIPE_PRICE_ID;
+  const trialDays = Number(process.env.STRIPE_TRIAL_DAYS) || 14;
+  if (!billingEnabled() || !priceId) return res.json({ configured: false, trialDays });
+  try {
+    const stripe = await getStripe();
+    if (!stripe) return res.json({ configured: false, trialDays });
+    const price = await stripe.prices.retrieve(priceId, { expand: ['product'] });
+    const product = price.product as Stripe.Product | undefined;
+    res.json({
+      configured: true,
+      trialDays,
+      amount: price.unit_amount,
+      currency: price.currency,
+      interval: price.recurring?.interval ?? null,
+      productName: product && typeof product === 'object' && 'name' in product ? product.name : null,
+    });
+  } catch (err) {
+    // Don't leak Stripe errors to a public endpoint; degrade to unconfigured.
+    res.json({ configured: false, trialDays, error: (err as Error).message });
   }
 });
 

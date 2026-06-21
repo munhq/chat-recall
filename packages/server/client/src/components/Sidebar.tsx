@@ -26,7 +26,7 @@ interface SidebarProps {
   setToolFilter: (t: string) => void;
   extraSections?: SidebarSection[];
   view?: string;
-  setView?: (v: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'settings') => void;
+  setView?: (v: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'settings' | 'account') => void;
   /** Views this deployment supports (/api/capabilities). Absent = all. */
   enabledViews?: Set<string>;
 }
