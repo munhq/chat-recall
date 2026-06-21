@@ -37,6 +37,37 @@ export default function LandingPage({ onGetStarted }: { onGetStarted: () => void
         </div>
       </section>
 
+      <section className="ln-preview">
+        <div className="ln-preview-cap">A glimpse of what you get</div>
+        <div className="ln-window">
+          <div className="ln-window-bar"><span/><span/><span/><em>chat-recall</em></div>
+          <div className="ln-window-body">
+            <div className="ln-shot ln-shot-alert">
+              <div className="ln-shot-head">🔴 Verified-live secret alert</div>
+              <div className="ln-shot-row"><code>&lt;detector&gt;/&lt;rule&gt;</code> · session <code>&lt;id&gt;</code> · <code>****&lt;last4&gt;</code></div>
+              <div className="ln-shot-cta">Rotate now →</div>
+            </div>
+            <div className="ln-shot ln-shot-stats">
+              <div className="ln-shot-head">Your dashboard, at a glance</div>
+              <ul className="ln-shot-list">
+                <li>Per-model &amp; per-project token cost</li>
+                <li>Sessions indexed across every AI tool</li>
+                <li>Secrets found &amp; verified-live count</li>
+              </ul>
+            </div>
+            <div className="ln-shot ln-shot-search">
+              <div className="ln-shot-head">🔎 Search every session</div>
+              <ul className="ln-shot-list">
+                <li>Full-text + recency-aware ranking</li>
+                <li>Across sessions, plans, tasks &amp; CLAUDE.md</li>
+                <li>Claude · Gemini · OpenCode · Codex</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+        <div className="ln-preview-note">Illustrative — your real sessions, costs and findings appear once you sign in.</div>
+      </section>
+
       <section className="ln-features">
         {FEATURES.map((f) => (
           <div className="ln-card" key={f.title}>
@@ -123,6 +154,23 @@ const LANDING_CSS = `
 .ln-price { font-size: 40px; font-weight: 800; letter-spacing: -0.02em; margin: 6px 0 20px; }
 .ln-plan-list { list-style:none; padding:0; margin: 0 0 24px; display:flex; flex-direction:column; gap: 10px; }
 .ln-plan-list li { font-size: 14.5px; color: var(--cr-fg-1, #e8eaed); }
+.ln-preview { max-width: 1000px; margin: 90px auto 0; padding: 0 32px; text-align:center; }
+.ln-preview-cap { font-size: 13px; text-transform:uppercase; letter-spacing:0.08em; color: var(--cr-fg-3,#6b7280); margin-bottom: 18px; }
+.ln-window { border:1px solid var(--cr-line-2,#2a2f37); border-radius:14px; overflow:hidden; background: var(--cr-ink-1,#12151a); box-shadow: 0 30px 80px -40px #000; }
+.ln-window-bar { display:flex; align-items:center; gap:7px; padding:10px 14px; border-bottom:1px solid var(--cr-line-1,#1e232b); background: var(--cr-ink-2,#171b21); }
+.ln-window-bar span { width:11px; height:11px; border-radius:50%; background: var(--cr-line-3,#39404a); }
+.ln-window-bar em { margin-left:8px; font-style:normal; font-size:12px; color: var(--cr-fg-3,#6b7280); }
+.ln-window-body { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px,1fr)); gap:14px; padding:18px; text-align:left; }
+.ln-shot { border:1px solid var(--cr-line-1,#1e232b); border-radius:10px; padding:14px; background: var(--cr-ink-0,#0b0d10); }
+.ln-shot-alert { border-color: var(--cr-err-line,#5a2329); background: var(--cr-err-surf,#2a1416); }
+.ln-shot-head { font-size:13px; font-weight:600; margin-bottom:10px; }
+.ln-shot-row { font-size:12px; color: var(--cr-fg-2,#aab1bd); }
+.ln-shot-row code, .ln-shot code { font-family: var(--cr-font-mono, monospace); font-size:11.5px; color: var(--cr-fg-1,#e8eaed); }
+.ln-shot-cta { margin-top:10px; font-size:12px; font-weight:600; color: var(--cr-err-500,#f87171); }
+.ln-shot-list { list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:7px; }
+.ln-shot-list li { font-size:12.5px; color: var(--cr-fg-2,#aab1bd); padding-left:16px; position:relative; }
+.ln-shot-list li::before { content:'›'; position:absolute; left:2px; color: var(--cr-brand-500,#5b8def); }
+.ln-preview-note { font-size:12px; color: var(--cr-fg-3,#6b7280); margin-top:14px; font-style:italic; }
 .ln-footer { display:flex; gap: 12px; align-items:center; justify-content:center; color: var(--cr-fg-3, #6b7280); font-size: 13px; padding: 80px 0 48px; }
 .ln-link { background:none; border:none; color: var(--cr-brand-500, #5b8def); cursor:pointer; font: inherit; padding:0; }
 `;

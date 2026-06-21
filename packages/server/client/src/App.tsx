@@ -14,6 +14,7 @@ import ActivityTimeline from './components/ActivityTimeline';
 import SecurityExplorer from './components/SecurityExplorer';
 import SettingsPage from './components/SettingsPage';
 import AccountPage, { SubscribeScreen } from './components/AccountPage';
+import SecuritySummaryBanner from './components/SecuritySummaryBanner';
 import ProjectMainPane from './components/ProjectMainPane';
 import { SidebarExtrasProvider, useSidebarExtras } from './context/sidebar-extras';
 import { isCloud } from './services/auth';
@@ -665,6 +666,10 @@ function AppInner() {
         onMobileMenu={() => setMobileSidebarOpen((v) => !v)}
         mobileSidebarOpen={mobileSidebarOpen}
       />
+
+      {enabledViews.has('security') && view !== 'settings' && view !== 'account' && (
+        <SecuritySummaryBanner onReview={() => setView('security')} />
+      )}
 
       {indexHealth && indexHealth.vectorOk === false && (
         <div
