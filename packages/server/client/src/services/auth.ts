@@ -18,6 +18,17 @@ const LS = 'chat-recall.oidc'; // { access_token, refresh_token, expires_at }
 
 export const isCloud = (): boolean => !!ISSUER;
 
+/** True when a token is already stored (sync; doesn't refresh). Lets the shell
+ *  decide between the public landing and the authenticated app on first paint. */
+export const hasStoredSession = (): boolean => !!localStorage.getItem(LS);
+
+/** True when the URL is an OIDC redirect callback (?code&state) coming back from
+ *  Keycloak — in that case we must complete the exchange, not show the landing. */
+export const isAuthCallback = (): boolean => {
+  const q = new URLSearchParams(window.location.search);
+  return q.has('code') && q.has('state');
+};
+
 const b64url = (buf: ArrayBuffer) =>
   btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const rand = () => b64url(crypto.getRandomValues(new Uint8Array(32)).buffer);
@@ -39,8 +50,9 @@ function storeTokens(t: Record<string, unknown>): void {
   });
 }
 
-/** Begin login: redirect the browser to Keycloak's authorize endpoint (PKCE). */
-async function beginLogin(): Promise<void> {
+/** Begin login: redirect the browser to Keycloak's authorize endpoint (PKCE).
+ *  Exported so the public landing page's "Get started" CTA can start the flow. */
+export async function beginLogin(): Promise<void> {
   const verifier = rand();
   const state = rand();
   sessionStorage.setItem('oidc.v', verifier);

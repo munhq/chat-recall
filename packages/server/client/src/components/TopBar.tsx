@@ -3,7 +3,7 @@ import { Icon, IconButton, Input, Logo, Button, Avatar } from './primitives';
 
 interface TopBarProps {
   view: string;
-  setView: (v: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'settings') => void;
+  setView: (v: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'settings' | 'account') => void;
   /** Views this deployment supports (/api/capabilities). Absent = all. */
   enabledViews?: Set<string>;
   query: string;
@@ -200,9 +200,21 @@ export default function TopBar({ view, setView, enabledViews, query, setQuery, s
             style={view === 'settings' ? { color: 'var(--cr-brand-500)' } : undefined}
           />
         )}
-        <div className="cr-topbar-avatar" style={{ marginLeft: 4 }}>
-          <Avatar name="User" size={28} />
-        </div>
+        {(!enabledViews || enabledViews.has('account')) ? (
+          <button
+            className="cr-topbar-avatar"
+            title="Account"
+            onClick={() => setView('account')}
+            aria-label="Account"
+            style={{ marginLeft: 4, background: 'none', border: 'none', cursor: 'pointer', padding: 0, borderRadius: '50%', outline: view === 'account' ? '2px solid var(--cr-brand-500)' : 'none' }}
+          >
+            <Avatar name="User" size={28} />
+          </button>
+        ) : (
+          <div className="cr-topbar-avatar" style={{ marginLeft: 4 }}>
+            <Avatar name="User" size={28} />
+          </div>
+        )}
       </div>
     </header>
   );

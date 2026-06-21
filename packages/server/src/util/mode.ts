@@ -67,6 +67,7 @@ export interface Capabilities {
     settings: boolean;
     projects: boolean;
     teams: boolean;
+    account: boolean;
   };
 }
 
@@ -103,6 +104,9 @@ export function capabilities(): Capabilities {
       // lives in requireEntitlement / entitledOr402 (util/billing.ts), applied
       // to the paid write paths (team publish + invite).
       teams: ed === 'cloud',
+      // Cloud-only account/billing surface (subscription, secret-alert webhook,
+      // device tokens). Self-host has no billing, so no account view.
+      account: ed === 'cloud',
     },
   };
 }
