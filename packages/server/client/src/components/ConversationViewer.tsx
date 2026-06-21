@@ -31,8 +31,9 @@ import {
   regenerateSummary,
 } from '../services/api';
 import { stripInjectedBanners } from '../utils/clean';
+import SessionTrace from './SessionTrace';
 
-type ViewMode = 'summary' | 'firstPrompt' | 'full' | 'raw' | 'related' | 'files' | 'diff' | 'commits' | 'outcome' | 'security';
+type ViewMode = 'summary' | 'firstPrompt' | 'full' | 'trace' | 'raw' | 'related' | 'files' | 'diff' | 'commits' | 'outcome' | 'security';
 type MessageFilter = 'all' | 'user' | 'assistant' | 'thinking' | 'tools' | 'edits';
 
 interface ConversationViewerProps {
@@ -192,7 +193,7 @@ export default function ConversationViewer({
   useEffect(() => {
     if (!sessionId) return;
     const derivedTool = sessionMeta?.tool || sessionInfo?.tool || 'claude';
-    const shouldAutoLoad = derivedTool !== 'claude' || viewMode === 'full';
+    const shouldAutoLoad = derivedTool !== 'claude' || viewMode === 'full' || viewMode === 'trace';
     if (!shouldAutoLoad) return;
     const key = `${sessionId}:${viewMode}`;
     if (autoLoadedFor.current.has(key)) return;
@@ -555,6 +556,7 @@ export default function ConversationViewer({
               { value: 'outcome', label: 'Outcome', icon: 'check' },
               { value: 'firstPrompt', label: 'First Prompt', icon: 'message' },
               { value: 'full', label: 'Full', icon: 'list' },
+              { value: 'trace', label: 'Trace', icon: 'terminal' },
               { value: 'files', label: 'Files', icon: 'file' },
               { value: 'diff', label: 'Diff', icon: 'terminal' },
               { value: 'commits', label: 'Commits', icon: 'sparkle' },
@@ -753,6 +755,12 @@ export default function ConversationViewer({
                 ))}
               </div>
             )}
+          </div>
+        )}
+
+        {viewMode === 'trace' && (
+          <div style={{ padding: '4px 2px' }}>
+            <SessionTrace messages={messages} subagents={subagents} />
           </div>
         )}
 
