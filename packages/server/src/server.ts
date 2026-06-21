@@ -20,6 +20,8 @@ import { tenantAuth } from './middleware/auth.js';
 import { apiLimiter } from './middleware/rate-limit.js';
 import metricsRouter from './routes/metrics.js';
 import adminRouter from './routes/admin.js';
+import accountRouter from './routes/account.js';
+import { requireEntitlement } from './util/billing.js';
 import projectsRouter from './routes/projects.js';
 import kgRouter from './routes/kg.js';
 import kvRouter from './routes/kv.js';
@@ -113,27 +115,38 @@ app.use('/api', tenantAuth);
 // Mounted after tenantAuth so req.tenant is already resolved.
 app.use('/api/teams/security-config', securityConfigRouter);
 
+// Account configuration (secret-alert webhook). Ungated so a lapsed/un-subscribed
+// user can still reach their account to (re)subscribe and configure alerts.
+app.use('/api/account', accountRouter);
+
+// Entitlement gate (util/billing.ts): 402 when the tenant isn't active|trialing.
+// NO-OP until billing is enabled (STRIPE_SECRET_KEY set) and on self-host, so it
+// is safe to ship before Stripe go-live. Applied to the VALUE surfaces only —
+// /api/status, /api/account, /api/billing, /api/teams stay reachable so a user
+// can see state, subscribe, and configure without already being paid.
+const paid = requireEntitlement;
+
 // Routes
-app.use('/api/search', searchRouter);
-app.use('/api/conversations', conversationsRouter);
+app.use('/api/search', paid, searchRouter);
+app.use('/api/conversations', paid, conversationsRouter);
 app.use('/api/status', statusRouter);
-app.use('/api/memory', memoryRouter);
-app.use('/api/analytics', analyticsRouter);
-app.use('/api/secrets', secretsRouter);
+app.use('/api/memory', paid, memoryRouter);
+app.use('/api/analytics', paid, analyticsRouter);
+app.use('/api/secrets', paid, secretsRouter);
 
 // Store-backed in both modes: the edits timeline reads synced compute_cache
 // diff rows, the projects tree reads memory_metadata project_ids.
-app.use('/api/edits', editsRouter);
-app.use('/api/projects', projectsRouter);
+app.use('/api/edits', paid, editsRouter);
+app.use('/api/projects', paid, projectsRouter);
 
 // Recall surfaces for the thin-collector MCP: knowledge graph + key-value.
 // Tenant-scoped via the same tenantAuth above; readable/writable over HTTP so
 // the MCP server needs no local store.
-app.use('/api/kg', kgRouter);
-app.use('/api/kv', kvRouter);
-app.use('/api/diary', diaryRouter);
-app.use('/api/files', filesRouter);
-app.use('/api/subagents', subagentsRouter);
+app.use('/api/kg', paid, kgRouter);
+app.use('/api/kv', paid, kvRouter);
+app.use('/api/diary', paid, diaryRouter);
+app.use('/api/files', paid, filesRouter);
+app.use('/api/subagents', paid, subagentsRouter);
 
 // FS-backed routers exist only in local mode: in a server deployment data
 // arrives via /api/sync and there is no settings file the UI should edit

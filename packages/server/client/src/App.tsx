@@ -13,8 +13,10 @@ import Dashboard from './components/Dashboard';
 import ActivityTimeline from './components/ActivityTimeline';
 import SecurityExplorer from './components/SecurityExplorer';
 import SettingsPage from './components/SettingsPage';
+import AccountPage, { SubscribeScreen } from './components/AccountPage';
 import ProjectMainPane from './components/ProjectMainPane';
 import { SidebarExtrasProvider, useSidebarExtras } from './context/sidebar-extras';
+import { isCloud } from './services/auth';
 import {
   getStatus,
   getRecentSessionsPage,
@@ -23,6 +25,7 @@ import {
   getProjectTree,
   getMemoryItem,
   getCapabilities,
+  getEntitlement,
   type ServerCapabilities,
   type SessionInfo,
   type SearchResult,
@@ -32,7 +35,7 @@ import {
   type ProjectTreeApiNode,
 } from './services/api';
 
-type ViewMode = 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'settings';
+type ViewMode = 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'settings' | 'account';
 
 /**
  * Recursive tree node used by the project sidebar. One node renders as
@@ -159,8 +162,31 @@ function AppInner() {
     if (f.analytics) out.add('dashboard');
     if (f.security) out.add('security');
     if (f.settings) out.add('settings');
+    if (f.account) out.add('account');
     return out;
   }, [capabilities]);
+
+  // Entitlement gate (cloud only). 'loading' until we know; 'subscribe' shows the
+  // full-screen trial gate; 'ok' renders the app. No gate when billing is off
+  // (Stripe not configured) or on self-host. A late 402 from any data call
+  // (lapsed mid-session) flips us back to 'subscribe'.
+  const [gate, setGate] = useState<'loading' | 'ok' | 'subscribe'>(isCloud() ? 'loading' : 'ok');
+  useEffect(() => {
+    if (!isCloud()) return;
+    getEntitlement()
+      .then((e) => {
+        if (!e.billingEnabled) return setGate('ok');
+        setGate(e.status === 'active' || e.status === 'trialing' ? 'ok' : 'subscribe');
+      })
+      // "no team yet" → first-run onboarding via the Subscribe screen. Any other
+      // error → don't lock the user out; the server's 402 still enforces payment.
+      .catch((err) => setGate(/no team/i.test(String(err?.message || err)) ? 'subscribe' : 'ok'));
+  }, []);
+  useEffect(() => {
+    const onPay = () => setGate('subscribe');
+    window.addEventListener('cr:payment-required', onPay);
+    return () => window.removeEventListener('cr:payment-required', onPay);
+  }, []);
   // If the current view got disabled by a late capabilities answer, fall
   // back to Conversations instead of rendering a dead panel.
   useEffect(() => {
@@ -616,6 +642,12 @@ function AppInner() {
     setMobileSidebarOpen(false);
   }, []);
 
+  // Entitlement gate: block the whole shell until subscribed (cloud + billing on).
+  if (gate === 'loading') {
+    return <div className="app" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--cr-fg-3)' }}>Loading…</div>;
+  }
+  if (gate === 'subscribe') return <SubscribeScreen />;
+
   return (
     <div
       className="app"
@@ -682,6 +714,10 @@ function AppInner() {
       {view === 'settings' ? (
         <div className="app-row">
           <SettingsPage onClose={() => setView('search')} />
+        </div>
+      ) : view === 'account' ? (
+        <div className="app-row">
+          <AccountPage onClose={() => setView('search')} />
         </div>
       ) : (
         <div className="app-row" data-testid="app-layout">
