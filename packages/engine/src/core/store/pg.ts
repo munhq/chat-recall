@@ -441,16 +441,30 @@ export class PgStore implements StorageDriver {
     const tsq = orPrefixTsQuery(query);
     if (!tsq) return [];
     const params: unknown[] = [this.t, tsq];
-    let sql = `SELECT chunk_id, item_id, source_type, title, text, chunk_type, project_path, file_path, mtime,
-                      ts_rank(tsv, to_tsquery('english',$2)) AS rank
-               FROM memory_chunks WHERE tenant=$1 AND tsv @@ to_tsquery('english',$2)`;
-    if (sourceTypes && sourceTypes.length > 0) { params.push(sourceTypes); sql += ` AND source_type = ANY($${params.length})`; }
+    let where = `tenant=$1 AND tsv @@ to_tsquery('english',$2)`;
+    if (sourceTypes && sourceTypes.length > 0) { params.push(sourceTypes); where += ` AND source_type = ANY($${params.length})`; }
     // `-p`/projectFilter is a cleartext PATH SUBSTRING (e.g. "inco-monorepo"),
     // not a resolved project_id — match it against project_path, case-insensitive.
     // Exact project_id match here meant a substring never matched and `-p`
     // silently returned nothing for every project.
-    if (projectIdFilter) { params.push(`%${projectIdFilter}%`); sql += ` AND project_path ILIKE $${params.length}`; }
-    params.push(topK * 5); sql += ` ORDER BY rank DESC LIMIT $${params.length}`;
+    if (projectIdFilter) { params.push(`%${projectIdFilter}%`); where += ` AND project_path ILIKE $${params.length}`; }
+    params.push(topK * 5);
+    // Recency tiebreaker. Bucket each hit's ts_rank into 1%-wide bands of the
+    // top match's score (`rank / max(rank)`, so it's query-scale-independent),
+    // then prefer the NEWER session WITHIN a band. Near-equal relevance → recent
+    // wins; a clearly stronger match still outranks it (higher band). This only
+    // breaks ties — it never lets a weak-but-recent hit jump a strong one. The
+    // window max() is computed over the full match set before LIMIT, so banding
+    // is stable regardless of which candidates the LIMIT keeps. groupChunks keeps
+    // this order (it no longer re-sorts by raw rank).
+    const sql = `SELECT chunk_id, item_id, source_type, title, text, chunk_type, project_path, file_path, mtime, rank
+                 FROM (
+                   SELECT chunk_id, item_id, source_type, title, text, chunk_type, project_path, file_path, mtime,
+                          ts_rank(tsv, to_tsquery('english',$2)) AS rank
+                   FROM memory_chunks WHERE ${where}
+                 ) s
+                 ORDER BY round((rank / NULLIF(max(rank) OVER (), 0))::numeric, 2) DESC, mtime DESC NULLS LAST
+                 LIMIT $${params.length}`;
     let rows: any[];
     try { rows = await this.q(sql, params); } catch { return []; }
     return groupChunks(rows, topK);
@@ -568,6 +582,9 @@ function groupChunks(rows: any[], topK: number): MemorySearchResult[] {
     item.chunks.sort((a, b) => b.score - a.score);
     results.push({ itemId: item.itemId, sourceType: item.sourceType, title: item.title, text: item.chunks[0]?.text || '', score: item.bestScore, chunkType: item.chunks[0]?.chunkType || 'unknown', projectPath: item.projectPath, filePath: item.filePath, mtime: item.mtime, matchedChunks: item.chunks.slice(0, 3) });
   }
-  results.sort((a, b) => b.score - a.score);
+  // Preserve the SQL order. Rows arrive sorted by (relevance band DESC, mtime
+  // DESC), so each item's first-seen row is its best-band chunk and Map
+  // insertion order already reflects the final ranking — re-sorting by raw
+  // `score` here would throw away the recency tiebreaker the query applied.
   return results.slice(0, topK);
 }
