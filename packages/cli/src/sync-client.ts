@@ -30,12 +30,12 @@
  * findings/dismissals/custom-rules are NOT shipped by the collector — the
  * server owns them.
  */
-import { join, dirname } from 'node:path';
-import { readFileSync, writeFileSync, mkdirSync, chmodSync, unlinkSync } from 'node:fs';
+import { join, dirname, basename } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, chmodSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { redactSecrets, scanTextForFindings } from '@chat-recall/engine/core/secret-redactor.js';
-import { scanFileForSecrets, scanTenantRules, isSecretScannerAvailable } from '@chat-recall/engine/core/secret-scanner.js';
+import { scanFileForSecrets, scanDirForSecrets, scanTenantRules, isSecretScannerAvailable, type ScanFinding } from '@chat-recall/engine/core/secret-scanner.js';
 import { isInternalToolPrompt } from '@chat-recall/engine/core/internal-prompts.js';
 import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js';
 import { loadSettings, saveSettings } from '@chat-recall/engine/core/settings.js';
@@ -50,7 +50,8 @@ import { parseSessionFile, readCwdFromJsonl } from '@chat-recall/engine/parsers/
 import { resolveProjectId } from '@chat-recall/engine/core/project-resolver.js';
 import { extractEntities } from '@chat-recall/engine/core/entity-extractor.js';
 import { buildSourceRegistry } from '@chat-recall/engine/parsers/all-sources.js';
-import { getSyncedMtimes, markSynced, getLedgerData, persistLedgerData } from './sync-ledger.js';
+import { getSyncedRows, markSynced, getLedgerData, persistLedgerData } from './sync-ledger.js';
+import { EXTRACTOR_VERSION } from '@chat-recall/engine/core/extractor-version.js';
 import '@chat-recall/engine/core/backends/index.js'; // register the tool backends
 
 // Lives under the data dir so CHAT_RECALL_DATA_DIR isolates credentials the
@@ -361,7 +362,7 @@ const refs = listAvailableBackends().flatMap((b) => {
     };
   };
   const base = cred.serverUrl.replace(/\/$/, '');
-  const ledger = opts.useLedger ? getSyncedMtimes(base) : null;
+  const ledger = opts.useLedger ? getSyncedRows(base) : null;
   const convBatch = makeBatcher('conversations', 25, false, (rows) => {
     // Server acked this batch — record exactly these sessions at exactly
     // the mtimes that were shipped. Failures never reach here, so an
@@ -407,26 +408,94 @@ const refs = listAvailableBackends().flatMap((b) => {
 
   let skipped = 0, redactions = 0, walked = 0;
   let scanMs = 0, scanned = 0; // secret-scan metrics
-  for (const ref of refs.slice(0, opts.limit ?? refs.length)) {
+
+  const slice = refs.slice(0, opts.limit ?? refs.length);
+
+  // Shared gate: a ref is built this run unless excluded or already acked at a
+  // covering mtime AND the current extractor version. Used by both the batch
+  // pre-scan and the upload loop so they stay in lockstep.
+  const willBuild = (ref: SessionRef): boolean => {
+    if (excludeTools.has(ref.toolId as any)) return false;
+    if (excluded(ref.projectPath)) return false;
+    if (ledger) {
+      const ack = ledger.get(ref.prefixedId);
+      if (ack && ack.m >= Math.floor(ref.mtime) && ack.v >= EXTRACTOR_VERSION) return false;
+    }
+    return true;
+  };
+
+  // ── Batch secret scan ──────────────────────────────────────────────
+  // gitleaks/trufflehog are directory-capable and report each finding's file.
+  // Materialize every to-be-built session's raw text into ONE temp dir
+  // (filename = sanitized session id), scan the dir ONCE per detector, then
+  // map findings back to sessions by filename. This replaces 2·N cold process
+  // spawns (the dominant per-session cost) with 2 total. null ⇒ no batch ran
+  // (scanning off) and buildConversationSync falls back to its per-session path.
+  let externalFindings: Map<string, ScanFinding[]> | null = null;
+  if (scanSecrets) {
+    externalFindings = new Map();
+    const toScan = slice.filter(willBuild);
+    if (toScan.length > 0) {
+      const scanDir = mkdtempSync(join(tmpdir(), 'cr-batchscan-'));
+      const safeToId = new Map<string, string>();
+      try {
+        for (const ref of toScan) {
+          try {
+            const backend = getBackendForId(ref.prefixedId) ?? getBackend('claude');
+            const exp = backend.exportRawSession(ref.prefixedId);
+            const container = exp ? buildRawContainer(exp) : null;
+            if (!container) continue;
+            const rawText = container.files.map((f) => f.text).join('\n');
+            const safe = ref.prefixedId.replace(/[^A-Za-z0-9_-]/g, '');
+            safeToId.set(safe, ref.prefixedId);
+            writeFileSync(join(scanDir, `${safe}.txt`), rawText);
+          } catch { /* unexportable session — it just gets no external findings */ }
+        }
+        const t0 = performance.now();
+        for (const f of scanDirForSecrets(scanDir, { verifyOnly: verifySecretsScan })) {
+          const id = safeToId.get(basename(f.file).replace(/\.txt$/, ''));
+          if (!id) continue;
+          const list = externalFindings.get(id) ?? [];
+          list.push({ detector: f.detector, rule: f.rule, line: f.line, preview: f.preview, verified: f.verified });
+          externalFindings.set(id, list);
+        }
+        scanMs = performance.now() - t0;
+        scanned = toScan.length;
+      } finally {
+        try { rmSync(scanDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+      }
+    }
+  }
+
+  for (const ref of slice) {
     localSessionIds.add(ref.prefixedId);
     if (excludeTools.has(ref.toolId as any)) { skipped++; continue; }
     if (excluded(ref.projectPath)) { skipped++; continue; }
-    // Ledger mode: this exact session at this exact version already acked
-    // by this server → nothing to do. Anything not covered (new, changed,
-    // or previously failed) flows through.
-    if (ledger && (ledger.get(ref.prefixedId) ?? -1) >= Math.floor(ref.mtime)) { skipped++; continue; }
+    // Ledger mode: skip only when this server already acked this session at a
+    // covering mtime AND under the current extractor version. A bump to
+    // EXTRACTOR_VERSION (extraction code changed) fails the version check even
+    // when mtime is unchanged, so corrected rows re-sync automatically — no
+    // manual ledger edits, no blanket --full. New / changed / previously
+    // failed / version-stale sessions all flow through.
+    if (ledger) {
+      const ack = ledger.get(ref.prefixedId);
+      if (ack && ack.m >= Math.floor(ref.mtime) && ack.v >= EXTRACTOR_VERSION) { skipped++; continue; }
+    }
     // Canonical envelope (live): parse the transcript NOW with THE parser —
     // no local content cache is read or warmed. What ships is exactly what
     // the local dashboard would render for the same file.
     const mtime = Math.floor(ref.mtime) || 0;
-    const built = await buildConversationSync(ref, mtime, { mapPath, includeRaw: upload.raw, includeMeta: upload.sessionMeta, scanSecrets, verifySecrets: verifySecretsScan, tenantRules });
+    // Hand this session its slice of the batch-scan results (when scanning is
+    // on). `?? []` means "batch ran, found nothing here" — distinct from the
+    // `undefined` that triggers the per-session fallback inside the builder.
+    const precomputedExternal = externalFindings ? (externalFindings.get(ref.prefixedId) ?? []) : undefined;
+    const built = await buildConversationSync(ref, mtime, { mapPath, includeRaw: upload.raw, includeMeta: upload.sessionMeta, scanSecrets, verifySecrets: verifySecretsScan, tenantRules, precomputedExternal });
     if (!built) { skipped++; continue; }
     redactions += built.redactions;
 
     await convBatch.add(built.conv);
     // Ship this session's secret findings as one group (server replaces wholesale).
     if (built.findings.length > 0) await findingsBatch.add(built.findings);
-    if (built.scanMs > 0) { scanMs += built.scanMs; scanned++; }
 
     // Knowledge graph: extract triples live from the redacted conversation
     // text (no local KG DB is read). Accumulated + deduped, flushed at the end.
@@ -616,7 +685,11 @@ export interface BuiltConversation {
 export async function buildConversationSync(
   ref: SessionRef,
   mtime: number,
-  opts: { mapPath?: (p: string) => string; includeRaw?: boolean; includeMeta?: boolean; scanSecrets?: boolean; verifySecrets?: boolean; tenantRules?: Array<{ name: string; regex: string }> } = {},
+  opts: { mapPath?: (p: string) => string; includeRaw?: boolean; includeMeta?: boolean; scanSecrets?: boolean; verifySecrets?: boolean; tenantRules?: Array<{ name: string; regex: string }>;
+    /** Batch-scan results for THIS session (gitleaks/trufflehog already run
+     *  over a directory). When provided, skip the per-session subprocess scan
+     *  and use these instead — built-in regex + tenant rules still run inline. */
+    precomputedExternal?: ScanFinding[] } = {},
 ): Promise<BuiltConversation | null> {
   const mapPath = opts.mapPath ?? ((p: string) => p);
   const includeRaw = opts.includeRaw !== false;
@@ -714,8 +787,21 @@ export async function buildConversationSync(
         findings.push({ session_id: ref.prefixedId, detector: 'builtin', rule: f.rule, line: f.line, preview: f.preview });
       }
     } catch { /* best-effort */ }
-    if (opts.scanSecrets) {
-      // gitleaks/trufflehog take a file path — write the materialized text once.
+    if (opts.precomputedExternal) {
+      // Batch path: gitleaks/trufflehog already ran once over a directory of
+      // all sessions; this session's slice is handed in. No per-session spawn.
+      // Tenant rules are cheap in-memory regex, so still run them here.
+      for (const f of opts.precomputedExternal) {
+        const verifiedAt = f.verified ? new Date().toISOString() : null;
+        findings.push({ session_id: ref.prefixedId, detector: f.detector, rule: f.rule, line: f.line, preview: f.preview, verified_at: verifiedAt });
+      }
+      if (opts.tenantRules && opts.tenantRules.length > 0) {
+        try { for (const f of scanTenantRules(rawText, opts.tenantRules)) findings.push({ session_id: ref.prefixedId, detector: f.detector, rule: f.rule, line: f.line, preview: f.preview }); }
+        catch { /* best-effort */ }
+      }
+    } else if (opts.scanSecrets) {
+      // Per-session fallback (no batch map supplied — e.g. unit tests, callers
+      // outside the sync loop). gitleaks/trufflehog take a path: write once.
       let tmp: string | null = null;
       try {
         tmp = join(tmpdir(), `cr-scan-${ref.prefixedId.replace(/[^A-Za-z0-9_-]/g, '')}-${mtime}.txt`);
