@@ -323,9 +323,15 @@ export async function parseSessionFile(
     return content;
   }
 
-  // New-format sessions store content in subagents/ dir, not in the stub .jsonl
+  // Sessions that spawned sub-agents have a subagents/ dir. The main .jsonl
+  // may be a tiny stub (rare /explore-style sessions) OR the full primary
+  // thread (the common case — Agent/Task tool use, where the main holds all
+  // the Edit/Write/Bash work and subagents hold only the spawned agents').
+  // Parse BOTH: the main carries the primary thread, subagents carry theirs.
+  // They are disjoint transcripts, so there is no double-counting; a stub
+  // main just contributes its handful of lines.
   const filesToParse = hasSubagentsDir(sessionPath)
-    ? getSubagentPaths(sessionPath)
+    ? [sessionPath, ...getSubagentPaths(sessionPath)]
     : [sessionPath];
 
   let userCount = 0;
