@@ -201,6 +201,22 @@ const COMPUTE_KINDS = ['diff', 'outcome', 'commits', 'markers'] as const;
  *  SQLite edition couldn't store anyway. */
 const MAX_DERIVED_ROW_BYTES = 2 * 1024 * 1024;
 
+/**
+ * Local/LAN sync targets need no WAN-style pacing — you own the box and there
+ * is no shared-tenant or rate-limiter to be polite to, so they get a higher
+ * in-flight cap and zero inter-batch sleep. Remote/SaaS hosts stay gentler.
+ */
+function isLocalHost(serverUrl: string): boolean {
+  let host = '';
+  try { host = new URL(serverUrl).hostname.toLowerCase(); } catch { return false; }
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') return true;
+  if (host.endsWith('.local') || host.endsWith('.lan')) return true;
+  if (/^10\./.test(host)) return true;                              // 10.0.0.0/8
+  if (/^192\.168\./.test(host)) return true;                        // 192.168.0.0/16
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;         // 172.16.0.0/12
+  return false;
+}
+
 export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number; prune?: boolean; useLedger?: boolean } = {}): Promise<SyncResult> {
   const targets = loadAllCredentials();
   if (targets.length === 0) throw new Error('Not logged in — run `chat-recall login <server-url> --token <token>`');
@@ -279,22 +295,28 @@ const refs = listAvailableBackends().flatMap((b) => {
   // gigabytes if accumulated before upload. Each batcher flushes as soon as
   // its window fills, so memory stays bounded at ~one batch per category.
   //
-  // Throttle: server-side ingest does real work per row (chunking,
-  // classification, FTS inserts) — an unthrottled 10k-session backfill can
-  // brown out a small server/database (it took down a node on 2026-06-11).
-  // Default 1s between batches; bulk callers pass more.
+  // Backpressure, not a blind sleep. Server-side ingest does real work per row
+  // (chunking, classification, FTS/vector inserts); an UNBOUNDED backfill
+  // browned out a node on 2026-06-11. The protection that matters is bounding
+  // how many batches hit the server AT ONCE — so we cap in-flight uploads (the
+  // cap is the rate limit) and let the server push back with 429/Retry-After,
+  // sleeping only when it actually tells us to. Local/LAN targets need none of
+  // this politeness (you own the box) → higher cap, zero pacing. An explicit
+  // --throttle (opts.throttleMs>0) forces the old serial+sleep mode for a
+  // known-fragile server.
   const MAX_BATCH_BYTES = 4 * 1024 * 1024;
-  const throttleMs = opts.throttleMs ?? 1000;
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  // Retries: a multi-hour backfill must survive a transient connection
-  // reset or a 5xx — one blip at batch 200/210 must not throw away the
-  // whole run. 4xx (bad token, oversized body) stays fatal: retrying
-  // can't fix it.
+  const explicitThrottle = typeof opts.throttleMs === 'number' && opts.throttleMs > 0;
+  const throttleMs = explicitThrottle ? (opts.throttleMs as number) : 0;
+  const maxInflight = explicitThrottle ? 1 : (isLocalHost(cred.serverUrl) ? 6 : 4);
   // Per-attempt upload timeout. WITHOUT this, a half-open/slow connection makes
   // `fetch` hang FOREVER (Node fetch has no default timeout) — observed as a
   // sync stuck for 20-40min at idle CPU with zero progress. With it, a hung
   // upload aborts, surfaces as an error, and goes through the retry path below.
   const UPLOAD_TIMEOUT_MS = Number(process.env.CHAT_RECALL_UPLOAD_TIMEOUT_MS) || 90_000;
+  // Single POST with retry. Retryable: network/abort errors, HTTP 429 (obeying
+  // Retry-After — the server's own rate signal), and 5xx. Non-429 4xx (bad
+  // token, oversized body) is fatal: retrying can't fix it.
   const post = async (body: Record<string, unknown>): Promise<void> => {
     const payload = JSON.stringify(body);
     const RETRY_DELAYS_MS = [2000, 8000, 30000];
@@ -313,9 +335,18 @@ const refs = listAvailableBackends().flatMap((b) => {
           signal: ac.signal,
         });
         if (res.ok) break;
+        const retryable = res.status === 429 || res.status >= 500;
         const text = await res.text().catch(() => '');
-        if (res.status < 500) throw new Error(`sync failed: HTTP ${res.status} ${text}`);
+        if (!retryable) throw new Error(`sync failed: HTTP ${res.status} ${text}`);
         if (attempt >= RETRY_DELAYS_MS.length) throw new Error(`sync failed after ${attempt + 1} attempts: HTTP ${res.status} ${text}`);
+        // 429: obey Retry-After (seconds) when the server sends it; else fall
+        // back to the backoff schedule. This puts the pacing decision where it
+        // belongs — on the server that knows its own load.
+        const retryAfterS = Number(res.headers.get('retry-after'));
+        const waitMs = res.status === 429 && retryAfterS > 0 ? retryAfterS * 1000 : RETRY_DELAYS_MS[attempt];
+        console.error(`[sync] HTTP ${res.status} from ${base} — backing off ${Math.round(waitMs / 1000)}s (attempt ${attempt + 1})`);
+        await sleep(waitMs);
+        continue;
       } catch (err) {
         const fatal = err instanceof Error && /HTTP 4\d\d|sync failed after/.test(err.message);
         if (fatal || attempt >= RETRY_DELAYS_MS.length) throw err;
@@ -327,6 +358,27 @@ const refs = listAvailableBackends().flatMap((b) => {
       }
     }
     if (throttleMs > 0) await sleep(throttleMs);
+  };
+
+  // Bounded-concurrency pool. Up to `maxInflight` POSTs run at once; awaiting a
+  // free slot in `submit` is what paces the producer (natural backpressure).
+  // A POST that fails after its own retries is captured into `poolError` and
+  // re-thrown at the next slot-wait / drain, so a fatal error still aborts the
+  // whole sync (matching the old serial behaviour).
+  const inflight = new Set<Promise<void>>();
+  let poolError: unknown = null;
+  const submit = async (body: Record<string, unknown>, after: () => void): Promise<void> => {
+    while (inflight.size >= maxInflight) await Promise.race(inflight);
+    if (poolError) throw poolError;
+    let task: Promise<void>;
+    task = (async () => { await post(body); after(); })()
+      .catch((e) => { poolError = poolError ?? e; })
+      .finally(() => { inflight.delete(task); });
+    inflight.add(task);
+  };
+  const drainInflight = async (): Promise<void> => {
+    await Promise.allSettled(inflight);
+    if (poolError) throw poolError;
   };
   // Track every local session id we see this sync. After the walk, any
   // session id recorded in the per-server ledger but missing locally is a
@@ -355,9 +407,9 @@ const refs = listAvailableBackends().flatMap((b) => {
         const rows = flatten ? batch.flat() : batch;
         batch = [];
         batchBytes = 0;
-        await post({ [field]: rows });
-        this.sent += rows.length;
-        onFlush?.(rows);
+        // Hand off to the concurrency pool; `sent`/onFlush (e.g. markSynced)
+        // fire only after the server acks THIS batch, same as before.
+        await submit({ [field]: rows }, () => { this.sent += rows.length; onFlush?.(rows); });
       },
     };
   };
@@ -627,6 +679,9 @@ const refs = listAvailableBackends().flatMap((b) => {
   await kgEntityBatch.drain();
   await kgTripleBatch.drain();
   await findingsBatch.drain();
+  // Barrier: wait for every pooled upload to land (and surface any fatal
+  // error) before tombstones/prune, which must run strictly after all data.
+  await drainInflight();
 
   // ── Tombstones for sessions this device previously synced but that no
   //    longer exist locally (deleted transcript file, cleared cache, etc).
