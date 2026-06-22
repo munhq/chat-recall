@@ -67,7 +67,8 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
     setError(null);
     getAnalytics(tool)
       .then(setData)
-      .catch((err) => setError(err.message || 'Failed to load analytics'));
+      .catch((err) => setError(err.message || 'Failed to load analytics'))
+      .finally(() => setLoading(false)); // BUGFIX: loading was never cleared → stuck on "Loading analytics…"
     getSyncStatus().then(setSyncStatus).catch(() => { /* tolerate */ });
     getSecretsSummary().then(setSecuritySummary).catch(() => { /* tolerate */ });
     // Patterns are global (not yet tool-filterable); load once on mount.

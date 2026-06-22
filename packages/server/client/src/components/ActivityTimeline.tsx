@@ -28,6 +28,9 @@ const PRESETS = [
   { label: '6h',  value: 6 },
   { label: '24h', value: 24 },
   { label: '7d',  value: 24 * 7 },
+  { label: '30d', value: 24 * 30 },
+  { label: '90d', value: 24 * 90 },
+  { label: '1y',  value: 24 * 365 },
 ];
 
 const OP_LABELS: Record<EditOp, string> = {
@@ -287,8 +290,16 @@ export default function ActivityTimeline({ onSessionClick, toolFilter: toolFilte
       )}
 
       {!loading && grouped.length === 0 && !error && (
-        <div style={{ color: 'var(--cr-fg-3)', fontSize: 13, padding: 16 }}>
-          No edits in the last {sinceHours}h{pattern ? ` matching "${pattern}"` : ''}.
+        <div style={{ color: 'var(--cr-fg-3)', fontSize: 13, padding: 16, display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+          <span>No edits in the last {sinceHours >= 24 ? `${Math.round(sinceHours / 24)}d` : `${sinceHours}h`}{pattern ? ` matching "${pattern}"` : ''}. Synced data may be older.</span>
+          {sinceHours < 24 * 365 && (
+            <button
+              onClick={() => setSinceHours(24 * 365)}
+              style={{ padding: '5px 12px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-2)', borderRadius: 'var(--cr-radius-sm)', color: 'var(--cr-fg-1)', cursor: 'pointer', fontSize: 12 }}
+            >
+              Widen to 1 year →
+            </button>
+          )}
         </div>
       )}
 
