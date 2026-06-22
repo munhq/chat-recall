@@ -129,6 +129,86 @@ function runTrufflehog(binary: string, filePath: string, opts: RunOpts = {}): Ar
 
 export interface ScanFinding { detector: string; rule: string; line: number; preview: string; verified?: boolean; }
 
+/** A finding from a directory scan, carrying the file it was found in so the
+ *  caller can map it back to a session (filename === session id). */
+export interface DirScanFinding extends ScanFinding { file: string; }
+
+/** gitleaks over a whole directory in ONE process — retains the `File` field
+ *  so each finding maps back to its source file. The report is written OUTSIDE
+ *  the scanned dir so gitleaks never scans its own output. */
+function runGitleaksDir(binary: string, dir: string): Array<RawFinding & { file: string }> {
+  const reportPath = `${dir}.gitleaks.json`;
+  const r = spawnSync(binary,
+    ['dir', dir, '--no-banner', '--report-format', 'json',
+     '--report-path', reportPath, '--exit-code', '0'],
+    { encoding: 'utf-8', timeout: 600_000, maxBuffer: 256 * 1024 * 1024 },
+  );
+  if (r.status !== 0 && r.status !== 1) { try { unlinkSync(reportPath); } catch { /* none */ } return []; }
+  let parsed: any[] = [];
+  try { parsed = JSON.parse(readFileSync(reportPath, 'utf-8')) || []; } catch { /* missing or malformed */ }
+  try { unlinkSync(reportPath); } catch { /* already gone */ }
+  return parsed
+    .filter((f) => !looksLikeUuid(f.Secret || f.Match || ''))
+    .map((f) => ({
+      rule: f.RuleID || f.Description || 'unknown',
+      line: f.StartLine || 0,
+      preview: mask(f.Secret || f.Match || ''),
+      file: f.File || '',
+    }));
+}
+
+/** trufflehog over a whole directory in ONE process — retains the filesystem
+ *  `file` path so each finding maps back to its source file. */
+function runTrufflehogDir(binary: string, dir: string, opts: RunOpts = {}): Array<RawFinding & { verified?: boolean; file: string }> {
+  const verifyArgs = opts.verifyOnly ? ['--only-verified'] : ['--no-verification'];
+  const r = spawnSync(binary,
+    ['filesystem', dir, ...verifyArgs, '--json'],
+    { encoding: 'utf-8', timeout: 600_000, maxBuffer: 256 * 1024 * 1024 },
+  );
+  if (r.status !== 0 && !r.stdout) return [];
+  const out: Array<RawFinding & { verified?: boolean; file: string }> = [];
+  for (const line of (r.stdout || '').split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const j = JSON.parse(line);
+      const raw = j.Raw || '';
+      if (looksLikeUuid(raw)) continue;
+      out.push({
+        rule: j.DetectorName || 'unknown',
+        line: j.SourceMetadata?.Data?.Filesystem?.line || 0,
+        preview: mask(raw),
+        verified: opts.verifyOnly ? true : (j.Verified === true ? true : undefined),
+        file: j.SourceMetadata?.Data?.Filesystem?.file || '',
+      });
+    } catch { /* skip malformed line */ }
+  }
+  return out;
+}
+
+/**
+ * Scan an entire DIRECTORY of materialized files in ONE invocation per
+ * detector (vs. one per file). Findings carry their source `file` so the
+ * caller can group them by session (we name each file `<sessionId>.txt`).
+ *
+ * This is the batch path used by sync: writing N session texts into a temp
+ * dir and calling this once is 2 process spawns total, instead of 2·N — the
+ * spawn + detector-set-reload cost is what made per-session scanning slow.
+ * Tenant rules are intentionally NOT applied here (they are cheap in-memory
+ * regex the caller already runs per-session on the un-redacted text).
+ */
+export function scanDirForSecrets(
+  dir: string,
+  opts: { verifyOnly?: boolean } = {},
+): DirScanFinding[] {
+  if (!existsSync(dir)) return [];
+  const gitleaks = which('gitleaks');
+  const trufflehog = which('trufflehog');
+  const out: DirScanFinding[] = [];
+  if (gitleaks) for (const f of runGitleaksDir(gitleaks, dir)) out.push({ detector: 'gitleaks', ...f });
+  if (trufflehog) for (const f of runTrufflehogDir(trufflehog, dir, { verifyOnly: opts.verifyOnly })) out.push({ detector: 'trufflehog', ...f });
+  return out;
+}
+
 /**
  * Scan a single file with whatever detectors are installed on PATH (+ optional
  * tenant rules). Returns MASKED findings — raw secrets never leave this

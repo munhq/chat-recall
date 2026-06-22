@@ -102,6 +102,13 @@ export function findSessionFile(sessionId: string): {
 /**
  * Resolve the actual content paths for a session — handles both the legacy
  * single-file format and the new subagents/ split format.
+ *
+ * The main transcript ALWAYS holds the primary thread's tool calls (Edit /
+ * Write / Bash on the main agent), so it must be included even when a
+ * `subagents/` dir exists — the subagent files only carry the spawned
+ * agents' work. Returning subagents alone silently drops every main-thread
+ * edit, which empties diff / files / commits / edits-timeline for any
+ * session that ever used the Agent/Task tool.
  */
 export function resolveSessionContentPaths(sessionFile: string): string[] {
   if (!hasSubagentsDir(sessionFile)) return [sessionFile];
@@ -111,7 +118,7 @@ export function resolveSessionContentPaths(sessionFile: string): string[] {
     .filter(f => f.endsWith('.jsonl'))
     .sort()
     .map(f => join(subDir, f));
-  return subPaths.length > 0 ? subPaths : [sessionFile];
+  return [sessionFile, ...subPaths];
 }
 
 /**
