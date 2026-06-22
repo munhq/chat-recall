@@ -408,7 +408,9 @@ export default function SecurityExplorer({ onSessionClick }: Props) {
                 ✓ No critical or high-severity secrets detected
               </div>
               <div style={{ fontSize: 12 }}>
-                Run a full scan with <code>node scripts/scan-secrets.cjs</code> to populate findings.
+                Findings populate from the collector. Run <code>chat-recall sync</code> on the
+                machine where your sessions live — secrets are scanned and masked client-side,
+                then shipped here.
               </div>
             </Card>
           )}
