@@ -134,6 +134,7 @@ function acquireConcurrency(className: RlClass, id: string, cfg: ClassConfig): {
 export function rl(className: RlClass, opts: { cost?: (req: Request) => number } = {}) {
   const cfg = CLASSES[className];
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    (req as any).rlClass = className;   // tag for cost telemetry
     try {
       const id = identityOf(req, cfg);
       const cost = Math.max(1, Math.floor(opts.cost ? opts.cost(req) : 1));

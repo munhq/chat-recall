@@ -18,6 +18,7 @@ import toolkitRouter from './routes/toolkit.js';
 import secretsRouter from './routes/secrets.js';
 import { tenantAuth } from './middleware/auth.js';
 import { apiLimiter, rl } from './middleware/rate-limit.js';
+import { costMiddleware, startCostTelemetry } from './middleware/request-cost.js';
 import metricsRouter from './routes/metrics.js';
 import adminRouter from './routes/admin.js';
 import accountRouter from './routes/account.js';
@@ -73,6 +74,14 @@ app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   next();
 });
+
+// Cost telemetry: establish a per-request cost context (wall + DB time/queries)
+// for every /api request and record a sample on finish. This is the DATA the
+// rate-limit policy is derived from (see middleware/request-cost.ts). Mounted
+// before the limiters so it measures the true cost of served requests; the
+// background flush/pool-sampler is started once here.
+app.use('/api', costMiddleware);
+startCostTelemetry();
 
 // Rate limiting: generous per-IP ceiling on the API surface (skips /api/sync
 // batches + the /api/capabilities probe — see middleware/rate-limit.ts).
