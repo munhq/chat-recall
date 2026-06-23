@@ -1,4 +1,4 @@
-import { tenantQuery } from './pg-pool.js';
+import { tenantQuery, tenantTx, bulkInsert } from './pg-pool.js';
 /**
  * PgStore — Postgres StorageDriver for team/cloud mode. Real implementation
  * (no longer a stub). Every table carries a `tenant` column so one Postgres
@@ -214,7 +214,18 @@ export class PgStore implements StorageDriver {
     );
   }
   async addLinks(links: MemoryLink[]): Promise<void> {
-    for (const link of links) await this.addLink(link);
+    if (links.length === 0) return;
+    // De-dupe by the conflict key, then one bulk INSERT in one transaction.
+    const byKey = new Map<string, MemoryLink>();
+    for (const l of links) byKey.set(`${l.sourceType} ${l.sourceId} ${l.targetType} ${l.targetId} ${l.linkType}`, l);
+    const now = Date.now();
+    const rows = [...byKey.values()].map((l) => [this.t, l.sourceType, l.sourceId, l.targetType, l.targetId, l.linkType, l.confidence ?? null, now]);
+    await tenantTx(this.pool, this.t, async (client) => {
+      await bulkInsert(client, 'memory_links',
+        ['tenant', 'source_type', 'source_id', 'target_type', 'target_id', 'link_type', 'confidence', 'created_at'],
+        rows,
+        'ON CONFLICT (tenant,source_type,source_id,target_type,target_id,link_type) DO UPDATE SET confidence=excluded.confidence, created_at=excluded.created_at');
+    });
   }
   async getLinksFrom(sourceType: SourceType, sourceId: string): Promise<MemoryLinkRow[]> {
     return this.q(`SELECT * FROM memory_links WHERE tenant=$1 AND source_type=$2 AND source_id=$3`, [this.t, sourceType, sourceId]);
@@ -397,21 +408,36 @@ export class PgStore implements StorageDriver {
   async addChunksFTS(chunks: MemoryChunk[]): Promise<number> {
     const valid = chunks.filter(c => c.text && c.text.trim().length > 0);
     if (valid.length === 0) return 0;
-    const itemKeys = new Map<string, { sourceType: string; itemId: string }>();
-    for (const c of valid) itemKeys.set(`${c.sourceType}:${c.itemId}`, { sourceType: c.sourceType, itemId: c.itemId });
-    for (const { sourceType, itemId } of itemKeys.values()) {
-      await this.q(`DELETE FROM memory_chunks WHERE tenant=$1 AND source_type=$2 AND item_id=$3`, [this.t, sourceType, itemId]);
-    }
-    for (const c of valid) {
-      const resolved = !c.projectId && c.projectPath ? resolveProjectId(c.projectPath) : null;
-      const projectId = c.projectId ?? (resolved && resolved.source !== 'ignored' ? resolved.id : '');
-      await this.q(
-        `INSERT INTO memory_chunks (tenant,chunk_id,item_id,source_type,title,text,chunk_type,project_path,project_id,file_path,mtime)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-         ON CONFLICT (tenant,chunk_id) DO UPDATE SET text=excluded.text, title=excluded.title`,
-        [this.t, c.chunkId, c.itemId, c.sourceType, c.title, applyChunkPrivacy(c.text), c.chunkType, c.projectPath, projectId, c.filePath, intMs(c.mtime)]);
-    }
-    return valid.length;
+    // De-dupe by chunk_id: a single multi-row INSERT cannot hit the same
+    // ON CONFLICT key twice. Last write wins (matches the prior loop's upsert).
+    const byId = new Map<string, MemoryChunk>();
+    for (const c of valid) byId.set(c.chunkId, c);
+    const rows = [...byId.values()];
+    // Affected items, for the replace-on-resync DELETE.
+    const items = new Map<string, [string, string]>();
+    for (const c of rows) items.set(`${c.sourceType} ${c.itemId}`, [c.sourceType, c.itemId]);
+
+    // ONE transaction: a single DELETE for all affected items, then bulk
+    // multi-row INSERTs — vs. the former (delete + insert) per row, each in its
+    // own BEGIN/SET/COMMIT. Same semantics, ~N× fewer round-trips.
+    await tenantTx(this.pool, this.t, async (client) => {
+      const its = [...items.values()];
+      const dParams: unknown[] = [this.t];
+      const dTuples = its.map((it) => { const b = dParams.length; dParams.push(it[0], it[1]); return `($${b + 1},$${b + 2})`; });
+      await client.query(
+        `DELETE FROM memory_chunks WHERE tenant=$1 AND (source_type,item_id) IN (${dTuples.join(',')})`,
+        dParams);
+      const insertRows = rows.map((c) => {
+        const resolved = !c.projectId && c.projectPath ? resolveProjectId(c.projectPath) : null;
+        const projectId = c.projectId ?? (resolved && resolved.source !== 'ignored' ? resolved.id : '');
+        return [this.t, c.chunkId, c.itemId, c.sourceType, c.title, applyChunkPrivacy(c.text), c.chunkType, c.projectPath, projectId, c.filePath, intMs(c.mtime)];
+      });
+      await bulkInsert(client, 'memory_chunks',
+        ['tenant', 'chunk_id', 'item_id', 'source_type', 'title', 'text', 'chunk_type', 'project_path', 'project_id', 'file_path', 'mtime'],
+        insertRows,
+        'ON CONFLICT (tenant,chunk_id) DO UPDATE SET text=excluded.text, title=excluded.title');
+    });
+    return rows.length;
   }
   async listChunksByItem(sourceType: string, itemId: string): Promise<Array<{ chunk_id: string; title: string; text: string; chunk_type: string; mtime: number }>> {
     const rows = await this.q(
