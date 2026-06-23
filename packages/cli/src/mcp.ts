@@ -136,6 +136,18 @@ async function remoteGet<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function remotePatch<T>(path: string, body: unknown): Promise<T> {
+  const cred = remoteCredentials();
+  if (!cred) throw new Error('scope "server" needs a login — run `chat-recall login <server-url>` first.');
+  const res = await fetch(cred.base + path, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${cred.token}` },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
+  return res.json() as Promise<T>;
+}
+
 /**
  * Throw the uniform "you must log in" error when no credentials exist.
  * Every server-backed tool calls this at entry so the agent always gets the
@@ -214,6 +226,11 @@ const RecallRecentSchema = z.object({
     .describe('Only include sessions modified in the last N hours. Combine with limit for "last 6h, top 20".'),
   scope: z.enum(['local', 'server']).optional().default('local')
     .describe('local = this machine (default). server = the synced chat-recall server (needs `chat-recall login`).'),
+});
+
+const RecallRenameSchema = z.object({
+  session_id: z.string().describe('Session ID to name (from recall_recent / recall_search).'),
+  name: z.string().describe('The name to give this conversation. Pass an empty string to clear it and revert to the auto title.'),
 });
 
 const RecallEditsTimelineSchema = z.object({
@@ -592,6 +609,24 @@ Pass \`since_hours: N\` to restrict to sessions modified in the last N hours.`,
             since_hours:    { type: 'number', description: 'Only include sessions modified in the last N hours.' },
             scope:          { type: 'string', enum: ['local', 'server'], default: 'local', description: 'server = synced cross-device history (needs chat-recall login).' },
           },
+        },
+      },
+      {
+        name: 'recall_rename_session',
+        description: `Give a conversation a memorable name — or rename it — so you (and the user) can find and resume it later.
+
+Mirrors Claude Code's session naming (\`/rename\`). The name replaces the auto-generated summary in
+recall_recent and the web UI. Use it when the user says "name this conversation X", "call this session Y",
+or "rename this to Z". Pass an empty string to clear the name and revert to the auto title.
+
+The name persists across re-syncs and summary regeneration (it's stored separately from the AI summary).`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            session_id: { type: 'string', description: 'Session ID to name (from recall_recent / recall_search).' },
+            name:       { type: 'string', description: 'The name to give this conversation. Empty string clears it.' },
+          },
+          required: ['session_id', 'name'],
         },
       },
       {
@@ -1443,7 +1478,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const qs = new URLSearchParams({ limit: String(params.limit) });
         if (params.since_hours) qs.set('since_hours', String(params.since_hours));
         if (params.project_filter) qs.set('project', params.project_filter);
-        const remote = await remoteGet<{ sessions: Array<{ sessionId: string; projectPath: string; modified: string; firstPrompt: string; summary?: string; tool?: string }>; total: number }>(
+        const remote = await remoteGet<{ sessions: Array<{ sessionId: string; projectPath: string; modified: string; firstPrompt: string; summary?: string; tool?: string; userTitle?: string | null }>; total: number }>(
           `/api/conversations/recent?${qs.toString()}`,
         );
         if (!remote.sessions?.length) {
@@ -1458,13 +1493,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const lines = [`# Recent sessions (server — ${remote.total} total synced)\n`];
         for (let i = 0; i < remote.sessions.length; i++) {
           const s = remote.sessions[i];
-          const display = (s.summary || s.firstPrompt || '(no prompt)').replace(/\n/g, ' ').slice(0, 120);
-          lines.push(`## #${i + 1}: ${display}`);
+          const named = s.userTitle?.trim();
+          const display = (named || s.summary || s.firstPrompt || '(no prompt)').replace(/\n/g, ' ').slice(0, 120);
+          lines.push(`## #${i + 1}: ${named ? `🏷️ ${display}` : display}`);
           lines.push(`**Tool:** ${s.tool || 'claude'}  ·  **Project:** ${s.projectPath || '(hashed)'}  ·  **Modified:** ${(s.modified || '').slice(0, 16).replace('T', ' ')}`);
           lines.push(`**Session ID:** \`${s.sessionId}\``);
           lines.push('');
         }
         return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_rename_session': {
+        const params = RecallRenameSchema.parse(args);
+        requireRemote();
+        const r = await remotePatch<{ sessionId: string; userTitle: string | null }>(
+          `/api/conversations/${encodeURIComponent(params.session_id)}`,
+          { name: params.name });
+        const text = r.userTitle
+          ? `✓ Named session \`${params.session_id}\` → "${r.userTitle}"`
+          : `✓ Cleared the name on session \`${params.session_id}\` (reverted to the auto title).`;
+        return { content: [{ type: 'text', text }] };
       }
 
       case 'recall_context': {

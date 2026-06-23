@@ -248,12 +248,17 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
   const timeStr = formatTime(r.modified);
   const path = formatProject(r);
 
+  // A user-assigned name (Claude Code's /rename equivalent) wins over the
+  // auto summary/first-prompt for the row title.
+  const userTitle = r.userTitle?.trim() || '';
   const hasSummary = !!r.summary;
-  const hasSummaryError = !hasSummary && !!r.summaryError;
+  const hasSummaryError = !userTitle && !hasSummary && !!r.summaryError;
   const rawFirstPrompt = stripInjectedBanners(r.firstPrompt || '').trim();
-  const titleText = hasSummary
-    ? getShortSummary(r.summary!, 200)
-    : rawFirstPrompt.slice(0, 220);
+  const titleText = userTitle
+    ? userTitle.slice(0, 220)
+    : hasSummary
+      ? getShortSummary(r.summary!, 200)
+      : rawFirstPrompt.slice(0, 220);
 
   // Search-only: render every matched chunk (up to a small cap), each
   // windowed around the first query-term hit and with the query terms
@@ -425,10 +430,10 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
 
           {titleText ? (
             <span
-              className={hasSummary ? undefined : 'cr-conv-title-faded'}
-              title={hasSummary ? 'AI-generated summary' : 'Raw first prompt'}
+              className={(hasSummary || userTitle) ? undefined : 'cr-conv-title-faded'}
+              title={userTitle ? 'Conversation name' : hasSummary ? 'AI-generated summary' : 'Raw first prompt'}
             >
-              {titleText}
+              {userTitle ? `🏷️ ${titleText}` : titleText}
             </span>
           ) : (
             <span style={{ color: 'var(--cr-fg-3)', fontStyle: 'italic', fontSize: 13 }}>

@@ -1368,6 +1368,40 @@ router.post('/:id/regenerate-summary', async (req, res) => {
   }
 });
 
+// PATCH /api/conversations/:id
+//
+// Set or clear a user-assigned conversation name (mirrors Claude Code's
+// /rename). Stored in session_metadata.user_title, which the indexer/summary
+// upsert never touches — so the name survives every re-sync. Body:
+//   { "name": "auth refactor" }  → set
+//   { "name": "" } | { "name": null }  → clear (revert to auto title)
+// Tenant scope + prefix-id expansion are inherited from router.param('id').
+router.patch('/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const body = (req.body ?? {}) as { name?: unknown; title?: unknown };
+    const input = body.name ?? body.title;
+    let title: string | null;
+    if (input === null || input === undefined || (typeof input === 'string' && input.trim() === '')) {
+      title = null; // clear → revert to auto-derived title
+    } else if (typeof input === 'string') {
+      title = input.trim().slice(0, 200);
+    } else {
+      return res.status(400).json({ error: 'name must be a string' });
+    }
+    const cache = await createMetadataCache();
+    try {
+      await cache.setUserTitle(id, title);
+    } finally {
+      await cache.close();
+    }
+    res.json({ sessionId: id, userTitle: title });
+  } catch (error) {
+    console.error(`rename ${id}:`, error instanceof Error ? error.message : error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to rename session' });
+  }
+});
+
 // GET /api/conversations/:id
 //
 // Pagination: `?offset=N&limit=M` slices the cached `messages` array

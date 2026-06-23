@@ -62,6 +62,9 @@ export interface SessionInfo {
    *  exists). The list shows "summary unavailable — check settings" with
    *  the error string as a hover tooltip. */
   summaryError?: { error: string; attemptCount: number; lastFailedAt: number };
+  /** User-assigned conversation name (mirrors Claude Code's /rename). When
+   *  set, the list and viewer show it in place of the auto summary. */
+  userTitle?: string | null;
   /** Search-only: relevance score (0..1ish) for this hit. */
   score?: number;
   /** Search-only: top matched chunks (snippets) — drives the result preview. */
@@ -528,6 +531,8 @@ export interface SessionMetadataResponse {
   peakContextTokens: number;
   estimatedCostUsd: number | null;
   cacheSavingsUsd: number | null;
+  /** User-assigned conversation name (mirrors Claude Code's /rename). */
+  userTitle?: string | null;
 }
 
 export async function getSessionMetadata(sessionId: string): Promise<SessionMetadataResponse> {
@@ -558,6 +563,29 @@ export async function regenerateSummary(sessionId: string): Promise<RegenerateSu
       throw new Error(`Summary provider quota exhausted: ${detail}`);
     }
     throw new Error(`Failed to regenerate summary: ${detail}`);
+  }
+  return await res.json();
+}
+
+/** Set or clear a user-assigned conversation name (mirrors Claude Code's
+ *  /rename). Empty string clears it and reverts to the auto-derived title. */
+export async function renameConversation(
+  sessionId: string,
+  name: string,
+): Promise<{ sessionId: string; userTitle: string | null }> {
+  const res = await fetchWithTimeout(
+    `${API_BASE}/conversations/${sessionId}`,
+    {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name }),
+    },
+    15000,
+  );
+  if (!res.ok) {
+    let detail = res.statusText;
+    try { const j = await res.json(); if (j?.error) detail = j.error; } catch {}
+    throw new Error(`Failed to rename: ${detail}`);
   }
   return await res.json();
 }

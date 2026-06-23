@@ -29,14 +29,39 @@ describe('MetadataCache', () => {
   test('set + get round-trips a row', () => {
     cache.set(sample);
     const got = cache.get('s1');
-    expect(got).toEqual(sample);
+    // set() never writes user_title, so a freshly-set row reads back null.
+    expect(got).toEqual({ ...sample, userTitle: null });
+  });
+
+  test('setUserTitle round-trips and set() never clobbers it', () => {
+    cache.set(sample);
+    cache.setUserTitle('s1', 'auth refactor');
+    expect(cache.get('s1')!.userTitle).toBe('auth refactor');
+
+    // The indexer/summary worker re-running set() must NOT wipe the name —
+    // this is the core invariant of the rename feature.
+    cache.set({ ...sample, summary: 'regenerated', mtime: 9000 });
+    const got = cache.get('s1')!;
+    expect(got.userTitle).toBe('auth refactor');
+    expect(got.summary).toBe('regenerated');
+
+    // Empty/null clears it back to the auto title.
+    cache.setUserTitle('s1', null);
+    expect(cache.get('s1')!.userTitle).toBeNull();
+  });
+
+  test('setUserTitle creates a stub row when none exists yet', () => {
+    cache.setUserTitle('ghost', 'named before indexed');
+    const got = cache.get('ghost')!;
+    expect(got.userTitle).toBe('named before indexed');
+    expect(got.summary).toBe('');
   });
 
   test('get returns null for unknown id', () => {
     expect(cache.get('nope')).toBeNull();
   });
 
-  test('upsert (INSERT OR REPLACE) keeps latest values', () => {
+  test('upsert (ON CONFLICT) keeps latest values', () => {
     cache.set(sample);
     cache.set({ ...sample, summary: 'updated', mtime: 3000 });
     const got = cache.get('s1')!;

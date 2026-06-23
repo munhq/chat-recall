@@ -46,6 +46,9 @@ export interface SessionInfo {
    * successful summary.
    */
   summaryError?: { error: string; attemptCount: number; lastFailedAt: number };
+  /** User-assigned conversation name (mirrors Claude Code's /rename). When
+   *  set, the UI and recall_recent show it in place of the auto summary. */
+  userTitle?: string | null;
 }
 
 /**
@@ -418,6 +421,7 @@ export async function hydrateSessions(entries: SessionIndexEntry[]): Promise<Ses
         tool: e.tool,
         oneShot: e.oneShot,
         summaryError: !summary && errors.has(e.sessionId) ? errors.get(e.sessionId)! : undefined,
+        userTitle: cached?.userTitle ?? undefined,
       });
     }
 
@@ -727,6 +731,9 @@ export interface SessionMetadataResponse {
    *  getSessionMetadata from the metadata cache — computeMetadataResponse
    *  itself doesn't populate it). recall_summary / recall_smart_resume read it. */
   summary?: string;
+  /** User-assigned conversation name (mirrors Claude Code's /rename). The
+   *  viewer header prefers this over the auto-derived title when present. */
+  userTitle?: string | null;
 }
 
 /**
@@ -754,6 +761,7 @@ export async function getSessionMetadata(sessionId: string): Promise<SessionMeta
           const cached = await cache.get(sessionId);
           await cache.close();
           if (cached?.summary) response.summary = cleanBanner(cached.summary);
+          if (cached?.userTitle) response.userTitle = cached.userTitle;
         } catch { /* summary is best-effort */ }
         return response;
       }

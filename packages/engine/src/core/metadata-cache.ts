@@ -16,6 +16,13 @@ export interface SessionMetadata {
   summarySource: 'original' | 'gemini' | 'claude' | 'ollama';
   mtime: number;
   indexedAt: number;
+  /**
+   * User-assigned conversation name (mirrors Claude Code's `/rename`). Owned
+   * exclusively by `setUserTitle` — the indexer/summary `set()` path NEVER
+   * writes this column, so a name survives every re-sync and summary regen.
+   * `null`/absent means "use the auto-derived title (summary/first prompt)".
+   */
+  userTitle?: string | null;
 }
 
 export class MetadataCache {
@@ -44,7 +51,8 @@ export class MetadataCache {
         summary TEXT NOT NULL,
         summary_source TEXT NOT NULL,
         mtime INTEGER NOT NULL,
-        indexed_at INTEGER NOT NULL
+        indexed_at INTEGER NOT NULL,
+        user_title TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_mtime ON session_metadata(mtime);
@@ -90,6 +98,8 @@ export class MetadataCache {
     // pre-gzip schema. ALTER TABLE ADD COLUMN is no-op-safe inside a
     // try/catch when the column already exists.
     try { this.db.exec('ALTER TABLE compute_cache ADD COLUMN payload_gz BLOB'); } catch { /* col exists */ }
+    // Migration for installs predating user-assigned conversation names.
+    try { this.db.exec('ALTER TABLE session_metadata ADD COLUMN user_title TEXT'); } catch { /* col exists */ }
     // Allow payload_json to be NULL post-migration so new gzip-only rows
     // can be inserted without a dummy text payload. SQLite can't drop
     // NOT NULL on an existing column without a table rebuild — accept
@@ -260,10 +270,20 @@ export class MetadataCache {
   }
 
   set(metadata: SessionMetadata): void {
+    // Column-scoped UPSERT (NOT INSERT OR REPLACE) so the indexer/summary
+    // worker never clobbers `user_title` — that column is written only by
+    // setUserTitle. INSERT OR REPLACE would delete+reinsert the row and drop
+    // the user's name on every re-index.
     const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO session_metadata
+      INSERT INTO session_metadata
       (session_id, first_prompt, summary, summary_source, mtime, indexed_at)
       VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET
+        first_prompt=excluded.first_prompt,
+        summary=excluded.summary,
+        summary_source=excluded.summary_source,
+        mtime=excluded.mtime,
+        indexed_at=excluded.indexed_at
     `);
 
     stmt.run(
@@ -276,9 +296,24 @@ export class MetadataCache {
     );
   }
 
+  /**
+   * Set (or clear) the user-assigned conversation name. `null` clears it,
+   * reverting display to the auto-derived title. Touches ONLY `user_title`;
+   * if no metadata row exists yet a stub row is created so the name persists
+   * until the indexer fills in first_prompt/summary.
+   */
+  setUserTitle(sessionId: string, title: string | null): void {
+    this.db.prepare(`
+      INSERT INTO session_metadata
+      (session_id, first_prompt, summary, summary_source, mtime, indexed_at, user_title)
+      VALUES (?, '', '', 'original', 0, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET user_title=excluded.user_title
+    `).run(sessionId, Date.now(), title);
+  }
+
   get(sessionId: string): SessionMetadata | null {
     const stmt = this.db.prepare(`
-      SELECT session_id, first_prompt, summary, summary_source, mtime, indexed_at
+      SELECT session_id, first_prompt, summary, summary_source, mtime, indexed_at, user_title
       FROM session_metadata
       WHERE session_id = ?
     `);
@@ -290,6 +325,7 @@ export class MetadataCache {
       summary_source: 'original' | 'gemini' | 'claude' | 'ollama';
       mtime: number;
       indexed_at: number;
+      user_title: string | null;
     } | undefined;
     if (!row) return null;
 
@@ -300,6 +336,7 @@ export class MetadataCache {
       summarySource: row.summary_source,
       mtime: row.mtime,
       indexedAt: row.indexed_at,
+      userTitle: row.user_title ?? null,
     };
   }
 
