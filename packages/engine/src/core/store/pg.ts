@@ -467,7 +467,34 @@ export class PgStore implements StorageDriver {
                  LIMIT $${params.length}`;
     let rows: any[];
     try { rows = await this.q(sql, params); } catch { return []; }
-    return groupChunks(rows, topK);
+
+    // Named-conversation matches. A user-assigned title (Claude Code /rename
+    // parity) is the strongest "find the one I named X" intent signal, so these
+    // sessions surface FIRST. Read straight from session_metadata.user_title —
+    // durable across re-index, unlike a synthetic FTS chunk (addChunksFTS wipes
+    // an item's chunks on every re-sync). groupChunks preserves insertion order,
+    // so prepending puts named hits at the top; a session that is both a named
+    // hit and an FTS hit merges into the single named entry.
+    let namedRows: any[] = [];
+    const q = query.trim();
+    if (q && (!sourceTypes || sourceTypes.includes('session'))) {
+      const np: unknown[] = [this.t, `%${q}%`];
+      let nwhere = `sm.tenant=$1 AND sm.user_title ILIKE $2 AND sm.user_title IS NOT NULL AND sm.user_title <> ''`;
+      if (projectIdFilter) { np.push(`%${projectIdFilter}%`); nwhere += ` AND mm.project_path ILIKE $${np.length}`; }
+      np.push(topK);
+      try {
+        namedRows = await this.q(
+          `SELECT sm.session_id AS chunk_id, sm.session_id AS item_id, 'session' AS source_type,
+                  sm.user_title AS title, sm.user_title AS text, 'user:title' AS chunk_type,
+                  mm.project_path, mm.file_path, mm.mtime, 1.0 AS rank
+           FROM session_metadata sm
+           JOIN memory_metadata mm ON mm.tenant=sm.tenant AND mm.id=sm.session_id AND mm.source_type='session'
+           WHERE ${nwhere}
+           ORDER BY mm.mtime DESC NULLS LAST
+           LIMIT $${np.length}`, np);
+      } catch { namedRows = []; }
+    }
+    return groupChunks([...namedRows, ...rows], topK);
   }
 
   async getFTSCount(): Promise<number> {
