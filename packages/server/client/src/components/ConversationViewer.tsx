@@ -29,6 +29,7 @@ import {
   getSessionOutcome,
   getSessionSecrets,
   regenerateSummary,
+  renameConversation,
 } from '../services/api';
 import { stripInjectedBanners } from '../utils/clean';
 import SessionTrace from './SessionTrace';
@@ -106,6 +107,13 @@ export default function ConversationViewer({
   const [secretsData, setSecretsData] = useState<SessionSecretsResponse | null>(null);
   const [secretsLoading, setSecretsLoading] = useState(false);
   const [secretsError, setSecretsError] = useState<string | null>(null);
+  // Inline conversation-rename (Claude Code's /rename equivalent).
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState('');
+  const [savingTitle, setSavingTitle] = useState(false);
+  // Set after a successful rename so the header updates instantly without
+  // waiting for a metadata refetch. `undefined` = no local edit this session.
+  const [userTitleOverride, setUserTitleOverride] = useState<string | null | undefined>(undefined);
 
   // Reset cross-section state when session changes AND immediately
   // refetch for whatever tab is currently active. Without the refetch,
@@ -119,6 +127,7 @@ export default function ConversationViewer({
     setOutcomeData(null); setOutcomeError(null);
     setSecretsData(null); setSecretsError(null);
     setSessionMeta(null);
+    setEditingTitle(false); setUserTitleOverride(undefined);
 
     // Always fetch session metadata up-front so the header title
     // resolves regardless of which tab is open. When you click into a
@@ -285,7 +294,14 @@ export default function ConversationViewer({
     const parts = path.replace(/\\/g, '/').split('/').filter(Boolean);
     return parts.length > 0 ? parts[parts.length - 1] : '';
   })();
-  const title =
+  // A user-assigned name (Claude Code's /rename equivalent) always wins over
+  // the auto-derived title. `userTitleOverride` reflects an edit made in this
+  // tab before metadata refetches; `undefined` means "no local edit".
+  const userTitle =
+    (userTitleOverride !== undefined ? userTitleOverride : undefined) ??
+    sessionMeta?.userTitle ??
+    (sessionInfo?.userTitle ?? null);
+  const autoTitle =
     extractTitle(sessionInfo?.summary) ||
     extractTitle(searchResult?.summary) ||
     extractTitle(sessionInfo?.firstPrompt) ||
@@ -295,6 +311,21 @@ export default function ConversationViewer({
     sessionMeta?.slug ||
     projectFallback ||
     'Untitled session';
+  const title = (userTitle && userTitle.trim()) || autoTitle;
+
+  const saveTitle = async () => {
+    if (!sessionId || savingTitle) return;
+    setSavingTitle(true);
+    try {
+      const r = await renameConversation(sessionId, titleDraft.trim());
+      setUserTitleOverride(r.userTitle);
+      setEditingTitle(false);
+    } catch (e) {
+      console.error('rename failed', e);
+    } finally {
+      setSavingTitle(false);
+    }
+  };
 
   const handleResume = () => {
     if (!sessionId) return;
@@ -429,19 +460,72 @@ export default function ConversationViewer({
           )}
         </div>
 
-        {/* Title */}
-        <h1
-          style={{
-            fontSize: 18,
-            fontWeight: 600,
-            letterSpacing: '-0.01em',
-            color: 'var(--cr-fg-1)',
-            marginBottom: 8,
-            wordBreak: 'break-word',
-          }}
-        >
-          {title}
-        </h1>
+        {/* Title — with inline rename (Claude Code's /rename equivalent). */}
+        {editingTitle ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <input
+              autoFocus
+              value={titleDraft}
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void saveTitle();
+                if (e.key === 'Escape') setEditingTitle(false);
+              }}
+              placeholder="Name this conversation…"
+              maxLength={200}
+              style={{
+                flex: 1,
+                fontSize: 18,
+                fontWeight: 600,
+                padding: '4px 8px',
+                background: 'var(--cr-ink-1)',
+                color: 'var(--cr-fg-1)',
+                border: '1px solid var(--cr-line-2)',
+                borderRadius: 6,
+              }}
+            />
+            <Button onClick={() => void saveTitle()} disabled={savingTitle}>
+              {savingTitle ? 'Saving…' : 'Save'}
+            </Button>
+            <Button variant="ghost" onClick={() => setEditingTitle(false)} disabled={savingTitle}>
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+            <h1
+              style={{
+                fontSize: 18,
+                fontWeight: 600,
+                letterSpacing: '-0.01em',
+                color: 'var(--cr-fg-1)',
+                margin: 0,
+                wordBreak: 'break-word',
+              }}
+            >
+              {title}
+            </h1>
+            {sessionId && (
+              <button
+                type="button"
+                title={userTitle ? 'Rename conversation' : 'Name this conversation'}
+                onClick={() => { setTitleDraft(userTitle?.trim() || ''); setEditingTitle(true); }}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  cursor: 'pointer',
+                  color: userTitle ? 'var(--cr-accent, #6ea8fe)' : 'var(--cr-fg-3)',
+                  padding: 2,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  flexShrink: 0,
+                }}
+              >
+                <Icon name="tag" size={15} />
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Meta context row */}
         <div

@@ -138,6 +138,10 @@ CREATE TABLE IF NOT EXISTS session_metadata (
   indexed_at     BIGINT NOT NULL DEFAULT 0,
   PRIMARY KEY (tenant, session_id)
 );
+-- User-assigned conversation name (mirrors Claude Code's /rename). Written
+-- ONLY by setUserTitle; the sync/summary upsert (caches.ts PgMetadataCache.set)
+-- deliberately omits this column so a name survives every re-sync.
+ALTER TABLE session_metadata ADD COLUMN IF NOT EXISTS user_title TEXT;
 
 CREATE TABLE IF NOT EXISTS tenants (
   tenant      TEXT PRIMARY KEY,
