@@ -281,6 +281,8 @@ router.post('/', async (req, res) => {
   const rowCount = conversations.length + items.length + links.length + findings.length
     + derived.length + kgEntities.length + kgTriples.length + tombstones.length
     + dismissals.length + customRules.length;
+  (req as any).rlClass = 'ingest';          // cost-telemetry tags
+  (req as any).tenant = (req as any).tenant || agent.tenant;
   const gate = await ingestGate(agent.tenant, rowCount);
   if (!gate.ok) {
     res.setHeader('Retry-After', String(Math.max(1, Math.ceil(gate.retryAfterMs / 1000))));
