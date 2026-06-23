@@ -301,7 +301,11 @@ export default function ConversationViewer({
     (userTitleOverride !== undefined ? userTitleOverride : undefined) ??
     sessionMeta?.userTitle ??
     (sessionInfo?.userTitle ?? null);
+  // The tool's own native title (Claude ai-title, OpenCode session.title) sits
+  // below a user name but above the AI summary / first prompt.
+  const toolTitle = (sessionMeta?.toolTitle ?? sessionInfo?.toolTitle ?? null);
   const autoTitle =
+    (toolTitle && toolTitle.trim()) ||
     extractTitle(sessionInfo?.summary) ||
     extractTitle(searchResult?.summary) ||
     extractTitle(sessionInfo?.firstPrompt) ||

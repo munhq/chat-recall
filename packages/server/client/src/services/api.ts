@@ -65,6 +65,9 @@ export interface SessionInfo {
   /** User-assigned conversation name (mirrors Claude Code's /rename). When
    *  set, the list and viewer show it in place of the auto summary. */
   userTitle?: string | null;
+  /** Native title from the originating tool (Claude ai-title, OpenCode title…).
+   *  Shown below a user name, above the AI summary / first prompt. */
+  toolTitle?: string | null;
   /** Search-only: relevance score (0..1ish) for this hit. */
   score?: number;
   /** Search-only: top matched chunks (snippets) — drives the result preview. */
@@ -533,6 +536,8 @@ export interface SessionMetadataResponse {
   cacheSavingsUsd: number | null;
   /** User-assigned conversation name (mirrors Claude Code's /rename). */
   userTitle?: string | null;
+  /** Native title from the originating tool (Claude ai-title, OpenCode title…). */
+  toolTitle?: string | null;
 }
 
 export async function getSessionMetadata(sessionId: string): Promise<SessionMetadataResponse> {

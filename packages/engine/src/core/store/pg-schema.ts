@@ -142,6 +142,9 @@ CREATE TABLE IF NOT EXISTS session_metadata (
 -- ONLY by setUserTitle; the sync/summary upsert (caches.ts PgMetadataCache.set)
 -- deliberately omits this column so a name survives every re-sync.
 ALTER TABLE session_metadata ADD COLUMN IF NOT EXISTS user_title TEXT;
+-- Native title assigned by the originating tool (Claude ai-title, OpenCode
+-- session.title, …), synced from the collector. Written only by setToolTitle.
+ALTER TABLE session_metadata ADD COLUMN IF NOT EXISTS tool_title TEXT;
 
 CREATE TABLE IF NOT EXISTS tenants (
   tenant      TEXT PRIMARY KEY,

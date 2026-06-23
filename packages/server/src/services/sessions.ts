@@ -49,6 +49,9 @@ export interface SessionInfo {
   /** User-assigned conversation name (mirrors Claude Code's /rename). When
    *  set, the UI and recall_recent show it in place of the auto summary. */
   userTitle?: string | null;
+  /** Native title from the originating tool (Claude ai-title, OpenCode
+   *  session.title, …). Display fallback below userTitle, above the summary. */
+  toolTitle?: string | null;
 }
 
 /**
@@ -422,6 +425,7 @@ export async function hydrateSessions(entries: SessionIndexEntry[]): Promise<Ses
         oneShot: e.oneShot,
         summaryError: !summary && errors.has(e.sessionId) ? errors.get(e.sessionId)! : undefined,
         userTitle: cached?.userTitle ?? undefined,
+        toolTitle: cached?.toolTitle ?? undefined,
       });
     }
 
@@ -734,6 +738,8 @@ export interface SessionMetadataResponse {
   /** User-assigned conversation name (mirrors Claude Code's /rename). The
    *  viewer header prefers this over the auto-derived title when present. */
   userTitle?: string | null;
+  /** Native title from the originating tool (Claude ai-title, OpenCode title…). */
+  toolTitle?: string | null;
 }
 
 /**
@@ -762,6 +768,7 @@ export async function getSessionMetadata(sessionId: string): Promise<SessionMeta
           await cache.close();
           if (cached?.summary) response.summary = cleanBanner(cached.summary);
           if (cached?.userTitle) response.userTitle = cached.userTitle;
+          if (cached?.toolTitle) response.toolTitle = cached.toolTitle;
         } catch { /* summary is best-effort */ }
         return response;
       }
