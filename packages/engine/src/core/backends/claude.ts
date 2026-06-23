@@ -80,6 +80,27 @@ export class ClaudeBackend implements ToolBackend {
   toPrefixedId(rawId: string): string { return rawId; }
 
   // ── Location ───────────────────────────────────────────────────
+  /** Claude Code writes an `ai-title` event (`{type:'ai-title', aiTitle}`) into
+   *  the transcript when it auto-titles a session. Return the most recent one.
+   *  Only JSON.parse lines that mention the marker — cheap even on big files. */
+  getNativeTitle(rawId: string): string | null {
+    const located = findSessionFile(rawId);
+    if (!located) return null;
+    let raw: string;
+    try { raw = readFileSync(located.path, 'utf-8'); } catch { return null; }
+    let title: string | null = null;
+    for (const line of raw.split('\n')) {
+      if (!line.includes('"ai-title"')) continue;
+      try {
+        const o = JSON.parse(line);
+        if (o?.type === 'ai-title' && typeof o.aiTitle === 'string' && o.aiTitle.trim()) {
+          title = o.aiTitle.trim().slice(0, 200); // keep last (most recent)
+        }
+      } catch { /* skip malformed */ }
+    }
+    return title;
+  }
+
   findSession(id: string): SessionLocation | null {
     const located = findSessionFile(this.toRawId(id));
     if (!located) return null;

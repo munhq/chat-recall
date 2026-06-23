@@ -23,6 +23,13 @@ export interface SessionMetadata {
    * `null`/absent means "use the auto-derived title (summary/first prompt)".
    */
   userTitle?: string | null;
+  /**
+   * The session's NATIVE title as assigned by the originating tool (Claude
+   * `ai-title`, OpenCode `session.title`, …). Synced from the collector and
+   * written only by `setToolTitle`. Display falls back to it below a user
+   * name but above the AI summary / first prompt. `null` = the tool gave none.
+   */
+  toolTitle?: string | null;
 }
 
 export class MetadataCache {
@@ -52,7 +59,8 @@ export class MetadataCache {
         summary_source TEXT NOT NULL,
         mtime INTEGER NOT NULL,
         indexed_at INTEGER NOT NULL,
-        user_title TEXT
+        user_title TEXT,
+        tool_title TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_mtime ON session_metadata(mtime);
@@ -100,6 +108,8 @@ export class MetadataCache {
     try { this.db.exec('ALTER TABLE compute_cache ADD COLUMN payload_gz BLOB'); } catch { /* col exists */ }
     // Migration for installs predating user-assigned conversation names.
     try { this.db.exec('ALTER TABLE session_metadata ADD COLUMN user_title TEXT'); } catch { /* col exists */ }
+    // Migration for installs predating native tool titles.
+    try { this.db.exec('ALTER TABLE session_metadata ADD COLUMN tool_title TEXT'); } catch { /* col exists */ }
     // Allow payload_json to be NULL post-migration so new gzip-only rows
     // can be inserted without a dummy text payload. SQLite can't drop
     // NOT NULL on an existing column without a table rebuild — accept
@@ -311,9 +321,23 @@ export class MetadataCache {
     `).run(sessionId, Date.now(), title);
   }
 
+  /**
+   * Set (or clear) the NATIVE tool title (Claude ai-title, OpenCode title…),
+   * synced from the collector. Touches ONLY `tool_title` so it never collides
+   * with the summary/first-prompt the indexer writes via set().
+   */
+  setToolTitle(sessionId: string, title: string | null): void {
+    this.db.prepare(`
+      INSERT INTO session_metadata
+      (session_id, first_prompt, summary, summary_source, mtime, indexed_at, tool_title)
+      VALUES (?, '', '', 'original', 0, ?, ?)
+      ON CONFLICT(session_id) DO UPDATE SET tool_title=excluded.tool_title
+    `).run(sessionId, Date.now(), title);
+  }
+
   get(sessionId: string): SessionMetadata | null {
     const stmt = this.db.prepare(`
-      SELECT session_id, first_prompt, summary, summary_source, mtime, indexed_at, user_title
+      SELECT session_id, first_prompt, summary, summary_source, mtime, indexed_at, user_title, tool_title
       FROM session_metadata
       WHERE session_id = ?
     `);
@@ -326,6 +350,7 @@ export class MetadataCache {
       mtime: number;
       indexed_at: number;
       user_title: string | null;
+      tool_title: string | null;
     } | undefined;
     if (!row) return null;
 
@@ -337,6 +362,7 @@ export class MetadataCache {
       mtime: row.mtime,
       indexedAt: row.indexed_at,
       userTitle: row.user_title ?? null,
+      toolTitle: row.tool_title ?? null,
     };
   }
 

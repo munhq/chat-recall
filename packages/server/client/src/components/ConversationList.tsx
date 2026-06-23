@@ -248,17 +248,20 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
   const timeStr = formatTime(r.modified);
   const path = formatProject(r);
 
-  // A user-assigned name (Claude Code's /rename equivalent) wins over the
-  // auto summary/first-prompt for the row title.
+  // Title precedence: user-assigned name (Claude /rename) > the tool's own
+  // native title (Claude ai-title, OpenCode title) > AI summary > first prompt.
   const userTitle = r.userTitle?.trim() || '';
+  const toolTitle = r.toolTitle?.trim() || '';
   const hasSummary = !!r.summary;
-  const hasSummaryError = !userTitle && !hasSummary && !!r.summaryError;
+  const hasSummaryError = !userTitle && !toolTitle && !hasSummary && !!r.summaryError;
   const rawFirstPrompt = stripInjectedBanners(r.firstPrompt || '').trim();
   const titleText = userTitle
     ? userTitle.slice(0, 220)
-    : hasSummary
-      ? getShortSummary(r.summary!, 200)
-      : rawFirstPrompt.slice(0, 220);
+    : toolTitle
+      ? toolTitle.slice(0, 220)
+      : hasSummary
+        ? getShortSummary(r.summary!, 200)
+        : rawFirstPrompt.slice(0, 220);
 
   // Search-only: render every matched chunk (up to a small cap), each
   // windowed around the first query-term hit and with the query terms
@@ -430,8 +433,8 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
 
           {titleText ? (
             <span
-              className={(hasSummary || userTitle) ? undefined : 'cr-conv-title-faded'}
-              title={userTitle ? 'Conversation name' : hasSummary ? 'AI-generated summary' : 'Raw first prompt'}
+              className={(hasSummary || userTitle || toolTitle) ? undefined : 'cr-conv-title-faded'}
+              title={userTitle ? 'Conversation name' : toolTitle ? 'Title from the tool' : hasSummary ? 'AI-generated summary' : 'Raw first prompt'}
             >
               {userTitle ? `🏷️ ${titleText}` : titleText}
             </span>

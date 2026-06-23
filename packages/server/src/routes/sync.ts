@@ -85,6 +85,9 @@ interface SyncConversation {
   /** Legacy per-turn payload (older clients). */
   turns?: SyncTurn[];
   first_prompt?: string;
+  /** Native title assigned by the originating tool (Claude ai-title, OpenCode
+   *  session.title, …). Stored in session_metadata.tool_title. */
+  title?: string;
   mtime?: number;
   meta?: Record<string, unknown>;
 }
@@ -407,6 +410,12 @@ router.post('/', async (req, res) => {
             mtime,
             indexedAt: Date.now(),
           });
+          // 3b. Native tool title (separate column — never clobbered by set()).
+          // Only write when the client sent one, so a re-sync from an older
+          // client can't wipe a previously-captured title.
+          if (typeof cv.title === 'string' && cv.title.trim()) {
+            await metaCache.setToolTitle(cv.session_id, cv.title.trim().slice(0, 200));
+          }
 
           // 4. Conversation envelope — the complete redacted turn view
           // (text + tool calls + result snippets), NOT the raw transcript.
