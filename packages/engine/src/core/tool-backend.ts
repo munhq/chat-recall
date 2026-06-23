@@ -250,6 +250,16 @@ export interface ToolBackend {
   ): SessionCommitsResult;
 
   /**
+   * The session's NATIVE title as the tool itself assigned it — Claude's
+   * `ai-title` event, OpenCode's `session.title` column, etc. Returns null when
+   * the tool gives none (Gemini) or the value is just the first prompt again.
+   * Read at sync time (once per session), NOT in listSessions — keep listing
+   * cheap. Optional: backends without a native title omit it. `rawId` is the
+   * backend-internal id (no prefix).
+   */
+  getNativeTitle?(rawId: string): string | null;
+
+  /**
    * The session's raw capture for the archive (Phase 2): every byte needed
    * to re-render it later, independent of the tool's mutable storage.
    * File-based tools return their transcript (+ subagent sidecars) verbatim;

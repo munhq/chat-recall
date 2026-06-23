@@ -479,13 +479,17 @@ export class PgStore implements StorageDriver {
     const q = query.trim();
     if (q && (!sourceTypes || sourceTypes.includes('session'))) {
       const np: unknown[] = [this.t, `%${q}%`];
-      let nwhere = `sm.tenant=$1 AND sm.user_title ILIKE $2 AND sm.user_title IS NOT NULL AND sm.user_title <> ''`;
+      // Match a user-assigned name OR the tool's native title (Claude ai-title,
+      // OpenCode session.title). The display title prefers the user name.
+      let nwhere = `sm.tenant=$1 AND (sm.user_title ILIKE $2 OR sm.tool_title ILIKE $2)`;
       if (projectIdFilter) { np.push(`%${projectIdFilter}%`); nwhere += ` AND mm.project_path ILIKE $${np.length}`; }
       np.push(topK);
       try {
         namedRows = await this.q(
           `SELECT sm.session_id AS chunk_id, sm.session_id AS item_id, 'session' AS source_type,
-                  sm.user_title AS title, sm.user_title AS text, 'user:title' AS chunk_type,
+                  COALESCE(NULLIF(sm.user_title,''), sm.tool_title) AS title,
+                  COALESCE(NULLIF(sm.user_title,''), sm.tool_title) AS text,
+                  CASE WHEN sm.user_title ILIKE $2 THEN 'user:title' ELSE 'tool:title' END AS chunk_type,
                   mm.project_path, mm.file_path, mm.mtime, 1.0 AS rank
            FROM session_metadata sm
            JOIN memory_metadata mm ON mm.tenant=sm.tenant AND mm.id=sm.session_id AND mm.source_type='session'

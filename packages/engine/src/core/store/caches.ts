@@ -54,6 +54,7 @@ export interface MetadataCacheDriver {
   clearSummaryError: AsyncMethod<MetadataCache['clearSummaryError']>;
   set: AsyncMethod<MetadataCache['set']>;
   setUserTitle: AsyncMethod<MetadataCache['setUserTitle']>;
+  setToolTitle: AsyncMethod<MetadataCache['setToolTitle']>;
   get: AsyncMethod<MetadataCache['get']>;
   needsUpdate: AsyncMethod<MetadataCache['needsUpdate']>;
   getStats: AsyncMethod<MetadataCache['getStats']>;
@@ -77,6 +78,7 @@ export class SqliteMetadataCache implements MetadataCacheDriver {
   async clearSummaryError(...a: MArgs<'clearSummaryError'>) { return this.inner.clearSummaryError(...a); }
   async set(...a: MArgs<'set'>) { return this.inner.set(...a); }
   async setUserTitle(...a: MArgs<'setUserTitle'>) { return this.inner.setUserTitle(...a); }
+  async setToolTitle(...a: MArgs<'setToolTitle'>) { return this.inner.setToolTitle(...a); }
   async get(...a: MArgs<'get'>) { return this.inner.get(...a); }
   async needsUpdate(...a: MArgs<'needsUpdate'>) { return this.inner.needsUpdate(...a); }
   async getStats(...a: MArgs<'getStats'>) { return this.inner.getStats(...a); }
@@ -156,9 +158,17 @@ export class PgMetadataCache implements MetadataCacheDriver {
        ON CONFLICT (tenant,session_id) DO UPDATE SET user_title=excluded.user_title`,
       [this.t, sessionId, Date.now(), title]);
   }
+  async setToolTitle(sessionId: string, title: string | null) {
+    // Native tool title (synced); touches only tool_title.
+    await this.q(
+      `INSERT INTO session_metadata (tenant,session_id,first_prompt,summary,summary_source,mtime,indexed_at,tool_title)
+       VALUES ($1,$2,'','','original',0,$3,$4)
+       ON CONFLICT (tenant,session_id) DO UPDATE SET tool_title=excluded.tool_title`,
+      [this.t, sessionId, Date.now(), title]);
+  }
   async get(...a: MArgs<'get'>) {
-    const r = (await this.q(`SELECT session_id, first_prompt, summary, summary_source, mtime, indexed_at, user_title FROM session_metadata WHERE tenant=$1 AND session_id=$2`, [this.t, a[0]]))[0];
-    return r ? { sessionId: r.session_id, firstPrompt: r.first_prompt, summary: r.summary, summarySource: r.summary_source, mtime: r.mtime, indexedAt: r.indexed_at, userTitle: r.user_title ?? null } : null;
+    const r = (await this.q(`SELECT session_id, first_prompt, summary, summary_source, mtime, indexed_at, user_title, tool_title FROM session_metadata WHERE tenant=$1 AND session_id=$2`, [this.t, a[0]]))[0];
+    return r ? { sessionId: r.session_id, firstPrompt: r.first_prompt, summary: r.summary, summarySource: r.summary_source, mtime: r.mtime, indexedAt: r.indexed_at, userTitle: r.user_title ?? null, toolTitle: r.tool_title ?? null } : null;
   }
   async needsUpdate(...a: MArgs<'needsUpdate'>) {
     const cached = await this.get(a[0]); return !cached || cached.mtime < intMs(a[1]);

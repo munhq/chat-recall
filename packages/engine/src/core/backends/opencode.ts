@@ -202,6 +202,19 @@ export class OpencodeBackend implements ToolBackend {
     } finally { db.close(); }
   }
 
+  /** OpenCode auto-generates a session title (model-written, distinct from the
+   *  first prompt — e.g. "Replacing Claude with Gemini CLI"). It's a plain
+   *  column on the session row. */
+  getNativeTitle(rawId: string): string | null {
+    const db = openReadonly(this.dbPath());
+    if (!db) return null;
+    try {
+      const row = db.prepare('SELECT title FROM session WHERE id = ?').get(rawId) as { title: string | null } | undefined;
+      const t = row?.title?.trim();
+      return t ? t.slice(0, 200) : null;
+    } catch { return null; } finally { db.close(); }
+  }
+
   // ── Generic-engine inputs ───────────────────────────────────────
 
   readonly fileToolMap: Record<string, EditOp> = {

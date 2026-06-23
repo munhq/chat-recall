@@ -1478,7 +1478,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const qs = new URLSearchParams({ limit: String(params.limit) });
         if (params.since_hours) qs.set('since_hours', String(params.since_hours));
         if (params.project_filter) qs.set('project', params.project_filter);
-        const remote = await remoteGet<{ sessions: Array<{ sessionId: string; projectPath: string; modified: string; firstPrompt: string; summary?: string; tool?: string; userTitle?: string | null }>; total: number }>(
+        const remote = await remoteGet<{ sessions: Array<{ sessionId: string; projectPath: string; modified: string; firstPrompt: string; summary?: string; tool?: string; userTitle?: string | null; toolTitle?: string | null }>; total: number }>(
           `/api/conversations/recent?${qs.toString()}`,
         );
         if (!remote.sessions?.length) {
@@ -1494,7 +1494,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         for (let i = 0; i < remote.sessions.length; i++) {
           const s = remote.sessions[i];
           const named = s.userTitle?.trim();
-          const display = (named || s.summary || s.firstPrompt || '(no prompt)').replace(/\n/g, ' ').slice(0, 120);
+          const display = (named || s.toolTitle?.trim() || s.summary || s.firstPrompt || '(no prompt)').replace(/\n/g, ' ').slice(0, 120);
           lines.push(`## #${i + 1}: ${named ? `🏷️ ${display}` : display}`);
           lines.push(`**Tool:** ${s.tool || 'claude'}  ·  **Project:** ${s.projectPath || '(hashed)'}  ·  **Modified:** ${(s.modified || '').slice(0, 16).replace('T', ' ')}`);
           lines.push(`**Session ID:** \`${s.sessionId}\``);

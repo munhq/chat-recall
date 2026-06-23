@@ -29,8 +29,8 @@ describe('MetadataCache', () => {
   test('set + get round-trips a row', () => {
     cache.set(sample);
     const got = cache.get('s1');
-    // set() never writes user_title, so a freshly-set row reads back null.
-    expect(got).toEqual({ ...sample, userTitle: null });
+    // set() never writes the title columns, so a freshly-set row reads null.
+    expect(got).toEqual({ ...sample, userTitle: null, toolTitle: null });
   });
 
   test('setUserTitle round-trips and set() never clobbers it', () => {
@@ -48,6 +48,24 @@ describe('MetadataCache', () => {
     // Empty/null clears it back to the auto title.
     cache.setUserTitle('s1', null);
     expect(cache.get('s1')!.userTitle).toBeNull();
+  });
+
+  test('setToolTitle, setUserTitle and set() never clobber each other', () => {
+    cache.set(sample);
+    cache.setToolTitle('s1', 'Compare Claude and Gemini');   // native tool title
+    cache.setUserTitle('s1', 'launch notes');                // user override
+    let got = cache.get('s1')!;
+    expect(got.toolTitle).toBe('Compare Claude and Gemini');
+    expect(got.userTitle).toBe('launch notes');
+
+    // A re-sync (set() + setToolTitle) refreshes summary + tool title but must
+    // preserve the user's name.
+    cache.set({ ...sample, summary: 'resynced', mtime: 9000 });
+    cache.setToolTitle('s1', 'Compare Claude, Gemini, OpenCode');
+    got = cache.get('s1')!;
+    expect(got.summary).toBe('resynced');
+    expect(got.toolTitle).toBe('Compare Claude, Gemini, OpenCode');
+    expect(got.userTitle).toBe('launch notes');
   });
 
   test('setUserTitle creates a stub row when none exists yet', () => {

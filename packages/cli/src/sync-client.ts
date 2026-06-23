@@ -900,6 +900,17 @@ export async function buildConversationSync(
 
   const envTexts = envelope.messages.filter((m) => m.content?.trim());
   const redactedText = envTexts.map((m) => m.content).join('\n');
+
+  // Native tool title (Claude ai-title, OpenCode session.title, …). Fetched
+  // once here at sync time — NOT in listSessions, which must stay cheap.
+  // Redacted like any other synced string. Backends without one return null.
+  let toolTitle: string | undefined;
+  try {
+    const backend = getBackendForId(ref.prefixedId);
+    const native = backend?.getNativeTitle?.(ref.rawId);
+    if (native && native.trim()) toolTitle = redactSecrets(native.trim(), { force: true, count }).slice(0, 200);
+  } catch { /* best-effort — title is optional */ }
+
   return {
     conv: {
       session_id: ref.prefixedId,
@@ -913,6 +924,7 @@ export async function buildConversationSync(
       raw_b64,
       raw_size,
       first_prompt: (envTexts.find((m) => m.role === 'user')?.content as string | undefined)?.slice(0, 200),
+      title: toolTitle,
       meta,
       mtime,
     },
