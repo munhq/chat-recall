@@ -15,6 +15,7 @@
  */
 import express from 'express';
 import { openPgPool, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
+import { latestPoolStats, queryCostSummary } from '../middleware/request-cost.js';
 
 const router = express.Router();
 
@@ -63,6 +64,14 @@ router.get('/', async (req, res) => {
     out.push(line('chatrecall_secret_findings_total', 'Secret findings across all tenants', findings));
     out.push(line('chatrecall_secret_findings_verified', 'Secret findings confirmed LIVE by the verifier — alert on this', verified));
     out.push(line('chatrecall_tenants_total', 'Provisioned tenants', tenants));
+
+    // pg pool saturation — the direct overload signal that rate limits defend.
+    // waiting>0 sustained ⇒ requests are queueing for a DB connection (at the
+    // ceiling). Sampled by the cost-telemetry background loop.
+    const ps = latestPoolStats();
+    out.push(line('chatrecall_pg_pool_total', 'pg pool connections open', ps.total));
+    out.push(line('chatrecall_pg_pool_idle', 'pg pool connections idle', ps.idle));
+    out.push(line('chatrecall_pg_pool_waiting', 'requests waiting for a pg connection — alert if sustained >0', ps.waiting));
   } catch (e) {
     // Surface a scrapeable down-signal instead of a 500 so Prometheus can alert
     // on chatrecall_up==0 rather than a missing target.
@@ -72,6 +81,24 @@ router.get('/', async (req, res) => {
   }
 
   res.set('Content-Type', 'text/plain; version=0.0.4').send(out.join('\n') + '\n');
+});
+
+// Rate-limit cost telemetry summary (JSON): per-class latency percentiles +
+// request rate, the noisiest tenants, and pool saturation over a window. This
+// is the input for deriving real limits from observed cost/traffic (vs guessed
+// constants). Gated by the same METRICS_TOKEN. ?window=<minutes> (default 60).
+router.get('/rl-cost', async (req, res) => {
+  const token = process.env.METRICS_TOKEN;
+  if (token && req.headers.authorization !== `Bearer ${token}`) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  try {
+    const windowMinutes = Math.max(1, Math.min(Number(req.query.window) || 60, 10080));
+    const summary = await queryCostSummary(windowMinutes);
+    res.json({ windowMinutes, ...summary });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 export default router;
