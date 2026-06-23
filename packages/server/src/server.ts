@@ -17,7 +17,7 @@ import editsRouter from './routes/edits.js';
 import toolkitRouter from './routes/toolkit.js';
 import secretsRouter from './routes/secrets.js';
 import { tenantAuth } from './middleware/auth.js';
-import { apiLimiter } from './middleware/rate-limit.js';
+import { apiLimiter, rl } from './middleware/rate-limit.js';
 import metricsRouter from './routes/metrics.js';
 import adminRouter from './routes/admin.js';
 import accountRouter from './routes/account.js';
@@ -126,27 +126,30 @@ app.use('/api/account', accountRouter);
 // can see state, subscribe, and configure without already being paid.
 const paid = requireEntitlement;
 
-// Routes
-app.use('/api/search', paid, searchRouter);
-app.use('/api/conversations', paid, conversationsRouter);
-app.use('/api/status', statusRouter);
-app.use('/api/memory', paid, memoryRouter);
-app.use('/api/analytics', paid, analyticsRouter);
-app.use('/api/secrets', paid, secretsRouter);
+// Routes. Per-tenant class limiters (token bucket + concurrency) sit after the
+// per-IP apiLimiter and tenantAuth: 'read-heavy' for FTS/vector/analytics and
+// per-session compute; 'read-light' for cheap reads; 'write-light' for the
+// recall write surfaces. Report-only until RATE_LIMIT_ENFORCE=1.
+app.use('/api/search', paid, rl('read-heavy'), searchRouter);
+app.use('/api/conversations', paid, rl('read-heavy'), conversationsRouter);
+app.use('/api/status', rl('read-light'), statusRouter);
+app.use('/api/memory', paid, rl('read-heavy'), memoryRouter);
+app.use('/api/analytics', paid, rl('read-heavy'), analyticsRouter);
+app.use('/api/secrets', paid, rl('read-light'), secretsRouter);
 
 // Store-backed in both modes: the edits timeline reads synced compute_cache
 // diff rows, the projects tree reads memory_metadata project_ids.
-app.use('/api/edits', paid, editsRouter);
-app.use('/api/projects', paid, projectsRouter);
+app.use('/api/edits', paid, rl('read-heavy'), editsRouter);
+app.use('/api/projects', paid, rl('read-light'), projectsRouter);
 
 // Recall surfaces for the thin-collector MCP: knowledge graph + key-value.
 // Tenant-scoped via the same tenantAuth above; readable/writable over HTTP so
 // the MCP server needs no local store.
-app.use('/api/kg', paid, kgRouter);
-app.use('/api/kv', paid, kvRouter);
-app.use('/api/diary', paid, diaryRouter);
-app.use('/api/files', paid, filesRouter);
-app.use('/api/subagents', paid, subagentsRouter);
+app.use('/api/kg', paid, rl('write-light'), kgRouter);
+app.use('/api/kv', paid, rl('write-light'), kvRouter);
+app.use('/api/diary', paid, rl('write-light'), diaryRouter);
+app.use('/api/files', paid, rl('read-light'), filesRouter);
+app.use('/api/subagents', paid, rl('read-light'), subagentsRouter);
 
 // FS-backed routers exist only in local mode: in a server deployment data
 // arrives via /api/sync and there is no settings file the UI should edit
