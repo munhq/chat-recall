@@ -45,6 +45,7 @@ import {
 import type { SourceType } from '../imports.js';
 import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js';
 import { notifyVerifiedSecrets, type VerifiedHit } from '../services/notify.js';
+import { ingestGate } from '../middleware/rate-limit.js';
 
 const router = express.Router();
 
@@ -272,6 +273,19 @@ router.post('/', async (req, res) => {
   const tombstones = arr<SyncTombstone>(req.body?.tombstones);
   const dismissals = arr<SyncDismissal>(req.body?.dismissals);
   const customRules = arr<SyncCustomRule>(req.body?.custom_rules);
+
+  // Ingest backpressure: bound concurrent ingestion (per-tenant + global) and
+  // cost the batch by row count, shedding with 429 + Retry-After (which the
+  // collector honors). This guards the one surface the per-IP limiter skips —
+  // the DB-write path that browned out a node before. Keyed on the token tenant.
+  const rowCount = conversations.length + items.length + links.length + findings.length
+    + derived.length + kgEntities.length + kgTriples.length + tombstones.length
+    + dismissals.length + customRules.length;
+  const gate = await ingestGate(agent.tenant, rowCount);
+  if (!gate.ok) {
+    res.setHeader('Retry-After', String(Math.max(1, Math.ceil(gate.retryAfterMs / 1000))));
+    return res.status(429).json({ error: 'ingest rate limit — retry shortly', retry_after_ms: gate.retryAfterMs });
+  }
 
   try {
     const result = await runWithTenant(agent.tenant, async () => {
@@ -587,6 +601,8 @@ router.post('/', async (req, res) => {
   } catch (e) {
     console.error('sync ingest error:', e);
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  } finally {
+    gate.release();   // free the ingest concurrency slot
   }
 });
 
