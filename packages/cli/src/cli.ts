@@ -197,6 +197,7 @@ program
           'recall_user_prompts', 'recall_decision_record', 'recall_analytics_summary',
           'recall_wake_up', 'recall_similar_sessions', 'recall_session_files',
           'recall_redundant_files', 'recall_set', 'recall_get', 'recall_kv_list',
+          'recall_rename_session',
           'recall_help',
         ];
         const existing = mcpServers['chat-recall'] as { command?: string; args?: string[]; alwaysAllow?: string[] } | undefined;
@@ -1648,6 +1649,36 @@ program
     }
     if (ok === 0) process.exit(1);
     console.log(chalk.dim(`Tombstoned on ${ok}/${targets.length} server(s) — re-sync cannot resurrect it.`));
+  });
+
+program
+  .command('rename <session-id> <name>')
+  .description('Give a session a memorable name on every logged-in server (mirrors Claude Code\'s /rename — shows in `recall recent` and the web UI in place of the auto summary). Pass an empty name "" to clear it and revert to the auto title.')
+  .action(async (sessionId: string, name: string) => {
+    const { loadAllCredentials } = await import('./sync-client.js');
+    const targets = loadAllCredentials();
+    if (targets.length === 0) {
+      console.error(chalk.red('Not logged in — run `chat-recall login <server-url>` first.'));
+      process.exit(1);
+    }
+    let ok = 0;
+    for (const t of targets) {
+      try {
+        const res = await fetch(`${t.serverUrl.replace(/\/+$/, '')}/api/conversations/${encodeURIComponent(sessionId)}`, {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${t.token}` },
+          body: JSON.stringify({ name }),
+        });
+        if (res.ok) { ok++; console.log(chalk.green(`✓ ${name.trim() ? 'Named' : 'Cleared name'} on ${t.serverUrl}`)); }
+        else console.error(chalk.red(`✗ ${t.serverUrl}: HTTP ${res.status}`));
+      } catch (e) {
+        console.error(chalk.red(`✗ ${t.serverUrl}: ${e instanceof Error ? e.message : 'failed'}`));
+      }
+    }
+    if (ok === 0) process.exit(1);
+    console.log(chalk.dim(name.trim()
+      ? `Named "${name.trim()}" on ${ok}/${targets.length} server(s).`
+      : `Cleared name on ${ok}/${targets.length} server(s).`));
   });
 
 program
