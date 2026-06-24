@@ -1776,4 +1776,21 @@ program
     }
   });
 
+program
+  .command('reconcile')
+  .description("Reconcile DERIVED FIELDS (e.g. native title) on every logged-in server WITHOUT re-syncing conversations. Scans each session once for any missing field, pushes only that field, and records 'scanned/absent' so it never retries. Normal `sync` does this automatically; run this for an explicit on-demand backfill. `--force` re-scans every session (ignores the coverage ledger).")
+  .option('--force', 'Re-scan and re-push every field for every session')
+  .action(async (opts: { force?: boolean }) => {
+    const { reconcileFields } = await import('./sync-client.js');
+    try {
+      const r = await reconcileFields({ force: !!opts.force });
+      const per = Object.entries(r.perTarget).map(([s, v]) => `${s}: ${v.pushed} pushed`).join(', ');
+      console.log(chalk.green(`✓ Reconciled derived fields`) + chalk.dim(
+        ` — ${r.sessions} sessions, ${r.scanned} scanned, ${r.pushed} pushed, ${r.absent} absent${per ? ` (${per})` : ''}`));
+    } catch (err) {
+      console.error(chalk.red('reconcile failed:'), err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
+  });
+
 program.parse();

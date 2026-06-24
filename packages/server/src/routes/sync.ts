@@ -85,9 +85,6 @@ interface SyncConversation {
   /** Legacy per-turn payload (older clients). */
   turns?: SyncTurn[];
   first_prompt?: string;
-  /** Native title assigned by the originating tool (Claude ai-title, OpenCode
-   *  session.title, …). Stored in session_metadata.tool_title. */
-  title?: string;
   mtime?: number;
   meta?: Record<string, unknown>;
 }
@@ -137,6 +134,10 @@ interface SyncKgTriple {
 interface SyncTombstone { session_id: string; deleted_at?: number }
 interface SyncDismissal { preview: string; status: string; reason?: string | null }
 interface SyncCustomRule { name: string; regex: string; severity: string; description?: string | null; enabled?: boolean }
+/** Generic derived-field row (see engine core/sync-fields.ts + the client's
+ *  field reconciliation): set ONE column for one session WITHOUT re-pushing the
+ *  conversation. `value: null` clears it. `field` is routed through FIELD_SETTERS. */
+interface SyncFieldRow { session_id: string; field: string; value?: string | null }
 
 /** Non-session source types the items[] path accepts. Sessions must come
  *  through conversations[] (they carry turns + telemetry meta). */
@@ -150,6 +151,14 @@ const COMPUTE_KINDS = new Set(['diff', 'outcome', 'commits', 'markers']);
 
 const DISMISSAL_STATUSES = new Set(['rotated', 'false_positive', 'dismissed']);
 const RULE_SEVERITIES = new Set(['critical', 'high', 'medium', 'low']);
+
+/** Derived-field router: field name → how its value lands server-side. The
+ *  client scans these locally (engine core/sync-fields.ts) and ships them via
+ *  the fields[] batch, conversation-free. Add a field in BOTH places. */
+type MetaCache = Awaited<ReturnType<typeof createMetadataCache>>;
+const FIELD_SETTERS: Record<string, (cache: MetaCache, sessionId: string, value: string | null) => Promise<void>> = {
+  tool_title: (cache, id, v) => cache.setToolTitle(id, v),
+};
 
 /** Chunk a conversation's turns for FTS. Mirrors the local chunker's
  *  granularity goal (search hits land on a turn, not a 140KB blob) without
@@ -276,6 +285,7 @@ router.post('/', async (req, res) => {
   const tombstones = arr<SyncTombstone>(req.body?.tombstones);
   const dismissals = arr<SyncDismissal>(req.body?.dismissals);
   const customRules = arr<SyncCustomRule>(req.body?.custom_rules);
+  const fields = arr<SyncFieldRow>(req.body?.fields);
 
   // Ingest backpressure: bound concurrent ingestion (per-tenant + global) and
   // cost the batch by row count, shedding with 429 + Retry-After (which the
@@ -283,7 +293,7 @@ router.post('/', async (req, res) => {
   // the DB-write path that browned out a node before. Keyed on the token tenant.
   const rowCount = conversations.length + items.length + links.length + findings.length
     + derived.length + kgEntities.length + kgTriples.length + tombstones.length
-    + dismissals.length + customRules.length;
+    + dismissals.length + customRules.length + fields.length;
   (req as any).rlClass = 'ingest';          // cost-telemetry tags
   (req as any).tenant = (req as any).tenant || agent.tenant;
   const gate = await ingestGate(agent.tenant, rowCount);
@@ -296,7 +306,7 @@ router.post('/', async (req, res) => {
     const result = await runWithTenant(agent.tenant, async () => {
       const store = await createStore();
       const metaCache = await createMetadataCache();
-      let conv = 0, item = 0, link = 0, find = 0, der = 0, kgE = 0, kgT = 0, chunks = 0, dead = 0;
+      let conv = 0, item = 0, link = 0, find = 0, der = 0, kgE = 0, kgT = 0, chunks = 0, dead = 0, fielded = 0;
       // Accumulate chunks + item-metadata across the WHOLE batch and flush each
       // ONCE (bulk, single transaction) instead of per conversation/item — turns
       // thousands of round-trips into a handful. Chunks from different items are
@@ -416,12 +426,8 @@ router.post('/', async (req, res) => {
             mtime,
             indexedAt: Date.now(),
           });
-          // 3b. Native tool title (separate column — never clobbered by set()).
-          // Only write when the client sent one, so a re-sync from an older
-          // client can't wipe a previously-captured title.
-          if (typeof cv.title === 'string' && cv.title.trim()) {
-            await metaCache.setToolTitle(cv.session_id, cv.title.trim().slice(0, 200));
-          }
+          // Native tool title is NOT set here — it's a derived field reconciled
+          // via the fields[] batch (sync-fields.ts), conversation-free.
 
           // 4. Conversation envelope — the complete redacted turn view
           // (text + tool calls + result snippets), NOT the raw transcript.
@@ -605,6 +611,18 @@ router.post('/', async (req, res) => {
             enabled: r.enabled !== false,
           });
         }
+        // Derived-field backfill: set ONE column per row (no conversation
+        // re-push). Idempotent; routed by field name. Unknown fields are
+        // ignored (forward-compat: a newer client may send a field this server
+        // doesn't know yet). value:null clears.
+        for (const fr of fields) {
+          if (!fr.session_id || !fr.field) continue;
+          const setter = FIELD_SETTERS[fr.field];
+          if (!setter) continue;
+          const v = typeof fr.value === 'string' ? fr.value.trim().slice(0, 200) : '';
+          await setter(metaCache, fr.session_id, v || null);
+          fielded++;
+        }
       } finally {
         await metaCache.close();
         await store.close();
@@ -615,7 +633,7 @@ router.post('/', async (req, res) => {
       if (req.body?.prune_empty_sessions === true) {
         try { pruned = await store.pruneEmptySessions(); } catch { /* best-effort */ }
       }
-      return { conv, item, link, find, der, kgE, kgT, chunks, dead, pruned };
+      return { conv, item, link, find, der, kgE, kgT, chunks, dead, pruned, fielded };
     });
 
     res.json({ ok: true, ...result, tenant: agent.tenant, ack_at: new Date().toISOString() });

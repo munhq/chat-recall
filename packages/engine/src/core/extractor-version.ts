@@ -24,3 +24,8 @@
  *       (all Edit/Write/Bash work) from chunks, summaries, and diffs.
  */
 export const EXTRACTOR_VERSION = 2;
+
+// Per-FIELD versions (native title, …) used to live here. They now live with
+// each field in the derived-field registry (core/sync-fields.ts), so adding or
+// re-versioning a field is one local edit and the sync/ledger stay generic.
+// A field re-scan pushes only that field — it never re-pushes conversations.
