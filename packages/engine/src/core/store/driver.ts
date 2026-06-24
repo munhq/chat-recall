@@ -31,6 +31,7 @@ type AsyncMethod<M> = M extends (...args: infer A) => infer R
 export interface StorageDriver {
   // ── metadata / items ──
   setItem: AsyncMethod<MemoryStore['setItem']>;
+  setItems: AsyncMethod<MemoryStore['setItems']>;
   getItem: AsyncMethod<MemoryStore['getItem']>;
   needsUpdate: AsyncMethod<MemoryStore['needsUpdate']>;
   listItems: AsyncMethod<MemoryStore['listItems']>;
