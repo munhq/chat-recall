@@ -89,3 +89,38 @@ describe('GET /api/toolkit/item/:type/:id', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('GET /api/toolkit/matrix', () => {
+  test('covers all four sync types with id-bearing cells', async () => {
+    const res = await request(app).get('/api/toolkit/matrix');
+    expect(res.status).toBe(200);
+    for (const t of ['skill', 'mcp', 'command', 'agent']) {
+      expect(res.body).toHaveProperty(t);
+    }
+    // supportedTargets includes the cross-tool types, each with 4 tools.
+    expect(res.body.supportedTargets.skill).toEqual(
+      expect.arrayContaining(['claude', 'gemini', 'opencode', 'codex']));
+    expect(res.body.supportedTargets.command).toEqual(
+      expect.arrayContaining(['claude', 'gemini', 'opencode', 'codex']));
+  });
+});
+
+describe('POST /api/toolkit/sync-all', () => {
+  test('dry-run returns a plan + totalToCopy', async () => {
+    const res = await request(app).post('/api/toolkit/sync-all').send({ dryRun: true });
+    expect(res.status).toBe(200);
+    expect(res.body.dryRun).toBe(true);
+    expect(Array.isArray(res.body.plan)).toBe(true);
+    expect(typeof res.body.totalToCopy).toBe('number');
+    // Every planned entry is one of the four supported sync types.
+    for (const p of res.body.plan as any[]) {
+      expect(['skill', 'mcp', 'command', 'agent']).toContain(p.type);
+    }
+  });
+
+  test('accepts a type filter', async () => {
+    const res = await request(app).post('/api/toolkit/sync-all').send({ dryRun: true, types: ['command'] });
+    expect(res.status).toBe(200);
+    for (const p of res.body.plan as any[]) expect(p.type).toBe('command');
+  });
+});

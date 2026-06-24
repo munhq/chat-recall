@@ -1,16 +1,20 @@
 /**
- * Slash commands memory source.
+ * Slash / custom command memory source — all four tools.
  *
- * Claude Code stores user-defined slash commands as markdown files at
- * ~/.claude/commands/<name>.md plus per-project .claude/commands/<name>.md.
- * Each file's frontmatter (name, description) describes the command.
+ * Commands are reusable prompt templates invoked as `/name`. Each tool stores
+ * them differently:
+ *   - Claude    — ~/.claude/commands/<name>.md            (+ project .claude/commands)
+ *   - OpenCode  — ~/.config/opencode/commands/<name>.md
+ *   - Codex     — ~/.codex/prompts/<name>.md              (flat; invoked /prompts:name)
+ *   - Gemini    — ~/.gemini/commands/<name>.toml          (TOML: prompt + description)
  *
- * Gemini and OpenCode don't have an analogous user-defined slash command
- * surface today, so this source is Claude-only.
+ * Markdown forms keep the prompt in the body; Gemini's TOML keeps it in a
+ * `prompt` scalar. We normalize both to one MemoryItem so search + the
+ * cross-tool sync codec have a single representation. `extra.format` records
+ * the on-disk encoding so the codec knows how to round-trip.
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
-import { homedir } from 'os';
 import { join, basename } from 'path';
 
 import type {
@@ -21,72 +25,101 @@ import type {
   SourceType,
 } from '../types/memory.js';
 import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
+import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
+import { opencodeBackend as OPENCODE } from '../core/backends/opencode.js';
+import { codexBackend as CODEX } from '../core/backends/codex.js';
 import { isSourceEnabled } from '../core/settings.js';
+import { parseFrontmatter, parseScalarToml } from '../core/toolkit-format.js';
 
 const MAX_CHUNK_CHARS = 2000;
 
-function parseFrontmatter(text: string): { name?: string; description?: string } {
-  const m = text.match(/^---\n([\s\S]*?)\n---/);
-  if (!m) return {};
-  const out: { name?: string; description?: string } = {};
-  for (const line of m[1].split('\n')) {
-    const kv = line.match(/^(\w+):\s*(.+)$/);
-    if (!kv) continue;
-    const k = kv[1].toLowerCase();
-    const v = kv[2].trim().replace(/^["']|["']$/g, '');
-    if (k === 'name') out.name = v;
-    if (k === 'description') out.description = v;
+type CmdTool = 'claude' | 'gemini' | 'opencode' | 'codex';
+
+interface CmdRoot {
+  path: string;
+  tool: CmdTool;
+  scope: string;
+  projectPath: string;
+  format: 'md' | 'toml';
+}
+
+/** Pull (name, description, body) out of a command file in either encoding. */
+function parseCommand(content: string, fallbackName: string, format: 'md' | 'toml'):
+  { name: string; description: string; body: string } {
+  if (format === 'toml') {
+    const t = parseScalarToml(content);
+    return {
+      name: t.name || fallbackName,
+      description: t.description || '',
+      body: t.prompt || '',
+    };
   }
-  return out;
+  const { fm, body } = parseFrontmatter(content);
+  return {
+    name: fm.name || fallbackName,
+    description: fm.description || '',
+    body: body.trim(),
+  };
 }
 
 export class SlashCommandsSource implements MemorySource {
   readonly sourceType = 'command' as SourceType;
 
-  async *discover(): AsyncGenerator<MemoryItem> {
-    if (!isSourceEnabled('claude', 'commands')) return;
-    const roots: { path: string; scope: string }[] = [
-      { path: CLAUDE.commandsDir(), scope: 'user' },
-    ];
+  private roots(): CmdRoot[] {
+    const roots: CmdRoot[] = [];
 
-    // Per-project .claude/commands/ — discover from known project dirs.
-    const projectsRoot = CLAUDE.projectsDir();
-    if (existsSync(projectsRoot)) {
-      try {
-        for (const entry of readdirSync(projectsRoot, { withFileTypes: true })) {
-          if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-          const projectPath = entry.name.replace(/^-/, '/').replace(/-/g, '/');
-          const cmdDir = join(projectPath, '.claude', 'commands');
-          if (existsSync(cmdDir)) roots.push({ path: cmdDir, scope: 'project' });
-        }
-      } catch { /* skip */ }
+    if (isSourceEnabled('claude', 'commands')) {
+      roots.push({ path: CLAUDE.commandsDir(), tool: 'claude', scope: 'user', projectPath: '', format: 'md' });
+      // Per-project .claude/commands/ — discovered from known project dirs.
+      const projectsRoot = CLAUDE.projectsDir();
+      if (existsSync(projectsRoot)) {
+        try {
+          for (const entry of readdirSync(projectsRoot, { withFileTypes: true })) {
+            if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+            const projectPath = entry.name.replace(/^-/, '/').replace(/-/g, '/');
+            const cmdDir = join(projectPath, '.claude', 'commands');
+            if (existsSync(cmdDir)) roots.push({ path: cmdDir, tool: 'claude', scope: 'project', projectPath, format: 'md' });
+          }
+        } catch { /* skip */ }
+      }
     }
+    if (isSourceEnabled('gemini', 'commands')) {
+      roots.push({ path: GEMINI.commandsDir(), tool: 'gemini', scope: 'user', projectPath: '', format: 'toml' });
+    }
+    if (isSourceEnabled('opencode', 'commands')) {
+      roots.push({ path: OPENCODE.commandsDir(), tool: 'opencode', scope: 'user', projectPath: '', format: 'md' });
+    }
+    if (isSourceEnabled('codex', 'commands')) {
+      roots.push({ path: CODEX.promptsDir(), tool: 'codex', scope: 'user', projectPath: '', format: 'md' });
+    }
+    return roots;
+  }
 
-    for (const root of roots) {
+  async *discover(): AsyncGenerator<MemoryItem> {
+    for (const root of this.roots()) {
+      const ext = root.format === 'toml' ? '.toml' : '.md';
       let files: string[];
-      try { files = readdirSync(root.path).filter(f => f.endsWith('.md')); } catch { continue; }
+      try { files = readdirSync(root.path).filter(f => f.endsWith(ext)); } catch { continue; }
       for (const file of files) {
         const filePath = join(root.path, file);
         try {
           const stat = statSync(filePath);
           const content = readFileSync(filePath, 'utf-8');
-          const fm = parseFrontmatter(content);
-          const cmdName = fm.name || basename(file, '.md');
+          const parsed = parseCommand(content, basename(file, ext), root.format);
           yield {
-            id: `claude_cmd_${root.scope}_${cmdName}`,
+            id: `${root.tool}_cmd_${root.scope}_${parsed.name}`,
             sourceType: 'command',
-            title: cmdName,
-            projectPath: root.scope === 'project'
-              ? root.path.replace(/\/\.claude\/commands$/, '')
-              : '',
+            title: parsed.name,
+            projectPath: root.projectPath,
             filePath,
             mtime: stat.mtimeMs,
-            contentPreview: (fm.description || content.replace(/^---[\s\S]*?---/, '').trim()).slice(0, 300),
+            contentPreview: (parsed.description || parsed.body).slice(0, 300),
             extra: {
-              tool: 'claude',
-              commandName: cmdName,
-              description: fm.description || '',
+              tool: root.tool,
+              commandName: parsed.name,
+              description: parsed.description,
               scope: root.scope,
+              format: root.format,
             },
           };
         } catch { /* skip */ }

@@ -305,33 +305,18 @@ program
       }
       console.log();
 
-      // Step 7: Install the per-user background sync service so new
-      // conversations ship automatically without the user ever re-running
-      // anything. Linux: systemd --user (+ linger). macOS: launchd (KeepAlive).
-      // Windows: Scheduled Task (onlogon). On by default — this is what makes
-      // chat-recall "install once, done" for a SaaS user. --skip-service opts
-      // out for headless/CI setups where a background agent isn't wanted.
-      if (!options.skipService) {
-        console.log(chalk.bold('7. Installing background sync service...'));
-        try {
-          const { installService, isServiceRunning, platformName, ServiceInstallError } = await import('./service-installer.js');
-          if (isServiceRunning()) {
-            console.log(`   ${chalk.green('Already running')} (${platformName()}) — leaving it in place.`);
-          } else {
-            const paths = installService();
-            console.log(`   ${chalk.green(`✓ chat-recall-watch service installed and started (${platformName()}).`)}`);
-            console.log(chalk.dim(`   logs: ${paths.logFile}   ·   manage: \`chat-recall service status\``));
-          }
-        } catch (err) {
-          const se = err as { hint?: string; message?: string };
-          console.log(`   ${chalk.yellow('Service install failed')} — ${se.message || err}`);
-          if (se.hint) console.log(chalk.dim(`   ${se.hint}`));
-          console.log(chalk.dim('   Re-run `chat-recall watch --install-service` later, or run `chat-recall watch` in the foreground.'));
-        }
-      } else {
-        console.log(chalk.bold('7. Skipping background service (--skip-service)'));
-        console.log(chalk.dim('   New conversations won\'t ship until you run `chat-recall sync` or `chat-recall watch`.'));
-      }
+      // Step 7: Background sync. There is ONE writer (see docs/SYNC.md): the
+      // MCP server (configured above) ticks `syncIncremental()` every few
+      // minutes while Claude Code runs — cross-platform, zero-install, and that
+      // is exactly when transcripts change. We deliberately DON'T install the
+      // standalone chat-recall-watch service anymore: a second, unlocked writer
+      // raced the sync ledger with the MCP one (clobbered coverage, CPU spin).
+      // Users who want an always-on agent (headless boxes, no editor running)
+      // opt in with `chat-recall watch --install-service`.
+      console.log(chalk.bold('7. Background sync'));
+      console.log(chalk.dim('   Runs via the MCP server while Claude Code is open (no extra service to install).'));
+      console.log(chalk.dim('   Always-on / headless? Opt in with `chat-recall watch --install-service`.'));
+      void options.skipService; // retained for back-compat; no longer changes behaviour
       console.log();
 
       // Done
@@ -1058,6 +1043,63 @@ companions
 // team id, token env var name) lives in settings.team.*; the bearer
 // token itself lives in the env var named by settings.team.tokenRef so
 // tokens never land in shell history or settings.json.
+// ── toolkit: personal cross-tool sync (skills/commands/agents/MCPs) ──
+const toolkit = program
+  .command('toolkit')
+  .description('Copy skills / commands / agents / MCPs between your AI tools');
+
+/**
+ * After a local copy writes new toolkit files, push them to the server so the
+ * web Toolkit matrix reflects the change immediately. The watch daemon doesn't
+ * watch toolkit dirs, so without this the change wouldn't appear until the
+ * 15-min heartbeat. No-op (silent) when not logged in.
+ */
+async function pushToolkitToServer(): Promise<void> {
+  try {
+    const { syncIncremental } = await import('./sync-client.js');
+    const res = await syncIncremental();
+    if (res && res.items > 0) console.log(chalk.dim(`  synced ${res.items} toolkit item(s) to the server.`));
+  } catch (err) {
+    console.error(chalk.dim(`  (could not sync to server: ${err instanceof Error ? err.message : err})`));
+  }
+}
+
+toolkit
+  .command('sync')
+  .description('Fan every artifact out to every tool that is missing it (runs locally now)')
+  .option('--types <list>', 'comma-separated subset: skill,mcp,command,agent')
+  .action(async (options: { types?: string }) => {
+    const { executeSyncAll } = await import('@chat-recall/engine');
+    const types = options.types
+      ? options.types.split(',').map(s => s.trim()).filter(Boolean) as Array<'skill' | 'mcp' | 'command' | 'agent'>
+      : undefined;
+    const r = await executeSyncAll(types);
+    for (const c of r.copied) console.log(chalk.green(`  + ${c.type} ${c.name} → ${c.toTool}`) + chalk.dim(`  ${c.path || ''}`));
+    for (const f of r.failed) console.log(chalk.red(`  ✗ ${f.type} ${f.name} → ${f.toTool}: ${f.error}`));
+    console.log(chalk.bold(`Synced: ${r.copied.length} copied, ${r.skipped.length} already present, ${r.failed.length} failed.`));
+    if (r.copied.length > 0) await pushToolkitToServer();
+  });
+
+toolkit
+  .command('drain')
+  .description('Process cross-tool sync intents queued from the web UI, now')
+  .action(async () => {
+    const { drainSyncIntents } = await import('./intent-drain.js');
+    const r = await drainSyncIntents({ verbose: true });
+    console.log(chalk.bold(`Processed ${r.processed} intent(s): ${r.done} done, ${r.errored} errored.`));
+    if (r.done > 0) await pushToolkitToServer();
+  });
+
+toolkit
+  .command('copy <type> <name> <fromTool> <toTool>')
+  .description('Copy one artifact (skill|mcp|command|agent) from one tool to another')
+  .action(async (type: string, name: string, fromTool: string, toTool: string) => {
+    const { executeCopy } = await import('@chat-recall/engine');
+    const r = await executeCopy(type as any, name, fromTool, toTool as any);
+    if (r.ok) console.log(chalk.green(`Copied to ${r.targetPath}`));
+    else { console.error(chalk.red(r.error || 'failed')); process.exit(1); }
+  });
+
 const team = program
   .command('team')
   .description('Sync team toolkit (skills, CLAUDE.md, MCPs, agents, commands)');

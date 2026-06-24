@@ -12,8 +12,9 @@ import express from 'express';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync, rmSync } from 'fs';
 import { dirname, join, basename } from 'path';
 import { homedir } from 'os';
-import { createStore, claudeBackend, codexBackend, opencodeBackend } from '../imports.js';
-import type { SourceType } from '../imports.js';
+import { createStore, claudeBackend, geminiBackend, codexBackend, opencodeBackend,
+         readCommand, readAgent, emitArtifact } from '../imports.js';
+import type { SourceType, CodecToolId, CodecType, Encoding } from '../imports.js';
 
 const router = express.Router();
 
@@ -128,9 +129,19 @@ router.get('/item/:type/:id/content', async (req, res) => {
 const TARGET_TOOLS = ['claude', 'gemini', 'opencode', 'codex'] as const;
 type TargetTool = (typeof TARGET_TOOLS)[number];
 
-const SUPPORTED_TARGETS: Record<'skill' | 'mcp', TargetTool[]> = {
-  skill: ['claude', 'opencode', 'codex'],          // gemini has no Skills surface
-  mcp:   ['claude', 'opencode', 'gemini', 'codex'],
+/** Toolkit primitives that have a clean global-scope cross-tool matrix. */
+type SyncType = 'skill' | 'mcp' | 'command' | 'agent';
+
+const SUPPORTED_TARGETS: Record<SyncType, TargetTool[]> = {
+  skill:   ['claude', 'gemini', 'opencode', 'codex'],  // Gemini gained Skills
+  mcp:     ['claude', 'opencode', 'gemini', 'codex'],
+  command: ['claude', 'gemini', 'opencode', 'codex'],
+  agent:   ['claude', 'gemini', 'opencode', 'codex'],
+};
+
+/** The extra_json field holding an artifact's display name, per type. */
+const NAME_FIELD: Record<SyncType, string> = {
+  skill: 'skillName', mcp: 'mcpName', command: 'commandName', agent: 'agentName',
 };
 
 /**
@@ -141,9 +152,10 @@ const SUPPORTED_TARGETS: Record<'skill' | 'mcp', TargetTool[]> = {
 function skillsDirFor(tool: TargetTool): string {
   switch (tool) {
     case 'claude':   return claudeBackend.skillsDir();
+    case 'gemini':   return geminiBackend.skillsDir();
     case 'opencode': return opencodeBackend.skillsDir();
-    case 'codex':    return codexBackend.skillsSystemDir();
-    case 'gemini':
+    // User skills go in ~/.codex/skills (NOT .system, which is OpenAI's bundle).
+    case 'codex':    return codexBackend.skillsDir();
     default:
       throw new Error(`No skills surface for tool '${tool}'`);
   }
@@ -168,13 +180,18 @@ router.post('/promote', express.json(), async (req, res) => {
     if (fromTool === toTool) {
       return res.status(400).json({ error: 'Source and target tool are the same' });
     }
+    // Read-only sources (Codex `.system` skills, plugin-bundled skills, shared
+    // ~/.agents skills) are never a promotion source.
+    if (extra.readonly) {
+      return res.status(400).json({ error: 'This artifact is read-only (system/bundled) and cannot be promoted.' });
+    }
 
     if (type === 'skill') return promoteSkill(item, extra, toTool as TargetTool, res);
     if (type === 'mcp')   return promoteMcp(item, extra, fromTool, toTool as TargetTool, res);
-    if (type === 'claude_md' as any) {
-      // claude_md isn't in the toolkit set, but kept here for symmetry — UI
-      // can call this with type='claude_md' if we ever add notes-promotion.
-      return res.status(400).json({ error: 'Notes promotion not implemented yet' });
+    if (type === 'command' || type === 'agent') {
+      const r = copyArtifactToTool(type, item, extra, fromTool, toTool as TargetTool);
+      if (!r.ok) return res.status(r.status || 500).json({ error: r.error });
+      return res.json({ ok: true, targetPath: r.targetPath });
     }
     return res.status(400).json({ error: `Promotion not supported for type: ${type}` });
   } catch (error) {
@@ -195,9 +212,6 @@ function copySkillToTool(
   itemFilePath: string,
   toTool: TargetTool,
 ): PromoteResult {
-  if (toTool === 'gemini') {
-    return { ok: false, status: 400, error: 'Gemini does not have a Skills surface (use Extensions instead).' };
-  }
   const skillDir = (extra.skillDir as string) || dirname(itemFilePath);
   if (!existsSync(skillDir)) return { ok: false, status: 404, error: `Source dir missing: ${skillDir}` };
 
@@ -257,6 +271,50 @@ function promoteMcp(
   const r = copyMcpToTool(item.title, extra, fromTool, toTool);
   if (!r.ok) return res.status(r.status || 500).json({ error: r.error });
   return res.json({ ok: true, targetPath: r.targetPath });
+}
+
+/**
+ * Copy a command or agent into another tool, translating the encoding via the
+ * cross-tool codec (markdown frontmatter ↔ TOML). Never overwrites.
+ */
+function copyCommandOrAgentToTool(
+  type: 'command' | 'agent',
+  sourceFilePath: string,
+  extra: Record<string, unknown>,
+  toTool: TargetTool,
+): PromoteResult {
+  if (!sourceFilePath) return { ok: false, status: 404, error: 'Source has no file on disk' };
+  const format: Encoding = extra.format === 'toml' ? 'toml' : 'md';
+  let art;
+  try {
+    art = type === 'command' ? readCommand(sourceFilePath, format) : readAgent(sourceFilePath, format);
+  } catch (e) {
+    return { ok: false, status: 404, error: `Source unreadable: ${e instanceof Error ? e.message : 'failed'}` };
+  }
+  const out = emitArtifact(type as CodecType, art, toTool as CodecToolId);
+  if (existsSync(out.path)) {
+    return { ok: false, status: 409, error: `Already exists: ${out.path}. Remove or rename first.` };
+  }
+  try {
+    mkdirSync(dirname(out.path), { recursive: true });
+    writeFileSync(out.path, out.content);
+    return { ok: true, targetPath: out.path };
+  } catch (e) {
+    return { ok: false, status: 500, error: e instanceof Error ? e.message : 'write failed' };
+  }
+}
+
+/** One dispatch point for every syncable type — used by promote AND sync-all. */
+function copyArtifactToTool(
+  type: SyncType,
+  sourceRow: any,
+  extra: Record<string, unknown>,
+  fromTool: string,
+  toTool: TargetTool,
+): PromoteResult {
+  if (type === 'skill') return copySkillToTool(extra, sourceRow.file_path, toTool);
+  if (type === 'mcp')   return copyMcpToTool(sourceRow.title, extra, fromTool, toTool);
+  return copyCommandOrAgentToTool(type, sourceRow.file_path, extra, toTool);
 }
 
 function readMcpEntry(tool: string, name: string): any | null {
@@ -482,7 +540,6 @@ router.delete('/item', express.json(), (req, res) => {
 });
 
 function removeSkillFromTool(name: string, tool: TargetTool): PromoteResult {
-  if (tool === 'gemini') return { ok: false, status: 400, error: 'Gemini has no Skills surface.' };
   const root = skillsDirFor(tool);
   const dir = join(root, name);
   if (!existsSync(dir)) return { ok: false, status: 404, error: `Not found: ${dir}` };
@@ -593,26 +650,28 @@ function stripCodexMcpBlock(content: string, name: string): string {
 router.get('/matrix', async (_req, res) => {
   const store = await createStore();
   try {
-    const out: Record<'skill' | 'mcp', Record<string, Record<string, boolean>>> = { skill: {}, mcp: {} };
-    for (const type of ['skill', 'mcp'] as const) {
+    const types: SyncType[] = ['skill', 'mcp', 'command', 'agent'];
+    // Each cell holds the source row id (so the UI can promote a precise
+    // item), not just a boolean. Truthiness still answers "is it present?".
+    const out: Record<SyncType, Record<string, Record<string, string>>> =
+      { skill: {}, mcp: {}, command: {}, agent: {} };
+    for (const type of types) {
       const rows = await store.listItems(type as SourceType, 100_000, 0);
       for (const row of rows) {
         let extra: any = {};
         try { extra = JSON.parse(row.extra_json || '{}'); } catch { /* skip */ }
+        // System/bundled/shared artifacts aren't sync candidates — keep them
+        // out of the matrix so the UI never offers to fan them out.
+        if (extra.readonly || extra.shared) continue;
         const tool = String(extra.tool || 'claude');
-        const name = type === 'skill'
-          ? String(extra.skillName || row.title)
-          : String(extra.mcpName || row.title);
+        const name = String(extra[NAME_FIELD[type]] || row.title);
         if (!name) continue;
         out[type][name] = out[type][name] || {};
-        out[type][name][tool] = true;
+        // First writer wins per tool — stable id for the cell.
+        if (!out[type][name][tool]) out[type][name][tool] = row.id;
       }
     }
-    res.json({
-      skill: out.skill,
-      mcp: out.mcp,
-      supportedTargets: SUPPORTED_TARGETS,
-    });
+    res.json({ ...out, supportedTargets: SUPPORTED_TARGETS });
   } catch (error) {
     console.error('Matrix error:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
@@ -637,13 +696,15 @@ router.get('/matrix', async (_req, res) => {
 // dryRun returns the plan without writing anything.
 // ─────────────────────────────────────────────────────────────────
 
-const SOURCE_PRECEDENCE: Record<'skill' | 'mcp', TargetTool[]> = {
-  skill: ['claude', 'codex', 'opencode'],
-  mcp:   ['claude', 'codex', 'gemini', 'opencode'],
+const SOURCE_PRECEDENCE: Record<SyncType, TargetTool[]> = {
+  skill:   ['claude', 'codex', 'opencode', 'gemini'],
+  mcp:     ['claude', 'codex', 'gemini', 'opencode'],
+  command: ['claude', 'opencode', 'codex', 'gemini'],
+  agent:   ['claude', 'opencode', 'gemini', 'codex'],
 };
 
 interface SyncPlanEntry {
-  type: 'skill' | 'mcp';
+  type: SyncType;
   name: string;
   source: TargetTool;       // tool we'll copy from
   presentIn: TargetTool[];  // tools that already have this row
@@ -661,25 +722,33 @@ function readField(item: any, key: string): unknown {
   catch { return undefined; }
 }
 
+const ALL_SYNC_TYPES: SyncType[] = ['skill', 'mcp', 'command', 'agent'];
+
+/** True for rows that must never act as a sync source (system/bundled/shared). */
+function isReadonlyRow(row: any): boolean {
+  return readField(row, 'readonly') === true || readField(row, 'shared') === true;
+}
+
 router.post('/sync-all', express.json(), async (req, res) => {
-  const types: Array<'skill' | 'mcp'> = Array.isArray(req.body?.types) && req.body.types.length > 0
-    ? req.body.types.filter((t: string) => t === 'skill' || t === 'mcp')
-    : ['skill', 'mcp'];
+  const requested: SyncType[] = Array.isArray(req.body?.types) && req.body.types.length > 0
+    ? req.body.types.filter((t: string): t is SyncType => (ALL_SYNC_TYPES as string[]).includes(t))
+    : ALL_SYNC_TYPES;
   const dryRun = !!req.body?.dryRun;
 
   const store = await createStore();
   try {
     const plan: SyncPlanEntry[] = [];
 
-    for (const type of types) {
-      // Index every (name, tool) → row for this type.
+    for (const type of requested) {
+      // Index every (name, tool) → row for this type. Read-only rows
+      // (Codex .system, plugin-bundled, shared ~/.agents) never act as a
+      // source, so they're skipped entirely.
       const rows = await store.listItems(type as SourceType, 100_000, 0);
       const byName = new Map<string, Partial<Record<TargetTool, any>>>();
       for (const row of rows) {
+        if (isReadonlyRow(row)) continue;
         const tool = String(readField(row, 'tool') || 'claude') as TargetTool;
-        const name = type === 'skill'
-          ? String(readField(row, 'skillName') || row.title)
-          : String(readField(row, 'mcpName') || row.title);
+        const name = String(readField(row, NAME_FIELD[type]) || row.title);
         if (!name) continue;
         const slot = byName.get(name) || {};
         slot[tool] = row;
@@ -708,10 +777,9 @@ router.post('/sync-all', express.json(), async (req, res) => {
       if (!rowsByType.has(entry.type)) rowsByType.set(entry.type, await store.listItems(entry.type as SourceType, 100_000, 0));
       const sourceRow = rowsByType.get(entry.type)!
         .find(r => {
+          if (isReadonlyRow(r)) return false;
           const tool = String(readField(r, 'tool') || 'claude');
-          const name = entry.type === 'skill'
-            ? String(readField(r, 'skillName') || r.title)
-            : String(readField(r, 'mcpName') || r.title);
+          const name = String(readField(r, NAME_FIELD[entry.type]) || r.title);
           return tool === entry.source && name === entry.name;
         });
       if (!sourceRow) {
@@ -726,9 +794,7 @@ router.post('/sync-all', express.json(), async (req, res) => {
       const errors: SyncResultEntry['errors'] = [];
 
       for (const target of entry.copyTo) {
-        const r = entry.type === 'skill'
-          ? copySkillToTool(extra, sourceRow.file_path, target)
-          : copyMcpToTool(sourceRow.title, extra, entry.source, target);
+        const r = copyArtifactToTool(entry.type, sourceRow, extra, entry.source, target);
         if (r.ok) {
           copied.push({ tool: target, targetPath: r.targetPath });
         } else if (r.status === 409) {

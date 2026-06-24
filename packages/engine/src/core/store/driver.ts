@@ -113,6 +113,12 @@ export interface StorageDriver {
   kvDelete: AsyncMethod<MemoryStore['kvDelete']>;
   kvList: AsyncMethod<MemoryStore['kvList']>;
 
+  // ── cross-tool sync intents (Model B queue) ──
+  enqueueSyncIntent: AsyncMethod<MemoryStore['enqueueSyncIntent']>;
+  listPendingSyncIntents: AsyncMethod<MemoryStore['listPendingSyncIntents']>;
+  ackSyncIntent: AsyncMethod<MemoryStore['ackSyncIntent']>;
+  listSyncIntents: AsyncMethod<MemoryStore['listSyncIntents']>;
+
   // ── lifecycle ──
   close: AsyncMethod<MemoryStore['close']>;
 }

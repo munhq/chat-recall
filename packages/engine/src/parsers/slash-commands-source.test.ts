@@ -67,4 +67,36 @@ description: project audit
   test('returns empty when commands dir is missing', async () => {
     expect(await collect()).toHaveLength(0);
   });
+
+  test('discovers Gemini TOML commands (prompt + description)', async () => {
+    mkdirSync(join(tmpHome, '.gemini', 'commands'), { recursive: true });
+    writeFileSync(join(tmpHome, '.gemini', 'commands', 'test.toml'),
+      'description = "Run the tests"\nprompt = """\nRun all unit tests and report failures.\n"""\n');
+    const items = await collect();
+    const g = items.find(i => i.extra.tool === 'gemini');
+    expect(g).toBeDefined();
+    expect(g.title).toBe('test');
+    expect(g.extra.format).toBe('toml');
+    expect(g.extra.description).toBe('Run the tests');
+  });
+
+  test('discovers OpenCode markdown commands', async () => {
+    mkdirSync(join(tmpHome, '.config', 'opencode', 'commands'), { recursive: true });
+    writeFileSync(join(tmpHome, '.config', 'opencode', 'commands', 'deploy.md'),
+      '---\nname: deploy\ndescription: ship it\n---\nDeploy the app.');
+    const items = await collect();
+    const o = items.find(i => i.extra.tool === 'opencode');
+    expect(o).toBeDefined();
+    expect(o.title).toBe('deploy');
+  });
+
+  test('discovers Codex prompts as commands', async () => {
+    mkdirSync(join(tmpHome, '.codex', 'prompts'), { recursive: true });
+    writeFileSync(join(tmpHome, '.codex', 'prompts', 'draftpr.md'),
+      '---\ndescription: draft a PR\n---\nWrite a pull request body.');
+    const items = await collect();
+    const c = items.find(i => i.extra.tool === 'codex');
+    expect(c).toBeDefined();
+    expect(c.title).toBe('draftpr');
+  });
 });
