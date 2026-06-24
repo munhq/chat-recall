@@ -206,6 +206,16 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
   });
 });
 
+// Schema bootstrap is now an EXPLICIT, primary-only step (decoupled from
+// opening a pool — see pg-pool.ts). Run it once here, before we serve, so a
+// misconfigured/unreachable primary fails fast at boot instead of erroring on
+// the first request. No-op when DATABASE_URL is unset (local sqlite mode).
+if (isServerMode()) {
+  const { ensurePgSchema } = await import('@chat-recall/engine/core/store/pg-pool.js');
+  await ensurePgSchema();
+  console.log('  Schema: ensured on primary');
+}
+
 // Start server - bind to localhost by default, 0.0.0.0 for Docker/network access
 const HOST = process.env.HOST || '127.0.0.1';
 app.listen(PORT, HOST, () => {
