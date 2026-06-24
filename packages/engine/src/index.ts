@@ -130,6 +130,7 @@ export { SessionSource } from './parsers/session-source.js';
 export { PlanSource } from './parsers/plan-source.js';
 export { TaskSource } from './parsers/task-source.js';
 export { ClaudeMdSource } from './parsers/claude-md-source.js';
+export { AgentMemorySource } from './parsers/agent-memory-source.js';
 export { HistorySource } from './parsers/history-source.js';
 export { PasteSource } from './parsers/paste-source.js';
 export { GeminiSessionSource } from './parsers/gemini-source.js';

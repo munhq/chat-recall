@@ -11,6 +11,7 @@ import { SessionSource } from './session-source.js';
 import { PlanSource } from './plan-source.js';
 import { TaskSource } from './task-source.js';
 import { ClaudeMdSource } from './claude-md-source.js';
+import { AgentMemorySource } from './agent-memory-source.js';
 import { HistorySource } from './history-source.js';
 import { PasteSource } from './paste-source.js';
 import { GeminiSessionSource } from './gemini-source.js';
@@ -32,6 +33,7 @@ export function buildSourceRegistry(registry: SourceRegistry = new SourceRegistr
   registry.register(new PlanSource());
   registry.register(new TaskSource());
   registry.register(new ClaudeMdSource());
+  registry.register(new AgentMemorySource());
   registry.register(new HistorySource());
   registry.register(new PasteSource());
   registry.register(new GeminiSessionSource());

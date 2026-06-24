@@ -122,7 +122,15 @@ export function markSynced(server: string, rows: Array<{ id: string; mtime: numb
   if (rows.length === 0) return;
   const data = load();
   const forServer = data[server] || (data[server] = {});
-  for (const r of rows) forServer[r.id] = { m: Math.floor(r.mtime), v: EXTRACTOR_VERSION };
+  for (const r of rows) {
+    // PRESERVE per-field coverage `f` — it's owned by field reconciliation and
+    // must survive a conversation re-sync. Overwriting the whole entry here was
+    // wiping it, making every reconcile re-scan from scratch.
+    const prevF = toRow(forServer[r.id])?.f;
+    forServer[r.id] = prevF
+      ? { m: Math.floor(r.mtime), v: EXTRACTOR_VERSION, f: prevF }
+      : { m: Math.floor(r.mtime), v: EXTRACTOR_VERSION };
+  }
   persist(data);
 }
 
