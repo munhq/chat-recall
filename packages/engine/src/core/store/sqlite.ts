@@ -25,6 +25,7 @@ export class SqliteStore implements StorageDriver {
 
   // ── metadata / items ──
   async setItem(...a: Args<'setItem'>) { return this.inner.setItem(...a); }
+  async setItems(...a: Args<'setItems'>) { return this.inner.setItems(...a); }
   async getItem(...a: Args<'getItem'>) { return this.inner.getItem(...a); }
   async needsUpdate(...a: Args<'needsUpdate'>) { return this.inner.needsUpdate(...a); }
   async listItems(...a: Args<'listItems'>) { return this.inner.listItems(...a); }
