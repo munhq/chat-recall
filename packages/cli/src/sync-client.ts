@@ -563,7 +563,14 @@ const refs = listAvailableBackends().flatMap((b) => {
         const count = { redactions: 0 };
         await derivedBatch.add(collectDerived(ref, mtime, count));
         redactions += count.redactions;
-      } catch { /* derived is best-effort — the conversation itself shipped */ }
+      } catch (err) {
+        // Derived is best-effort — the conversation still shipped — but it must
+        // NOT be silent: a derived failure means this session shows empty
+        // diffs/Activity on the server, and a SILENT swallow here is exactly why
+        // a stale-data regression went unnoticed for days. Log it so it's
+        // visible and diagnosable.
+        console.error(`[sync] derived compute failed for ${ref.prefixedId} (diffs/Activity will be empty for it): ${err instanceof Error ? err.message : err}`);
+      }
     }
 
     // Fork lineage link (collected at index time too; shipping here keeps
