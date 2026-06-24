@@ -218,6 +218,12 @@ export class MemoryStore {
     );
   }
 
+  /** Bulk upsert. Local sqlite loops (cheap, in-process); PgStore overrides
+   *  with one multi-row INSERT in a single transaction. */
+  setItems(items: MemoryItem[]): void {
+    for (const it of items) this.setItem(it);
+  }
+
   /** Get a memory item by ID and source type */
   getItem(id: string, sourceType: SourceType): MemoryMetadataRow | null {
     const stmt = this.db.prepare(`
