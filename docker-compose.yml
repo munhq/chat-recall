@@ -87,12 +87,6 @@ services:
       # Security dashboard (secret findings). On by default; set to "0" to
       # hide the Security tab and its API surface.
       CHAT_RECALL_FEATURE_SECURITY: ${CHAT_RECALL_FEATURE_SECURITY:-1}
-      # Rate limiting. ENFORCE=1 actually sheds (without it the tenant-aware
-      # class limiter + ingest backpressure run report-only); STORE=pg shares
-      # token buckets across replicas and is correct single-replica too. Parity
-      # with the cloud deployment. Override to "0"/"memory" if needed.
-      RATE_LIMIT_ENFORCE: ${RATE_LIMIT_ENFORCE:-1}
-      RATE_LIMIT_STORE: ${RATE_LIMIT_STORE:-pg}
       # Billing (cloud SaaS only). Unset ⇒ billing OFF: every tenant is entitled
       # and nothing is gated (self-host is the free tier). Set all four to gate
       # the app behind a Stripe subscription with a card-required trial.
