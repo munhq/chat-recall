@@ -215,6 +215,17 @@ const opencodeWatcher = chokidar.watch(
   },
 );
 
+// 9. Per-project agent memory files (Claude Code ~/.claude/projects/<hash>/memory/*.md).
+// Agents write reference/feedback/project-state notes here between sessions —
+// the richest cross-session knowledge surface, now indexed + synced.
+const agentMemoryWatcher = chokidar.watch(`${CLAUDE_DIR}/*/memory/*.md`, {
+  persistent: true,
+  ignoreInitial: true,
+  awaitWriteFinish: { stabilityThreshold: 1000, pollInterval: 100 },
+  usePolling: true,
+  interval: 10000,
+});
+
 // Wire up all watchers. Every add/change just arms the debounced ship —
 // the daemon no longer cares which source/type changed, because the sync
 // client rescans and ledgers everything itself.
@@ -227,6 +238,7 @@ const watchers: Record<string, chokidar.FSWatcher> = {
   codex: codexWatcher,
   gemini: geminiWatcher,
   opencode: opencodeWatcher,
+  agentMemory: agentMemoryWatcher,
 };
 
 for (const [name, watcher] of Object.entries(watchers)) {
@@ -257,6 +269,7 @@ console.log(`  Watching diary:    ${DIARY_DIR}`);
 console.log(`  Watching codex:    ${CODEX_SESSIONS_DIR}`);
 console.log(`  Watching gemini:   ${GEMINI_TMP_DIR}`);
 console.log(`  Watching opencode: ${OPENCODE_DB_DIR}`);
+console.log(`  Watching agent memory: ${CLAUDE_DIR}/*/memory/`);
 console.log(`  Debounce: ${DEBOUNCE_MS}ms · ships via syncIncremental() to the configured server`);
 console.log(`  Ready for changes...`);
 

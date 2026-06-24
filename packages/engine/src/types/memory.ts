@@ -10,6 +10,8 @@
 export type SourceType =
   // Memory primitives — what was said / what happened. Read-mostly.
   | 'session' | 'plan' | 'task' | 'claude_md' | 'paste' | 'history' | 'diary'
+  // Per-project agent memory files (Claude Code ~/.claude/projects/<hash>/memory/*.md).
+  | 'agent_memory'
   // Toolkit primitives — what's configured / what can run. Promotable
   // across AI tools (Claude ↔ Gemini ↔ OpenCode) via /api/toolkit/promote.
   | 'skill' | 'mcp' | 'command' | 'agent' | 'hook' | 'plugin';
@@ -72,6 +74,8 @@ export type LinkType =
   | 'agent_plan_for_session' // Agent plan filename contains session hash
   | 'brain_artifact_for_session' // Gemini brain artifact linked to session
   | 'diary_for_session'
+  | 'agent_memory_from_session' // Claude Code memory file with originSessionId frontmatter
+  | 'agent_memory_for_project'  // Claude Code memory file in a project's memory/ dir
   | 'forked_from'          // session resumed/forked from a predecessor session (head parentUuid); // Agent diary entry linked to session
 
 /** A discovered relationship between two memory items */

@@ -90,6 +90,11 @@ async function main() {
   } catch { /* not yet implemented */ }
 
   try {
+    const { AgentMemorySource } = await import('@chat-recall/engine/parsers/agent-memory-source.js');
+    registry.register(new AgentMemorySource());
+  } catch { /* not yet implemented */ }
+
+  try {
     const { HistorySource } = await import('@chat-recall/engine/parsers/history-source.js');
     registry.register(new HistorySource());
   } catch { /* not yet implemented */ }
