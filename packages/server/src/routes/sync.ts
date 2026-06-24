@@ -297,6 +297,12 @@ router.post('/', async (req, res) => {
       const store = await createStore();
       const metaCache = await createMetadataCache();
       let conv = 0, item = 0, link = 0, find = 0, der = 0, kgE = 0, kgT = 0, chunks = 0, dead = 0;
+      // Accumulate chunks + item-metadata across the WHOLE batch and flush each
+      // ONCE (bulk, single transaction) instead of per conversation/item — turns
+      // thousands of round-trips into a handful. Chunks from different items are
+      // safe to co-batch: addChunksFTS deletes per-(item) then bulk-inserts.
+      const chunkBatch: Parameters<typeof store.addChunksFTS>[0] = [];
+      const itemBatch: Parameters<typeof store.setItem>[0][] = [];
       try {
         // Tombstones first: purge + remember, and build the do-not-write set
         // so nothing in THIS payload resurrects a deleted session.
@@ -399,7 +405,7 @@ router.post('/', async (req, res) => {
             }];
           });
           const allChunks = subChunks.length > 0 ? [...cks, ...subChunks] : cks;
-          if (allChunks.length > 0) chunks += await store.addChunksFTS(allChunks);
+          if (allChunks.length > 0) chunkBatch.push(...allChunks);
 
           // 3. First-prompt cache — what the conversation list hydrates from.
           await metaCache.set({
@@ -438,7 +444,7 @@ router.post('/', async (req, res) => {
           if (!it.id || !ITEM_SOURCE_TYPES.has(it.source_type)) continue;
           const mtime = Math.floor(Number(it.mtime) || 0);
           const sourceType = it.source_type as SourceType;
-          await store.setItem({
+          itemBatch.push({
             id: it.id,
             sourceType,
             title: (it.title || '').slice(0, 200),
@@ -472,9 +478,13 @@ router.post('/', async (req, res) => {
                 mtime,
               };
             });
-          if (cks.length > 0) chunks += await store.addChunksFTS(cks);
+          if (cks.length > 0) chunkBatch.push(...cks);
           item++;
         }
+
+        // Flush the whole batch's metadata + chunks ONCE (bulk, one tx each).
+        if (itemBatch.length > 0) await store.setItems(itemBatch);
+        if (chunkBatch.length > 0) chunks += await store.addChunksFTS(chunkBatch);
 
         // Relationship links — upsert semantics (pg ON CONFLICT) make
         // re-syncs idempotent.
