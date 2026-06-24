@@ -51,14 +51,19 @@ function looksLikeUuid(raw: string): boolean {
 }
 
 /**
- * Resolve a tool from PATH. We don't hard-fail if missing — the
- * scanner is opt-in. Returns the absolute path, or `null` to signal
- * "skip this detector."
+ * Resolve a tool from PATH — cross-platform. Unix uses `which`; Windows uses
+ * the `where` builtin (which.exe doesn't exist there). `where` returns the full
+ * path incl. the `.exe`, which the subsequent spawnSync executes directly, and
+ * can list multiple matches (one per line) — we take the first. We don't
+ * hard-fail if missing: the scanner is opt-in. Returns the path, or `null` to
+ * skip this detector.
  */
 function which(bin: string): string | null {
+  const finder = process.platform === 'win32' ? 'where' : 'which';
   try {
-    const out = execFileSync('which', [bin], { encoding: 'utf-8' }).trim();
-    return out || null;
+    const out = execFileSync(finder, [bin], { encoding: 'utf-8' }).trim();
+    const first = out.split(/\r?\n/)[0]?.trim();
+    return first || null;
   } catch { return null; }
 }
 
