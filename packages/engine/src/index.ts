@@ -4,7 +4,7 @@
  */
 // Core
 export { MemoryIndex, type MemoryChunkRecord } from './core/memory-index.js';
-export { MemoryStore } from './core/memory-store.js';
+export { MemoryStore, type SyncIntentInput, type SyncIntentRow } from './core/memory-store.js';
 // Storage-flag drivers (sqlite|postgres) — routes/services should prefer these
 // async factories over instantiating the concrete classes directly.
 export { createStore, type StorageDriver } from './core/store/index.js';
@@ -90,6 +90,44 @@ export {
   opencodeDbPath,
   codexHomeDir,
 } from './core/tool-paths.js';
+// Cross-tool artifact codec — normalize/emit commands, agents, instructions
+// between tool encodings (markdown frontmatter ↔ TOML, CLAUDE.md ↔ AGENTS.md).
+export {
+  emit as emitArtifact,
+  readCommand,
+  readAgent,
+  readInstructions,
+  encodingFor,
+  instructionsFilename,
+  type ToolId as CodecToolId,
+  type CodecType,
+  type Encoding,
+  type NormalizedArtifact,
+  type EmittedFile,
+} from './core/artifact-codec.js';
+// Local cross-tool sync executor — copy/plan/execute shared by the CLI agent
+// and the server fast path.
+export {
+  copyArtifactToTool,
+  planSync,
+  discoverLocalArtifacts,
+  executeSyncAll,
+  executeCopy,
+  rowFromMemoryItem,
+  rowFromStore,
+  skillsDirFor,
+  readMcpEntry,
+  writeMcpEntry,
+  supportedTargetsFor,
+  NAME_FIELD as SYNC_NAME_FIELD,
+  ALL_SYNC_TYPES,
+  type SyncType,
+  type TargetTool as SyncTargetTool,
+  type ArtifactRow,
+  type CopyResult,
+  type SyncPlanEntry,
+  type ExecuteReport,
+} from './core/toolkit-sync.js';
 
 // Session replay / git / sentiment / outcome (per-session deep-dive).
 // Use `replaySessionAny` for the registry-routed version that works

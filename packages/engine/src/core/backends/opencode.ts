@@ -91,15 +91,21 @@ export class OpencodeBackend implements ToolBackend {
 
   // ── Subpath helpers ────────────────────────────────────────────
   plansDir(): string { return join(this.homeDir(), 'plans'); }
-  /**
-   * Canonical OpenCode skills location. OpenCode also reads skills from
-   * `~/.opencode/skill[s]/` for backwards compat — both are surfaced by
-   * `SkillsSource` — but config-dir is the conventional install target
-   * for "promote skill to OpenCode" actions.
-   */
-  skillsDir(): string {
-    return join(process.env.HOME || homedir(), '.config', 'opencode', 'skill');
+  /** Root that holds OpenCode's global config dir (~/.config/opencode). */
+  private configRoot(): string {
+    return join(process.env.HOME || homedir(), '.config', 'opencode');
   }
+  /**
+   * Canonical OpenCode skills location. The current docs use the plural
+   * `skills/`; the singular `skill/` (and `~/.opencode/skill[s]/`) are read
+   * for backwards compat and surfaced by `SkillsSource`. We WRITE to the
+   * plural canonical dir for "promote skill to OpenCode" actions.
+   */
+  skillsDir(): string { return join(this.configRoot(), 'skills'); }
+  /** Custom slash commands — markdown with frontmatter, plural canonical dir. */
+  commandsDir(): string { return join(this.configRoot(), 'commands'); }
+  /** Agent/subagent definitions — markdown with frontmatter. */
+  agentsDir(): string { return join(this.configRoot(), 'agents'); }
 
   // Available only when both the DB exists AND better-sqlite3 can be loaded —
   // without the driver we cannot read it, so OpenCode is effectively absent.

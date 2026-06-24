@@ -9,6 +9,7 @@
 import Database from 'better-sqlite3';
 import { existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
+import { randomBytes } from 'crypto';
 
 import type {
   SourceType,
@@ -114,6 +115,26 @@ export class MemoryStore {
         PRIMARY KEY (scope, key)
       );
       CREATE INDEX IF NOT EXISTS idx_kv_scope ON kv_store(scope);
+
+      -- Cross-tool sync intents (Model B queue). The UI (on any server, incl.
+      -- SaaS) enqueues "copy artifact X from tool Y to tool Z" (or sync_all);
+      -- the local CLI agent drains pending rows, does the filesystem copy on
+      -- the user's machine, and acks status back here.
+      CREATE TABLE IF NOT EXISTS sync_intents (
+        id            TEXT PRIMARY KEY,
+        device_id     TEXT,
+        kind          TEXT NOT NULL,
+        artifact_type TEXT,
+        name          TEXT,
+        from_tool     TEXT,
+        to_tool       TEXT,
+        status        TEXT NOT NULL DEFAULT 'pending',
+        result        TEXT,
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        created_by    TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_sync_intents_pending ON sync_intents(status, created_at);
 
       CREATE INDEX IF NOT EXISTS idx_links_source
         ON memory_links(source_type, source_id);
@@ -1538,7 +1559,77 @@ export class MemoryStore {
     `).all(scope, limit) as any;
   }
 
+  // ── Cross-tool sync intents (Model B queue) ────────────────────
+  // The UI enqueues an intent; the local CLI agent drains pending rows,
+  // performs the filesystem copy on the user's machine, and acks status.
+
+  /** Queue an intent. Returns the generated id. */
+  enqueueSyncIntent(input: SyncIntentInput): string {
+    const id = 'si_' + randomBytes(8).toString('hex');
+    const now = Date.now();
+    this.db.prepare(`
+      INSERT INTO sync_intents
+        (id, device_id, kind, artifact_type, name, from_tool, to_tool, status, result, created_at, updated_at, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?, ?, ?)
+    `).run(id, input.deviceId ?? null, input.kind, input.artifactType ?? null, input.name ?? null,
+           input.fromTool ?? null, input.toTool ?? null, now, now, input.createdBy ?? null);
+    return id;
+  }
+
+  /** Pending intents targeted at `deviceId` (or untargeted, device_id IS NULL). */
+  listPendingSyncIntents(deviceId?: string | null, limit = 50): SyncIntentRow[] {
+    return this.db.prepare(`
+      SELECT id, device_id, kind, artifact_type, name, from_tool, to_tool, status, result, created_at, updated_at, created_by
+      FROM sync_intents
+      WHERE status = 'pending' AND (device_id IS NULL OR device_id = ?)
+      ORDER BY created_at ASC LIMIT ?
+    `).all(deviceId ?? null, limit) as SyncIntentRow[];
+  }
+
+  /** Mark an intent done/error with a JSON result/error string. */
+  ackSyncIntent(id: string, status: 'done' | 'error', result?: string | null): boolean {
+    const r = this.db.prepare(`UPDATE sync_intents SET status = ?, result = ?, updated_at = ? WHERE id = ?`)
+      .run(status, result ?? null, Date.now(), id);
+    return r.changes > 0;
+  }
+
+  /** Recent intents (any status) — for the UI to show progress. */
+  listSyncIntents(limit = 50): SyncIntentRow[] {
+    return this.db.prepare(`
+      SELECT id, device_id, kind, artifact_type, name, from_tool, to_tool, status, result, created_at, updated_at, created_by
+      FROM sync_intents ORDER BY created_at DESC LIMIT ?
+    `).all(limit) as SyncIntentRow[];
+  }
+
   close(): void {
     this.db.close();
   }
+}
+
+/** Input to enqueue a cross-tool sync intent. */
+export interface SyncIntentInput {
+  kind: 'copy' | 'sync_all';
+  /** Target device (null/undefined = any device in the tenant). */
+  deviceId?: string | null;
+  artifactType?: string | null;  // skill|mcp|command|agent (copy only)
+  name?: string | null;          // artifact name (copy only)
+  fromTool?: string | null;
+  toTool?: string | null;
+  createdBy?: string | null;
+}
+
+/** A persisted sync intent row. */
+export interface SyncIntentRow {
+  id: string;
+  device_id: string | null;
+  kind: 'copy' | 'sync_all';
+  artifact_type: string | null;
+  name: string | null;
+  from_tool: string | null;
+  to_tool: string | null;
+  status: 'pending' | 'done' | 'error';
+  result: string | null;
+  created_at: number;
+  updated_at: number;
+  created_by: string | null;
 }

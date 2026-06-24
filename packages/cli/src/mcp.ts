@@ -19,7 +19,6 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { execSync as _execSync } from 'child_process';
 
-import { acquireIndexLock } from '@chat-recall/engine/core/index-lock.js';
 import { extractConversationContext, formatContext } from '@chat-recall/engine/core/context.js';
 import { getCacheDbPath, getIdentityFilePath, getDataDir } from '@chat-recall/engine/core/paths.js';
 import {
@@ -3357,16 +3356,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 const SYNC_TICK_MS = 3 * 60_000;
 function startBackgroundSync(): void {
   const tick = async () => {
-    let lock: ReturnType<typeof acquireIndexLock> = null;
     try {
-      lock = acquireIndexLock({ kind: 'mcp-background-sync', staleAfterMs: SYNC_TICK_MS * 3 });
-      if (!lock) return; // another session's MCP is the writer this tick
+      // syncIncremental() takes the single sync lock itself (see docs/SYNC.md)
+      // and no-ops if another writer holds it — so concurrent sessions' MCP
+      // ticks (and any other caller) serialize on ONE writer. No outer lock
+      // here: double-acquiring would make the inner call always skip.
       const { syncIncremental } = await import('./sync-client.js');
       await syncIncremental();
     } catch (err) {
       console.error('[mcp] background sync tick failed:', err instanceof Error ? err.message : err);
-    } finally {
-      lock?.release();
     }
   };
   setInterval(() => { void tick(); }, SYNC_TICK_MS).unref();
