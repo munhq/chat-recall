@@ -92,8 +92,9 @@ export class PgVectorStore implements VectorStore {
   }
 
   async init(): Promise<void> {
-    const { openPgPool } = await import('./pg-pool.js');
+    const { openPgPool, ensurePgSchema } = await import('./pg-pool.js');
     this.pool = await openPgPool(this.databaseUrl);
+    await ensurePgSchema(this.databaseUrl);
     // FTS store shares the pooled connection (openPgPool caches per URL) and
     // creates/owns the `memory_chunks` table in its own init().
     const { PgStore } = await import('./pg.js');

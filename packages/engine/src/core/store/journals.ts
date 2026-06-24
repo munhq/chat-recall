@@ -14,7 +14,7 @@ import { createHash } from 'crypto';
 import { WriteAheadLog } from '../write-ahead-log.js';
 import { DiarySource } from '../../parsers/diary-source.js';
 import { resolveBackend, type CreateStoreOptions } from './index.js';
-import { openPgPool, pgTenant, tenantQuery } from './pg-pool.js';
+import { openPgPool, ensurePgSchema, pgTenant, tenantQuery } from './pg-pool.js';
 
 type AsyncMethod<M> = M extends (...args: infer A) => infer R
   ? (...args: A) => Promise<Awaited<R>>
@@ -40,7 +40,7 @@ export class PgWal implements WalDriver {
   private pool: any;
   private readonly t: string;
   constructor(private readonly databaseUrl?: string, tenant?: string) { this.t = pgTenant(tenant); }
-  async init(): Promise<void> { this.pool = await openPgPool(this.databaseUrl); }
+  async init(): Promise<void> { this.pool = await openPgPool(this.databaseUrl); await ensurePgSchema(this.databaseUrl); }
   async log(...a: WArgs<'log'>): Promise<void> {
     const [operation, params, result] = a;
     await tenantQuery(this.pool, this.t, `INSERT INTO wal_log (tenant, ts, operation, payload) VALUES ($1,$2,$3,$4)`,
@@ -81,7 +81,7 @@ export class PgDiary implements DiaryDriver {
   private pool: any;
   private readonly t: string;
   constructor(private readonly databaseUrl?: string, tenant?: string) { this.t = pgTenant(tenant); }
-  async init(): Promise<void> { this.pool = await openPgPool(this.databaseUrl); }
+  async init(): Promise<void> { this.pool = await openPgPool(this.databaseUrl); await ensurePgSchema(this.databaseUrl); }
   async write(entry: DiaryEntryArg): Promise<string> {
     const id = `d_${createHash('sha256').update(`${entry.agent}|${entry.timestamp}|${entry.content}`).digest('hex').slice(0, 16)}`;
     await tenantQuery(this.pool, this.t, 
