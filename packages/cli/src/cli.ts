@@ -873,13 +873,27 @@ program
       note(false, 'codeindex companion', `error: ${err}`);
     }
 
-    // Watch daemon detection (best effort — the live collector that auto-syncs)
+    // Watch daemon detection — cross-platform (best effort). Checks the
+    // installed per-user service first (the supported way to keep collection
+    // running), then falls back to a foreground process scan on Unix. `pgrep`
+    // exists on Linux AND macOS but NOT Windows, so Windows uses tasklist +
+    // the Scheduled Task query instead.
     let watchRunning = false;
-    try {
-      const out = execSync('pgrep -fc "chat-recall.*watch" 2>/dev/null || true', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
-      watchRunning = parseInt(out, 10) > 0;
-    } catch { /* tolerate */ }
-    note(watchRunning, 'Watch daemon', watchRunning ? 'running' : 'not running (run `chat-recall watch` to auto-ship new sessions)');
+    const tryCmd = (cmd: string): string => {
+      try { return execSync(cmd, { stdio: ['ignore', 'pipe', 'ignore'] }).toString(); } catch { return ''; }
+    };
+    if (process.platform === 'win32') {
+      // Scheduled Task present + running, or a node process running watch.js.
+      watchRunning = /Running/i.test(tryCmd('schtasks /query /tn chat-recall-watch /fo LIST /v 2>nul'));
+      if (!watchRunning) watchRunning = /watch\.js/i.test(tryCmd('wmic process where "name=\'node.exe\'" get commandline 2>nul'));
+    } else if (process.platform === 'darwin') {
+      watchRunning = /com\.chat-recall\.watch/.test(tryCmd('launchctl list 2>/dev/null'))
+        || parseInt(tryCmd('pgrep -fc "chat-recall.*watch" 2>/dev/null || true').trim(), 10) > 0;
+    } else {
+      watchRunning = /active/.test(tryCmd('systemctl --user is-active chat-recall-watch.service 2>/dev/null'))
+        || parseInt(tryCmd('pgrep -fc "chat-recall.*watch" 2>/dev/null || true').trim(), 10) > 0;
+    }
+    note(watchRunning, 'Watch daemon', watchRunning ? 'running' : 'not running (run `chat-recall watch --install-service` to keep collection running)');
 
     // Legacy local index — pre-thin-collector versions kept a local SQLite
     // store + vector/KG files here. The thin collector stores everything
@@ -1468,45 +1482,83 @@ program
 program
   .command('watch')
   .description('Run the live indexer daemon (watches all AI-tool session stores, generates summaries, precomputes, syncs when logged in)')
-  .option('--install-service', 'Install + start a systemd user service instead of running in the foreground (Linux only)')
+  .option('--install-service', 'Install + start a per-user background service so collection keeps running (Linux: systemd --user · macOS: launchd · Windows: Scheduled Task). No admin rights.')
   .action(async (opts: { installService?: boolean }) => {
     if (opts.installService) {
-      if (process.platform !== 'linux') {
-        console.error(chalk.red('--install-service currently supports Linux (systemd --user) only.'));
-        console.error(chalk.dim('Run `chat-recall watch` in the foreground, or use your OS scheduler to run `chat-recall-watch`.'));
-        process.exit(1);
-      }
       const { fileURLToPath } = await import('url');
       const { mkdirSync, writeFileSync } = await import('fs');
       // The daemon entry sits next to this file in dist/ — resolve it so the
-      // unit survives npm prefix moves better than relying on PATH at boot.
+      // service survives npm prefix moves better than relying on PATH at boot.
       const watchJs = fileURLToPath(new URL('./watch.js', import.meta.url));
-      const unitDir = join(homedir(), '.config', 'systemd', 'user');
-      const unitPath = join(unitDir, 'chat-recall-watch.service');
-      const unit = [
-        '[Unit]',
-        'Description=chat-recall live indexer (sessions → local index, optional server sync)',
-        'After=default.target',
-        '',
-        '[Service]',
-        `ExecStart=${process.execPath} ${watchJs}`,
-        'Restart=on-failure',
-        'RestartSec=10',
-        'Nice=10',
-        '',
-        '[Install]',
-        'WantedBy=default.target',
-        '',
-      ].join('\n');
-      mkdirSync(unitDir, { recursive: true });
-      writeFileSync(unitPath, unit);
-      try {
-        execSync('systemctl --user daemon-reload && systemctl --user enable --now chat-recall-watch.service', { stdio: 'inherit' });
-        console.log(chalk.green('✓ chat-recall-watch service installed and started.'));
-        console.log(chalk.dim('  status:  systemctl --user status chat-recall-watch'));
-        console.log(chalk.dim('  logs:    journalctl --user -u chat-recall-watch -f'));
-      } catch {
-        console.error(chalk.red('Unit written but systemctl failed.') + chalk.dim(`  Unit: ${unitPath}`));
+      const node = process.execPath;
+      const dataDir = join(homedir(), '.chat-recall');
+      const logFile = join(dataDir, 'watch.log');
+      mkdirSync(dataDir, { recursive: true });
+
+      if (process.platform === 'linux') {
+        const unitDir = join(homedir(), '.config', 'systemd', 'user');
+        const unitPath = join(unitDir, 'chat-recall-watch.service');
+        const unit = [
+          '[Unit]', 'Description=chat-recall live indexer (sessions → local index, optional server sync)', 'After=default.target', '',
+          '[Service]', `ExecStart=${node} ${watchJs}`, 'Restart=on-failure', 'RestartSec=10', 'Nice=10', '',
+          '[Install]', 'WantedBy=default.target', '',
+        ].join('\n');
+        mkdirSync(unitDir, { recursive: true });
+        writeFileSync(unitPath, unit);
+        try {
+          execSync('systemctl --user daemon-reload && systemctl --user enable --now chat-recall-watch.service', { stdio: 'inherit' });
+          // Survive logout/reboot when no session is open (best-effort; needs the user's password once on some distros).
+          try { execSync('loginctl enable-linger "$USER" 2>/dev/null', { stdio: 'ignore' }); } catch { /* optional */ }
+          console.log(chalk.green('✓ chat-recall-watch service installed and started (systemd --user).'));
+          console.log(chalk.dim('  status:  systemctl --user status chat-recall-watch   ·   logs: journalctl --user -u chat-recall-watch -f'));
+        } catch {
+          console.error(chalk.red('Unit written but systemctl failed.') + chalk.dim(`  Unit: ${unitPath}`));
+          process.exit(1);
+        }
+      } else if (process.platform === 'darwin') {
+        const label = 'com.chat-recall.watch';
+        const plistDir = join(homedir(), 'Library', 'LaunchAgents');
+        const plistPath = join(plistDir, `${label}.plist`);
+        const plist = [
+          '<?xml version="1.0" encoding="UTF-8"?>',
+          '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+          '<plist version="1.0"><dict>',
+          `  <key>Label</key><string>${label}</string>`,
+          `  <key>ProgramArguments</key><array><string>${node}</string><string>${watchJs}</string></array>`,
+          '  <key>RunAtLoad</key><true/>',
+          '  <key>KeepAlive</key><true/>',
+          `  <key>StandardOutPath</key><string>${logFile}</string>`,
+          `  <key>StandardErrorPath</key><string>${logFile}</string>`,
+          '</dict></plist>', '',
+        ].join('\n');
+        mkdirSync(plistDir, { recursive: true });
+        writeFileSync(plistPath, plist);
+        try {
+          // Reload idempotently: unload an old copy first, ignore "not loaded".
+          try { execSync(`launchctl unload "${plistPath}"`, { stdio: 'ignore' }); } catch { /* not loaded yet */ }
+          execSync(`launchctl load "${plistPath}"`, { stdio: 'inherit' });
+          console.log(chalk.green('✓ chat-recall-watch agent installed and started (launchd).'));
+          console.log(chalk.dim(`  status:  launchctl list | grep chat-recall   ·   logs: ${logFile}`));
+        } catch {
+          console.error(chalk.red('Plist written but launchctl failed.') + chalk.dim(`  Plist: ${plistPath}`));
+          process.exit(1);
+        }
+      } else if (process.platform === 'win32') {
+        const taskName = 'chat-recall-watch';
+        // Run at logon; quote node + script for paths with spaces.
+        const tr = `\\"${node}\\" \\"${watchJs}\\"`;
+        try {
+          execSync(`schtasks /create /tn "${taskName}" /tr "${tr}" /sc onlogon /rl LIMITED /f`, { stdio: 'inherit' });
+          try { execSync(`schtasks /run /tn "${taskName}"`, { stdio: 'inherit' }); } catch { /* starts next logon if /run unsupported */ }
+          console.log(chalk.green('✓ chat-recall-watch Scheduled Task installed (runs at logon).'));
+          console.log(chalk.dim(`  status:  schtasks /query /tn ${taskName}   ·   logs: ${logFile}`));
+        } catch {
+          console.error(chalk.red('Scheduled Task creation failed (schtasks).'));
+          process.exit(1);
+        }
+      } else {
+        console.error(chalk.red(`--install-service: unsupported platform '${process.platform}'.`));
+        console.error(chalk.dim('Run `chat-recall watch` in the foreground, or point your OS scheduler at `chat-recall-watch`.'));
         process.exit(1);
       }
       return;
