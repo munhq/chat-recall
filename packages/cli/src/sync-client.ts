@@ -50,8 +50,10 @@ import { parseSessionFile, readCwdFromJsonl } from '@chat-recall/engine/parsers/
 import { resolveProjectId } from '@chat-recall/engine/core/project-resolver.js';
 import { extractEntities } from '@chat-recall/engine/core/entity-extractor.js';
 import { buildSourceRegistry } from '@chat-recall/engine/parsers/all-sources.js';
-import { getSyncedRows, markSynced, getLedgerData, persistLedgerData } from './sync-ledger.js';
+import { getSyncedRows, markSynced, getLedgerData, persistLedgerData,
+  fieldNeedsScan, markFieldCoverage, fieldNeedsFullPass, markFieldFullPassDone } from './sync-ledger.js';
 import { EXTRACTOR_VERSION } from '@chat-recall/engine/core/extractor-version.js';
+import { SYNC_FIELDS } from '@chat-recall/engine/core/sync-fields.js';
 import '@chat-recall/engine/core/backends/index.js'; // register the tool backends
 
 // Lives under the data dir so CHAT_RECALL_DATA_DIR isolates credentials the
@@ -238,6 +240,107 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
   if (!agg) throw new Error(`sync failed for all targets:\n  ${errors.join('\n  ')}`);
   if (errors.length > 0) console.error(`[sync] ${errors.length} target(s) failed (others succeeded):\n  ${errors.join('\n  ')}`);
   return agg;
+}
+
+export interface ReconcileResult { sessions: number; scanned: number; pushed: number; absent: number; perTarget: Record<string, { pushed: number; absent: number }> }
+
+/** POST one derived-field batch, retrying the ingest gate's 429 (honoring
+ *  Retry-After) and transient 5xx. */
+async function postFieldBatch(base: string, token: string, rows: Array<{ session_id: string; field: string; value: string | null }>): Promise<void> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (token) headers.authorization = `Bearer ${token}`;
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(`${base}/api/sync`, { method: 'POST', headers, body: JSON.stringify({ fields: rows }) });
+    if (res.ok) return;
+    const retryable = res.status === 429 || res.status >= 500;
+    if (!retryable || attempt >= 5) throw new Error(`${base}: fields batch HTTP ${res.status} ${await res.text().catch(() => '')}`);
+    const ra = Number(res.headers.get('retry-after')) || 0;
+    await sleep(ra > 0 ? ra * 1000 : [500, 1500, 4000, 8000, 15000][Math.min(attempt, 4)]);
+  }
+}
+
+/**
+ * Reconcile every DERIVED FIELD (engine core/sync-fields.ts) for one target,
+ * pushing ONLY missing/stale fields — never the conversation.
+ *
+ * Per field: a one-time FULL pass (all sessions) runs when the field's version
+ * bumped or a re-scan was forced; otherwise only `convRefs` (the new/changed
+ * sessions this sync already listed) are checked. A session is (re)scanned only
+ * when the coverage ledger says the field is missing/stale — an absent-but-
+ * current field is skipped (the no-retry guarantee). Present values ship via the
+ * fields[] batch and are ledger-stamped after the server acks; absent results
+ * are stamped locally (nothing to ship) so they're never re-scanned.
+ */
+async function reconcileFieldsForTarget(
+  cred: Credentials,
+  fullRefs: () => SessionRef[],
+  opts: { convRefs?: SessionRef[]; force?: boolean } = {},
+): Promise<{ pushed: number; absent: number; scanned: number }> {
+  const base = cred.serverUrl.replace(/\/+$/, '');
+  const ledger = getSyncedRows(base);
+  let pushed = 0, absent = 0, scanned = 0;
+
+  for (const field of SYNC_FIELDS) {
+    const needFull = !!opts.force || fieldNeedsFullPass(base, field);
+    const candidates = needFull ? fullRefs() : (opts.convRefs ?? fullRefs());
+    const send: Array<{ session_id: string; field: string; value: string | null }> = [];
+    const mtimeById = new Map<string, number>();
+    const absentIds: string[] = [];
+
+    for (const ref of candidates) {
+      if (!fieldNeedsScan(ledger.get(ref.prefixedId), field, ref.mtime, opts.force)) continue;
+      scanned++;
+      mtimeById.set(ref.prefixedId, ref.mtime);
+      const raw = field.scan(ref);
+      const value = raw && raw.trim()
+        ? redactSecrets(raw.trim(), { force: true, count: { redactions: 0 } }).slice(0, 200)
+        : null;
+      if (value !== null) send.push({ session_id: ref.prefixedId, field: field.name, value });
+      else absentIds.push(ref.prefixedId);
+    }
+
+    // Present values: ship in chunks, stamp coverage only after each ack so an
+    // interrupted run resumes cleanly.
+    for (let i = 0; i < send.length; i += 200) {
+      const chunk = send.slice(i, i + 200);
+      await postFieldBatch(base, cred.token, chunk);
+      markFieldCoverage(base, field, chunk.map((r) => ({ id: r.session_id, present: true, mtime: mtimeById.get(r.session_id) ?? 0 })));
+      pushed += chunk.length;
+    }
+    // Absent: nothing to ship; stamp locally so they're never re-scanned.
+    if (absentIds.length) {
+      markFieldCoverage(base, field, absentIds.map((id) => ({ id, present: false, mtime: mtimeById.get(id) ?? 0 })));
+      absent += absentIds.length;
+    }
+
+    // Full pass completed without throwing → record so it isn't repeated until
+    // the field version bumps or a re-scan is forced again.
+    if (needFull) markFieldFullPassDone(base, field);
+  }
+  return { pushed, absent, scanned };
+}
+
+/**
+ * Manual entrypoint (CLI `reconcile`): reconcile derived fields for ALL targets.
+ * Normal `sync` already runs reconciliation each pass; this is the explicit
+ * on-demand backfill / forced re-scan (also what a UI "re-scan this field"
+ * action drives, via forceFieldRescan + a sync).
+ */
+export async function reconcileFields(opts: { force?: boolean } = {}): Promise<ReconcileResult> {
+  const targets = loadAllCredentials();
+  if (targets.length === 0) throw new Error('Not logged in — run `chat-recall login <server-url> --token <token>`');
+  let cached: SessionRef[] | null = null;
+  const fullRefs = () => (cached ??= listAvailableBackends().flatMap((b) => { try { return b.listSessions({}); } catch { return []; } }));
+
+  let pushed = 0, absent = 0, scanned = 0;
+  const perTarget: Record<string, { pushed: number; absent: number }> = {};
+  for (const cred of targets) {
+    const r = await reconcileFieldsForTarget(cred, fullRefs, { force: opts.force });
+    pushed += r.pushed; absent += r.absent; scanned += r.scanned;
+    perTarget[cred.serverUrl.replace(/\/+$/, '')] = { pushed: r.pushed, absent: r.absent };
+  }
+  return { sessions: fullRefs().length, scanned, pushed, absent, perTarget };
 }
 
 async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number; prune?: boolean; useLedger?: boolean } = {}): Promise<SyncResult> {
@@ -690,6 +793,23 @@ const refs = listAvailableBackends().flatMap((b) => {
   // error) before tombstones/prune, which must run strictly after all data.
   await drainInflight();
 
+  // ── Derived-field reconciliation (native title, …) — conversation-free.
+  // Cheap pass over the sessions THIS sync listed (covers new/changed); a
+  // one-time full pass per field when its version bumped or a re-scan was
+  // forced. Never re-pushes a conversation. Best-effort: a field-reconcile
+  // failure must not fail the conversation sync that already succeeded.
+  if (upload.sessionMeta) {
+    try {
+      await reconcileFieldsForTarget(
+        cred,
+        () => listAvailableBackends().flatMap((b) => { try { return b.listSessions({}); } catch { return []; } }),
+        { convRefs: slice },
+      );
+    } catch (e) {
+      console.error(`[sync] field reconcile (${base}): ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
   // ── Tombstones for sessions this device previously synced but that no
   //    longer exist locally (deleted transcript file, cleared cache, etc).
   //    We only tombstone sessions we have a ledger record for — never data
@@ -908,15 +1028,9 @@ export async function buildConversationSync(
   const envTexts = envelope.messages.filter((m) => m.content?.trim());
   const redactedText = envTexts.map((m) => m.content).join('\n');
 
-  // Native tool title (Claude ai-title, OpenCode session.title, …). Fetched
-  // once here at sync time — NOT in listSessions, which must stay cheap.
-  // Redacted like any other synced string. Backends without one return null.
-  let toolTitle: string | undefined;
-  try {
-    const backend = getBackendForId(ref.prefixedId);
-    const native = backend?.getNativeTitle?.(ref.rawId);
-    if (native && native.trim()) toolTitle = redactSecrets(native.trim(), { force: true, count }).slice(0, 200);
-  } catch { /* best-effort — title is optional */ }
+  // Native tool title (Claude ai-title, OpenCode session.title) is NOT shipped
+  // here — it's a derived field reconciled separately (sync-fields.ts), so a
+  // title change never drags the conversation back through sync.
 
   return {
     conv: {
@@ -931,7 +1045,6 @@ export async function buildConversationSync(
       raw_b64,
       raw_size,
       first_prompt: (envTexts.find((m) => m.role === 'user')?.content as string | undefined)?.slice(0, 200),
-      title: toolTitle,
       meta,
       mtime,
     },

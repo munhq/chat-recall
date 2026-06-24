@@ -44,4 +44,51 @@ describe('sync-ledger (JSON watermark)', () => {
     const { markSynced } = await import('./sync-ledger.js');
     expect(() => markSynced('https://a.example', [])).not.toThrow();
   });
+
+  test('field coverage: scan-once, no-retry-on-absent, version-bump re-scans', async () => {
+    const { markFieldCoverage, fieldNeedsScan, getSyncedRows, _resetLedgerCacheForTests } = await import('./sync-ledger.js');
+    const SRV = 'https://fld.example';
+    const F = { name: 'tool_title', version: 1, mtimeSensitive: true };
+
+    // Unknown session → needs scan.
+    expect(fieldNeedsScan(getSyncedRows(SRV).get('x'), F, 1000)).toBe(true);
+
+    // Present at v1, mtime 1000 → covered (no re-scan).
+    markFieldCoverage(SRV, F, [{ id: 'x', present: true, mtime: 1000 }]);
+    expect(fieldNeedsScan(getSyncedRows(SRV).get('x'), F, 1000)).toBe(false);
+
+    // Absent at v1 → covered, NOT retried (the no-retry guarantee).
+    markFieldCoverage(SRV, F, [{ id: 'y', present: false, mtime: 1000 }]);
+    expect(fieldNeedsScan(getSyncedRows(SRV).get('y'), F, 1000)).toBe(false);
+    // …unless forced.
+    expect(fieldNeedsScan(getSyncedRows(SRV).get('y'), F, 1000, true)).toBe(true);
+
+    // mtime moved past scan mtime → re-scan (mtime-sensitive field).
+    expect(fieldNeedsScan(getSyncedRows(SRV).get('x'), F, 2000)).toBe(true);
+    // Version bump → re-scan everything (conversations untouched).
+    expect(fieldNeedsScan(getSyncedRows(SRV).get('x'), { ...F, version: 2 }, 1000)).toBe(true);
+
+    // Field coverage must NOT disturb conversation {m,v}.
+    const { markSynced } = await import('./sync-ledger.js');
+    markSynced(SRV, [{ id: 'z', mtime: 5000 }]);
+    markFieldCoverage(SRV, F, [{ id: 'z', present: true, mtime: 5000 }]);
+    _resetLedgerCacheForTests();
+    const z = getSyncedRows(SRV).get('z')!;
+    expect(z.m).toBe(5000);
+    expect(z.f?.tool_title?.p).toBe(1);
+  });
+
+  test('full-pass gate: owed until done, re-owed on version bump or force', async () => {
+    const { fieldNeedsFullPass, markFieldFullPassDone, forceFieldRescan } = await import('./sync-ledger.js');
+    const SRV = 'https://full.example';
+    const F = { name: 'tool_title', version: 1 };
+    expect(fieldNeedsFullPass(SRV, F)).toBe(true);     // never reconciled
+    markFieldFullPassDone(SRV, F);
+    expect(fieldNeedsFullPass(SRV, F)).toBe(false);    // done at v1
+    expect(fieldNeedsFullPass(SRV, { ...F, version: 2 })).toBe(true); // bumped
+    forceFieldRescan('tool_title', SRV);
+    expect(fieldNeedsFullPass(SRV, F)).toBe(true);     // forced
+    markFieldFullPassDone(SRV, F);
+    expect(fieldNeedsFullPass(SRV, F)).toBe(false);    // force cleared
+  });
 });
