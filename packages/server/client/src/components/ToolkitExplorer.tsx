@@ -17,11 +17,15 @@ import {
   promoteToolkitItem,
   getToolkitMatrix,
   removeToolkitItem,
+  enqueueSyncIntent,
+  listSyncIntents,
   type ToolkitType,
   type ToolkitStatus,
   type MemoryMetadataRow,
   type ToolkitMatrix,
   type SyncTool,
+  type SyncType,
+  type SyncIntentRow,
 } from '../services/api';
 
 type ToolFilter = 'all' | 'claude' | 'gemini' | 'opencode' | 'codex';
@@ -41,6 +45,21 @@ function readTool(item: { extra_json?: string }): string {
 
 function readField<T = unknown>(item: { extra_json?: string }, k: string): T | undefined {
   try { return JSON.parse(item.extra_json || '{}')[k] as T; } catch { return undefined; }
+}
+
+/**
+ * Poll recent intents until `id` leaves 'pending' (the local agent picked it
+ * up and acked), or give up. Model B is async: the UI only enqueues; the user's
+ * machine does the copy and reports back here.
+ */
+async function pollIntent(id: string, timeoutMs = 90_000): Promise<SyncIntentRow | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 3000));
+    const row = (await listSyncIntents(100)).find(i => i.id === id);
+    if (row && row.status !== 'pending') return row;
+  }
+  return null;
 }
 
 interface ToolkitExplorerProps {
@@ -435,18 +454,19 @@ function ToolkitDetail({ item, kind, allRows }: { item: MemoryMetadataRow; kind:
 
 /** Per-primitive: which AI tools natively expose this surface today. */
 const TOOL_SUPPORT: Record<ToolkitType, ReadonlySet<AiToolName>> = {
-  // Skills: Claude (~/.claude/skills), OpenCode (~/.config/opencode/skill),
-  // Codex (~/.codex/skills/.system). Gemini uses Extensions instead.
-  skill:   new Set(['claude', 'opencode', 'codex']),
+  // Skills: all four use the same SKILL.md shape (Claude, Gemini, OpenCode,
+  // Codex). Gemini gained first-class Skills; the tool-neutral ~/.agents
+  // location is read by every tool.
+  skill:   new Set(['claude', 'gemini', 'opencode', 'codex']),
   // MCPs: 4-way (cross-format JSON ↔ TOML).
   mcp:     new Set(['claude', 'gemini', 'opencode', 'codex']),
   // Plugins: Claude marketplace, Gemini extensions, Codex plugin packs —
   // different on-disk shapes, but each tool has a "plugin"-flavored slot.
   plugin:  new Set(['claude', 'gemini', 'codex']),
-  // Commands / Agents / Hooks: only Claude has a documented user-editable
-  // surface today. Listed honestly — the matrix shows other tools as N/A.
-  command: new Set(['claude']),
-  agent:   new Set(['claude']),
+  // Commands & Agents: cross-tool via the codec (markdown frontmatter ↔ TOML).
+  command: new Set(['claude', 'gemini', 'opencode', 'codex']),
+  agent:   new Set(['claude', 'gemini', 'opencode', 'codex']),
+  // Hooks remain Claude-specific (settings.json event handlers).
   hook:    new Set(['claude']),
 };
 
@@ -507,6 +527,16 @@ function PromoteRow({
     if (!confirm(`Copy ${primaryName} from ${fromTool} → ${toTool}?`)) return;
     setBusy(toTool);
     setMsg(null);
+    // The 4 cross-tool types go through the Model-B intent queue (works from
+    // the SaaS too); hooks/plugins fall back to the local-only direct promote.
+    const SYNC4 = ['skill', 'mcp', 'command', 'agent'];
+    if (SYNC4.includes(kind)) {
+      const e = await enqueueSyncIntent({ kind: 'copy', artifactType: kind as SyncType, name: primaryName, fromTool: fromTool as SyncTool, toTool });
+      setBusy(null);
+      if (e.ok) setMsg({ kind: 'ok', text: `Queued — your local agent will copy it to ${toTool}.` });
+      else setMsg({ kind: 'err', text: e.error || 'failed' });
+      return;
+    }
     const r = await promoteToolkitItem(kind, item.id, toTool);
     setBusy(null);
     if (r.ok) setMsg({ kind: 'ok', text: `Copied to ${r.targetPath || toTool}` });
@@ -622,10 +652,8 @@ function EmptyListState({
           {targetTool} doesn't natively support {kind}s.
         </div>
         <div style={{ fontSize: 12 }}>
-          {kind === 'skill' && targetTool === 'gemini' && 'Gemini uses Extensions instead — see the Plugins tab.'}
           {kind === 'hook'  && 'Hooks live in Claude Code\'s settings.json. Other tools have their own event mechanisms.'}
-          {kind === 'command' && 'Slash commands are a Claude Code feature today.'}
-          {kind === 'agent' && 'User-definable subagent files live under ~/.claude/agents/. Other tools spawn agents differently.'}
+          {kind === 'plugin' && 'Plugins use different bundle formats per tool — promote the skills/MCPs inside them instead.'}
         </div>
       </div>
     );
@@ -642,6 +670,17 @@ function EmptyListState({
   const handleImport = async (row: MemoryMetadataRow) => {
     if (!targetTool) return;
     setBusyId(row.id);
+    const SYNC4 = ['skill', 'mcp', 'command', 'agent'];
+    if (SYNC4.includes(kind)) {
+      const nameField = kind === 'skill' ? 'skillName' : kind === 'mcp' ? 'mcpName' : kind === 'command' ? 'commandName' : 'agentName';
+      const name = readField<string>(row, nameField) || row.title;
+      const fromTool = readTool(row) as SyncTool;
+      const e = await enqueueSyncIntent({ kind: 'copy', artifactType: kind as SyncType, name, fromTool, toTool: targetTool });
+      setBusyId(null);
+      if (e.ok) alert(`Queued — your local agent will copy "${name}" to ${targetTool}.`);
+      else alert(`Queue failed: ${e.error || 'unknown error'}`);
+      return;
+    }
     const r = await promoteToolkitItem(kind, row.id, targetTool);
     setBusyId(null);
     if (r.ok) onAfterCopy();
@@ -712,11 +751,20 @@ const TOOL_LABEL: Record<SyncTool, string> = {
 
 type CellAction = 'add' | 'remove';
 type PendingMap = Map<string, CellAction>; // key = "<type>:<name>:<tool>"
-const cellKey = (type: 'skill' | 'mcp', name: string, tool: SyncTool) => `${type}:${name}:${tool}`;
+const cellKey = (type: SyncType, name: string, tool: SyncTool) => `${type}:${name}:${tool}`;
+
+const SYNC_TYPE_TABS: Array<{ id: SyncType; label: string }> = [
+  { id: 'skill',   label: 'Skills' },
+  { id: 'mcp',     label: 'MCPs' },
+  { id: 'command', label: 'Commands' },
+  { id: 'agent',   label: 'Subagents' },
+];
+/** DELETE is only implemented server-side for skills + MCPs. */
+const REMOVABLE_TYPES = new Set<SyncType>(['skill', 'mcp']);
 
 function SyncMatrix({ onClose, onMutated }: { onClose: () => void; onMutated: () => void }) {
   const [matrix, setMatrix] = useState<ToolkitMatrix | null>(null);
-  const [activeType, setActiveType] = useState<'skill' | 'mcp'>('skill');
+  const [activeType, setActiveType] = useState<SyncType>('skill');
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | 'incomplete'>('incomplete');
   const [pending, setPending] = useState<PendingMap>(new Map());
@@ -724,6 +772,7 @@ function SyncMatrix({ onClose, onMutated }: { onClose: () => void; onMutated: ()
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [errors, setErrors] = useState<{ key: string; error: string }[]>([]);
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [oneClickMsg, setOneClickMsg] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -736,7 +785,9 @@ function SyncMatrix({ onClose, onMutated }: { onClose: () => void; onMutated: ()
   }, []);
   useEffect(() => { reload(); }, [reload]);
 
-  const togglePending = useCallback((type: 'skill' | 'mcp', name: string, tool: SyncTool, currentlyPresent: boolean) => {
+  const togglePending = useCallback((type: SyncType, name: string, tool: SyncTool, currentlyPresent: boolean) => {
+    // Removing is only supported for skills + MCPs.
+    if (currentlyPresent && !REMOVABLE_TYPES.has(type)) return;
     setPending((prev) => {
       const next = new Map(prev);
       const k = cellKey(type, name, tool);
@@ -751,10 +802,40 @@ function SyncMatrix({ onClose, onMutated }: { onClose: () => void; onMutated: ()
     });
   }, []);
 
+  /**
+   * One-click: queue a full cross-tool fan-out. The copy runs on the user's
+   * own machine (the local agent has the filesystem) — so this enqueues a
+   * `sync_all` intent, then polls until the agent applies it and reports back.
+   */
+  const syncEverything = useCallback(async () => {
+    setOneClickMsg(null);
+    if (!confirm('Queue a full cross-tool sync?\n\nYour local agent will copy every artifact into every tool that is missing it (existing items are never overwritten). This runs on your machine — it may take up to a minute to apply.')) return;
+    setApplying(true);
+    try {
+      const enq = await enqueueSyncIntent({ kind: 'sync_all' });
+      if (!enq.ok || !enq.id) { setApplying(false); setOneClickMsg(enq.error || 'Failed to queue sync.'); return; }
+      setOneClickMsg('Queued — your local agent is applying it…');
+      const done = await pollIntent(enq.id);
+      setApplying(false);
+      if (!done) { setOneClickMsg('Queued. Your local agent will apply it shortly (is `chat-recall watch` running on your machine?).'); return; }
+      if (done.status === 'error') { setOneClickMsg(`Sync reported errors: ${done.result || 'see agent logs'}`); }
+      else {
+        let summary = 'Synced.';
+        try { const r = JSON.parse(done.result || '{}'); summary = `Synced: ${r.copied ?? 0} copied · ${r.skipped ?? 0} already present · ${(r.failed?.length ?? r.failed ?? 0)} failed.`; } catch { /* keep default */ }
+        setOneClickMsg(summary);
+      }
+      onMutated();
+      await reload();
+    } catch (e) {
+      setApplying(false);
+      setOneClickMsg(e instanceof Error ? e.message : 'Sync failed');
+    }
+  }, [onMutated, reload]);
+
   const apply = useCallback(async () => {
     if (!matrix || pending.size === 0) return;
     const ops = [...pending.entries()].map(([k, action]) => {
-      const [type, name, tool] = k.split(':') as ['skill' | 'mcp', string, SyncTool];
+      const [type, name, tool] = k.split(':') as [SyncType, string, SyncTool];
       return { k, type, name, tool, action };
     });
     setApplying(true);
@@ -767,20 +848,19 @@ function SyncMatrix({ onClose, onMutated }: { onClose: () => void; onMutated: ()
     for (const op of ops) {
       try {
         if (op.action === 'add') {
-          // Find a source tool that has it.
+          // Model B: enqueue a copy intent; the local agent does the file copy.
+          // Source tool = the first tool that already has this artifact.
           const slot = matrix[op.type][op.name] || {};
           const source = (Object.keys(slot) as SyncTool[]).find(t => slot[t]);
           if (!source) {
             errorList.push({ key: op.k, error: `no source tool has ${op.name}` });
           } else {
-            // Build a synthetic id: <tool>_<typePrefix>_<name>
-            const prefix = op.type === 'skill' ? 'skill' : 'mcp';
-            const sourceId = `${source}_${prefix}_${op.name}`;
-            const r = await promoteToolkitItem(op.type, sourceId, op.tool);
+            const r = await enqueueSyncIntent({ kind: 'copy', artifactType: op.type, name: op.name, fromTool: source, toTool: op.tool });
             if (!r.ok) errorList.push({ key: op.k, error: r.error || 'failed' });
           }
         } else {
-          const r = await removeToolkitItem(op.type, op.name, op.tool);
+          // Guarded by togglePending → only skill/mcp reach here.
+          const r = await removeToolkitItem(op.type as 'skill' | 'mcp', op.name, op.tool);
           if (!r.ok) errorList.push({ key: op.k, error: r.error || 'failed' });
         }
       } catch (e) {
@@ -792,6 +872,8 @@ function SyncMatrix({ onClose, onMutated }: { onClose: () => void; onMutated: ()
     setErrors(errorList);
     setApplying(false);
     setPending(new Map());
+    const queued = ops.length - errorList.length;
+    if (queued > 0) setOneClickMsg(`Queued ${queued} change${queued === 1 ? '' : 's'} — your local agent will apply them and they'll appear here after the next index.`);
     onMutated();
     await reload();
   }, [matrix, pending, onMutated, reload]);
@@ -851,6 +933,16 @@ function SyncMatrix({ onClose, onMutated }: { onClose: () => void; onMutated: ()
           </span>
           <div style={{ flex: 1 }} />
           <Button
+            data-testid="toolkit-sync-everything"
+            variant="outline"
+            size="sm"
+            disabled={applying}
+            onClick={syncEverything}
+            title="Fan every artifact out to every tool that's missing it (never overwrites)"
+          >
+            {applying ? 'Syncing…' : '⚡ Sync everything'}
+          </Button>
+          <Button
             data-testid="toolkit-sync-apply"
             variant="primary"
             size="sm"
@@ -870,11 +962,11 @@ function SyncMatrix({ onClose, onMutated }: { onClose: () => void; onMutated: ()
         <div style={{ padding: '10px 18px', borderBottom: '1px solid var(--cr-line-1)', display: 'flex', alignItems: 'center', gap: 12 }}>
           <SegmentedControl
             value={activeType}
-            onChange={(v) => setActiveType(v as 'skill' | 'mcp')}
-            options={[
-              { value: 'skill', label: matrix ? `Skills (${Object.keys(matrix.skill).length})` : 'Skills' },
-              { value: 'mcp',   label: matrix ? `MCPs (${Object.keys(matrix.mcp).length})`     : 'MCPs' },
-            ]}
+            onChange={(v) => setActiveType(v as SyncType)}
+            options={SYNC_TYPE_TABS.map(t => ({
+              value: t.id,
+              label: matrix ? `${t.label} (${Object.keys(matrix[t.id]).length})` : t.label,
+            }))}
             size="sm"
           />
           <div style={{ flex: 1, maxWidth: 320 }}>
@@ -899,6 +991,19 @@ function SyncMatrix({ onClose, onMutated }: { onClose: () => void; onMutated: ()
 
         {/* Body */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '12px 18px' }}>
+          {oneClickMsg && (
+            <div
+              data-testid="toolkit-sync-everything-msg"
+              style={{
+                marginBottom: 12, padding: 10, fontSize: 12,
+                borderRadius: 'var(--cr-radius-sm)',
+                background: 'var(--cr-ok-surf)', color: 'var(--cr-ok-500)',
+                border: '1px solid var(--cr-ok-line)',
+              }}
+            >
+              {oneClickMsg}
+            </div>
+          )}
           {loadErr && <div style={{ color: 'var(--cr-err-500)', fontSize: 13 }}>{loadErr}</div>}
           {!matrix && !loadErr && (
             <div style={{ color: 'var(--cr-fg-3)', fontSize: 13, padding: 30, textAlign: 'center' }}>Loading matrix…</div>

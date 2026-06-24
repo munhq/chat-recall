@@ -44,4 +44,29 @@ You are a thorough code reviewer.`);
   test('returns empty when agents dir absent', async () => {
     expect(await collect()).toHaveLength(0);
   });
+
+  test('discovers OpenCode + Gemini markdown agents', async () => {
+    mkdirSync(join(tmpHome, '.config', 'opencode', 'agents'), { recursive: true });
+    writeFileSync(join(tmpHome, '.config', 'opencode', 'agents', 'planner.md'),
+      '---\ndescription: plans work\n---\nYou plan.');
+    mkdirSync(join(tmpHome, '.gemini', 'agents'), { recursive: true });
+    writeFileSync(join(tmpHome, '.gemini', 'agents', 'helper.md'),
+      '---\nname: helper\ndescription: helps\n---\nYou help.');
+    const items = await collect();
+    expect(items.find(i => i.extra.tool === 'opencode')?.title).toBe('planner');
+    expect(items.find(i => i.extra.tool === 'gemini')?.title).toBe('helper');
+  });
+
+  test('discovers Codex TOML agents (developer_instructions as body)', async () => {
+    mkdirSync(join(tmpHome, '.codex', 'agents'), { recursive: true });
+    writeFileSync(join(tmpHome, '.codex', 'agents', 'auditor.toml'),
+      'name = "auditor"\ndescription = "audits code"\ndeveloper_instructions = """\nYou audit for security bugs.\n"""\n');
+    const items = await collect();
+    const c = items.find(i => i.extra.tool === 'codex');
+    expect(c).toBeDefined();
+    expect(c.title).toBe('auditor');
+    expect(c.extra.format).toBe('toml');
+    const chunks = await new SubagentsSource().parse(c);
+    expect(chunks[0].text).toContain('audits code');
+  });
 });

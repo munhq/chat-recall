@@ -6,18 +6,22 @@
  * yaml frontmatter (`name`, `description`) plus optional `references/`
  * and `scripts/` subdirectories.
  *
- * Roots scanned:
+ * Roots scanned (every tool uses the same SKILL.md shape, so a skill is the
+ * one artifact that needs NO format translation to move between tools):
+ *   - Shared    — ~/.agents/skills/<name>/SKILL.md          (tool-neutral standard,
+ *                 read by Claude, Gemini, OpenCode and Codex alike)
  *   - Claude    — ~/.claude/skills/<name>/SKILL.md
- *   - OpenCode  — ~/.config/opencode/skill/<name>/SKILL.md
- *                 ~/.opencode/skill/<name>/SKILL.md
- *                 ~/.opencode/skills/<name>/SKILL.md
- *   - Codex     — ~/.codex/skills/.system/<name>/SKILL.md
+ *   - Gemini    — ~/.gemini/skills/<name>/SKILL.md
+ *   - OpenCode  — ~/.config/opencode/{skills,skill}/<name>/SKILL.md
+ *                 ~/.opencode/{skill,skills}/<name>/SKILL.md
+ *   - Codex     — ~/.codex/skills/<name>/SKILL.md           (user-authored)
+ *                 ~/.codex/skills/.system/<name>/SKILL.md   (OpenAI bundled, READ-ONLY)
  *                 ~/.codex/.tmp/plugins/plugins/<plugin>/skills/<name>/SKILL.md
- *   - Gemini    — no first-class skills concept; extensions under
- *                 ~/.gemini/extensions/ are surfaced as MCPs instead.
  *
- * Each skill yields one MemoryItem with extra.tool tagging the source.
- * The "name" field from yaml frontmatter is the canonical id within a tool.
+ * Each skill yields one MemoryItem with extra.tool tagging the source. Skills
+ * tagged `shared` already live in the tool-neutral location every tool reads,
+ * so the sync layer treats them as present-everywhere. System/plugin skills
+ * carry extra.readonly so the UI never offers to overwrite or promote them.
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
@@ -32,32 +36,51 @@ import type {
   SourceType,
 } from '../types/memory.js';
 import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
+import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
 import { codexBackend as CODEX } from '../core/backends/codex.js';
 import { isSourceEnabled } from '../core/settings.js';
 
 const MAX_CHUNK_CHARS = 2000;
 
+export type SkillTool = 'shared' | 'claude' | 'gemini' | 'opencode' | 'codex';
+
 interface SkillRoot {
   path: string;
-  tool: 'claude' | 'opencode' | 'codex';
+  tool: SkillTool;
+  /** Skip these immediate child dir names (e.g. Codex's `.system` container). */
+  skipChildren?: string[];
+  /** Mark every skill found here read-only (bundled/system — never sync target). */
+  readonly?: boolean;
 }
 
 function resolveRoots(): SkillRoot[] {
   // Per-tool skill toggles — emit only the roots whose tool is enabled.
   const home = homedir();
   const all: SkillRoot[] = [];
+
+  // Tool-neutral standard location, read by every tool.
+  if (isSourceEnabled('shared', 'skills')) {
+    all.push({ path: join(home, '.agents', 'skills'), tool: 'shared' });
+  }
   if (isSourceEnabled('claude', 'skills')) {
     all.push({ path: CLAUDE.skillsDir(), tool: 'claude' });
   }
+  if (isSourceEnabled('gemini', 'skills')) {
+    all.push({ path: GEMINI.skillsDir(), tool: 'gemini' });
+  }
   if (isSourceEnabled('opencode', 'skills')) {
     all.push(
-      { path: join(home, '.config', 'opencode', 'skill'), tool: 'opencode' },
-      { path: join(home, '.opencode', 'skill'),           tool: 'opencode' },
-      { path: join(home, '.opencode', 'skills'),          tool: 'opencode' },
+      { path: join(home, '.config', 'opencode', 'skills'), tool: 'opencode' },
+      { path: join(home, '.config', 'opencode', 'skill'),  tool: 'opencode' },
+      { path: join(home, '.opencode', 'skill'),            tool: 'opencode' },
+      { path: join(home, '.opencode', 'skills'),           tool: 'opencode' },
     );
   }
   if (isSourceEnabled('codex', 'skills')) {
-    all.push({ path: CODEX.skillsSystemDir(), tool: 'codex' });
+    // User skills sit directly under ~/.codex/skills; `.system` is OpenAI's
+    // read-only bundle and is scanned separately as a distinct root.
+    all.push({ path: CODEX.skillsDir(), tool: 'codex', skipChildren: ['.system'] });
+    all.push({ path: CODEX.skillsSystemDir(), tool: 'codex', readonly: true });
   }
   return all.filter(r => existsSync(r.path));
 }
@@ -104,6 +127,7 @@ export class SkillsSource implements MemorySource {
     try { entries = readdirSync(root.path); } catch { return; }
 
     for (const name of entries) {
+      if (root.skipChildren?.includes(name)) continue;
       const skillDir = join(root.path, name);
       let st;
       try { st = statSync(skillDir); } catch { continue; }
@@ -143,6 +167,11 @@ export class SkillsSource implements MemorySource {
         skillDir,
         subdirs,
       };
+      // Bundled/system/plugin skills are read-only: never a sync target and
+      // never offered for promotion. Shared skills live in the tool-neutral
+      // location every tool already reads.
+      if (root.readonly || pluginName !== undefined) extra.readonly = true;
+      if (root.tool === 'shared') extra.shared = true;
       if (pluginName !== undefined) {
         extra.plugin = pluginName;
       }

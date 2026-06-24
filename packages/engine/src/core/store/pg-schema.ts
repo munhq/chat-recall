@@ -61,6 +61,27 @@ CREATE TABLE IF NOT EXISTS kv_store (
   PRIMARY KEY (tenant, scope, key)
 );
 
+-- Cross-tool sync intents (Model B queue). UI enqueues "copy X from Y to Z"
+-- (or sync_all); the local CLI agent drains pending rows, copies on the
+-- user's machine, and acks status. Tenant + device scoped (RLS-walled).
+CREATE TABLE IF NOT EXISTS sync_intents (
+  tenant        TEXT NOT NULL DEFAULT 'default',
+  id            TEXT NOT NULL,
+  device_id     TEXT,
+  kind          TEXT NOT NULL,
+  artifact_type TEXT,
+  name          TEXT,
+  from_tool     TEXT,
+  to_tool       TEXT,
+  status        TEXT NOT NULL DEFAULT 'pending',
+  result        TEXT,
+  created_at    BIGINT NOT NULL,
+  updated_at    BIGINT NOT NULL,
+  created_by    TEXT,
+  PRIMARY KEY (tenant, id)
+);
+CREATE INDEX IF NOT EXISTS idx_sync_intents_pending ON sync_intents (tenant, status, created_at);
+
 CREATE TABLE IF NOT EXISTS memory_chunks (
   tenant       TEXT NOT NULL DEFAULT 'default',
   chunk_id     TEXT NOT NULL,
@@ -361,7 +382,7 @@ BEGIN
     'memory_metadata','memory_links','content_cache','kv_store','memory_chunks',
     'secret_findings','secret_rules','secret_dismissals','alerted_secrets','session_metadata',
     'summary_errors','compute_cache','session_outcome_cache','kg_entities','kg_triples',
-    'wal_log','diary_entries'
+    'wal_log','diary_entries','sync_intents'
   ] LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);

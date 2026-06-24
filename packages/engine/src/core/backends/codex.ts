@@ -55,7 +55,14 @@ export class CodexBackend implements ToolBackend {
   sessionsDir(): string { return join(this.homeDir(), 'sessions'); }
   configToml(): string { return join(this.homeDir(), 'config.toml'); }
   pluginsDir(): string { return join(this.homeDir(), '.tmp', 'plugins', 'plugins'); }
+  /** OpenAI-bundled, read-only system skills (imagegen, skill-creator, …). */
   skillsSystemDir(): string { return join(this.homeDir(), 'skills', '.system'); }
+  /** User skills root. Direct children (excluding `.system`) are user-authored. */
+  skillsDir(): string { return join(this.homeDir(), 'skills'); }
+  /** Custom prompts (deprecated upstream in favor of skills) — flat *.md. */
+  promptsDir(): string { return join(this.homeDir(), 'prompts'); }
+  /** Subagent definitions — one TOML file per agent. */
+  agentsDir(): string { return join(this.homeDir(), 'agents'); }
 
   isAvailable(): boolean { return existsSync(this.sessionsDir()); }
 

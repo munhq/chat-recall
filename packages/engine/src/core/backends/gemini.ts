@@ -60,6 +60,11 @@ export class GeminiBackend implements ToolBackend {
   settingsFile(): string { return join(this.homeDir(), 'settings.json'); }
   extensionsDir(): string { return join(this.homeDir(), 'extensions'); }
   antigravityBrainDir(): string { return join(this.homeDir(), 'antigravity', 'brain'); }
+  // Toolkit-artifact dirs. Gemini gained first-class Skills + Agents + (TOML)
+  // Commands; all live directly under the home dir, mirroring Claude's layout.
+  skillsDir(): string { return join(this.homeDir(), 'skills'); }
+  commandsDir(): string { return join(this.homeDir(), 'commands'); }
+  agentsDir(): string { return join(this.homeDir(), 'agents'); }
 
   isAvailable(): boolean {
     return existsSync(this.tmpDir());

@@ -126,9 +126,14 @@ export interface SourcesEnabled {
   claude:   { sessions: boolean; plans: boolean; tasks: boolean; pasteCache: boolean;
               history: boolean; skills: boolean; agents: boolean; commands: boolean;
               hooks: boolean; plugins: boolean; agentMemory: boolean };
-  gemini:   { sessions: boolean; plans: boolean; brain: boolean; extensions: boolean };
-  opencode: { sessions: boolean; plans: boolean; todos: boolean; skills: boolean };
-  codex:    { sessions: boolean; plugins: boolean; skills: boolean };
+  gemini:   { sessions: boolean; plans: boolean; brain: boolean; extensions: boolean;
+              skills: boolean; agents: boolean; commands: boolean };
+  opencode: { sessions: boolean; plans: boolean; todos: boolean; skills: boolean;
+              agents: boolean; commands: boolean };
+  codex:    { sessions: boolean; plugins: boolean; skills: boolean;
+              agents: boolean; commands: boolean };
+  // `shared` covers the tool-neutral ~/.agents/{skills} standard read by all tools.
+  shared:   { skills: boolean };
   common:   { mcps: boolean; agentMd: boolean };
 }
 
@@ -304,9 +309,13 @@ function defaultSourcesEnabled(): SourcesEnabled {
     claude:   { sessions: true, plans: true, tasks: true, pasteCache: true, history: true,
                 skills: true, agents: true, commands: true, hooks: true, plugins: true,
                 agentMemory: true },
-    gemini:   { sessions: true, plans: true, brain: true, extensions: true },
-    opencode: { sessions: true, plans: true, todos: true, skills: true },
-    codex:    { sessions: true, plugins: true, skills: true },
+    gemini:   { sessions: true, plans: true, brain: true, extensions: true,
+                skills: true, agents: true, commands: true },
+    opencode: { sessions: true, plans: true, todos: true, skills: true,
+                agents: true, commands: true },
+    codex:    { sessions: true, plugins: true, skills: true,
+                agents: true, commands: true },
+    shared:   { skills: true },
     common:   { mcps: true, agentMd: true },
   };
 }
@@ -377,6 +386,7 @@ function mergeSources(base: SourceSettings, partial?: Partial<SourceSettings>): 
     gemini:   { ...base.enabled.gemini,   ...(partial.enabled?.gemini   ?? {}) },
     opencode: { ...base.enabled.opencode, ...(partial.enabled?.opencode ?? {}) },
     codex:    { ...base.enabled.codex,    ...(partial.enabled?.codex    ?? {}) },
+    shared:   { ...base.enabled.shared,   ...(partial.enabled?.shared   ?? {}) },
     common:   { ...base.enabled.common,   ...(partial.enabled?.common   ?? {}) },
   };
   return {

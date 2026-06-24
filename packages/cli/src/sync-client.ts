@@ -54,6 +54,7 @@ import { getSyncedRows, markSynced, getLedgerData, persistLedgerData,
   fieldNeedsScan, markFieldCoverage, fieldNeedsFullPass, markFieldFullPassDone } from './sync-ledger.js';
 import { EXTRACTOR_VERSION } from '@chat-recall/engine/core/extractor-version.js';
 import { SYNC_FIELDS } from '@chat-recall/engine/core/sync-fields.js';
+import { acquireIndexLock } from '@chat-recall/engine/core/index-lock.js';
 import '@chat-recall/engine/core/backends/index.js'; // register the tool backends
 
 // Lives under the data dir so CHAT_RECALL_DATA_DIR isolates credentials the
@@ -1159,15 +1160,27 @@ export async function syncIncremental(): Promise<SyncResult | null> {
     saveSettings(settings);
     settings = loadSettings();
   }
-  const startedAt = Date.now();
-  // Per-session ledger replaces the global watermark for sessions: every
-  // tick walks ALL sessions and the ledger skips acked ones — so a session
-  // that failed once retries forever until it lands. The watermark is kept
-  // only to bound the non-session items walk.
-  const result = await syncSessions({ useLedger: true, sinceMs: settings.sync.lastSyncAt });
-  // Re-load before saving so we don't clobber settings written mid-sync.
-  const fresh = loadSettings();
-  fresh.sync.lastSyncAt = startedAt;
-  saveSettings(fresh);
-  return result;
+  // SINGLE WRITER — see docs/SYNC.md. Every background sync (MCP ticks across
+  // sessions, any file-watcher, manual incremental) serializes on ONE
+  // cross-platform lock (O_EXCL lockfile; Linux/macOS/Windows). One writer of
+  // the sync ledger at a time, ever. Can't get the lock ⇒ another writer is
+  // mid-sync ⇒ skip this tick. Nothing is lost (the per-session ledger +
+  // watermark make ticks idempotent; the next tick picks up the rest).
+  const lock = acquireIndexLock({ kind: 'sync-incremental', staleAfterMs: 10 * 60_000 });
+  if (!lock) return null;
+  try {
+    const startedAt = Date.now();
+    // Per-session ledger replaces the global watermark for sessions: every
+    // tick walks ALL sessions and the ledger skips acked ones — so a session
+    // that failed once retries forever until it lands. The watermark is kept
+    // only to bound the non-session items walk.
+    const result = await syncSessions({ useLedger: true, sinceMs: settings.sync.lastSyncAt });
+    // Re-load before saving so we don't clobber settings written mid-sync.
+    const fresh = loadSettings();
+    fresh.sync.lastSyncAt = startedAt;
+    saveSettings(fresh);
+    return result;
+  } finally {
+    lock.release();
+  }
 }

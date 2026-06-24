@@ -45,7 +45,15 @@ interface McpConfig {
 
 function readJson(path: string): any | null {
   if (!existsSync(path)) return null;
-  try { return JSON.parse(readFileSync(path, 'utf-8')); }
+  try {
+    const raw = readFileSync(path, 'utf-8');
+    // OpenCode allows JSONC (opencode.jsonc) — strip line/block comments and
+    // trailing commas before parsing. Cheap and safe for plain JSON too.
+    const stripped = path.endsWith('.jsonc')
+      ? raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1').replace(/,(\s*[}\]])/g, '$1')
+      : raw;
+    return JSON.parse(stripped);
+  }
   catch { return null; }
 }
 
@@ -79,9 +87,15 @@ export class McpsSource implements MemorySource {
       scope: 'user',
     });
 
-    // OpenCode — config.json `mcp` key (two possible locations)
+    // OpenCode — `mcp` key. Canonical files are opencode.json[c]; config.json
+    // is the legacy name still present on many installs. Scan all of them in
+    // both the XDG config dir and the legacy ~/.opencode dir.
     for (const path of [
+      join(home, '.config', 'opencode', 'opencode.json'),
+      join(home, '.config', 'opencode', 'opencode.jsonc'),
       join(home, '.config', 'opencode', 'config.json'),
+      join(home, '.opencode', 'opencode.json'),
+      join(home, '.opencode', 'opencode.jsonc'),
       join(home, '.opencode', 'config.json'),
     ]) {
       yield* this.fromObject(readJson(path)?.mcp, {

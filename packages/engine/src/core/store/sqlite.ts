@@ -107,6 +107,12 @@ export class SqliteStore implements StorageDriver {
   async kvDelete(...a: Args<'kvDelete'>) { return this.inner.kvDelete(...a); }
   async kvList(...a: Args<'kvList'>) { return this.inner.kvList(...a); }
 
+  // ── cross-tool sync intents (Model B queue) ──
+  async enqueueSyncIntent(...a: Args<'enqueueSyncIntent'>) { return this.inner.enqueueSyncIntent(...a); }
+  async listPendingSyncIntents(...a: Args<'listPendingSyncIntents'>) { return this.inner.listPendingSyncIntents(...a); }
+  async ackSyncIntent(...a: Args<'ackSyncIntent'>) { return this.inner.ackSyncIntent(...a); }
+  async listSyncIntents(...a: Args<'listSyncIntents'>) { return this.inner.listSyncIntents(...a); }
+
   // ── lifecycle ──
   async close(...a: Args<'close'>) { return this.inner.close(...a); }
 }

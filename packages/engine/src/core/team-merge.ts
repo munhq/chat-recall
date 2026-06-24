@@ -21,7 +21,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, statSync } from 'fs';
 import { dirname, join } from 'path';
 import { createHash } from 'crypto';
-import { homedir } from 'os';
 import Database from 'better-sqlite3';
 
 import type { TeamArtifactBody, TeamArtifactType, TeamArtifactTool } from './team-client.js';
@@ -70,10 +69,11 @@ function installPathFor(art: { type: TeamArtifactType; name: string }, tool: 'cl
   switch (art.type) {
     case 'skill':
       switch (tool) {
-        case 'claude':   return join(claudeBackend.skillsDir(),                    art.name, 'SKILL.md');
-        case 'gemini':   return null;  // no first-class skills in Gemini today
-        case 'opencode': return join(homedir(), '.config', 'opencode', 'skill',    art.name, 'SKILL.md');
-        case 'codex':    return join(codexBackend.skillsSystemDir(),               art.name, 'SKILL.md');
+        case 'claude':   return join(claudeBackend.skillsDir(),   art.name, 'SKILL.md');
+        case 'gemini':   return join(geminiBackend.skillsDir(),   art.name, 'SKILL.md');
+        case 'opencode': return join(opencodeBackend.skillsDir(), art.name, 'SKILL.md');
+        // User skills go to ~/.codex/skills (NOT .system, which is OpenAI's bundle).
+        case 'codex':    return join(codexBackend.skillsDir(),    art.name, 'SKILL.md');
       }
       break;
     case 'agent':

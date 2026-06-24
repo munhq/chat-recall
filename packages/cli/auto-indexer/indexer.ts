@@ -41,6 +41,7 @@ import { getDiaryDir } from '@chat-recall/engine/core/paths.js';
 // summary generator, knowledge graph, source parsers) is gone — those
 // responsibilities live on the server now.
 import { syncIncremental } from '../src/sync-client.js';
+import { drainSyncIntents } from '../src/intent-drain.js';
 
 const DEBOUNCE_MS = 5000;  // coalesce a burst of file events into one flush
 
@@ -283,6 +284,32 @@ setTimeout(() => { void shipToServer('startup'); }, 20_000);
 setInterval(() => {
   console.log(`[${ts()}] Heartbeat - ${pendingFileCount} pending file event(s), sync ${syncInFlight ? 'in-flight' : 'idle'}`);
 }, 60000);
+
+// Cross-tool sync intents (Model B): poll the server(s) for queued intents the
+// UI created and execute them locally. 45s cadence keeps "click in UI → files
+// copied on disk" feeling prompt without hammering the server. Best-effort —
+// errors are swallowed inside the drainer and retried next tick.
+let intentDrainInFlight = false;
+async function drainIntentsTick(): Promise<void> {
+  if (intentDrainInFlight) return;
+  intentDrainInFlight = true;
+  try {
+    const r = await drainSyncIntents();
+    if (r.processed > 0) {
+      console.log(`[${ts()}] sync-intents: ${r.done} done, ${r.errored} errored`);
+      // Applying an intent wrote files into toolkit dirs the chokidar watcher
+      // does NOT watch — push them up now so the UI reflects the change in
+      // seconds, instead of waiting for the 15-min heartbeat.
+      if (r.done > 0) await shipToServer('intent-applied');
+    }
+  } catch (err) {
+    console.error(`[${ts()}] sync-intents drain failed: ${err instanceof Error ? err.message : err}`);
+  } finally {
+    intentDrainInFlight = false;
+  }
+}
+setInterval(() => { void drainIntentsTick(); }, 45_000).unref();
+setTimeout(() => { void drainIntentsTick(); }, 10_000);
 
 // ── Graceful shutdown ───────────────────────────────────────────────
 // No child processes to reap anymore (summary generation moved

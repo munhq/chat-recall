@@ -1041,9 +1041,11 @@ export async function promoteToolkitItem(
 // --- Sync-all (bulk promote across tools) ---
 
 export type SyncTool = 'claude' | 'gemini' | 'opencode' | 'codex';
+/** Toolkit primitives with a clean cross-tool sync matrix. */
+export type SyncType = 'skill' | 'mcp' | 'command' | 'agent';
 
 export interface SyncPlanEntry {
-  type: 'skill' | 'mcp';
+  type: SyncType;
   name: string;
   source: SyncTool;
   presentIn: SyncTool[];
@@ -1074,7 +1076,7 @@ export interface SyncRunResponse {
 }
 
 export async function syncToolkit(
-  opts: { types?: ('skill' | 'mcp')[]; dryRun?: boolean } = {},
+  opts: { types?: SyncType[]; dryRun?: boolean } = {},
 ): Promise<SyncDryRunResponse | SyncRunResponse> {
   const res = await fetchWithTimeout(`${API_BASE}/toolkit/sync-all`, {
     method: 'POST',
@@ -1090,16 +1092,61 @@ export async function syncToolkit(
 
 // --- Matrix view: name × tool presence ---
 
+/** Each cell holds the source row id for that (name, tool), or is absent. */
+export type MatrixCells = Record<string, Partial<Record<SyncTool, string>>>;
+
 export interface ToolkitMatrix {
-  skill: Record<string, Partial<Record<SyncTool, boolean>>>;
-  mcp:   Record<string, Partial<Record<SyncTool, boolean>>>;
-  supportedTargets: { skill: SyncTool[]; mcp: SyncTool[] };
+  skill:   MatrixCells;
+  mcp:     MatrixCells;
+  command: MatrixCells;
+  agent:   MatrixCells;
+  supportedTargets: Record<SyncType, SyncTool[]>;
 }
 
 export async function getToolkitMatrix(): Promise<ToolkitMatrix> {
   const res = await fetchWithTimeout(`${API_BASE}/toolkit/matrix`, {}, 30_000);
   if (!res.ok) throw new Error(`Failed to load toolkit matrix: ${res.statusText}`);
   return await res.json();
+}
+
+// --- Model-B cross-tool sync intents (UI enqueues, local agent executes) ---
+
+export interface SyncIntentRow {
+  id: string;
+  device_id: string | null;
+  kind: 'copy' | 'sync_all';
+  artifact_type: string | null;
+  name: string | null;
+  from_tool: string | null;
+  to_tool: string | null;
+  status: 'pending' | 'done' | 'error';
+  result: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+export type SyncIntentBody =
+  | { kind: 'sync_all' }
+  | { kind: 'copy'; artifactType: SyncType; name: string; fromTool: SyncTool; toTool: SyncTool };
+
+/** Queue a cross-tool sync intent. The user's local CLI agent drains + executes it. */
+export async function enqueueSyncIntent(body: SyncIntentBody): Promise<{ ok: boolean; id?: string; error?: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/sync-intents`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }, 30_000);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return { ok: false, error: data.error || res.statusText };
+  return { ok: true, id: data.id };
+}
+
+/** Recent intents (any status) — used to poll for "applied yet?". */
+export async function listSyncIntents(limit = 50): Promise<SyncIntentRow[]> {
+  const res = await fetchWithTimeout(`${API_BASE}/sync-intents?limit=${limit}`, {}, 30_000);
+  if (!res.ok) return [];
+  const data = await res.json().catch(() => ({ intents: [] }));
+  return data.intents || [];
 }
 
 export async function removeToolkitItem(

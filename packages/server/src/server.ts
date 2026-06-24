@@ -27,6 +27,7 @@ import projectsRouter from './routes/projects.js';
 import kgRouter from './routes/kg.js';
 import kvRouter from './routes/kv.js';
 import diaryRouter from './routes/diary.js';
+import syncIntentsRouter from './routes/sync-intents.js';
 import filesRouter from './routes/files.js';
 import subagentsRouter from './routes/subagents.js';
 import syncRouter from './routes/sync.js';
@@ -157,6 +158,11 @@ app.use('/api/projects', paid, rl('read-light'), projectsRouter);
 app.use('/api/kg', paid, rl('write-light'), kgRouter);
 app.use('/api/kv', paid, rl('write-light'), kvRouter);
 app.use('/api/diary', paid, rl('write-light'), diaryRouter);
+// Cross-tool sync intent queue (Model B). MUST be available in BOTH local and
+// server mode: the SaaS UI enqueues intents here and the user's local CLI agent
+// (which has the actual filesystem) drains + executes them. Unlike /api/toolkit
+// (local-only, writes files), this only touches the DB queue.
+app.use('/api/sync-intents', paid, rl('write-light'), syncIntentsRouter);
 app.use('/api/files', paid, rl('read-light'), filesRouter);
 app.use('/api/subagents', paid, rl('read-light'), subagentsRouter);
 
