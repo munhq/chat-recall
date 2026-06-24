@@ -125,7 +125,7 @@ export interface SummarySettings {
 export interface SourcesEnabled {
   claude:   { sessions: boolean; plans: boolean; tasks: boolean; pasteCache: boolean;
               history: boolean; skills: boolean; agents: boolean; commands: boolean;
-              hooks: boolean; plugins: boolean };
+              hooks: boolean; plugins: boolean; agentMemory: boolean };
   gemini:   { sessions: boolean; plans: boolean; brain: boolean; extensions: boolean };
   opencode: { sessions: boolean; plans: boolean; todos: boolean; skills: boolean };
   codex:    { sessions: boolean; plugins: boolean; skills: boolean };
@@ -302,7 +302,8 @@ const SCHEMA_VERSION = 3;
 function defaultSourcesEnabled(): SourcesEnabled {
   return {
     claude:   { sessions: true, plans: true, tasks: true, pasteCache: true, history: true,
-                skills: true, agents: true, commands: true, hooks: true, plugins: true },
+                skills: true, agents: true, commands: true, hooks: true, plugins: true,
+                agentMemory: true },
     gemini:   { sessions: true, plans: true, brain: true, extensions: true },
     opencode: { sessions: true, plans: true, todos: true, skills: true },
     codex:    { sessions: true, plugins: true, skills: true },

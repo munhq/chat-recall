@@ -78,6 +78,20 @@ describe('sync-ledger (JSON watermark)', () => {
     expect(z.f?.tool_title?.p).toBe(1);
   });
 
+  test('markSynced preserves field coverage (conversation re-sync must not wipe f)', async () => {
+    const { markSynced, markFieldCoverage, fieldNeedsScan, getSyncedRows, _resetLedgerCacheForTests } = await import('./sync-ledger.js');
+    const SRV = 'https://preserve.example';
+    const F = { name: 'tool_title', version: 1, mtimeSensitive: true };
+    markFieldCoverage(SRV, F, [{ id: 's1', present: true, mtime: 1000 }]);
+    // A later conversation re-sync of the SAME session must keep its field coverage.
+    markSynced(SRV, [{ id: 's1', mtime: 1000 }]);
+    _resetLedgerCacheForTests();
+    const row = getSyncedRows(SRV).get('s1')!;
+    expect(row.v).toBeGreaterThan(0);              // conversation marked
+    expect(row.f?.tool_title?.p).toBe(1);          // field coverage SURVIVED
+    expect(fieldNeedsScan(row, F, 1000)).toBe(false); // → not re-scanned
+  });
+
   test('full-pass gate: owed until done, re-owed on version bump or force', async () => {
     const { fieldNeedsFullPass, markFieldFullPassDone, forceFieldRescan } = await import('./sync-ledger.js');
     const SRV = 'https://full.example';

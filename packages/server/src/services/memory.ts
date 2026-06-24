@@ -4,7 +4,7 @@
 
 import {
   createStore, createVectorStore, OllamaEmbedder, SourceRegistry,
-  SessionSource, PlanSource, TaskSource, ClaudeMdSource, HistorySource, PasteSource,
+  SessionSource, PlanSource, TaskSource, ClaudeMdSource, AgentMemorySource, HistorySource, PasteSource,
   GeminiSessionSource, GeminiBrainSource, OpenCodeSource, OpenCodeTodoSource, DiarySource,
   SkillsSource, McpsSource, SlashCommandsSource, SubagentsSource, HooksSource, PluginsSource,
   CodexSessionSource, currentTenant,
@@ -47,6 +47,7 @@ export class MemoryService {
     this.registry.register(new PlanSource());
     this.registry.register(new TaskSource());
     this.registry.register(new ClaudeMdSource());
+    this.registry.register(new AgentMemorySource());
     this.registry.register(new HistorySource());
     this.registry.register(new PasteSource());
     this.registry.register(new GeminiSessionSource());
