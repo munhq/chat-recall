@@ -66,7 +66,10 @@ services:
       # Required for minting device tokens; unset ⇒ those endpoints are
       # disabled (fail-closed) and the binary can never log in.
       ADMIN_KEY: ${ADMIN_KEY:?set ADMIN_KEY in .env (e.g. openssl rand -hex 24)}
-      # Postgres-only. The server creates its schema on first connect.
+      # Postgres-only. The server applies its schema to the PRIMARY explicitly
+      # at startup (decoupled from opening a pool — see pg-pool.ts). No
+      # DATABASE_URL_RO here: single-DB self-host has no read replica, so reads
+      # use the primary pool.
       CHAT_RECALL_STORAGE: postgres
       DATABASE_URL: postgres://chat_recall:${POSTGRES_PASSWORD}@db:5432/chat_recall
       # Dashboard auth: none (default; bind to localhost or your VPN!) |
@@ -84,6 +87,12 @@ services:
       # Security dashboard (secret findings). On by default; set to "0" to
       # hide the Security tab and its API surface.
       CHAT_RECALL_FEATURE_SECURITY: ${CHAT_RECALL_FEATURE_SECURITY:-1}
+      # Rate limiting. ENFORCE=1 actually sheds (without it the tenant-aware
+      # class limiter + ingest backpressure run report-only); STORE=pg shares
+      # token buckets across replicas and is correct single-replica too. Parity
+      # with the cloud deployment. Override to "0"/"memory" if needed.
+      RATE_LIMIT_ENFORCE: ${RATE_LIMIT_ENFORCE:-1}
+      RATE_LIMIT_STORE: ${RATE_LIMIT_STORE:-pg}
       # Billing (cloud SaaS only). Unset ⇒ billing OFF: every tenant is entitled
       # and nothing is gated (self-host is the free tier). Set all four to gate
       # the app behind a Stripe subscription with a card-required trial.
