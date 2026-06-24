@@ -22,7 +22,7 @@
 import { createHash, randomBytes } from 'crypto';
 import Database from 'better-sqlite3';
 import { resolveBackend, type CreateStoreOptions } from './index.js';
-import { openPgPool, tenantQuery } from './pg-pool.js';
+import { openPgPool, ensurePgSchema, tenantQuery } from './pg-pool.js';
 import { getCacheDbPath } from '../paths.js';
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -436,7 +436,7 @@ function mergeEntitlement(
 class PgControlPlane implements ControlPlane {
   private pool: any;
   constructor(private readonly databaseUrl?: string) {}
-  async init(): Promise<void> { this.pool = await openPgPool(this.databaseUrl); }
+  async init(): Promise<void> { this.pool = await openPgPool(this.databaseUrl); await ensurePgSchema(this.databaseUrl); }
   private async q(sql: string, params: unknown[] = []): Promise<any[]> {
     return (await this.pool.query(sql, params)).rows;
   }

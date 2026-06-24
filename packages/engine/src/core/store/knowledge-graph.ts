@@ -9,7 +9,7 @@ import { currentTenant } from './tenant-context.js';
 
 import type { KnowledgeGraph } from '../knowledge-graph.js';
 import { resolveBackend, type CreateStoreOptions } from './index.js';
-import { openPgPool, pgTenant, tenantQuery } from './pg-pool.js';
+import { openPgPool, ensurePgSchema, pgTenant, tenantQuery } from './pg-pool.js';
 
 type AsyncMethod<M> = M extends (...args: infer A) => infer R
   ? (...args: A) => Promise<Awaited<R>>
@@ -50,7 +50,7 @@ export class PgKnowledgeGraph implements KnowledgeGraphDriver {
   private pool: any;
   private readonly t: string;
   constructor(private readonly databaseUrl?: string, tenant?: string) { this.t = pgTenant(tenant); }
-  async init(): Promise<void> { this.pool = await openPgPool(this.databaseUrl); }
+  async init(): Promise<void> { this.pool = await openPgPool(this.databaseUrl); await ensurePgSchema(this.databaseUrl); }
   private async q(sql: string, params: unknown[] = []): Promise<any[]> { return (await tenantQuery(this.pool, this.t, sql, params)).rows; }
 
   private entityId(name: string): string { return name.toLowerCase().replace(/[^a-z0-9_-]/g, '_').replace(/_+/g, '_'); }
