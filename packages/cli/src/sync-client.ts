@@ -566,6 +566,25 @@ const refs = listAvailableBackends().flatMap((b) => {
 
   const slice = refs.slice(0, opts.limit ?? refs.length);
 
+  // ── Derived-field reconciliation (native title, …) — runs FIRST, BEFORE the
+  // heavy conversation walk, so it's never blocked by per-session git/replay
+  // compute (titles flow even when the conversation phase is slow). Pushes only
+  // {session_id, field, value}, never a conversation. Cheap pass over the
+  // sessions this sync listed; a one-time full pass per field when its version
+  // bumped or a re-scan was forced. Best-effort — a reconcile failure must not
+  // fail the conversation sync.
+  if (upload.sessionMeta) {
+    try {
+      await reconcileFieldsForTarget(
+        cred,
+        () => listAvailableBackends().flatMap((b) => { try { return b.listSessions({}); } catch { return []; } }),
+        { convRefs: slice },
+      );
+    } catch (e) {
+      console.error(`[sync] field reconcile (${base}): ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
   // Shared gate: a ref is built this run unless excluded or already acked at a
   // covering mtime AND the current extractor version. Used by both the batch
   // pre-scan and the upload loop so they stay in lockstep.
@@ -792,23 +811,6 @@ const refs = listAvailableBackends().flatMap((b) => {
   // Barrier: wait for every pooled upload to land (and surface any fatal
   // error) before tombstones/prune, which must run strictly after all data.
   await drainInflight();
-
-  // ── Derived-field reconciliation (native title, …) — conversation-free.
-  // Cheap pass over the sessions THIS sync listed (covers new/changed); a
-  // one-time full pass per field when its version bumped or a re-scan was
-  // forced. Never re-pushes a conversation. Best-effort: a field-reconcile
-  // failure must not fail the conversation sync that already succeeded.
-  if (upload.sessionMeta) {
-    try {
-      await reconcileFieldsForTarget(
-        cred,
-        () => listAvailableBackends().flatMap((b) => { try { return b.listSessions({}); } catch { return []; } }),
-        { convRefs: slice },
-      );
-    } catch (e) {
-      console.error(`[sync] field reconcile (${base}): ${e instanceof Error ? e.message : e}`);
-    }
-  }
 
   // ── Tombstones for sessions this device previously synced but that no
   //    longer exist locally (deleted transcript file, cleared cache, etc).
