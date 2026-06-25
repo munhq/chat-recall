@@ -325,7 +325,18 @@ export function syncMode(
   // coarse (second-level) granularity on some filesystems while size is the
   // real growth signal — a sub-second append may not move mtime but does grow
   // the file. (Shrink already handled above; size>=offset guaranteed here.)
-  if (isAppendOnly && fileSize > 0 && offset > 0 && fileSize > (row.s ?? 0)) {
+  //
+  // ⚠ DISABLED BY DEFAULT (CHAT_RECALL_TAIL_APPEND=1 to opt in). Append trusts
+  // the server's stored base is COMPLETE and merges the tail into it, but it
+  // can't detect a *truncated* base — the full_resync_needed handshake only
+  // fires on an EMPTY envelope, not a partial one. A base truncated by an
+  // interrupted full sync (or server purge) then stays truncated forever
+  // (active sessions never go quiet to trigger a clean full re-sync). Observed:
+  // a 1079-message live session stored as 65 messages / 25 chunks. Re-enable
+  // only once append verifies base completeness (e.g. ship expected prior size
+  // and have the server request full on mismatch). See docs/SYNC-INCREMENTAL.md.
+  if (process.env.CHAT_RECALL_TAIL_APPEND === '1' &&
+      isAppendOnly && fileSize > 0 && offset > 0 && fileSize > (row.s ?? 0)) {
     return 'append';
   }
   // mtime unchanged → the last sync (FULL or APPEND) covered this version of
