@@ -349,6 +349,16 @@ router.post('/', async (req, res) => {
           // metadata row (title/preview/extra are head-derived; prior values
           // stand). If the server has no prior envelope, signal full_resync.
           if (cv.append) {
+            // KILL-SWITCH (default ON): tail-append truncates actively-growing
+            // sessions (it can't verify the stored base is complete). Until the
+            // base-completeness check exists, the SERVER refuses every append and
+            // makes the client FULL re-sync — this neutralizes ALL clients,
+            // including stale builds still shipping append. Opt back in with
+            // CHAT_RECALL_TAIL_APPEND=1 on the server. See docs/SYNC-INCREMENTAL.md.
+            if (process.env.CHAT_RECALL_TAIL_APPEND !== '1') {
+              fullResyncNeeded.push(cv.session_id);
+              continue;
+            }
             // Need a client envelope for the tail messages.
             if (!cv.envelope || cv.envelope.v !== PARSER_VERSION || !Array.isArray(cv.envelope.messages)) {
               // No usable tail envelope → ask for full. (Shouldn't happen — the
