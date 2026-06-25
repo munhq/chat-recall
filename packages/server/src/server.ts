@@ -166,13 +166,18 @@ app.use('/api/sync-intents', paid, rl('write-light'), syncIntentsRouter);
 app.use('/api/files', paid, rl('read-light'), filesRouter);
 app.use('/api/subagents', paid, rl('read-light'), subagentsRouter);
 
-// FS-backed routers exist only in local mode: in a server deployment data
-// arrives via /api/sync and there is no settings file the UI should edit
-// and no toolkit files to write. (Projects config PUT is guarded inside
-// the projects router.)
+// Toolkit READS (status/browse/item/matrix) come from the synced store, so the
+// router is available in BOTH modes — the Toolkit tab must render on the hosted
+// SaaS and on a self-host Docker server (neither can see the user's local fs).
+// The fs-mutating routes inside (promote/sync-all/delete) self-guard with
+// requireLocalMode; cross-tool copy on a remote server goes via the local CLI
+// agent draining /api/sync-intents.
+app.use('/api/toolkit', paid, rl('read-light'), toolkitRouter);
+
+// Settings editing genuinely mutates the local fs, so it stays local-only.
+// (Projects config PUT is guarded inside the projects router.)
 if (!isServerMode()) {
   app.use('/api/settings', settingsRouter);
-  app.use('/api/toolkit', toolkitRouter);
 }
 
 // Health check

@@ -9,12 +9,12 @@
  */
 
 import express from 'express';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, cpSync, rmSync } from 'fs';
-import { dirname, join, basename } from 'path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'fs';
+import { dirname, join } from 'path';
 import { homedir } from 'os';
-import { createStore, claudeBackend, geminiBackend, codexBackend, opencodeBackend,
-         readCommand, readAgent, emitArtifact } from '../imports.js';
-import type { SourceType, CodecToolId, CodecType, Encoding } from '../imports.js';
+import { createStore, copyArtifactToTool, rowFromStore, skillsDirFor } from '../imports.js';
+import type { SourceType } from '../imports.js';
+import { requireLocalMode } from '../util/mode.js';
 
 const router = express.Router();
 
@@ -144,24 +144,8 @@ const NAME_FIELD: Record<SyncType, string> = {
   skill: 'skillName', mcp: 'mcpName', command: 'commandName', agent: 'agentName',
 };
 
-/**
- * Each backend exposes its own skillsDir() — this lookup avoids spreading
- * tool-specific paths through the route. Throws on 'gemini' since the
- * caller is expected to gate on `SUPPORTED_TARGETS.skill` first.
- */
-function skillsDirFor(tool: TargetTool): string {
-  switch (tool) {
-    case 'claude':   return claudeBackend.skillsDir();
-    case 'gemini':   return geminiBackend.skillsDir();
-    case 'opencode': return opencodeBackend.skillsDir();
-    // User skills go in ~/.codex/skills (NOT .system, which is OpenAI's bundle).
-    case 'codex':    return codexBackend.skillsDir();
-    default:
-      throw new Error(`No skills surface for tool '${tool}'`);
-  }
-}
 
-router.post('/promote', express.json(), async (req, res) => {
+router.post('/promote', requireLocalMode, express.json(), async (req, res) => {
   const { type, sourceId, toTool } = req.body || {};
   if (!isToolkitType(type)) return res.status(400).json({ error: `Invalid type: ${type}` });
   if (typeof sourceId !== 'string' || !sourceId) return res.status(400).json({ error: 'sourceId required' });
@@ -186,10 +170,10 @@ router.post('/promote', express.json(), async (req, res) => {
       return res.status(400).json({ error: 'This artifact is read-only (system/bundled) and cannot be promoted.' });
     }
 
-    if (type === 'skill') return promoteSkill(item, extra, toTool as TargetTool, res);
-    if (type === 'mcp')   return promoteMcp(item, extra, fromTool, toTool as TargetTool, res);
-    if (type === 'command' || type === 'agent') {
-      const r = copyArtifactToTool(type, item, extra, fromTool, toTool as TargetTool);
+    if (type === 'skill' || type === 'mcp' || type === 'command' || type === 'agent') {
+      // The single copy implementation lives in the engine executor (shared
+      // with the CLI agent). The route just adapts the store row and delegates.
+      const r = copyArtifactToTool(type, rowFromStore(type, item), toTool as TargetTool);
       if (!r.ok) return res.status(r.status || 500).json({ error: r.error });
       return res.json({ ok: true, targetPath: r.targetPath });
     }
@@ -207,305 +191,6 @@ interface PromoteResult {
   status?: number;
 }
 
-function copySkillToTool(
-  extra: Record<string, unknown>,
-  itemFilePath: string,
-  toTool: TargetTool,
-): PromoteResult {
-  const skillDir = (extra.skillDir as string) || dirname(itemFilePath);
-  if (!existsSync(skillDir)) return { ok: false, status: 404, error: `Source dir missing: ${skillDir}` };
-
-  const skillName = (extra.skillName as string) || basename(skillDir);
-  const targetRoot = skillsDirFor(toTool);
-  const targetDir = join(targetRoot, skillName);
-
-  if (existsSync(targetDir)) {
-    return { ok: false, status: 409, error: `Already exists: ${targetDir}. Remove or rename first.` };
-  }
-
-  try {
-    mkdirSync(targetRoot, { recursive: true });
-    cpSync(skillDir, targetDir, { recursive: true });
-    return { ok: true, targetPath: targetDir };
-  } catch (e) {
-    return { ok: false, status: 500, error: e instanceof Error ? e.message : 'cp failed' };
-  }
-}
-
-function promoteSkill(item: any, extra: Record<string, unknown>, toTool: TargetTool, res: express.Response) {
-  const r = copySkillToTool(extra, item.file_path, toTool);
-  if (!r.ok) return res.status(r.status || 500).json({ error: r.error });
-  return res.json({ ok: true, targetPath: r.targetPath });
-}
-
-function copyMcpToTool(
-  itemTitle: string,
-  extra: Record<string, unknown>,
-  fromTool: string,
-  toTool: TargetTool,
-): PromoteResult {
-  const name = (extra.mcpName as string) || itemTitle;
-  const command = (extra.command as string) || '';
-  const allow = Array.isArray(extra.alwaysAllow) ? (extra.alwaysAllow as string[]) : [];
-
-  const sourceCfg = readMcpEntry(fromTool, name);
-  let entry = sourceCfg;
-  if (!entry) {
-    const parts = command.split(' ').filter(Boolean);
-    entry = parts.length > 0
-      ? { command: parts[0], args: parts.slice(1), ...(allow.length ? { alwaysAllow: allow } : {}) }
-      : null;
-  }
-  if (!entry) return { ok: false, status: 404, error: `Could not read source MCP config for ${name}` };
-
-  return writeMcpEntryPure(toTool, name, entry);
-}
-
-function promoteMcp(
-  item: any,
-  extra: Record<string, unknown>,
-  fromTool: string,
-  toTool: TargetTool,
-  res: express.Response,
-) {
-  const r = copyMcpToTool(item.title, extra, fromTool, toTool);
-  if (!r.ok) return res.status(r.status || 500).json({ error: r.error });
-  return res.json({ ok: true, targetPath: r.targetPath });
-}
-
-/**
- * Copy a command or agent into another tool, translating the encoding via the
- * cross-tool codec (markdown frontmatter ↔ TOML). Never overwrites.
- */
-function copyCommandOrAgentToTool(
-  type: 'command' | 'agent',
-  sourceFilePath: string,
-  extra: Record<string, unknown>,
-  toTool: TargetTool,
-): PromoteResult {
-  if (!sourceFilePath) return { ok: false, status: 404, error: 'Source has no file on disk' };
-  const format: Encoding = extra.format === 'toml' ? 'toml' : 'md';
-  let art;
-  try {
-    art = type === 'command' ? readCommand(sourceFilePath, format) : readAgent(sourceFilePath, format);
-  } catch (e) {
-    return { ok: false, status: 404, error: `Source unreadable: ${e instanceof Error ? e.message : 'failed'}` };
-  }
-  const out = emitArtifact(type as CodecType, art, toTool as CodecToolId);
-  if (existsSync(out.path)) {
-    return { ok: false, status: 409, error: `Already exists: ${out.path}. Remove or rename first.` };
-  }
-  try {
-    mkdirSync(dirname(out.path), { recursive: true });
-    writeFileSync(out.path, out.content);
-    return { ok: true, targetPath: out.path };
-  } catch (e) {
-    return { ok: false, status: 500, error: e instanceof Error ? e.message : 'write failed' };
-  }
-}
-
-/** One dispatch point for every syncable type — used by promote AND sync-all. */
-function copyArtifactToTool(
-  type: SyncType,
-  sourceRow: any,
-  extra: Record<string, unknown>,
-  fromTool: string,
-  toTool: TargetTool,
-): PromoteResult {
-  if (type === 'skill') return copySkillToTool(extra, sourceRow.file_path, toTool);
-  if (type === 'mcp')   return copyMcpToTool(sourceRow.title, extra, fromTool, toTool);
-  return copyCommandOrAgentToTool(type, sourceRow.file_path, extra, toTool);
-}
-
-function readMcpEntry(tool: string, name: string): any | null {
-  const home = homedir();
-  const tries: { path: string; key: string }[] = [];
-  if (tool === 'claude') {
-    tries.push({ path: join(home, '.mcp.json'),    key: 'mcpServers' });
-    tries.push({ path: join(home, '.claude.json'), key: 'mcpServers' });
-  } else if (tool === 'gemini') {
-    tries.push({ path: join(home, '.gemini', 'settings.json'), key: 'mcpServers' });
-  } else if (tool === 'opencode') {
-    tries.push({ path: join(home, '.config', 'opencode', 'config.json'), key: 'mcp' });
-    tries.push({ path: join(home, '.opencode', 'config.json'),           key: 'mcp' });
-  } else if (tool === 'codex') {
-    const entry = readCodexMcpEntry(join(home, '.codex', 'config.toml'), name);
-    if (entry) return entry;
-  }
-  for (const t of tries) {
-    if (!existsSync(t.path)) continue;
-    try {
-      const cfg = JSON.parse(readFileSync(t.path, 'utf-8'));
-      const block = cfg[t.key] || {};
-      if (block[name]) return block[name];
-    } catch { /* try next */ }
-  }
-  return null;
-}
-
-/**
- * Pull a single [mcp_servers.<name>] block out of Codex's config.toml.
- * Mirrors the parser in McpsSource.fromCodexToml — kept local so the
- * promote path doesn't depend on the indexer's internals.
- */
-function readCodexMcpEntry(path: string, target: string): any | null {
-  if (!existsSync(path)) return null;
-  let content: string;
-  try { content = readFileSync(path, 'utf-8'); } catch { return null; }
-
-  let currentName: string | null = null;
-  let inEnv = false;
-  const out: { command?: string; args?: any; env?: Record<string, string>; url?: string } = {};
-
-  for (const rawLine of content.split('\n')) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith('#')) continue;
-
-    const envMatch = line.match(/^\[mcp_servers\.([^\.\]]+)\.env\]$/);
-    if (envMatch) {
-      currentName = envMatch[1];
-      inEnv = currentName === target;
-      if (inEnv) out.env = out.env || {};
-      continue;
-    }
-    const serverMatch = line.match(/^\[mcp_servers\.([^\.\]]+)\]$/);
-    if (serverMatch) {
-      currentName = serverMatch[1];
-      inEnv = false;
-      continue;
-    }
-    if (currentName !== target) continue;
-
-    const propMatch = line.match(/^(\w+)\s*=\s*(.+)$/);
-    if (!propMatch) continue;
-    const key = propMatch[1];
-    let value = propMatch[2].trim();
-    if ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-
-    if (inEnv) {
-      out.env = out.env || {};
-      out.env[key] = value;
-    } else if (key === 'args' && value.startsWith('[')) {
-      try { out.args = JSON.parse(value); } catch { out.args = value; }
-    } else {
-      (out as any)[key] = value;
-    }
-  }
-
-  return out.command || out.url ? out : null;
-}
-
-/**
- * Append (never replace) a Codex [mcp_servers.<name>] block to config.toml.
- * Returns false when the entry already exists.
- */
-function writeCodexMcpEntry(path: string, name: string, entry: any): boolean {
-  let content = '';
-  if (existsSync(path)) content = readFileSync(path, 'utf-8');
-
-  const header = `[mcp_servers.${name}]`;
-  if (content.includes(header)) return false;
-
-  const escape = (s: string) => `"${String(s).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-
-  let cmd = '';
-  let args: string[] = [];
-  if (Array.isArray(entry.command)) {
-    cmd = entry.command[0] || '';
-    args = (entry.command as any[]).slice(1).map(String);
-  } else {
-    cmd = String(entry.command || '');
-    args = Array.isArray(entry.args) ? (entry.args as any[]).map(String) : [];
-  }
-
-  const lines: string[] = [];
-  if (content.length > 0 && !content.endsWith('\n')) lines.push('');
-  lines.push('', header);
-  if (cmd) lines.push(`command = ${escape(cmd)}`);
-  if (args.length > 0) lines.push(`args = [${args.map(escape).join(', ')}]`);
-  if (entry.url) lines.push(`url = ${escape(entry.url)}`);
-  if (entry.env && typeof entry.env === 'object' && Object.keys(entry.env).length > 0) {
-    lines.push(`[mcp_servers.${name}.env]`);
-    for (const [k, v] of Object.entries(entry.env)) {
-      lines.push(`${k} = ${escape(String(v))}`);
-    }
-  }
-
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, content + lines.join('\n') + '\n');
-  return true;
-}
-
-function writeMcpEntryPure(toTool: TargetTool, name: string, entry: any): PromoteResult {
-  const home = homedir();
-
-  // Codex stores MCPs in TOML, not JSON — handle separately.
-  if (toTool === 'codex') {
-    const path = join(home, '.codex', 'config.toml');
-    const ok = writeCodexMcpEntry(path, name, entry);
-    if (!ok) return { ok: false, status: 409, error: `MCP "${name}" already exists in ${path}.` };
-    return { ok: true, targetPath: path };
-  }
-
-  let path: string; let key: string;
-  if (toTool === 'claude') {
-    path = join(home, '.mcp.json'); key = 'mcpServers';
-  } else if (toTool === 'gemini') {
-    path = join(home, '.gemini', 'settings.json'); key = 'mcpServers';
-  } else {
-    path = join(home, '.config', 'opencode', 'config.json'); key = 'mcp';
-  }
-
-  let cfg: any = {};
-  if (existsSync(path)) {
-    try { cfg = JSON.parse(readFileSync(path, 'utf-8')); }
-    catch { return { ok: false, status: 500, error: `Target config is malformed: ${path}` }; }
-  } else {
-    mkdirSync(dirname(path), { recursive: true });
-  }
-
-  cfg[key] = cfg[key] || {};
-  if (cfg[key][name]) {
-    return { ok: false, status: 409, error: `MCP "${name}" already exists in ${path}.` };
-  }
-
-  // Normalize entry shape per target tool.
-  let normalized = entry;
-  if (toTool === 'opencode') {
-    if (entry.url) normalized = { type: 'remote', url: entry.url };
-    else if (Array.isArray(entry.command)) normalized = { type: 'local', command: entry.command };
-    else if (typeof entry.command === 'string') {
-      normalized = { type: 'local', command: [entry.command, ...(entry.args || [])] };
-    }
-  } else {
-    if (Array.isArray(entry.command)) {
-      const [cmd, ...args] = entry.command;
-      normalized = { command: cmd, args };
-    } else {
-      normalized = { command: entry.command, ...(entry.args ? { args: entry.args } : {}) };
-    }
-    if (entry.env) (normalized as any).env = entry.env;
-    if (entry.alwaysAllow) (normalized as any).alwaysAllow = entry.alwaysAllow;
-  }
-
-  cfg[key][name] = normalized;
-  try {
-    writeFileSync(path, JSON.stringify(cfg, null, 2));
-    return { ok: true, targetPath: path };
-  } catch (e) {
-    return { ok: false, status: 500, error: e instanceof Error ? e.message : 'write failed' };
-  }
-}
-
-function writeMcpEntry(toTool: TargetTool, name: string, entry: any, res: express.Response) {
-  const r = writeMcpEntryPure(toTool, name, entry);
-  if (!r.ok) return res.status(r.status || 500).json({ error: r.error });
-  return res.json({ ok: true, targetPath: r.targetPath, name });
-}
-
 // ─────────────────────────────────────────────────────────────────
 // DELETE /api/toolkit/item
 //
@@ -516,7 +201,7 @@ function writeMcpEntry(toTool: TargetTool, name: string, entry: any, res: expres
 // [mcp_servers.<name>] block.
 // ─────────────────────────────────────────────────────────────────
 
-router.delete('/item', express.json(), (req, res) => {
+router.delete('/item', requireLocalMode, express.json(), (req, res) => {
   const { type, name, tool } = req.body || {};
   if (type !== 'skill' && type !== 'mcp') return res.status(400).json({ error: 'type must be "skill" or "mcp"' });
   if (typeof name !== 'string' || !name) return res.status(400).json({ error: 'name required' });
@@ -729,7 +414,7 @@ function isReadonlyRow(row: any): boolean {
   return readField(row, 'readonly') === true || readField(row, 'shared') === true;
 }
 
-router.post('/sync-all', express.json(), async (req, res) => {
+router.post('/sync-all', requireLocalMode, express.json(), async (req, res) => {
   const requested: SyncType[] = Array.isArray(req.body?.types) && req.body.types.length > 0
     ? req.body.types.filter((t: string): t is SyncType => (ALL_SYNC_TYPES as string[]).includes(t))
     : ALL_SYNC_TYPES;
@@ -794,7 +479,7 @@ router.post('/sync-all', express.json(), async (req, res) => {
       const errors: SyncResultEntry['errors'] = [];
 
       for (const target of entry.copyTo) {
-        const r = copyArtifactToTool(entry.type, sourceRow, extra, entry.source, target);
+        const r = copyArtifactToTool(entry.type, rowFromStore(entry.type, sourceRow), target);
         if (r.ok) {
           copied.push({ tool: target, targetPath: r.targetPath });
         } else if (r.status === 409) {

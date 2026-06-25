@@ -124,3 +124,42 @@ describe('POST /api/toolkit/sync-all', () => {
     for (const p of res.body.plan as any[]) expect(p.type).toBe('command');
   });
 });
+
+// The router-split contract: on a remote server (SaaS / self-host Docker) the
+// reads must work (they come from the synced store) while the fs-mutating
+// routes refuse cleanly — cross-tool copy there goes via /api/sync-intents.
+describe('server mode (no local filesystem)', () => {
+  const orig = process.env.CHAT_RECALL_SERVER_MODE;
+  beforeAll(() => { process.env.CHAT_RECALL_SERVER_MODE = 'server'; });
+  afterAll(() => {
+    if (orig === undefined) delete process.env.CHAT_RECALL_SERVER_MODE;
+    else process.env.CHAT_RECALL_SERVER_MODE = orig;
+  });
+
+  test('matrix read still works in server mode', async () => {
+    const res = await request(app).get('/api/toolkit/matrix');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('skill');
+  });
+
+  test('browse read still works in server mode', async () => {
+    const res = await request(app).get('/api/toolkit/browse/skill?limit=5');
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.items)).toBe(true);
+  });
+
+  test('promote (fs write) is refused with 501', async () => {
+    const res = await request(app).post('/api/toolkit/promote').send({ type: 'skill', sourceId: 'x', toTool: 'opencode' });
+    expect(res.status).toBe(501);
+  });
+
+  test('sync-all (fs write) is refused with 501', async () => {
+    const res = await request(app).post('/api/toolkit/sync-all').send({ dryRun: true });
+    expect(res.status).toBe(501);
+  });
+
+  test('delete (fs write) is refused with 501', async () => {
+    const res = await request(app).delete('/api/toolkit/item').send({ type: 'skill', name: 'x', tool: 'claude' });
+    expect(res.status).toBe(501);
+  });
+});
