@@ -92,8 +92,12 @@ interface SyncConversation {
    *  + appends chunks WITHOUT deleting the head's chunks. The payload omits
    *  title/first_prompt/meta/raw_b64 (all head-derived; prior values stand). */
   append?: boolean;
-  /** The new byte cursor to persist client-side (the offset the tail was read
-   *  from-to). Echoed back in the ack so the client stamps its ledger. */
+  /** Byte offset the tail STARTS at (= the prior synced-through offset). The
+   *  server merges the tail ONLY if its stored envelope's `o` equals this — the
+   *  offset-continuity guard against a truncated/stale base. */
+  base_offset?: number;
+  /** Byte offset the tail ENDS at (the new synced-through offset). Persisted
+   *  server-side (`o`) and client-side (ledger) on a successful append/full. */
   from_offset?: number;
 }
 interface SyncItem {
@@ -349,13 +353,9 @@ router.post('/', async (req, res) => {
           // metadata row (title/preview/extra are head-derived; prior values
           // stand). If the server has no prior envelope, signal full_resync.
           if (cv.append) {
-            // KILL-SWITCH (default ON): tail-append truncates actively-growing
-            // sessions (it can't verify the stored base is complete). Until the
-            // base-completeness check exists, the SERVER refuses every append and
-            // makes the client FULL re-sync — this neutralizes ALL clients,
-            // including stale builds still shipping append. Opt back in with
-            // CHAT_RECALL_TAIL_APPEND=1 on the server. See docs/SYNC-INCREMENTAL.md.
-            if (process.env.CHAT_RECALL_TAIL_APPEND !== '1') {
+            // Emergency off-switch (default ON now that the continuity check
+            // below makes append safe). CHAT_RECALL_TAIL_APPEND=0 disables.
+            if (process.env.CHAT_RECALL_TAIL_APPEND === '0') {
               fullResyncNeeded.push(cv.session_id);
               continue;
             }
@@ -377,13 +377,28 @@ router.post('/', async (req, res) => {
               continue;
             }
             try {
-              const prev = JSON.parse(existing.content) as { v: number; messages: EnvelopeMessage[]; subagents?: unknown[] };
+              const prev = JSON.parse(existing.content) as { v: number; messages: EnvelopeMessage[]; subagents?: unknown[]; o?: number };
+              // ── OFFSET-CONTINUITY GUARD (the fix that makes append safe) ──
+              // The append's tail starts at byte `base_offset`. It is valid to
+              // merge ONLY if our stored envelope is synced through exactly that
+              // offset (`prev.o`). Any mismatch — a base truncated by an
+              // interrupted full sync, a server purge, a re-ordered tick, or an
+              // envelope stored before this field existed (prev.o undefined) —
+              // means the tail would graft onto the wrong base. Refuse → FULL
+              // re-sync. This is what the original append lacked: it trusted the
+              // base was complete. (1079-msg session stored as 65 was a base at
+              // a different offset than the tail expected — now caught here.)
+              if (typeof prev.o !== 'number' || prev.o !== (cv.base_offset ?? -1)) {
+                fullResyncNeeded.push(cv.session_id);
+                continue;
+              }
               const prevMsgs = Array.isArray(prev.messages) ? prev.messages : [];
               // Continue line numbers from the stored envelope's last line.
               const startLine = prevMsgs.length > 0 ? (prevMsgs[prevMsgs.length - 1].line ?? 0) : 0;
               const tailMsgs = cv.envelope.messages as EnvelopeMessage[];
               const mergedMsgs = [...prevMsgs, ...tailMsgs.map((m, i) => ({ ...m, line: startLine + i + 1 }))];
-              const merged = { v: PARSER_VERSION, messages: mergedMsgs, subagents: prev.subagents ?? [] };
+              // Advance the synced-through offset to where this tail ends.
+              const merged = { v: PARSER_VERSION, messages: mergedMsgs, subagents: prev.subagents ?? [], o: cv.from_offset ?? prev.o };
               await store.setCachedContent(cv.session_id, 'session', mtime, JSON.stringify(merged));
 
               // Append chunks for the tail's text turns. The server owns the
@@ -519,12 +534,17 @@ router.post('/', async (req, res) => {
           // (text + tool calls + result snippets), NOT the raw transcript.
           // Upsert by (id, source_type): re-syncs replace any stale
           // envelope a previous ingest version left behind.
+          // Record the byte offset this FULL sync is synced THROUGH (`o`) — the
+          // next append validates its base against it (offset-continuity guard).
+          // `cv.from_offset` is the file size at full-sync time for append-only
+          // backends (0/undefined otherwise — those never append).
+          const syncedOffset = typeof cv.from_offset === 'number' ? cv.from_offset : 0;
           if (envelope) {
-            await store.setCachedContent(cv.session_id, 'session', mtime, JSON.stringify(envelope));
+            await store.setCachedContent(cv.session_id, 'session', mtime, JSON.stringify({ ...envelope, o: syncedOffset }));
           } else if (turns.length > 0) {
             await store.setCachedContent(
               cv.session_id, 'session', mtime,
-              JSON.stringify({ v: PARSER_VERSION, messages: envelopeFromTurns(turns), subagents: [] }),
+              JSON.stringify({ v: PARSER_VERSION, messages: envelopeFromTurns(turns), subagents: [], o: syncedOffset }),
             );
           }
           conv++;
