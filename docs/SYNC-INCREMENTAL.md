@@ -1,5 +1,18 @@
 # Incremental tail-only conversation sync
 
+> ⚠️ **DISABLED BY DEFAULT (opt in with `CHAT_RECALL_TAIL_APPEND=1`).** Live
+> validation found append corrupts actively-growing sessions: it merges the tail
+> into the server's stored base but cannot detect a *truncated* base (the
+> `full_resync_needed` handshake only fires on an EMPTY envelope, not a partial
+> one). Once a base is truncated — by an interrupted full sync or a server purge —
+> every append just extends the stump, and an active session never goes quiet to
+> trigger a clean full re-sync. Observed: a 1079-message live session stored as 65
+> messages / 25 chunks. **Re-enable only after append verifies base completeness**
+> (ship the expected prior size / last-line and have the server return
+> `full_resync_needed` on mismatch). Until then `syncMode` returns `full` instead
+> of `append`, which is correct (just not incremental).
+
+
 ## Problem
 A growing active session re-processes its WHOLE transcript every sync tick:
 parse whole file → redact whole envelope → gzip whole raw_b64 → replay whole
