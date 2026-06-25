@@ -111,6 +111,7 @@ describe('sync-ledger (JSON watermark)', () => {
     const SRV = 'https://mode.example';
     const V = (await import('@chat-recall/engine/core/extractor-version.js')).EXTRACTOR_VERSION;
     const AO = true; // append-only backend
+    process.env.CHAT_RECALL_TAIL_APPEND = '1'; // append is opt-in (default off); enable to test the branch
 
     // Never synced → full.
     expect(syncMode(undefined, 1000, 500, V, AO)).toBe('full');
@@ -123,6 +124,14 @@ describe('sync-ledger (JSON watermark)', () => {
 
     // File grew (500 → 800), version current, prior offset valid → append.
     expect(syncMode(getSyncedRows(SRV).get('s1'), 1000, 800, V, AO)).toBe('append');
+
+    // SAFETY: with the flag OFF (default), a grown append-only file whose mtime
+    // ADVANCED is FULL, not append — append can't verify the server's base is
+    // complete (see syncMode). (mtime-unchanged-but-grew falls to skip and
+    // resyncs on the next mtime tick — real appends move mtime.)
+    delete process.env.CHAT_RECALL_TAIL_APPEND;
+    expect(syncMode(getSyncedRows(SRV).get('s1'), 1001, 800, V, AO)).toBe('full');
+    process.env.CHAT_RECALL_TAIL_APPEND = '1';
 
     // Version bump → full (overrides append-eligibility).
     expect(syncMode(getSyncedRows(SRV).get('s1'), 1000, 800, V + 1, AO)).toBe('full');
@@ -143,6 +152,7 @@ describe('sync-ledger (JSON watermark)', () => {
     _resetLedgerCacheForTests();
     expect(syncMode(getSyncedRows(SRV).get('s4'), 5000, 100, V, AO)).toBe('skip');
     expect(syncMode(getSyncedRows(SRV).get('s4'), 6000, 200, V, AO)).toBe('full');
+    delete process.env.CHAT_RECALL_TAIL_APPEND; // don't leak into other tests
   });
 
   test('markSynced persists offset/size and preserves f across re-sync', async () => {
