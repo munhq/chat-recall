@@ -44,6 +44,7 @@ import {
   liveScanEditsFromEvents,
   replayFromEvents,
 } from '../generic-engine.js';
+import { readTailFromOffset } from './tail-read.js';
 
 const PREFIX = 'gemini_';
 
@@ -354,6 +355,20 @@ export class GeminiBackend implements ToolBackend {
         files: [{ name: basename(loc.path), bytes: readFileSync(loc.path) }],
       };
     } catch { return null; }
+  }
+
+  isAppendOnly(): boolean { return true; }
+
+  fileSize(prefixedId: string): number {
+    const loc = this.findSession(prefixedId);
+    if (!loc) return 0;
+    try { return statSync(loc.path).size; } catch { return 0; }
+  }
+
+  async readFromOffset(prefixedId: string, offset: number): Promise<{ text: string; newOffset: number }> {
+    const loc = this.findSession(prefixedId);
+    if (!loc) return { text: '', newOffset: offset };
+    return readTailFromOffset(loc.path, offset);
   }
 }
 

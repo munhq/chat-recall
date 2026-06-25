@@ -41,10 +41,19 @@ import { EXTRACTOR_VERSION } from '@chat-recall/engine/core/extractor-version.js
 export interface FieldCoverage { v: number; p: 0 | 1; m?: number }
 /** A synced row: conversation mtime covered + extractor version it was produced
  *  under, plus per-field coverage `f` for the derived-field reconciliation
- *  (see sync-fields.ts). The conversation sync owns {m,v}; field reconciliation
- *  owns `f` — neither path re-does the other's work. */
-export interface SyncedRow { m: number; v: number; f?: Record<string, FieldCoverage>; }
-/** On disk a row is the {m,v[,f]} shape OR a legacy bare mtime number. */
+ *  (see sync-fields.ts), plus the tail-sync byte offset `o` and file size `s`
+ *  (see docs/SYNC-INCREMENTAL.md). The conversation sync owns {m,v,o,s}; field
+ *  reconciliation owns `f` — neither path re-does the other's work. */
+export interface SyncedRow {
+  m: number; v: number; f?: Record<string, FieldCoverage>;
+  /** Last byte offset shipped (append-only transcripts). 0 = no tail sync yet
+   *  (FULL sync needed or never shipped). >0 = eligible for APPEND from here. */
+  o?: number;
+  /** File size at the time `o` was captured. Lets the freshness gate detect
+   *  growth (append) vs rotation/truncation (shrink → FULL). */
+  s?: number;
+}
+/** On disk a row is the {m,v[,f,o,s]} shape OR a legacy bare mtime number. */
 type LedgerEntry = SyncedRow | number;
 type Ledger = Record<string, Record<string, LedgerEntry>>;
 
@@ -117,8 +126,16 @@ export function persistLedgerData(server: string, serverData: Record<string, Led
  * Mark sessions as synced at the given mtimes, stamped with the CURRENT
  * extractor version (after a server ack). The version stamp is what lets a
  * later extraction-code change invalidate these rows for re-sync.
+ *
+ * `offset` and `size` are the tail-sync byte cursor (append-only transcripts).
+ * They default to 0 (FULL sync) so callers that don't care about tail sync
+ * leave them absent/0 → the next tick treats the session as FULL-eligible
+ * only when mtime advances, exactly as before this field existed.
  */
-export function markSynced(server: string, rows: Array<{ id: string; mtime: number }>): void {
+export function markSynced(
+  server: string,
+  rows: Array<{ id: string; mtime: number; offset?: number; size?: number }>,
+): void {
   if (rows.length === 0) return;
   const data = load();
   const forServer = data[server] || (data[server] = {});
@@ -126,10 +143,18 @@ export function markSynced(server: string, rows: Array<{ id: string; mtime: numb
     // PRESERVE per-field coverage `f` — it's owned by field reconciliation and
     // must survive a conversation re-sync. Overwriting the whole entry here was
     // wiping it, making every reconcile re-scan from scratch.
-    const prevF = toRow(forServer[r.id])?.f;
-    forServer[r.id] = prevF
+    const prev = toRow(forServer[r.id]);
+    const prevF = prev?.f;
+    const prevOS = prev && (prev.o !== undefined || prev.s !== undefined)
+      ? { o: prev.o, s: prev.s }
+      : {};
+    const o = r.offset ?? prevOS.o ?? 0;
+    const s = r.size ?? prevOS.s ?? 0;
+    const base: SyncedRow = prevF
       ? { m: Math.floor(r.mtime), v: EXTRACTOR_VERSION, f: prevF }
       : { m: Math.floor(r.mtime), v: EXTRACTOR_VERSION };
+    if (o > 0 || s > 0) { base.o = o; base.s = s; }
+    forServer[r.id] = base;
   }
   persist(data);
 }
@@ -244,4 +269,70 @@ export function forceFieldRescan(fieldName: string, server?: string): void {
 export function _resetLedgerCacheForTests(): void {
   cache = null;
   reconcileCache = null;
+}
+
+/**
+ * Invalidate a session's ledger row so the next sync tick classifies it as
+ * FULL (never-synced). Used when the server signals `full_resync_needed` for
+ * an append — the client must not retry append (the server lost the prior
+ * envelope); it must FULL re-sync. Deleting the row (rather than clearing just
+ * o/s) is correct: a FULL re-sync re-derives everything including field
+ * coverage `f`, so there's nothing worth preserving. Preserves other sessions.
+ */
+export function markFullResync(server: string, sessionId: string): void {
+  const data = load();
+  const forServer = data[server];
+  if (!forServer) return;
+  if (!(sessionId in forServer)) return;
+  delete forServer[sessionId];
+  persist(data);
+}
+
+// ── Tail-sync mode classification ────────────────────────────────────────────
+// See docs/SYNC-INCREMENTAL.md. The freshness gate decides, per session, whether
+// this tick should SKIP (already covered), APPEND (ship only the new tail from
+// the last byte offset), or FULL (re-parse + re-ship the whole conversation).
+
+export type SyncMode = 'skip' | 'append' | 'full';
+
+/**
+ * Classify one session's sync mode for this tick.
+ *
+ * @param row        ledger row for this session (undefined = never synced)
+ * @param mtime      current transcript mtime (ms, floored)
+ * @param fileSize   current transcript byte size (0 when unknown / not append-only)
+ * @param extractorVersion current EXTRACTOR_VERSION
+ * @param isAppendOnly  whether the backend's transcript is an append-only file
+ *                      (Claude/Gemini/Codex JSONL = true; OpenCode SQLite = false)
+ */
+export function syncMode(
+  row: SyncedRow | undefined,
+  mtime: number,
+  fileSize: number,
+  extractorVersion: number,
+  isAppendOnly: boolean,
+): SyncMode {
+  // Never synced → FULL.
+  if (!row) return 'full';
+  // Extractor version bump → FULL (re-derive everything, even if mtime unchanged).
+  if (row.v < extractorVersion) return 'full';
+  const offset = row.o ?? 0;
+  // Append-only file shrank below the last cursor (rotation/truncation/compaction)
+  // → the cursor is invalid; FULL re-sync.
+  if (isAppendOnly && offset > 0 && fileSize > 0 && fileSize < offset) return 'full';
+  // Append-only file that grew since the last ship (size increased), with a
+  // valid prior offset → APPEND. Checked BEFORE skip because mtime can have
+  // coarse (second-level) granularity on some filesystems while size is the
+  // real growth signal — a sub-second append may not move mtime but does grow
+  // the file. (Shrink already handled above; size>=offset guaranteed here.)
+  if (isAppendOnly && fileSize > 0 && offset > 0 && fileSize > (row.s ?? 0)) {
+    return 'append';
+  }
+  // mtime unchanged → the last sync (FULL or APPEND) covered this version of
+  // the file. SKIP. The byte cursor is NOT a skip prerequisite — a FULL sync
+  // that didn't record an offset still shipped the whole file at this mtime.
+  if (row.m >= Math.floor(mtime)) return 'skip';
+  // Everything else (mtime moved on a non-append-only backend, first tail sync
+  // with no prior offset, …) → FULL.
+  return 'full';
 }
