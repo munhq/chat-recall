@@ -43,6 +43,9 @@ import { getDataDir } from '@chat-recall/engine/core/paths.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
 import { extractTurnsAny, replaySessionAny } from '@chat-recall/engine/core/session-multi-tool.js';
 import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION, gzipContainer, mapContainerText, buildRawContainer } from '@chat-recall/engine/transcript/index.js';
+import { parseClaudeTranscriptText } from '@chat-recall/engine/transcript/claude.js';
+import { parseGeminiTranscriptText } from '@chat-recall/engine/transcript/gemini.js';
+import { parseCodexTranscriptText } from '@chat-recall/engine/transcript/codex.js';
 import { getBackendForId, getBackend, type SessionRef } from '@chat-recall/engine/core/tool-backend.js';
 import { computeOutcome } from '@chat-recall/engine/core/session-outcome.js';
 import { markPrompt, summarizeMarkers } from '@chat-recall/engine/core/session-sentiment.js';
@@ -51,7 +54,8 @@ import { resolveProjectId } from '@chat-recall/engine/core/project-resolver.js';
 import { extractEntities } from '@chat-recall/engine/core/entity-extractor.js';
 import { buildSourceRegistry } from '@chat-recall/engine/parsers/all-sources.js';
 import { getSyncedRows, markSynced, getLedgerData, persistLedgerData,
-  fieldNeedsScan, markFieldCoverage, fieldNeedsFullPass, markFieldFullPassDone } from './sync-ledger.js';
+  fieldNeedsScan, markFieldCoverage, fieldNeedsFullPass, markFieldFullPassDone,
+  syncMode, markFullResync, type SyncedRow } from './sync-ledger.js';
 import { EXTRACTOR_VERSION } from '@chat-recall/engine/core/extractor-version.js';
 import { SYNC_FIELDS } from '@chat-recall/engine/core/sync-fields.js';
 import { acquireIndexLock } from '@chat-recall/engine/core/index-lock.js';
@@ -523,9 +527,83 @@ const refs = listAvailableBackends().flatMap((b) => {
     // Server acked this batch — record exactly these sessions at exactly
     // the mtimes that were shipped. Failures never reach here, so an
     // unsynced session stays unsynced and retries next tick.
-    try { markSynced(base, rows.map((r: any) => ({ id: r.session_id, mtime: r.mtime }))); }
+    //
+    // For append-only backends, also stamp the byte cursor (o=size, s=size) so
+    // the next tick can APPEND from here instead of re-doing a FULL sync. We
+    // read the CURRENT file size (not the size at ship time) — the file may
+    // have grown between ship and ack, but that's fine: the next tick's gate
+    // sees size > ack.s and APPENDs the new tail. If it shrank (rotation), the
+    // gate falls back to FULL.
+    try {
+      markSynced(base, rows.map((r: any) => {
+        const backend = getBackendForId(r.session_id);
+        const isAO = !!backend?.isAppendOnly?.();
+        const size = isAO ? (backend?.fileSize?.(r.session_id) ?? 0) : 0;
+        return size > 0
+          ? { id: r.session_id, mtime: r.mtime, offset: size, size }
+          : { id: r.session_id, mtime: r.mtime };
+      }));
+    }
     catch { /* ledger is local bookkeeping — never fail an upload over it */ }
   });
+
+  // ── Append batcher (tail-only sync) ──────────────────────────────
+  // See docs/SYNC-INCREMENTAL.md. Append conversations ship with append:true;
+  // the server appends chunks + merges the envelope. The server may respond
+  // with full_resync_needed:[ids] when it has no prior envelope for a session
+  // (data loss, first sync) — those sessions are NOT marked synced, so the
+  // next tick re-classifies them as FULL (offset 0 or absent → full).
+  //
+  // Append payloads are small (tail only), so we batch up to 50 per POST and
+  // inspect the response body for the full_resync_needed list. This path does
+  // NOT go through the shared `post`/`submit` pool — it needs the response
+  // body, which the shared path discards.
+  const appendResults = { uploaded: 0, fullResyncNeeded: new Set<string>() };
+  const postAppend = async (convs: Array<Record<string, unknown>>): Promise<void> => {
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    if (cred.token) headers.authorization = `Bearer ${cred.token}`;
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(new Error(`upload timed out after ${UPLOAD_TIMEOUT_MS}ms`)), UPLOAD_TIMEOUT_MS);
+    try {
+      const res = await fetch(`${base}/api/sync`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ conversations: convs }),
+        signal: ac.signal,
+      });
+      if (!res.ok) throw new Error(`append sync failed: HTTP ${res.status} ${await res.text().catch(() => '')}`);
+      const body = await res.json().catch(() => ({})) as { full_resync_needed?: string[] };
+      const fullNeeded = new Set(body.full_resync_needed ?? []);
+      // Mark synced ONLY the sessions the server accepted as appends. Sessions
+      // the server asked to full-resync stay unmarked → next tick = FULL.
+      const acked = convs.filter((c) => !fullNeeded.has(c.session_id as string));
+      if (acked.length > 0) {
+        try {
+          markSynced(base, acked.map((c) => ({
+            id: c.session_id as string,
+            mtime: c.mtime as number,
+            offset: c.from_offset as number,
+            size: c.from_offset as number, // size = new offset (file grew to here)
+          })));
+        } catch { /* ledger — never fail an upload over it */ }
+      }
+      appendResults.uploaded += acked.length;
+      for (const id of fullNeeded) appendResults.fullResyncNeeded.add(id);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  let appendBatch: Array<Record<string, unknown>> = [];
+  const APPEND_BATCH_SIZE = 50;
+  const appendFlush = async (): Promise<void> => {
+    if (appendBatch.length === 0) return;
+    const batch = appendBatch;
+    appendBatch = [];
+    await postAppend(batch);
+  };
+  const appendAdd = async (conv: Record<string, unknown>): Promise<void> => {
+    appendBatch.push(conv);
+    if (appendBatch.length >= APPEND_BATCH_SIZE) await appendFlush();
+  };
   const itemsBatch = makeBatcher('items', 100);
   const linksBatch = makeBatcher('links', 2000);
   const derivedBatch = makeBatcher('derived', 50);
@@ -586,30 +664,36 @@ const refs = listAvailableBackends().flatMap((b) => {
     }
   }
 
-  // Shared gate: a ref is built this run unless excluded or already acked at a
-  // covering mtime AND the current extractor version. Used by both the batch
-  // pre-scan and the upload loop so they stay in lockstep.
-  const willBuild = (ref: SessionRef): boolean => {
-    if (excludeTools.has(ref.toolId as any)) return false;
-    if (excluded(ref.projectPath)) return false;
-    if (ledger) {
-      const ack = ledger.get(ref.prefixedId);
-      if (ack && ack.m >= Math.floor(ref.mtime) && ack.v >= EXTRACTOR_VERSION) return false;
-    }
-    return true;
+  // Shared gate: classify each session's sync mode for this tick. Used by
+  // both the batch pre-scan and the upload loop so they stay in lockstep.
+  // See docs/SYNC-INCREMENTAL.md for the skip/append/full decision.
+  const backendFor = (ref: SessionRef) => getBackendForId(ref.prefixedId);
+  const modeOf = (ref: SessionRef): 'skip' | 'append' | 'full' => {
+    if (excludeTools.has(ref.toolId as any)) return 'skip';
+    if (excluded(ref.projectPath)) return 'skip';
+    if (!ledger) return ref.mtime >= (opts.sinceMs ?? 0) ? 'full' : 'skip';
+    const ack = ledger.get(ref.prefixedId);
+    const backend = backendFor(ref);
+    const isAO = !!backend?.isAppendOnly?.();
+    const size = isAO ? (backend?.fileSize?.(ref.prefixedId) ?? 0) : 0;
+    return syncMode(ack, ref.mtime, size, EXTRACTOR_VERSION, isAO);
   };
+  const willBuild = (ref: SessionRef): boolean => modeOf(ref) !== 'skip';
 
   // ── Batch secret scan ──────────────────────────────────────────────
   // gitleaks/trufflehog are directory-capable and report each finding's file.
-  // Materialize every to-be-built session's raw text into ONE temp dir
+  // Materialize every to-be-FULL-synced session's raw text into ONE temp dir
   // (filename = sanitized session id), scan the dir ONCE per detector, then
   // map findings back to sessions by filename. This replaces 2·N cold process
   // spawns (the dominant per-session cost) with 2 total. null ⇒ no batch ran
   // (scanning off) and buildConversationSync falls back to its per-session path.
+  // APPEND sessions are excluded — they skip external detectors (the head was
+  // already scanned; the tail uses builtin regex only; the FULL re-sync when
+  // the session closes covers the whole file).
   let externalFindings: Map<string, ScanFinding[]> | null = null;
   if (scanSecrets) {
     externalFindings = new Map();
-    const toScan = slice.filter(willBuild);
+    const toScan = slice.filter((ref) => modeOf(ref) === 'full');
     if (toScan.length > 0) {
       const scanDir = mkdtempSync(join(tmpdir(), 'cr-batchscan-'));
       const safeToId = new Map<string, string>();
@@ -644,18 +728,45 @@ const refs = listAvailableBackends().flatMap((b) => {
 
   for (const ref of slice) {
     localSessionIds.add(ref.prefixedId);
-    if (excludeTools.has(ref.toolId as any)) { skipped++; continue; }
-    if (excluded(ref.projectPath)) { skipped++; continue; }
-    // Ledger mode: skip only when this server already acked this session at a
-    // covering mtime AND under the current extractor version. A bump to
-    // EXTRACTOR_VERSION (extraction code changed) fails the version check even
-    // when mtime is unchanged, so corrected rows re-sync automatically — no
-    // manual ledger edits, no blanket --full. New / changed / previously
-    // failed / version-stale sessions all flow through.
-    if (ledger) {
-      const ack = ledger.get(ref.prefixedId);
-      if (ack && ack.m >= Math.floor(ref.mtime) && ack.v >= EXTRACTOR_VERSION) { skipped++; continue; }
+    const mode = modeOf(ref);
+    if (mode === 'skip') { skipped++; continue; }
+
+    // ── APPEND: tail-only ship (no raw_b64, no telemetry, no derived) ──
+    if (mode === 'append' && ledger) {
+      const ack = ledger.get(ref.prefixedId)!;
+      try {
+        const tail = await buildConversationTail(ref, ack.o ?? 0, { mapPath, tenantRules });
+        if (tail) {
+          redactions += tail.redactions;
+          await appendAdd(tail.conv);
+          // NOTE: tail.findings are NOT shipped here — the server's findings
+          // path does wholesale replaceSecretFindings, so shipping only the
+          // tail's findings would WIPE the head's. Defer findings to the FULL
+          // re-sync (same as raw_b64 + derived). The head's findings stand.
+          walked++;
+          if (walked % 250 === 0) console.error(`[sync] ${walked} sessions processed…`);
+        } else {
+          // Nothing new to ship (tail empty/unparseable). Re-stamp the cursor
+          // at the current size so the gate doesn't re-attempt every tick
+          // when the file hasn't grown since.
+          const backend = backendFor(ref);
+          const size = backend?.fileSize?.(ref.prefixedId) ?? 0;
+          if (size > 0) {
+            try { markSynced(base, [{ id: ref.prefixedId, mtime: ref.mtime, offset: size, size }]); }
+            catch { /* ledger — best-effort */ }
+          }
+          skipped++;
+        }
+      } catch (err) {
+        console.error(`[sync] append tail failed for ${ref.prefixedId} (will retry as full next tick): ${err instanceof Error ? err.message : err}`);
+        // Don't mark synced → next tick re-classifies. If the tail failed, a
+        // FULL sync is the safe fallback (the gate sees an unchanged cursor).
+        skipped++;
+      }
+      continue;
     }
+
+    // ── FULL: the existing whole-conversation path ──
     // Canonical envelope (live): parse the transcript NOW with THE parser —
     // no local content cache is read or warmed. What ships is exactly what
     // the local dashboard would render for the same file.
@@ -801,7 +912,16 @@ const refs = listAvailableBackends().flatMap((b) => {
   }
 
   // ── Drain every batcher (the walks above flushed full windows already;
-  // this ships the tails).
+  // this ships the tails). The append batch flushes BEFORE the inflight
+  // barrier so its full_resync_needed set is populated before we process it.
+  await appendFlush();
+  // Server said full_resync_needed for these append sessions (no prior
+  // envelope on the server). Wipe their ledger rows so the next tick
+  // classifies them as FULL (never-synced) instead of retrying append or
+  // skipping — which would leave the server without the data forever.
+  for (const id of appendResults.fullResyncNeeded) {
+    try { markFullResync(base, id); } catch { /* ledger — best-effort */ }
+  }
   await convBatch.drain();
   await itemsBatch.drain();
   await linksBatch.drain();
@@ -836,7 +956,7 @@ const refs = listAvailableBackends().flatMap((b) => {
   if (opts.prune) await post({ prune_empty_sessions: true });
 
   return {
-    uploaded: convBatch.sent, skipped, redactions,
+    uploaded: convBatch.sent + appendResults.uploaded, skipped, redactions,
     items: itemsBatch.sent, links: linksBatch.sent, findings: findingsBatch.sent, derived: derivedBatch.sent,
     kgEntities: kgEntityBatch.sent, kgTriples: kgTripleBatch.sent,
     scanned, scanMs: Math.round(scanMs),
@@ -1056,6 +1176,102 @@ export async function buildConversationSync(
     redactions: count.redactions,
     findings,
     scanMs,
+  };
+}
+
+/**
+ * Parse raw JSONL tail text into canonical messages for one tool. The tail is
+ * the bytes after the last shipped offset — complete JSONL lines only (the
+ * backend's readFromOffset snaps to the last newline). Returns [] when the
+ * tail has no usable messages (blank, all-summary, internal-tool prompt).
+ */
+function parseTailMessages(tool: string, text: string): any[] {
+  if (!text || !text.trim()) return [];
+  if (tool === 'claude') return parseClaudeTranscriptText(text);
+  if (tool === 'gemini') return parseGeminiTranscriptText(text);
+  if (tool === 'codex') return parseCodexTranscriptText(text);
+  return [];
+}
+
+/**
+ * Build the tail-only conversation payload for an APPEND sync (see
+ * docs/SYNC-INCREMENTAL.md). Reads ONLY the new bytes from `fromOffset` via
+ * the backend's `readFromOffset`, parses them into messages, and ships a
+ * minimal append envelope — no raw_b64, no telemetry meta, no title/
+ * first_prompt (all head-derived; the server keeps its prior values), no
+ * derived (deferred to the FULL re-sync when the session goes quiet).
+ *
+ * Returns null when the tail is empty / unparseable / all-internal — the
+ * caller treats that as "nothing to ship this tick" and leaves the ledger
+ * cursor unchanged.
+ */
+export async function buildConversationTail(
+  ref: SessionRef,
+  fromOffset: number,
+  opts: { mapPath?: (p: string) => string; tenantRules?: Array<{ name: string; regex: string }> } = {},
+): Promise<{ conv: Record<string, unknown>; redactions: number; newOffset: number; findings: BuiltConversation['findings'] } | null> {
+  const backend = getBackendForId(ref.prefixedId);
+  if (!backend?.readFromOffset) return null;
+  const mapPath = opts.mapPath ?? ((p: string) => p);
+
+  const { text: tailText, newOffset } = await backend.readFromOffset(ref.prefixedId, fromOffset);
+  if (!tailText.trim()) return null;
+
+  const messages = parseTailMessages(ref.toolId, tailText);
+  if (messages.length === 0) return null;
+
+  const textMessages = messages.filter((m) => m.role !== 'summary' && m.content?.trim());
+  if (textMessages.length === 0 && !messages.some((m) => m.toolCalls?.length)) return null;
+
+  // Skip chat-recall's OWN internal prompts in the tail (same gate as the
+  // full builder). A tail that is ONLY an internal prompt ships nothing.
+  const firstUser = textMessages.find((m) => m.role === 'user');
+  if (isInternalToolPrompt(firstUser?.content)) return null;
+
+  // Trim + redact the tail envelope only (not the whole transcript).
+  const count = { redactions: 0 };
+  const envelope = redactDeep(
+    { v: TRANSCRIPT_VERSION, ...trimTranscriptForSync({ messages, subagents: [] }) },
+    count,
+  ) as { v: number; messages: any[]; subagents: any[] };
+
+  const envTexts = envelope.messages.filter((m) => m.content?.trim());
+  const redactedText = envTexts.map((m) => m.content).join('\n');
+
+  // Secret scan on the tail text only (builtin regex + tenant rules — cheap,
+  // in-memory). External detectors skip append ticks; the FULL re-sync covers
+  // the whole file when the session closes.
+  const findings: BuiltConversation['findings'] = [];
+  try {
+    for (const f of scanTextForFindings(tailText)) {
+      findings.push({ session_id: ref.prefixedId, detector: 'builtin', rule: f.rule, line: f.line, preview: f.preview });
+    }
+  } catch { /* best-effort */ }
+  if (opts.tenantRules && opts.tenantRules.length > 0) {
+    try { for (const f of scanTenantRules(tailText, opts.tenantRules)) findings.push({ session_id: ref.prefixedId, detector: f.detector, rule: f.rule, line: f.line, preview: f.preview }); }
+    catch { /* best-effort */ }
+  }
+  const keptFindings = dropFuzzyFindings(findings, (f) => ({ detector: f.detector, rule: f.rule }));
+  findings.length = 0;
+  findings.push(...keptFindings);
+
+  // No title / first_prompt / meta / raw_b64 — all head-derived or whole-file.
+  // The server's append path updates ONLY mtime + appends chunks + merges the
+  // envelope; it keeps its prior title/preview/extra/raw_b64 untouched.
+  return {
+    conv: {
+      session_id: ref.prefixedId,
+      tool: ref.toolId,
+      project_path: mapPath(ref.projectPath),
+      append: true,
+      from_offset: newOffset,
+      redacted_text: redactedText,
+      envelope,
+      mtime: Math.floor(ref.mtime) || 0,
+    },
+    redactions: count.redactions,
+    newOffset,
+    findings,
   };
 }
 

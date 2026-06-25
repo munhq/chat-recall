@@ -32,6 +32,7 @@ import { findSessionFile, resolveSessionContentPaths } from '../live-session-sca
 import { computeOutcome } from '../session-outcome.js';
 import { getSessionCommits } from '../session-git.js';
 import { extractFirstUserPromptSync } from '../first-prompt.js';
+import { readTailFromOffset } from './tail-read.js';
 import {
   extractTurnsFromEvents,
   liveScanEditsFromEvents,
@@ -492,6 +493,20 @@ export class ClaudeBackend implements ToolBackend {
       }
     }
     return files.length > 0 ? { tool: 'claude', mtime, files } : null;
+  }
+
+  isAppendOnly(): boolean { return true; }
+
+  fileSize(prefixedId: string): number {
+    const located = findSessionFile(this.toRawId(prefixedId));
+    if (!located) return 0;
+    try { return statSync(located.path).size; } catch { return 0; }
+  }
+
+  async readFromOffset(prefixedId: string, offset: number): Promise<{ text: string; newOffset: number }> {
+    const located = findSessionFile(this.toRawId(prefixedId));
+    if (!located) return { text: '', newOffset: offset };
+    return readTailFromOffset(located.path, offset);
   }
 }
 

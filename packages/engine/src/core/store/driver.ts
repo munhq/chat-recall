@@ -88,6 +88,9 @@ export interface StorageDriver {
 
   // ── FTS5 full-text search ──
   addChunksFTS: AsyncMethod<MemoryStore['addChunksFTS']>;
+  appendChunksFTS: AsyncMethod<MemoryStore['appendChunksFTS']>;
+  maxSyncChunkIndex: AsyncMethod<MemoryStore['maxSyncChunkIndex']>;
+  touchSessionMtime: AsyncMethod<MemoryStore['touchSessionMtime']>;
   listChunksByItem: AsyncMethod<MemoryStore['listChunksByItem']>;
   pruneEmptySessions: AsyncMethod<MemoryStore['pruneEmptySessions']>;
   deleteItemFTS: AsyncMethod<MemoryStore['deleteItemFTS']>;

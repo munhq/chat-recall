@@ -82,6 +82,9 @@ export class SqliteStore implements StorageDriver {
 
   // ── FTS5 ──
   async addChunksFTS(...a: Args<'addChunksFTS'>) { return this.inner.addChunksFTS(...a); }
+  async appendChunksFTS(...a: Args<'appendChunksFTS'>) { return this.inner.appendChunksFTS(...a); }
+  async maxSyncChunkIndex(...a: Args<'maxSyncChunkIndex'>) { return this.inner.maxSyncChunkIndex(...a); }
+  async touchSessionMtime(...a: Args<'touchSessionMtime'>) { return this.inner.touchSessionMtime(...a); }
   async listChunksByItem(...a: Args<'listChunksByItem'>) { return this.inner.listChunksByItem(...a); }
   async pruneEmptySessions(...a: Args<'pruneEmptySessions'>) { return this.inner.pruneEmptySessions(...a); }
   async deleteItemFTS(...a: Args<'deleteItemFTS'>) { return this.inner.deleteItemFTS(...a); }

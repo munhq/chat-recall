@@ -267,6 +267,33 @@ export interface ToolBackend {
    * session's rows. Returns null when the session can't be located.
    */
   exportRawSession(id: string): RawSessionExport | null;
+
+  // ── Tail-sync (append-only transcripts) ─────────────────────────
+  // See docs/SYNC-INCREMENTAL.md. Lets the sync client ship only the new tail
+  // of a growing session instead of re-parsing + re-shipping the whole file.
+
+  /** True when the transcript is an append-only file (Claude/Gemini/Codex
+   *  JSONL). False for DB-backed tools (OpenCode SQLite) — those have no byte
+   *  offset and always full-sync. */
+  isAppendOnly?(): boolean;
+
+  /** Current byte size of the transcript file. Returns 0 when unknown or the
+   *  backend is not append-only (the freshness gate treats 0 as "no tail
+   *  info; fall back to mtime-only decisions"). */
+  fileSize?(prefixedId: string): number;
+
+  /** Read the transcript from `offset` to EOF and return the tail text plus
+   *  the byte position to persist as the new cursor.
+   *
+   *  `newOffset` is the byte position of the LAST `\n` in the read window,
+   *  NOT EOF — a sync tick can fire mid-write while the AI tool has flushed
+   *  only part of a trailing JSONL line; advancing to EOF would resume next
+   *  tick inside that torn line → permanent misalignment. Snapping to the
+   *  last newline means the partial trailing line is re-read (and completed)
+   *  next tick. If the window contains no newline (offset already past the
+   *  last complete line), return `text: ''` and `newOffset: offset` — nothing
+   *  to ship this tick. Only append-only backends implement this. */
+  readFromOffset?(prefixedId: string, offset: number): Promise<{ text: string; newOffset: number }>;
 }
 
 /** A raw capture: named parts so multi-file sessions (main + subagents)

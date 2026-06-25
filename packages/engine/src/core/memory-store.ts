@@ -1141,6 +1141,65 @@ export class MemoryStore {
     return rows;
   }
 
+  // ── Tail-sync (append-only transcripts) ─────────────────────────
+  // See docs/SYNC-INCREMENTAL.md. The append path needs an INSERT WITHOUT the
+  // per-item DELETE that addChunksFTS performs (replace vs append semantics),
+  // a way to continue the chunk-id index monotonically, and a metadata update
+  // that touches ONLY mtime (so head-derived title/preview/extra survive).
+
+  /** INSERT chunks WITHOUT deleting the item's existing rows. Used by the
+   *  sync server's append path so a tail-only ship adds new chunks alongside
+   *  the head's chunks instead of replacing them. Idempotent on retry via
+   *  INSERT OR REPLACE on chunk_id (the primary key). */
+  appendChunksFTS(chunks: MemoryChunk[]): number {
+    if (chunks.length === 0) return 0;
+    const valid = chunks.filter(c => c.text && c.text.trim().length > 0);
+    if (valid.length === 0) return 0;
+    const insert = this.db.prepare(`
+      INSERT OR REPLACE INTO memory_chunks_fts(chunk_id, item_id, source_type, title, text, chunk_type, project_path, project_id, file_path, mtime)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const transaction = this.db.transaction((chunks: MemoryChunk[]) => {
+      for (const c of chunks) {
+        const resolved = c.projectPath ? resolveProjectId(c.projectPath) : null;
+        const projectId = resolved && resolved.source !== 'ignored' ? resolved.id : '';
+        insert.run(
+          c.chunkId, c.itemId, c.sourceType, c.title,
+          applyRedactionIfEnabled(c.text),
+          c.chunkType, c.projectPath, projectId, c.filePath, c.mtime
+        );
+      }
+    });
+    transaction(valid);
+    return valid.length;
+  }
+
+  /** The highest `:sync:<i>` chunk index for one session — so the server can
+   *  continue chunk numbering monotonically on an append (new chunks get
+   *  MAX+1, MAX+2, …). Returns 0 when the session has no sync chunks yet. */
+  maxSyncChunkIndex(itemId: string): number {
+    const rows = this.db.prepare(`
+      SELECT chunk_id FROM memory_chunks_fts
+      WHERE source_type = 'session' AND item_id = ? AND chunk_id LIKE '%:sync:%'
+    `).all(itemId) as Array<{ chunk_id: string }>;
+    let max = 0;
+    for (const r of rows) {
+      const m = /:sync:(\d+)$/.exec(r.chunk_id);
+      if (m) { const n = Number(m[1]); if (n > max) max = n; }
+    }
+    return max;
+  }
+
+  /** Update ONLY the mtime (and indexed_at) on a session's metadata row —
+   *  used by the sync server's append path so head-derived title /
+   *  content_preview / extra_json survive a tail-only ship untouched. */
+  touchSessionMtime(sessionId: string, mtime: number): void {
+    this.db.prepare(`
+      UPDATE memory_metadata SET mtime = ?, indexed_at = ?
+      WHERE id = ? AND source_type = 'session'
+    `).run(Math.floor(mtime), Date.now(), sessionId);
+  }
+
   // ── Tombstones + purge ─────────────────────────────────────────
   // Deleting a session is a first-class, propagating operation: the local
   // delete writes a tombstone; sync ships tombstones; every server purges

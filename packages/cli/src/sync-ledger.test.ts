@@ -105,4 +105,83 @@ describe('sync-ledger (JSON watermark)', () => {
     markFieldFullPassDone(SRV, F);
     expect(fieldNeedsFullPass(SRV, F)).toBe(false);    // force cleared
   });
+
+  test('syncMode: skip / append / full branches', async () => {
+    const { syncMode, markSynced, getSyncedRows, _resetLedgerCacheForTests } = await import('./sync-ledger.js');
+    const SRV = 'https://mode.example';
+    const V = (await import('@chat-recall/engine/core/extractor-version.js')).EXTRACTOR_VERSION;
+    const AO = true; // append-only backend
+
+    // Never synced → full.
+    expect(syncMode(undefined, 1000, 500, V, AO)).toBe('full');
+
+    // FULL sync ships the whole file; mark with offset=size so the cursor covers.
+    markSynced(SRV, [{ id: 's1', mtime: 1000, offset: 500, size: 500 }]);
+    _resetLedgerCacheForTests();
+    // Unchanged mtime + cursor covers size → skip.
+    expect(syncMode(getSyncedRows(SRV).get('s1'), 1000, 500, V, AO)).toBe('skip');
+
+    // File grew (500 → 800), version current, prior offset valid → append.
+    expect(syncMode(getSyncedRows(SRV).get('s1'), 1000, 800, V, AO)).toBe('append');
+
+    // Version bump → full (overrides append-eligibility).
+    expect(syncMode(getSyncedRows(SRV).get('s1'), 1000, 800, V + 1, AO)).toBe('full');
+
+    // File shrank (rotation/truncation, size < offset) → full.
+    markSynced(SRV, [{ id: 's2', mtime: 2000, offset: 1000, size: 1000 }]);
+    _resetLedgerCacheForTests();
+    expect(syncMode(getSyncedRows(SRV).get('s2'), 2000, 400, V, AO)).toBe('full');
+
+    // Non-append-only backend (OpenCode SQLite): mtime advanced → full (never append).
+    markSynced(SRV, [{ id: 's3', mtime: 3000 }]);
+    _resetLedgerCacheForTests();
+    expect(syncMode(getSyncedRows(SRV).get('s3'), 3000, 0, V, false)).toBe('skip');
+    expect(syncMode(getSyncedRows(SRV).get('s3'), 4000, 0, V, false)).toBe('full');
+
+    // First sync with no offset (o=0) → full even if append-only + file grew.
+    markSynced(SRV, [{ id: 's4', mtime: 5000 }]); // no offset/size → o,s absent
+    _resetLedgerCacheForTests();
+    expect(syncMode(getSyncedRows(SRV).get('s4'), 5000, 100, V, AO)).toBe('skip');
+    expect(syncMode(getSyncedRows(SRV).get('s4'), 6000, 200, V, AO)).toBe('full');
+  });
+
+  test('markSynced persists offset/size and preserves f across re-sync', async () => {
+    const { markSynced, markFieldCoverage, getSyncedRows, _resetLedgerCacheForTests } = await import('./sync-ledger.js');
+    const SRV = 'https://os.example';
+    const F = { name: 'tool_title', version: 1, mtimeSensitive: true };
+    // Field coverage first, then a FULL conversation sync with offset.
+    markFieldCoverage(SRV, F, [{ id: 's1', present: true, mtime: 1000 }]);
+    markSynced(SRV, [{ id: 's1', mtime: 1000, offset: 500, size: 500 }]);
+    _resetLedgerCacheForTests();
+    const row = getSyncedRows(SRV).get('s1')!;
+    expect(row.o).toBe(500);
+    expect(row.s).toBe(500);
+    expect(row.f?.tool_title?.p).toBe(1); // f survived
+    // A later APPEND ack advances o/s without touching f.
+    markSynced(SRV, [{ id: 's1', mtime: 1000, offset: 800, size: 800 }]);
+    _resetLedgerCacheForTests();
+    const row2 = getSyncedRows(SRV).get('s1')!;
+    expect(row2.o).toBe(800);
+    expect(row2.s).toBe(800);
+    expect(row2.f?.tool_title?.p).toBe(1); // f still survives
+  });
+
+  test('markFullResync wipes the row so the next tick is FULL', async () => {
+    const { markSynced, markFullResync, getSyncedRows, syncMode, _resetLedgerCacheForTests } = await import('./sync-ledger.js');
+    const { EXTRACTOR_VERSION } = await import('@chat-recall/engine/core/extractor-version.js');
+    const SRV = 'https://resync.example';
+    // A fully-synced session with an offset cursor.
+    markSynced(SRV, [{ id: 's1', mtime: 1000, offset: 500, size: 500 }]);
+    _resetLedgerCacheForTests();
+    expect(getSyncedRows(SRV).get('s1')).toBeDefined();
+    // Server says full_resync_needed → wipe the row.
+    markFullResync(SRV, 's1');
+    _resetLedgerCacheForTests();
+    expect(getSyncedRows(SRV).get('s1')).toBeUndefined(); // gone
+    // Next tick: never-synced → FULL (not append, not skip).
+    expect(syncMode(undefined, 1000, 500, EXTRACTOR_VERSION, true)).toBe('full');
+    // Wiping a non-existent row / unknown server is a no-op (no throw).
+    expect(() => markFullResync(SRV, 'nope')).not.toThrow();
+    expect(() => markFullResync('https://unknown.example', 's1')).not.toThrow();
+  });
 });

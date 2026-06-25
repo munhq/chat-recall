@@ -246,4 +246,168 @@ describe('POST /api/sync (ingest)', () => {
       else process.env.AUTH_PROVIDER = prev;
     }
   });
+
+  // ── Tail-only append sync (docs/SYNC-INCREMENTAL.md) ──────────────────
+  test('append:true merges the envelope, continues chunk ids, preserves head title/telemetry', async () => {
+    const { createControlPlane, createStore, createMetadataCache } = await import('../imports.js');
+    const syncRouter = (await import('./sync.js')).default;
+    const app = express();
+    app.use(express.json({ limit: '16mb' }));
+    app.use('/api/sync', syncRouter);
+
+    const cp = await createControlPlane();
+    const token = await cp.mintAgentToken('default', 'append-test');
+    await cp.close();
+
+    const sessionId = 'aaaa0000-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const headMtime = 1750100000000;
+    // 1. FULL seed: two head turns + a title + telemetry.
+    let res = await request(app).post('/api/sync').set('authorization', `Bearer ${token}`)
+      .send({
+        conversations: [{
+          session_id: sessionId, tool: 'claude', project_path: '/tmp/app', mtime: headMtime,
+          first_prompt: 'set up the framis module',
+          envelope: { v: 6, messages: [
+            { line: 1, role: 'user', content: 'set up the framis module' },
+            { line: 2, role: 'assistant', content: 'Created src/framis.ts with the init function.' },
+          ], subagents: [] },
+          meta: { inputTokens: 500, outputTokens: 100, modelsUsed: ['claude-sonnet-4-6'] },
+        }],
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.conv).toBe(1);
+
+    const store = await createStore();
+    // Head state: 2 chunks, title = first prompt, telemetry in extra.
+    let chunks = await store.listChunksByItem('session', sessionId);
+    expect(chunks).toHaveLength(2);
+    let item = await store.getItem(sessionId, 'session');
+    expect(item?.title).toContain('framis module');
+    expect(JSON.parse(item!.extra_json).inputTokens).toBe(500);
+    let cached = await store.getCachedContentStale(sessionId, 'session');
+    expect(cached).not.toBeNull();
+    const headEnv = JSON.parse(cached!.content);
+    expect(headEnv.messages).toHaveLength(2);
+
+    // 2. APPEND: two new tail turns. No title, no meta, no raw_b64 — the
+    //    append payload omits head-derived fields (the server keeps priors).
+    const tailMtime = 1750100060000;
+    res = await request(app).post('/api/sync').set('authorization', `Bearer ${token}`)
+      .send({
+        conversations: [{
+          session_id: sessionId, tool: 'claude', project_path: '/tmp/app', mtime: tailMtime,
+          append: true, from_offset: 9999,
+          envelope: { v: 6, messages: [
+            { line: 3, role: 'user', content: 'now add tests for framis' },
+            { line: 4, role: 'assistant', content: 'Added framis.test.ts covering init and edge cases.' },
+          ], subagents: [] },
+        }],
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.appendConv).toBe(1);
+    expect(res.body.full_resync_needed ?? []).not.toContain(sessionId);
+
+    // 3. Envelope merged: 4 messages, lines continue 1..4.
+    cached = await store.getCachedContentStale(sessionId, 'session');
+    const mergedEnv = JSON.parse(cached!.content);
+    expect(mergedEnv.messages).toHaveLength(4);
+    expect(mergedEnv.messages[2].content).toContain('add tests for framis');
+    expect(mergedEnv.messages[3].content).toContain('framis.test.ts');
+
+    // 4. Chunks: head's 2 chunks SURVIVED + 2 new tail chunks appended.
+    //    chunk ids continue from MAX(head :sync: index)+1 (no collision).
+    chunks = await store.listChunksByItem('session', sessionId);
+    expect(chunks).toHaveLength(4);
+    const syncIdxs = chunks.map(c => { const m = /:sync:(\d+)$/.exec(c.chunk_id); return m ? Number(m[1]) : 0; });
+    expect(Math.min(...syncIdxs)).toBeGreaterThanOrEqual(0);
+    // No duplicate chunk ids.
+    const ids = new Set(chunks.map(c => c.chunk_id));
+    expect(ids.size).toBe(4);
+    // Tail chunks are findable in FTS.
+    const tailHits = await store.searchFTS('framis.test.ts', { topK: 5 });
+    expect(tailHits.some(h => h.itemId === sessionId)).toBe(true);
+
+    // 5. Title + telemetry PRESERVED from the head (append touched only mtime).
+    item = await store.getItem(sessionId, 'session');
+    expect(item?.title).toContain('framis module');       // head title, not clobbered
+    expect(JSON.parse(item!.extra_json).inputTokens).toBe(500); // head telemetry
+    expect(item?.mtime).toBe(tailMtime);                  // mtime advanced
+
+    await store.close();
+  });
+
+  test('append:true with no prior envelope → full_resync_needed, no data written', async () => {
+    const { createControlPlane, createStore } = await import('../imports.js');
+    const syncRouter = (await import('./sync.js')).default;
+    const app = express();
+    app.use(express.json({ limit: '16mb' }));
+    app.use('/api/sync', syncRouter);
+
+    const cp = await createControlPlane();
+    const token = await cp.mintAgentToken('default', 'append-missing');
+    await cp.close();
+
+    const sessionId = 'bbbb1111-cccc-dddd-eeee-ffffffffffff';
+    // APPEND with NO prior FULL sync → server has no envelope → full_resync_needed.
+    const res = await request(app).post('/api/sync').set('authorization', `Bearer ${token}`)
+      .send({
+        conversations: [{
+          session_id: sessionId, tool: 'claude', project_path: '/tmp/miss', mtime: 1750200000000,
+          append: true, from_offset: 100,
+          envelope: { v: 6, messages: [{ line: 1, role: 'user', content: 'tail with no head' }], subagents: [] },
+        }],
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.full_resync_needed).toContain(sessionId);
+    expect(res.body.appendConv).toBe(0);
+
+    // Nothing was written — no chunks, no envelope, no metadata.
+    const store = await createStore();
+    expect(await store.listChunksByItem('session', sessionId)).toHaveLength(0);
+    expect(await store.getCachedContentStale(sessionId, 'session')).toBeNull();
+    expect(await store.getItem(sessionId, 'session')).toBeNull();
+    await store.close();
+  });
+
+  test('full_resync_needed then FULL re-seed lands the data (the recovery flow)', async () => {
+    const { createControlPlane, createStore } = await import('../imports.js');
+    const syncRouter = (await import('./sync.js')).default;
+    const app = express();
+    app.use(express.json({ limit: '16mb' }));
+    app.use('/api/sync', syncRouter);
+
+    const cp = await createControlPlane();
+    const token = await cp.mintAgentToken('default', 'resync-flow');
+    await cp.close();
+
+    const sessionId = 'cccc2222-dddd-0000-1111-222233334444';
+    // 1. APPEND with no prior envelope → full_resync_needed.
+    let res = await request(app).post('/api/sync').set('authorization', `Bearer ${token}`)
+      .send({ conversations: [{
+        session_id: sessionId, tool: 'claude', project_path: '/tmp/rs', mtime: 1750300000000,
+        append: true, from_offset: 50,
+        envelope: { v: 6, messages: [{ line: 1, role: 'user', content: 'tail' }], subagents: [] },
+      }] });
+    expect(res.body.full_resync_needed).toContain(sessionId);
+
+    // 2. Client wipes its ledger row → next tick sends FULL.
+    res = await request(app).post('/api/sync').set('authorization', `Bearer ${token}`)
+      .send({ conversations: [{
+        session_id: sessionId, tool: 'claude', project_path: '/tmp/rs', mtime: 1750300000000,
+        first_prompt: 'recovered full sync',
+        envelope: { v: 6, messages: [
+          { line: 1, role: 'user', content: 'recovered full sync' },
+          { line: 2, role: 'assistant', content: 'back online' },
+        ], subagents: [] },
+      }] });
+    expect(res.body.conv).toBe(1);
+
+    // 3. Data landed — the session is now on the server.
+    const store = await createStore();
+    const item = await store.getItem(sessionId, 'session');
+    expect(item?.title).toContain('recovered full sync');
+    const chunks = await store.listChunksByItem('session', sessionId);
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+    await store.close();
+  });
 });
