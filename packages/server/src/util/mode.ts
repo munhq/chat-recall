@@ -96,7 +96,12 @@ export function capabilities(): Capabilities {
       activity: true,
       sessionDeepDive: true,
       projects: true,
-      toolkit: !server,
+      // Toolkit READS (browse/matrix/status) come from synced store rows, so
+      // the tab renders in both modes. Its fs-mutating routes self-guard with
+      // requireLocalMode; cross-tool copy on a remote server runs via the
+      // local CLI agent draining /api/sync-intents. Settings editing genuinely
+      // writes the local fs, so it stays local-only.
+      toolkit: true,
       settings: !server,
       // Edition hint only: "the teams feature exists in this build". This is
       // PRE-AUTH (capabilities() runs before any tenant is resolved), so it

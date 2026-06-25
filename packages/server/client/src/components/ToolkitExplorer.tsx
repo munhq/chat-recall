@@ -14,7 +14,6 @@ import {
   browseToolkit,
   getToolkitItem,
   getToolkitStatus,
-  promoteToolkitItem,
   getToolkitMatrix,
   removeToolkitItem,
   enqueueSyncIntent,
@@ -473,6 +472,10 @@ const TOOL_SUPPORT: Record<ToolkitType, ReadonlySet<AiToolName>> = {
 type AiToolName = 'claude' | 'gemini' | 'opencode' | 'codex';
 const ALL_AI_TOOLS: AiToolName[] = ['claude', 'gemini', 'opencode', 'codex'];
 
+/** Types with a real cross-tool copy (via the intent queue). Hooks/plugins
+ *  are tool-specific and display-only. */
+const CROSS_TOOL_TYPES = new Set<ToolkitType>(['skill', 'mcp', 'command', 'agent']);
+
 /** Build the per-tool presence map for a primitive (by display name). */
 function computePresence(
   kind: ToolkitType,
@@ -523,25 +526,34 @@ function PromoteRow({
   );
   const supportedTools = TOOL_SUPPORT[kind];
 
+  // Copy goes through the Model-B intent queue (works from the SaaS too).
   const handle = async (toTool: AiToolName) => {
     if (!confirm(`Copy ${primaryName} from ${fromTool} → ${toTool}?`)) return;
     setBusy(toTool);
     setMsg(null);
-    // The 4 cross-tool types go through the Model-B intent queue (works from
-    // the SaaS too); hooks/plugins fall back to the local-only direct promote.
-    const SYNC4 = ['skill', 'mcp', 'command', 'agent'];
-    if (SYNC4.includes(kind)) {
-      const e = await enqueueSyncIntent({ kind: 'copy', artifactType: kind as SyncType, name: primaryName, fromTool: fromTool as SyncTool, toTool });
-      setBusy(null);
-      if (e.ok) setMsg({ kind: 'ok', text: `Queued — your local agent will copy it to ${toTool}.` });
-      else setMsg({ kind: 'err', text: e.error || 'failed' });
-      return;
-    }
-    const r = await promoteToolkitItem(kind, item.id, toTool);
+    const e = await enqueueSyncIntent({ kind: 'copy', artifactType: kind as SyncType, name: primaryName, fromTool: fromTool as SyncTool, toTool });
     setBusy(null);
-    if (r.ok) setMsg({ kind: 'ok', text: `Copied to ${r.targetPath || toTool}` });
-    else setMsg({ kind: 'err', text: r.error || 'failed' });
+    if (e.ok) setMsg({ kind: 'ok', text: `Queued — your local agent will copy it to ${toTool}.` });
+    else setMsg({ kind: 'err', text: e.error || 'failed' });
   };
+
+  // Hooks and plugins are tool-specific (settings.json events / per-tool bundle
+  // formats) — there's no faithful cross-tool copy, so we show them read-only
+  // rather than offering buttons that would fail.
+  if (!CROSS_TOOL_TYPES.has(kind)) {
+    return (
+      <Card style={{ padding: 16, marginTop: 16 }}>
+        <div style={{ fontSize: 13, color: 'var(--cr-fg-2)', fontWeight: 500, marginBottom: 4 }}>
+          Tool-specific — not portable across tools
+        </div>
+        <div style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
+          {kind === 'hook'
+            ? 'Hooks are Claude Code settings.json event handlers; other tools have their own mechanisms.'
+            : 'Plugins use a different bundle format per tool. Promote the skills/MCPs inside them instead.'}
+        </div>
+      </Card>
+    );
+  }
 
   // Cross-tool availability matrix — one row per AI tool, with explicit state.
   return (
@@ -644,12 +656,13 @@ function EmptyListState({
   const targetTool = tool === 'all' ? null : (tool as AiToolName);
   const supports = targetTool ? TOOL_SUPPORT[kind].has(targetTool) : true;
 
-  // Tool isn't supposed to have this primitive at all — be honest about it.
-  if (targetTool && !supports) {
+  // Either the tool doesn't have this primitive, or it's a tool-specific type
+  // (hook/plugin) with no faithful cross-tool copy — be honest, offer no import.
+  if (targetTool && (!supports || !CROSS_TOOL_TYPES.has(kind))) {
     return (
       <div style={{ padding: 40, color: 'var(--cr-fg-3)' }}>
         <div style={{ fontSize: 14, fontWeight: 500, color: 'var(--cr-fg-2)', marginBottom: 6 }}>
-          {targetTool} doesn't natively support {kind}s.
+          {CROSS_TOOL_TYPES.has(kind) ? `${targetTool} doesn't natively support ${kind}s.` : `${kind}s are tool-specific — not portable across tools.`}
         </div>
         <div style={{ fontSize: 12 }}>
           {kind === 'hook'  && 'Hooks live in Claude Code\'s settings.json. Other tools have their own event mechanisms.'}
@@ -667,24 +680,18 @@ function EmptyListState({
     );
   }
 
+  // Only cross-tool types (skill/mcp/command/agent) reach here — hooks/plugins
+  // are short-circuited above. Copy goes through the Model-B intent queue.
   const handleImport = async (row: MemoryMetadataRow) => {
     if (!targetTool) return;
     setBusyId(row.id);
-    const SYNC4 = ['skill', 'mcp', 'command', 'agent'];
-    if (SYNC4.includes(kind)) {
-      const nameField = kind === 'skill' ? 'skillName' : kind === 'mcp' ? 'mcpName' : kind === 'command' ? 'commandName' : 'agentName';
-      const name = readField<string>(row, nameField) || row.title;
-      const fromTool = readTool(row) as SyncTool;
-      const e = await enqueueSyncIntent({ kind: 'copy', artifactType: kind as SyncType, name, fromTool, toTool: targetTool });
-      setBusyId(null);
-      if (e.ok) alert(`Queued — your local agent will copy "${name}" to ${targetTool}.`);
-      else alert(`Queue failed: ${e.error || 'unknown error'}`);
-      return;
-    }
-    const r = await promoteToolkitItem(kind, row.id, targetTool);
+    const nameField = kind === 'skill' ? 'skillName' : kind === 'mcp' ? 'mcpName' : kind === 'command' ? 'commandName' : 'agentName';
+    const name = readField<string>(row, nameField) || row.title;
+    const fromTool = readTool(row) as SyncTool;
+    const e = await enqueueSyncIntent({ kind: 'copy', artifactType: kind as SyncType, name, fromTool, toTool: targetTool });
     setBusyId(null);
-    if (r.ok) onAfterCopy();
-    else alert(`Copy failed: ${r.error || 'unknown error'}`);
+    if (e.ok) alert(`Queued — your local agent will copy "${name}" to ${targetTool}.`);
+    else alert(`Queue failed: ${e.error || 'unknown error'}`);
   };
 
   return (
