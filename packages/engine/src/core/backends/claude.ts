@@ -6,7 +6,7 @@
  * with optional sibling subagents/<id>.jsonl files for /explore-style splits.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, statSync, openSync, readSync, closeSync } from 'fs';
 import { join, basename } from 'path';
 import { claudeHomeDir, claudeProjectDirs } from '../tool-paths.js';
 
@@ -86,19 +86,29 @@ export class ClaudeBackend implements ToolBackend {
   getNativeTitle(rawId: string): string | null {
     const located = findSessionFile(rawId);
     if (!located) return null;
-    let raw: string;
-    try { raw = readFileSync(located.path, 'utf-8'); } catch { return null; }
-    let title: string | null = null;
-    for (const line of raw.split('\n')) {
+    // Claude writes the `ai-title` event EARLY (≈line 12) and it's stable
+    // (verified: first == last). Read only the head (64 KB) — a transcript can
+    // be many MB and reconciliation scans thousands of them, so reading whole
+    // files was the dominant cost. Return on the first ai-title found.
+    let head: string;
+    try {
+      const fd = openSync(located.path, 'r');
+      try {
+        const buf = Buffer.alloc(65536);
+        const n = readSync(fd, buf, 0, buf.length, 0);
+        head = buf.toString('utf-8', 0, n);
+      } finally { closeSync(fd); }
+    } catch { return null; }
+    for (const line of head.split('\n')) {
       if (!line.includes('"ai-title"')) continue;
       try {
         const o = JSON.parse(line);
         if (o?.type === 'ai-title' && typeof o.aiTitle === 'string' && o.aiTitle.trim()) {
-          title = o.aiTitle.trim().slice(0, 200); // keep last (most recent)
+          return o.aiTitle.trim().slice(0, 200);
         }
-      } catch { /* skip malformed */ }
+      } catch { /* skip malformed (e.g. the truncated last line of the 64KB window) */ }
     }
-    return title;
+    return null;
   }
 
   findSession(id: string): SessionLocation | null {
