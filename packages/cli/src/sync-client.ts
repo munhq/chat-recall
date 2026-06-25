@@ -536,11 +536,15 @@ const refs = listAvailableBackends().flatMap((b) => {
     // gate falls back to FULL.
     try {
       markSynced(base, rows.map((r: any) => {
-        const backend = getBackendForId(r.session_id);
-        const isAO = !!backend?.isAppendOnly?.();
-        const size = isAO ? (backend?.fileSize?.(r.session_id) ?? 0) : 0;
-        return size > 0
-          ? { id: r.session_id, mtime: r.mtime, offset: size, size }
+        // Record the SAME offset the conv shipped to the server (conv.from_offset
+        // = build-time file size), NOT a freshly-stat'd size — otherwise an
+        // actively-growing file's ledger offset would differ from the server's
+        // stored `o`, and every subsequent append would miss the continuity
+        // check and fall back to FULL. Consistency here is what lets the active
+        // session actually append.
+        const off = typeof r.from_offset === 'number' ? r.from_offset : 0;
+        return off > 0
+          ? { id: r.session_id, mtime: r.mtime, offset: off, size: off }
           : { id: r.session_id, mtime: r.mtime };
       }));
     }
@@ -1168,6 +1172,12 @@ export async function buildConversationSync(
       raw_b64,
       raw_size,
       first_prompt: (envTexts.find((m) => m.role === 'user')?.content as string | undefined)?.slice(0, 200),
+      // Byte offset this FULL sync is synced THROUGH (file size at build time).
+      // The server stores it as the envelope's `o`; the ledger records the SAME
+      // value (convBatch onFlush uses this, not a recomputed size) so the next
+      // append's base_offset matches exactly — no spurious continuity misses on
+      // an actively-growing session. undefined for non-append-only backends.
+      from_offset: getBackendForId(ref.prefixedId)?.fileSize?.(ref.rawId),
       meta,
       mtime,
     },
@@ -1264,7 +1274,9 @@ export async function buildConversationTail(
       tool: ref.toolId,
       project_path: mapPath(ref.projectPath),
       append: true,
-      from_offset: newOffset,
+      base_offset: fromOffset, // where this tail STARTS — server validates it
+                               // equals its stored synced-through offset.
+      from_offset: newOffset,  // where it ends → new synced-through offset.
       redacted_text: redactedText,
       envelope,
       mtime: Math.floor(ref.mtime) || 0,

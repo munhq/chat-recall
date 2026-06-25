@@ -249,7 +249,7 @@ describe('POST /api/sync (ingest)', () => {
 
   // ── Tail-only append sync (docs/SYNC-INCREMENTAL.md) ──────────────────
   test('append:true merges the envelope, continues chunk ids, preserves head title/telemetry', async () => {
-    process.env.CHAT_RECALL_TAIL_APPEND = '1'; // append is server-gated OFF by default; enable to test the merge path
+    delete process.env.CHAT_RECALL_TAIL_APPEND; // append is ON by default (offset-continuity guard makes it safe)
     const { createControlPlane, createStore, createMetadataCache } = await import('../imports.js');
     const syncRouter = (await import('./sync.js')).default;
     const app = express();
@@ -268,6 +268,7 @@ describe('POST /api/sync (ingest)', () => {
         conversations: [{
           session_id: sessionId, tool: 'claude', project_path: '/tmp/app', mtime: headMtime,
           first_prompt: 'set up the framis module',
+          from_offset: 4096, // FULL sync synced-through offset (file size)
           envelope: { v: 6, messages: [
             { line: 1, role: 'user', content: 'set up the framis module' },
             { line: 2, role: 'assistant', content: 'Created src/framis.ts with the init function.' },
@@ -297,7 +298,7 @@ describe('POST /api/sync (ingest)', () => {
       .send({
         conversations: [{
           session_id: sessionId, tool: 'claude', project_path: '/tmp/app', mtime: tailMtime,
-          append: true, from_offset: 9999,
+          append: true, base_offset: 4096, from_offset: 6000, // base matches the head's synced-through offset
           envelope: { v: 6, messages: [
             { line: 3, role: 'user', content: 'now add tests for framis' },
             { line: 4, role: 'assistant', content: 'Added framis.test.ts covering init and edge cases.' },
@@ -338,36 +339,50 @@ describe('POST /api/sync (ingest)', () => {
     delete process.env.CHAT_RECALL_TAIL_APPEND;
   });
 
-  test('KILL-SWITCH: with append disabled (default), append:true → full_resync_needed even with a prior envelope', async () => {
-    delete process.env.CHAT_RECALL_TAIL_APPEND; // explicit: default state
+  test('CONTINUITY GUARD: an append whose base_offset ≠ the stored synced-through offset → full_resync_needed, base untouched', async () => {
+    // This is the test that would have caught the original corruption: a tail
+    // grafting onto a base at a DIFFERENT offset than it expects (truncated /
+    // stale / re-ordered) must be refused, not silently merged.
+    delete process.env.CHAT_RECALL_TAIL_APPEND;
     const { createControlPlane, createStore } = await import('../imports.js');
     const syncRouter = (await import('./sync.js')).default;
     const app = express();
     app.use(express.json({ limit: '16mb' }));
     app.use('/api/sync', syncRouter);
     const cp = await createControlPlane();
-    const token = await cp.mintAgentToken('default', 'append-killswitch');
+    const token = await cp.mintAgentToken('default', 'append-continuity');
     await cp.close();
 
     const sessionId = 'cccc2222-dddd-eeee-ffff-aaaaaaaaaaaa';
-    // Seed a FULL head (gives the session a prior envelope).
+    // FULL seed synced THROUGH offset 4096.
     await request(app).post('/api/sync').set('authorization', `Bearer ${token}`).send({
       conversations: [{ session_id: sessionId, tool: 'claude', project_path: '/tmp/ks', mtime: 1750200000000,
-        first_prompt: 'seed', envelope: { v: 6, messages: [{ line: 1, role: 'user', content: 'seed' }], subagents: [] } }],
+        first_prompt: 'seed', from_offset: 4096,
+        envelope: { v: 6, messages: [{ line: 1, role: 'user', content: 'seed' }], subagents: [] } }],
     });
     const store = await createStore();
     const before = await store.listChunksByItem('session', sessionId);
-    // APPEND with the kill-switch off → server refuses, asks for full, writes nothing.
-    const res = await request(app).post('/api/sync').set('authorization', `Bearer ${token}`).send({
+
+    // APPEND claiming its tail starts at 9999 — but the base is synced through
+    // 4096. Mismatch → refuse, ask for full, write NOTHING.
+    let res = await request(app).post('/api/sync').set('authorization', `Bearer ${token}`).send({
       conversations: [{ session_id: sessionId, tool: 'claude', project_path: '/tmp/ks', mtime: 1750200060000,
-        append: true, from_offset: 9999, envelope: { v: 6, messages: [{ line: 2, role: 'user', content: 'tail that must NOT corrupt the base' }], subagents: [] } }],
+        append: true, base_offset: 9999, from_offset: 12000,
+        envelope: { v: 6, messages: [{ line: 2, role: 'user', content: 'tail that must NOT corrupt the base' }], subagents: [] } }],
     });
     expect(res.status).toBe(200);
     expect(res.body.appendConv).toBe(0);
     expect(res.body.full_resync_needed).toContain(sessionId);
-    // The base is untouched — no truncation, no tail merged.
-    const after = await store.listChunksByItem('session', sessionId);
-    expect(after.length).toBe(before.length);
+    expect((await store.listChunksByItem('session', sessionId)).length).toBe(before.length); // untouched
+
+    // APPEND with the CORRECT base_offset (4096) → accepted and merged.
+    res = await request(app).post('/api/sync').set('authorization', `Bearer ${token}`).send({
+      conversations: [{ session_id: sessionId, tool: 'claude', project_path: '/tmp/ks', mtime: 1750200120000,
+        append: true, base_offset: 4096, from_offset: 5000,
+        envelope: { v: 6, messages: [{ line: 2, role: 'user', content: 'the real next turn' }], subagents: [] } }],
+    });
+    expect(res.body.appendConv).toBe(1);
+    expect(res.body.full_resync_needed ?? []).not.toContain(sessionId);
     await store.close();
   });
 

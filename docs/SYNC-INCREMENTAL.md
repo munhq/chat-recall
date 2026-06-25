@@ -1,16 +1,18 @@
 # Incremental tail-only conversation sync
 
-> ⚠️ **DISABLED BY DEFAULT (opt in with `CHAT_RECALL_TAIL_APPEND=1`).** Live
-> validation found append corrupts actively-growing sessions: it merges the tail
-> into the server's stored base but cannot detect a *truncated* base (the
-> `full_resync_needed` handshake only fires on an EMPTY envelope, not a partial
-> one). Once a base is truncated — by an interrupted full sync or a server purge —
-> every append just extends the stump, and an active session never goes quiet to
-> trigger a clean full re-sync. Observed: a 1079-message live session stored as 65
-> messages / 25 chunks. **Re-enable only after append verifies base completeness**
-> (ship the expected prior size / last-line and have the server return
-> `full_resync_needed` on mismatch). Until then `syncMode` returns `full` instead
-> of `append`, which is correct (just not incremental).
+> ✅ **ENABLED (default on; `CHAT_RECALL_TAIL_APPEND=0` is the emergency off).**
+> The first cut corrupted actively-growing sessions: it merged the tail into the
+> server's stored base but couldn't detect a *truncated* base (the
+> `full_resync_needed` handshake only fired on an EMPTY envelope), so a 1079-msg
+> session was stored as 65. **Fixed by an OFFSET-CONTINUITY GUARD:** the server
+> records the byte offset its envelope is synced *through* (`o` in the content_cache
+> envelope), and an append merges ONLY when its `base_offset` equals that `o` —
+> otherwise it returns `full_resync_needed` and the client falls back to FULL. A
+> truncated/stale/re-ordered base no longer matches, so it can never be silently
+> extended. The full-sync ledger offset and the server's stored `o` use the SAME
+> value (`conv.from_offset` = build-time file size) so an active session's appends
+> match exactly. Tested: `sync.test.ts` CONTINUITY GUARD (mismatch → full, match →
+> merge) + `sync-ledger.test.ts` syncMode branches.
 
 
 ## Problem
