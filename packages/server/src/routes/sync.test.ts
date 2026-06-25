@@ -249,6 +249,7 @@ describe('POST /api/sync (ingest)', () => {
 
   // ── Tail-only append sync (docs/SYNC-INCREMENTAL.md) ──────────────────
   test('append:true merges the envelope, continues chunk ids, preserves head title/telemetry', async () => {
+    process.env.CHAT_RECALL_TAIL_APPEND = '1'; // append is server-gated OFF by default; enable to test the merge path
     const { createControlPlane, createStore, createMetadataCache } = await import('../imports.js');
     const syncRouter = (await import('./sync.js')).default;
     const app = express();
@@ -333,6 +334,40 @@ describe('POST /api/sync (ingest)', () => {
     expect(JSON.parse(item!.extra_json).inputTokens).toBe(500); // head telemetry
     expect(item?.mtime).toBe(tailMtime);                  // mtime advanced
 
+    await store.close();
+    delete process.env.CHAT_RECALL_TAIL_APPEND;
+  });
+
+  test('KILL-SWITCH: with append disabled (default), append:true → full_resync_needed even with a prior envelope', async () => {
+    delete process.env.CHAT_RECALL_TAIL_APPEND; // explicit: default state
+    const { createControlPlane, createStore } = await import('../imports.js');
+    const syncRouter = (await import('./sync.js')).default;
+    const app = express();
+    app.use(express.json({ limit: '16mb' }));
+    app.use('/api/sync', syncRouter);
+    const cp = await createControlPlane();
+    const token = await cp.mintAgentToken('default', 'append-killswitch');
+    await cp.close();
+
+    const sessionId = 'cccc2222-dddd-eeee-ffff-aaaaaaaaaaaa';
+    // Seed a FULL head (gives the session a prior envelope).
+    await request(app).post('/api/sync').set('authorization', `Bearer ${token}`).send({
+      conversations: [{ session_id: sessionId, tool: 'claude', project_path: '/tmp/ks', mtime: 1750200000000,
+        first_prompt: 'seed', envelope: { v: 6, messages: [{ line: 1, role: 'user', content: 'seed' }], subagents: [] } }],
+    });
+    const store = await createStore();
+    const before = await store.listChunksByItem('session', sessionId);
+    // APPEND with the kill-switch off → server refuses, asks for full, writes nothing.
+    const res = await request(app).post('/api/sync').set('authorization', `Bearer ${token}`).send({
+      conversations: [{ session_id: sessionId, tool: 'claude', project_path: '/tmp/ks', mtime: 1750200060000,
+        append: true, from_offset: 9999, envelope: { v: 6, messages: [{ line: 2, role: 'user', content: 'tail that must NOT corrupt the base' }], subagents: [] } }],
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.appendConv).toBe(0);
+    expect(res.body.full_resync_needed).toContain(sessionId);
+    // The base is untouched — no truncation, no tail merged.
+    const after = await store.listChunksByItem('session', sessionId);
+    expect(after.length).toBe(before.length);
     await store.close();
   });
 
