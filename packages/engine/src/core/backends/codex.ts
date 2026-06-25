@@ -41,6 +41,7 @@ import {
   liveScanEditsFromEvents,
   replayFromEvents,
 } from '../generic-engine.js';
+import { readTailFromOffset } from './tail-read.js';
 
 const PREFIX = 'codex_';
 
@@ -529,6 +530,20 @@ export class CodexBackend implements ToolBackend {
       } catch { /* day dir unreadable */ }
     }
     return files.length > 0 ? { tool: 'codex', mtime, files } : null;
+  }
+
+  isAppendOnly(): boolean { return true; }
+
+  fileSize(prefixedId: string): number {
+    const loc = this.findSession(prefixedId);
+    if (!loc) return 0;
+    try { return statSync(loc.path).size; } catch { return 0; }
+  }
+
+  async readFromOffset(prefixedId: string, offset: number): Promise<{ text: string; newOffset: number }> {
+    const loc = this.findSession(prefixedId);
+    if (!loc) return { text: '', newOffset: offset };
+    return readTailFromOffset(loc.path, offset);
   }
 }
 

@@ -87,6 +87,14 @@ interface SyncConversation {
   first_prompt?: string;
   mtime?: number;
   meta?: Record<string, unknown>;
+  /** Tail-only append sync (docs/SYNC-INCREMENTAL.md). When true, the server
+   *  appends this envelope's messages to the existing content_cache envelope
+   *  + appends chunks WITHOUT deleting the head's chunks. The payload omits
+   *  title/first_prompt/meta/raw_b64 (all head-derived; prior values stand). */
+  append?: boolean;
+  /** The new byte cursor to persist client-side (the offset the tail was read
+   *  from-to). Echoed back in the ack so the client stamps its ledger. */
+  from_offset?: number;
 }
 interface SyncItem {
   id: string;
@@ -307,12 +315,17 @@ router.post('/', async (req, res) => {
       const store = await createStore();
       const metaCache = await createMetadataCache();
       let conv = 0, item = 0, link = 0, find = 0, der = 0, kgE = 0, kgT = 0, chunks = 0, dead = 0, fielded = 0;
+      let appendConv = 0;
+      const fullResyncNeeded: string[] = [];
       // Accumulate chunks + item-metadata across the WHOLE batch and flush each
       // ONCE (bulk, single transaction) instead of per conversation/item — turns
       // thousands of round-trips into a handful. Chunks from different items are
       // safe to co-batch: addChunksFTS deletes per-(item) then bulk-inserts.
       const chunkBatch: Parameters<typeof store.addChunksFTS>[0] = [];
       const itemBatch: Parameters<typeof store.setItem>[0][] = [];
+      // Append chunks go through a SEPARATE batch (appendChunksFTS — no per-item
+      // delete) so they don't wipe the head's chunks.
+      const appendChunkBatch: Parameters<typeof store.appendChunksFTS>[0] = [];
       try {
         // Tombstones first: purge + remember, and build the do-not-write set
         // so nothing in THIS payload resurrects a deleted session.
@@ -329,6 +342,69 @@ router.post('/', async (req, res) => {
           if (deadSet.has(cv.session_id)) continue; // deleted — never resurrect
           const mtime = Math.floor(Number(cv.mtime) || 0);
           const projectPath = cv.project_path || '';
+
+          // ── APPEND path (tail-only sync, docs/SYNC-INCREMENTAL.md) ──────
+          // The client shipped only the new tail. Merge the envelope + append
+          // chunks WITHOUT deleting the head's chunks. Touch ONLY mtime on the
+          // metadata row (title/preview/extra are head-derived; prior values
+          // stand). If the server has no prior envelope, signal full_resync.
+          if (cv.append) {
+            // Need a client envelope for the tail messages.
+            if (!cv.envelope || cv.envelope.v !== PARSER_VERSION || !Array.isArray(cv.envelope.messages)) {
+              // No usable tail envelope → ask for full. (Shouldn't happen — the
+              // client always sends an envelope on append — but be defensive.)
+              fullResyncNeeded.push(cv.session_id);
+              continue;
+            }
+            // Read the existing envelope from content_cache (stale read —
+            // the stored mtime may be older than the incoming append's mtime;
+            // we want the prior envelope regardless, to merge into it).
+            const existing = await store.getCachedContentStale(cv.session_id, 'session');
+            if (!existing || !existing.content) {
+              // No prior envelope on the server (data loss, first sync, rotation)
+              // → the client must FULL re-sync this session.
+              fullResyncNeeded.push(cv.session_id);
+              continue;
+            }
+            try {
+              const prev = JSON.parse(existing.content) as { v: number; messages: EnvelopeMessage[]; subagents?: unknown[] };
+              const prevMsgs = Array.isArray(prev.messages) ? prev.messages : [];
+              // Continue line numbers from the stored envelope's last line.
+              const startLine = prevMsgs.length > 0 ? (prevMsgs[prevMsgs.length - 1].line ?? 0) : 0;
+              const tailMsgs = cv.envelope.messages as EnvelopeMessage[];
+              const mergedMsgs = [...prevMsgs, ...tailMsgs.map((m, i) => ({ ...m, line: startLine + i + 1 }))];
+              const merged = { v: PARSER_VERSION, messages: mergedMsgs, subagents: prev.subagents ?? [] };
+              await store.setCachedContent(cv.session_id, 'session', mtime, JSON.stringify(merged));
+
+              // Append chunks for the tail's text turns. The server owns the
+              // chunk-id index: continue from MAX(existing :sync: index) + 1.
+              const textSource = tailMsgs.filter((m) => m.content?.trim()).map((m) => ({ role: m.role, text: m.content! }));
+              if (textSource.length > 0) {
+                const maxIdx = await store.maxSyncChunkIndex(cv.session_id);
+                const tailChunks = chunksFromTurns(
+                  cv.session_id,
+                  textSource.map((t) => ({ role: t.role as SyncTurn['role'], text: t.text })),
+                  projectPath, mtime, cv.project_id || undefined,
+                );
+                // Re-number: shift each chunk's :sync:<i> to continue from maxIdx+1.
+                for (let i = 0; i < tailChunks.length; i++) {
+                  tailChunks[i].chunkId = `${cv.session_id}:sync:${maxIdx + 1 + i}`;
+                }
+                appendChunkBatch.push(...tailChunks);
+              }
+
+              // Touch ONLY mtime on the metadata row — title/preview/extra are
+              // head-derived and must survive the append untouched.
+              await store.touchSessionMtime(cv.session_id, mtime);
+              appendConv++;
+            } catch {
+              // Merge failed (corrupt prior envelope, etc.) → ask for full.
+              fullResyncNeeded.push(cv.session_id);
+            }
+            continue;
+          }
+
+          // ── FULL path (the existing whole-conversation ingest) ──────────
           // Raw container (highest fidelity): archive shrink-protected and
           // derive the envelope from the bytes with the canonical parser.
           // Falls back to the client envelope, then legacy turns.
@@ -491,6 +567,9 @@ router.post('/', async (req, res) => {
         // Flush the whole batch's metadata + chunks ONCE (bulk, one tx each).
         if (itemBatch.length > 0) await store.setItems(itemBatch);
         if (chunkBatch.length > 0) chunks += await store.addChunksFTS(chunkBatch);
+        // Append chunks (tail-only sync) — inserted WITHOUT per-item delete so
+        // the head's chunks survive. Idempotent on retry (ON CONFLICT update).
+        if (appendChunkBatch.length > 0) chunks += await store.appendChunksFTS(appendChunkBatch);
 
         // Relationship links — upsert semantics (pg ON CONFLICT) make
         // re-syncs idempotent.
@@ -633,7 +712,7 @@ router.post('/', async (req, res) => {
       if (req.body?.prune_empty_sessions === true) {
         try { pruned = await store.pruneEmptySessions(); } catch { /* best-effort */ }
       }
-      return { conv, item, link, find, der, kgE, kgT, chunks, dead, pruned, fielded };
+      return { conv, item, link, find, der, kgE, kgT, chunks, dead, pruned, fielded, appendConv, full_resync_needed: fullResyncNeeded };
     });
 
     res.json({ ok: true, ...result, tenant: agent.tenant, ack_at: new Date().toISOString() });
