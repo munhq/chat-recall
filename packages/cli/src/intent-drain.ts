@@ -10,6 +10,9 @@
  * `chat-recall toolkit drain` command.
  */
 
+import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { loadAllCredentials } from './sync-client.js';
 import {
   executeSyncAll, executeCopy,
@@ -18,11 +21,49 @@ import {
 
 interface PendingIntent {
   id: string;
-  kind: 'copy' | 'sync_all';
+  kind: 'copy' | 'sync_all' | 'code_apply';
   artifact_type: string | null;
   name: string | null;
   from_tool: string | null;
   to_tool: string | null;
+}
+
+/** Apply a code recommendation locally. Currently: append a rule to the
+ *  project's CLAUDE.md (idempotent — skips if the exact rule is already there). */
+function applyCodeRecommendation(intent: PendingIntent): { status: 'done' | 'error'; result: string } {
+  try {
+    const meta = JSON.parse(intent.name || '{}') as { rootPath?: string; filename?: string; content?: string; global?: boolean; payload?: { text?: string; global?: boolean } };
+    if (intent.artifact_type === 'write_tasks_file') {
+      if (!meta.rootPath || !meta.content) return { status: 'error', result: JSON.stringify({ error: 'missing rootPath or content' }) };
+      const file = join(meta.rootPath, meta.filename || 'CODE_TASKS.md');
+      writeFileSync(file, meta.content);   // overwrite — it's a regenerated task list
+      return { status: 'done', result: JSON.stringify({ wrote: file }) };
+    }
+    if (intent.artifact_type === 'append_claude_md') {
+      const text = meta.payload?.text?.trim();
+      const isGlobal = meta.global || meta.payload?.global;
+      if (!text) return { status: 'error', result: JSON.stringify({ error: 'missing text' }) };
+      // global → ~/.claude/CLAUDE.md (user-wide); else the project's CLAUDE.md.
+      let file: string;
+      if (isGlobal) {
+        const dir = join(homedir(), '.claude');
+        try { mkdirSync(dir, { recursive: true }); } catch { /* exists */ }
+        file = join(dir, 'CLAUDE.md');
+      } else {
+        if (!meta.rootPath) return { status: 'error', result: JSON.stringify({ error: 'missing rootPath' }) };
+        file = join(meta.rootPath, 'CLAUDE.md');
+      }
+      const existing = existsSync(file) ? readFileSync(file, 'utf8') : '';
+      if (existing.includes(text)) return { status: 'done', result: JSON.stringify({ skipped: 'rule already present', file }) };
+      const block = `${existing && !existing.endsWith('\n') ? '\n' : ''}\n## Rule (added by chat-recall recommendation)\n${text}\n`;
+      if (existing) appendFileSync(file, block);
+      else writeFileSync(file, `# ${(meta.rootPath?.split('/').pop()) || 'Global'} instructions\n${block}`);
+      return { status: 'done', result: JSON.stringify({ appended: file }) };
+    }
+    return { status: 'error', result: JSON.stringify({ error: `unsupported code_apply action: ${intent.artifact_type}` }) };
+  } catch (e) {
+    return { status: 'error', result: JSON.stringify({ error: e instanceof Error ? e.message : 'failed' }) };
+  }
 }
 
 export interface DrainResult {
@@ -34,6 +75,9 @@ export interface DrainResult {
 /** Run one intent and return the (status, result-json) to ack with. */
 async function runIntent(intent: PendingIntent): Promise<{ status: 'done' | 'error'; result: string }> {
   try {
+    if (intent.kind === 'code_apply') {
+      return applyCodeRecommendation(intent);
+    }
     if (intent.kind === 'sync_all') {
       const report = await executeSyncAll();
       const status = report.failed.length > 0 ? 'error' : 'done';
