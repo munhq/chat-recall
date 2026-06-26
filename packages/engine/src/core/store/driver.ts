@@ -122,6 +122,20 @@ export interface StorageDriver {
   ackSyncIntent: AsyncMethod<MemoryStore['ackSyncIntent']>;
   listSyncIntents: AsyncMethod<MemoryStore['listSyncIntents']>;
 
+  // ── code intelligence (codeindex merge) ──
+  upsertCodeProject: AsyncMethod<MemoryStore['upsertCodeProject']>;
+  getCodeProject: AsyncMethod<MemoryStore['getCodeProject']>;
+  listCodeProjects: AsyncMethod<MemoryStore['listCodeProjects']>;
+  setCodeProjectLabel: AsyncMethod<MemoryStore['setCodeProjectLabel']>;
+  replaceCodeFindings: AsyncMethod<MemoryStore['replaceCodeFindings']>;
+  listCodeFindings: AsyncMethod<MemoryStore['listCodeFindings']>;
+  codeFindingsSummary: AsyncMethod<MemoryStore['codeFindingsSummary']>;
+  replaceCodeHotspots: AsyncMethod<MemoryStore['replaceCodeHotspots']>;
+  listCodeHotspots: AsyncMethod<MemoryStore['listCodeHotspots']>;
+  upsertCodeActions: AsyncMethod<MemoryStore['upsertCodeActions']>;
+  listCodeActions: AsyncMethod<MemoryStore['listCodeActions']>;
+  setCodeActionStatus: AsyncMethod<MemoryStore['setCodeActionStatus']>;
+
   // ── lifecycle ──
   close: AsyncMethod<MemoryStore['close']>;
 }

@@ -30,6 +30,8 @@ import diaryRouter from './routes/diary.js';
 import syncIntentsRouter from './routes/sync-intents.js';
 import filesRouter from './routes/files.js';
 import subagentsRouter from './routes/subagents.js';
+import codeRouter from './routes/code.js';
+import recommendationsRouter from './routes/recommendations.js';
 import syncRouter from './routes/sync.js';
 import teamsRouter from './routes/teams.js';
 import teamArtifactsRouter from './routes/team-artifacts.js';
@@ -65,10 +67,14 @@ const smallJson = express.json({ limit: '100kb' });
 // JSON parser for it here.
 app.use((req, res, next) => {
   if (req.path.startsWith('/api/sync')) return next();
+  // /api/code/index carries a full collector run (findings + map + actions) —
+  // bigger than 100kb on a large repo. Its reads/PATCHes stay tight.
+  if (req.path === '/api/code/index') return next();
   if (req.path === '/api/billing/webhook') return next();
   return smallJson(req, res, next);
 });
 app.use('/api/sync', express.json({ limit: '32mb' }));
+app.use('/api/code/index', express.json({ limit: '16mb' }));
 
 // Request logging
 app.use((req, res, next) => {
@@ -165,6 +171,15 @@ app.use('/api/diary', paid, rl('write-light'), diaryRouter);
 app.use('/api/sync-intents', paid, rl('write-light'), syncIntentsRouter);
 app.use('/api/files', paid, rl('read-light'), filesRouter);
 app.use('/api/subagents', paid, rl('read-light'), subagentsRouter);
+
+// Code intelligence (codeindex merge). Store-backed in BOTH modes: the local
+// CLI `code index` POSTs collector output to /index; the dashboard reads it
+// back. read-light for the GETs; the POST/PATCH are light DB writes. The
+// collector runs on the user's machine, never here.
+app.use('/api/code', paid, rl('read-light'), codeRouter);
+// Account-level recommendations (security + behaviour) — the actionable
+// approach applied to chat-recall's own data.
+app.use('/api/recommendations', paid, rl('read-light'), recommendationsRouter);
 
 // Toolkit READS (status/browse/item/matrix) come from the synced store, so the
 // router is available in BOTH modes — the Toolkit tab must render on the hosted

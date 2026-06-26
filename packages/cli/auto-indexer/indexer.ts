@@ -42,6 +42,8 @@ import { getDiaryDir } from '@chat-recall/engine/core/paths.js';
 // responsibilities live on the server now.
 import { syncIncremental } from '../src/sync-client.js';
 import { drainSyncIntents } from '../src/intent-drain.js';
+import { loadAllCredentials } from '../src/sync-client.js';
+import { existsSync } from 'fs';
 
 const DEBOUNCE_MS = 5000;  // coalesce a burst of file events into one flush
 
@@ -310,6 +312,49 @@ async function drainIntentsTick(): Promise<void> {
 }
 setInterval(() => { void drainIntentsTick(); }, 45_000).unref();
 setTimeout(() => { void drainIntentsTick(); }, 10_000);
+
+// Periodic code re-index (codeindex merge). Opt-in (CHAT_RECALL_CODE_REINDEX=1)
+// because running the analyzer over every known repo is heavier than a session
+// ship. When on, it re-runs the collector on each project the server already
+// knows about (skipping ones whose path is gone) and re-syncs findings, so the
+// Code dashboard stays fresh without manual `chat-recall code index` runs.
+const CODE_REINDEX_ON = process.env.CHAT_RECALL_CODE_REINDEX === '1';
+const CODE_REINDEX_MS = Math.max(30, parseInt(process.env.CHAT_RECALL_CODE_REINDEX_MINUTES || '360', 10)) * 60 * 1000;
+let codeReindexInFlight = false;
+async function codeReindexTick(): Promise<void> {
+  if (codeReindexInFlight) return;
+  codeReindexInFlight = true;
+  try {
+    const { collectCode } = await import('@chat-recall/engine');
+    for (const cred of loadAllCredentials()) {
+      const base = cred.serverUrl.replace(/\/+$/, '');
+      const headers: Record<string, string> = cred.token ? { authorization: `Bearer ${cred.token}` } : {};
+      let projects: Array<{ projectId: string; rootPath: string }> = [];
+      try {
+        const res = await fetch(`${base}/api/code/projects`, { headers });
+        if (!res.ok) continue;
+        projects = ((await res.json()) as { projects?: Array<{ projectId: string; rootPath: string }> }).projects || [];
+      } catch { continue; }
+      for (const p of projects) {
+        if (!p.rootPath || !existsSync(p.rootPath)) continue;   // repo moved/deleted — skip
+        try {
+          const result = await collectCode({ workspace: p.rootPath, autoInstall: false });
+          await fetch(`${base}/api/code/index`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(result) });
+          console.log(`[${ts()}] code re-indexed ${p.projectId} (health ${result.project.health.score})`);
+        } catch (e) {
+          console.error(`[${ts()}] code re-index failed for ${p.projectId}: ${e instanceof Error ? e.message : e}`);
+        }
+      }
+    }
+  } finally {
+    codeReindexInFlight = false;
+  }
+}
+if (CODE_REINDEX_ON) {
+  setInterval(() => { void codeReindexTick(); }, CODE_REINDEX_MS).unref();
+  setTimeout(() => { void codeReindexTick(); }, 60_000);
+  console.log(`  Code re-index: ON (every ${CODE_REINDEX_MS / 60000} min)`);
+}
 
 // ── Graceful shutdown ───────────────────────────────────────────────
 // No child processes to reap anymore (summary generation moved

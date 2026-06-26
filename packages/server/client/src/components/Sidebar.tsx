@@ -26,16 +26,17 @@ interface SidebarProps {
   setToolFilter: (t: string) => void;
   extraSections?: SidebarSection[];
   view?: string;
-  setView?: (v: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'settings' | 'account') => void;
+  setView?: (v: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code' | 'settings' | 'account') => void;
   /** Views this deployment supports (/api/capabilities). Absent = all. */
   enabledViews?: Set<string>;
 }
 
-const MOBILE_NAV_ITEMS: Array<{ id: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security'; label: string; icon: string }> = [
+const MOBILE_NAV_ITEMS: Array<{ id: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code'; label: string; icon: string }> = [
   { id: 'search', label: 'Conversations', icon: 'message' },
   { id: 'activity', label: 'Activity', icon: 'clock' },
   { id: 'memory', label: 'Memory', icon: 'brain' },
   { id: 'toolkit', label: 'Toolkit', icon: 'zap' },
+  { id: 'code', label: 'Code', icon: 'code' },
   { id: 'dashboard', label: 'Insights', icon: 'chart' },
   { id: 'security', label: 'Security', icon: 'check' },
 ];
