@@ -3,7 +3,7 @@ import { Icon, IconButton, Input, Logo, Button, Avatar } from './primitives';
 
 interface TopBarProps {
   view: string;
-  setView: (v: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'settings' | 'account') => void;
+  setView: (v: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code' | 'settings' | 'account') => void;
   /** Views this deployment supports (/api/capabilities). Absent = all. */
   enabledViews?: Set<string>;
   query: string;
@@ -37,14 +37,15 @@ export default function TopBar({ view, setView, enabledViews, query, setQuery, s
     requestAnimationFrame(() => requestAnimationFrame(() => killer.remove()));
   };
 
-  const navItems: Array<{ id: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security'; label: string; icon: string }> = ([
+  const navItems: Array<{ id: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code'; label: string; icon: string }> = ([
     { id: 'search', label: 'Conversations', icon: 'message' },
     { id: 'activity', label: 'Activity', icon: 'clock' },
     { id: 'memory', label: 'Memory', icon: 'brain' },
     { id: 'toolkit', label: 'Toolkit', icon: 'zap' },
+    { id: 'code', label: 'Code', icon: 'code' },
     { id: 'dashboard', label: 'Insights', icon: 'chart' },
     { id: 'security', label: 'Security', icon: 'check' },
-  ] as const).filter((n) => !enabledViews || enabledViews.has(n.id)) as Array<{ id: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security'; label: string; icon: string }>;
+  ] as const).filter((n) => !enabledViews || enabledViews.has(n.id)) as Array<{ id: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code'; label: string; icon: string }>;
 
   return (
     <header

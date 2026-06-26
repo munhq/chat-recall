@@ -68,6 +68,8 @@ export interface Capabilities {
     projects: boolean;
     teams: boolean;
     account: boolean;
+    /** Code intelligence (codeindex merge): the Code dashboard + findings/hotspots/actions. */
+    codeIntel: boolean;
   };
 }
 
@@ -112,6 +114,10 @@ export function capabilities(): Capabilities {
       // Cloud-only account/billing surface (subscription, secret-alert webhook,
       // device tokens). Self-host has no billing, so no account view.
       account: ed === 'cloud',
+      // Code intelligence: store-backed in both modes (the local CLI ships
+      // collector output via /api/code/index), so the Code tab renders on the
+      // hosted SaaS and self-host alike. Opt-out via CHAT_RECALL_FEATURE_CODE=0.
+      codeIntel: (process.env.CHAT_RECALL_FEATURE_CODE ?? '1') !== '0',
     },
   };
 }

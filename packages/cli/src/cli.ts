@@ -8,7 +8,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { execSync } from 'child_process';
 
 import { getDataDir, getIdentityFilePath, getHooksDir } from '@chat-recall/engine/core/paths.js';
@@ -1035,6 +1035,80 @@ companions
     const mcpJsonPath = join(homedir(), '.mcp.json');
     const u = unregisterCodeindexMcp(mcpJsonPath);
     if (u.removed) console.log(chalk.dim(`  Unregistered MCP server from ${mcpJsonPath}`));
+  });
+
+// ── code: index a repo with codeindex + ship findings to the server ──────
+// The collector runs LOCALLY (needs the repo files + git history), then POSTs
+// its output to /api/code/index. The dashboard reads it back. Mirrors the
+// thin-collector model: compute on the machine, store + render on the server.
+const code = program
+  .command('code')
+  .description('Index a codebase with codeindex and ship findings/hotspots/actions to your server');
+
+code
+  .command('index [path]')
+  .description('Run codeindex on a repo (default: cwd) and sync the results to your server')
+  .option('--no-install', "Don't auto-install codeindex if missing")
+  .action(async (path: string | undefined, opts: { install?: boolean }) => {
+    try {
+      const target = requireTarget();
+      const { collectCode } = await import('@chat-recall/engine');
+      const workspace = resolve(path || process.cwd());
+      console.log(chalk.bold(`code index ${workspace}`));
+      const result = await collectCode({
+        workspace,
+        autoInstall: opts.install !== false,
+        log: (m) => console.log(chalk.dim('  · ' + m)),
+      });
+      const resp = await serverPost<{ ok: boolean; projectId: string; findings: number; hotspots: number; actions: number }>(
+        '/api/code/index',
+        result,
+      );
+      console.log(chalk.green('✓ synced'), chalk.dim(`→ ${target.base}`));
+      console.log(`  project:  ${resp.projectId}`);
+      console.log(`  health:   ${result.project.health.score}/100`);
+      console.log(`  findings: ${resp.findings}  hotspots: ${resp.hotspots}  actions: ${resp.actions}`);
+    } catch (err) {
+      console.error(chalk.red('code index failed:'), err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
+  });
+
+code
+  .command('status')
+  .description('List code-indexed projects on your server')
+  .action(async () => {
+    try {
+      const { projects } = await serverGet<{ projects: Array<{ projectId: string; health: { score: number; findings: number }; lastIndexedAt: number; label?: string | null }> }>('/api/code/projects');
+      if (!projects.length) { console.log(chalk.dim('No code-indexed projects yet. Run `chat-recall code index` in a repo.')); return; }
+      console.log(chalk.bold(`${projects.length} code project(s)`));
+      for (const p of projects) {
+        const when = new Date(p.lastIndexedAt).toISOString().slice(0, 16).replace('T', ' ');
+        console.log(`  ${chalk.bold(p.projectId)}${p.label ? chalk.cyan(` [${p.label}]`) : ''}`);
+        console.log(chalk.dim(`    health ${p.health.score}/100 · ${p.health.findings} findings · ${when}`));
+      }
+    } catch (err) {
+      console.error(chalk.red('code status failed:'), err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
+  });
+
+code
+  .command('show <project>')
+  .description('Show a project: health, findings summary, and the top action items')
+  .action(async (project: string) => {
+    try {
+      const enc = encodeURIComponent(project);
+      const p = await serverGet<{ projectId: string; rootPath: string; health: any; langs: Record<string, number> }>(`/api/code/projects/${enc}`);
+      const { actions } = await serverGet<{ actions: Array<{ pri: number; category: string; title: string }> }>(`/api/code/actions?project=${enc}&limit=12`);
+      console.log(chalk.bold(p.projectId), chalk.dim(p.rootPath));
+      console.log(`  health ${p.health.score}/100 — ${p.health.critical}C ${p.health.high}H ${p.health.medium}M ${p.health.low}L · ${p.health.hotspots} hotspots · ${Math.round((p.health.aiAuthoredPct || 0) * 100)}% AI-authored`);
+      console.log(chalk.bold('\n  Top actions:'));
+      for (const a of actions) console.log(`    ${chalk.yellow('P' + a.pri)} [${a.category}] ${a.title}`);
+    } catch (err) {
+      console.error(chalk.red('code show failed:'), err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
   });
 
 // ── Team toolkit sync ───────────────────────────────────────────────────

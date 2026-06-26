@@ -156,6 +156,7 @@ export interface ServerCapabilities {
     projects: boolean;
     teams: boolean;
     account: boolean;
+    codeIntel: boolean;
   };
 }
 
@@ -165,7 +166,7 @@ const LOCAL_CAPABILITIES: ServerCapabilities = {
   features: {
     conversations: true, search: true, memory: true, analytics: true,
     security: true, activity: true, sessionDeepDive: true, toolkit: true,
-    settings: true, projects: true, teams: false, account: false,
+    settings: true, projects: true, teams: false, account: false, codeIntel: true,
   },
 };
 
@@ -182,6 +183,78 @@ export async function getCapabilities(): Promise<ServerCapabilities> {
   } catch {
     return LOCAL_CAPABILITIES;
   }
+}
+
+// ── Code intelligence (codeindex merge) ──────────────────────────────────
+export interface CodeHealth { score: number; findings: number; critical: number; high: number; medium: number; low: number; hotspots: number; aiAuthoredPct: number; aiCommits?: number; totalCommits?: number; savingsPct?: number; stats?: Record<string, number>; }
+export interface CodeMapNode { file: string; pkg?: string; symbols: number; lines: number; }
+export interface CodeCouplingMetric { file: string; fanIn: number; fanOut: number; instability: number; }
+export interface CodeMap { nodes: CodeMapNode[]; edges: Array<{ from: string; to: string }>; buckets: { god_modules: string[]; stable_cores: string[]; unstable_drivers: string[]; islands: string[]; cycles: string[][] }; pkgFiles?: Record<string, string[]>; fileEdges?: Array<{ from: string; to: string }>; fileMeta?: Record<string, { symbols: number; lang: string }>; langSymbols?: Record<string, number>; coupling?: { god_modules: CodeCouplingMetric[]; stable_cores: CodeCouplingMetric[]; unstable_drivers: CodeCouplingMetric[]; islands: CodeCouplingMetric[] }; }
+export interface CodeProject { projectId: string; rootPath: string; fileCount: number; symbolCount: number; langs: Record<string, number>; health: CodeHealth; map: CodeMap; label?: string | null; lastIndexedAt: number; }
+export interface CodeFinding { id: string; category: string; severity: string; file: string; line: number | null; rule: string; title: string; snippet: string; why: string; agentPrompt: string; status: string; }
+export interface CodeHotspot { id: string; file: string; churn: number; complexity: number; score: number; aiAuthored: boolean; lines: number; suggestion?: string; }
+export interface CodeAction { id: string; pri: number; category: string; title: string; fix: string; loc: Array<{ file: string; line?: number | null }>; agentPrompt: string; status: string; queued: boolean; }
+export interface CodeFindingsSummary { total: number; bySeverity: Record<string, number>; byCategory: Record<string, number>; }
+
+const qs = (params: Record<string, string | number | boolean | undefined>) => {
+  const p = Object.entries(params).filter(([, v]) => v !== undefined && v !== '').map(([k, v]) => `${k}=${encodeURIComponent(String(v))}`);
+  return p.length ? `?${p.join('&')}` : '';
+};
+
+export async function getCodeProjects(): Promise<CodeProject[]> {
+  const r = await fetchWithTimeout(`${API_BASE}/code/projects`);
+  if (!r.ok) return [];
+  return (await r.json()).projects ?? [];
+}
+export async function getCodeProject(id: string): Promise<CodeProject | null> {
+  const r = await fetchWithTimeout(`${API_BASE}/code/projects/${encodeURIComponent(id)}`);
+  return r.ok ? r.json() : null;
+}
+export async function getCodeSummary(project?: string): Promise<CodeFindingsSummary> {
+  const r = await fetchWithTimeout(`${API_BASE}/code/summary${qs({ project })}`);
+  return r.ok ? r.json() : { total: 0, bySeverity: {}, byCategory: {} };
+}
+export async function getCodeFindings(project?: string, opts: { severity?: string; category?: string; limit?: number } = {}): Promise<CodeFinding[]> {
+  const r = await fetchWithTimeout(`${API_BASE}/code/findings${qs({ project, ...opts })}`);
+  return r.ok ? (await r.json()).findings ?? [] : [];
+}
+export async function getCodeHotspots(project?: string, limit = 100): Promise<CodeHotspot[]> {
+  const r = await fetchWithTimeout(`${API_BASE}/code/hotspots${qs({ project, limit })}`);
+  return r.ok ? (await r.json()).hotspots ?? [] : [];
+}
+export async function getCodeActions(project?: string, opts: { status?: string; queued?: boolean; limit?: number } = {}): Promise<CodeAction[]> {
+  const r = await fetchWithTimeout(`${API_BASE}/code/actions${qs({ project, ...opts })}`);
+  return r.ok ? (await r.json()).actions ?? [] : [];
+}
+export async function patchCodeAction(id: string, body: { status?: string; queued?: boolean }): Promise<boolean> {
+  const r = await fetchWithTimeout(`${API_BASE}/code/actions/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  return r.ok;
+}
+export async function patchCodeProjectLabel(id: string, label: string | null): Promise<boolean> {
+  const r = await fetchWithTimeout(`${API_BASE}/code/projects/${encodeURIComponent(id)}/label`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ label }) });
+  return r.ok;
+}
+export interface CodeRecommendation { id: string; kind: string; severity: string; title: string; rationale: string; evidence: string[]; action: { type: string; payload: Record<string, unknown> }; }
+export async function getCodeRecommendations(project: string): Promise<{ recommendations: CodeRecommendation[]; behavior: { failedOrAbandoned: number; totalSessions: number } | null }> {
+  const r = await fetchWithTimeout(`${API_BASE}/code/recommendations${qs({ project })}`);
+  return r.ok ? r.json() : { recommendations: [], behavior: null };
+}
+export async function applyCodeRecommendation(project: string, recId: string): Promise<{ ok: boolean; queued?: boolean; applied?: boolean; message?: string }> {
+  const r = await fetchWithTimeout(`${API_BASE}/code/recommendations/${encodeURIComponent(recId)}/apply`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project }) });
+  return r.ok ? r.json() : { ok: false, message: `HTTP ${r.status}` };
+}
+export async function writeTasksToProject(project: string): Promise<{ ok: boolean; queued?: boolean; filename?: string; count?: number; message?: string }> {
+  const r = await fetchWithTimeout(`${API_BASE}/code/tasks/write`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project }) });
+  return r.ok ? r.json() : { ok: false, message: `HTTP ${r.status}` };
+}
+// Account-level recommendations (chat-recall's own security + behaviour data).
+export async function getAccountRecommendations(): Promise<{ recommendations: CodeRecommendation[]; behavior: { failedOrAbandoned: number; totalSessions: number } | null }> {
+  const r = await fetchWithTimeout(`${API_BASE}/recommendations`);
+  return r.ok ? r.json() : { recommendations: [], behavior: null };
+}
+export async function applyAccountRecommendation(recId: string): Promise<{ ok: boolean; queued?: boolean; message?: string }> {
+  const r = await fetchWithTimeout(`${API_BASE}/recommendations/${encodeURIComponent(recId)}/apply`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  return r.ok ? r.json() : { ok: false, message: `HTTP ${r.status}` };
 }
 
 /** Result item from a unified-memory search — covers non-session sources

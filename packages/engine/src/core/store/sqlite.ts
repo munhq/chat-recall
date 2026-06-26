@@ -116,6 +116,20 @@ export class SqliteStore implements StorageDriver {
   async ackSyncIntent(...a: Args<'ackSyncIntent'>) { return this.inner.ackSyncIntent(...a); }
   async listSyncIntents(...a: Args<'listSyncIntents'>) { return this.inner.listSyncIntents(...a); }
 
+  // ── code intelligence (codeindex merge) ──
+  async upsertCodeProject(...a: Args<'upsertCodeProject'>) { return this.inner.upsertCodeProject(...a); }
+  async getCodeProject(...a: Args<'getCodeProject'>) { return this.inner.getCodeProject(...a); }
+  async listCodeProjects(...a: Args<'listCodeProjects'>) { return this.inner.listCodeProjects(...a); }
+  async setCodeProjectLabel(...a: Args<'setCodeProjectLabel'>) { return this.inner.setCodeProjectLabel(...a); }
+  async replaceCodeFindings(...a: Args<'replaceCodeFindings'>) { return this.inner.replaceCodeFindings(...a); }
+  async listCodeFindings(...a: Args<'listCodeFindings'>) { return this.inner.listCodeFindings(...a); }
+  async codeFindingsSummary(...a: Args<'codeFindingsSummary'>) { return this.inner.codeFindingsSummary(...a); }
+  async replaceCodeHotspots(...a: Args<'replaceCodeHotspots'>) { return this.inner.replaceCodeHotspots(...a); }
+  async listCodeHotspots(...a: Args<'listCodeHotspots'>) { return this.inner.listCodeHotspots(...a); }
+  async upsertCodeActions(...a: Args<'upsertCodeActions'>) { return this.inner.upsertCodeActions(...a); }
+  async listCodeActions(...a: Args<'listCodeActions'>) { return this.inner.listCodeActions(...a); }
+  async setCodeActionStatus(...a: Args<'setCodeActionStatus'>) { return this.inner.setCodeActionStatus(...a); }
+
   // ── lifecycle ──
   async close(...a: Args<'close'>) { return this.inner.close(...a); }
 }

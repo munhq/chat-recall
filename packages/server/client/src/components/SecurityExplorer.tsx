@@ -19,12 +19,48 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Card, Chip, SegmentedControl } from './primitives';
+import { Card, Chip, SegmentedControl, Button } from './primitives';
 import {
   getSecretsSummary, getFlaggedSessions, getSecretsByRule,
   dismissSecret, undismissSecret,
-  type SecretsSummary, type FlaggedSession, type SecretRuleRollup,
+  getAccountRecommendations, applyAccountRecommendation,
+  type SecretsSummary, type FlaggedSession, type SecretRuleRollup, type CodeRecommendation,
 } from '../services/api';
+
+/** Account-level recommendations (security + behaviour) — the same actionable
+ *  approach as the Code view, surfaced over chat-recall's own data. */
+function AccountRecsStrip() {
+  const [recs, setRecs] = useState<CodeRecommendation[]>([]);
+  const [msg, setMsg] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  useEffect(() => { let on = true; getAccountRecommendations().then((r) => { if (on) setRecs(r.recommendations); }); return () => { on = false; }; }, []);
+  if (!recs.length) return null;
+  const apply = async (r: CodeRecommendation) => {
+    setBusy(r.id);
+    const res = await applyAccountRecommendation(r.id);
+    setMsg((m) => ({ ...m, [r.id]: res.message || (res.ok ? 'queued' : 'failed') }));
+    setBusy(null);
+  };
+  return (
+    <div data-testid="account-recs" style={{ marginBottom: 16 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--cr-fg-2)', marginBottom: 6 }}>Recommendations</div>
+      {recs.map((r) => (
+        <Card key={r.id} style={{ padding: 12, marginBottom: 6 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+            <Chip kind={r.severity === 'high' ? 'err' : r.severity === 'medium' ? 'warn' : 'neutral'} size="sm">{r.severity}</Chip>
+            <strong style={{ fontSize: 13 }}>{r.title}</strong>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--cr-fg-2)', marginBottom: 8 }}>{r.rationale}</div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <Button variant="primary" onClick={() => apply(r)} disabled={busy === r.id}>{busy === r.id ? 'applying…' : 'Apply to global CLAUDE.md'}</Button>
+            {(r.action.payload as any)?.text && <Button variant="secondary" onClick={() => navigator.clipboard.writeText(String((r.action.payload as any).text))}>Copy rule</Button>}
+            {msg[r.id] && <span style={{ fontSize: 12, color: 'var(--cr-fg-2)' }}>{msg[r.id]}</span>}
+          </div>
+        </Card>
+      ))}
+    </div>
+  );
+}
 
 interface DistinctSecret {
   preview: string;
@@ -329,6 +365,7 @@ export default function SecurityExplorer({ onSessionClick }: Props) {
 
   return (
     <div className="cr-page-pad" style={{ flex: 1, overflow: 'auto', padding: '20px 24px' }}>
+      <AccountRecsStrip />
       {/* ── Hero ────────────────────────────────────────────────── */}
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', marginBottom: 16, flexWrap: 'wrap' }}>
         <div>

@@ -257,7 +257,8 @@ else describe.skip('StorageDriver behavior — postgres (DATABASE_URL not set)',
         ftsChunk('older', 'alpha beta', 1000),                 // same rank → same band
         ftsChunk('strong_old', 'alpha alpha alpha beta', 500), // higher rank → higher band
       ]);
-      await store.flushBuffer();
+      // addChunksFTS persists immediately on both backends — no buffer to flush
+      // (flushBuffer lives on the vector store, not the StorageDriver).
       const order = (await store.searchFTS('alpha', { topK: 10 })).map(r => r.itemId);
       // Stronger match ranks first even though it is the oldest (relevance > recency across bands).
       expect(order[0]).toBe('strong_old');

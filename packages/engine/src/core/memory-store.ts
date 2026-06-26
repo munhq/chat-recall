@@ -10,6 +10,12 @@ import Database from 'better-sqlite3';
 import { existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { randomBytes } from 'crypto';
+import { codeFindingId, codeHotspotId, codeActionId } from '../types/code-intel.js';
+import type {
+  CodeProjectInput, CodeProjectRow, CodeFindingInput, CodeFindingRow, CodeFindingsSummary,
+  CodeHotspotInput, CodeHotspotRow, CodeActionInput, CodeActionRow, CodeHealth, CodeMap,
+  CodeActionLoc, CodeSeverity, CodeProjectLabel, CodeActionStatus,
+} from '../types/code-intel.js';
 
 import type {
   SourceType,
@@ -135,6 +141,68 @@ export class MemoryStore {
         created_by    TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_sync_intents_pending ON sync_intents(status, created_at);
+
+      -- Code intelligence (codeindex merge). Mirrors the pg code_* tables.
+      CREATE TABLE IF NOT EXISTS code_projects (
+        project_id      TEXT PRIMARY KEY,
+        root_path       TEXT NOT NULL DEFAULT '',
+        file_count      INTEGER NOT NULL DEFAULT 0,
+        symbol_count    INTEGER NOT NULL DEFAULT 0,
+        langs_json      TEXT NOT NULL DEFAULT '{}',
+        health_json     TEXT NOT NULL DEFAULT '{}',
+        map_json        TEXT NOT NULL DEFAULT '{}',
+        label           TEXT,
+        indexed_by      TEXT,
+        last_indexed_at INTEGER NOT NULL DEFAULT 0,
+        created_at      INTEGER NOT NULL,
+        updated_at      INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS code_findings (
+        id            TEXT PRIMARY KEY,
+        project_id    TEXT NOT NULL,
+        category      TEXT NOT NULL,
+        severity      TEXT NOT NULL,
+        file          TEXT NOT NULL DEFAULT '',
+        line          INTEGER,
+        rule          TEXT NOT NULL DEFAULT '',
+        title         TEXT NOT NULL DEFAULT '',
+        snippet       TEXT NOT NULL DEFAULT '',
+        why           TEXT NOT NULL DEFAULT '',
+        agent_prompt  TEXT NOT NULL DEFAULT '',
+        status        TEXT NOT NULL DEFAULT 'open',
+        first_seen_at INTEGER NOT NULL,
+        last_seen_at  INTEGER NOT NULL,
+        extra_json    TEXT NOT NULL DEFAULT '{}'
+      );
+      CREATE INDEX IF NOT EXISTS idx_code_findings_proj ON code_findings(project_id, severity);
+      CREATE TABLE IF NOT EXISTS code_hotspots (
+        id           TEXT PRIMARY KEY,
+        project_id   TEXT NOT NULL,
+        file         TEXT NOT NULL DEFAULT '',
+        churn        INTEGER NOT NULL DEFAULT 0,
+        complexity   INTEGER NOT NULL DEFAULT 0,
+        score        REAL NOT NULL DEFAULT 0,
+        ai_authored  INTEGER NOT NULL DEFAULT 0,
+        lines        INTEGER NOT NULL DEFAULT 0,
+        suggestion   TEXT NOT NULL DEFAULT '',
+        last_seen_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_code_hotspots_proj ON code_hotspots(project_id, score);
+      CREATE TABLE IF NOT EXISTS code_actions (
+        id           TEXT PRIMARY KEY,
+        project_id   TEXT NOT NULL,
+        pri          INTEGER NOT NULL DEFAULT 0,
+        category     TEXT NOT NULL DEFAULT '',
+        title        TEXT NOT NULL DEFAULT '',
+        fix          TEXT NOT NULL DEFAULT '',
+        loc_json     TEXT NOT NULL DEFAULT '[]',
+        agent_prompt TEXT NOT NULL DEFAULT '',
+        status       TEXT NOT NULL DEFAULT 'suggested',
+        queued       INTEGER NOT NULL DEFAULT 0,
+        created_at   INTEGER NOT NULL,
+        updated_at   INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_code_actions_proj ON code_actions(project_id, pri);
 
       CREATE INDEX IF NOT EXISTS idx_links_source
         ON memory_links(source_type, source_id);
@@ -1660,14 +1728,225 @@ export class MemoryStore {
     `).all(limit) as SyncIntentRow[];
   }
 
+  // ── Code intelligence (codeindex merge) ────────────────────────────────
+  // Findings + hotspots are derived: replaced wholesale per project on each
+  // re-index (first_seen_at + dismissals preserved). Actions carry durable
+  // user state (queued/done/dismissed): upserted in place by deterministic id.
+
+  upsertCodeProject(p: CodeProjectInput): void {
+    const now = Date.now();
+    // label is intentionally omitted from the UPDATE set so a user-assigned
+    // label survives every re-index (set separately via setCodeProjectLabel).
+    this.db.prepare(`
+      INSERT INTO code_projects
+        (project_id, root_path, file_count, symbol_count, langs_json, health_json, map_json, label, indexed_by, last_indexed_at, created_at, updated_at)
+      VALUES (@project_id, @root_path, @file_count, @symbol_count, @langs_json, @health_json, @map_json, @label, @indexed_by, @last_indexed_at, @now, @now)
+      ON CONFLICT(project_id) DO UPDATE SET
+        root_path=excluded.root_path, file_count=excluded.file_count, symbol_count=excluded.symbol_count,
+        langs_json=excluded.langs_json, health_json=excluded.health_json, map_json=excluded.map_json,
+        indexed_by=excluded.indexed_by, last_indexed_at=excluded.last_indexed_at, updated_at=excluded.updated_at
+    `).run({
+      project_id: p.projectId, root_path: p.rootPath, file_count: p.fileCount, symbol_count: p.symbolCount,
+      langs_json: JSON.stringify(p.langs ?? {}), health_json: JSON.stringify(p.health ?? {}),
+      map_json: JSON.stringify(p.map ?? {}), label: p.label ?? null, indexed_by: p.indexedBy ?? null,
+      last_indexed_at: p.lastIndexedAt, now,
+    });
+  }
+
+  getCodeProject(projectId: string): CodeProjectRow | null {
+    const r = this.db.prepare(`SELECT * FROM code_projects WHERE project_id = ?`).get(projectId) as any;
+    return r ? rowToCodeProject(r) : null;
+  }
+
+  listCodeProjects(): CodeProjectRow[] {
+    return (this.db.prepare(`SELECT * FROM code_projects ORDER BY last_indexed_at DESC`).all() as any[]).map(rowToCodeProject);
+  }
+
+  setCodeProjectLabel(projectId: string, label: CodeProjectLabel | null): boolean {
+    const r = this.db.prepare(`UPDATE code_projects SET label = ?, updated_at = ? WHERE project_id = ?`)
+      .run(label, Date.now(), projectId);
+    return r.changes > 0;
+  }
+
+  /** Replace all findings for a project. Preserves first_seen_at + status of
+   *  findings whose deterministic id reappears (so dismissals survive re-index). */
+  replaceCodeFindings(projectId: string, findings: CodeFindingInput[]): number {
+    const now = Date.now();
+    const tx = this.db.transaction((items: CodeFindingInput[]) => {
+      const prev = this.db.prepare(`SELECT id, first_seen_at, status FROM code_findings WHERE project_id = ?`)
+        .all(projectId) as Array<{ id: string; first_seen_at: number; status: string }>;
+      const prevById = new Map(prev.map((r) => [r.id, r]));
+      this.db.prepare(`DELETE FROM code_findings WHERE project_id = ?`).run(projectId);
+      // OR REPLACE: two findings can hash to the same deterministic id within a
+      // single run (last wins) — collapse rather than crash.
+      const ins = this.db.prepare(`
+        INSERT OR REPLACE INTO code_findings (id, project_id, category, severity, file, line, rule, title, snippet, why, agent_prompt, status, first_seen_at, last_seen_at, extra_json)
+        VALUES (@id, @project_id, @category, @severity, @file, @line, @rule, @title, @snippet, @why, @agent_prompt, @status, @first_seen_at, @last_seen_at, @extra_json)
+      `);
+      let n = 0;
+      for (const f of items) {
+        const id = f.id ?? codeFindingId(projectId, f);
+        const carried = prevById.get(id);
+        ins.run({
+          id, project_id: projectId, category: f.category, severity: f.severity, file: f.file,
+          line: f.line ?? null, rule: f.rule, title: f.title, snippet: f.snippet ?? '', why: f.why ?? '',
+          agent_prompt: f.agentPrompt ?? '', status: carried?.status ?? 'open',
+          first_seen_at: carried?.first_seen_at ?? now, last_seen_at: now,
+          extra_json: JSON.stringify(f.extra ?? {}),
+        });
+        n++;
+      }
+      return n;
+    });
+    return tx(findings);
+  }
+
+  listCodeFindings(projectId?: string, opts: { severity?: CodeSeverity; category?: string; limit?: number } = {}): CodeFindingRow[] {
+    const where: string[] = []; const params: any[] = [];
+    if (projectId) { where.push('project_id = ?'); params.push(projectId); }
+    if (opts.severity) { where.push('severity = ?'); params.push(opts.severity); }
+    if (opts.category) { where.push('category = ?'); params.push(opts.category); }
+    params.push(opts.limit ?? 500);
+    const sql = `SELECT * FROM code_findings ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+      ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, last_seen_at DESC
+      LIMIT ?`;
+    return (this.db.prepare(sql).all(...params) as any[]).map(rowToCodeFinding);
+  }
+
+  codeFindingsSummary(projectId?: string): CodeFindingsSummary {
+    const where = projectId ? 'WHERE project_id = ?' : '';
+    const params = projectId ? [projectId] : [];
+    const rows = this.db.prepare(`SELECT severity, category, COUNT(*) c FROM code_findings ${where} GROUP BY severity, category`)
+      .all(...params) as Array<{ severity: string; category: string; c: number }>;
+    const sum: CodeFindingsSummary = { total: 0, bySeverity: { critical: 0, high: 0, medium: 0, low: 0, info: 0 }, byCategory: {} };
+    for (const r of rows) {
+      sum.total += r.c;
+      if (r.severity in sum.bySeverity) (sum.bySeverity as any)[r.severity] += r.c;
+      sum.byCategory[r.category] = (sum.byCategory[r.category] ?? 0) + r.c;
+    }
+    return sum;
+  }
+
+  /** Replace all hotspots for a project (purely derived, no user state). */
+  replaceCodeHotspots(projectId: string, hotspots: CodeHotspotInput[]): number {
+    const now = Date.now();
+    const tx = this.db.transaction((items: CodeHotspotInput[]) => {
+      this.db.prepare(`DELETE FROM code_hotspots WHERE project_id = ?`).run(projectId);
+      const ins = this.db.prepare(`
+        INSERT OR REPLACE INTO code_hotspots (id, project_id, file, churn, complexity, score, ai_authored, lines, suggestion, last_seen_at)
+        VALUES (@id, @project_id, @file, @churn, @complexity, @score, @ai_authored, @lines, @suggestion, @last_seen_at)
+      `);
+      let n = 0;
+      for (const h of items) {
+        ins.run({
+          id: codeHotspotId(projectId, h.file), project_id: projectId, file: h.file,
+          churn: h.churn | 0, complexity: h.complexity | 0, score: h.score,
+          ai_authored: h.aiAuthored ? 1 : 0, lines: h.lines | 0, suggestion: h.suggestion ?? '', last_seen_at: now,
+        });
+        n++;
+      }
+      return n;
+    });
+    return tx(hotspots);
+  }
+
+  listCodeHotspots(projectId?: string, limit = 100): CodeHotspotRow[] {
+    const where = projectId ? 'WHERE project_id = ?' : '';
+    const params: any[] = projectId ? [projectId] : [];
+    params.push(limit);
+    return (this.db.prepare(`SELECT * FROM code_hotspots ${where} ORDER BY score DESC LIMIT ?`).all(...params) as any[]).map(rowToCodeHotspot);
+  }
+
+  /** Upsert actions by deterministic id. Preserves status/queued/created_at so
+   *  user decisions (queued, done, dismissed) survive re-index. */
+  upsertCodeActions(projectId: string, actions: CodeActionInput[]): number {
+    const now = Date.now();
+    const tx = this.db.transaction((items: CodeActionInput[]) => {
+      const up = this.db.prepare(`
+        INSERT INTO code_actions (id, project_id, pri, category, title, fix, loc_json, agent_prompt, status, queued, created_at, updated_at)
+        VALUES (@id, @project_id, @pri, @category, @title, @fix, @loc_json, @agent_prompt, 'suggested', 0, @now, @now)
+        ON CONFLICT(id) DO UPDATE SET
+          pri=excluded.pri, category=excluded.category, title=excluded.title, fix=excluded.fix,
+          loc_json=excluded.loc_json, agent_prompt=excluded.agent_prompt, updated_at=excluded.updated_at
+      `);
+      let n = 0;
+      for (const a of items) {
+        const id = a.id ?? codeActionId(projectId, a);
+        up.run({
+          id, project_id: projectId, pri: a.pri | 0, category: a.category, title: a.title,
+          fix: a.fix, loc_json: JSON.stringify(a.loc ?? []), agent_prompt: a.agentPrompt, now,
+        });
+        n++;
+      }
+      return n;
+    });
+    return tx(actions);
+  }
+
+  listCodeActions(projectId?: string, opts: { status?: CodeActionStatus; queued?: boolean; limit?: number } = {}): CodeActionRow[] {
+    const where: string[] = []; const params: any[] = [];
+    if (projectId) { where.push('project_id = ?'); params.push(projectId); }
+    if (opts.status) { where.push('status = ?'); params.push(opts.status); }
+    if (opts.queued !== undefined) { where.push('queued = ?'); params.push(opts.queued ? 1 : 0); }
+    params.push(opts.limit ?? 200);
+    return (this.db.prepare(`SELECT * FROM code_actions ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY pri ASC, updated_at DESC LIMIT ?`).all(...params) as any[]).map(rowToCodeAction);
+  }
+
+  setCodeActionStatus(id: string, status: CodeActionStatus, queued?: boolean): boolean {
+    if (queued === undefined) {
+      const r = this.db.prepare(`UPDATE code_actions SET status = ?, updated_at = ? WHERE id = ?`).run(status, Date.now(), id);
+      return r.changes > 0;
+    }
+    const r = this.db.prepare(`UPDATE code_actions SET status = ?, queued = ?, updated_at = ? WHERE id = ?`)
+      .run(status, queued ? 1 : 0, Date.now(), id);
+    return r.changes > 0;
+  }
+
   close(): void {
     this.db.close();
   }
 }
 
+// ── Code-intel row mappers (snake_case sqlite row → camelCase typed row) ─────
+function safeJson<T>(s: string | null | undefined, fallback: T): T {
+  if (!s) return fallback;
+  try { return JSON.parse(s) as T; } catch { return fallback; }
+}
+function rowToCodeProject(r: any): CodeProjectRow {
+  return {
+    projectId: r.project_id, rootPath: r.root_path, fileCount: r.file_count, symbolCount: r.symbol_count,
+    langs: safeJson<Record<string, number>>(r.langs_json, {}),
+    health: safeJson<CodeHealth>(r.health_json, {} as CodeHealth),
+    map: safeJson<CodeMap>(r.map_json, {} as CodeMap),
+    label: (r.label ?? null) as CodeProjectLabel | null, indexedBy: r.indexed_by ?? null,
+    lastIndexedAt: Number(r.last_indexed_at), createdAt: Number(r.created_at), updatedAt: Number(r.updated_at),
+  };
+}
+function rowToCodeFinding(r: any): CodeFindingRow {
+  return {
+    id: r.id, projectId: r.project_id, category: r.category, severity: r.severity, file: r.file,
+    line: r.line ?? null, rule: r.rule, title: r.title, snippet: r.snippet, why: r.why,
+    agentPrompt: r.agent_prompt, status: r.status, firstSeenAt: Number(r.first_seen_at),
+    lastSeenAt: Number(r.last_seen_at), extra: safeJson<Record<string, unknown>>(r.extra_json, {}),
+  };
+}
+function rowToCodeHotspot(r: any): CodeHotspotRow {
+  return {
+    id: r.id, projectId: r.project_id, file: r.file, churn: r.churn, complexity: r.complexity,
+    score: r.score, aiAuthored: !!r.ai_authored, lines: r.lines, suggestion: r.suggestion ?? '', lastSeenAt: Number(r.last_seen_at),
+  };
+}
+function rowToCodeAction(r: any): CodeActionRow {
+  return {
+    id: r.id, projectId: r.project_id, pri: r.pri, category: r.category, title: r.title, fix: r.fix,
+    loc: safeJson<CodeActionLoc[]>(r.loc_json, []), agentPrompt: r.agent_prompt, status: r.status,
+    queued: !!r.queued, createdAt: Number(r.created_at), updatedAt: Number(r.updated_at),
+  };
+}
+
 /** Input to enqueue a cross-tool sync intent. */
 export interface SyncIntentInput {
-  kind: 'copy' | 'sync_all';
+  kind: 'copy' | 'sync_all' | 'code_apply';
   /** Target device (null/undefined = any device in the tenant). */
   deviceId?: string | null;
   artifactType?: string | null;  // skill|mcp|command|agent (copy only)
@@ -1681,7 +1960,7 @@ export interface SyncIntentInput {
 export interface SyncIntentRow {
   id: string;
   device_id: string | null;
-  kind: 'copy' | 'sync_all';
+  kind: 'copy' | 'sync_all' | 'code_apply';
   artifact_type: string | null;
   name: string | null;
   from_tool: string | null;

@@ -369,6 +369,87 @@ CREATE TABLE IF NOT EXISTS diary_entries (
 );
 CREATE INDEX IF NOT EXISTS idx_diary_agent ON diary_entries(tenant, agent);
 
+-- ── Code intelligence (codeindex merge) ─────────────────────────────────
+-- Produced by the local codeindex Zig engine + the TS collector (git churn,
+-- AI-authorship, complexity, action-plan synthesis), synced via /api/sync.
+-- Findings + hotspots are derived/regenerable (replaced wholesale per project
+-- on each re-index); actions carry durable user state (queued/done/dismissed)
+-- and are upserted by deterministic id.
+CREATE TABLE IF NOT EXISTS code_projects (
+  tenant          TEXT NOT NULL DEFAULT 'default',
+  project_id      TEXT NOT NULL,
+  root_path       TEXT NOT NULL DEFAULT '',
+  file_count      INTEGER NOT NULL DEFAULT 0,
+  symbol_count    INTEGER NOT NULL DEFAULT 0,
+  langs_json      TEXT NOT NULL DEFAULT '{}',
+  health_json     TEXT NOT NULL DEFAULT '{}',
+  map_json        TEXT NOT NULL DEFAULT '{}',
+  label           TEXT CHECK (label IN ('poc','production','engineering')),
+  indexed_by      TEXT,
+  last_indexed_at BIGINT NOT NULL DEFAULT 0,
+  created_at      BIGINT NOT NULL,
+  updated_at      BIGINT NOT NULL,
+  PRIMARY KEY (tenant, project_id)
+);
+
+CREATE TABLE IF NOT EXISTS code_findings (
+  tenant        TEXT NOT NULL DEFAULT 'default',
+  id            TEXT NOT NULL,
+  project_id    TEXT NOT NULL,
+  category      TEXT NOT NULL,
+  severity      TEXT NOT NULL,
+  file          TEXT NOT NULL DEFAULT '',
+  line          INTEGER,
+  rule          TEXT NOT NULL DEFAULT '',
+  title         TEXT NOT NULL DEFAULT '',
+  snippet       TEXT NOT NULL DEFAULT '',
+  why           TEXT NOT NULL DEFAULT '',
+  agent_prompt  TEXT NOT NULL DEFAULT '',
+  status        TEXT NOT NULL DEFAULT 'open',
+  first_seen_at BIGINT NOT NULL,
+  last_seen_at  BIGINT NOT NULL,
+  extra_json    TEXT NOT NULL DEFAULT '{}',
+  PRIMARY KEY (tenant, id)
+);
+CREATE INDEX IF NOT EXISTS idx_code_findings_proj ON code_findings(tenant, project_id, severity);
+
+CREATE TABLE IF NOT EXISTS code_hotspots (
+  tenant       TEXT NOT NULL DEFAULT 'default',
+  id           TEXT NOT NULL,
+  project_id   TEXT NOT NULL,
+  file         TEXT NOT NULL DEFAULT '',
+  churn        INTEGER NOT NULL DEFAULT 0,
+  complexity   INTEGER NOT NULL DEFAULT 0,
+  score        REAL NOT NULL DEFAULT 0,
+  ai_authored  INTEGER NOT NULL DEFAULT 0,
+  lines        INTEGER NOT NULL DEFAULT 0,
+  suggestion   TEXT NOT NULL DEFAULT '',
+  last_seen_at BIGINT NOT NULL,
+  PRIMARY KEY (tenant, id)
+);
+CREATE INDEX IF NOT EXISTS idx_code_hotspots_proj ON code_hotspots(tenant, project_id, score);
+-- Added after initial code_hotspots shape — ALTER so existing tables get it
+-- (CREATE TABLE IF NOT EXISTS won't add columns to a pre-existing table).
+ALTER TABLE code_hotspots ADD COLUMN IF NOT EXISTS suggestion TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS code_actions (
+  tenant       TEXT NOT NULL DEFAULT 'default',
+  id           TEXT NOT NULL,
+  project_id   TEXT NOT NULL,
+  pri          INTEGER NOT NULL DEFAULT 0,
+  category     TEXT NOT NULL DEFAULT '',
+  title        TEXT NOT NULL DEFAULT '',
+  fix          TEXT NOT NULL DEFAULT '',
+  loc_json     TEXT NOT NULL DEFAULT '[]',
+  agent_prompt TEXT NOT NULL DEFAULT '',
+  status       TEXT NOT NULL DEFAULT 'suggested',
+  queued       INTEGER NOT NULL DEFAULT 0,
+  created_at   BIGINT NOT NULL,
+  updated_at   BIGINT NOT NULL,
+  PRIMARY KEY (tenant, id)
+);
+CREATE INDEX IF NOT EXISTS idx_code_actions_proj ON code_actions(tenant, project_id, pri);
+
 -- ── Row-Level Security: the wall between tenants ─────────────────────────
 -- Every tenant-bearing table is force-RLS'd and isolated by the per-transaction
 -- 'app.tenant' GUC the drivers set (see pg-pool.ts tenantQuery). A non-superuser
@@ -382,7 +463,8 @@ BEGIN
     'memory_metadata','memory_links','content_cache','kv_store','memory_chunks',
     'secret_findings','secret_rules','secret_dismissals','alerted_secrets','session_metadata',
     'summary_errors','compute_cache','session_outcome_cache','kg_entities','kg_triples',
-    'wal_log','diary_entries','sync_intents'
+    'wal_log','diary_entries','sync_intents',
+    'code_projects','code_findings','code_hotspots','code_actions'
   ] LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);

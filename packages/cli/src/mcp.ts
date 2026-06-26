@@ -381,6 +381,27 @@ const RecallDiaryReadSchema = z.object({
   last_n: z.number().optional().default(10).describe('Number of recent entries'),
 });
 
+// ── Code intelligence (codeindex merge) ──
+const RecallCodeIndexSchema = z.object({
+  path: z.string().optional().describe('Repo path to index (default: current working directory)'),
+});
+const RecallCodeProjectsSchema = z.object({});
+const RecallCodeFindingsSchema = z.object({
+  project: z.string().optional().describe('Project id (omit for all). Get ids from recall_code_projects.'),
+  severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
+  category: z.string().optional().describe('security|literal|clone|duplication|dead_code|coupling|cycle'),
+  limit: z.number().optional().default(50),
+});
+const RecallCodeActionsSchema = z.object({
+  project: z.string().optional().describe('Project id (omit for all)'),
+  status: z.enum(['suggested', 'queued', 'done', 'dismissed']).optional(),
+  limit: z.number().optional().default(30),
+});
+const RecallCodeRecommendationsSchema = z.object({
+  project: z.string().describe('Project id (from recall_code_projects)'),
+});
+const RecallRecommendationsSchema = z.object({});
+
 // ── New tools (subagents, files-touched, user-prompts, decision-record) ──
 
 const RecallSubagentSearchSchema = z.object({
@@ -1050,6 +1071,59 @@ or when you learn something important that should persist.`,
           },
           required: ['agent_name'],
         },
+      },
+      // ── Code intelligence (codeindex merge) ──
+      {
+        name: 'recall_code_index',
+        description: `Index a code repository with codeindex and sync its findings/hotspots/actions to your chat-recall server. Runs the codeindex analyzer LOCALLY (needs the repo files + git history), then ships the result. Use before recall_code_findings/actions if a repo hasn't been indexed yet.`,
+        inputSchema: {
+          type: 'object',
+          properties: { path: { type: 'string', description: 'Repo path (default: cwd)' } },
+        },
+      },
+      {
+        name: 'recall_code_projects',
+        description: `List code-indexed projects on your server with health score, finding count, and label (poc/production/engineering).`,
+        inputSchema: { type: 'object', properties: {} },
+      },
+      {
+        name: 'recall_code_findings',
+        description: `List code findings (security / hardcoded literals / copy-paste clones / reinvention / dead code / coupling / cycles). Each finding carries a concrete, ready-to-run agent prompt that references codeindex tools. Filter by project/severity/category.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Project id (omit for all)' },
+            severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'] },
+            category: { type: 'string', description: 'security|literal|clone|duplication|dead_code|coupling|cycle' },
+            limit: { type: 'number', default: 50 },
+          },
+        },
+      },
+      {
+        name: 'recall_code_actions',
+        description: `The ranked, actionable plan for a codebase — prioritised tasks synthesised from the findings, each with a ready agent prompt. This is the "what should I fix next" list. Filter by project/status.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Project id (omit for all)' },
+            status: { type: 'string', enum: ['suggested', 'queued', 'done', 'dismissed'] },
+            limit: { type: 'number', default: 30 },
+          },
+        },
+      },
+      {
+        name: 'recall_code_recommendations',
+        description: `Behavior × code recommendations for a project — the differentiator. Concrete changes to apply: add a CLAUDE.md rule, install a skill, set a project label, or reset a POC db. Reasons over BOTH the code findings and how sessions in this project went (failed/abandoned, recurring corrections). Each has rationale + evidence + an apply-action.`,
+        inputSchema: {
+          type: 'object',
+          properties: { project: { type: 'string', description: 'Project id' } },
+          required: ['project'],
+        },
+      },
+      {
+        name: 'recall_recommendations',
+        description: `Account-level recommendations from YOUR chat-recall data (not a code project): leaked secrets found by the scanner + session behaviour (unresolved/abandoned). Returns concrete CLAUDE.md rules to apply globally. The same actionable approach as recall_code_recommendations, over chat-recall's own signals.`,
+        inputSchema: { type: 'object', properties: {} },
       },
       // ── Subagent / files-touched / user-prompts / decision-record ──
       {
@@ -2540,6 +2614,95 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           lines.push('');
         }
 
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      // ── Code intelligence (codeindex merge) ──
+      case 'recall_code_index': {
+        const params = RecallCodeIndexSchema.parse(args);
+        requireRemote();
+        const { collectCode } = await import('@chat-recall/engine');
+        const { resolve: resolvePath } = await import('node:path');
+        const workspace = params.path ? resolvePath(params.path) : process.cwd();
+        const result = await collectCode({ workspace });
+        const resp = await remotePost<{ projectId: string; findings: number; hotspots: number; actions: number }>('/api/code/index', result);
+        return { content: [{ type: 'text', text: `Indexed ${resp.projectId}: health ${result.project.health.score}/100, ${resp.findings} findings, ${resp.hotspots} hotspots, ${resp.actions} actions. Use recall_code_actions to see what to fix.` }] };
+      }
+      case 'recall_code_projects': {
+        RecallCodeProjectsSchema.parse(args);
+        requireRemote();
+        const { projects } = await remoteGet<{ projects: Array<{ projectId: string; rootPath: string; health: { score: number; findings: number; hotspots: number }; label?: string | null; lastIndexedAt: number }> }>('/api/code/projects');
+        if (!projects.length) return { content: [{ type: 'text', text: 'No code-indexed projects yet. Run recall_code_index in a repo.' }] };
+        const lines = [`# Code projects (${projects.length})\n`];
+        for (const p of projects) {
+          lines.push(`## ${p.projectId}${p.label ? ` [${p.label}]` : ''}`);
+          lines.push(`health ${p.health.score}/100 · ${p.health.findings} findings · ${p.health.hotspots} hotspots · ${p.rootPath}`);
+          lines.push('');
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+      case 'recall_code_findings': {
+        const params = RecallCodeFindingsSchema.parse(args);
+        requireRemote();
+        const { findings } = await remoteGetQS<{ findings: Array<{ category: string; severity: string; file: string; line: number | null; title: string; why: string; agentPrompt: string }> }>(
+          '/api/code/findings', { project: params.project, severity: params.severity, category: params.category, limit: params.limit });
+        if (!findings.length) return { content: [{ type: 'text', text: 'No findings match.' }] };
+        const lines = [`# Code findings (${findings.length})\n`];
+        for (const f of findings) {
+          lines.push(`## [${f.severity}] ${f.title} — ${f.file}${f.line ? ':' + f.line : ''}`);
+          if (f.why) lines.push(`_${f.why}_`);
+          lines.push('```\n' + f.agentPrompt + '\n```');
+          lines.push('');
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+      case 'recall_code_actions': {
+        const params = RecallCodeActionsSchema.parse(args);
+        requireRemote();
+        const { actions } = await remoteGetQS<{ actions: Array<{ pri: number; category: string; title: string; fix: string; agentPrompt: string; status: string }> }>(
+          '/api/code/actions', { project: params.project, status: params.status, limit: params.limit });
+        if (!actions.length) return { content: [{ type: 'text', text: 'No actions. Run recall_code_index first, or all clear.' }] };
+        const lines = [`# Action plan (${actions.length}) — prioritised\n`];
+        for (const a of actions) {
+          lines.push(`## P${a.pri} [${a.category}]${a.status !== 'suggested' ? ` (${a.status})` : ''} ${a.title}`);
+          lines.push(a.fix);
+          lines.push('```\n' + a.agentPrompt + '\n```');
+          lines.push('');
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_code_recommendations': {
+        const params = RecallCodeRecommendationsSchema.parse(args);
+        requireRemote();
+        const { recommendations } = await remoteGetQS<{ recommendations: Array<{ kind: string; severity: string; title: string; rationale: string; evidence: string[]; action: { type: string; payload: any } }> }>(
+          '/api/code/recommendations', { project: params.project });
+        if (!recommendations.length) return { content: [{ type: 'text', text: 'No recommendations — clean, or not enough signal yet.' }] };
+        const lines = [`# Recommendations (${recommendations.length}) — behavior × code\n`];
+        for (const r of recommendations) {
+          lines.push(`## [${r.severity}] ${r.title} (${r.kind})`);
+          lines.push(r.rationale);
+          if (r.evidence?.length) lines.push(`Evidence: ${r.evidence.join('; ')}`);
+          if (r.action?.type === 'append_claude_md') lines.push('Apply → add to CLAUDE.md:\n```\n' + r.action.payload.text + '\n```');
+          else lines.push(`Apply → ${r.action.type} ${JSON.stringify(r.action.payload)}`);
+          lines.push('');
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_recommendations': {
+        RecallRecommendationsSchema.parse(args);
+        requireRemote();
+        const { recommendations } = await remoteGet<{ recommendations: Array<{ kind: string; severity: string; title: string; rationale: string; evidence: string[]; action: { type: string; payload: any } }> }>('/api/recommendations');
+        if (!recommendations.length) return { content: [{ type: 'text', text: 'No account recommendations — no leaked secrets and healthy session outcomes.' }] };
+        const lines = [`# Account recommendations (${recommendations.length})\n`];
+        for (const r of recommendations) {
+          lines.push(`## [${r.severity}] ${r.title} (${r.kind})`);
+          lines.push(r.rationale);
+          if (r.evidence?.length) lines.push(`Evidence: ${r.evidence.join('; ')}`);
+          if (r.action?.type === 'append_claude_md') lines.push('Apply → add to global CLAUDE.md:\n```\n' + r.action.payload.text + '\n```');
+          lines.push('');
+        }
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 

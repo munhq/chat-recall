@@ -12,6 +12,7 @@ import ToolkitExplorer from './components/ToolkitExplorer';
 import Dashboard from './components/Dashboard';
 import ActivityTimeline from './components/ActivityTimeline';
 import SecurityExplorer from './components/SecurityExplorer';
+import CodeExplorer from './components/CodeExplorer';
 import SettingsPage from './components/SettingsPage';
 import AccountPage, { SubscribeScreen } from './components/AccountPage';
 import SecuritySummaryBanner from './components/SecuritySummaryBanner';
@@ -36,7 +37,7 @@ import {
   type ProjectTreeApiNode,
 } from './services/api';
 
-type ViewMode = 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'settings' | 'account';
+type ViewMode = 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code' | 'settings' | 'account';
 
 /**
  * Recursive tree node used by the project sidebar. One node renders as
@@ -154,7 +155,7 @@ function AppInner() {
   useEffect(() => { void getCapabilities().then(setCapabilities); }, []);
   const enabledViews = useMemo<Set<ViewMode>>(() => {
     const f = capabilities?.features;
-    if (!f) return new Set<ViewMode>(['search', 'memory', 'toolkit', 'dashboard', 'activity', 'security', 'settings']);
+    if (!f) return new Set<ViewMode>(['search', 'memory', 'toolkit', 'dashboard', 'activity', 'security', 'code', 'settings']);
     const out = new Set<ViewMode>();
     if (f.conversations) out.add('search');
     if (f.activity) out.add('activity');
@@ -162,6 +163,7 @@ function AppInner() {
     if (f.toolkit) out.add('toolkit');
     if (f.analytics) out.add('dashboard');
     if (f.security) out.add('security');
+    if (f.codeIntel) out.add('code');
     if (f.settings) out.add('settings');
     if (f.account) out.add('account');
     return out;
@@ -497,7 +499,7 @@ function AppInner() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const v = params.get('view');
-    if (v && ['search', 'activity', 'memory', 'insights', 'security'].includes(v)) setView(v as ViewMode);
+    if (v && ['search', 'activity', 'memory', 'insights', 'security', 'code', 'toolkit', 'dashboard'].includes(v)) setView(v as ViewMode);
     const id = params.get('session');
     if (id && looksLikeSessionId(id)) handleSelectSession(id);
     // Back/forward restore the selection they recorded.
@@ -833,6 +835,9 @@ function AppInner() {
             <SecurityExplorer
               onSessionClick={(sid) => handleMemorySessionClick(sid, { initialTab: 'security' })}
             />
+          )}
+          {view === 'code' && (
+            <CodeExplorer projectFilter={projectFilter} />
           )}
         </div>
       )}

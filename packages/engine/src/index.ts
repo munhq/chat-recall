@@ -5,6 +5,22 @@
 // Core
 export { MemoryIndex, type MemoryChunkRecord } from './core/memory-index.js';
 export { MemoryStore, type SyncIntentInput, type SyncIntentRow } from './core/memory-store.js';
+// Code intelligence (codeindex merge) — shared shapes + deterministic id helpers.
+export {
+  codeFindingId, codeHotspotId, codeActionId,
+  type CodeFindingCategory, type CodeSeverity, type CodeFindingStatus, type CodeActionStatus,
+  type CodeProjectLabel, type CodeHealth, type CodeMap, type CodeMapNode, type CodeMapEdge,
+  type CodeProjectInput, type CodeProjectRow,
+  type CodeFindingInput, type CodeFindingRow, type CodeFindingsSummary,
+  type CodeHotspotInput, type CodeHotspotRow,
+  type CodeActionLoc, type CodeActionInput, type CodeActionRow,
+} from './types/code-intel.js';
+export { collectCode, resolveCodeindexBin, type CollectResult, type CollectOpts } from './core/code/collector.js';
+export {
+  buildRecommendations, buildAccountRecommendations,
+  type Recommendation, type RecommendationKind, type RecommendationAction,
+  type RecommendationInput, type BehaviorSignal, type AccountSignal,
+} from './core/code/recommendations.js';
 // Storage-flag drivers (sqlite|postgres) — routes/services should prefer these
 // async factories over instantiating the concrete classes directly.
 export { createStore, type StorageDriver } from './core/store/index.js';
