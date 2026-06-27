@@ -31,7 +31,7 @@
  */
 
 import chokidar from 'chokidar';
-import { dirname, basename } from 'path';
+import { dirname, basename, join } from 'path';
 
 import { claudeBackend, geminiBackend, opencodeBackend, codexBackend } from '@chat-recall/engine/core/backends/index.js';
 import { getDiaryDir } from '@chat-recall/engine/core/paths.js';
@@ -313,47 +313,78 @@ async function drainIntentsTick(): Promise<void> {
 setInterval(() => { void drainIntentsTick(); }, 45_000).unref();
 setTimeout(() => { void drainIntentsTick(); }, 10_000);
 
-// Periodic code re-index (codeindex merge). Opt-in (CHAT_RECALL_CODE_REINDEX=1)
-// because running the analyzer over every known repo is heavier than a session
-// ship. When on, it re-runs the collector on each project the server already
-// knows about (skipping ones whose path is gone) and re-syncs findings, so the
-// Code dashboard stays fresh without manual `chat-recall code index` runs.
-const CODE_REINDEX_ON = process.env.CHAT_RECALL_CODE_REINDEX === '1';
-const CODE_REINDEX_MS = Math.max(30, parseInt(process.env.CHAT_RECALL_CODE_REINDEX_MINUTES || '360', 10)) * 60 * 1000;
-let codeReindexInFlight = false;
-async function codeReindexTick(): Promise<void> {
-  if (codeReindexInFlight) return;
-  codeReindexInFlight = true;
-  try {
-    const { collectCode } = await import('@chat-recall/engine');
-    for (const cred of loadAllCredentials()) {
-      const base = cred.serverUrl.replace(/\/+$/, '');
-      const headers: Record<string, string> = cred.token ? { authorization: `Bearer ${cred.token}` } : {};
-      let projects: Array<{ projectId: string; rootPath: string }> = [];
-      try {
-        const res = await fetch(`${base}/api/code/projects`, { headers });
-        if (!res.ok) continue;
-        projects = ((await res.json()) as { projects?: Array<{ projectId: string; rootPath: string }> }).projects || [];
-      } catch { continue; }
-      for (const p of projects) {
-        if (!p.rootPath || !existsSync(p.rootPath)) continue;   // repo moved/deleted — skip
-        try {
-          const result = await collectCode({ workspace: p.rootPath, autoInstall: false });
-          await fetch(`${base}/api/code/index`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(result) });
-          console.log(`[${ts()}] code re-indexed ${p.projectId} (health ${result.project.health.score})`);
-        } catch (e) {
-          console.error(`[${ts()}] code re-index failed for ${p.projectId}: ${e instanceof Error ? e.message : e}`);
-        }
-      }
+// Automatic code intelligence (codeindex merge). The daemon DISCOVERS the
+// workspaces you actually work in — distinct project paths across ALL tool
+// sessions in the recent window — and indexes each with codeindex, then syncs
+// the findings/hotspots/actions to every logged-in server. No manual
+// `chat-recall code index`. codeindex itself decides what's a scannable
+// workspace (it walks up for markers and refuses $HOME and /), so the daemon
+// applies no homemade path filters beyond "still exists on disk".
+// On by default; CHAT_RECALL_CODE_INDEX=0 disables, *_MINUTES/_MAX/_DAYS tune it.
+const CODE_INDEX_ON = process.env.CHAT_RECALL_CODE_INDEX !== '0';
+const CODE_INDEX_MS = Math.max(15, parseInt(process.env.CHAT_RECALL_CODE_INDEX_MINUTES || '180', 10)) * 60 * 1000;
+const CODE_INDEX_MAX = Math.max(1, parseInt(process.env.CHAT_RECALL_CODE_INDEX_MAX || '50', 10));
+const CODE_INDEX_WINDOW_DAYS = Math.max(1, parseInt(process.env.CHAT_RECALL_CODE_INDEX_DAYS || '120', 10));
+let codeIndexInFlight = false;
+
+/** Workspaces to index = distinct project paths from recent sessions across all
+ *  tools, that still exist on disk, newest-active first. No .git/marker check —
+ *  codeindex is the authority on what's scannable. */
+function discoverWorkspaces(): string[] {
+  const sinceMs = Date.now() - CODE_INDEX_WINDOW_DAYS * 86_400_000;
+  const newest = new Map<string, number>();
+  for (const b of [claudeBackend, geminiBackend, opencodeBackend, codexBackend]) {
+    let avail = false;
+    try { avail = b.isAvailable(); } catch { /* backend not installed */ }
+    if (!avail) continue;
+    let refs: Array<{ projectPath: string; mtime: number }> = [];
+    try { refs = b.listSessions({ sinceMs }); } catch { /* unreadable */ }
+    for (const r of refs) {
+      if (!r.projectPath) continue;
+      const prev = newest.get(r.projectPath);
+      if (prev === undefined || r.mtime > prev) newest.set(r.projectPath, r.mtime);
     }
+  }
+  return [...newest.entries()]
+    .filter(([p]) => { try { return existsSync(p); } catch { return false; } })
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, CODE_INDEX_MAX)
+    .map(([p]) => p);
+}
+
+async function codeIndexTick(): Promise<void> {
+  if (codeIndexInFlight) return;
+  codeIndexInFlight = true;
+  try {
+    const creds = loadAllCredentials();
+    if (creds.length === 0) return;
+    const workspaces = discoverWorkspaces();
+    if (workspaces.length === 0) return;
+    const { collectCode, resolveCodeindexBin } = await import('@chat-recall/engine');
+    let bin: string;
+    try { bin = await resolveCodeindexBin(true); }   // resolve/install codeindex once per pass
+    catch (e) { console.error(`[${ts()}] code intelligence skipped — codeindex unavailable: ${e instanceof Error ? e.message : e}`); return; }
+    let ok = 0;
+    for (const ws of workspaces) {
+      let result;
+      try { result = await collectCode({ workspace: ws, binPath: bin }); }
+      catch { continue; }   // not a scannable workspace (codeindex refused) or transient — skip
+      for (const cred of creds) {
+        const base = cred.serverUrl.replace(/\/+$/, '');
+        const headers: Record<string, string> = { 'content-type': 'application/json', ...(cred.token ? { authorization: `Bearer ${cred.token}` } : {}) };
+        try { await fetch(`${base}/api/code/index`, { method: 'POST', headers, body: JSON.stringify(result) }); } catch { /* retry next tick */ }
+      }
+      ok++;
+    }
+    if (ok > 0) console.log(`[${ts()}] code intelligence: indexed ${ok}/${workspaces.length} workspace(s)`);
   } finally {
-    codeReindexInFlight = false;
+    codeIndexInFlight = false;
   }
 }
-if (CODE_REINDEX_ON) {
-  setInterval(() => { void codeReindexTick(); }, CODE_REINDEX_MS).unref();
-  setTimeout(() => { void codeReindexTick(); }, 60_000);
-  console.log(`  Code re-index: ON (every ${CODE_REINDEX_MS / 60000} min)`);
+if (CODE_INDEX_ON) {
+  setInterval(() => { void codeIndexTick(); }, CODE_INDEX_MS).unref();
+  setTimeout(() => { void codeIndexTick(); }, 90_000);   // first pass shortly after startup
+  console.log(`  Code intelligence: AUTO — discovers your repos & indexes them (every ${CODE_INDEX_MS / 60000}m · ${CODE_INDEX_WINDOW_DAYS}d window · max ${CODE_INDEX_MAX})`);
 }
 
 // ── Graceful shutdown ───────────────────────────────────────────────
