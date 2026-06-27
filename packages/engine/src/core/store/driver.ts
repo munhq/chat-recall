@@ -127,6 +127,7 @@ export interface StorageDriver {
   getCodeProject: AsyncMethod<MemoryStore['getCodeProject']>;
   listCodeProjects: AsyncMethod<MemoryStore['listCodeProjects']>;
   setCodeProjectLabel: AsyncMethod<MemoryStore['setCodeProjectLabel']>;
+  deleteCodeProject: AsyncMethod<MemoryStore['deleteCodeProject']>;
   replaceCodeFindings: AsyncMethod<MemoryStore['replaceCodeFindings']>;
   listCodeFindings: AsyncMethod<MemoryStore['listCodeFindings']>;
   codeFindingsSummary: AsyncMethod<MemoryStore['codeFindingsSummary']>;

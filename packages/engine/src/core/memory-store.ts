@@ -1768,6 +1768,17 @@ export class MemoryStore {
     return r.changes > 0;
   }
 
+  /** Remove a code project and all its findings/hotspots/actions. */
+  deleteCodeProject(projectId: string): boolean {
+    const tx = this.db.transaction(() => {
+      this.db.prepare(`DELETE FROM code_findings WHERE project_id = ?`).run(projectId);
+      this.db.prepare(`DELETE FROM code_hotspots WHERE project_id = ?`).run(projectId);
+      this.db.prepare(`DELETE FROM code_actions WHERE project_id = ?`).run(projectId);
+      return this.db.prepare(`DELETE FROM code_projects WHERE project_id = ?`).run(projectId).changes > 0;
+    });
+    return tx();
+  }
+
   /** Replace all findings for a project. Preserves first_seen_at + status of
    *  findings whose deterministic id reappears (so dismissals survive re-index). */
   replaceCodeFindings(projectId: string, findings: CodeFindingInput[]): number {

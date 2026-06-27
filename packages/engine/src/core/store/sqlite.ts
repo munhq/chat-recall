@@ -121,6 +121,7 @@ export class SqliteStore implements StorageDriver {
   async getCodeProject(...a: Args<'getCodeProject'>) { return this.inner.getCodeProject(...a); }
   async listCodeProjects(...a: Args<'listCodeProjects'>) { return this.inner.listCodeProjects(...a); }
   async setCodeProjectLabel(...a: Args<'setCodeProjectLabel'>) { return this.inner.setCodeProjectLabel(...a); }
+  async deleteCodeProject(...a: Args<'deleteCodeProject'>) { return this.inner.deleteCodeProject(...a); }
   async replaceCodeFindings(...a: Args<'replaceCodeFindings'>) { return this.inner.replaceCodeFindings(...a); }
   async listCodeFindings(...a: Args<'listCodeFindings'>) { return this.inner.listCodeFindings(...a); }
   async codeFindingsSummary(...a: Args<'codeFindingsSummary'>) { return this.inner.codeFindingsSummary(...a); }

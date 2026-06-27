@@ -189,7 +189,8 @@ export async function getCapabilities(): Promise<ServerCapabilities> {
 export interface CodeHealth { score: number; findings: number; critical: number; high: number; medium: number; low: number; hotspots: number; aiAuthoredPct: number; aiCommits?: number; totalCommits?: number; savingsPct?: number; stats?: Record<string, number>; }
 export interface CodeMapNode { file: string; pkg?: string; symbols: number; lines: number; }
 export interface CodeCouplingMetric { file: string; fanIn: number; fanOut: number; instability: number; }
-export interface CodeMap { nodes: CodeMapNode[]; edges: Array<{ from: string; to: string }>; buckets: { god_modules: string[]; stable_cores: string[]; unstable_drivers: string[]; islands: string[]; cycles: string[][] }; pkgFiles?: Record<string, string[]>; fileEdges?: Array<{ from: string; to: string }>; fileMeta?: Record<string, { symbols: number; lang: string }>; langSymbols?: Record<string, number>; coupling?: { god_modules: CodeCouplingMetric[]; stable_cores: CodeCouplingMetric[]; unstable_drivers: CodeCouplingMetric[]; islands: CodeCouplingMetric[] }; }
+export interface CodeBlastRadius { fileRole: string; fanIn: number; fanOut: number; direct: number; transitive: number; maxDepth: number; directFiles?: string[]; }
+export interface CodeMap { nodes: CodeMapNode[]; edges: Array<{ from: string; to: string }>; buckets: { god_modules: string[]; stable_cores: string[]; unstable_drivers: string[]; islands: string[]; cycles: string[][] }; pkgFiles?: Record<string, string[]>; fileEdges?: Array<{ from: string; to: string }>; fileMeta?: Record<string, { symbols: number; lang: string }>; langSymbols?: Record<string, number>; coupling?: { god_modules: CodeCouplingMetric[]; stable_cores: CodeCouplingMetric[]; unstable_drivers: CodeCouplingMetric[]; islands: CodeCouplingMetric[] }; blast?: Record<string, CodeBlastRadius>; }
 export interface CodeProject { projectId: string; rootPath: string; fileCount: number; symbolCount: number; langs: Record<string, number>; health: CodeHealth; map: CodeMap; label?: string | null; lastIndexedAt: number; }
 export interface CodeFinding { id: string; category: string; severity: string; file: string; line: number | null; rule: string; title: string; snippet: string; why: string; agentPrompt: string; status: string; }
 export interface CodeHotspot { id: string; file: string; churn: number; complexity: number; score: number; aiAuthored: boolean; lines: number; suggestion?: string; }
@@ -246,6 +247,30 @@ export async function applyCodeRecommendation(project: string, recId: string): P
 export async function writeTasksToProject(project: string): Promise<{ ok: boolean; queued?: boolean; filename?: string; count?: number; message?: string }> {
   const r = await fetchWithTimeout(`${API_BASE}/code/tasks/write`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project }) });
   return r.ok ? r.json() : { ok: false, message: `HTTP ${r.status}` };
+}
+
+// ── Knowledge graph (temporal entity-relationship facts) ──────────────────
+// Previously had ZERO web surface despite being a headline feature. These wrap
+// the existing /api/kg/* routes so the UI can finally render the graph.
+export interface KgFact {
+  direction?: 'incoming' | 'outgoing';
+  subject: string; predicate: string; object: string;
+  valid_from?: number | string | null; valid_to?: number | string | null;
+  confidence?: number; source_session?: string | null; current?: boolean;
+}
+export interface KgStats { entities: number; triples: number; current_facts: number; expired_facts: number; relationship_types: number | string[]; }
+
+export async function getKgStats(): Promise<KgStats> {
+  const r = await fetchWithTimeout(`${API_BASE}/kg/stats`);
+  return r.ok ? r.json() : { entities: 0, triples: 0, current_facts: 0, expired_facts: 0, relationship_types: 0 };
+}
+export async function queryKgEntity(entity: string, opts: { as_of?: string; direction?: 'incoming' | 'outgoing' | 'both' } = {}): Promise<{ entity: string; facts: KgFact[] }> {
+  const r = await fetchWithTimeout(`${API_BASE}/kg/query`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ entity, ...opts }) });
+  return r.ok ? r.json() : { entity, facts: [] };
+}
+export async function getKgTimeline(entity?: string, limit = 100): Promise<{ entity: string | null; entries: KgFact[] }> {
+  const r = await fetchWithTimeout(`${API_BASE}/kg/timeline${qs({ entity, limit })}`);
+  return r.ok ? r.json() : { entity: entity ?? null, entries: [] };
 }
 // Account-level recommendations (chat-recall's own security + behaviour data).
 export async function getAccountRecommendations(): Promise<{ recommendations: CodeRecommendation[]; behavior: { failedOrAbandoned: number; totalSessions: number } | null }> {

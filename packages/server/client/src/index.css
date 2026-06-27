@@ -1,7 +1,13 @@
 /* Chat Recall — Design System Tokens */
+@import url('https://fonts.googleapis.com/css2?family=Martian+Mono:wght@500;700&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 /* ────────────────────── Dark (default) ────────────────────── */
 :root {
+  /* Typography — intelligence-console direction (distinctive, not system slop):
+   *  display = Martian Mono (eyebrows, metrics, nav), body = Hanken Grotesk,
+   *  code/data = JetBrains Mono. */
+  --cr-font-display: 'Martian Mono', ui-monospace, monospace;
+  --cr-font-sans: 'Hanken Grotesk', ui-sans-serif, system-ui, sans-serif;
   /* Ink scale — deep charcoal with clear layering.
    * ink-0 (page) → ink-1 (sidebar, cards) → ink-2 (hover) → ink-3 (active, sub-cards) → ink-4 (segmented-control active, code bg accent) */
   --cr-ink-0: #090D14;
@@ -73,7 +79,7 @@
 
   /* Typography */
   --cr-fw-medium: 500;
-  --cr-font-mono: 'Fira Code', 'SF Mono', 'Courier New', monospace;
+  --cr-font-mono: 'JetBrains Mono', 'SF Mono', 'Courier New', monospace;
 }
 
 /* ────────────────────── Light ────────────────────── */
@@ -134,7 +140,7 @@
 html, body, #root { height: 100%; margin: 0; padding: 0; }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  font-family: var(--cr-font-sans);
   -webkit-font-smoothing: antialiased;
   background: var(--cr-ink-0);
   color: var(--cr-fg-1);

@@ -18,7 +18,9 @@ import { createHash } from 'crypto';
 
 export type CodeFindingCategory =
   | 'security' | 'literal' | 'clone' | 'duplication' | 'dead_code' | 'coupling' | 'cycle'
-  | 'unwrap' | 'coverage' | 'architecture';
+  | 'unwrap' | 'coverage' | 'architecture'
+  // Recovered count-only analyzers, now per-item findings:
+  | 'crossref' | 'type_drift' | 'schema' | 'migration' | 'manifest';
 
 export type CodeSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
@@ -65,6 +67,22 @@ export interface CodeMapEdge { from: string; to: string; }
 /** Per-file coupling metrics (POC Structure tables: fan-in/fan-out/instability). */
 export interface CodeCouplingMetric { file: string; fanIn: number; fanOut: number; instability: number; }
 
+/** plan_change blast radius for a file — "what breaks if I touch this". Keyed by
+ *  file in CodeMap.blast; surfaced in the hotspot/finding drawer as impact. */
+export interface CodeBlastRadius {
+  /** god_module | stable_core | driver | island | regular */
+  fileRole: string;
+  fanIn: number;
+  fanOut: number;
+  /** files that import this file directly */
+  direct: number;
+  /** files reachable transitively (blast radius) */
+  transitive: number;
+  maxDepth: number;
+  /** sample of directly-impacted files (capped) */
+  directFiles?: string[];
+}
+
 /** Dependency graph + structure buckets — render-only blob stored on the project. */
 export interface CodeMap {
   nodes: CodeMapNode[];
@@ -85,6 +103,9 @@ export interface CodeMap {
   /** language → symbol count (POC sizes the language bars by symbols). Lives on
    *  the map so it round-trips through map_json without a new column. */
   langSymbols?: Record<string, number>;
+  /** file → plan_change blast radius. Lives on the map so it round-trips through
+   *  map_json without a new column; the hotspot drawer joins on file. */
+  blast?: Record<string, CodeBlastRadius>;
   /** Coupling tiers WITH metrics (POC Structure tables: file/in/out/I). */
   coupling?: {
     god_modules: CodeCouplingMetric[];

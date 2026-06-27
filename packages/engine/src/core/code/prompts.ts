@@ -25,6 +25,11 @@ export const FINDING_WHY: Record<CodeFindingCategory, string> = {
   unwrap: 'Unchecked unwrap/panic on an error path — a crash waiting for the wrong input.',
   coverage: 'Code with few or no tests — changes here ship unverified.',
   architecture: 'Layering violation — a lower layer reaching into a higher one tangles the design.',
+  crossref: 'Frontend/backend wiring gap — a call with no route (or a route nobody calls) is a broken or dead API.',
+  type_drift: 'The same type disagrees across languages — a serialization/contract mismatch waiting to corrupt data.',
+  schema: 'Code and migrations disagree about the schema — a table/column drift that fails at runtime.',
+  migration: 'Migration sequence is broken (gap/duplicate/out-of-order) — deploys may apply the wrong state.',
+  manifest: 'Manifest problem — a leaked credential, suspicious/unused dependency, or missing required field.',
 };
 
 /** Per-rule remediation for security findings (from codeindex's rule set). */
@@ -91,4 +96,29 @@ export function coveragePrompt(file: string, totalSymbols: number, testSymbols: 
 
 export function architecturePrompt(from: string, to: string, fromLayer: string, toLayer: string): string {
   return `Layer violation: ${from} (${fromLayer}) imports ${to} (${toLayer}). Invert the dependency behind an interface, or move the shared piece to a lower layer. Use codeindex get_imports/get_imported_by to map the blast radius, then show the change.`;
+}
+
+export function crossrefPrompt(kind: 'frontend_only' | 'backend_only', method: string, target: string, file: string, line: number | null): string {
+  return kind === 'frontend_only'
+    ? `Frontend calls \`${method} ${target}\` (${file}:${line ?? '?'}) but no backend route matches it. Either the endpoint is missing/renamed or the call is wrong. Find the intended route (codeindex search "${target}"), then fix the call or implement the route. Show the diff.`
+    : `Backend route \`${method} ${target}\` (${file}:${line ?? '?'}) has no frontend caller. Confirm it is truly unused (codeindex find_word "${target}") — if dead, remove it; if it's a public API, document why it's kept.`;
+}
+
+export function typeDriftPrompt(typeName: string, field: string, a: string, b: string): string {
+  return `Type \`${typeName}\` field \`${field}\` disagrees across languages: ${a} vs ${b}. Pick the source of truth, align both sides, and add a shared contract/test so they can't drift again. Show the diff.`;
+}
+
+export function schemaPrompt(table: string, issueType: string, description: string, file: string, line: number | null): string {
+  return `Schema drift on \`${table}\` (${issueType}) at ${file}:${line ?? '?'}: ${description}. Reconcile the code model and the migrations — add the missing migration or model, or fix the mismatched column. Show the migration + model change.`;
+}
+
+export function migrationPrompt(issueType: string, description: string, file: string): string {
+  return `Migration problem (${issueType}) in ${file}: ${description}. Renumber/merge/reorder the migrations so the sequence is contiguous and deterministic. Show the corrected migration set.`;
+}
+
+export function manifestPrompt(violationType: string, file: string, line: number | null, description: string): string {
+  if (violationType === 'credential_in_manifest') {
+    return `A credential appears in the manifest ${file}:${line ?? '?'}: ${description}. Remove it, ROTATE the exposed secret, and load it from env/secret-manager instead. Show the diff.`;
+  }
+  return `Manifest issue (${violationType}) in ${file}:${line ?? '?'}: ${description}. Fix the manifest — pin/remove the dependency or add the required field. Show the diff.`;
 }

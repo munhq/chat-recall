@@ -21,7 +21,7 @@ import {
   type CodeProject, type CodeFinding, type CodeHotspot, type CodeAction, type CodeFindingsSummary, type CodeRecommendation, type CodeCouplingMetric,
 } from '../services/api';
 
-type Tab = 'recs' | 'overview' | 'plan' | 'security' | 'quality' | 'structure' | 'hotspots' | 'map';
+type Tab = 'recs' | 'overview' | 'plan' | 'security' | 'quality' | 'structure' | 'integrity' | 'hotspots' | 'map';
 type ChipKind = 'neutral' | 'mono' | 'brand' | 'ok' | 'warn' | 'err' | 'info';
 
 const SEV_CHIP: Record<string, ChipKind> = { critical: 'err', high: 'warn', medium: 'info', low: 'neutral', info: 'mono' };
@@ -37,7 +37,7 @@ function hotspotPrompt(h: CodeHotspot): string {
   return `${h.file} is a hotspot — changed ${h.churn}× with complexity ${h.complexity}.${h.aiAuthored ? ' AI-authored & high-risk — review carefully.' : ''}\nRun codeindex get_change_impact on it first, add tests for its critical paths, then propose targeted refactors to reduce complexity. Show a plan + the first diff.`;
 }
 
-export default function CodeExplorer({ projectFilter }: { projectFilter?: string | null }) {
+export default function CodeExplorer({ projectFilter, embedded }: { projectFilter?: string | null; embedded?: boolean }) {
   const [projects, setProjects] = useState<CodeProject[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [project, setProject] = useState<CodeProject | null>(null);
@@ -88,11 +88,16 @@ export default function CodeExplorer({ projectFilter }: { projectFilter?: string
     loc: f.file ? `${f.file}${f.line ? ':' + f.line : ''}` : undefined,
     chip: <Chip kind={SEV_CHIP[f.severity] ?? 'neutral'} size="sm">{f.severity}</Chip>,
   });
-  const openHotspot = (h: CodeHotspot) => setDrawer({
-    kind: 'hotspot', title: h.file.split('/').pop() || h.file, why: 'Frequently-changed complex code is statistically where bugs land.',
-    prompt: hotspotPrompt(h), loc: h.file,
-    chip: <Chip kind="warn" size="sm">score {h.score}</Chip>,
-  });
+  const openHotspot = (h: CodeHotspot) => {
+    const b = project?.map?.blast?.[h.file];
+    setDrawer({
+      kind: 'hotspot', title: h.file.split('/').pop() || h.file,
+      why: 'Frequently-changed complex code is statistically where bugs land.'
+        + (b ? ` Blast radius: editing this directly affects ${b.direct} file(s), ${b.transitive} transitively — role ${b.fileRole}, fan-in ${b.fanIn}, fan-out ${b.fanOut}.` : ''),
+      prompt: hotspotPrompt(h), loc: h.file,
+      chip: <Chip kind="warn" size="sm">score {h.score}</Chip>,
+    });
+  };
   const BUCKET: Record<string, { label: string; why: string; prompt: (f: string) => string }> = {
     god: { label: 'god module', why: 'Over-coupled module: hard to change safely and concentrates risk.', prompt: (f) => `${f} is a god module (high fan-in AND fan-out). Use codeindex get_imports / get_imported_by to map its dependencies, then propose how to split it into cohesive units and which dependencies to invert behind interfaces.` },
     stable: { label: 'stable core', why: 'Heavily depended-on — changes here ripple widely.', prompt: (f) => `${f} is a stable core — many modules depend on it. Run codeindex get_imported_by to see the blast radius, then ensure it has strong tests and a stable public interface before any change.` },
@@ -148,16 +153,19 @@ export default function CodeExplorer({ projectFilter }: { projectFilter?: string
 
   const h = project?.health;
   const planActions = actions;
-  const securityFindings = findings.filter((f) => f.category === 'security' || f.category === 'literal' || f.category === 'unwrap');
+  const securityFindings = findings.filter((f) => f.category === 'security' || f.category === 'literal' || f.category === 'unwrap' || (f.category === 'manifest' && f.rule === 'credential_in_manifest'));
   const qualityFindings = findings.filter((f) => f.category === 'clone' || f.category === 'duplication' || f.category === 'dead_code' || f.category === 'coverage');
   const structureFindings = findings.filter((f) => f.category === 'coupling' || f.category === 'cycle' || f.category === 'architecture');
+  // Recovered analyzers (were count-only) — frontend/backend wiring, type drift,
+  // schema/migration parity, manifest hygiene. Each is a real, clickable finding.
+  const integrityFindings = findings.filter((f) => f.category === 'crossref' || f.category === 'type_drift' || f.category === 'schema' || f.category === 'migration' || (f.category === 'manifest' && f.rule !== 'credential_in_manifest'));
 
   return (
     <div className="cr-page-pad" style={{ position: 'relative', paddingBottom: 60 }}>
       {/* Header: project picker + label + tasks pill */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 18 }}>
-        <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}><Icon name="code" size={20} /> Code</h2>
-        {projects.length > 1 && (
+        {!embedded && <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}><Icon name="code" size={20} /> Code</h2>}
+        {!embedded && projects.length > 1 && (
           <select value={projectId ?? ''} onChange={(e) => setProjectId(e.target.value)}
             style={{ background: 'var(--cr-ink-1)', color: 'var(--cr-fg-1)', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-sm)', padding: '6px 10px', fontFamily: 'var(--cr-font-mono)', fontSize: 12 }}>
             {projects.map((p) => <option key={p.projectId} value={p.projectId}>{p.projectId}</option>)}
@@ -208,6 +216,7 @@ export default function CodeExplorer({ projectFilter }: { projectFilter?: string
             { value: 'security', label: `Security (${securityFindings.length})` },
             { value: 'quality', label: `Quality (${qualityFindings.length})` },
             { value: 'structure', label: `Structure (${structureFindings.length})` },
+            { value: 'integrity', label: `Integrity (${integrityFindings.length})` },
             { value: 'hotspots', label: `Hotspots (${hotspots.length})` },
             { value: 'map', label: 'Map' },
           ]}
@@ -220,6 +229,7 @@ export default function CodeExplorer({ projectFilter }: { projectFilter?: string
       {tab === 'security' && <FindingList findings={securityFindings} onOpen={openFinding} />}
       {tab === 'quality' && <FindingList findings={qualityFindings} onOpen={openFinding} />}
       {tab === 'structure' && <StructureView findings={structureFindings} buckets={project?.map.buckets} coupling={project?.map.coupling} onOpen={openFinding} onBucket={openBucket} />}
+      {tab === 'integrity' && (integrityFindings.length ? <FindingList findings={integrityFindings} onOpen={openFinding} /> : <div style={{ padding: 30, textAlign: 'center', color: 'var(--cr-fg-3)' }}>No wiring / type / schema / migration / manifest issues. Frontend↔backend routes match, types agree across languages, and migrations are consistent.</div>)}
       {tab === 'hotspots' && <HotspotTable hotspots={hotspots} onOpen={openHotspot} />}
       {tab === 'map' && <DependencyMap map={project?.map} />}
 

@@ -22,10 +22,11 @@ import {
   FINDING_WHY, secFix,
   securityPrompt, literalPrompt, clonePrompt, duplicationPrompt, deadCodePrompt, hotspotPrompt, couplingPrompt, cyclePrompt,
   unwrapPrompt, coveragePrompt, architecturePrompt,
+  crossrefPrompt, typeDriftPrompt, schemaPrompt, migrationPrompt, manifestPrompt,
 } from './prompts.js';
 import type {
   CodeProjectInput, CodeFindingInput, CodeHotspotInput, CodeActionInput,
-  CodeSeverity, CodeMapNode, CodeMapEdge,
+  CodeSeverity, CodeMapNode, CodeMapEdge, CodeBlastRadius,
 } from '../../types/code-intel.js';
 
 const ANALYSES = [
@@ -265,7 +266,7 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
     const file = rel(s.file);
     findings.push({
       category: 'dead_code', severity: 'low', file, line: s.line ?? null, rule: 'dead_symbol',
-      title: s.name, snippet: s.kind ?? '', why: FINDING_WHY.dead_code,
+      title: s.name, snippet: s.reason ? `${s.kind ?? 'symbol'} · ${s.reason}` : (s.kind ?? ''), why: FINDING_WHY.dead_code,
       agentPrompt: deadCodePrompt(s.name, s.kind ?? 'symbol', file, s.line ?? null),
     });
   }
@@ -290,7 +291,7 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
     const file = rel(f.file);
     findings.push({
       category: 'unwrap', severity: (f.severity ?? 'low') as CodeSeverity, file, line: f.line ?? null,
-      rule: f.kind ?? 'unwrap', title: `${f.kind ?? 'unwrap'} — possible panic`, snippet: '',
+      rule: f.kind ?? 'unwrap', title: f.scope ? `${f.kind ?? 'unwrap'} in ${f.scope} — possible panic` : `${f.kind ?? 'unwrap'} — possible panic`, snippet: f.line_text ?? '',
       why: FINDING_WHY.unwrap, agentPrompt: unwrapPrompt(f.kind ?? 'unwrap', file, f.line ?? null),
     });
   }
@@ -312,8 +313,72 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
     const from = rel(v.from); const to = rel(v.to);
     findings.push({
       category: 'architecture', severity: 'medium', file: from, line: null, rule: 'layer_violation',
-      title: `${v.from_layer}→${v.to_layer} layer violation`, snippet: `${from} → ${to}`,
+      title: `${v.from_layer}→${v.to_layer} layer violation`, snippet: v.description ? `${from} → ${to} — ${v.description}` : `${from} → ${to}`,
       why: FINDING_WHY.architecture, agentPrompt: architecturePrompt(from, to, v.from_layer ?? '?', v.to_layer ?? '?'),
+    });
+  }
+
+  // ── Recovered analyzers (were count-only) → real per-item findings ───────
+  // crossref: frontend calls with no route (broken) + routes with no caller (dead)
+  for (const r of (crossref?.frontend_only_calls ?? []).slice(0, 80)) {
+    const file = rel(r.file); const target = r.url ?? '';
+    findings.push({
+      category: 'crossref', severity: 'medium', file, line: r.line ?? null, rule: 'frontend_only',
+      title: `${r.method ?? 'CALL'} ${target} — no backend route`, snippet: `${r.method ?? ''} ${target}`.trim(),
+      why: FINDING_WHY.crossref, agentPrompt: crossrefPrompt('frontend_only', r.method ?? 'CALL', target, file, r.line ?? null),
+    });
+  }
+  for (const r of (crossref?.backend_only_routes ?? []).slice(0, 80)) {
+    const file = rel(r.file); const target = r.path ?? '';
+    findings.push({
+      category: 'crossref', severity: 'low', file, line: r.line ?? null, rule: 'backend_only',
+      title: `${r.method ?? 'ROUTE'} ${target} — no caller`, snippet: `${r.method ?? ''} ${target}`.trim(),
+      why: FINDING_WHY.crossref, agentPrompt: crossrefPrompt('backend_only', r.method ?? 'ROUTE', target, file, r.line ?? null),
+    });
+  }
+  // type_drift: same type disagrees across languages
+  for (const m of (typeDrift?.mismatch_details ?? []).slice(0, 80)) {
+    const a = `${m.lang_a}:${m.type_a}`; const b = `${m.lang_b}:${m.type_b}`;
+    findings.push({
+      category: 'type_drift', severity: 'medium', file: m.type_name ?? '', line: null, rule: 'type_mismatch',
+      title: `${m.type_name}.${m.field}: ${m.type_a} vs ${m.type_b}`, snippet: `${a}  ≠  ${b}`,
+      why: FINDING_WHY.type_drift, agentPrompt: typeDriftPrompt(m.type_name ?? '', m.field ?? '', a, b),
+    });
+  }
+  for (const m of (typeDrift?.missing_field_details ?? []).slice(0, 80)) {
+    findings.push({
+      category: 'type_drift', severity: 'low', file: m.type_name ?? '', line: null, rule: 'missing_field',
+      title: `${m.type_name}.${m.field} missing in ${m.missing_from}`, snippet: `present in ${m.present_in}, missing from ${m.missing_from}`,
+      why: FINDING_WHY.type_drift, agentPrompt: typeDriftPrompt(m.type_name ?? '', m.field ?? '', m.present_in ?? '', m.missing_from ?? ''),
+    });
+  }
+  // db_schema: code ↔ migration parity
+  const schemaSev = (t: string): CodeSeverity => t === 'missing_migration' ? 'high' : t === 'column_mismatch' ? 'medium' : 'low';
+  for (const iss of (dbSchema?.issue_details ?? []).slice(0, 80)) {
+    const file = rel(iss.file);
+    findings.push({
+      category: 'schema', severity: schemaSev(iss.issue_type ?? ''), file, line: iss.line ?? null, rule: iss.issue_type ?? 'schema_issue',
+      title: `${iss.table}: ${iss.issue_type}`, snippet: iss.description ?? '',
+      why: FINDING_WHY.schema, agentPrompt: schemaPrompt(iss.table ?? '', iss.issue_type ?? '', iss.description ?? '', file, iss.line ?? null),
+    });
+  }
+  // migration_parity: broken migration sequence
+  for (const iss of (migParity?.issue_details ?? []).slice(0, 80)) {
+    const file = rel(iss.file);
+    findings.push({
+      category: 'migration', severity: 'medium', file, line: null, rule: iss.issue_type ?? 'migration_issue',
+      title: `Migration ${iss.issue_type}`, snippet: iss.description ?? '',
+      why: FINDING_WHY.migration, agentPrompt: migrationPrompt(iss.issue_type ?? '', iss.description ?? '', file),
+    });
+  }
+  // manifest_compliance: leaked creds / suspicious deps / missing fields
+  const manifestSev = (t: string): CodeSeverity => t === 'credential_in_manifest' ? 'critical' : t === 'suspicious_dependency' ? 'high' : t === 'version_mismatch' ? 'medium' : 'low';
+  for (const v of (manifest?.violation_details ?? []).slice(0, 80)) {
+    const file = rel(v.file);
+    findings.push({
+      category: 'manifest', severity: manifestSev(v.violation_type ?? ''), file, line: v.line ?? null, rule: v.violation_type ?? 'manifest_violation',
+      title: `${v.violation_type} in ${basename(file)}`, snippet: v.description ?? '',
+      why: FINDING_WHY.manifest, agentPrompt: manifestPrompt(v.violation_type ?? '', file, v.line ?? null, v.description ?? ''),
     });
   }
 
@@ -346,6 +411,29 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
   }
   hotspotsAll.sort((a, b) => b.score - a.score);
   const hotspots: CodeHotspotInput[] = hotspotsAll.slice(0, 30);
+
+  // ── Blast radius (plan_change) for the top hotspots — "what breaks if I touch this" ──
+  log('blast radius (plan_change) for top hotspots …');
+  const blast: Record<string, CodeBlastRadius> = {};
+  const blastTargets = hotspots.slice(0, 12).map((h) => h.file);
+  if (blastTargets.length) {
+    try {
+      const pc = await runMcp(bin, ws, [
+        call(1, 'index_workspace', { path: ws }),
+        ...blastTargets.map((f, i) => call(2000 + i, 'plan_change', { file: f, format: 'json' })),
+      ]);
+      blastTargets.forEach((f, i) => {
+        const j = parseJson<any>(pc, 2000 + i, null);
+        if (j && typeof j === 'object' && typeof j.fan_in === 'number') {
+          blast[f] = {
+            fileRole: j.file_role ?? 'regular', fanIn: j.fan_in ?? 0, fanOut: j.fan_out ?? 0,
+            direct: j.direct ?? 0, transitive: j.transitive ?? 0, maxDepth: j.max_depth ?? 0,
+            directFiles: Array.isArray(j.direct_files) ? j.direct_files.map(rel).slice(0, 20) : undefined,
+          };
+        }
+      });
+    } catch { /* blast radius is best-effort enrichment */ }
+  }
 
   // ── Synthesis: the ranked, actionable plan ──────────────────────────────
   log('synthesising action plan …');
@@ -475,7 +563,7 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
         unstable_drivers: (coup?.unstable_drivers ?? []).map(metric),
         islands: (coup?.islands_sample ?? coup?.islands ?? []).map((m: any) => ({ file: rel(m.file), fanIn: 0, fanOut: 0, instability: 0 })),
       },
-      pkgFiles, fileEdges, fileMeta, langSymbols: Object.fromEntries(langSymbols),
+      pkgFiles, fileEdges, fileMeta, langSymbols: Object.fromEntries(langSymbols), blast,
     },
     label: undefined,
     indexedBy: opts.deviceId ?? null,

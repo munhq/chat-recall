@@ -17,6 +17,11 @@ export {
 } from './types/code-intel.js';
 export { collectCode, resolveCodeindexBin, type CollectResult, type CollectOpts } from './core/code/collector.js';
 export {
+  getRegistry, isExcluded, addScannedPath, setWatermark, getWatermark,
+  removeScannedPath, addExclude, removeExclude,
+  type CodeRegistry, type CodeRegistryEntry,
+} from './core/code/registry.js';
+export {
   buildRecommendations, buildAccountRecommendations,
   type Recommendation, type RecommendationKind, type RecommendationAction,
   type RecommendationInput, type BehaviorSignal, type AccountSignal,
