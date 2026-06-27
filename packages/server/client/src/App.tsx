@@ -13,6 +13,10 @@ import Dashboard from './components/Dashboard';
 import ActivityTimeline from './components/ActivityTimeline';
 import SecurityExplorer from './components/SecurityExplorer';
 import CodeExplorer from './components/CodeExplorer';
+import CommandCenter from './components/CommandCenter';
+import ProjectWorkspace from './components/ProjectWorkspace';
+import KnowledgeGraph from './components/KnowledgeGraph';
+import { SegmentedControl, Card } from './components/primitives';
 import SettingsPage from './components/SettingsPage';
 import AccountPage, { SubscribeScreen } from './components/AccountPage';
 import SecuritySummaryBanner from './components/SecuritySummaryBanner';
@@ -37,7 +41,7 @@ import {
   type ProjectTreeApiNode,
 } from './services/api';
 
-type ViewMode = 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code' | 'settings' | 'account';
+type ViewMode = 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code' | 'settings' | 'account';
 
 /**
  * Recursive tree node used by the project sidebar. One node renders as
@@ -147,7 +151,11 @@ export default function App() {
 
 function AppInner() {
   const sidebarExtras = useSidebarExtras();
-  const [view, setView] = useState<ViewMode>('search');
+  const [view, setView] = useState<ViewMode>('home');
+  // Memory now hosts the two "how you think" corpora: the knowledge GRAPH
+  // (temporal facts — previously invisible) and NOTES (plans/tasks/diary/etc).
+  // Toolkit is its own top-level view now (no longer buried here).
+  const [memorySub, setMemorySub] = useState<'graph' | 'notes'>('graph');
   // Deployment capabilities — server mode / SaaS disables the FS-backed
   // views (activity, toolkit, settings, projects). Defaults to everything-on
   // until /api/capabilities answers, so local mode renders unchanged.
@@ -155,8 +163,10 @@ function AppInner() {
   useEffect(() => { void getCapabilities().then(setCapabilities); }, []);
   const enabledViews = useMemo<Set<ViewMode>>(() => {
     const f = capabilities?.features;
-    if (!f) return new Set<ViewMode>(['search', 'memory', 'toolkit', 'dashboard', 'activity', 'security', 'code', 'settings']);
+    if (!f) return new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'dashboard', 'activity', 'security', 'code', 'settings']);
     const out = new Set<ViewMode>();
+    out.add('home');   // command center is always available
+    if (f.codeIntel || f.conversations) out.add('projects');  // the project workspace spine
     if (f.conversations) out.add('search');
     if (f.activity) out.add('activity');
     if (f.memory) out.add('memory');
@@ -499,7 +509,7 @@ function AppInner() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const v = params.get('view');
-    if (v && ['search', 'activity', 'memory', 'insights', 'security', 'code', 'toolkit', 'dashboard'].includes(v)) setView(v as ViewMode);
+    if (v && ['home', 'projects', 'search', 'activity', 'memory', 'security', 'code', 'toolkit', 'dashboard'].includes(v)) setView(v as ViewMode);
     const id = params.get('session');
     if (id && looksLikeSessionId(id)) handleSelectSession(id);
     // Back/forward restore the selection they recorded.
@@ -805,16 +815,40 @@ function AppInner() {
             })
           )}
           {view === 'memory' && (
-            <MemoryExplorer
-              onSessionClick={handleMemorySessionClick}
-              toolFilter={toolFilter}
-              projectFilter={projectFilter}
-            />
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+              <div style={{ padding: '12px 16px 0' }}>
+                <SegmentedControl
+                  value={memorySub}
+                  onChange={(v) => setMemorySub(v as 'graph' | 'notes')}
+                  options={[{ value: 'graph', label: 'Knowledge graph' }, { value: 'notes', label: 'Notes & plans' }]}
+                />
+              </div>
+              <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+                {memorySub === 'graph' ? (
+                  <KnowledgeGraph />
+                ) : (
+                  <MemoryExplorer onSessionClick={handleMemorySessionClick} toolFilter={toolFilter} projectFilter={projectFilter} />
+                )}
+              </div>
+            </div>
           )}
           {view === 'toolkit' && (
-            <ToolkitExplorer
-              toolFilter={toolFilter}
-            />
+            <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+              <ToolkitExplorer toolFilter={toolFilter} />
+            </div>
+          )}
+          {view === 'projects' && (
+            projectFilter ? (
+              <ProjectWorkspace
+                projectId={projectFilter}
+                projectName={findProjectName(projectTree, projectFilter) || projectFilter}
+                toolFilter={toolFilter}
+                onOpenSession={(sid) => handleMemorySessionClick(sid)}
+                onBack={() => setView('home')}
+              />
+            ) : (
+              <ProjectPicker tree={projectTree} onPick={(id) => setProjectFilter(id)} />
+            )
           )}
           {view === 'dashboard' && (
             <Dashboard
@@ -836,9 +870,50 @@ function AppInner() {
               onSessionClick={(sid) => handleMemorySessionClick(sid, { initialTab: 'security' })}
             />
           )}
+          {view === 'home' && (
+            <CommandCenter
+              setView={(v) => setView(v as ViewMode)}
+              onOpenProject={(id) => { setProjectFilter(id); setView('projects'); }}
+            />
+          )}
           {view === 'code' && (
             <CodeExplorer projectFilter={projectFilter} />
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * ProjectPicker — shown in the Projects view when no project is selected yet.
+ * Flattens the sidebar project tree into pickable cards. Picking one drops you
+ * into that project's unified workspace.
+ */
+function ProjectPicker({ tree, onPick }: { tree: ProjectTreeNode[]; onPick: (id: string) => void }) {
+  const flat: Array<{ name: string; id: string; count: number }> = [];
+  const walk = (nodes: ProjectTreeNode[]) => {
+    for (const n of nodes) {
+      if (n.count > 0) flat.push({ name: n.name, id: n.fullPath, count: n.count });
+      if (n.children?.length) walk(n.children);
+    }
+  };
+  walk(tree);
+  flat.sort((a, b) => b.count - a.count);
+  return (
+    <div style={{ flex: 1, overflow: 'auto', padding: '28px 32px' }}>
+      <h2 style={{ margin: '0 0 4px', display: 'flex', alignItems: 'center', gap: 8 }}>Projects</h2>
+      <div style={{ color: 'var(--cr-fg-2)', fontSize: 13, marginBottom: 20 }}>Pick a project to open its unified workspace — code health, conversations, knowledge and activity for that repo in one place. Or use the project tree on the left.</div>
+      {flat.length === 0 ? (
+        <div style={{ color: 'var(--cr-fg-3)' }}>No projects indexed yet.</div>
+      ) : (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 12 }}>
+          {flat.map((p) => (
+            <Card key={p.id} interactive onClick={() => onPick(p.id)} style={{ padding: 16, cursor: 'pointer' }}>
+              <div className="mono" style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
+              <div style={{ color: 'var(--cr-fg-3)', fontSize: 12, marginTop: 6 }}>{p.count} session(s)</div>
+            </Card>
+          ))}
         </div>
       )}
     </div>

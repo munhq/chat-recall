@@ -66,6 +66,19 @@ router.get('/projects/:id', async (req, res) => {
   finally { await store.close(); }
 });
 
+// DELETE /api/code/projects/:id — remove a project + its findings/hotspots/actions
+// (clears it from the dashboard). Excluding it from future scans is a local
+// concern handled by the CLI/daemon registry.
+router.delete('/projects/:id', async (req, res) => {
+  const store = await createStore();
+  try {
+    const ok = await store.deleteCodeProject(req.params.id);
+    if (!ok) return res.status(404).json({ error: 'project not indexed' });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : 'failed' }); }
+  finally { await store.close(); }
+});
+
 // GET /api/code/summary?project= — findings counts by severity + category.
 router.get('/summary', async (req, res) => {
   const projectId = typeof req.query.project === 'string' ? req.query.project : undefined;

@@ -26,19 +26,19 @@ interface SidebarProps {
   setToolFilter: (t: string) => void;
   extraSections?: SidebarSection[];
   view?: string;
-  setView?: (v: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code' | 'settings' | 'account') => void;
+  setView?: (v: 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code' | 'settings' | 'account') => void;
   /** Views this deployment supports (/api/capabilities). Absent = all. */
   enabledViews?: Set<string>;
 }
 
-const MOBILE_NAV_ITEMS: Array<{ id: 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code'; label: string; icon: string }> = [
+// Single source of truth for primary navigation — kept in sync with TopBar.
+const MOBILE_NAV_ITEMS: Array<{ id: 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'dashboard'; label: string; icon: string }> = [
+  { id: 'home', label: 'Overview', icon: 'home' },
+  { id: 'projects', label: 'Projects', icon: 'folder' },
   { id: 'search', label: 'Conversations', icon: 'message' },
-  { id: 'activity', label: 'Activity', icon: 'clock' },
   { id: 'memory', label: 'Memory', icon: 'brain' },
-  { id: 'toolkit', label: 'Toolkit', icon: 'zap' },
-  { id: 'code', label: 'Code', icon: 'code' },
+  { id: 'toolkit', label: 'Toolkit', icon: 'terminal' },
   { id: 'dashboard', label: 'Insights', icon: 'chart' },
-  { id: 'security', label: 'Security', icon: 'check' },
 ];
 
 const TOOL_SOURCES = [
