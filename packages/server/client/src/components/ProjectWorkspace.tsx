@@ -12,10 +12,7 @@
 
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { Card, Chip, SegmentedControl, Button, Icon } from './primitives';
-import CodeExplorer, {
-  DependencyMap, ActionList, RecommendationsView, Drawer, TasksDrawer,
-  PRI_CHIP, PRI_LABEL, type DrawerContent,
-} from './CodeExplorer';
+import CodeExplorer, { DependencyMap, PRI_CHIP, PRI_LABEL } from './CodeExplorer';
 import KnowledgeGraph from './KnowledgeGraph';
 import ActivityTimeline from './ActivityTimeline';
 import ConversationList from './ConversationList';
@@ -23,8 +20,8 @@ import ConversationViewer from './ConversationViewer';
 import { useCodeProject, type UseCodeProject } from '../hooks/useCodeProject';
 import { useConversation, type UseConversation } from '../hooks/useConversation';
 import {
-  getRecentSessionsPage, patchCodeAction,
-  type CodeProject, type CodeAction, type SessionInfo,
+  getRecentSessionsPage, patchCodeAction, applyCodeRecommendation,
+  type CodeProject, type CodeAction, type CodeRecommendation, type SessionInfo,
 } from '../services/api';
 
 type Lens = 'overview' | 'code' | 'conversations' | 'activity' | 'knowledge';
@@ -52,6 +49,10 @@ export default function ProjectWorkspace({
   const kgEntity = useMemo(() => projectName.split('/').pop() || projectName, [projectName]);
 
   const code = useCodeProject(projectId);
+  // Canonical id: once code intel resolves, its projectId is the authoritative
+  // resolveProjectId key — use it for sessions/activity so the count and the
+  // list never disagree (was the "281 vs 2" bug). Falls back to the raw id.
+  const canonicalId = code.project?.projectId ?? projectId;
   // One conversation instance for the whole workspace — the Conversations lens
   // AND Activity both open sessions into it, INLINE, never leaving the project.
   const conv = useConversation();
@@ -64,11 +65,11 @@ export default function ProjectWorkspace({
         <SegmentedControl value={lens} onChange={(v) => setLens(v as Lens)} options={LENSES} />
       </div>
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-        {lens === 'overview' && <MissionControl projectId={projectId} kgEntity={kgEntity} code={code} onJump={setLens} />}
-        {lens === 'code' && <CodeExplorer projectFilter={projectId} embedded />}
-        {lens === 'conversations' && <ConversationsLens projectId={projectId} toolFilter={toolFilter} conv={conv} />}
+        {lens === 'overview' && <MissionControl canonicalId={canonicalId} kgEntity={kgEntity} toolFilter={toolFilter} code={code} onJump={setLens} onOpenSession={openInline} />}
+        {lens === 'code' && <CodeExplorer projectFilter={canonicalId} embedded />}
+        {lens === 'conversations' && <ConversationsLens projectId={canonicalId} toolFilter={toolFilter} conv={conv} />}
         {lens === 'activity' && (
-          <ActivityTimeline onSessionClick={openInline} toolFilter={toolFilter} projectFilter={projectId} onActiveProjects={() => {}} />
+          <ActivityTimeline onSessionClick={openInline} toolFilter={toolFilter} projectFilter={canonicalId} onActiveProjects={() => {}} />
         )}
         {lens === 'knowledge' && <KnowledgeGraph entity={kgEntity} embedded />}
       </div>
@@ -108,74 +109,150 @@ function ProjectHeader({ projectName, code, onBack }: { projectName: string; cod
   );
 }
 
-// ── Overview = the command surface ──────────────────────────────────────────
-function MissionControl({ projectId, kgEntity, code, onJump }: { projectId: string; kgEntity: string; code: UseCodeProject; onJump: (l: Lens) => void }) {
-  const { project, recs, actions, behavior, reload } = code;
-  const [drawer, setDrawer] = useState<DrawerContent | null>(null);
-  const [tasksOpen, setTasksOpen] = useState(false);
-  const queuedIds = useMemo(() => new Set(actions.filter((a) => a.queued).map((a) => a.id)), [actions]);
+type ChipKind = 'neutral' | 'mono' | 'brand' | 'ok' | 'warn' | 'err' | 'info';
 
-  const openAction = (a: CodeAction) => setDrawer({
-    kind: 'task', title: a.title, why: a.fix, prompt: a.agentPrompt, actionId: a.id,
-    loc: a.loc?.map((l) => `${l.file}${l.line ? ':' + l.line : ''}`).join(' · '),
-    chip: <Chip kind={PRI_CHIP[a.pri] ?? 'neutral'} size="sm">{PRI_LABEL[a.pri] ?? 'P?'}</Chip>,
-  });
-  const addToTasks = async () => { if (drawer?.actionId) { await patchCodeAction(drawer.actionId, { status: 'queued', queued: true }); reload(); } };
-  const markDone = async () => { if (drawer?.actionId) { await patchCodeAction(drawer.actionId, { status: 'done', queued: false }); reload(); setDrawer(null); } };
-
-  if (code.loading && !project) return <div style={{ padding: 30, color: 'var(--cr-fg-3)' }}>Loading project…</div>;
-
+function SectionTitle({ title, hint, action, actionLabel }: { title: string; hint?: string; action?: () => void; actionLabel?: string }) {
   return (
-    <div style={{ padding: '18px 24px 60px', display: 'grid', gap: 16 }}>
-      {!project ? (
-        <Card style={{ padding: 20 }}>
-          <strong>No code intelligence for this repo yet.</strong>
-          <div style={{ color: 'var(--cr-fg-2)', fontSize: 13, marginTop: 6 }}>
-            The watch daemon indexes repos as you work, or run <code>chat-recall code index</code> from the repo. Conversations, activity and knowledge are still available in their lenses.
-          </div>
-        </Card>
-      ) : (
-        <>
-          {/* THE PLAN + NEXT MOVES */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.5fr) minmax(0,1fr)', gap: 16, alignItems: 'start' }}>
-            <Card style={{ padding: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-                <strong style={{ fontSize: 13 }}>The plan <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400 }}>ranked · paste-ready prompts</span></strong>
-                <button onClick={() => setTasksOpen(true)} data-testid="tasks-pill" style={{ cursor: 'pointer', borderRadius: 999, padding: '4px 12px', border: '1px solid var(--cr-brand-500)', background: 'var(--cr-brand-surf, transparent)', color: 'var(--cr-brand-500)', fontWeight: 600, fontSize: 12 }}>▸ tasks · {queuedIds.size}</button>
-              </div>
-              <ActionList actions={actions} onOpen={openAction} queuedIds={queuedIds} />
-            </Card>
-            <Card style={{ padding: 16 }}>
-              <strong style={{ fontSize: 13, display: 'block', marginBottom: 10 }}>Next moves <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400 }}>behaviour × code</span></strong>
-              <RecommendationsView recs={recs} projectId={project.projectId} onApplied={reload} />
-            </Card>
-          </div>
-
-          {/* THE TWO GRAPHS */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(360px,1fr))', gap: 16 }}>
-            <Card style={{ padding: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <strong style={{ fontSize: 13 }}>Dependency graph <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400 }}>code structure</span></strong>
-                <button onClick={() => onJump('code')} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12 }}>explore →</button>
-              </div>
-              <DependencyMap map={project.map} />
-            </Card>
-            <Card style={{ padding: 16 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <strong style={{ fontSize: 13 }}>Knowledge graph <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400 }}>decisions · tools</span></strong>
-                <button onClick={() => onJump('knowledge')} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12 }}>open →</button>
-              </div>
-              <KnowledgeGraph entity={kgEntity} embedded />
-            </Card>
-          </div>
-        </>
-      )}
-
-      {drawer && <Drawer content={drawer} onClose={() => setDrawer(null)} onAddTask={addToTasks} onDone={markDone} />}
-      {tasksOpen && project && (
-        <TasksDrawer name={project.projectId} projectId={project.projectId} queuedActions={actions.filter((a) => a.queued)} queued={[]} onClose={() => setTasksOpen(false)} />
-      )}
+    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
+      <span style={{ fontFamily: 'var(--cr-font-display)', fontSize: 11, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--cr-fg-2)' }}>
+        {title}{hint ? <span style={{ color: 'var(--cr-fg-3)', marginLeft: 8, textTransform: 'none', letterSpacing: 0, fontSize: 12 }}>{hint}</span> : null}
+      </span>
+      {action ? <button onClick={action} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12 }}>{actionLabel || 'view all →'}</button> : null}
     </div>
+  );
+}
+
+// ── Overview = the command surface: Do next → Understand → History ───────────
+function MissionControl({ canonicalId, kgEntity, toolFilter, code, onJump, onOpenSession }: {
+  canonicalId: string; kgEntity: string; toolFilter: string; code: UseCodeProject;
+  onJump: (l: Lens) => void; onOpenSession: (sid: string, info?: SessionInfo | null) => void;
+}) {
+  const { project, recs, actions, loading, reload } = code;
+  if (loading && !project) return <div style={{ padding: 30, color: 'var(--cr-fg-3)' }}>Loading project…</div>;
+  const hasGraph = !!project?.map?.nodes?.length;
+  return (
+    <div style={{ padding: '18px 24px 60px', display: 'grid', gap: 22 }}>
+      {/* 1 — DO NEXT: one ranked stream (fixes + rules + tasks) */}
+      <section><DoNext recs={recs} actions={actions} projectId={project?.projectId ?? canonicalId} hasCode={!!project} onReload={reload} /></section>
+
+      {/* 2 — UNDERSTAND: the two graphs, in place */}
+      <section>
+        <SectionTitle title="Understand" hint="how this repo is wired · what was decided" />
+        <div style={{ display: 'grid', gridTemplateColumns: hasGraph ? 'repeat(auto-fit,minmax(380px,1fr))' : '1fr', gap: 16 }}>
+          {hasGraph && (
+            <Card style={{ padding: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <strong style={{ fontSize: 12 }}>Dependency graph <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400 }}>scroll to zoom · drag to pan</span></strong>
+                <button onClick={() => onJump('code')} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12 }}>full →</button>
+              </div>
+              <DependencyMap map={project!.map} />
+            </Card>
+          )}
+          <Card style={{ padding: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <strong style={{ fontSize: 12 }}>Knowledge graph <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400 }}>decisions · tools</span></strong>
+              <button onClick={() => onJump('knowledge')} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12 }}>open →</button>
+            </div>
+            <KnowledgeGraph entity={kgEntity} embedded />
+          </Card>
+        </div>
+      </section>
+
+      {/* 3 — HISTORY: what happened here */}
+      <section>
+        <SectionTitle title="History" hint="recent work in this repo" action={() => onJump('activity')} actionLabel="full timeline →" />
+        <ProjectHistory projectId={canonicalId} toolFilter={toolFilter} onOpenSession={onOpenSession} />
+      </section>
+    </div>
+  );
+}
+
+// ── DO NEXT: recommendations (apply) + tasks (copy prompt / done), ranked ─────
+interface DoItem { id: string; rank: number; badge: { label: string; kind: ChipKind }; tag: string; title: string; detail: string; rec?: CodeRecommendation; action?: CodeAction; }
+function buildDoNext(recs: CodeRecommendation[], actions: CodeAction[]): DoItem[] {
+  const out: DoItem[] = [];
+  for (const r of recs) {
+    out.push({ id: 'r_' + r.id, rank: r.severity === 'high' ? 0 : r.severity === 'medium' ? 2 : 4,
+      badge: { label: r.severity, kind: r.severity === 'high' ? 'err' : r.severity === 'medium' ? 'warn' : 'neutral' },
+      tag: r.kind, title: r.title, detail: r.rationale, rec: r });
+  }
+  for (const a of actions) {
+    if (a.status === 'done' || a.status === 'dismissed') continue;
+    out.push({ id: 'a_' + a.id, rank: a.pri === 0 ? 1 : a.pri === 1 ? 2 : a.pri === 2 ? 3 : 5,
+      badge: { label: PRI_LABEL[a.pri] ?? 'P?', kind: PRI_CHIP[a.pri] ?? 'neutral' },
+      tag: a.category, title: a.title, detail: a.fix, action: a });
+  }
+  return out.sort((x, y) => x.rank - y.rank);
+}
+function DoNext({ recs, actions, projectId, hasCode, onReload }: { recs: CodeRecommendation[]; actions: CodeAction[]; projectId: string; hasCode: boolean; onReload: () => void }) {
+  const items = useMemo(() => buildDoNext(recs, actions), [recs, actions]);
+  const [showAll, setShowAll] = useState(false);
+  const shown = showAll ? items : items.slice(0, 7);
+  return (
+    <>
+      <SectionTitle title="Do next" hint="fixes, rules & tasks — ranked, one action each" />
+      <Card style={{ padding: 6 }}>
+        {items.length === 0 ? (
+          <div style={{ padding: 16, color: 'var(--cr-fg-3)', fontSize: 13 }}>
+            {hasCode ? 'Nothing queued — clean signals.' : <>This repo isn’t code-indexed yet. The watch daemon picks it up as you work, or run <code>chat-recall code index</code>.</>}
+          </div>
+        ) : (
+          <>
+            {shown.map((it) => <DoNextRow key={it.id} item={it} projectId={projectId} onReload={onReload} />)}
+            {items.length > 7 && <button onClick={() => setShowAll(!showAll)} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12, padding: '8px 10px' }}>{showAll ? 'show less' : `show all ${items.length} →`}</button>}
+          </>
+        )}
+      </Card>
+    </>
+  );
+}
+function DoNextRow({ item, projectId, onReload }: { item: DoItem; projectId: string; onReload: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const [copied, setCopied] = useState(false);
+  const [open, setOpen] = useState(false);
+  const isRec = !!item.rec;
+  const expandText = item.rec ? String((item.rec.action.payload as any)?.text || '') : (item.action?.agentPrompt || '');
+  const apply = async () => { if (!item.rec) return; setBusy(true); const res = await applyCodeRecommendation(projectId, item.rec.id); setMsg(res.message || (res.ok ? 'done' : 'failed')); setBusy(false); if (res.applied) onReload(); };
+  const copy = () => { if (item.action) { navigator.clipboard.writeText(item.action.agentPrompt); setCopied(true); setTimeout(() => setCopied(false), 1300); } };
+  const done = async () => { if (item.action) { await patchCodeAction(item.action.id, { status: 'done', queued: false }); onReload(); } };
+  return (
+    <div style={{ padding: '9px 10px', borderBottom: '1px solid var(--cr-line-1)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <Chip kind={item.badge.kind} size="sm">{item.badge.label}</Chip>
+        <Chip kind="mono" size="sm">{item.tag}</Chip>
+        <span style={{ fontSize: 13, fontWeight: 500, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.title}</span>
+        {isRec
+          ? <Button variant="primary" onClick={apply} disabled={busy}>{busy ? 'applying…' : item.rec!.kind === 'rule' ? 'Apply to CLAUDE.md' : item.rec!.kind === 'label' ? 'Apply label' : item.rec!.kind === 'skill' ? 'Install skill' : 'Apply'}</Button>
+          : <Button variant="primary" onClick={copy}>{copied ? 'copied ✓' : 'Copy prompt'}</Button>}
+        {!isRec && <Button variant="ghost" onClick={done}>Done</Button>}
+        {expandText && <button onClick={() => setOpen(!open)} title="Show detail" style={{ background: 'none', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-sm)', color: 'var(--cr-fg-2)', cursor: 'pointer', padding: '2px 7px', fontSize: 12 }}>{open ? '−' : '⌄'}</button>}
+      </div>
+      {item.detail && <div style={{ color: 'var(--cr-fg-2)', fontSize: 12, marginTop: 4 }}>{item.detail}</div>}
+      {open && expandText && <pre style={{ background: 'var(--cr-ink-2, #0d1117)', border: '1px solid var(--cr-line-1)', borderRadius: 6, padding: 10, fontSize: 11, whiteSpace: 'pre-wrap', fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-1)', marginTop: 6 }}>{expandText}</pre>}
+      {msg && <span style={{ fontSize: 12, color: 'var(--cr-fg-2)', marginLeft: 4 }}>{msg}</span>}
+    </div>
+  );
+}
+
+// ── Project history (compact) — recent sessions; full timeline = Activity lens
+function ProjectHistory({ projectId, toolFilter, onOpenSession }: { projectId: string; toolFilter: string; onOpenSession: (sid: string, info?: SessionInfo | null) => void }) {
+  const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let on = true; setLoading(true);
+    getRecentSessionsPage({ limit: 8, offset: 0, projectFilter: projectId, toolFilter: toolFilter === 'all' ? undefined : toolFilter })
+      .then((p) => { if (on) { setSessions(p.sessions); setTotal(p.total); setLoading(false); } });
+    return () => { on = false; };
+  }, [projectId, toolFilter]);
+  if (loading) return <Card style={{ padding: 16, color: 'var(--cr-fg-3)' }}>Loading history…</Card>;
+  if (!sessions.length) return <Card style={{ padding: 16, color: 'var(--cr-fg-3)', fontSize: 13 }}>No recorded sessions for this project.</Card>;
+  return (
+    <Card style={{ padding: 6 }}>
+      <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', padding: '4px 10px' }}>{total} session(s) · newest first</div>
+      {sessions.map((s) => <SessionRow key={s.sessionId} s={s} onOpen={() => onOpenSession(s.sessionId, s)} />)}
+    </Card>
   );
 }
 
@@ -241,6 +318,19 @@ function ConversationsLens({ projectId, toolFilter, conv }: { projectId: string;
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function SessionRow({ s, onOpen }: { s: SessionInfo; onOpen: () => void }) {
+  const title = (s as any).userTitle || (s as any).summary || (s as any).firstPrompt || s.sessionId;
+  const when = (s as any).modified ? new Date((s as any).modified).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+  return (
+    <div onClick={onOpen} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', cursor: 'pointer', borderBottom: '1px solid var(--cr-line-1)' }}>
+      <div style={{ minWidth: 0, flex: 1, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</div>
+      {(s as any).gitBranch && <Chip kind="mono" size="sm">{(s as any).gitBranch}</Chip>}
+      <span style={{ fontSize: 11, color: 'var(--cr-fg-3)', whiteSpace: 'nowrap' }}>{when}</span>
+      <Icon name="chevronRight" size={15} style={{ opacity: 0.4 }} />
     </div>
   );
 }
