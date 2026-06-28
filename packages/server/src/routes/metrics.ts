@@ -101,4 +101,38 @@ router.get('/rl-cost', async (req, res) => {
   }
 });
 
+// Work-backlog gauges (JSON) for the KEDA metrics-api scaler. Returns the
+// cross-tenant count of work still pending so KEDA scales the OVMS embeddings /
+// summaries deployments on PENDING WORK rather than CPU — the right signal for
+// bursty multi-tenant load (scale out when a backlog builds, idle back to min
+// when drained). Same per-tenant RLS-safe summation as `/`. Unauthenticated by
+// default (cluster-internal); gated by METRICS_TOKEN when set.
+router.get('/backlog', async (req, res) => {
+  const token = process.env.METRICS_TOKEN;
+  if (token && req.headers.authorization !== `Bearer ${token}`) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  try {
+    const pool = await openPgPool(process.env.DATABASE_URL || '');
+    const slugs: string[] = (await pool.query('SELECT tenant FROM tenants')).rows.map((r: any) => r.tenant);
+    let pendingVectors = 0;
+    let pendingSummaries = 0;
+    for (const t of slugs) {
+      const r = (await tenantQuery(pool, t, `
+        SELECT
+          (SELECT count(*) FROM memory_chunks c
+             LEFT JOIN memory_vectors v ON v.chunk_id = c.chunk_id AND v.tenant = c.tenant
+             WHERE c.tenant = $1 AND length(c.text) > 0 AND v.chunk_id IS NULL) AS pending_vectors,
+          (SELECT count(*) FROM session_metadata
+             WHERE tenant = $1 AND (summary IS NULL OR length(summary) = 0)) AS pending_summaries
+      `, [t])).rows[0];
+      pendingVectors += Number(r.pending_vectors);
+      pendingSummaries += Number(r.pending_summaries);
+    }
+    res.json({ pendingVectors, pendingSummaries, tenants: slugs.length });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
 export default router;
