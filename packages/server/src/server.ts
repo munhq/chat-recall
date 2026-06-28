@@ -261,14 +261,18 @@ app.listen(PORT, HOST, () => {
   // it's a no-op and we say so once instead of spinning a useless timer.
   if (isServerMode()) {
     if (serverSummaryConfig()) {
-      const SUMMARY_SWEEP_MS = 3 * 60 * 1000; // every 3 minutes
-      const SUMMARY_BATCH = 10;                // small batch per tick
+      const SUMMARY_SWEEP_MS = 60 * 1000;      // every minute — keep draining
+      // Concurrency drives throughput: gemma4 is slow per call, so generate
+      // several at once, load-balanced across the KEDA-scaled OVMS summaries
+      // replicas. Batch is sized to keep all lanes fed within a sweep.
+      const SUMMARY_CONCURRENCY = Math.max(1, Number(process.env.SUMMARY_CONCURRENCY) || 1);
+      const SUMMARY_BATCH = Math.max(SUMMARY_CONCURRENCY * 4, Number(process.env.SUMMARY_BATCH) || 0) || SUMMARY_CONCURRENCY * 4;
       let sweepInFlight = false;               // guard against overlap on slow LLMs
       const sweep = async (): Promise<void> => {
         if (sweepInFlight) return;
         sweepInFlight = true;
         try {
-          const r = await generateMissingSummariesAllTenants({ limit: SUMMARY_BATCH });
+          const r = await generateMissingSummariesAllTenants({ limit: SUMMARY_BATCH, concurrency: SUMMARY_CONCURRENCY });
           if (r.generated > 0 || r.failed > 0) {
             console.log(`  Summary sweep: ${r.generated} generated, ${r.failed} failed, ${r.skipped} skipped (${r.tenants} tenant(s))`);
           }

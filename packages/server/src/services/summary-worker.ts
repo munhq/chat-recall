@@ -200,6 +200,19 @@ export interface GenerateMissingOptions {
    */
   tenant?: string;
   /**
+   * How many summaries to generate concurrently. gemma4 generation is slow on
+   * CPU (~15-40s each), so sequential generation can't keep up with a backlog.
+   * Concurrent requests are load-balanced across the OVMS summaries replicas
+   * (KEDA-scaled). Default 1 (safe for rate-limited hosted APIs). Per tenant.
+   */
+  concurrency?: number;
+  /**
+   * Per-summary hard timeout (ms). A stalled generation must not pin a
+   * concurrency slot forever; abandon it (recorded as a failure → backed off)
+   * so the slot frees for the next session.
+   */
+  timeoutMs?: number;
+  /**
    * Summarizer. Injectable so the sweep is testable without a real LLM.
    * Defaults to a SummaryGenerator built from `serverSummaryConfig()`.
    * When no provider is configured AND no override is supplied, the sweep
@@ -240,82 +253,91 @@ export async function generateMissingSummaries(
 
   const store = await createStore({ tenant: opts.tenant });
   const cache = await createMetadataCache({ tenant: opts.tenant });
+  const concurrency = Math.max(1, opts.concurrency ?? 1);
+  const timeoutMs = Math.max(1000, opts.timeoutMs ?? 120000);
   let generated = 0;
   let failed = 0;
   let skipped = 0;
   const now = Date.now();
 
+  // Per-summary hard timeout: a stalled gemma4 generation must not pin a
+  // concurrency slot forever. Race the summarize call against a timer.
+  const summarizeBounded = async (content: SessionContent): Promise<string> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`summary timed out after ${timeoutMs}ms`)), timeoutMs);
+    });
+    try {
+      return await Promise.race([summarize!(content), timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
   try {
-    // Walk indexed sessions newest-first. We over-fetch relative to `limit`
-    // because most rows already have a summary (or no envelope) and get
-    // skipped — we want up to `limit` *generations*, not up to `limit`
-    // *candidates*. A generous cap bounds the scan on huge installs.
+    // Phase 1 — gather up to `limit` candidates. These checks are cheap DB
+    // reads (no LLM), so they stay sequential; skips don't cost a generation.
     const SCAN_CAP = 5000;
     const items = await store.listItems('session' as SourceType, SCAN_CAP, 0);
+    const candidates: Array<{ id: string; mtime?: number; firstPrompt?: string; content: SessionContent }> = [];
 
     for (const item of items) {
-      if (generated >= limit) break;
+      if (candidates.length >= limit) break;
 
       const cached = await cache.get(item.id);
-      if (cached?.summary && cached.summary.trim().length > 0) {
-        skipped++;
-        continue; // already summarized
-      }
+      if (cached?.summary && cached.summary.trim().length > 0) { skipped++; continue; }
 
-      // Backoff: don't retry a session that keeps failing until the window
-      // elapses. Without this a permanently-misconfigured provider would
-      // burn the whole sweep on the same doomed sessions every tick.
+      // Backoff: skip a session that keeps failing until the window elapses.
       const err = await cache.getSummaryError(item.id);
       if (err && err.attemptCount >= MAX_SUMMARY_ATTEMPTS && now - err.lastFailedAt < RETRY_WINDOW_MS) {
         skipped++;
         continue;
       }
 
-      // getCachedContent uses `mtime >= ?`; passing 0 returns the latest
-      // synced envelope regardless of the metadata row's mtime (which may
-      // lag mid-backfill).
+      // mtime>=0 returns the latest synced envelope regardless of metadata mtime.
       const raw = await store.getCachedContent(item.id, 'session', 0);
-      if (!raw) {
-        skipped++;
-        continue; // not synced yet — nothing to summarize from
-      }
+      if (!raw) { skipped++; continue; } // not synced yet
 
       let envelope: CachedEnvelope;
-      try {
-        envelope = JSON.parse(raw) as CachedEnvelope;
-      } catch {
-        skipped++;
-        continue; // corrupt envelope — leave it for a fresh sync
-      }
+      try { envelope = JSON.parse(raw) as CachedEnvelope; } catch { skipped++; continue; }
 
       const content = envelopeToSessionContent(item.id, envelope);
-      if (!content) {
-        skipped++;
-        continue;
-      }
+      if (!content) { skipped++; continue; }
 
-      try {
-        const summary = await summarize(content);
-        if (!summary || summary.trim().length === 0) {
-          throw new Error('summarizer returned empty summary');
-        }
-        await cache.set({
-          sessionId: item.id,
-          firstPrompt: cached?.firstPrompt || content.firstPrompt.slice(0, 200),
-          summary,
-          summarySource,
-          mtime: item.mtime || now,
-          indexedAt: now,
-        });
-        await cache.clearSummaryError(item.id);
-        generated++;
-      } catch (e) {
-        // Record + continue. One failure must not stop the sweep.
-        const msg = e instanceof Error ? e.message : String(e);
-        try { await cache.recordSummaryError(item.id, msg); } catch { /* best-effort */ }
-        failed++;
-      }
+      candidates.push({ id: item.id, mtime: item.mtime, firstPrompt: cached?.firstPrompt, content });
     }
+
+    // Phase 2 — generate concurrently. gemma4 is slow per call (~15-40s on
+    // CPU), so a bounded pool of `concurrency` keeps the KEDA-scaled OVMS
+    // summaries replicas busy. A timed-out/failed lane is recorded + backed off
+    // and the slot moves on — one bad session never stalls the sweep.
+    let cursor = 0;
+    const lane = async (): Promise<void> => {
+      for (let i = cursor++; i < candidates.length; i = cursor++) {
+        const c = candidates[i];
+        try {
+          const summary = await summarizeBounded(c.content);
+          if (!summary || summary.trim().length === 0) {
+            throw new Error('summarizer returned empty summary');
+          }
+          await cache.set({
+            sessionId: c.id,
+            firstPrompt: c.firstPrompt || c.content.firstPrompt.slice(0, 200),
+            summary,
+            summarySource,
+            mtime: c.mtime || now,
+            indexedAt: now,
+          });
+          await cache.clearSummaryError(c.id);
+          generated++;
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          try { await cache.recordSummaryError(c.id, msg); } catch { /* best-effort */ }
+          failed++;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, candidates.length) }, () => lane()));
   } finally {
     await store.close();
     await cache.close();
