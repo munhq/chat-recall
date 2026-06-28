@@ -62,11 +62,18 @@ export async function embedMissingVectors(opts: BackfillOptions = {}): Promise<B
         const r = await vs.embedMissing(batch);
         embedded += r.embedded;
         perTenant += r.embedded;
-        if (r.scanned < batch) break; // no more missing for this tenant
+        // Break when the tenant is drained (scanned < batch) OR the sweep made
+        // no progress (embedded 0 on a full batch = a failing/blocked embed).
+        // Without the embedded===0 guard a failing batch spins forever — it
+        // can't advance perTenant and scanned never drops below batch — which
+        // hammered OVMS in a tight loop the whole time embeddings was down.
+        if (r.scanned < batch || r.embedded === 0) break;
       }
       if (perTenant > 0) touched++;
-    } catch {
-      // One bad tenant must never abort the whole sweep — continue.
+    } catch (e) {
+      // One bad tenant must never abort the whole sweep — continue, but never
+      // silently: a swallowed error here is an invisible stall.
+      console.error(`  Vector backfill: tenant ${tenant} errored, skipping: ${e instanceof Error ? e.message : String(e)}`);
       continue;
     }
   }
