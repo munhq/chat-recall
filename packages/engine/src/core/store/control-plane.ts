@@ -90,6 +90,10 @@ export interface ControlPlane {
    */
   deleteTenant(tenant: string): Promise<boolean>;
 
+  /** All tenant slugs. For cross-tenant background sweeps (e.g. the vector
+   *  backfill worker), since RLS hides other tenants from a scoped query. */
+  listTenants(): Promise<string[]>;
+
   // ── Team toolkit artifacts ──
   /** Publish (or re-publish: version bump in place) an artifact. */
   publishArtifact(teamSlug: string, a: { type: string; tool: string; name: string; bodyB64: string; pinnedTo?: string | null; authorSub: string }): Promise<ArtifactMeta>;
@@ -274,6 +278,10 @@ class SqliteControlPlane implements ControlPlane {
     return this.db.prepare(
       `SELECT user_sub, email, role, created_at FROM cp_memberships WHERE team_slug = ? ORDER BY role DESC, created_at`,
     ).all(teamSlug) as TeamMember[];
+  }
+
+  async listTenants(): Promise<string[]> {
+    return (this.db.prepare(`SELECT tenant FROM cp_tenants ORDER BY tenant`).all() as { tenant: string }[]).map(r => r.tenant);
   }
 
   async publishArtifact(teamSlug: string, a: { type: string; tool: string; name: string; bodyB64: string; pinnedTo?: string | null; authorSub: string }): Promise<ArtifactMeta> {
@@ -532,6 +540,10 @@ class PgControlPlane implements ControlPlane {
       `SELECT user_sub, email, role, created_at FROM memberships WHERE team_slug = $1 ORDER BY role DESC, created_at`,
       [teamSlug],
     ) as Promise<TeamMember[]>;
+  }
+
+  async listTenants(): Promise<string[]> {
+    return (await this.q(`SELECT tenant FROM tenants ORDER BY tenant`)).map((r: any) => r.tenant as string);
   }
 
   async publishArtifact(teamSlug: string, a: { type: string; tool: string; name: string; bodyB64: string; pinnedTo?: string | null; authorSub: string }): Promise<ArtifactMeta> {
