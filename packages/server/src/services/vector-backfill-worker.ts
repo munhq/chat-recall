@@ -51,12 +51,12 @@ export async function embedMissingVectors(opts: BackfillOptions = {}): Promise<B
   let embedded = 0;
   let touched = 0;
   for (const tenant of tenants) {
-    const vs = createVectorStore(embedder, { tenant }) as unknown as {
-      init(): Promise<void>;
-      embedMissing(limit: number): Promise<{ embedded: number; scanned: number }>;
-    };
     try {
-      await vs.init();
+      // createVectorStore is async and init()s the store internally — await it
+      // (don't call init() again). embedMissing lives on the pg vector store.
+      const vs = await createVectorStore(embedder, { tenant }) as unknown as {
+        embedMissing(limit: number): Promise<{ embedded: number; scanned: number }>;
+      };
       let perTenant = 0;
       while (perTenant < perTenantCap) {
         const r = await vs.embedMissing(batch);
