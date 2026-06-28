@@ -218,7 +218,13 @@ export class PgVectorStore implements VectorStore {
     if (rows.length === 0) return { embedded: 0, scanned: 0 };
     let embeddings: number[][] | null = null;
     try { embeddings = await (this.embedder as any).embed(rows.map(r => r.text)); }
-    catch (e) { this.lastError = e instanceof Error ? e.message : String(e); return { embedded: 0, scanned: rows.length }; }
+    catch (e) {
+      this.lastError = e instanceof Error ? e.message : String(e);
+      // Do NOT swallow silently: a stuck backfill (every sweep embeds 0 with no
+      // log) is invisible and cost real debugging time. Surface the reason.
+      console.warn(`[vector] embedMissing: embed failed for tenant=${this.t} (${rows.length} chunks): ${this.lastError.slice(0, 300)}`);
+      return { embedded: 0, scanned: rows.length };
+    }
     if (!embeddings) return { embedded: 0, scanned: rows.length };
     let n = 0;
     for (let k = 0; k < rows.length; k++) {
