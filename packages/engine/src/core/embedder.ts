@@ -220,18 +220,21 @@ export class OpenAICompatibleEmbedder implements Embedder {
   }
 
   async embed(texts: string[]): Promise<number[][]> {
-    // Asymmetric embedding models (e.g. NVIDIA's nv-embedqa-*) require a
-    // distinct input_type for documents vs queries. We pass "passage" for
-    // bulk indexing here.
-    return this.embedWithType(texts, 'passage');
+    // Bulk passage embedding (the backfill). RESILIENT: if a sub-batch times out
+    // / fails, its texts come back as holes instead of throwing — so the
+    // sub-batches that DID succeed still persist (the caller skips holes and
+    // retries them next sweep). Without this, one slow sub-batch (a cold pod, a
+    // long chunk) aborted the whole 256-chunk batch → 0 progress, forever.
+    return this.embedWithType(texts, 'passage', true);
   }
 
   async embedQuery(query: string): Promise<number[]> {
+    // A single query is all-or-nothing — let it throw on failure (no resilience).
     const [v] = await this.embedWithType([query], 'query');
     return v;
   }
 
-  private async embedWithType(texts: string[], inputType: 'query' | 'passage'): Promise<number[][]> {
+  private async embedWithType(texts: string[], inputType: 'query' | 'passage', resilient = false): Promise<number[][]> {
     // Split into BATCH_SIZE slices, then drain them through a bounded worker
     // pool of CONCURRENCY in-flight requests. Results are written back by index
     // so the returned order matches `texts` regardless of completion order.
@@ -239,16 +242,28 @@ export class OpenAICompatibleEmbedder implements Embedder {
     for (let i = 0; i < texts.length; i += OpenAICompatibleEmbedder.BATCH_SIZE) {
       slices.push(texts.slice(i, i + OpenAICompatibleEmbedder.BATCH_SIZE));
     }
-    const results: number[][][] = new Array(slices.length);
+    // Per-slice results; a failed slice (resilient mode) stays a null-filled
+    // array so flat() keeps index alignment and the caller skips the holes.
+    const results: (number[] | null)[][] = new Array(slices.length);
     let cursor = 0;
+    let failed = 0;
     const worker = async (): Promise<void> => {
       for (let idx = cursor++; idx < slices.length; idx = cursor++) {
-        results[idx] = await this.embedBatch(slices[idx], inputType);
+        try {
+          results[idx] = await this.embedBatch(slices[idx], inputType);
+        } catch (e) {
+          if (!resilient) throw e;
+          results[idx] = slices[idx].map(() => null);
+          failed += slices[idx].length;
+        }
       }
     };
     const lanes = Math.max(1, Math.min(OpenAICompatibleEmbedder.CONCURRENCY, slices.length));
     await Promise.all(Array.from({ length: lanes }, () => worker()));
-    return results.flat();
+    if (failed > 0) {
+      console.warn(`[embedder] ${failed}/${texts.length} texts failed this batch — persisting the rest, will retry the failures.`);
+    }
+    return results.flat() as number[][];
   }
 
   // Retry-wrapping front for embedBatchOnce. A self-hosted CPU server (OVMS)
