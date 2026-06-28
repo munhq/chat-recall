@@ -178,6 +178,9 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
   }, [activeTab, filtered]);
 
   const [matrixOpen, setMatrixOpen] = useState(false);
+  // Coverage (the tool×primitive what's-where matrix) is the default — it's the
+  // actionable view; Library browses individual artifacts.
+  const [view, setView] = useState<'coverage' | 'library'>('coverage');
 
   const refreshAfterMutation = () => {
     getToolkitStatus().then(setStatus).catch(() => {});
@@ -214,14 +217,13 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
             Skills, MCPs, and other config-y primitives — cross-tool, promotable.
           </span>
           <div className="cr-page-header-spacer" style={{ flex: 1 }} />
-          <Button
-            data-testid="toolkit-sync-all"
-            variant="primary"
-            size="sm"
-            onClick={() => setMatrixOpen(true)}
-          >
-            Sync across tools
-          </Button>
+          <div style={{ minWidth: 240 }}>
+            <SegmentedControl
+              value={view}
+              onChange={(v) => setView(v as 'coverage' | 'library')}
+              options={[{ value: 'coverage', label: 'Coverage' }, { value: 'library', label: 'Library' }]}
+            />
+          </div>
         </div>
       </div>
 
@@ -231,6 +233,18 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
           onMutated={refreshAfterMutation}
         />
       )}
+
+      {/* COVERAGE: the tool×primitive what's-where matrix, front and centre */}
+      {view === 'coverage' && (
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, padding: '12px 24px 16px' }}>
+          <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 8 }}>
+            Which tool has which skill / MCP / command / agent. A gap = not synced there. Click a cell to queue a copy, or ⚡ Sync everything.
+          </div>
+          <SyncMatrix inline onClose={() => {}} onMutated={refreshAfterMutation} />
+        </div>
+      )}
+
+      {view === 'library' && (<>
 
       {/* Tool + sub-tab filters live in the global Sidebar. Just the
           search box and detail panel ride here. */}
@@ -364,6 +378,7 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
           )}
         </div>
       </div>
+      </>)}
     </div>
   );
 }
@@ -769,7 +784,7 @@ const SYNC_TYPE_TABS: Array<{ id: SyncType; label: string }> = [
 /** DELETE is only implemented server-side for skills + MCPs. */
 const REMOVABLE_TYPES = new Set<SyncType>(['skill', 'mcp']);
 
-function SyncMatrix({ onClose, onMutated }: { onClose: () => void; onMutated: () => void }) {
+function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMutated: () => void; inline?: boolean }) {
   const [matrix, setMatrix] = useState<ToolkitMatrix | null>(null);
   const [activeType, setActiveType] = useState<SyncType>('skill');
   const [search, setSearch] = useState('');
@@ -908,24 +923,27 @@ function SyncMatrix({ onClose, onMutated }: { onClose: () => void; onMutated: ()
   const adds = [...pending.values()].filter(v => v === 'add').length;
   const removes = [...pending.values()].filter(v => v === 'remove').length;
 
-  // Lock body scroll while modal is open.
+  // Lock body scroll while the MODAL is open (not inline).
   useEffect(() => {
+    if (inline) return;
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => { document.body.style.overflow = prev; };
-  }, []);
+  }, [inline]);
 
   return (
     <div
       data-testid="toolkit-sync-matrix"
-      style={{
+      style={inline ? { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } : {
         position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
         display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
       }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={inline ? undefined : (e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        style={{
+        style={inline ? {
+          width: '100%', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        } : {
           width: 'min(1100px, 96vw)', maxHeight: '92vh',
           background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-2)',
           borderRadius: 'var(--cr-radius-md)', display: 'flex', flexDirection: 'column',
