@@ -128,7 +128,7 @@ function MissionControl({ canonicalId, kgEntity, toolFilter, code, onJump, onOpe
   if (loading && !project) return <div style={{ padding: 30, color: 'var(--cr-fg-3)' }}>Loading project…</div>;
   const hasGraph = !!project?.map?.nodes?.length;
   return (
-    <div style={{ padding: '18px 24px 60px', display: 'grid', gap: 22 }}>
+    <div style={{ padding: '18px 24px 60px', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 22 }}>
       {/* 1 — DO NEXT: one ranked stream (fixes + rules + tasks) */}
       <section><DoNext recs={recs} actions={actions} projectId={project?.projectId ?? canonicalId} hasCode={!!project} onReload={reload} /></section>
 
@@ -215,10 +215,10 @@ function DoNextRow({ item, projectId, onReload }: { item: DoItem; projectId: str
   const done = async () => { if (item.action) { await patchCodeAction(item.action.id, { status: 'done', queued: false }); onReload(); } };
   return (
     <div style={{ padding: '9px 10px', borderBottom: '1px solid var(--cr-line-1)' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div className="cr-wrap-mobile" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <Chip kind={item.badge.kind} size="sm">{item.badge.label}</Chip>
         <Chip kind="mono" size="sm">{item.tag}</Chip>
-        <span style={{ fontSize: 13, fontWeight: 500, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.title}</span>
+        <span className="cr-donext-title" style={{ fontSize: 13, fontWeight: 500, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.title}</span>
         {isRec
           ? <Button variant="primary" onClick={apply} disabled={busy}>{busy ? 'applying…' : item.rec!.kind === 'rule' ? 'Apply to CLAUDE.md' : item.rec!.kind === 'label' ? 'Apply label' : item.rec!.kind === 'skill' ? 'Install skill' : 'Apply'}</Button>
           : <Button variant="primary" onClick={copy}>{copied ? 'copied ✓' : 'Copy prompt'}</Button>}

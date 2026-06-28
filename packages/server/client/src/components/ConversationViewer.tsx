@@ -1186,7 +1186,7 @@ function MessageBlock({ message }: { message: Message }) {
                 <SyntaxHighlighter
                   language={match[1]}
                   style={vscDarkPlus}
-                  customStyle={{ margin: '0.5rem 0', borderRadius: '6px' }}
+                  customStyle={{ margin: '0.5rem 0', borderRadius: '6px', maxWidth: '100%', overflowX: 'auto' }}
                 >
                   {String(children).replace(/\n$/, '')}
                 </SyntaxHighlighter>

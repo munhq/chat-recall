@@ -414,6 +414,18 @@ a:hover { text-decoration: underline; }
 .cr-segmented-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; margin-bottom: 20px; }
 .cr-segmented-scroll::-webkit-scrollbar { display: none; }
 
+/* ────────────────────── Conversation message content ──────────────────────
+ * Long code/JSON/URLs in rendered messages must never force the whole pane to
+ * grow horizontally. Constrain code blocks to scroll within their own box and
+ * let prose/inline-code break. Applies on every viewport, not just mobile. */
+.message { min-width: 0; }
+.message pre { max-width: 100%; overflow-x: auto; }
+.message pre code { white-space: pre; }
+.message :not(pre) > code { word-break: break-word; overflow-wrap: anywhere; }
+.message p, .message li, .message a { overflow-wrap: anywhere; }
+.message table { display: block; max-width: 100%; overflow-x: auto; }
+.message img { max-width: 100%; height: auto; }
+
 /* ────────────────────── Reduced motion ────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   .cr-conv-row, .cr-conv-skeleton-bar,
@@ -432,6 +444,12 @@ a:hover { text-decoration: underline; }
   :root { --cr-sidebar-w: 280px; --cr-convos-w: 100%; --cr-header-h: 56px; }
   .cr-desktop-only { display: none !important; }
   .app-row { position: relative; }
+  /* Flexbox min-width gotcha: in-flow view panes default to min-width:auto and
+   * refuse to shrink below their content's min-content width, forcing horizontal
+   * overflow that .app-row then clips (cutting off content). Allow them to shrink
+   * to the viewport. The off-canvas sidebar/conversation-column are position:absolute
+   * so they're unaffected. */
+  .app-row > * { min-width: 0 !important; }
 
   .cr-topbar { padding: 0 12px !important; gap: 8px !important; }
   .cr-topbar-brand-text, .cr-topbar-brand-tag { display: none !important; }
@@ -502,6 +520,23 @@ a:hover { text-decoration: underline; }
   .cr-dashboard-inner { padding: 20px 14px 64px !important; }
   .cr-stat-grid-4 { grid-template-columns: repeat(2, 1fr) !important; gap: 16px !important; }
   .cr-stat-grid-2 { grid-template-columns: 1fr !important; }
+
+  /* Responsive grid utilities — these win over inline `gridTemplateColumns`
+   * because inline styles lose to author `!important`. Tag any fixed
+   * multi-column grid with one of these so it reflows on phones. */
+  .cr-stack-mobile { grid-template-columns: 1fr !important; }
+  .cr-cols2-mobile { grid-template-columns: repeat(2, 1fr) !important; }
+  /* Let dense flex header/toolbar rows wrap instead of crushing their children. */
+  .cr-wrap-mobile { flex-wrap: wrap !important; }
+  .cr-wrap-mobile > * { min-width: 0; }
+  /* In a wrapped action row, the title claims the whole first line so the
+   * action buttons drop below it instead of starving it to an ellipsis. */
+  .cr-donext-title {
+    flex: 1 0 100% !important; white-space: normal !important;
+    overflow: visible !important; text-overflow: clip !important; margin-bottom: 2px;
+  }
+  /* Generic guard: nothing inside the app may force horizontal scroll. */
+  img, svg, canvas, video, table, pre { max-width: 100%; }
 
   h1 { font-size: 20px; }
   h2 { font-size: 18px; }
