@@ -25,7 +25,11 @@
 
 services:
   db:
-    image: postgres:18
+    # pgvector/pgvector:pg18 = official Postgres 18 + the `vector` extension
+    # preinstalled. Data dir is identical to postgres:18 (same PG major), so this
+    # is a drop-in swap. The server runs `CREATE EXTENSION IF NOT EXISTS vector`
+    # at startup, which now succeeds → semantic (pgvector) search works.
+    image: pgvector/pgvector:pg18
     environment:
       POSTGRES_USER: chat_recall
       POSTGRES_DB: chat_recall
