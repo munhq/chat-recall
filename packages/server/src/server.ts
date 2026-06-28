@@ -268,17 +268,32 @@ app.listen(PORT, HOST, () => {
       const SUMMARY_CONCURRENCY = Math.max(1, Number(process.env.SUMMARY_CONCURRENCY) || 1);
       const SUMMARY_BATCH = Math.max(SUMMARY_CONCURRENCY * 4, Number(process.env.SUMMARY_BATCH) || 0) || SUMMARY_CONCURRENCY * 4;
       let sweepInFlight = false;               // guard against overlap on slow LLMs
+      // Cross-replica singleton: unlike the vector backfill (which uses a
+      // SKIP-LOCKED work queue so workers self-coordinate), the summary worker
+      // still scans, so running it on every replica would duplicate generation.
+      // A pg advisory lock makes exactly one replica summarise at a time.
+      const SUMMARY_LOCK_KEY = 0x53554d4d; // "SUMM"
       const sweep = async (): Promise<void> => {
         if (sweepInFlight) return;
         sweepInFlight = true;
+        const { openPgPool } = await import('@chat-recall/engine/core/store/pg-pool.js');
+        const pool = await openPgPool(process.env.DATABASE_URL || '');
+        const client = await pool.connect();
         try {
-          const r = await generateMissingSummariesAllTenants({ limit: SUMMARY_BATCH, concurrency: SUMMARY_CONCURRENCY });
-          if (r.generated > 0 || r.failed > 0) {
-            console.log(`  Summary sweep: ${r.generated} generated, ${r.failed} failed, ${r.skipped} skipped (${r.tenants} tenant(s))`);
+          const got = (await client.query('SELECT pg_try_advisory_lock($1) AS ok', [SUMMARY_LOCK_KEY])).rows[0].ok;
+          if (!got) return; // another replica holds it — skip, no duplicate work
+          try {
+            const r = await generateMissingSummariesAllTenants({ limit: SUMMARY_BATCH, concurrency: SUMMARY_CONCURRENCY });
+            if (r.generated > 0 || r.failed > 0) {
+              console.log(`  Summary sweep: ${r.generated} generated, ${r.failed} failed, ${r.skipped} skipped (${r.tenants} tenant(s))`);
+            }
+          } finally {
+            await client.query('SELECT pg_advisory_unlock($1)', [SUMMARY_LOCK_KEY]);
           }
         } catch (err) {
           console.error('Summary sweep failed:', err);
         } finally {
+          client.release();
           sweepInFlight = false;
         }
       };
