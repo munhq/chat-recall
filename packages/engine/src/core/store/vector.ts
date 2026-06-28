@@ -1,5 +1,5 @@
 import { currentTenant } from './tenant-context.js';
-import { tenantQuery } from './pg-pool.js';
+import { tenantQuery, tenantTx } from './pg-pool.js';
 /**
  * VectorStore driver — abstracts the embedding/vector layer behind the same
  * storage flag as the relational stores.
@@ -208,39 +208,50 @@ export class PgVectorStore implements VectorStore {
    */
   async embedMissing(limit = 200): Promise<{ embedded: number; scanned: number }> {
     if (!this.tableReady || !this.embedder || !this.vectorOk) return { embedded: 0, scanned: 0 };
-    const rows: any[] = await this.q(
-      `SELECT c.chunk_id, c.item_id, c.source_type, c.title, c.text, c.chunk_type, c.project_path, c.file_path, c.mtime
-         FROM memory_chunks c
-         LEFT JOIN memory_vectors v ON v.chunk_id = c.chunk_id
-         WHERE v.chunk_id IS NULL AND c.text <> ''
-         LIMIT $1`,
-      [limit]);
-    if (rows.length === 0) return { embedded: 0, scanned: 0 };
-    let embeddings: number[][] | null = null;
-    try { embeddings = await (this.embedder as any).embed(rows.map(r => r.text)); }
-    catch (e) {
-      this.lastError = e instanceof Error ? e.message : String(e);
-      // Do NOT swallow silently: a stuck backfill (every sweep embeds 0 with no
-      // log) is invisible and cost real debugging time. Surface the reason.
-      console.warn(`[vector] embedMissing: embed failed for tenant=${this.t} (${rows.length} chunks): ${this.lastError.slice(0, 300)}`);
-      return { embedded: 0, scanned: rows.length };
-    }
-    if (!embeddings) return { embedded: 0, scanned: rows.length };
-    let n = 0;
-    for (let k = 0; k < rows.length; k++) {
-      const r = rows[k];
-      const emb = embeddings[k];
-      if (!emb) continue;
-      const resolved = r.project_path ? resolveProjectId(r.project_path) : null;
-      const pid = resolved && resolved.source !== 'ignored' ? resolved.id : '';
-      await this.q(
-        `INSERT INTO memory_vectors (tenant,chunk_id,item_id,source_type,title,text,chunk_type,project_path,project_id,file_path,mtime,embedding)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::vector)
-         ON CONFLICT (tenant,chunk_id) DO UPDATE SET text=excluded.text, embedding=excluded.embedding`,
-        [this.t, r.chunk_id, r.item_id, r.source_type, r.title || '', r.text, r.chunk_type || '', r.project_path || '', pid, r.file_path || '', this.intMs(r.mtime), this.vecLiteral(emb)]);
-      n++;
-    }
-    return { embedded: n, scanned: rows.length };
+    // WORK QUEUE via FOR UPDATE ... SKIP LOCKED. The whole claim→embed→insert
+    // runs in ONE transaction: the SELECT locks a disjoint batch of un-embedded
+    // chunks (SKIP LOCKED ⇒ a concurrent worker grabs a DIFFERENT batch, never
+    // the same rows), the embed happens while the locks are held, the inserts
+    // land, COMMIT releases the locks — and by then those rows have vectors so
+    // they're never re-claimed. This makes the backfill safe to run on MANY
+    // workers at once (chat-recall replicas) and across MANY tenants/customers
+    // with zero duplicated embedding. Partial/failed rows just stay unlocked
+    // without a vector and get claimed again on a later sweep.
+    return tenantTx(this.pool, this.t, async (client: any) => {
+      const rows: any[] = (await client.query(
+        `SELECT c.chunk_id, c.item_id, c.source_type, c.title, c.text, c.chunk_type, c.project_path, c.file_path, c.mtime
+           FROM memory_chunks c
+           WHERE c.tenant = $1 AND length(c.text) > 0
+             AND NOT EXISTS (
+               SELECT 1 FROM memory_vectors v WHERE v.tenant = c.tenant AND v.chunk_id = c.chunk_id)
+           LIMIT $2
+           FOR UPDATE OF c SKIP LOCKED`,
+        [this.t, limit])).rows;
+      if (rows.length === 0) return { embedded: 0, scanned: 0 };
+      let embeddings: number[][] | null = null;
+      try { embeddings = await (this.embedder as any).embed(rows.map((r: any) => r.text)); }
+      catch (e) {
+        this.lastError = e instanceof Error ? e.message : String(e);
+        console.warn(`[vector] embedMissing: embed failed for tenant=${this.t} (${rows.length} chunks): ${this.lastError.slice(0, 300)}`);
+        return { embedded: 0, scanned: rows.length };
+      }
+      if (!embeddings) return { embedded: 0, scanned: rows.length };
+      let n = 0;
+      for (let k = 0; k < rows.length; k++) {
+        const r = rows[k];
+        const emb = embeddings[k];
+        if (!emb) continue; // resilient embed left a hole — leave it for a later claim
+        const resolved = r.project_path ? resolveProjectId(r.project_path) : null;
+        const pid = resolved && resolved.source !== 'ignored' ? resolved.id : '';
+        await client.query(
+          `INSERT INTO memory_vectors (tenant,chunk_id,item_id,source_type,title,text,chunk_type,project_path,project_id,file_path,mtime,embedding)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::vector)
+           ON CONFLICT (tenant,chunk_id) DO UPDATE SET text=excluded.text, embedding=excluded.embedding`,
+          [this.t, r.chunk_id, r.item_id, r.source_type, r.title || '', r.text, r.chunk_type || '', r.project_path || '', pid, r.file_path || '', this.intMs(r.mtime), this.vecLiteral(emb)]);
+        n++;
+      }
+      return { embedded: n, scanned: rows.length };
+    });
   }
 
   async search(...a: Args<'search'>): Promise<MemorySearchResult[]> {
