@@ -223,8 +223,15 @@ function AppInner() {
     if (!enabledViews.has(view)) setView('search');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabledViews]);
-  const [toolFilter, setToolFilter] = useState<string>('all');
-  const [projectFilter, setProjectFilter] = useState<string | null>(null);
+  // toolFilter / projectFilter are URL-backed so a filtered view is shareable
+  // and survives refresh + back/forward (e.g. ?project=git:…&tool=claude).
+  // Read during init so the first data fetch already uses them.
+  const [toolFilter, setToolFilter] = useState<string>(() => {
+    try { return new URLSearchParams(window.location.search).get('tool') || 'all'; } catch { return 'all'; }
+  });
+  const [projectFilter, setProjectFilter] = useState<string | null>(() => {
+    try { return new URLSearchParams(window.location.search).get('project'); } catch { return null; }
+  });
   const [query, setQuery] = useState('');
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [selectionNonce, setSelectionNonce] = useState(0);
@@ -529,15 +536,42 @@ function AppInner() {
     if (v && ['home', 'projects', 'search', 'activity', 'memory', 'security', 'code', 'toolkit', 'dashboard'].includes(v)) setView(v as ViewMode);
     const id = params.get('session');
     if (id && looksLikeSessionId(id)) handleSelectSession(id);
-    // Back/forward restore the selection they recorded.
+    // Back/forward restore the full navigational state recorded in that URL
+    // snapshot — view, project, tool and the open session — so the back button
+    // actually walks where you've been, not just the conversation selection.
     const onPop = () => {
-      const sid = new URLSearchParams(window.location.search).get('session');
+      const p = new URLSearchParams(window.location.search);
+      const pv = p.get('view');
+      if (pv && URL_VIEWS.has(pv as ViewMode)) setView(pv as ViewMode);
+      setProjectFilter(p.get('project'));
+      setToolFilter(p.get('tool') || 'all');
+      const sid = p.get('session');
       if (sid && looksLikeSessionId(sid)) handleSelectSession(sid);
     };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  // Keep ?project= / ?tool= current. replaceState — filters are incidental, not
+  // history-worthy. Default values (no project, tool=all) drop the param for
+  // clean URLs.
+  useEffect(() => {
+    try {
+      const url = new URL(window.location.href);
+      let changed = false;
+      if ((url.searchParams.get('project') || null) !== projectFilter) {
+        if (projectFilter) url.searchParams.set('project', projectFilter);
+        else url.searchParams.delete('project');
+        changed = true;
+      }
+      if ((url.searchParams.get('tool') || 'all') !== toolFilter) {
+        if (toolFilter && toolFilter !== 'all') url.searchParams.set('tool', toolFilter);
+        else url.searchParams.delete('tool');
+        changed = true;
+      }
+      if (changed) window.history.replaceState(window.history.state, '', url);
+    } catch { /* best-effort */ }
+  }, [projectFilter, toolFilter]);
   // Keep ?view= current (replace, not push — tab switches aren't history).
   useEffect(() => {
     try {

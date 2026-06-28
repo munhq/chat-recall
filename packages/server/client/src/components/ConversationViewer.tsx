@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { useUrlState } from '../services/url-state';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -80,13 +81,22 @@ export default function ConversationViewer({
   // Default to the actual conversation messages, not the Gemini summary.
   // Caller can override (e.g. Activity passes 'diff' since the user just
   // clicked a row of file edits and expects to see the changes).
-  const [viewMode, setViewMode] = useState<ViewMode>((initialTab as ViewMode) || 'full');
+  // Tab is URL-backed (?tab=) so a specific lens on a session is shareable
+  // ("this session → Diff"). replaceState keeps tab flips out of history;
+  // the param clears when the viewer unmounts.
+  const VIEWER_TABS = ['summary', 'outcome', 'firstPrompt', 'full', 'trace', 'files', 'diff', 'commits', 'security', 'raw', 'related'];
+  const [viewModeRaw, setViewModeRaw] = useUrlState('tab', 'full', {
+    valid: (v) => VIEWER_TABS.includes(v),
+    clearOnUnmount: true,
+  });
+  const viewMode = viewModeRaw as ViewMode;
+  const setViewMode = setViewModeRaw as (v: ViewMode) => void;
 
-  // When the user navigates between sessions and the caller hints at a
-  // different tab (Activity → diff, Search → full), respect it.
+  // When the caller hints at a tab (Activity → diff, Security → security),
+  // that explicit intent wins over whatever the URL had.
   useEffect(() => {
     if (initialTab) setViewMode(initialTab as ViewMode);
-  }, [sessionId, initialTab]);
+  }, [sessionId, initialTab]); // eslint-disable-line react-hooks/exhaustive-deps
   const [filter, setFilter] = useState<MessageFilter>('all');
   const [rawData, setRawData] = useState<any[]>([]);
   const [rawLoading, setRawLoading] = useState(false);
