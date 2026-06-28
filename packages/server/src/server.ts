@@ -38,7 +38,7 @@ import teamArtifactsRouter from './routes/team-artifacts.js';
 import securityConfigRouter from './routes/security-config.js';
 import billingRouter from './routes/billing.js';
 import { capabilities, isServerMode } from './util/mode.js';
-import { generateMissingSummaries, serverSummaryConfig } from './services/summary-worker.js';
+import { generateMissingSummariesAllTenants, serverSummaryConfig } from './services/summary-worker.js';
 import { embedMissingVectors, serverEmbedderConfigured } from './services/vector-backfill-worker.js';
 
 const app = express();
@@ -268,9 +268,9 @@ app.listen(PORT, HOST, () => {
         if (sweepInFlight) return;
         sweepInFlight = true;
         try {
-          const r = await generateMissingSummaries({ limit: SUMMARY_BATCH });
+          const r = await generateMissingSummariesAllTenants({ limit: SUMMARY_BATCH });
           if (r.generated > 0 || r.failed > 0) {
-            console.log(`  Summary sweep: ${r.generated} generated, ${r.failed} failed, ${r.skipped} skipped`);
+            console.log(`  Summary sweep: ${r.generated} generated, ${r.failed} failed, ${r.skipped} skipped (${r.tenants} tenant(s))`);
           }
         } catch (err) {
           console.error('Summary sweep failed:', err);

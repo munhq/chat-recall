@@ -33,6 +33,7 @@
 import {
   createStore,
   createMetadataCache,
+  createControlPlane,
   SummaryGenerator,
   type SummaryGeneratorConfig,
   type SessionContent,
@@ -192,6 +193,13 @@ export interface GenerateMissingOptions {
   /** Max sessions to attempt this sweep. Keeps each tick bounded. */
   limit?: number;
   /**
+   * Tenant to scope the store/cache to. Sessions are RLS-partitioned per
+   * tenant; with no tenant the store resolves the default, which on a hosted
+   * install holds zero sessions — so the sweep MUST be told which tenant to
+   * walk (see sweepAllTenants). Omitted ⇒ default tenant (self-host single-user).
+   */
+  tenant?: string;
+  /**
    * Summarizer. Injectable so the sweep is testable without a real LLM.
    * Defaults to a SummaryGenerator built from `serverSummaryConfig()`.
    * When no provider is configured AND no override is supplied, the sweep
@@ -230,8 +238,8 @@ export async function generateMissingSummaries(
     summarySource = providerToSource(config.provider);
   }
 
-  const store = await createStore();
-  const cache = await createMetadataCache();
+  const store = await createStore({ tenant: opts.tenant });
+  const cache = await createMetadataCache({ tenant: opts.tenant });
   let generated = 0;
   let failed = 0;
   let skipped = 0;
@@ -314,4 +322,45 @@ export async function generateMissingSummaries(
   }
 
   return { generated, failed, skipped };
+}
+
+/**
+ * Tenant-aware sweep. Sessions are RLS-partitioned per tenant, so a single
+ * unscoped pass only ever sees the default tenant — which on a hosted install
+ * holds zero sessions, leaving every real session unsummarised (0 generated, 0
+ * failed → silent). Enumerate tenants from the control plane (exactly like the
+ * vector backfill worker) and run `generateMissingSummaries` for each. `limit`
+ * applies per tenant so one tick stays bounded.
+ */
+export async function generateMissingSummariesAllTenants(
+  opts: GenerateMissingOptions = {},
+): Promise<GenerateMissingResult & { tenants: number }> {
+  // No provider configured and no injected summarizer ⇒ nothing to do; skip the
+  // control-plane round-trip entirely (mirrors generateMissingSummaries).
+  if (!opts.summarize && !serverSummaryConfig()) {
+    return { generated: 0, failed: 0, skipped: 0, tenants: 0 };
+  }
+
+  const cp = await createControlPlane();
+  let tenants: string[] = [];
+  try { tenants = await cp.listTenants(); } catch { /* fall through to default */ }
+  if (tenants.length === 0) tenants = [process.env.CHAT_RECALL_TENANT || 'default'];
+
+  let generated = 0;
+  let failed = 0;
+  let skipped = 0;
+  let touched = 0;
+  for (const tenant of tenants) {
+    try {
+      const r = await generateMissingSummaries({ ...opts, tenant });
+      generated += r.generated;
+      failed += r.failed;
+      skipped += r.skipped;
+      if (r.generated > 0 || r.failed > 0) touched++;
+    } catch {
+      // One bad tenant must never abort the whole sweep — continue.
+      continue;
+    }
+  }
+  return { generated, failed, skipped, tenants: touched };
 }
