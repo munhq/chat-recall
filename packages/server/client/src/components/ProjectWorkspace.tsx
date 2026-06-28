@@ -14,14 +14,13 @@ import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { Card, Chip, SegmentedControl, Button, Icon } from './primitives';
 import CodeExplorer, { DependencyMap, PRI_CHIP, PRI_LABEL } from './CodeExplorer';
 import KnowledgeGraph from './KnowledgeGraph';
-import ActivityTimeline from './ActivityTimeline';
 import ConversationList from './ConversationList';
 import ConversationViewer from './ConversationViewer';
 import { useCodeProject, type UseCodeProject } from '../hooks/useCodeProject';
 import { useConversation, type UseConversation } from '../hooks/useConversation';
 import {
-  getRecentSessionsPage, patchCodeAction, applyCodeRecommendation,
-  type CodeProject, type CodeAction, type CodeRecommendation, type SessionInfo,
+  getRecentSessionsPage, patchCodeAction, applyCodeRecommendation, getEditsTimeline,
+  type CodeProject, type CodeAction, type CodeRecommendation, type SessionInfo, type EditRow,
 } from '../services/api';
 
 type Lens = 'overview' | 'code' | 'conversations' | 'activity' | 'knowledge';
@@ -68,9 +67,7 @@ export default function ProjectWorkspace({
         {lens === 'overview' && <MissionControl canonicalId={canonicalId} kgEntity={kgEntity} toolFilter={toolFilter} code={code} onJump={setLens} onOpenSession={openInline} />}
         {lens === 'code' && <CodeExplorer projectFilter={canonicalId} embedded />}
         {lens === 'conversations' && <ConversationsLens projectId={canonicalId} toolFilter={toolFilter} conv={conv} />}
-        {lens === 'activity' && (
-          <ActivityTimeline onSessionClick={openInline} toolFilter={toolFilter} projectFilter={canonicalId} onActiveProjects={() => {}} />
-        )}
+        {lens === 'activity' && <ProjectActivity projectId={canonicalId} toolFilter={toolFilter} onOpenSession={openInline} />}
         {lens === 'knowledge' && <KnowledgeGraph entity={kgEntity} embedded />}
       </div>
     </div>
@@ -318,6 +315,60 @@ function ConversationsLens({ projectId, toolFilter, conv }: { projectId: string;
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ── Project Activity: a real "what happened" feed — sessions + file changes ──
+type ActEvent = { ts: number; type: 'session' | 'edit'; title: string; sub?: string; sessionId: string; op?: string };
+function ProjectActivity({ projectId, toolFilter, onOpenSession }: { projectId: string; toolFilter: string; onOpenSession: (sid: string, info?: SessionInfo | null) => void }) {
+  const [events, setEvents] = useState<ActEvent[]>([]);
+  const [counts, setCounts] = useState<{ sessions: number; edits: number }>({ sessions: 0, edits: 0 });
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let on = true; setLoading(true);
+    const tf = toolFilter === 'all' ? undefined : toolFilter;
+    Promise.all([
+      getRecentSessionsPage({ limit: 40, offset: 0, projectFilter: projectId, toolFilter: tf }),
+      getEditsTimeline({ sinceHours: 24 * 120, project: projectId, limit: 200 }).catch(() => ({ edits: [] as EditRow[], total: 0 } as any)),
+    ]).then(([sp, et]) => {
+      if (!on) return;
+      const evs: ActEvent[] = [];
+      for (const s of sp.sessions) evs.push({ ts: Date.parse((s as any).modified || '') || 0, type: 'session', title: (s as any).userTitle || (s as any).summary || (s as any).firstPrompt || s.sessionId, sub: (s as any).gitBranch, sessionId: s.sessionId });
+      for (const e of ((et.edits || []) as EditRow[]).slice(0, 120)) evs.push({ ts: e.ts, type: 'edit', title: `${e.op} ${e.file.split('/').pop()}`, sub: e.file, sessionId: e.sessionId, op: e.op });
+      evs.sort((a, b) => b.ts - a.ts);
+      setEvents(evs);
+      setCounts({ sessions: sp.total, edits: (et.total ?? (et.edits || []).length) });
+      setLoading(false);
+    });
+    return () => { on = false; };
+  }, [projectId, toolFilter]);
+  if (loading) return <div style={{ padding: 30, color: 'var(--cr-fg-3)' }}>Loading activity…</div>;
+  if (!events.length) return <div style={{ padding: 40, color: 'var(--cr-fg-3)', textAlign: 'center' }}>No recorded activity for this project.</div>;
+  const groups: Array<{ day: string; items: ActEvent[] }> = [];
+  let cur: { day: string; items: ActEvent[] } | null = null;
+  for (const e of events) { const day = e.ts ? new Date(e.ts).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) : 'earlier'; if (!cur || cur.day !== day) { cur = { day, items: [] }; groups.push(cur); } cur.items.push(e); }
+  return (
+    <div style={{ padding: '16px 24px 48px' }}>
+      <div style={{ display: 'flex', gap: 16, marginBottom: 14, color: 'var(--cr-fg-2)', fontSize: 12 }}>
+        <span><b style={{ color: 'var(--cr-fg-1)' }}>{counts.sessions}</b> sessions</span>
+        <span><b style={{ color: 'var(--cr-fg-1)' }}>{counts.edits}</b> file changes</span>
+      </div>
+      {groups.map((g) => (
+        <div key={g.day} style={{ marginBottom: 14 }}>
+          <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--cr-fg-3)', marginBottom: 6 }}>{g.day}</div>
+          <Card style={{ padding: 4 }}>
+            {g.items.map((e, i) => (
+              <div key={i} onClick={() => onOpenSession(e.sessionId)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 10px', cursor: 'pointer', borderBottom: i < g.items.length - 1 ? '1px solid var(--cr-line-1)' : 'none' }}>
+                <Icon name={e.type === 'session' ? 'message' : 'file'} size={14} style={{ opacity: 0.55, flexShrink: 0 }} />
+                <span style={{ flex: 1, minWidth: 0, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: e.type === 'edit' ? 'var(--cr-font-mono)' : undefined }}>{e.title}</span>
+                {e.type === 'edit' && <Chip kind="mono" size="sm">{e.op}</Chip>}
+                <span style={{ fontSize: 11, color: 'var(--cr-fg-3)', whiteSpace: 'nowrap' }}>{e.ts ? new Date(e.ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : ''}</span>
+              </div>
+            ))}
+          </Card>
+        </div>
+      ))}
     </div>
   );
 }
