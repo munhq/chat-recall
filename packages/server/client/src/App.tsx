@@ -525,11 +525,19 @@ function AppInner() {
   useEffect(() => {
     try {
       const url = new URL(window.location.href);
-      if (url.searchParams.get('view') !== view) {
-        url.searchParams.set('view', view);
-        window.history.replaceState(window.history.state, '', url);
-      }
+      let changed = false;
+      if (url.searchParams.get('view') !== view) { url.searchParams.set('view', view); changed = true; }
+      // The selected session belongs only to the Conversations view — drop it
+      // from the URL anywhere else so clicking Projects doesn't leave a stale
+      // ?session=… (and a reload there doesn't reopen a conversation).
+      if (view !== 'search' && url.searchParams.has('session')) { url.searchParams.delete('session'); changed = true; }
+      if (changed) window.history.replaceState(window.history.state, '', url);
     } catch { /* best-effort */ }
+  }, [view]);
+  // Selection is scoped to Conversations; clear it when navigating away so the
+  // viewer doesn't linger and returning starts clean.
+  useEffect(() => {
+    if (view !== 'search') { setSelectedSessionId(null); setSelectedMemoryItem(null); }
   }, [view]);
   void SESSION_ID_RE;
 

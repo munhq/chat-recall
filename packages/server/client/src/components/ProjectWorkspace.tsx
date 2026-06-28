@@ -14,14 +14,17 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { Card, Chip, SegmentedControl, MetricCard, Button, Icon } from './primitives';
-import CodeExplorer from './CodeExplorer';
+import CodeExplorer, { DependencyMap } from './CodeExplorer';
 import ActivityTimeline from './ActivityTimeline';
 import KnowledgeGraph from './KnowledgeGraph';
 import {
-  getCodeProjects, getCodeRecommendations, applyCodeRecommendation,
+  getCodeProjects, getCodeRecommendations, applyCodeRecommendation, getCodeActions,
   getRecentSessionsPage,
-  type CodeProject, type CodeRecommendation, type SessionInfo,
+  type CodeProject, type CodeRecommendation, type CodeAction, type SessionInfo,
 } from '../services/api';
+
+const PRI_CHIP: Array<'err' | 'warn' | 'info' | 'neutral'> = ['err', 'warn', 'info', 'neutral'];
+const PRI_LABEL = ['P0', 'P1', 'P2', 'P3'];
 
 type WsTab = 'pulse' | 'code' | 'conversations' | 'knowledge' | 'activity';
 
@@ -85,6 +88,7 @@ export default function ProjectWorkspace({
 function PulseTab({ projectId, toolFilter, onOpenTab, onOpenSession }: { projectId: string; toolFilter: string; onOpenTab: (t: WsTab) => void; onOpenSession: (s: string) => void }) {
   const [project, setProject] = useState<CodeProject | null>(null);
   const [recs, setRecs] = useState<CodeRecommendation[]>([]);
+  const [actions, setActions] = useState<CodeAction[]>([]);
   const [behavior, setBehavior] = useState<{ failedOrAbandoned: number; totalSessions: number } | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -100,6 +104,7 @@ function PulseTab({ projectId, toolFilter, onOpenTab, onOpenSession }: { project
       setProject(match);
       if (match) {
         getCodeRecommendations(match.projectId).then((r) => { if (on) { setRecs(r.recommendations); setBehavior(r.behavior); } });
+        getCodeActions(match.projectId, { limit: 50 }).then((a) => { if (on) setActions(a); });
       }
       setLoading(false);
     });
@@ -173,6 +178,28 @@ function PulseTab({ projectId, toolFilter, onOpenTab, onOpenSession }: { project
             ))}
           </Card>
 
+          {/* Action plan — the durable task queue + ready-to-paste agent prompts (POC parity) */}
+          <Card style={{ padding: 16 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <strong style={{ fontSize: 13 }}>Tasks <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400 }}>ranked plan · paste-ready prompts</span></strong>
+              <button onClick={() => onOpenTab('code')} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12 }}>full plan ({actions.length}) →</button>
+            </div>
+            {actions.length === 0 ? (
+              <div style={{ color: 'var(--cr-fg-3)', fontSize: 13 }}>No action items — clean, or this repo isn't code-indexed yet.</div>
+            ) : actions.slice(0, 6).map((a) => <TaskRow key={a.id} a={a} />)}
+          </Card>
+
+          {/* Dependency graph (POC) */}
+          {project.map && project.map.nodes && project.map.nodes.length > 0 && (
+            <Card style={{ padding: 16 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                <strong style={{ fontSize: 13 }}>Dependency graph <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400 }}>{project.map.nodes.length} packages · {project.map.edges.length} edges</span></strong>
+                <button onClick={() => onOpenTab('code')} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12 }}>explore →</button>
+              </div>
+              <DependencyMap map={project.map} />
+            </Card>
+          )}
+
           {/* Recent sessions for this repo */}
           <Card style={{ padding: 16 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
@@ -204,6 +231,28 @@ function ProjectConversations({ projectId, toolFilter, onOpenSession }: { projec
     <div style={{ padding: '16px 24px 48px' }}>
       <div style={{ color: 'var(--cr-fg-3)', fontSize: 12, marginBottom: 10 }}>{total} session(s) for this project</div>
       {sessions.map((s) => <SessionRow key={s.sessionId} s={s} onOpen={() => onOpenSession(s.sessionId)} />)}
+    </div>
+  );
+}
+
+function TaskRow({ a }: { a: CodeAction }) {
+  const [copied, setCopied] = useState(false);
+  const [open, setOpen] = useState(false);
+  const copy = () => { navigator.clipboard.writeText(a.agentPrompt); setCopied(true); setTimeout(() => setCopied(false), 1300); };
+  return (
+    <div style={{ padding: '9px 0', borderBottom: '1px solid var(--cr-line-1)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <Chip kind={PRI_CHIP[a.pri] ?? 'neutral'} size="sm">{PRI_LABEL[a.pri] ?? 'P?'}</Chip>
+        <span style={{ fontSize: 13, fontWeight: 500, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.title}</span>
+        {a.status === 'done' && <Chip kind="ok" size="sm">done</Chip>}
+        <Chip kind="mono" size="sm">{a.category}</Chip>
+        <Button variant="secondary" onClick={copy}>{copied ? 'copied ✓' : 'Copy prompt'}</Button>
+        <button onClick={() => setOpen((v) => !v)} title="Show prompt" style={{ background: 'none', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-sm)', color: 'var(--cr-fg-2)', cursor: 'pointer', padding: '2px 7px', fontSize: 12 }}>{open ? '−' : '⌄'}</button>
+      </div>
+      {a.fix && <div style={{ color: 'var(--cr-fg-2)', fontSize: 12, marginTop: 4 }}>{a.fix}</div>}
+      {open && (
+        <pre style={{ background: 'var(--cr-ink-2, #0d1117)', border: '1px solid var(--cr-line-1)', borderRadius: 6, padding: 10, fontSize: 11, whiteSpace: 'pre-wrap', fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-1)', marginTop: 6 }}>{a.agentPrompt}</pre>
+      )}
     </div>
   );
 }

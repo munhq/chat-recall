@@ -399,7 +399,7 @@ function CircleGraph({ nodes, edges, onNode, dim }: { nodes: Array<{ id: string;
     </svg>
   );
 }
-function DependencyMap({ map }: { map?: CodeProject['map'] }) {
+export function DependencyMap({ map }: { map?: CodeProject['map'] }) {
   const [pkg, setPkg] = useState<string | null>(null);
   if (!map || map.nodes.length === 0) return <Empty>No dependency graph (single-package or no cross-package imports).</Empty>;
 
