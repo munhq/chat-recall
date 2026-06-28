@@ -209,10 +209,17 @@ export default function MemoryExplorer({ onSessionClick, toolFilter = 'all', pro
     : items;
 
   const isToolFilterable = TOOL_FILTERABLE.has(activeType);
-  const displayedItems =
+  const filteredItems =
     isToolFilterable && sessionTool !== 'all'
       ? rawDisplayedItems.filter(it => readItemTool(it) === sessionTool)
       : rawDisplayedItems;
+  // When browsing (not searching), cluster by project so a repo's notes/plans
+  // sit together — a light "grouped" feel without restructuring the list.
+  const displayedItems = query ? filteredItems : [...filteredItems].sort((a, b) => {
+    const pa = (a.project_path || '~~').split('/').pop() || '~~';
+    const pb = (b.project_path || '~~').split('/').pop() || '~~';
+    return pa.localeCompare(pb) || (b.mtime - a.mtime);
+  });
 
   // Per-tool counts in the currently-loaded set, for the filter chip badges.
   const sessionToolCounts = useMemo(() => {
@@ -335,7 +342,12 @@ export default function MemoryExplorer({ onSessionClick, toolFilter = 'all', pro
                     const tool = readItemTool(item);
                     return tool ? <ToolBadge tool={tool} size="sm" /> : null;
                   })()}
-                  <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>
+                  {item.project_path && (
+                    <span className="mono" style={{ fontSize: 11, color: 'var(--cr-fg-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 160 }}>
+                      {item.project_path.split('/').pop()}
+                    </span>
+                  )}
+                  <span style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginLeft: 'auto' }}>
                     {new Date(item.mtime).toLocaleDateString()}
                   </span>
                 </div>
