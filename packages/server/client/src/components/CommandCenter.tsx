@@ -65,7 +65,7 @@ export default function CommandCenter({ setView, onOpenProject }: { setView: Nav
         <Metric label="Sessions" value={status?.totalSessions != null ? String(status.totalSessions) : '—'} onClick={() => setView('search')} />
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.3fr) minmax(0,1fr)', gap: 16, alignItems: 'start' }}>
+      <div className="cr-stack-mobile" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.3fr) minmax(0,1fr)', gap: 16, alignItems: 'start' }}>
         {/* Left: recommendations + code health */}
         <div style={{ display: 'grid', gap: 16 }}>
           <Panel title="Recommendations" hint="behaviour × code" action={recs.length ? undefined : null}>

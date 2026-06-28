@@ -951,7 +951,7 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
         }}
       >
         {/* Header */}
-        <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--cr-line-1)', display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div className="cr-wrap-mobile" style={{ padding: '14px 18px', borderBottom: '1px solid var(--cr-line-1)', display: 'flex', alignItems: 'center', gap: 12 }}>
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Sync across tools</h2>
           <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
             Click a cell to queue a change. Filled = present; ring = pending add; X = pending remove.
@@ -984,7 +984,7 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
         </div>
 
         {/* Toolbar: type tabs, search, filter */}
-        <div style={{ padding: '10px 18px', borderBottom: '1px solid var(--cr-line-1)', display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div className="cr-wrap-mobile" style={{ padding: '10px 18px', borderBottom: '1px solid var(--cr-line-1)', display: 'flex', alignItems: 'center', gap: 12 }}>
           <SegmentedControl
             value={activeType}
             onChange={(v) => setActiveType(v as SyncType)}

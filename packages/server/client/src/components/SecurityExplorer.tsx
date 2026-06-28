@@ -468,11 +468,11 @@ export default function SecurityExplorer({ onSessionClick }: Props) {
                   {/* Header row: glyph + label + preview + chips */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
                     <span style={{ fontSize: 22 }} aria-hidden>{s.type.glyph}</span>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
                       <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--cr-fg-1)' }}>
                         {s.type.label}
                       </span>
-                      <span style={{ fontSize: 11, fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-3)' }}>
+                      <span style={{ fontSize: 11, fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-3)', wordBreak: 'break-all', overflowWrap: 'anywhere', maxWidth: '100%' }}>
                         {s.preview}
                       </span>
                     </div>
