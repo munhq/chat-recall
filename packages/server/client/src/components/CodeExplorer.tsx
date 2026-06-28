@@ -12,7 +12,7 @@
  * dependency-free SVG).
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Card, Chip, SegmentedControl, MetricCard, Button, Icon } from './primitives';
 import {
   getCodeProjects, getCodeProject, getCodeSummary, getCodeFindings, getCodeHotspots,
@@ -378,25 +378,66 @@ export function HotspotTable({ hotspots, onOpen }: { hotspots: CodeHotspot[]; on
   ))}</>;
 }
 
-// ── Dependency map (dependency-free SVG: nodes on a circle, edges as lines) ──
-function CircleGraph({ nodes, edges, onNode, dim }: { nodes: Array<{ id: string; label: string; symbols: number; faded?: boolean }>; edges: Array<{ from: string; to: string }>; onNode?: (id: string) => void; dim?: boolean }) {
-  if (nodes.length === 0) return <Empty>Nothing to graph here.</Empty>;
-  const idx = new Map(nodes.map((n, i) => [n.id, i]));
-  const W = 760, H = 500, cx = W / 2, cy = H / 2, R = Math.min(W, H) / 2 - 64;
-  const pos = nodes.map((_, i) => { const a = (i / nodes.length) * Math.PI * 2 - Math.PI / 2; return { x: cx + R * Math.cos(a), y: cy + R * Math.sin(a) }; });
+// ── Dependency map: deterministic force layout + wheel-zoom / drag-pan ───────
+// No deps: a small fixed-iteration force sim (repulsion + edge springs +
+// centering) places nodes organically instead of on a ring, and a viewBox <g>
+// transform gives real zoom/pan so you can read crowded clusters.
+function forceLayout(nodes: Array<{ id: string }>, edges: Array<{ from: string; to: string }>, W: number, H: number) {
+  const n = nodes.length;
+  const idx = new Map(nodes.map((nd, i) => [nd.id, i]));
+  const pos = nodes.map((_, i) => { const a = (i / Math.max(1, n)) * Math.PI * 2; return { x: W / 2 + Math.cos(a) * Math.min(W, H) * 0.32, y: H / 2 + Math.sin(a) * Math.min(W, H) * 0.32, vx: 0, vy: 0 }; });
+  const E = edges.map((e) => [idx.get(e.from), idx.get(e.to)] as [number | undefined, number | undefined]).filter(([a, b]) => a != null && b != null) as Array<[number, number]>;
+  const ITER = 160, kRep = (W * H) / Math.max(1, n) * 0.9, kSpring = 0.025, springLen = Math.min(W, H) / Math.sqrt(Math.max(2, n)) * 1.25, center = 0.0025, damp = 0.85;
+  for (let it = 0; it < ITER; it++) {
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+      let dx = pos[i].x - pos[j].x, dy = pos[i].y - pos[j].y; const d2 = dx * dx + dy * dy + 0.01; const d = Math.sqrt(d2); const f = kRep / d2; const fx = f * dx / d, fy = f * dy / d;
+      pos[i].vx += fx; pos[i].vy += fy; pos[j].vx -= fx; pos[j].vy -= fy;
+    }
+    for (const [a, b] of E) { const dx = pos[b].x - pos[a].x, dy = pos[b].y - pos[a].y; const d = Math.sqrt(dx * dx + dy * dy) + 0.01; const f = kSpring * (d - springLen); const fx = f * dx / d, fy = f * dy / d; pos[a].vx += fx; pos[a].vy += fy; pos[b].vx -= fx; pos[b].vy -= fy; }
+    for (let i = 0; i < n; i++) { pos[i].vx += (W / 2 - pos[i].x) * center; pos[i].vy += (H / 2 - pos[i].y) * center; pos[i].vx *= damp; pos[i].vy *= damp; pos[i].x += pos[i].vx; pos[i].y += pos[i].vy; }
+  }
+  return pos.map((p) => ({ x: p.x, y: p.y }));
+}
+function CircleGraph({ nodes, edges, onNode }: { nodes: Array<{ id: string; label: string; symbols: number; faded?: boolean }>; edges: Array<{ from: string; to: string }>; onNode?: (id: string) => void; dim?: boolean }) {
+  const W = 760, H = 520;
+  const pos = useMemo(() => forceLayout(nodes, edges, W, H), [nodes, edges]);
+  const idx = useMemo(() => new Map(nodes.map((n, i) => [n.id, i])), [nodes]);
   const maxSym = Math.max(1, ...nodes.map((n) => n.symbols));
+  const [view, setView] = useState({ k: 1, x: 0, y: 0 });
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const drag = useRef<{ mx: number; my: number; vx: number; vy: number } | null>(null);
+  const [grabbing, setGrabbing] = useState(false);
+  useEffect(() => { setView({ k: 1, x: 0, y: 0 }); }, [nodes]);
+  if (nodes.length === 0) return <Empty>Nothing to graph here.</Empty>;
+  const toSvg = (cx: number, cy: number) => { const r = svgRef.current!.getBoundingClientRect(); return { x: (cx - r.left) * (W / r.width), y: (cy - r.top) * (H / r.height) }; };
+  const onWheel = (e: React.WheelEvent) => { e.preventDefault(); const m = toSvg(e.clientX, e.clientY); const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15; setView((v) => { const k = Math.min(9, Math.max(0.4, v.k * factor)); return { k, x: m.x - (m.x - v.x) * (k / v.k), y: m.y - (m.y - v.y) * (k / v.k) }; }); };
+  const onDown = (e: React.MouseEvent) => { drag.current = { mx: e.clientX, my: e.clientY, vx: view.x, vy: view.y }; setGrabbing(true); };
+  const onMove = (e: React.MouseEvent) => { if (!drag.current) return; const r = svgRef.current!.getBoundingClientRect(); const dx = (e.clientX - drag.current.mx) * (W / r.width); const dy = (e.clientY - drag.current.my) * (H / r.height); setView((v) => ({ ...v, x: drag.current!.vx + dx, y: drag.current!.vy + dy })); };
+  const onUp = () => { drag.current = null; setGrabbing(false); };
+  const btn = { background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 6, color: 'var(--cr-fg-2)', cursor: 'pointer', width: 26, height: 24, fontSize: 13 } as React.CSSProperties;
   return (
-    <svg width={W} height={H} style={{ maxWidth: '100%' }}>
-      {edges.map((e, i) => { const a = idx.get(e.from), b = idx.get(e.to); if (a == null || b == null) return null; return <line key={i} x1={pos[a].x} y1={pos[a].y} x2={pos[b].x} y2={pos[b].y} stroke="var(--cr-line-1)" strokeWidth={1} opacity={0.45} />; })}
-      {nodes.map((n, i) => (
-        <g key={n.id} style={{ cursor: onNode ? 'pointer' : 'default' }} onClick={() => onNode?.(n.id)}>
-          <circle cx={pos[i].x} cy={pos[i].y} r={5 + Math.round((n.symbols / maxSym) * 16)} fill={n.faded ? 'var(--cr-line-1)' : 'var(--cr-brand-500)'} opacity={n.faded ? 0.5 : 0.85}>
-            <title>{`${n.id} · ${n.symbols} symbols${onNode ? ' (click to drill in)' : ''}`}</title>
-          </circle>
-          <text x={pos[i].x} y={pos[i].y - 12 - Math.round((n.symbols / maxSym) * 16)} textAnchor="middle" fontSize={10} fill="var(--cr-fg-2)" style={{ fontFamily: 'var(--cr-font-mono)' }}>{n.label}</text>
+    <div style={{ position: 'relative' }}>
+      <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 4, zIndex: 2 }}>
+        <button style={btn} title="Zoom in" onClick={() => setView((v) => ({ ...v, k: Math.min(9, v.k * 1.3) }))}>+</button>
+        <button style={btn} title="Zoom out" onClick={() => setView((v) => ({ ...v, k: Math.max(0.4, v.k / 1.3) }))}>−</button>
+        <button style={{ ...btn, width: 'auto', padding: '0 8px' }} title="Reset" onClick={() => setView({ k: 1, x: 0, y: 0 })}>reset</button>
+      </div>
+      <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width="100%" preserveAspectRatio="xMidYMid meet"
+        style={{ maxWidth: '100%', height: H, background: 'var(--cr-ink-1)', borderRadius: 8, cursor: grabbing ? 'grabbing' : 'grab', touchAction: 'none', userSelect: 'none' }}
+        onWheel={onWheel} onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}>
+        <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
+          {edges.map((e, i) => { const a = idx.get(e.from), b = idx.get(e.to); if (a == null || b == null) return null; return <line key={i} x1={pos[a].x} y1={pos[a].y} x2={pos[b].x} y2={pos[b].y} stroke="var(--cr-line-1)" strokeWidth={1 / view.k} opacity={0.4} />; })}
+          {nodes.map((n, i) => (
+            <g key={n.id} style={{ cursor: onNode ? 'pointer' : 'default' }} onClick={() => { if (!drag.current) onNode?.(n.id); }}>
+              <circle cx={pos[i].x} cy={pos[i].y} r={4 + Math.round((n.symbols / maxSym) * 16)} fill={n.faded ? 'var(--cr-line-1)' : 'var(--cr-brand-500)'} opacity={n.faded ? 0.45 : 0.85}>
+                <title>{`${n.id} · ${n.symbols} symbols${onNode ? ' (click to drill in)' : ''}`}</title>
+              </circle>
+              <text x={pos[i].x} y={pos[i].y - 10 - Math.round((n.symbols / maxSym) * 16)} textAnchor="middle" fontSize={Math.max(7, 10 / view.k)} fill="var(--cr-fg-2)" style={{ fontFamily: 'var(--cr-font-mono)', pointerEvents: 'none' }}>{n.label}</text>
+            </g>
+          ))}
         </g>
-      ))}
-    </svg>
+      </svg>
+    </div>
   );
 }
 export function DependencyMap({ map }: { map?: CodeProject['map'] }) {

@@ -118,6 +118,8 @@ const DECISION_OBJECT_STOPWORDS = new Set([
   // common noise nouns/adjectives
   'wins', 'default', 'content', 'now', 'here', 'there', 'just', 'one',
   'two', 'three', 'best', 'worst', 'good', 'bad',
+  'otherwise', 'else', 'such', 'more', 'most', 'them', 'thing', 'things',
+  'something', 'anything', 'everything', 'nothing', 'etc',
 ]);
 
 const KNOWN_TOOL_NAMES = new Set(
