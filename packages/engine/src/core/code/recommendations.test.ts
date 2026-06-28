@@ -18,8 +18,32 @@ const base: RecommendationInput = { project: project(), summary: summary(), find
 const kinds = (recs: ReturnType<typeof buildRecommendations>) => recs.map((r) => r.id.split('_').slice(0, 1).join('') + ':' + r.kind);
 
 describe('buildRecommendations', () => {
-  test('clean project yields no recommendations', () => {
-    expect(buildRecommendations(base).length).toBe(0);
+  test('clean but unlabeled project → only the classify-project nudge', () => {
+    const recs = buildRecommendations(base);
+    expect(recs.length).toBe(1);
+    expect(recs[0].action.type).toBe('set_label');
+    expect(recs[0].title).toMatch(/label this project/i);
+  });
+
+  test('clean labeled project (engineering) yields no nags', () => {
+    const recs = buildRecommendations({ ...base, project: project({ label: 'engineering' }) });
+    expect(recs.length).toBe(0);
+  });
+
+  test('production label → high-severity data-safety rule', () => {
+    const recs = buildRecommendations({ ...base, project: project({ label: 'production' }) });
+    const safety = recs.find((r) => /protect production data/i.test(r.title));
+    expect(safety).toBeTruthy();
+    expect(safety!.severity).toBe('high');
+    expect(safety!.action.type).toBe('append_claude_md');
+    expect(String(safety!.action.payload.text)).toMatch(/never drop or reset the database/i);
+    // a labeled project must NOT also get the classify nudge
+    expect(recs.some((r) => /label this project/i.test(r.title))).toBe(false);
+  });
+
+  test('POC label → poc-mode rule alongside the db reset', () => {
+    const recs = buildRecommendations({ ...base, project: project({ label: 'poc' }) });
+    expect(recs.some((r) => /poc mode/i.test(r.title) && r.action.type === 'append_claude_md')).toBe(true);
   });
 
   test('critical security finding → high-severity no-hardcoded-secrets rule', () => {
