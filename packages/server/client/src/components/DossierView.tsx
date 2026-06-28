@@ -95,6 +95,7 @@ export default function DossierView({ projectId }: Props) {
       }}
     >
       <div
+        className="cr-stack-mobile"
         style={{
           display: 'grid',
           gridTemplateColumns: 'minmax(0, 1fr) 220px',
