@@ -127,7 +127,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
           <div>
             <h2>Insights</h2>
             <p className="cr-lead" style={{ marginTop: 4 }}>
-              Where your tokens go — and what you can cut.
+              What's working, what's not — and how to improve your Claude setup.
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -142,6 +142,8 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
             showing <strong style={{ color: 'var(--cr-fg-1)' }}>{toolFilter}</strong> only — totals reflect this tool's slice
           </div>
         )}
+
+        <ImproveYourClaude data={data} secrets={securitySummary} syncStatus={syncStatus} />
 
         {/* This-week digest card */}
         <div
@@ -645,5 +647,66 @@ function LegendDot({ color, label }: { color: string; label: string }) {
       <span style={{ width: 8, height: 8, borderRadius: 2, background: color }} />
       {label}
     </span>
+  );
+}
+
+// ── Improve your Claude: derive workflow signals + concrete CLAUDE.md tips ────
+function ImproveYourClaude({ data, secrets, syncStatus }: { data: AnalyticsData; secrets: SecretsSummary | null; syncStatus: SyncStatus | null }) {
+  const lc = (s: string) => s.toLowerCase();
+  const CLEAN = ['shipped', 'success', 'completed', 'done', 'resolved'];
+  const BAD = ['interrupted', 'abandoned', 'failed', 'error', 'incomplete'];
+  const outcomes = data.outcomes || [];
+  const clean = outcomes.filter((o) => CLEAN.some((r) => lc(o.reason).includes(r))).reduce((a, o) => a + o.count, 0);
+  const bad = outcomes.filter((o) => BAD.some((r) => lc(o.reason).includes(r))).reduce((a, o) => a + o.count, 0);
+  const classified = clean + bad;
+  const completion = classified > 0 ? Math.round((clean / classified) * 100) : null;
+  const ctxHit = data.contextExhausted?.length || 0;
+  const leaked = secrets?.actionRequired ?? (secrets ? secrets.total : 0);
+  const topModel = (data.costByModel || [])[0];
+
+  const sugg: Array<{ t: string; d: string }> = [];
+  if (classified >= 4 && completion != null && completion < 70) sugg.push({ t: 'Add a definition-of-done to CLAUDE.md', d: `${100 - completion}% of classified sessions ended interrupted/abandoned. A "not done until build + tests pass, verified" rule cuts re-work.` });
+  if (ctxHit >= 3) sugg.push({ t: 'Tell the AI to split large tasks + use recall', d: `${ctxHit} sessions hit high context usage. Add "break big tasks into steps; recall prior context instead of re-reading the whole repo."` });
+  if (leaked > 0) sugg.push({ t: 'Add a no-secrets rule + rotate', d: `${leaked} secret(s) flagged in your sessions. Add "never echo secrets; load from env/secret-manager" and rotate the exposed ones.` });
+  if (data.summary.totalSessions > 0 && data.summary.sessionsWithoutPricing / data.summary.totalSessions > 0.3) sugg.push({ t: 'Pin model ids for accurate cost', d: `${data.summary.sessionsWithoutPricing} sessions ran on models without known pricing — your cost view undercounts.` });
+  if (!sugg.length) sugg.push({ t: 'Looking healthy', d: 'No obvious workflow regressions in this window — clean outcomes, context under control, no leaked secrets.' });
+
+  const shortM = (m: string) => m.replace(/^.*\//, '').replace(/-\d{6,}$/, '').slice(0, 18);
+  const usd = (n: number) => (n >= 1 ? `$${n.toFixed(0)}` : `$${n.toFixed(2)}`);
+
+  return (
+    <Card style={{ padding: 20, marginBottom: 24 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+        <Icon name="sparkle" size={16} />
+        <strong style={{ fontSize: 14 }}>Improve your Claude</strong>
+        <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>what your sessions reveal about your setup</span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12, marginBottom: 16 }}>
+        <ImpSignal label="Completion" value={completion != null ? `${completion}%` : '—'} sub={classified ? `${clean}/${classified} clean` : 'no outcomes yet'} tone={completion == null ? 'neutral' : completion >= 70 ? 'ok' : 'err'} />
+        <ImpSignal label="Context exhaustion" value={String(ctxHit)} sub="sessions near limit" tone={ctxHit >= 3 ? 'warn' : 'ok'} />
+        <ImpSignal label="Leaked secrets" value={String(leaked)} sub={secrets ? `${secrets.sessionsWithFindings} sessions` : '—'} tone={leaked > 0 ? 'err' : 'ok'} />
+        <ImpSignal label="Top model" value={topModel ? shortM(topModel.model) : '—'} sub={topModel ? usd(topModel.cost) : ''} tone="neutral" />
+        <ImpSignal label="Synced" value={syncStatus ? String(syncStatus.sessions) : '—'} sub="sessions on server" tone="neutral" />
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.14em', fontFamily: 'var(--cr-font-display)', marginBottom: 8 }}>Suggested CLAUDE.md additions</div>
+      <div style={{ display: 'grid', gap: 8 }}>
+        {sugg.map((s, i) => (
+          <div key={i} style={{ display: 'flex', gap: 10, padding: '8px 0', borderBottom: i < sugg.length - 1 ? '1px solid var(--cr-line-1)' : 'none' }}>
+            <Chip kind="brand" size="sm">tip</Chip>
+            <div><div style={{ fontSize: 13, fontWeight: 500 }}>{s.t}</div><div style={{ fontSize: 12, color: 'var(--cr-fg-2)', marginTop: 2 }}>{s.d}</div></div>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+function ImpSignal({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone: 'ok' | 'warn' | 'err' | 'neutral' }) {
+  const color = tone === 'ok' ? 'var(--cr-ok-500)' : tone === 'warn' ? 'var(--cr-warn-500)' : tone === 'err' ? 'var(--cr-err-500)' : 'var(--cr-fg-1)';
+  return (
+    <div style={{ background: 'var(--cr-ink-2,#0d1117)', border: '1px solid var(--cr-line-1)', borderRadius: 8, padding: '12px 14px' }}>
+      <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 22, fontWeight: 700, color, lineHeight: 1 }}>{value}</div>
+      <div style={{ fontSize: 11, color: 'var(--cr-fg-2)', marginTop: 6 }}>{label}</div>
+      {sub && <div style={{ fontSize: 10, color: 'var(--cr-fg-3)', marginTop: 2 }}>{sub}</div>}
+    </div>
   );
 }
