@@ -170,7 +170,17 @@ export class GeminiEmbedder implements Embedder {
  * identical — only base URL, model name, and dimension differ.
  */
 export class OpenAICompatibleEmbedder implements Embedder {
-  static readonly BATCH_SIZE = 100;
+  // Texts sent per /embeddings request. A self-hosted server (OVMS, vLLM,
+  // llama.cpp) runs the whole array through one forward pass, so a wide batch
+  // of long passages allocates batch × seq × hidden × layers of activations at
+  // once — 100 wide OOMKilled the OVMS qwen3-embedding pod even at a 16Gi limit
+  // (the 0.6GB weights were never the problem; the batch was). Default 32 is
+  // safe for hosted APIs; override with EMBED_BATCH_SIZE for memory-bound
+  // self-hosted servers (we run 16 against OVMS).
+  static readonly BATCH_SIZE = (() => {
+    const n = Number(process.env.EMBED_BATCH_SIZE);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 32;
+  })();
 
   private baseUrl: string;
   private apiKey: string;
