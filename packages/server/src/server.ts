@@ -39,6 +39,7 @@ import securityConfigRouter from './routes/security-config.js';
 import billingRouter from './routes/billing.js';
 import { capabilities, isServerMode } from './util/mode.js';
 import { generateMissingSummaries, serverSummaryConfig } from './services/summary-worker.js';
+import { embedMissingVectors, serverEmbedderConfigured } from './services/vector-backfill-worker.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '5000', 10);
@@ -285,6 +286,38 @@ app.listen(PORT, HOST, () => {
       console.log('  Summary worker: enabled (server mode)');
     } else {
       console.log('  Summary worker: disabled (no SUMMARY_PROVIDER configured)');
+    }
+  }
+
+  // Vector backfill: embed chunks that are in FTS but missing from
+  // memory_vectors (embedder switched on, model changed, missed batches).
+  // New ingests embed on the fly; this sweep catches up the backlog across all
+  // tenants so semantic search becomes complete on its own. Gated like the
+  // summary worker: server mode + an embedder actually configured.
+  if (isServerMode()) {
+    if (serverEmbedderConfigured()) {
+      const VEC_SWEEP_MS = 30 * 1000;   // keep it moving; inFlight guard prevents overlap
+      const VEC_BATCH = 256;
+      let vecInFlight = false;
+      const vecSweep = async (): Promise<void> => {
+        if (vecInFlight) return;
+        vecInFlight = true;
+        try {
+          const r = await embedMissingVectors({ batch: VEC_BATCH });
+          if (r.embedded > 0) {
+            console.log(`  Vector backfill: embedded ${r.embedded} chunk(s) across ${r.tenants} tenant(s)`);
+          }
+        } catch (err) {
+          console.error('Vector backfill failed:', err);
+        } finally {
+          vecInFlight = false;
+        }
+      };
+      setInterval(() => { void vecSweep(); }, VEC_SWEEP_MS).unref();
+      setTimeout(() => { void vecSweep(); }, 8000).unref();
+      console.log('  Vector backfill worker: enabled (server mode)');
+    } else {
+      console.log('  Vector backfill worker: disabled (no EMBEDDING_PROVIDER)');
     }
   }
 

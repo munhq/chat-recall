@@ -198,6 +198,45 @@ export class PgVectorStore implements VectorStore {
   }
   async optimize(..._a: Args<'optimize'>) { return { before: 0, after: 0, reclaimed: 0 } as any; }
 
+  /**
+   * Backfill embeddings for chunks that are in FTS (`memory_chunks`) but missing
+   * from `memory_vectors` — the backlog created when the embedder was off, or
+   * after a model switch. Embeds up to `limit` per call; returns how many were
+   * embedded and how many were scanned (callers loop until scanned < limit).
+   * Tenant-scoped via the same RLS context as every other store op. This is the
+   * permanent mechanism behind the server's vector-backfill worker (no one-offs).
+   */
+  async embedMissing(limit = 200): Promise<{ embedded: number; scanned: number }> {
+    if (!this.tableReady || !this.embedder || !this.vectorOk) return { embedded: 0, scanned: 0 };
+    const rows: any[] = await this.q(
+      `SELECT c.chunk_id, c.item_id, c.source_type, c.title, c.text, c.chunk_type, c.project_path, c.file_path, c.mtime
+         FROM memory_chunks c
+         LEFT JOIN memory_vectors v ON v.chunk_id = c.chunk_id
+         WHERE v.chunk_id IS NULL AND c.text <> ''
+         LIMIT $1`,
+      [limit]);
+    if (rows.length === 0) return { embedded: 0, scanned: 0 };
+    let embeddings: number[][] | null = null;
+    try { embeddings = await (this.embedder as any).embed(rows.map(r => r.text)); }
+    catch (e) { this.lastError = e instanceof Error ? e.message : String(e); return { embedded: 0, scanned: rows.length }; }
+    if (!embeddings) return { embedded: 0, scanned: rows.length };
+    let n = 0;
+    for (let k = 0; k < rows.length; k++) {
+      const r = rows[k];
+      const emb = embeddings[k];
+      if (!emb) continue;
+      const resolved = r.project_path ? resolveProjectId(r.project_path) : null;
+      const pid = resolved && resolved.source !== 'ignored' ? resolved.id : '';
+      await this.q(
+        `INSERT INTO memory_vectors (tenant,chunk_id,item_id,source_type,title,text,chunk_type,project_path,project_id,file_path,mtime,embedding)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::vector)
+         ON CONFLICT (tenant,chunk_id) DO UPDATE SET text=excluded.text, embedding=excluded.embedding`,
+        [this.t, r.chunk_id, r.item_id, r.source_type, r.title || '', r.text, r.chunk_type || '', r.project_path || '', pid, r.file_path || '', this.intMs(r.mtime), this.vecLiteral(emb)]);
+      n++;
+    }
+    return { embedded: n, scanned: rows.length };
+  }
+
   async search(...a: Args<'search'>): Promise<MemorySearchResult[]> {
     const [query, options = {}] = a;
     const topK = (options as any).topK ?? 20;
