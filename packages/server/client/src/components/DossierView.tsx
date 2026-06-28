@@ -124,7 +124,7 @@ export default function DossierView({ projectId }: Props) {
             paddingTop: 4,
             borderLeft: '1px solid var(--cr-line-1)',
             paddingLeft: 20,
-            maxHeight: 'calc(100vh - 120px)',
+            maxHeight: 'calc(100dvh - 120px)',
             overflow: 'auto',
           }}
         >
