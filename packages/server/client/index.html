@@ -4,6 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#090D14" />
+    <!-- Don't leak the path (which can contain a repo/project id) to any
+         cross-origin destination via the Referer header. Same-origin keeps the
+         full URL so internal navigation/analytics are unaffected. -->
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
     <title>Chat Recall - Claude Code Conversations</title>
   </head>
   <body>
