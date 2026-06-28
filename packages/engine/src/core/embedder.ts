@@ -242,7 +242,27 @@ export class OpenAICompatibleEmbedder implements Embedder {
     if (!Array.isArray(data?.data)) {
       throw new Error(`Embedding response from ${this.baseUrl} did not include a "data" array`);
     }
-    return data.data.map(d => d.embedding);
+    return data.data.map(d => this.fit(d.embedding));
+  }
+
+  /**
+   * Make a returned vector match the configured dimension. Matryoshka (MRL)
+   * models — e.g. qwen3-embedding (native 1024) — let you keep the first N
+   * components and re-normalize to get a valid N-dim embedding. We do this
+   * CLIENT-SIDE (not via a `dimensions` request hint) so it works regardless of
+   * whether the serving layer honors the hint (Ollama's /v1 shim ignores it).
+   * A no-op when the model already returns exactly `_dimension`.
+   */
+  private fit(v: number[]): number[] {
+    if (v.length === this._dimension) return v;
+    if (v.length < this._dimension) {
+      throw new Error(`Embedding model ${this.model} returned ${v.length} dims < configured ${this._dimension}; lower OPENAI_COMPAT_DIMENSION or pick another model.`);
+    }
+    const t = v.slice(0, this._dimension);
+    let norm = 0;
+    for (const x of t) norm += x * x;
+    norm = Math.sqrt(norm) || 1;
+    return t.map(x => x / norm);
   }
 
   get dimension(): number { return this._dimension; }
