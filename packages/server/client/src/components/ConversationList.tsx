@@ -67,16 +67,25 @@ export default function ConversationList({
         (a, b) => ((b as any).score ?? 0) - ((a as any).score ?? 0),
       );
     }
+    if (effectiveSort === 'project') {
+      return [...results].sort((a, b) => {
+        const pa = (a.projectPath || '~~').split('/').pop() || '~~';
+        const pb = (b.projectPath || '~~').split('/').pop() || '~~';
+        return pa.localeCompare(pb) || (new Date(b.modified).getTime() - new Date(a.modified).getTime());
+      });
+    }
     return [...results].sort(
       (a, b) => new Date(b.modified).getTime() - new Date(a.modified).getTime(),
     );
   }, [results, effectiveSort]);
 
-  // Group by date for browsing; flat list for relevance ordering.
+  // Group by date (browse), by project (cross-project browser), or flat (relevance).
   const groupedRaw =
     effectiveSort === 'rel'
       ? [{ label: 'By relevance', items: sortedResults }]
-      : groupByDate(sortedResults);
+      : effectiveSort === 'project'
+        ? groupByProject(sortedResults)
+        : groupByDate(sortedResults);
 
   // Collapse adjacent template-runs. A PR-bot pushes the same first
   // prompt against the same project many times in rapid succession;
@@ -138,8 +147,12 @@ export default function ConversationList({
               ? [
                   { value: 'rel', label: 'Relevance' },
                   { value: 'recent', label: 'Recent' },
+                  { value: 'project', label: 'By project' },
                 ]
-              : [{ value: 'recent', label: 'Recent' }]
+              : [
+                  { value: 'recent', label: 'Recent' },
+                  { value: 'project', label: 'By project' },
+                ]
           }
           value={effectiveSort}
           onChange={setSort}
@@ -1018,6 +1031,19 @@ function collapseAdjacentRuns(items: SessionInfo[]): SessionInfo[] {
     }
   }
   return out;
+}
+
+// Cross-project browser: cluster sessions by project, busiest first.
+function groupByProject(items: SessionInfo[]): Array<{ label: string; items: SessionInfo[] }> {
+  const map = new Map<string, SessionInfo[]>();
+  for (const r of items) {
+    const proj = (r.projectPath || '').split('/').pop() || 'Unscoped';
+    if (!map.has(proj)) map.set(proj, []);
+    map.get(proj)!.push(r);
+  }
+  return [...map.entries()]
+    .sort((a, b) => b[1].length - a[1].length)
+    .map(([name, group]) => ({ label: `${name} · ${group.length}`, items: group }));
 }
 
 function groupByDate(items: SessionInfo[]): Array<{ label: string; items: SessionInfo[] }> {
