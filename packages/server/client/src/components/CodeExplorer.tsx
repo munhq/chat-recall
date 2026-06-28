@@ -24,16 +24,16 @@ import {
 type Tab = 'recs' | 'overview' | 'plan' | 'security' | 'quality' | 'structure' | 'integrity' | 'hotspots' | 'map';
 type ChipKind = 'neutral' | 'mono' | 'brand' | 'ok' | 'warn' | 'err' | 'info';
 
-const SEV_CHIP: Record<string, ChipKind> = { critical: 'err', high: 'warn', medium: 'info', low: 'neutral', info: 'mono' };
-const PRI_CHIP: ChipKind[] = ['err', 'warn', 'info', 'neutral'];
-const PRI_LABEL = ['P0', 'P1', 'P2', 'P3'];
+export const SEV_CHIP: Record<string, ChipKind> = { critical: 'err', high: 'warn', medium: 'info', low: 'neutral', info: 'mono' };
+export const PRI_CHIP: ChipKind[] = ['err', 'warn', 'info', 'neutral'];
+export const PRI_LABEL = ['P0', 'P1', 'P2', 'P3'];
 const LABELS: Array<{ value: string; label: string }> = [
   { value: 'poc', label: 'POC' }, { value: 'production', label: 'Production' }, { value: 'engineering', label: 'Engineering-grade' },
 ];
 
-interface DrawerContent { kind: string; title: string; chip?: React.ReactNode; loc?: string; why: string; prompt: string; actionId?: string; }
+export interface DrawerContent { kind: string; title: string; chip?: React.ReactNode; loc?: string; why: string; prompt: string; actionId?: string; }
 
-function hotspotPrompt(h: CodeHotspot): string {
+export function hotspotPrompt(h: CodeHotspot): string {
   return `${h.file} is a hotspot — changed ${h.churn}× with complexity ${h.complexity}.${h.aiAuthored ? ' AI-authored & high-risk — review carefully.' : ''}\nRun codeindex get_change_impact on it first, add tests for its critical paths, then propose targeted refactors to reduce complexity. Show a plan + the first diff.`;
 }
 
@@ -260,7 +260,7 @@ function Row({ onClick, left, right }: { onClick: () => void; left: React.ReactN
   );
 }
 
-function ActionList({ actions, onOpen, queuedIds }: { actions: CodeAction[]; onOpen: (a: CodeAction) => void; queuedIds: Set<string> }) {
+export function ActionList({ actions, onOpen, queuedIds }: { actions: CodeAction[]; onOpen: (a: CodeAction) => void; queuedIds: Set<string> }) {
   if (!actions.length) return <Empty>No action items — clean, or not indexed yet.</Empty>;
   return <>{actions.map((a) => (
     <Row key={a.id} onClick={() => onOpen(a)}
@@ -277,7 +277,7 @@ function ActionList({ actions, onOpen, queuedIds }: { actions: CodeAction[]; onO
   ))}</>;
 }
 
-function FindingList({ findings, onOpen }: { findings: CodeFinding[]; onOpen: (f: CodeFinding) => void }) {
+export function FindingList({ findings, onOpen }: { findings: CodeFinding[]; onOpen: (f: CodeFinding) => void }) {
   if (!findings.length) return <Empty>Nothing here — nice.</Empty>;
   return <>{findings.map((f) => (
     <Row key={f.id} onClick={() => onOpen(f)}
@@ -315,7 +315,7 @@ function CouplingTable({ title, kind, rows, tone, hint, onItem }: { title: strin
     </Card>
   );
 }
-function StructureView({ findings, buckets, coupling, onOpen, onBucket }: { findings: CodeFinding[]; buckets?: CodeProject['map']['buckets']; coupling?: CodeProject['map']['coupling']; onOpen: (f: CodeFinding) => void; onBucket: (kind: string, file: string) => void }) {
+export function StructureView({ findings, buckets, coupling, onOpen, onBucket }: { findings: CodeFinding[]; buckets?: CodeProject['map']['buckets']; coupling?: CodeProject['map']['coupling']; onOpen: (f: CodeFinding) => void; onBucket: (kind: string, file: string) => void }) {
   return (
     <div>
       {coupling ? (
@@ -358,7 +358,7 @@ function BucketCard({ title, kind, files, tone, hint, onItem }: { title: string;
   );
 }
 
-function HotspotTable({ hotspots, onOpen }: { hotspots: CodeHotspot[]; onOpen: (h: CodeHotspot) => void }) {
+export function HotspotTable({ hotspots, onOpen }: { hotspots: CodeHotspot[]; onOpen: (h: CodeHotspot) => void }) {
   if (!hotspots.length) return <Empty>No hotspots (no churn × complexity signal).</Empty>;
   const max = hotspots[0]?.score || 1;
   return <>{hotspots.map((h) => (
@@ -433,7 +433,7 @@ export function DependencyMap({ map }: { map?: CodeProject['map'] }) {
 }
 
 // ── Drawers ───────────────────────────────────────────────────────────────
-function Drawer({ content, onClose, onAddTask, onDone }: { content: DrawerContent; onClose: () => void; onAddTask: () => void; onDone: () => void }) {
+export function Drawer({ content, onClose, onAddTask, onDone }: { content: DrawerContent; onClose: () => void; onAddTask: () => void; onDone: () => void }) {
   const [copied, setCopied] = useState(false);
   const [added, setAdded] = useState(false);
   useEffect(() => {
@@ -468,7 +468,7 @@ function Drawer({ content, onClose, onAddTask, onDone }: { content: DrawerConten
   );
 }
 
-function TasksDrawer({ name, projectId, queuedActions, queued, onClose }: { name: string; projectId: string | null; queuedActions: CodeAction[]; queued: Array<{ title: string; prompt: string }>; onClose: () => void }) {
+export function TasksDrawer({ name, projectId, queuedActions, queued, onClose }: { name: string; projectId: string | null; queuedActions: CodeAction[]; queued: Array<{ title: string; prompt: string }>; onClose: () => void }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('keydown', onKey); return () => document.removeEventListener('keydown', onKey);
@@ -517,7 +517,7 @@ function TasksDrawer({ name, projectId, queuedActions, queued, onClose }: { name
 
 // ── Recommendations (the moat: behavior × code → apply) ─────────────────────
 const REC_CHIP: Record<string, ChipKind> = { high: 'err', medium: 'warn', low: 'neutral' };
-function RecommendationsView({ recs, projectId, onApplied }: { recs: CodeRecommendation[]; projectId: string | null; onApplied: () => void }) {
+export function RecommendationsView({ recs, projectId, onApplied }: { recs: CodeRecommendation[]; projectId: string | null; onApplied: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<Record<string, string>>({});
   if (!recs.length) return <Empty>No recommendations yet — index a project with findings, or wait for behavioral signal. The engine turns code × behavior into rules, labels and skills to apply.</Empty>;
