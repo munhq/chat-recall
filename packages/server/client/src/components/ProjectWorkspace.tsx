@@ -348,26 +348,23 @@ function ConversationsLens({ projectId, toolFilter, conv }: { projectId: string;
       </div>
       <div className="cr-split-detail" style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         {conv.sessionId ? (
-          <>
-            {/* Mobile-only back button — returns to the session list. */}
-            <button type="button" className="cr-mobile-only cr-split-back" onClick={conv.close} aria-label="Back to list">
-              <Icon name="chevronLeft" size={14} /> Back
-            </button>
-            <ConversationViewer
-              selectionNonce={conv.selectionNonce}
-              totalMessages={conv.total}
-              hasMoreMessages={conv.hasMore}
-              onLoadMoreMessages={conv.loadMore}
-              sessionId={conv.sessionId}
-              messages={conv.messages}
-              subagents={conv.subagents}
-              loading={conv.loading}
-              onClose={conv.close}
-              onLoadFull={conv.loadFull}
-              searchResult={null}
-              sessionInfo={conv.sessionInfo}
-            />
-          </>
+          // ConversationViewer has its own back/close (onClose → conv.close),
+          // which clears the selection and slides this pane back to the list on
+          // mobile — so no extra cr-split-back here (it would double up).
+          <ConversationViewer
+            selectionNonce={conv.selectionNonce}
+            totalMessages={conv.total}
+            hasMoreMessages={conv.hasMore}
+            onLoadMoreMessages={conv.loadMore}
+            sessionId={conv.sessionId}
+            messages={conv.messages}
+            subagents={conv.subagents}
+            loading={conv.loading}
+            onClose={conv.close}
+            onLoadFull={conv.loadFull}
+            searchResult={null}
+            sessionInfo={conv.sessionInfo}
+          />
         ) : (
           <div style={{ padding: 40, color: 'var(--cr-fg-3)', textAlign: 'center' }}>
             {sessions.length ? `${total} session(s) for this project — pick one to read it here.` : 'No sessions recorded for this project.'}
