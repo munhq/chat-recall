@@ -172,8 +172,10 @@ export default function CodeExplorer({ projectFilter, embedded }: { projectFilte
           </select>
         )}
         <div style={{ display: 'flex', gap: 6, marginLeft: 'auto', alignItems: 'center' }}>
-          <span style={{ color: 'var(--cr-fg-3)', fontSize: 12 }}>label:</span>
-          {LABELS.map((l) => (
+          {/* Embedded in ProjectWorkspace the label switch lives in the project
+              header — only show it here on the standalone Code page. */}
+          {!embedded && <span style={{ color: 'var(--cr-fg-3)', fontSize: 12 }}>label:</span>}
+          {!embedded && LABELS.map((l) => (
             <button key={l.value} onClick={() => setLabel(l.value)} title={`Mark project as ${l.label}`}
               style={{ cursor: 'pointer', borderRadius: 999, padding: '3px 10px', fontSize: 11, border: '1px solid var(--cr-line-1)',
                 background: project?.label === l.value ? 'var(--cr-brand-500)' : 'transparent',
@@ -486,7 +488,7 @@ export function Drawer({ content, onClose, onAddTask, onDone }: { content: Drawe
   return (
     <>
       <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000 }} />
-      <div data-testid="code-drawer" style={{ position: 'fixed', right: 0, top: 0, height: '100vh', width: 'min(540px,96vw)', background: 'var(--cr-ink-1)', borderLeft: '1px solid var(--cr-line-1)', zIndex: 1001, padding: 22, overflow: 'auto', boxShadow: '-12px 0 40px rgba(0,0,0,0.4)' }}>
+      <div data-testid="code-drawer" style={{ position: 'fixed', right: 0, top: 0, height: '100dvh', width: 'min(540px,96vw)', background: 'var(--cr-ink-1)', borderLeft: '1px solid var(--cr-line-1)', zIndex: 1001, padding: 22, overflow: 'auto', boxShadow: '-12px 0 40px rgba(0,0,0,0.4)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
           <span style={{ color: 'var(--cr-fg-3)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>{content.kind}</span>
           <button onClick={onClose} style={{ cursor: 'pointer', background: 'none', border: 'none', color: 'var(--cr-fg-3)' }}><Icon name="x" size={18} /></button>
@@ -530,7 +532,7 @@ export function TasksDrawer({ name, projectId, queuedActions, queued, onClose }:
   return (
     <>
       <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000 }} />
-      <div data-testid="tasks-drawer" style={{ position: 'fixed', right: 0, top: 0, height: '100vh', width: 'min(540px,96vw)', background: 'var(--cr-ink-1)', borderLeft: '1px solid var(--cr-line-1)', zIndex: 1001, padding: 22, overflow: 'auto' }}>
+      <div data-testid="tasks-drawer" style={{ position: 'fixed', right: 0, top: 0, height: '100dvh', width: 'min(540px,96vw)', background: 'var(--cr-ink-1)', borderLeft: '1px solid var(--cr-line-1)', zIndex: 1001, padding: 22, overflow: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <h3 style={{ margin: 0 }}>Task queue · {all.length}</h3>
           <button onClick={onClose} style={{ cursor: 'pointer', background: 'none', border: 'none', color: 'var(--cr-fg-3)' }}><Icon name="x" size={18} /></button>

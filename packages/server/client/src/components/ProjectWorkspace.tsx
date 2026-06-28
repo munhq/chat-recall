@@ -20,6 +20,7 @@ import { useCodeProject, type UseCodeProject } from '../hooks/useCodeProject';
 import { useConversation, type UseConversation } from '../hooks/useConversation';
 import {
   getRecentSessionsPage, patchCodeAction, applyCodeRecommendation, getEditsTimeline,
+  patchCodeProjectLabel,
   type CodeProject, type CodeAction, type CodeRecommendation, type SessionInfo, type EditRow,
 } from '../services/api';
 
@@ -31,6 +32,16 @@ const LENSES: Array<{ value: Lens; label: string }> = [
   { value: 'conversations', label: 'Conversations' },
   { value: 'activity', label: 'Activity' },
   { value: 'knowledge', label: 'Knowledge' },
+];
+
+// Project labels drive the safety guidance the recommendations engine emits:
+// POC → "OK to reset the db, move fast"; Production → "never drop/remove data";
+// Engineering → "raise the bar on tests + review". This switch is the trigger,
+// so it lives in the always-visible header — not buried in the Code lens.
+const PROJECT_LABELS: Array<{ value: string; label: string; hint: string }> = [
+  { value: 'poc', label: 'POC', hint: 'Throwaway prototype — OK to reset the db and move fast' },
+  { value: 'production', label: 'Production', hint: 'Live data — never drop/reset/remove without backup' },
+  { value: 'engineering', label: 'Engineering', hint: 'Raise the bar: tests + review on every change' },
 ];
 
 export default function ProjectWorkspace({
@@ -80,6 +91,19 @@ function ProjectHeader({ projectName, code, onBack }: { projectName: string; cod
   const b = code.behavior;
   const score = h?.score ?? null;
   const tone = score == null ? 'var(--cr-fg-3)' : score >= 70 ? 'var(--cr-ok-500)' : score >= 40 ? 'var(--cr-warn-500)' : 'var(--cr-err-500)';
+  const [labelBusy, setLabelBusy] = useState(false);
+  const current = code.project?.label ?? null;
+  // Toggle the label (clicking the active one clears it). Reload after so the
+  // recommendations re-derive against the new label — POC/Production guidance
+  // appears in "Do next" immediately.
+  const setLabel = async (value: string) => {
+    if (!code.project || labelBusy) return;
+    const next = current === value ? null : value;
+    setLabelBusy(true);
+    const ok = await patchCodeProjectLabel(code.project.projectId, next);
+    setLabelBusy(false);
+    if (ok) code.reload();
+  };
   return (
     <div style={{ padding: '16px 24px 12px', flexShrink: 0 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
@@ -88,6 +112,18 @@ function ProjectHeader({ projectName, code, onBack }: { projectName: string; cod
         </button>
         <Icon name="folder" size={18} />
         <h2 className="mono" style={{ margin: 0, fontSize: 16, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 420 }}>{projectName}</h2>
+        {/* Project label switch — drives the safety suggestions in "Do next" */}
+        {code.project && (
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }} title="Classify this project so the AI gets the right guardrails">
+            <span style={{ color: 'var(--cr-fg-3)', fontSize: 11 }}>label:</span>
+            {PROJECT_LABELS.map((l) => (
+              <button key={l.value} onClick={() => setLabel(l.value)} disabled={labelBusy} title={l.hint}
+                style={{ cursor: labelBusy ? 'wait' : 'pointer', borderRadius: 999, padding: '3px 10px', fontSize: 11, border: '1px solid var(--cr-line-1)',
+                  background: current === l.value ? 'var(--cr-brand-500)' : 'transparent',
+                  color: current === l.value ? '#fff' : 'var(--cr-fg-2)' }}>{l.label}</button>
+            ))}
+          </div>
+        )}
         {/* State-at-a-glance signal strip */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto', flexWrap: 'wrap' }}>
           {score != null && (

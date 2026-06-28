@@ -106,7 +106,7 @@ export function buildRecommendations(input: RecommendationInput): Recommendation
     });
   }
 
-  // 4. POC → reset the db instead of migrating.
+  // 4a. POC → move fast: reset the db, add a "POC mode" rule (don't over-engineer).
   if (project.label === 'poc') {
     recs.push({
       id: recId(pid, 'reset', 'poc-db'),
@@ -115,6 +115,38 @@ export function buildRecommendations(input: RecommendationInput): Recommendation
       rationale: 'This project is labelled POC — invest in iteration speed, not migrations. Reset/reseed the dev db rather than maintaining a migration history.',
       evidence: ['project label = poc'],
       action: { type: 'reset_db', payload: {} },
+    });
+    recs.push({
+      id: recId(pid, 'rule', 'poc-mode'),
+      kind: 'rule', severity: 'low',
+      title: 'Add a "POC mode" rule — optimise for speed, not durability',
+      rationale: 'Labelled POC. Tell the AI it can drop/reseed data, skip migration history, and prefer the fastest path over production hardening here.',
+      evidence: ['project label = poc'],
+      action: { type: 'append_claude_md', payload: { text: 'This is a POC / throwaway prototype. Optimise for iteration speed: it is OK to reset/reseed the database, skip migration history, and avoid premature hardening. Do not invest in production concerns (backups, zero-downtime migrations) unless asked.' } },
+    });
+  }
+
+  // 4b. Production/work → protect data: NO destructive ops, reversible migrations.
+  if (project.label === 'production') {
+    recs.push({
+      id: recId(pid, 'rule', 'production-data-safety'),
+      kind: 'rule', severity: 'high',
+      title: 'Protect production data — no destructive ops without backup',
+      rationale: 'This project is labelled production. Schema/data changes must be reversible and data must never be lost to a careless AI edit.',
+      evidence: ['project label = production'],
+      action: { type: 'append_claude_md', payload: { text: 'This is a PRODUCTION project. NEVER drop or reset the database, truncate tables, or delete user data. Make all schema changes via reversible migrations (never destructive DDL on live data). Back up before any risky operation, and never remove data without explicit written approval.' } },
+    });
+  }
+
+  // 4c. No label set → ask the user to classify so the right guidance kicks in.
+  if (!project.label) {
+    recs.push({
+      id: recId(pid, 'label', 'classify-project'),
+      kind: 'label', severity: 'low',
+      title: 'Label this project (POC / Production / Engineering)',
+      rationale: 'Set a label so the AI gets the right guardrails — a POC can reset its db and move fast; a production repo must protect data; engineering-grade raises the bar on tests + review.',
+      evidence: ['no label set'],
+      action: { type: 'set_label', payload: { label: 'production' } },
     });
   }
 
