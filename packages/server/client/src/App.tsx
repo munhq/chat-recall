@@ -141,6 +141,23 @@ function renderSearchView(opts: {
   );
 }
 
+/** Views that may be addressed via the ?view= deep link. */
+const URL_VIEWS = new Set<ViewMode>(['home', 'projects', 'search', 'activity', 'memory', 'security', 'code', 'toolkit', 'dashboard', 'account', 'settings']);
+
+/**
+ * Initial view from the URL. Reading it during state init (not in an effect)
+ * means the very first render is already on the right view — otherwise the
+ * "keep ?view= current" writer effect races the URL reader and snaps a
+ * deep-linked ?view=dashboard back to home.
+ */
+function initialViewFromUrl(): ViewMode {
+  try {
+    const v = new URLSearchParams(window.location.search).get('view') as ViewMode | null;
+    if (v && URL_VIEWS.has(v)) return v;
+  } catch { /* SSR / bad URL — fall through */ }
+  return 'home';
+}
+
 export default function App() {
   return (
     <SidebarExtrasProvider>
@@ -151,7 +168,7 @@ export default function App() {
 
 function AppInner() {
   const sidebarExtras = useSidebarExtras();
-  const [view, setView] = useState<ViewMode>('home');
+  const [view, setView] = useState<ViewMode>(initialViewFromUrl);
   // Memory now hosts the two "how you think" corpora: the knowledge GRAPH
   // (temporal facts — previously invisible) and NOTES (plans/tasks/diary/etc).
   // Toolkit is its own top-level view now (no longer buried here).
@@ -665,7 +682,7 @@ function AppInner() {
 
   // Entitlement gate: block the whole shell until subscribed (cloud + billing on).
   if (gate === 'loading') {
-    return <div className="app" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', color: 'var(--cr-fg-3)' }}>Loading…</div>;
+    return <div className="app" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100dvh', color: 'var(--cr-fg-3)' }}>Loading…</div>;
   }
   if (gate === 'subscribe') return <SubscribeScreen />;
 

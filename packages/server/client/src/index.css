@@ -170,7 +170,10 @@ a { color: var(--cr-brand-500); text-decoration: none; font-size: 13px; }
 a:hover { text-decoration: underline; }
 
 /* App shell */
-.app { display: flex; flex-direction: column; height: 100vh; }
+/* 100dvh tracks the *dynamic* viewport so the bottom (pagination footer,
+ * drawers) isn't hidden under mobile Safari's address bar. 100vh fallback
+ * for browsers without dvh. */
+.app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 .app-row { display: flex; flex: 1; overflow: hidden; }
 
 /* ────────────────────── Conversation list ────────────────────── */
@@ -451,7 +454,15 @@ a:hover { text-decoration: underline; }
    * so they're unaffected. */
   .app-row > * { min-width: 0 !important; }
 
-  .cr-topbar { padding: 0 12px !important; gap: 8px !important; }
+  .cr-topbar {
+    padding: 0 12px !important; gap: 8px !important;
+    /* keep the topbar clear of the notch in landscape */
+    padding-left: max(12px, env(safe-area-inset-left)) !important;
+    padding-right: max(12px, env(safe-area-inset-right)) !important;
+  }
+  /* keep fixed footers/lists clear of the home indicator */
+  .cr-conv-footer { padding-bottom: max(10px, env(safe-area-inset-bottom)) !important; }
+  .conversation-column > div:first-child { padding-bottom: max(96px, calc(96px + env(safe-area-inset-bottom))) !important; }
   .cr-topbar-brand-text, .cr-topbar-brand-tag { display: none !important; }
   .cr-topbar-nav { display: none !important; }
   .cr-topbar-search { flex: 1 !important; margin: 0 !important; max-width: none !important; }
@@ -552,8 +563,8 @@ a:hover { text-decoration: underline; }
   .cr-topbar-search input::placeholder { font-size: 13px; }
 }
 
-/* Touch targets */
+/* Touch targets — 44px is the iOS/Material minimum for reliable tapping. */
 @media (pointer: coarse) {
-  .cr-sidebar [role="button"], .cr-sidebar a,
-  .cr-conv-row, .cr-split-back, .cr-split-list > div[role="button"] { min-height: 36px; }
+  .cr-sidebar-row, .cr-sidebar [role="button"], .cr-sidebar a,
+  .cr-conv-row, .cr-split-back, .cr-split-list > div[role="button"] { min-height: 44px; }
 }
