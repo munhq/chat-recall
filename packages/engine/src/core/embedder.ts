@@ -192,6 +192,13 @@ export class OpenAICompatibleEmbedder implements Embedder {
     return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
   })();
 
+  // Per-request hard timeout (ms). A CPU embed server under concurrent load can
+  // stall a single request; abort + retry rather than hang the lane.
+  static readonly TIMEOUT_MS = (() => {
+    const n = Number(process.env.EMBED_TIMEOUT_MS);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 60000;
+  })();
+
   private baseUrl: string;
   private apiKey: string;
   private model: string;
@@ -244,7 +251,29 @@ export class OpenAICompatibleEmbedder implements Embedder {
     return results.flat();
   }
 
+  // Retry-wrapping front for embedBatchOnce. A self-hosted CPU server (OVMS)
+  // briefly overloaded by concurrent batches drops/stalls requests ("fetch
+  // failed" / undici "terminated"); without a retry, one slow sub-batch threw
+  // and Promise.all zeroed the entire 256-chunk backfill batch → 0 progress.
+  // Retry transient failures (network/timeout/5xx) a few times with backoff so
+  // a momentary overload self-heals instead of failing the whole sweep.
   private async embedBatch(input: string[], inputType: 'query' | 'passage'): Promise<number[][]> {
+    const ATTEMPTS = 4;
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+      try {
+        return await this.embedBatchOnce(input, inputType);
+      } catch (e) {
+        lastErr = e;
+        if (attempt === ATTEMPTS) break;
+        // Exponential backoff (0.5s, 1s, 2s) lets a transient overload drain.
+        await new Promise(r => setTimeout(r, 500 * 2 ** (attempt - 1)));
+      }
+    }
+    throw lastErr;
+  }
+
+  private async embedBatchOnce(input: string[], inputType: 'query' | 'passage'): Promise<number[][]> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     // Local servers (LocalAI, llama.cpp, vLLM with no auth) often run keyless.
     if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
@@ -260,11 +289,22 @@ export class OpenAICompatibleEmbedder implements Embedder {
       Object.assign(body, this.extraBody);
     }
 
-    const res = await fetch(`${this.baseUrl}/embeddings`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body),
-    });
+    // Hard timeout: a CPU embed server can stall a request indefinitely under
+    // load; without this the lane hangs until undici eventually "terminated"s
+    // it. Abort at EMBED_TIMEOUT_MS so the retry wrapper can re-issue.
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), OpenAICompatibleEmbedder.TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/embeddings`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: ctl.signal,
+      });
+    } finally {
+      clearTimeout(t);
+    }
     if (!res.ok) {
       const msg = await res.text().catch(() => '');
       throw new Error(`Embedding request to ${this.baseUrl} failed: ${res.status} ${res.statusText}${msg ? ' – ' + msg.slice(0, 200) : ''}`);
