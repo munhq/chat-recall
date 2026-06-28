@@ -122,7 +122,7 @@ const FEATURES = [
 ];
 
 const LANDING_CSS = `
-.cr-landing { min-height: 100vh; background: var(--cr-ink-0, #0b0d10); color: var(--cr-fg-1, #e8eaed); font-family: system-ui, -apple-system, sans-serif; overflow-x: hidden; }
+.cr-landing { min-height: 100vh; min-height: 100dvh; background: var(--cr-ink-0, #0b0d10); color: var(--cr-fg-1, #e8eaed); font-family: system-ui, -apple-system, sans-serif; overflow-x: hidden; }
 .cr-landing * { box-sizing: border-box; }
 .ln-nav { display:flex; align-items:center; justify-content:space-between; padding: 20px 32px; max-width: 1100px; margin: 0 auto; }
 .ln-brand { font-weight: 700; font-size: 18px; letter-spacing: -0.01em; }
