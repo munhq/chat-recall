@@ -387,6 +387,12 @@ a:hover { text-decoration: underline; }
   padding: 0 18px; border-bottom: 1px solid var(--cr-line-1);
 }
 
+/* Project-workspace lens bar: scroll horizontally instead of clipping when the
+   5 lenses (Overview/Code/Conversations/Activity/Knowledge) don't fit a phone.
+   Scrollbar hidden — it's a swipe affordance, not a visible track. */
+.cr-lens-bar { -webkit-overflow-scrolling: touch; scrollbar-width: none; overscroll-behavior-x: contain; }
+.cr-lens-bar::-webkit-scrollbar { height: 0; display: none; }
+
 /* ────────────────────── Split panes (Toolkit / Memory) ────────────────────── */
 .cr-split { display: flex; flex: 1; overflow: hidden; }
 .cr-split-list { flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--cr-line-1); }
@@ -460,6 +466,11 @@ a:hover { text-decoration: underline; }
     padding-left: max(12px, env(safe-area-inset-left)) !important;
     padding-right: max(12px, env(safe-area-inset-right)) !important;
   }
+  /* lens bar: tighter gutters + clear the notch in landscape */
+  .cr-lens-bar {
+    padding-left: max(12px, env(safe-area-inset-left)) !important;
+    padding-right: max(12px, env(safe-area-inset-right)) !important;
+  }
   /* keep fixed footers/lists clear of the home indicator */
   .cr-conv-footer { padding-bottom: max(10px, env(safe-area-inset-bottom)) !important; }
   .conversation-column > div:first-child { padding-bottom: max(96px, calc(96px + env(safe-area-inset-bottom))) !important; }
@@ -527,6 +538,19 @@ a:hover { text-decoration: underline; }
   }
   .cr-split[data-has-selection="true"] .cr-split-detail { transform: translateX(0); }
   .cr-split[data-has-selection="true"] .cr-split-list { pointer-events: none; visibility: hidden; }
+
+  /* ConversationViewer reused inside a master/detail split (project workspace
+     Conversations lens): the global .conversation-column off-canvas rules are
+     scoped to the top-level search view via .app[data-has-selection], which the
+     workspace never sets — so the viewer was display:none'd and conversations
+     vanished on mobile. Inside .cr-split the .cr-split-detail does the sliding,
+     so reset the viewer to simply fill the detail pane. Selector carries the
+     leading .app to outrank the global rules' specificity. */
+  .app .cr-split-detail .conversation-column {
+    position: static !important; inset: auto !important; z-index: auto !important;
+    transform: none !important; display: flex !important; flex-direction: column !important;
+    flex: 1 1 auto !important; min-height: 0; width: 100% !important;
+  }
 
   .cr-dashboard-inner { padding: 20px 14px 64px !important; }
   .cr-stat-grid-4 { grid-template-columns: repeat(2, 1fr) !important; gap: 16px !important; }
