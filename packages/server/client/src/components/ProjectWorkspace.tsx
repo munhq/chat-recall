@@ -10,8 +10,9 @@
  * reuses the existing components; nothing is bolted on.
  */
 
-import React, { useEffect, useMemo, useState, useCallback } from 'react';
+import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { Card, Chip, SegmentedControl, Button, Icon } from './primitives';
+import { useUrlState } from '../services/url-state';
 import CodeExplorer, { DependencyMap, PRI_CHIP, PRI_LABEL } from './CodeExplorer';
 import KnowledgeGraph from './KnowledgeGraph';
 import ConversationList from './ConversationList';
@@ -54,8 +55,20 @@ export default function ProjectWorkspace({
   onOpenSession?: (sessionId: string) => void;
   onBack: () => void;
 }) {
-  const [lens, setLens] = useState<Lens>('overview');
-  useEffect(() => { setLens('overview'); }, [projectId]);
+  // Lens is URL-backed (?lens=) so a project view is shareable/refresh-safe
+  // ("munbot → Code"). replaceState (default) keeps lens flips out of history.
+  const [lens, setLensRaw] = useUrlState('lens', 'overview', {
+    valid: (v) => LENSES.some((l) => l.value === v),
+    clearOnUnmount: true,
+  });
+  const setLens = setLensRaw as (l: Lens) => void;
+  // Switching to a *different* project resets to Overview — but skip the first
+  // render so a deep-linked ?lens= isn't clobbered on load.
+  const firstLensRender = useRef(true);
+  useEffect(() => {
+    if (firstLensRender.current) { firstLensRender.current = false; return; }
+    setLens('overview');
+  }, [projectId]); // eslint-disable-line react-hooks/exhaustive-deps
   const kgEntity = useMemo(() => projectName.split('/').pop() || projectName, [projectName]);
 
   const code = useCodeProject(projectId);
@@ -71,7 +84,7 @@ export default function ProjectWorkspace({
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       <ProjectHeader projectName={projectName} code={code} onBack={onBack} />
-      <div style={{ padding: '0 24px', flexShrink: 0, borderBottom: '1px solid var(--cr-line-1)' }}>
+      <div className="cr-lens-bar" style={{ padding: '8px 24px', flexShrink: 0, borderBottom: '1px solid var(--cr-line-1)', overflowX: 'auto' }}>
         <SegmentedControl value={lens} onChange={(v) => setLens(v as Lens)} options={LENSES} />
       </div>
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
@@ -314,8 +327,12 @@ function ConversationsLens({ projectId, toolFilter, conv }: { projectId: string;
   const onSelect = (sid: string) => conv.open(sid, sessions.find((s) => s.sessionId === sid) || null);
 
   return (
-    <div className="cr-split" style={{ display: 'flex', height: '100%', minHeight: 0 }}>
-      <div style={{ width: 'var(--cr-convos-w, 360px)', flexShrink: 0, borderRight: '1px solid var(--cr-line-1)', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+    // .cr-split + data-has-selection drive the mobile master/detail slide: the
+    // list is full-width until a session is picked, then the reader slides in
+    // over it (with a Back button). Without these classes the reader sat
+    // off-canvas on phones and tapping a session showed nothing.
+    <div className="cr-split" data-has-selection={conv.sessionId ? 'true' : undefined} style={{ display: 'flex', height: '100%', minHeight: 0, overflow: 'hidden' }}>
+      <div className="cr-split-list" style={{ width: 'var(--cr-convos-w, 360px)', flexShrink: 0, borderRight: '1px solid var(--cr-line-1)', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         <ConversationList
           results={sessions}
           selected={conv.sessionId}
@@ -329,22 +346,28 @@ function ConversationsLens({ projectId, toolFilter, conv }: { projectId: string;
           loading={loading}
         />
       </div>
-      <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+      <div className="cr-split-detail" style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         {conv.sessionId ? (
-          <ConversationViewer
-            selectionNonce={conv.selectionNonce}
-            totalMessages={conv.total}
-            hasMoreMessages={conv.hasMore}
-            onLoadMoreMessages={conv.loadMore}
-            sessionId={conv.sessionId}
-            messages={conv.messages}
-            subagents={conv.subagents}
-            loading={conv.loading}
-            onClose={conv.close}
-            onLoadFull={conv.loadFull}
-            searchResult={null}
-            sessionInfo={conv.sessionInfo}
-          />
+          <>
+            {/* Mobile-only back button — returns to the session list. */}
+            <button type="button" className="cr-mobile-only cr-split-back" onClick={conv.close} aria-label="Back to list">
+              <Icon name="chevronLeft" size={14} /> Back
+            </button>
+            <ConversationViewer
+              selectionNonce={conv.selectionNonce}
+              totalMessages={conv.total}
+              hasMoreMessages={conv.hasMore}
+              onLoadMoreMessages={conv.loadMore}
+              sessionId={conv.sessionId}
+              messages={conv.messages}
+              subagents={conv.subagents}
+              loading={conv.loading}
+              onClose={conv.close}
+              onLoadFull={conv.loadFull}
+              searchResult={null}
+              sessionInfo={conv.sessionInfo}
+            />
+          </>
         ) : (
           <div style={{ padding: 40, color: 'var(--cr-fg-3)', textAlign: 'center' }}>
             {sessions.length ? `${total} session(s) for this project — pick one to read it here.` : 'No sessions recorded for this project.'}
