@@ -182,6 +182,16 @@ export class OpenAICompatibleEmbedder implements Embedder {
     return Number.isFinite(n) && n > 0 ? Math.floor(n) : 32;
   })();
 
+  // How many /embeddings requests to keep in flight at once. Sequential (1) is
+  // safe for rate-limited hosted APIs (OpenAI/Gemini 429 on bursts). A
+  // self-hosted server with multiple OpenVINO streams sits idle unless the
+  // client feeds it concurrently — set EMBED_CONCURRENCY to match the server's
+  // NUM_STREAMS (we run 8 against OVMS on the 48-core node).
+  static readonly CONCURRENCY = (() => {
+    const n = Number(process.env.EMBED_CONCURRENCY);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;
+  })();
+
   private baseUrl: string;
   private apiKey: string;
   private model: string;
@@ -215,12 +225,23 @@ export class OpenAICompatibleEmbedder implements Embedder {
   }
 
   private async embedWithType(texts: string[], inputType: 'query' | 'passage'): Promise<number[][]> {
-    const out: number[][] = [];
+    // Split into BATCH_SIZE slices, then drain them through a bounded worker
+    // pool of CONCURRENCY in-flight requests. Results are written back by index
+    // so the returned order matches `texts` regardless of completion order.
+    const slices: string[][] = [];
     for (let i = 0; i < texts.length; i += OpenAICompatibleEmbedder.BATCH_SIZE) {
-      const batch = texts.slice(i, i + OpenAICompatibleEmbedder.BATCH_SIZE);
-      out.push(...await this.embedBatch(batch, inputType));
+      slices.push(texts.slice(i, i + OpenAICompatibleEmbedder.BATCH_SIZE));
     }
-    return out;
+    const results: number[][][] = new Array(slices.length);
+    let cursor = 0;
+    const worker = async (): Promise<void> => {
+      for (let idx = cursor++; idx < slices.length; idx = cursor++) {
+        results[idx] = await this.embedBatch(slices[idx], inputType);
+      }
+    };
+    const lanes = Math.max(1, Math.min(OpenAICompatibleEmbedder.CONCURRENCY, slices.length));
+    await Promise.all(Array.from({ length: lanes }, () => worker()));
+    return results.flat();
   }
 
   private async embedBatch(input: string[], inputType: 'query' | 'passage'): Promise<number[][]> {
