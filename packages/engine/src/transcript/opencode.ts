@@ -3,6 +3,9 @@
  * Ported verbatim from services/parser.ts.
  */
 import type { TranscriptMessage as Message, Subagent, ToolCall } from './types.js';
+import { createLogger } from '../core/logger.js';
+
+const log = createLogger('transcript-opencode');
 
 /**
  * Discover OpenCode sub-agent sessions spawned by a parent. OpenCode
@@ -36,7 +39,7 @@ export async function parseOpenCodeSubagents(parentSessionId: string): Promise<S
       const childId = `opencode_${c.id}`;
       let messages: Message[] = [];
       try { messages = await parseOpenCodeTranscript(childId); }
-      catch (e) { console.error(`Failed to parse OpenCode sub-session ${c.id}:`, e); }
+      catch (e) { log.error({ err: e, sessionId: c.id }, 'Failed to parse OpenCode sub-session'); }
       const toolUseCount = messages.reduce((n, m) => n + (m.toolCalls?.length ?? 0), 0);
 
       // Heuristic kind from the title prefix (`@explorer`, `@general`, …).

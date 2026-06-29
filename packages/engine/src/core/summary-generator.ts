@@ -8,6 +8,9 @@
  */
 
 import { execSync, spawn } from 'child_process';
+import { createLogger } from './logger.js';
+
+const log = createLogger('summary-generator');
 
 /**
  * Promise-based shell exec. Replaces `execSync` for summary generation
@@ -408,7 +411,7 @@ export class SummaryGenerator {
         try { unlinkSync(tempFile); } catch {}
       }
     } catch (error) {
-      console.error('Gemini CLI error:', error);
+      log.error({ err: error }, 'Gemini CLI error');
       // Fallback: Build summary from available context
       const lines = context.split('\n').filter(l => l.trim().length > 20);
       let fallback = '';
@@ -599,7 +602,7 @@ Summary:`;
         const summary = await this.generate(content);
         results.set(sessionId, summary);
       } catch (error) {
-        console.error(`Failed to generate summary for ${sessionId}:`, error);
+        log.error({ err: error, sessionId }, 'Failed to generate summary');
         results.set(sessionId, content.firstPrompt.slice(0, 200));
       }
     }

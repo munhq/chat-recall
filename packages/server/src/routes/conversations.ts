@@ -47,6 +47,9 @@ import { matchesPrefix } from '../utils/paths.js';
 import { buildETag, maybeSendNotModified } from '../util/cacheable.js';
 import { requireLocalMode, isServerMode } from '../util/mode.js';
 import { openPgPool, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
+import { createLogger } from '@chat-recall/engine/core/logger.js';
+
+const log = createLogger('conversations');
 
 const router = express.Router();
 
@@ -273,7 +276,7 @@ router.get('/recent', async (req, res) => {
       hasMore: offset + sessions.length < totalAfterFilter,
     });
   } catch (error) {
-    console.error('Recent sessions error:', error);
+    log.error({ err: error }, 'recent sessions error');
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to get recent sessions',
     });
@@ -315,7 +318,7 @@ router.get('/:id/files-live', async (req, res) => {
       source: 'live',
     });
   } catch (error) {
-    console.error('Files-live error:', error);
+    log.error({ err: error }, 'files-live error');
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to live-scan session',
     });
@@ -395,7 +398,7 @@ router.get('/:id/diff', async (req, res) => {
       })),
     });
   } catch (error) {
-    console.error('Diff error:', error);
+    log.error({ err: error }, 'diff error');
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to compute diff' });
   }
 });
@@ -434,7 +437,7 @@ router.get('/:id/commits', async (req, res) => {
     }
     return res.status(404).json({ error: 'Session not found' });
   } catch (error) {
-    console.error('Commits error:', error);
+    log.error({ err: error }, 'commits error');
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to compute commits' });
   }
 });
@@ -492,7 +495,7 @@ router.get('/:id/outcome', async (req, res) => {
     }
     return res.status(404).json({ error: 'Session not found' });
   } catch (error) {
-    console.error('Outcome error:', error);
+    log.error({ err: error }, 'outcome error');
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to read outcome' });
   }
 });
@@ -647,7 +650,7 @@ function enqueueRefresh(kind: 'outcome' | 'diff' | 'commits' | 'markers' | 'turn
           if (turns.found) await heavyCacheSet(`turns:${sessionId}`, mtime, turns);
         }
       } catch (err) {
-        console.error(`Async refresh ${kind}:${sessionId.slice(0, 8)} failed:`, err);
+        log.error({ err, kind, sessionId }, 'async refresh failed');
       } finally {
         REFRESH_PENDING.delete(key);
       }
@@ -737,9 +740,9 @@ export async function prewarmConversationCaches(): Promise<void> {
   try {
     const t0 = Date.now();
     await getCachedSessionPathMap();
-    console.log(`  Path map warmed: ${sessionPathCache?.map.size ?? 0} sessions in ${Date.now() - t0}ms`);
+    log.info({ sessions: sessionPathCache?.map.size ?? 0, ms: Date.now() - t0 }, 'path map warmed');
   } catch (err) {
-    console.error('Path map warm-up failed:', err);
+    log.error({ err }, 'path map warm-up failed');
   }
   try {
     // Open the heavy-metadata cache so the very first L2 read pays
@@ -747,18 +750,18 @@ export async function prewarmConversationCaches(): Promise<void> {
     // schema init). Triggers initSchema once at boot.
     const t0 = Date.now();
     getHeavyMetadataCache();
-    console.log(`  Heavy metadata cache opened in ${Date.now() - t0}ms`);
+    log.info({ ms: Date.now() - t0 }, 'heavy metadata cache opened');
   } catch (err) {
-    console.error('Heavy metadata cache warm-up failed:', err);
+    log.error({ err }, 'heavy metadata cache warm-up failed');
   }
   try {
     // Same for OutcomeCache (badge endpoint's L2 — opens on first badge
     // request otherwise).
     const t0 = Date.now();
     getOutcomeCache();
-    console.log(`  Outcome cache opened in ${Date.now() - t0}ms`);
+    log.info({ ms: Date.now() - t0 }, 'outcome cache opened');
   } catch (err) {
-    console.error('Outcome cache warm-up failed:', err);
+    log.error({ err }, 'outcome cache warm-up failed');
   }
 }
 
@@ -993,7 +996,7 @@ router.get('/:id/outcome/badge', async (req, res) => {
     if (!resolved) return res.status(404).json({ error: 'Session not found' });
     res.json(classifyOne(id, resolved));
   } catch (error) {
-    console.error('Outcome badge error:', error);
+    log.error({ err: error }, 'outcome badge error');
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to compute outcome badge' });
   }
 });
@@ -1130,7 +1133,7 @@ router.post('/outcome/badges', async (req, res) => {
     if (newRecords.length > 0) cache.putMany(newRecords);
     res.json({ badges });
   } catch (error) {
-    console.error('Outcome badges batch error:', error);
+    log.error({ err: error }, 'outcome badges batch error');
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to compute outcome badges' });
   }
 });
@@ -1192,7 +1195,7 @@ router.get('/:id/turns', async (req, res) => {
     }
     res.json(result);
   } catch (error) {
-    console.error('Turns error:', error);
+    log.error({ err: error }, 'turns error');
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to extract turns' });
   }
 });
@@ -1246,7 +1249,7 @@ router.get('/:id/markers', async (req, res) => {
     if (resolved) await setCachedMarkers(id, resolved.mtime, payload);
     res.json(payload);
   } catch (error) {
-    console.error('Markers error:', error);
+    log.error({ err: error }, 'markers error');
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to mark prompts' });
   }
 });
@@ -1258,7 +1261,7 @@ router.get('/:id/related', async (req, res) => {
     const related = await getRelatedItems(id);
     res.json(related);
   } catch (error) {
-    console.error('Related items error:', error);
+    log.error({ err: error }, 'related items error');
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to get related items',
     });
@@ -1275,7 +1278,7 @@ router.get('/:id/metadata', async (req, res) => {
     }
     res.json(metadata);
   } catch (error) {
-    console.error('Session metadata error:', error);
+    log.error({ err: error }, 'session metadata error');
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to get session metadata',
     });
@@ -1363,7 +1366,7 @@ router.post('/:id/regenerate-summary', async (req, res) => {
     const msg = error instanceof Error ? error.message : String(error);
     // Surface quota errors with a 429 so the UI can render a clear message
     const status = /QUOTA_EXHAUSTED|429|exhausted your capacity|rate.?limit/i.test(msg) ? 429 : 500;
-    console.error(`regenerate-summary ${id}:`, msg.slice(0, 300));
+    log.error({ id, msg: msg.slice(0, 300) }, 'regenerate-summary failed');
     res.status(status).json({ error: msg.slice(0, 500) });
   }
 });
@@ -1397,7 +1400,7 @@ router.patch('/:id', async (req, res) => {
     }
     res.json({ sessionId: id, userTitle: title });
   } catch (error) {
-    console.error(`rename ${id}:`, error instanceof Error ? error.message : error);
+    log.error({ id, err: error }, 'rename failed');
     res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to rename session' });
   }
 });
@@ -1599,7 +1602,7 @@ router.get('/:id', async (req, res) => {
       await store.close();
     }
   } catch (error) {
-    console.error('Conversation error:', error);
+    log.error({ err: error }, 'conversation error');
 
     if (error instanceof Error && error.message.includes('not found')) {
       return res.status(404).json({ error: 'Session not found' });
@@ -1650,7 +1653,7 @@ router.get('/:id/raw', async (req, res) => {
           return res.json({ sessionId: id, tool: 'opencode', session, lines, count: lines.length });
         } finally { db.close(); }
       } catch (e) {
-        console.error('OpenCode raw error:', e);
+        log.error({ err: e }, 'opencode raw error');
         return res.status(404).json({ error: e instanceof Error ? e.message : 'OpenCode database not found' });
       }
     }
@@ -1695,7 +1698,7 @@ router.get('/:id/raw', async (req, res) => {
       count: rawLines.length,
     });
   } catch (error) {
-    console.error('Raw conversation error:', error);
+    log.error({ err: error }, 'raw conversation error');
 
     if (error instanceof Error && error.message.includes('not found')) {
       return res.status(404).json({ error: 'Session not found' });

@@ -7,6 +7,9 @@ import { getAllSessions, parseSessionFile, createMetadataCache, createStore } fr
 import type { SessionEntry, SourceType } from '../imports.js';
 import { getModelContextLimit } from '@chat-recall/engine/core/utils.js';
 import { estimateCostUsdOrNull } from '@chat-recall/engine/core/model-pricing.js';
+import { createLogger } from '@chat-recall/engine/core/logger.js';
+
+const log = createLogger('analytics');
 
 const router = express.Router();
 
@@ -647,7 +650,7 @@ router.get('/', async (req, res) => {
     }
     res.json(result);
   } catch (error) {
-    console.error('Analytics error:', error);
+    log.error({ err: error }, 'analytics error');
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to compute analytics',
     });

@@ -32,6 +32,9 @@
 import { defaultApiBaseUrl } from '../imports.js';
 import type { SummaryGeneratorConfig } from '../imports.js';
 import { serverSummaryConfig } from './summary-worker.js';
+import { createLogger } from '@chat-recall/engine/core/logger.js';
+
+const log = createLogger('query-expander');
 
 /** Providers we can call on the hot search path. CLI/gemini-cli shell out per
  *  invocation — far too slow (and unsafe) to run on every search — so they are
@@ -95,9 +98,9 @@ export class QueryExpander {
       const why = !this.config
         ? 'no SUMMARY_PROVIDER configured'
         : `provider '${this.config.provider}' is not usable on the search hot path`;
-      console.warn(`[query-expander] QUERY_EXPANSION=on but disabled: ${why}`);
+      log.warn({ why }, 'QUERY_EXPANSION=on but disabled');
     } else if (this.enabled) {
-      console.log(`[query-expander] enabled via summary provider '${this.config!.provider}'`);
+      log.info({ provider: this.config!.provider }, 'enabled via summary provider');
     }
   }
 
@@ -145,7 +148,7 @@ export class QueryExpander {
       return terms;
     } catch (err) {
       // Fail open — keyword search still works without expansion.
-      console.warn(`[query-expander] expansion failed, using keyword-only: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn({ err }, 'expansion failed, using keyword-only');
       return [];
     } finally {
       clearTimeout(timer);

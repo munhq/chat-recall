@@ -17,6 +17,9 @@
 import { openPgPool, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
 import { createControlPlane } from '../imports.js';
 import { isEntitled } from '../util/billing.js';
+import { createLogger } from '@chat-recall/engine/core/logger.js';
+
+const log = createLogger('notify');
 
 export interface VerifiedHit {
   sessionId: string;
@@ -84,10 +87,10 @@ async function postWebhook(url: string, h: VerifiedHit): Promise<boolean> {
       body: JSON.stringify({ content: msg, text: msg }),
       signal: ctrl.signal,
     });
-    if (!res.ok) console.error(`[notify] webhook ${res.status} for tenant alert`);
+    if (!res.ok) log.error({ status: res.status }, 'webhook failed for tenant alert');
     return res.ok;
   } catch (e) {
-    console.error('[notify] webhook post failed:', e instanceof Error ? e.message : e);
+    log.error({ err: e }, 'webhook post failed');
     return false;
   } finally {
     clearTimeout(timer);

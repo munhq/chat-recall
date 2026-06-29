@@ -8,6 +8,9 @@ import express from 'express';
 import { cachedRecentEdits, findRepoRoot } from '../imports.js';
 import type { SessionEdit } from '../imports.js';
 import { isServerMode } from '../util/mode.js';
+import { createLogger } from '@chat-recall/engine/core/logger.js';
+
+const log = createLogger('edits');
 
 const router = express.Router();
 
@@ -152,7 +155,7 @@ router.get('/timeline', async (req, res) => {
       edits: enriched,
     });
   } catch (error) {
-    console.error('Edits timeline error:', error);
+    log.error({ err: error }, 'edits timeline error');
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to build edits timeline',
     });

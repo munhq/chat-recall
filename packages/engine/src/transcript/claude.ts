@@ -6,6 +6,9 @@
 import { open, readdir, readFile, stat } from 'fs/promises';
 import { dirname, join, basename } from 'path';
 import type { TranscriptMessage as Message, Subagent, ToolCall } from './types.js';
+import { createLogger } from '../core/logger.js';
+
+const log = createLogger('transcript-claude');
 
 // Client banners Claude Code prepends to user messages on session boundaries.
 // Strip them from parsed messages so they don't render as part of the prompt.
@@ -59,7 +62,7 @@ async function parseMessagesFromFile(sessionPath: string): Promise<Message[]> {
       try {
         raw.push({ line: lineNumber, obj: JSON.parse(line) });
       } catch (e) {
-        console.error(`Error parsing line ${lineNumber}:`, e);
+        log.error({ err: e, line: lineNumber }, 'Error parsing line');
       }
     }
   } finally {
@@ -206,7 +209,7 @@ export async function parseClaudeSubagents(sessionPath: string): Promise<Subagen
     try {
       messages = await parseMessagesFromFile(filePath);
     } catch (e) {
-      console.error(`Failed to parse subagent ${filePath}:`, e);
+      log.error({ err: e, filePath }, 'Failed to parse subagent');
     }
 
     const toolUseCount = messages.reduce((n, m) => n + (m.toolCalls?.length ?? 0), 0);

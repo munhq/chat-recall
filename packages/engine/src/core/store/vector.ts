@@ -20,6 +20,9 @@ import { MemoryIndex } from '../memory-index.js';
 import { resolveBackend, type CreateStoreOptions } from './index.js';
 import { resolveProjectId } from '../project-resolver.js';
 import type { MemorySearchResult } from '../../types/memory.js';
+import { createLogger } from '../logger.js';
+
+const log = createLogger('vector');
 
 type AsyncMethod<M> = M extends (...args: infer A) => infer R
   ? (...args: A) => Promise<Awaited<R>>
@@ -248,7 +251,7 @@ export class PgVectorStore implements VectorStore {
       try { embeddings = await (this.embedder as any).embed(rows.map((r: any) => r.text)); }
       catch (e) {
         this.lastError = e instanceof Error ? e.message : String(e);
-        console.warn(`[vector] embedMissing: embed failed for tenant=${this.t} (${rows.length} chunks): ${this.lastError.slice(0, 300)}`);
+        log.warn({ err: e, tenant: this.t, chunks: rows.length }, 'embedMissing: embed failed');
         return { embedded: 0, scanned: rows.length };
       }
       if (!embeddings) return { embedded: 0, scanned: rows.length };

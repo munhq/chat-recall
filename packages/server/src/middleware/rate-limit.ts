@@ -52,6 +52,9 @@ import type { Request, Response, NextFunction } from 'express';
 import { CLASSES, ENFORCE, STORE_KIND, type RlClass, type ClassConfig } from './rate-limit-config.js';
 import { MemoryStore, PgStore, NoopStore, type RateLimitStore } from './rate-limit-store.js';
 import { openPgPool } from '@chat-recall/engine/core/store/pg-pool.js';
+import { createLogger } from '@chat-recall/engine/core/logger.js';
+
+const log = createLogger('rate-limit');
 
 let _store: RateLimitStore | null = null;
 function store(): RateLimitStore {
@@ -90,7 +93,7 @@ function setHeaders(res: Response, capacity: number, remaining: number, refillPe
  *  be blocked (caller must stop). In report-only mode, logs and returns false. */
 function shed(res: Response, className: RlClass, id: string, kind: string, retryAfterMs: number): boolean {
   if (!ENFORCE) {
-    console.warn(`[ratelimit] report-only would-shed ${className}/${kind} id=${id} retryAfter=${retryAfterMs}ms`);
+    log.warn({ className, kind, id, retryAfterMs }, 'report-only would-shed');
     return false;
   }
   const retrySec = Math.max(1, Math.ceil(retryAfterMs / 1000));
@@ -166,12 +169,12 @@ export async function ingestGate(tenant: string, rowCount: number): Promise<{ ok
   try {
     const conc = acquireConcurrency('ingest', id, cfg);
     if (!conc.ok) {
-      console.warn(`[ratelimit] ${ENFORCE ? 'BLOCK' : 'report-only would-shed'} ingest/concurrency id=${id} rows=${rowCount}`);
+      log.warn({ decision: ENFORCE ? 'BLOCK' : 'report-only would-shed', id, rowCount }, 'ingest/concurrency');
       return { ok: ENFORCE ? false : true, release: conc.release, retryAfterMs: 2000 };
     }
     const r = await store().consume(`ingest:${id}`, Math.max(1, rowCount), cfg.capacity, cfg.refillPerSec);
     if (!r.allowed) {
-      console.warn(`[ratelimit] ${ENFORCE ? 'BLOCK' : 'report-only would-shed'} ingest/rate id=${id} rows=${rowCount} retryAfter=${r.retryAfterMs}ms`);
+      log.warn({ decision: ENFORCE ? 'BLOCK' : 'report-only would-shed', id, rowCount, retryAfterMs: r.retryAfterMs }, 'ingest/rate');
       if (ENFORCE) { conc.release(); return { ok: false, release: () => {}, retryAfterMs: r.retryAfterMs }; }
     }
     return { ok: true, release: conc.release, retryAfterMs: 0 };

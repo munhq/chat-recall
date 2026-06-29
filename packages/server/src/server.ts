@@ -40,9 +40,24 @@ import billingRouter from './routes/billing.js';
 import { capabilities, isServerMode } from './util/mode.js';
 import { generateMissingSummariesAllTenants, serverSummaryConfig } from './services/summary-worker.js';
 import { embedMissingVectors, serverEmbedderConfigured } from './services/vector-backfill-worker.js';
+import { createLogger, setLogContextProvider } from '@chat-recall/engine/core/logger.js';
+import { closePgPools } from '@chat-recall/engine/core/store/pg-pool.js';
+import { requestContext, attachTenantToContext, logContext } from './middleware/request-context.js';
+import { httpObservability } from './middleware/http-observability.js';
+import {
+  summarySweepsTotal, summariesGeneratedTotal, summariesFailedTotal, summariesSkippedTotal,
+  summaryConcurrency, vectorSweepsTotal, vectorsEmbeddedTotal,
+} from './metrics/registry.js';
 
 const app = express();
 const PORT = parseInt(process.env.PORT || '5000', 10);
+const log = createLogger('server');
+
+// Every log line emitted while handling a request gets { reqId, tenant }.
+setLogContextProvider(logContext);
+
+// Flipped on SIGTERM so /health starts failing readiness and k8s drains us.
+let shuttingDown = false;
 
 // Behind an ingress/Traefik/Cloudflare the client IP is in X-Forwarded-For.
 // Trust the first proxy hop so rate limiting keys on the real client, not the
@@ -59,6 +74,9 @@ app.use(cors({
 // of our /api/* responses are JSON in the 1KB-5MB range — exactly where
 // compression pays off (typically 70-85% wire-size reduction).
 app.use(compression({ threshold: 1024 }));
+// Establish per-request correlation (reqId + tenant, echoed as x-request-id)
+// BEFORE the body parsers so even a parse error is traceable to one log line.
+app.use(requestContext);
 // /api/sync carries whole (redacted) conversation batches — it gets its own
 // 32mb parser below; everything else keeps the tight 100kb bound.
 const smallJson = express.json({ limit: '100kb' });
@@ -77,11 +95,9 @@ app.use((req, res, next) => {
 app.use('/api/sync', express.json({ limit: '32mb' }));
 app.use('/api/code/index', express.json({ limit: '16mb' }));
 
-// Request logging
-app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
-  next();
-});
+// Structured access logging + Prometheus RED metrics (duration/count/in-flight),
+// one line per response, labelled by route template. Skips /health + /metrics.
+app.use(httpObservability);
 
 // Cost telemetry: establish a per-request cost context (wall + DB time/queries)
 // for every /api request and record a sample on finish. This is the DATA the
@@ -127,6 +143,10 @@ app.use('/api/admin', adminRouter);
 // middleware/auth.ts). Scoped to /api so /health + the static client stay open.
 // Provider is 'none' by default (self-host single-tenant, tenant='default').
 app.use('/api', tenantAuth);
+
+// Now that tenantAuth resolved req.tenant/req.userId, attach them to the
+// request's log context so every subsequent line is tenant-attributed.
+app.use('/api', attachTenantToContext);
 
 // Tenant-scoped security configuration read by the sync collector.
 // Mounted after tenantAuth so req.tenant is already resolved.
@@ -196,8 +216,12 @@ if (!isServerMode()) {
   app.use('/api/settings', settingsRouter);
 }
 
-// Health check
-app.get('/health', (req, res) => {
+// Health check. During graceful shutdown it returns 503 so the readiness probe
+// pulls this pod out of the Service endpoints before we stop accepting — the
+// other half of zero-downtime rolling (the rest is the preStop drain + SIGTERM
+// handler below).
+app.get('/health', (_req, res) => {
+  if (shuttingDown) return res.status(503).json({ status: 'shutting_down' });
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
@@ -221,12 +245,13 @@ if (existsSync(STATIC_DIR)) {
     res.setHeader('Cache-Control', 'no-store');
     res.sendFile(resolve(STATIC_DIR, 'index.html'));
   });
-  console.log(`Serving client from ${STATIC_DIR}`);
+  log.info({ staticDir: STATIC_DIR }, 'serving client');
 }
 
-// Error handler
-app.use((err: Error, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error('Unhandled error:', err);
+// Error handler. pino serializes the `err` key (message + stack); the reqId and
+// tenant ride along from the request log context.
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  log.error({ err }, 'unhandled error');
   res.status(500).json({
     error: 'Internal server error',
     message: err.message,
@@ -240,18 +265,14 @@ app.use((err: Error, req: express.Request, res: express.Response, next: express.
 if (isServerMode()) {
   const { ensurePgSchema } = await import('@chat-recall/engine/core/store/pg-pool.js');
   await ensurePgSchema();
-  console.log('  Schema: ensured on primary');
+  log.info('schema ensured on primary');
 }
 
 // Start server - bind to localhost by default, 0.0.0.0 for Docker/network access
 const HOST = process.env.HOST || '127.0.0.1';
-app.listen(PORT, HOST, () => {
-  console.log(`\nChat-Recall Backend running on http://${HOST}:${PORT}`);
-  console.log(`  Health: http://${HOST}:${PORT}/health`);
-  console.log(`  Bind: ${HOST} (set HOST=0.0.0.0 for network access)\n`);
-
+const httpServer = app.listen(PORT, HOST, () => {
   const caps = capabilities();
-  console.log(`  Mode: ${caps.mode} · edition: ${caps.edition}`);
+  log.info({ host: HOST, port: PORT, mode: caps.mode, edition: caps.edition }, 'server listening');
 
   // Tier role (see D-split): 'api' serves HTTP only and runs NO background sweeps
   // (so the API tier autoscales on real web traffic, never on worker CPU bursts);
@@ -259,7 +280,7 @@ app.listen(PORT, HOST, () => {
   // both. The HTTP server always starts (health/metrics probes) regardless.
   const role = process.env.CHAT_RECALL_ROLE || 'all';
   const runWorkers = role !== 'api';
-  console.log(`  Role: ${role} (background workers: ${runWorkers ? 'on' : 'off'})`);
+  log.info({ role, backgroundWorkers: runWorkers }, 'tier role');
 
   // Server-side AI summary generation. Synced sessions arrive without an AI
   // summary (the thin collector only ships raw content + structured outcome);
@@ -295,11 +316,17 @@ app.listen(PORT, HOST, () => {
             if (r.failed / total > 0.1) concurrency = Math.max(CONC_MIN, Math.floor(concurrency / 2));
             else if (r.generated > 0) concurrency = Math.min(CONC_MAX, concurrency + 2);
           }
+          summarySweepsTotal.inc({ result: 'ok' });
+          summariesGeneratedTotal.inc(r.generated);
+          summariesFailedTotal.inc(r.failed);
+          summariesSkippedTotal.inc(r.skipped);
+          summaryConcurrency.set(concurrency);
           if (r.generated > 0 || r.failed > 0) {
-            console.log(`  Summary sweep: ${r.generated} generated, ${r.failed} failed, ${r.skipped} skipped (${r.tenants} tenant(s)) [concurrency→${concurrency}]`);
+            log.info({ generated: r.generated, failed: r.failed, skipped: r.skipped, tenants: r.tenants, concurrency }, 'summary sweep');
           }
         } catch (err) {
-          console.error('Summary sweep failed:', err);
+          summarySweepsTotal.inc({ result: 'error' });
+          log.error({ err }, 'summary sweep failed');
         } finally {
           sweepInFlight = false;
         }
@@ -309,9 +336,9 @@ app.listen(PORT, HOST, () => {
       // Kick one sweep shortly after boot so the first batch doesn't wait a
       // full interval.
       setTimeout(() => { void sweep(); }, 5000).unref();
-      console.log('  Summary worker: enabled (server mode)');
+      log.info('summary worker enabled (server mode)');
     } else {
-      console.log('  Summary worker: disabled (no SUMMARY_PROVIDER configured)');
+      log.info('summary worker disabled (no SUMMARY_PROVIDER configured)');
     }
   }
 
@@ -330,20 +357,23 @@ app.listen(PORT, HOST, () => {
         vecInFlight = true;
         try {
           const r = await embedMissingVectors({ batch: VEC_BATCH });
+          vectorSweepsTotal.inc({ result: 'ok' });
+          vectorsEmbeddedTotal.inc(r.embedded);
           if (r.embedded > 0) {
-            console.log(`  Vector backfill: embedded ${r.embedded} chunk(s) across ${r.tenants} tenant(s)`);
+            log.info({ embedded: r.embedded, tenants: r.tenants }, 'vector backfill');
           }
         } catch (err) {
-          console.error('Vector backfill failed:', err);
+          vectorSweepsTotal.inc({ result: 'error' });
+          log.error({ err }, 'vector backfill failed');
         } finally {
           vecInFlight = false;
         }
       };
       setInterval(() => { void vecSweep(); }, VEC_SWEEP_MS).unref();
       setTimeout(() => { void vecSweep(); }, 8000).unref();
-      console.log('  Vector backfill worker: enabled (server mode)');
+      log.info('vector backfill worker enabled (server mode)');
     } else {
-      console.log('  Vector backfill worker: disabled (no EMBEDDING_PROVIDER)');
+      log.info('vector backfill worker disabled (no EMBEDDING_PROVIDER)');
     }
   }
 
@@ -369,8 +399,32 @@ app.listen(PORT, HOST, () => {
         fetch(`http://127.0.0.1:${PORT}/api/memory/status`).then(() => 'memory/status'),
         fetch(`http://127.0.0.1:${PORT}/api/edits/timeline?since_hours=24&limit=200`).then(() => 'edits/timeline'),
       ]).then(results => {
-        console.log(`  Route caches warmed: ${results.filter(Boolean).join(', ')}`);
+        log.info({ caches: results.filter(Boolean) }, 'route caches warmed');
       }).catch(() => { /* benign — first user request will pay */ });
     }, 300);
   }
 });
+
+// ── Graceful shutdown ────────────────────────────────────────────────────────
+// On SIGTERM (rolling update / scale-down / node drain): stop readiness (above),
+// stop accepting new connections, let in-flight requests finish, close the pg
+// pools, then exit. A hard cap prevents a stuck socket from blocking the
+// rollout. Paired with the k8s preStop sleep + terminationGracePeriodSeconds.
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log.info({ signal }, 'shutdown: draining connections');
+  const forceMs = Number(process.env.SHUTDOWN_TIMEOUT_MS) || 25000;
+  const force = setTimeout(() => {
+    log.warn('shutdown: forced exit after timeout');
+    process.exit(0);
+  }, forceMs);
+  force.unref();
+  httpServer.close(async () => {
+    try { await closePgPools(); } catch (err) { log.warn({ err }, 'shutdown: pool close failed'); }
+    log.info('shutdown: complete');
+    process.exit(0);
+  });
+}
+process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+process.on('SIGINT', () => { void shutdown('SIGINT'); });
