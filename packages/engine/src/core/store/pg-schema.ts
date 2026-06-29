@@ -166,20 +166,22 @@ ALTER TABLE session_metadata ADD COLUMN IF NOT EXISTS user_title TEXT;
 -- Native title assigned by the originating tool (Claude ai-title, OpenCode
 -- session.title, …), synced from the collector. Written only by setToolTitle.
 ALTER TABLE session_metadata ADD COLUMN IF NOT EXISTS tool_title TEXT;
--- Summary work-queue LEASE. The worker no longer holds a row lock across the
--- (multi-second) LLM call — it claims a batch in a short tx by stamping
--- claimed_at, runs the LLM OUTSIDE any transaction, then writes the summary in a
--- second short tx (clearing the lease). A crashed worker's lease simply expires
--- (claimed_at < now - SUMMARY_LEASE_MS) and another worker re-claims the row, so
--- nothing strands. 0 = unclaimed. Safe across N worker replicas.
--- (Metadata-only ADD COLUMN — brief lock, safe to run on boot. We deliberately
--- do NOT build a new index here: a non-CONCURRENT CREATE INDEX takes a lock on
--- the continuously-written session_metadata table, waits behind sync ingest, and
--- trips ensurePgSchema's statement_timeout → crash-on-boot. The existing
--- idx_session_metadata_pending (summary='') already narrows the claim to pending
--- rows; the claimed_at lease filter is applied on that small set. A claimed_at
--- index can be added later via CREATE INDEX CONCURRENTLY (outside this batch).
-ALTER TABLE session_metadata ADD COLUMN IF NOT EXISTS claimed_at BIGINT NOT NULL DEFAULT 0;
+-- Summary work-queue LEASE — a SEPARATE table, deliberately NOT a column on the
+-- hot session_metadata. The worker claims a batch in a short tx, writes a lease
+-- row here, runs the LLM OUTSIDE any transaction, then writes the summary +
+-- deletes the lease in a second short tx. A crashed worker's lease just expires
+-- (claimed_at < now - SUMMARY_LEASE_MS) and another worker re-claims — nothing
+-- strands. Kept out of session_metadata on purpose: ALTER-ing that continuously
+-- written table needs an ACCESS EXCLUSIVE lock that fights sync ingest + the old
+-- workers' long txns during a rollout (lock-timeout crash-on-boot). A brand-new
+-- table has zero such contention. summary_leases only ever holds rows for the
+-- few IN-FLIGHT claims (deleted on completion), so it stays tiny.
+CREATE TABLE IF NOT EXISTS summary_leases (
+  tenant      TEXT NOT NULL,
+  session_id  TEXT NOT NULL,
+  claimed_at  BIGINT NOT NULL,
+  PRIMARY KEY (tenant, session_id)
+);
 -- Work-queue index for the summary backfill (summary-worker SKIP-LOCKED claim).
 -- The claim scans only un-summarised rows; this keeps it O(pending) instead of
 -- O(all sessions) as the table grows. summary is NOT NULL DEFAULT empty-string,
@@ -482,7 +484,7 @@ BEGIN
   FOREACH t IN ARRAY ARRAY[
     'memory_metadata','memory_links','content_cache','kv_store','memory_chunks',
     'secret_findings','secret_rules','secret_dismissals','alerted_secrets','session_metadata',
-    'summary_errors','compute_cache','session_outcome_cache','kg_entities','kg_triples',
+    'summary_errors','summary_leases','compute_cache','session_outcome_cache','kg_entities','kg_triples',
     'wal_log','diary_entries','sync_intents',
     'code_projects','code_findings','code_hotspots','code_actions'
   ] LOOP
