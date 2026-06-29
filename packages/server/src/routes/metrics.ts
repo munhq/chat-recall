@@ -157,6 +157,42 @@ async function collectBusiness(pool: any) {
     `SELECT count(*)::int AS n FROM entitlements WHERE status='canceled' AND updated_at > $1`, [dayAgo]));
 }
 
+// ── Backlog cache (KEDA-safe) ────────────────────────────────────────────────
+// The backlog COUNTs (per-tenant RLS anti-join over 100k+ chunks + a jsonb
+// messageCount parse) take seconds — too slow for KEDA's metrics-api timeout.
+// That made BOTH the OVMS summaries and Ollama embeddings scalers read
+// <unknown> and stop scaling (FailedGetExternalMetric). So we compute it on a
+// BACKGROUND timer and serve the last snapshot instantly; KEDA/Prometheus never
+// block on the query.
+interface BacklogSnapshot { pendingVectors: number; pendingSummaries: number; pendingRealSummaries: number; tenants: number; at: number; }
+let backlogCache: BacklogSnapshot = { pendingVectors: 0, pendingSummaries: 0, pendingRealSummaries: 0, tenants: 0, at: 0 };
+let backlogRefreshing = false;
+
+async function refreshBacklog(): Promise<void> {
+  if (backlogRefreshing) return;
+  backlogRefreshing = true;
+  try {
+    const pool = await openPgPoolRo();
+    const slugs: string[] = (await pool.query('SELECT tenant FROM tenants')).rows.map((r: any) => r.tenant);
+    const b = await collectBacklog(pool, slugs);
+    backlogCache = { ...b, tenants: slugs.length, at: Date.now() };
+  } catch (e) {
+    log.warn({ err: e instanceof Error ? e.message : String(e) }, 'backlog refresh failed (serving last value)');
+  } finally {
+    backlogRefreshing = false;
+  }
+}
+
+let backlogStarted = false;
+/** Start the background backlog refresher (server mode). Idempotent. */
+export function startBacklogRefresher(): void {
+  if (backlogStarted) return;
+  backlogStarted = true;
+  void refreshBacklog();                                   // warm immediately at boot
+  const ms = Math.max(5000, Number(process.env.BACKLOG_REFRESH_MS) || 15000);
+  setInterval(() => { void refreshBacklog(); }, ms).unref();
+}
+
 // ── GET /metrics ─────────────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
   if (!tokenOk(req)) return res.status(401).type('text/plain').send('unauthorized');
@@ -182,10 +218,10 @@ router.get('/', async (req, res) => {
     gPoolIdle.set(ps.idle);
     gPoolWaiting.set(ps.waiting);
 
-    const backlog = await collectBacklog(pool, slugs);
-    gPendingVectors.set(backlog.pendingVectors);
-    gPendingSummaries.set(backlog.pendingSummaries);
-    gPendingRealSummaries.set(backlog.pendingRealSummaries);
+    // Backlog from the background cache (never run the heavy query on a scrape).
+    gPendingVectors.set(backlogCache.pendingVectors);
+    gPendingSummaries.set(backlogCache.pendingSummaries);
+    gPendingRealSummaries.set(backlogCache.pendingRealSummaries);
 
     await collectBusiness(pool);
 
@@ -219,17 +255,12 @@ router.get('/rl-cost', async (req, res) => {
 // cross-tenant count of work still pending so KEDA scales the OVMS embeddings /
 // summaries deployments on PENDING WORK rather than CPU. Unauthenticated by
 // default (cluster-internal); gated by METRICS_TOKEN when set.
-router.get('/backlog', async (req, res) => {
+router.get('/backlog', (req, res) => {
   if (!tokenOk(req)) return res.status(401).json({ error: 'unauthorized' });
-  try {
-    // Same backlog COUNTs as /metrics — kept consistent and on the read replica.
-    const pool = await openPgPoolRo();
-    const slugs: string[] = (await pool.query('SELECT tenant FROM tenants')).rows.map((r: any) => r.tenant);
-    const backlog = await collectBacklog(pool, slugs);
-    res.json({ ...backlog, tenants: slugs.length });
-  } catch (e) {
-    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
-  }
+  // Served from the in-memory snapshot — instant, so KEDA's metrics-api never
+  // times out. `at` lets a consumer see snapshot freshness if it cares.
+  const { pendingVectors, pendingSummaries, pendingRealSummaries, tenants } = backlogCache;
+  res.json({ pendingVectors, pendingSummaries, pendingRealSummaries, tenants });
 });
 
 export default router;

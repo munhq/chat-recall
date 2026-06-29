@@ -19,7 +19,7 @@ import secretsRouter from './routes/secrets.js';
 import { tenantAuth } from './middleware/auth.js';
 import { apiLimiter, rl } from './middleware/rate-limit.js';
 import { costMiddleware, startCostTelemetry } from './middleware/request-cost.js';
-import metricsRouter from './routes/metrics.js';
+import metricsRouter, { startBacklogRefresher } from './routes/metrics.js';
 import adminRouter from './routes/admin.js';
 import accountRouter from './routes/account.js';
 import { requireEntitlement } from './util/billing.js';
@@ -281,6 +281,11 @@ const httpServer = app.listen(PORT, HOST, () => {
   const role = process.env.CHAT_RECALL_ROLE || 'all';
   const runWorkers = role !== 'api';
   log.info({ role, backgroundWorkers: runWorkers }, 'tier role');
+
+  // Backlog refresher: keep /metrics/backlog instant (background-computed) so the
+  // KEDA scalers (OVMS summaries + Ollama embeddings) never time out reading it.
+  // Runs on every tier that serves HTTP (the API service is what KEDA scrapes).
+  if (isServerMode()) startBacklogRefresher();
 
   // Server-side AI summary generation. Synced sessions arrive without an AI
   // summary (the thin collector only ships raw content + structured outcome);
