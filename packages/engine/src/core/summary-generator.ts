@@ -546,11 +546,13 @@ export class SummaryGenerator {
           model,
           messages: [{ role: 'user', content: prompt }],
           temperature: 0.3,
-          // Generous cap: reasoning models (e.g. stepfun/step-flash, deepseek-r1)
-          // spend most of the budget on hidden `reasoning_content`, leaving the
-          // visible answer empty at a low cap. Non-reasoning models stop early
-          // (finish_reason=stop) and bill only what they use, so this is safe.
-          max_tokens: 4000,
+          // Output cap. A summary is short (~hundreds of tokens), so 1024 is
+          // ample. The old 4000 broke small-context self-hosted models: OVMS
+          // Phi-4-mini has a 4096 ctx, and `prompt_tokens + max_tokens` must fit
+          // it — 4000 left only 96 for the prompt, so EVERY summary 400'd
+          // ("exceeds model max length: 4096"). Env-overridable for reasoning
+          // models (deepseek-r1 etc.) that burn budget on hidden reasoning_content.
+          max_tokens: Math.max(64, Number(process.env.SUMMARY_MAX_TOKENS) || 1024),
         }),
         signal: controller.signal,
       });
