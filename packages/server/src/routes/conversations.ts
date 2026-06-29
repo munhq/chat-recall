@@ -46,7 +46,7 @@ import {
 import { matchesPrefix } from '../utils/paths.js';
 import { buildETag, maybeSendNotModified } from '../util/cacheable.js';
 import { requireLocalMode, isServerMode } from '../util/mode.js';
-import { openPgPool, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
+import { openPgPoolRo, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 
 const log = createLogger('conversations');
@@ -75,7 +75,10 @@ export async function expandSessionId(
   id: string,
 ): Promise<{ resolved: string } | { ambiguous: string[] } | null> {
   if (!process.env.DATABASE_URL) return null;
-  const pool = await openPgPool(process.env.DATABASE_URL);
+  // Display read: prefix→full-id resolution + existence check for VIEWING a
+  // conversation. Pure SELECTs over memory_metadata, lag-tolerant → read replica
+  // (falls back to primary when no RO DSN is set).
+  const pool = await openPgPoolRo();
   // Exact first — hits the (tenant,id) primary key, so a full id costs one probe.
   const exact = await tenantQuery(
     pool, tenant,
