@@ -118,6 +118,13 @@ export function pgTenant(t?: string): string {
  */
 export async function tenantQuery(pool: any, tenant: string, sql: string, params: unknown[] = []): Promise<any> {
   const c = await pool.connect();
+  // A connection-level error (server closing the backend, pooler reset, FATAL
+  // termination) is emitted as an 'error' event on the client — with NO listener
+  // Node treats it as fatal and CRASHES the process. Swallow it here so it
+  // surfaces only as the query rejection caught below; the broken client is then
+  // discarded by the pool on release.
+  const onErr = () => { /* handled via the query rejection */ };
+  c.on('error', onErr);
   try {
     await c.query('BEGIN');
     await c.query("SELECT set_config('app.tenant', $1, true)", [tenant]);
@@ -128,6 +135,7 @@ export async function tenantQuery(pool: any, tenant: string, sql: string, params
     try { await c.query('ROLLBACK'); } catch { /* ignore */ }
     throw e;
   } finally {
+    c.removeListener('error', onErr);
     c.release();
   }
 }
@@ -142,9 +150,19 @@ export async function tenantQuery(pool: any, tenant: string, sql: string, params
  */
 export async function tenantTx<T>(pool: any, tenant: string, fn: (client: any) => Promise<T>): Promise<T> {
   const c = await pool.connect();
+  // See tenantQuery: a connection 'error' with no listener crashes the process.
+  const onErr = () => { /* handled via the query/await rejection */ };
+  c.on('error', onErr);
   try {
     await c.query('BEGIN');
     await c.query("SELECT set_config('app.tenant', $1, true)", [tenant]);
+    // The callback may hold this tx open across slow work — the summary worker
+    // runs a multi-second LLM call INSIDE the tx (it deliberately holds the
+    // FOR UPDATE … SKIP LOCKED locks to dedupe across replicas). That makes the
+    // connection "idle in transaction", which Postgres' idle_in_transaction_
+    // session_timeout FATALs → unhandled client error → worker crashloop. Disable
+    // that timeout for THIS tx only; the app-level operation timeout bounds it.
+    await c.query('SET LOCAL idle_in_transaction_session_timeout = 0');
     const r = await fn(c);
     await c.query('COMMIT');
     return r;
@@ -152,6 +170,7 @@ export async function tenantTx<T>(pool: any, tenant: string, fn: (client: any) =
     try { await c.query('ROLLBACK'); } catch { /* ignore */ }
     throw e;
   } finally {
+    c.removeListener('error', onErr);
     c.release();
   }
 }
