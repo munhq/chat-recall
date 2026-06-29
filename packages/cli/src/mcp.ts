@@ -1488,7 +1488,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Server holds the full message list (rebuilt from synced chunks in
         // server mode, parsed transcript in local mode). limit=0 = whole
         // session; the server's `content` field is already display text.
-        const soft = await remoteGetSoft<{ sessionId: string; messages: Array<{ line: number; role: string; content: string }>; total: number }>(
+        // `toolCalls` carries the agent's executed tool inputs (Bash command,
+        // Edit/Write/Read file_path, …) — render them so tool-only turns are
+        // not shown as blank. They are stored in the synced envelope and
+        // returned by /api/conversations/:id.
+        const soft = await remoteGetSoft<{ sessionId: string; messages: Array<{ line: number; role: string; content: string; toolCalls?: Array<{ name: string; input?: Record<string, unknown> }> }>; total: number }>(
           `/api/conversations/${encodeURIComponent(params.session_id)}`, { limit: 0 });
         if (!soft.data || soft.data.messages.length === 0) {
           return { content: [{ type: 'text', text: soft.message || `Session not found: ${params.session_id}` }] };
@@ -1527,13 +1531,36 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         output.push('');
 
+        // Render a single tool_use as the exact command/file it acted on, so
+        // "what did the agent run?" is answerable from recall_show instead of
+        // showing the turn as blank. Bash → the command; file tools → the path.
+        const fmtToolCall = (tc: { name: string; input?: Record<string, unknown> }): string => {
+          const inp = tc.input || {};
+          const oneLine = (v: unknown) => String(v).replace(/\s*\n\s*/g, ' ⏎ ');
+          if (tc.name === 'Bash' && inp.command !== undefined) {
+            const desc = inp.description ? `  # ${oneLine(inp.description)}` : '';
+            let cmd = oneLine(inp.command);
+            if (cmd.length > truncAt) cmd = cmd.slice(0, truncAt) + '...';
+            return `[Bash]${desc}\n  $ ${cmd}`;
+          }
+          if (inp.file_path !== undefined) return `[${tc.name}] ${inp.file_path}`;
+          let argStr = oneLine(JSON.stringify(inp));
+          if (argStr.length > 300) argStr = argStr.slice(0, 300) + '...';
+          return `[${tc.name}] ${argStr}`;
+        };
+
         for (const msg of displayMessages) {
           output.push(`**${msg.role}** (line ${msg.line})`);
           let text = msg.content;
           if (text.length > truncAt) {
             text = text.slice(0, truncAt) + '...';
           }
-          output.push(text);
+          if (text.trim()) output.push(text);
+          // Show the actual tool inputs the agent executed in this turn.
+          for (const tc of (msg.toolCalls || [])) {
+            output.push(fmtToolCall(tc));
+          }
+          if (!text.trim() && !(msg.toolCalls || []).length) output.push('_(empty)_');
           output.push('');
         }
 

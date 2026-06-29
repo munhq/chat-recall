@@ -219,6 +219,13 @@ export interface GenerateMissingOptions {
    * is a no-op (returns all-zero counts).
    */
   summarize?: (content: SessionContent) => Promise<string>;
+  /**
+   * Max REAL (LLM) summaries to produce this sweep for the tenant — the rate cap.
+   * Free first_prompt fallbacks for trivial sessions are NOT counted/capped.
+   * Omitted/Infinity ⇒ uncapped. Set by generateMissingSummariesAllTenants from
+   * the per-tenant hourly/monthly quota (server-side; never in the published CLI).
+   */
+  maxReal?: number;
 }
 
 /**
@@ -251,17 +258,16 @@ export async function generateMissingSummaries(
     summarySource = providerToSource(config.provider);
   }
 
-  const store = await createStore({ tenant: opts.tenant });
-  const cache = await createMetadataCache({ tenant: opts.tenant });
   const concurrency = Math.max(1, opts.concurrency ?? 1);
   const timeoutMs = Math.max(1000, opts.timeoutMs ?? 120000);
+  const tenant = opts.tenant || process.env.CHAT_RECALL_TENANT || 'default';
   let generated = 0;
   let failed = 0;
-  let skipped = 0;
+  const skipped = 0;
   const now = Date.now();
 
-  // Per-summary hard timeout: a stalled gemma4 generation must not pin a
-  // concurrency slot forever. Race the summarize call against a timer.
+  // Per-summary hard timeout: a stalled generation must not pin a concurrency
+  // slot forever. Race the summarize call against a timer.
   const summarizeBounded = async (content: SessionContent): Promise<string> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
@@ -274,52 +280,185 @@ export async function generateMissingSummaries(
     }
   };
 
+  // Local/single-user mode runs on the sqlite store (also the unit-test path),
+  // where there's no FOR UPDATE … SKIP LOCKED, no concurrent replicas, and the
+  // backlog is tiny. Use the simple store-scan there. The Postgres work queue
+  // below is the server/cloud path that actually drains a large backlog.
+  if ((process.env.CHAT_RECALL_STORAGE || 'sqlite') !== 'postgres') {
+    return summarizeViaScan(opts, summarize, summarySource, summarizeBounded, limit, concurrency, now);
+  }
+
+  // WORK QUEUE via FOR UPDATE … SKIP LOCKED (mirrors PgVectorStore.embedMissing).
+  // Each iteration claims a disjoint batch of un-summarised sessions: SKIP LOCKED
+  // means a concurrent replica grabs a DIFFERENT batch, never the same rows. The
+  // summary is generated while the row locks are held, the UPDATE lands, COMMIT
+  // releases — and by then summary != '' so the row is never re-claimed. Safe to
+  // run on every replica at once (no advisory-lock singleton), and it drains the
+  // WHOLE backlog: unlike the old listItems(5000, offset 0) scan, the claim pulls
+  // pending rows from anywhere in the table (idx_session_metadata_pending partial
+  // index), so a 15k backlog no longer strands everything past the first 5000.
+  const { openPgPool, tenantTx } = await import('@chat-recall/engine/core/store/pg-pool.js');
+  const pool = await openPgPool(process.env.DATABASE_URL || '');
+  const BATCH = concurrency; // small claim → short tx; locks held ~one parallel LLM round
+  const retryFloor = now - RETRY_WINDOW_MS;
+  // Generic size triage: a session with very few turns (prompt → answer → exit,
+  // bot one-shots, automation) has nothing to compress — its first prompt already
+  // captures intent. Resolve those to first_prompt WITHOUT an LLM call. This is
+  // content-agnostic (turn count only), so it protects cost for ANY user, not a
+  // hardcoded pattern. Real sessions are far above this (avg hundreds of turns).
+  const SHORT_TURN_MAX = Math.max(0, Number(process.env.SUMMARY_MIN_TURNS) || 4);
+
+  // Per-tenant rate cap. `maxReal` bounds REAL LLM summaries this tick; the free
+  // first_prompt fallbacks (too_short) are NEVER capped (they cost nothing). The
+  // cap value is computed server-side (generateMissingSummariesAllTenants) and is
+  // never shipped in the published client, so the limits can't be read or gamed.
+  // Infinity ⇒ uncapped (self-host / default).
+  const maxReal = Number.isFinite(opts.maxReal as number) ? Math.max(0, opts.maxReal as number) : Infinity;
+  let realGenerated = 0;
+  const TICK_CAP = Math.max(limit, 200); // safety bound on total sessions touched per tick
+  let totalClaimed = 0;
+
+  while (totalClaimed < TICK_CAP) {
+    const batch = await tenantTx(pool, tenant, async (client: any) => {
+      const rows: any[] = (await client.query(
+        `SELECT sm.session_id, sm.mtime, sm.first_prompt, cc.content_json
+           FROM session_metadata sm
+           LEFT JOIN content_cache cc
+             ON cc.tenant = sm.tenant AND cc.id = sm.session_id AND cc.source_type = 'session'
+          WHERE sm.tenant = $1 AND sm.summary = ''
+            AND NOT EXISTS (
+              SELECT 1 FROM summary_errors e
+               WHERE e.tenant = sm.tenant AND e.session_id = sm.session_id
+                 AND e.attempt_count >= $3 AND e.last_failed_at > $4)
+          ORDER BY sm.mtime DESC
+          LIMIT $2
+          FOR UPDATE OF sm SKIP LOCKED`,
+        [tenant, BATCH, MAX_SUMMARY_ATTEMPTS, retryFloor])).rows;
+      if (rows.length === 0) return { count: 0, budgetHit: false };
+
+      // Build SessionContent + turn count for each claimed row (cheap, no LLM).
+      const work = rows.map((r: any) => {
+        let content: SessionContent | null = null;
+        let turns = 0;
+        if (r.content_json) {
+          try {
+            const env = JSON.parse(r.content_json) as CachedEnvelope;
+            turns = Array.isArray(env.messages) ? env.messages.length : 0;
+            content = envelopeToSessionContent(r.session_id, env);
+          } catch { content = null; }
+        }
+        return { id: r.session_id as string, content, turns, firstPrompt: (r.first_prompt as string) || '' };
+      });
+
+      // Decide each row up-front. Short sessions are free (first_prompt, no LLM)
+      // and never consume budget; real sessions consume the remaining real budget;
+      // once it's spent, over-budget real rows are left pending (re-claimed a later
+      // tick / next hour) and we stop after this batch.
+      let budget = maxReal - realGenerated;
+      let budgetHit = false;
+      const plan = work.map((w) => {
+        if (!w.content) return { w, kind: 'fail' as const };
+        if (w.turns <= SHORT_TURN_MAX) return { w, kind: 'short' as const };
+        if (budget > 0) { budget--; return { w, kind: 'real' as const }; }
+        budgetHit = true;
+        return { w, kind: 'skip' as const };
+      });
+
+      // Phase A — only 'real' rows hit the LLM (concurrently). No DB on the tx
+      // client here, so we never overlap queries on the single connection.
+      const outcomes = await Promise.all(plan.map(async (p) => {
+        if (p.kind === 'fail') return { id: p.w.id, status: 'fail' as const, err: 'no synced content' };
+        if (p.kind === 'skip') return { id: p.w.id, status: 'skip' as const };
+        if (p.kind === 'short') {
+          const fp = (p.w.firstPrompt || p.w.content!.firstPrompt || '').slice(0, 500);
+          return { id: p.w.id, status: 'ok' as const, summary: fp || '(short session)', source: 'too_short', real: false };
+        }
+        try {
+          const summary = await summarizeBounded(p.w.content!);
+          if (!summary || summary.trim().length === 0) throw new Error('summarizer returned empty summary');
+          return { id: p.w.id, status: 'ok' as const, summary, source: summarySource, real: true };
+        } catch (e) {
+          return { id: p.w.id, status: 'fail' as const, err: e instanceof Error ? e.message : String(e) };
+        }
+      }));
+
+      // Phase B — persist sequentially on the locked client, then COMMIT releases.
+      for (const o of outcomes) {
+        if (o.status === 'skip') continue; // capped this tick — leave pending
+        if (o.status === 'ok') {
+          await client.query(
+            `UPDATE session_metadata SET summary = $3, summary_source = $4, indexed_at = $5
+              WHERE tenant = $1 AND session_id = $2`,
+            [tenant, o.id, o.summary, o.source, now]);
+          await client.query(`DELETE FROM summary_errors WHERE tenant = $1 AND session_id = $2`, [tenant, o.id]);
+          generated++;
+          if (o.real) realGenerated++;
+        } else {
+          await client.query(
+            `INSERT INTO summary_errors (tenant,session_id,error,attempt_count,first_failed_at,last_failed_at)
+                  VALUES ($1,$2,$3,1,$4,$4)
+             ON CONFLICT (tenant,session_id) DO UPDATE SET error=excluded.error,
+                   attempt_count=summary_errors.attempt_count+1, last_failed_at=excluded.last_failed_at`,
+            [tenant, o.id, String(o.err).slice(0, 500), now]);
+          failed++;
+        }
+      }
+      return { count: rows.length, budgetHit };
+    });
+    totalClaimed += batch.count;
+    if (batch.count === 0) break;   // queue drained for this replica
+    if (batch.budgetHit) break;     // real-summary budget spent this tick
+  }
+
+  return { generated, failed, skipped };
+}
+
+/**
+ * Legacy store-scan path for the sqlite backend (local single-user mode + unit
+ * tests): no SKIP-LOCKED, no concurrent replicas. Gathers up to `limit`
+ * unsummarised sessions from a bounded scan and generates them. Kept verbatim
+ * from the original implementation so behaviour on sqlite is unchanged.
+ */
+async function summarizeViaScan(
+  opts: GenerateMissingOptions,
+  summarize: (content: SessionContent) => Promise<string>,
+  summarySource: SummarySource,
+  summarizeBounded: (content: SessionContent) => Promise<string>,
+  limit: number,
+  concurrency: number,
+  now: number,
+): Promise<GenerateMissingResult> {
+  void summarize; // resolved by the caller; summarizeBounded wraps it
+  const store = await createStore({ tenant: opts.tenant });
+  const cache = await createMetadataCache({ tenant: opts.tenant });
+  let generated = 0;
+  let failed = 0;
+  let skipped = 0;
   try {
-    // Phase 1 — gather up to `limit` candidates. These checks are cheap DB
-    // reads (no LLM), so they stay sequential; skips don't cost a generation.
     const SCAN_CAP = 5000;
     const items = await store.listItems('session' as SourceType, SCAN_CAP, 0);
     const candidates: Array<{ id: string; mtime?: number; firstPrompt?: string; content: SessionContent }> = [];
-
     for (const item of items) {
       if (candidates.length >= limit) break;
-
       const cached = await cache.get(item.id);
       if (cached?.summary && cached.summary.trim().length > 0) { skipped++; continue; }
-
-      // Backoff: skip a session that keeps failing until the window elapses.
       const err = await cache.getSummaryError(item.id);
-      if (err && err.attemptCount >= MAX_SUMMARY_ATTEMPTS && now - err.lastFailedAt < RETRY_WINDOW_MS) {
-        skipped++;
-        continue;
-      }
-
-      // mtime>=0 returns the latest synced envelope regardless of metadata mtime.
+      if (err && err.attemptCount >= MAX_SUMMARY_ATTEMPTS && now - err.lastFailedAt < RETRY_WINDOW_MS) { skipped++; continue; }
       const raw = await store.getCachedContent(item.id, 'session', 0);
-      if (!raw) { skipped++; continue; } // not synced yet
-
+      if (!raw) { skipped++; continue; }
       let envelope: CachedEnvelope;
       try { envelope = JSON.parse(raw) as CachedEnvelope; } catch { skipped++; continue; }
-
       const content = envelopeToSessionContent(item.id, envelope);
       if (!content) { skipped++; continue; }
-
       candidates.push({ id: item.id, mtime: item.mtime, firstPrompt: cached?.firstPrompt, content });
     }
-
-    // Phase 2 — generate concurrently. gemma4 is slow per call (~15-40s on
-    // CPU), so a bounded pool of `concurrency` keeps the KEDA-scaled OVMS
-    // summaries replicas busy. A timed-out/failed lane is recorded + backed off
-    // and the slot moves on — one bad session never stalls the sweep.
     let cursor = 0;
     const lane = async (): Promise<void> => {
       for (let i = cursor++; i < candidates.length; i = cursor++) {
         const c = candidates[i];
         try {
           const summary = await summarizeBounded(c.content);
-          if (!summary || summary.trim().length === 0) {
-            throw new Error('summarizer returned empty summary');
-          }
+          if (!summary || summary.trim().length === 0) throw new Error('summarizer returned empty summary');
           await cache.set({
             sessionId: c.id,
             firstPrompt: c.firstPrompt || c.content.firstPrompt.slice(0, 200),
@@ -342,7 +481,6 @@ export async function generateMissingSummaries(
     await store.close();
     await cache.close();
   }
-
   return { generated, failed, skipped };
 }
 
@@ -368,13 +506,42 @@ export async function generateMissingSummariesAllTenants(
   try { tenants = await cp.listTenants(); } catch { /* fall through to default */ }
   if (tenants.length === 0) tenants = [process.env.CHAT_RECALL_TENANT || 'default'];
 
+  // Per-tenant rate caps on REAL (LLM) summaries — server-side abuse protection,
+  // never shipped in the published client. Defaults are generous (a hard ceiling,
+  // not a normal-use limit); tune down per plan via env / entitlements later.
+  // Free first_prompt fallbacks for trivial sessions don't count against these.
+  const HOUR_CAP = Math.max(0, Number(process.env.SUMMARY_CAP_PER_HOUR) || 500);
+  const MONTH_CAP = Math.max(0, Number(process.env.SUMMARY_CAP_PER_MONTH) || 50000);
+  const { openPgPool, tenantTx } = await import('@chat-recall/engine/core/store/pg-pool.js');
+  const pool = await openPgPool(process.env.DATABASE_URL || '');
+  const nowMs = Date.now();
+  const hourAgo = nowMs - 3_600_000;
+  const md = new Date(nowMs);
+  const monthStart = Date.UTC(md.getUTCFullYear(), md.getUTCMonth(), 1);
+
   let generated = 0;
   let failed = 0;
   let skipped = 0;
   let touched = 0;
   for (const tenant of tenants) {
     try {
-      const r = await generateMissingSummaries({ ...opts, tenant });
+      // Compute this tenant's remaining real-summary budget. Real = an LLM-written
+      // summary (excludes '' / 'original' / 'too_short'). If the usage probe fails,
+      // fall back to uncapped rather than block summarizing.
+      let maxReal = Infinity;
+      try {
+        const u = await tenantTx(pool, tenant, async (c: any) => (await c.query(
+          `SELECT count(*) FILTER (WHERE indexed_at >= $2) AS hour,
+                  count(*) FILTER (WHERE indexed_at >= $3) AS month
+             FROM session_metadata
+            WHERE tenant = $1 AND summary <> '' AND summary_source NOT IN ('original','too_short')`,
+          [tenant, hourAgo, monthStart])).rows[0]);
+        const usedHour = Number(u?.hour || 0);
+        const usedMonth = Number(u?.month || 0);
+        maxReal = Math.max(0, Math.min(HOUR_CAP - usedHour, MONTH_CAP - usedMonth));
+      } catch { maxReal = Infinity; }
+
+      const r = await generateMissingSummaries({ ...opts, tenant, maxReal });
       generated += r.generated;
       failed += r.failed;
       skipped += r.skipped;

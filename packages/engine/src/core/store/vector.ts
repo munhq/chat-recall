@@ -217,6 +217,13 @@ export class PgVectorStore implements VectorStore {
     // workers at once (chat-recall replicas) and across MANY tenants/customers
     // with zero duplicated embedding. Partial/failed rows just stay unlocked
     // without a vector and get claimed again on a later sweep.
+    // Triage (same rule as the summary worker): skip TRIVIAL sessions — one-shot /
+    // bot / automation runs (≤ EMBED_MIN_TURNS messages). Embedding them wastes
+    // compute and pollutes semantic search with noise nobody queries. Generic
+    // (turn count only, no hardcoded patterns) and applies to source_type='session'
+    // only — plan/task/claude_md/etc. chunks always embed. messageCount is already
+    // stored in memory_metadata.extra_json at index time, so this stays cheap.
+    const minTurns = Math.max(0, Number(process.env.EMBED_MIN_TURNS ?? process.env.SUMMARY_MIN_TURNS) || 4);
     return tenantTx(this.pool, this.t, async (client: any) => {
       const rows: any[] = (await client.query(
         `SELECT c.chunk_id, c.item_id, c.source_type, c.title, c.text, c.chunk_type, c.project_path, c.file_path, c.mtime
@@ -224,9 +231,18 @@ export class PgVectorStore implements VectorStore {
            WHERE c.tenant = $1 AND length(c.text) > 0
              AND NOT EXISTS (
                SELECT 1 FROM memory_vectors v WHERE v.tenant = c.tenant AND v.chunk_id = c.chunk_id)
+             AND NOT (
+               c.source_type = 'session'
+               AND EXISTS (
+                 SELECT 1 FROM memory_metadata m
+                  WHERE m.tenant = c.tenant AND m.id = c.item_id AND m.source_type = 'session'
+                    AND m.extra_json LIKE '{%'
+                    AND COALESCE(NULLIF(m.extra_json::jsonb ->> 'messageCount', '')::int, 999) <= $3
+               )
+             )
            LIMIT $2
            FOR UPDATE OF c SKIP LOCKED`,
-        [this.t, limit])).rows;
+        [this.t, limit, minTurns])).rows;
       if (rows.length === 0) return { embedded: 0, scanned: 0 };
       let embeddings: number[][] | null = null;
       try { embeddings = await (this.embedder as any).embed(rows.map((r: any) => r.text)); }

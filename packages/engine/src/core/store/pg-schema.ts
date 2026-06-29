@@ -166,6 +166,12 @@ ALTER TABLE session_metadata ADD COLUMN IF NOT EXISTS user_title TEXT;
 -- Native title assigned by the originating tool (Claude ai-title, OpenCode
 -- session.title, …), synced from the collector. Written only by setToolTitle.
 ALTER TABLE session_metadata ADD COLUMN IF NOT EXISTS tool_title TEXT;
+-- Work-queue index for the summary backfill (summary-worker SKIP-LOCKED claim).
+-- The claim scans only un-summarised rows; this keeps it O(pending) instead of
+-- O(all sessions) as the table grows. summary is NOT NULL DEFAULT empty-string,
+-- so the empty-string predicate covers the whole pending backlog.
+CREATE INDEX IF NOT EXISTS idx_session_metadata_pending
+  ON session_metadata (tenant, mtime) WHERE summary = '';
 
 CREATE TABLE IF NOT EXISTS tenants (
   tenant      TEXT PRIMARY KEY,
