@@ -296,15 +296,14 @@ const httpServer = app.listen(PORT, HOST, () => {
   if (isServerMode() && runWorkers) {
     if (serverSummaryConfig()) {
       const SUMMARY_SWEEP_MS = 30 * 1000;      // sweep often; sweepInFlight prevents overlap
-      // AUTONOMOUS throughput — no hand-tuned concurrency. AIMD (TCP-style): start
-      // low, ramp +2 after every clean sweep, halve when failures climb (OVMS
-      // overload / cold pod = backpressure). This self-finds the saturation point
-      // of however many OVMS pods KEDA has brought up — 1 or 10 — with zero config.
-      // SUMMARY_CONCURRENCY is only the initial seed now, not a fixed cap. The
-      // per-tenant quota (SUMMARY_CAP_PER_HOUR) stays the ONLY deliberate limit.
-      const CONC_MIN = 2;
-      const CONC_MAX = Math.max(CONC_MIN, Number(process.env.SUMMARY_CONCURRENCY_MAX) || 64);
-      let concurrency = Math.min(CONC_MAX, Math.max(CONC_MIN, Number(process.env.SUMMARY_CONCURRENCY) || 4));
+      // FIXED, provider-sized concurrency — the lease-based work queue (see
+      // summary-worker.ts) keeps `concurrency` LLM calls in flight per worker pod,
+      // claiming more leases as slots free. No AIMD: it was brittle (a transient
+      // failure storm beat it to the floor, and it only ramped on *completed*
+      // sweeps). One explicit number scales cleanly — raise it, or add worker
+      // replicas, or let KEDA add model-tier pods; all independent. Per-tenant
+      // quota (SUMMARY_CAP_PER_HOUR) stays the only deliberate rate limit.
+      const concurrency = Math.max(1, Number(process.env.SUMMARY_CONCURRENCY) || 8);
       // Per-sweep ceiling on sessions TOUCHED — high so the FREE trivial sessions
       // (first_prompt, no LLM) drain fast; real LLM ones stay quota-capped downstream.
       const SUMMARY_BATCH = Math.max(200, Number(process.env.SUMMARY_BATCH) || 2000);
@@ -314,13 +313,6 @@ const httpServer = app.listen(PORT, HOST, () => {
         sweepInFlight = true;
         try {
           const r = await generateMissingSummariesAllTenants({ limit: SUMMARY_BATCH, concurrency });
-          // AIMD: adapt concurrency to live capacity for the NEXT sweep based on
-          // the observed failure rate (the backpressure signal).
-          const total = r.generated + r.failed;
-          if (total > 0) {
-            if (r.failed / total > 0.1) concurrency = Math.max(CONC_MIN, Math.floor(concurrency / 2));
-            else if (r.generated > 0) concurrency = Math.min(CONC_MAX, concurrency + 2);
-          }
           summarySweepsTotal.inc({ result: 'ok' });
           summariesGeneratedTotal.inc(r.generated);
           summariesFailedTotal.inc(r.failed);

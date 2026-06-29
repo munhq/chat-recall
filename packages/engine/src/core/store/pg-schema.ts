@@ -166,12 +166,23 @@ ALTER TABLE session_metadata ADD COLUMN IF NOT EXISTS user_title TEXT;
 -- Native title assigned by the originating tool (Claude ai-title, OpenCode
 -- session.title, …), synced from the collector. Written only by setToolTitle.
 ALTER TABLE session_metadata ADD COLUMN IF NOT EXISTS tool_title TEXT;
+-- Summary work-queue LEASE. The worker no longer holds a row lock across the
+-- (multi-second) LLM call — it claims a batch in a short tx by stamping
+-- claimed_at, runs the LLM OUTSIDE any transaction, then writes the summary in a
+-- second short tx (clearing the lease). A crashed worker's lease simply expires
+-- (claimed_at < now - SUMMARY_LEASE_MS) and another worker re-claims the row, so
+-- nothing strands. 0 = unclaimed. Safe across N worker replicas.
+ALTER TABLE session_metadata ADD COLUMN IF NOT EXISTS claimed_at BIGINT NOT NULL DEFAULT 0;
 -- Work-queue index for the summary backfill (summary-worker SKIP-LOCKED claim).
 -- The claim scans only un-summarised rows; this keeps it O(pending) instead of
 -- O(all sessions) as the table grows. summary is NOT NULL DEFAULT empty-string,
--- so the empty-string predicate covers the whole pending backlog.
-CREATE INDEX IF NOT EXISTS idx_session_metadata_pending
-  ON session_metadata (tenant, mtime) WHERE summary = '';
+-- so the empty-string predicate covers the whole pending backlog. claimed_at is
+-- in the index so the lease filter (claimed_at < leaseFloor) is index-served too.
+-- (Renamed from idx_session_metadata_pending — the old one lacked claimed_at;
+-- IF NOT EXISTS can't alter an existing index's columns, so drop + new name.)
+DROP INDEX IF EXISTS idx_session_metadata_pending;
+CREATE INDEX IF NOT EXISTS idx_session_metadata_claimable
+  ON session_metadata (tenant, claimed_at, mtime) WHERE summary = '';
 
 CREATE TABLE IF NOT EXISTS tenants (
   tenant      TEXT PRIMARY KEY,
