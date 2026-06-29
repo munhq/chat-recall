@@ -523,7 +523,14 @@ export class SummaryGenerator {
     const apiKey = this.config.apiKey;
     if (!baseUrl) throw new Error(`Provider '${this.config.provider}' needs a base URL (settings → summary apiBaseUrl / SUMMARY_API_BASE_URL)`);
     if (!model) throw new Error(`Provider '${this.config.provider}' needs a model (settings → summary apiModel / SUMMARY_API_MODEL)`);
-    if (!apiKey) throw new Error(`Provider '${this.config.provider}' needs an API key (settings → summary apiKey / SUMMARY_API_KEY)`);
+    // `openai-compat` targets SELF-HOSTED endpoints (OVMS, vLLM, llama.cpp, local
+    // gateways) that usually need NO auth — mirror the embedder (OpenAICompatible
+    // Embedder only sends a Bearer when a key exists). Hosted providers
+    // (ollama-cloud / openai / nvidia) still require one. Requiring a key for
+    // openai-compat is what silently failed EVERY cluster summary pre-flight
+    // (internal OVMS needs no key) — the entire backlog errored before any call.
+    const keyRequired = this.config.provider !== 'openai-compat';
+    if (keyRequired && !apiKey) throw new Error(`Provider '${this.config.provider}' needs an API key (settings → summary apiKey / SUMMARY_API_KEY)`);
 
     const prompt = this.buildPrompt(context);
     const controller = new AbortController();
@@ -533,7 +540,7 @@ export class SummaryGenerator {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
         },
         body: JSON.stringify({
           model,
