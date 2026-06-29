@@ -7,8 +7,14 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./*": { "types": "./dist/*", "default": "./dist/*" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./*": {
+      "types": "./dist/*",
+      "default": "./dist/*"
+    }
   },
   "scripts": {
     "build": "tsc -b"
@@ -21,6 +27,7 @@
     "diff": "^9.0.0",
     "dotenv": "^17.2.3",
     "pg": "^8.13.0",
+    "pino": "^9.14.0",
     "zod": "^3.22.0"
   }
 }

@@ -11,6 +11,9 @@ import {
 } from '../imports.js';
 import type { SourceType, MemorySearchResult, MemoryMetadataRow, MemoryLinkRow, StorageDriver, VectorStore } from '../imports.js';
 import { isServerMode } from '../util/mode.js';
+import { createLogger } from '@chat-recall/engine/core/logger.js';
+
+const log = createLogger('memory');
 
 export class MemoryService {
   private embedder: OllamaEmbedder;
@@ -167,11 +170,11 @@ export class MemoryService {
     for (const sourceType of sourceTypes) {
       const sources = this.registry.getAll(sourceType);
       if (sources.length === 0) {
-        console.error(`No source registered for type: ${sourceType}`);
+        log.error({ sourceType }, 'no source registered for type');
         continue;
       }
 
-      console.log(`Reindexing ${sourceType}...`);
+      log.info({ sourceType }, 'reindexing');
 
       try {
         for (const source of sources) {
@@ -205,13 +208,13 @@ export class MemoryService {
             totalItems++;
           } catch (err) {
             totalErrors++;
-            console.error(`Error indexing ${item.id}:`, err);
+            log.error({ err, itemId: item.id }, 'error indexing item');
           }
         }
         }
       } catch (err) {
         totalErrors++;
-        console.error(`Discovery error for ${sourceType}:`, err);
+        log.error({ err, sourceType }, 'discovery error');
       }
     }
 

@@ -31,6 +31,9 @@
 import { existsSync, mkdirSync, renameSync, readdirSync, statSync, copyFileSync, rmSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
+import { createLogger } from './logger.js';
+
+const log = createLogger('paths');
 
 /** Root data directory. Respects $CHAT_RECALL_DATA_DIR; defaults to ~/.chat-recall. */
 export function getDataDir(): string {
@@ -148,8 +151,7 @@ function ensureMigrated(): void {
 
     try {
       renameSync(m.legacyPath, m.newPath);
-      // eslint-disable-next-line no-console
-      console.error(`[chat-recall] migrated ${m.legacyPath} → ${m.newPath}`);
+      log.error({ from: m.legacyPath, to: m.newPath }, 'migrated');
     } catch (err) {
       // Cross-filesystem rename fails with EXDEV. Fall back to recursive copy.
       if ((err as NodeJS.ErrnoException).code === 'EXDEV') {
@@ -157,16 +159,13 @@ function ensureMigrated(): void {
           if (m.isDir) copyDir(m.legacyPath, m.newPath);
           else { ensureDir(dirname(m.newPath)); copyFileSync(m.legacyPath, m.newPath); }
           rmSync(m.legacyPath, { recursive: true, force: true });
-          // eslint-disable-next-line no-console
-          console.error(`[chat-recall] migrated (cross-fs) ${m.legacyPath} → ${m.newPath}`);
+          log.error({ from: m.legacyPath, to: m.newPath }, 'migrated (cross-fs)');
         } catch (copyErr) {
           // Non-fatal: log and continue. The new dir will start empty.
-          // eslint-disable-next-line no-console
-          console.error(`[chat-recall] migration failed for ${m.legacyPath}:`, copyErr);
+          log.error({ err: copyErr, path: m.legacyPath }, 'migration failed');
         }
       } else {
-        // eslint-disable-next-line no-console
-        console.error(`[chat-recall] migration failed for ${m.legacyPath}:`, err);
+        log.error({ err, path: m.legacyPath }, 'migration failed');
       }
     }
   }

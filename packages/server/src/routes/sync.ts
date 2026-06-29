@@ -46,6 +46,9 @@ import type { SourceType } from '../imports.js';
 import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js';
 import { notifyVerifiedSecrets, type VerifiedHit } from '../services/notify.js';
 import { ingestGate } from '../middleware/rate-limit.js';
+import { createLogger } from '@chat-recall/engine/core/logger.js';
+
+const log = createLogger('sync');
 
 const router = express.Router();
 
@@ -643,7 +646,7 @@ router.post('/', async (req, res) => {
         // deduped + non-blocking — a webhook hiccup must never fail a sync.
         if (verifiedHits.length > 0) {
           try { await notifyVerifiedSecrets(agent.tenant, verifiedHits); }
-          catch (e) { console.error('[sync] secret alert failed:', e instanceof Error ? e.message : e); }
+          catch (e) { log.error({ err: e }, 'secret alert failed'); }
         }
 
         // Derived data: compute_cache rows (what the diff/outcome/commits/
@@ -747,7 +750,7 @@ router.post('/', async (req, res) => {
 
     res.json({ ok: true, ...result, tenant: agent.tenant, ack_at: new Date().toISOString() });
   } catch (e) {
-    console.error('sync ingest error:', e);
+    log.error({ err: e }, 'sync ingest error');
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   } finally {
     gate.release();   // free the ingest concurrency slot

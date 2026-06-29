@@ -15,6 +15,9 @@
 
 import { createControlPlane, createVectorStore, getEmbedder } from '../imports.js';
 import type { EmbedderProvider } from '../imports.js';
+import { createLogger } from '@chat-recall/engine/core/logger.js';
+
+const log = createLogger('vector-backfill-worker');
 
 /** True when an embedder is configured (so vectors can actually be produced). */
 export function serverEmbedderConfigured(): boolean {
@@ -73,7 +76,7 @@ export async function embedMissingVectors(opts: BackfillOptions = {}): Promise<B
     } catch (e) {
       // One bad tenant must never abort the whole sweep — continue, but never
       // silently: a swallowed error here is an invisible stall.
-      console.error(`  Vector backfill: tenant ${tenant} errored, skipping: ${e instanceof Error ? e.message : String(e)}`);
+      log.error({ err: e, tenant }, 'vector backfill: tenant errored, skipping');
       continue;
     }
   }

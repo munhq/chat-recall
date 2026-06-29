@@ -34,6 +34,8 @@ export { createMetadataCache, createOutcomeCache, type MetadataCacheDriver, type
 export { createKnowledgeGraph, type KnowledgeGraphDriver } from './core/store/knowledge-graph.js';
 export { createControlPlane, type ControlPlane, type Membership, type TeamMember, type ArtifactMeta, type ArtifactBody, type Entitlement, type EntitlementStatus } from './core/store/control-plane.js';
 export { closePgPools } from './core/store/pg-pool.js';
+// Structured logging — the shared logger used across engine + server.
+export { logger, createLogger, setLogContextProvider, type LogContextProvider } from './core/logger.js';
 // Re-export the row type so route files can use it without deep paths.
 export {
   OllamaEmbedder,
