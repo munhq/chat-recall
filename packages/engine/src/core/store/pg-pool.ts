@@ -88,7 +88,20 @@ export async function ensurePgSchema(databaseUrl?: string): Promise<void> {
     ready = (async () => {
       const pool = await openPgPool(url);
       const { PG_SCHEMA } = await import('./pg-schema.js');
-      await pool.query(PG_SCHEMA);
+      // Schema DDL (ADD COLUMN / CREATE TABLE on hot tables) must NOT be killed by
+      // the app's default statement_timeout — that crashed boot mid-bootstrap. Run
+      // it on a DEDICATED connection with the statement timeout lifted and a
+      // bounded lock_timeout (so it fails fast + retries next boot rather than
+      // hanging if a lock is genuinely unavailable). release(true) destroys the
+      // connection so these session settings never leak back into the pool.
+      const client = await pool.connect();
+      try {
+        await client.query('SET statement_timeout = 0');
+        await client.query("SET lock_timeout = '30s'");
+        await client.query(PG_SCHEMA);
+      } finally {
+        client.release(true);
+      }
     })();
     SCHEMA_READY.set(url, ready);
     // A failed bootstrap (db down at boot) must not poison forever — retry next call.
