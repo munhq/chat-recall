@@ -320,11 +320,18 @@ export async function generateMissingSummaries(
 
   while (totalClaimed < TICK_CAP) {
     const batch = await tenantTx(pool, tenant, async (client: any) => {
+      // Claim metadata + the CHEAP turn count (messageCount, already stored in
+      // memory_metadata.extra_json) — NOT the content envelope. Parsing every
+      // session's full envelope just to count turns spiked CPU on the bulk of
+      // trivial sessions and flapped the autoscaler. Only the few REAL sessions
+      // fetch + parse content below.
       const rows: any[] = (await client.query(
-        `SELECT sm.session_id, sm.mtime, sm.first_prompt, cc.content_json
+        `SELECT sm.session_id, sm.mtime, sm.first_prompt,
+                COALESCE(NULLIF(mm.extra_json::jsonb ->> 'messageCount', '')::int, 999) AS msg_count
            FROM session_metadata sm
-           LEFT JOIN content_cache cc
-             ON cc.tenant = sm.tenant AND cc.id = sm.session_id AND cc.source_type = 'session'
+           LEFT JOIN memory_metadata mm
+             ON mm.tenant = sm.tenant AND mm.id = sm.session_id
+                AND mm.source_type = 'session' AND mm.extra_json LIKE '{%'
           WHERE sm.tenant = $1 AND sm.summary = ''
             AND NOT EXISTS (
               SELECT 1 FROM summary_errors e
@@ -336,55 +343,60 @@ export async function generateMissingSummaries(
         [tenant, BATCH, MAX_SUMMARY_ATTEMPTS, retryFloor])).rows;
       if (rows.length === 0) return { count: 0, budgetHit: false };
 
-      // Build SessionContent + turn count for each claimed row (cheap, no LLM).
-      const work = rows.map((r: any) => {
-        let content: SessionContent | null = null;
-        let turns = 0;
-        if (r.content_json) {
-          try {
-            const env = JSON.parse(r.content_json) as CachedEnvelope;
-            turns = Array.isArray(env.messages) ? env.messages.length : 0;
-            content = envelopeToSessionContent(r.session_id, env);
-          } catch { content = null; }
-        }
-        return { id: r.session_id as string, content, turns, firstPrompt: (r.first_prompt as string) || '' };
-      });
-
-      // Decide each row up-front. Short sessions are free (first_prompt, no LLM)
-      // and never consume budget; real sessions consume the remaining real budget;
-      // once it's spent, over-budget real rows are left pending (re-claimed a later
-      // tick / next hour) and we stop after this batch.
+      // Classify by the cheap count — no parsing. Trivial = free first_prompt;
+      // real = needs an LLM (consumes the rate budget); over-budget = left pending.
       let budget = maxReal - realGenerated;
       let budgetHit = false;
-      const plan = work.map((w) => {
-        if (!w.content) return { w, kind: 'fail' as const };
-        if (w.turns <= SHORT_TURN_MAX) return { w, kind: 'short' as const };
-        if (budget > 0) { budget--; return { w, kind: 'real' as const }; }
-        budgetHit = true;
-        return { w, kind: 'skip' as const };
-      });
+      const trivial: Array<{ id: string; firstPrompt: string }> = [];
+      const real: Array<{ id: string; firstPrompt: string }> = [];
+      for (const r of rows) {
+        const w = { id: r.session_id as string, firstPrompt: (r.first_prompt as string) || '' };
+        if ((Number(r.msg_count) || 0) <= SHORT_TURN_MAX) trivial.push(w);
+        else if (budget > 0) { budget--; real.push(w); }
+        else budgetHit = true; // over budget → leave pending, re-claimed later
+      }
 
-      // Phase A — only 'real' rows hit the LLM (concurrently). No DB on the tx
-      // client here, so we never overlap queries on the single connection.
-      const outcomes = await Promise.all(plan.map(async (p) => {
-        if (p.kind === 'fail') return { id: p.w.id, status: 'fail' as const, err: 'no synced content' };
-        if (p.kind === 'skip') return { id: p.w.id, status: 'skip' as const };
-        if (p.kind === 'short') {
-          const fp = (p.w.firstPrompt || p.w.content!.firstPrompt || '').slice(0, 500);
-          return { id: p.w.id, status: 'ok' as const, summary: fp || '(short session)', source: 'too_short', real: false };
+      // Fetch + parse content ONLY for the (few) real sessions — one query, and
+      // the only place we ever JSON.parse an envelope.
+      const contentById = new Map<string, SessionContent>();
+      if (real.length) {
+        const cc = (await client.query(
+          `SELECT id, content_json FROM content_cache
+            WHERE tenant = $1 AND source_type = 'session' AND id = ANY($2)`,
+          [tenant, real.map((w) => w.id)])).rows;
+        for (const row of cc) {
+          if (!row.content_json) continue;
+          try {
+            const built = envelopeToSessionContent(row.id, JSON.parse(row.content_json) as CachedEnvelope);
+            if (built) contentById.set(row.id, built);
+          } catch { /* leave unset → counts as no-content fail */ }
         }
-        try {
-          const summary = await summarizeBounded(p.w.content!);
-          if (!summary || summary.trim().length === 0) throw new Error('summarizer returned empty summary');
-          return { id: p.w.id, status: 'ok' as const, summary, source: summarySource, real: true };
-        } catch (e) {
-          return { id: p.w.id, status: 'fail' as const, err: e instanceof Error ? e.message : String(e) };
-        }
-      }));
+      }
+
+      // Phase A — trivial resolve instantly to first_prompt; real hit the LLM
+      // concurrently (no DB on the tx client here).
+      const outcomes = await Promise.all([
+        ...trivial.map(async (w) => ({
+          id: w.id, status: 'ok' as const,
+          summary: (w.firstPrompt || '(short session)').slice(0, 500), source: 'too_short', real: false,
+        })),
+        ...real.map(async (w) => {
+          const content = contentById.get(w.id);
+          if (!content) return { id: w.id, status: 'fail' as const, err: 'no synced content' };
+          try {
+            const summary = await summarizeBounded(content);
+            if (!summary || summary.trim().length === 0) throw new Error('summarizer returned empty summary');
+            return { id: w.id, status: 'ok' as const, summary, source: summarySource, real: true };
+          } catch (e) {
+            return { id: w.id, status: 'fail' as const, err: e instanceof Error ? e.message : String(e) };
+          }
+        }),
+      ]);
 
       // Phase B — persist sequentially on the locked client, then COMMIT releases.
+      // (Over-budget rows were never claimed into trivial/real, so there's nothing
+      // to skip here — they stay summary='' and get re-claimed a later tick.)
       for (const o of outcomes) {
-        if (o.status === 'skip') continue; // capped this tick — leave pending
         if (o.status === 'ok') {
           await client.query(
             `UPDATE session_metadata SET summary = $3, summary_source = $4, indexed_at = $5
@@ -510,7 +522,7 @@ export async function generateMissingSummariesAllTenants(
   // never shipped in the published client. Defaults are generous (a hard ceiling,
   // not a normal-use limit); tune down per plan via env / entitlements later.
   // Free first_prompt fallbacks for trivial sessions don't count against these.
-  const HOUR_CAP = Math.max(0, Number(process.env.SUMMARY_CAP_PER_HOUR) || 500);
+  const HOUR_CAP = Math.max(0, Number(process.env.SUMMARY_CAP_PER_HOUR) || 2000);
   const MONTH_CAP = Math.max(0, Number(process.env.SUMMARY_CAP_PER_MONTH) || 50000);
   const { openPgPool, tenantTx } = await import('@chat-recall/engine/core/store/pg-pool.js');
   const pool = await openPgPool(process.env.DATABASE_URL || '');
