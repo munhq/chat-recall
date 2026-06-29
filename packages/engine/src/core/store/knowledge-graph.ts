@@ -9,7 +9,7 @@ import { currentTenant } from './tenant-context.js';
 
 import type { KnowledgeGraph } from '../knowledge-graph.js';
 import { resolveBackend, type CreateStoreOptions } from './index.js';
-import { openPgPool, ensurePgSchema, pgTenant, tenantQuery } from './pg-pool.js';
+import { openPgPool, openPgPoolRo, ensurePgSchema, pgTenant, tenantQuery } from './pg-pool.js';
 
 type AsyncMethod<M> = M extends (...args: infer A) => infer R
   ? (...args: A) => Promise<Awaited<R>>
@@ -48,10 +48,15 @@ export class SqliteKnowledgeGraph implements KnowledgeGraphDriver {
 
 export class PgKnowledgeGraph implements KnowledgeGraphDriver {
   private pool: any;
+  private poolRo: any;
   private readonly t: string;
   constructor(private readonly databaseUrl?: string, tenant?: string) { this.t = pgTenant(tenant); }
-  async init(): Promise<void> { this.pool = await openPgPool(this.databaseUrl); await ensurePgSchema(this.databaseUrl); }
+  async init(): Promise<void> { this.pool = await openPgPool(this.databaseUrl); this.poolRo = await openPgPoolRo(); await ensurePgSchema(this.databaseUrl); }
   private async q(sql: string, params: unknown[] = []): Promise<any[]> { return (await tenantQuery(this.pool, this.t, sql, params)).rows; }
+  // Read-replica variant for pure KG read/query methods (display-only,
+  // lag-tolerant). Falls back to the primary pool when no RO DSN is configured.
+  // NOT used by the write methods (addTriple/importTriple read-before-write).
+  private async qRo(sql: string, params: unknown[] = []): Promise<any[]> { return (await tenantQuery(this.poolRo, this.t, sql, params)).rows; }
 
   private entityId(name: string): string { return name.toLowerCase().replace(/[^a-z0-9_-]/g, '_').replace(/_+/g, '_'); }
   private async tripleId(subject: string, predicate: string, object: string): Promise<string> {
@@ -118,12 +123,12 @@ export class PgKnowledgeGraph implements KnowledgeGraphDriver {
     const asOfClause = asOf ? ` AND (t.valid_from IS NULL OR t.valid_from <= $3) AND (t.valid_to IS NULL OR t.valid_to >= $3)` : '';
     if (direction === 'outgoing' || direction === 'both') {
       const params = asOf ? [this.t, eid, asOf] : [this.t, eid];
-      const rows = await this.q(`SELECT t.*, e.name AS obj_name FROM kg_triples t JOIN kg_entities e ON e.tenant=t.tenant AND t.object=e.id WHERE t.tenant=$1 AND t.subject=$2${asOfClause}`, params);
+      const rows = await this.qRo(`SELECT t.*, e.name AS obj_name FROM kg_triples t JOIN kg_entities e ON e.tenant=t.tenant AND t.object=e.id WHERE t.tenant=$1 AND t.subject=$2${asOfClause}`, params);
       for (const row of rows) results.push({ direction: 'outgoing', subject: name, predicate: row.predicate, object: row.obj_name, valid_from: row.valid_from, valid_to: row.valid_to, confidence: row.confidence, source_session: row.source_session, current: row.valid_to === null });
     }
     if (direction === 'incoming' || direction === 'both') {
       const params = asOf ? [this.t, eid, asOf] : [this.t, eid];
-      const rows = await this.q(`SELECT t.*, e.name AS sub_name FROM kg_triples t JOIN kg_entities e ON e.tenant=t.tenant AND t.subject=e.id WHERE t.tenant=$1 AND t.object=$2${asOfClause}`, params);
+      const rows = await this.qRo(`SELECT t.*, e.name AS sub_name FROM kg_triples t JOIN kg_entities e ON e.tenant=t.tenant AND t.subject=e.id WHERE t.tenant=$1 AND t.object=$2${asOfClause}`, params);
       for (const row of rows) results.push({ direction: 'incoming', subject: row.sub_name, predicate: row.predicate, object: name, valid_from: row.valid_from, valid_to: row.valid_to, confidence: row.confidence, source_session: row.source_session, current: row.valid_to === null });
     }
     return results;
@@ -134,7 +139,7 @@ export class PgKnowledgeGraph implements KnowledgeGraphDriver {
     const pred = predicate.toLowerCase().replace(/\s+/g, '_');
     const asOfClause = asOf ? ` AND (t.valid_from IS NULL OR t.valid_from <= $3) AND (t.valid_to IS NULL OR t.valid_to >= $3)` : '';
     const params = asOf ? [this.t, pred, asOf] : [this.t, pred];
-    const rows = await this.q(`SELECT t.*, s.name AS sub_name, o.name AS obj_name FROM kg_triples t JOIN kg_entities s ON s.tenant=t.tenant AND t.subject=s.id JOIN kg_entities o ON o.tenant=t.tenant AND t.object=o.id WHERE t.tenant=$1 AND t.predicate=$2${asOfClause}`, params);
+    const rows = await this.qRo(`SELECT t.*, s.name AS sub_name, o.name AS obj_name FROM kg_triples t JOIN kg_entities s ON s.tenant=t.tenant AND t.subject=s.id JOIN kg_entities o ON o.tenant=t.tenant AND t.object=o.id WHERE t.tenant=$1 AND t.predicate=$2${asOfClause}`, params);
     return rows.map(row => ({ direction: 'outgoing' as const, subject: row.sub_name, predicate: pred, object: row.obj_name, valid_from: row.valid_from, valid_to: row.valid_to, confidence: row.confidence, source_session: row.source_session, current: row.valid_to === null }));
   }
 
@@ -143,24 +148,24 @@ export class PgKnowledgeGraph implements KnowledgeGraphDriver {
     let rows: any[];
     if (entityName) {
       const eid = this.entityId(entityName);
-      rows = await this.q(`SELECT t.*, s.name AS sub_name, o.name AS obj_name FROM kg_triples t JOIN kg_entities s ON s.tenant=t.tenant AND t.subject=s.id JOIN kg_entities o ON o.tenant=t.tenant AND t.object=o.id WHERE t.tenant=$1 AND (t.subject=$2 OR t.object=$2) ORDER BY t.valid_from ASC NULLS LAST LIMIT $3`, [this.t, eid, limit]);
+      rows = await this.qRo(`SELECT t.*, s.name AS sub_name, o.name AS obj_name FROM kg_triples t JOIN kg_entities s ON s.tenant=t.tenant AND t.subject=s.id JOIN kg_entities o ON o.tenant=t.tenant AND t.object=o.id WHERE t.tenant=$1 AND (t.subject=$2 OR t.object=$2) ORDER BY t.valid_from ASC NULLS LAST LIMIT $3`, [this.t, eid, limit]);
     } else {
-      rows = await this.q(`SELECT t.*, s.name AS sub_name, o.name AS obj_name FROM kg_triples t JOIN kg_entities s ON s.tenant=t.tenant AND t.subject=s.id JOIN kg_entities o ON o.tenant=t.tenant AND t.object=o.id WHERE t.tenant=$1 ORDER BY t.valid_from ASC NULLS LAST LIMIT $2`, [this.t, limit]);
+      rows = await this.qRo(`SELECT t.*, s.name AS sub_name, o.name AS obj_name FROM kg_triples t JOIN kg_entities s ON s.tenant=t.tenant AND t.subject=s.id JOIN kg_entities o ON o.tenant=t.tenant AND t.object=o.id WHERE t.tenant=$1 ORDER BY t.valid_from ASC NULLS LAST LIMIT $2`, [this.t, limit]);
     }
     return rows.map(r => ({ subject: r.sub_name, predicate: r.predicate, object: r.obj_name, valid_from: r.valid_from, valid_to: r.valid_to, current: r.valid_to === null }));
   }
 
   async stats(..._a: Args<'stats'>) {
-    const entities = (await this.q(`SELECT COUNT(*)::int AS cnt FROM kg_entities WHERE tenant=$1`, [this.t]))[0].cnt;
-    const triples = (await this.q(`SELECT COUNT(*)::int AS cnt FROM kg_triples WHERE tenant=$1`, [this.t]))[0].cnt;
-    const current = (await this.q(`SELECT COUNT(*)::int AS cnt FROM kg_triples WHERE tenant=$1 AND valid_to IS NULL`, [this.t]))[0].cnt;
-    const predicates = (await this.q(`SELECT DISTINCT predicate FROM kg_triples WHERE tenant=$1 ORDER BY predicate`, [this.t])).map(r => r.predicate);
+    const entities = (await this.qRo(`SELECT COUNT(*)::int AS cnt FROM kg_entities WHERE tenant=$1`, [this.t]))[0].cnt;
+    const triples = (await this.qRo(`SELECT COUNT(*)::int AS cnt FROM kg_triples WHERE tenant=$1`, [this.t]))[0].cnt;
+    const current = (await this.qRo(`SELECT COUNT(*)::int AS cnt FROM kg_triples WHERE tenant=$1 AND valid_to IS NULL`, [this.t]))[0].cnt;
+    const predicates = (await this.qRo(`SELECT DISTINCT predicate FROM kg_triples WHERE tenant=$1 ORDER BY predicate`, [this.t])).map(r => r.predicate);
     return { entities, triples, current_facts: current, expired_facts: triples - current, relationship_types: predicates };
   }
 
   async listEntities(...a: Args<'listEntities'>) {
     const [limit = 100] = a;
-    const rows = await this.q(`SELECT id, name, type, properties, created_at FROM kg_entities WHERE tenant=$1 ORDER BY created_at DESC LIMIT $2`, [this.t, limit]);
+    const rows = await this.qRo(`SELECT id, name, type, properties, created_at FROM kg_entities WHERE tenant=$1 ORDER BY created_at DESC LIMIT $2`, [this.t, limit]);
     return rows.map(r => ({ ...r, properties: JSON.parse(r.properties) }));
   }
 

@@ -13,7 +13,7 @@
  * the RLS cloud and non-RLS self-host.
  */
 import express from 'express';
-import { openPgPool, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
+import { openPgPoolRo, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
 import { requireAdmin } from '../middleware/auth.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 
@@ -34,7 +34,10 @@ interface TenantRow {
 router.get('/metrics', async (req, res) => {
   if (!(await requireAdmin(req, res))) return; // 401/403 already sent
   try {
-    const pool = await openPgPool(process.env.DATABASE_URL || '');
+    // Cross-tenant operator metrics: pure per-tenant COUNT reads (+ tenant
+    // listing), lag-tolerant → read replica (falls back to primary when no RO
+    // DSN is set). Admin auth already enforced above via requireAdmin.
+    const pool = await openPgPoolRo();
     const slugs: string[] = (await pool.query('SELECT tenant FROM tenants')).rows.map((r: any) => r.tenant);
 
     const tenants: TenantRow[] = [];

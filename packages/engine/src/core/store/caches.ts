@@ -15,7 +15,7 @@ import { gzipSync, gunzipSync } from 'zlib';
 import type { MetadataCache } from '../metadata-cache.js';
 import type { OutcomeCache } from '../outcome-cache.js';
 import { resolveBackend, type CreateStoreOptions } from './index.js';
-import { openPgPool, ensurePgSchema, pgTenant, tenantQuery } from './pg-pool.js';
+import { openPgPool, openPgPoolRo, ensurePgSchema, pgTenant, tenantQuery } from './pg-pool.js';
 
 // Postgres BIGINT columns reject the fractional `stat.mtimeMs` values that
 // SQLite stores verbatim. Floor to whole ms at every pg bind and mtime
@@ -87,10 +87,14 @@ export class SqliteMetadataCache implements MetadataCacheDriver {
 
 export class PgMetadataCache implements MetadataCacheDriver {
   private pool: any;
+  private poolRo: any;
   private readonly t: string;
   constructor(private readonly databaseUrl?: string, tenant?: string) { this.t = pgTenant(tenant); }
-  async init(): Promise<void> { this.pool = await openPgPool(this.databaseUrl); await ensurePgSchema(this.databaseUrl); }
+  async init(): Promise<void> { this.pool = await openPgPool(this.databaseUrl); this.poolRo = await openPgPoolRo(); await ensurePgSchema(this.databaseUrl); }
   private async q(sql: string, params: unknown[] = []): Promise<any[]> { return (await tenantQuery(this.pool, this.t, sql, params)).rows; }
+  // Read-replica variant for pure, lag-tolerant cache LOOKUPS (a stale miss just
+  // recomputes). Falls back to the primary pool when no RO DSN is configured.
+  private async qRo(sql: string, params: unknown[] = []): Promise<any[]> { return (await tenantQuery(this.poolRo, this.t, sql, params)).rows; }
 
   async setCompute(...a: MArgs<'setCompute'>) {
     const [sessionId, kind, mtime, data] = a;
@@ -108,15 +112,15 @@ export class PgMetadataCache implements MetadataCacheDriver {
     await this.q(`DELETE FROM compute_cache WHERE tenant=$1 AND session_id=$2`, [this.t, a[0]]);
   }
   async getRawComputeRow(...a: MArgs<'getRawComputeRow'>) {
-    const r = (await this.q(`SELECT mtime, payload_json, payload_gz FROM compute_cache WHERE tenant=$1 AND session_id=$2 AND kind=$3`, [this.t, a[0], a[1]]))[0];
+    const r = (await this.qRo(`SELECT mtime, payload_json, payload_gz FROM compute_cache WHERE tenant=$1 AND session_id=$2 AND kind=$3`, [this.t, a[0], a[1]]))[0];
     return r ? { mtime: r.mtime, payload_json: r.payload_json ?? null, payload_gz: r.payload_gz ?? null } : null;
   }
   async getCompute<T = unknown>(sessionId: string, kind: string, mtime: number) {
-    const r = (await this.q(`SELECT payload_json, payload_gz FROM compute_cache WHERE tenant=$1 AND session_id=$2 AND kind=$3 AND mtime=$4`, [this.t, sessionId, kind, intMs(mtime)]))[0];
+    const r = (await this.qRo(`SELECT payload_json, payload_gz FROM compute_cache WHERE tenant=$1 AND session_id=$2 AND kind=$3 AND mtime=$4`, [this.t, sessionId, kind, intMs(mtime)]))[0];
     return decodeComputePayload(r) as T | null;
   }
   async getComputeStale<T = unknown>(sessionId: string, kind: string) {
-    const r = (await this.q(`SELECT mtime, payload_json, payload_gz FROM compute_cache WHERE tenant=$1 AND session_id=$2 AND kind=$3 ORDER BY computed_at DESC LIMIT 1`, [this.t, sessionId, kind]))[0];
+    const r = (await this.qRo(`SELECT mtime, payload_json, payload_gz FROM compute_cache WHERE tenant=$1 AND session_id=$2 AND kind=$3 ORDER BY computed_at DESC LIMIT 1`, [this.t, sessionId, kind]))[0];
     if (!r) return null;
     const data = decodeComputePayload(r);
     return data === null ? null : { data: data as T, mtime: r.mtime };
@@ -129,13 +133,13 @@ export class PgMetadataCache implements MetadataCacheDriver {
       [this.t, a[0], a[1].slice(0, 500), now]);
   }
   async getSummaryError(...a: MArgs<'getSummaryError'>) {
-    const r = (await this.q(`SELECT error, attempt_count, last_failed_at FROM summary_errors WHERE tenant=$1 AND session_id=$2`, [this.t, a[0]]))[0];
+    const r = (await this.qRo(`SELECT error, attempt_count, last_failed_at FROM summary_errors WHERE tenant=$1 AND session_id=$2`, [this.t, a[0]]))[0];
     return r ? { error: r.error, attemptCount: r.attempt_count, lastFailedAt: r.last_failed_at } : null;
   }
   async getSummaryErrors(...a: MArgs<'getSummaryErrors'>) {
     const out = new Map<string, { error: string; attemptCount: number; lastFailedAt: number }>();
     if (!a[0].length) return out;
-    for (const r of await this.q(`SELECT session_id, error, attempt_count, last_failed_at FROM summary_errors WHERE tenant=$1 AND session_id = ANY($2)`, [this.t, a[0]]))
+    for (const r of await this.qRo(`SELECT session_id, error, attempt_count, last_failed_at FROM summary_errors WHERE tenant=$1 AND session_id = ANY($2)`, [this.t, a[0]]))
       out.set(r.session_id, { error: r.error, attemptCount: r.attempt_count, lastFailedAt: r.last_failed_at });
     return out;
   }
@@ -174,9 +178,9 @@ export class PgMetadataCache implements MetadataCacheDriver {
     const cached = await this.get(a[0]); return !cached || cached.mtime < intMs(a[1]);
   }
   async getStats(..._a: MArgs<'getStats'>) {
-    const total = (await this.q(`SELECT COUNT(*)::int AS count FROM session_metadata WHERE tenant=$1`, [this.t]))[0].count;
+    const total = (await this.qRo(`SELECT COUNT(*)::int AS count FROM session_metadata WHERE tenant=$1`, [this.t]))[0].count;
     const bySources: Record<string, number> = {};
-    for (const r of await this.q(`SELECT summary_source, COUNT(*)::int AS count FROM session_metadata WHERE tenant=$1 GROUP BY summary_source`, [this.t])) bySources[r.summary_source] = r.count;
+    for (const r of await this.qRo(`SELECT summary_source, COUNT(*)::int AS count FROM session_metadata WHERE tenant=$1 GROUP BY summary_source`, [this.t])) bySources[r.summary_source] = r.count;
     return { totalSessions: total, bySources };
   }
   async close(..._a: MArgs<'close'>) { /* shared pool — see pg-pool.ts closePgPools */ }
@@ -231,19 +235,23 @@ function rowToOutcome(r: any) {
 
 export class PgOutcomeCache implements OutcomeCacheDriver {
   private pool: any;
+  private poolRo: any;
   private readonly t: string;
   constructor(private readonly databaseUrl?: string, tenant?: string) { this.t = pgTenant(tenant); }
-  async init(): Promise<void> { this.pool = await openPgPool(this.databaseUrl); await ensurePgSchema(this.databaseUrl); }
+  async init(): Promise<void> { this.pool = await openPgPool(this.databaseUrl); this.poolRo = await openPgPoolRo(); await ensurePgSchema(this.databaseUrl); }
   private async q(sql: string, params: unknown[] = []): Promise<any[]> { return (await tenantQuery(this.pool, this.t, sql, params)).rows; }
+  // Read-replica variant for pure outcome-cache LOOKUPS (a stale miss just
+  // reclassifies). Falls back to the primary pool when no RO DSN is configured.
+  private async qRo(sql: string, params: unknown[] = []): Promise<any[]> { return (await tenantQuery(this.poolRo, this.t, sql, params)).rows; }
 
   async get(...a: OArgs<'get'>) {
-    const r = (await this.q(`SELECT ${OUTCOME_COLS} FROM session_outcome_cache WHERE tenant=$1 AND session_id=$2`, [this.t, a[0]]))[0];
+    const r = (await this.qRo(`SELECT ${OUTCOME_COLS} FROM session_outcome_cache WHERE tenant=$1 AND session_id=$2`, [this.t, a[0]]))[0];
     return r ? rowToOutcome(r) as any : null;
   }
   async getMany(...a: OArgs<'getMany'>) {
     const out = new Map<string, ReturnType<typeof rowToOutcome>>();
     if (!a[0].length) return out as any;
-    for (const r of await this.q(`SELECT ${OUTCOME_COLS} FROM session_outcome_cache WHERE tenant=$1 AND session_id = ANY($2)`, [this.t, a[0]])) out.set(r.session_id, rowToOutcome(r));
+    for (const r of await this.qRo(`SELECT ${OUTCOME_COLS} FROM session_outcome_cache WHERE tenant=$1 AND session_id = ANY($2)`, [this.t, a[0]])) out.set(r.session_id, rowToOutcome(r));
     return out as any;
   }
   async put(...a: OArgs<'put'>) {

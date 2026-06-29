@@ -1,5 +1,5 @@
 import { currentTenant } from './tenant-context.js';
-import { tenantQuery, tenantTx } from './pg-pool.js';
+import { tenantQuery, tenantTx, openPgPoolRo } from './pg-pool.js';
 /**
  * VectorStore driver — abstracts the embedding/vector layer behind the same
  * storage flag as the relational stores.
@@ -73,6 +73,7 @@ export class LanceVectorStore implements VectorStore {
  */
 export class PgVectorStore implements VectorStore {
   private pool: any;
+  private poolRo: any;
   private readonly t: string;
   private vectorOk = false;
   // Whether the `memory_vectors` table exists and is usable. Distinct from
@@ -97,6 +98,7 @@ export class PgVectorStore implements VectorStore {
   async init(): Promise<void> {
     const { openPgPool, ensurePgSchema } = await import('./pg-pool.js');
     this.pool = await openPgPool(this.databaseUrl);
+    this.poolRo = await openPgPoolRo();
     await ensurePgSchema(this.databaseUrl);
     // FTS store shares the pooled connection (openPgPool caches per URL) and
     // creates/owns the `memory_chunks` table in its own init().
@@ -130,6 +132,11 @@ export class PgVectorStore implements VectorStore {
   }
 
   private q(sql: string, params: unknown[] = []) { return tenantQuery(this.pool, this.t, sql, params).then((r: any) => r.rows); }
+  // Read-replica variant for pure, lag-tolerant SELECTs (vector similarity
+  // search, status aggregations). Falls back to the primary pool when no RO DSN
+  // is configured. NEVER for needsUpdate freshness in the index/embed write flow
+  // or the embedMissing SKIP-LOCKED claim — those must stay on the primary.
+  private qRo(sql: string, params: unknown[] = []) { return tenantQuery(this.poolRo, this.t, sql, params).then((r: any) => r.rows); }
   private vecLiteral(v: number[]) { return `[${v.join(',')}]`; }
   // memory_vectors.mtime is BIGINT; stat.mtimeMs is fractional. Floor to whole
   // ms at every bind/compare (same rationale as store/pg.ts `intMs`).
@@ -293,7 +300,7 @@ export class PgVectorStore implements VectorStore {
     // vector path consistent with FTS so `-p` filters identically either way.
     if ((options as any).projectIdFilter) { params.push(`%${(options as any).projectIdFilter}%`); sql += ` AND project_path ILIKE $${params.length}`; }
     params.push(topK * 5); sql += ` ORDER BY embedding <=> $2::vector ASC LIMIT $${params.length}`;
-    const rows = await this.q(sql, params);
+    const rows = await this.qRo(sql, params);
     // Group by item (best score wins), mirroring the FTS grouping.
     const byItem = new Map<string, any>();
     for (const r of rows) {
@@ -324,10 +331,10 @@ export class PgVectorStore implements VectorStore {
     // chunks — counting vectors made `/api/status` report `totalChunks: 0` while
     // data was fully searchable. `vectorOk`/`vectorError` still describe the
     // vector subsystem; the counts describe what's actually indexed and queryable.
-    const totalChunks = (await this.q(`SELECT COUNT(*)::int AS n FROM memory_chunks WHERE tenant=$1`, [this.t]))[0]?.n ?? 0;
-    const totalItems = (await this.q(`SELECT COUNT(DISTINCT item_id)::int AS n FROM memory_chunks WHERE tenant=$1`, [this.t]))[0]?.n ?? 0;
+    const totalChunks = (await this.qRo(`SELECT COUNT(*)::int AS n FROM memory_chunks WHERE tenant=$1`, [this.t]))[0]?.n ?? 0;
+    const totalItems = (await this.qRo(`SELECT COUNT(DISTINCT item_id)::int AS n FROM memory_chunks WHERE tenant=$1`, [this.t]))[0]?.n ?? 0;
     const bySourceType: Record<string, { items: number; chunks: number }> = {};
-    for (const r of await this.q(`SELECT source_type, COUNT(*)::int AS chunks, COUNT(DISTINCT item_id)::int AS items FROM memory_chunks WHERE tenant=$1 GROUP BY source_type`, [this.t]))
+    for (const r of await this.qRo(`SELECT source_type, COUNT(*)::int AS chunks, COUNT(DISTINCT item_id)::int AS items FROM memory_chunks WHERE tenant=$1 GROUP BY source_type`, [this.t]))
       bySourceType[r.source_type] = { items: r.items, chunks: r.chunks };
     return { totalChunks, totalItems, bySourceType, indexPath: 'postgres', vectorOk: this.vectorOk, vectorError: this.lastError ?? undefined } as any;
   }
