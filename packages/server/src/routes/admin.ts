@@ -15,6 +15,9 @@
 import express from 'express';
 import { openPgPool, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
 import { requireAdmin } from '../middleware/auth.js';
+import { createLogger } from '@chat-recall/engine/core/logger.js';
+
+const log = createLogger('admin');
 
 const router = express.Router();
 
@@ -68,7 +71,7 @@ router.get('/metrics', async (req, res) => {
 
     res.json({ totals, tenants });
   } catch (e) {
-    console.error('[admin/metrics] query failed:', e instanceof Error ? e.message : e);
+    log.error({ err: e }, 'metrics query failed');
     res.status(500).json({ error: 'admin metrics query failed' });
   }
 });

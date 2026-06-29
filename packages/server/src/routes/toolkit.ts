@@ -15,6 +15,9 @@ import { homedir } from 'os';
 import { createStore, copyArtifactToTool, rowFromStore, skillsDirFor } from '../imports.js';
 import type { SourceType } from '../imports.js';
 import { requireLocalMode } from '../util/mode.js';
+import { createLogger } from '@chat-recall/engine/core/logger.js';
+
+const log = createLogger('toolkit');
 
 const router = express.Router();
 
@@ -42,7 +45,7 @@ router.get('/status', async (_req, res) => {
     }
     res.json({ counts: out });
   } catch (error) {
-    console.error('Toolkit status error:', error);
+    log.error({ err: error }, 'toolkit status error');
     res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
   } finally { await store.close(); }
 });
@@ -69,7 +72,7 @@ router.get('/browse/:type', async (req, res) => {
     items = items.slice(offset, offset + limit);
     res.json({ items, type, count: items.length });
   } catch (error) {
-    console.error('Toolkit browse error:', error);
+    log.error({ err: error }, 'toolkit browse error');
     res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
   } finally { await store.close(); }
 });
@@ -86,7 +89,7 @@ router.get('/item/:type/:id', async (req, res) => {
     if (!item) return res.status(404).json({ error: 'Not found' });
     res.json(item);
   } catch (error) {
-    console.error('Toolkit item error:', error);
+    log.error({ err: error }, 'toolkit item error');
     res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
   } finally { await store.close(); }
 });
@@ -111,7 +114,7 @@ router.get('/item/:type/:id/content', async (req, res) => {
     } catch { /* tolerate */ }
     res.json({ content, filePath: item.file_path });
   } catch (error) {
-    console.error('Toolkit content error:', error);
+    log.error({ err: error }, 'toolkit content error');
     res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
   } finally { await store.close(); }
 });
@@ -179,7 +182,7 @@ router.post('/promote', requireLocalMode, express.json(), async (req, res) => {
     }
     return res.status(400).json({ error: `Promotion not supported for type: ${type}` });
   } catch (error) {
-    console.error('Promote error:', error);
+    log.error({ err: error }, 'promote error');
     res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
   } finally { await store.close(); }
 });
@@ -219,7 +222,7 @@ router.delete('/item', requireLocalMode, express.json(), (req, res) => {
     if (!r.ok) return res.status(r.status || 500).json({ error: r.error });
     return res.json({ ok: true, removedPath: r.targetPath });
   } catch (error) {
-    console.error('Remove error:', error);
+    log.error({ err: error }, 'remove error');
     return res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
   }
 });
@@ -358,7 +361,7 @@ router.get('/matrix', async (_req, res) => {
     }
     res.json({ ...out, supportedTargets: SUPPORTED_TARGETS });
   } catch (error) {
-    console.error('Matrix error:', error);
+    log.error({ err: error }, 'matrix error');
     res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
   } finally {
     await store.close();
@@ -499,7 +502,7 @@ router.post('/sync-all', requireLocalMode, express.json(), async (req, res) => {
     };
     return res.json({ dryRun: false, summary, results });
   } catch (error) {
-    console.error('Sync-all error:', error);
+    log.error({ err: error }, 'sync-all error');
     return res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
   } finally {
     await store.close();

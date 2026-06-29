@@ -12,6 +12,9 @@ import express from 'express';
 import { MemoryService } from '../services/memory.js';
 import { createStore } from '../imports.js';
 import type { SourceType } from '../imports.js';
+import { createLogger } from '@chat-recall/engine/core/logger.js';
+
+const log = createLogger('memory');
 
 const router = express.Router();
 const memoryService = new MemoryService();
@@ -47,7 +50,7 @@ router.post('/search', async (req, res) => {
 
     res.json({ query, results, count: results.length });
   } catch (error) {
-    console.error('Memory search error:', error);
+    log.error({ err: error }, 'memory search error');
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Memory search failed',
     });
@@ -72,7 +75,7 @@ router.get('/status', async (req, res) => {
     memoryStatusCache = { data: status, expiresAt: now + MEMORY_STATUS_TTL_MS };
     res.json(status);
   } catch (error) {
-    console.error('Memory status error:', error);
+    log.error({ err: error }, 'memory status error');
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to get memory status',
     });
@@ -94,7 +97,7 @@ router.get('/item/:sourceType/:id', async (req, res) => {
 
     res.json(item);
   } catch (error) {
-    console.error('Memory item error:', error);
+    log.error({ err: error }, 'memory item error');
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to get memory item',
     });
@@ -153,7 +156,7 @@ router.get('/item/:sourceType/:id/content', async (req, res) => {
       await store.close();
     }
   } catch (error) {
-    console.error('Memory item content error:', error);
+    log.error({ err: error }, 'memory item content error');
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to get memory item content',
     });
@@ -171,7 +174,7 @@ router.get('/links/:sourceType/:id', async (req, res) => {
 
     res.json({ links, count: links.length });
   } catch (error) {
-    console.error('Memory links error:', error);
+    log.error({ err: error }, 'memory links error');
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to get memory links',
     });
@@ -192,7 +195,7 @@ router.get('/browse/:sourceType', async (req, res) => {
 
     res.json({ items, count: items.length, sourceType });
   } catch (error) {
-    console.error('Memory browse error:', error);
+    log.error({ err: error }, 'memory browse error');
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to browse memory items',
     });
@@ -218,7 +221,7 @@ router.post('/reindex', async (req, res) => {
       ...result
     });
   } catch (error) {
-    console.error('Memory reindex error:', error);
+    log.error({ err: error }, 'memory reindex error');
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to start reindexing',
     });
@@ -247,7 +250,7 @@ router.patch('/item/:sourceType/:id', async (req, res) => {
       res.status(404).json({ error: 'Item not found' });
     }
   } catch (error) {
-    console.error('Memory item update error:', error);
+    log.error({ err: error }, 'memory item update error');
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to update item',
     });

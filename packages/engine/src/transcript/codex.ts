@@ -5,6 +5,9 @@
 import { open, readdir, stat } from 'fs/promises';
 import { dirname, join, basename } from 'path';
 import type { TranscriptMessage as Message, Subagent, ToolCall } from './types.js';
+import { createLogger } from '../core/logger.js';
+
+const log = createLogger('transcript-codex');
 
 /**
  * Discover Codex sub-agent rollouts spawned by a parent session.
@@ -61,7 +64,7 @@ export async function parseCodexSubagents(sessionPath: string): Promise<Subagent
 
     let messages: Message[] = [];
     try { messages = await parseCodexTranscript(filePath); }
-    catch (e) { console.error(`Failed to parse Codex sub-agent ${filePath}:`, e); }
+    catch (e) { log.error({ err: e, filePath }, 'Failed to parse Codex sub-agent'); }
 
     const toolUseCount = messages.reduce((n, m) => n + (m.toolCalls?.length ?? 0), 0);
 

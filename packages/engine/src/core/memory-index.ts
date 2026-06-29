@@ -16,6 +16,9 @@ import type { SourceType, MemoryChunk, MemorySearchResult } from '../types/memor
 import { createStore } from './store/index.js';
 import { resolveProjectId } from './project-resolver.js';
 import { getIndexDir } from './paths.js';
+import { createLogger } from './logger.js';
+
+const log = createLogger('memory-index');
 
 export interface MemoryChunkRecord {
   id: string;
@@ -113,8 +116,7 @@ export class MemoryIndex {
         return; // already migrated
       }
       // Old schema — drop the table. Rebuild happens on next addChunks call.
-      // eslint-disable-next-line no-console
-      console.error('[chat-recall] LanceDB table predates project_id column; dropping for rebuild');
+      log.error('LanceDB table predates project_id column; dropping for rebuild');
       await (this.db as unknown as { dropTable(name: string): Promise<void> }).dropTable(MemoryIndex.TABLE_NAME);
       this.table = null;
       // Force re-index of all chunks by clearing the mtime cache so
@@ -212,7 +214,7 @@ export class MemoryIndex {
         // failing the whole item. Warn once to avoid log spam.
         if (!MemoryIndex.embedWarned) {
           MemoryIndex.embedWarned = true;
-          console.warn(`  Vector indexing unavailable (${(err as Error).message}) — using FTS5 keyword search. Start Ollama or set EMBEDDING_PROVIDER to enable semantic search.`);
+          log.warn({ err }, 'Vector indexing unavailable — using FTS5 keyword search. Start Ollama or set EMBEDDING_PROVIDER to enable semantic search.');
         }
       }
     }
@@ -458,8 +460,7 @@ export class MemoryIndex {
       // common "stale data file" error after the auto-indexer compacts.
       if (this.lanceReopenAttempts < MemoryIndex.MAX_REOPEN_ATTEMPTS) {
         this.lanceReopenAttempts += 1;
-        // eslint-disable-next-line no-console
-        console.error(`[chat-recall] Lance read failed (${msg}); reopening table and retrying once`);
+        log.error({ err }, 'Lance read failed; reopening table and retrying once');
         this.db = null;
         this.table = null;
         try {
@@ -469,8 +470,7 @@ export class MemoryIndex {
         } catch (err2) {
           const msg2 = err2 instanceof Error ? err2.message : String(err2);
           this.lastLanceError = msg2;
-          // eslint-disable-next-line no-console
-          console.error(`[chat-recall] Lance retry failed (${msg2}); falling back to FTS5`);
+          log.error({ err: err2 }, 'Lance retry failed; falling back to FTS5');
           const store = await createStore();
           const fts = await store.searchFTS(query, { topK, sourceTypes, projectIdFilter });
           await store.close();

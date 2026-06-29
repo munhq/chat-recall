@@ -6,6 +6,10 @@
  * - Gemini (optional): Google's text-embedding-004 model
  */
 
+import { createLogger } from './logger.js';
+
+const log = createLogger('embedder');
+
 export interface Embedder {
   embed(texts: string[]): Promise<number[][]>;
   embedQuery(query: string): Promise<number[]>;
@@ -261,7 +265,7 @@ export class OpenAICompatibleEmbedder implements Embedder {
     const lanes = Math.max(1, Math.min(OpenAICompatibleEmbedder.CONCURRENCY, slices.length));
     await Promise.all(Array.from({ length: lanes }, () => worker()));
     if (failed > 0) {
-      console.warn(`[embedder] ${failed}/${texts.length} texts failed this batch — persisting the rest, will retry the failures.`);
+      log.warn({ failed, total: texts.length }, 'texts failed this batch — persisting the rest, will retry the failures');
     }
     return results.flat() as number[][];
   }

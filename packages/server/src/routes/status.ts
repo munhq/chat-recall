@@ -4,6 +4,9 @@
 
 import express from 'express';
 import { SearchService } from '../services/search.js';
+import { createLogger } from '@chat-recall/engine/core/logger.js';
+
+const log = createLogger('status');
 
 const router = express.Router();
 const searchService = new SearchService();
@@ -43,7 +46,7 @@ router.get('/', async (req, res) => {
     const stats = await searchService.getStatus();
     res.json(stats);
   } catch (error) {
-    console.error('Status error:', error);
+    log.error({ err: error }, 'status error');
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to get status',
     });
@@ -62,7 +65,7 @@ router.get('/stream', async (req, res) => {
     const stats = await searchService.getStatus();
     res.write(`data: ${JSON.stringify(stats)}\n\n`);
   } catch (error) {
-    console.error('SSE initial status error:', error);
+    log.error({ err: error }, 'SSE initial status error');
   }
 
   // Send updates every 2 seconds
@@ -71,7 +74,7 @@ router.get('/stream', async (req, res) => {
       const stats = await searchService.getStatus();
       res.write(`data: ${JSON.stringify(stats)}\n\n`);
     } catch (error) {
-      console.error('SSE update error:', error);
+      log.error({ err: error }, 'SSE update error');
     }
   }, 2000);
 

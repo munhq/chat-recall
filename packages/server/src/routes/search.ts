@@ -4,6 +4,9 @@
 
 import express from 'express';
 import { SearchService } from '../services/search.js';
+import { createLogger } from '@chat-recall/engine/core/logger.js';
+
+const log = createLogger('search');
 
 const router = express.Router();
 const searchService = new SearchService();
@@ -41,7 +44,7 @@ router.post('/', async (req, res) => {
       memoryCount,
     });
   } catch (error) {
-    console.error('Search error:', error);
+    log.error({ err: error }, 'search error');
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Search failed',
     });
