@@ -115,8 +115,15 @@ router.get('/backlog', async (req, res) => {
   try {
     const pool = await openPgPool(process.env.DATABASE_URL || '');
     const slugs: string[] = (await pool.query('SELECT tenant FROM tenants')).rows.map((r: any) => r.tenant);
+    // Trivial sessions (<= minTurns) resolve to first_prompt with NO LLM call, so
+    // they're NOT real OVMS work. `pendingRealSummaries` counts only sessions that
+    // actually need an LLM — that's the correct signal for KEDA to scale the OVMS
+    // summary pods on (raw pendingSummaries is inflated by trivial sessions and
+    // would over-scale compute that isn't needed).
+    const minTurns = Math.max(0, Number(process.env.SUMMARY_MIN_TURNS) || 4);
     let pendingVectors = 0;
     let pendingSummaries = 0;
+    let pendingRealSummaries = 0;
     for (const t of slugs) {
       const r = (await tenantQuery(pool, t, `
         SELECT
@@ -124,12 +131,20 @@ router.get('/backlog', async (req, res) => {
              LEFT JOIN memory_vectors v ON v.chunk_id = c.chunk_id AND v.tenant = c.tenant
              WHERE c.tenant = $1 AND length(c.text) > 0 AND v.chunk_id IS NULL) AS pending_vectors,
           (SELECT count(*) FROM session_metadata
-             WHERE tenant = $1 AND (summary IS NULL OR length(summary) = 0)) AS pending_summaries
-      `, [t])).rows[0];
+             WHERE tenant = $1 AND (summary IS NULL OR length(summary) = 0)) AS pending_summaries,
+          (SELECT count(*) FROM session_metadata sm
+             WHERE sm.tenant = $1 AND (sm.summary IS NULL OR length(sm.summary) = 0)
+               AND EXISTS (SELECT 1 FROM memory_metadata m
+                            WHERE m.tenant = sm.tenant AND m.id = sm.session_id AND m.source_type = 'session'
+                              AND m.extra_json LIKE '{%'
+                              AND COALESCE(NULLIF(m.extra_json::jsonb ->> 'messageCount', '')::int, 999) > $2)
+          ) AS pending_real_summaries
+      `, [t, minTurns])).rows[0];
       pendingVectors += Number(r.pending_vectors);
       pendingSummaries += Number(r.pending_summaries);
+      pendingRealSummaries += Number(r.pending_real_summaries);
     }
-    res.json({ pendingVectors, pendingSummaries, tenants: slugs.length });
+    res.json({ pendingVectors, pendingSummaries, pendingRealSummaries, tenants: slugs.length });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }
