@@ -488,14 +488,22 @@ BEGIN
     'wal_log','diary_entries','sync_intents',
     'code_projects','code_findings','code_hotspots','code_actions'
   ] LOOP
-    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
-    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
-    EXECUTE format('DROP POLICY IF EXISTS tenant_isolation ON %I', t);
-    EXECUTE format($p$
-      CREATE POLICY tenant_isolation ON %I
-        USING (tenant = current_setting('app.tenant', true))
-        WITH CHECK (tenant = current_setting('app.tenant', true))
-    $p$, t);
+    -- IDEMPOTENT: only configure a table that isn't already locked down. The
+    -- ALTER/DROP/CREATE POLICY statements each take an ACCESS EXCLUSIVE lock on
+    -- the table; re-running them on every boot re-locks HOT tables (e.g.
+    -- session_metadata), which during a rollout deadlocks against sync ingest +
+    -- the old workers' long transactions → lock_timeout → crash-on-boot. Skipping
+    -- already-configured tables means steady-state boots take NO locks; only a
+    -- brand-new table (summary_leases) is ever touched, and it has no contention.
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename = t AND policyname = 'tenant_isolation') THEN
+      EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+      EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+      EXECUTE format($p$
+        CREATE POLICY tenant_isolation ON %I
+          USING (tenant = current_setting('app.tenant', true))
+          WITH CHECK (tenant = current_setting('app.tenant', true))
+      $p$, t);
+    END IF;
   END LOOP;
 END $$;
 
