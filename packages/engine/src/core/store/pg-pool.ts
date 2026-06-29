@@ -55,6 +55,25 @@ export async function openPgPool(databaseUrl?: string): Promise<any> {
 }
 
 /**
+ * Open (and cache) the READ pool → the read-only replica via PgBouncer
+ * (`DATABASE_URL_RO`, the `-pooler-ro` service). Use this for pure, lag-tolerant
+ * SELECTs (search, analytics, monitoring, list/view reads) to offload the
+ * primary. NEVER use it for writes, read-after-write, or `SKIP LOCKED` claims —
+ * the replica is read-only and lags the primary by streaming-replication delay.
+ *
+ * Falls back to the primary (`openPgPool`) when no RO DSN is set (local,
+ * self-host, tests, or a single-DB deployment) so callers can ALWAYS route reads
+ * here without branching — behaviour is identical when there's no replica.
+ */
+export async function openPgPoolRo(): Promise<any> {
+  const roUrl = process.env.DATABASE_URL_RO || process.env.CHAT_RECALL_DATABASE_URL_RO;
+  const primary = process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
+  // No RO DSN, or it's literally the primary ⇒ just use the primary pool.
+  if (!roUrl || roUrl === primary) return openPgPool(primary);
+  return openPgPool(roUrl);
+}
+
+/**
  * Idempotently apply the schema to the PRIMARY database. Memoized per URL so
  * the DDL runs exactly once per process regardless of how many drivers ask for
  * it. NEVER call this against a read-only replica — its tables arrive via

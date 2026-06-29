@@ -20,7 +20,7 @@
  * api rate-limiter doesn't apply).
  */
 import express from 'express';
-import { openPgPool, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
+import { openPgPoolRo, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { latestPoolStats, queryCostSummary } from '../middleware/request-cost.js';
 import {
@@ -162,7 +162,11 @@ router.get('/', async (req, res) => {
   if (!tokenOk(req)) return res.status(401).type('text/plain').send('unauthorized');
 
   try {
-    const pool = await openPgPool(process.env.DATABASE_URL || '');
+    // Monitoring aggregations: capacity/backlog/business COUNTs (+ tenant
+    // enumeration) are all pure reads that tolerate a scrape-interval of replica
+    // lag — route to the read replica to offload per-scrape COUNT load off the
+    // primary (falls back to primary when no RO DSN is set).
+    const pool = await openPgPoolRo();
     const slugs: string[] = (await pool.query('SELECT tenant FROM tenants')).rows.map((r: any) => r.tenant);
 
     const cap = await collectCapacity(pool, slugs);
@@ -218,7 +222,8 @@ router.get('/rl-cost', async (req, res) => {
 router.get('/backlog', async (req, res) => {
   if (!tokenOk(req)) return res.status(401).json({ error: 'unauthorized' });
   try {
-    const pool = await openPgPool(process.env.DATABASE_URL || '');
+    // Same backlog COUNTs as /metrics — kept consistent and on the read replica.
+    const pool = await openPgPoolRo();
     const slugs: string[] = (await pool.query('SELECT tenant FROM tenants')).rows.map((r: any) => r.tenant);
     const backlog = await collectBacklog(pool, slugs);
     res.json({ ...backlog, tenants: slugs.length });
