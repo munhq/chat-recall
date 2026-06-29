@@ -327,8 +327,9 @@ export async function generateMissingSummaries(
     if (o.ok) {
       await tenantTx(pool, tenant, async (c: any) => {
         await c.query(
-          `UPDATE session_metadata SET summary=$3, summary_source=$4, indexed_at=$5, claimed_at=0 WHERE tenant=$1 AND session_id=$2`,
+          `UPDATE session_metadata SET summary=$3, summary_source=$4, indexed_at=$5 WHERE tenant=$1 AND session_id=$2`,
           [tenant, o.id, o.summary, o.source, Date.now()]);
+        await c.query(`DELETE FROM summary_leases WHERE tenant=$1 AND session_id=$2`, [tenant, o.id]);
         await c.query(`DELETE FROM summary_errors WHERE tenant=$1 AND session_id=$2`, [tenant, o.id]);
       });
       generated++;
@@ -336,7 +337,7 @@ export async function generateMissingSummaries(
       await tenantTx(pool, tenant, async (c: any) => {
         // Release the lease so the row is re-claimable; the error backoff
         // (attempt_count >= MAX within RETRY_WINDOW) gates how soon it retries.
-        await c.query(`UPDATE session_metadata SET claimed_at=0 WHERE tenant=$1 AND session_id=$2`, [tenant, o.id]);
+        await c.query(`DELETE FROM summary_leases WHERE tenant=$1 AND session_id=$2`, [tenant, o.id]);
         await c.query(
           `INSERT INTO summary_errors (tenant,session_id,error,attempt_count,first_failed_at,last_failed_at)
                 VALUES ($1,$2,$3,1,$4,$4)
@@ -358,7 +359,10 @@ export async function generateMissingSummaries(
            LEFT JOIN memory_metadata mm
              ON mm.tenant = sm.tenant AND mm.id = sm.session_id
                 AND mm.source_type = 'session' AND mm.extra_json LIKE '{%'
-          WHERE sm.tenant = $1 AND sm.summary = '' AND sm.claimed_at < $5
+           LEFT JOIN summary_leases sl
+             ON sl.tenant = sm.tenant AND sl.session_id = sm.session_id
+          WHERE sm.tenant = $1 AND sm.summary = ''
+            AND (sl.claimed_at IS NULL OR sl.claimed_at < $5)
             AND NOT EXISTS (
               SELECT 1 FROM summary_errors e
                WHERE e.tenant = sm.tenant AND e.session_id = sm.session_id
@@ -375,7 +379,7 @@ export async function generateMissingSummaries(
       for (const r of rows) {
         if ((Number(r.msg_count) || 0) <= SHORT_TURN_MAX) trivialIds.push(r.session_id);
         else if (budget > 0) { budget--; realIds.push(r.session_id); }
-        else budgetExhausted = true; // over budget → left unclaimed, re-claimed later
+        else budgetExhausted = true; // over budget → left unleased, re-claimed later
       }
       // Trivial → first_prompt inline (free), done now. left() bounds it; empty
       // first prompt falls back to a marker.
@@ -383,14 +387,18 @@ export async function generateMissingSummaries(
         await client.query(
           `UPDATE session_metadata
               SET summary = COALESCE(NULLIF(left(first_prompt, 500), ''), '(short session)'),
-                  summary_source = 'too_short', indexed_at = $3, claimed_at = 0
+                  summary_source = 'too_short', indexed_at = $3
             WHERE tenant = $1 AND session_id = ANY($2) AND summary = ''`,
           [tenant, trivialIds, Date.now()]);
         generated += trivialIds.length;
       }
-      // Real → stamp the lease; the LLM runs OUTSIDE this tx (step 3).
+      // Real → write the LEASE rows (separate table, no hot-table lock); the LLM
+      // runs OUTSIDE this tx (step 3). ON CONFLICT refreshes an expired lease.
       if (realIds.length) {
-        await client.query(`UPDATE session_metadata SET claimed_at = $3 WHERE tenant = $1 AND session_id = ANY($2)`,
+        await client.query(
+          `INSERT INTO summary_leases (tenant, session_id, claimed_at)
+           SELECT $1, unnest($2::text[]), $3
+           ON CONFLICT (tenant, session_id) DO UPDATE SET claimed_at = excluded.claimed_at`,
           [tenant, realIds, Date.now()]);
       }
       return { real: realIds, seen: rows.length };
