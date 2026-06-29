@@ -253,13 +253,21 @@ app.listen(PORT, HOST, () => {
   const caps = capabilities();
   console.log(`  Mode: ${caps.mode} · edition: ${caps.edition}`);
 
+  // Tier role (see D-split): 'api' serves HTTP only and runs NO background sweeps
+  // (so the API tier autoscales on real web traffic, never on worker CPU bursts);
+  // 'worker' runs the summary + vector sweeps; 'all' (default = self-host) does
+  // both. The HTTP server always starts (health/metrics probes) regardless.
+  const role = process.env.CHAT_RECALL_ROLE || 'all';
+  const runWorkers = role !== 'api';
+  console.log(`  Role: ${role} (background workers: ${runWorkers ? 'on' : 'off'})`);
+
   // Server-side AI summary generation. Synced sessions arrive without an AI
   // summary (the thin collector only ships raw content + structured outcome);
   // this periodic sweep fills them in using the operator-configured provider.
   // Gated twice: server mode only (local mode generates summaries during its
   // own indexing), and only when a provider is actually configured — otherwise
   // it's a no-op and we say so once instead of spinning a useless timer.
-  if (isServerMode()) {
+  if (isServerMode() && runWorkers) {
     if (serverSummaryConfig()) {
       const SUMMARY_SWEEP_MS = 30 * 1000;      // sweep often; sweepInFlight prevents overlap
       // AUTONOMOUS throughput — no hand-tuned concurrency. AIMD (TCP-style): start
@@ -312,7 +320,7 @@ app.listen(PORT, HOST, () => {
   // New ingests embed on the fly; this sweep catches up the backlog across all
   // tenants so semantic search becomes complete on its own. Gated like the
   // summary worker: server mode + an embedder actually configured.
-  if (isServerMode()) {
+  if (isServerMode() && runWorkers) {
     if (serverEmbedderConfigured()) {
       const VEC_SWEEP_MS = 30 * 1000;   // keep it moving; inFlight guard prevents overlap
       const VEC_BATCH = 256;
