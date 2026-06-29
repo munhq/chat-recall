@@ -288,51 +288,77 @@ export async function generateMissingSummaries(
     return summarizeViaScan(opts, summarize, summarySource, summarizeBounded, limit, concurrency, now);
   }
 
-  // WORK QUEUE via FOR UPDATE … SKIP LOCKED (mirrors PgVectorStore.embedMissing).
-  // Each iteration claims a disjoint batch of un-summarised sessions: SKIP LOCKED
-  // means a concurrent replica grabs a DIFFERENT batch, never the same rows. The
-  // summary is generated while the row locks are held, the UPDATE lands, COMMIT
-  // releases — and by then summary != '' so the row is never re-claimed. Safe to
-  // run on every replica at once (no advisory-lock singleton), and it drains the
-  // WHOLE backlog: unlike the old listItems(5000, offset 0) scan, the claim pulls
-  // pending rows from anywhere in the table (idx_session_metadata_pending partial
-  // index), so a 15k backlog no longer strands everything past the first 5000.
-  const { openPgPool, tenantTx } = await import('@chat-recall/engine/core/store/pg-pool.js');
+  // LEASE-BASED WORK QUEUE — the worker NEVER holds a DB transaction or row lock
+  // across the (multi-second) LLM call. Per tick:
+  //   (1) CLAIM in a SHORT tx: pull pending rows (SKIP LOCKED), resolve trivial
+  //       sessions to first_prompt INLINE (free, no LLM), and stamp a LEASE
+  //       (claimed_at) on the real ones — then COMMIT (locks released in ms).
+  //   (2) Run the LLM for the leased rows OUTSIDE any transaction, bounded by a
+  //       FIXED concurrency semaphore (no AIMD — provider-sized, predictable).
+  //   (3) Write each summary in its OWN short tx, clearing the lease.
+  // A crashed worker's lease simply expires (claimed_at < now - SUMMARY_LEASE_MS)
+  // and another worker re-claims the row — nothing strands. Safe across N
+  // replicas (SKIP LOCKED + lease). Provider-agnostic: the LLM is just
+  // summarizeBounded; swapping OVMS ↔ Ollama Cloud ↔ OpenAI changes nothing here.
+  const { openPgPool, tenantTx, tenantQuery } = await import('@chat-recall/engine/core/store/pg-pool.js');
   const pool = await openPgPool(process.env.DATABASE_URL || '');
-  const BATCH = concurrency; // small claim → short tx; locks held ~one parallel LLM round
   const retryFloor = now - RETRY_WINDOW_MS;
-  // Generic size triage: a session with very few turns (prompt → answer → exit,
-  // bot one-shots, automation) has nothing to compress — its first prompt already
-  // captures intent. Resolve those to first_prompt WITHOUT an LLM call. This is
-  // content-agnostic (turn count only), so it protects cost for ANY user, not a
-  // hardcoded pattern. Real sessions are far above this (avg hundreds of turns).
+  // Lease length: long enough for the slowest summary (LLM timeout + margin),
+  // short enough that a crashed worker's rows are retried promptly.
+  const LEASE_MS = Math.max(60_000, Number(process.env.SUMMARY_LEASE_MS) || 5 * 60_000);
+  const leaseFloor = now - LEASE_MS;
+  // Generic size triage: a session with very few turns has nothing to compress —
+  // its first prompt already captures intent. Resolve those to first_prompt
+  // WITHOUT an LLM call (content-agnostic, turn count only).
   const SHORT_TURN_MAX = Math.max(0, Number(process.env.SUMMARY_MIN_TURNS) || 4);
-
-  // Per-tenant rate cap. `maxReal` bounds REAL LLM summaries this tick; the free
-  // first_prompt fallbacks (too_short) are NEVER capped (they cost nothing). The
-  // cap value is computed server-side (generateMissingSummariesAllTenants) and is
-  // never shipped in the published client, so the limits can't be read or gamed.
-  // Infinity ⇒ uncapped (self-host / default).
+  // Claim more than we process concurrently so the LLM pool never starves between
+  // claims; the fixed concurrency is the real throttle.
+  const CLAIM_BATCH = Math.max(concurrency * 4, 64);
+  // Per-tenant rate cap on REAL LLM summaries (free first_prompt fallbacks are
+  // never capped). Infinity ⇒ uncapped (self-host / default).
   const maxReal = Number.isFinite(opts.maxReal as number) ? Math.max(0, opts.maxReal as number) : Infinity;
   let realGenerated = 0;
-  const TICK_CAP = Math.max(limit, 200); // safety bound on total sessions touched per tick
-  let totalClaimed = 0;
+  const TICK_CAP = Math.max(limit, 200); // safety bound on sessions touched per tick
+  let totalSeen = 0;
+  let budgetExhausted = false;
 
-  while (totalClaimed < TICK_CAP) {
-    const batch = await tenantTx(pool, tenant, async (client: any) => {
-      // Claim metadata + the CHEAP turn count (messageCount, already stored in
-      // memory_metadata.extra_json) — NOT the content envelope. Parsing every
-      // session's full envelope just to count turns spiked CPU on the bulk of
-      // trivial sessions and flapped the autoscaler. Only the few REAL sessions
-      // fetch + parse content below.
+  // Persist ONE finished job in its own short tx — no lock held across the LLM.
+  const persist = async (o: { id: string; ok: boolean; summary?: string; source?: string; err?: string }): Promise<void> => {
+    if (o.ok) {
+      await tenantTx(pool, tenant, async (c: any) => {
+        await c.query(
+          `UPDATE session_metadata SET summary=$3, summary_source=$4, indexed_at=$5, claimed_at=0 WHERE tenant=$1 AND session_id=$2`,
+          [tenant, o.id, o.summary, o.source, Date.now()]);
+        await c.query(`DELETE FROM summary_errors WHERE tenant=$1 AND session_id=$2`, [tenant, o.id]);
+      });
+      generated++;
+    } else {
+      await tenantTx(pool, tenant, async (c: any) => {
+        // Release the lease so the row is re-claimable; the error backoff
+        // (attempt_count >= MAX within RETRY_WINDOW) gates how soon it retries.
+        await c.query(`UPDATE session_metadata SET claimed_at=0 WHERE tenant=$1 AND session_id=$2`, [tenant, o.id]);
+        await c.query(
+          `INSERT INTO summary_errors (tenant,session_id,error,attempt_count,first_failed_at,last_failed_at)
+                VALUES ($1,$2,$3,1,$4,$4)
+           ON CONFLICT (tenant,session_id) DO UPDATE SET error=excluded.error,
+                 attempt_count=summary_errors.attempt_count+1, last_failed_at=excluded.last_failed_at`,
+          [tenant, o.id, String(o.err).slice(0, 500), Date.now()]);
+      });
+      failed++;
+    }
+  };
+
+  while (totalSeen < TICK_CAP && !budgetExhausted) {
+    // (1) CLAIM (short tx) — resolve trivial inline, lease the real ones.
+    const claim = await tenantTx(pool, tenant, async (client: any) => {
       const rows: any[] = (await client.query(
-        `SELECT sm.session_id, sm.mtime, sm.first_prompt,
+        `SELECT sm.session_id,
                 COALESCE(NULLIF(mm.extra_json::jsonb ->> 'messageCount', '')::int, 999) AS msg_count
            FROM session_metadata sm
            LEFT JOIN memory_metadata mm
              ON mm.tenant = sm.tenant AND mm.id = sm.session_id
                 AND mm.source_type = 'session' AND mm.extra_json LIKE '{%'
-          WHERE sm.tenant = $1 AND sm.summary = ''
+          WHERE sm.tenant = $1 AND sm.summary = '' AND sm.claimed_at < $5
             AND NOT EXISTS (
               SELECT 1 FROM summary_errors e
                WHERE e.tenant = sm.tenant AND e.session_id = sm.session_id
@@ -340,86 +366,72 @@ export async function generateMissingSummaries(
           ORDER BY sm.mtime DESC
           LIMIT $2
           FOR UPDATE OF sm SKIP LOCKED`,
-        [tenant, BATCH, MAX_SUMMARY_ATTEMPTS, retryFloor])).rows;
-      if (rows.length === 0) return { count: 0, budgetHit: false };
+        [tenant, CLAIM_BATCH, MAX_SUMMARY_ATTEMPTS, retryFloor, leaseFloor])).rows;
+      if (rows.length === 0) return { real: [] as string[], seen: 0 };
 
-      // Classify by the cheap count — no parsing. Trivial = free first_prompt;
-      // real = needs an LLM (consumes the rate budget); over-budget = left pending.
       let budget = maxReal - realGenerated;
-      let budgetHit = false;
-      const trivial: Array<{ id: string; firstPrompt: string }> = [];
-      const real: Array<{ id: string; firstPrompt: string }> = [];
+      const trivialIds: string[] = [];
+      const realIds: string[] = [];
       for (const r of rows) {
-        const w = { id: r.session_id as string, firstPrompt: (r.first_prompt as string) || '' };
-        if ((Number(r.msg_count) || 0) <= SHORT_TURN_MAX) trivial.push(w);
-        else if (budget > 0) { budget--; real.push(w); }
-        else budgetHit = true; // over budget → leave pending, re-claimed later
+        if ((Number(r.msg_count) || 0) <= SHORT_TURN_MAX) trivialIds.push(r.session_id);
+        else if (budget > 0) { budget--; realIds.push(r.session_id); }
+        else budgetExhausted = true; // over budget → left unclaimed, re-claimed later
       }
-
-      // Fetch + parse content ONLY for the (few) real sessions — one query, and
-      // the only place we ever JSON.parse an envelope.
-      const contentById = new Map<string, SessionContent>();
-      if (real.length) {
-        const cc = (await client.query(
-          `SELECT id, content_json FROM content_cache
-            WHERE tenant = $1 AND source_type = 'session' AND id = ANY($2)`,
-          [tenant, real.map((w) => w.id)])).rows;
-        for (const row of cc) {
-          if (!row.content_json) continue;
-          try {
-            const built = envelopeToSessionContent(row.id, JSON.parse(row.content_json) as CachedEnvelope);
-            if (built) contentById.set(row.id, built);
-          } catch { /* leave unset → counts as no-content fail */ }
-        }
+      // Trivial → first_prompt inline (free), done now. left() bounds it; empty
+      // first prompt falls back to a marker.
+      if (trivialIds.length) {
+        await client.query(
+          `UPDATE session_metadata
+              SET summary = COALESCE(NULLIF(left(first_prompt, 500), ''), '(short session)'),
+                  summary_source = 'too_short', indexed_at = $3, claimed_at = 0
+            WHERE tenant = $1 AND session_id = ANY($2) AND summary = ''`,
+          [tenant, trivialIds, Date.now()]);
+        generated += trivialIds.length;
       }
-
-      // Phase A — trivial resolve instantly to first_prompt; real hit the LLM
-      // concurrently (no DB on the tx client here).
-      const outcomes = await Promise.all([
-        ...trivial.map(async (w) => ({
-          id: w.id, status: 'ok' as const,
-          summary: (w.firstPrompt || '(short session)').slice(0, 500), source: 'too_short', real: false,
-        })),
-        ...real.map(async (w) => {
-          const content = contentById.get(w.id);
-          if (!content) return { id: w.id, status: 'fail' as const, err: 'no synced content' };
-          try {
-            const summary = await summarizeBounded(content);
-            if (!summary || summary.trim().length === 0) throw new Error('summarizer returned empty summary');
-            return { id: w.id, status: 'ok' as const, summary, source: summarySource, real: true };
-          } catch (e) {
-            return { id: w.id, status: 'fail' as const, err: e instanceof Error ? e.message : String(e) };
-          }
-        }),
-      ]);
-
-      // Phase B — persist sequentially on the locked client, then COMMIT releases.
-      // (Over-budget rows were never claimed into trivial/real, so there's nothing
-      // to skip here — they stay summary='' and get re-claimed a later tick.)
-      for (const o of outcomes) {
-        if (o.status === 'ok') {
-          await client.query(
-            `UPDATE session_metadata SET summary = $3, summary_source = $4, indexed_at = $5
-              WHERE tenant = $1 AND session_id = $2`,
-            [tenant, o.id, o.summary, o.source, now]);
-          await client.query(`DELETE FROM summary_errors WHERE tenant = $1 AND session_id = $2`, [tenant, o.id]);
-          generated++;
-          if (o.real) realGenerated++;
-        } else {
-          await client.query(
-            `INSERT INTO summary_errors (tenant,session_id,error,attempt_count,first_failed_at,last_failed_at)
-                  VALUES ($1,$2,$3,1,$4,$4)
-             ON CONFLICT (tenant,session_id) DO UPDATE SET error=excluded.error,
-                   attempt_count=summary_errors.attempt_count+1, last_failed_at=excluded.last_failed_at`,
-            [tenant, o.id, String(o.err).slice(0, 500), now]);
-          failed++;
-        }
+      // Real → stamp the lease; the LLM runs OUTSIDE this tx (step 3).
+      if (realIds.length) {
+        await client.query(`UPDATE session_metadata SET claimed_at = $3 WHERE tenant = $1 AND session_id = ANY($2)`,
+          [tenant, realIds, Date.now()]);
       }
-      return { count: rows.length, budgetHit };
+      return { real: realIds, seen: rows.length };
     });
-    totalClaimed += batch.count;
-    if (batch.count === 0) break;   // queue drained for this replica
-    if (batch.budgetHit) break;     // real-summary budget spent this tick
+
+    totalSeen += claim.seen;
+    if (claim.seen === 0) break;            // queue drained for this replica
+    if (claim.real.length === 0) continue;  // batch was all trivial / over-budget
+
+    // (2) Fetch content for the leased real sessions (one read), OUTSIDE any tx.
+    const contentById = new Map<string, SessionContent>();
+    const cc = (await tenantQuery(pool, tenant,
+      `SELECT id, content_json FROM content_cache WHERE tenant=$1 AND source_type='session' AND id = ANY($2)`,
+      [tenant, claim.real])).rows;
+    for (const row of cc) {
+      if (!row.content_json) continue;
+      try {
+        const built = envelopeToSessionContent(row.id, JSON.parse(row.content_json) as CachedEnvelope);
+        if (built) contentById.set(row.id, built);
+      } catch { /* leave unset → no-content fail */ }
+    }
+
+    // (3) LLM with a FIXED concurrency semaphore (lane pool), each result
+    // persisted in its own short tx. The LLM never runs inside a transaction.
+    let cursor = 0;
+    const lane = async (): Promise<void> => {
+      for (let i = cursor++; i < claim.real.length; i = cursor++) {
+        const id = claim.real[i];
+        const content = contentById.get(id);
+        if (!content) { await persist({ id, ok: false, err: 'no synced content' }); continue; }
+        try {
+          const summary = await summarizeBounded(content);
+          if (!summary || summary.trim().length === 0) throw new Error('summarizer returned empty summary');
+          await persist({ id, ok: true, summary, source: summarySource });
+          realGenerated++;
+        } catch (e) {
+          await persist({ id, ok: false, err: e instanceof Error ? e.message : String(e) });
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(concurrency, claim.real.length) }, () => lane()));
   }
 
   return { generated, failed, skipped };
