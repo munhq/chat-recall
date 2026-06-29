@@ -172,17 +172,20 @@ ALTER TABLE session_metadata ADD COLUMN IF NOT EXISTS tool_title TEXT;
 -- second short tx (clearing the lease). A crashed worker's lease simply expires
 -- (claimed_at < now - SUMMARY_LEASE_MS) and another worker re-claims the row, so
 -- nothing strands. 0 = unclaimed. Safe across N worker replicas.
+-- (Metadata-only ADD COLUMN — brief lock, safe to run on boot. We deliberately
+-- do NOT build a new index here: a non-CONCURRENT CREATE INDEX takes a lock on
+-- the continuously-written session_metadata table, waits behind sync ingest, and
+-- trips ensurePgSchema's statement_timeout → crash-on-boot. The existing
+-- idx_session_metadata_pending (summary='') already narrows the claim to pending
+-- rows; the claimed_at lease filter is applied on that small set. A claimed_at
+-- index can be added later via CREATE INDEX CONCURRENTLY (outside this batch).
 ALTER TABLE session_metadata ADD COLUMN IF NOT EXISTS claimed_at BIGINT NOT NULL DEFAULT 0;
 -- Work-queue index for the summary backfill (summary-worker SKIP-LOCKED claim).
 -- The claim scans only un-summarised rows; this keeps it O(pending) instead of
 -- O(all sessions) as the table grows. summary is NOT NULL DEFAULT empty-string,
--- so the empty-string predicate covers the whole pending backlog. claimed_at is
--- in the index so the lease filter (claimed_at < leaseFloor) is index-served too.
--- (Renamed from idx_session_metadata_pending — the old one lacked claimed_at;
--- IF NOT EXISTS can't alter an existing index's columns, so drop + new name.)
-DROP INDEX IF EXISTS idx_session_metadata_pending;
-CREATE INDEX IF NOT EXISTS idx_session_metadata_claimable
-  ON session_metadata (tenant, claimed_at, mtime) WHERE summary = '';
+-- so the empty-string predicate covers the whole pending backlog.
+CREATE INDEX IF NOT EXISTS idx_session_metadata_pending
+  ON session_metadata (tenant, mtime) WHERE summary = '';
 
 CREATE TABLE IF NOT EXISTS tenants (
   tenant      TEXT PRIMARY KEY,
