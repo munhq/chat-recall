@@ -86,16 +86,21 @@ export async function expandSessionId(
     [tenant, id],
   );
   if (exact.rows.length) return { resolved: id };
-  // Prefix fallback. `left(id, char_length($2)) = $2` is an exact character
-  // prefix (no LIKE wildcards — session ids contain `_`, which LIKE would treat
-  // as a wildcard). Shortest id first is the tightest match.
+  // Prefix fallback. `id LIKE 'prefix%'` with the prefix's LIKE metacharacters
+  // (`\` `%` `_`) escaped — session ids legitimately contain `_` (tool prefixes
+  // like `opencode_`), so leaving it unescaped would treat it as a wildcard and
+  // over-match. This form is SARGABLE against idx_mm_session_id_prefix
+  // (text_pattern_ops), so it range-scans rather than sequential-scanning every
+  // session row in the tenant — what `left(id, char_length($2)) = $2` forced.
+  // Shortest id first is the tightest match.
+  const likePrefix = id.replace(/[\\%_]/g, (c) => `\\${c}`) + '%';
   const rows = (await tenantQuery(
     pool, tenant,
     `SELECT id FROM memory_metadata
-       WHERE tenant=$1 AND source_type='session' AND left(id, char_length($2)) = $2
+       WHERE tenant=$1 AND source_type='session' AND id LIKE $2 ESCAPE '\\'
        ORDER BY char_length(id) ASC
        LIMIT 5`,
-    [tenant, id],
+    [tenant, likePrefix],
   )).rows as Array<{ id: string }>;
   if (rows.length === 0) return null;
   if (rows.length === 1) return { resolved: rows[0].id };
