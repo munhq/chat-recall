@@ -184,9 +184,17 @@ async function remoteGetSoft<T>(path: string, params: Record<string, string | nu
   for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
   const q = qs.toString();
   const res = await fetch(cred.base + (q ? `${path}?${q}` : path), { headers: { authorization: `Bearer ${cred.token}` } });
-  if (res.status === 202 || res.status === 404) {
-    const body = await res.json().catch(() => ({}));
-    return { status: res.status, data: null, message: (body as { message?: string }).message };
+  // 202 pending-sync, 404 unknown, 409 ambiguous short-id prefix. 409 carries a
+  // `candidates` list (the sessions the prefix matched) — fold it into the
+  // message so the user sees the choices and can re-run with a longer prefix,
+  // instead of the prefix expander's work surfacing as a raw `HTTP 409` throw.
+  if (res.status === 202 || res.status === 404 || res.status === 409) {
+    const body = await res.json().catch(() => ({})) as { message?: string; error?: string; candidates?: string[] };
+    let message = body.message ?? body.error;
+    if (Array.isArray(body.candidates) && body.candidates.length) {
+      message = `${message ?? 'Ambiguous session id prefix.'}\nCandidates:\n${body.candidates.map((c) => `  • ${c}`).join('\n')}\nRe-run with a longer prefix or the full id.`;
+    }
+    return { status: res.status, data: null, message };
   }
   if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
   return { status: res.status, data: (await res.json()) as T };

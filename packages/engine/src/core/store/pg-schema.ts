@@ -27,6 +27,15 @@ CREATE INDEX IF NOT EXISTS idx_mm_tenant_source ON memory_metadata(tenant, sourc
 CREATE INDEX IF NOT EXISTS idx_mm_tenant_project ON memory_metadata(tenant, project_path);
 CREATE INDEX IF NOT EXISTS idx_mm_tenant_projid ON memory_metadata(tenant, project_id);
 CREATE INDEX IF NOT EXISTS idx_mm_tenant_mtime ON memory_metadata(tenant, mtime);
+-- Session-id PREFIX resolution (recall_show/summary/context/... accept a unique
+-- short id). The text_pattern_ops opclass makes a LIKE 'prefix%' an index range
+-- scan regardless of the database default collation (a plain btree only supports
+-- LIKE-prefix under the C locale) -- so short-id lookups stay O(log n) instead of
+-- scanning every one of a tenant's sessions. Partial (sessions only) keeps it
+-- small. See expandSessionId() in routes/conversations.ts.
+CREATE INDEX IF NOT EXISTS idx_mm_session_id_prefix
+  ON memory_metadata (tenant, id text_pattern_ops)
+  WHERE source_type = 'session';
 
 CREATE TABLE IF NOT EXISTS memory_links (
   id           BIGSERIAL PRIMARY KEY,
