@@ -14,6 +14,11 @@ const PG_URL = process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
 const FULL = 'e3105b00-4529-4576-86ff-9fb9211adb00';
 const SIBLING = 'e3aa1111-0000-0000-0000-000000000000';
 const OPENCODE = 'opencode_ses_130643791';
+// Escaping pair: a prefix `abc_def` must match UND_ only — a literal underscore,
+// not a LIKE single-char wildcard that would also catch UNDX. Guards the
+// metacharacter escaping in expandSessionId's prefix query.
+const UND_ = 'abc_def-1111-0000-0000-000000000000';
+const UNDX = 'abcXdef-2222-0000-0000-000000000000';
 
 function session(id: string): MemoryItem {
   return {
@@ -32,7 +37,7 @@ function session(id: string): MemoryItem {
     const store = await createStore({ backend: 'postgres', databaseUrl: PG_URL, tenant } as any);
     try {
       await store.clearSourceType('session');
-      for (const id of [FULL, SIBLING, OPENCODE]) await store.setItem(session(id));
+      for (const id of [FULL, SIBLING, OPENCODE, UND_, UNDX]) await store.setItem(session(id));
     } finally { await store.close(); }
   });
   afterAll(() => { process.env.DATABASE_URL = origDbUrl; });
@@ -50,6 +55,12 @@ function session(id: string): MemoryItem {
     const r = await expandSessionId(tenant, 'e3');
     expect(r && 'ambiguous' in r).toBe(true);
     if (r && 'ambiguous' in r) expect(r.ambiguous.sort()).toEqual([FULL, SIBLING].sort());
+  });
+
+  test('underscore in prefix is a literal, not a LIKE wildcard', async () => {
+    // `abc_def` must resolve to UND_ alone. If the `_` leaked through unescaped
+    // it would also match UNDX (`abcXdef`) and wrongly report an ambiguity.
+    expect(await expandSessionId(tenant, 'abc_def')).toEqual({ resolved: UND_ });
   });
 
   test('unknown prefix returns null', async () => {
