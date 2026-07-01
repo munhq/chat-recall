@@ -538,6 +538,16 @@ export async function generateMissingSummariesAllTenants(
   try { tenants = await cp.listTenants(); } catch { /* fall through to default */ }
   if (tenants.length === 0) tenants = [process.env.CHAT_RECALL_TENANT || 'default'];
 
+  // Exclude synthetic/healthcheck tenants (e.g. the sync healthcheck 'synccheck')
+  // from summary generation — their sessions are probes, not real content, and
+  // summarizing them just burns LLM budget on junk. Configurable via
+  // SUMMARY_EXCLUDE_TENANTS (comma-separated); defaults to the sync healthcheck.
+  const excludedTenants = new Set(
+    (process.env.SUMMARY_EXCLUDE_TENANTS ?? 'synccheck')
+      .split(',').map((s) => s.trim()).filter(Boolean),
+  );
+  tenants = tenants.filter((t) => !excludedTenants.has(t));
+
   // Per-tenant rate caps on REAL (LLM) summaries — server-side abuse protection,
   // never shipped in the published client. Defaults are generous (a hard ceiling,
   // not a normal-use limit); tune down per plan via env / entitlements later.
