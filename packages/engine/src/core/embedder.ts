@@ -296,6 +296,10 @@ export class OpenAICompatibleEmbedder implements Embedder {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     // Local servers (LocalAI, llama.cpp, vLLM with no auth) often run keyless.
     if (this.apiKey) headers['Authorization'] = `Bearer ${this.apiKey}`;
+    // When pointed at axon, declare the call-type so axon resolves the admin-
+    // assigned model (Call routing page). Deploy sets EMBEDDING_AXON_SOURCE=
+    // chat-recall.embedding; unset = plain openai-compat embeddings.
+    if (process.env.EMBEDDING_AXON_SOURCE) headers['x-axon-source'] = process.env.EMBEDDING_AXON_SOURCE;
 
     // Build the request body. extraBody takes priority for provider-specific
     // tweaks (e.g. NVIDIA's input_type). Mainstream providers (OpenAI) ignore

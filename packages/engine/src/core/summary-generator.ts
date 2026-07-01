@@ -541,6 +541,10 @@ export class SummaryGenerator {
         headers: {
           'Content-Type': 'application/json',
           ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+          // When pointed at axon, declare the call-type so axon resolves the
+          // admin-assigned model (Call routing page). Deploy sets
+          // SUMMARY_AXON_SOURCE=chat-recall.summary; unset = plain openai-compat.
+          ...(process.env.SUMMARY_AXON_SOURCE ? { 'x-axon-source': process.env.SUMMARY_AXON_SOURCE } : {}),
         },
         body: JSON.stringify({
           model,
