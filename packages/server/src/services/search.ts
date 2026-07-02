@@ -2,8 +2,8 @@
  * Search service — uses unified MemoryIndex for all searches.
  */
 
-import { createVectorStore, OllamaEmbedder, createMetadataCache, getAllSessions, currentTenant } from '../imports.js';
-import type { SourceType, MemorySearchResult, VectorStore } from '../imports.js';
+import { createVectorStore, getEmbedder, createMetadataCache, getAllSessions, currentTenant } from '../imports.js';
+import type { Embedder, EmbedderProvider, SourceType, MemorySearchResult, VectorStore } from '../imports.js';
 import { QueryExpander } from './query-expander.js';
 import { TenantTtlCache } from '../util/tenant-cache.js';
 
@@ -39,7 +39,7 @@ export interface SearchResult {
 }
 
 export class SearchService {
-  private embedder: OllamaEmbedder;
+  private embedder: Embedder;
   // One vector store per tenant (built lazily in the request's ambient-tenant
   // context). createVectorStore reads currentTenant(), so a single shared
   // instance would leak the startup tenant ('default') to every team.
@@ -61,7 +61,10 @@ export class SearchService {
   private vectorOkCache = new Map<string, { ok: boolean; t: number }>();
 
   constructor() {
-    this.embedder = new OllamaEmbedder();
+    // Same env-driven factory the backfill worker uses — query embeddings and
+    // stored vectors MUST come from the same model or similarity is garbage.
+    // Default 'ollama' preserves the local/self-host behavior when unset.
+    this.embedder = getEmbedder((process.env.EMBEDDING_PROVIDER || 'ollama') as EmbedderProvider);
   }
 
   private index(): Promise<VectorStore> {
