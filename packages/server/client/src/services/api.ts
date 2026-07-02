@@ -754,7 +754,7 @@ export async function searchMemory(
   sourceTypes?: SourceType[],
   projectFilter?: string
 ): Promise<MemorySearchResult[]> {
-  const res = await fetch(`${API_BASE}/memory/search`, {
+  const res = await fetchWithTimeout(`${API_BASE}/memory/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, topK, sourceTypes, projectFilter }),
@@ -782,7 +782,7 @@ export async function fetchProviderModels(opts: {
   if (opts.baseUrl) q.set('baseUrl', opts.baseUrl);
   if (opts.apiKey) q.set('apiKey', opts.apiKey);
   try {
-    const res = await fetch(`${API_BASE}/settings/models?${q.toString()}`);
+    const res = await fetchWithTimeout(`${API_BASE}/settings/models?${q.toString()}`);
     if (!res.ok) return { models: [], error: `HTTP ${res.status}` };
     return await res.json();
   } catch (err) {
@@ -791,7 +791,7 @@ export async function fetchProviderModels(opts: {
 }
 
 export async function getMemoryStatus(): Promise<MemoryStatus> {
-  const res = await fetch(`${API_BASE}/memory/status`);
+  const res = await fetchWithTimeout(`${API_BASE}/memory/status`);
 
   if (!res.ok) {
     throw new Error(`Failed to get memory status: ${res.statusText}`);
@@ -801,7 +801,7 @@ export async function getMemoryStatus(): Promise<MemoryStatus> {
 }
 
 export async function getMemoryItem(sourceType: string, id: string): Promise<MemoryMetadataRow> {
-  const res = await fetch(`${API_BASE}/memory/item/${sourceType}/${id}`);
+  const res = await fetchWithTimeout(`${API_BASE}/memory/item/${sourceType}/${id}`);
 
   if (!res.ok) {
     throw new Error(`Failed to get memory item: ${res.statusText}`);
@@ -811,7 +811,7 @@ export async function getMemoryItem(sourceType: string, id: string): Promise<Mem
 }
 
 export async function getMemoryItemContent(sourceType: string, id: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/memory/item/${sourceType}/${id}/content`);
+  const res = await fetchWithTimeout(`${API_BASE}/memory/item/${sourceType}/${id}/content`);
 
   if (!res.ok) {
     throw new Error(`Failed to get memory item content: ${res.statusText}`);
@@ -822,7 +822,7 @@ export async function getMemoryItemContent(sourceType: string, id: string): Prom
 }
 
 export async function getMemoryLinks(sourceType: string, id: string): Promise<MemoryLinkRow[]> {
-  const res = await fetch(`${API_BASE}/memory/links/${sourceType}/${id}`);
+  const res = await fetchWithTimeout(`${API_BASE}/memory/links/${sourceType}/${id}`);
 
   if (!res.ok) {
     throw new Error(`Failed to get memory links: ${res.statusText}`);
@@ -842,7 +842,7 @@ export async function browseMemory(
     offset: offset.toString(),
   });
 
-  const res = await fetch(`${API_BASE}/memory/browse/${sourceType}?${params}`);
+  const res = await fetchWithTimeout(`${API_BASE}/memory/browse/${sourceType}?${params}`);
 
   if (!res.ok) {
     throw new Error(`Failed to browse memory: ${res.statusText}`);
@@ -861,7 +861,7 @@ export async function reindexMemory(
   linksAdded: number;
   errors: number;
 }> {
-  const res = await fetch(`${API_BASE}/memory/reindex`, {
+  const res = await fetchWithTimeout(`${API_BASE}/memory/reindex`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sourceTypes, force }),
@@ -1349,7 +1349,7 @@ export async function updateItemProjectPath(
   id: string,
   projectPath: string
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/memory/item/${sourceType}/${id}`, {
+  const res = await fetchWithTimeout(`${API_BASE}/memory/item/${sourceType}/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ project_path: projectPath }),
@@ -1714,6 +1714,8 @@ export interface DistinctSecretsResponse {
     sessionCount: number;
     occurrences: number;
     verified?: boolean | null;
+    firstSeen: number;
+    lastSeen: number;
   }>;
   dismissedCount: number;
 }
@@ -1754,13 +1756,13 @@ export interface SecretRuleRollup {
   samplePreviews: string[];
 }
 export async function getSecretsByRule(): Promise<{ rules: SecretRuleRollup[] }> {
-  const res = await fetchWithTimeout(`/api/secrets/by-rule`, {}, 15000);
+  const res = await fetchWithTimeout(`${API_BASE}/secrets/by-rule`, {}, 15000);
   if (!res.ok) throw new Error(`Failed to load rules: ${res.statusText}`);
   return await res.json();
 }
 
 export async function dismissSecret(preview: string, status: 'rotated' | 'false_positive' | 'dismissed', reason?: string): Promise<void> {
-  const res = await fetchWithTimeout('/api/secrets/dismiss', {
+  const res = await fetchWithTimeout(`${API_BASE}/secrets/dismiss`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ preview, status, reason }),
@@ -1768,12 +1770,52 @@ export async function dismissSecret(preview: string, status: 'rotated' | 'false_
   if (!res.ok) throw new Error(`Dismiss failed: ${res.statusText}`);
 }
 export async function undismissSecret(preview: string): Promise<void> {
-  const res = await fetchWithTimeout('/api/secrets/undismiss', {
+  const res = await fetchWithTimeout(`${API_BASE}/secrets/undismiss`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ preview }),
   }, 10000);
   if (!res.ok) throw new Error(`Undismiss failed: ${res.statusText}`);
+}
+
+/* Custom (tenant-defined) secret-detection rules — CRUD + regex sandbox. */
+export interface CustomSecretRule {
+  id: number;
+  name: string;
+  regex: string;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  description: string | null;
+  /** SQLite-style flag from the server row: 1 = enabled, 0 = disabled. */
+  enabled: number;
+  updated_at: number;
+}
+export async function getCustomSecretRules(): Promise<{ rules: CustomSecretRule[] }> {
+  const res = await fetchWithTimeout(`${API_BASE}/secrets/rules`, {}, 10000);
+  if (!res.ok) throw new Error(`Failed to load custom rules: ${res.statusText}`);
+  return await res.json();
+}
+export async function saveCustomSecretRule(rule: Partial<CustomSecretRule>): Promise<{ ok: boolean; error?: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/secrets/rules`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(rule),
+  }, 10000);
+  const j = await res.json().catch(() => ({}));
+  return res.ok ? { ok: true } : { ok: false, error: j.error || res.statusText };
+}
+export async function deleteCustomSecretRule(id: number): Promise<void> {
+  await fetchWithTimeout(`${API_BASE}/secrets/rules/${id}`, { method: 'DELETE' }, 10000);
+}
+export async function testCustomSecretRule(sample: string, regex: string): Promise<
+  { ok: true; count: number; matches: Array<{ match: string; index: number }> } | { ok: false; error: string }
+> {
+  const res = await fetchWithTimeout(`${API_BASE}/secrets/rules/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sample, regex }),
+  }, 10000);
+  const j = await res.json().catch(() => ({}));
+  return res.ok ? { ok: true, ...j } : { ok: false, error: j.error || 'test failed' };
 }
 
 /* ────────────────────────────────────────────────────────────────

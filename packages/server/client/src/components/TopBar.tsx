@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Icon, IconButton, Input, Logo, Button, Avatar } from './primitives';
+import { getSyncStatus } from '../services/api';
 
 interface TopBarProps {
   view: string;
@@ -229,7 +230,9 @@ export function SyncStatusChip() {
   const [s, setS] = React.useState<{ sessions: number; rawArchived: number; newestSessionAgeMs: number | null } | null>(null);
   React.useEffect(() => {
     let dead = false;
-    const load = () => fetch('/api/status/sync').then(r => r.json()).then(d => { if (!dead) setS(d); }).catch(() => {});
+    // getSyncStatus goes through the api helper → correct origin + Keycloak
+    // Bearer in cloud mode. A raw fetch('/api/…') here 401'd on the SaaS.
+    const load = () => getSyncStatus().then(d => { if (!dead) setS(d); }).catch(() => {});
     load();
     const t = setInterval(load, 60_000);
     return () => { dead = true; clearInterval(t); };

@@ -21,8 +21,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Card, Chip, SegmentedControl, Button } from './primitives';
 import {
-  getSecretsSummary, getFlaggedSessions, getSecretsByRule,
+  getSecretsSummary, getFlaggedSessions, getSecretsByRule, getDistinctSecrets,
   dismissSecret, undismissSecret,
+  getCustomSecretRules, saveCustomSecretRule, deleteCustomSecretRule, testCustomSecretRule,
   getAccountRecommendations, applyAccountRecommendation,
   type SecretsSummary, type FlaggedSession, type SecretRuleRollup, type CodeRecommendation,
 } from '../services/api';
@@ -232,11 +233,10 @@ export default function SecurityExplorer({ onSessionClick }: Props) {
   useEffect(() => {
     let cancelled = false;
     setLoading(true); setError(null);
-    const distinctUrl = showDismissed ? '/api/secrets/distinct?include_dismissed=true' : '/api/secrets/distinct';
     Promise.all([
       getSecretsSummary(),
       getSecretsByRule(),
-      fetch(distinctUrl).then(r => r.json()),
+      getDistinctSecrets(showDismissed),
       getFlaggedSessions(1),
     ])
       .then(([s, r, dist, f]) => {
@@ -759,15 +759,7 @@ function severityRank(s: Severity): number {
 
 /* ── Custom-rules CRUD panel ──────────────────────────────────── */
 
-interface TenantRule {
-  id: number;
-  name: string;
-  regex: string;
-  severity: 'critical' | 'high' | 'medium' | 'low';
-  description: string | null;
-  enabled: number;
-  updated_at: number;
-}
+type TenantRule = import('../services/api').CustomSecretRule;
 
 function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
   const [rules, setRules] = useState<TenantRule[]>([]);
@@ -782,8 +774,7 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
   async function reload() {
     setLoading(true);
     try {
-      const r = await fetch('/api/secrets/rules');
-      const j = await r.json();
+      const j = await getCustomSecretRules();
       setRules(j.rules || []);
     } catch (e) {
       setError((e as Error).message);
@@ -799,13 +790,8 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
       return;
     }
     try {
-      const res = await fetch('/api/secrets/rules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editing),
-      });
-      const j = await res.json();
-      if (!res.ok) { setError(j.error || 'save failed'); return; }
+      const res = await saveCustomSecretRule(editing);
+      if (!res.ok) { setError(res.error || 'save failed'); return; }
       setEditing(null);
       setError(null);
       await reload();
@@ -814,7 +800,7 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
   }
   async function remove(id: number) {
     if (!confirm('Delete this rule? Existing findings stay; future scans will not match this pattern.')) return;
-    await fetch(`/api/secrets/rules/${id}`, { method: 'DELETE' });
+    await deleteCustomSecretRule(id);
     await reload();
     onChanged();
   }
@@ -822,14 +808,9 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
     if (!testRegex || !testSample) return;
     setTestError(null);
     try {
-      const res = await fetch('/api/secrets/rules/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sample: testSample, regex: testRegex }),
-      });
-      const j = await res.json();
-      if (!res.ok) { setTestError(j.error || 'test failed'); setTestResult(null); return; }
-      setTestResult(j);
+      const res = await testCustomSecretRule(testSample, testRegex);
+      if (!res.ok) { setTestError(res.error); setTestResult(null); return; }
+      setTestResult({ count: res.count, matches: res.matches });
     } catch (e) { setTestError((e as Error).message); }
   }
 
