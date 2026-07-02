@@ -311,6 +311,12 @@ export async function generateMissingSummaries(
   const { openPgPool, tenantTx, tenantQuery } = await import('@chat-recall/engine/core/store/pg-pool.js');
   const pool = await openPgPool(process.env.DATABASE_URL || '');
   const retryFloor = now - RETRY_WINDOW_MS;
+  // Attempts must be SPACED, not just counted: the claim loop re-claims a
+  // released row in the SAME tick, so a transient failure ("no synced content"
+  // while the CLI is still uploading content_cache) burned all
+  // MAX_SUMMARY_ATTEMPTS within one second and parked the session for the full
+  // 24h retry window. Any failure inside the backoff window defers the row.
+  const backoffFloor = now - Math.max(60_000, Number(process.env.SUMMARY_RETRY_BACKOFF_MS) || 10 * 60_000);
   // Lease length: long enough for the slowest summary (LLM timeout + margin),
   // short enough that a crashed worker's rows are retried promptly.
   const LEASE_MS = Math.max(60_000, Number(process.env.SUMMARY_LEASE_MS) || 5 * 60_000);
@@ -343,8 +349,9 @@ export async function generateMissingSummaries(
       generated++;
     } else {
       await tenantTx(pool, tenant, async (c: any) => {
-        // Release the lease so the row is re-claimable; the error backoff
-        // (attempt_count >= MAX within RETRY_WINDOW) gates how soon it retries.
+        // Release the lease so the row is re-claimable; the claim query defers
+        // it until the per-attempt backoff elapses (and parks it for
+        // RETRY_WINDOW once attempt_count reaches MAX).
         await c.query(`DELETE FROM summary_leases WHERE tenant=$1 AND session_id=$2`, [tenant, o.id]);
         await c.query(
           `INSERT INTO summary_errors (tenant,session_id,error,attempt_count,first_failed_at,last_failed_at)
@@ -377,11 +384,12 @@ export async function generateMissingSummaries(
             AND NOT EXISTS (
               SELECT 1 FROM summary_errors e
                WHERE e.tenant = sm.tenant AND e.session_id = sm.session_id
-                 AND e.attempt_count >= $3 AND e.last_failed_at > $4)
+                 AND ((e.attempt_count >= $3 AND e.last_failed_at > $4)
+                   OR e.last_failed_at > $6))
           ORDER BY sm.mtime DESC
           LIMIT $2
           FOR UPDATE OF sm SKIP LOCKED`,
-        [tenant, CLAIM_BATCH, MAX_SUMMARY_ATTEMPTS, retryFloor, leaseFloor])).rows;
+        [tenant, CLAIM_BATCH, MAX_SUMMARY_ATTEMPTS, retryFloor, leaseFloor, backoffFloor])).rows;
       if (rows.length === 0) return { real: [] as string[], seen: 0 };
 
       let budget = maxReal - realGenerated;
