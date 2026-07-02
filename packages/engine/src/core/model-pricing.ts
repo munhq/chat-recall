@@ -182,6 +182,23 @@ export function estimateCostUsdOrNull(
   return Math.round(cost * 100) / 100;
 }
 
+/**
+ * True when a session's estimated cost is an UPPER BOUND rather than exact:
+ * two or more distinct PRICED models contributed, and the whole token bundle
+ * was billed at the most expensive one (per-model attribution needs
+ * per-message token data the stored metadata doesn't carry yet). Callers
+ * surfacing dollar figures should label such sessions "≤" / "upper bound"
+ * instead of presenting the number as measured spend.
+ */
+export function costIsUpperBound(modelsUsed: string[]): boolean {
+  const priced = new Set<string>();
+  for (const m of modelsUsed) {
+    if (!m || m === '<synthetic>') continue;
+    if (pricingFor(m)) priced.add(m);
+  }
+  return priced.size > 1;
+}
+
 /** Like `estimateCostUsdOrNull` but collapses "unpriced" to 0 for callers
  *  that store a plain number (SessionMetadata.costUsd). */
 export function estimateCostUsd(
