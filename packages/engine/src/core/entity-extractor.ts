@@ -58,7 +58,10 @@ const KNOWN_TOOLS: Record<string, string> = {
   // Tools
   'git': 'tool', 'github': 'tool', 'gitlab': 'tool',
   'vscode': 'tool', 'neovim': 'tool', 'zellij': 'tool',
-  'ollama': 'tool', 'gemini': 'tool', 'claude': 'tool',
+  // NOTE: 'claude' and 'gemini' are deliberately ABSENT — they appear in
+  // essentially every AI-coding transcript, so "project uses claude" triples
+  // carry zero information (per-session tool is already tracked in metadata).
+  'ollama': 'tool',
   'nushell': 'tool', 'zsh': 'tool', 'bash': 'tool',
   // Libraries
   'better-sqlite3': 'library', 'commander': 'library',
@@ -67,14 +70,31 @@ const KNOWN_TOOLS: Record<string, string> = {
   'esbuild': 'library', 'turbopack': 'library',
 };
 
-// Build regex from known tools — word-boundary match, case insensitive
-const TOOL_PATTERNS: Array<{ pattern: RegExp; name: string; category: string }> = [];
+// Tool names that are also ordinary English words (or verbs) — "let me go
+// check", "move the file", "express this", "spring cleaning", "react to".
+// A bare word-boundary hit on these flooded the KG with `go is_a language`
+// triples from plain prose. They only count with LINGUISTIC CONTEXT: a
+// tech-verb phrase ("written in go", "using express") or a `backtick` wrap.
+const AMBIGUOUS_TOOLS = new Set([
+  'go', 'move', 'swift', 'express', 'spring', 'rails', 'flask', 'vue',
+  'react', 'angular', 'git', 'bash', 'rust', 'ruby', 'java', 'stack',
+  'caddy', 'vite',
+]);
+
+// Context that makes an ambiguous word read as a technology reference.
+const toolContextRe = (tool: string) => new RegExp(
+  '(?:' +
+    `(?:use|uses|using|used|with|via|install(?:ed|ing)?|import(?:ed|ing)?|deploy(?:ed|ing)?|run(?:s|ning)?|configur\\w+|migrat\\w+|switch\\w+ to|built (?:with|on|in)|written in|powered by|based on|port(?:ed)? to|in)\\s+(?:the\\s+)?${tool}\\b` +
+    '|' +
+    '`' + tool + '`' +
+  ')', 'i');
+
+// Build regexes from known tools — word-boundary for unambiguous names,
+// context-gated for ambiguous ones.
+const TOOL_PATTERNS: Array<{ pattern: RegExp; countPattern: RegExp; contextPattern: RegExp; name: string; category: string }> = [];
 for (const [tool, category] of Object.entries(KNOWN_TOOLS)) {
   // For patterns with escaped special chars (like c\+\+), use lookaround instead of \b
   const hasSpecialChars = /\\[+.^$*?]/.test(tool) || /\[/.test(tool);
-  const pat = hasSpecialChars
-    ? new RegExp(`(?:^|[\\s,;(])${tool}(?:[\\s,;)]|$)`, 'i')
-    : new RegExp(`\\b${tool}\\b`, 'i');
 
   // Clean up the display name
   const name = tool
@@ -83,7 +103,14 @@ for (const [tool, category] of Object.entries(KNOWN_TOOLS)) {
     .replace(/\[\+\]/g, '+')
     .replace(/\[([^\]]+)\]/g, '$1');
 
-  TOOL_PATTERNS.push({ pattern: pat, name, category });
+  const bare = hasSpecialChars
+    ? new RegExp(`(?:^|[\\s,;(])${tool}(?:[\\s,;)]|$)`, 'i')
+    : new RegExp(`\\b${tool}\\b`, 'i');
+  const contextPattern = toolContextRe(tool);
+  const pat = AMBIGUOUS_TOOLS.has(name.toLowerCase()) ? contextPattern : bare;
+  const countPattern = new RegExp(pat.source, 'gi');
+
+  TOOL_PATTERNS.push({ pattern: pat, countPattern, contextPattern, name, category });
 }
 
 // ── Decision extraction ──────────────────────────────────────────
@@ -197,16 +224,21 @@ export function extractEntities(
     ? context.projectPath.split('/').filter(Boolean).pop() || ''
     : '';
 
-  // 1. Extract tools/technologies mentioned
-  for (const { pattern, name, category } of TOOL_PATTERNS) {
-    if (pattern.test(text)) {
-      // If we have a project context, link tool to project
-      if (projectName) {
-        addTriple(projectName, 'uses', name, 0.6);
-      }
-      // Also add the tool as an entity with its category
-      addTriple(name, 'is_a', category, 0.9);
+  // 1. Extract tools/technologies mentioned. Confidence is derived from
+  //    EVIDENCE (mention count / context match), not stamped as a constant:
+  //    a `uses` claim needs either repeated mentions or a linguistic tech
+  //    context (which the ambiguous-name patterns already require) — one
+  //    passing bare mention of "redis" in prose is a topic, not a dependency.
+  for (const { pattern, countPattern, contextPattern, name, category } of TOOL_PATTERNS) {
+    if (!pattern.test(text)) continue;
+    countPattern.lastIndex = 0;
+    const mentions = (text.match(countPattern) || []).length;
+    const contextual = contextPattern.test(text);
+    if (projectName && (mentions >= 2 || contextual)) {
+      addTriple(projectName, 'uses', name, Math.min(0.9, 0.5 + 0.1 * Math.min(mentions, 4) + (contextual ? 0.1 : 0)));
     }
+    // Category fact — true by definition of the KNOWN_TOOLS table.
+    addTriple(name, 'is_a', category, 0.9);
   }
 
   // 2. Extract decisions — only emit when the captured object passes
@@ -249,11 +281,16 @@ export function extractEntities(
     let match;
     while ((match = pattern.exec(text)) !== null) {
       const name = match[1]?.trim();
-      if (name && name.length > 1 && name.length < 30 && !NOT_PEOPLE.has(name.toLowerCase())) {
-        addTriple(name, 'is_a', 'person', 0.6);
-        if (projectName) {
-          addTriple(name, 'works_on', projectName, 0.5);
-        }
+      if (!name || name.length < 2 || name.length >= 30) continue;
+      const lower = name.toLowerCase();
+      if (NOT_PEOPLE.has(lower) || KNOWN_TOOL_NAMES.has(lower)) continue;
+      // @handle immediately followed by '/' is an npm scope (@playwright/test),
+      // not a person — this pattern minted "playwright is_a person" triples.
+      const after = text[(match.index ?? 0) + match[0].length];
+      if (match[0].startsWith('@') && after === '/') continue;
+      addTriple(name, 'is_a', 'person', 0.6);
+      if (projectName) {
+        addTriple(name, 'works_on', projectName, 0.5);
       }
     }
   }

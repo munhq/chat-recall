@@ -60,3 +60,35 @@ describe('extractEntities', () => {
     expect(ts.find(t => t.predicate === 'chose' && t.object.toLowerCase() === 'summarizing')).toBeUndefined();
   });
 });
+
+describe('precision — prose words are not technologies (anti-noise regression)', () => {
+  test('"let me go check" does not mint a go language triple', () => {
+    const ts = extractEntities('Let me go check what happened and move the file over.', { projectPath: '/code/myapp' });
+    expect(ts.find(t => t.subject === 'go')).toBeUndefined();
+    expect(ts.find(t => t.subject === 'move')).toBeUndefined();
+  });
+
+  test('"written in go" DOES mint the go triple', () => {
+    const ts = extractEntities('The collector is written in go for speed.', { projectPath: '/code/myapp' });
+    expect(ts.find(t => t.subject === 'go' && t.predicate === 'is_a')).toBeDefined();
+    expect(ts.find(t => t.predicate === 'uses' && t.object === 'go')).toBeDefined();
+  });
+
+  test('a single passing mention does not become a project dependency', () => {
+    const ts = extractEntities('Someone mentioned redis at the meetup.', { projectPath: '/code/myapp' });
+    expect(ts.find(t => t.predicate === 'uses' && t.object === 'redis')).toBeUndefined();
+    // The category fact is still fine — redis IS a database.
+    expect(ts.find(t => t.subject === 'redis' && t.predicate === 'is_a')).toBeDefined();
+  });
+
+  test('claude/gemini never become tool entities (they are in every transcript)', () => {
+    const ts = extractEntities('claude wrote this and gemini reviewed it, using claude again.', { projectPath: '/code/myapp' });
+    expect(ts.find(t => t.subject === 'claude' || t.object === 'claude')).toBeUndefined();
+    expect(ts.find(t => t.subject === 'gemini' || t.object === 'gemini')).toBeUndefined();
+  });
+
+  test('npm scopes are not people', () => {
+    const ts = extractEntities('Import it from @playwright/test and @chat-recall/engine.');
+    expect(ts.find(t => t.predicate === 'is_a' && t.object === 'person')).toBeUndefined();
+  });
+});

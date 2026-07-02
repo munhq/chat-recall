@@ -58,3 +58,35 @@ describe('classifyChunk', () => {
     expect(r.memoryType).toBe('general');
   });
 });
+
+describe('precision — topical words are not decisions (anti-slop regression)', () => {
+  test('prose full of decision-adjacent NOUNS stays general, never importance ≥4', () => {
+    // Every one of these words was a DECISION_MARKER in the original
+    // implementation, which scored this paragraph importance 5 and surfaced
+    // it in recall_wake_up as a high-importance "decision".
+    const r = classifyChunk(
+      'The architecture uses a layered approach. Our strategy relies on a plugin pattern; ' +
+      'the stack is a standard framework setup — configure it and keep the default.'
+    );
+    expect(r.memoryType).toBe('general');
+    expect(r.importance).toBeLessThan(4);
+  });
+
+  test('an explicit decision statement reaches the wake-up bar (≥4)', () => {
+    const r = classifyChunk('We decided to use Postgres instead of SQLite for the server.');
+    expect(r.memoryType).toBe('decision');
+    expect(r.importance).toBeGreaterThanOrEqual(4);
+  });
+
+  test('bare "bug/error" mentions without explicit phrasing stay general', () => {
+    const r = classifyChunk('There is a bug tracker and an error page in this repo.');
+    expect(r.memoryType).toBe('general');
+  });
+
+  test('long text gets no importance boost from length alone', () => {
+    const filler = 'This paragraph describes the codebase in neutral terms. '.repeat(20);
+    const short = classifyChunk('We decided to use Postgres.');
+    const long = classifyChunk('We decided to use Postgres. ' + filler);
+    expect(long.importance).toBeLessThanOrEqual(short.importance);
+  });
+});

@@ -25,6 +25,7 @@ const FILES = [
   './migrations/0002_messages.sql',
   './migrations/0003_teams.sql',
   './migrations/0004_unified_server.sql',
+  './migrations/0005_kg_junk_cleanup.sql',
 ];
 
 for (const f of FILES) {
