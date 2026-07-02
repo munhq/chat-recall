@@ -136,6 +136,10 @@ beforeAll(async () => {
   await new Promise<void>(resolve => {
     server = app.listen(0, () => resolve());
   });
+  // No keep-alive: the suite's multi-second KDF pauses outlive Node's default
+  // 5s keep-alive window, so pooled client sockets went stale and the next
+  // request died with 'fetch failed' — the flake this suite was known for.
+  server.keepAliveTimeout = 0;
   serverPort = (server.address() as AddressInfo).port;
 });
 
@@ -182,6 +186,12 @@ beforeEach(() => {
   serverState.pendingDownloads = new Map();
 });
 
+// Real end-to-end crypto: the heavy tests do multi-second KDF + encrypt/
+// upload/restore round-trips, ~10s alone and more under full-suite parallel
+// load — their per-test timeouts below declare that true cost. (NOTE: do NOT
+// pass an options object as describe()'s second argument here — this vitest
+// version silently mis-handles that overload and the suite's beforeEach/test
+// pairing breaks, failing the ledger-idempotency test.)
 describe('vault-client end-to-end', () => {
   test('vaultEnable persists salt + keyId to settings', () => {
     const r = vaultEnable('correct-horse-battery', { existingSaltHex: '00'.repeat(32) });
@@ -222,15 +232,20 @@ describe('vault-client end-to-end', () => {
     const original = readFileSync(join(tmp, 'claude', 'projects', '-home-user-foo', 'aaaa-bbbb.jsonl'));
     const restored = readFileSync(restoredPath);
     expect(Buffer.compare(original, restored)).toBe(0);
-  }, 30_000);
+  }, 60_000);
 
   test('second sync skips unchanged files (idempotent)', async () => {
     vaultEnable('correct-horse-battery', { existingSaltHex: '22'.repeat(32) });
-    await vaultSync('correct-horse-battery');
+    const r1 = await vaultSync('correct-horse-battery');
+    // The idempotency claim below is meaningless if the FIRST sync silently
+    // failed (a failed upload writes no ledger row, so the second sync
+    // re-uploading would be CORRECT behavior, not a bug).
+    expect(JSON.stringify(r1.failures)).toBe('[]');
+    expect(r1.uploaded.length).toBe(1);
     const r2 = await vaultSync('correct-horse-battery');
     expect(r2.uploaded).toEqual([]);
     expect(r2.skipped.find(s => s.reason === 'unchanged')).toBeDefined();
-  }, 30_000);
+  }, 60_000);
 
   test('wrong passphrase on sync after enable fails fast', async () => {
     vaultEnable('correct-horse-battery', { existingSaltHex: '33'.repeat(32) });
