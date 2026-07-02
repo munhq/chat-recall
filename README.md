@@ -140,7 +140,7 @@ The codeindex release artifacts are currently in a private repo, so `--with-code
 
 ## MCP tools (42)
 
-**Search & retrieve** — `recall_search`, `recall_memory_search`, `recall_recent`, `recall_show`, `recall_context`, `recall_summary`, `recall_suggest_resume`, `recall_smart_resume`, `recall_project_context`, `recall_weekly_digest`, `recall_analytics_summary`, `recall_wake_up`.
+**Search & retrieve** — `recall_search`, `recall_memory_search`, `recall_recent`, `recall_show`, `recall_context`, `recall_summary`, `recall_smart_resume`, `recall_project_context`, `recall_weekly_digest`, `recall_analytics_summary`, `recall_wake_up`.
 
 **Pattern detection** (the launch-headline tools) — `recall_similar_sessions` (vector cluster of past work matching a query), `recall_redundant_files` (warn when a new filename overlaps prior work), `recall_session_files` (what files did session X actually touch), `recall_files_touched` (which sessions edited `auth.rs`).
 
@@ -148,9 +148,9 @@ The codeindex release artifacts are currently in a private repo, so `--with-code
 
 **Knowledge graph** — `recall_kg_query`, `recall_kg_add`, `recall_kg_invalidate`, `recall_kg_timeline`, `recall_kg_stats`. Plus `recall_decision_record` to write a decision as both a triple and a diary entry in one call.
 
-**KV state** — `recall_set`, `recall_get`, `recall_kv_list`. Small persistent values keyed by namespaced strings: "current PR url", "branch I'm working on", user prefs.
+**KV state** — `recall_set`, `recall_get` (no key = list the scope). Small persistent values keyed by namespaced strings: "current PR url", "branch I'm working on", user prefs.
 
-**Diary & status** — `recall_diary_write`, `recall_diary_read`, `recall_status`, `recall_memory_status`, `recall_plans`, `recall_plan_show`, `recall_tasks`, `recall_index`.
+**Diary & status** — `recall_diary_write`, `recall_diary_read`, `recall_status` (includes memory breakdown), `recall_index`. Plans/tasks: search via `recall_memory_search(source_types:['plan','task'])`, read via `recall_show`.
 
 When the codeindex companion is installed, the agent *also* gets 16 code-level tools (`find_symbol`, `find_callers`, `get_imports`, `plan_change`, `get_change_impact`, `analyze`, etc.) from a separate MCP server. They compose: chat-recall finds what you've done; codeindex tells you what currently exists.
 

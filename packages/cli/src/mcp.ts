@@ -15,7 +15,6 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import { existsSync, readFileSync } from 'fs';
-import { homedir } from 'os';
 import { join } from 'path';
 import { execSync as _execSync } from 'child_process';
 
@@ -66,11 +65,10 @@ function codeindexAvailable(): boolean {
  * The agent sees both MCP servers but doesn't always know they compose — this
  * makes the connection explicit at the point where it'd actually be useful.
  */
-function withCodeindexHint(body: string, kind: 'files' | 'redundancy' | 'session'): string {
+function withCodeindexHint(body: string, kind: 'files' | 'session'): string {
   if (!codeindexAvailable()) return body;
   const hints: Record<string, string> = {
     files:      '\n\n_Tip: codeindex is also installed — call `find_symbol` or `get_outline` on these files for current symbol-level detail._',
-    redundancy: '\n\n_Tip: codeindex is also installed — call `find_symbol` to check whether the symbols you\'re about to write already exist in this codebase._',
     session:    '\n\n_Tip: codeindex is also installed — call `get_outline` on each file for its current symbol structure._',
   };
   return body + hints[kind];
@@ -105,6 +103,21 @@ function remoteCredentials(): { base: string; token: string } | null {
   } catch { return null; }
 }
 
+/**
+ * Uniform HTTP-error shape for server responses: status + a short actionable
+ * hint. Deliberately does NOT echo the raw response body — server error pages
+ * / stack traces are noise (and a potential info leak) in a tool result.
+ */
+function httpError(path: string, status: number): Error {
+  const hint =
+    status === 401 || status === 403 ? 'auth failed — re-run `chat-recall login <server-url>`' :
+    status === 404 ? 'not found — the id may be wrong, or the server is older than this CLI' :
+    status === 429 ? 'rate limited — retry in a moment' :
+    status >= 500 ? 'server error — check the chat-recall server logs' :
+    'request rejected';
+  return new Error(`server ${path}: HTTP ${status} (${hint})`);
+}
+
 async function remotePost<T>(path: string, body: unknown): Promise<T> {
   const cred = remoteCredentials();
   if (!cred) throw new Error('scope "server" needs a login — run `chat-recall login <server-url>` first.');
@@ -113,7 +126,7 @@ async function remotePost<T>(path: string, body: unknown): Promise<T> {
     headers: { 'content-type': 'application/json', authorization: `Bearer ${cred.token}` },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
+  if (!res.ok) throw httpError(path, res.status);
   return res.json() as Promise<T>;
 }
 
@@ -123,7 +136,7 @@ async function remoteGet<T>(path: string): Promise<T> {
   const res = await fetch(cred.base + path, {
     headers: { authorization: `Bearer ${cred.token}` },
   });
-  if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
+  if (!res.ok) throw httpError(path, res.status);
   return res.json() as Promise<T>;
 }
 
@@ -135,7 +148,7 @@ async function remotePatch<T>(path: string, body: unknown): Promise<T> {
     headers: { 'content-type': 'application/json', authorization: `Bearer ${cred.token}` },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
+  if (!res.ok) throw httpError(path, res.status);
   return res.json() as Promise<T>;
 }
 
@@ -188,13 +201,17 @@ async function remoteGetSoft<T>(path: string, params: Record<string, string | nu
     }
     return { status: res.status, data: null, message };
   }
-  if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
+  if (!res.ok) throw httpError(path, res.status);
   return { status: res.status, data: (await res.json()) as T };
 }
 
 // Tool schemas
 const RecallSearchSchema = z.object({
-  query: z.string().describe('What you\'re looking for (e.g., "OAuth implementation", "React hooks")'),
+  query: z.string().optional().describe('What you\'re looking for (e.g., "OAuth implementation", "React hooks"). Required unless like_session is set.'),
+  like_session: z.string().optional()
+    .describe('Find sessions similar to this session id (uses its first prompt / preview as the search text, excludes itself, groups results by project). Takes precedence over query.'),
+  include_outcome: z.boolean().optional().default(false)
+    .describe('Append a per-result outcome one-liner (shipped/interrupted/abandoned + edit stats) so you can judge at a glance whether resuming each hit is worth it.'),
   top_k: z.number().optional().default(5).describe('Number of results to return'),
   project_filter: z.string().optional().describe('Optional filter by project path substring'),
 });
@@ -238,6 +255,8 @@ const RecallEditsTimelineSchema = z.object({
     .describe('Restrict to a subset of AI tools. Default: all four (claude+gemini+opencode+codex).'),
   group_by_repo: z.boolean().optional().default(false)
     .describe('Group output by detected git repo root instead of returning a flat list. Useful when a single session touched multiple repos.'),
+  group_by: z.enum(['session']).optional()
+    .describe('"session" = aggregate edits per session instead of a flat timeline — answers "which sessions touched files matching X?" (pass `pattern` + a wide `since_hours`, e.g. 720 for 30 days).'),
 });
 
 const RecallContextSchema = z.object({
@@ -259,6 +278,8 @@ const RecallDiffSchema = z.object({
   file: z.string().optional().describe('Only return the diff for this absolute file path'),
   context_only: z.boolean().optional().default(false)
     .describe('Skip the full unified diff bodies and return only file-level stats (lines added/removed, reverted flag)'),
+  files_only: z.boolean().optional().default(false)
+    .describe('Return just the list of files the session touched (grouped by extension, with tools used) — no diffs, no stats. Answers "which files did session X actually touch?".'),
   max_diff_chars: z.number().optional().default(4000)
     .describe('Truncate each per-file unified diff at this many characters in the rendered output'),
 });
@@ -269,19 +290,9 @@ const RecallCommitsSchema = z.object({
     .describe('Pad the session window by this many minutes on each side to catch commits made just after edits'),
 });
 
-const RecallOutcomeSchema = z.object({
-  session_id: z.string().describe('Session ID to classify'),
-});
-
 const RecallMarkersSchema = z.object({
   session_id: z.string().describe('Session ID to mark prompts in'),
   limit: z.number().optional().default(200).describe('Maximum prompts to mark'),
-});
-
-const RecallSuggestResumeSchema = z.object({
-  current_task: z.string().describe('What you\'re working on now'),
-  top_k: z.number().optional().default(3).describe('Number of suggestions'),
-  provider: z.enum(['ollama', 'gemini']).optional().default('ollama'),
 });
 
 const RecallMemorySearchSchema = z.object({
@@ -292,38 +303,19 @@ const RecallMemorySearchSchema = z.object({
   project_filter: z.string().optional().describe('Filter by project path'),
 });
 
-const RecallMemoryStatusSchema = z.object({});
-
 const RecallSmartResumeSchema = z.object({
   session_id: z.string().describe('Session ID to get smart resume context for'),
 });
 
 const RecallProjectContextSchema = z.object({
-  project_path: z.string().describe('Project path or substring (e.g., "munbot", "chat-recall", "/home/user/code/personal/poly")'),
+  project_path: z.string().describe('Project path, name substring, OR a stable project_id ("git:github.com/me/repo", "ws:name", "git-local:<sha1>", "user:<custom>")'),
   limit: z.number().optional().default(5).describe('Number of recent sessions to include'),
-});
-
-const RecallProjectDossierSchema = z.object({
-  project: z.string().describe('project_id (e.g. "git:github.com/me/repo", "ws:inco") OR an absolute path that resolves to one'),
-  sessions: z.number().optional().default(10).describe('Max sessions to enumerate'),
   tasks: z.number().optional().default(20).describe('Max open tasks to list'),
   plans: z.number().optional().default(20).describe('Max plans to list'),
 });
 
 const RecallWeeklyDigestSchema = z.object({
   weeks_back: z.number().optional().default(0).describe('0 = current week, 1 = last week, etc.'),
-});
-
-const RecallPlansSchema = z.object({
-  limit: z.number().optional().default(20).describe('Number of plans to list'),
-});
-
-const RecallPlanShowSchema = z.object({
-  plan_id: z.string().describe('Plan ID (the filename without .md)'),
-});
-
-const RecallTasksSchema = z.object({
-  limit: z.number().optional().default(20).describe('Number of task groups to list'),
 });
 
 // ── Knowledge Graph Schemas ──────────────────────────────────────
@@ -387,26 +379,13 @@ const RecallCodeActionsSchema = z.object({
   status: z.enum(['suggested', 'queued', 'done', 'dismissed']).optional(),
   limit: z.number().optional().default(30),
 });
-const RecallCodeRecommendationsSchema = z.object({
-  project: z.string().describe('Project id (from recall_code_projects)'),
-});
-const RecallRecommendationsSchema = z.object({});
-
-// ── New tools (subagents, files-touched, user-prompts, decision-record) ──
-
-const RecallSubagentSearchSchema = z.object({
-  query: z.string().describe('Substring to search for inside subagent conversations'),
-  session_id: z.string().optional().describe('Restrict to subagents of this session'),
-  kind: z.enum(['explore', 'compact', 'aside', 'other']).optional()
-    .describe('Filter by subagent kind. Compact subagents hold prior compacted history.'),
-  limit: z.number().optional().default(20).describe('Maximum subagent files to inspect'),
+const RecallRecommendationsSchema = z.object({
+  scope: z.enum(['account', 'project']).optional().default('account')
+    .describe('account = recommendations from YOUR chat-recall data (leaked secrets + session behaviour). project = behavior × code recommendations for one code-indexed project (requires `project`).'),
+  project: z.string().optional().describe('Project id (from recall_code_projects). Required when scope is "project".'),
 });
 
-const RecallFilesTouchedSchema = z.object({
-  pattern: z.string().describe('File path or substring to look for (e.g., "auth.rs" or "src/api/")'),
-  since_days: z.number().optional().default(30).describe('Only include sessions modified in the last N days'),
-  limit: z.number().optional().default(20).describe('Maximum sessions to return'),
-});
+// ── New tools (user-prompts, decision-record) ──
 
 const RecallUserPromptsSchema = z.object({
   session_id: z.string().optional().describe('If set, only that session\'s prompts'),
@@ -443,34 +422,6 @@ const RecallWakeUpSchema = z.object({
     .describe('Scope facts and KG entities to a project (substring match against project_path / entity name). Without this, facts are global and bleed across unrelated projects.'),
 });
 
-// ── Cross-session pattern detection ────────────────────────────────────────
-
-const RecallSimilarSessionsSchema = z.object({
-  query: z.string().optional()
-    .describe('Free-text query (e.g. "implement OAuth login"). Mutually exclusive with session_id.'),
-  session_id: z.string().optional()
-    .describe('Find sessions similar to this one. Uses the session\'s first user prompt as the search text.'),
-  top_k: z.number().optional().default(5).describe('Max sessions to return'),
-  project_filter: z.string().optional().describe('Optional project path substring filter'),
-}).refine(d => !!d.query !== !!d.session_id, {
-  message: 'Provide exactly one of `query` or `session_id`.',
-});
-
-// ── Files-touched per session ───────────────────────────────────────────────
-
-const RecallSessionFilesSchema = z.object({
-  session_id: z.string().describe('Session whose file activity you want to inspect'),
-});
-
-// ── Redundancy detection (filename-level) ──────────────────────────────────
-
-const RecallRedundantFilesSchema = z.object({
-  filename: z.string().describe('File path or basename you\'re about to create (e.g. "src/auth/validator.ts")'),
-  project_path: z.string().optional()
-    .describe('Restrict the search to sessions in this project. Recommended.'),
-  limit: z.number().optional().default(5).describe('Max similar files to return'),
-});
-
 // ── KV (third memory primitive) ────────────────────────────────────────────
 
 const RecallSetSchema = z.object({
@@ -481,14 +432,11 @@ const RecallSetSchema = z.object({
 });
 
 const RecallGetSchema = z.object({
-  key: z.string().describe('Key name'),
-  scope: z.string().optional().default('default'),
-});
-
-const RecallKvListSchema = z.object({
+  key: z.string().optional()
+    .describe('Key name. Omit to LIST the keys in the scope instead (omit scope too to list across all scopes).'),
   scope: z.string().optional()
-    .describe('Filter by scope. Omit to list across all scopes.'),
-  limit: z.number().optional().default(50),
+    .describe('Namespace. Defaults to "default" when reading a key; when listing (no key), omit to list across all scopes.'),
+  limit: z.number().optional().default(50).describe('Max entries when listing (no key given).'),
 });
 
 // ── Security / Secret Findings Schemas ─────────────────────────────
@@ -539,25 +487,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: 'recall_search',
-        description: `Search for relevant Claude Code sessions to resume.
+        description: `Search for relevant past sessions to resume.
 
-Find past conversations that are semantically similar to your current task.
-Returns session IDs that can be used with \`claude --resume <session_id>\`.
+Find past conversations matching your current task. Returns session IDs that
+can be used with \`claude --resume <session_id>\`.
 
-Pass \`scope: "server"\` to search the synced chat-recall server instead —
-your history across every logged-in device (and your team's, when on a team
-plan). Needs a prior \`chat-recall login\`.`,
+Three modes on one tool:
+- \`query\` — free-text search ("I'm working on X, what past work is relevant?").
+- \`like_session\` — find sessions similar to an existing session id (uses its
+  first prompt as the search text, excludes itself, groups hits by project).
+- \`include_outcome: true\` — append a per-result outcome one-liner (shipped /
+  interrupted / abandoned + edit stats) to judge whether each hit is worth resuming.`,
         inputSchema: {
           type: 'object',
           properties: {
-            query: { type: 'string', description: 'What you\'re looking for (e.g., "OAuth implementation", "React hooks")' },
+            query: { type: 'string', description: 'What you\'re looking for (e.g., "OAuth implementation"). Required unless like_session is set.' },
+            like_session: { type: 'string', description: 'Find sessions similar to this session id instead of a free-text query.' },
+            include_outcome: { type: 'boolean', default: false, description: 'Append per-result outcome one-liners (status + edit stats).' },
             top_k: { type: 'number', default: 5, description: 'Number of results to return' },
             project_filter: { type: 'string', description: 'Optional filter by project path substring' },
             skip_ranking: { type: 'boolean', default: false, description: 'Skip Claude ranking for faster results' },
             provider: { type: 'string', enum: ['ollama', 'gemini'], default: 'ollama', description: 'Embedding provider' },
-            scope: { type: 'string', enum: ['local', 'server'], default: 'local', description: 'local = this machine (default, offline). server = synced cross-device history.' },
+            scope: { type: 'string', enum: ['local', 'server'], default: 'local', description: 'Accepted for back-compat; search always runs against the synced server.' },
           },
-          required: ['query'],
         },
       },
       {
@@ -576,7 +528,7 @@ By default, only indexes new or changed sessions.`,
       },
       {
         name: 'recall_status',
-        description: 'Show index status and statistics.',
+        description: 'Show index status and statistics: synced sessions, chunks, freshness, top projects, plus the full memory-system breakdown (items/chunks per source type, per AI tool, link count).',
         inputSchema: {
           type: 'object',
           properties: {},
@@ -584,9 +536,11 @@ By default, only indexes new or changed sessions.`,
       },
       {
         name: 'recall_show',
-        description: `Get conversation content from a specific session.
+        description: `Get conversation content from a specific session — or the full text of a plan.
 
-Use this after recall_search to get full context from a session.
+Use this after recall_search to get full context from a session. Also accepts a
+plan id (the plan filename without .md, as returned by
+recall_memory_search(source_types:['plan'])) and renders the complete plan text.
 
 Set \`from_end: N\` to fetch the last N messages (no line-number guessing).
 Set \`include_code: true\` to keep code blocks instead of redacting them — useful
@@ -594,7 +548,7 @@ when the user is asking "what did we change?" and the diffs/SQL/commands matter.
         inputSchema: {
           type: 'object',
           properties: {
-            session_id:    { type: 'string', description: 'Session ID from search results' },
+            session_id:    { type: 'string', description: 'Session ID from search results, or a plan id (filename without .md)' },
             around_line:   { type: 'number', description: 'Optional line number to show context around' },
             max_messages:  { type: 'number', default: 10, description: 'Maximum messages to return' },
             from_end:      { type: 'number', description: 'Return the last N messages (alternative to around_line).' },
@@ -650,7 +604,10 @@ JSON, OpenCode SQLite — so the active session is included even though its meta
 hasn't been re-indexed yet.
 
 Great for "what were we just changing?" — call with \`since_hours: 2\` to see the last
-two hours of edits across every session and every AI tool.`,
+two hours of edits across every session and every AI tool.
+
+Pass \`group_by: "session"\` (with \`pattern\` + a wide \`since_hours\`, e.g. 720) to
+aggregate per session instead — "which sessions edited auth.rs in the last month?".`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -665,6 +622,7 @@ two hours of edits across every session and every AI tool.`,
               description: 'Restrict to specific AI tools. Default: all four.',
             },
             group_by_repo:  { type: 'boolean', default: false, description: 'Group results by detected git repo root.' },
+            group_by:       { type: 'string', enum: ['session'], description: '"session" = aggregate edits per session (which sessions touched files matching pattern).' },
           },
         },
       },
@@ -690,14 +648,17 @@ Use this to understand what happened in a session before resuming.`,
       },
       {
         name: 'recall_summary',
-        description: `Get the summary for a session.
+        description: `Get the summary for a session — including its OUTCOME classification.
 
 By default returns a *rich* summary that combines the AI summary (when available)
-with a structured breakdown derived from the transcript itself: status (shipped /
-interrupted / abandoned / in_progress), decisions the agent announced, blockers
-hit (tool errors, interrupts), and the last assistant claim paired with the
-user's reaction to it. Pass \`rich: false\` to fall back to the legacy
-single-line AI summary only.`,
+with the structured outcome derived from the transcript itself: status (shipped /
+interrupted / abandoned / in_progress), the session window, decisions the agent
+announced, blockers hit (tool errors, interrupts), edit/commit stats, prompt
+markers, and the last assistant claim paired with the user's reaction to it
+(so you can see whether "done!" was actually accepted or met with "wtf").
+This is the triage call when scanning a session list — it answers the question
+the AI summary doesn't: did this work actually land?
+Pass \`rich: false\` to fall back to the legacy single-line AI summary only.`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -717,13 +678,16 @@ Detects reverts: when a file was edited but the final state matches the initial
 state, the file is reported with \`reverted: true\` and a zero-line diff.
 
 Pass \`file\` to focus on a single absolute path. Pass \`context_only: true\` for
-just the per-file stats (lines added/removed) when you don't need the diff body.`,
+just the per-file stats (lines added/removed) when you don't need the diff body.
+Pass \`files_only: true\` for just the list of files the session touched (grouped
+by extension, with tools used) — "which files did session X actually touch?".`,
         inputSchema: {
           type: 'object',
           properties: {
             session_id:     { type: 'string', description: 'Session ID to replay' },
             file:           { type: 'string', description: 'Absolute file path to focus on (optional)' },
             context_only:   { type: 'boolean', default: false, description: 'Skip diff bodies, return stats only' },
+            files_only:     { type: 'boolean', default: false, description: 'Return just the file list (no diffs/stats)' },
             max_diff_chars: { type: 'number', default: 4000, description: 'Truncate each per-file unified diff' },
           },
           required: ['session_id'],
@@ -744,23 +708,6 @@ matching commit exists, work probably stayed local.`,
           properties: {
             session_id:     { type: 'string', description: 'Session ID to look up commits for' },
             buffer_minutes: { type: 'number', default: 30, description: 'Window padding on each side' },
-          },
-          required: ['session_id'],
-        },
-      },
-      {
-        name: 'recall_outcome',
-        description: `Classify a session as shipped / interrupted / abandoned / in_progress / unknown,
-with the supporting evidence: decisions the agent announced, blockers it hit,
-and the final claim paired with the user's reaction (so you can see whether
-"done!" was actually accepted or was met with "wtf").
-
-This is the single most useful triage call when scanning a session list — it
-answers the question the AI summary doesn't: did this work actually land?`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            session_id: { type: 'string', description: 'Session ID to classify' },
           },
           required: ['session_id'],
         },
@@ -789,28 +736,12 @@ sessions where things went sideways before reading the whole transcript.`,
         },
       },
       {
-        name: 'recall_suggest_resume',
-        description: `Suggest past conversations to resume based on your current task.
-
-Given what you're working on, finds the most relevant past conversations
-and provides summaries + resume commands.
-
-Perfect for: "I'm working on X, what past work is relevant?"`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            current_task: { type: 'string', description: 'What you\'re working on now' },
-            top_k: { type: 'number', default: 3, description: 'Number of suggestions' },
-            provider: { type: 'string', enum: ['ollama', 'gemini'], default: 'ollama' },
-          },
-          required: ['current_task'],
-        },
-      },
-      {
         name: 'recall_memory_search',
         description: `Search across all memory types: sessions, plans, tasks, CLAUDE.md files, history, paste cache, and agent diaries.
 
-Returns results from any memory source, ranked by relevance. Use source_types to filter.`,
+Returns results from any memory source, ranked by relevance. Use source_types to filter.
+Plans and tasks are found here (source_types: ['plan', 'task']); read a full plan
+with recall_show (pass the plan id).`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -826,14 +757,6 @@ Returns results from any memory source, ranked by relevance. Use source_types to
             scope: { type: 'string', enum: ['local', 'server'], default: 'local', description: 'server = synced cross-device history (needs chat-recall login).' },
           },
           required: ['query'],
-        },
-      },
-      {
-        name: 'recall_memory_status',
-        description: 'Show memory system status across all source types (sessions, plans, tasks, etc).',
-        inputSchema: {
-          type: 'object',
-          properties: {},
         },
       },
       {
@@ -858,53 +781,30 @@ Use this instead of recall_context for a more actionable summary when resuming w
       },
       {
         name: 'recall_project_context',
-        description: `Get rich project context for a project path.
-
-Returns:
-- Recent sessions with summaries
-- Open tasks
-- Related plans
-- Recent git commits (if git repo)
-- Cost and token usage
-- Files modified recently
-
-Use at the START of a new session to understand what's been happening in a project.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            project_path: { type: 'string', description: 'Project path or substring (e.g., "munbot", "chat-recall")' },
-            limit: { type: 'number', default: 5, description: 'Number of recent sessions to include' },
-          },
-          required: ['project_path'],
-        },
-      },
-      {
-        name: 'recall_project_dossier',
-        description: `Generate a full project dossier as markdown.
+        description: `Get the full project dossier as markdown — rich project context.
 
 Aggregates everything the index knows about one project into a single report:
 overview (from CLAUDE.md), tech stack (KG uses), architecture / deployment / security
-sections (from CLAUDE.md), decisions log (KG chose/rejected), recent session activity,
-open tasks, plans, agent diary conclusions, and cost rollup.
+sections (from CLAUDE.md), decisions log (KG chose/rejected), recent session activity
+with summaries, open tasks, plans, agent diary conclusions, and cost rollup.
 
-Input MUST be a logical project_id (one of:
+Accepts EITHER a project path / name substring (e.g. "munbot", "chat-recall",
+"/home/user/code/poly") OR a stable project_id:
   - "git:<host>/<owner>/<repo>"   (e.g. "git:github.com/me/munbot")
   - "ws:<name>"                   (workspace rollup)
   - "git-local:<sha1>"            (local-only git repo)
   - "user:<custom>"               (declared in ~/.chat-recall/projects.json)
 
-Get the list of valid ids from \`recall_project_context\` or the web UI's
-sidebar (each leaf has its project_id). Path inputs are no longer accepted
-— pass the id, not the folder.`,
+Use at the START of a new session to understand what's been happening in a project.`,
         inputSchema: {
           type: 'object',
           properties: {
-            project: { type: 'string', description: 'project_id — must start with git:, ws:, git-local:, or user:' },
-            sessions: { type: 'number', default: 10 },
-            tasks: { type: 'number', default: 20 },
-            plans: { type: 'number', default: 20 },
+            project_path: { type: 'string', description: 'Project path, name substring, or project_id (git:/ws:/git-local:/user:)' },
+            limit: { type: 'number', default: 5, description: 'Number of recent sessions to include' },
+            tasks: { type: 'number', default: 20, description: 'Max open tasks to list' },
+            plans: { type: 'number', default: 20, description: 'Max plans to list' },
           },
-          required: ['project'],
+          required: ['project_path'],
         },
       },
       {
@@ -923,43 +823,6 @@ Use to understand overall productivity and spending.`,
           type: 'object',
           properties: {
             weeks_back: { type: 'number', default: 0, description: '0 = current week, 1 = last week' },
-          },
-        },
-      },
-      {
-        name: 'recall_plans',
-        description: `List indexed plans from ~/.claude/plans/.
-
-Shows plan titles and metadata. Use recall_memory_search to search plan content.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            limit: { type: 'number', default: 20, description: 'Number of plans to list' },
-          },
-        },
-      },
-      {
-        name: 'recall_plan_show',
-        description: `Show the full content of a specific plan by ID.
-
-Use this to view or edit the complete plan text. Pass the plan_id from recall_plans results.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            plan_id: { type: 'string', description: 'Plan ID (filename without .md extension)' },
-          },
-          required: ['plan_id'],
-        },
-      },
-      {
-        name: 'recall_tasks',
-        description: `List indexed task groups from ~/.claude/tasks/.
-
-Each task group corresponds to a session. Shows task subjects and status.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            limit: { type: 'number', default: 20, description: 'Number of task groups to list' },
           },
         },
       },
@@ -1062,93 +925,71 @@ or when you learn something important that should persist.`,
           required: ['agent_name'],
         },
       },
-      // ── Code intelligence (codeindex merge) ──
-      {
-        name: 'recall_code_index',
-        description: `Index a code repository with codeindex and sync its findings/hotspots/actions to your chat-recall server. Runs the codeindex analyzer LOCALLY (needs the repo files + git history), then ships the result. Use before recall_code_findings/actions if a repo hasn't been indexed yet.`,
-        inputSchema: {
-          type: 'object',
-          properties: { path: { type: 'string', description: 'Repo path (default: cwd)' } },
-        },
-      },
-      {
-        name: 'recall_code_projects',
-        description: `List code-indexed projects on your server with health score, finding count, and label (poc/production/engineering).`,
-        inputSchema: { type: 'object', properties: {} },
-      },
-      {
-        name: 'recall_code_findings',
-        description: `List code findings (security / hardcoded literals / copy-paste clones / reinvention / dead code / coupling / cycles). Each finding carries a concrete, ready-to-run agent prompt that references codeindex tools. Filter by project/severity/category.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            project: { type: 'string', description: 'Project id (omit for all)' },
-            severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'] },
-            category: { type: 'string', description: 'security|literal|clone|duplication|dead_code|coupling|cycle' },
-            limit: { type: 'number', default: 50 },
+      // ── Code intelligence (codeindex companion) ──
+      // Registered ONLY when the codeindex binary is on PATH: recall_code_index
+      // runs the analyzer locally, and the other three are its server-side
+      // browse companions — without the binary the family is dead surface.
+      ...(codeindexAvailable() ? [
+        {
+          name: 'recall_code_index',
+          description: `Index a code repository with codeindex and sync its findings/hotspots/actions to your chat-recall server. Runs the codeindex analyzer LOCALLY (needs the repo files + git history), then ships the result. Use before recall_code_findings/actions if a repo hasn't been indexed yet.`,
+          inputSchema: {
+            type: 'object',
+            properties: { path: { type: 'string', description: 'Repo path (default: cwd)' } },
           },
         },
-      },
-      {
-        name: 'recall_code_actions',
-        description: `The ranked, actionable plan for a codebase — prioritised tasks synthesised from the findings, each with a ready agent prompt. This is the "what should I fix next" list. Filter by project/status.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            project: { type: 'string', description: 'Project id (omit for all)' },
-            status: { type: 'string', enum: ['suggested', 'queued', 'done', 'dismissed'] },
-            limit: { type: 'number', default: 30 },
+        {
+          name: 'recall_code_projects',
+          description: `List code-indexed projects on your server with health score, finding count, and label (poc/production/engineering).`,
+          inputSchema: { type: 'object', properties: {} },
+        },
+        {
+          name: 'recall_code_findings',
+          description: `List code findings (security / hardcoded literals / copy-paste clones / reinvention / dead code / coupling / cycles). Each finding carries a concrete, ready-to-run agent prompt that references codeindex tools. Filter by project/severity/category.`,
+          inputSchema: {
+            type: 'object',
+            properties: {
+              project: { type: 'string', description: 'Project id (omit for all)' },
+              severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'] },
+              category: { type: 'string', description: 'security|literal|clone|duplication|dead_code|coupling|cycle' },
+              limit: { type: 'number', default: 50 },
+            },
           },
         },
-      },
-      {
-        name: 'recall_code_recommendations',
-        description: `Behavior × code recommendations for a project — the differentiator. Concrete changes to apply: add a CLAUDE.md rule, install a skill, set a project label, or reset a POC db. Reasons over BOTH the code findings and how sessions in this project went (failed/abandoned, recurring corrections). Each has rationale + evidence + an apply-action.`,
-        inputSchema: {
-          type: 'object',
-          properties: { project: { type: 'string', description: 'Project id' } },
-          required: ['project'],
+        {
+          name: 'recall_code_actions',
+          description: `The ranked, actionable plan for a codebase — prioritised tasks synthesised from the findings, each with a ready agent prompt. This is the "what should I fix next" list. Filter by project/status.`,
+          inputSchema: {
+            type: 'object',
+            properties: {
+              project: { type: 'string', description: 'Project id (omit for all)' },
+              status: { type: 'string', enum: ['suggested', 'queued', 'done', 'dismissed'] },
+              limit: { type: 'number', default: 30 },
+            },
+          },
         },
-      },
+      ] : []),
       {
         name: 'recall_recommendations',
-        description: `Account-level recommendations from YOUR chat-recall data (not a code project): leaked secrets found by the scanner + session behaviour (unresolved/abandoned). Returns concrete CLAUDE.md rules to apply globally. The same actionable approach as recall_code_recommendations, over chat-recall's own signals.`,
-        inputSchema: { type: 'object', properties: {} },
-      },
-      // ── Subagent / files-touched / user-prompts / decision-record ──
-      {
-        name: 'recall_subagent_search',
-        description: `Search inside hidden subagent conversations (Explore, aside_question, compact summaries).
-Claude Code stores subagent work in <session-dir>/<session-id>/subagents/*.jsonl with no reference
-from the parent JSONL. This tool reads those files and returns matching sessions + which subagents hit.
+        description: `Actionable recommendations, two scopes on one tool:
 
-Especially useful for finding orphaned compacted history (kind: compact).`,
+- scope "account" (default) — from YOUR chat-recall data: leaked secrets found by
+  the scanner + session behaviour (unresolved/abandoned). Returns concrete
+  CLAUDE.md rules to apply globally.
+- scope "project" (requires \`project\`) — behavior × code recommendations for a
+  code-indexed project. Concrete changes to apply: add a CLAUDE.md rule, install
+  a skill, set a project label, or reset a POC db. Reasons over BOTH the code
+  findings and how sessions in this project went (failed/abandoned, recurring
+  corrections). Each has rationale + evidence + an apply-action.`,
         inputSchema: {
           type: 'object',
           properties: {
-            query: { type: 'string', description: 'Substring to search for' },
-            session_id: { type: 'string', description: 'Restrict to subagents of this session' },
-            kind: { type: 'string', enum: ['explore', 'compact', 'aside', 'other'], description: 'Filter by subagent kind' },
-            limit: { type: 'number', default: 20 },
+            scope: { type: 'string', enum: ['account', 'project'], default: 'account', description: 'account = your chat-recall data; project = one code-indexed project' },
+            project: { type: 'string', description: 'Project id (from recall_code_projects). Required when scope is "project".' },
           },
-          required: ['query'],
         },
       },
-      {
-        name: 'recall_files_touched',
-        description: `List sessions that touched a file path or pattern. Uses indexed session metadata
-(filesModified) so it returns quickly without re-reading transcripts. Great for "which sessions
-edited auth.rs in the last month?" — productivity recall.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            pattern: { type: 'string', description: 'File path or substring' },
-            since_days: { type: 'number', default: 30 },
-            limit: { type: 'number', default: 20 },
-          },
-          required: ['pattern'],
-        },
-      },
+      // ── User-prompts / decision-record ──
       {
         name: 'recall_user_prompts',
         description: `List the human-typed prompts from a session (or recent sessions). Tool results
@@ -1205,56 +1046,6 @@ the start of a session to "remember who you are and what's true right now".`,
         },
       },
       {
-        name: 'recall_similar_sessions',
-        description: `Find past sessions semantically similar to a query (or to another session).
-Use this when the user asks for something that "feels familiar" — chat-recall will surface earlier
-work on the same topic, grouped by project so you can see "you've done this 5 times across 3 projects".
-With an embedder configured this is real semantic clustering; without one it falls back to FTS5 keyword
-match (still useful, just less fuzzy).
-
-Pair with codeindex's find_symbol/search to also check whether matching code already exists.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: { type: 'string', description: 'What you\'re about to do' },
-            session_id: { type: 'string', description: 'Or compare against an existing session' },
-            top_k: { type: 'number', default: 5 },
-            project_filter: { type: 'string' },
-          },
-        },
-      },
-      {
-        name: 'recall_session_files',
-        description: `List the files a session created, edited, or read — pulled from the session's
-indexed metadata (extra_json.filesModified) plus per-message tool_calls. Use to answer
-"which files did session X actually touch?" without scanning the transcript.`,
-        inputSchema: {
-          type: 'object',
-          properties: { session_id: { type: 'string' } },
-          required: ['session_id'],
-        },
-      },
-      {
-        name: 'recall_redundant_files',
-        description: `Filename-level redundancy detector — call this before creating a new file.
-Searches the indexed filesModified history of all past sessions in the project for filenames
-similar to the one you're about to create. Surfaces "you (or a past session) already touched
-src/lib/validators.ts" so the agent can read it before redoing work.
-
-For *content*-level redundancy (semantic match against existing code), call codeindex's
-find_symbol or search instead. The two checks compose: chat-recall sees what's been touched,
-codeindex sees what currently exists.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            filename:     { type: 'string', description: 'Path or basename you\'re about to create' },
-            project_path: { type: 'string', description: 'Project to search in' },
-            limit:        { type: 'number', default: 5 },
-          },
-          required: ['filename'],
-        },
-      },
-      {
         name: 'recall_set',
         description: `Persist a small key/value pair across sessions. Use this for
 state that doesn't fit the diary (narrative) or knowledge graph (entity-relationship facts) —
@@ -1272,40 +1063,16 @@ Scope namespaces keys so per-project state doesn't collide.`,
       },
       {
         name: 'recall_get',
-        description: `Read a key/value pair previously written with recall_set.`,
+        description: `Read a key/value pair previously written with recall_set — or, when \`key\` is
+omitted, LIST the recorded keys (in one scope, or across all scopes when \`scope\` is
+also omitted). Use the list mode to discover what state has been recorded without
+remembering specific keys.`,
         inputSchema: {
           type: 'object',
           properties: {
-            key:   { type: 'string' },
-            scope: { type: 'string', default: 'default' },
-          },
-          required: ['key'],
-        },
-      },
-      {
-        name: 'recall_help',
-        description: `Catalog of recall options grouped by intent.
-
-Call this first when you need to remember something but aren't sure which recall_*
-tool fits. Returns the full menu of available tools, what each one is for, and
-which one to reach for in common situations (resume work, search past sessions,
-inspect a session, see recent edits, query the knowledge graph, etc.).
-
-No arguments — just call it.`,
-        inputSchema: {
-          type: 'object',
-          properties: {},
-        },
-      },
-      {
-        name: 'recall_kv_list',
-        description: `List keys in a scope (or across all scopes). Useful for the agent to
-        discover what state has been recorded without remembering specific keys.`,
-        inputSchema: {
-          type: 'object',
-          properties: {
-            scope: { type: 'string', description: 'Filter by scope. Omit for all.' },
-            limit: { type: 'number', default: 50 },
+            key:   { type: 'string', description: 'Key name. Omit to list keys instead.' },
+            scope: { type: 'string', description: 'Namespace (default "default" when reading; omit to list across all scopes)' },
+            limit: { type: 'number', default: 50, description: 'Max entries in list mode' },
           },
         },
       },
@@ -1382,18 +1149,109 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   try {
+    // The codeindex family is only REGISTERED when the codeindex binary is on
+    // PATH (see the tools list). Guard the handlers too, so a client that
+    // cached an older tool list gets a clear message instead of a half-working
+    // call that fails later at collect time.
+    if (/^recall_code_(index|projects|findings|actions)$/.test(name) && !codeindexAvailable()) {
+      return { content: [{ type: 'text', text: `Unknown tool: ${name} — the codeindex companion binary is not installed. Install it (\`chat-recall init --with-codeindex\`) and restart the MCP server.` }] };
+    }
+
     switch (name) {
       case 'recall_search': {
         const params = RecallSearchSchema.parse(args);
-
-        // Sanitize query to prevent prompt injection
-        const sanitized = sanitizeQuery(params.query);
-        const searchQuery = sanitized.cleanQuery;
 
         // Thin collector: search always runs against the synced chat-recall
         // server (cross-device / team history). The `scope` param is accepted
         // for back-compat but ignored — there is no local index to query.
         requireRemote();
+
+        // Outcome one-liner (opt-in via include_outcome) — same endpoint and
+        // shape recall_summary consumes, rendered as a single triage line.
+        type OutcomeLite = { status: string; reason: string; fileCount: number; totalLinesAdded: number; totalLinesRemoved: number };
+        const outcomeEmoji = (s: string) =>
+          s === 'shipped' ? '🚢' : s === 'interrupted' ? '⏸' : s === 'abandoned' ? '🪦' : s === 'in_progress' ? '🟡' : '❔';
+        const outcomeLine = async (sessionId: string): Promise<string | null> => {
+          try {
+            const soft = await remoteGetSoft<OutcomeLite>(`/api/conversations/${encodeURIComponent(sessionId)}/outcome`);
+            if (!soft.data) return null;
+            const o = soft.data;
+            return `**Outcome:** ${outcomeEmoji(o.status)} ${o.status} — ${o.reason} · ${o.fileCount} file(s) +${o.totalLinesAdded}/−${o.totalLinesRemoved}`;
+          } catch { return null; } // best-effort: skip when not synced yet
+        };
+
+        // like_session mode: find sessions similar to an existing session —
+        // derive the search text from its synced metadata, exclude itself,
+        // and group hits by project.
+        if (params.like_session) {
+          const meta = await remoteGetSoft<{ contentPreview?: string; slug?: string }>(
+            `/api/conversations/${encodeURIComponent(params.like_session)}/metadata`);
+          if (!meta.data) {
+            return { content: [{ type: 'text', text: meta.message || (meta.status === 404 ? `Session not found: ${params.like_session}` : `Session ${params.like_session} not synced yet.`) }] };
+          }
+          const searchText = meta.data.contentPreview || meta.data.slug || '';
+          if (!searchText.trim()) {
+            return { content: [{ type: 'text', text: `No search text could be derived from session ${params.like_session} — it has no synced prompt content. Pass a \`query\` instead.` }] };
+          }
+          const cleaned = sanitizeQuery(searchText).cleanQuery;
+          type SearchResp = {
+            results: Array<{ sessionId: string; score: number; projectPath: string; modified: string; title?: string; firstPrompt?: string; text?: string; matchedChunks?: Array<{ text: string }> }>;
+          };
+          const search = await remotePost<SearchResp>('/api/search', {
+            query: cleaned,
+            topK: params.top_k * 4,
+            projectFilter: params.project_filter,
+          });
+          const filtered = (search.results || []).filter(r => r.sessionId !== params.like_session);
+          const trimmed = filtered.slice(0, params.top_k);
+          if (trimmed.length === 0) {
+            return { content: [{ type: 'text', text: `No similar sessions found for "${cleaned.slice(0, 80)}".` }] };
+          }
+
+          // Group by project so the "5 projects, 3 of them did this" frame surfaces.
+          const byProject = new Map<string, number>();
+          for (const r of filtered) {
+            const p = r.projectPath || '(unknown)';
+            byProject.set(p, (byProject.get(p) || 0) + 1);
+          }
+
+          const lines = [
+            `# Similar past work (${trimmed.length} session${trimmed.length === 1 ? '' : 's'} returned, ${filtered.length} total matches across ${byProject.size} project${byProject.size === 1 ? '' : 's'})`,
+            '',
+            '_Keyword (FTS) match against the synced server index._',
+            '',
+          ];
+          for (const r of trimmed) {
+            const date = (r.modified || '').slice(0, 10) || '?';
+            const proj = (r.projectPath || '').split('/').slice(-2).join('/') || '(unknown)';
+            const snippet = (r.matchedChunks?.[0]?.text || r.text || r.firstPrompt || r.title || '').replace(/\s+/g, ' ').trim().slice(0, 160);
+            lines.push(`- **${r.sessionId.slice(0, 8)}** · ${proj} · ${date} · score ${r.score.toFixed(3)}`);
+            if (snippet) lines.push(`  ${snippet}…`);
+            if (params.include_outcome) {
+              const ol = await outcomeLine(r.sessionId);
+              if (ol) lines.push(`  ${ol}`);
+            }
+          }
+
+          if (byProject.size > 1) {
+            lines.push('', '## Project distribution');
+            const sortedProjects = [...byProject.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
+            for (const [proj, n] of sortedProjects) {
+              const short = proj.split('/').slice(-2).join('/') || proj;
+              lines.push(`- ${short} — ${n} session${n === 1 ? '' : 's'}`);
+            }
+          }
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+
+        if (!params.query?.trim()) {
+          return { content: [{ type: 'text', text: 'Provide `query` (free-text search) or `like_session` (find sessions similar to a session id).' }] };
+        }
+
+        // Sanitize query to prevent prompt injection
+        const sanitized = sanitizeQuery(params.query);
+        const searchQuery = sanitized.cleanQuery;
+
         const remote = await remotePost<{ results: Array<{ sessionId: string; score: number; projectPath: string; firstPrompt: string; summary?: string; matchedChunks?: Array<{ chunkType: string; text: string }> }>; count: number }>(
           '/api/search', { query: searchQuery, topK: params.top_k, projectFilter: params.project_filter },
         );
@@ -1409,6 +1267,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (r.summary) lines.push(`**Summary:** ${r.summary.slice(0, 300)}`);
           const snippet = r.matchedChunks?.[0]?.text?.replace(/\n/g, ' ').slice(0, 240);
           if (snippet) lines.push(`> ${snippet}`);
+          if (params.include_outcome) {
+            const ol = await outcomeLine(r.sessionId);
+            if (ol) lines.push(ol);
+            lines.push(`**Resume:** \`claude --resume ${r.sessionId}\``);
+          }
           lines.push('');
         }
         return { content: [{ type: 'text', text: lines.join('\n') }] };
@@ -1435,10 +1298,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       
       case 'recall_status': {
         requireRemote();
-        // Two cheap server reads: /api/status (chunks + per-project session
-        // counts) and /api/status/sync (the trust-panel coverage: synced
-        // sessions, raw archives, freshness). Local index-path / vector
-        // fields don't exist server-side and are dropped.
+        // Three cheap server reads: /api/status (chunks + per-project session
+        // counts), /api/status/sync (the trust-panel coverage: synced
+        // sessions, raw archives, freshness), and /api/memory/status (the
+        // memory-system breakdown formerly served by recall_memory_status:
+        // items/chunks per source type, per tool, link count). Local
+        // index-path / vector fields don't exist server-side and are dropped.
         const status = await remoteGet<{ totalChunks: number; totalSessions: number; projects: Record<string, number> }>('/api/status');
         const sync = await remoteGet<{ sessions: number; sourceTypes: Record<string, number>; rawArchived: number; newestSessionAgeMs: number | null }>('/api/status/sync');
 
@@ -1453,11 +1318,41 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           lines.push(`Freshness: newest synced session ${mins} min ago`);
         }
 
-        const types = Object.entries(sync.sourceTypes).filter(([, n]) => Number(n) > 0);
-        if (types.length > 0) {
-          lines.push('\nBy source type:');
-          for (const [type, n] of types) {
-            lines.push(`  ${type}: ${n} items`);
+        // Memory-system breakdown (absorbed from recall_memory_status).
+        // Best-effort: an older server without /api/memory/status still gets
+        // the basic status block plus the sync sourceTypes fallback.
+        type MemoryStatus = {
+          totalChunks: number; totalItems: number; linkCount: number;
+          bySourceType: Record<string, { items: number; chunks: number }>;
+          bySourceAndTool: Record<string, Record<string, number>>;
+        };
+        let memory: MemoryStatus | null = null;
+        try { memory = await remoteGet<MemoryStatus>('/api/memory/status'); } catch { /* older server */ }
+
+        if (memory) {
+          lines.push(`Memory items: ${memory.totalItems} · links: ${memory.linkCount}`);
+          const bySource = Object.entries(memory.bySourceType || {});
+          if (bySource.length > 0) {
+            lines.push('\nBy source type:');
+            for (const [type, data] of bySource) {
+              lines.push(`  ${type}: ${data.items} items, ${data.chunks} chunks`);
+            }
+          }
+          const byTool = Object.entries(memory.bySourceAndTool || {});
+          if (byTool.length > 0) {
+            lines.push('\nBy source type and tool:');
+            for (const [type, tools] of byTool) {
+              const parts = Object.entries(tools).map(([t, n]) => `${t}: ${n}`).join(', ');
+              lines.push(`  ${type}: ${parts}`);
+            }
+          }
+        } else {
+          const types = Object.entries(sync.sourceTypes).filter(([, n]) => Number(n) > 0);
+          if (types.length > 0) {
+            lines.push('\nBy source type:');
+            for (const [type, n] of types) {
+              lines.push(`  ${type}: ${n} items`);
+            }
           }
         }
 
@@ -1485,7 +1380,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const soft = await remoteGetSoft<{ sessionId: string; messages: Array<{ line: number; role: string; content: string; toolCalls?: Array<{ name: string; input?: Record<string, unknown> }> }>; total: number }>(
           `/api/conversations/${encodeURIComponent(params.session_id)}`, { limit: 0 });
         if (!soft.data || soft.data.messages.length === 0) {
-          return { content: [{ type: 'text', text: soft.message || `Session not found: ${params.session_id}` }] };
+          // Not a known session — try it as a PLAN id (absorbed from
+          // recall_plan_show). The content endpoint serves the plan from its
+          // stored FTS chunks when there's no local file (the synced case).
+          if (soft.status === 404 || !soft.data) {
+            const plan = await remoteGetSoft<{ content: string }>(
+              `/api/memory/item/plan/${encodeURIComponent(params.session_id)}/content`);
+            if (plan.data) {
+              return { content: [{ type: 'text', text: `# Plan: ${params.session_id}\n\n${plan.data.content}` }] };
+            }
+          }
+          return { content: [{ type: 'text', text: soft.message || `Session (or plan) not found: ${params.session_id}` }] };
         }
         const messagesList = soft.data.messages;
 
@@ -1716,6 +1621,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           .catch(() => '');
         type Outcome = {
           found?: boolean; status: string; reason: string;
+          startMs?: number; endMs?: number;
           fileCount: number; totalLinesAdded: number; totalLinesRemoved: number;
           commits: { totalCommits: number; repos: Array<{ repoName: string; commits: unknown[] }> };
           decisions: Array<{ text: string }>;
@@ -1756,6 +1662,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         // Status header line — most useful single signal.
         lines.push(`**Status:** ${statusEmoji} ${outcome.status} — ${outcome.reason}`);
+        if (outcome.startMs && outcome.endMs) {
+          const mins = Math.round((outcome.endMs - outcome.startMs) / 60000);
+          lines.push(`**Window:** ${new Date(outcome.startMs).toISOString().slice(0, 16).replace('T', ' ')} → ${new Date(outcome.endMs).toISOString().slice(0, 16).replace('T', ' ')} (${mins} min)`);
+        }
         if (outcome.fileCount > 0) {
           lines.push(`**Edits:** ${outcome.fileCount} file(s) · +${outcome.totalLinesAdded} / −${outcome.totalLinesRemoved} lines`);
         }
@@ -1816,7 +1726,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'recall_diff': {
         const params = RecallDiffSchema.parse(args);
-        const soft = await remoteGetSoft<{ totalLinesAdded: number; totalLinesRemoved: number; files: Array<{ file: string; diff: string; linesAdded: number; linesRemoved: number; reverted: boolean; succeededEvents: number; failedEvents: number; initialKnown: boolean; events: unknown[] }> }>(
+        const soft = await remoteGetSoft<{ projectPath?: string; totalLinesAdded: number; totalLinesRemoved: number; files: Array<{ file: string; diff: string; linesAdded: number; linesRemoved: number; reverted: boolean; succeededEvents: number; failedEvents: number; initialKnown: boolean; events: Array<{ toolName?: string }> }> }>(
           `/api/conversations/${encodeURIComponent(params.session_id)}/diff`, { file: params.file });
         if (!soft.data) {
           return { content: [{ type: 'text', text: soft.message || (soft.status === 404 ? `Session not found: ${params.session_id}` : `Diff not synced yet for ${params.session_id}.`) }] };
@@ -1824,7 +1734,43 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const result = soft.data;
         const files = result.files;
         if (files.length === 0) {
-          return { content: [{ type: 'text', text: `No edits found${params.file ? ` for file ${params.file}` : ''} in session ${params.session_id}.` }] };
+          return { content: [{ type: 'text', text: params.files_only
+            ? `Session ${params.session_id} exists but no file activity is recorded (no Edit/Write/MultiEdit/NotebookEdit tool_uses found).`
+            : `No edits found${params.file ? ` for file ${params.file}` : ''} in session ${params.session_id}.` }] };
+        }
+
+        // files_only mode (absorbed from recall_session_files): just the list
+        // of files the session touched, bucketed by extension, with the tools
+        // used — no diff bodies, no per-file stats.
+        if (params.files_only) {
+          const fileNames = files.map(f => f.file);
+          const tools = [...new Set(files.flatMap(f => (f.events || []).map(e => e.toolName).filter((t): t is string => !!t)))];
+
+          // Bucket by extension to give the agent a quick "what kind of work was this".
+          const byExt = new Map<string, string[]>();
+          for (const f of fileNames) {
+            const ext = f.includes('.') ? f.split('.').pop()!.toLowerCase() : '(no ext)';
+            if (!byExt.has(ext)) byExt.set(ext, []);
+            byExt.get(ext)!.push(f);
+          }
+
+          const lines = [
+            `# Files touched in session ${params.session_id.slice(0, 8)}`,
+            '',
+            `**Project:** ${result.projectPath || '(unknown)'}`,
+            `**Files modified:** ${fileNames.length}`,
+            `**Tools used:** ${tools.join(', ') || '(none recorded)'}`,
+            `**Source:** synced diff replay`,
+            '',
+            '## By extension',
+          ];
+          const sortedExts = [...byExt.entries()].sort((a, b) => b[1].length - a[1].length);
+          for (const [ext, fs] of sortedExts) {
+            lines.push(`### .${ext} (${fs.length})`);
+            for (const f of fs.slice(0, 12)) lines.push(`- ${f}`);
+            if (fs.length > 12) lines.push(`- …and ${fs.length - 12} more`);
+          }
+          return { content: [{ type: 'text', text: withCodeindexHint(lines.join('\n'), 'session') }] };
         }
         const lines: string[] = [];
         lines.push(`# 🧾 Diff — ${params.session_id.substring(0, 8)}…`);
@@ -1880,55 +1826,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
-      case 'recall_outcome': {
-        const params = RecallOutcomeSchema.parse(args);
-        const soft = await remoteGetSoft<{ status: string; reason: string; startMs?: number; endMs?: number; fileCount: number; totalLinesAdded: number; totalLinesRemoved: number; commits: { totalCommits: number; repos: Array<{ repoName: string; commits: unknown[] }> }; decisions: Array<{ text: string }>; blockers: Array<{ kind: string; text: string }>; claimReaction: { claim?: { text: string }; reaction?: { text: string; markers: string[] } } }>(
-          `/api/conversations/${encodeURIComponent(params.session_id)}/outcome`);
-        if (!soft.data) {
-          return { content: [{ type: 'text', text: soft.message || (soft.status === 404 ? `Session not found: ${params.session_id}` : `Outcome not synced yet for ${params.session_id}.`) }] };
-        }
-        const o = soft.data;
-        const statusEmoji =
-          o.status === 'shipped' ? '🚢' :
-          o.status === 'interrupted' ? '⏸' :
-          o.status === 'abandoned' ? '🪦' :
-          o.status === 'in_progress' ? '🟡' : '❔';
-        const lines: string[] = [];
-        lines.push(`# ${statusEmoji} Outcome — ${o.status}`);
-        lines.push(`**Session:** ${params.session_id.substring(0, 8)}…`);
-        lines.push(`**Reason:** ${o.reason}`);
-        if (o.startMs && o.endMs) {
-          const mins = Math.round((o.endMs - o.startMs) / 60000);
-          lines.push(`**Window:** ${new Date(o.startMs).toISOString().slice(0, 16).replace('T', ' ')} → ${new Date(o.endMs).toISOString().slice(0, 16).replace('T', ' ')} (${mins} min)`);
-        }
-        lines.push(`**Edits:** ${o.fileCount} file(s) · +${o.totalLinesAdded} / −${o.totalLinesRemoved} lines`);
-        if (o.commits.totalCommits > 0) {
-          lines.push(`**Commits:** ${o.commits.totalCommits} (${o.commits.repos.map(r => `${r.repoName}:${r.commits.length}`).join(', ')})`);
-        }
-        if (o.decisions.length) {
-          lines.push('');
-          lines.push('## Decisions');
-          for (const d of o.decisions.slice(0, 10)) lines.push(`- ${d.text}`);
-        }
-        if (o.blockers.length) {
-          lines.push('');
-          lines.push('## Blockers');
-          for (const b of o.blockers.slice(0, 10)) lines.push(`- _${b.kind}_: ${b.text}`);
-        }
-        if (o.claimReaction.claim) {
-          lines.push('');
-          lines.push('## Final claim vs reaction');
-          lines.push(`- **claim:** ${o.claimReaction.claim.text.slice(0, 240)}`);
-          if (o.claimReaction.reaction) {
-            const r = o.claimReaction.reaction;
-            const m = r.markers.length ? ` _[${r.markers.join(', ')}]_` : '';
-            lines.push(`- **reaction:** ${r.text.slice(0, 240)}${m}`);
-          } else {
-            lines.push(`- **reaction:** _none — session ended on this claim_`);
-          }
-        }
-        return { content: [{ type: 'text', text: lines.join('\n') }] };
-      }
 
       case 'recall_markers': {
         const params = RecallMarkersSchema.parse(args);
@@ -1964,71 +1861,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
-      case 'recall_suggest_resume': {
-        const params = RecallSuggestResumeSchema.parse(args);
-
-        // Server-backed: POST /api/search (FTS) using the current task text as
-        // the query — a keyword degrade of the local vector match (noted in the
-        // header). Per-result outcome one-liners come from the synced
-        // /outcome endpoint (best-effort; skipped when not synced yet).
-        const cleaned = sanitizeQuery(params.current_task).cleanQuery;
-        type SearchResp = {
-          results: Array<{ sessionId: string; score: number; projectPath: string; summary?: string; firstPrompt?: string; text?: string }>;
-        };
-        const search = await remotePost<SearchResp>('/api/search', {
-          query: cleaned,
-          topK: params.top_k,
-        });
-        const results = search.results || [];
-
-        if (results.length === 0) {
-          return { content: [{ type: 'text', text: 'No relevant past conversations found.' }] };
-        }
-
-        const output = [
-          `# Suggested Conversations to Resume`,
-          `Based on: "${params.current_task}"`,
-          '_Keyword (FTS) match against the synced server index._',
-          '',
-        ];
-
-        // Outcome shape (subset) — same endpoint recall_outcome consumes.
-        type Outcome = { status: string; reason: string; fileCount: number; totalLinesAdded: number; totalLinesRemoved: number };
-        const statusEmoji = (s: string) =>
-          s === 'shipped' ? '🚢' : s === 'interrupted' ? '⏸' : s === 'abandoned' ? '🪦' : s === 'in_progress' ? '🟡' : '❔';
-
-        for (let i = 0; i < results.length; i++) {
-          const result = results[i];
-
-          output.push(`## ${i + 1}. Session ${result.sessionId.substring(0, 8)}...`);
-          output.push(`**Project:** ${(result.projectPath || '').replace(homedir(), '~')}`);
-          output.push(`**Relevance:** ${(result.score * 100).toFixed(1)}%`);
-          output.push('');
-
-          if (result.summary) {
-            const shortSummary = result.summary.length > 300 ? result.summary.substring(0, 300) + '...' : result.summary;
-            output.push(shortSummary);
-          } else {
-            output.push((result.text || result.firstPrompt || '').substring(0, 200) + '...');
-          }
-
-          // Outcome one-liner — status tells you at a glance whether resuming
-          // this session is worth it. Best-effort: skip on 202/404.
-          try {
-            const soft = await remoteGetSoft<Outcome>(`/api/conversations/${encodeURIComponent(result.sessionId)}/outcome`);
-            if (soft.data) {
-              const o = soft.data;
-              output.push(`**Outcome:** ${statusEmoji(o.status)} ${o.status} — ${o.reason} · ${o.fileCount} file(s) +${o.totalLinesAdded}/−${o.totalLinesRemoved}`);
-            }
-          } catch { /* outcome best-effort */ }
-
-          output.push('');
-          output.push(`**Resume:** \`claude --resume ${result.sessionId}\``);
-          output.push('');
-        }
-
-        return { content: [{ type: 'text', text: output.join('\n') }] };
-      }
 
       case 'recall_memory_search': {
         const params = RecallMemorySearchSchema.parse(args);
@@ -2057,105 +1889,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
-      case 'recall_memory_status': {
-        requireRemote();
-        // Server's aggregate memory stats. Vector/index-path fields are
-        // local-only and dropped; FTS5 chunk count and per-(source,tool)
-        // breakdown come straight from the server.
-        const status = await remoteGet<{
-          totalChunks: number;
-          totalItems: number;
-          linkCount: number;
-          bySourceType: Record<string, { items: number; chunks: number }>;
-          bySourceAndTool: Record<string, Record<string, number>>;
-        }>('/api/memory/status');
 
-        const lines = [
-          '# Memory System Status\n',
-          `Total items: ${status.totalItems}`,
-          `FTS5 chunks: ${status.totalChunks}`,
-          `Total links: ${status.linkCount}`,
-          '',
-        ];
 
-        const bySource = Object.entries(status.bySourceType || {});
-        if (bySource.length > 0) {
-          lines.push('**By source type:**');
-          for (const [type, data] of bySource) {
-            lines.push(`- ${type}: ${data.items} items, ${data.chunks} chunks`);
-          }
-          lines.push('');
-        }
 
-        const byTool = Object.entries(status.bySourceAndTool || {});
-        if (byTool.length > 0) {
-          lines.push('**By source type and tool:**');
-          for (const [type, tools] of byTool) {
-            const parts = Object.entries(tools).map(([t, n]) => `${t}: ${n}`).join(', ');
-            lines.push(`- ${type}: ${parts}`);
-          }
-        }
-
-        return { content: [{ type: 'text', text: lines.join('\n') }] };
-      }
-
-      case 'recall_plans': {
-        const params = RecallPlansSchema.parse(args);
-        requireRemote();
-        const { items } = await remoteGetQS<{ items: Array<{ id: string; title: string; mtime: number; content_preview: string }> }>(
-          '/api/memory/browse/plan', { limit: params.limit });
-
-        if (items.length === 0) {
-          return { content: [{ type: 'text', text: 'No plans synced yet.' }] };
-        }
-
-        const lines = [`# Plans (${items.length})\n`];
-        for (const item of items) {
-          const date = new Date(item.mtime).toISOString().slice(0, 10);
-          lines.push(`- **${item.title}** (${date})`);
-          if (item.content_preview) lines.push(`  ${item.content_preview.slice(0, 120)}...`);
-        }
-        return { content: [{ type: 'text', text: lines.join('\n') }] };
-      }
-
-      case 'recall_plan_show': {
-        const params = RecallPlanShowSchema.parse(args);
-
-        // Server-backed: the content endpoint serves the plan from its stored
-        // FTS chunks when there's no local file (the synced case) — see
-        // packages/server/src/routes/memory.ts. 404 → plan not on the server.
-        const soft = await remoteGetSoft<{ content: string }>(
-          `/api/memory/item/plan/${encodeURIComponent(params.plan_id)}/content`);
-        if (!soft.data) {
-          return { content: [{ type: 'text', text:
-            soft.status === 404 ? `Plan not found: ${params.plan_id}` : (soft.message || `Plan not synced yet: ${params.plan_id}.`) }] };
-        }
-        return { content: [{ type: 'text', text: soft.data.content }] };
-      }
-
-      case 'recall_tasks': {
-        const params = RecallTasksSchema.parse(args);
-        requireRemote();
-        const { items } = await remoteGetQS<{ items: Array<{ id: string; title: string; extra_json: string }> }>(
-          '/api/memory/browse/task', { limit: params.limit });
-
-        if (items.length === 0) {
-          return { content: [{ type: 'text', text: 'No tasks synced yet.' }] };
-        }
-
-        const lines = [`# Task Groups (${items.length})\n`];
-        for (const item of items) {
-          const extra = JSON.parse(item.extra_json || '{}');
-          const taskCount = extra.taskCount || '?';
-          const completedCount = extra.completedCount || 0;
-          lines.push(`## Session ${item.id.slice(0, 8)}...`);
-          lines.push(`**Tasks:** ${completedCount}/${taskCount} completed`);
-          lines.push(`**Subjects:** ${item.title}`);
-          lines.push(`**Resume:** \`claude --resume ${item.id.replace(/^[a-z]+_/, '')}\``);
-          lines.push('');
-        }
-        return { content: [{ type: 'text', text: lines.join('\n') }] };
-      }
 
       case 'recall_smart_resume': {
         const params = RecallSmartResumeSchema.parse(args);
@@ -2350,49 +2086,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
-      case 'recall_project_dossier': {
-        const params = RecallProjectDossierSchema.parse(args);
-        // Reject absolute paths and other non-id inputs. Resolving a path
-        // here used to silently produce empty/orphan dossiers when the cwd
-        // no longer existed (PR-bot worktrees, /tmp). Force the caller to
-        // pass a stable identifier they got from `recall_project_context`
-        // or the web sidebar.
-        if (!/^(git:|git-local:|ws:|user:)/.test(params.project)) {
-          return {
-            content: [{
-              type: 'text',
-              text:
-                `Invalid project id: \`${params.project}\`.\n\n` +
-                `Use a project_id from \`recall_project_context\` or the web UI sidebar.\n` +
-                `Examples:\n  - git:github.com/me/munbot\n  - ws:personal\n  - git-local:26ccc83b2b1b\n`,
-            }],
-            isError: true,
-          };
-        }
-        const dossier = await remoteGetQS<{ project_id: string; markdown: string }>(
-          `/api/projects/${encodeURIComponent(params.project)}/dossier`,
-          { sessions: params.sessions, tasks: params.tasks, plans: params.plans },
-        );
-        return { content: [{ type: 'text', text: dossier.markdown }] };
-      }
-
       case 'recall_project_context': {
         const params = RecallProjectContextSchema.parse(args);
 
-        // Server-backed: the dossier route resolves a path/id into a
+        // Server-backed: the dossier route resolves EITHER a stable project_id
+        // (git:/ws:/git-local:/user:) OR a path/name substring into a
         // project_id (via the engine's resolveProjectId) and aggregates
         // everything the synced index knows — recent sessions w/ summaries,
         // cost/token rollup, open tasks, plans, and current knowledge-graph
-        // facts (decisions + tech stack). That is the substance of the old
-        // local project_context. Two of the old extras are intentionally NOT
-        // reproduced because no server endpoint exposes them:
+        // facts (decisions + tech stack). Absorbs the old recall_project_dossier
+        // (which demanded an id) — both hit the same endpoint. Two of the old
+        // local extras are intentionally NOT reproduced because no server
+        // endpoint exposes them:
         //   - "Recent Git Commits": came from shelling out to `git log` on the
         //     local repo; the server has no checkout of the producer's repo.
         //   - "Related Work in Other Projects": a cross-project FTS sweep over
         //     the local index; the dossier endpoint is single-project scoped.
         const dossier = await remoteGetQS<{ project_id: string; markdown: string }>(
           `/api/projects/${encodeURIComponent(params.project_path)}/dossier`,
-          { sessions: params.limit },
+          { sessions: params.limit, tasks: params.tasks, plans: params.plans },
         );
         return { content: [{ type: 'text', text: dossier.markdown }] };
       }
@@ -2655,7 +2367,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
-      // ── Code intelligence (codeindex merge) ──
+      // ── Code intelligence (codeindex companion — gated: the case handlers
+      // are only reachable when the tools are registered, i.e. when the
+      // codeindex binary is on PATH; see the pre-switch guard) ──
       case 'recall_code_index': {
         const params = RecallCodeIndexSchema.parse(args);
         requireRemote();
@@ -2710,28 +2424,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
-      case 'recall_code_recommendations': {
-        const params = RecallCodeRecommendationsSchema.parse(args);
-        requireRemote();
-        const { recommendations } = await remoteGetQS<{ recommendations: Array<{ kind: string; severity: string; title: string; rationale: string; evidence: string[]; action: { type: string; payload: any } }> }>(
-          '/api/code/recommendations', { project: params.project });
-        if (!recommendations.length) return { content: [{ type: 'text', text: 'No recommendations — clean, or not enough signal yet.' }] };
-        const lines = [`# Recommendations (${recommendations.length}) — behavior × code\n`];
-        for (const r of recommendations) {
-          lines.push(`## [${r.severity}] ${r.title} (${r.kind})`);
-          lines.push(r.rationale);
-          if (r.evidence?.length) lines.push(`Evidence: ${r.evidence.join('; ')}`);
-          if (r.action?.type === 'append_claude_md') lines.push('Apply → add to CLAUDE.md:\n```\n' + r.action.payload.text + '\n```');
-          else lines.push(`Apply → ${r.action.type} ${JSON.stringify(r.action.payload)}`);
-          lines.push('');
-        }
-        return { content: [{ type: 'text', text: lines.join('\n') }] };
-      }
 
       case 'recall_recommendations': {
-        RecallRecommendationsSchema.parse(args);
+        const params = RecallRecommendationsSchema.parse(args);
         requireRemote();
-        const { recommendations } = await remoteGet<{ recommendations: Array<{ kind: string; severity: string; title: string; rationale: string; evidence: string[]; action: { type: string; payload: any } }> }>('/api/recommendations');
+        type Rec = { kind: string; severity: string; title: string; rationale: string; evidence: string[]; action: { type: string; payload: any } };
+
+        // scope "project" — behavior × code recommendations for one
+        // code-indexed project (the old recall_code_recommendations).
+        if (params.scope === 'project') {
+          if (!params.project) {
+            return { content: [{ type: 'text', text: 'scope "project" requires `project` (a project id from recall_code_projects).' }] };
+          }
+          const { recommendations } = await remoteGetQS<{ recommendations: Rec[] }>(
+            '/api/code/recommendations', { project: params.project });
+          if (!recommendations.length) return { content: [{ type: 'text', text: 'No recommendations — clean, or not enough signal yet.' }] };
+          const lines = [`# Recommendations (${recommendations.length}) — behavior × code\n`];
+          for (const r of recommendations) {
+            lines.push(`## [${r.severity}] ${r.title} (${r.kind})`);
+            lines.push(r.rationale);
+            if (r.evidence?.length) lines.push(`Evidence: ${r.evidence.join('; ')}`);
+            if (r.action?.type === 'append_claude_md') lines.push('Apply → add to CLAUDE.md:\n```\n' + r.action.payload.text + '\n```');
+            else lines.push(`Apply → ${r.action.type} ${JSON.stringify(r.action.payload)}`);
+            lines.push('');
+          }
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+
+        // scope "account" (default) — recommendations from YOUR chat-recall data.
+        const { recommendations } = await remoteGet<{ recommendations: Rec[] }>('/api/recommendations');
         if (!recommendations.length) return { content: [{ type: 'text', text: 'No account recommendations — no leaked secrets and healthy session outcomes.' }] };
         const lines = [`# Account recommendations (${recommendations.length})\n`];
         for (const r of recommendations) {
@@ -2744,85 +2465,58 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
-      // ── Subagent search ────────────────────────────────────────
-      case 'recall_subagent_search': {
-        // Server-backed: subagents ship in the session envelope and are indexed
-        // as `subagent:<kind>` FTS chunks at sync time, so this searches synced
-        // (cross-device) history rather than local JSONL files.
-        const params = RecallSubagentSearchSchema.parse(args);
-        requireRemote();
-        const { hits } = await remoteGetQS<{ hits: Array<{ sessionId: string; subagent: string; kind: string; lineHits: number; sample: string }> }>(
-          '/api/subagents/search', { query: params.query, session_id: params.session_id, kind: params.kind, limit: params.limit });
-
-        if (hits.length === 0) {
-          return { content: [{ type: 'text', text: `No subagent matches for "${params.query}".` }] };
-        }
-
-        const lines = [`# Subagent search: "${params.query}" (${hits.length} hits)\n`];
-        for (const h of hits) {
-          lines.push(`- **${h.sessionId.slice(0, 8)}** / ${h.subagent} [${h.kind}] (${h.lineHits} match${h.lineHits === 1 ? '' : 'es'})`);
-          lines.push(`  …${h.sample}…`);
-        }
-        return { content: [{ type: 'text', text: lines.join('\n') }] };
-      }
-
-      // ── Files touched ──────────────────────────────────────────
-      case 'recall_files_touched': {
-        const params = RecallFilesTouchedSchema.parse(args);
-
-        // Server-backed: /api/edits/timeline with a pattern filter returns the
-        // edit rows (file/session/project/ts) across recent sessions, sourced
-        // from synced diff rows (cache-first). We group them by session to get
-        // the "which sessions touched files matching X" view. Edits are
-        // returned newest-first and capped at 1000 server-side; for a normal
-        // pattern that comfortably covers `limit` sessions.
-        const sinceHours = params.since_days * 24;
-        type Edit = { sessionId: string; projectPath: string; file: string; ts: number };
-        type TimelineResp = { total: number; edits: Edit[] };
-        const resp = await remoteGetQS<TimelineResp>('/api/edits/timeline', {
-          since_hours: sinceHours,
-          pattern: params.pattern,
-          limit: 1000,
-          include_reads: false,
-        });
-
-        type Match = { sessionId: string; project: string; mtime: number; matchedFiles: string[] };
-        const matchesById = new Map<string, Match>();
-        for (const e of resp.edits || []) {
-          const existing = matchesById.get(e.sessionId);
-          if (existing) {
-            if (!existing.matchedFiles.includes(e.file)) existing.matchedFiles.push(e.file);
-            if (e.ts > existing.mtime) existing.mtime = e.ts;
-            continue;
-          }
-          matchesById.set(e.sessionId, {
-            sessionId: e.sessionId,
-            project: e.projectPath || '(unknown)',
-            mtime: e.ts,
-            matchedFiles: [e.file],
-          });
-        }
-
-        const matches = [...matchesById.values()].sort((a, b) => b.mtime - a.mtime);
-        const trimmed = matches.slice(0, params.limit);
-
-        if (trimmed.length === 0) {
-          return { content: [{ type: 'text', text: `No sessions in the last ${params.since_days} days touched files matching "${params.pattern}".` }] };
-        }
-
-        const lines = [`# Files touched: "${params.pattern}" (${matches.length} session${matches.length === 1 ? '' : 's'} in last ${params.since_days}d)\n`];
-        for (const m of trimmed) {
-          const date = new Date(m.mtime).toISOString().slice(0, 10);
-          lines.push(`- **${m.sessionId}** ${date} — ${m.project}`);
-          for (const f of m.matchedFiles.slice(0, 5)) lines.push(`  · ${f}`);
-          if (m.matchedFiles.length > 5) lines.push(`  · …and ${m.matchedFiles.length - 5} more`);
-        }
-        return { content: [{ type: 'text', text: withCodeindexHint(lines.join('\n'), 'files') }] };
-      }
-
       // ── Edits timeline (chronological tool_use list across recent sessions) ──
       case 'recall_edits_timeline': {
         const params = RecallEditsTimelineSchema.parse(args);
+
+        // group_by "session" (absorbed from recall_files_touched): aggregate
+        // the edit rows per session — "which sessions touched files matching
+        // X?". Same /api/edits/timeline source, grouped instead of flat.
+        if (params.group_by === 'session') {
+          type GEdit = { sessionId: string; projectPath: string; file: string; ts: number };
+          const resp = await remoteGetQS<{ total: number; edits: GEdit[] }>('/api/edits/timeline', {
+            since_hours: params.since_hours,
+            pattern: params.pattern,
+            project: params.project_filter,
+            include_reads: params.include_reads,
+            tools: params.tools?.join(','),
+            limit: 1000,
+          });
+
+          type Match = { sessionId: string; project: string; mtime: number; matchedFiles: string[] };
+          const matchesById = new Map<string, Match>();
+          for (const e of resp.edits || []) {
+            const existing = matchesById.get(e.sessionId);
+            if (existing) {
+              if (!existing.matchedFiles.includes(e.file)) existing.matchedFiles.push(e.file);
+              if (e.ts > existing.mtime) existing.mtime = e.ts;
+              continue;
+            }
+            matchesById.set(e.sessionId, {
+              sessionId: e.sessionId,
+              project: e.projectPath || '(unknown)',
+              mtime: e.ts,
+              matchedFiles: [e.file],
+            });
+          }
+
+          const matches = [...matchesById.values()].sort((a, b) => b.mtime - a.mtime);
+          const trimmed = matches.slice(0, params.limit);
+
+          if (trimmed.length === 0) {
+            return { content: [{ type: 'text', text: `No sessions in the last ${params.since_hours}h touched files${params.pattern ? ` matching "${params.pattern}"` : ''}.` }] };
+          }
+
+          const header = params.pattern ? `"${params.pattern}"` : 'any file';
+          const lines = [`# Files touched: ${header} (${matches.length} session${matches.length === 1 ? '' : 's'} in last ${params.since_hours}h)\n`];
+          for (const m of trimmed) {
+            const date = new Date(m.mtime).toISOString().slice(0, 10);
+            lines.push(`- **${m.sessionId}** ${date} — ${m.project}`);
+            for (const f of m.matchedFiles.slice(0, 5)) lines.push(`  · ${f}`);
+            if (m.matchedFiles.length > 5) lines.push(`  · …and ${m.matchedFiles.length - 5} more`);
+          }
+          return { content: [{ type: 'text', text: withCodeindexHint(lines.join('\n'), 'files') }] };
+        }
 
         // Server-backed: /api/edits/timeline runs the same cached/live edit
         // scan the Activity panel uses (cache-first from synced diff rows,
@@ -3112,174 +2806,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
-      // ── Similar sessions ───────────────────────────────────────
-      case 'recall_similar_sessions': {
-        const params = RecallSimilarSessionsSchema.parse(args);
 
-        // Resolve search text: either the explicit query, or the source
-        // session's first-prompt/preview pulled from its metadata on the
-        // server (the synced session's content preview).
-        let searchText = params.query ?? '';
-        let excludeSessionId: string | undefined;
-        if (params.session_id) {
-          excludeSessionId = params.session_id;
-          const meta = await remoteGetSoft<{ contentPreview?: string; slug?: string }>(
-            `/api/conversations/${encodeURIComponent(params.session_id)}/metadata`);
-          if (!meta.data) {
-            return { content: [{ type: 'text', text: meta.message || (meta.status === 404 ? `Session not found: ${params.session_id}` : `Session ${params.session_id} not synced yet.`) }] };
-          }
-          searchText = meta.data.contentPreview || meta.data.slug || '';
-        }
-        if (!searchText.trim()) {
-          return { content: [{ type: 'text', text: 'No search text could be derived. Provide `query` or a session_id with prompt content.' }] };
-        }
 
-        // Sanitize then search across sessions only. Server search is FTS —
-        // a keyword degrade of the local vector clustering (noted below).
-        const cleaned = sanitizeQuery(searchText).cleanQuery;
-        type SearchResp = {
-          results: Array<{ sessionId: string; score: number; projectPath: string; modified: string; title?: string; firstPrompt?: string; text?: string; matchedChunks?: Array<{ text: string }> }>;
-        };
-        const search = await remotePost<SearchResp>('/api/search', {
-          query: cleaned,
-          topK: params.top_k * 4,
-          projectFilter: params.project_filter,
-        });
-
-        const filtered = (search.results || []).filter(r => r.sessionId !== excludeSessionId);
-        const trimmed = filtered.slice(0, params.top_k);
-
-        if (trimmed.length === 0) {
-          return { content: [{ type: 'text', text: `No similar sessions found for "${cleaned.slice(0, 80)}".` }] };
-        }
-
-        // Group by project so the "5 projects, 3 of them did this" frame surfaces.
-        const byProject = new Map<string, number>();
-        for (const r of filtered) {
-          const p = r.projectPath || '(unknown)';
-          byProject.set(p, (byProject.get(p) || 0) + 1);
-        }
-
-        const lines = [
-          `# Similar past work (${trimmed.length} session${trimmed.length === 1 ? '' : 's'} returned, ${filtered.length} total matches across ${byProject.size} project${byProject.size === 1 ? '' : 's'})`,
-          '',
-          '_Keyword (FTS) match against the synced server index — server search is keyword-based, not vector clustering._',
-          '',
-        ];
-        for (const r of trimmed) {
-          const date = (r.modified || '').slice(0, 10) || '?';
-          const proj = (r.projectPath || '').split('/').slice(-2).join('/') || '(unknown)';
-          const snippet = (r.matchedChunks?.[0]?.text || r.text || r.firstPrompt || r.title || '').replace(/\s+/g, ' ').trim().slice(0, 160);
-          lines.push(`- **${r.sessionId.slice(0, 8)}** · ${proj} · ${date} · score ${r.score.toFixed(3)}`);
-          if (snippet) lines.push(`  ${snippet}…`);
-        }
-
-        if (byProject.size > 1) {
-          lines.push('', '## Project distribution');
-          const sortedProjects = [...byProject.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
-          for (const [proj, n] of sortedProjects) {
-            const short = proj.split('/').slice(-2).join('/') || proj;
-            lines.push(`- ${short} — ${n} session${n === 1 ? '' : 's'}`);
-          }
-        }
-
-        return { content: [{ type: 'text', text: lines.join('\n') }] };
-      }
-
-      // ── Session files ──────────────────────────────────────────
-      case 'recall_session_files': {
-        const params = RecallSessionFilesSchema.parse(args);
-
-        // Server-backed: the per-session diff endpoint replays the session's
-        // Edit/Write/MultiEdit/NotebookEdit tool calls into a per-file diff.
-        // The set of modified files is `files[].file`; the tools used come from
-        // each file's `events[].toolName`. Served from the synced compute cache
-        // (202 "pending-sync" until the session's machine ships its diff).
-        type DiffFile = { file: string; events?: Array<{ toolName: string }> };
-        type DiffResp = { projectPath: string; files: DiffFile[] };
-        const soft = await remoteGetSoft<DiffResp>(`/api/conversations/${encodeURIComponent(params.session_id)}/diff`);
-        if (!soft.data) {
-          return { content: [{ type: 'text', text: soft.message || (soft.status === 404 ? `Session not found: ${params.session_id}` : `Files not synced yet for ${params.session_id}.`) }] };
-        }
-
-        const projectPath = soft.data.projectPath || '';
-        const files = soft.data.files.map(f => f.file);
-        const tools = [...new Set(soft.data.files.flatMap(f => (f.events || []).map(e => e.toolName)))];
-
-        if (files.length === 0) {
-          return {
-            content: [{
-              type: 'text',
-              text: `Session ${params.session_id} exists but no file activity is recorded ` +
-                    `(no Edit/Write/MultiEdit/NotebookEdit tool_uses found).`,
-            }],
-          };
-        }
-
-        // Bucket by extension to give the agent a quick "what kind of work was this".
-        const byExt = new Map<string, string[]>();
-        for (const f of files) {
-          const ext = f.includes('.') ? f.split('.').pop()!.toLowerCase() : '(no ext)';
-          if (!byExt.has(ext)) byExt.set(ext, []);
-          byExt.get(ext)!.push(f);
-        }
-
-        const lines = [
-          `# Files touched in session ${params.session_id.slice(0, 8)}`,
-          '',
-          `**Project:** ${projectPath || '(unknown)'}`,
-          `**Files modified:** ${files.length}`,
-          `**Tools used:** ${tools.join(', ') || '(none recorded)'}`,
-          `**Source:** synced diff replay`,
-          '',
-          '## By extension',
-        ];
-        const sortedExts = [...byExt.entries()].sort((a, b) => b[1].length - a[1].length);
-        for (const [ext, fs] of sortedExts) {
-          lines.push(`### .${ext} (${fs.length})`);
-          for (const f of fs.slice(0, 12)) lines.push(`- ${f}`);
-          if (fs.length > 12) lines.push(`- …and ${fs.length - 12} more`);
-        }
-
-        return { content: [{ type: 'text', text: withCodeindexHint(lines.join('\n'), 'session') }] };
-      }
-
-      // ── Redundancy detection (filename-level) ──────────────────
-      case 'recall_redundant_files': {
-        const params = RecallRedundantFilesSchema.parse(args);
-        const target = params.filename.trim();
-        requireRemote();
-        const { hits: ranked } = await remoteGetQS<{ hits: Array<{ file: string; sessionId: string; project: string; mtime: number; score: number; reason: string }> }>(
-          '/api/files/redundant', { filename: target, project: params.project_path, limit: params.limit });
-
-        if (ranked.length === 0) {
-          return {
-            content: [{
-              type: 'text',
-              text: `No similar filenames found in synced sessions for "${target}".\n\n` +
-                    `For *code-level* redundancy (existing symbols/functions matching what you're about to write), ` +
-                    `call codeindex's \`find_symbol\` or \`search\` against the same project.`,
-            }],
-          };
-        }
-
-        const lines = [
-          `# Filename redundancy check: "${target}"`,
-          '',
-          `Found **${ranked.length}** similar file${ranked.length === 1 ? '' : 's'} touched by past sessions.`,
-          params.project_path ? `Scoped to project: \`${params.project_path}\`` : '_Searched across all projects._',
-          '',
-        ];
-        for (const h of ranked) {
-          const date = new Date(h.mtime).toISOString().slice(0, 10);
-          lines.push(`- **${h.file}**`);
-          lines.push(`  ${h.reason} · session ${h.sessionId.slice(0, 8)} · ${h.project} · ${date} · score ${h.score.toFixed(2)}`);
-        }
-        lines.push('');
-        lines.push('_Tip: read the matching file before creating new code that may duplicate it._');
-
-        return { content: [{ type: 'text', text: withCodeindexHint(lines.join('\n'), 'redundancy') }] };
-      }
 
       // ── KV store ───────────────────────────────────────────────
       case 'recall_set': {
@@ -3296,39 +2824,42 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'recall_get': {
         const params = RecallGetSchema.parse(args);
         requireRemote();
+
+        // List mode (absorbed from recall_kv_list): no key → enumerate the
+        // scope's entries; no scope either → list across ALL scopes.
+        if (!params.key) {
+          const { entries: rows } = await remoteGetQS<{ entries: Array<{ scope: string; key: string; value: string; updated_at: number }> }>(
+            '/api/kv/list', { scope: params.scope, limit: params.limit });
+          if (rows.length === 0) {
+            return {
+              content: [{
+                type: 'text',
+                text: params.scope ? `No keys in scope "${params.scope}".` : 'No KV entries yet.',
+              }],
+            };
+          }
+          const lines = [`# KV entries (${rows.length})\n`];
+          for (const r of rows) {
+            const preview = r.value.length > 80 ? r.value.slice(0, 80) + '…' : r.value;
+            const ago = Math.floor((Date.now() - r.updated_at) / 1000);
+            lines.push(`- **${r.scope}:${r.key}** — ${preview}  _(${ago}s ago)_`);
+          }
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+
+        const scope = params.scope ?? 'default';
         const { entry: row } = await remoteGetQS<{ entry: { value: string; updated_at: number } | null }>(
-          '/api/kv/get', { scope: params.scope, key: params.key });
-        if (!row) return { content: [{ type: 'text', text: `(no value at ${params.scope}:${params.key})` }] };
+          '/api/kv/get', { scope, key: params.key });
+        if (!row) return { content: [{ type: 'text', text: `(no value at ${scope}:${params.key})` }] };
         const ago = Math.floor((Date.now() - row.updated_at) / 1000);
         return {
           content: [{
             type: 'text',
-            text: `${params.scope}:${params.key} (set ${ago}s ago)\n\n${row.value}`,
+            text: `${scope}:${params.key} (set ${ago}s ago)\n\n${row.value}`,
           }],
         };
       }
 
-      case 'recall_kv_list': {
-        const params = RecallKvListSchema.parse(args);
-        requireRemote();
-        const { entries: rows } = await remoteGetQS<{ entries: Array<{ scope: string; key: string; value: string; updated_at: number }> }>(
-          '/api/kv/list', { scope: params.scope, limit: params.limit });
-        if (rows.length === 0) {
-          return {
-            content: [{
-              type: 'text',
-              text: params.scope ? `No keys in scope "${params.scope}".` : 'No KV entries yet.',
-            }],
-          };
-        }
-        const lines = [`# KV entries (${rows.length})\n`];
-        for (const r of rows) {
-          const preview = r.value.length > 80 ? r.value.slice(0, 80) + '…' : r.value;
-          const ago = Math.floor((Date.now() - r.updated_at) / 1000);
-          lines.push(`- **${r.scope}:${r.key}** — ${preview}  _(${ago}s ago)_`);
-        }
-        return { content: [{ type: 'text', text: lines.join('\n') }] };
-      }
 
       // ── Wake-up context ────────────────────────────────────────
       case 'recall_wake_up': {
@@ -3387,79 +2918,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
-      case 'recall_help': {
-        const text = [
-          '# chat-recall: how to recall',
-          '',
-          'Pick a tool by what you actually want to do. Most flows start with one of the first three.',
-          '',
-          '## I want to pick up where I left off',
-          '- `recall_smart_resume` — structured resume bundle (completed work, pending items, files, budget, KG facts). Best default for "continue".',
-          '- `recall_suggest_resume` — finds the most relevant past session for a free-text current task.',
-          '- `recall_recent` — list latest sessions (optionally `project_filter`, `since_hours`). Use when you just want the list.',
-          '- `recall_wake_up` — high-importance classifier facts + current KG snapshot. Fast cold-start identity/context.',
-          '',
-          '## I want to search past conversations',
-          '- `recall_search` — semantic + FTS5 over sessions. Returns session IDs to drill into.',
-          '- `recall_memory_search` — search across ALL memory types (sessions, plans, tasks, CLAUDE.md, paste, history, diary).',
-          '- `recall_similar_sessions` — given a session id, find sessions like it.',
-          '- `recall_subagent_search` — search subagent transcripts specifically.',
-          '- `recall_user_prompts` — search what the user actually typed (not assistant output).',
-          '',
-          '## I want details on one specific session',
-          '- `recall_context` — structured context dump for a session id.',
-          '- `recall_summary` — AI-generated summary.',
-          '- `recall_show` — raw conversation slice (`from_end: N`, `around_line`, `include_code`).',
-          '- `recall_diff` — what files changed in that session.',
-          '- `recall_commits` — git commits associated with the session window.',
-          '- `recall_outcome` — success/failure/abandonment classification.',
-          '- `recall_markers` — milestone/decision markers extracted from the session.',
-          '- `recall_session_files` — files touched in a session.',
-          '',
-          '## I want to know what was changed recently',
-          '- `recall_edits_timeline` — chronological file edits across Claude/Gemini/OpenCode/Codex. Try `since_hours: 2`.',
-          '- `recall_files_touched` — aggregate file activity over a window.',
-          '- `recall_redundant_files` — detect about-to-create-duplicate before writing a new file.',
-          '',
-          '## Project-level context',
-          '- `recall_project_context` — rich dump for a project (sessions, tasks, plans, commits, cost, KG).',
-          '- `recall_weekly_digest` — weekly activity digest.',
-          '- `recall_analytics_summary` — token/cost/tool analytics.',
-          '- `recall_plans` / `recall_plan_show` — list and inspect plans.',
-          '- `recall_tasks` — list tasks (optionally per session).',
-          '',
-          '## Temporal knowledge graph (facts with validity windows)',
-          '- `recall_kg_query` — query entity relationships (`as_of` for time-travel).',
-          '- `recall_kg_timeline` — chronological facts.',
-          '- `recall_kg_stats` — graph overview.',
-          '- `recall_kg_add` — assert a new fact triple.',
-          '- `recall_kg_invalidate` — mark a fact no longer true.',
-          '',
-          '## Persistent agent notes',
-          '- `recall_diary_write` / `recall_diary_read` — per-agent diary across sessions.',
-          '- `recall_decision_record` — record an architectural decision.',
-          '- `recall_set` / `recall_get` / `recall_kv_list` — scoped KV store for arbitrary state.',
-          '',
-          '## Index management',
-          '- `recall_index` — re-index sources (incremental by default; `force: true` for full).',
-          '- `recall_status` — index stats (counts by source type, FTS5/vector).',
-          '- `recall_memory_status` — memory-system stats.',
-          '',
-          '## Security / secret findings',
-          '- `recall_security_summary` — action-required leaked secrets overview.',
-          '- `recall_security_session` — per-session findings.',
-          '- `recall_security_dismiss` — mark a finding rotated / false_positive / dismissed.',
-          '- `recall_security_rules` — list tenant custom rules or test a regex.',
-          '',
-          '## Decision shortcuts',
-          '- "continue our last conversation" → `recall_recent` then `recall_context`/`recall_show`.',
-          '- "remember when we discussed X" → `recall_memory_search`.',
-          '- "what was I doing 2h ago" → `recall_edits_timeline` `since_hours: 2`.',
-          '- "what do you know about me/this project" → `recall_wake_up` (+ `project_filter`).',
-          '- "did we already decide on X" → `recall_kg_query` then `recall_decision_record`.',
-        ].join('\n');
-        return { content: [{ type: 'text', text }] };
-      }
 
       case 'recall_security_summary': {
         const params = RecallSecuritySummarySchema.parse(args);
@@ -3539,7 +2997,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: `Unknown tool: ${name}` }] };
     }
   } catch (err) {
-    return { content: [{ type: 'text', text: `Error: ${err}` }] };
+    // Friendlier error surface. Network-level failures (undici throws
+    // TypeError("fetch failed") when the socket can't be opened) get one
+    // actionable line instead of a stack fragment; everything else keeps its
+    // message (HTTP errors from remoteGet/Post are already status + hint,
+    // never the raw response body).
+    const msg = err instanceof Error ? err.message : String(err);
+    if (err instanceof TypeError && /fetch failed/i.test(msg)) {
+      return { content: [{ type: 'text', text: 'chat-recall server unreachable — is it up / are you logged in? (chat-recall login <url>)' }] };
+    }
+    return { content: [{ type: 'text', text: `Error: ${msg}` }] };
   }
 });
 
