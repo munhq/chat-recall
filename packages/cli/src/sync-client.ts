@@ -76,7 +76,11 @@ export interface Credentials { serverUrl: string; token: string; }
 export function saveCredentials(c: Credentials): void {
   mkdirSync(dirname(credPath()), { recursive: true });
   const targets = loadAllCredentials().filter((t) => t.serverUrl !== c.serverUrl);
-  targets.push(c);
+  // Newest login FIRST: single-target consumers (loadCredentials → targets[0],
+  // i.e. sync + every MCP read) follow the most recent `chat-recall login`.
+  // Appending here once meant a fresh SaaS login silently kept syncing to a
+  // stale localhost self-host target that happened to sit at position 0.
+  targets.unshift(c);
   writeFileSync(credPath(), JSON.stringify({ targets }, null, 2));
   try { chmodSync(credPath(), 0o600); } catch { /* windows */ }
   try {
@@ -153,6 +157,7 @@ export function _resetTenantSecurityConfigCache(): void {
 }
 
 /** Legacy single-target accessor — first target. */
+/** The ACTIVE target = most recent login (saveCredentials unshifts). */
 export function loadCredentials(): Credentials | null {
   return loadAllCredentials()[0] ?? null;
 }
