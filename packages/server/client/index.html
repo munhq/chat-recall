@@ -8,6 +8,17 @@
          cross-origin destination via the Referer header. Same-origin keeps the
          full URL so internal navigation/analytics are unaffected. -->
     <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <!-- Pre-paint theme bootstrap. Mirrors the TopBar toggle exactly:
+         'light' → data-theme="light" on <html>; anything else → attribute
+         absent (dark default). Runs before first paint so a persisted light
+         theme doesn't flash dark and revert on reload. -->
+    <script>
+      try {
+        if (localStorage.getItem('cr-theme') === 'light') {
+          document.documentElement.setAttribute('data-theme', 'light');
+        }
+      } catch (e) { /* storage blocked — keep dark default */ }
+    </script>
     <title>Chat Recall - Claude Code Conversations</title>
   </head>
   <body>

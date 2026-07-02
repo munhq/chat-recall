@@ -37,6 +37,10 @@ const ICONS: Record<string, string> = {
   sun: 'M12 3v2M12 19v2M5.64 5.64l1.41 1.41M16.95 16.95l1.41 1.41M3 12h2M19 12h2M5.64 18.36l1.41-1.41M16.95 7.05l1.41-1.41M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z',
   moon: 'M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z',
   menu: 'M3 6h18M3 12h18M3 18h18',
+  document: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zM14 2v6h6M16 13H8M16 17H8M10 9H8',
+  cloud: 'M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z',
+  shield: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
+  edit: 'M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z',
 };
 
 interface IconProps extends React.SVGProps<SVGSVGElement> {
@@ -64,6 +68,31 @@ export function Icon({ name, size = 16, strokeWidth = 1.75, style, ...rest }: Ic
       <path d={d} />
     </svg>
   );
+}
+
+// ────────────────────────────── pressableProps ──────────────────────────────
+/**
+ * Keyboard-accessible click props for interactive elements that can't be a
+ * real <button> for layout reasons (list rows, cards). Adds role="button",
+ * tab focus and Enter/Space activation to match native button semantics.
+ */
+export function pressableProps(onActivate: () => void): {
+  role: 'button';
+  tabIndex: number;
+  onClick: () => void;
+  onKeyDown: (e: React.KeyboardEvent<HTMLElement>) => void;
+} {
+  return {
+    role: 'button',
+    tabIndex: 0,
+    onClick: onActivate,
+    onKeyDown: (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        onActivate();
+      }
+    },
+  };
 }
 
 // ────────────────────────────── Kbd ──────────────────────────────
