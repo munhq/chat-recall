@@ -280,11 +280,13 @@ export async function generateMissingSummaries(
     }
   };
 
-  // Local/single-user mode runs on the sqlite store (also the unit-test path),
-  // where there's no FOR UPDATE … SKIP LOCKED, no concurrent replicas, and the
-  // backlog is tiny. Use the simple store-scan there. The Postgres work queue
-  // below is the server/cloud path that actually drains a large backlog.
-  if ((process.env.CHAT_RECALL_STORAGE || 'sqlite') !== 'postgres') {
+  // The sqlite store (unit-test path only) has no FOR UPDATE … SKIP LOCKED and
+  // no concurrent replicas, and its backlog is tiny — use the simple store-scan
+  // there. The Postgres work queue below is the server/cloud path that actually
+  // drains a large backlog. resolveBackend() throws on an unset/unknown env, so
+  // this can never silently fall into the scan path on a misconfigured server.
+  const { resolveBackend } = await import('@chat-recall/engine/core/store/index.js');
+  if (resolveBackend() !== 'postgres') {
     return summarizeViaScan(opts, summarize, summarySource, summarizeBounded, limit, concurrency, now);
   }
 
