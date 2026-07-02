@@ -4,7 +4,19 @@
 
 import { getAllSessions, parseSessionFile, createMetadataCache, createStore, findCodexSessionFile, extractFirstUserPromptSync, codexBackend, getBackendForId } from '../imports.js';
 import type { SessionEntry, SessionMetadata, MemoryMetadataRow, MemoryLinkRow, SourceType } from '../imports.js';
+import { isServerMode } from '../util/mode.js';
 import { join } from 'path';
+
+/**
+ * Local-mode-only iterator over the Claude filesystem walk. In server mode
+ * (store-only deployment) data arrives exclusively via /api/sync — the server
+ * must NEVER walk its own container home looking for transcripts. Every
+ * `getAllSessions()` consumer in this service goes through this guard.
+ */
+function* localSessionsWalk(): Generator<[SessionEntry, string]> {
+  if (isServerMode()) return;
+  yield* getAllSessions();
+}
 
 // Client banners like "MCP issues detected. Run /mcp list for status." are
 // prepended by Claude Code to the first user message when an MCP server fails.
@@ -62,8 +74,8 @@ export async function getRecentSessions(limit = 20): Promise<SessionInfo[]> {
   const sessions: SessionInfo[] = [];
   const cache = await createMetadataCache();
 
-  // 1. Claude sessions from filesystem
-  for (const [entry, filePath] of getAllSessions()) {
+  // 1. Claude sessions from filesystem — local mode only (no-op on a server).
+  for (const [entry, filePath] of localSessionsWalk()) {
     const cached = await cache.get(entry.sessionId);
 
     let firstPrompt = entry.firstPrompt || '';
@@ -114,7 +126,9 @@ export async function getRecentSessions(limit = 20): Promise<SessionInfo[]> {
     const { existsSync, readdirSync, statSync, readFileSync } = await import('fs');
     const { join } = await import('path');
     const codexSessionsDir = codexBackend.sessionsDir();
-    if (existsSync(codexSessionsDir)) {
+    // Same local-mode-only rule as localSessionsWalk(): never walk the
+    // server host's own home for Codex rollouts in a deployment.
+    if (!isServerMode() && existsSync(codexSessionsDir)) {
       const seenIds = new Set(sessions.map(s => s.sessionId));
       const years = readdirSync(codexSessionsDir);
       for (const year of years) {
@@ -273,7 +287,8 @@ export async function getSessionIndex(): Promise<SessionIndexEntry[]> {
   const out: SessionIndexEntry[] = [];
 
   // 1. Claude sessions — walk the index entries (no parseSessionFile).
-  for (const [entry, filePath] of getAllSessions()) {
+  //    Local mode only (no-op on a server deployment).
+  for (const [entry, filePath] of localSessionsWalk()) {
     out.push({
       sessionId: entry.sessionId,
       projectPath: entry.projectPath || '',
@@ -290,7 +305,9 @@ export async function getSessionIndex(): Promise<SessionIndexEntry[]> {
     const { existsSync, readdirSync, statSync, readFileSync } = await import('fs');
     const { join } = await import('path');
     const codexSessionsDir = codexBackend.sessionsDir();
-    if (existsSync(codexSessionsDir)) {
+    // Same local-mode-only rule as localSessionsWalk(): never walk the
+    // server host's own home for Codex rollouts in a deployment.
+    if (!isServerMode() && existsSync(codexSessionsDir)) {
       for (const year of readdirSync(codexSessionsDir)) {
         for (const month of readdirSync(join(codexSessionsDir, year))) {
           for (const day of readdirSync(join(codexSessionsDir, year, month))) {
@@ -465,8 +482,8 @@ export async function getSessionProjectCounts(): Promise<{ projects: Record<stri
   let total = 0;
 
   // 1. Claude sessions — walk the index entries (no parseSessionFile, no
-  //    extractFirstUserPromptSync — just project paths).
-  for (const [entry] of getAllSessions()) {
+  //    extractFirstUserPromptSync — just project paths). Local mode only.
+  for (const [entry] of localSessionsWalk()) {
     const p = entry.projectPath || '';
     if (p) projects[p] = (projects[p] || 0) + 1;
     total++;
@@ -479,7 +496,9 @@ export async function getSessionProjectCounts(): Promise<{ projects: Record<stri
     const { existsSync, readdirSync, readFileSync } = await import('fs');
     const { join } = await import('path');
     const codexSessionsDir = codexBackend.sessionsDir();
-    if (existsSync(codexSessionsDir)) {
+    // Same local-mode-only rule as localSessionsWalk(): never walk the
+    // server host's own home for Codex rollouts in a deployment.
+    if (!isServerMode() && existsSync(codexSessionsDir)) {
       for (const year of readdirSync(codexSessionsDir)) {
         for (const month of readdirSync(join(codexSessionsDir, year))) {
           for (const day of readdirSync(join(codexSessionsDir, year, month))) {
@@ -547,8 +566,8 @@ export async function getSessionProjectCounts(): Promise<{ projects: Record<stri
  */
 export function getSessionPath(sessionId: string): string {
   // Session files are typically stored in ~/.claude/projects/<project-path>/<session-id>.jsonl
-  // We need to search for it
-  for (const [entry, filePath] of getAllSessions()) {
+  // We need to search for it. Local mode only — a server has no transcripts on disk.
+  for (const [entry, filePath] of localSessionsWalk()) {
     if (entry.sessionId === sessionId) {
       return filePath;
     }
@@ -569,7 +588,8 @@ export function getSessionPaths(sessionIds: string[]): Map<string, string> {
   const want = new Set(sessionIds);
   const out = new Map<string, string>();
   if (want.size === 0) return out;
-  for (const [entry, filePath] of getAllSessions()) {
+  // Local mode only — a server deployment never walks its own container home.
+  for (const [entry, filePath] of localSessionsWalk()) {
     if (want.has(entry.sessionId)) {
       out.set(entry.sessionId, filePath);
       // Early exit when we've found everything we were asked about.

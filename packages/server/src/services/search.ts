@@ -2,7 +2,9 @@
  * Search service — uses unified MemoryIndex for all searches.
  */
 
-import { createVectorStore, getEmbedder, createMetadataCache, getAllSessions, currentTenant } from '../imports.js';
+// getAllSessions deliberately NOT imported here: the only FS walk this service
+// needs runs via getSessionProjectCounts (sessions.ts), which is server-mode-guarded.
+import { createVectorStore, getEmbedder, createMetadataCache, currentTenant } from '../imports.js';
 import type { Embedder, EmbedderProvider, SourceType, MemorySearchResult, VectorStore } from '../imports.js';
 import { QueryExpander } from './query-expander.js';
 import { TenantTtlCache } from '../util/tenant-cache.js';
@@ -172,7 +174,7 @@ export class SearchService {
     let counts = this.projectCountsCache.get();
     if (!counts) {
       const { getSessionProjectCounts } = await import('./sessions.js');
-      const { normalizeProjectPath } = await import('../utils/paths.js');
+      const { normalizeProjectPath } = await import('../util/paths.js');
       const { projects: rawCounts, total } = await getSessionProjectCounts();
       const projectCounts: Record<string, number> = {};
       for (const [path, count] of Object.entries(rawCounts)) {

@@ -9,6 +9,7 @@
 import express from 'express';
 import { createStore } from '../imports.js';
 import type { SourceType } from '../imports.js';
+import { listItemsPaged } from '../util/paged-items.js';
 
 const router = express.Router();
 
@@ -26,7 +27,8 @@ router.get('/redundant', async (req, res) => {
 
   const store = await createStore();
   try {
-    const items = await store.listItems('session' as SourceType, 5000, 0);
+    // Paged (1000-row chunks) with the pre-existing 5k cap — flat memory.
+    const items = await listItemsPaged(store, 'session' as SourceType, { cap: 5000, context: 'files-redundant' });
     const hits: Hit[] = [];
     for (const item of items) {
       if (project && !item.project_path?.includes(project)) continue;

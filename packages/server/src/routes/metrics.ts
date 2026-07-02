@@ -13,8 +13,8 @@
  * someone*; `chatrecall_secret_findings_verified` is the alertable series. The
  * business gauges (MRR, conversions, churn) are sensitive, so for an
  * internet-exposed deployment set METRICS_TOKEN (Bearer) — Prometheus sends it
- * via `bearer_token_file`. No token ⇒ open, the norm inside a private cluster
- * behind an ingress allowlist.
+ * via `bearer_token_file`. No token ⇒ open on local/self-host; on the cloud
+ * edition no token fails CLOSED for non-private source IPs (see metricsAccess).
  *
  * Mounted at `/metrics` (top-level, OUTSIDE `/api` → not tenant-scoped, and the
  * api rate-limiter doesn't apply).
@@ -23,6 +23,7 @@ import express from 'express';
 import { openPgPool, openPgPoolRo, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { latestPoolStats, queryCostSummary } from '../middleware/request-cost.js';
+import { edition } from '../util/mode.js';
 import {
   registry,
   gUp, gSessions, gChunks, gRawSessions, gSecretFindings, gSecretFindingsVerified, gTenants,
@@ -35,9 +36,67 @@ import {
 const router = express.Router();
 const log = createLogger('metrics');
 
-function tokenOk(req: express.Request): boolean {
+/**
+ * True for loopback/RFC1918/ULA/link-local source addresses (the direct TCP
+ * peer, NOT X-Forwarded-For — that header is caller-controlled).
+ */
+function isPrivateAddress(ip: string): boolean {
+  const v4 = ip.startsWith('::ffff:') ? ip.slice(7) : ip; // IPv4-mapped IPv6
+  if (/^127\./.test(v4) || v4 === '::1') return true;                      // loopback
+  if (/^10\./.test(v4) || /^192\.168\./.test(v4)) return true;            // RFC1918
+  const m172 = v4.match(/^172\.(\d+)\./);
+  if (m172 && Number(m172[1]) >= 16 && Number(m172[1]) <= 31) return true; // RFC1918
+  if (/^f[cd]/i.test(ip) || /^fe80:/i.test(ip)) return true;               // ULA / link-local v6
+  return false;
+}
+
+type MetricsAccess = { ok: true } | { ok: false; status: number; message: string };
+
+/**
+ * Access policy for the metrics surface:
+ *   - METRICS_TOKEN set → Bearer token required (401 otherwise). Unchanged.
+ *   - METRICS_TOKEN unset, cloud edition → fail-closed for non-private source
+ *     IPs (403), but private/loopback peers stay allowed so the in-cluster
+ *     Prometheus (which scrapes tokenless today) keeps working.
+ *     Trade-off, stated honestly: we check the DIRECT peer address, so a
+ *     request proxied through an in-cluster ingress arrives from a private
+ *     pod IP and passes. This blocks only direct external exposure; the real
+ *     fix is setting METRICS_TOKEN + the ServiceMonitor bearer-token secret
+ *     (logged as an error at boot via logMetricsExposureAtBoot).
+ *   - METRICS_TOKEN unset, local/self-host → open (current behavior; the norm
+ *     behind a private compose network / ingress allowlist).
+ */
+function metricsAccess(req: express.Request): MetricsAccess {
   const token = process.env.METRICS_TOKEN;
-  return !token || req.headers.authorization === `Bearer ${token}`;
+  if (token) {
+    if (req.headers.authorization === `Bearer ${token}`) return { ok: true };
+    return { ok: false, status: 401, message: 'unauthorized' };
+  }
+  if (edition() === 'cloud') {
+    const peer = req.socket.remoteAddress ?? '';
+    if (isPrivateAddress(peer)) return { ok: true };
+    return {
+      ok: false,
+      status: 403,
+      message: 'metrics disabled for external callers: set METRICS_TOKEN on the server and the matching bearer-token secret on the Prometheus ServiceMonitor',
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Boot-time exposure check — call once from server startup. On the cloud
+ * edition with no METRICS_TOKEN, /metrics (MRR, churn, tenant counts, secret
+ * findings) is reachable by anything that can hit the pod from a private
+ * address, and external callers are only blocked by the peer-IP heuristic
+ * above. That's a stopgap, not auth — say so loudly.
+ */
+export function logMetricsExposureAtBoot(): void {
+  if (edition() === 'cloud' && !process.env.METRICS_TOKEN) {
+    log.error(
+      'METRICS_TOKEN is unset on the cloud edition: /metrics (business + security gauges) is only protected by a private-source-IP check. Set METRICS_TOKEN and configure the Prometheus ServiceMonitor bearer-token secret before exposing this deployment.',
+    );
+  }
 }
 
 /** Per-tenant prices in USD/month for MRR, from BILLING_PRICE_USD_MAP (JSON,
@@ -201,7 +260,8 @@ export function startBacklogRefresher(): void {
 
 // ── GET /metrics ─────────────────────────────────────────────────────────────
 router.get('/', async (req, res) => {
-  if (!tokenOk(req)) return res.status(401).type('text/plain').send('unauthorized');
+  const access = metricsAccess(req);
+  if (!access.ok) return res.status(access.status).type('text/plain').send(access.message);
 
   try {
     // Monitoring aggregations: capacity/backlog/business COUNTs (+ tenant
@@ -247,7 +307,8 @@ router.get('/', async (req, res) => {
 // request rate, the noisiest tenants, and pool saturation over a window.
 // Gated by the same METRICS_TOKEN. ?window=<minutes> (default 60).
 router.get('/rl-cost', async (req, res) => {
-  if (!tokenOk(req)) return res.status(401).json({ error: 'unauthorized' });
+  const access = metricsAccess(req);
+  if (!access.ok) return res.status(access.status).json({ error: access.message });
   try {
     const windowMinutes = Math.max(1, Math.min(Number(req.query.window) || 60, 10080));
     const summary = await queryCostSummary(windowMinutes);
@@ -262,7 +323,8 @@ router.get('/rl-cost', async (req, res) => {
 // summaries deployments on PENDING WORK rather than CPU. Unauthenticated by
 // default (cluster-internal); gated by METRICS_TOKEN when set.
 router.get('/backlog', (req, res) => {
-  if (!tokenOk(req)) return res.status(401).json({ error: 'unauthorized' });
+  const access = metricsAccess(req);
+  if (!access.ok) return res.status(access.status).json({ error: access.message });
   // Served from the in-memory snapshot — instant, so KEDA's metrics-api never
   // times out. `at` lets a consumer see snapshot freshness if it cares.
   const { pendingVectors, pendingSummaries, pendingRealSummaries, tenants } = backlogCache;

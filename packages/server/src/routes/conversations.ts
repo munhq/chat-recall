@@ -43,7 +43,7 @@ import {
   providerToSource,
   type CachedEnvelope,
 } from '../services/summary-worker.js';
-import { matchesPrefix } from '../utils/paths.js';
+import { matchesPrefix } from '../util/paths.js';
 import { buildETag, maybeSendNotModified } from '../util/cacheable.js';
 import { TenantTtlCache } from '../util/tenant-cache.js';
 import { requireLocalMode, isServerMode } from '../util/mode.js';

@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import express from 'express';
 import request from 'supertest';
 import { createControlPlane } from '../imports.js';
-import { billingEnabled, isEntitled } from '../util/billing.js';
+import { billingEnabled, isEntitled, clearEntitlementCache } from '../util/billing.js';
 import { applyStripeEvent } from './billing.js';
 import billingRouter from './billing.js';
 
@@ -47,6 +47,8 @@ afterAll(() => {
 beforeEach(() => {
   // Default each test to self-host (no Stripe) unless it opts into cloud.
   setEnv('STRIPE_SECRET_KEY', undefined);
+  // Entitlement lookups are TTL-cached (30s) in-process — reset between tests.
+  clearEntitlementCache();
 });
 
 describe('billingEnabled / isEntitled gate', () => {

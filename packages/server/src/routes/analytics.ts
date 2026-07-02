@@ -9,6 +9,8 @@ import { getModelContextLimit } from '@chat-recall/engine/core/utils.js';
 import { estimateCostUsdOrNull, costIsUpperBound } from '@chat-recall/engine/core/model-pricing.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { TenantTtlCache } from '../util/tenant-cache.js';
+import { listItemsPaged } from '../util/paged-items.js';
+import { isServerMode } from '../util/mode.js';
 
 const log = createLogger('analytics');
 
@@ -163,15 +165,18 @@ router.get('/', async (req, res) => {
     // Context utilization distribution (% of context window used)
     const contextUtilBuckets = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; // 0-10%, 10-20%, ..., 90-100%
 
-    // Iterate ALL session items from MemoryStore (Claude + Gemini + OpenCode + Codex)
-    const allItems = (await store.listItems('session' as SourceType, 10000, 0))
+    // Iterate ALL session items from MemoryStore (Claude + Gemini + OpenCode + Codex).
+    // Paged in 1000-row chunks with a 10k cap so memory stays flat; the helper
+    // log.warns when a tenant exceeds the cap (analytics truncated, newest kept).
+    const allItems = (await listItemsPaged(store, 'session' as SourceType, { cap: 10_000, context: 'analytics' }))
       .filter(i => !sinceMs || (i.mtime ?? 0) >= sinceMs);
     // Also get Claude sessions from filesystem for those not yet in the store
     const storeIds = new Set(allItems.map(i => i.id));
     const claudeOnlyEntries: Array<{ sessionId: string; filePath: string; projectPath: string; created: string; modified: string; fileMtime: number }> = [];
     // When tool filter is active and not 'claude', skip the filesystem-only Claude
     // path entirely — those sessions are by definition Claude-only.
-    if (!activeToolFilter || activeToolFilter === 'claude') {
+    // Local-mode only: never walk the server host's own home in a deployment.
+    if (!isServerMode() && (!activeToolFilter || activeToolFilter === 'claude')) {
       for (const [entry, filePath] of getAllSessions()) {
         if (sinceMs && (entry.fileMtime ?? 0) < sinceMs) continue;
         if (!storeIds.has(entry.sessionId)) {
@@ -695,7 +700,8 @@ router.get('/patterns', async (_req, res) => {
   try {
     const store = await createStore();
     try {
-      const items = await store.listItems('session' as SourceType, 5000, 0);
+      // Paged (1000-row chunks) with the pre-existing 5k cap — flat memory.
+      const items = await listItemsPaged(store, 'session' as SourceType, { cap: 5000, context: 'analytics-patterns' });
 
       // ── Hot files: how many distinct sessions touched this file? ─────
       const fileCount = new Map<string, {
