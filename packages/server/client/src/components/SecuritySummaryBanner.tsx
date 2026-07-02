@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { getSecretsSummary } from '../services/api';
+import { Button, IconButton } from './primitives';
 
 /**
  * First-login value proof. Most trials won't hit a live leak that week, so we
@@ -38,8 +39,17 @@ export default function SecuritySummaryBanner({ onReview }: { onReview: () => vo
           <>Scanned <strong>{s.sessions} sessions</strong> — found <strong>{s.distinct} secret{s.distinct > 1 ? 's' : ''}</strong> to review. None verified live (yet).</>
         )}
       </span>
-      <button className="cr-secbanner-cta" onClick={onReview}>Review →</button>
-      <button className="cr-secbanner-x" onClick={dismiss} aria-label="Dismiss">×</button>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={onReview}
+        // Inherit the banner's live/info accent instead of the neutral token
+        // palette so the CTA reads as part of the alert.
+        style={{ color: 'inherit', borderColor: 'currentColor', background: 'transparent', whiteSpace: 'nowrap' }}
+      >
+        Review →
+      </Button>
+      <IconButton icon="x" size={26} onClick={dismiss} aria-label="Dismiss" title="Dismiss" style={{ color: 'inherit' }} />
     </div>
   );
 }
@@ -51,8 +61,4 @@ const CSS = `
 .cr-secbanner .muted { opacity:.7; }
 .cr-secbanner-dot { width:8px; height:8px; border-radius:50%; background:currentColor; flex:none; box-shadow:0 0 0 3px color-mix(in srgb, currentColor 22%, transparent); }
 .cr-secbanner-text { flex:1; min-width:0; }
-.cr-secbanner-cta { font:inherit; font-weight:600; color:inherit; background:none; border:1px solid currentColor; border-radius:7px; padding:4px 12px; cursor:pointer; white-space:nowrap; }
-.cr-secbanner-cta:hover { background: color-mix(in srgb, currentColor 14%, transparent); }
-.cr-secbanner-x { font:inherit; font-size:18px; line-height:1; color:inherit; background:none; border:none; cursor:pointer; opacity:.6; padding:0 4px; }
-.cr-secbanner-x:hover { opacity:1; }
 `;

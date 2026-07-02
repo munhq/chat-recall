@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { Icon, Button, Input, SourceBadge, ToolBadge, Card, Chip } from './primitives';
+import { Icon, Button, Input, SourceBadge, ToolBadge, Card, Chip, pressableProps } from './primitives';
 import { useSidebarExtrasRegister } from '../context/sidebar-extras';
 import type {
   SourceType,
@@ -327,7 +327,7 @@ export default function MemoryExplorer({ onSessionClick, toolFilter = 'all', pro
             displayedItems.map((item) => (
               <div
                 key={`${item.source_type}:${item.id}`}
-                onClick={() => setSelectedId(item.id)}
+                {...pressableProps(() => setSelectedId(item.id))}
                 style={{
                   padding: '14px 20px',
                   cursor: 'pointer',

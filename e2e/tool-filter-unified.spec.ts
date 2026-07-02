@@ -58,6 +58,7 @@ test.describe('Tool filter renders first across views', () => {
 test.describe('Tool filter is radio-style (not multi-toggle)', () => {
   test('Activity: clicking Codex narrows to Codex only (not deselects)', async ({ page }) => {
     await page.goto(BASE);
+    await page.locator("[data-testid='nav-more']").click();
     await page.locator("[data-testid='nav-activity']").click();
     // Wait for first chip
     await page.getByRole('button', { name: /^All\s+\d+/ }).first().waitFor({ state: 'visible' });
