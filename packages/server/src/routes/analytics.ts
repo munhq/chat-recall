@@ -58,8 +58,19 @@ router.get('/', async (req, res) => {
     const validTools = new Set(['claude', 'gemini', 'opencode', 'codex']);
     const activeToolFilter = toolFilter && validTools.has(toolFilter) ? toolFilter : null;
 
-    // Only the unfiltered slice is cached; per-tool slices are recomputed.
-    if (!activeToolFilter) {
+    // Optional time window: only aggregate sessions whose mtime falls in the
+    // last N hours. Lets the weekly digest show genuinely week-scoped project/
+    // model rollups instead of all-time numbers under a weekly header.
+    const sinceHoursRaw = req.query.since_hours as string | undefined;
+    const sinceHours = sinceHoursRaw ? Number(sinceHoursRaw) : null;
+    if (sinceHoursRaw && (!Number.isFinite(sinceHours) || sinceHours! <= 0)) {
+      return res.status(400).json({ error: 'since_hours must be a positive number' });
+    }
+    const sinceMs = sinceHours ? Date.now() - sinceHours * 3_600_000 : null;
+
+    // Only the unfiltered, unwindowed slice is cached; filtered slices are
+    // recomputed on demand.
+    if (!activeToolFilter && !sinceMs) {
       const cached = analyticsCache.get();
       if (cached) return res.json(cached);
     }
@@ -149,7 +160,8 @@ router.get('/', async (req, res) => {
     const contextUtilBuckets = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]; // 0-10%, 10-20%, ..., 90-100%
 
     // Iterate ALL session items from MemoryStore (Claude + Gemini + OpenCode + Codex)
-    const allItems = await store.listItems('session' as SourceType, 10000, 0);
+    const allItems = (await store.listItems('session' as SourceType, 10000, 0))
+      .filter(i => !sinceMs || (i.mtime ?? 0) >= sinceMs);
     // Also get Claude sessions from filesystem for those not yet in the store
     const storeIds = new Set(allItems.map(i => i.id));
     const claudeOnlyEntries: Array<{ sessionId: string; filePath: string; projectPath: string; created: string; modified: string; fileMtime: number }> = [];
@@ -157,6 +169,7 @@ router.get('/', async (req, res) => {
     // path entirely — those sessions are by definition Claude-only.
     if (!activeToolFilter || activeToolFilter === 'claude') {
       for (const [entry, filePath] of getAllSessions()) {
+        if (sinceMs && (entry.fileMtime ?? 0) < sinceMs) continue;
         if (!storeIds.has(entry.sessionId)) {
           claudeOnlyEntries.push({ sessionId: entry.sessionId, filePath, projectPath: entry.projectPath, created: entry.created, modified: entry.modified, fileMtime: entry.fileMtime });
         }
@@ -643,9 +656,9 @@ router.get('/', async (req, res) => {
       })(),
     };
 
-    // Only cache the unfiltered (whole-fleet) result. Per-tool slices are
-    // recomputed on demand — they're small relative to the unfiltered run.
-    if (!activeToolFilter) {
+    // Only cache the unfiltered, unwindowed (whole-fleet) result. Filtered
+    // slices are recomputed on demand — small relative to the unfiltered run.
+    if (!activeToolFilter && !sinceMs) {
       analyticsCache.set(result);
     }
     res.json(result);

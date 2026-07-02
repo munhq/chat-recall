@@ -63,6 +63,21 @@ describe('GET /api/analytics', () => {
     if (tools.length > 0) expect(tools).toEqual(['claude']);
   });
 
+  test('?since_hours=168 returns the same shape, time-windowed', async () => {
+    const res = await request(app).get('/api/analytics?since_hours=168');
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('summary');
+    expect(res.body).toHaveProperty('projects');
+    // Windowed totals can never exceed the all-time totals.
+    const all = await request(app).get('/api/analytics');
+    expect(res.body.summary.totalSessions).toBeLessThanOrEqual(all.body.summary.totalSessions);
+  });
+
+  test('?since_hours=garbage is a 400, not a silent all-time answer', async () => {
+    expect((await request(app).get('/api/analytics?since_hours=abc')).status).toBe(400);
+    expect((await request(app).get('/api/analytics?since_hours=-5')).status).toBe(400);
+  });
+
   test('?tool=invalid is treated as unfiltered (graceful fallback)', async () => {
     const full = (await request(app).get('/api/analytics')).body;
     const bogus = (await request(app).get('/api/analytics?tool=notarealtool')).body;
