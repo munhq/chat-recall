@@ -258,10 +258,26 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   });
 });
 
+// Validate the storage backend BEFORE serving: resolveBackend() is fail-closed
+// (unset/unknown CHAT_RECALL_STORAGE throws), and we want that throw here at
+// boot — one clear crash with a clear message — not on the first request that
+// happens to touch the store. A server deployment must be postgres.
+{
+  const { resolveBackend } = await import('@chat-recall/engine/core/store/index.js');
+  const backend = resolveBackend();
+  if (isServerMode() && backend !== 'postgres') {
+    throw new Error(
+      `CHAT_RECALL_STORAGE=${backend} is not valid in server mode — a server deployment must use postgres. ` +
+        'The sqlite backend exists for unit tests only.',
+    );
+  }
+  log.info({ backend }, 'storage backend resolved');
+}
+
 // Schema bootstrap is now an EXPLICIT, primary-only step (decoupled from
 // opening a pool — see pg-pool.ts). Run it once here, before we serve, so a
 // misconfigured/unreachable primary fails fast at boot instead of erroring on
-// the first request. No-op when DATABASE_URL is unset (local sqlite mode).
+// the first request.
 if (isServerMode()) {
   const { ensurePgSchema } = await import('@chat-recall/engine/core/store/pg-pool.js');
   await ensurePgSchema();
