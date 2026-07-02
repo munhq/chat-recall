@@ -15,6 +15,7 @@ import { homedir } from 'os';
 import { createStore, copyArtifactToTool, rowFromStore, skillsDirFor } from '../imports.js';
 import type { SourceType } from '../imports.js';
 import { requireLocalMode } from '../util/mode.js';
+import { listItemsPaged } from '../util/paged-items.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 
 const log = createLogger('toolkit');
@@ -36,7 +37,8 @@ router.get('/status', async (_req, res) => {
     const out: Record<string, Record<string, number>> = {};
     for (const t of VALID_TOOLKIT_TYPES) {
       out[t] = { claude: 0, gemini: 0, opencode: 0, codex: 0 };
-      const items = await store.listItems(t as SourceType, 5000, 0);
+      // Paged (1000-row chunks) with the pre-existing 5k cap — flat memory.
+      const items = await listItemsPaged(store, t as SourceType, { cap: 5000, context: 'toolkit-status' });
       for (const it of items) {
         let tool = 'claude';
         try { tool = JSON.parse(it.extra_json || '{}').tool || 'claude'; } catch {}
@@ -344,7 +346,9 @@ router.get('/matrix', async (_req, res) => {
     const out: Record<SyncType, Record<string, Record<string, string>>> =
       { skill: {}, mcp: {}, command: {}, agent: {} };
     for (const type of types) {
-      const rows = await store.listItems(type as SourceType, 100_000, 0);
+      // Paged in 1000-row chunks, 20k hard cap (was a single 100k fetch) —
+      // the helper warns when the cap truncates the matrix for a tenant.
+      const rows = await listItemsPaged(store, type as SourceType, { cap: 20_000, context: 'toolkit-matrix' });
       for (const row of rows) {
         let extra: any = {};
         try { extra = JSON.parse(row.extra_json || '{}'); } catch { /* skip */ }
@@ -430,8 +434,8 @@ router.post('/sync-all', requireLocalMode, express.json(), async (req, res) => {
     for (const type of requested) {
       // Index every (name, tool) → row for this type. Read-only rows
       // (Codex .system, plugin-bundled, shared ~/.agents) never act as a
-      // source, so they're skipped entirely.
-      const rows = await store.listItems(type as SourceType, 100_000, 0);
+      // source, so they're skipped entirely. Paged, 20k cap (warns on truncate).
+      const rows = await listItemsPaged(store, type as SourceType, { cap: 20_000, context: 'toolkit-sync-plan' });
       const byName = new Map<string, Partial<Record<TargetTool, any>>>();
       for (const row of rows) {
         if (isReadonlyRow(row)) continue;
@@ -460,9 +464,10 @@ router.post('/sync-all', requireLocalMode, express.json(), async (req, res) => {
     }
 
     const results: SyncResultEntry[] = [];
-    const rowsByType = new Map<string, Awaited<ReturnType<typeof store.listItems>>>();
+    const rowsByType = new Map<string, Awaited<ReturnType<typeof listItemsPaged>>>();
     for (const entry of plan) {
-      if (!rowsByType.has(entry.type)) rowsByType.set(entry.type, await store.listItems(entry.type as SourceType, 100_000, 0));
+      // Same paged bounded scan as the planning pass above (20k cap + warn).
+      if (!rowsByType.has(entry.type)) rowsByType.set(entry.type, await listItemsPaged(store, entry.type as SourceType, { cap: 20_000, context: 'toolkit-sync-exec' }));
       const sourceRow = rowsByType.get(entry.type)!
         .find(r => {
           if (isReadonlyRow(r)) return false;

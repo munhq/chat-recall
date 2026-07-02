@@ -17,6 +17,21 @@
  */
 import type { Request, Response, NextFunction } from 'express';
 import { createControlPlane } from '../imports.js';
+import { TenantTtlCache } from './tenant-cache.js';
+
+/**
+ * 30s in-process TTL cache on the control-plane entitlement lookup, keyed by
+ * the tenant being checked. Without it every paid request pays a control-plane
+ * query. 30s of staleness on entitlement is acceptable: webhook-driven changes
+ * (checkout completed, subscription canceled) simply take effect on the next
+ * tick, so no explicit invalidation is needed. `clearEntitlementCache` exists
+ * for tests.
+ */
+const entitlementCache = new TenantTtlCache<boolean>(30_000);
+
+export function clearEntitlementCache(): void {
+  entitlementCache.clear();
+}
 
 /**
  * Billing is "enabled" exactly when a Stripe secret key is configured. This is
@@ -42,19 +57,25 @@ export function billingEnabled(): boolean {
 export async function isEntitled(tenant: string): Promise<boolean> {
   if (!billingEnabled()) return true;
 
+  // Served from the 30s TTL cache when warm — one control-plane query per
+  // tenant per window instead of one per paid request.
+  const cached = entitlementCache.get(tenant);
+  if (cached !== undefined) return cached;
+
   const cp = await createControlPlane();
+  let entitled = false;
   try {
     const e = await cp.getEntitlement(tenant);
-    if (!e) return false;
-    const statusOk = e.status === 'active' || e.status === 'trialing';
-    if (!statusOk) return false;
+    const statusOk = !!e && (e.status === 'active' || e.status === 'trialing');
     // null period = open-ended (e.g. a trial Stripe hasn't dated yet); any
     // recorded period must not be in the past.
-    const periodOk = e.currentPeriodEnd == null || e.currentPeriodEnd > Date.now();
-    return periodOk;
+    const periodOk = !!e && (e.currentPeriodEnd == null || e.currentPeriodEnd > Date.now());
+    entitled = statusOk && periodOk;
   } finally {
     await cp.close();
   }
+  entitlementCache.set(tenant, entitled);
+  return entitled;
 }
 
 /**
