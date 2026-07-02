@@ -50,7 +50,7 @@ function context(): Ctx {
 }
 
 async function api<T>(ctx: Ctx, method: string, path: string, body?: unknown): Promise<T> {
-  const r = await fetch(ctx.serverUrl.replace(/\/+$/, '') + path, {
+  const doFetch = () => fetch(ctx.serverUrl.replace(/\/+$/, '') + path, {
     method,
     headers: {
       'Authorization': `Bearer ${ctx.token}`,
@@ -59,6 +59,19 @@ async function api<T>(ctx: Ctx, method: string, path: string, body?: unknown): P
     },
     body: body == null ? undefined : JSON.stringify(body),
   });
+  let r: Response;
+  try {
+    r = await doFetch();
+  } catch {
+    // One retry on NETWORK-level failure (undici 'fetch failed'). The vault
+    // KDF pauses ~5s between calls — long enough for a server/LB keep-alive
+    // timeout to close the pooled socket, and the next request on that dead
+    // socket dies with ECONNRESET before anything was sent. A fresh attempt
+    // opens a new connection. (Response-received errors are NOT retried —
+    // only the nothing-was-processed case.)
+    await new Promise((res) => setTimeout(res, 250));
+    r = await doFetch();
+  }
   const text = await r.text();
   let parsed: unknown;
   try { parsed = text ? JSON.parse(text) : undefined; } catch { /* non-JSON */ }
