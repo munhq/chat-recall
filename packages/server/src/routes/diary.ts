@@ -9,6 +9,7 @@
 
 import express from 'express';
 import { createStore } from '../imports.js';
+import { listItemsPaged } from '../util/paged-items.js';
 
 const router = express.Router();
 
@@ -72,7 +73,9 @@ router.get('/read', async (req, res) => {
   if (!agent) return res.status(400).json({ error: 'agent is required' });
   const store = await createStore();
   try {
-    const rows = await store.listItems('diary', 50000, 0);
+    // Paged in 1000-row chunks, 10k cap (was one 50k fetch). listItems is
+    // mtime-DESC so a truncated scan keeps the newest entries; helper warns.
+    const rows = await listItemsPaged(store, 'diary', { cap: 10_000, context: 'diary-read' });
     const want = agentSlug(agent);
     const entries = rows
       .map((r) => { try { return JSON.parse(r.extra_json || '{}') as DiaryExtra; } catch { return null; } })
