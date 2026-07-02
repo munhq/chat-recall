@@ -39,6 +39,7 @@ import securityConfigRouter from './routes/security-config.js';
 import billingRouter from './routes/billing.js';
 import { capabilities, isServerMode } from './util/mode.js';
 import { generateMissingSummariesAllTenants, serverSummaryConfig } from './services/summary-worker.js';
+import { sweepSyntheticRetention } from './services/retention.js';
 import { embedMissingVectors, serverEmbedderConfigured } from './services/vector-backfill-worker.js';
 import { createLogger, setLogContextProvider } from '@chat-recall/engine/core/logger.js';
 import { closePgPools } from '@chat-recall/engine/core/store/pg-pool.js';
@@ -353,6 +354,29 @@ const httpServer = app.listen(PORT, HOST, () => {
     } else {
       log.info('summary worker disabled (no SUMMARY_PROVIDER configured)');
     }
+  }
+
+  // Synthetic-tenant retention: purge healthcheck/probe sessions (tenant
+  // allowlist SYNTHETIC_TENANTS, default 'synccheck') older than
+  // SYNTHETIC_RETENTION_DAYS. Without this the sync probe grew the DB without
+  // bound (15k sessions / 2.5 GB in 12 days). Hourly, bounded per tick.
+  if (isServerMode() && runWorkers) {
+    const RETENTION_SWEEP_MS = 60 * 60 * 1000;
+    let retentionInFlight = false;
+    const retentionSweep = async (): Promise<void> => {
+      if (retentionInFlight) return;
+      retentionInFlight = true;
+      try {
+        await sweepSyntheticRetention();
+      } catch (err) {
+        log.error({ err }, 'synthetic retention sweep failed');
+      } finally {
+        retentionInFlight = false;
+      }
+    };
+    setInterval(() => { void retentionSweep(); }, RETENTION_SWEEP_MS).unref();
+    setTimeout(() => { void retentionSweep(); }, 30_000).unref();
+    log.info('synthetic-tenant retention sweep enabled');
   }
 
   // Vector backfill: embed chunks that are in FTS but missing from
