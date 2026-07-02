@@ -197,15 +197,10 @@ const RecallSearchSchema = z.object({
   query: z.string().describe('What you\'re looking for (e.g., "OAuth implementation", "React hooks")'),
   top_k: z.number().optional().default(5).describe('Number of results to return'),
   project_filter: z.string().optional().describe('Optional filter by project path substring'),
-  skip_ranking: z.boolean().optional().default(false).describe('Skip Claude ranking for faster results'),
-  provider: z.enum(['ollama', 'gemini']).optional().default('ollama').describe('Embedding provider'),
-  scope: z.enum(['local', 'server']).optional().default('local')
-    .describe('local = this machine\'s index (default, offline). server = the synced chat-recall server (cross-device/team history; needs `chat-recall login`).'),
 });
 
 const RecallIndexSchema = z.object({
   force: z.boolean().optional().default(false).describe('Force re-index all sessions'),
-  provider: z.enum(['ollama', 'gemini']).optional().default('ollama').describe('Embedding provider'),
 });
 
 const RecallShowSchema = z.object({
@@ -223,8 +218,6 @@ const RecallRecentSchema = z.object({
   limit: z.number().optional().default(10).describe('Number of recent sessions to show'),
   since_hours: z.number().optional()
     .describe('Only include sessions modified in the last N hours. Combine with limit for "last 6h, top 20".'),
-  scope: z.enum(['local', 'server']).optional().default('local')
-    .describe('local = this machine (default). server = the synced chat-recall server (needs `chat-recall login`).'),
 });
 
 const RecallRenameSchema = z.object({
@@ -297,9 +290,6 @@ const RecallMemorySearchSchema = z.object({
   source_types: z.array(z.enum(['session', 'plan', 'task', 'claude_md', 'paste', 'history', 'diary'])).optional()
     .describe('Filter by source types (default: all)'),
   project_filter: z.string().optional().describe('Filter by project path'),
-  provider: z.enum(['ollama', 'gemini']).optional().default('ollama'),
-  scope: z.enum(['local', 'server']).optional().default('local')
-    .describe('local = this machine (default). server = the synced chat-recall server (needs `chat-recall login`).'),
 });
 
 const RecallMemoryStatusSchema = z.object({});
@@ -1671,24 +1661,31 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
 
         // Append token/cost metadata from the server's session telemetry.
-        // Tools without comparable per-session counters report inputTokens=0,
-        // so the section is skipped silently for them.
-        if (meta && meta.inputTokens > 0) {
+        // Tools without per-session token counters (Gemini/OpenCode/Codex
+        // report inputTokens=0) still get the section — with duration/
+        // messages/files and an explicit "not reported" line instead of the
+        // old silent omission, which read as "this data doesn't exist".
+        if (meta) {
           const lines: string[] = ['## Context Budget'];
           if (meta.slug) lines.push(`Session: ${meta.slug}`);
           if (meta.durationMs > 0) {
             const mins = Math.round(meta.durationMs / 60000);
             lines.push(`Duration: ~${mins} min | ${meta.messageCount} messages`);
           }
-          lines.push(`Input: ${(meta.inputTokens / 1_000_000).toFixed(1)}M tokens | Output: ${(meta.outputTokens / 1000).toFixed(1)}k tokens`);
-          lines.push(`Cache reads: ${(meta.cacheReadTokens / 1_000_000).toFixed(1)}M | Peak context: ${(meta.peakContextTokens / 1000).toFixed(0)}k`);
+          if (meta.inputTokens > 0) {
+            lines.push(`Input: ${(meta.inputTokens / 1_000_000).toFixed(1)}M tokens | Output: ${(meta.outputTokens / 1000).toFixed(1)}k tokens`);
+            lines.push(`Cache reads: ${(meta.cacheReadTokens / 1_000_000).toFixed(1)}M | Peak context: ${(meta.peakContextTokens / 1000).toFixed(0)}k`);
+          } else {
+            lines.push('Tokens/cost: not reported by this tool (Gemini/OpenCode/Codex transcripts carry no per-session token counters)');
+          }
           if (meta.filesModified.length > 0) {
             lines.push(`Files modified: ${meta.filesModified.length}`);
           }
           if (meta.modelsUsed.length > 0) {
             lines.push(`Models: ${meta.modelsUsed.filter(x => x !== '<synthetic>').join(', ')}`);
           }
-          formatted += '\n\n' + lines.join('\n');
+          // A bare header helps nobody — only append if something got added.
+          if (lines.length > 1) formatted += '\n\n' + lines.join('\n');
         }
 
         // Optional: append an in-order message dump (server doesn't expose the
@@ -2407,9 +2404,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Server-backed digest off the same analytics aggregate the dashboard
         // renders. The server computes per-week (Sunday-start, UTC) trends; we
         // pick the requested week from `weeklyTrends` / `periodComparison`.
-        // Project / model breakdowns aren't week-scoped server-side, so they
-        // are shown as overall-fleet context (clearly labelled). KG stats and
-        // open-task scans are local-only and dropped.
+        // For the CURRENT week, project/model breakdowns come from a second,
+        // time-windowed analytics call (?since_hours=168) so they're genuinely
+        // weekly. Historical weeks can't be windowed with a since-only filter,
+        // so their breakdowns show all-time context, labelled as such. KG
+        // stats and open-task scans are local-only and dropped.
         type Analytics = {
           summary: { totalSessions: number; totalCostUsd: number; totalDurationMin: number; totalCacheReadTokens: number; totalInputTokens: number };
           projects: Array<{ name: string; sessions: number; totalCost: number; description?: string }>;
@@ -2482,21 +2481,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         lines.push(`Change: ${arrow}${pctChange}%`);
         lines.push('');
 
-        // Top projects (overall fleet — analytics doesn't expose per-week
-        // project slices).
-        if (a.projects.length > 0) {
-          lines.push('## Top Projects (overall)\n');
-          for (const p of a.projects.slice(0, 8)) {
+        // Project/model breakdowns: genuinely week-scoped for the current
+        // week, all-time (and labelled so) for historical weeks.
+        let breakdown: Pick<Analytics, 'projects' | 'models'> = a;
+        let breakdownLabel = 'all-time';
+        if (params.weeks_back === 0) {
+          try {
+            breakdown = await remoteGet<Analytics>('/api/analytics?since_hours=168');
+            breakdownLabel = 'this week';
+          } catch { /* older server without since_hours — keep all-time */ }
+        }
+
+        if (breakdown.projects.length > 0) {
+          lines.push(`## Top Projects (${breakdownLabel})\n`);
+          for (const p of breakdown.projects.slice(0, 8)) {
             const desc = p.description ? ` — ${p.description.slice(0, 80)}` : '';
             lines.push(`**${p.name}** · ${p.sessions} sessions · $${p.totalCost.toFixed(0)}${desc}`);
           }
           lines.push('');
         }
 
-        // Models used (overall)
-        if (a.models.length > 0) {
-          lines.push('## Models Used (overall)\n');
-          for (const m of a.models) {
+        if (breakdown.models.length > 0) {
+          lines.push(`## Models Used (${breakdownLabel})\n`);
+          for (const m of breakdown.models) {
             const shortModel = m.model.replace(/^claude-/, '').replace(/^models\//, '');
             lines.push(`- ${shortModel}: ${m.sessions} sessions`);
           }
