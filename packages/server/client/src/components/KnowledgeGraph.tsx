@@ -8,8 +8,9 @@
  * opens focused on that entity instead of the global timeline.
  */
 
-import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import { Card, Chip, Input, Icon, SegmentedControl } from './primitives';
+import ForceGraph from './ForceGraph';
 import { getKgStats, getKgTimeline, queryKgEntity, type KgFact, type KgStats } from '../services/api';
 
 // Drop facts the extractor mangled — objects like "otherwise.", "it", trailing
@@ -166,19 +167,10 @@ function FactRow({ f, side, onPivot }: { f: KgFact; side: 'subject' | 'object' |
 }
 
 // ── Visual graph: center entity + its facts as nodes / labeled edges ─────────
-function kgForce(nodes: Array<{ id: string }>, edges: Array<{ from: string; to: string }>, W: number, H: number) {
-  const n = nodes.length;
-  const idx = new Map(nodes.map((nd, i) => [nd.id, i]));
-  const pos = nodes.map((_, i) => { const a = (i / Math.max(1, n)) * Math.PI * 2; return { x: W / 2 + Math.cos(a) * Math.min(W, H) * 0.34, y: H / 2 + Math.sin(a) * Math.min(W, H) * 0.34, vx: 0, vy: 0 }; });
-  const E = edges.map((e) => [idx.get(e.from), idx.get(e.to)] as [number | undefined, number | undefined]).filter(([a, b]) => a != null && b != null) as Array<[number, number]>;
-  const ITER = 160, kRep = (W * H) / Math.max(1, n) * 0.95, kSpring = 0.02, springLen = Math.min(W, H) / Math.sqrt(Math.max(2, n)) * 1.4, ctr = 0.003, damp = 0.85;
-  for (let it = 0; it < ITER; it++) {
-    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) { const dx = pos[i].x - pos[j].x, dy = pos[i].y - pos[j].y, d2 = dx * dx + dy * dy + 0.01, d = Math.sqrt(d2), f = kRep / d2, fx = f * dx / d, fy = f * dy / d; pos[i].vx += fx; pos[i].vy += fy; pos[j].vx -= fx; pos[j].vy -= fy; }
-    for (const [a, b] of E) { const dx = pos[b].x - pos[a].x, dy = pos[b].y - pos[a].y, d = Math.sqrt(dx * dx + dy * dy) + 0.01, f = kSpring * (d - springLen), fx = f * dx / d, fy = f * dy / d; pos[a].vx += fx; pos[a].vy += fy; pos[b].vx -= fx; pos[b].vy -= fy; }
-    for (let i = 0; i < n; i++) { pos[i].vx += (W / 2 - pos[i].x) * ctr; pos[i].vy += (H / 2 - pos[i].y) * ctr; pos[i].vx *= damp; pos[i].vy *= damp; pos[i].x += pos[i].vx; pos[i].y += pos[i].vy; }
-  }
-  return pos.map((p) => ({ x: p.x, y: p.y }));
-}
+// Thin adapter over the shared ForceGraph (components/ForceGraph.tsx): maps
+// facts to nodes/labeled edges (dashed = expired), keeps the KG-specific
+// layout tuning, and pivots on node click (the center node is inert).
+const KG_LAYOUT = { kRepFactor: 0.95, kSpring: 0.02, springLenFactor: 1.4, center: 0.003, initialRadius: 0.34 };
 function KgGraph({ center, facts, onPivot }: { center: string; facts: KgFact[]; onPivot: (n: string) => void }) {
   const { nodes, edges } = useMemo(() => {
     const set = new Map<string, { id: string }>([[center, { id: center }]]);
@@ -193,49 +185,32 @@ function KgGraph({ center, facts, onPivot }: { center: string; facts: KgFact[]; 
     }
     return { nodes: [...set.values()], edges: eds };
   }, [center, facts]);
-  const W = 760, H = 520;
-  const pos = useMemo(() => kgForce(nodes, edges, W, H), [nodes, edges]);
-  const idx = useMemo(() => new Map(nodes.map((n, i) => [n.id, i])), [nodes]);
-  const [v, setV] = useState({ k: 1, x: 0, y: 0 });
-  const svgRef = useRef<SVGSVGElement | null>(null);
-  const drag = useRef<{ mx: number; my: number; vx: number; vy: number } | null>(null);
-  const [grab, setGrab] = useState(false);
-  useEffect(() => { setV({ k: 1, x: 0, y: 0 }); }, [center]);
-  const toSvg = (cx: number, cy: number) => { const r = svgRef.current!.getBoundingClientRect(); return { x: (cx - r.left) * (W / r.width), y: (cy - r.top) * (H / r.height) }; };
-  const onWheel = (e: React.WheelEvent) => { e.preventDefault(); const m = toSvg(e.clientX, e.clientY); const fac = e.deltaY < 0 ? 1.15 : 1 / 1.15; setV((s) => { const k = Math.min(9, Math.max(0.4, s.k * fac)); return { k, x: m.x - (m.x - s.x) * (k / s.k), y: m.y - (m.y - s.y) * (k / s.k) }; }); };
-  const onDown = (e: React.MouseEvent) => { drag.current = { mx: e.clientX, my: e.clientY, vx: v.x, vy: v.y }; setGrab(true); };
-  const onMove = (e: React.MouseEvent) => { if (!drag.current) return; const r = svgRef.current!.getBoundingClientRect(); const dx = (e.clientX - drag.current.mx) * (W / r.width), dy = (e.clientY - drag.current.my) * (H / r.height); setV((s) => ({ ...s, x: drag.current!.vx + dx, y: drag.current!.vy + dy })); };
-  const onUp = () => { drag.current = null; setGrab(false); };
-  const btn = { background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 6, color: 'var(--cr-fg-2)', cursor: 'pointer', width: 26, height: 24, fontSize: 13 } as React.CSSProperties;
-  return (
-    <div style={{ position: 'relative' }}>
-      <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 4, zIndex: 2 }}>
-        <button style={btn} onClick={() => setV((s) => ({ ...s, k: Math.min(9, s.k * 1.3) }))}>+</button>
-        <button style={btn} onClick={() => setV((s) => ({ ...s, k: Math.max(0.4, s.k / 1.3) }))}>−</button>
-        <button style={{ ...btn, width: 'auto', padding: '0 8px' }} onClick={() => setV({ k: 1, x: 0, y: 0 })}>reset</button>
-      </div>
-      <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} width="100%" preserveAspectRatio="xMidYMid meet"
-        style={{ maxWidth: '100%', height: H, background: 'var(--cr-ink-1)', borderRadius: 8, cursor: grab ? 'grabbing' : 'grab', touchAction: 'none', userSelect: 'none' }}
-        onWheel={onWheel} onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}>
-        <g transform={`translate(${v.x} ${v.y}) scale(${v.k})`}>
-          {edges.map((e, i) => { const a = idx.get(e.from), b = idx.get(e.to); if (a == null || b == null) return null; const mx = (pos[a].x + pos[b].x) / 2, my = (pos[a].y + pos[b].y) / 2; return (
-            <g key={i}>
-              <line x1={pos[a].x} y1={pos[a].y} x2={pos[b].x} y2={pos[b].y} stroke="var(--cr-line-2, var(--cr-line-1))" strokeWidth={1.2 / v.k} opacity={e.expired ? 0.25 : 0.55} strokeDasharray={e.expired ? '4 3' : undefined} />
-              <text x={mx} y={my} textAnchor="middle" fontSize={Math.max(6, 8 / v.k)} fill="var(--cr-fg-3)" style={{ pointerEvents: 'none' }}>{e.label}</text>
-            </g>
-          ); })}
-          {nodes.map((n, i) => { const isC = n.id === center; return (
-            <g key={n.id} style={{ cursor: isC ? 'default' : 'pointer' }} onClick={() => { if (!drag.current && !isC) onPivot(n.id); }}>
-              <circle cx={pos[i].x} cy={pos[i].y} r={isC ? 12 : 7} fill={isC ? 'var(--cr-brand-500)' : 'var(--cr-ink-2)'} stroke="var(--cr-brand-500)" strokeWidth={1.2 / v.k} opacity={0.95}>
-                <title>{n.id}</title>
-              </circle>
-              <text x={pos[i].x} y={pos[i].y - (isC ? 16 : 11)} textAnchor="middle" fontSize={Math.max(7, (isC ? 11 : 9) / v.k)} fill={isC ? 'var(--cr-fg-1)' : 'var(--cr-fg-2)'} style={{ fontFamily: 'var(--cr-font-mono)', pointerEvents: 'none' }}>{n.id}</text>
-            </g>
-          ); })}
-        </g>
-      </svg>
-    </div>
-  );
+  const fgNodes = useMemo(() => nodes.map((n) => {
+    const isC = n.id === center;
+    return {
+      id: n.id,
+      label: n.id,
+      r: isC ? 12 : 7,
+      fill: isC ? 'var(--cr-brand-500)' : 'var(--cr-ink-2)',
+      stroke: 'var(--cr-brand-500)',
+      strokeWidth: 1.2,
+      opacity: 0.95,
+      labelSize: isC ? 11 : 9,
+      labelColor: isC ? 'var(--cr-fg-1)' : 'var(--cr-fg-2)',
+      labelGap: 4,
+      clickable: !isC,
+    };
+  }), [nodes, center]);
+  const fgEdges = useMemo(() => edges.map((e) => ({
+    from: e.from,
+    to: e.to,
+    label: e.label,
+    color: 'var(--cr-line-2, var(--cr-line-1))',
+    width: 1.2,
+    opacity: e.expired ? 0.25 : 0.55,
+    dashed: e.expired,
+  })), [edges]);
+  return <ForceGraph nodes={fgNodes} edges={fgEdges} onNode={onPivot} resetKey={center} layout={KG_LAYOUT} />;
 }
 
 function KgStat({ label, value, tone }: { label: string; value: number; tone?: 'ok' | 'muted' }) {
