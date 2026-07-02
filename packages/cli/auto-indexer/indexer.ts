@@ -360,7 +360,7 @@ async function codeIndexTick(): Promise<void> {
     if (creds.length === 0) return;
     const workspaces = discoverWorkspaces();
     if (workspaces.length === 0) return;
-    const { collectCode, resolveCodeindexBin } = await import('@chat-recall/engine');
+    const { collectCode, resolveCodeindexBin } = await import('@chat-recall/engine/core/code/collector.js');
     let bin: string;
     try { bin = await resolveCodeindexBin(true); }   // resolve/install codeindex once per pass
     catch (e) { console.error(`[${ts()}] code intelligence skipped — codeindex unavailable: ${e instanceof Error ? e.message : e}`); return; }

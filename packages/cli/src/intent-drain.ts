@@ -14,10 +14,13 @@ import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync } fr
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { loadAllCredentials } from './sync-client.js';
+// Concrete module, NOT the engine barrel: the barrel statically re-exports
+// MemoryIndex -> @lancedb/lancedb, and a static barrel import hoists that
+// native dep to boot-time in the published bundle (breaks fresh installs).
 import {
   executeSyncAll, executeCopy,
-  type SyncType, type SyncTargetTool,
-} from '@chat-recall/engine';
+  type SyncType, type TargetTool as SyncTargetTool,
+} from '@chat-recall/engine/core/toolkit-sync.js';
 
 interface PendingIntent {
   id: string;
