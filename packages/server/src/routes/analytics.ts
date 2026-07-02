@@ -8,15 +8,16 @@ import type { SessionEntry, SourceType } from '../imports.js';
 import { getModelContextLimit } from '@chat-recall/engine/core/utils.js';
 import { estimateCostUsdOrNull } from '@chat-recall/engine/core/model-pricing.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
+import { TenantTtlCache } from '../util/tenant-cache.js';
 
 const log = createLogger('analytics');
 
 const router = express.Router();
 
-// Cache analytics for 60 seconds (expensive to compute)
-let analyticsCache: any = null;
-let analyticsCacheTime = 0;
-const CACHE_TTL_MS = 60_000;
+// Cache analytics for 60 seconds (expensive to compute). Tenant-scoped —
+// a module-level `let` here once served tenant A's whole-fleet analytics
+// to tenant B for the TTL window.
+const analyticsCache = new TenantTtlCache<any>(60_000);
 
 /** Map file extension to language name */
 function extToLang(ext: string): string {
@@ -57,10 +58,10 @@ router.get('/', async (req, res) => {
     const validTools = new Set(['claude', 'gemini', 'opencode', 'codex']);
     const activeToolFilter = toolFilter && validTools.has(toolFilter) ? toolFilter : null;
 
-    // Cache key includes the tool filter so we don't return the wrong slice.
-    const now = Date.now();
-    if (!activeToolFilter && analyticsCache && (now - analyticsCacheTime) < CACHE_TTL_MS) {
-      return res.json(analyticsCache);
+    // Only the unfiltered slice is cached; per-tool slices are recomputed.
+    if (!activeToolFilter) {
+      const cached = analyticsCache.get();
+      if (cached) return res.json(cached);
     }
 
     const store = await createStore();
@@ -645,8 +646,7 @@ router.get('/', async (req, res) => {
     // Only cache the unfiltered (whole-fleet) result. Per-tool slices are
     // recomputed on demand — they're small relative to the unfiltered run.
     if (!activeToolFilter) {
-      analyticsCache = result;
-      analyticsCacheTime = now;
+      analyticsCache.set(result);
     }
     res.json(result);
   } catch (error) {

@@ -13,6 +13,7 @@ import { MemoryService } from '../services/memory.js';
 import { createStore } from '../imports.js';
 import type { SourceType } from '../imports.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
+import { TenantTtlCache } from '../util/tenant-cache.js';
 
 const log = createLogger('memory');
 
@@ -61,18 +62,17 @@ router.post('/search', async (req, res) => {
 // (across 9 source types) are derived from a SQL group-by — fast
 // individually but adds up to ~250ms cold. The Memory tab fires this
 // on every render; caching for 30s keeps tab switches snappy.
-let memoryStatusCache: { data: unknown; expiresAt: number } | null = null;
-const MEMORY_STATUS_TTL_MS = 30_000;
+// Tenant-scoped: a plain module-level value here leaked one tenant's
+// counts to every other tenant for the TTL window.
+const memoryStatusCache = new TenantTtlCache<unknown>(30_000);
 
 // GET /api/memory/status
 router.get('/status', async (req, res) => {
   try {
-    const now = Date.now();
-    if (memoryStatusCache && memoryStatusCache.expiresAt > now) {
-      return res.json(memoryStatusCache.data);
-    }
+    const cached = memoryStatusCache.get();
+    if (cached) return res.json(cached);
     const status = await memoryService.getStatus();
-    memoryStatusCache = { data: status, expiresAt: now + MEMORY_STATUS_TTL_MS };
+    memoryStatusCache.set(status);
     res.json(status);
   } catch (error) {
     log.error({ err: error }, 'memory status error');
