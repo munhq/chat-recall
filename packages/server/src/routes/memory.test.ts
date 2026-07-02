@@ -9,6 +9,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import memoryRouter from './memory.js';
+import { runWithTenant } from '@chat-recall/engine/core/store/tenant-context.js';
 
 let tmpHome: string;
 const origHome = process.env.HOME;
@@ -135,5 +136,49 @@ describe('GET /api/memory/item/:type/:id/content — server-mode reconstruction'
     }
     const res = await request(app).get(`/api/memory/item/plan/${id}/content`);
     expect(res.status).toBe(404);
+  });
+});
+
+describe('cross-tenant response-cache isolation (regression)', () => {
+  test('/api/memory/status cached for tenant A is never served to tenant B', async () => {
+    // Regression for the pre-multi-tenancy module-level status cache: the
+    // first caller's counts were served to EVERY tenant for the 30s TTL.
+    // Strategy (works on the single-file sqlite test backend, where store
+    // data is shared): warm the cache as tenant A, mutate the store, then
+    // read as tenant B. A leak serves B the stale payload A cached; the
+    // tenant-scoped cache recomputes for B and sees the new item.
+    const tenantApp = express();
+    tenantApp.use((req, _res, next) => {
+      runWithTenant(String(req.headers['x-test-tenant'] || 'default'), () => next());
+    });
+    tenantApp.use('/api/memory', memoryRouter);
+
+    const planItems = (body: any): number =>
+      Object.values((body.bySourceAndTool?.plan ?? {}) as Record<string, number>).reduce((a, b) => a + b, 0);
+
+    const a1 = await request(tenantApp).get('/api/memory/status').set('x-test-tenant', 'team-a');
+    expect(a1.status).toBe(200);
+    const planCountA = planItems(a1.body);
+
+    const { createStore } = await import('../imports.js');
+    const store = await createStore();
+    try {
+      await store.setItem({
+        id: 'iso-plan-1', sourceType: 'plan', title: 'Isolation probe',
+        projectPath: 'p_iso', filePath: '', mtime: 1750000000002, contentPreview: 'probe',
+      });
+    } finally {
+      await store.close();
+    }
+
+    // Tenant A within the TTL still gets its cached (stale) payload…
+    const a2 = await request(tenantApp).get('/api/memory/status').set('x-test-tenant', 'team-a');
+    expect(planItems(a2.body)).toBe(planCountA);
+
+    // …but tenant B must NOT inherit A's cache entry: it recomputes and
+    // sees the freshly-inserted plan.
+    const b1 = await request(tenantApp).get('/api/memory/status').set('x-test-tenant', 'team-b');
+    expect(b1.status).toBe(200);
+    expect(planItems(b1.body)).toBe(planCountA + 1);
   });
 });

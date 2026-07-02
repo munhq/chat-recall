@@ -9,6 +9,7 @@ import { cachedRecentEdits, findRepoRoot } from '../imports.js';
 import type { SessionEdit } from '../imports.js';
 import { isServerMode } from '../util/mode.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
+import { TenantTtlCache } from '../util/tenant-cache.js';
 
 const log = createLogger('edits');
 
@@ -27,9 +28,10 @@ const router = express.Router();
  * after lookup, so different filter combos still share the underlying
  * scan output.
  */
-const TIMELINE_CACHE_TTL_MS = 30_000;
-const TIMELINE_CACHE_MAX = 64;
-const timelineCache = new Map<string, { data: SessionEdit[]; expiresAt: number }>();
+// Tenant-scoped (TenantTtlCache prefixes the ambient tenant): the compound
+// key below deliberately does NOT need to include the tenant itself — a plain
+// Map here once served tenant A's edit timeline to tenant B for 30s.
+const timelineCache = new TenantTtlCache<SessionEdit[]>(30_000, 64);
 
 async function getCachedTimeline(opts: {
   sinceMs: number;
@@ -39,9 +41,8 @@ async function getCachedTimeline(opts: {
 }): Promise<SessionEdit[]> {
   const sinceBucket = Math.floor(opts.sinceMs / 60_000);
   const key = `${sinceBucket}|${opts.pattern || ''}|${opts.projectFilter || ''}|${(opts.tools || []).slice().sort().join(',')}`;
-  const now = Date.now();
   const hit = timelineCache.get(key);
-  if (hit && hit.expiresAt > now) return hit.data;
+  if (hit) return hit;
 
   // Cache-first: pulls events from compute_cache[diff] for any session
   // whose cached row is fresh (mtime matches memory_metadata). Falls
@@ -56,12 +57,7 @@ async function getCachedTimeline(opts: {
     // server host's own filesystem.
     liveFallback: !isServerMode(),
   });
-  timelineCache.set(key, { data, expiresAt: now + TIMELINE_CACHE_TTL_MS });
-  while (timelineCache.size > TIMELINE_CACHE_MAX) {
-    const oldest = timelineCache.keys().next().value;
-    if (!oldest) break;
-    timelineCache.delete(oldest);
-  }
+  timelineCache.set(key, data);
   return data;
 }
 
