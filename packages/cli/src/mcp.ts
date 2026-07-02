@@ -2410,7 +2410,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // so their breakdowns show all-time context, labelled as such. KG
         // stats and open-task scans are local-only and dropped.
         type Analytics = {
-          summary: { totalSessions: number; totalCostUsd: number; totalDurationMin: number; totalCacheReadTokens: number; totalInputTokens: number };
+          summary: { totalSessions: number; totalCostUsd: number; totalDurationMin: number; totalCacheReadTokens: number; totalInputTokens: number; sessionsCostUpperBound?: number };
           projects: Array<{ name: string; sessions: number; totalCost: number; description?: string }>;
           models: Array<{ model: string; sessions: number }>;
           weeklyTrends: Array<{ week: string; cost: number; sessions: number; cacheRate: number }>;
@@ -2467,8 +2467,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: 'text', text: lines.join('\n') }] };
         }
 
-        // Overview
-        lines.push(`**${weekSessions} sessions** · **$${weekCost.toFixed(0)}**`);
+        // Overview. "≤" when any mixed-model session inflates the figure —
+        // those are billed entirely at their priciest model, so the total is
+        // an upper bound, not measured spend.
+        const costPrefix = (a.summary.sessionsCostUpperBound ?? 0) > 0 ? '≤' : '';
+        lines.push(`**${weekSessions} sessions** · **${costPrefix}$${weekCost.toFixed(0)}**`);
+        if (costPrefix) lines.push(`_(cost is an upper bound: ${a.summary.sessionsCostUpperBound} mixed-model session(s) billed at their priciest model)_`);
         if (weekCacheRate > 0) lines.push(`Cache hit rate: ${weekCacheRate}%`);
         lines.push('');
 
