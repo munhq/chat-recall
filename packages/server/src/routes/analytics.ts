@@ -6,7 +6,7 @@ import express from 'express';
 import { getAllSessions, parseSessionFile, createMetadataCache, createStore } from '../imports.js';
 import type { SessionEntry, SourceType } from '../imports.js';
 import { getModelContextLimit } from '@chat-recall/engine/core/utils.js';
-import { estimateCostUsdOrNull } from '@chat-recall/engine/core/model-pricing.js';
+import { estimateCostUsdOrNull, costIsUpperBound } from '@chat-recall/engine/core/model-pricing.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { TenantTtlCache } from '../util/tenant-cache.js';
 
@@ -94,6 +94,10 @@ router.get('/', async (req, res) => {
     let totalSessions = 0;
     let totalCost = 0;
     let sessionsWithoutPricing = 0; // models we don't have public prices for (Gemini, Ollama, custom)
+    // Mixed-model sessions are billed at the priciest model for the WHOLE
+    // bundle, so their (and any total containing them) dollar figure is an
+    // upper bound, not measured spend. Counted so the UI/digest can say so.
+    let sessionsCostUpperBound = 0;
     let totalInput = 0;
     let totalOutput = 0;
     let totalCacheRead = 0;
@@ -215,6 +219,7 @@ router.get('/', async (req, res) => {
       // the UI can show "N sessions don't have pricing data" instead of pretending.
       const costForAdd = cost ?? 0;
       if (cost === null) sessionsWithoutPricing++;
+      else if (costIsUpperBound((meta.modelsUsed || []) as string[])) sessionsCostUpperBound++;
 
       // Per-tool detail
       const td = getToolDetail(tool);
@@ -544,6 +549,10 @@ router.get('/', async (req, res) => {
         })(),
         avgDurationMin: Math.round(totalDuration / 60000 / Math.max(totalSessions, 1)),
         sessionsWithoutPricing,
+        // >0 means totalCostUsd is an UPPER BOUND (mixed-model sessions are
+        // billed entirely at their priciest model). Consumers should label
+        // dollar figures accordingly instead of presenting measured spend.
+        sessionsCostUpperBound,
       },
       topByDuration: sessionsByDuration.slice(0, 10).map(s => ({
         ...s, durationMin: Math.round(s.durationMs / 60000),
