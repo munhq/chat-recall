@@ -5,6 +5,7 @@ import {
   testAlertWebhook, getMe, createTeam, getPlan,
   type Entitlement, type PlanInfo,
 } from '../services/api';
+import { Button } from './primitives';
 
 /**
  * Cloud Account view: subscription status, connected devices (sync-token
@@ -29,7 +30,7 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
       <style>{ACCT_CSS}</style>
       <div className="acct-head">
         <h1>Account</h1>
-        <button className="acct-btn ghost" onClick={onClose}>← Back</button>
+        <Button variant="ghost" onClick={onClose}>← Back</Button>
       </div>
       {err && <div className="acct-err">{err}</div>}
 
@@ -49,7 +50,7 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
             )}
             <div className="acct-actions">
               {ent.hasSubscription
-                ? <button className="acct-btn" disabled={busy} onClick={manage}>Manage subscription</button>
+                ? <Button variant="secondary" disabled={busy} onClick={manage}>Manage subscription</Button>
                 : <StartTrialButton onError={setErr} />}
             </div>
           </>
@@ -65,7 +66,7 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
   );
 }
 
-function StartTrialButton({ onError }: { onError: (s: string) => void }) {
+function StartTrialButton({ onError, size = 'md' }: { onError: (s: string) => void; size?: 'md' | 'lg' }) {
   const [busy, setBusy] = useState(false);
   async function start() {
     setBusy(true); onError('');
@@ -82,7 +83,11 @@ function StartTrialButton({ onError }: { onError: (s: string) => void }) {
       window.location.assign(url);
     } catch (e: any) { onError(String(e.message || e)); setBusy(false); }
   }
-  return <button className="acct-btn primary" disabled={busy} onClick={start}>{busy ? 'Starting…' : 'Start free trial'}</button>;
+  return (
+    <Button variant="primary" size={size} disabled={busy} onClick={start} style={size === 'lg' ? { marginTop: 20 } : undefined}>
+      {busy ? 'Starting…' : 'Start free trial'}
+    </Button>
+  );
 }
 
 function AlertsCard({ onError }: { onError: (s: string) => void }) {
@@ -110,8 +115,8 @@ function AlertsCard({ onError }: { onError: (s: string) => void }) {
       <input className="acct-input" type="url" placeholder="https://discord.com/api/webhooks/…  or  https://hooks.slack.com/…"
         value={url} onChange={(e) => setUrl(e.target.value)} />
       <div className="acct-actions">
-        <button className="acct-btn primary" disabled={url.trim() === saved.trim()} onClick={save}>Save</button>
-        <button className="acct-btn" disabled={!url.trim()} onClick={test}>Send test</button>
+        <Button variant="primary" disabled={url.trim() === saved.trim()} onClick={save}>Save</Button>
+        <Button variant="secondary" disabled={!url.trim()} onClick={test}>Send test</Button>
         {msg && <span className="muted">{msg}</span>}
       </div>
     </section>
@@ -134,7 +139,7 @@ export function SubscribeScreen() {
         <p className="muted">Your subscription is required to access your sessions, search, analytics and live secret-leak
           alerts. Card required, cancel anytime — no charge until the trial ends.</p>
         {err && <div className="acct-err">{err}</div>}
-        <StartTrialButton onError={setErr} />
+        <StartTrialButton onError={setErr} size="lg" />
       </div>
     </div>
   );
@@ -154,12 +159,6 @@ const ACCT_CSS = `
 .acct-row:last-of-type { border-bottom:none; }
 .muted { color: var(--cr-fg-3,#6b7280); font-size: 14px; line-height:1.55; }
 .acct-actions { display:flex; gap: 10px; align-items:center; margin-top: 16px; flex-wrap:wrap; }
-.acct-btn { font: inherit; font-weight: 600; font-size: 14px; border-radius: 9px; padding: 9px 16px; cursor: pointer; border:1px solid var(--cr-line-2,#2a2f37); background: var(--cr-ink-2,#171b21); color: var(--cr-fg-1,#e8eaed); }
-.acct-btn:hover:not(:disabled) { border-color: var(--cr-brand-500,#5b8def); }
-.acct-btn:disabled { opacity:.5; cursor:default; }
-.acct-btn.primary { background: var(--cr-brand-500,#5b8def); border-color: transparent; color:#fff; }
-.acct-btn.primary:hover:not(:disabled) { background: var(--cr-brand-600,#4a7ad9); }
-.acct-btn.ghost { background:transparent; }
 .acct-input { width:100%; box-sizing:border-box; font: inherit; font-size:14px; padding: 10px 12px; border-radius:9px; border:1px solid var(--cr-line-2,#2a2f37); background: var(--cr-ink-0,#0b0d10); color: var(--cr-fg-1,#e8eaed); margin-top: 8px; }
 .acct-err { background: var(--cr-err-surf,#2a1416); border:1px solid var(--cr-err-line,#5a2329); color: var(--cr-err-500,#f87171); padding: 10px 14px; border-radius:9px; margin-bottom:16px; font-size:13px; }
 .badge { padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight:600; }
@@ -170,5 +169,4 @@ const ACCT_CSS = `
 .sub-box { max-width: 460px; text-align:center; }
 .sub-logo { color: var(--cr-brand-500,#5b8def); font-weight:700; margin-bottom: 20px; }
 .sub-box h1 { font-size: 28px; letter-spacing:-0.02em; margin: 0 0 14px; }
-.sub-box .acct-btn { margin-top: 20px; font-size: 16px; padding: 12px 24px; }
 `;
