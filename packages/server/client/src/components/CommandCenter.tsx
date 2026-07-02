@@ -11,6 +11,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { Card, Chip, Button, Icon } from './primitives';
+import ConnectMachine from './ConnectMachine';
 import {
   getCodeProjects, getAccountRecommendations, applyAccountRecommendation, getSecretsSummary, getStatus,
   type CodeProject, type CodeRecommendation, type SecretsSummary,
@@ -18,7 +19,7 @@ import {
 
 type Nav = (v: string) => void;
 
-export default function CommandCenter({ setView, onOpenProject }: { setView: Nav; onOpenProject: (id: string) => void }) {
+export default function CommandCenter({ setView, onOpenProject, cloud }: { setView: Nav; onOpenProject: (id: string) => void; cloud?: boolean }) {
   const [projects, setProjects] = useState<CodeProject[]>([]);
   const [recs, setRecs] = useState<CodeRecommendation[]>([]);
   const [secrets, setSecrets] = useState<SecretsSummary | null>(null);
@@ -43,6 +44,28 @@ export default function CommandCenter({ setView, onOpenProject }: { setView: Nav
   const criticals = projects.reduce((a, p) => a + (p.health?.critical ?? 0), 0);
   const hotspots = projects.reduce((a, p) => a + (p.health?.hotspots ?? 0), 0);
   const leaked = secrets ? (secrets.totals || []).reduce((a, t) => a + (t.findings || 0), 0) : 0;
+
+  // First run on the SaaS: a paying user with zero synced sessions gets the
+  // connect flow front-and-center, not a wall of `—` metrics that reads like
+  // the product is broken. The moment data lands, the dashboard takes over.
+  if (cloud && !loading && (status?.totalSessions ?? 0) === 0) {
+    return (
+      <div className="cr-cmd" style={{ flex: 1, overflow: 'auto', padding: '28px 32px 64px' }}>
+        <div style={{ maxWidth: 680, margin: '40px auto 0' }}>
+          <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 10, letterSpacing: '0.32em', textTransform: 'uppercase', color: 'var(--cr-brand-500)', marginBottom: 8 }}>
+            welcome to chat-recall
+          </div>
+          <h1 style={{ fontFamily: 'var(--cr-font-display)', fontWeight: 700, fontSize: 26, margin: '0 0 6px', letterSpacing: '-0.01em' }}>
+            Let’s get your first machine connected
+          </h1>
+          <div style={{ color: 'var(--cr-fg-2)', fontSize: 13, marginBottom: 20 }}>
+            Nothing is synced yet — this dashboard lights up the moment your session history arrives.
+          </div>
+          <ConnectMachine compact onFirstData={() => getStatus().then((s) => setStatus(s as any)).catch(() => {})} />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="cr-cmd" style={{ flex: 1, overflow: 'auto', padding: '28px 32px 64px' }}>

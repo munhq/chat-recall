@@ -123,6 +123,36 @@ router.post('/teams/:slug/tokens', sensitiveLimiter, async (req, res) => {
   } finally { await cp.close(); }
 });
 
+// List the team's devices (metadata only — token hashes never leave the
+// store). Powers the Account page "Connected devices" card in onboarding.
+router.get('/teams/:slug/tokens', async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const cp = await createControlPlane();
+  try {
+    if (!(await cp.roleOf(user.sub, req.params.slug))) {
+      return res.status(403).json({ error: 'not a member' });
+    }
+    res.json({ devices: await cp.listAgentTokens(req.params.slug) });
+  } finally { await cp.close(); }
+});
+
+// Revoke a device's sync token. The device keeps its local transcripts; it
+// just can't push to / read from this team until a new token is minted.
+router.delete('/teams/:slug/tokens/:deviceId', sensitiveLimiter, async (req, res) => {
+  const user = await requireUser(req, res);
+  if (!user) return;
+  const cp = await createControlPlane();
+  try {
+    if (!(await cp.roleOf(user.sub, req.params.slug))) {
+      return res.status(403).json({ error: 'not a member' });
+    }
+    const ok = await cp.revokeAgentToken(req.params.slug, req.params.deviceId);
+    if (!ok) return res.status(404).json({ error: 'no active token for that device' });
+    res.json({ revoked: req.params.deviceId });
+  } finally { await cp.close(); }
+});
+
 // ── Admin bootstrap (self-host without Keycloak) ────────────────────────
 
 router.post('/tenants', sensitiveLimiter, async (req, res) => {

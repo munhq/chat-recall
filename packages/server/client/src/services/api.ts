@@ -1950,6 +1950,34 @@ export async function createTeam(name: string): Promise<{ slug: string; name: st
   return await res.json();
 }
 
+// ── Device sync tokens (connect-your-machine onboarding) ────────────────
+
+export interface DeviceInfo { deviceId: string; createdAt: number; revoked: boolean }
+
+/** Mint (or rotate) a device sync token. The raw token is shown ONCE. */
+export async function mintDeviceToken(teamSlug: string, deviceId: string): Promise<{ token: string; device_id: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/teams/${encodeURIComponent(teamSlug)}/tokens`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ device_id: deviceId }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `token mint failed: ${res.statusText}`);
+  return await res.json();
+}
+
+/** Devices with a sync token (metadata only — never the token itself). */
+export async function listDevices(teamSlug: string): Promise<DeviceInfo[]> {
+  const res = await fetchWithTimeout(`${API_BASE}/teams/${encodeURIComponent(teamSlug)}/tokens`);
+  if (!res.ok) throw new Error(`listing devices failed: ${res.statusText}`);
+  return (await res.json()).devices ?? [];
+}
+
+export async function revokeDevice(teamSlug: string, deviceId: string): Promise<void> {
+  const res = await fetchWithTimeout(
+    `${API_BASE}/teams/${encodeURIComponent(teamSlug)}/tokens/${encodeURIComponent(deviceId)}`,
+    { method: 'DELETE' },
+  );
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `revoke failed: ${res.statusText}`);
+}
+
 /** Current subscription/entitlement for the caller's tenant. Throws with the
  *  server's error message (e.g. "no team yet …") so the gate can branch on it. */
 export async function getEntitlement(): Promise<Entitlement> {

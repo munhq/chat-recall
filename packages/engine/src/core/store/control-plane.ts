@@ -29,6 +29,7 @@ const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 const INVITE_TTL_MS = 7 * 24 * 3600 * 1000;
 
 export interface AgentTokenInfo { tenant: string; deviceId: string }
+export interface AgentTokenMeta { deviceId: string; createdAt: number; revoked: boolean }
 
 /**
  * Per-tenant subscription state — the billing spine. A tenant is "entitled"
@@ -74,6 +75,8 @@ export interface ControlPlane {
   /** Mint (or rotate) a device token. Returns the raw token — shown once. */
   mintAgentToken(tenant: string, deviceId: string, userSub?: string): Promise<string>;
   revokeAgentToken(tenant: string, deviceId: string): Promise<boolean>;
+  /** Devices with a token (active or revoked) — metadata only, never hashes. */
+  listAgentTokens(tenant: string): Promise<AgentTokenMeta[]>;
 
   createTeam(name: string, ownerSub: string, ownerEmail?: string | null): Promise<{ slug: string; name: string }>;
   listMemberships(userSub: string): Promise<Membership[]>;
@@ -226,6 +229,13 @@ class SqliteControlPlane implements ControlPlane {
       `UPDATE cp_agent_tokens SET revoked_at = ? WHERE tenant = ? AND device_id = ? AND revoked_at IS NULL`,
     ).run(Date.now(), tenant, deviceId);
     return r.changes > 0;
+  }
+
+  async listAgentTokens(tenant: string): Promise<AgentTokenMeta[]> {
+    const rows = this.db.prepare(
+      `SELECT device_id, created_at, revoked_at FROM cp_agent_tokens WHERE tenant = ? ORDER BY created_at DESC`,
+    ).all(tenant) as Array<{ device_id: string; created_at: number; revoked_at: number | null }>;
+    return rows.map(r => ({ deviceId: r.device_id, createdAt: r.created_at, revoked: r.revoked_at != null }));
   }
 
   async createTeam(name: string, ownerSub: string, ownerEmail?: string | null): Promise<{ slug: string; name: string }> {
@@ -482,6 +492,18 @@ class PgControlPlane implements ControlPlane {
       [Date.now(), tenant, deviceId],
     );
     return (r.rowCount || 0) > 0;
+  }
+
+  async listAgentTokens(tenant: string): Promise<AgentTokenMeta[]> {
+    const r = await this.pool.query(
+      `SELECT device_id, created_at, revoked_at FROM agent_tokens WHERE tenant = $1 ORDER BY created_at DESC`,
+      [tenant],
+    );
+    return r.rows.map((row: { device_id: string; created_at: string | number; revoked_at: string | number | null }) => ({
+      deviceId: row.device_id,
+      createdAt: Number(row.created_at),
+      revoked: row.revoked_at != null,
+    }));
   }
 
   async createTeam(name: string, ownerSub: string, ownerEmail?: string | null): Promise<{ slug: string; name: string }> {
