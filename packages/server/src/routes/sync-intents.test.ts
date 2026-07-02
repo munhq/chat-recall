@@ -5,15 +5,32 @@
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 import express, { type Express } from 'express';
 import request from 'supertest';
-import syncIntentsRouter from './sync-intents.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
+// HERMETIC: without CHAT_RECALL_DATA_DIR this suite wrote its intents into the
+// DEVELOPER'S real ~/.chat-recall store — every run leaked one pending
+// sync_all intent into the real queue (the watch daemon would try to execute
+// them!), and once the real queue crossed the pending-list's oldest-first
+// LIMIT 50, the round-trip test started failing on unrelated data. Env must
+// be set BEFORE the route module loads (store path resolves at import).
+let tmpDir: string;
 let app: Express;
-beforeAll(() => {
+const origDataDir = process.env.CHAT_RECALL_DATA_DIR;
+beforeAll(async () => {
+  tmpDir = mkdtempSync(join(tmpdir(), 'sync-intents-'));
+  process.env.CHAT_RECALL_DATA_DIR = tmpDir;
+  const syncIntentsRouter = (await import('./sync-intents.js')).default;
   app = express();
   app.use(express.json());
   app.use('/api/sync-intents', syncIntentsRouter);
 });
-afterAll(() => { /* shared pooled store; closed by suite teardown */ });
+afterAll(() => {
+  if (origDataDir === undefined) delete process.env.CHAT_RECALL_DATA_DIR;
+  else process.env.CHAT_RECALL_DATA_DIR = origDataDir;
+  rmSync(tmpDir, { recursive: true, force: true });
+});
 
 describe('POST /api/sync-intents (validation)', () => {
   test('rejects unknown kind', async () => {
