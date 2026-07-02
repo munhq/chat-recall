@@ -65,7 +65,11 @@ export const DEFAULT_REDACTION_RULES: RedactionRule[] = [
   // tool output) and is exactly what leaked AWS_SECRET_ACCESS_KEY and
   // AWS_SESSION_TOKEN in cleartext while the access-key-ID rule above caught
   // only the (least-sensitive) ID.
-  { label: 'env-secret',       pattern: /(?<=\b[A-Z][A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL)S?["']?[ \t]{0,3}[:=][ \t]{0,3}["']?)[A-Za-z0-9/+_.~=-]{12,}/g },
+  // Suffix list deliberately broad: DB_PASS (our own helm chart's name!),
+  // NPM_AUTH, SENTRY_DSN, SESSION/COOKIE secrets and BEARER vars all leaked
+  // past the original KEY/SECRET/TOKEN/PASSWORD-only list. Values under 12
+  // chars don't redact, so flag-ish vars (BYPASS=true) stay readable.
+  { label: 'env-secret',       pattern: /(?<=\b[A-Z][A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|PASS|PWD|CREDENTIAL|AUTH|DSN|SESSION|COOKIE|BEARER|SIGNATURE)S?["']?[ \t]{0,3}[:=][ \t]{0,3}["']?)[A-Za-z0-9/+_.~=:@-]{12,}/g },
   // Credentials embedded in a connection URL: scheme://user:PASSWORD@host.
   // Redacts only the password segment (keeps scheme/user/host for context).
   { label: 'url-password',     pattern: /(?<=\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?|mssql|mariadb):\/\/[^:@\s/]{1,64}:)[^@\s/]{1,256}(?=@)/g },
@@ -119,11 +123,24 @@ export const DEFAULT_REDACTION_RULES: RedactionRule[] = [
 // digit — which excludes lowercase-hex SHAs and all-lower base64url ids).
 // ---------------------------------------------------------------------------
 const SECRET_CONTEXT_RE = /\b(?:secret|password|passwd|credential|access[ _-]?key|private[ _-]?key|api[ _-]?key|auth(?:oriz\w*)?|bearer|token)\b/gi;
-const HIGH_ENTROPY_TOKEN_RE = /[A-Za-z0-9/+]{32,}/g;
+// Charset includes base64url (-/_) — bare base64url secrets used to slip
+// through because only classic base64 was matched.
+const HIGH_ENTROPY_TOKEN_RE = /[A-Za-z0-9/+_-]{32,}/g;
 
-/** A bare token is "secret-shaped" when long + mixed-case + has a digit. */
+/**
+ * A bare token is "secret-shaped" when long AND either mixed-case-with-digit
+ * (classic base64 secrets) or PURE HEX (many real API keys are 32/40/64-char
+ * hex — the original mixed-case requirement waved every one of them through).
+ * Hex checksums (git SHAs, digests) can false-positive here, but this only
+ * fires within 80 chars of an explicit secret-context word — "commit abc123…"
+ * has no such word, "api key 3f2a…" does. A redacted checksum in derived
+ * data is a paper cut; a leaked hex credential is the product failing at the
+ * one thing its Security page sells.
+ */
 function looksLikeSecretToken(t: string): boolean {
-  return t.length >= 32 && /[A-Z]/.test(t) && /[a-z]/.test(t) && /[0-9]/.test(t);
+  if (t.length < 32) return false;
+  if (/^[a-f0-9]+$/i.test(t)) return true; // pure hex, 32+ chars
+  return /[A-Z]/.test(t) && /[a-z]/.test(t) && /[0-9]/.test(t);
 }
 
 /**
@@ -143,10 +160,17 @@ export function findContextualSecrets(text: string): { start: number; end: numbe
     HIGH_ENTROPY_TOKEN_RE.lastIndex = 0;
     let tm: RegExpExecArray | null;
     while ((tm = HIGH_ENTROPY_TOKEN_RE.exec(window)) !== null) {
-      if (looksLikeSecretToken(tm[0])) {
-        ranges.push({ start: winStart + tm.index, end: winStart + tm.index + tm[0].length });
-        break; // first qualifying token per context word is enough
+      if (!looksLikeSecretToken(tm[0])) continue;
+      // Pure-hex tokens are also what checksums look like. When the text
+      // BETWEEN the context word and the token names a checksum ("the secret
+      // commit is <sha>", "token cache hash <digest>"), it's a reference,
+      // not a credential — skip it. "api key 3f2a…" has no such word and
+      // stays redacted.
+      if (/^[a-f0-9]+$/i.test(tm[0]) && /\b(?:commit|sha-?\d*|hash|digest|checksum|uuid|guid|etag|blob|ref)\b/i.test(window.slice(0, tm.index))) {
+        continue;
       }
+      ranges.push({ start: winStart + tm.index, end: winStart + tm.index + tm[0].length });
+      break; // first qualifying token per context word is enough
     }
   }
   // De-dupe / drop overlaps (multiple context words can point at the same token).

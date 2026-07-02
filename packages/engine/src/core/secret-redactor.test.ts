@@ -125,3 +125,34 @@ describe('scanTextForFindings — the universal in-process scanner (no binaries)
     expect(scanTextForFindings('')).toEqual([]);
   });
 });
+
+describe('secret redactor — coverage widened 2026-07-02 (audit gaps)', () => {
+  const r = (t: string) => redactSecrets(t, { force: true });
+
+  test('DB_PASS / _AUTH / _DSN / _SESSION env values redact (suffixes the old list missed)', () => {
+    expect(r('DB_PASS=supersecretpassword123')).toContain('[REDACTED:env-secret]');
+    expect(r('NPM_AUTH=abcDEF123456789012345')).toContain('[REDACTED:env-secret]');
+    expect(r('SENTRY_DSN=https://abc123def456@o1.ingest.sentry.io/1')).toContain('[REDACTED:env-secret]');
+    expect(r('COOKIE_SESSION: sess_abcdef0123456789')).toContain('[REDACTED:env-secret]');
+  });
+
+  test('short flag-ish values under 12 chars stay readable (BYPASS=true)', () => {
+    expect(r('BYPASS=true and STRICT_AUTH=off')).toBe('BYPASS=true and STRICT_AUTH=off');
+  });
+
+  test('bare lowercase-hex credential near a secret-context word redacts', () => {
+    const hexKey = 'deadbeefcafe0123456789abcdef0123456789ab'; // 40-hex
+    expect(r(`the api key is ${hexKey} for this service`)).toContain('[REDACTED:secret-context]');
+  });
+
+  test('git SHA named as a commit near "secret" is NOT redacted (checksum context)', () => {
+    const sha = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0';
+    expect(r(`the secret commit is ${sha}`)).toContain(sha);
+    expect(r(`token cache hash ${sha} unchanged`)).toContain(sha);
+  });
+
+  test('bare base64url token (with - and _) near context word redacts', () => {
+    const tok = 'aB3-cD4_eF5-gH6_iJ7-kL8_mN9-oP0_qR1-sT2x';
+    expect(r(`the access key ${tok} was pasted`)).toContain('[REDACTED:secret-context]');
+  });
+});
