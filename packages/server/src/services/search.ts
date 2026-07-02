@@ -5,6 +5,7 @@
 import { createVectorStore, OllamaEmbedder, createMetadataCache, getAllSessions, currentTenant } from '../imports.js';
 import type { SourceType, MemorySearchResult, VectorStore } from '../imports.js';
 import { QueryExpander } from './query-expander.js';
+import { TenantTtlCache } from '../util/tenant-cache.js';
 
 // See sessions.ts for why we strip client-injected banners here.
 const INJECTED_BANNERS: RegExp[] = [
@@ -44,10 +45,12 @@ export class SearchService {
   // instance would leak the startup tenant ('default') to every team.
   private indexes = new Map<string, Promise<VectorStore>>();
 
-  // Cache project counts for 30 seconds to avoid scanning filesystem on every SSE tick
-  private projectCountsCache: { projects: Record<string, number>; totalSessions: number } | null = null;
-  private projectCountsCacheTime = 0;
-  private static readonly CACHE_TTL_MS = 30_000;
+  // Cache project counts for 30 seconds to avoid scanning filesystem on every
+  // SSE tick. Tenant-scoped for the same reason `indexes` above is per-tenant:
+  // this service is a process-wide singleton, and an unscoped cache here
+  // served one tenant's project names + session counts to every other tenant
+  // via /api/status.
+  private projectCountsCache = new TenantTtlCache<{ projects: Record<string, number>; totalSessions: number }>(30_000);
 
   // LLM query expansion ("semantic without embeddings"). Shared across tenants —
   // it holds no tenant state, only a query→terms cache keyed by the query text.
@@ -163,8 +166,8 @@ export class SearchService {
     // extraction — `getStatus` only needs aggregate counts, and pulling
     // firstPrompts for 500+ sessions was the cause of the multi-second
     // cold status responses.
-    const now = Date.now();
-    if (!this.projectCountsCache || (now - this.projectCountsCacheTime) > SearchService.CACHE_TTL_MS) {
+    let counts = this.projectCountsCache.get();
+    if (!counts) {
       const { getSessionProjectCounts } = await import('./sessions.js');
       const { normalizeProjectPath } = await import('../utils/paths.js');
       const { projects: rawCounts, total } = await getSessionProjectCounts();
@@ -173,10 +176,10 @@ export class SearchService {
         const norm = normalizeProjectPath(path);
         if (norm) projectCounts[norm] = (projectCounts[norm] || 0) + count;
       }
-      this.projectCountsCache = { projects: projectCounts, totalSessions: total };
-      this.projectCountsCacheTime = now;
+      counts = { projects: projectCounts, totalSessions: total };
+      this.projectCountsCache.set(counts);
     }
-    const { projects: projectCounts, totalSessions } = this.projectCountsCache;
+    const { projects: projectCounts, totalSessions } = counts;
 
     return {
       totalChunks: stats.totalChunks,

@@ -45,6 +45,7 @@ import {
 } from '../services/summary-worker.js';
 import { matchesPrefix } from '../utils/paths.js';
 import { buildETag, maybeSendNotModified } from '../util/cacheable.js';
+import { TenantTtlCache } from '../util/tenant-cache.js';
 import { requireLocalMode, isServerMode } from '../util/mode.js';
 import { openPgPoolRo, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
@@ -691,14 +692,14 @@ function getOutcomeCache(): OutcomeCache {
  * kept (small in-process map) only to coalesce hundreds of badge calls
  * in the same render burst; it doesn't gate cold-path correctness.
  */
-const SESSION_PATH_MAP_TTL_MS = 10_000;
-let sessionPathCache: { map: Map<string, string>; expiresAt: number } | null = null;
+// Tenant-scoped: the map is built from the tenant's own store rows, so an
+// unscoped module-level value here both hid tenant B's sessions for the TTL
+// window and disclosed tenant A's session ids + file paths to everyone.
+const sessionPathCache = new TenantTtlCache<Map<string, string>>(10_000);
 
 async function getCachedSessionPathMap(): Promise<Map<string, string>> {
-  const now = Date.now();
-  if (sessionPathCache && sessionPathCache.expiresAt > now) {
-    return sessionPathCache.map;
-  }
+  const cached = sessionPathCache.get();
+  if (cached) return cached;
   // Primary source: indexed sessions from memory_metadata. <1ms.
   const store = await createStore();
   const map = new Map<string, string>();
@@ -707,13 +708,14 @@ async function getCachedSessionPathMap(): Promise<Map<string, string>> {
   } finally {
     await store.close();
   }
-  // Coverage fill: walk ~/.claude/projects/<encoded>/<id>.jsonl by
-  // filename only (no parse) for any session id not yet in
+  // Coverage fill (LOCAL MODE ONLY): walk ~/.claude/projects/<encoded>/
+  // <id>.jsonl by filename only (no parse) for any session id not yet in
   // memory_metadata. Active sessions and anything between indexer
   // passes show up here. Pure listdir is ~2ms for ~600 files —
   // cheaper than the 1-2s cost of the per-id `getSessionPath` fallback
-  // that this avoids on subsequent requests.
-  try {
+  // that this avoids on subsequent requests. In server mode data arrives
+  // exclusively via /api/sync — never walk the server host's own home.
+  if (!isServerMode()) try {
     const { readdirSync } = await import('fs');
     const { join } = await import('path');
     const { claudeBackend } = await import('../imports.js');
@@ -730,7 +732,7 @@ async function getCachedSessionPathMap(): Promise<Map<string, string>> {
       }
     }
   } catch { /* projects dir absent — leave map as-is */ }
-  sessionPathCache = { map, expiresAt: now + SESSION_PATH_MAP_TTL_MS };
+  sessionPathCache.set(map);
   return map;
 }
 
@@ -747,8 +749,8 @@ async function getCachedSessionPathMap(): Promise<Map<string, string>> {
 export async function prewarmConversationCaches(): Promise<void> {
   try {
     const t0 = Date.now();
-    await getCachedSessionPathMap();
-    log.info({ sessions: sessionPathCache?.map.size ?? 0, ms: Date.now() - t0 }, 'path map warmed');
+    const warmed = await getCachedSessionPathMap();
+    log.info({ sessions: warmed.size, ms: Date.now() - t0 }, 'path map warmed');
   } catch (err) {
     log.error({ err }, 'path map warm-up failed');
   }
