@@ -20,7 +20,7 @@
  * api rate-limiter doesn't apply).
  */
 import express from 'express';
-import { openPgPoolRo, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
+import { openPgPool, openPgPoolRo, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { latestPoolStats, queryCostSummary } from '../middleware/request-cost.js';
 import {
@@ -172,7 +172,13 @@ async function refreshBacklog(): Promise<void> {
   if (backlogRefreshing) return;
   backlogRefreshing = true;
   try {
-    const pool = await openPgPoolRo();
+    // Deliberately the RW pooler, NOT openPgPoolRo: this seconds-long COUNT was
+    // cancelled by WAL replay on the hot standby ("conflict with recovery") on
+    // nearly every tick while the embedding backfill streams writes — the KEDA
+    // scalers ran blind on a stale snapshot and the log spammed a warn/min. A
+    // bounded count every BACKLOG_REFRESH_MS is cheap on the primary; a read
+    // that reliably dies on the replica offloads nothing.
+    const pool = await openPgPool();
     const slugs: string[] = (await pool.query('SELECT tenant FROM tenants')).rows.map((r: any) => r.tenant);
     const b = await collectBacklog(pool, slugs);
     backlogCache = { ...b, tenants: slugs.length, at: Date.now() };
