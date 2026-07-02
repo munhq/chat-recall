@@ -3,20 +3,20 @@
  */
 
 import {
-  createStore, createVectorStore, OllamaEmbedder, SourceRegistry,
+  createStore, createVectorStore, getEmbedder, SourceRegistry,
   SessionSource, PlanSource, TaskSource, ClaudeMdSource, AgentMemorySource, HistorySource, PasteSource,
   GeminiSessionSource, GeminiBrainSource, OpenCodeSource, OpenCodeTodoSource, DiarySource,
   SkillsSource, McpsSource, SlashCommandsSource, SubagentsSource, HooksSource, PluginsSource,
   CodexSessionSource, currentTenant,
 } from '../imports.js';
-import type { SourceType, MemorySearchResult, MemoryMetadataRow, MemoryLinkRow, StorageDriver, VectorStore } from '../imports.js';
+import type { Embedder, EmbedderProvider, SourceType, MemorySearchResult, MemoryMetadataRow, MemoryLinkRow, StorageDriver, VectorStore } from '../imports.js';
 import { isServerMode } from '../util/mode.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 
 const log = createLogger('memory');
 
 export class MemoryService {
-  private embedder: OllamaEmbedder;
+  private embedder: Embedder;
   private registry: SourceRegistry;
   // Per-tenant store/index, built lazily in the request's ambient-tenant
   // context (createStore/createVectorStore read currentTenant()).
@@ -37,7 +37,9 @@ export class MemoryService {
   }
 
   constructor() {
-    this.embedder = new OllamaEmbedder();
+    // Env-driven embedder factory (same as SearchService / backfill worker) —
+    // one embedding model everywhere; default 'ollama' keeps local behavior.
+    this.embedder = getEmbedder((process.env.EMBEDDING_PROVIDER || 'ollama') as EmbedderProvider);
 
     // Initialize source registry. In server mode there is no local
     // filesystem to discover from (data arrives via /api/sync) and several
