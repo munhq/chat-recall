@@ -10,7 +10,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { Card, Chip, Button, Icon } from './primitives';
+import { Card, Chip, Button, Icon, pressableProps } from './primitives';
 import {
   getCodeProjects, getAccountRecommendations, applyAccountRecommendation, getSecretsSummary, getStatus,
   type CodeProject, type CodeRecommendation, type SecretsSummary,
@@ -135,7 +135,7 @@ function ProjectRow({ p, onOpen }: { p: CodeProject; onOpen: () => void }) {
   const s = p.health?.score ?? 0;
   const tone = s >= 70 ? 'var(--cr-ok-500)' : s >= 40 ? 'var(--cr-warn-500)' : 'var(--cr-err-500)';
   return (
-    <div onClick={onOpen} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0', cursor: 'pointer', borderBottom: '1px solid var(--cr-line-1)' }}>
+    <div {...pressableProps(onOpen)} aria-label={`Open project ${p.projectId.replace(/^git:/, '')}`} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0', cursor: 'pointer', borderBottom: '1px solid var(--cr-line-1)' }}>
       <div style={{ minWidth: 0, flex: 1 }}>
         <div className="mono" style={{ fontSize: 12, color: 'var(--cr-fg-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.projectId.replace(/^git:/, '')}</div>
         <div style={{ height: 4, background: 'var(--cr-line-1)', borderRadius: 2, marginTop: 5, width: '100%' }}>

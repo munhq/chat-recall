@@ -8,7 +8,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Card, Chip, Input, ToolBadge, Button, SegmentedControl, Icon } from './primitives';
+import { Card, Chip, Input, ToolBadge, Button, SegmentedControl, Icon, pressableProps } from './primitives';
 import { useSidebarExtrasRegister } from '../context/sidebar-extras';
 import {
   browseToolkit,
@@ -287,7 +287,7 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
               return (
                 <div
                   key={name}
-                  onClick={() => setSelectedId(id)}
+                  {...pressableProps(() => setSelectedId(id))}
                   style={{
                     padding: '14px 20px',
                     cursor: 'pointer',
@@ -322,7 +322,7 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
               return (
                 <div
                   key={item.id}
-                  onClick={() => setSelectedId(item.id)}
+                  {...pressableProps(() => setSelectedId(item.id))}
                   style={{
                     padding: '14px 20px',
                     cursor: 'pointer',
