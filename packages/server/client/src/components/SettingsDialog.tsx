@@ -63,6 +63,14 @@ interface Props {
   variant?: 'modal' | 'page';
 }
 
+// Provider/credential config (embedder + summary provider + API keys) is NOT
+// exposed in the UI. It's a SaaS-operator concern, injected via env/secret
+// (vault now; external-secrets / AWS Secrets Manager later). Self-host/local
+// devs still configure it via env, settings.json, or the CLI — just not here.
+// Removing it from the UI keeps the surface small and is a deliberate funnel:
+// self-hosting requires real ops, which is what the hosted SaaS sells.
+const PROVIDER_SETTINGS_IN_UI = false;
+
 export default function SettingsDialog({ open, onClose, variant = 'modal' }: Props) {
   const [resp, setResp] = useState<SettingsResponse | null>(null);
   const [emb, setEmb] = useState<EmbeddingSettings | null>(null);
@@ -209,24 +217,31 @@ export default function SettingsDialog({ open, onClose, variant = 'modal' }: Pro
 
         {resp && emb && sm && src && priv && snc && (
           <>
-            <SummaryCard
-              value={sm}
-              onChange={setSm}
-              presets={resp.presets}
-              status={resp.status}
-              testResult={smTest}
-              testing={smTesting}
-              onTest={runSmTest}
-            />
-            <EmbeddingCard
-              value={emb}
-              onChange={setEmb}
-              presets={resp.presets}
-              status={resp.status}
-              testResult={embTest}
-              testing={embTesting}
-              onTest={runEmbTest}
-            />
+            {/* Provider/credentials (summary + embedding) are operator-config,
+                injected via env/secret — not user-editable here. See
+                PROVIDER_SETTINGS_IN_UI. */}
+            {PROVIDER_SETTINGS_IN_UI && (
+              <>
+                <SummaryCard
+                  value={sm}
+                  onChange={setSm}
+                  presets={resp.presets}
+                  status={resp.status}
+                  testResult={smTest}
+                  testing={smTesting}
+                  onTest={runSmTest}
+                />
+                <EmbeddingCard
+                  value={emb}
+                  onChange={setEmb}
+                  presets={resp.presets}
+                  status={resp.status}
+                  testResult={embTest}
+                  testing={embTesting}
+                  onTest={runEmbTest}
+                />
+              </>
+            )}
             <SourcesCard value={src} onChange={setSrc} />
             <ProjectsSettingsCard />
             <PrivacyCard value={priv} onChange={setPriv} syncEnabled={snc.enabled} />
