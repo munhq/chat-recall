@@ -933,6 +933,7 @@ function AppInner() {
             <CommandCenter
               setView={(v) => setView(v as ViewMode)}
               onOpenProject={(id) => { setProjectFilter(id); setView('projects'); }}
+              cloud={capabilities?.edition === 'cloud'}
             />
           )}
           {view === 'code' && (

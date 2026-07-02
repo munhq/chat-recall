@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import ConnectMachine from './ConnectMachine';
 import {
   getEntitlement, startCheckout, openBillingPortal, getAlertConfig, setAlertConfig,
   testAlertWebhook, getMe, createTeam, getPlan,
@@ -6,9 +7,9 @@ import {
 } from '../services/api';
 
 /**
- * Cloud Account view: subscription status + the secret-alert webhook. Distinct
- * from the local Settings dialog (which is filesystem-collector config). Device
- * sync tokens are managed via the CLI for now.
+ * Cloud Account view: subscription status, connected devices (sync-token
+ * minting + revocation), and the secret-alert webhook. Distinct from the
+ * local Settings dialog (which is filesystem-collector config).
  */
 export default function AccountPage({ onClose }: { onClose: () => void }) {
   const [ent, setEnt] = useState<Entitlement | null>(null);
@@ -53,6 +54,10 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
             </div>
           </>
         )}
+      </section>
+
+      <section style={{ marginBottom: 18 }}>
+        <ConnectMachine />
       </section>
 
       <AlertsCard onError={setErr} />
