@@ -39,6 +39,9 @@ import {
   type SessionContent,
   type SourceType,
 } from '../imports.js';
+import { createLogger } from '@chat-recall/engine/core/logger.js';
+
+const log = createLogger('summary-worker');
 
 /** Provider names accepted from SUMMARY_PROVIDER, mirroring SummaryGeneratorConfig. */
 type SummaryProvider = SummaryGeneratorConfig['provider'];
@@ -350,6 +353,9 @@ export async function generateMissingSummaries(
                  attempt_count=summary_errors.attempt_count+1, last_failed_at=excluded.last_failed_at`,
           [tenant, o.id, String(o.err).slice(0, 500), Date.now()]);
       });
+      // summary_errors is the retry ledger, but ops can't read prod tables —
+      // the reason must also reach the logs or `failed:N` is undiagnosable.
+      log.warn({ tenant, sessionId: o.id, err: String(o.err).slice(0, 300) }, 'summary generation failed');
       failed++;
     }
   };
@@ -509,6 +515,7 @@ async function summarizeViaScan(
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
           try { await cache.recordSummaryError(c.id, msg); } catch { /* best-effort */ }
+          log.warn({ tenant: opts.tenant, sessionId: c.id, err: msg.slice(0, 300) }, 'summary generation failed');
           failed++;
         }
       }
