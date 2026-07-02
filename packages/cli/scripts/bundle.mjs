@@ -14,15 +14,18 @@ const here = new URL('.', import.meta.url);
 const cliPkg = JSON.parse(readFileSync(new URL('../package.json', here)));
 const enginePkg = JSON.parse(readFileSync(new URL('../../engine/package.json', here)));
 
-// External = all npm deps from the CLI and engine, EXCEPT the workspace engine
-// itself (we want that inlined). The engine still lists native deps
-// (better-sqlite3/lancedb/pg) so they stay externalized here, but the COLLECTOR
-// only actually installs what's in its own (optional)dependencies — the guard
-// below proves the built bundles never require anything outside that set.
+// External = the CLI's own (optional)dependencies — those install from
+// package.json on the customer's machine — plus the engine's NATIVE deps
+// (unbundleable addons). Every other engine dep (pino, pg's pure-JS friends,
+// etc.) gets INLINED: the published package installs only cliPkg deps, so an
+// externalized-but-uninstalled engine dep crashes a fresh install at boot
+// (this exact bug shipped: `import 'pino'` stayed external → every
+// `npm i -g chat-recall` broke with ERR_MODULE_NOT_FOUND).
+const NATIVE_ENGINE_DEPS = ['better-sqlite3', '@lancedb/lancedb', 'pg'];
 const external = [
   ...Object.keys(cliPkg.dependencies || {}),
   ...Object.keys(cliPkg.optionalDependencies || {}),
-  ...Object.keys(enginePkg.dependencies || {}),
+  ...NATIVE_ENGINE_DEPS,
 ].filter((d) => d !== '@chat-recall/engine');
 
 await build({
@@ -62,16 +65,32 @@ const allowed = new Set([
   ...builtinModules.map((m) => `node:${m}`),
 ]);
 const isOptional = new Set(Object.keys(cliPkg.optionalDependencies || {}));
-// Match require('x') / require("x") for bare specifiers (not ./relative paths).
-const requireRe = /require\(\s*['"]([^'".][^'"]*)['"]\s*\)/g;
+// Every way the bundle can pull a bare specifier at runtime, each with its
+// own severity:
+//   require('x') / top-level `import … from 'x'` — loaded at BOOT. Must be a
+//     collector dep or builtin, full stop. (The `from`-statement check is the
+//     one that was missing when a top-level `import 'pino'` shipped and broke
+//     every fresh `npm i -g chat-recall`.)
+//   import('x') — LAZY. Also allowed for the engine's native/server deps
+//     (pg, lancedb): those code paths never execute on a collector machine,
+//     and keeping them dynamic is exactly what makes the package native-free.
+const bootRes = [
+  /require\(\s*['"]([^'"\s.][^'"\s]*)['"]\s*\)/g,
+  /^import\b[^'"\n]*['"]([^'"\s.][^'"\s]*)['"];?\s*$/gm,
+];
+const lazyRe = /\bimport\(\s*['"]([^'"\s.][^'"\s]*)['"]\s*\)/g;
+const lazyAllowed = new Set([...allowed, ...NATIVE_ENGINE_DEPS]);
+const toPkg = (spec) => (spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0]);
 const offenders = new Set();
 for (const out of ['cli.js', 'mcp.js', 'watch.js']) {
   const code = readFileSync(new URL(`../dist/${out}`, here), 'utf-8');
-  for (const m of code.matchAll(requireRe)) {
-    const spec = m[1];
-    // Reduce subpath imports (e.g. "@scope/pkg/sub") to the package name.
-    const pkg = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
-    if (!allowed.has(pkg)) offenders.add(`${out} → require('${spec}')`);
+  for (const re of bootRes) {
+    for (const m of code.matchAll(re)) {
+      if (!allowed.has(toPkg(m[1]))) offenders.add(`${out} → boot-time '${m[1]}'`);
+    }
+  }
+  for (const m of code.matchAll(lazyRe)) {
+    if (!lazyAllowed.has(toPkg(m[1]))) offenders.add(`${out} → lazy import('${m[1]}')`);
   }
 }
 if (offenders.size > 0) {

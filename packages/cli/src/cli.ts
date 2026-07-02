@@ -1052,7 +1052,7 @@ code
   .action(async (path: string | undefined, opts: { install?: boolean }) => {
     try {
       const target = requireTarget();
-      const { collectCode } = await import('@chat-recall/engine');
+      const { collectCode } = await import('@chat-recall/engine/core/code/collector.js');
       const workspace = resolve(path || process.cwd());
       console.log(chalk.bold(`code index ${workspace}`));
       const result = await collectCode({
@@ -1143,7 +1143,7 @@ toolkit
   .description('Fan every artifact out to every tool that is missing it (runs locally now)')
   .option('--types <list>', 'comma-separated subset: skill,mcp,command,agent')
   .action(async (options: { types?: string }) => {
-    const { executeSyncAll } = await import('@chat-recall/engine');
+    const { executeSyncAll } = await import('@chat-recall/engine/core/toolkit-sync.js');
     const types = options.types
       ? options.types.split(',').map(s => s.trim()).filter(Boolean) as Array<'skill' | 'mcp' | 'command' | 'agent'>
       : undefined;
@@ -1168,7 +1168,7 @@ toolkit
   .command('copy <type> <name> <fromTool> <toTool>')
   .description('Copy one artifact (skill|mcp|command|agent) from one tool to another')
   .action(async (type: string, name: string, fromTool: string, toTool: string) => {
-    const { executeCopy } = await import('@chat-recall/engine');
+    const { executeCopy } = await import('@chat-recall/engine/core/toolkit-sync.js');
     const r = await executeCopy(type as any, name, fromTool, toTool as any);
     if (r.ok) console.log(chalk.green(`Copied to ${r.targetPath}`));
     else { console.error(chalk.red(r.error || 'failed')); process.exit(1); }
