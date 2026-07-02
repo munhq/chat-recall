@@ -12,19 +12,12 @@ import React, { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { Card, Chip, Input, Icon, SegmentedControl } from './primitives';
 import { getKgStats, getKgTimeline, queryKgEntity, type KgFact, type KgStats } from '../services/api';
 
-// Drop facts the extractor mangled — objects like "otherwise.", "it", trailing
-// punctuation, or one-char fragments aren't real entities. Cleans the display
-// until the extractor itself is tightened.
-const KG_FILLER = new Set(['otherwise', 'it', 'this', 'that', 'them', 'these', 'those', 'here', 'there', 'then', 'thing', 'things', 'one', 'some', 'any', 'etc', 'else', 'such', 'more', 'most', 'the', 'a', 'an']);
-function kgJunk(e?: string | null): boolean {
-  if (!e) return true;
-  const t = e.trim();
-  if (t.length < 2) return true;
-  if (/[.,;:!?]$/.test(t)) return true;            // ends in punctuation → sentence fragment
-  if (KG_FILLER.has(t.toLowerCase())) return true; // filler word
-  return false;
-}
-const cleanFact = (f: KgFact) => !kgJunk(f.subject) && !kgJunk(f.object);
+// (The junk-word display filter that used to live here is gone: the entity
+// extractor no longer emits fragments — context-gated ambiguous names,
+// evidence-based confidence — and migration 0005_kg_junk_cleanup deleted the
+// rows the old extractor had already written. The UI renders the KG as-is;
+// if garbage ever reappears, fix the extractor, don't re-add a filter.)
+const cleanFact = (_f: KgFact) => true;
 
 function fmtWhen(v: number | string | null | undefined): string {
   if (v == null) return '';

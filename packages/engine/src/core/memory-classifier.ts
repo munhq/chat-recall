@@ -3,8 +3,18 @@
  *
  * Types: decision, preference, milestone, problem, discovery
  *
- * Pure regex/heuristic approach — no LLM needed.
- * Inspired by MemPalace's general_extractor but adapted for our chunk pipeline.
+ * Pure regex/heuristic approach — no LLM. Because it's regexes, precision is
+ * everything: a type label is only assigned when the text contains a STRONG
+ * marker (an explicit multi-word phrasing of that type — "we decided to",
+ * "i prefer", "root cause"). Topical single words ("architecture", "bug",
+ * "fixed") are WEAK markers: they add supporting density to an established
+ * type but can never assign one on their own. The first version of this file
+ * let bare nouns like "approach"/"framework" mint importance-4 "decisions" —
+ * confident numbers with no basis, surfaced as facts in recall_wake_up.
+ *
+ * importance (0-5) is an EVIDENCE-STRENGTH score, not a semantic judgement:
+ *   ≥4 (the wake-up bar) requires explicit strong-marker evidence;
+ *   weak-only text is always 'general' importance 1.
  */
 
 // ── Types ────────────────────────────────────────────────────────
@@ -13,21 +23,31 @@ export type MemoryType = 'decision' | 'preference' | 'milestone' | 'problem' | '
 
 export interface ClassificationResult {
   memoryType: MemoryType;
-  importance: number;  // 0-5 scale
+  /** Evidence strength on a 0-5 scale (regex-derived; ≥4 needs explicit phrasing). */
+  importance: number;
   confidence: number;  // 0-1
 }
 
 // ── Marker patterns per type ─────────────────────────────────────
+// STRONG = explicit phrasing that on its own justifies the label.
+// WEAK   = topical hint; only counts once a strong marker set the type.
 
-const DECISION_MARKERS = [
+const DECISION_STRONG = [
   /\b(?:let's|lets)\s+(?:use|go with|try|pick|choose|switch to)\b/i,
   /\bwe\s+(?:should|decided|chose|went with|picked|settled on)\b/i,
-  /\b(?:i'm|im) going (?:to|with)\b/i,
-  /\bbetter\s+(?:to|than|approach|option|choice)\b/i,
+  /\b(?:i'm|im|i am)\s+going\s+(?:to use|with)\b/i,
+  /\bdecided\s+(?:to|on|against)\b/i,
+  /\bwe(?:'ll| will)\s+(?:use|go with|stick with)\b/i,
+  /\bchose\s+\S+\s+over\b/i,
+  /\bswitch(?:ed|ing)?\s+(?:to|from)\b/i,
+];
+
+const DECISION_WEAK = [
   /\binstead of\b/i,
   /\brather than\b/i,
   /\btrade-?off\b/i,
   /\bpros and cons\b/i,
+  /\bbetter\s+(?:to|than|approach|option|choice)\b/i,
   /\barchitecture\b/i,
   /\bapproach\b/i,
   /\bstrategy\b/i,
@@ -38,28 +58,41 @@ const DECISION_MARKERS = [
   /\bdefault\b/i,
 ];
 
-const PREFERENCE_MARKERS = [
+const PREFERENCE_STRONG = [
   /\bi prefer\b/i,
   /\balways use\b/i,
   /\bnever use\b/i,
-  /\bdon'?t\s+(?:ever\s+)?(?:use|do|mock|stub|import)\b/i,
-  /\bi (?:like|hate)\s+(?:to|when|how)\b/i,
+  /\bdon'?t\s+ever\s+(?:use|do|mock|stub|import)\b/i,
   /\bplease\s+(?:always|never|don'?t)\b/i,
   /\bmy\s+(?:rule|preference|style|convention)\s+is\b/i,
   /\bwe\s+(?:always|never)\b/i,
+];
+
+const PREFERENCE_WEAK = [
+  /\bi (?:like|hate)\s+(?:to|when|how)\b/i,
+  /\bdon'?t\s+(?:use|do|mock|stub|import)\b/i,
   /\bsnake_?case\b/i,
   /\bcamel_?case\b/i,
   /\buse\b.*\binstead of\b/i,
 ];
 
-const MILESTONE_MARKERS = [
+const MILESTONE_STRONG = [
   /\bit works\b/i,
   /\bgot it working\b/i,
-  /\bfixed\b/i,
-  /\bsolved\b/i,
   /\bbreakthrough\b/i,
   /\bfigured\s+(?:it\s+)?out\b/i,
   /\bnailed it\b/i,
+  /\bshipped\b/i,
+  /\blaunched\b/i,
+  /\bdeployed\b/i,
+  /\breleased\b/i,
+  /\d+x\s+(?:compression|faster|slower|better|improvement|reduction)/i,
+  /\d+%\s+(?:reduction|improvement|faster|better|smaller)/i,
+];
+
+const MILESTONE_WEAK = [
+  /\bfixed\b/i,
+  /\bsolved\b/i,
   /\bfinally\b/i,
   /\bfirst time\b/i,
   /\bdiscovered\b/i,
@@ -70,23 +103,20 @@ const MILESTONE_MARKERS = [
   /\bbuilt\b/i,
   /\bcreated\b/i,
   /\bimplemented\b/i,
-  /\bshipped\b/i,
-  /\blaunched\b/i,
-  /\bdeployed\b/i,
-  /\breleased\b/i,
-  /\d+x\s+(?:compression|faster|slower|better|improvement|reduction)/i,
-  /\d+%\s+(?:reduction|improvement|faster|better|smaller)/i,
 ];
 
-const PROBLEM_MARKERS = [
-  /\b(?:bug|error|crash|fail|broke|broken|issue|problem)\b/i,
-  /\bdoesn'?t work\b/i,
-  /\bnot working\b/i,
-  /\bwon'?t\b.*\bwork\b/i,
-  /\bkeeps?\s+(?:failing|crashing|breaking|erroring)\b/i,
+const PROBLEM_STRONG = [
   /\broot cause\b/i,
   /\bthe\s+(?:problem|issue|bug)\s+(?:is|was)\b/i,
   /\bthe fix\s+(?:is|was)\b/i,
+  /\bkeeps?\s+(?:failing|crashing|breaking|erroring)\b/i,
+  /\bdoesn'?t work\b/i,
+  /\bnot working\b/i,
+  /\bwon'?t\b.*\bwork\b/i,
+];
+
+const PROBLEM_WEAK = [
+  /\b(?:bug|error|crash|fail|broke|broken|issue|problem)\b/i,
   /\bworkaround\b/i,
   /\bthat'?s why\b/i,
   /\bfixed\s+(?:it|the|by)\b/i,
@@ -95,28 +125,30 @@ const PROBLEM_MARKERS = [
   /\bpatched\b/i,
 ];
 
-const DISCOVERY_MARKERS = [
+const DISCOVERY_STRONG = [
   /\bfound\s+(?:out|that)\b/i,
+  /\bTIL\b/,
+  /\blearned\s+that\b/i,
+  /\bnow i (?:understand|see|get it)\b/i,
+  /\bturned out\b/i,
+  /\bsurprising\b/i,
+  /\bunexpected\b/i,
+];
+
+const DISCOVERY_WEAK = [
   /\bdiscovered\b/i,
   /\bfigured out\b/i,
   /\brealized\b/i,
   /\bnoticed\b/i,
-  /\bturned out\b/i,
   /\binteresting\b/i,
-  /\bsurprising\b/i,
-  /\bunexpected\b/i,
-  /\bTIL\b/,
-  /\blearned\s+that\b/i,
-  /\bnow i (?:understand|see|get it)\b/i,
 ];
 
-const ALL_MARKERS: Record<MemoryType, RegExp[]> = {
-  decision: DECISION_MARKERS,
-  preference: PREFERENCE_MARKERS,
-  milestone: MILESTONE_MARKERS,
-  problem: PROBLEM_MARKERS,
-  discovery: DISCOVERY_MARKERS,
-  general: [],
+const MARKERS: Record<Exclude<MemoryType, 'general'>, { strong: RegExp[]; weak: RegExp[] }> = {
+  decision: { strong: DECISION_STRONG, weak: DECISION_WEAK },
+  preference: { strong: PREFERENCE_STRONG, weak: PREFERENCE_WEAK },
+  milestone: { strong: MILESTONE_STRONG, weak: MILESTONE_WEAK },
+  problem: { strong: PROBLEM_STRONG, weak: PROBLEM_WEAK },
+  discovery: { strong: DISCOVERY_STRONG, weak: DISCOVERY_WEAK },
 };
 
 // ── Resolution detection (problem → milestone disambiguation) ────
@@ -138,7 +170,7 @@ function hasResolution(text: string): boolean {
 
 // ── Scoring ──────────────────────────────────────────────────────
 
-function scoreMarkers(text: string, markers: RegExp[]): number {
+function countMatches(text: string, markers: RegExp[]): number {
   let score = 0;
   for (const marker of markers) {
     const matches = text.match(new RegExp(marker.source, marker.flags + 'g'));
@@ -184,52 +216,47 @@ function extractProse(text: string): string {
 // ── Main classifier ──────────────────────────────────────────────
 
 /**
- * Classify a text chunk into a memory type with importance score.
+ * Classify a text chunk into a memory type with an evidence-strength score.
  *
- * Returns the best matching type, confidence, and importance (0-5).
+ * A type is assigned ONLY when a strong marker for it matches; weak markers
+ * add density to a strong-established candidate but never assign a type by
+ * themselves. Text with weak-only hints is 'general' (importance 1) — a
+ * paragraph mentioning "architecture" and "framework" is a paragraph about
+ * software, not a decision record.
  */
 export function classifyChunk(text: string): ClassificationResult {
   const prose = extractProse(text);
 
-  // Score against all types
-  const scores: Partial<Record<MemoryType, number>> = {};
-  for (const [type, markers] of Object.entries(ALL_MARKERS) as [MemoryType, RegExp[]][]) {
-    if (markers.length === 0) continue;
-    const score = scoreMarkers(prose, markers);
-    if (score > 0) scores[type] = score;
+  let bestType: MemoryType = 'general';
+  let bestStrong = 0;
+  let bestWeak = 0;
+  let bestScore = 0;
+  for (const [type, m] of Object.entries(MARKERS) as [Exclude<MemoryType, 'general'>, { strong: RegExp[]; weak: RegExp[] }][]) {
+    const strong = countMatches(prose, m.strong);
+    if (strong === 0) continue; // no explicit evidence → this type is not in play
+    const weak = countMatches(prose, m.weak);
+    // Strong evidence dominates; weak matches are half-weight support.
+    const score = strong * 2 + weak * 0.5;
+    if (score > bestScore) {
+      bestScore = score;
+      bestType = type;
+      bestStrong = strong;
+      bestWeak = weak;
+    }
   }
 
-  if (Object.keys(scores).length === 0) {
+  if (bestType === 'general') {
     return { memoryType: 'general', importance: 1, confidence: 0 };
   }
 
-  // Length bonus
-  let lengthBonus = 0;
-  if (text.length > 500) lengthBonus = 2;
-  else if (text.length > 200) lengthBonus = 1;
-
-  // Find best type
-  let bestType: MemoryType = 'general';
-  let bestScore = 0;
-  for (const [type, score] of Object.entries(scores) as [MemoryType, number][]) {
-    const adjusted = score + lengthBonus;
-    if (adjusted > bestScore) {
-      bestScore = adjusted;
-      bestType = type;
-    }
-  }
-
-  // Disambiguate: resolved problems are milestones
-  if (bestType === 'problem' && hasResolution(prose)) {
-    if (scores.milestone && scores.milestone > 0) {
-      bestType = 'milestone';
-    }
+  // Disambiguate: resolved problems read as milestones when milestone
+  // evidence is also present.
+  if (bestType === 'problem' && hasResolution(prose) && countMatches(prose, MILESTONE_STRONG) > 0) {
+    bestType = 'milestone';
   }
 
   const confidence = Math.min(1.0, bestScore / 5.0);
-
-  // Importance scoring (0-5)
-  const importance = computeImportance(bestType, bestScore, text);
+  const importance = computeImportance(bestType, bestStrong, bestWeak);
 
   return { memoryType: bestType, importance, confidence };
 }
@@ -237,18 +264,25 @@ export function classifyChunk(text: string): ClassificationResult {
 // ── Importance scoring ───────────────────────────────────────────
 
 /**
- * Compute importance score (0-5) based on memory type, marker density,
- * and content characteristics.
+ * Evidence-strength score (0-5). The ≥4 band — what recall_wake_up surfaces
+ * as "high-importance facts" — is reachable only through explicit strong
+ * evidence, never through topical-word density or text length (both of which
+ * the original implementation counted, minting importance-5 "decisions" out
+ * of ordinary engineering prose).
  *
- * Priority order: decisions (4-5) > milestones (3-5) > problems (3-4)
- * > preferences (3-4) > discoveries (2-4) > general (1)
+ *   decision:   4 base (explicit "we chose/decided" is the highest-value
+ *               memory the product captures), 5 with corroboration
+ *   preference: 3 base, 4-5 with repeated/multiple explicit rules
+ *   milestone/problem: 3 base, 4 with corroboration
+ *   discovery:  2 base, 3 with corroboration
+ *   general:    1
  */
 function computeImportance(
   memoryType: MemoryType,
-  markerScore: number,
-  text: string
+  strongMatches: number,
+  weakMatches: number,
 ): number {
-  const baseScores: Record<MemoryType, number> = {
+  const base: Record<MemoryType, number> = {
     decision: 4,
     preference: 3,
     milestone: 3,
@@ -257,15 +291,10 @@ function computeImportance(
     general: 1,
   };
 
-  let importance = baseScores[memoryType];
+  let importance = base[memoryType];
+  // Corroboration: multiple explicit markers, or one explicit marker backed
+  // by substantial topical support.
+  if (strongMatches >= 2 || (strongMatches >= 1 && weakMatches >= 3)) importance += 1;
 
-  // Density bonus: more markers = more important
-  if (markerScore >= 5) importance += 1;
-  else if (markerScore >= 3) importance += 0.5;
-
-  // Length bonus: longer content that matched = more substance
-  if (text.length > 500) importance += 0.5;
-
-  // Cap at 5
-  return Math.min(5, Math.round(importance));
+  return Math.min(5, importance);
 }

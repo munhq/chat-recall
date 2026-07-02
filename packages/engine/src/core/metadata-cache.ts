@@ -13,7 +13,7 @@ export interface SessionMetadata {
   sessionId: string;
   firstPrompt: string;
   summary: string;
-  summarySource: 'original' | 'gemini' | 'claude' | 'ollama';
+  summarySource: 'original' | 'gemini' | 'claude' | 'ollama' | 'ai';
   mtime: number;
   indexedAt: number;
   /**
@@ -346,7 +346,7 @@ export class MetadataCache {
       session_id: string;
       first_prompt: string;
       summary: string;
-      summary_source: 'original' | 'gemini' | 'claude' | 'ollama';
+      summary_source: 'original' | 'gemini' | 'claude' | 'ollama' | 'ai';
       mtime: number;
       indexed_at: number;
       user_title: string | null;

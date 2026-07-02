@@ -44,7 +44,7 @@ import {
 type SummaryProvider = SummaryGeneratorConfig['provider'];
 
 /** `summary_source` tag the metadata cache accepts (see MetadataCache.set). */
-type SummarySource = 'original' | 'gemini' | 'claude' | 'ollama';
+type SummarySource = 'original' | 'gemini' | 'claude' | 'ollama' | 'ai';
 
 /**
  * Resolve the summary provider configuration from server env. Returns null
@@ -92,9 +92,12 @@ export function providerToSource(provider: SummaryProvider): SummarySource {
     case 'ollama':
       return 'ollama';
     default:
-      // 'cli' / openai-compatible providers don't have a dedicated enum value;
-      // 'original' is the catch-all the cache already accepts.
-      return 'original';
+      // openai-compat (axon and friends) and any future provider: a GENERATED
+      // summary must never masquerade as 'original' (transcript-lifted) — that
+      // made "how many AI summaries exist?" unanswerable from the data and hid
+      // the pipeline being broken for weeks. 'ai' = LLM-generated, provider in
+      // the worker logs.
+      return 'ai';
   }
 }
 
