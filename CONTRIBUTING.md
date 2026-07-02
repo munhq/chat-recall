@@ -15,8 +15,13 @@ cd chat-recall
 npm install
 npm run build
 npm run web:install
-npm run web:dev          # API :5000, UI :5174
+CHAT_RECALL_STORAGE=sqlite npm run web:dev   # API :5000, UI :5174
 ```
+
+`CHAT_RECALL_STORAGE` is required — the server refuses to guess a storage
+backend (fail-closed; a misconfigured deployment must not silently land on a
+local file). Use `sqlite` for quick local dev, or `postgres` + `DATABASE_URL`
+to develop against the docker-compose stack.
 
 ## Code style
 

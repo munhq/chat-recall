@@ -476,18 +476,25 @@ describe('FileDiary', () => {
 });
 
 describe('createStore factory + resolveBackend', () => {
-  test('default → SqliteStore', async () => {
+  test('explicit sqlite backend → SqliteStore', async () => {
     const tmp = mkdtempSync(join(tmpdir(), 'cr-factory-'));
-    const s = await createStore({ sqlitePath: join(tmp, 't.db') });
+    const s = await createStore({ backend: 'sqlite', sqlitePath: join(tmp, 't.db') });
     expect(s).toBeInstanceOf(SqliteStore);
     await s.close(); rmSync(tmp, { recursive: true, force: true });
   });
-  test('resolveBackend honors env + aliases', () => {
+  test('resolveBackend honors env + aliases and is fail-closed', () => {
     const prev = process.env.CHAT_RECALL_STORAGE;
     process.env.CHAT_RECALL_STORAGE = 'pg';
     expect(resolveBackend()).toBe('postgres');
-    delete process.env.CHAT_RECALL_STORAGE;
+    process.env.CHAT_RECALL_STORAGE = 'sqlite';
     expect(resolveBackend()).toBe('sqlite');
+    // No silent fallback: unset or unknown values must throw, never guess.
+    delete process.env.CHAT_RECALL_STORAGE;
+    expect(() => resolveBackend()).toThrow(/CHAT_RECALL_STORAGE is not set/);
+    expect(resolveBackend({ backend: 'sqlite' })).toBe('sqlite');
+    process.env.CHAT_RECALL_STORAGE = 'postgress'; // typo must not become sqlite
+    expect(() => resolveBackend()).toThrow(/Unrecognized/);
     if (prev !== undefined) process.env.CHAT_RECALL_STORAGE = prev;
+    else delete process.env.CHAT_RECALL_STORAGE;
   });
 });
