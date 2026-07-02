@@ -38,6 +38,10 @@ jobs:
       - name: Boot compose — server (built from source) + Postgres
         run: |
           echo "ADMIN_KEY=$ADMIN_KEY" > .env
+          # compose fails closed without POSTGRES_PASSWORD (deliberate — no
+          # default password ships to self-hosters). CI mints a throwaway one,
+          # exactly like the quick-start tells a real user to.
+          echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)" >> .env
           docker compose up -d --build
           # Wait for the server to answer /api/capabilities.
           for i in $(seq 1 90); do

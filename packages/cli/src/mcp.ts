@@ -19,29 +19,21 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { execSync as _execSync } from 'child_process';
 
-import { extractConversationContext, formatContext } from '@chat-recall/engine/core/context.js';
-import { getCacheDbPath, getIdentityFilePath, getDataDir } from '@chat-recall/engine/core/paths.js';
-import {
-  detectTool,
-  liveScanModifiedFiles,
-  liveScanRecentEdits,
-  liveScanSessionEdits,
-  type SessionEdit,
-} from '@chat-recall/engine/core/live-session-scan.js';
-import { findRepoRoot } from '@chat-recall/engine/core/session-replay.js';
-import { getSessionCommits } from '@chat-recall/engine/core/session-git.js';
-import { extractTurnsAny, replaySessionAny } from '@chat-recall/engine/core/session-multi-tool.js';
-import { computeOutcome } from '@chat-recall/engine/core/session-outcome.js';
+// KEEP THIS IMPORT LIST LEAN. The MCP is a thin collector — every read goes
+// to the server; local compute moved server-side in the thin-collector
+// migration. Dead engine imports here aren't just clutter: they drag heavy
+// engine modules (once the whole store layer, incl. lancedb + pino) into the
+// published bundle, which broke every fresh `npm i -g chat-recall`.
+import { formatContext } from '@chat-recall/engine/core/context.js';
+import { getIdentityFilePath, getDataDir } from '@chat-recall/engine/core/paths.js';
+import { liveScanModifiedFiles } from '@chat-recall/engine/core/live-session-scan.js';
 // Side-effect import: registers the four ToolBackend implementations so
 // getBackendForId(...) works everywhere downstream.
 import '@chat-recall/engine/core/backends/index.js';
 import { getBackendForId } from '@chat-recall/engine/core/tool-backend.js';
-import type { SessionTurn } from '@chat-recall/engine/core/session-turns.js';
-import { markPrompt, summarizeMarkers } from '@chat-recall/engine/core/session-sentiment.js';
-import { outcomeOneLiner, statusEmoji } from '@chat-recall/engine/core/outcome-display.js';
-import { buildProjectDossier } from '@chat-recall/engine/core/project-dossier.js';
+import { markPrompt } from '@chat-recall/engine/core/session-sentiment.js';
+import { statusEmoji } from '@chat-recall/engine/core/outcome-display.js';
 import { sanitizeQuery } from '@chat-recall/engine/core/query-sanitizer.js';
-import { estimateCostUsdOrNull } from '@chat-recall/engine/core/model-pricing.js';
 import { getWAL } from '@chat-recall/engine/core/write-ahead-log.js';
 
 // Load .env configuration
@@ -2656,7 +2648,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'recall_code_index': {
         const params = RecallCodeIndexSchema.parse(args);
         requireRemote();
-        const { collectCode } = await import('@chat-recall/engine');
+        const { collectCode } = await import('@chat-recall/engine/core/code/collector.js');
         const { resolve: resolvePath } = await import('node:path');
         const workspace = params.path ? resolvePath(params.path) : process.cwd();
         const result = await collectCode({ workspace });
