@@ -1796,6 +1796,7 @@ async function runLogin(
       console.log(chalk.bold('To log in, open:'));
       console.log('  ' + chalk.cyan(p.url));
       console.log(chalk.dim(`  (if prompted, enter code: ${chalk.bold(p.userCode)} at ${p.verificationUri})`));
+      console.log(chalk.dim('After approving, come back to THIS terminal — it finishes the login by itself.'));
       console.log(chalk.dim('Waiting for approval…'));
     });
 

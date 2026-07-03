@@ -16,6 +16,7 @@ import SyncCoverage from './SyncCoverage';
 import SyncRules from './SyncRules';
 import {
   getCodeProjects, getAccountRecommendations, applyAccountRecommendation, getSecretsSummary, getStatus, getSyncStatus, getOutcomeSummary,
+  getMe, listDevices,
   type CodeProject, type CodeRecommendation, type SecretsSummary, type OutcomeDayRow,
 } from '../services/api';
 
@@ -27,6 +28,33 @@ export default function CommandCenter({ setView, onOpenProject, cloud }: { setVi
   const [secrets, setSecrets] = useState<SecretsSummary | null>(null);
   const [status, setStatus] = useState<{ totalSessions?: number } | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Dead-workspace detector (cloud): a workspace with synced data but ZERO
+  // active device tokens can never receive another byte — say so at the top
+  // of the home view, not buried in Account. (Live incident: a revoked token
+  // left prod frozen at 7 conversations with no visible signal.) Secondary
+  // signal: devices exist but nothing has arrived for 48h — the machine's
+  // watch service is probably down.
+  const [syncAlert, setSyncAlert] = useState<null | { kind: 'no-device' | 'stale'; ageH?: number }>(null);
+  useEffect(() => {
+    if (!cloud) return;
+    let on = true;
+    (async () => {
+      try {
+        const me = await getMe();
+        const slug = me.teams[0]?.team_slug;
+        if (!slug) return;
+        const [devices, s] = await Promise.all([listDevices(slug), getSyncStatus()]);
+        if (!on) return;
+        const active = devices.filter((d) => !d.revoked);
+        if (active.length === 0 && s.sessions > 0) setSyncAlert({ kind: 'no-device' });
+        else if (active.length > 0 && s.newestSessionAgeMs != null && s.newestSessionAgeMs > 48 * 3600_000) {
+          setSyncAlert({ kind: 'stale', ageH: Math.round(s.newestSessionAgeMs / 3600_000) });
+        }
+      } catch { /* control-plane hiccup — no banner beats a wrong banner */ }
+    })();
+    return () => { on = false; };
+  }, [cloud]);
 
   // Live sync ticker: while sessions are still arriving (a fresh machine
   // backfilling its history), show the count climbing instead of a frozen
@@ -93,6 +121,28 @@ export default function CommandCenter({ setView, onOpenProject, cloud }: { setVi
 
   return (
     <div className="cr-cmd" style={{ flex: 1, overflow: 'auto', padding: '28px 32px 64px' }}>
+      {syncAlert && (
+        <div role="alert" style={{
+          marginBottom: 18, padding: '12px 16px', borderRadius: 'var(--cr-radius-md, 8px)',
+          border: '1px solid var(--cr-err-500)', background: 'var(--cr-err-surf, #2a1215)',
+          color: 'var(--cr-fg-1)', fontSize: 13, lineHeight: 1.55,
+        }}>
+          {syncAlert.kind === 'no-device' ? (
+            <>
+              <strong style={{ color: 'var(--cr-err-500)' }}>Nothing can sync to this workspace</strong> — it has data
+              but no active device token (all revoked?). Reconnect your machine:{' '}
+              <code>chat-recall login {window.location.origin}</code>{' '}
+              <span style={{ color: 'var(--cr-fg-2)' }}>(or Account → Connect your machine)</span>
+            </>
+          ) : (
+            <>
+              <strong style={{ color: 'var(--cr-err-500)' }}>No new data for {syncAlert.ageH}h</strong> — a device token
+              is active but nothing is arriving. On your machine, check:{' '}
+              <code>chat-recall service status</code> · <code>chat-recall sync</code>
+            </>
+          )}
+        </div>
+      )}
       {/* Eyebrow + title */}
       <div style={{ marginBottom: 22 }}>
         <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 10, letterSpacing: '0.32em', textTransform: 'uppercase', color: 'var(--cr-brand-500)', display: 'flex', alignItems: 'center', gap: 8 }}>
