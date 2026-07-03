@@ -2,8 +2,8 @@
  * Session listing service.
  */
 
-import { getAllSessions, parseSessionFile, createMetadataCache, createStore, findCodexSessionFile, extractFirstUserPromptSync, codexBackend, getBackendForId } from '../imports.js';
-import type { SessionEntry, SessionMetadata, MemoryMetadataRow, MemoryLinkRow, SourceType } from '../imports.js';
+import { getAllSessions, parseSessionFile, createMetadataCache, createStore, createOutcomeCache, findCodexSessionFile, extractFirstUserPromptSync, codexBackend, getBackendForId } from '../imports.js';
+import type { SessionEntry, SessionMetadata, MemoryMetadataRow, MemoryLinkRow, SourceType, CachedOutcome } from '../imports.js';
 import { isServerMode } from '../util/mode.js';
 import { join } from 'path';
 
@@ -64,6 +64,18 @@ export interface SessionInfo {
   /** Native title from the originating tool (Claude ai-title, OpenCode
    *  session.title, …). Display fallback below userTitle, above the summary. */
   toolTitle?: string | null;
+  /** What actually happened — from the synced outcome classifier, attached
+   *  in one batch so list rows never pay a per-row badge fetch.
+   *  `discussion` = the classifier's 'unknown' with zero file edits, i.e. a
+   *  talk-only session; real 'unknown' (files touched, outcome unclear) is
+   *  passed through and hidden by the UI. */
+  outcome?: {
+    status: 'shipped' | 'abandoned' | 'interrupted' | 'in_progress' | 'completed' | 'discussion' | 'unknown';
+    files: number;
+    linesAdded: number;
+    linesRemoved: number;
+    commits: number;
+  };
 }
 
 /**
@@ -391,6 +403,18 @@ export async function getSessionIndex(): Promise<SessionIndexEntry[]> {
  */
 export async function hydrateSessions(entries: SessionIndexEntry[]): Promise<SessionInfo[]> {
   const cache = await createMetadataCache();
+  // One batched outcome read for the whole page — the list must say what
+  // happened (shipped/abandoned/interrupted/discussion + change size) without
+  // a per-row badge round-trip. Best-effort: rows render without it.
+  let outcomes = new Map<string, CachedOutcome>();
+  try {
+    const oc = await createOutcomeCache();
+    try {
+      outcomes = await oc.getMany(entries.map(e => e.sessionId));
+    } finally {
+      await oc.close();
+    }
+  } catch { /* outcome-less rows are fine */ }
   try {
     const errors = await cache.getSummaryErrors(entries.map(e => e.sessionId));
 
@@ -428,6 +452,7 @@ export async function hydrateSessions(entries: SessionIndexEntry[]): Promise<Ses
       }
 
       const iso = new Date(e.mtime || 0).toISOString();
+      const oc = outcomes.get(e.sessionId);
       result.push({
         sessionId: e.sessionId,
         projectPath: e.projectPath,
@@ -443,6 +468,13 @@ export async function hydrateSessions(entries: SessionIndexEntry[]): Promise<Ses
         summaryError: !summary && errors.has(e.sessionId) ? errors.get(e.sessionId)! : undefined,
         userTitle: cached?.userTitle ?? undefined,
         toolTitle: cached?.toolTitle ?? undefined,
+        outcome: oc ? {
+          status: oc.status === 'unknown' && oc.fileCount === 0 ? 'discussion' : oc.status,
+          files: oc.fileCount,
+          linesAdded: oc.linesAdded,
+          linesRemoved: oc.linesRemoved,
+          commits: oc.commits,
+        } : undefined,
       });
     }
 
