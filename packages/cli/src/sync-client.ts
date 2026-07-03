@@ -156,6 +156,41 @@ export function _resetTenantSecurityConfigCache(): void {
   _securityConfigCache.clear();
 }
 
+// ── Tenant sync config (server-side exclusions) ────────────────────────
+// The dashboard edits exclusions once; every device pulls them here at the
+// start of each sync and UNIONS them with local settings. Union is the
+// fail-safe direction: the server can add exclusions for all devices but can
+// never re-enable something a machine excluded locally. Same 5-minute cache
+// policy as the security config; fail-open to empty (older servers have no
+// endpoint, and an outage must not stop the collector).
+interface TenantSyncConfig { excludeTools: string[]; excludeProjects: string[] }
+const _syncConfigCache = new Map<string, { fetchedAt: number; config: TenantSyncConfig }>();
+
+async function fetchTenantSyncConfig(cred: Credentials): Promise<TenantSyncConfig> {
+  const base = cred.serverUrl.replace(/\/+$/, '');
+  const cached = _syncConfigCache.get(base);
+  if (cached && Date.now() - cached.fetchedAt < SECURITY_CONFIG_TTL_MS) return cached.config;
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (cred.token) headers.authorization = `Bearer ${cred.token}`;
+  try {
+    const res = await fetch(`${base}/api/sync-config`, { headers });
+    if (!res.ok) return { excludeTools: [], excludeProjects: [] };
+    const body = await res.json().catch(() => ({})) as Partial<TenantSyncConfig>;
+    const config: TenantSyncConfig = {
+      excludeTools: Array.isArray(body.excludeTools) ? body.excludeTools.filter((t): t is string => typeof t === 'string') : [],
+      excludeProjects: Array.isArray(body.excludeProjects) ? body.excludeProjects.filter((p): p is string => typeof p === 'string') : [],
+    };
+    _syncConfigCache.set(base, { fetchedAt: Date.now(), config });
+    return config;
+  } catch {
+    return { excludeTools: [], excludeProjects: [] };
+  }
+}
+
+export function _resetTenantSyncConfigCache(): void {
+  _syncConfigCache.clear();
+}
+
 /** Legacy single-target accessor — first target. */
 /** The ACTIVE target = most recent login (saveCredentials unshifts). */
 export function loadCredentials(): Credentials | null {
@@ -355,8 +390,10 @@ export async function reconcileFields(opts: { force?: boolean } = {}): Promise<R
 
 async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number; prune?: boolean; useLedger?: boolean; walk?: 'full' | 'changed' } = {}): Promise<SyncResult> {
   const sync = loadSettings().sync;
-  const excludeTools = new Set(sync?.excludeTools ?? []);
-  const excludeProjects = sync?.excludeProjects ?? [];
+  // Exclusions = local settings ∪ server-side tenant config (dashboard-edited).
+  const serverCfg = await fetchTenantSyncConfig(cred);
+  const excludeTools = new Set([...(sync?.excludeTools ?? []), ...serverCfg.excludeTools]);
+  const excludeProjects = [...(sync?.excludeProjects ?? []), ...serverCfg.excludeProjects];
   // Upload category toggles (settings.sync.upload, all default true).
   // Redaction of shipped text always runs regardless of toggles.
   const upload = {

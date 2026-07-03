@@ -36,6 +36,7 @@ import syncRouter from './routes/sync.js';
 import teamsRouter from './routes/teams.js';
 import teamArtifactsRouter from './routes/team-artifacts.js';
 import securityConfigRouter from './routes/security-config.js';
+import syncConfigRouter from './routes/sync-config.js';
 import billingRouter from './routes/billing.js';
 import installRouter from './routes/install.js';
 import { capabilities, isServerMode } from './util/mode.js';
@@ -158,6 +159,7 @@ app.use('/api', attachTenantToContext);
 // Tenant-scoped security configuration read by the sync collector.
 // Mounted after tenantAuth so req.tenant is already resolved.
 app.use('/api/teams/security-config', securityConfigRouter);
+app.use('/api/sync-config', syncConfigRouter);
 
 // Account configuration (secret-alert webhook). Ungated so a lapsed/un-subscribed
 // user can still reach their account to (re)subscribe and configure alerts.
