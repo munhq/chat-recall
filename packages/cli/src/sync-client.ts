@@ -499,6 +499,12 @@ const refs = listAvailableBackends().flatMap((b) => {
         if (res.ok) break;
         const retryable = res.status === 429 || res.status >= 500;
         const text = await res.text().catch(() => '');
+        // Auth rejection is a standing condition, not a glitch: the device
+        // token was revoked or the tenant is gone. Every future sync will fail
+        // the same way until the human reconnects — say exactly that.
+        if (res.status === 401 || res.status === 403) {
+          throw new Error(`server rejected this machine's device token (HTTP ${res.status} — revoked?). Reconnect with: chat-recall login ${base}`);
+        }
         if (!retryable) throw new Error(`sync failed: HTTP ${res.status} ${text}`);
         if (attempt >= RETRY_DELAYS_MS.length) throw new Error(`sync failed after ${attempt + 1} attempts: HTTP ${res.status} ${text}`);
         // 429: obey Retry-After (seconds) when the server sends it; else fall
