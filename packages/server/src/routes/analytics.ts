@@ -3,7 +3,7 @@
  */
 
 import express from 'express';
-import { getAllSessions, parseSessionFile, createMetadataCache, createStore } from '../imports.js';
+import { getAllSessions, parseSessionFile, createMetadataCache, createStore, createOutcomeCache } from '../imports.js';
 import type { SessionEntry, SourceType } from '../imports.js';
 import { getModelContextLimit } from '@chat-recall/engine/core/utils.js';
 import { estimateCostUsdOrNull, costIsUpperBound } from '@chat-recall/engine/core/model-pricing.js';
@@ -185,6 +185,20 @@ router.get('/', async (req, res) => {
       }
     }
 
+    // Real session outcomes (shipped / abandoned / interrupted / …) from the
+    // outcome classifier, batched once. lastStopReason ('end_turn' etc.) is a
+    // transport detail, not an outcome — matching it against 'shipped' left
+    // the completion signal permanently at "no outcomes yet" while 10k
+    // classified outcomes existed. One getMany over the candidate ids.
+    const outcomeById = new Map<string, string>();
+    try {
+      const oc = await createOutcomeCache();
+      try {
+        const rows = await oc.getMany(allItems.map((i) => i.id));
+        for (const [id, r] of rows) if (r?.status) outcomeById.set(id, r.status);
+      } finally { await oc.close(); }
+    } catch { /* outcome-less analytics still renders */ }
+
     // Process store items (all tools, optionally filtered by tool)
     for (const storeItem of allItems) {
       const extra = JSON.parse(storeItem.extra_json || '{}');
@@ -348,8 +362,9 @@ router.get('/', async (req, res) => {
         weeklyCacheRead.set(week, (weeklyCacheRead.get(week) || 0) + (meta.cacheReadTokens || 0));
       }
 
-      // Session outcomes
-      const outcome = meta.lastStopReason || 'unknown';
+      // Session outcomes — real classifier status, falling back to the
+      // transport stop-reason only when unclassified.
+      const outcome = outcomeById.get(storeItem.id) || meta.lastStopReason || 'unknown';
       outcomes.set(outcome, (outcomes.get(outcome) || 0) + 1);
 
       // File hotspots

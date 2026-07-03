@@ -91,7 +91,7 @@ export default function CommandCenter({ setView, onOpenProject, cloud }: { setVi
       <div className="cr-stack-mobile" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.3fr) minmax(0,1fr)', gap: 16, alignItems: 'start' }}>
         {/* Left: this week's story + recommendations + code health */}
         <div style={{ display: 'grid', gap: 16 }}>
-          <Panel title="This week" hint="what actually happened" action={() => setView('search')}>
+          <Panel title="Last 7 days" hint="what actually happened" action={() => setView('search')}>
             <WeekStrip />
           </Panel>
           <Panel title="Recommendations" hint="behaviour × code" action={recs.length ? undefined : null}>
