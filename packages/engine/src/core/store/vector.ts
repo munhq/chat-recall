@@ -299,7 +299,17 @@ export class PgVectorStore implements VectorStore {
     // Path SUBSTRING, not an exact project_id — see searchFTS (pg.ts). Keeps the
     // vector path consistent with FTS so `-p` filters identically either way.
     if ((options as any).projectIdFilter) { params.push(`%${(options as any).projectIdFilter}%`); sql += ` AND project_path ILIKE $${params.length}`; }
-    params.push(topK * 5); sql += ` ORDER BY embedding <=> $2::vector ASC LIMIT $${params.length}`;
+    // Same ranking posture as searchFTS (pg.ts): subagent chunks are
+    // keyword/semantics-dense internal expansions — demoted so they never
+    // bury the user's own conversations; a small bounded recency bonus makes
+    // "when" a prior, not just a tiebreak.
+    params.push(Date.now());
+    const nowP = params.length;
+    params.push(topK * 5);
+    sql += ` ORDER BY (1/(1+(embedding <=> $2::vector)))
+                      * (CASE WHEN chunk_type LIKE 'subagent%' THEN 0.55 ELSE 1.0 END)
+                      + 0.15 * exp(-GREATEST($${nowP}::double precision - COALESCE(mtime, 0), 0) / (14.0 * 86400000)) DESC
+             LIMIT $${params.length}`;
     const rows = await this.qRo(sql, params);
     // Group by item (best score wins), mirroring the FTS grouping.
     const byItem = new Map<string, any>();
