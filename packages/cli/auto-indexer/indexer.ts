@@ -11,8 +11,9 @@
  *  - Watches ~/.claude/projects (sessions), plans, tasks, history, diary,
  *    plus Codex / Gemini / OpenCode session stores.
  *  - Debounces a burst of file events into one flush.
- *  - On each flush: call `syncIncremental()`. If the user isn't logged in
- *    it returns null — we log one warning line and skip (no crash).
+ *  - On each flush: call `syncIncremental()`. If it skips (not logged in,
+ *    paused, or another writer holds the sync lock) we log the actionable
+ *    reasons and stay quiet on routine lock contention (no crash).
  *
  * What it deliberately does NOT do anymore (all moved server-side):
  *  - No local indexing (LanceDB / FTS / metadata store).
@@ -40,7 +41,7 @@ import { getDiaryDir } from '@chat-recall/engine/core/paths.js';
 // server. Everything else this daemon used to import (stores, embedder,
 // summary generator, knowledge graph, source parsers) is gone — those
 // responsibilities live on the server now.
-import { syncIncremental } from '../src/sync-client.js';
+import { syncIncremental, isSyncSkip } from '../src/sync-client.js';
 import { drainSyncIntents } from '../src/intent-drain.js';
 import { loadAllCredentials } from '../src/sync-client.js';
 import { existsSync } from 'fs';
@@ -88,12 +89,19 @@ async function shipToServer(trigger: string): Promise<void> {
   if (syncInFlight) return;
   syncInFlight = true;
   try {
-    const result = await syncIncremental();
-    if (result === null) {
-      // Not logged in (no credentials, or sync paused) — the daemon has
-      // nothing to do until `chat-recall login` runs. Warn once per flush
-      // so the journal shows why nothing is shipping, but don't crash.
-      console.warn(`[${ts()}] Sync skipped (${trigger}): not logged in — run \`chat-recall login\` to ship sessions to a server.`);
+    // File-change ticks fire on every debounced keystroke burst — walk only
+    // the recent-mtime window (cheap). Heartbeat/startup/intent ticks do the
+    // full ledger walk so old failed sessions still retry forever.
+    const result = await syncIncremental({ scope: trigger === 'file-change' ? 'changed' : 'full' });
+    if (isSyncSkip(result)) {
+      // 'lock-held' is routine writer election (an MCP session's sync tick
+      // won the lock) — nothing to say. Only the user-actionable reasons
+      // warrant a log line.
+      if (result.skipped === 'no-credentials') {
+        console.warn(`[${ts()}] Sync skipped (${trigger}): not logged in — run \`chat-recall login\` to ship sessions to a server.`);
+      } else if (result.skipped === 'paused') {
+        console.warn(`[${ts()}] Sync skipped (${trigger}): sync is paused in settings — re-run \`chat-recall login <server-url>\` to resume.`);
+      }
       return;
     }
     if (result.uploaded > 0 || result.derived > 0) {
