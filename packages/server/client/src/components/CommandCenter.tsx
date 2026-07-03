@@ -190,9 +190,13 @@ export default function CommandCenter({ setView, onOpenProject, cloud }: { setVi
           <Panel title="What's synced" hint="coverage by tool · type · project" action={() => setView('search')}>
             <SyncCoverage />
           </Panel>
-          <Panel title="Sync rules" hint="what never leaves your machines" action={null}>
-            <SyncRules />
-          </Panel>
+          {/* Cloud puts Sync rules in Account (the settings surface); selfhost
+              has no Account view, so home is its only place to live. */}
+          {!cloud && (
+            <Panel title="Sync rules" hint="what never leaves your machines" action={null}>
+              <SyncRules />
+            </Panel>
+          )}
           <Panel title="Security" hint="leaked secrets" action={() => setView('security')}>
             {leaked === 0 ? <Empty>No leaked secrets detected.</Empty> : (
               <div>
