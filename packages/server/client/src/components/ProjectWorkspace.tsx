@@ -12,6 +12,7 @@
 
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { Card, Chip, SegmentedControl, Button, Icon } from './primitives';
+import { summaryTitle } from '../utils/clean';
 import { useUrlState } from '../services/url-state';
 import CodeExplorer, { DependencyMap, PRI_CHIP, PRI_LABEL } from './CodeExplorer';
 import KnowledgeGraph from './KnowledgeGraph';
@@ -390,7 +391,7 @@ function ProjectActivity({ projectId, toolFilter, onOpenSession }: { projectId: 
     ]).then(([sp, et]) => {
       if (!on) return;
       const evs: ActEvent[] = [];
-      for (const s of sp.sessions) evs.push({ ts: Date.parse((s as any).modified || '') || 0, type: 'session', title: (s as any).userTitle || (s as any).summary || (s as any).firstPrompt || s.sessionId, sub: (s as any).gitBranch, sessionId: s.sessionId });
+      for (const s of sp.sessions) evs.push({ ts: Date.parse((s as any).modified || '') || 0, type: 'session', title: (s as any).userTitle || summaryTitle((s as any).summary, 120) || (s as any).firstPrompt || s.sessionId, sub: (s as any).gitBranch, sessionId: s.sessionId });
       for (const e of ((et.edits || []) as EditRow[]).slice(0, 120)) evs.push({ ts: e.ts, type: 'edit', title: `${e.op} ${e.file.split('/').pop()}`, sub: e.file, sessionId: e.sessionId, op: e.op });
       evs.sort((a, b) => b.ts - a.ts);
       setEvents(evs);
@@ -430,7 +431,7 @@ function ProjectActivity({ projectId, toolFilter, onOpenSession }: { projectId: 
 }
 
 function SessionRow({ s, onOpen }: { s: SessionInfo; onOpen: () => void }) {
-  const title = (s as any).userTitle || (s as any).summary || (s as any).firstPrompt || s.sessionId;
+  const title = (s as any).userTitle || summaryTitle((s as any).summary, 120) || (s as any).firstPrompt || s.sessionId;
   const when = (s as any).modified ? new Date((s as any).modified).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
   return (
     <div onClick={onOpen} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', cursor: 'pointer', borderBottom: '1px solid var(--cr-line-1)' }}>

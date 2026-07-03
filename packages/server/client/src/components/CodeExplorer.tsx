@@ -14,6 +14,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Card, Chip, SegmentedControl, MetricCard, Button, Icon } from './primitives';
+import { summaryTitle } from '../utils/clean';
 import ForceGraph from './ForceGraph';
 import {
   getCodeProjects, getCodeProject, getCodeSummary, getCodeFindings, getCodeHotspots,
@@ -527,7 +528,7 @@ function FileSessionHistory({ projectId, file, onSessionClick }: { projectId: st
         const oc = s.outcome;
         const color = oc ? (HIST_STATUS_COLOR[oc.status] || 'var(--cr-fg-3)') : 'var(--cr-fg-3)';
         const label = oc && oc.status !== 'unknown' ? (oc.status === 'in_progress' ? 'in progress' : oc.status) : '';
-        const title = (s.userTitle || s.toolTitle || s.summary || s.firstPrompt || '(untitled session)').replace(/\s+/g, ' ').slice(0, 90);
+        const title = (s.userTitle || s.toolTitle || summaryTitle(s.summary, 90) || s.firstPrompt || '(untitled session)').replace(/\s+/g, ' ').slice(0, 90);
         return (
           <button
             key={s.sessionId}

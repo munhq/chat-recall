@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon, Chip, SegmentedControl } from './primitives';
 import type { SessionInfo, SessionMarkersResponse, SessionOutcomeBadgeResponse } from '../services/api';
 import { getSessionMarkers, getSessionOutcomeBadge } from '../services/api';
-import { stripInjectedBanners } from '../utils/clean';
+import { stripInjectedBanners, summaryTitle } from '../utils/clean';
 
 /**
  * Conversation list — editorial-archive treatment.
@@ -292,7 +292,7 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
     : toolTitle
       ? toolTitle.slice(0, 220)
       : hasSummary
-        ? getShortSummary(r.summary!, 200)
+        ? summaryTitle(r.summary!, 200)
         : rawFirstPrompt.slice(0, 220);
 
   // Search-only: render every matched chunk (up to a small cap), each
@@ -918,18 +918,6 @@ function formatProject(r: SessionInfo): string {
     return id;
   }
   return formatPath(r.projectPath);
-}
-
-function getShortSummary(rawSummary: string, maxLength: number = 200): string {
-  if (!rawSummary) return '';
-  const summary = stripInjectedBanners(rawSummary);
-  const requestMatch = summary.match(/\*\*Request:\*\*\s*-?\s*([^\n*]+)/i);
-  if (requestMatch && requestMatch[1]) {
-    const request = requestMatch[1].trim();
-    return request.length <= maxLength ? request : request.substring(0, maxLength) + '…';
-  }
-  const firstLine = summary.split('\n')[0].replace(/^\*\*[^*]+\*\*:?\s*-?\s*/, '');
-  return firstLine.length <= maxLength ? firstLine : firstLine.substring(0, maxLength) + '…';
 }
 
 // Search-only helpers ----------------------------------------------------
