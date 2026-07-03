@@ -126,6 +126,7 @@ program
         { name: 'Claude CLI', cmd: 'claude', available: false },
         { name: 'OpenCode', cmd: 'opencode', available: false },
         { name: 'Codex', cmd: 'codex', available: false },
+        { name: 'Antigravity CLI', cmd: 'agy', available: false },
       ];
 
       for (const cli of clis) {
@@ -1835,6 +1836,88 @@ async function runLogin(
     process.exit(1);
   }
 }
+
+// ── Exclusions: what never leaves this machine ─────────────────────────
+// The sync/privacy settings are machine-owned (~/.chat-recall/settings) by
+// design — decisions about what uploads happen where the data is. The
+// dashboard can't edit them in server mode, so the CLI is the interface.
+const exclude = program
+  .command('exclude')
+  .description('Control what never leaves this machine (per-tool, per-project). Bare `exclude` lists the current rules.');
+
+exclude
+  .command('list', { isDefault: true })
+  .description('Show current exclusions')
+  .action(async () => {
+    const { loadSettings } = await import('@chat-recall/engine/core/settings.js');
+    const s = loadSettings();
+    console.log(chalk.bold('Sync exclusions') + chalk.dim(' (~/.chat-recall/settings/settings.json)'));
+    console.log(`  tools:    ${s.sync.excludeTools.length ? s.sync.excludeTools.join(', ') : chalk.dim('none')}`);
+    console.log(`  projects: ${s.sync.excludeProjects.length ? '' : chalk.dim('none')}`);
+    for (const p of s.sync.excludeProjects) console.log(`    ${p}`);
+    const deny = s.privacy.projectDenylist || [];
+    console.log(`  index denylist (never even indexed): ${deny.length ? '' : chalk.dim('none')}`);
+    for (const p of deny) console.log(`    ${p}`);
+  });
+
+exclude
+  .command('project <path>')
+  .description('Exclude a project path from syncing (substring match on the project path; e.g. ~/.claude-pr-bot)')
+  .action(async (path: string) => {
+    const { loadSettings, saveSettings } = await import('@chat-recall/engine/core/settings.js');
+    const { resolve } = await import('node:path');
+    const { homedir } = await import('node:os');
+    const abs = resolve(path.replace(/^~(?=\/|$)/, homedir()));
+    const s = loadSettings();
+    if (s.sync.excludeProjects.includes(abs)) {
+      console.log(chalk.dim(`Already excluded: ${abs}`));
+      return;
+    }
+    s.sync.excludeProjects.push(abs);
+    saveSettings(s);
+    console.log(chalk.green(`✓ Excluded ${abs}`) + chalk.dim(' — takes effect next sync; already-synced rows stay until deleted.'));
+  });
+
+exclude
+  .command('tool <tool>')
+  .description('Exclude an AI tool entirely (claude | gemini | codex | opencode | agy)')
+  .action(async (tool: string) => {
+    const valid = ['claude', 'gemini', 'codex', 'opencode', 'agy'];
+    if (!valid.includes(tool)) {
+      console.error(chalk.red(`Unknown tool '${tool}'.`) + chalk.dim(` Use one of: ${valid.join(' | ')}`));
+      process.exit(1);
+    }
+    const { loadSettings, saveSettings } = await import('@chat-recall/engine/core/settings.js');
+    const s = loadSettings();
+    if (s.sync.excludeTools.includes(tool as never)) {
+      console.log(chalk.dim(`Already excluded: ${tool}`));
+      return;
+    }
+    s.sync.excludeTools.push(tool as never);
+    saveSettings(s);
+    console.log(chalk.green(`✓ Excluded ${tool}`) + chalk.dim(' — nothing from it leaves this machine from the next sync on.'));
+  });
+
+exclude
+  .command('remove <value>')
+  .description('Remove an exclusion (tool name or project path)')
+  .action(async (value: string) => {
+    const { loadSettings, saveSettings } = await import('@chat-recall/engine/core/settings.js');
+    const { resolve } = await import('node:path');
+    const { homedir } = await import('node:os');
+    const abs = resolve(value.replace(/^~(?=\/|$)/, homedir()));
+    const s = loadSettings();
+    const beforeTools = s.sync.excludeTools.length;
+    const beforeProjects = s.sync.excludeProjects.length;
+    s.sync.excludeTools = s.sync.excludeTools.filter((t) => t !== value);
+    s.sync.excludeProjects = s.sync.excludeProjects.filter((p) => p !== value && p !== abs);
+    if (s.sync.excludeTools.length === beforeTools && s.sync.excludeProjects.length === beforeProjects) {
+      console.error(chalk.red(`No exclusion matches '${value}'.`) + chalk.dim(' See: chat-recall exclude list'));
+      process.exit(1);
+    }
+    saveSettings(s);
+    console.log(chalk.green(`✓ Removed ${value}`));
+  });
 
 program
   .command('login <server-url>')
