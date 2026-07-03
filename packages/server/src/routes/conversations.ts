@@ -1300,6 +1300,43 @@ router.get('/:id/metadata', async (req, res) => {
   }
 });
 
+// Transient upstream failures (gateway 5xx/429, provider hiccups, dropped
+// connections) that a short retry usually absorbs. Anything else — auth,
+// misconfiguration, unsummarizable content — fails immediately; retrying
+// cannot fix those.
+const TRANSIENT_SUMMARY_ERROR =
+  /\b(429|502|503|504)\b|upstream_failed|retryable|rate.?limit|timed?\s?out|ECONNRESET|ECONNREFUSED|EAI_AGAIN|fetch failed|socket hang up/i;
+
+const REGEN_ATTEMPTS = 3;
+const REGEN_BACKOFF_MS = 2000;
+
+/**
+ * Generate a summary, retrying transient upstream failures with linear
+ * backoff (2s, then 4s) so a seconds-long provider blip never reaches the
+ * user. Non-transient errors and outages that outlast the backoff window
+ * still throw — the route records those in the summary_errors ledger.
+ * `backoffMs` is injectable for tests only.
+ */
+export async function generateSummaryWithRetry(
+  generator: Pick<SummaryGenerator, 'generate'>,
+  content: Parameters<SummaryGenerator['generate']>[0],
+  backoffMs = REGEN_BACKOFF_MS,
+): Promise<string> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= REGEN_ATTEMPTS; attempt++) {
+    try {
+      return await generator.generate(content);
+    } catch (e) {
+      lastErr = e;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (attempt === REGEN_ATTEMPTS || !TRANSIENT_SUMMARY_ERROR.test(msg)) throw e;
+      log.warn({ attempt, msg: msg.slice(0, 200) }, 'regenerate-summary: transient upstream failure, retrying');
+      await new Promise((r) => setTimeout(r, backoffMs * attempt));
+    }
+  }
+  throw lastErr;
+}
+
 // POST /api/conversations/:id/regenerate-summary
 //
 // On-demand re-generation of an AI summary for a single session.
@@ -1310,7 +1347,10 @@ router.get('/:id/metadata', async (req, res) => {
 //                 synced content_cache envelope and summarize with the
 //                 server-configured provider (serverSummaryConfig / env).
 //
-// Existing cached summary (if any) is overwritten on success.
+// Existing cached summary (if any) is overwritten on success. Failures are
+// recorded in the summary_errors ledger (same one the background sweep
+// reads), so a failed regenerate is durable and diagnosable, not just an
+// HTTP response the user may have closed.
 router.post('/:id/regenerate-summary', async (req, res) => {
   const { id } = req.params;
   try {
@@ -1345,7 +1385,7 @@ router.post('/:id/regenerate-summary', async (req, res) => {
       content = built;
 
       const generator = new SummaryGenerator(config);
-      summary = await generator.generate(built);
+      summary = await generateSummaryWithRetry(generator, built);
       summarySource = providerToSource(config.provider);
     } else {
       const path = getSessionPath(id); // throws if missing
@@ -1357,7 +1397,7 @@ router.post('/:id/regenerate-summary', async (req, res) => {
       const cliCommand = settings.summary?.cliCommand || process.env.SUMMARY_CLI_CMD;
       const generator = new SummaryGenerator({ provider, cliCommand });
 
-      summary = await generator.generate(parsed);
+      summary = await generateSummaryWithRetry(generator, parsed);
       summarySource = provider === 'gemini-cli' ? 'gemini' : provider;
     }
 
@@ -1382,6 +1422,14 @@ router.post('/:id/regenerate-summary', async (req, res) => {
     // Surface quota errors with a 429 so the UI can render a clear message
     const status = /QUOTA_EXHAUSTED|429|exhausted your capacity|rate.?limit/i.test(msg) ? 429 : 500;
     log.error({ id, msg: msg.slice(0, 300) }, 'regenerate-summary failed');
+    // Durable failure record: the summary_errors ledger is what ops and the
+    // background sweep read. For a still-unsummarized session this also hands
+    // the retry over to the sweep's backoff machinery. Best-effort — the
+    // ledger write must never mask the real error.
+    try {
+      const cache = await createMetadataCache();
+      try { await cache.recordSummaryError(id, msg); } finally { await cache.close(); }
+    } catch { /* best-effort */ }
     res.status(status).json({ error: msg.slice(0, 500) });
   }
 });
