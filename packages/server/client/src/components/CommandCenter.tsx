@@ -13,8 +13,8 @@ import React, { useEffect, useState } from 'react';
 import { Card, Chip, Button, Icon, pressableProps } from './primitives';
 import ConnectMachine from './ConnectMachine';
 import {
-  getCodeProjects, getAccountRecommendations, applyAccountRecommendation, getSecretsSummary, getStatus,
-  type CodeProject, type CodeRecommendation, type SecretsSummary,
+  getCodeProjects, getAccountRecommendations, applyAccountRecommendation, getSecretsSummary, getStatus, getOutcomeSummary,
+  type CodeProject, type CodeRecommendation, type SecretsSummary, type OutcomeDayRow,
 } from '../services/api';
 
 type Nav = (v: string) => void;
@@ -40,7 +40,6 @@ export default function CommandCenter({ setView, onOpenProject, cloud }: { setVi
     return () => { on = false; };
   }, []);
 
-  const avgHealth = projects.length ? Math.round(projects.reduce((a, p) => a + (p.health?.score ?? 0), 0) / projects.length) : null;
   const criticals = projects.reduce((a, p) => a + (p.health?.critical ?? 0), 0);
   const hotspots = projects.reduce((a, p) => a + (p.health?.hotspots ?? 0), 0);
   const leaked = secrets ? (secrets.totals || []).reduce((a, t) => a + (t.findings || 0), 0) : 0;
@@ -78,10 +77,11 @@ export default function CommandCenter({ setView, onOpenProject, cloud }: { setVi
         <div style={{ color: 'var(--cr-fg-2)', fontSize: 13, marginTop: 4 }}>How you build × what you build — with the next move on every signal.</div>
       </div>
 
-      {/* Hero metric strip */}
+      {/* Hero metric strip. No "avg health": averaging N repos into one
+          number hides the one that's on fire and moves for reasons you
+          can't act on — the Code health panel below ranks per-project. */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12, marginBottom: 22 }}>
         <Metric label="Projects" value={loading ? '—' : String(projects.length)} onClick={() => setView('projects')} />
-        <Metric label="Avg health" value={avgHealth == null ? '—' : `${avgHealth}`} suffix={avgHealth == null ? '' : '/100'} tone={avgHealth == null ? 'neutral' : avgHealth >= 70 ? 'ok' : avgHealth >= 40 ? 'warn' : 'err'} onClick={() => setView('projects')} />
         <Metric label="Critical findings" value={loading ? '—' : String(criticals)} tone={criticals > 0 ? 'err' : 'ok'} onClick={() => setView('projects')} />
         <Metric label="Hotspots" value={loading ? '—' : String(hotspots)} onClick={() => setView('projects')} />
         <Metric label="Leaked secrets" value={loading ? '—' : String(leaked)} tone={leaked > 0 ? 'err' : 'ok'} onClick={() => setView('security')} />
@@ -89,8 +89,11 @@ export default function CommandCenter({ setView, onOpenProject, cloud }: { setVi
       </div>
 
       <div className="cr-stack-mobile" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.3fr) minmax(0,1fr)', gap: 16, alignItems: 'start' }}>
-        {/* Left: recommendations + code health */}
+        {/* Left: this week's story + recommendations + code health */}
         <div style={{ display: 'grid', gap: 16 }}>
+          <Panel title="This week" hint="what actually happened" action={() => setView('search')}>
+            <WeekStrip />
+          </Panel>
           <Panel title="Recommendations" hint="behaviour × code" action={recs.length ? undefined : null}>
             {recs.length === 0 ? <Empty>No recommendations right now — clean signals.</Empty> : recs.slice(0, 4).map((r) => (
               <RecRow key={r.id} rec={r} />
@@ -192,4 +195,138 @@ function RecRow({ rec }: { rec: CodeRecommendation }) {
 
 function Empty({ children }: { children: React.ReactNode }) {
   return <div style={{ color: 'var(--cr-fg-3)', fontSize: 13, padding: '6px 0' }}>{children}</div>;
+}
+
+// ── This-week activity strip ─────────────────────────────────────────────
+//
+// Per-day stacked mini bars of session outcomes + labeled totals. Status
+// colors sit in the CVD floor band (red↔green ΔE ~8), so identity is NEVER
+// color-alone: every lane is direct-labeled with name+count in the totals
+// row, stacked segments keep a 2px surface gap, and each day bar carries a
+// full text breakdown tooltip.
+
+type WeekLane = 'shipped' | 'interrupted' | 'in_progress' | 'abandoned' | 'discussion';
+
+/** Fixed stack order (bottom → top) — color follows the lane, never rank. */
+const WEEK_LANES: Array<{ lane: WeekLane; label: string; color: string }> = [
+  { lane: 'shipped',     label: 'shipped',     color: 'var(--cr-ok-500)' },
+  { lane: 'interrupted', label: 'interrupted', color: 'var(--cr-warn-500)' },
+  { lane: 'in_progress', label: 'in progress', color: 'var(--cr-info-500)' },
+  { lane: 'abandoned',   label: 'abandoned',   color: 'var(--cr-err-500)' },
+  { lane: 'discussion',  label: 'discussions', color: 'var(--cr-fg-3)' },
+];
+
+function toLane(status: OutcomeDayRow['status']): WeekLane {
+  if (status === 'shipped' || status === 'interrupted' || status === 'in_progress' || status === 'abandoned') return status;
+  return 'discussion'; // 'unknown' (no edits, no commits) and rare 'completed'
+}
+
+function WeekStrip() {
+  const [rows, setRows] = useState<OutcomeDayRow[] | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let on = true;
+    getOutcomeSummary(7)
+      .then((r) => { if (on) setRows(r.rows); })
+      .catch(() => { if (on) { setRows([]); setFailed(true); } });
+    return () => { on = false; };
+  }, []);
+
+  if (rows === null) return <Empty>Loading activity…</Empty>;
+  if (failed) return <Empty>Activity unavailable right now.</Empty>;
+
+  // Last 7 UTC days, oldest first — matches the server's UTC day buckets.
+  const days: string[] = [];
+  for (let i = 6; i >= 0; i--) {
+    days.push(new Date(Date.now() - i * 86_400_000).toISOString().slice(0, 10));
+  }
+
+  const byDay = new Map<string, Map<WeekLane, number>>();
+  const laneTotals = new Map<WeekLane, number>();
+  let linesAdded = 0, linesRemoved = 0, commits = 0, total = 0;
+  for (const r of rows) {
+    const lane = toLane(r.status);
+    const m = byDay.get(r.day) ?? new Map<WeekLane, number>();
+    m.set(lane, (m.get(lane) ?? 0) + r.sessions);
+    byDay.set(r.day, m);
+    laneTotals.set(lane, (laneTotals.get(lane) ?? 0) + r.sessions);
+    linesAdded += r.linesAdded; linesRemoved += r.linesRemoved; commits += r.commits;
+    total += r.sessions;
+  }
+
+  if (total === 0) return <Empty>No sessions in the last 7 days.</Empty>;
+
+  // Bars show CODE WORK only. Talk-only sessions outnumber code sessions
+  // ~50:1 here, so putting the discussion lane in the stack turns every bar
+  // into a gray monolith and crushes the shipped/abandoned story — the thing
+  // this panel exists to show. Discussions stay in the legend and the
+  // per-day tooltip as text.
+  const barLanes = WEEK_LANES.filter(({ lane }) => lane !== 'discussion');
+  const codeDayTotal = (d: string): number => {
+    const m = byDay.get(d);
+    return m ? barLanes.reduce((a, { lane }) => a + (m.get(lane) ?? 0), 0) : 0;
+  };
+  const maxDay = Math.max(1, ...days.map(codeDayTotal));
+  const BAR_AREA = 64; // px height of the tallest day
+
+  return (
+    <div data-testid="week-strip">
+      {/* Labeled totals — the legend. Name + count next to each colored dot
+          so lane identity never rests on color alone. */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 14px', marginBottom: 12, fontSize: 12 }}>
+        {WEEK_LANES.filter(({ lane }) => (laneTotals.get(lane) ?? 0) > 0).map(({ lane, label, color }) => (
+          <span key={lane} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: 'var(--cr-fg-2)' }}>
+            <span aria-hidden style={{ width: 8, height: 8, borderRadius: 2, background: color, flexShrink: 0 }} />
+            <strong style={{ color: 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums' }}>{laneTotals.get(lane)}</strong> {label}
+          </span>
+        ))}
+      </div>
+
+      {/* Per-day stacked bars, oldest → newest. */}
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, height: BAR_AREA + 18 }}>
+        {days.map((d) => {
+          const m = byDay.get(d);
+          const allDayTotal = m ? [...m.values()].reduce((a, b) => a + b, 0) : 0;
+          const breakdown = WEEK_LANES
+            .filter(({ lane }) => (m?.get(lane) ?? 0) > 0)
+            .map(({ lane, label }) => `${m!.get(lane)} ${label}`)
+            .join(' · ');
+          const weekday = new Date(`${d}T00:00:00Z`).toLocaleDateString(undefined, { weekday: 'short', timeZone: 'UTC' });
+          return (
+            <div key={d} title={`${d} — ${allDayTotal ? breakdown : 'no sessions'}`}
+              style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', height: '100%', minWidth: 0 }}>
+              <div style={{ display: 'flex', flexDirection: 'column-reverse' }}>
+                {barLanes.map(({ lane, color }) => {
+                  const n = m?.get(lane) ?? 0;
+                  if (n === 0) return null;
+                  return (
+                    <div key={lane} style={{
+                      height: Math.max(3, Math.round((n / maxDay) * BAR_AREA)),
+                      background: color,
+                      borderRadius: 2,
+                      marginTop: 2, // the 2px surface gap between stacked segments
+                    }} />
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 9, color: 'var(--cr-fg-3)', textAlign: 'center', marginTop: 4, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                {weekday}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* The week's output in one line. */}
+      <div style={{ marginTop: 10, fontSize: 12, color: 'var(--cr-fg-2)', fontVariantNumeric: 'tabular-nums' }}>
+        <span style={{ color: 'var(--cr-ok-500)' }}>+{linesAdded.toLocaleString()}</span>
+        {' / '}
+        <span style={{ color: 'var(--cr-err-500)' }}>−{linesRemoved.toLocaleString()}</span>
+        {' lines · '}
+        <strong style={{ color: 'var(--cr-fg-1)' }}>{commits.toLocaleString()}</strong> commits landed
+        {' · '}{total.toLocaleString()} sessions
+      </div>
+    </div>
+  );
 }

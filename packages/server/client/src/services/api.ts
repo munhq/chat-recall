@@ -478,6 +478,28 @@ export async function getStatus(): Promise<IndexStats> {
   return await res.json();
 }
 
+/** One (day, status) cell of the activity rollup behind the dashboard's
+ *  "this week" strip. `day` is YYYY-MM-DD (UTC, session file mtime). */
+export interface OutcomeDayRow {
+  day: string;
+  status: 'shipped' | 'abandoned' | 'interrupted' | 'in_progress' | 'completed' | 'unknown';
+  sessions: number;
+  files: number;
+  linesAdded: number;
+  linesRemoved: number;
+  commits: number;
+}
+
+export async function getOutcomeSummary(days = 7): Promise<{ days: number; rows: OutcomeDayRow[] }> {
+  const res = await fetchWithTimeout(`${API_BASE}/conversations/outcome-summary?days=${days}`);
+
+  if (!res.ok) {
+    throw new Error(`Failed to get outcome summary: ${res.statusText}`);
+  }
+
+  return await res.json();
+}
+
 export interface SyncStatus {
   sessions: number;
   rawArchived: number;

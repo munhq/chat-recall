@@ -203,6 +203,7 @@ export async function createMetadataCache(opts: CreateStoreOptions = {}): Promis
 export interface OutcomeCacheDriver {
   get: AsyncMethod<OutcomeCache['get']>;
   getMany: AsyncMethod<OutcomeCache['getMany']>;
+  summarizeByDay: AsyncMethod<OutcomeCache['summarizeByDay']>;
   put: AsyncMethod<OutcomeCache['put']>;
   putMany: AsyncMethod<OutcomeCache['putMany']>;
   invalidate: AsyncMethod<OutcomeCache['invalidate']>;
@@ -217,6 +218,7 @@ export class SqliteOutcomeCache implements OutcomeCacheDriver {
 
   async get(...a: OArgs<'get'>) { return this.inner.get(...a); }
   async getMany(...a: OArgs<'getMany'>) { return this.inner.getMany(...a); }
+  async summarizeByDay(...a: OArgs<'summarizeByDay'>) { return this.inner.summarizeByDay(...a); }
   async put(...a: OArgs<'put'>) { return this.inner.put(...a); }
   async putMany(...a: OArgs<'putMany'>) { return this.inner.putMany(...a); }
   async invalidate(...a: OArgs<'invalidate'>) { return this.inner.invalidate(...a); }
@@ -253,6 +255,23 @@ export class PgOutcomeCache implements OutcomeCacheDriver {
     if (!a[0].length) return out as any;
     for (const r of await this.qRo(`SELECT ${OUTCOME_COLS} FROM session_outcome_cache WHERE tenant=$1 AND session_id = ANY($2)`, [this.t, a[0]])) out.set(r.session_id, rowToOutcome(r));
     return out as any;
+  }
+  async summarizeByDay(...a: OArgs<'summarizeByDay'>) {
+    const rows = await this.qRo(
+      `SELECT to_char(to_timestamp(file_mtime/1000) AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day, status,
+              COUNT(*) AS sessions, SUM(file_count) AS files,
+              SUM(lines_added) AS lines_added, SUM(lines_removed) AS lines_removed, SUM(commits) AS commits
+         FROM session_outcome_cache
+        WHERE tenant=$1 AND file_mtime > $2
+        GROUP BY 1, 2
+        ORDER BY 1`,
+      [this.t, a[0]]);
+    return rows.map((r: any) => ({
+      day: r.day, status: r.status,
+      sessions: Number(r.sessions) || 0, files: Number(r.files) || 0,
+      linesAdded: Number(r.lines_added) || 0, linesRemoved: Number(r.lines_removed) || 0,
+      commits: Number(r.commits) || 0,
+    })) as any;
   }
   async put(...a: OArgs<'put'>) {
     const rec = a[0];
