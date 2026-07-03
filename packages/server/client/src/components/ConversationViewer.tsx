@@ -32,7 +32,7 @@ import {
   regenerateSummary,
   renameConversation,
 } from '../services/api';
-import { stripInjectedBanners } from '../utils/clean';
+import { stripInjectedBanners, summaryTitle } from '../utils/clean';
 import SessionTrace from './SessionTrace';
 
 type ViewMode = 'summary' | 'firstPrompt' | 'full' | 'trace' | 'raw' | 'related' | 'files' | 'diff' | 'commits' | 'outcome' | 'security';
@@ -281,17 +281,11 @@ export default function ConversationViewer({
       'No first prompt available'
   );
 
+  // One-line title from a summary/prompt — delegates to the canonical
+  // cleaner in utils/clean.ts (markdown stripping + placeholder rejection,
+  // shared with the list and the code drawer).
   function extractTitle(text: string | undefined): string {
-    if (!text) return '';
-    const stripped = stripInjectedBanners(text);
-    const firstLine = stripped.split('\n')[0].trim();
-    const cleaned = firstLine.replace(/^\*\*[^*]+\*\*:?\s*-?\s*/, '').trim();
-    // Reject trivially-uninformative placeholder strings — they're worse
-    // than nothing because they push real content out of view.
-    if (!cleaned) return '';
-    if (/^no (first prompt|summary)( available)?$/i.test(cleaned)) return '';
-    if (/^session [0-9a-f]{4,}/i.test(cleaned)) return '';
-    return cleaned.length > 80 ? cleaned.substring(0, 80) + '…' : cleaned;
+    return summaryTitle(text, 80);
   }
   // Title fallback chain. Always falls back to the project's last segment
   // (e.g. "chat-recall") rather than the opaque session UUID — a path is
