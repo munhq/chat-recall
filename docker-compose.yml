@@ -81,6 +81,8 @@ services:
       AUTH_PROVIDER: ${AUTH_PROVIDER:-none}
       OIDC_JWKS_URL: ${OIDC_JWKS_URL:-}
       OIDC_ISSUER: ${OIDC_ISSUER:-}
+      # Client the JWT must be minted for (azp/aud). '*' disables the check.
+      OIDC_ALLOWED_AZP: ${OIDC_ALLOWED_AZP:-}
       # Optional: LLM query expansion (semantic-ish keyword search). Set
       # QUERY_EXPANSION=on plus a SUMMARY_PROVIDER (+ key) to enable.
       QUERY_EXPANSION: ${QUERY_EXPANSION:-}
