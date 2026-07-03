@@ -937,7 +937,7 @@ function AppInner() {
             />
           )}
           {view === 'code' && (
-            <CodeExplorer projectFilter={projectFilter} />
+            <CodeExplorer projectFilter={projectFilter} onSessionClick={handleMemorySessionClick} />
           )}
         </div>
       )}
