@@ -54,14 +54,20 @@ describe('GET /install.sh', () => {
       .set('x-forwarded-host', 'chat-recall.example.com');
     // Skip the dance when this machine already holds a working credential.
     expect(res.text).toContain('chat-recall login https://chat-recall.example.com --check');
-    // Fresh machine: point at the token page (?view=connect), suggesting the
-    // hostname as the device name...
-    expect(res.text).toContain('https://chat-recall.example.com/?view=connect&device=');
+    // Fresh machine: point at the token page (?view=connect) with a RANDOM
+    // device slug — the hostname must never leak into a URL...
+    expect(res.text).toContain('https://chat-recall.example.com/?view=connect&device=$DEVICE');
+    expect(res.text).toContain('/dev/urandom');
+    expect(res.text).not.toContain('$(hostname');
     // ...read the pasted token from the TERMINAL, not the piped-in script...
     expect(res.text).toContain('read TOKEN < /dev/tty');
-    // ...log in with it (login validates before saving) and run the first sync.
+    // ...log in with it (login validates before saving)...
     expect(res.text).toContain('chat-recall login https://chat-recall.example.com --token "$TOKEN"');
-    expect(res.text).toMatch(/^chat-recall sync/m);
+    // ...and sync in the BACKGROUND (service, or nohup fallback) — the first
+    // sync of a big history must not hold the terminal hostage.
+    expect(res.text).toContain('chat-recall service install');
+    expect(res.text).toContain('nohup chat-recall sync');
+    expect(res.text).not.toMatch(/^chat-recall sync\b/m);
     // No stale "open the site and mint a token by hand" instructions.
     expect(res.text).not.toMatch(/mint a device token/i);
   });
