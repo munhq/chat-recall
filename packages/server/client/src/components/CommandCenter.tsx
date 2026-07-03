@@ -12,6 +12,7 @@
 import React, { useEffect, useState } from 'react';
 import { Card, Chip, Button, Icon, pressableProps } from './primitives';
 import ConnectMachine from './ConnectMachine';
+import SyncCoverage from './SyncCoverage';
 import {
   getCodeProjects, getAccountRecommendations, applyAccountRecommendation, getSecretsSummary, getStatus, getSyncStatus, getOutcomeSummary,
   type CodeProject, type CodeRecommendation, type SecretsSummary, type OutcomeDayRow,
@@ -133,8 +134,11 @@ export default function CommandCenter({ setView, onOpenProject, cloud }: { setVi
           </Panel>
         </div>
 
-        {/* Right: security + jump-offs */}
+        {/* Right: coverage + security + jump-offs */}
         <div style={{ display: 'grid', gap: 16 }}>
+          <Panel title="What's synced" hint="coverage by tool · type · project" action={() => setView('search')}>
+            <SyncCoverage />
+          </Panel>
           <Panel title="Security" hint="leaked secrets" action={() => setView('security')}>
             {leaked === 0 ? <Empty>No leaked secrets detected.</Empty> : (
               <div>
