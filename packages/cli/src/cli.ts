@@ -1714,23 +1714,64 @@ program
  */
 async function runLogin(
   serverUrl: string,
-  opts: { token?: string; issuer?: string; clientId?: string; team?: string; deviceId?: string },
+  opts: { token?: string; issuer?: string; clientId?: string; team?: string; deviceId?: string; check?: boolean },
 ): Promise<void> {
-  const { saveCredentials } = await import('./sync-client.js');
+  const { saveCredentials, loadAllCredentials } = await import('./sync-client.js');
   const base = serverUrl.replace(/\/+$/, '');
+
+  /** Prove a token works against this server BEFORE persisting it. */
+  const verifyToken = async (token: string): Promise<{ ok: boolean; status?: number; error?: string }> => {
+    try {
+      const res = await fetch(`${base}/api/status`, {
+        headers: token ? { authorization: `Bearer ${token}` } : {},
+        signal: AbortSignal.timeout(10_000),
+      });
+      return { ok: res.ok, status: res.status };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  };
 
   // Self-host escape hatch: token supplied directly, no OIDC.
   if (opts.token) {
-    saveCredentials({ serverUrl, token: opts.token });
-    console.log(chalk.green('✓ Logged in.') + chalk.dim(`  server: ${serverUrl}`));
+    const token = opts.token.trim();
+    // A masked copy out of the UI ("ct_12345678…") is the classic failure here.
+    // Non-ASCII in the token would otherwise be saved silently and crash every
+    // later sync inside fetch() with an opaque "ByteString" error.
+    if (/[^\x21-\x7e]/.test(token)) {
+      console.error(chalk.red('login failed: the token contains non-ASCII characters — this looks like a masked/truncated copy (e.g. "ct_12345678…").'));
+      console.error(chalk.dim('Use the Copy button next to the token in the dashboard and paste the full line.'));
+      process.exit(1);
+    }
+    const check = await verifyToken(token);
+    if (!check.ok) {
+      if (check.status === 401 || check.status === 403) {
+        console.error(chalk.red(`login failed: ${base} rejected the token (HTTP ${check.status}).`));
+        console.error(chalk.dim('Tokens are shown once — mint a fresh one (Account → Connect your machine) and copy the whole line.'));
+      } else {
+        console.error(chalk.red(`login failed: could not verify the token against ${base}:`), check.error || `HTTP ${check.status}`);
+      }
+      process.exit(1);
+    }
+    saveCredentials({ serverUrl, token });
+    console.log(chalk.green('✓ Logged in.') + chalk.dim(`  server: ${serverUrl} (token verified)`));
     return;
   }
 
+  // Idempotent login: a working credential for this server already on disk wins
+  // — the installer re-runs `login <origin>` unconditionally (e.g. on upgrade),
+  // and that must not force a second token dance.
+  const existing = loadAllCredentials().find((t) => t.serverUrl.replace(/\/+$/, '') === base);
+  if (existing && (await verifyToken(existing.token)).ok) {
+    console.log(chalk.green('✓ Already connected.') + chalk.dim(`  server: ${serverUrl} (existing token verified)`));
+    return;
+  }
   // Local self-host (AUTH_PROVIDER=none) needs NO token: a tenant-scoped request
   // with no auth resolves to the single 'default' tenant — which is also what the
   // no-auth dashboard reads, so collector and dashboard always agree. Detect it
   // (a no-auth /api/status returns 200; an auth-required server returns 401) and
-  // save a tokenless target instead of forcing the OIDC flow.
+  // save a tokenless target instead of forcing the OIDC flow. Runs under --check
+  // too: connecting to a no-auth server is free, so "connected" is the answer.
   try {
     const probe = await fetch(`${base}/api/status`, { signal: AbortSignal.timeout(8000) });
     if (probe.status === 200) {
@@ -1739,6 +1780,13 @@ async function runLogin(
       return;
     }
   } catch { /* unreachable or not a no-auth server — fall through to OIDC */ }
+
+  // --check: report-only probe for scripts (the installer). Exit 1 without
+  // starting any interactive flow when no working credential exists.
+  if (opts.check) {
+    console.error(chalk.dim(`Not connected to ${serverUrl}.`));
+    process.exit(1);
+  }
 
   try {
     const { deviceLogin } = await import('./device-auth.js');
@@ -1752,13 +1800,22 @@ async function runLogin(
 
     const authHdr = { authorization: `Bearer ${tokens.accessToken}`, 'content-type': 'application/json' };
 
-    // Which team? Use --team, else the user's sole team; bail with guidance otherwise.
-    const me = await fetch(`${base}/api/me`, { headers: authHdr }).then((r) => r.json() as Promise<{ teams: { team_slug: string; name: string }[] }>);
+    // Which team? Use --team, else the user's sole team; a brand-new user
+    // (zero teams) gets a workspace auto-created — same as the web onboarding.
+    // Bouncing them to "run `team create`, then re-run login" mid-funnel is a
+    // dead end for the one-command install.
+    const me = await fetch(`${base}/api/me`, { headers: authHdr }).then((r) => r.json() as Promise<{ user?: { email?: string }; teams: { team_slug: string; name: string }[] }>);
     const teams = me.teams || [];
     let slug = opts.team;
     if (!slug) {
       if (teams.length === 1) slug = teams[0].team_slug;
-      else if (teams.length === 0) { console.error(chalk.red('No team yet. Create one:') + ' chat-recall team create <name>, then re-run login.'); process.exit(1); }
+      else if (teams.length === 0) {
+        const name = me.user?.email?.split('@')[0]?.replace(/[^a-z0-9]/gi, '') || 'workspace';
+        const created = await fetch(`${base}/api/teams`, { method: 'POST', headers: authHdr, body: JSON.stringify({ name }) });
+        if (!created.ok) throw new Error(`workspace create failed: HTTP ${created.status} ${await created.text().catch(() => '')}`);
+        slug = ((await created.json()) as { slug: string }).slug;
+        console.log(chalk.dim(`Created workspace "${name}" (${slug}) — you're its owner.`));
+      }
       else { console.error(chalk.red('You belong to multiple teams — pass --team <slug>:')); teams.forEach((t) => console.error(`  ${t.team_slug}  ${chalk.dim(t.name)}`)); process.exit(1); }
     }
 
@@ -1783,11 +1840,12 @@ program
   .command('login <server-url>')
   .description('Log in via Keycloak (device flow) and mint a sync device token → ~/.chat-recall/credentials.json (0600)')
   .option('--token <token>', 'Self-host: skip OIDC and save this device token directly')
+  .option('--check', 'Report-only: exit 0 if a working credential for this server exists, 1 otherwise (never interactive)')
   .option('--issuer <url>', 'OIDC issuer (default: hotmun realm)')
   .option('--client-id <id>', 'OIDC client id (default: chat-recall-web)')
   .option('--team <slug>', 'Team to mint the device token for (default: your only team)')
   .option('--device-id <id>', 'Device id for this machine (default: hostname)')
-  .action((serverUrl: string, opts: { token?: string; issuer?: string; clientId?: string; team?: string; deviceId?: string }) =>
+  .action((serverUrl: string, opts: { token?: string; check?: boolean; issuer?: string; clientId?: string; team?: string; deviceId?: string }) =>
     runLogin(serverUrl, opts));
 
 program
@@ -1878,10 +1936,16 @@ program
       if (!opts.sinceHours && !opts.limit && !opts.full && !opts.pathsCleartext && !opts.throttle && !opts.prune) {
         const r = await syncIncremental();
         if (isSyncSkip(r)) {
+          // lock-held is routine writer election (another sync IS running right
+          // now — e.g. the watch daemon), not a failure: exit 0 so wrappers like
+          // the installer don't report a broken first sync.
+          if (r.skipped === 'lock-held') {
+            console.log(chalk.dim('Another sync is already running (MCP tick or watch daemon) — your data is on its way.'));
+            return;
+          }
           const msg = {
             'no-credentials': 'Not logged in — run `chat-recall login <server-url>` first.',
             'paused': 'Sync is paused in settings — re-run `chat-recall login <server-url>` to resume.',
-            'lock-held': 'Another sync is already running (MCP tick or watch daemon) — try again in a moment.',
           }[r.skipped];
           console.error(chalk.red(msg));
           process.exit(1);
