@@ -8,7 +8,7 @@ describe('service-installer renders', () => {
 
   test('systemd unit interpolates ExecStart + log paths (no literal ${...})', () => {
     const unit = renderSystemdUnit(watchJs, node, logFile);
-    expect(unit).toContain(`ExecStart=${node} ${watchJs}`);
+    expect(unit).toContain(`ExecStart=${node} --max-old-space-size=1536 ${watchJs}`);
     expect(unit).toContain(`StandardOutput=append:${logFile}`);
     expect(unit).toContain(`StandardError=append:${logFile}`);
     expect(unit).toContain('Restart=on-failure');

@@ -1130,9 +1130,9 @@ const toolkit = program
  */
 async function pushToolkitToServer(): Promise<void> {
   try {
-    const { syncIncremental } = await import('./sync-client.js');
+    const { syncIncremental, isSyncSkip } = await import('./sync-client.js');
     const res = await syncIncremental();
-    if (res && res.items > 0) console.log(chalk.dim(`  synced ${res.items} toolkit item(s) to the server.`));
+    if (!isSyncSkip(res) && res.items > 0) console.log(chalk.dim(`  synced ${res.items} toolkit item(s) to the server.`));
   } catch (err) {
     console.error(chalk.dim(`  (could not sync to server: ${err instanceof Error ? err.message : err})`));
   }
@@ -1864,15 +1864,20 @@ program
   .option('--throttle <ms>', 'Pause between upload batches in ms (default: 1000, or 3000 with --full)')
   .option('--prune', 'After syncing, drop server-side session rows that have no content (ghost rows)')
   .action(async (opts: { sinceHours?: string; limit?: string; full?: boolean; pathsCleartext?: boolean; throttle?: string; prune?: boolean }) => {
-    const { syncSessions, syncIncremental } = await import('./sync-client.js');
+    const { syncSessions, syncIncremental, isSyncSkip } = await import('./sync-client.js');
     try {
       // Bare `chat-recall sync` = incremental: only sessions modified since
       // the last successful sync, watermark advanced on success. Any explicit
       // flag switches to the manual one-shot path (watermark untouched).
       if (!opts.sinceHours && !opts.limit && !opts.full && !opts.pathsCleartext && !opts.throttle && !opts.prune) {
         const r = await syncIncremental();
-        if (r === null) {
-          console.error(chalk.red('Not logged in (or sync disabled) — run `chat-recall login <server-url>` first.'));
+        if (isSyncSkip(r)) {
+          const msg = {
+            'no-credentials': 'Not logged in — run `chat-recall login <server-url>` first.',
+            'paused': 'Sync is paused in settings — re-run `chat-recall login <server-url>` to resume.',
+            'lock-held': 'Another sync is already running (MCP tick or watch daemon) — try again in a moment.',
+          }[r.skipped];
+          console.error(chalk.red(msg));
           process.exit(1);
         }
         console.log(chalk.green(`✓ Synced ${r.uploaded} session(s), ${r.items} item(s)`) + chalk.dim(` — ${r.links} links, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted, ${r.findings} secret findings${r.scanned ? ` (scanned ${r.scanned} in ${r.scanMs}ms)` : ''} (incremental)`));

@@ -102,7 +102,12 @@ export function renderSystemdUnit(watchJs: string, node: string, logFile: string
   return [
     '[Unit]', 'Description=chat-recall live indexer (sessions → local index, optional server sync)', 'After=default.target', '',
     '[Service]',
-    `ExecStart=${node} ${watchJs}`,
+    // Bounded heap: the daemon does bursty batch work (transcript parse,
+    // base64 payloads); V8's default old-space on a big-RAM box is ~4GB and
+    // GC only gets aggressive near the ceiling — observed as a multi-GB RSS
+    // sawtooth. 1536MB keeps GC honest (768 OOMed on the largest subagent-fanout session) with plenty of headroom for the
+    // largest transcripts.
+    `ExecStart=${node} --max-old-space-size=1536 ${watchJs}`,
     'Restart=on-failure', 'RestartSec=10', 'Nice=10',
     // Keep the service's own stdout/stderr out of the journal noise but
     // available for `chat-recall service status` without paging journald.
@@ -135,7 +140,7 @@ export function renderLaunchdPlist(watchJs: string, node: string, logFile: strin
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
     '<plist version="1.0"><dict>',
     `  <key>Label</key><string>${label}</string>`,
-    `  <key>ProgramArguments</key><array><string>${node}</string><string>${watchJs}</string></array>`,
+    `  <key>ProgramArguments</key><array><string>${node}</string><string>--max-old-space-size=1536</string><string>${watchJs}</string></array>`,
     '  <key>RunAtLoad</key><true/>',
     '  <key>KeepAlive</key><true/>',
     `  <key>StandardOutPath</key><string>${logFile}</string>`,
@@ -146,7 +151,7 @@ export function renderLaunchdPlist(watchJs: string, node: string, logFile: strin
 
 function installWindowsTask(watchJs: string, node: string, logFile: string): ServicePaths {
   const taskName = 'chat-recall-watch';
-  const tr = `\\"${node}\\" \\"${watchJs}\\"`;
+  const tr = `\\"${node}\\" --max-old-space-size=1536 \\"${watchJs}\\"`;
   try {
     execSync(`schtasks /create /tn "${taskName}" /tr "${tr}" /sc onlogon /rl LIMITED /f`, { stdio: 'inherit' });
     // Start now too (best-effort — starts next logon if /run unsupported).
@@ -159,7 +164,7 @@ function installWindowsTask(watchJs: string, node: string, logFile: string): Ser
 
 /** Render the schtasks /create command (pure — no exec). */
 export function renderWindowsTaskCommand(watchJs: string, node: string, taskName = 'chat-recall-watch'): string {
-  const tr = `\\"${node}\\" \\"${watchJs}\\"`;
+  const tr = `\\"${node}\\" --max-old-space-size=1536 \\"${watchJs}\\"`;
   return `schtasks /create /tn "${taskName}" /tr "${tr}" /sc onlogon /rl LIMITED /f`;
 }
 

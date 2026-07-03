@@ -229,7 +229,7 @@ function isLocalHost(serverUrl: string): boolean {
   return false;
 }
 
-export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number; prune?: boolean; useLedger?: boolean } = {}): Promise<SyncResult> {
+export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number; prune?: boolean; useLedger?: boolean; walk?: 'full' | 'changed' } = {}): Promise<SyncResult> {
   const targets = loadAllCredentials();
   if (targets.length === 0) throw new Error('Not logged in — run `chat-recall login <server-url> --token <token>`');
   let agg: SyncResult | null = null;
@@ -353,7 +353,7 @@ export async function reconcileFields(opts: { force?: boolean } = {}): Promise<R
   return { sessions: fullRefs().length, scanned, pushed, absent, perTarget };
 }
 
-async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number; prune?: boolean; useLedger?: boolean } = {}): Promise<SyncResult> {
+async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number; prune?: boolean; useLedger?: boolean; walk?: 'full' | 'changed' } = {}): Promise<SyncResult> {
   const sync = loadSettings().sync;
   const excludeTools = new Set(sync?.excludeTools ?? []);
   const excludeProjects = sync?.excludeProjects ?? [];
@@ -395,8 +395,20 @@ try {
 // tenant admin can disable it.
 const { tenantRules, verifySecrets } = await fetchTenantSecurityConfig(cred);
 
+// Walk scope. 'full' (default) lists EVERY session — the ledger does the
+// skipping, which is what lets an old failed session retry forever. 'changed'
+// bounds the LISTING to recently-touched sessions (mtime window with overlap):
+// the watch daemon's per-file-change ticks use it so a burst of keystrokes
+// costs a walk over ~a handful of refs, not 30k+. Failed/old sessions still
+// converge via the daemon's 15-min heartbeat + startup ticks, which stay
+// 'full'. The ledger still drives skip/append/full per ref in BOTH modes.
+const CHANGED_WALK_OVERLAP_MS = 15 * 60_000;
+const changedWalk = opts.walk === 'changed';
+const listSinceMs = changedWalk
+  ? Math.max(0, (opts.sinceMs ?? 0) - CHANGED_WALK_OVERLAP_MS)
+  : (opts.useLedger ? undefined : opts.sinceMs);
 const refs = listAvailableBackends().flatMap((b) => {
-    try { return b.listSessions({ sinceMs: opts.useLedger ? undefined : opts.sinceMs }); } catch { return []; }
+    try { return b.listSessions({ sinceMs: listSinceMs }); } catch { return []; }
   });
 
   // ── Upload plumbing, created up-front so the walks below can stream.
@@ -945,8 +957,11 @@ const refs = listAvailableBackends().flatMap((b) => {
   // ── Tombstones for sessions this device previously synced but that no
   //    longer exist locally (deleted transcript file, cleared cache, etc).
   //    We only tombstone sessions we have a ledger record for — never data
-  //    from other devices.
-  if (ledger) {
+  //    from other devices. STRICTLY full-walk only: a changed-scope walk
+  //    lists only recent sessions, so "in ledger but not walked" means
+  //    "old and unchanged", NOT "deleted" — tombstoning there would wipe
+  //    every quiet session from the server.
+  if (ledger && !changedWalk) {
     const tombstones: Array<{ session_id: string; deleted_at: number }> = [];
     for (const [sessionId] of ledger) {
       if (!localSessionIds.has(sessionId)) {
@@ -1376,9 +1391,20 @@ function collectDerived(
  * Returns null when sync isn't configured (no credentials) — callers treat
  * that as "feature off", not an error.
  */
-export async function syncIncremental(): Promise<SyncResult | null> {
+/** Why an incremental sync tick did no work. Distinct outcomes because the
+ *  right reaction differs: 'lock-held' is routine writer election (be quiet),
+ *  'no-credentials'/'paused' are user-actionable. Historically all three were
+ *  a bare `null` and every skip logged as "not logged in" — thousands of
+ *  misleading lines in the watch log. */
+export interface SyncSkip { skipped: 'no-credentials' | 'paused' | 'lock-held' }
+
+export function isSyncSkip(r: SyncResult | SyncSkip): r is SyncSkip {
+  return typeof (r as SyncSkip).skipped === 'string';
+}
+
+export async function syncIncremental(opts: { scope?: 'full' | 'changed' } = {}): Promise<SyncResult | SyncSkip> {
   const cred = loadCredentials();
-  if (!cred) return null;
+  if (!cred) return { skipped: 'no-credentials' };
   let settings = loadSettings();
   // Master switch (settings.sync.enabled) — `chat-recall login` flips it on;
   // the user can turn background sync off without logging out. Legacy logins
@@ -1387,7 +1413,7 @@ export async function syncIncremental(): Promise<SyncResult | null> {
   // credentials is an explicit login) and migrate the settings once. An
   // endpoint WITH enabled=false means the user deliberately paused — respect it.
   if (!settings.sync.enabled) {
-    if (settings.sync.endpoint) return null; // user paused
+    if (settings.sync.endpoint) return { skipped: 'paused' }; // user paused
     settings.sync.enabled = true;
     settings.sync.endpoint = cred.serverUrl;
     saveSettings(settings);
@@ -1400,14 +1426,18 @@ export async function syncIncremental(): Promise<SyncResult | null> {
   // mid-sync ⇒ skip this tick. Nothing is lost (the per-session ledger +
   // watermark make ticks idempotent; the next tick picks up the rest).
   const lock = acquireIndexLock({ kind: 'sync-incremental', staleAfterMs: 10 * 60_000 });
-  if (!lock) return null;
+  if (!lock) return { skipped: 'lock-held' };
   try {
     const startedAt = Date.now();
-    // Per-session ledger replaces the global watermark for sessions: every
-    // tick walks ALL sessions and the ledger skips acked ones — so a session
-    // that failed once retries forever until it lands. The watermark is kept
-    // only to bound the non-session items walk.
-    const result = await syncSessions({ useLedger: true, sinceMs: settings.sync.lastSyncAt });
+    // Per-session ledger replaces the global watermark for sessions: a FULL
+    // walk lists ALL sessions and the ledger skips acked ones — so a session
+    // that failed once retries forever until it lands. scope:'changed'
+    // (file-change ticks from the watch daemon) bounds the listing to the
+    // recent-mtime window instead — a keystroke-burst tick walks a handful of
+    // refs, not 30k+ — while heartbeat/startup ticks stay 'full' so the
+    // retry-forever property holds. The watermark also bounds the
+    // non-session items walk in both scopes.
+    const result = await syncSessions({ useLedger: true, sinceMs: settings.sync.lastSyncAt, walk: opts.scope ?? 'full' });
     // Re-load before saving so we don't clobber settings written mid-sync.
     const fresh = loadSettings();
     fresh.sync.lastSyncAt = startedAt;
