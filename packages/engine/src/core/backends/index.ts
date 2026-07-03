@@ -13,6 +13,7 @@ import { claudeBackend, ClaudeBackend } from './claude.js';
 import { geminiBackend, GeminiBackend } from './gemini.js';
 import { opencodeBackend, OpencodeBackend } from './opencode.js';
 import { codexBackend, CodexBackend } from './codex.js';
+import { agyBackend, AgyBackend } from './agy.js';
 
 export function bootstrapBackends(): void {
   // Idempotent — registerBackend() calls Map.set, replacing if present, so
@@ -21,6 +22,7 @@ export function bootstrapBackends(): void {
   registerBackend(geminiBackend);
   registerBackend(opencodeBackend);
   registerBackend(codexBackend);
+  registerBackend(agyBackend);
 }
 
 // Defer registration to the first registry access (call time), not import
@@ -35,6 +37,7 @@ export {
   geminiBackend, GeminiBackend,
   opencodeBackend, OpencodeBackend,
   codexBackend, CodexBackend,
+  agyBackend, AgyBackend,
 };
 export {
   registerBackend,

@@ -14,7 +14,7 @@
  * adding a fifth tool needs zero edits in this file.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, statSync, openSync, readSync, closeSync } from 'fs';
 import { join, basename } from 'path';
 import { createHash } from 'crypto';
 import { hasSubagentsDir } from '../parsers/session.js';
@@ -34,7 +34,7 @@ import {
 // not at module-init time.
 import './backends/index.js';
 
-export type AiTool = 'claude' | 'gemini' | 'opencode' | 'codex';
+export type AiTool = 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy';
 
 // Path subdirs — defaults + env-var overrides come from `tool-paths.ts`
 // so backends and this dispatcher share a single source of truth.
@@ -220,14 +220,26 @@ export function findGeminiSessionFile(sessionIdOrFileBase: string): { path: stri
   return null;
 }
 
+/** Read only the first `bytes` of a file — session transcripts run into the
+ *  hundreds of MB, so anything that just needs the head must never
+ *  readFileSync the whole thing (that is what OOM-killed the watch daemon). */
+export function readHeadSync(path: string, bytes = 65536): string {
+  const fd = openSync(path, 'r');
+  try {
+    const buf = Buffer.alloc(bytes);
+    const n = readSync(fd, buf, 0, buf.length, 0);
+    return buf.toString('utf-8', 0, n);
+  } finally { closeSync(fd); }
+}
+
 /** Pull the sessionId out of either format without reading the whole file. */
 function readGeminiSessionIdFromFile(path: string, format: 'json' | 'jsonl'): string | null {
   if (format === 'json') {
     try { return JSON.parse(readFileSync(path, 'utf-8'))?.sessionId ?? null; } catch { return null; }
   }
-  // .jsonl — only the first line carries sessionId.
+  // .jsonl — only the first line (metadata) carries sessionId.
   try {
-    const head = readFileSync(path, 'utf-8').split('\n', 1)[0] || '';
+    const head = readHeadSync(path).split('\n', 1)[0] || '';
     return JSON.parse(head)?.sessionId ?? null;
   } catch { return null; }
 }
@@ -242,6 +254,13 @@ interface GeminiMessage {
   thoughts?: unknown;
   model?: string;
 }
+
+/** Largest single JSONL event line the parsers will JSON.parse. Real chat
+ *  messages top out in the KBs; batch/bot runs have been observed logging a
+ *  349MB single line (an entire transcript embedded in one message —
+ *  session-2026-05-20T16-02-faa2393f), and JSON.parse of that alone needs
+ *  >1GB of heap. Lines over this budget are skipped, not parsed. */
+export const MAX_EVENT_LINE_BYTES = 8 * 1024 * 1024;
 
 /** Yield messages from either `.json` (single blob) or `.jsonl` (line per event). */
 export function readGeminiMessages(path: string, format: 'json' | 'jsonl'): GeminiMessage[] {
@@ -260,6 +279,7 @@ export function readGeminiMessages(path: string, format: 'json' | 'jsonl'): Gemi
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue;
     if (isFirst) { isFirst = false; continue; } // metadata header
+    if (line.length > MAX_EVENT_LINE_BYTES) continue; // see constant's doc — skip, don't die
     let obj: GeminiMessage;
     try { obj = JSON.parse(line); } catch { continue; }
     if (!obj || typeof obj !== 'object') continue;

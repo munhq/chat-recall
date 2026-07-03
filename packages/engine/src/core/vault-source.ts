@@ -24,9 +24,10 @@ import { extname, join } from 'path';
 import { claudeBackend } from './backends/claude.js';
 import { geminiBackend } from './backends/gemini.js';
 import { codexBackend } from './backends/codex.js';
+import { agyBackend } from './backends/agy.js';
 import { loadSettings } from './settings.js';
 
-export type VaultTool = 'claude' | 'gemini' | 'codex' | 'opencode' | 'cursor';
+export type VaultTool = 'claude' | 'gemini' | 'codex' | 'opencode' | 'cursor' | 'agy';
 
 export interface VaultSourceFile {
   /** chat-recall-style session id (`<uuid>` for claude, `gemini_<uuid>`, `codex_<basename>`). */
@@ -50,6 +51,7 @@ export function* walkVaultSources(): Generator<VaultSourceFile> {
   if (include.has('claude')   && claudeBackend.isAvailable()) yield* walkClaude();
   if (include.has('gemini')   && geminiBackend.isAvailable()) yield* walkGemini();
   if (include.has('codex')    && codexBackend.isAvailable())  yield* walkCodex();
+  if (include.has('agy')      && agyBackend.isAvailable())    yield* walkAgy();
   // opencode + cursor (SQLite-based) are tier C — handled by a separate
   // module that snapshots the SQLite via the online backup API and
   // synthesizes JSONL per session. Stub here so the discovery path is
@@ -132,5 +134,33 @@ function* walkCodex(): Generator<VaultSourceFile> {
       const base = e.name.replace(/\.jsonl$/, '');
       yield { sessionId: `codex_${base}`, tool: 'codex', path, mtimeMs: s.mtimeMs, sizeBytes: s.size };
     }
+  }
+}
+
+function* walkAgy(): Generator<VaultSourceFile> {
+  const brainDir = join(agyBackend.homeDir(), 'brain');
+  if (!existsSync(brainDir)) return;
+  let sessionDirs: string[] = [];
+  try { sessionDirs = readdirSync(brainDir); } catch { return; }
+
+  for (const rawId of sessionDirs) {
+    const sessionPath = join(brainDir, rawId);
+    try {
+      if (!statSync(sessionPath).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+
+    let filePath = join(sessionPath, '.system_generated', 'logs', 'transcript.jsonl');
+    if (!existsSync(filePath)) {
+      filePath = join(sessionPath, '.system_generated', 'logs', 'transcript_full.jsonl');
+    }
+    if (!existsSync(filePath)) continue;
+
+    const s = safeStat(filePath);
+    if (!s) continue;
+
+    const sessionId = `agy_${rawId}`;
+    yield { sessionId, tool: 'agy', path: filePath, mtimeMs: s.mtimeMs, sizeBytes: s.size };
   }
 }

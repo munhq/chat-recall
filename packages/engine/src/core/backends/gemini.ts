@@ -36,6 +36,7 @@ import type { EditOp, SessionEdit } from '../live-session-scan.js';
 import {
   findGeminiSessionFile,
   readGeminiMessages,
+  readHeadSync,
 } from '../live-session-scan.js';
 import { computeOutcome } from '../session-outcome.js';
 import { getSessionCommits } from '../session-git.js';
@@ -47,6 +48,11 @@ import {
 import { readTailFromOffset } from './tail-read.js';
 
 const PREFIX = 'gemini_';
+
+// Largest transcript listSessions may parse whole. Beyond this, only a
+// bounded head is read — real ~/.gemini/tmp dirs carry 100-350MB session
+// files, and full-parsing those on every discovery tick OOMed the daemon.
+const FULL_PARSE_MAX = 4 * 1024 * 1024;
 
 export class GeminiBackend implements ToolBackend {
   readonly id = 'gemini' as const;
@@ -118,10 +124,38 @@ export class GeminiBackend implements ToolBackend {
         if (stat.mtimeMs < cutoff) continue;
 
         const format: 'json' | 'jsonl' = f.endsWith('.jsonl') ? 'jsonl' : 'json';
-        const innerId = readSessionId(fullPath, format) || basename(f).replace(/\.jsonl?$/, '');
-        const messages = readGeminiMessages(fullPath, format);
-        const firstUser = messages.find((m: { type?: string; text?: string; content?: unknown }) => m.type === 'user');
-        const firstPrompt = (typeof firstUser?.text === 'string' ? firstUser.text : flatten(firstUser?.content)).slice(0, 200);
+        let sessionId: string | null = null;
+        let firstPrompt = '';
+        let messageCount = 0;
+        if (stat.size <= FULL_PARSE_MAX) {
+          sessionId = readSessionId(fullPath, format);
+          const messages = readGeminiMessages(fullPath, format);
+          const firstUser = messages.find((m: { type?: string; text?: string; content?: unknown }) => m.type === 'user');
+          firstPrompt = (typeof firstUser?.text === 'string' ? firstUser.text : flatten(firstUser?.content)).slice(0, 200);
+          messageCount = messages.length;
+        } else if (format === 'jsonl') {
+          // Transcripts run into the hundreds of MB; parsing them whole here
+          // is what OOM-killed the watch daemon (listSessions runs on every
+          // discovery tick). Take id + first prompt from a bounded head and
+          // leave messageCount 0 — same trade the Claude direct walk makes.
+          const lines = readHeadSync(fullPath, 1_048_576).split('\n');
+          try {
+            const meta = JSON.parse(lines[0] || '');
+            if (typeof meta?.sessionId === 'string') sessionId = meta.sessionId;
+          } catch { /* malformed metadata line */ }
+          for (const line of lines.slice(1, -1)) { // last line may be truncated
+            const s = line.trim();
+            if (!s) continue;
+            let m: { type?: string; text?: string; content?: unknown };
+            try { m = JSON.parse(s); } catch { continue; }
+            if (m?.type !== 'user') continue;
+            firstPrompt = (typeof m.text === 'string' ? m.text : flatten(m.content)).slice(0, 200);
+            break;
+          }
+        }
+        // Oversized legacy `.json` blobs can't be partially parsed — list them
+        // from the stat alone (basename id, no preview).
+        const innerId = sessionId || basename(f).replace(/\.jsonl?$/, '');
 
         out.push({
           toolId: 'gemini',
@@ -134,7 +168,7 @@ export class GeminiBackend implements ToolBackend {
           modified: stat.mtime.toISOString(),
           mtime: stat.mtimeMs,
           firstPrompt,
-          messageCount: messages.length,
+          messageCount,
         });
       }
     }
@@ -382,7 +416,7 @@ function readSessionId(path: string, format: 'json' | 'jsonl'): string | null {
       const json = JSON.parse(readFileSync(path, 'utf-8'));
       return typeof json?.sessionId === 'string' ? json.sessionId : null;
     }
-    const head = readFileSync(path, 'utf-8').split('\n', 1)[0] || '';
+    const head = readHeadSync(path).split('\n', 1)[0] || '';
     const meta = JSON.parse(head);
     return typeof meta?.sessionId === 'string' ? meta.sessionId : null;
   } catch { return null; }
