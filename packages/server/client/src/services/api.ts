@@ -528,6 +528,26 @@ export async function getSyncStatus(): Promise<SyncStatus> {
   return await res.json();
 }
 
+/** Tenant-wide sync exclusions — edited here, pulled by every device's sync
+ *  client and UNIONED with its local rules (server config only adds). */
+export interface TenantSyncConfig { excludeTools: string[]; excludeProjects: string[] }
+
+export async function getSyncConfig(): Promise<TenantSyncConfig> {
+  const res = await fetchWithTimeout(`${API_BASE}/sync-config`);
+  if (!res.ok) throw new Error(`Failed to get sync config: ${res.statusText}`);
+  return await res.json();
+}
+
+export async function saveSyncConfig(cfg: TenantSyncConfig): Promise<TenantSyncConfig> {
+  const res = await fetchWithTimeout(`${API_BASE}/sync-config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(cfg),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `Failed to save sync config: ${res.statusText}`);
+  return await res.json();
+}
+
 export function subscribeToStatus(
   onUpdate: (stats: IndexStats) => void,
   onError?: (error: Error) => void
@@ -610,7 +630,7 @@ export interface AnalyticsData {
   };
 }
 
-export async function getAnalytics(tool?: 'all' | 'claude' | 'gemini' | 'opencode' | 'codex'): Promise<AnalyticsData> {
+export async function getAnalytics(tool?: 'all' | 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy'): Promise<AnalyticsData> {
   const url = tool && tool !== 'all'
     ? `${API_BASE}/analytics?tool=${encodeURIComponent(tool)}`
     : `${API_BASE}/analytics`;
@@ -972,6 +992,7 @@ export interface SourcesEnabled {
   gemini:   { sessions: boolean; plans: boolean; brain: boolean; extensions: boolean };
   opencode: { sessions: boolean; plans: boolean; todos: boolean; skills: boolean };
   codex:    { sessions: boolean; plugins: boolean; skills: boolean };
+  agy:      { sessions: boolean; plans: boolean };
   common:   { mcps: boolean; agentMd: boolean };
 }
 
@@ -979,6 +1000,7 @@ export interface SourceSettings {
   claudeHome?: string;
   geminiHome?: string;
   codexHome?: string;
+  agyHome?: string;
   opencodeDbPath?: string;
   extraClaudeHomes?: string[];
   enabled: SourcesEnabled;
@@ -1010,7 +1032,7 @@ export interface SyncSettings {
     dismissals: boolean;
     customRules: boolean;
   };
-  excludeTools: Array<'claude' | 'gemini' | 'opencode' | 'codex'>;
+  excludeTools: Array<'claude' | 'gemini' | 'opencode' | 'codex' | 'agy'>;
   excludeProjects: string[];
   excludePreviewPatterns?: string[];
 }
@@ -1141,7 +1163,7 @@ export async function getToolkitStatus(): Promise<ToolkitStatus> {
 
 export async function browseToolkit(
   type: ToolkitType,
-  opts: { limit?: number; offset?: number; tool?: 'all' | 'claude' | 'gemini' | 'opencode' | 'codex' } = {},
+  opts: { limit?: number; offset?: number; tool?: 'all' | 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy' } = {},
 ): Promise<MemoryMetadataRow[]> {
   const params = new URLSearchParams();
   if (opts.limit !== undefined) params.append('limit', String(opts.limit));
@@ -1309,7 +1331,7 @@ export async function removeToolkitItem(
 // --- Edits timeline / live session files ---
 
 export type EditOp = 'edit' | 'write' | 'multi_edit' | 'notebook_edit' | 'read';
-export type AiTool = 'claude' | 'gemini' | 'opencode' | 'codex';
+export type AiTool = 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy';
 
 export interface EditRow {
   ts: number;
