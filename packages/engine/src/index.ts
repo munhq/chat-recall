@@ -77,6 +77,7 @@ export {
   fingerprintFile,
   type CachedOutcome,
   type CachedOutcomeStatus,
+  type OutcomeDaySummary,
 } from './core/outcome-cache.js';
 
 // Live transcript scanning (for the active session and anything not yet re-indexed)

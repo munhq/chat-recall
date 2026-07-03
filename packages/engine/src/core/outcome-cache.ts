@@ -47,6 +47,18 @@ export type CachedOutcomeStatus =
   | 'abandoned'
   | 'unknown';
 
+/** One (day, status) cell of the activity rollup — see summarizeByDay(). */
+export interface OutcomeDaySummary {
+  /** YYYY-MM-DD (UTC) of the session file mtime. */
+  day: string;
+  status: CachedOutcomeStatus;
+  sessions: number;
+  files: number;
+  linesAdded: number;
+  linesRemoved: number;
+  commits: number;
+}
+
 export interface CachedOutcome {
   sessionId: string;
   tool: string;
@@ -132,6 +144,26 @@ export class OutcomeCache {
       WHERE session_id = ?
     `).get(sessionId) as CacheRow | undefined;
     return row ? rowToCached(row) : null;
+  }
+
+  /**
+   * Per-day, per-status activity rollup since `sinceMs` (session file mtime,
+   * not classification time — "when the work happened"). Powers the
+   * dashboard's what-happened-this-week strip.
+   */
+  summarizeByDay(sinceMs: number): OutcomeDaySummary[] {
+    return this.db.prepare(`
+      SELECT date(file_mtime/1000, 'unixepoch') AS day, status,
+             COUNT(*)          AS sessions,
+             SUM(file_count)   AS files,
+             SUM(lines_added)  AS lines_added,
+             SUM(lines_removed) AS lines_removed,
+             SUM(commits)      AS commits
+        FROM session_outcome_cache
+       WHERE file_mtime > ?
+       GROUP BY 1, 2
+       ORDER BY 1
+    `).all(sinceMs).map(rowToDaySummary);
   }
 
   /** Bulk lookup — single SQL query, returned as a Map for O(1) callsite use. */
@@ -303,6 +335,18 @@ interface CacheRow {
   is_full: number;
   classified_at: number;
   last_scanned_offset: number;
+}
+
+function rowToDaySummary(r: any): OutcomeDaySummary {
+  return {
+    day: r.day,
+    status: r.status as CachedOutcomeStatus,
+    sessions: Number(r.sessions) || 0,
+    files: Number(r.files) || 0,
+    linesAdded: Number(r.lines_added) || 0,
+    linesRemoved: Number(r.lines_removed) || 0,
+    commits: Number(r.commits) || 0,
+  };
 }
 
 function rowToCached(r: CacheRow): CachedOutcome {
