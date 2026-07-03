@@ -11,11 +11,17 @@
  */
 
 import express from 'express';
-import { createStore, createOutcomeCache, buildRecommendations } from '../imports.js';
+import { gunzipSync } from 'zlib';
+import { createStore, buildRecommendations, createOutcomeCache, cachedRecentEdits, detectTool } from '../imports.js';
 import type {
   CodeProjectInput, CodeFindingInput, CodeHotspotInput, CodeActionInput,
-  CodeProjectLabel, CodeActionStatus, CodeSeverity, BehaviorSignal,
+  CodeProjectLabel, CodeActionStatus, CodeSeverity, BehaviorSignal, SourceType,
 } from '@chat-recall/engine';
+import { openPgPoolRo, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
+import { hydrateSessions } from '../services/sessions.js';
+import type { SessionIndexEntry } from '../services/sessions.js';
+import { isServerMode } from '../util/mode.js';
+import { TenantTtlCache } from '../util/tenant-cache.js';
 
 const router = express.Router();
 
@@ -108,6 +114,108 @@ router.get('/hotspots', async (req, res) => {
   try { res.json({ hotspots: await store.listCodeHotspots(projectId, limit) }); }
   catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : 'failed' }); }
   finally { await store.close(); }
+});
+
+// GET /api/code/file-sessions?project=<projectId>&file=<repo-relative path>
+//
+// The behaviour×code correlation: which sessions actually touched this file.
+// Turns a hotspot/finding from a bare assertion into a navigable cause —
+// each returned session carries its outcome + title, and the UI links
+// through to the conversation.
+//
+// Matching: hotspots/findings store repo-relative paths; the synced diff
+// rows (compute_cache[kind='diff']) store the session's absolute local
+// paths. A session matches when any edited path ends with "/<file>" (or
+// equals it). Scoped to the project's own sessions first, so the payload
+// pass touches a few hundred rows, not the tenant's whole cache.
+const fileSessionsCache = new TenantTtlCache<{ sessions: unknown[] }>(60_000, 128);
+
+/** Does this diff payload (json or gz) contain an edit to `file`? */
+function diffTouchesFile(payloadJson: string | null, payloadGz: Buffer | null, file: string): boolean {
+  let raw = payloadJson;
+  if (!raw && payloadGz) {
+    try { raw = gunzipSync(payloadGz).toString('utf-8'); } catch { return false; }
+  }
+  if (!raw) return false;
+  // Cheap reject before JSON.parse — the path must at least appear as a substring.
+  if (!raw.includes(file)) return false;
+  try {
+    const diff = JSON.parse(raw) as { files?: Array<{ file?: string }> };
+    return (diff.files ?? []).some((f) => typeof f.file === 'string' && (f.file === file || f.file.endsWith('/' + file)));
+  } catch { return false; }
+}
+
+router.get('/file-sessions', async (req, res) => {
+  const projectId = typeof req.query.project === 'string' ? req.query.project : '';
+  const file = typeof req.query.file === 'string' ? req.query.file.trim() : '';
+  if (!projectId || !file) return res.status(400).json({ error: 'project and file are required' });
+  const limit = Math.max(1, Math.min(parseInt(String(req.query.limit)) || 8, 25));
+
+  const cacheKey = `${projectId}|${file}|${limit}`;
+  const hit = fileSessionsCache.get(cacheKey);
+  if (hit) return res.json(hit);
+
+  const store = await createStore();
+  try {
+    // The project's sessions, newest first — the candidate set.
+    const rows = await store.listItemsByProjectId('session' as SourceType, projectId, 500);
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const matched: string[] = [];
+
+    if (isServerMode() && byId.size > 0) {
+      // Synced diff rows, one batched read for the whole candidate set.
+      const tenant = (req as { tenant?: string }).tenant || 'default';
+      const pool = await openPgPoolRo();
+      const cc = (await tenantQuery(
+        pool, tenant,
+        `SELECT session_id, payload_json, payload_gz FROM compute_cache
+          WHERE tenant=$1 AND kind='diff' AND session_id = ANY($2)`,
+        [tenant, [...byId.keys()]],
+      )).rows as Array<{ session_id: string; payload_json: string | null; payload_gz: Buffer | null }>;
+      for (const r of cc) {
+        if (diffTouchesFile(r.payload_json, r.payload_gz, file)) matched.push(r.session_id);
+      }
+    } else {
+      // Local mode: the cached timeline reads the same diff rows from the
+      // local cache.db and live-scans the active session.
+      const edits = await cachedRecentEdits({
+        sinceMs: Date.now() - 180 * 86_400_000,
+        pattern: file,
+        liveFallback: true,
+      });
+      const seen = new Set<string>();
+      for (const e of edits) {
+        if (!(e.file === file || e.file.endsWith('/' + file))) continue;
+        if (byId.size > 0 && !byId.has(e.sessionId)) continue;
+        if (!seen.has(e.sessionId)) { seen.add(e.sessionId); matched.push(e.sessionId); }
+      }
+    }
+
+    // Newest first, then hydrate the top slice (titles + outcomes).
+    matched.sort((a, b) => (byId.get(b)?.mtime ?? 0) - (byId.get(a)?.mtime ?? 0));
+    const entries: SessionIndexEntry[] = matched.slice(0, limit).map((id) => {
+      const m = byId.get(id);
+      let extra: Record<string, unknown> = {};
+      try { extra = m?.extra_json ? JSON.parse(m.extra_json) : {}; } catch { /* tool falls back */ }
+      return {
+        sessionId: id,
+        projectPath: m?.project_path || '',
+        projectId: m?.project_id || projectId,
+        mtime: m?.mtime || 0,
+        tool: (extra.tool as SessionIndexEntry['tool']) || detectTool(id) as SessionIndexEntry['tool'],
+        filePath: m?.file_path || undefined,
+        preIndexedFirstPrompt: m?.content_preview || undefined,
+      };
+    });
+    const sessions = await hydrateSessions(entries);
+    const body = { file, project: projectId, total: matched.length, sessions };
+    fileSessionsCache.set(cacheKey, body);
+    res.json(body);
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : 'failed' });
+  } finally {
+    await store.close();
+  }
 });
 
 // GET /api/code/actions?project=&status=&queued=&limit=

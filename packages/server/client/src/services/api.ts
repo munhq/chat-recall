@@ -490,6 +490,18 @@ export interface OutcomeDayRow {
   commits: number;
 }
 
+/** Sessions that actually edited a repo file (behaviour×code correlation).
+ *  `file` is the repo-relative path a finding/hotspot carries. */
+export async function getFileSessions(project: string, file: string, limit = 8): Promise<{ total: number; sessions: SessionInfo[] }> {
+  const res = await fetchWithTimeout(`${API_BASE}/code/file-sessions?project=${encodeURIComponent(project)}&file=${encodeURIComponent(file)}&limit=${limit}`);
+
+  if (!res.ok) {
+    throw new Error(`Failed to get file sessions: ${res.statusText}`);
+  }
+
+  return await res.json();
+}
+
 export async function getOutcomeSummary(days = 7): Promise<{ days: number; rows: OutcomeDayRow[] }> {
   const res = await fetchWithTimeout(`${API_BASE}/conversations/outcome-summary?days=${days}`);
 

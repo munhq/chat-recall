@@ -89,7 +89,7 @@ export default function ProjectWorkspace({
       </div>
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
         {lens === 'overview' && <MissionControl canonicalId={canonicalId} kgEntity={kgEntity} toolFilter={toolFilter} code={code} onJump={setLens} onOpenSession={openInline} />}
-        {lens === 'code' && <CodeExplorer projectFilter={canonicalId} embedded />}
+        {lens === 'code' && <CodeExplorer projectFilter={canonicalId} embedded onSessionClick={openInline} />}
         {lens === 'conversations' && <ConversationsLens projectId={canonicalId} toolFilter={toolFilter} conv={conv} />}
         {lens === 'activity' && <ProjectActivity projectId={canonicalId} toolFilter={toolFilter} onOpenSession={openInline} />}
         {lens === 'knowledge' && <KnowledgeGraph entity={kgEntity} embedded />}

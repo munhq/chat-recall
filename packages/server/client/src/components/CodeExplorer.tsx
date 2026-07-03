@@ -18,8 +18,8 @@ import ForceGraph from './ForceGraph';
 import {
   getCodeProjects, getCodeProject, getCodeSummary, getCodeFindings, getCodeHotspots,
   getCodeActions, patchCodeAction, patchCodeProjectLabel,
-  getCodeRecommendations, applyCodeRecommendation, writeTasksToProject,
-  type CodeProject, type CodeFinding, type CodeHotspot, type CodeAction, type CodeFindingsSummary, type CodeRecommendation, type CodeCouplingMetric,
+  getCodeRecommendations, applyCodeRecommendation, writeTasksToProject, getFileSessions,
+  type CodeProject, type CodeFinding, type CodeHotspot, type CodeAction, type CodeFindingsSummary, type CodeRecommendation, type CodeCouplingMetric, type SessionInfo,
 } from '../services/api';
 
 type Tab = 'recs' | 'overview' | 'plan' | 'security' | 'quality' | 'structure' | 'integrity' | 'hotspots' | 'map';
@@ -38,7 +38,7 @@ export function hotspotPrompt(h: CodeHotspot): string {
   return `${h.file} is a hotspot — changed ${h.churn}× with complexity ${h.complexity}.${h.aiAuthored ? ' AI-authored & high-risk — review carefully.' : ''}\nRun codeindex get_change_impact on it first, add tests for its critical paths, then propose targeted refactors to reduce complexity. Show a plan + the first diff.`;
 }
 
-export default function CodeExplorer({ projectFilter, embedded }: { projectFilter?: string | null; embedded?: boolean }) {
+export default function CodeExplorer({ projectFilter, embedded, onSessionClick }: { projectFilter?: string | null; embedded?: boolean; onSessionClick?: (sessionId: string) => void }) {
   const [projects, setProjects] = useState<CodeProject[]>([]);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [project, setProject] = useState<CodeProject | null>(null);
@@ -237,7 +237,8 @@ export default function CodeExplorer({ projectFilter, embedded }: { projectFilte
       {tab === 'map' && <DependencyMap map={project?.map} />}
 
       {drawer && (
-        <Drawer content={drawer} onClose={() => setDrawer(null)} onAddTask={addToTasks} onDone={markDone} />
+        <Drawer content={drawer} onClose={() => setDrawer(null)} onAddTask={addToTasks} onDone={markDone}
+          projectId={projectId} onSessionClick={onSessionClick} />
       )}
       {tasksOpen && (
         <TasksDrawer
@@ -443,7 +444,7 @@ export function DependencyMap({ map }: { map?: CodeProject['map'] }) {
 }
 
 // ── Drawers ───────────────────────────────────────────────────────────────
-export function Drawer({ content, onClose, onAddTask, onDone }: { content: DrawerContent; onClose: () => void; onAddTask: () => void; onDone: () => void }) {
+export function Drawer({ content, onClose, onAddTask, onDone, projectId, onSessionClick }: { content: DrawerContent; onClose: () => void; onAddTask: () => void; onDone: () => void; projectId?: string | null; onSessionClick?: (sessionId: string) => void }) {
   const [copied, setCopied] = useState(false);
   const [added, setAdded] = useState(false);
   useEffect(() => {
@@ -473,8 +474,80 @@ export function Drawer({ content, onClose, onAddTask, onDone }: { content: Drawe
           {content.actionId && <Button variant="ghost" onClick={onDone}>Mark done</Button>}
         </div>
         <div style={{ color: 'var(--cr-fg-3)', fontSize: 11, marginTop: 10 }}>Paste into Claude Code / your agent. It references codeindex tools so the agent verifies before editing.</div>
+        {content.loc && projectId && (
+          <FileSessionHistory projectId={projectId} file={content.loc} onSessionClick={onSessionClick} />
+        )}
       </div>
     </>
+  );
+}
+
+/**
+ * Behaviour×code correlation panel: the sessions that actually edited this
+ * file, each with its outcome — the "why is this file like this" trail.
+ * Clicking a session jumps to the conversation.
+ */
+const HIST_STATUS_COLOR: Record<string, string> = {
+  shipped: 'var(--cr-ok-500)', abandoned: 'var(--cr-err-500)',
+  interrupted: 'var(--cr-warn-500)', in_progress: 'var(--cr-info-500)',
+};
+function FileSessionHistory({ projectId, file, onSessionClick }: { projectId: string; file: string; onSessionClick?: (sessionId: string) => void }) {
+  const [data, setData] = useState<{ total: number; sessions: SessionInfo[] } | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let on = true;
+    setData(null); setFailed(false);
+    getFileSessions(projectId, file)
+      .then((d) => { if (on) setData(d); })
+      .catch(() => { if (on) { setData({ total: 0, sessions: [] }); setFailed(true); } });
+    return () => { on = false; };
+  }, [projectId, file]);
+
+  const timeAgo = (iso: string): string => {
+    const d = Date.now() - new Date(iso).getTime();
+    const h = Math.floor(d / 3_600_000);
+    if (h < 1) return 'now';
+    if (h < 24) return `${h}h ago`;
+    const days = Math.floor(h / 24);
+    return days < 31 ? `${days}d ago` : `${Math.floor(days / 30)}mo ago`;
+  };
+
+  return (
+    <div data-testid="file-session-history" style={{ marginTop: 18, borderTop: '1px solid var(--cr-line-1)', paddingTop: 14 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--cr-fg-2)', marginBottom: 8 }}>
+        Who touched this file
+        {data && data.total > 0 && <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400 }}> · {data.total} session{data.total === 1 ? '' : 's'}</span>}
+      </div>
+      {data === null && <div style={{ color: 'var(--cr-fg-3)', fontSize: 12 }}>Looking up sessions…</div>}
+      {data !== null && failed && <div style={{ color: 'var(--cr-fg-3)', fontSize: 12 }}>Session history unavailable.</div>}
+      {data !== null && !failed && data.sessions.length === 0 && (
+        <div style={{ color: 'var(--cr-fg-3)', fontSize: 12 }}>No synced session edited this file — the change predates chat-recall or happened outside an AI session.</div>
+      )}
+      {data !== null && data.sessions.map((s) => {
+        const oc = s.outcome;
+        const color = oc ? (HIST_STATUS_COLOR[oc.status] || 'var(--cr-fg-3)') : 'var(--cr-fg-3)';
+        const label = oc && oc.status !== 'unknown' ? (oc.status === 'in_progress' ? 'in progress' : oc.status) : '';
+        const title = (s.userTitle || s.toolTitle || s.summary || s.firstPrompt || '(untitled session)').replace(/\s+/g, ' ').slice(0, 90);
+        return (
+          <button
+            key={s.sessionId}
+            data-testid="file-session-row"
+            onClick={() => onSessionClick?.(s.sessionId)}
+            title={oc ? `${label || 'session'} · ${oc.files} file(s) +${oc.linesAdded} −${oc.linesRemoved}${oc.commits ? ` · ${oc.commits} commit(s)` : ''} — click to open the conversation` : 'Click to open the conversation'}
+            style={{
+              display: 'flex', alignItems: 'baseline', gap: 8, width: '100%', textAlign: 'left',
+              background: 'none', border: 'none', padding: '5px 0', cursor: onSessionClick ? 'pointer' : 'default',
+              borderBottom: '1px solid var(--cr-line-1)', fontSize: 12, color: 'var(--cr-fg-2)',
+            }}
+          >
+            <span aria-hidden style={{ width: 7, height: 7, borderRadius: '50%', background: color, flexShrink: 0, alignSelf: 'center' }} />
+            {label && <span style={{ color, flexShrink: 0, fontWeight: 600 }}>{label}</span>}
+            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>{title}</span>
+            <span className="mono" style={{ color: 'var(--cr-fg-3)', flexShrink: 0, fontSize: 11 }}>{timeAgo(s.modified)}</span>
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
