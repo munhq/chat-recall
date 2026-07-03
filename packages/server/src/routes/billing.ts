@@ -28,7 +28,7 @@ import express from 'express';
 import type Stripe from 'stripe';
 import { createControlPlane, type EntitlementStatus } from '../imports.js';
 import { requireUser } from '../middleware/auth.js';
-import { billingEnabled } from '../util/billing.js';
+import { billingEnabled, openBeta } from '../util/billing.js';
 
 const router = express.Router();
 
@@ -302,6 +302,7 @@ router.get('/', async (req, res) => {
     const ent = await cp.getEntitlement(tenant);
     res.json({
       billingEnabled: billingEnabled(),
+      openBeta: openBeta(),
       tenant,
       status: ent?.status ?? 'none',
       plan: ent?.plan ?? null,
@@ -355,15 +356,16 @@ router.post('/portal', async (req, res) => {
 router.get('/plan', async (_req, res) => {
   const priceId = process.env.STRIPE_PRICE_ID;
   const trialDays = Number(process.env.STRIPE_TRIAL_DAYS) || 14;
-  if (!billingEnabled() || !priceId) return res.json({ configured: false, trialDays });
+  if (!billingEnabled() || !priceId) return res.json({ configured: false, trialDays, openBeta: openBeta() });
   try {
     const stripe = await getStripe();
-    if (!stripe) return res.json({ configured: false, trialDays });
+    if (!stripe) return res.json({ configured: false, trialDays, openBeta: openBeta() });
     const price = await stripe.prices.retrieve(priceId, { expand: ['product'] });
     const product = price.product as Stripe.Product | undefined;
     res.json({
       configured: true,
       trialDays,
+      openBeta: openBeta(),
       amount: price.unit_amount,
       currency: price.currency,
       interval: price.recurring?.interval ?? null,
@@ -371,7 +373,7 @@ router.get('/plan', async (_req, res) => {
     });
   } catch (err) {
     // Don't leak Stripe errors to a public endpoint; degrade to unconfigured.
-    res.json({ configured: false, trialDays, error: (err as Error).message });
+    res.json({ configured: false, trialDays, openBeta: openBeta(), error: (err as Error).message });
   }
 });
 
