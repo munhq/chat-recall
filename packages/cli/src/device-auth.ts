@@ -77,7 +77,11 @@ export async function deviceLogin(
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        grant_type: 'urn:ietf:params:oauth:device_code',
+        // RFC 8628 §3.4 — the exact URN matters: 'grant-type' is part of it.
+        // The truncated 'urn:ietf:params:oauth:device_code' made Keycloak
+        // reject every poll with unsupported_grant_type (found by the first
+        // real new-user onboarding test, 2026-07-03).
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
         device_code: start.device_code,
         client_id: clientId,
         code_verifier: codeVerifier,
