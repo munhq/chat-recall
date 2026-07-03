@@ -19,6 +19,7 @@ import KnowledgeGraph from './components/KnowledgeGraph';
 import { SegmentedControl, Card } from './components/primitives';
 import SettingsPage from './components/SettingsPage';
 import AccountPage, { SubscribeScreen } from './components/AccountPage';
+import ConnectTokenPage from './components/ConnectTokenPage';
 import SecuritySummaryBanner from './components/SecuritySummaryBanner';
 import ProjectMainPane from './components/ProjectMainPane';
 import { SidebarExtrasProvider, useSidebarExtras } from './context/sidebar-extras';
@@ -41,7 +42,7 @@ import {
   type ProjectTreeApiNode,
 } from './services/api';
 
-type ViewMode = 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code' | 'settings' | 'account';
+type ViewMode = 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code' | 'settings' | 'account' | 'connect';
 
 /**
  * Recursive tree node used by the project sidebar. One node renders as
@@ -142,7 +143,7 @@ function renderSearchView(opts: {
 }
 
 /** Views that may be addressed via the ?view= deep link. */
-const URL_VIEWS = new Set<ViewMode>(['home', 'projects', 'search', 'activity', 'memory', 'security', 'code', 'toolkit', 'dashboard', 'account', 'settings']);
+const URL_VIEWS = new Set<ViewMode>(['home', 'projects', 'search', 'activity', 'memory', 'security', 'code', 'toolkit', 'dashboard', 'account', 'settings', 'connect']);
 
 /**
  * Initial view from the URL. Reading it during state init (not in an effect)
@@ -180,9 +181,10 @@ function AppInner() {
   useEffect(() => { void getCapabilities().then(setCapabilities); }, []);
   const enabledViews = useMemo<Set<ViewMode>>(() => {
     const f = capabilities?.features;
-    if (!f) return new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'dashboard', 'activity', 'security', 'code', 'settings']);
+    if (!f) return new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'dashboard', 'activity', 'security', 'code', 'settings', 'connect']);
     const out = new Set<ViewMode>();
-    out.add('home');   // command center is always available
+    out.add('home');    // command center is always available
+    out.add('connect'); // installer's token page — must never be capability-gated
     if (f.codeIntel || f.conversations) out.add('projects');  // the project workspace spine
     if (f.conversations) out.add('search');
     if (f.activity) out.add('activity');
@@ -721,6 +723,11 @@ function AppInner() {
     return <div className="app" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100dvh', color: 'var(--cr-fg-3)' }}>Loading…</div>;
   }
   if (gate === 'subscribe') return <SubscribeScreen />;
+
+  // The installer's token page renders chrome-free: the user is mid-command in
+  // a terminal — no sidebar, no tabs, just the token. (Auto-creates the
+  // workspace itself, so it must come after the entitlement gate only.)
+  if (view === 'connect') return <ConnectTokenPage />;
 
   return (
     <div

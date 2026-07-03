@@ -47,6 +47,25 @@ describe('GET /install.sh', () => {
     expect(res.text).toContain('set -eu');
   });
 
+  test('runs the full connect flow: token page URL → paste → login → sync', async () => {
+    const res = await request(app)
+      .get('/install.sh')
+      .set('x-forwarded-proto', 'https')
+      .set('x-forwarded-host', 'chat-recall.example.com');
+    // Skip the dance when this machine already holds a working credential.
+    expect(res.text).toContain('chat-recall login https://chat-recall.example.com --check');
+    // Fresh machine: point at the token page (?view=connect), suggesting the
+    // hostname as the device name...
+    expect(res.text).toContain('https://chat-recall.example.com/?view=connect&device=');
+    // ...read the pasted token from the TERMINAL, not the piped-in script...
+    expect(res.text).toContain('read TOKEN < /dev/tty');
+    // ...log in with it (login validates before saving) and run the first sync.
+    expect(res.text).toContain('chat-recall login https://chat-recall.example.com --token "$TOKEN"');
+    expect(res.text).toMatch(/^chat-recall sync/m);
+    // No stale "open the site and mint a token by hand" instructions.
+    expect(res.text).not.toMatch(/mint a device token/i);
+  });
+
   test('PUBLIC_URL overrides request-derived origin', async () => {
     process.env.PUBLIC_URL = 'https://override.example.com/';
     try {

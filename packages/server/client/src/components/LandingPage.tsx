@@ -42,9 +42,9 @@ export default function LandingPage({ onGetStarted }: { onGetStarted: () => void
           </span>
         </div>
         <div className="ln-install">
-          <div className="ln-install-cap">Get connected in three commands</div>
+          <div className="ln-install-cap">Get connected in one command</div>
           <InstallCommand text={installCmd} />
-          <div className="ln-install-note">then sign {beta ? 'up' : 'in'}, mint a device token, and <code>chat-recall sync</code></div>
+          <div className="ln-install-note">installs the CLI, opens your token page (sign {beta ? 'up' : 'in'} once), and syncs the moment you paste the token back</div>
         </div>
       </section>
 
