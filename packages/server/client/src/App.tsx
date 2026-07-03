@@ -181,7 +181,11 @@ function AppInner() {
   useEffect(() => { void getCapabilities().then(setCapabilities); }, []);
   const enabledViews = useMemo<Set<ViewMode>>(() => {
     const f = capabilities?.features;
-    if (!f) return new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'dashboard', 'activity', 'security', 'code', 'settings', 'connect']);
+    // Optimistic default while /api/capabilities is in flight — it must be a
+    // SUPERSET of every real deployment's views, or deep links to a missing
+    // entry get snapped to ?view=search before the server can answer
+    // ('account' was absent → ?view=account never worked as a link).
+    if (!f) return new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'dashboard', 'activity', 'security', 'code', 'settings', 'account', 'connect']);
     const out = new Set<ViewMode>();
     out.add('home');    // command center is always available
     out.add('connect'); // installer's token page — must never be capability-gated
