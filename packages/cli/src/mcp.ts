@@ -3023,23 +3023,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
  */
 const SYNC_TICK_MS = 3 * 60_000;
 function startBackgroundSync(): void {
-  const tick = async () => {
+  const tick = async (scope: 'full' | 'changed') => {
     try {
       // syncIncremental() takes the single sync lock itself (see docs/SYNC.md)
       // and no-ops if another writer holds it — so concurrent sessions' MCP
       // ticks (and any other caller) serialize on ONE writer. No outer lock
       // here: double-acquiring would make the inner call always skip.
       const { syncIncremental } = await import('./sync-client.js');
-      await syncIncremental();
+      await syncIncremental({ scope });
     } catch (err) {
       console.error('[mcp] background sync tick failed:', err instanceof Error ? err.message : err);
     }
   };
-  setInterval(() => { void tick(); }, SYNC_TICK_MS).unref();
-  setTimeout(() => { void tick(); }, 15_000).unref();
+  // Startup tick: FULL ledger walk — flushes whatever the previous session
+  // left behind, including sessions whose earlier sync failed. Interval
+  // ticks: 'changed' — bounded recent-mtime walk. A full walk lists ALL
+  // ~30k+ sessions; doing that every 3 minutes in EVERY session's MCP
+  // process was a main driver of multi-hundred-MB MCP RSS. Old failed
+  // sessions still converge via each new session's startup tick and the
+  // watch daemon's 15-min heartbeat.
+  setInterval(() => { void tick('changed'); }, SYNC_TICK_MS).unref();
+  setTimeout(() => { void tick('full'); }, 15_000).unref();
 }
 
 async function main() {
+  // NOTE on heap bounding: v8.setFlagsFromString('--max-old-space-size=…')
+  // does NOT take effect after startup (verified empirically on Node 23) —
+  // the cap must come from the spawner. `chat-recall init` writes
+  // NODE_OPTIONS into the MCP registration for exactly that reason; the
+  // in-process defense is the bounded 'changed' sync ticks above.
   const transport = new StdioServerTransport();
   await server.connect(transport);
   startBackgroundSync();
