@@ -61,8 +61,11 @@ async function parseMessagesFromFile(sessionPath: string): Promise<Message[]> {
       if (!line.trim()) continue;
       try {
         raw.push({ line: lineNumber, obj: JSON.parse(line) });
-      } catch (e) {
-        log.error({ err: e, line: lineNumber }, 'Error parsing line');
+      } catch {
+        // A live transcript's last line is routinely half-written — skipping
+        // it is normal operation, not an error. A stack trace here lands in a
+        // brand-new user's face on their first sync. Keep a quiet breadcrumb.
+        log.debug({ line: lineNumber, file: sessionPath }, 'skipped malformed transcript line');
       }
     }
   } finally {
