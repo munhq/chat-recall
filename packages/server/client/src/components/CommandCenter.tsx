@@ -13,7 +13,7 @@ import React, { useEffect, useState } from 'react';
 import { Card, Chip, Button, Icon, pressableProps } from './primitives';
 import ConnectMachine from './ConnectMachine';
 import {
-  getCodeProjects, getAccountRecommendations, applyAccountRecommendation, getSecretsSummary, getStatus, getOutcomeSummary,
+  getCodeProjects, getAccountRecommendations, applyAccountRecommendation, getSecretsSummary, getStatus, getSyncStatus, getOutcomeSummary,
   type CodeProject, type CodeRecommendation, type SecretsSummary, type OutcomeDayRow,
 } from '../services/api';
 
@@ -25,6 +25,29 @@ export default function CommandCenter({ setView, onOpenProject, cloud }: { setVi
   const [secrets, setSecrets] = useState<SecretsSummary | null>(null);
   const [status, setStatus] = useState<{ totalSessions?: number } | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Live sync ticker: while sessions are still arriving (a fresh machine
+  // backfilling its history), show the count climbing instead of a frozen
+  // number. Polls every 10s and goes quiet once two polls agree.
+  const [syncTick, setSyncTick] = useState<{ sessions: number; arriving: boolean } | null>(null);
+  useEffect(() => {
+    let on = true;
+    let last = -1;
+    let stable = 0;
+    const poll = async () => {
+      try {
+        const s = await getSyncStatus();
+        if (!on) return;
+        const arriving = s.sessions !== last;
+        stable = arriving ? 0 : stable + 1;
+        last = s.sessions;
+        setSyncTick({ sessions: s.sessions, arriving: stable < 2 });
+      } catch { /* transient — keep the last reading */ }
+    };
+    void poll();
+    const t = setInterval(poll, 10_000);
+    return () => { on = false; clearInterval(t); };
+  }, []);
 
   useEffect(() => {
     let on = true;
@@ -85,7 +108,11 @@ export default function CommandCenter({ setView, onOpenProject, cloud }: { setVi
         <Metric label="Critical findings" value={loading ? '—' : String(criticals)} tone={criticals > 0 ? 'err' : 'ok'} onClick={() => setView('projects')} />
         <Metric label="Hotspots" value={loading ? '—' : String(hotspots)} onClick={() => setView('projects')} />
         <Metric label="Leaked secrets" value={loading ? '—' : String(leaked)} tone={leaked > 0 ? 'err' : 'ok'} onClick={() => setView('security')} />
-        <Metric label="Sessions" value={status?.totalSessions != null ? String(status.totalSessions) : '—'} onClick={() => setView('search')} />
+        <Metric
+          label={syncTick?.arriving ? 'Sessions · syncing…' : 'Sessions'}
+          value={syncTick ? String(syncTick.sessions) : status?.totalSessions != null ? String(status.totalSessions) : '—'}
+          onClick={() => setView('search')}
+        />
       </div>
 
       <div className="cr-stack-mobile" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.3fr) minmax(0,1fr)', gap: 16, alignItems: 'start' }}>

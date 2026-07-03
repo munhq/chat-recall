@@ -278,7 +278,7 @@ export interface SessionIndexEntry {
   /** Logical cleartext project id, passed through to the hydrated SessionInfo. */
   projectId?: string;
   mtime: number;
-  tool: 'claude' | 'codex' | 'gemini' | 'opencode';
+  tool: 'claude' | 'codex' | 'gemini' | 'opencode' | 'agy';
   filePath?: string;
   /** Pre-computed when available (Claude sessions-index.json). Used to
    *  short-circuit hydration when the index already has it. */
@@ -374,8 +374,8 @@ export async function getSessionIndex(): Promise<SessionIndexEntry[]> {
       for (const item of items) {
         let extra: Record<string, unknown> = {};
         try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
-        const tool = extra.tool as 'gemini' | 'opencode' | undefined;
-        if (tool !== 'gemini' && tool !== 'opencode') continue;
+        const tool = extra.tool as 'gemini' | 'opencode' | 'agy' | undefined;
+        if (tool !== 'gemini' && tool !== 'opencode' && tool !== 'agy') continue;
         out.push({
           sessionId: item.id,
           projectPath: item.project_path || '',
@@ -568,19 +568,25 @@ export async function getSessionProjectCounts(): Promise<{ projects: Record<stri
     }
   } catch { /* codex dir missing or unreadable */ }
 
-  // 3. Gemini + OpenCode — already aggregated in MemoryStore as `session`
-  //    rows; query directly so we don't repeat the discovery walk.
+  // 3. Store rows. In LOCAL mode only gemini/opencode/agy live here (claude +
+  //    codex were counted from disk above — counting their rows again would
+  //    double-count). In SERVER mode the store is the ONLY source: branches
+  //    1–2 are disabled there, and synced Claude/Codex sessions are store rows
+  //    like everything else. Filtering them out on the server made
+  //    totalSessions read 0 with thousands synced — which kept the first-run
+  //    "connect your machine" hero up forever for a fully-synced user.
   try {
     const store = await createStore();
     try {
       // listItems pages — pass a generous cap that's larger than any
       // realistic local session count.
       const items = await store.listItems('session' as SourceType, 100_000, 0);
+      const serverMode = isServerMode();
       for (const item of items) {
         let extra: Record<string, unknown> = {};
         try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
         const tool = extra.tool as string | undefined;
-        if (tool !== 'gemini' && tool !== 'opencode') continue;
+        if (!serverMode && tool !== 'gemini' && tool !== 'opencode' && tool !== 'agy') continue;
         const p = item.project_path || '';
         if (p) projects[p] = (projects[p] || 0) + 1;
         total++;
