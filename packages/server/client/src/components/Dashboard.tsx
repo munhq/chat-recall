@@ -171,6 +171,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
           <div style={{ position: 'relative' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
               <h3>This week</h3>
+              <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>calendar week, Sun–Sat</span>
               {costDelta !== 0 && (
                 <Chip kind={costDelta > 0 ? 'warn' : 'ok'} icon={costDelta > 0 ? 'arrowUp' : 'arrowDown'}>
                   {Math.abs(costDelta)}% vs last week
@@ -653,8 +654,13 @@ function LegendDot({ color, label }: { color: string; label: string }) {
 // ── Improve your Claude: derive workflow signals + concrete CLAUDE.md tips ────
 function ImproveYourClaude({ data, secrets, syncStatus }: { data: AnalyticsData; secrets: SecretsSummary | null; syncStatus: SyncStatus | null }) {
   const lc = (s: string) => s.toLowerCase();
-  const CLEAN = ['shipped', 'success', 'completed', 'done', 'resolved'];
-  const BAD = ['interrupted', 'abandoned', 'failed', 'error', 'incomplete'];
+  // Match the real classifier statuses (shipped/abandoned/interrupted/
+  // completed) first; the legacy free-text words stay as a fallback for any
+  // pre-classifier rows. 'shipped' + 'completed' = clean; 'abandoned' +
+  // 'interrupted' = unresolved. 'unknown'/'in_progress' are excluded from
+  // the ratio (not yet a verdict), so completion reflects decided sessions.
+  const CLEAN = ['shipped', 'completed', 'success', 'done', 'resolved'];
+  const BAD = ['abandoned', 'interrupted', 'failed', 'error', 'incomplete'];
   const outcomes = data.outcomes || [];
   const clean = outcomes.filter((o) => CLEAN.some((r) => lc(o.reason).includes(r))).reduce((a, o) => a + o.count, 0);
   const bad = outcomes.filter((o) => BAD.some((r) => lc(o.reason).includes(r))).reduce((a, o) => a + o.count, 0);
@@ -682,10 +688,10 @@ function ImproveYourClaude({ data, secrets, syncStatus }: { data: AnalyticsData;
         <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>what your sessions reveal about your setup</span>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12, marginBottom: 16 }}>
-        <ImpSignal label="Completion" value={completion != null ? `${completion}%` : '—'} sub={classified ? `${clean}/${classified} clean` : 'no outcomes yet'} tone={completion == null ? 'neutral' : completion >= 70 ? 'ok' : 'err'} />
+        <ImpSignal label="Completion" value={completion != null ? `${completion}%` : '—'} sub={classified ? `${clean}/${classified} shipped vs abandoned` : 'no decided outcomes'} tone={completion == null ? 'neutral' : completion >= 70 ? 'ok' : 'err'} />
         <ImpSignal label="Context exhaustion" value={String(ctxHit)} sub="sessions near limit" tone={ctxHit >= 3 ? 'warn' : 'ok'} />
-        <ImpSignal label="Leaked secrets" value={String(leaked)} sub={secrets ? `${secrets.sessionsWithFindings} sessions` : '—'} tone={leaked > 0 ? 'err' : 'ok'} />
-        <ImpSignal label="Top model" value={topModel ? shortM(topModel.model) : '—'} sub={topModel ? usd(topModel.cost) : ''} tone="neutral" />
+        <ImpSignal label="Leaked secrets" value={String(leaked)} sub={secrets ? `across ${secrets.sessionsWithFindings} sessions` : '—'} tone={leaked > 0 ? 'err' : 'ok'} />
+        <ImpSignal label="Top model" value={topModel ? shortM(topModel.model) : '—'} sub={topModel ? `${usd(topModel.cost)} · all-time` : ''} tone="neutral" />
         <ImpSignal label="Synced" value={syncStatus ? String(syncStatus.sessions) : '—'} sub="sessions on server" tone="neutral" />
       </div>
       <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.14em', fontFamily: 'var(--cr-font-display)', marginBottom: 8 }}>Suggested CLAUDE.md additions</div>
