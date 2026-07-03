@@ -94,19 +94,32 @@ function lockFilePath(): string {
   return join(getIndexDir(), '.compact.lock');
 }
 
+/** Grace before stealing from a DEAD holder. Short on purpose: a dead PID
+ *  cannot still be working — the only thing the grace protects against is
+ *  PID-reuse racing right at creation. (MCP tick processes get killed by
+ *  their session's lifecycle mid-sync constantly; making everyone else wait
+ *  the full stale window behind a corpse starved syncs for 10-min bites.) */
+const DEAD_HOLDER_GRACE_MS = 30_000;
+
 function stealStaleLock(lockPath: string, staleAfterMs: number): boolean {
   try {
     const s = statSync(lockPath);
     const age = Date.now() - s.mtimeMs;
-    if (age < staleAfterMs) return false;
 
     let payload: { pid: number; kind: string; startedAt: number };
     try { payload = JSON.parse(readFileSync(lockPath, 'utf-8')); }
     catch { rmSync(lockPath, { force: true }); return true; }  // corrupt → take over
 
-    if (isProcessAlive(payload.pid)) return false;
+    if (isProcessAlive(payload.pid)) {
+      // A LIVE holder is only preempted after the full stale window — it may
+      // legitimately be grinding a huge transcript.
+      if (age < staleAfterMs) return false;
+      return false; // live holder never stolen; it owns the lock until it exits
+    }
 
-    // Stale + dead PID — take it over.
+    // Dead holder: steal after a short grace. Waiting the full stale window
+    // behind a process that can never finish is pure starvation.
+    if (age < DEAD_HOLDER_GRACE_MS) return false;
     rmSync(lockPath, { force: true });
     return true;
   } catch {
