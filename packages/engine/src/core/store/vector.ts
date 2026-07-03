@@ -306,13 +306,15 @@ export class PgVectorStore implements VectorStore {
     // Same ranking posture as searchFTS (pg.ts): subagent chunks are
     // keyword/semantics-dense internal expansions — demoted so they never
     // bury the user's own conversations; a small bounded recency bonus makes
-    // "when" a prior, not just a tiebreak.
+    // "when" a prior, not just a tiebreak. Age exponent clamped (LEAST(…, 60))
+    // for the same reason as searchFTS: Postgres RAISES underflow for exp() of
+    // a large negative, so one mtime=0 row would error every vector search.
     params.push(Date.now());
     const nowP = params.length;
     params.push(topK * 5);
     sql += ` ORDER BY (1/(1+(embedding <=> $2::vector)))
                       * (CASE WHEN chunk_type LIKE 'subagent%' THEN 0.55 ELSE 1.0 END)
-                      + 0.15 * exp(-GREATEST($${nowP}::double precision - COALESCE(mtime, 0), 0) / (14.0 * 86400000)) DESC
+                      + 0.15 * exp(-LEAST(GREATEST($${nowP}::double precision - COALESCE(mtime, 0), 0) / (14.0 * 86400000), 60)) DESC
              LIMIT $${params.length}`;
     const rows = await this.qRo(sql, params);
     // Group by item (best score wins), mirroring the FTS grouping.
