@@ -1962,6 +1962,8 @@ export interface MeInfo {
 }
 export interface Entitlement {
   billingEnabled: boolean;
+  /** Cloud pre-GA: everything free, no checkout — UI renders beta copy. */
+  openBeta?: boolean;
   tenant: string;
   status: 'active' | 'trialing' | 'past_due' | 'canceled' | 'none';
   plan: string | null;
@@ -1971,6 +1973,8 @@ export interface Entitlement {
 export interface PlanInfo {
   configured: boolean;
   trialDays: number;
+  /** Cloud pre-GA: free for everyone — landing renders beta copy, no card talk. */
+  openBeta?: boolean;
   amount?: number | null;
   currency?: string;
   interval?: string | null;

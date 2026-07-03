@@ -13,6 +13,8 @@ export default function LandingPage({ onGetStarted }: { onGetStarted: () => void
 
   const price = formatPrice(plan);
   const trialDays = plan?.trialDays ?? 14;
+  const beta = !!plan?.openBeta;
+  const installCmd = `curl -fsSL ${window.location.origin}/install.sh | sh`;
 
   return (
     <div className="cr-landing">
@@ -32,8 +34,17 @@ export default function LandingPage({ onGetStarted }: { onGetStarted: () => void
           then alerts you to rotate them. Plus full-text search and cost analytics across your entire AI history.
         </p>
         <div className="ln-cta-row">
-          <button className="ln-btn ln-btn-primary" onClick={onGetStarted}>Start your {trialDays}-day free trial →</button>
-          <span className="ln-cta-note">Card required · cancel anytime · no forever-free abuse</span>
+          <button className="ln-btn ln-btn-primary" onClick={onGetStarted}>
+            {beta ? 'Join the open beta — free →' : `Start your ${trialDays}-day free trial →`}
+          </button>
+          <span className="ln-cta-note">
+            {beta ? 'Free during the open beta · no card required' : 'Card required · cancel anytime · no forever-free abuse'}
+          </span>
+        </div>
+        <div className="ln-install">
+          <div className="ln-install-cap">Get connected in three commands</div>
+          <InstallCommand text={installCmd} />
+          <div className="ln-install-note">then sign {beta ? 'up' : 'in'}, mint a device token, and <code>chat-recall sync</code></div>
         </div>
       </section>
 
@@ -79,10 +90,10 @@ export default function LandingPage({ onGetStarted }: { onGetStarted: () => void
       </section>
 
       <section className="ln-pricing">
-        <h2>Simple pricing</h2>
+        <h2>{beta ? 'Open beta' : 'Simple pricing'}</h2>
         <div className="ln-price-card">
           <div className="ln-plan-name">{plan?.productName || 'chat-recall Pro'}</div>
-          <div className="ln-price">{price}</div>
+          <div className="ln-price">{beta ? 'Free' : price}</div>
           <ul className="ln-plan-list">
             <li>✓ Live verified secret-leak alerts (Discord / Slack)</li>
             <li>✓ Search across every AI session, plan &amp; task</li>
@@ -91,10 +102,12 @@ export default function LandingPage({ onGetStarted }: { onGetStarted: () => void
             <li>✓ Tenant-isolated, secrets never stored in cleartext</li>
           </ul>
           <button className="ln-btn ln-btn-primary ln-btn-block" onClick={onGetStarted}>
-            Start {trialDays}-day free trial
+            {beta ? 'Join the open beta' : `Start ${trialDays}-day free trial`}
           </button>
           <div className="ln-cta-note ln-center">
-            {plan && !plan.configured ? 'Pricing finalizing — start a trial to get in early.' : `Then ${price}. Cancel anytime.`}
+            {beta
+              ? 'Everything included while the beta runs. Pro pricing comes later — you get notice before anything is ever charged.'
+              : plan && !plan.configured ? 'Pricing finalizing — start a trial to get in early.' : `Then ${price}. Cancel anytime.`}
           </div>
         </div>
       </section>
@@ -104,6 +117,20 @@ export default function LandingPage({ onGetStarted }: { onGetStarted: () => void
         <span>·</span>
         <button className="ln-link" onClick={onGetStarted}>Sign in</button>
       </footer>
+    </div>
+  );
+}
+
+function InstallCommand({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="ln-install-row">
+      <pre className="ln-install-cmd">{text}</pre>
+      <button
+        className="ln-btn ln-btn-ghost ln-install-copy"
+        aria-label="Copy install command"
+        onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
+      >{copied ? 'Copied ✓' : 'Copy'}</button>
     </div>
   );
 }
@@ -134,6 +161,13 @@ const LANDING_CSS = `
 .ln-sub { font-size: clamp(16px, 2vw, 20px); line-height: 1.6; color: var(--cr-fg-2, #aab1bd); max-width: 680px; margin: 0 auto 36px; }
 .ln-cta-row { display:flex; flex-direction:column; align-items:center; gap: 12px; }
 .ln-cta-note { font-size: 13px; color: var(--cr-fg-3, #6b7280); }
+.ln-install { margin-top: 34px; }
+.ln-install-cap { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--cr-fg-3, #6b7280); margin-bottom: 10px; }
+.ln-install-row { display: flex; align-items: stretch; gap: 8px; max-width: 560px; margin: 0 auto; }
+.ln-install-cmd { flex: 1; margin: 0; padding: 12px 16px; text-align: left; border: 1px solid var(--cr-line-2, #2a2f37); border-radius: 10px; background: var(--cr-ink-1, #12151a); color: var(--cr-fg-1, #e8eaed); font-family: var(--cr-font-mono, monospace); font-size: 13px; overflow-x: auto; white-space: pre; }
+.ln-install-copy { flex-shrink: 0; }
+.ln-install-note { font-size: 12.5px; color: var(--cr-fg-3, #6b7280); margin-top: 10px; }
+.ln-install-note code { font-family: var(--cr-font-mono, monospace); color: var(--cr-fg-2, #aab1bd); }
 .ln-center { text-align:center; }
 .ln-btn { font: inherit; font-weight: 600; border-radius: 10px; padding: 12px 22px; cursor: pointer; border: 1px solid transparent; transition: transform .08s ease, background .15s ease, border-color .15s ease; }
 .ln-btn:hover { transform: translateY(-1px); }

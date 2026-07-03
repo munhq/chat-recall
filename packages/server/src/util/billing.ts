@@ -44,9 +44,21 @@ export function billingEnabled(): boolean {
 }
 
 /**
+ * Open beta: everything is free for everyone, even with Stripe fully
+ * configured underneath. One env flag (OPEN_BETA=1) so GA is a config change,
+ * not a deploy — unset it and the subscription gate snaps back on. Surfaced
+ * to the client via /api/billing and /api/billing/plan so the UI renders
+ * beta copy instead of trial/checkout CTAs.
+ */
+export function openBeta(): boolean {
+  return /^(1|true|yes)$/i.test(process.env.OPEN_BETA || '');
+}
+
+/**
  * Whether a tenant may use the paid surface right now.
  *
  *   - billing disabled → always true (self-host free tier).
+ *   - open beta        → always true (cloud, pre-GA: free for everyone).
  *   - billing enabled  → true iff the tenant has a recorded subscription that
  *     is active|trialing AND not lapsed (currentPeriodEnd null = no expiry
  *     known yet, treated as still valid; otherwise must be in the future).
@@ -55,7 +67,7 @@ export function billingEnabled(): boolean {
  * resolve to NOT entitled.
  */
 export async function isEntitled(tenant: string): Promise<boolean> {
-  if (!billingEnabled()) return true;
+  if (!billingEnabled() || openBeta()) return true;
 
   // Served from the 30s TTL cache when warm — one control-plane query per
   // tenant per window instead of one per paid request.

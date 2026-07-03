@@ -36,7 +36,12 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
 
       <section className="acct-card">
         <h2>Subscription</h2>
-        {!ent ? <p className="muted">Loading…</p> : !ent.billingEnabled ? (
+        {!ent ? <p className="muted">Loading…</p> : ent.openBeta ? (
+          <p className="muted">
+            <strong>Open beta</strong> — everything is free while the beta runs. Pro pricing comes
+            later, and you'll get notice before anything is ever charged.
+          </p>
+        ) : !ent.billingEnabled ? (
           <p className="muted">Billing isn't enabled on this deployment — all features are available.</p>
         ) : (
           <>
@@ -124,22 +129,51 @@ function AlertsCard({ onError }: { onError: (s: string) => void }) {
 }
 
 /** Full-screen gate shown when the tenant isn't entitled (lapsed/never subscribed
- *  or brand-new with no workspace). The only way past it is to start the trial. */
+ *  or brand-new with no workspace). Paid mode: the only way past it is the trial.
+ *  Open beta: it's a welcome screen — create the workspace, no card, no checkout. */
 export function SubscribeScreen() {
   const [plan, setPlan] = useState<PlanInfo | null>(null);
   const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
   useEffect(() => { getPlan().then(setPlan).catch(() => {}); }, []);
   const trialDays = plan?.trialDays ?? 14;
+
+  // Beta first-run: same workspace bootstrap StartTrialButton does, minus Stripe.
+  async function joinBeta() {
+    setBusy(true); setErr('');
+    try {
+      const me = await getMe();
+      if (me.teams.length === 0) {
+        await createTeam(me.user.email?.split('@')[0]?.replace(/[^a-z0-9]/gi, '') || 'workspace');
+      }
+      window.location.reload();
+    } catch (e: any) { setErr(String(e.message || e)); setBusy(false); }
+  }
+
   return (
     <div className="sub-screen">
       <style>{ACCT_CSS}</style>
       <div className="sub-box">
         <div className="sub-logo">◆ chat-recall</div>
-        <h1>Start your {trialDays}-day free trial</h1>
-        <p className="muted">Your subscription is required to access your sessions, search, analytics and live secret-leak
-          alerts. Card required, cancel anytime — no charge until the trial ends.</p>
-        {err && <div className="acct-err">{err}</div>}
-        <StartTrialButton onError={setErr} size="lg" />
+        {plan?.openBeta ? (
+          <>
+            <h1>Welcome to the open beta</h1>
+            <p className="muted">Everything is free while the beta runs — no card, no trial clock. Create your
+              workspace, connect your machine, and your AI-session history becomes searchable.</p>
+            {err && <div className="acct-err">{err}</div>}
+            <Button variant="primary" disabled={busy} onClick={joinBeta}>
+              {busy ? 'Setting up…' : 'Create your workspace →'}
+            </Button>
+          </>
+        ) : (
+          <>
+            <h1>Start your {trialDays}-day free trial</h1>
+            <p className="muted">Your subscription is required to access your sessions, search, analytics and live secret-leak
+              alerts. Card required, cancel anytime — no charge until the trial ends.</p>
+            {err && <div className="acct-err">{err}</div>}
+            <StartTrialButton onError={setErr} size="lg" />
+          </>
+        )}
       </div>
     </div>
   );
