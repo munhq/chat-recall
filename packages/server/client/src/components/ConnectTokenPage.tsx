@@ -51,13 +51,19 @@ export default function ConnectTokenPage() {
     })();
   }, []);
 
-  // Flip to "you're live" the moment the first data lands after the paste.
+  // Flip to "you're live" the moment the first data lands after the paste,
+  // then take the user into their dashboard — this page is a hallway, not a
+  // destination.
   useEffect(() => {
     if (state !== 'done') return;
     const t = setInterval(async () => {
       try {
         const s = await getSyncStatus();
-        if (s.sessions > 0) { setSynced(s.sessions); clearInterval(t); }
+        if (s.sessions > 0) {
+          setSynced(s.sessions);
+          clearInterval(t);
+          setTimeout(() => { window.location.replace('/'); }, 1500);
+        }
       } catch { /* keep polling */ }
     }, 5000);
     return () => clearInterval(t);
@@ -113,8 +119,11 @@ export default function ConnectTokenPage() {
               color: synced > 0 ? 'var(--cr-ok-500, #4ade80)' : 'var(--cr-fg-2)',
             }}>
               {synced > 0
-                ? <>✓ First data arrived — {synced} session(s) synced. You can close this tab.</>
-                : <>Waiting for your terminal to finish — paste the token there and this flips green.</>}
+                ? <>✓ First data arrived — {synced} session(s) synced. Taking you to your dashboard…</>
+                : <>Paste the token in your terminal — sync runs in the background, and this page jumps to your dashboard when the first data lands.</>}
+            </div>
+            <div style={{ marginTop: 12 }}>
+              <Button variant="secondary" onClick={() => window.location.replace('/')}>Open your dashboard →</Button>
             </div>
           </>
         )}

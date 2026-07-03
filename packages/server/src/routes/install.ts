@@ -77,8 +77,11 @@ if chat-recall login ${origin} --check >/dev/null 2>&1; then
   echo "Already connected to ${origin}."
 else
   # Fresh machine: send the user to the token page and read the paste back.
-  DEVICE=$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g')
-  CONNECT_URL="${origin}/?view=connect&device=\${DEVICE:-my-machine}"
+  # The device label is a random slug — the hostname must not leak into a URL
+  # (browser history, IdP logs). Rename/revoke devices later in Account.
+  DEVICE="dev-$(od -An -N4 -tx1 /dev/urandom 2>/dev/null | tr -d ' \\n')"
+  [ "\$DEVICE" = "dev-" ] && DEVICE="dev-\$\$"
+  CONNECT_URL="${origin}/?view=connect&device=\$DEVICE"
 
   echo "Get your device token here (sign in if asked; the token page opens right after):"
   echo ""
@@ -102,15 +105,18 @@ else
 fi
 
 echo ""
-echo "Starting your first sync (indexes local AI sessions, redacts secrets locally, pushes) ..."
-chat-recall sync || {
-  echo "" >&2
-  echo "First sync hit an error — re-run it with: chat-recall sync" >&2
-  exit 1
-}
-
-echo ""
-echo "Done. Your history is live at ${origin}"
+# The first sync of a full history can take a long time — it must NOT hold
+# this terminal hostage. The per-user service (systemd --user / launchd /
+# Scheduled Task; no admin rights) syncs continuously in the background.
+if chat-recall service install; then
+  echo ""
+  echo "Done. Syncing in the background — your history is filling in at ${origin}"
+else
+  echo "Background service install failed — starting a one-off background sync instead." >&2
+  (nohup chat-recall sync >/dev/null 2>&1 &)
+  echo ""
+  echo "Done. Watch your history fill in at ${origin} (re-run 'chat-recall sync' to top up later)"
+fi
 `;
 }
 
