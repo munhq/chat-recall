@@ -151,9 +151,10 @@ export default function ConnectMachine({ compact, onFirstData }: { compact?: boo
       ) : (
         <div style={{ marginTop: 12 }}>
           <div style={{ fontSize: 13, color: 'var(--cr-fg-2)' }}>
-            <strong style={{ color: 'var(--cr-fg-1)' }}>1.</strong> Install the CLI (Node 18+, no build tools needed):
+            <strong style={{ color: 'var(--cr-fg-1)' }}>1.</strong> Install the CLI (Node 18+, no build tools needed) —
+            served by this server, always version-matched:
           </div>
-          <CopyBlock text="npm install -g chat-recall" />
+          <CopyBlock text={`curl -fsSL ${origin}/install.sh | sh`} />
           <div style={{ fontSize: 13, color: 'var(--cr-fg-2)', marginTop: 12 }}>
             <strong style={{ color: 'var(--cr-fg-1)' }}>2.</strong> Connect <Chip size="sm">{minted.deviceId}</Chip> —
             this token is shown <strong>once</strong>; copy the whole line:

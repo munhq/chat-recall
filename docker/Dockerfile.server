@@ -30,7 +30,16 @@ COPY packages/server/package.json ./packages/server/
 RUN npm ci
 COPY packages/engine/ ./packages/engine/
 COPY packages/server/ ./packages/server/
+COPY packages/cli/ ./packages/cli/
+# Build server + engine, then build AND `npm pack` the CLI: the tarball is
+# served by this same server at /install/chat-recall.tgz (routes/install.ts),
+# so every deployment hands out a CLI that exactly matches its own version —
+# no npm-registry publish in the loop. Pack BEFORE prune (the CLI build needs
+# devDeps: tsc + esbuild).
 RUN npx tsc -b packages/engine packages/server \
+    && npm run build --workspace=chat-recall \
+    && npm pack --workspace=chat-recall --pack-destination /app \
+    && mv /app/chat-recall-*.tgz /app/chat-recall.tgz \
     && npm prune --omit=dev
 
 # ── Stage 3: runtime ──────────────────────────────────────────────────────────
@@ -57,6 +66,9 @@ COPY --from=client /client/dist ./client
 # `node migrate/migrate.mjs` from this same image (pg comes from node_modules).
 COPY packages/server/cloud/migrate.mjs ./migrate/migrate.mjs
 COPY packages/server/cloud/migrations ./migrate/migrations
+
+# The packed CLI, served at /install/chat-recall.tgz (see routes/install.ts).
+COPY --from=build /app/chat-recall.tgz ./install/chat-recall.tgz
 
 EXPOSE 5000
 ENV NODE_ENV=production

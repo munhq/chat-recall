@@ -205,7 +205,9 @@ function AppInner() {
     if (!isCloud()) return;
     getEntitlement()
       .then((e) => {
-        if (!e.billingEnabled) return setGate('ok');
+        // Open beta: billing may be fully configured underneath, but nobody
+        // is gated and nobody sees checkout.
+        if (!e.billingEnabled || e.openBeta) return setGate('ok');
         setGate(e.status === 'active' || e.status === 'trialing' ? 'ok' : 'subscribe');
       })
       // "no team yet" → first-run onboarding via the Subscribe screen. Any other

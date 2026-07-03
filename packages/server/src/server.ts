@@ -37,6 +37,7 @@ import teamsRouter from './routes/teams.js';
 import teamArtifactsRouter from './routes/team-artifacts.js';
 import securityConfigRouter from './routes/security-config.js';
 import billingRouter from './routes/billing.js';
+import installRouter from './routes/install.js';
 import { capabilities, isServerMode } from './util/mode.js';
 import { generateMissingSummariesAllTenants, serverSummaryConfig } from './services/summary-worker.js';
 import { sweepSyntheticRetention } from './services/retention.js';
@@ -117,6 +118,11 @@ app.use('/api', apiLimiter);
 // it without a tenant context (optionally gated by METRICS_TOKEN). Mounted
 // before the /api rate-limiter too.
 app.use('/metrics', metricsRouter);
+
+// Public install surface (/install.sh + /install/chat-recall.tgz) — the
+// funnel's first touch happens before any credential exists, so it mounts
+// top-level like /metrics: outside /api auth, limiters, and entitlements.
+app.use('/', installRouter);
 
 // Open metadata: lets the client decide which views to render before auth.
 app.get('/api/capabilities', (_req, res) => res.json(capabilities()));

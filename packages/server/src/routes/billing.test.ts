@@ -47,6 +47,7 @@ afterAll(() => {
 beforeEach(() => {
   // Default each test to self-host (no Stripe) unless it opts into cloud.
   setEnv('STRIPE_SECRET_KEY', undefined);
+  setEnv('OPEN_BETA', undefined);
   // Entitlement lookups are TTL-cached (30s) in-process — reset between tests.
   clearEntitlementCache();
 });
@@ -88,6 +89,14 @@ describe('billingEnabled / isEntitled gate', () => {
       await cp.setEntitlement('cloud-lapsed', { status: 'active', currentPeriodEnd: Date.now() - 1000 });
     } finally { await cp.close(); }
     expect(await isEntitled('cloud-lapsed')).toBe(false);
+  });
+
+  test('OPEN_BETA on cloud: everyone entitled, no subscription needed', async () => {
+    setEnv('STRIPE_SECRET_KEY', 'sk_test_x');
+    setEnv('OPEN_BETA', '1');
+    // Billing stays configured underneath — only the gate opens.
+    expect(billingEnabled()).toBe(true);
+    expect(await isEntitled('total-stranger')).toBe(true);
   });
 
   test('cloud: trialing with null period IS entitled', async () => {
@@ -187,6 +196,16 @@ describe('GET /api/billing/plan (public)', () => {
     expect(res.status).toBe(200);
     expect(res.body.configured).toBe(false);
     expect(res.body.trialDays).toBe(14);
+    expect(res.body.openBeta).toBe(false);
+  });
+
+  test('OPEN_BETA=1 → plan advertises the beta so the landing page renders beta copy', async () => {
+    setEnv('OPEN_BETA', '1');
+    const app = express();
+    app.use('/api/billing', billingRouter);
+    const res = await request(app).get('/api/billing/plan');
+    expect(res.status).toBe(200);
+    expect(res.body.openBeta).toBe(true);
   });
 });
 
