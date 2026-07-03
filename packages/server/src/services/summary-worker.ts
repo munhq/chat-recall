@@ -323,8 +323,12 @@ export async function generateMissingSummaries(
   const leaseFloor = now - LEASE_MS;
   // Generic size triage: a session with very few turns has nothing to compress —
   // its first prompt already captures intent. Resolve those to first_prompt
-  // WITHOUT an LLM call (content-agnostic, turn count only).
+  // WITHOUT an LLM call. Turn count alone is NOT enough: a session with one
+  // user turn can fan out to subagents and produce tens of thousands of output
+  // tokens (real work, deserves a real summary), so a session is trivial only
+  // when it has few turns AND little generated output.
   const SHORT_TURN_MAX = Math.max(0, Number(process.env.SUMMARY_MIN_TURNS) || 4);
+  const TRIVIAL_MAX_OUT = Math.max(0, Number(process.env.SUMMARY_TRIVIAL_MAX_OUTPUT_TOKENS) || 2000);
   // Claim more than we process concurrently so the LLM pool never starves between
   // claims; the fixed concurrency is the real throttle.
   const CLAIM_BATCH = Math.max(concurrency * 4, 64);
@@ -370,16 +374,26 @@ export async function generateMissingSummaries(
   while (totalSeen < TICK_CAP && !budgetExhausted) {
     // (1) CLAIM (short tx) — resolve trivial inline, lease the real ones.
     const claim = await tenantTx(pool, tenant, async (client: any) => {
+      // Claim (a) unsummarized sessions, and (b) sessions a PREVIOUS triage
+      // stamped 'too_short' that no longer satisfy the trivial rule (e.g. the
+      // rule gained the output-tokens dimension, or metadata was re-synced
+      // with real counts). (b) makes misclassifications self-heal on the next
+      // sweep — no one-off backfill scripts, ever.
       const rows: any[] = (await client.query(
         `SELECT sm.session_id,
-                COALESCE(NULLIF(mm.extra_json::jsonb ->> 'messageCount', '')::int, 999) AS msg_count
+                COALESCE(NULLIF(mm.extra_json::jsonb ->> 'messageCount', '')::int, 999) AS msg_count,
+                COALESCE(NULLIF(mm.extra_json::jsonb ->> 'outputTokens', '')::bigint, 0) AS out_tokens
            FROM session_metadata sm
            LEFT JOIN memory_metadata mm
              ON mm.tenant = sm.tenant AND mm.id = sm.session_id
                 AND mm.source_type = 'session' AND mm.extra_json LIKE '{%'
            LEFT JOIN summary_leases sl
              ON sl.tenant = sm.tenant AND sl.session_id = sm.session_id
-          WHERE sm.tenant = $1 AND sm.summary = ''
+          WHERE sm.tenant = $1
+            AND (sm.summary = ''
+              OR (sm.summary_source = 'too_short'
+                  AND (COALESCE(NULLIF(mm.extra_json::jsonb ->> 'messageCount', '')::int, 999) > $7
+                    OR COALESCE(NULLIF(mm.extra_json::jsonb ->> 'outputTokens', '')::bigint, 0) >= $8)))
             AND (sl.claimed_at IS NULL OR sl.claimed_at < $5)
             AND NOT EXISTS (
               SELECT 1 FROM summary_errors e
@@ -389,14 +403,20 @@ export async function generateMissingSummaries(
           ORDER BY sm.mtime DESC
           LIMIT $2
           FOR UPDATE OF sm SKIP LOCKED`,
-        [tenant, CLAIM_BATCH, MAX_SUMMARY_ATTEMPTS, retryFloor, leaseFloor, backoffFloor])).rows;
+        [tenant, CLAIM_BATCH, MAX_SUMMARY_ATTEMPTS, retryFloor, leaseFloor, backoffFloor, SHORT_TURN_MAX, TRIVIAL_MAX_OUT])).rows;
       if (rows.length === 0) return { real: [] as string[], seen: 0 };
 
       let budget = maxReal - realGenerated;
       const trivialIds: string[] = [];
       const realIds: string[] = [];
       for (const r of rows) {
-        if ((Number(r.msg_count) || 0) <= SHORT_TURN_MAX) trivialIds.push(r.session_id);
+        // MUST mirror the claim query's trivial rule exactly: a re-claimed
+        // 'too_short' row that landed in trivialIds would be re-stamped
+        // nothing (the UPDATE below is summary=''-guarded) and re-claimed
+        // forever.
+        const trivial = (Number(r.msg_count) || 0) <= SHORT_TURN_MAX
+          && (Number(r.out_tokens) || 0) < TRIVIAL_MAX_OUT;
+        if (trivial) trivialIds.push(r.session_id);
         else if (budget > 0) { budget--; realIds.push(r.session_id); }
         else budgetExhausted = true; // over budget → left unleased, re-claimed later
       }

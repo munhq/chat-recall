@@ -797,7 +797,22 @@ const refs = listAvailableBackends().flatMap((b) => {
     // `undefined` that triggers the per-session fallback inside the builder.
     const precomputedExternal = externalFindings ? (externalFindings.get(ref.prefixedId) ?? []) : undefined;
     const built = await buildConversationSync(ref, mtime, { mapPath, includeRaw: upload.raw, includeMeta: upload.sessionMeta, scanSecrets, verifySecrets: verifySecretsScan, tenantRules, precomputedExternal });
-    if (!built) { skipped++; continue; }
+    if (!built) {
+      // Nothing worth shipping for THIS content — empty, unparseable, or one
+      // of chat-recall's own internal LLM invocations (roughly half of all
+      // "sessions" on a busy machine). Every null verdict is a pure function
+      // of file content, so ack it at this mtime: without the ack these
+      // sessions re-classify as FULL on every full walk, forever — observed
+      // as ~5k sessions re-exported and re-secret-scanned per 15-min
+      // heartbeat (4GB+ heap peak, 12-minute walks, heap-OOM crash loops).
+      // A real content change bumps mtime and re-evaluates.
+      if (ledger) {
+        try { markSynced(base, [{ id: ref.prefixedId, mtime: ref.mtime }]); }
+        catch { /* ledger is local bookkeeping — never fail a sync over it */ }
+      }
+      skipped++;
+      continue;
+    }
     redactions += built.redactions;
 
     await convBatch.add(built.conv);
