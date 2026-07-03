@@ -91,6 +91,13 @@ export function codexHomeDir(): string {
     || join(homedir(), '.codex');
 }
 
+/** Antigravity CLI root (`~/.gemini/antigravity-cli` by default). */
+export function agyHomeDir(): string {
+  return process.env.CHAT_RECALL_AGY_HOME
+    || sources().agyHome
+    || join(homedir(), '.gemini', 'antigravity-cli');
+}
+
 /**
  * Extra Claude home directories (multi-install). Returns the deduped list
  * minus the primary `claudeHomeDir()`. Discovery code can union these with
