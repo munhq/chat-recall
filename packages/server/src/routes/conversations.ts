@@ -162,37 +162,11 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-/**
- * The per-session features below — diff replay, git commits, outcome,
- * turns, markers — read Claude's tool_use shape directly from JSONL.
- * Codex (apply_patch shell calls), Gemini (different tool format), and
- * OpenCode (SQLite + tool parts) need their own implementations and
- * aren't wired up yet, so for now we short-circuit to a graceful empty
- * payload instead of 404. The UI's tab panels render an empty state
- * naturally; the network tab stays clean.
- */
-function isNonClaude(id: string): boolean {
-  return id.startsWith('codex_') || id.startsWith('gemini_') || id.startsWith('opencode_');
-}
-
-function emptyDiff(id: string) {
-  return { sessionId: id, projectPath: '', files: [], totalLinesAdded: 0, totalLinesRemoved: 0 };
-}
-
-function emptyOutcome(id: string) {
-  return {
-    sessionId: id,
-    found: true,
-    status: 'unknown',
-    reason: 'outcome analysis not yet implemented for this AI tool',
-    startMs: 0, endMs: 0,
-    decisions: [], blockers: [], claimReaction: {},
-    prompts: [],
-    promptMarkers: { total: 0, interrupt: 0, frustrated: 0, correction: 0, approval: 0, question: 0, directive: 0, clarification_request: 0, peakIntensity: 0 },
-    commits: { sessionId: id, startMs: 0, endMs: 0, repos: [], totalCommits: 0 },
-    fileCount: 0, filesChanged: [], totalLinesAdded: 0, totalLinesRemoved: 0,
-  };
-}
+// Per-session diff/outcome/turns/markers are tool-agnostic: every backend
+// (Claude, Gemini, OpenCode, Codex) goes through the generic engine's
+// readEvents() adapter, and the synced compute_cache rows cover all four.
+// (The old isNonClaude/emptyDiff/emptyOutcome short-circuits from before the
+// ToolBackend registry were dead code and are gone.)
 
 // GET /api/conversations/recent?limit=20&offset=0&project=...&tool=...&since_hours=...
 //
