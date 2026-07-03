@@ -88,6 +88,16 @@ export interface SessionInfo {
   /** Single-prompt invocation (batch/bot run) — synced flag. */
   oneShot?: boolean;
   runMemberIds?: string[];
+  /** What actually happened — attached by the server in one batch (no
+   *  per-row badge fetch). `discussion` = talk-only session (no file edits,
+   *  no commits). Absent = not classified yet; the row renders without it. */
+  outcome?: {
+    status: 'shipped' | 'abandoned' | 'interrupted' | 'in_progress' | 'completed' | 'discussion' | 'unknown';
+    files: number;
+    linesAdded: number;
+    linesRemoved: number;
+    commits: number;
+  };
 }
 
 export interface IndexStats {

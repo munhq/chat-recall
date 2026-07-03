@@ -164,6 +164,26 @@ export default function ConversationList({
         style={{ flex: 1, overflowY: 'auto', position: 'relative' }}
         data-testid={isSearch ? 'search-results' : 'recent-sessions'}
       >
+        {/* Summary generation failing is ONE condition (usually an
+            unconfigured provider) — say it once here, never as a chip on
+            every row, where it drowns the per-row signal. */}
+        {results.filter((r) => r.summaryError && !r.summary && !r.userTitle && !r.toolTitle).length >= 3 && (
+          <div
+            data-testid="summary-unavailable"
+            title={results.find((r) => r.summaryError)?.summaryError?.error || ''}
+            style={{
+              padding: '6px 18px',
+              fontSize: 11,
+              color: 'var(--cr-warn-500)',
+              background: 'var(--cr-warn-surf)',
+              borderBottom: '1px solid var(--cr-warn-line)',
+              cursor: 'help',
+            }}
+          >
+            AI summaries unavailable — rows show raw first prompts. Check Settings → Summary provider.
+          </div>
+        )}
+
         {/* Loading skeletons — shown when the first page is in flight and
             we have no rows yet. Once any rows arrive, they replace the
             skeletons entirely so we don't double-show. */}
@@ -266,7 +286,6 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
   const userTitle = r.userTitle?.trim() || '';
   const toolTitle = r.toolTitle?.trim() || '';
   const hasSummary = !!r.summary;
-  const hasSummaryError = !userTitle && !toolTitle && !hasSummary && !!r.summaryError;
   const rawFirstPrompt = stripInjectedBanners(r.firstPrompt || '').trim();
   const titleText = userTitle
     ? userTitle.slice(0, 220)
@@ -343,6 +362,22 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
           )}
           <span style={{ color: 'var(--cr-line-3)', flexShrink: 0 }}>·</span>
           <span className="cr-conv-meta-path" title={r.projectPath}>{path}</span>
+          {/* What changed: files · +added −removed · commits. Only for
+              sessions that touched code — discussion rows stay clean. */}
+          {r.outcome && r.outcome.files > 0 && (
+            <span
+              data-testid="outcome-stats"
+              title={`${r.outcome.files} file(s) edited · +${r.outcome.linesAdded} / −${r.outcome.linesRemoved} lines${r.outcome.commits > 0 ? ` · ${r.outcome.commits} commit(s) landed` : ' · never committed'}`}
+              style={{ flexShrink: 0, whiteSpace: 'nowrap', color: 'var(--cr-fg-3)' }}
+            >
+              {r.outcome.files} {r.outcome.files === 1 ? 'file' : 'files'}
+              {' '}<span style={{ color: 'var(--cr-ok-500)' }}>+{r.outcome.linesAdded}</span>
+              {' '}<span style={{ color: 'var(--cr-err-500)' }}>−{r.outcome.linesRemoved}</span>
+              {r.outcome.commits > 0 && (
+                <span> · {r.outcome.commits} {r.outcome.commits === 1 ? 'commit' : 'commits'}</span>
+              )}
+            </span>
+          )}
           <span className="cr-conv-meta-time">{timeStr}</span>
           {/*
             Collapsed-run badge. When ≥2 adjacent sessions in the same
@@ -417,32 +452,29 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
           </div>
         )}
 
-        {/* Title line: status prefix + title body */}
+        {/* Title line: status prefix + title body. When the server attached
+            the outcome (batched — every /recent row), render it directly;
+            the lazy per-row badge fetch remains only as a search-result
+            fallback where no outcome is attached. */}
         <div className="cr-conv-title">
-          <SessionStatusPrefix sessionId={r.sessionId} tool={tool} />
-
-          {hasSummaryError ? (
-            <span
-              title={`${r.summaryError!.error}\n\n${r.summaryError!.attemptCount} attempt(s). Check Settings → Summary provider.`}
-              data-testid="summary-unavailable"
-              style={{
-                display: 'inline-block',
-                fontSize: 11,
-                fontWeight: 500,
-                color: 'var(--cr-warn-500)',
-                background: 'var(--cr-warn-surf)',
-                border: '1px solid var(--cr-warn-line)',
-                padding: '1px 6px',
-                borderRadius: 3,
-                marginRight: 8,
-                verticalAlign: '1px',
-                cursor: 'help',
-                letterSpacing: 0,
-              }}
-            >
-              summary unavailable · check settings
-            </span>
-          ) : null}
+          {r.outcome ? (
+            STATUS_LABEL[r.outcome.status] ? (
+              <span
+                className="cr-conv-status"
+                data-status={r.outcome.status}
+                data-testid="outcome-badge"
+                data-outcome={r.outcome.status}
+                title={STATUS_TOOLTIP[r.outcome.status] || ''}
+                style={{ ['--cr-row-status' as string]: STATUS_COLOR[r.outcome.status] } as React.CSSProperties}
+              >
+                <span className="cr-conv-status-dot" />
+                {STATUS_LABEL[r.outcome.status]}
+                <span style={{ color: 'var(--cr-line-3)', marginLeft: 2 }}>·</span>
+              </span>
+            ) : null
+          ) : (
+            <SessionStatusPrefix sessionId={r.sessionId} tool={tool} />
+          )}
 
           {titleText ? (
             <span
@@ -555,6 +587,7 @@ const STATUS_COLOR: Record<string, string> = {
   interrupted: 'var(--cr-warn-500)',
   abandoned: 'var(--cr-err-500)',
   completed: 'var(--cr-fg-3)',
+  discussion: 'var(--cr-fg-3)',
   unknown: 'var(--cr-fg-3)',
 };
 const STATUS_LABEL: Record<string, string> = {
@@ -563,7 +596,16 @@ const STATUS_LABEL: Record<string, string> = {
   interrupted: 'interrupted',
   abandoned: 'abandoned',
   completed: 'done',
+  discussion: 'discussion',
   unknown: '',
+};
+const STATUS_TOOLTIP: Record<string, string> = {
+  shipped: 'Edits from this session were committed.',
+  in_progress: 'Recent activity — session may still be running.',
+  interrupted: 'The last user message was an interrupt.',
+  abandoned: 'Files were edited but never committed — the work stayed local.',
+  completed: 'Session finished without file edits pending.',
+  discussion: 'Talk-only session — no file edits, no commits.',
 };
 
 /**
