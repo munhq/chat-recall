@@ -666,6 +666,13 @@ const refs = listAvailableBackends().flatMap((b) => {
 
   const slice = refs.slice(0, opts.limit ?? refs.length);
 
+  // CHAT_RECALL_SYNC_TRACE=1: phase + progress markers with heap usage, to
+  // stderr. This is how the 2026-07-03 walk OOM was localized — keep it.
+  const trace = process.env.CHAT_RECALL_SYNC_TRACE === '1'
+    ? (msg: string) => { const m = process.memoryUsage(); console.error(`[sync-trace] ${msg} · heap=${(m.heapUsed / 1048576).toFixed(0)}MB rss=${(m.rss / 1048576).toFixed(0)}MB`); }
+    : null;
+  trace?.(`walk start: ${slice.length} ref(s) → ${base}`);
+
   // ── Derived-field reconciliation (native title, …) — runs FIRST, BEFORE the
   // heavy conversation walk, so it's never blocked by per-session git/replay
   // compute (titles flow even when the conversation phase is slow). Pushes only
@@ -684,6 +691,7 @@ const refs = listAvailableBackends().flatMap((b) => {
       console.error(`[sync] field reconcile (${base}): ${e instanceof Error ? e.message : e}`);
     }
   }
+  trace?.('field reconcile done');
 
   // Shared gate: classify each session's sync mode for this tick. Used by
   // both the batch pre-scan and the upload loop so they stay in lockstep.
@@ -714,7 +722,11 @@ const refs = listAvailableBackends().flatMap((b) => {
   let externalFindings: Map<string, ScanFinding[]> | null = null;
   if (scanSecrets) {
     externalFindings = new Map();
-    const toScan = slice.filter((ref) => modeOf(ref) === 'full');
+    // Oversized sessions are excluded: exportRawSession would materialize the
+    // whole file (hundreds of MB — this loop is what OOM-killed the daemon).
+    // Their bounded tail still gets the builtin scan in buildConversationSync.
+    const toScan = slice.filter((ref) => modeOf(ref) === 'full' && sessionFileBytes(ref) <= FULL_BUILD_MAX_BYTES);
+    trace?.(`batch secret scan start: ${toScan.length} session(s)`);
     if (toScan.length > 0) {
       const scanDir = mkdtempSync(join(tmpdir(), 'cr-batchscan-'));
       const safeToId = new Map<string, string>();
@@ -747,10 +759,14 @@ const refs = listAvailableBackends().flatMap((b) => {
     }
   }
 
+  trace?.('conversation walk start');
+  let traceN = 0;
   for (const ref of slice) {
+    if (trace && ++traceN % 500 === 0) trace(`walk ${traceN}/${slice.length} · at ${ref.prefixedId}`);
     localSessionIds.add(ref.prefixedId);
     const mode = modeOf(ref);
     if (mode === 'skip') { skipped++; continue; }
+    trace?.(`build (${mode}) ${ref.prefixedId} · ${(sessionFileBytes(ref) / 1048576).toFixed(1)}MB`);
 
     // ── APPEND: tail-only ship (no raw_b64, no telemetry, no derived) ──
     if (mode === 'append' && ledger) {
@@ -765,7 +781,7 @@ const refs = listAvailableBackends().flatMap((b) => {
           // tail's findings would WIPE the head's. Defer findings to the FULL
           // re-sync (same as raw_b64 + derived). The head's findings stand.
           walked++;
-          if (walked % 250 === 0) console.error(`[sync] ${walked} sessions processed…`);
+          if (walked % 250 === 0) console.error(`[sync] ${walked}/${slice.length} sessions…`);
         } else {
           // Nothing new to ship (tail empty/unparseable). Re-stamp the cursor
           // at the current size so the gate doesn't re-attempt every tick
@@ -827,8 +843,11 @@ const refs = listAvailableBackends().flatMap((b) => {
 
     // Derived data — the CLI has the FS/git/transcript, the server doesn't.
     // Always computed live (diff/outcome/commits/markers + badge row); no
-    // local compute/outcome cache is read or warmed.
-    if (upload.sessionMeta) {
+    // local compute/outcome cache is read or warmed. Oversized transcripts are
+    // excluded: replay/outcome re-read the WHOLE file (readEvents), and a
+    // 353MB session with 100MB+ single JSON lines OOMed the walk right after
+    // its (bounded) conversation shipped.
+    if (upload.sessionMeta && sessionFileBytes(ref) <= FULL_BUILD_MAX_BYTES) {
       try {
         const count = { redactions: 0 };
         await derivedBatch.add(collectDerived(ref, mtime, count));
@@ -860,7 +879,7 @@ const refs = listAvailableBackends().flatMap((b) => {
     } catch { /* best-effort */ }
 
     walked++;
-    if (walked % 250 === 0) console.error(`[sync] ${walked} sessions processed…`);
+    if (walked % 250 === 0) console.error(`[sync] ${walked}/${slice.length} sessions…`);
   }
 
   // ── Non-session sources: plan/task/claude_md/history/paste/diary/skill/
@@ -1026,6 +1045,23 @@ export interface BuiltConversation {
   scanMs: number;
 }
 
+/** Transcript bytes beyond which a FULL sync must not materialize the whole
+ *  file. The FULL pipeline copies the transcript ~5× (parse, trim+redact,
+ *  raw export, raw-text join, redacted container) — a 350MB session transiently
+ *  needs >1.5GB of heap, which OOM-killed the watch daemon in a restart loop
+ *  (ledger never acked → same file retried on every startup tick, forever). */
+export const FULL_BUILD_MAX_BYTES =
+  Math.max(8, parseInt(process.env.CHAT_RECALL_FULL_BUILD_MAX_MB || '64', 10)) * 1024 * 1024;
+/** How much of an oversized transcript's tail still ships (newest content). */
+const FULL_BUILD_TAIL_BYTES = 16 * 1024 * 1024;
+
+/** Bytes an append-only session occupies on disk (0 for non-AO backends). */
+export function sessionFileBytes(ref: SessionRef): number {
+  const backend = getBackendForId(ref.prefixedId);
+  if (!backend?.isAppendOnly?.()) return 0;
+  return backend.fileSize?.(ref.prefixedId) ?? 0;
+}
+
 export async function buildConversationSync(
   ref: SessionRef,
   mtime: number,
@@ -1036,16 +1072,40 @@ export async function buildConversationSync(
     precomputedExternal?: ScanFinding[] } = {},
 ): Promise<BuiltConversation | null> {
   const mapPath = opts.mapPath ?? ((p: string) => p);
-  const includeRaw = opts.includeRaw !== false;
-  const includeMeta = opts.includeMeta !== false;
+  let includeRaw = opts.includeRaw !== false;
+  let includeMeta = opts.includeMeta !== false;
+
+  // Oversized-transcript guard: ship the newest FULL_BUILD_TAIL_BYTES as this
+  // session's FULL sync instead of materializing the whole file. The envelope
+  // is marked truncated, raw/meta (whole-file reads) are dropped, and
+  // from_offset = file size — so the ledger advances and every later tick is
+  // a normal bounded APPEND. Truncation only loses the transcript's OLD head.
+  const fileBytes = sessionFileBytes(ref);
+  const oversized = fileBytes > FULL_BUILD_MAX_BYTES;
+  let tailText = '';
+  let tailOffsetEnd = 0;
 
   // Parse the transcript live — this is the single canonical parse; the
   // envelope and the redacted text both come from it.
   let transcript: { messages: any[]; subagents: any[] } | null = null;
-  try {
-    const t = await parseTranscript(ref.prefixedId);
-    if (t && (t.messages.length > 0 || t.subagents.length > 0)) transcript = t;
-  } catch { /* unparseable */ }
+  if (oversized) {
+    const backend = getBackendForId(ref.prefixedId);
+    if (!backend?.readFromOffset) return null;
+    try {
+      const tail = await backend.readFromOffset(ref.prefixedId, fileBytes - FULL_BUILD_TAIL_BYTES);
+      tailText = tail.text;
+      tailOffsetEnd = tail.newOffset;
+      const messages = parseTailMessages(ref.toolId, tailText);
+      if (messages.length > 0) transcript = { messages, subagents: [] };
+    } catch { /* unreadable tail */ }
+    includeRaw = false;   // exportRawSession would read the whole file
+    includeMeta = false;  // parseSessionFile would read the whole file
+  } else {
+    try {
+      const t = await parseTranscript(ref.prefixedId);
+      if (t && (t.messages.length > 0 || t.subagents.length > 0)) transcript = t;
+    } catch { /* unparseable */ }
+  }
   if (!transcript) return null;
 
   const textMessages = transcript.messages.filter((m) => m.role !== 'summary' && m.content?.trim());
@@ -1074,6 +1134,8 @@ export async function buildConversationSync(
   // which is the same behaviour as an un-indexed session.
   let projectPath = ref.projectPath;
   const meta: Record<string, unknown> = { messageCount: textMessages.length };
+  // Flag tail-only FULL syncs so the UI can badge partial history.
+  if (oversized) meta.truncated = true;
   // Single-prompt invocations (batch/bot runs) carry a flag so the UI can
   // badge them and lists can de-emphasize them.
   if (textMessages.filter((m) => m.role === 'user').length <= 1) meta.oneShot = true;
@@ -1107,12 +1169,17 @@ export async function buildConversationSync(
   // Gemini/Codex file bytes AND the OpenCode row-dump are all UTF-8 text in the
   // container. Reused for BOTH the secret scan (pre-redaction) and the raw_b64
   // archive. (Scanning ref.fullPath was wrong for OpenCode — that's the DB.)
+  // Oversized sessions never materialize the container — the builtin regex
+  // scan runs over the bounded tail instead (same coverage the APPEND path
+  // gives a growing session's new bytes).
   let container: ReturnType<typeof buildRawContainer> | null = null;
-  try {
-    const backend = getBackendForId(ref.prefixedId) ?? getBackend('claude');
-    const exp = backend.exportRawSession(ref.prefixedId);
-    container = exp ? buildRawContainer(exp) : null;
-  } catch { /* export unavailable — conversation still ships */ }
+  if (!oversized) {
+    try {
+      const backend = getBackendForId(ref.prefixedId) ?? getBackend('claude');
+      const exp = backend.exportRawSession(ref.prefixedId);
+      container = exp ? buildRawContainer(exp) : null;
+    } catch { /* export unavailable — conversation still ships */ }
+  }
 
   // Secret SCAN on the materialized raw text (where secrets actually are,
   // pre-redaction). MASKED findings (last-4) ship to the server's secret_findings.
@@ -1167,6 +1234,23 @@ export async function buildConversationSync(
     }
     scanMs = performance.now() - t0;
   }
+  // Oversized sessions: builtin regex (+ tenant rules) over the bounded tail —
+  // the container path above never ran for them.
+  if (oversized && tailText) {
+    const t0 = performance.now();
+    try {
+      for (const f of scanTextForFindings(tailText)) {
+        findings.push({ session_id: ref.prefixedId, detector: 'builtin', rule: f.rule, line: f.line, preview: f.preview });
+      }
+      if (opts.tenantRules && opts.tenantRules.length > 0) {
+        for (const f of scanTenantRules(tailText, opts.tenantRules)) {
+          findings.push({ session_id: ref.prefixedId, detector: f.detector, rule: f.rule, line: f.line, preview: f.preview });
+        }
+      }
+    } catch { /* best-effort */ }
+    scanMs = performance.now() - t0;
+  }
+
   // High-precision default: drop fuzzy/low-precision detector findings
   // (generic-api-key, Box, URI, …) before shipping so the Security view isn't
   // buried in false positives. Opt back in with CHAT_RECALL_INCLUDE_FUZZY=1.
@@ -1207,12 +1291,13 @@ export async function buildConversationSync(
       raw_b64,
       raw_size,
       first_prompt: (envTexts.find((m) => m.role === 'user')?.content as string | undefined)?.slice(0, 200),
-      // Byte offset this FULL sync is synced THROUGH (file size at build time).
-      // The server stores it as the envelope's `o`; the ledger records the SAME
-      // value (convBatch onFlush uses this, not a recomputed size) so the next
+      // Byte offset this FULL sync is synced THROUGH (file size at build time,
+      // or the end of the bounded tail for an oversized session). The server
+      // stores it as the envelope's `o`; the ledger records the SAME value
+      // (convBatch onFlush uses this, not a recomputed size) so the next
       // append's base_offset matches exactly — no spurious continuity misses on
       // an actively-growing session. undefined for non-append-only backends.
-      from_offset: getBackendForId(ref.prefixedId)?.fileSize?.(ref.rawId),
+      from_offset: oversized ? tailOffsetEnd : getBackendForId(ref.prefixedId)?.fileSize?.(ref.rawId),
       meta,
       mtime,
     },
