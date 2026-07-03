@@ -201,13 +201,19 @@ program
           'recall_rename_session',
           'recall_help',
         ];
-        const existing = mcpServers['chat-recall'] as { command?: string; args?: string[]; alwaysAllow?: string[] } | undefined;
+        // Cap the MCP server's V8 heap via the spawner: it's a long-lived
+        // per-session process, and v8.setFlagsFromString can't change the
+        // limit after startup (verified) — NODE_OPTIONS is the only knob
+        // that works when the AI tool owns the spawn.
+        const MCP_ENV = { NODE_OPTIONS: '--max-old-space-size=1024' };
+        const existing = mcpServers['chat-recall'] as { command?: string; args?: string[]; alwaysAllow?: string[]; env?: Record<string, string> } | undefined;
         const isCurrent = !!existing && existing.command === launch.command &&
-          JSON.stringify(existing.args ?? null) === JSON.stringify(launch.args ?? null);
+          JSON.stringify(existing.args ?? null) === JSON.stringify(launch.args ?? null) &&
+          existing.env?.NODE_OPTIONS === MCP_ENV.NODE_OPTIONS;
         if (isCurrent) {
           console.log(`   MCP server: ${chalk.green('already configured')} in ${mcpJsonPath}`);
         } else {
-          const entry: Record<string, unknown> = { command: launch.command, alwaysAllow: existing?.alwaysAllow ?? DEFAULT_ALLOW };
+          const entry: Record<string, unknown> = { command: launch.command, alwaysAllow: existing?.alwaysAllow ?? DEFAULT_ALLOW, env: { ...existing?.env, ...MCP_ENV } };
           if (launch.args) entry.args = launch.args;
           mcpServers['chat-recall'] = entry;
           mcpConfig.mcpServers = mcpServers;
