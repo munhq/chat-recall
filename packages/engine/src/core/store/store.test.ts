@@ -252,14 +252,22 @@ else describe.skip('StorageDriver behavior — postgres (DATABASE_URL not set)',
     });
     try {
       await store.clearFTS();
+      // "Stronger" under length-normalized ts_rank means matching MORE query
+      // terms, not repeating one term (repetition dominance is exactly what
+      // normalization flag 1 kills). Realistic mtimes so the +0.15·exp(−age/14d)
+      // recency bonus is what separates newer from older, not the mtime
+      // tiebreak; strong_old is a month old — its full-match rank (2× a
+      // one-term match, normalized 1.0 vs 0.5) must still beat bonus-boosted
+      // weak matches.
+      const now = Date.now();
       await store.addChunksFTS([
-        ftsChunk('newer', 'alpha beta', 2000),                 // same text as older →
-        ftsChunk('older', 'alpha beta', 1000),                 // same rank → same band
-        ftsChunk('strong_old', 'alpha alpha alpha beta', 500), // higher rank → higher band
+        ftsChunk('newer', 'alpha beta', now),                            // same text as older →
+        ftsChunk('older', 'alpha beta', now - 7 * 86400000),             // same rank → same band
+        ftsChunk('strong_old', 'alpha gamma', now - 30 * 86400000),      // matches both terms → higher band
       ]);
       // addChunksFTS persists immediately on both backends — no buffer to flush
       // (flushBuffer lives on the vector store, not the StorageDriver).
-      const order = (await store.searchFTS('alpha', { topK: 10 })).map(r => r.itemId);
+      const order = (await store.searchFTS('alpha gamma', { topK: 10 })).map(r => r.itemId);
       // Stronger match ranks first even though it is the oldest (relevance > recency across bands).
       expect(order[0]).toBe('strong_old');
       // Equal relevance → the newer session ranks above the older one.
