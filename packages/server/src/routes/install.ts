@@ -69,10 +69,48 @@ fi
 echo ""
 chat-recall --version
 echo ""
-echo "Installed. Next steps:"
-echo "  1. Open ${origin} and mint a device token (Connect your machine)."
-echo "  2. chat-recall login ${origin} --token <your-token>"
-echo "  3. chat-recall sync"
+
+# Already connected (e.g. re-running the installer to upgrade)? Skip the
+# token dance entirely. --check is report-only and never interactive; it also
+# auto-connects to no-auth self-host servers.
+if chat-recall login ${origin} --check >/dev/null 2>&1; then
+  echo "Already connected to ${origin}."
+else
+  # Fresh machine: send the user to the token page and read the paste back.
+  DEVICE=$(hostname 2>/dev/null | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/-/g')
+  CONNECT_URL="${origin}/?view=connect&device=\${DEVICE:-my-machine}"
+
+  echo "Get your device token here (sign in if asked; the token page opens right after):"
+  echo ""
+  echo "    \$CONNECT_URL"
+  echo ""
+  # Best effort — over SSH there's no local browser; the printed URL works from
+  # any device, the paste comes back to THIS terminal either way.
+  (xdg-open "\$CONNECT_URL" || open "\$CONNECT_URL") >/dev/null 2>&1 || true
+
+  if [ ! -r /dev/tty ]; then
+    echo "No terminal to read the token from (piped/CI run)." >&2
+    echo "Finish connecting with:  chat-recall login ${origin} --token <your-token>" >&2
+    exit 1
+  fi
+  printf "Paste your token here: "
+  read TOKEN < /dev/tty
+  [ -n "\$TOKEN" ] || { echo "No token entered." >&2; exit 1; }
+
+  # login validates the token against the server before saving it.
+  chat-recall login ${origin} --token "\$TOKEN" || exit 1
+fi
+
+echo ""
+echo "Starting your first sync (indexes local AI sessions, redacts secrets locally, pushes) ..."
+chat-recall sync || {
+  echo "" >&2
+  echo "First sync hit an error — re-run it with: chat-recall sync" >&2
+  exit 1
+}
+
+echo ""
+echo "Done. Your history is live at ${origin}"
 `;
 }
 

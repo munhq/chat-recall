@@ -24,7 +24,7 @@ function serverOrigin(): string {
   return window.location.origin;
 }
 
-function CopyBlock({ text, masked }: { text: string; masked?: boolean }) {
+function CopyBlock({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <div style={{ display: 'flex', alignItems: 'stretch', gap: 8, marginTop: 8 }}>
@@ -32,7 +32,7 @@ function CopyBlock({ text, masked }: { text: string; masked?: boolean }) {
         flex: 1, margin: 0, padding: '10px 12px', borderRadius: 'var(--cr-radius-md, 8px)',
         border: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-0)', color: 'var(--cr-fg-1)',
         fontSize: 12.5, lineHeight: 1.6, overflowX: 'auto', whiteSpace: 'pre',
-      }}>{masked ? text.replace(/ct_[a-f0-9]+/g, (m) => m.slice(0, 8) + '…') : text}</pre>
+      }}>{text}</pre>
       <Button
         variant="secondary"
         onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
@@ -47,6 +47,7 @@ export default function ConnectMachine({ compact, onFirstData }: { compact?: boo
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [deviceName, setDeviceName] = useState('');
   const [minted, setMinted] = useState<{ deviceId: string; token: string } | null>(null);
+  const [showTokenFlow, setShowTokenFlow] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [synced, setSynced] = useState<number | null>(null);
@@ -72,11 +73,11 @@ export default function ConnectMachine({ compact, onFirstData }: { compact?: boo
     return () => { on = false; };
   }, []);
 
-  // After a mint, watch sync status until the first session arrives. That
-  // moment — not the payment — is when the product starts existing for the
-  // user, so celebrate it explicitly.
+  // Watch sync status until the first session arrives. That moment — not the
+  // payment — is when the product starts existing for the user, so celebrate
+  // it explicitly. Armed immediately: the install one-liner needs no UI step
+  // here (login mints its own token after the browser approval).
   useEffect(() => {
-    if (!minted) return;
     pollRef.current = setInterval(async () => {
       try {
         const s = await getSyncStatus();
@@ -88,7 +89,7 @@ export default function ConnectMachine({ compact, onFirstData }: { compact?: boo
       } catch { /* server hiccup — keep polling */ }
     }, 5000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [minted]);
+  }, []);
 
   async function mint() {
     if (!teamSlug) return;
@@ -124,61 +125,71 @@ export default function ConnectMachine({ compact, onFirstData }: { compact?: boo
       </div>
       <div style={{ color: 'var(--cr-fg-2)', fontSize: 13, lineHeight: 1.55, marginBottom: 4 }}>
         chat-recall indexes the AI-coding sessions already on your machine (Claude Code, Gemini CLI,
-        OpenCode, Codex), redacts secrets locally, and syncs them here. Three commands and your
+        OpenCode, Codex), redacts secrets locally, and syncs them here. One command and your
         history becomes searchable.
       </div>
       {err && <div style={{ color: 'var(--cr-err-500)', fontSize: 13, margin: '8px 0' }}>{err}</div>}
 
-      {!minted ? (
-        <div style={{ marginTop: 12 }}>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-            <input
-              value={deviceName}
-              onChange={(e) => setDeviceName(e.target.value)}
-              placeholder="device name, e.g. work-laptop"
-              aria-label="Device name"
-              style={{
-                flex: '1 1 220px', font: 'inherit', fontSize: 13, padding: '9px 12px',
-                borderRadius: 'var(--cr-radius-md, 8px)', border: '1px solid var(--cr-line-2)',
-                background: 'var(--cr-ink-0)', color: 'var(--cr-fg-1)',
-              }}
-            />
-            <Button variant="primary" onClick={mint} disabled={busy || !teamSlug}>
-              {busy ? 'Generating…' : 'Generate connect commands'}
-            </Button>
-          </div>
+      <div style={{ marginTop: 12 }}>
+        <div style={{ fontSize: 13, color: 'var(--cr-fg-2)' }}>
+          Run this on the machine with your sessions — it installs the CLI (Node 18+, served by this
+          server, always version-matched), opens your token page, and syncs the moment you paste the
+          token back into the terminal:
         </div>
-      ) : (
-        <div style={{ marginTop: 12 }}>
-          <div style={{ fontSize: 13, color: 'var(--cr-fg-2)' }}>
-            <strong style={{ color: 'var(--cr-fg-1)' }}>1.</strong> Install the CLI (Node 18+, no build tools needed) —
-            served by this server, always version-matched:
-          </div>
-          <CopyBlock text={`curl -fsSL ${origin}/install.sh | sh`} />
-          <div style={{ fontSize: 13, color: 'var(--cr-fg-2)', marginTop: 12 }}>
-            <strong style={{ color: 'var(--cr-fg-1)' }}>2.</strong> Connect <Chip size="sm">{minted.deviceId}</Chip> —
-            this token is shown <strong>once</strong>; copy the whole line:
-          </div>
-          <CopyBlock text={`chat-recall login ${origin} --token ${minted.token}`} masked />
-          <div style={{ fontSize: 13, color: 'var(--cr-fg-2)', marginTop: 12 }}>
-            <strong style={{ color: 'var(--cr-fg-1)' }}>3.</strong> Sync your history (then keep it live with the watch daemon):
-          </div>
-          <CopyBlock text="chat-recall sync" />
-          <div style={{
-            marginTop: 14, padding: '10px 12px', borderRadius: 'var(--cr-radius-md, 8px)', fontSize: 13,
-            border: '1px solid var(--cr-line-1)',
-            background: synced && synced > 0 ? 'var(--cr-ok-surf, #10241a)' : 'var(--cr-ink-1)',
-            color: synced && synced > 0 ? 'var(--cr-ok-500, #4ade80)' : 'var(--cr-fg-2)',
-          }}>
-            {synced && synced > 0
-              ? <>✓ First data arrived — {synced} session(s) synced. You're live.</>
-              : <><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: 'var(--cr-warn-500, #fbbf24)', marginRight: 8 }} />Waiting for the first sync from {minted.deviceId}…</>}
-          </div>
-          <div style={{ marginTop: 10 }}>
-            <Button variant="secondary" onClick={() => { setMinted(null); setSynced(null); }}>Connect another machine</Button>
-          </div>
+        <CopyBlock text={`curl -fsSL ${origin}/install.sh | sh`} />
+        <div style={{ fontSize: 13, color: 'var(--cr-fg-2)', marginTop: 10 }}>
+          Already have the CLI installed? <code>chat-recall login {origin}</code> connects without reinstalling.
         </div>
-      )}
+        <div style={{
+          marginTop: 14, padding: '10px 12px', borderRadius: 'var(--cr-radius-md, 8px)', fontSize: 13,
+          border: '1px solid var(--cr-line-1)',
+          background: synced && synced > 0 ? 'var(--cr-ok-surf, #10241a)' : 'var(--cr-ink-1)',
+          color: synced && synced > 0 ? 'var(--cr-ok-500, #4ade80)' : 'var(--cr-fg-2)',
+        }}>
+          {synced && synced > 0
+            ? <>✓ First data arrived — {synced} session(s) synced. You're live.</>
+            : <><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: 'var(--cr-warn-500, #fbbf24)', marginRight: 8 }} />Waiting for the first sync…</>}
+        </div>
+
+        {/* Raw device tokens are only for machines where nobody can approve a
+            browser prompt (CI, bots). Everyone else never needs to see this. */}
+        {!minted ? (
+          <div style={{ marginTop: 12 }}>
+            <button
+              onClick={() => setShowTokenFlow(!showTokenFlow)}
+              style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', fontSize: 12.5, color: 'var(--cr-fg-3)', cursor: 'pointer' }}
+            >{showTokenFlow ? '▾' : '▸'} Need a raw device token instead? (CI, bots — no browser)</button>
+            {showTokenFlow && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
+                <input
+                  value={deviceName}
+                  onChange={(e) => setDeviceName(e.target.value)}
+                  placeholder="device name, e.g. ci-runner"
+                  aria-label="Device name"
+                  style={{
+                    flex: '1 1 220px', font: 'inherit', fontSize: 13, padding: '9px 12px',
+                    borderRadius: 'var(--cr-radius-md, 8px)', border: '1px solid var(--cr-line-2)',
+                    background: 'var(--cr-ink-0)', color: 'var(--cr-fg-1)',
+                  }}
+                />
+                <Button variant="secondary" onClick={mint} disabled={busy || !teamSlug}>
+                  {busy ? 'Minting…' : 'Mint token'}
+                </Button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 13, color: 'var(--cr-fg-2)' }}>
+              Token for <Chip size="sm">{minted.deviceId}</Chip> — shown <strong>once</strong>; copy the whole line, then run <code>chat-recall sync</code>:
+            </div>
+            <CopyBlock text={`chat-recall login ${origin} --token ${minted.token}`} />
+            <div style={{ marginTop: 10 }}>
+              <Button variant="secondary" onClick={() => { setMinted(null); }}>Mint another token</Button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {!compact && devices.length > 0 && (
         <div style={{ marginTop: 18 }}>
