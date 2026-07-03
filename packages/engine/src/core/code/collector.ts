@@ -18,6 +18,7 @@ import { join, basename } from 'node:path';
 import { resolveProjectId } from '../project-resolver.js';
 import { checkCodeindexStatus, installCodeindex } from '../companions.js';
 import { redactSecrets } from '../secret-redactor.js';
+import { scanDirForSecrets } from '../secret-scanner.js';
 import {
   FINDING_WHY, secFix,
   securityPrompt, literalPrompt, clonePrompt, duplicationPrompt, deadCodePrompt, hotspotPrompt, couplingPrompt, cyclePrompt,
@@ -108,7 +109,25 @@ function parseJson<T>(map: Map<number, string>, id: number, fallback: T): T {
   try { return JSON.parse(t) as T; } catch { return fallback; }
 }
 
-function isGenerated(rel: string): boolean { return GENERATED.some((g) => rel.includes(g)); }
+// Prefix '/' so patterns like '/node_modules/' also match at the string
+// start ('node_modules/zod/…' slipped through the bare includes()).
+function isGenerated(rel: string): boolean { const r = '/' + rel; return GENERATED.some((g) => r.includes(g)); }
+
+/** Test/fixture files — flagged secrets there are fake by design, so the
+ *  scanners' hits get downgraded to low instead of poisoning the score. */
+function isTestFile(rel: string): boolean {
+  return /\.(test|spec)\.[a-z]+$|__tests__\/|\/fixtures?\/|\/testdata\//i.test(rel);
+}
+
+/** Secret-shaped security rules — the raw analyzer matches on NAMES
+ *  (measured 15/16 false positives, including a `stripe_live_key` critical
+ *  that was a doc comment), so this entire domain is delegated to
+ *  gitleaks/trufflehog. Broad on purpose: a dropped codeindex rule here is
+ *  covered by the real scanners; a kept false critical poisons the score. */
+export function isSecretRule(rule: string): boolean {
+  return /secret|password|credential|key|token|auth/i.test(rule);
+}
+
 
 export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
   const ws = opts.workspace.replace(/\/+$/, '');
@@ -226,12 +245,63 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
   const sevFromLiteral = (cat: string): CodeSeverity =>
     cat === 'secret_suspect' ? 'medium' : cat === 'todo_marker' ? 'info' : 'low';
 
-  for (const f of (sec?.findings ?? []).slice(0, 300)) {
-    const file = rel(f.file);
+  // Secret detection comes from the REAL scanners — gitleaks/trufflehog,
+  // the same engine behind the session security pipeline — never from
+  // codeindex's name-matching regex (measured 15/16 false positives on
+  // this repo: function names like maskSecret(), scanner regexes, docs.
+  // 84 phantom criticals × −14 floored health to 0/100). codeindex's
+  // secret-shaped rules are dropped wholesale; its non-secret rules
+  // (injection etc.) pass through. `securityRows` (rel paths) is the ONLY
+  // security list downstream — rows, per-file counts, actions, and the
+  // health score all agree by construction.
+  type SecurityRow = { file: string; rule: string; severity: CodeSeverity; line: number | null; snippet: string };
+  const securityRows: SecurityRow[] = [];
+  const rawSec = (sec?.findings ?? []).slice(0, 300);
+  for (const f of rawSec) {
+    if (isSecretRule(f.rule ?? '')) continue; // replaced by the real scanners below
+    securityRows.push({
+      file: rel(f.file), rule: f.rule ?? 'security', severity: (f.severity ?? 'medium') as CodeSeverity,
+      line: f.line ?? null, snippet: f.line_text ?? '',
+    });
+  }
+  try {
+    // Only git-tracked files can leak via the repo. Untracked local junk
+    // (.playwright-mcp snapshots, node_modules, scratch files) produced 60+
+    // phantom findings on this repo. No git ⇒ empty set ⇒ keep everything.
+    let tracked: Set<string> | null = null;
+    try {
+      const ls = execSync(`git -C "${ws}" ls-files -z`, { encoding: 'utf8', timeout: 60_000, maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
+      tracked = new Set(ls.split('\0').filter(Boolean));
+    } catch { /* not a git repo — scan everything */ }
+
+    const dirSecrets = scanDirForSecrets(ws).slice(0, 500);
+    let kept = 0;
+    for (const f of dirSecrets) {
+      const file = rel(f.file);
+      if (isGenerated(file)) continue;
+      if (tracked && !tracked.has(file)) continue;
+      kept++;
+      securityRows.push({
+        file,
+        rule: `${f.detector}/${f.rule}`,
+        // trufflehog's verified=true means the credential answered a live
+        // probe — unambiguously critical. Other hits: high in product code,
+        // low in test/fixture files (fake-by-design secrets).
+        severity: f.verified === true ? 'critical' : isTestFile(file) ? 'low' : 'high',
+        line: f.line || null,
+        snippet: f.preview, // masked by the scanner — raw secrets never land in findings
+      });
+    }
+    const droppedRegex = rawSec.filter((f: any) => isSecretRule(f.rule ?? '')).length;
+    log(`security: ${kept} tracked-file secret finding(s) from gitleaks/trufflehog (${dirSecrets.length - kept} untracked/generated skipped); dropped ${droppedRegex} name-match regex finding(s)`);
+  } catch (e) {
+    log(`security: repo secret scan unavailable (${e instanceof Error ? e.message : e}) — install gitleaks/trufflehog for secret coverage`);
+  }
+  for (const f of securityRows) {
     findings.push({
-      category: 'security', severity: (f.severity ?? 'medium') as CodeSeverity, file, line: f.line ?? null,
-      rule: f.rule ?? 'security', title: f.rule ?? 'Security finding', snippet: f.line_text ?? '',
-      why: FINDING_WHY.security, agentPrompt: securityPrompt(f.rule ?? 'security', f.severity ?? 'medium', file, f.line ?? null),
+      category: 'security', severity: f.severity, file: f.file, line: f.line,
+      rule: f.rule, title: f.rule, snippet: f.snippet,
+      why: FINDING_WHY.security, agentPrompt: securityPrompt(f.rule, f.severity, f.file, f.line),
     });
   }
   for (const f of (lit?.findings ?? []).slice(0, 150)) {
@@ -387,7 +457,7 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
   const cloneSet = new Set<string>();
   for (const g of clones?.groups ?? []) for (const x of g.functions ?? []) if (x && typeof x === 'object') cloneSet.add(rel(x.file));
   const secByFile = new Map<string, number>();
-  for (const f of sec?.findings ?? []) { const r = rel(f.file); secByFile.set(r, (secByFile.get(r) ?? 0) + 1); }
+  for (const f of securityRows) { secByFile.set(f.file, (secByFile.get(f.file) ?? 0) + 1); }
 
   const suggest = (r: string, ch: number, cx: number): string => {
     if (isGenerated(r)) return 'Generated — exclude from review; fix the generator/template instead.';
@@ -443,8 +513,8 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
 
   // 1. security grouped by rule
   const byRule = new Map<string, Array<{ file: string; line: number | null; sev: string }>>();
-  for (const f of sec?.findings ?? []) {
-    const arr = byRule.get(f.rule) ?? []; arr.push({ file: rel(f.file), line: f.line ?? null, sev: f.severity }); byRule.set(f.rule, arr);
+  for (const f of securityRows) {
+    const arr = byRule.get(f.rule) ?? []; arr.push({ file: f.file, line: f.line, sev: f.severity }); byRule.set(f.rule, arr);
   }
   for (const [rule, hits] of byRule) {
     const sev = hits.some((h) => h.sev === 'critical') ? 'critical' : hits.some((h) => h.sev === 'high') ? 'high' : 'medium';
@@ -507,13 +577,21 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
   // only a small, capped penalty for low-confidence quality noise (literals,
   // dead code, reinvention) so a repo full of TODOs doesn't read as "0 health".
   const secSev = { critical: 0, high: 0, medium: 0 } as Record<string, number>;
-  for (const f of sec?.findings ?? []) if (f.severity in secSev) secSev[f.severity]++;
+  for (const f of securityRows) if (f.severity in secSev) secSev[f.severity]++;
   const qualityNoise = findings.filter((f) => f.category === 'literal' || f.category === 'dead_code' || f.category === 'duplication').length;
   const aiAuthoredFiles = tree.filter((n) => aiFiles.has(rel(n.path))).length;
+  // Capped buckets: no single category can floor the score, so it keeps
+  // discrimination between repos (the old open-ended `critical×14` turned
+  // any repo with a noisy category into 0/100 — every 0 reads as fake and
+  // the user stops trusting the whole page). Verified-live criticals are
+  // the only thing that can take a repo near zero:
+  //   criticals ≤55 · highs ≤25 · mediums ≤8 · structure ≤8 · noise ≤4.
   const score = Math.round(Math.max(0, Math.min(100,
-    100 - secSev.critical * 14 - secSev.high * 6 - secSev.medium * 2
-        - (cyc?.cycles?.length ?? 0) * 4 - (coup?.god_modules?.length ?? 0) * 3
-        - Math.min(qualityNoise, 60) * 0.1)));
+    100 - Math.min(55, secSev.critical * 18)
+        - Math.min(25, secSev.high * 2.5)
+        - Math.min(8, secSev.medium * 1)
+        - Math.min(8, (cyc?.cycles?.length ?? 0) * 2 + (coup?.god_modules?.length ?? 0) * 1.5)
+        - Math.min(4, qualityNoise * 0.1))));
 
   const nodes: CodeMapNode[] = [...symByPkg.entries()].map(([p, sym]) => ({ file: p, pkg: p, symbols: sym, lines: 0 }));
   const edges: CodeMapEdge[] = [...pkgEdges.entries()].filter(([, w]) => w >= 2).map(([k]) => { const [from, to] = k.split(' '); return { from, to }; });
