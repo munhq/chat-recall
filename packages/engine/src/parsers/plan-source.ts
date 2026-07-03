@@ -27,6 +27,7 @@ import { splitByHeaders, discoverSubdirs } from '../core/utils.js';
 import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
 import { opencodeBackend as OPENCODE } from '../core/backends/opencode.js';
 import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
+import { agyBackend as AGY } from '../core/backends/agy.js';
 import { isSourceEnabled } from '../core/settings.js';
 
 const MAX_CHUNK_CHARS = 2000;
@@ -81,6 +82,11 @@ export class PlanSource implements MemorySource {
     // 3) OpenCode plans — ~/.local/share/opencode/plans/*.md
     if (isSourceEnabled('opencode', 'plans')) {
       yield* this.discoverOpenCodePlans();
+    }
+
+    // 4) Antigravity plans — ~/.gemini/antigravity-cli/brain/<uuid>/*.md
+    if (isSourceEnabled('agy', 'plans')) {
+      yield* this.discoverAgyPlans();
     }
   }
 
@@ -376,6 +382,57 @@ export class PlanSource implements MemorySource {
 
     return links;
   }
-}
 
-// splitByHeaders imported from '../core/utils.js'
+  private async *discoverAgyPlans(): AsyncGenerator<MemoryItem> {
+    const brainDir = join(AGY.homeDir(), 'brain');
+    if (!existsSync(brainDir)) return;
+
+    let sessionDirs: string[];
+    try { sessionDirs = readdirSync(brainDir); } catch { return; }
+
+    for (const rawId of sessionDirs) {
+      const sessionPath = join(brainDir, rawId);
+      try {
+        if (!statSync(sessionPath).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+
+      let files: string[];
+      try {
+        files = readdirSync(sessionPath).filter(f => f.endsWith('.md'));
+      } catch {
+        continue;
+      }
+
+      for (const file of files) {
+        const filePath = join(sessionPath, file);
+        try {
+          const stat = statSync(filePath);
+          const content = readFileSync(filePath, 'utf-8');
+          const firstLine = content.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim() || file;
+
+          const sessionLoc = AGY.findSession(rawId);
+          const projectPath = sessionLoc?.projectPath || this.extractProjectPath(content);
+
+          const planName = `${AGY.idPrefix}plan_${rawId}_${basename(file, '.md')}`;
+
+          yield {
+            id: planName,
+            sourceType: 'plan',
+            title: firstLine.slice(0, 150),
+            projectPath,
+            filePath,
+            mtime: stat.mtimeMs,
+            contentPreview: content.slice(0, 300),
+            extra: {
+              tool: 'agy',
+              agySessionId: rawId,
+              fileSize: stat.size,
+            },
+          };
+        } catch { /* skip */ }
+      }
+    }
+  }
+}

@@ -74,13 +74,26 @@ export async function resolveCodeindexBin(autoInstall = true): Promise<string> {
   return st.path;
 }
 
+/** Hard cap on buffered codeindex MCP output. The replies the collector
+ *  consumes are a few MB of JSON; an unbounded `out +=` buffer (plus the
+ *  split('\n') copy at close) OOM-killed the watch daemon on big workspaces. */
+const MCP_OUT_MAX_BYTES = 64 * 1024 * 1024;
+
 /** Drive the codeindex MCP server: write all calls, close stdin, collect replies by id. */
 function runMcp(binPath: string, workspace: string, calls: any[], timeoutMs = 180_000): Promise<Map<number, string>> {
   return new Promise((resolve, reject) => {
     const p = spawn(binPath, ['--mcp', '--workspace', workspace], { stdio: ['pipe', 'pipe', 'ignore'] });
     let out = '';
     const timer = setTimeout(() => { try { p.kill('SIGKILL'); } catch { /* ignore */ } reject(new Error('codeindex MCP timed out')); }, timeoutMs);
-    p.stdout.on('data', (d) => { out += d.toString(); });
+    p.stdout.on('data', (d) => {
+      out += d.toString();
+      if (out.length > MCP_OUT_MAX_BYTES) {
+        out = '';
+        clearTimeout(timer);
+        try { p.kill('SIGKILL'); } catch { /* ignore */ }
+        reject(new Error(`codeindex MCP output exceeded ${MCP_OUT_MAX_BYTES / 1048576}MB budget`));
+      }
+    });
     p.on('error', (e) => { clearTimeout(timer); reject(e); });
     p.on('close', () => {
       clearTimeout(timer);

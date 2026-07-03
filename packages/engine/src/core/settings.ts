@@ -132,6 +132,7 @@ export interface SourcesEnabled {
               agents: boolean; commands: boolean };
   codex:    { sessions: boolean; plugins: boolean; skills: boolean;
               agents: boolean; commands: boolean };
+  agy:      { sessions: boolean; plans: boolean };
   // `shared` covers the tool-neutral ~/.agents/{skills} standard read by all tools.
   shared:   { skills: boolean };
   common:   { mcps: boolean; agentMd: boolean };
@@ -143,6 +144,7 @@ export interface SourceSettings {
   geminiHome?: string;
   codexHome?: string;
   opencodeDbPath?: string;
+  agyHome?: string;
   /** Additional Claude home directories (multi-install: ~/.claude-work, …). */
   extraClaudeHomes?: string[];
   enabled: SourcesEnabled;
@@ -212,7 +214,7 @@ export interface SyncSettings {
    */
   pathsCleartext?: boolean;
   /** Tools whose findings/meta never leave the device. */
-  excludeTools: Array<'claude' | 'gemini' | 'codex' | 'opencode'>;
+  excludeTools: Array<'claude' | 'gemini' | 'codex' | 'opencode' | 'agy'>;
   /** Project paths whose findings/meta never leave the device. */
   excludeProjects: string[];
   /** Last-line regex filter on the redacted `preview` field. */
@@ -282,7 +284,7 @@ export interface TeamSettings {
     /** 24-char hex (12 bytes) — sha256(masterKey)[:12]. Public id for routing. */
     keyId?: string;
     /** Which tools to back up (default: all installed). */
-    syncTools: Array<'claude' | 'gemini' | 'codex' | 'opencode' | 'cursor'>;
+    syncTools: Array<'claude' | 'gemini' | 'codex' | 'opencode' | 'cursor' | 'agy'>;
     /** Project denylist for Vault uploads (extends `privacy.projectDenylist`). */
     excludeProjects: string[];
     /** Last-successful-sync watermark (ms epoch). */
@@ -315,6 +317,7 @@ function defaultSourcesEnabled(): SourcesEnabled {
                 agents: true, commands: true },
     codex:    { sessions: true, plugins: true, skills: true,
                 agents: true, commands: true },
+    agy:      { sessions: true, plans: true },
     shared:   { skills: true },
     common:   { mcps: true, agentMd: true },
   };
@@ -386,6 +389,7 @@ function mergeSources(base: SourceSettings, partial?: Partial<SourceSettings>): 
     gemini:   { ...base.enabled.gemini,   ...(partial.enabled?.gemini   ?? {}) },
     opencode: { ...base.enabled.opencode, ...(partial.enabled?.opencode ?? {}) },
     codex:    { ...base.enabled.codex,    ...(partial.enabled?.codex    ?? {}) },
+    agy:      { ...base.enabled.agy,      ...(partial.enabled?.agy      ?? {}) },
     shared:   { ...base.enabled.shared,   ...(partial.enabled?.shared   ?? {}) },
     common:   { ...base.enabled.common,   ...(partial.enabled?.common   ?? {}) },
   };
@@ -394,6 +398,7 @@ function mergeSources(base: SourceSettings, partial?: Partial<SourceSettings>): 
     geminiHome:       partial.geminiHome       ?? base.geminiHome,
     codexHome:        partial.codexHome        ?? base.codexHome,
     opencodeDbPath:   partial.opencodeDbPath   ?? base.opencodeDbPath,
+    agyHome:          partial.agyHome          ?? base.agyHome,
     extraClaudeHomes: partial.extraClaudeHomes ?? base.extraClaudeHomes,
     enabled,
   };

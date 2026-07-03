@@ -62,7 +62,7 @@ interface MemoryExplorerProps {
   projectFilter?: string | null;
 }
 
-type SessionToolFilter = 'all' | 'claude' | 'gemini' | 'opencode' | 'codex';
+type SessionToolFilter = 'all' | 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy';
 
 /**
  * Read the per-row tool tag. Defaults to 'claude' for sessions and
@@ -223,13 +223,13 @@ export default function MemoryExplorer({ onSessionClick, toolFilter = 'all', pro
 
   // Per-tool counts in the currently-loaded set, for the filter chip badges.
   const sessionToolCounts = useMemo(() => {
-    if (!isToolFilterable) return { claude: 0, gemini: 0, opencode: 0, codex: 0 };
-    const c = { claude: 0, gemini: 0, opencode: 0, codex: 0 } as Record<string, number>;
+    if (!isToolFilterable) return { claude: 0, gemini: 0, opencode: 0, codex: 0, agy: 0 };
+    const c = { claude: 0, gemini: 0, opencode: 0, codex: 0, agy: 0 } as Record<string, number>;
     for (const it of rawDisplayedItems) {
       const t = readItemTool(it);
       if (t in c) c[t]++;
     }
-    return c as { claude: number; gemini: number; opencode: number; codex: number };
+    return c as { claude: number; gemini: number; opencode: number; codex: number; agy: number };
   }, [isToolFilterable, rawDisplayedItems]);
 
   const selectedItem = displayedItems.find((i) => i.id === selectedId);

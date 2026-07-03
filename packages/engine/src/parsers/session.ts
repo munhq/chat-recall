@@ -2,7 +2,7 @@
  * Session parser for Claude Code JSONL files.
  */
 
-import { createReadStream, existsSync, readdirSync, readFileSync, statSync } from 'fs';
+import { createReadStream, existsSync, readdirSync, readFileSync, statSync, openSync, readSync, closeSync } from 'fs';
 import { createInterface } from 'readline';
 import { homedir } from 'os';
 import { join, basename } from 'path';
@@ -251,7 +251,15 @@ export function getSubagentProjectPath(sessionPath: string, folderDerivedPath: s
 export function readCwdFromJsonl(sessionPath: string): string {
   try {
     if (!existsSync(sessionPath)) return '';
-    const text = readFileSync(sessionPath, 'utf-8');
+    // Head-bounded read: transcripts run into the hundreds of MB and this
+    // only ever inspects the first ~50 lines — never load the whole file.
+    let text: string;
+    const fd = openSync(sessionPath, 'r');
+    try {
+      const buf = Buffer.alloc(262144);
+      const n = readSync(fd, buf, 0, buf.length, 0);
+      text = buf.toString('utf-8', 0, n);
+    } finally { closeSync(fd); }
     const lines = text.split('\n', 50);
     for (const line of lines) {
       if (!line || !line.includes('"cwd"')) continue;
