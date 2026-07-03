@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import ConnectMachine from './ConnectMachine';
+import SyncRules from './SyncRules';
 import {
   getEntitlement, startCheckout, openBillingPortal, getAlertConfig, setAlertConfig,
   testAlertWebhook, getMe, createTeam, getPlan,
@@ -64,6 +65,11 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
 
       <section style={{ marginBottom: 18 }}>
         <ConnectMachine />
+      </section>
+
+      <section className="acct-card">
+        <h2>Sync rules</h2>
+        <SyncRules />
       </section>
 
       <AlertsCard onError={setErr} />
