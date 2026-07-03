@@ -5,7 +5,7 @@
 import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import searchRouter from './routes/search.js';
 import conversationsRouter from './routes/conversations.js';
@@ -227,9 +227,17 @@ if (!isServerMode()) {
 // pulls this pod out of the Service endpoints before we stop accepting — the
 // other half of zero-downtime rolling (the rest is the preStop drain + SIGTERM
 // handler below).
+// build identifies the running image ("did the deploy actually roll?"). The
+// Dockerfile stamps git sha or build time into BUILD_STAMP_FILE; 'dev' outside
+// an image. Read once — it can't change while the process lives.
+const BUILD_STAMP = process.env.BUILD_STAMP || (() => {
+  try { return readFileSync(process.env.BUILD_STAMP_FILE || '/app/.build-stamp', 'utf-8').trim() || 'dev'; }
+  catch { return 'dev'; }
+})();
+
 app.get('/health', (_req, res) => {
   if (shuttingDown) return res.status(503).json({ status: 'shutting_down' });
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), build: BUILD_STAMP });
 });
 
 // Serve the built React client from the same origin in production / Docker.
