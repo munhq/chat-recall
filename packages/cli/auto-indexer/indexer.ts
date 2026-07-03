@@ -374,9 +374,17 @@ async function codeIndexTick(): Promise<void> {
     catch (e) { console.error(`[${ts()}] code intelligence skipped — codeindex unavailable: ${e instanceof Error ? e.message : e}`); return; }
     let ok = 0;
     for (const ws of workspaces) {
+      // Per-workspace log line — when this tick OOMs or hangs, the log names
+      // WHERE. (The 2026-07-03 crash hunt had to reconstruct this from GC
+      // timestamps; never again.)
+      const t0 = Date.now();
+      console.log(`[${ts()}] code intelligence: indexing ${ws} …`);
       let result;
       try { result = await collectCode({ workspace: ws, binPath: bin }); }
-      catch { continue; }   // not a scannable workspace (codeindex refused) or transient — skip
+      catch (e) {
+        console.log(`[${ts()}] code intelligence: skipped ${ws} after ${Math.round((Date.now() - t0) / 1000)}s (${e instanceof Error ? e.message : e})`);
+        continue;   // not a scannable workspace (codeindex refused) or transient — skip
+      }
       for (const cred of creds) {
         const base = cred.serverUrl.replace(/\/+$/, '');
         const headers: Record<string, string> = { 'content-type': 'application/json', ...(cred.token ? { authorization: `Bearer ${cred.token}` } : {}) };
