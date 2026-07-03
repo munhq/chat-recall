@@ -235,9 +235,13 @@ const BUILD_STAMP = process.env.BUILD_STAMP || (() => {
   catch { return 'dev'; }
 })();
 
-app.get('/health', (_req, res) => {
+app.get('/health', (req, res) => {
   if (shuttingDown) return res.status(503).json({ status: 'shutting_down' });
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), build: BUILD_STAMP });
+  // The build stamp is OPERATOR data — /health is public, and advertising
+  // image versions/deploy cadence to the internet is a free recon gift. Only
+  // reveal it to requests that prove they're the operator (x-admin-key).
+  const isOperator = !!process.env.ADMIN_KEY && req.get('x-admin-key') === process.env.ADMIN_KEY;
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), ...(isOperator ? { build: BUILD_STAMP } : {}) });
 });
 
 // Serve the built React client from the same origin in production / Docker.
