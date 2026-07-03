@@ -36,6 +36,7 @@ function defaultSourceSettings(): SourceSettings {
       claude:   { sessions: true, plans: true, tasks: true, pasteCache: true, history: true,
                   skills: true, agents: true, commands: true, hooks: true, plugins: true },
       gemini:   { sessions: true, plans: true, brain: true, extensions: true },
+      agy:      { sessions: true, plans: true },
       opencode: { sessions: true, plans: true, todos: true, skills: true },
       codex:    { sessions: true, plugins: true, skills: true },
       common:   { mcps: true, agentMd: true },
@@ -697,6 +698,7 @@ function SourcesCard({ value, onChange }: { value: SourceSettings; onChange: (v:
       {groupRow('Gemini',       'gemini',   ['sessions','plans','brain','extensions'])}
       {groupRow('OpenCode',     'opencode', ['sessions','plans','todos','skills'])}
       {groupRow('Codex',        'codex',    ['sessions','plugins','skills'])}
+      {groupRow('Antigravity',  'agy',      ['sessions','plans'])}
       {groupRow('Cross-tool',   'common',   ['mcps','agentMd'])}
 
       <Disclosure open={pathsOpen} onToggle={setPathsOpen} label="Path overrides (advanced)">
@@ -705,6 +707,8 @@ function SourcesCard({ value, onChange }: { value: SourceSettings; onChange: (v:
             onChange={(v) => onChange({ ...value, claudeHome: v || undefined })} />
           <TextField label="Gemini home"   value={value.geminiHome ?? ''}     placeholder="~/.gemini"
             onChange={(v) => onChange({ ...value, geminiHome: v || undefined })} />
+          <TextField label="Antigravity home" value={value.agyHome ?? ''}     placeholder="~/.gemini/antigravity-cli"
+            onChange={(v) => onChange({ ...value, agyHome: v || undefined })} />
           <TextField label="Codex home"    value={value.codexHome ?? ''}      placeholder="~/.codex"
             onChange={(v) => onChange({ ...value, codexHome: v || undefined })} />
           <TextField label="OpenCode DB"   value={value.opencodeDbPath ?? ''} placeholder="~/.local/share/opencode/opencode.db"
@@ -784,7 +788,7 @@ function SyncCard({
   const setUpload = (k: keyof SyncSettings['upload'], on: boolean) => {
     onChange({ ...value, upload: { ...value.upload, [k]: on } });
   };
-  const tools: Array<'claude' | 'gemini' | 'opencode' | 'codex'> = ['claude','gemini','opencode','codex'];
+  const tools: Array<'claude' | 'gemini' | 'opencode' | 'codex' | 'agy'> = ['claude','gemini','opencode','codex','agy'];
 
   return (
     <Card title="Sync to remote"
