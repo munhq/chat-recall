@@ -70,6 +70,16 @@ async function verifyKeycloakJwt(token: string): Promise<{ sub: string; email: s
       process.env.OIDC_ISSUER ? { issuer: process.env.OIDC_ISSUER } : {},
     );
     if (typeof payload.sub !== 'string') return null;
+    // Audience pinning: accept only tokens minted FOR our client — not any
+    // valid token from the realm (another app's SPA token would otherwise
+    // pass). Keycloak puts the requesting client id in `azp`; audience
+    // mappers may also add it to `aud`. Set OIDC_ALLOWED_AZP=* to disable
+    // (self-host realms with exotic client setups).
+    const allowedAzp = process.env.OIDC_ALLOWED_AZP || 'chat-recall-web';
+    if (allowedAzp !== '*') {
+      const aud = Array.isArray(payload.aud) ? payload.aud : payload.aud ? [payload.aud] : [];
+      if (payload.azp !== allowedAzp && !aud.includes(allowedAzp)) return null;
+    }
     const email = (payload.email || payload.preferred_username) as string | undefined;
     // Keycloak realm roles live in `realm_access.roles`. Used by requireAdmin
     // to gate platform-operator endpoints on the `chat-recall-admin` role.
@@ -130,12 +140,33 @@ export async function requireUser(req: Request, res: Response): Promise<{ sub: s
   return user;
 }
 
-/** Resolve an agent (device) token → tenant, or null. */
+/**
+ * Resolve an agent (device) token → tenant, or null.
+ *
+ * Positive results are cached for 30s: ct_ tokens authenticate EVERY data-plane
+ * request (sync uploads, MCP remote), and opening a control-plane handle per
+ * request is the hot-path cost. Positive-only — a freshly minted token must
+ * never be shadowed by a cached miss. The TTL bounds revocation latency to 30s
+ * per server replica (each replica has its own cache), which is acceptable for
+ * a manual "revoke device" action.
+ */
+const AGENT_TOKEN_TTL_MS = 30_000;
+const agentTokenCache = new Map<string, { tenant: string; userId: string; expires: number }>();
+
 async function resolveAgentToken(tok: string): Promise<{ tenant: string; userId: string } | null> {
+  const hit = agentTokenCache.get(tok);
+  if (hit && hit.expires > Date.now()) return { tenant: hit.tenant, userId: hit.userId };
   const cp = await createControlPlane();
   try {
     const info = await cp.resolveAgentToken(tok);
-    return info ? { tenant: info.tenant, userId: `device:${info.deviceId}` } : null;
+    if (!info) return null;
+    const entry = { tenant: info.tenant, userId: `device:${info.deviceId}`, expires: Date.now() + AGENT_TOKEN_TTL_MS };
+    // Crude size cap — a scan of garbage tokens must not grow this unbounded.
+    // (Garbage never lands here — negatives aren't cached — but tenants with
+    // thousands of devices are.) Clearing rebuilds within one TTL window.
+    if (agentTokenCache.size >= 5000) agentTokenCache.clear();
+    agentTokenCache.set(tok, entry);
+    return { tenant: entry.tenant, userId: entry.userId };
   } finally {
     await cp.close();
   }
