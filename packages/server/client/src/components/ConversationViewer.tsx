@@ -35,7 +35,7 @@ import {
 import { stripInjectedBanners, summaryTitle } from '../utils/clean';
 import SessionTrace from './SessionTrace';
 
-type ViewMode = 'summary' | 'firstPrompt' | 'full' | 'trace' | 'raw' | 'related' | 'files' | 'diff' | 'commits' | 'outcome' | 'security';
+type ViewMode = 'summary' | 'insights' | 'metrics' | 'firstPrompt' | 'full' | 'trace' | 'raw' | 'related' | 'files' | 'diff' | 'commits' | 'outcome' | 'security';
 type MessageFilter = 'all' | 'user' | 'assistant' | 'thinking' | 'tools' | 'edits';
 
 interface ConversationViewerProps {
@@ -84,7 +84,7 @@ export default function ConversationViewer({
   // Tab is URL-backed (?tab=) so a specific lens on a session is shareable
   // ("this session → Diff"). replaceState keeps tab flips out of history;
   // the param clears when the viewer unmounts.
-  const VIEWER_TABS = ['summary', 'outcome', 'firstPrompt', 'full', 'trace', 'files', 'diff', 'commits', 'security', 'raw', 'related'];
+  const VIEWER_TABS = ['summary', 'insights', 'metrics', 'outcome', 'firstPrompt', 'full', 'trace', 'files', 'diff', 'commits', 'security', 'raw', 'related'];
   // Default to Summary — the readable landing (outcome + what the session was
   // about), not the raw transcript.
   const [viewModeRaw, setViewModeRaw] = useUrlState('tab', 'summary', {
@@ -165,8 +165,8 @@ export default function ConversationViewer({
 
     // Re-fire the fetch for the currently-active tab so the new session's
     // data populates without requiring a second user click.
-    if (viewMode === 'outcome' || viewMode === 'summary') {
-      // Summary shows the outcome banner, so both tabs need it on session switch.
+    if (viewMode === 'outcome' || viewMode === 'summary' || viewMode === 'insights' || viewMode === 'metrics') {
+      // Summary (status), Insights (panel), Metrics (duration) all need outcome.
       setOutcomeLoading(true);
       getSessionOutcome(sessionId)
         .then(setOutcomeData)
@@ -387,17 +387,22 @@ export default function ConversationViewer({
         .catch(() => {})
         .finally(() => setMetaLoading(false));
     }
-    // Summary now shows the outcome banner too — load it alongside.
-    if (mode === 'summary' && (!outcomeData || outcomeData._computing) && !outcomeLoading) {
+    // Summary (status line), Insights (full panel), and Metrics (duration +
+    // commit counts) all read the outcome — load it for any of them.
+    if ((mode === 'summary' || mode === 'insights' || mode === 'metrics') && (!outcomeData || outcomeData._computing) && !outcomeLoading) {
       setOutcomeLoading(true);
       setOutcomeError(null);
       getSessionOutcome(sessionId)
         .then((d) => {
           setOutcomeData(d);
-          if (d._computing) setTimeout(() => { if (mode === 'summary') setOutcomeData(null); }, 2000);
+          if (d._computing) setTimeout(() => { setOutcomeData(null); }, 2000);
         })
         .catch(err => setOutcomeError(err instanceof Error ? err.message : 'Failed to load outcome'))
         .finally(() => setOutcomeLoading(false));
+    }
+    if (mode === 'metrics' && !sessionMeta) {
+      setMetaLoading(true);
+      getSessionMetadata(sessionId).then(setSessionMeta).catch(() => {}).finally(() => setMetaLoading(false));
     }
     if (mode === 'diff' && (!diffData || diffData._computing) && !diffLoading) {
       setDiffLoading(true);
@@ -438,11 +443,6 @@ export default function ConversationViewer({
     setViewMode(mode);
   };
 
-  const formatTokens = (n: number) => {
-    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-    return String(n);
-  };
 
   const formatCost = (n: number) => {
     if (n < 0.01) return `<$0.01`;
@@ -580,6 +580,10 @@ export default function ConversationViewer({
             alignItems: 'center',
           }}
         >
+          {/* Only the at-a-glance context chips stay in the header. Git branch
+              is quick orientation; cost/savings are one-glance money. Tokens
+              and the tools-used list moved to the Metrics tab — they were
+              noise up here. */}
           {sessionMeta?.gitBranch && <Chip kind="ok" icon="check">{sessionMeta.gitBranch}</Chip>}
           {sessionMeta?.estimatedCostUsd && sessionMeta.estimatedCostUsd > 0 && (
             <Chip kind="warn">{formatCost(sessionMeta.estimatedCostUsd)}</Chip>
@@ -587,107 +591,48 @@ export default function ConversationViewer({
           {sessionMeta?.cacheSavingsUsd && sessionMeta.cacheSavingsUsd > 0.01 && (
             <Chip kind="ok">saved {formatCost(sessionMeta.cacheSavingsUsd)}</Chip>
           )}
-          {sessionMeta?.toolsUsed && sessionMeta.toolsUsed.length > 0 && (
-            <Chip kind="mono" className="cr-chip-tools">
-              {sessionMeta.toolsUsed.slice(0, 8).join(', ')}
-              {sessionMeta.toolsUsed.length > 8 && ' +' + (sessionMeta.toolsUsed.length - 8)}
-            </Chip>
-          )}
         </div>
 
-        {/* Token strip */}
-        {(sessionMeta?.inputTokens || 0) > 0 && (
-          <div
-            className="cr-viewer-tokens"
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(90px, 1fr))',
-              gap: 1,
-              background: 'var(--cr-line-1)',
-              border: '1px solid var(--cr-line-1)',
-              borderRadius: 'var(--cr-radius-md)',
-              marginBottom: 24,
-              overflow: 'hidden',
-            }}
-          >
-            {[
-              ['Input', formatTokens(sessionMeta?.inputTokens || 0)],
-              ['Output', formatTokens(sessionMeta?.outputTokens || 0)],
-              ['Cache read', formatTokens(sessionMeta?.cacheReadTokens || 0)],
-              ['Cache write', formatTokens(sessionMeta?.cacheCreationTokens || 0)],
-              ['Peak ctx', formatTokens(sessionMeta?.peakContextTokens || 0)],
-            ].map(([l, v]) => (
-              <div
-                key={l}
-                style={{
-                  padding: '10px 12px',
-                  background: 'var(--cr-ink-1)',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 2,
-                }}
-              >
-                <div
-                  style={{
-                    fontSize: 10,
-                    color: 'var(--cr-fg-3)',
-                    fontWeight: 500,
-                    letterSpacing: '0.02em',
-                    textTransform: 'uppercase',
-                  }}
-                >
-                  {l}
-                </div>
-                <div
-                  style={{
-                    fontSize: 14,
-                    fontWeight: 600,
-                    color: 'var(--cr-fg-1)',
-                    fontVariantNumeric: 'tabular-nums',
-                  }}
-                >
-                  {v}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {/* View tabs — four plain-language lenses instead of eleven jargon
-            ones. Outcome folds into Summary (what happened + what it was
-            about, together). Transcript is the conversation, with its own
-            message-type filter that covers the old Trace/First-Prompt.
-            Changes groups Diff/Files/Commits. Raw/Related were dropped — debug
-            detail, not something you operate the app with. */}
+        {/* View tabs — each one job. Summary: the AI narrative, readable.
+            Insights: the extractions (decisions, blockers, friction). Metrics:
+            the numbers + tools/edits. Transcript: the conversation. Changes:
+            diff/files/commits. Security appears ONLY when this session actually
+            leaked secrets — otherwise it's not a tab. */}
         {(() => {
           const primaryOf = (m: ViewMode): string =>
-            (m === 'summary' || m === 'outcome') ? 'summary'
+            (m === 'summary') ? 'summary'
+            : (m === 'insights' || m === 'outcome') ? 'insights'
+            : (m === 'metrics') ? 'metrics'
             : (m === 'full' || m === 'firstPrompt' || m === 'trace' || m === 'raw' || m === 'related') ? 'transcript'
             : (m === 'diff' || m === 'files' || m === 'commits') ? 'changes'
             : m; // 'security'
           const primary = primaryOf(viewMode);
-          const securityLabel = (() => {
-            if (!secretsData) return 'Security';
+          const findingCount = (() => {
+            if (!secretsData) return 0;
             const seen = new Set<string>();
             for (const det of Object.keys(secretsData.byDetector)) {
               for (const f of secretsData.byDetector[det]) seen.add(`${det}|${f.rule}|${f.line}`);
             }
-            return seen.size > 0 ? `Security · ${seen.size}` : 'Security';
+            return seen.size;
           })();
+          const tabs = [
+            { value: 'summary', label: 'Summary', icon: 'file' },
+            { value: 'insights', label: 'Insights', icon: 'sparkle' },
+            { value: 'metrics', label: 'Metrics', icon: 'chart' },
+            { value: 'transcript', label: 'Transcript', icon: 'message' },
+            { value: 'changes', label: 'Changes', icon: 'terminal' },
+            // Security is conditional: a tab only when there's something to see.
+            ...(findingCount > 0 ? [{ value: 'security', label: `Security · ${findingCount}`, icon: 'check' }] : []),
+          ];
+          const toMode = (p: string): ViewMode =>
+            p === 'transcript' ? 'full' : p === 'changes' ? 'diff' : (p as ViewMode);
           return (
             <>
               <div className="cr-segmented-scroll" style={{ marginBottom: primary === 'changes' ? 10 : 20 }}>
                 <SegmentedControl
                   value={primary}
-                  onChange={(p) => handleViewChange(
-                    (p === 'summary' ? 'summary' : p === 'transcript' ? 'full' : p === 'changes' ? 'diff' : 'security') as ViewMode,
-                  )}
-                  options={[
-                    { value: 'summary', label: 'Summary', icon: 'file' },
-                    { value: 'transcript', label: 'Transcript', icon: 'message' },
-                    { value: 'changes', label: 'Changes', icon: 'terminal' },
-                    { value: 'security', label: securityLabel, icon: 'check' },
-                  ]}
+                  onChange={(p) => handleViewChange(toMode(p))}
+                  options={tabs}
                 />
               </div>
               {primary === 'changes' && (
@@ -710,16 +655,31 @@ export default function ConversationViewer({
         {/* Content */}
         {viewMode === 'summary' && (
           <>
-            {/* Outcome folded in: what actually happened (shipped/interrupted,
-                files, +/− lines, commits) sits above the AI summary of what the
-                session was about. One place, no separate jargon tab. */}
-            {outcomeData && <div style={{ marginBottom: 20 }}><OutcomePanel data={outcomeData} loading={false} error={null} /></div>}
+            {/* One compact outcome line — status + one-sentence reason. The full
+                breakdown (decisions/blockers/markers) lives in Insights so the
+                AI narrative below is the star of this tab, not buried under it. */}
+            {outcomeData && outcomeData.status && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18, flexWrap: 'wrap' }}>
+                <StatusChip status={outcomeData.status} />
+                {outcomeData.reason && (
+                  <span style={{ fontSize: 13, color: 'var(--cr-fg-2)' }}>{outcomeData.reason}</span>
+                )}
+              </div>
+            )}
             <StructuredSummary
               summary={summary}
               loading={metaLoading}
               sessionId={sessionId}
             />
           </>
+        )}
+
+        {viewMode === 'insights' && (
+          <OutcomePanel data={outcomeData} loading={outcomeLoading} error={outcomeError} />
+        )}
+
+        {viewMode === 'metrics' && (
+          <MetricsPanel meta={sessionMeta} outcome={outcomeData} loading={metaLoading} />
         )}
 
         {viewMode === 'firstPrompt' && (
@@ -1466,6 +1426,83 @@ function MarkerChip({ marker }: { marker: PromptMarker }) {
   const m = MARKER_STYLES[marker];
   if (!m) return null;
   return <Chip kind={m.kind} size="sm">{m.symbol} {m.label}</Chip>;
+}
+
+/* ────────────────────────────── Metrics ────────────────────────────── */
+
+/** The numbers behind a session: cost + tokens, size (messages/duration/files/
+ *  commits), and the tools it called. All the quantitative stuff that used to
+ *  clutter the header now lives on its own tab. */
+function MetricsPanel({
+  meta, outcome, loading,
+}: { meta: SessionMetadataResponse | null; outcome: SessionOutcomeResponse | null; loading: boolean }) {
+  if (loading && !meta) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Loading metrics…</div>;
+  if (!meta) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>No metrics for this session.</div>;
+
+  const fmtN = (n: number) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
+  const fmtCost = (n: number | null) => n == null ? '—' : n < 0.01 ? '<$0.01' : `$${n.toFixed(2)}`;
+  const dur = meta.durationMs > 0
+    ? (meta.durationMs >= 3600_000 ? `${(meta.durationMs / 3600_000).toFixed(1)}h` : `${Math.round(meta.durationMs / 60000)} min`)
+    : '—';
+
+  const Stat = ({ label, value, tone }: { label: string; value: string; tone?: string }) => (
+    <div style={{ padding: '12px 14px', background: 'var(--cr-ink-1)', display: 'flex', flexDirection: 'column', gap: 3 }}>
+      <div style={{ fontSize: 10, color: 'var(--cr-fg-3)', fontWeight: 500, letterSpacing: '0.04em', textTransform: 'uppercase' }}>{label}</div>
+      <div style={{ fontSize: 18, fontWeight: 600, color: tone || 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+    </div>
+  );
+  const grid: React.CSSProperties = {
+    display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 1,
+    background: 'var(--cr-line-1)', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-md)', overflow: 'hidden',
+  };
+  const cap: React.CSSProperties = { fontSize: 11, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--cr-fg-3)', fontWeight: 600, margin: '4px 2px 8px' };
+
+  return (
+    <div data-testid="conversation-metrics" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <div>
+        <div style={cap}>Size</div>
+        <div style={grid}>
+          <Stat label="Messages" value={fmtN(meta.messageCount || 0)} />
+          <Stat label="Duration" value={dur} />
+          <Stat label="Files edited" value={String(outcome?.fileCount ?? meta.filesModified?.length ?? 0)} />
+          <Stat label="Commits" value={String(outcome?.commits?.totalCommits ?? 0)} />
+        </div>
+      </div>
+
+      <div>
+        <div style={cap}>Cost &amp; tokens</div>
+        <div style={grid}>
+          <Stat label="Cost" value={fmtCost(meta.estimatedCostUsd)} tone="var(--cr-warn-500)" />
+          {meta.cacheSavingsUsd != null && meta.cacheSavingsUsd > 0.01 && (
+            <Stat label="Cache saved" value={fmtCost(meta.cacheSavingsUsd)} tone="var(--cr-ok-500)" />
+          )}
+          <Stat label="Input" value={fmtN(meta.inputTokens || 0)} />
+          <Stat label="Output" value={fmtN(meta.outputTokens || 0)} />
+          <Stat label="Cache read" value={fmtN(meta.cacheReadTokens || 0)} />
+          <Stat label="Cache write" value={fmtN(meta.cacheCreationTokens || 0)} />
+          <Stat label="Peak context" value={fmtN(meta.peakContextTokens || 0)} />
+        </div>
+      </div>
+
+      {meta.modelsUsed && meta.modelsUsed.length > 0 && (
+        <div>
+          <div style={cap}>Models</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {meta.modelsUsed.map((m) => <Chip key={m} kind="mono" size="sm">{m}</Chip>)}
+          </div>
+        </div>
+      )}
+
+      {meta.toolsUsed && meta.toolsUsed.length > 0 && (
+        <div>
+          <div style={cap}>Tools called ({meta.toolsUsed.length})</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {meta.toolsUsed.map((t) => <Chip key={t} kind="mono" size="sm">{t}</Chip>)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function OutcomePanel({
