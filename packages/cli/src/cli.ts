@@ -1859,6 +1859,59 @@ exclude
     const deny = s.privacy.projectDenylist || [];
     console.log(`  index denylist (never even indexed): ${deny.length ? '' : chalk.dim('none')}`);
     for (const p of deny) console.log(`    ${p}`);
+    console.log(chalk.dim('\nPersonal folders (Pictures, Music, Documents, Desktop, Downloads, …) are'));
+    console.log(chalk.dim('skipped from code indexing by default. Opt one back in: `chat-recall include project <path>`.'));
+    const inc = s.sync.includeProjects || [];
+    if (inc.length) { console.log(`  personal paths opted back in:`); for (const p of inc) console.log(`    ${p}`); }
+  });
+
+// `include` re-permits a personal folder (Pictures/Music/Documents/…) that
+// code-index discovery skips by default. Opt-in only — the default is privacy.
+const include = program
+  .command('include')
+  .description('Opt a personal folder (Pictures/Music/Documents/…) back into code indexing. Bare `include` lists opted-in paths.');
+
+include
+  .command('list', { isDefault: true })
+  .description('Show paths opted back into indexing')
+  .action(async () => {
+    const { loadSettings } = await import('@chat-recall/engine/core/settings.js');
+    const inc = loadSettings().sync.includeProjects || [];
+    console.log(chalk.bold('Personal paths opted back into code indexing'));
+    if (!inc.length) console.log(chalk.dim('  none — personal folders are all skipped'));
+    for (const p of inc) console.log(`  ${p}`);
+  });
+
+include
+  .command('project <path>')
+  .description('Re-permit a path under a personal folder (substring match; e.g. ~/Documents/code)')
+  .action(async (path: string) => {
+    const { loadSettings, saveSettings } = await import('@chat-recall/engine/core/settings.js');
+    const { resolve } = await import('node:path');
+    const { homedir } = await import('node:os');
+    const abs = resolve(path.replace(/^~(?=\/|$)/, homedir()));
+    const s = loadSettings();
+    s.sync.includeProjects = s.sync.includeProjects || [];
+    if (s.sync.includeProjects.includes(abs)) { console.log(chalk.dim(`Already included: ${abs}`)); return; }
+    s.sync.includeProjects.push(abs);
+    saveSettings(s);
+    console.log(chalk.green(`✓ Included ${abs}`) + chalk.dim(' — code indexing may now walk it (takes effect next discovery tick).'));
+  });
+
+include
+  .command('remove <path>')
+  .description('Undo an opt-in (personal folder goes back to skipped)')
+  .action(async (path: string) => {
+    const { loadSettings, saveSettings } = await import('@chat-recall/engine/core/settings.js');
+    const { resolve } = await import('node:path');
+    const { homedir } = await import('node:os');
+    const abs = resolve(path.replace(/^~(?=\/|$)/, homedir()));
+    const s = loadSettings();
+    const before = (s.sync.includeProjects || []).length;
+    s.sync.includeProjects = (s.sync.includeProjects || []).filter((p) => p !== path && p !== abs);
+    if (s.sync.includeProjects.length === before) { console.error(chalk.red(`Not in the include list: ${path}`)); process.exit(1); }
+    saveSettings(s);
+    console.log(chalk.green(`✓ Removed ${path}`) + chalk.dim(' — back to skipped.'));
   });
 
 exclude

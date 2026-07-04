@@ -36,7 +36,7 @@ import { dirname, basename, join } from 'path';
 
 import { claudeBackend, geminiBackend, opencodeBackend, codexBackend } from '@chat-recall/engine/core/backends/index.js';
 import { getDiaryDir } from '@chat-recall/engine/core/paths.js';
-import { loadSettings } from '@chat-recall/engine/core/settings.js';
+import { loadSettings, isPersonalPath } from '@chat-recall/engine/core/settings.js';
 
 // The only "work" import: the HTTP collector that ships sessions to the
 // server. Everything else this daemon used to import (stores, embedder,
@@ -361,14 +361,19 @@ function discoverWorkspaces(): string[] {
   // protected folder, and indexes repos the user explicitly excluded. Excluded
   // = never handed to codeindex, so its filesystem walk never starts there.
   let excluded: string[] = [];
+  let includeProjects: string[] = [];
   try {
     const s = loadSettings();
     excluded = [...(s.sync?.excludeProjects ?? []), ...(s.privacy?.projectDenylist ?? [])].filter(Boolean);
-  } catch { /* settings unreadable — no extra exclusions */ }
+    includeProjects = (s.sync?.includeProjects ?? []).filter(Boolean);
+  } catch { /* settings unreadable — no extra exclusions, personal-dir default still applies */ }
   const isExcluded = (p: string) => excluded.some((x) => p.includes(x));
 
   return [...newest.entries()]
     .filter(([p]) => !isExcluded(p))
+    // Personal folders (Pictures/Music/Documents/…) are skipped by default —
+    // opt a specific path back in via sync.includeProjects.
+    .filter(([p]) => !isPersonalPath(p, includeProjects))
     .filter(([p]) => { try { return existsSync(p); } catch { return false; } })
     .sort((a, b) => b[1] - a[1])
     .slice(0, CODE_INDEX_MAX)
