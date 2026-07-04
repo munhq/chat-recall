@@ -1488,17 +1488,38 @@ function MetricsPanel({
 
   // Tool activity — counted from the transcript. This is where "what happened"
   // lives: web fetches, edits, reads, bash, MCP calls, each with a magnitude.
+  // We also estimate the TOKEN WEIGHT each tool pulled in, from the size of its
+  // input+result text (~4 chars/token) — so you can see which tools ate the
+  // context (a Read of a huge file, a WebFetch, a noisy Bash), not just how
+  // often they ran.
   const toolCounts = new Map<string, number>();
+  const toolTokens = new Map<string, number>();
   let toolErrors = 0;
   for (const m of messages) {
     for (const tc of m.toolCalls || []) {
       toolCounts.set(tc.name, (toolCounts.get(tc.name) || 0) + 1);
       if (tc.isError) toolErrors++;
+      let bytes = 0;
+      try { bytes = JSON.stringify(tc.input ?? '').length + JSON.stringify(tc.result ?? '').length; } catch { /* circular — skip */ }
+      toolTokens.set(tc.name, (toolTokens.get(tc.name) || 0) + Math.round(bytes / 4));
     }
   }
   const tools = [...toolCounts.entries()].sort((a, b) => b[1] - a[1]);
   const toolTotal = tools.reduce((s, [, n]) => s + n, 0);
   const maxTool = Math.max(1, ...tools.map(([, n]) => n));
+  const toolsByTokens = [...toolTokens.entries()].filter(([, t]) => t > 0).sort((a, b) => b[1] - a[1]);
+  const maxToolTokens = Math.max(1, ...toolsByTokens.map(([, t]) => t));
+
+  // Color a tool by the kind of work it does — shared by both tool charts.
+  const toolKindColor = (name: string): string => {
+    if (/^(Edit|Write|MultiEdit|NotebookEdit)$/.test(name)) return 'var(--cr-ok-500)';
+    if (/^(Read|Glob|Grep|LS)$/.test(name)) return 'var(--cr-fg-3)';
+    if (name === 'Bash') return 'var(--cr-warn-500)';
+    if (/^Web(Fetch|Search)$/.test(name)) return 'var(--cr-info-500)';
+    if (/^(Task|Agent)/.test(name)) return 'var(--cr-tool-claude, #c98bff)';
+    if (name.startsWith('mcp__')) return 'var(--cr-brand-500)';
+    return 'var(--cr-fg-2)';
+  };
 
   // Clean borderless stat — big number + label, matches the chart sections
   // (the old boxed grid looked like a different app).
@@ -1534,7 +1555,8 @@ function MetricsPanel({
           sub={outcome?.commits?.repos?.length ? `${outcome.commits.repos.length} repo(s)` : undefined}
           onClick={() => onOpenTab('commits')} />
         {toolTotal > 0 && <StatInline label="tool calls" value={fmtN(toolTotal)}
-          sub={toolErrors > 0 ? <span style={{ color: 'var(--cr-err-500)' }}>{toolErrors} failed</span> : undefined} />}
+          sub={toolErrors > 0 ? <span style={{ color: 'var(--cr-err-500)' }}>{toolErrors} failed</span> : undefined}
+          onClick={onOpenTools} />}
       </div>
 
       {/* Context window — a single value against its ceiling. A gauge is the
@@ -1625,42 +1647,52 @@ function MetricsPanel({
           Web fetches, edits, reads, bash, MCP calls — each a bar, colored by
           kind of work. This is the "what happened" the user asked for. Opens
           the transcript for the raw calls. */}
-      {tools.length > 0 && (() => {
-        const kindColor = (name: string): string => {
-          if (/^(Edit|Write|MultiEdit|NotebookEdit)$/.test(name)) return 'var(--cr-ok-500)';       // edits
-          if (/^(Read|Glob|Grep|LS)$/.test(name)) return 'var(--cr-fg-3)';                          // reads/search
-          if (name === 'Bash') return 'var(--cr-warn-500)';                                         // shell
-          if (/^Web(Fetch|Search)$/.test(name)) return 'var(--cr-info-500)';                        // web
-          if (/^(Task|Agent)/.test(name)) return 'var(--cr-tool-claude, #c98bff)';                  // subagents
-          if (name.startsWith('mcp__')) return 'var(--cr-brand-500)';                               // MCP tools
-          return 'var(--cr-fg-2)';
-        };
-        return (
-          <div>
-            <div style={cap}>Activity · {toolTotal} tool calls</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {tools.slice(0, 16).map(([name, n]) => (
-                <div key={name} onClick={onOpenTools} title={`${name} — ${n} call(s). Open the tool calls in the transcript.`}
-                  style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
-                  <span style={{ width: 150, flexShrink: 0, fontSize: 12, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prettyToolName(name)}</span>
-                  <div style={{ flex: 1, height: 14, background: 'var(--cr-ink-2)', borderRadius: 3, overflow: 'hidden' }}>
-                    <div style={{ width: `${(n / maxTool) * 100}%`, height: '100%', background: kindColor(name), borderRadius: 3, minWidth: 3 }} />
-                  </div>
-                  <span style={{ width: 30, textAlign: 'right', flexShrink: 0, fontSize: 12, color: 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums' }}>{n}</span>
+      {tools.length > 0 && (
+        <div>
+          <div style={cap}>Activity · {toolTotal} tool calls{toolErrors > 0 && <span style={{ color: 'var(--cr-err-500)' }}> · {toolErrors} failed</span>}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {tools.slice(0, 16).map(([name, n]) => (
+              <div key={name} onClick={onOpenTools} title={`${name} — ${n} call(s). Open the tool calls in the transcript.`}
+                style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                <span style={{ width: 150, flexShrink: 0, fontSize: 12, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prettyToolName(name)}</span>
+                <div style={{ flex: 1, height: 14, background: 'var(--cr-ink-2)', borderRadius: 3, overflow: 'hidden' }}>
+                  <div style={{ width: `${(n / maxTool) * 100}%`, height: '100%', background: toolKindColor(name), borderRadius: 3, minWidth: 3 }} />
                 </div>
-              ))}
-              {tools.length > 16 && <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>+{tools.length - 16} more tool(s)</div>}
-            </div>
-            <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 10.5, color: 'var(--cr-fg-3)', marginTop: 8 }}>
-              <span><span style={{ color: 'var(--cr-ok-500)' }}>■</span> edits</span>
-              <span><span style={{ color: 'var(--cr-info-500)' }}>■</span> web</span>
-              <span><span style={{ color: 'var(--cr-warn-500)' }}>■</span> shell</span>
-              <span><span style={{ color: 'var(--cr-brand-500)' }}>■</span> recall/MCP</span>
-              <span><span style={{ color: 'var(--cr-fg-3)' }}>■</span> reads</span>
-            </div>
+                <span style={{ width: 30, textAlign: 'right', flexShrink: 0, fontSize: 12, color: 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums' }}>{n}</span>
+              </div>
+            ))}
+            {tools.length > 16 && <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>+{tools.length - 16} more tool(s)</div>}
           </div>
-        );
-      })()}
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 10.5, color: 'var(--cr-fg-3)', marginTop: 8 }}>
+            <span><span style={{ color: 'var(--cr-ok-500)' }}>■</span> edits</span>
+            <span><span style={{ color: 'var(--cr-info-500)' }}>■</span> web</span>
+            <span><span style={{ color: 'var(--cr-warn-500)' }}>■</span> shell</span>
+            <span><span style={{ color: 'var(--cr-brand-500)' }}>■</span> recall/MCP</span>
+            <span><span style={{ color: 'var(--cr-fg-3)' }}>■</span> reads</span>
+          </div>
+        </div>
+      )}
+
+      {/* Tokens by tool — which tools ate the context. Estimated from each
+          call's input+result size (~4 chars/token); a Read of a big file or a
+          WebFetch dwarfs a dozen small Edits. Different story than call count. */}
+      {toolsByTokens.length > 0 && (
+        <div>
+          <div style={cap}>Tokens by tool · approx from I/O</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {toolsByTokens.slice(0, 12).map(([name, t]) => (
+              <div key={name} onClick={onOpenTools} title={`${name} — ~${fmtN(t)} tokens of input+output across its calls.`}
+                style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                <span style={{ width: 150, flexShrink: 0, fontSize: 12, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prettyToolName(name)}</span>
+                <div style={{ flex: 1, height: 14, background: 'var(--cr-ink-2)', borderRadius: 3, overflow: 'hidden' }}>
+                  <div style={{ width: `${(t / maxToolTokens) * 100}%`, height: '100%', background: toolKindColor(name), borderRadius: 3, minWidth: 3 }} />
+                </div>
+                <span style={{ width: 42, textAlign: 'right', flexShrink: 0, fontSize: 12, color: 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums' }}>{fmtN(t)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Cost & tokens — a visual composition, not a value list. Where the
           tokens went (input / output / cache) as a stacked bar + legend with
