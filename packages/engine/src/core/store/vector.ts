@@ -107,6 +107,23 @@ export class PgVectorStore implements VectorStore {
     await this.fts.init();
     try {
       await this.pool.query(`CREATE EXTENSION IF NOT EXISTS vector`);
+      // Self-heal dimension drift: the table is created with the embedder's
+      // configured dimension, so an embedder/model swap (e.g. 768 → 1024)
+      // leaves CREATE IF NOT EXISTS silently keeping the old width — every
+      // insert then fails forever. Vectors are derived data (the sweep refills
+      // them from memory_chunks), so on mismatch we drop and recreate at the
+      // configured width instead of requiring a hand-run migration. Old-model
+      // vectors would be a different vector space anyway — unusable for
+      // similarity against new-model query embeddings, not worth preserving.
+      const dimRow = await this.pool.query(
+        `SELECT atttypmod AS dim FROM pg_attribute
+          WHERE attrelid = to_regclass('memory_vectors') AND attname = 'embedding'`);
+      const existingDim = dimRow.rows[0]?.dim;
+      if (existingDim != null && existingDim > 0 && existingDim !== this.dim) {
+        const n = await this.pool.query(`SELECT count(*)::int AS c FROM memory_vectors`);
+        console.warn(`[vector] memory_vectors is vector(${existingDim}) but embedder is ${this.dim}-dim — dropping ${n.rows[0].c} stale vector(s) and recreating; the backfill sweep re-embeds from memory_chunks`);
+        await this.pool.query(`DROP TABLE memory_vectors`);
+      }
       await this.pool.query(
         `CREATE TABLE IF NOT EXISTS memory_vectors (
            tenant TEXT NOT NULL DEFAULT 'default', chunk_id TEXT NOT NULL, item_id TEXT NOT NULL,
