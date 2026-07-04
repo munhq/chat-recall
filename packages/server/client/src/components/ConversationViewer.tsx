@@ -1679,116 +1679,114 @@ function OutcomePanel({
 
   const minutes = data.startMs && data.endMs ? Math.round((data.endMs - data.startMs) / 60000) : 0;
 
+  // ── Three human questions: what got delivered, what didn't, what frustrated
+  //    you. Each bucket is built from the raw outcome fields.
+  const commits = data.commits.repos.flatMap(r => r.commits.map(c => ({ ...c, repoName: r.repoName })));
+  const frustPrompts = data.prompts.filter(p => p.markers.includes('frustrated') || p.markers.includes('correction'));
+  const reactionNegative = data.claimReaction.reaction?.markers?.some(m => m === 'frustrated' || m === 'correction');
+  const unfinished = data.status === 'interrupted' || data.status === 'abandoned';
+
+  const Section = ({ tone, title, count, children }: { tone: string; title: string; count?: number; children: React.ReactNode }) => (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '4px 2px 10px' }}>
+        <span style={{ width: 8, height: 8, borderRadius: 2, background: tone }} />
+        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--cr-fg-1)', letterSpacing: '0.01em' }}>{title}</span>
+        {count != null && <span style={{ fontSize: 12, color: 'var(--cr-fg-3)', fontVariantNumeric: 'tabular-nums' }}>{count}</span>}
+      </div>
+      {children}
+    </div>
+  );
+  const item: React.CSSProperties = { padding: '10px 14px', background: 'var(--cr-ink-1)', borderLeft: '2px solid var(--cr-line-2)', borderRadius: '0 6px 6px 0', fontSize: 13, color: 'var(--cr-fg-1)', lineHeight: 1.5 };
+  const list: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 6 };
+  const empty = (txt: string) => <div style={{ fontSize: 13, color: 'var(--cr-fg-3)', fontStyle: 'italic', padding: '2px 2px' }}>{txt}</div>;
+
   return (
-    <div data-testid="conversation-outcome" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {/* Headline status card */}
-      <Card style={{ padding: 16 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
-          <StatusChip status={data.status} />
-          <span style={{ fontSize: 13, color: 'var(--cr-fg-2)' }}>{data.reason}</span>
-        </div>
-        <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12, color: 'var(--cr-fg-3)' }}>
-          {minutes > 0 && <span>Window: {minutes} min</span>}
-          <span>Files: {data.fileCount} (+{data.totalLinesAdded} / −{data.totalLinesRemoved})</span>
-          <span>Commits: {data.commits.totalCommits} across {data.commits.repos.length} repo(s)</span>
-          <span>Prompts: {data.promptMarkers.total}</span>
-        </div>
-      </Card>
+    <div data-testid="conversation-outcome" style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+      {/* Headline */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <StatusChip status={data.status} />
+        <span style={{ fontSize: 13, color: 'var(--cr-fg-2)' }}>{data.reason}</span>
+      </div>
 
-      {/* Marker tally */}
-      {data.promptMarkers.total > 0 && (
-        <Card style={{ padding: 16 }}>
-          <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>
-            Prompt markers
-          </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {(['frustrated','correction','interrupt','approval','question','directive','clarification_request'] as PromptMarker[])
-              .filter(k => data.promptMarkers[k] > 0)
-              .map(k => (
-                <Chip key={k} kind={MARKER_STYLES[k].kind} size="sm">
-                  {MARKER_STYLES[k].symbol} {data.promptMarkers[k]} {MARKER_STYLES[k].label}
-                </Chip>
-              ))}
-          </div>
-        </Card>
-      )}
-
-      {/* Decisions */}
-      {data.decisions.length > 0 && (
-        <Card style={{ padding: 16 }}>
-          <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>
-            Decisions ({data.decisions.length})
-          </div>
-          <ul style={{ paddingLeft: 18, margin: 0, color: 'var(--cr-fg-1)', fontSize: 13, lineHeight: 1.6 }}>
-            {data.decisions.slice(0, 12).map((d, i) => (
-              <li key={i}>{d.text}</li>
-            ))}
-          </ul>
-        </Card>
-      )}
-
-      {/* Blockers */}
-      {data.blockers.length > 0 && (
-        <Card style={{ padding: 16, borderColor: 'var(--cr-warn-line)' }}>
-          <div style={{ fontSize: 12, color: 'var(--cr-warn-500)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>
-            Blockers ({data.blockers.length})
-          </div>
-          <ul style={{ paddingLeft: 18, margin: 0, color: 'var(--cr-fg-1)', fontSize: 13, lineHeight: 1.6 }}>
-            {data.blockers.slice(0, 12).map((b, i) => (
-              <li key={i}>
-                <span style={{ color: 'var(--cr-warn-500)', fontWeight: 600 }}>{b.kind}:</span> {b.text}
-              </li>
-            ))}
-          </ul>
-        </Card>
-      )}
-
-      {/* Last claim vs reaction */}
-      {data.claimReaction.claim && (
-        <Card style={{ padding: 16 }}>
-          <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>
-            Last claim → user reaction
-          </div>
-          <div style={{ marginBottom: 10 }}>
-            <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginBottom: 4 }}>Agent claim</div>
-            <div style={{ fontSize: 13, color: 'var(--cr-fg-1)', lineHeight: 1.5 }}>{data.claimReaction.claim.text}</div>
-          </div>
-          {data.claimReaction.reaction ? (
-            <div>
-              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 6 }}>
-                User reaction
-                {data.claimReaction.reaction.markers.map(m => <MarkerChip key={m} marker={m} />)}
-              </div>
-              <div style={{ fontSize: 13, color: 'var(--cr-fg-1)', lineHeight: 1.5 }}>{data.claimReaction.reaction.text}</div>
-            </div>
-          ) : (
-            <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', fontStyle: 'italic' }}>
-              Session ended on this claim — no follow-up from the user.
+      {/* ✅ DELIVERED — commits that landed + decisions concluded. */}
+      <Section tone="var(--cr-ok-500)" title="Delivered">
+        <div style={list}>
+          {commits.length === 0 && data.decisions.length === 0 && data.fileCount === 0 && empty('Nothing shipped — no commits or file changes in this session.')}
+          {data.fileCount > 0 && (
+            <div style={{ ...item, borderLeftColor: 'var(--cr-ok-500)' }}>
+              <b>{data.fileCount} file(s) changed</b>{' '}
+              <span style={{ color: 'var(--cr-ok-500)' }}>+{data.totalLinesAdded}</span>{' '}
+              <span style={{ color: 'var(--cr-err-500)' }}>−{data.totalLinesRemoved}</span>
+              {commits.length === 0 && <span style={{ color: 'var(--cr-warn-500)', marginLeft: 8, fontSize: 12 }}>· never committed</span>}
             </div>
           )}
-        </Card>
-      )}
+          {commits.slice(0, 12).map((c) => (
+            <div key={c.sha} style={{ ...item, borderLeftColor: 'var(--cr-ok-500)' }}>
+              <span style={{ fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-3)', fontSize: 11.5 }}>{c.shortSha}</span>{' '}
+              {c.subject}
+              <span style={{ color: 'var(--cr-fg-3)', fontSize: 11.5 }}> · {c.repoName} · <span style={{ color: 'var(--cr-ok-500)' }}>+{c.linesAdded}</span> <span style={{ color: 'var(--cr-err-500)' }}>−{c.linesRemoved}</span></span>
+            </div>
+          ))}
+          {data.decisions.slice(0, 12).map((d, i) => (
+            <div key={`d${i}`} style={{ ...item, borderLeftColor: 'var(--cr-ok-500)' }}>
+              <span style={{ color: 'var(--cr-fg-3)', fontSize: 11.5, textTransform: 'uppercase', letterSpacing: '0.04em', marginRight: 6 }}>decided</span>
+              {d.text}
+            </div>
+          ))}
+        </div>
+      </Section>
 
-      {/* Per-prompt markers strip — chronological */}
-      {data.prompts.length > 0 && (
-        <Card style={{ padding: 16 }}>
-          <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>
-            Prompts in order
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 360, overflowY: 'auto' }}>
-            {data.prompts.map((p, i) => (
-              <div key={i} style={{ borderLeft: '2px solid var(--cr-line-1)', paddingLeft: 10 }}>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 3 }}>
-                  {p.markers.map(m => <MarkerChip key={m} marker={m} />)}
-                </div>
-                <div style={{ fontSize: 12, color: 'var(--cr-fg-2)', lineHeight: 1.5 }}>
-                  {p.text.length > 280 ? p.text.slice(0, 280) + '…' : p.text}
-                </div>
+      {/* 🚧 NOT DONE — blockers, failed tool calls, interrupted/abandoned, a
+          claim the user never confirmed. */}
+      <Section tone="var(--cr-warn-500)" title="Not done / blocked" count={data.blockers.length || undefined}>
+        <div style={list}>
+          {data.blockers.length === 0 && !unfinished && empty('Nothing recorded as blocked.')}
+          {unfinished && (
+            <div style={{ ...item, borderLeftColor: 'var(--cr-warn-500)' }}>
+              <b style={{ color: 'var(--cr-warn-500)' }}>Session {data.status}.</b> {data.reason}
+            </div>
+          )}
+          {data.blockers.slice(0, 15).map((b, i) => (
+            <div key={i} style={{ ...item, borderLeftColor: 'var(--cr-warn-500)' }}>
+              <span style={{ color: 'var(--cr-warn-500)', fontWeight: 600, fontSize: 11.5, textTransform: 'uppercase', letterSpacing: '0.03em', marginRight: 6 }}>
+                {b.kind.replace('_', ' ')}
+              </span>
+              {b.text.length > 300 ? b.text.slice(0, 300) + '…' : b.text}
+            </div>
+          ))}
+          {data.claimReaction.claim && !data.claimReaction.reaction && (
+            <div style={{ ...item, borderLeftColor: 'var(--cr-warn-500)' }}>
+              <span style={{ color: 'var(--cr-fg-3)', fontSize: 11.5, textTransform: 'uppercase', letterSpacing: '0.04em', marginRight: 6 }}>unconfirmed</span>
+              Ended on “{data.claimReaction.claim.text.slice(0, 200)}” — you never replied, so it may not actually be done.
+            </div>
+          )}
+        </div>
+      </Section>
+
+      {/* 😖 FRUSTRATIONS — the moments you pushed back, in your own words. */}
+      <Section tone="var(--cr-err-500)" title="Frustrations" count={data.promptMarkers.frustrated || undefined}>
+        <div style={list}>
+          {frustPrompts.length === 0 && !reactionNegative && empty('No pushback — this one went smoothly.')}
+          {data.claimReaction.claim && reactionNegative && (
+            <div style={{ ...item, borderLeftColor: 'var(--cr-err-500)' }}>
+              <div style={{ color: 'var(--cr-fg-3)', fontSize: 11.5, marginBottom: 4 }}>AI claimed “{data.claimReaction.claim.text.slice(0, 140)}” — you reacted:</div>
+              <div>{data.claimReaction.reaction!.text.slice(0, 240)}</div>
+            </div>
+          )}
+          {frustPrompts.slice(0, 12).map((p, i) => (
+            <div key={i} style={{ ...item, borderLeftColor: 'var(--cr-err-500)' }}>
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 3 }}>
+                {p.markers.filter(m => m === 'frustrated' || m === 'correction').map(m => <MarkerChip key={m} marker={m} />)}
               </div>
-            ))}
-          </div>
-        </Card>
-      )}
+              {p.text.length > 240 ? p.text.slice(0, 240) + '…' : p.text}
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      <div style={{ fontSize: 11.5, color: 'var(--cr-fg-3)', borderTop: '1px solid var(--cr-line-1)', paddingTop: 10 }}>
+        {minutes > 0 && `${minutes} min · `}{data.promptMarkers.total} prompt(s) · peak friction {data.promptMarkers.peakIntensity}/5
+      </div>
     </div>
   );
 }
