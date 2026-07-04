@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Icon, Chip, SegmentedControl } from './primitives';
-import type { SessionInfo, SessionMarkersResponse, SessionOutcomeBadgeResponse } from '../services/api';
-import { getSessionMarkers, getSessionOutcomeBadge } from '../services/api';
+import { Icon, SegmentedControl } from './primitives';
+import type { SessionInfo, SessionOutcomeBadgeResponse } from '../services/api';
+import { getSessionOutcomeBadge } from '../services/api';
 import { stripInjectedBanners, summaryTitle } from '../utils/clean';
 
 /**
@@ -362,30 +362,13 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
           )}
           <span style={{ color: 'var(--cr-line-3)', flexShrink: 0 }}>·</span>
           <span className="cr-conv-meta-path" title={r.projectPath}>{path}</span>
-          {/* What changed: files · +added −removed · commits. Only for
-              sessions that touched code — discussion rows stay clean. */}
-          {r.outcome && r.outcome.files > 0 && (
-            <span
-              data-testid="outcome-stats"
-              title={`${r.outcome.files} file(s) edited · +${r.outcome.linesAdded} / −${r.outcome.linesRemoved} lines${r.outcome.commits > 0 ? ` · ${r.outcome.commits} commit(s) landed` : ' · never committed'}`}
-              style={{ flexShrink: 0, whiteSpace: 'nowrap', color: 'var(--cr-fg-3)' }}
-            >
-              {r.outcome.files} {r.outcome.files === 1 ? 'file' : 'files'}
-              {' '}<span style={{ color: 'var(--cr-ok-500)' }}>+{r.outcome.linesAdded}</span>
-              {' '}<span style={{ color: 'var(--cr-err-500)' }}>−{r.outcome.linesRemoved}</span>
-              {r.outcome.commits > 0 && (
-                <span> · {r.outcome.commits} {r.outcome.commits === 1 ? 'commit' : 'commits'}</span>
-              )}
-            </span>
-          )}
           <span className="cr-conv-meta-time">{timeStr}</span>
           {/*
-            Collapsed-run badge. When ≥2 adjacent sessions in the same
-            project share a templated first prompt within 24h
-            (PR-bot pattern), they fold into one feed row. The badge
-            shows the run size so the user knows the work happened
-            multiple times. Clicking the row still opens the head
-            session — the rest are reachable via search by project.
+            Collapsed-run badge — the one meta signal kept because it changes
+            what the row IS: ≥2 same-prompt sessions (PR-bot iterations) folded
+            into one. File/line/commit stats, the one-shot tag, and the
+            summary/raw-prompt tag were removed — they're detail for the viewer,
+            not the scan. Clicking still opens the head session.
           */}
           {r.runCount && r.runCount > 1 && (
             <span
@@ -404,25 +387,6 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
               }}
             >
               ×{r.runCount} runs
-            </span>
-          )}
-          {r.oneShot && (
-            <span
-              title="Single-prompt invocation — likely a batch/bot run, not an interactive conversation."
-              data-testid="one-shot-badge"
-              style={{
-                fontSize: 10,
-                fontWeight: 600,
-                color: 'var(--cr-fg-3)',
-                background: 'var(--cr-ink-2)',
-                border: '1px dashed var(--cr-line-1)',
-                padding: '1px 6px',
-                borderRadius: 3,
-                marginLeft: 4,
-                letterSpacing: '0.02em',
-              }}
-            >
-              one-shot
             </span>
           )}
         </div>
@@ -489,24 +453,9 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
             </span>
           )}
 
-          {/* Quiet source badge: whether this is summary or raw */}
-          {titleText && (
-            <span style={{
-              marginLeft: 10,
-              fontSize: 10,
-              fontWeight: 500,
-              color: hasSummary ? 'var(--cr-ok-500)' : 'var(--cr-fg-3)',
-              background: hasSummary ? 'var(--cr-ok-surf)' : 'var(--cr-ink-2)',
-              border: `1px solid ${hasSummary ? 'var(--cr-ok-line)' : 'var(--cr-line-1)'}`,
-              padding: '1px 5px',
-              borderRadius: 3,
-              whiteSpace: 'nowrap',
-              verticalAlign: '2px',
-              letterSpacing: 0,
-            }}>
-              {hasSummary ? 'AI summary' : 'raw prompt'}
-            </span>
-          )}
+          {/* The "AI summary / raw prompt" tag was removed — whether the title
+              came from a summary or the first prompt is not something the reader
+              acts on while scanning. A faded title already signals "raw". */}
         </div>
 
         {/* Search-only: stack of matched snippets, each with the query term
@@ -571,10 +520,10 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
         )}
       </div>
 
-      {/* Right column: marker chips */}
-      <div className="cr-conv-markers">
-        <SessionMarkerStrip sessionId={r.sessionId} tool={tool} />
-      </div>
+      {/* Sentiment marker chips (frustrated/interrupt/correction) removed —
+          per-row noise that also fired a fetch per visible row. The outcome
+          status (in-progress/shipped/interrupted) already carries the state
+          worth scanning. */}
     </div>
   );
 }
@@ -681,78 +630,6 @@ function SessionStatusPrefix({ sessionId, tool: _tool }: { sessionId: string; to
   );
 }
 
-/* ────────────────────────────── Marker strip ────────────────────────────── */
-
-/**
- * Right-aligned marker strip — only renders when sentiment markers have
- * actual signal (frustrated, interrupt, correction). A purely-positive
- * session shows nothing here, keeping the right column clean for the
- * sessions that warrant attention.
- *
- * Markers come from Claude transcripts only today; non-Claude tools
- * render nothing (no fetch fires).
- */
-function SessionMarkerStrip({ sessionId, tool }: { sessionId: string; tool: string }) {
-  const ref = useRef<HTMLSpanElement | null>(null);
-  const [data, setData] = useState<SessionMarkersResponse | null>(null);
-  const [seen, setSeen] = useState(false);
-
-  useEffect(() => {
-    if (tool !== 'claude') return;
-    if (!ref.current) return;
-    const el = ref.current;
-    const obs = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          if (e.isIntersecting) {
-            setSeen(true);
-            obs.disconnect();
-          }
-        }
-      },
-      { rootMargin: '160px' },
-    );
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, [tool]);
-
-  useEffect(() => {
-    if (!seen || data || tool !== 'claude') return;
-    let cancelled = false;
-    getSessionMarkers(sessionId)
-      .then((d) => {
-        if (!cancelled) setData(d);
-      })
-      .catch(() => {
-        /* benign */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [seen, sessionId, tool, data]);
-
-  if (tool !== 'claude') return <span ref={ref} aria-hidden />;
-  const summary = data?.summary;
-  if (!summary) return <span ref={ref} aria-hidden />;
-
-  const chips: Array<{ kind: Parameters<typeof Chip>[0]['kind']; text: string; title: string }> = [];
-  if (summary.frustrated > 0) chips.push({ kind: 'err', text: `⚠ ${summary.frustrated}`, title: `${summary.frustrated} frustrated prompt(s)` });
-  if (summary.interrupt > 0) chips.push({ kind: 'warn', text: `⏸ ${summary.interrupt}`, title: `${summary.interrupt} interrupt(s)` });
-  if (summary.correction > 0 && chips.length < 2)
-    chips.push({ kind: 'warn', text: `↩ ${summary.correction}`, title: `${summary.correction} correction(s)` });
-
-  if (chips.length === 0) return <span ref={ref} aria-hidden />;
-
-  return (
-    <span ref={ref} style={{ display: 'inline-flex', gap: 4 }}>
-      {chips.slice(0, 2).map((c, i) => (
-        <Chip key={i} kind={c.kind} size="sm" style={{ height: 18, fontSize: 10 }}>
-          <span title={c.title}>{c.text}</span>
-        </Chip>
-      ))}
-    </span>
-  );
-}
 
 /* ────────────────────────────── Date divider ────────────────────────────── */
 
