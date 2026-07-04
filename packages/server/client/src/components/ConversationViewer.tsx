@@ -1446,6 +1446,18 @@ function MarkerChip({ marker }: { marker: PromptMarker }) {
 /** The numbers behind a session: cost + tokens, size (messages/duration/files/
  *  commits), and the tools it called. All the quantitative stuff that used to
  *  clutter the header now lives on its own tab. */
+/** Humanize a tool id for display. Raw MCP ids like
+ *  `mcp__chat-recall__recall_smart_resume` are unreadable — show a clean
+ *  "smart resume" (full id in the tooltip). Built-ins pass through. */
+function prettyToolName(raw: string): string {
+  if (raw.startsWith('mcp__')) {
+    const parts = raw.slice(5).split('__');
+    const tool = (parts[1] || parts[0] || raw).replace(/^recall_/, '').replace(/_/g, ' ');
+    return tool || raw;
+  }
+  return raw;
+}
+
 /**
  * Metrics = the session at a glance. Not a bare number grid — it answers the
  * questions you actually ask: did it ship, how big/expensive was it, was it
@@ -1540,19 +1552,30 @@ function MetricsPanel({
         </div>
       </div>
 
-      {/* Cost */}
+      {/* Cost gets a headline tile only when we actually know it (no broken
+          "—"). Tokens are reference numbers, not headline stats — a compact
+          line, so they don't compete with Work done / Signals. */}
       <div>
         <div style={cap}>Cost &amp; tokens</div>
-        <div style={grid}>
-          <Stat label="Cost" value={fmtCost(meta.estimatedCostUsd)} tone="var(--cr-warn-500)" />
-          {meta.cacheSavingsUsd != null && meta.cacheSavingsUsd > 0.01 && (
-            <Stat label="Cache saved" value={fmtCost(meta.cacheSavingsUsd)} tone="var(--cr-ok-500)" />
-          )}
-          <Stat label="Input" value={fmtN(meta.inputTokens || 0)} />
-          <Stat label="Output" value={fmtN(meta.outputTokens || 0)} />
-          <Stat label="Cache read" value={fmtN(meta.cacheReadTokens || 0)} />
-          <Stat label="Cache write" value={fmtN(meta.cacheCreationTokens || 0)} />
-          <Stat label="Peak context" value={fmtN(meta.peakContextTokens || 0)} />
+        {(meta.estimatedCostUsd != null || (meta.cacheSavingsUsd ?? 0) > 0.01) && (
+          <div style={{ ...grid, marginBottom: 12 }}>
+            {meta.estimatedCostUsd != null && <Stat label="Cost" value={fmtCost(meta.estimatedCostUsd)} tone="var(--cr-warn-500)" />}
+            {meta.cacheSavingsUsd != null && meta.cacheSavingsUsd > 0.01 && (
+              <Stat label="Cache saved" value={fmtCost(meta.cacheSavingsUsd)} tone="var(--cr-ok-500)" />
+            )}
+          </div>
+        )}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 22px', fontSize: 13, color: 'var(--cr-fg-2)', padding: '2px 2px' }}>
+          {[
+            ['Input', meta.inputTokens], ['Output', meta.outputTokens],
+            ['Cache read', meta.cacheReadTokens], ['Cache write', meta.cacheCreationTokens],
+            ['Peak context', meta.peakContextTokens],
+          ].map(([label, n]) => (
+            <span key={label as string}>
+              {label}{' '}
+              <b style={{ color: 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>{fmtN((n as number) || 0)}</b>
+            </span>
+          ))}
         </div>
       </div>
 
@@ -1569,7 +1592,9 @@ function MetricsPanel({
         <div>
           <div style={cap}>Tools called ({meta.toolsUsed.length})</div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {meta.toolsUsed.map((t) => <Chip key={t} kind="mono" size="sm">{t}</Chip>)}
+            {meta.toolsUsed.map((t) => (
+              <Chip key={t} kind="mono" size="sm"><span title={t}>{prettyToolName(t)}</span></Chip>
+            ))}
           </div>
         </div>
       )}
