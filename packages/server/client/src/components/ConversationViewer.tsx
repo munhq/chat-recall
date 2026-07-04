@@ -216,7 +216,7 @@ export default function ConversationViewer({
   useEffect(() => {
     if (!sessionId) return;
     const derivedTool = sessionMeta?.tool || sessionInfo?.tool || 'claude';
-    const shouldAutoLoad = derivedTool !== 'claude' || viewMode === 'full' || viewMode === 'trace';
+    const shouldAutoLoad = derivedTool !== 'claude' || viewMode === 'full' || viewMode === 'trace' || viewMode === 'metrics';
     if (!shouldAutoLoad) return;
     const key = `${sessionId}:${viewMode}`;
     if (autoLoadedFor.current.has(key)) return;
@@ -364,7 +364,9 @@ export default function ConversationViewer({
   };
 
   const handleViewChange = (mode: ViewMode) => {
-    if (mode === 'full' && messages.length === 0) {
+    // Full transcript + Generic both need the messages (Generic counts tool
+    // calls from them for the activity chart).
+    if ((mode === 'full' || mode === 'metrics') && messages.length === 0) {
       onLoadFull();
     }
     if (mode === 'raw' && rawData.length === 0) {
@@ -621,7 +623,7 @@ export default function ConversationViewer({
             // Frustrations. Summary (the AI narrative) is next.
             { value: 'insights', label: 'Recap', icon: 'sparkle' },
             { value: 'summary', label: 'Summary', icon: 'file' },
-            { value: 'metrics', label: 'Metrics', icon: 'chart' },
+            { value: 'metrics', label: 'Generic', icon: 'chart' },
             { value: 'transcript', label: 'Transcript', icon: 'message' },
             { value: 'changes', label: 'Changes', icon: 'terminal' },
             // Security is conditional: a tab only when there's something to see.
@@ -685,6 +687,7 @@ export default function ConversationViewer({
           <MetricsPanel
             meta={sessionMeta}
             outcome={outcomeData}
+            messages={messages}
             loading={metaLoading}
             onOpenTab={handleViewChange}
           />
@@ -1461,15 +1464,16 @@ function prettyToolName(raw: string): string {
  * outcome + security scan, each deep-linking to the tab with the detail.
  */
 function MetricsPanel({
-  meta, outcome, loading, onOpenTab,
+  meta, outcome, messages, loading, onOpenTab,
 }: {
   meta: SessionMetadataResponse | null;
   outcome: SessionOutcomeResponse | null;
+  messages: Message[];
   loading: boolean;
   onOpenTab: (m: ViewMode) => void;
 }) {
-  if (loading && !meta) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Loading metrics…</div>;
-  if (!meta) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>No metrics for this session.</div>;
+  if (loading && !meta) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Loading…</div>;
+  if (!meta) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>No data for this session.</div>;
 
   const fmtN = (n: number) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n);
   const fmtCost = (n: number | null) => n == null ? '—' : n < 0.01 ? '<$0.01' : `$${n.toFixed(2)}`;
@@ -1480,28 +1484,34 @@ function MetricsPanel({
   const filesAdded = outcome?.totalLinesAdded ?? 0;
   const filesRemoved = outcome?.totalLinesRemoved ?? 0;
 
-  const Stat = ({ label, value, sub, tone, onClick }: { label: string; value: string; sub?: React.ReactNode; tone?: string; onClick?: () => void }) => (
-    <div
-      onClick={onClick}
-      style={{
-        padding: '12px 14px', background: 'var(--cr-ink-1)', display: 'flex', flexDirection: 'column', gap: 3,
-        cursor: onClick ? 'pointer' : 'default',
-      }}
-      title={onClick ? 'Open detail' : undefined}
-    >
-      <div style={{ fontSize: 10, color: 'var(--cr-fg-3)', fontWeight: 500, letterSpacing: '0.04em', textTransform: 'uppercase' }}>{label}</div>
-      <div style={{ fontSize: 18, fontWeight: 600, color: tone || 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums' }}>{value}</div>
-      {sub && <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>{sub}</div>}
+  // Tool activity — counted from the transcript. This is where "what happened"
+  // lives: web fetches, edits, reads, bash, MCP calls, each with a magnitude.
+  const toolCounts = new Map<string, number>();
+  let toolErrors = 0;
+  for (const m of messages) {
+    for (const tc of m.toolCalls || []) {
+      toolCounts.set(tc.name, (toolCounts.get(tc.name) || 0) + 1);
+      if (tc.isError) toolErrors++;
+    }
+  }
+  const tools = [...toolCounts.entries()].sort((a, b) => b[1] - a[1]);
+  const toolTotal = tools.reduce((s, [, n]) => s + n, 0);
+  const maxTool = Math.max(1, ...tools.map(([, n]) => n));
+
+  // Clean borderless stat — big number + label, matches the chart sections
+  // (the old boxed grid looked like a different app).
+  const cap: React.CSSProperties = { fontSize: 11, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--cr-fg-3)', fontWeight: 600, margin: '4px 2px 10px' };
+  const StatInline = ({ label, value, sub, tone, onClick }: { label: string; value: string; sub?: React.ReactNode; tone?: string; onClick?: () => void }) => (
+    <div onClick={onClick} style={{ cursor: onClick ? 'pointer' : 'default', minWidth: 84 }} title={onClick ? 'Open detail' : undefined}>
+      <div style={{ fontSize: 24, fontWeight: 700, color: tone || 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums', lineHeight: 1.1 }}>{value}</div>
+      <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', letterSpacing: '0.03em', marginTop: 3 }}>
+        {label}{sub ? <> · {sub}</> : null}{onClick ? ' ›' : ''}
+      </div>
     </div>
   );
-  const grid: React.CSSProperties = {
-    display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 1,
-    background: 'var(--cr-line-1)', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-md)', overflow: 'hidden',
-  };
-  const cap: React.CSSProperties = { fontSize: 11, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--cr-fg-3)', fontWeight: 600, margin: '4px 2px 8px' };
 
   return (
-    <div data-testid="conversation-metrics" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div data-testid="conversation-metrics" style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
       {/* Outcome headline — the one-line answer to "how did it end". */}
       {outcome?.status && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -1510,23 +1520,19 @@ function MetricsPanel({
         </div>
       )}
 
-      {/* Work done — headline magnitude stats. Metrics is now purely the
-          numbers; the friction/signals read lives in Recap, so nothing here
-          redirects elsewhere. */}
-      <div>
-        <div style={cap}>Work done</div>
-        <div style={{ ...grid, gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))' }}>
-          <Stat label="Messages" value={fmtN(meta.messageCount || 0)} />
-          <Stat label="Duration" value={dur} />
-          <Stat label="Files edited" value={String(outcome?.fileCount ?? meta.filesModified?.length ?? 0)}
-            sub={(filesAdded || filesRemoved)
-              ? <><span style={{ color: 'var(--cr-ok-500)' }}>+{filesAdded.toLocaleString()}</span> <span style={{ color: 'var(--cr-err-500)' }}>−{filesRemoved.toLocaleString()}</span></>
-              : undefined}
-            onClick={() => onOpenTab('diff')} />
-          <Stat label="Commits" value={String(outcome?.commits?.totalCommits ?? 0)}
-            sub={outcome?.commits?.repos?.length ? `${outcome.commits.repos.length} repo(s)` : undefined}
-            onClick={() => onOpenTab('commits')} />
-        </div>
+      {/* Work done — a clean borderless stat row (was a boxy grid that clashed
+          with the charts). Files/Commits drill into their tabs. */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '18px 34px', paddingBottom: 4, borderBottom: '1px solid var(--cr-line-1)' }}>
+        <StatInline label="messages" value={fmtN(meta.messageCount || 0)} />
+        <StatInline label="duration" value={dur} />
+        <StatInline label="files" value={String(outcome?.fileCount ?? meta.filesModified?.length ?? 0)}
+          sub={(filesAdded || filesRemoved) ? <><span style={{ color: 'var(--cr-ok-500)' }}>+{filesAdded.toLocaleString()}</span> <span style={{ color: 'var(--cr-err-500)' }}>−{filesRemoved.toLocaleString()}</span></> : undefined}
+          onClick={() => onOpenTab('diff')} />
+        <StatInline label="commits" value={String(outcome?.commits?.totalCommits ?? 0)}
+          sub={outcome?.commits?.repos?.length ? `${outcome.commits.repos.length} repo(s)` : undefined}
+          onClick={() => onOpenTab('commits')} />
+        {toolTotal > 0 && <StatInline label="tool calls" value={fmtN(toolTotal)}
+          sub={toolErrors > 0 ? <span style={{ color: 'var(--cr-err-500)' }}>{toolErrors} failed</span> : undefined} />}
       </div>
 
       {/* Context window — a single value against its ceiling. A gauge is the
@@ -1568,7 +1574,8 @@ function MetricsPanel({
         return (
           <div>
             <div style={cap}>Session arc · {outcome.prompts.length} prompts</div>
-            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 52, background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-md)', padding: '8px 10px' }}>
+            <div onClick={() => onOpenTab('insights')} title="Open Recap for the frustrations in full"
+              style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 52, background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-md)', padding: '8px 10px', cursor: 'pointer' }}>
               {outcome.prompts.map((p, i) => {
                 const strong = p.markers.some(m => m === 'frustrated' || m === 'correction' || m === 'interrupt');
                 const h = 25 + Math.min(p.intensity || (p.markers.length ? 2 : 1), 5) / 5 * 75;
@@ -1578,6 +1585,7 @@ function MetricsPanel({
                 );
               })}
             </div>
+            <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 4 }}>Each bar is a prompt, tallest = most intense · red = frustrated, green = approval · opens Recap ›</div>
           </div>
         );
       })()}
@@ -1611,50 +1619,68 @@ function MetricsPanel({
         );
       })()}
 
-      {/* Cost — headline tile only when known (never a broken "—"). Tokens are
-          reference numbers: a compact line, not competing tiles. */}
+      {/* Activity — what the AI actually DID, counted from the transcript.
+          Web fetches, edits, reads, bash, MCP calls — each a bar, colored by
+          kind of work. This is the "what happened" the user asked for. Opens
+          the transcript for the raw calls. */}
+      {tools.length > 0 && (() => {
+        const kindColor = (name: string): string => {
+          if (/^(Edit|Write|MultiEdit|NotebookEdit)$/.test(name)) return 'var(--cr-ok-500)';       // edits
+          if (/^(Read|Glob|Grep|LS)$/.test(name)) return 'var(--cr-fg-3)';                          // reads/search
+          if (name === 'Bash') return 'var(--cr-warn-500)';                                         // shell
+          if (/^Web(Fetch|Search)$/.test(name)) return 'var(--cr-info-500)';                        // web
+          if (/^(Task|Agent)/.test(name)) return 'var(--cr-tool-claude, #c98bff)';                  // subagents
+          if (name.startsWith('mcp__')) return 'var(--cr-brand-500)';                               // MCP tools
+          return 'var(--cr-fg-2)';
+        };
+        return (
+          <div>
+            <div style={cap}>Activity · {toolTotal} tool calls</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {tools.slice(0, 16).map(([name, n]) => (
+                <div key={name} onClick={() => onOpenTab('full')} title={`${name} — ${n} call(s). Open transcript.`}
+                  style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
+                  <span style={{ width: 150, flexShrink: 0, fontSize: 12, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prettyToolName(name)}</span>
+                  <div style={{ flex: 1, height: 14, background: 'var(--cr-ink-2)', borderRadius: 3, overflow: 'hidden' }}>
+                    <div style={{ width: `${(n / maxTool) * 100}%`, height: '100%', background: kindColor(name), borderRadius: 3, minWidth: 3 }} />
+                  </div>
+                  <span style={{ width: 30, textAlign: 'right', flexShrink: 0, fontSize: 12, color: 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums' }}>{n}</span>
+                </div>
+              ))}
+              {tools.length > 16 && <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>+{tools.length - 16} more tool(s)</div>}
+            </div>
+            <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 10.5, color: 'var(--cr-fg-3)', marginTop: 8 }}>
+              <span><span style={{ color: 'var(--cr-ok-500)' }}>■</span> edits</span>
+              <span><span style={{ color: 'var(--cr-info-500)' }}>■</span> web</span>
+              <span><span style={{ color: 'var(--cr-warn-500)' }}>■</span> shell</span>
+              <span><span style={{ color: 'var(--cr-brand-500)' }}>■</span> recall/MCP</span>
+              <span><span style={{ color: 'var(--cr-fg-3)' }}>■</span> reads</span>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Cost, tokens, model — one clean labelled block (was a boxed grid + a
+          cramped inline line + an orphan chip). Values right-aligned, tabular. */}
       <div>
         <div style={cap}>Cost &amp; tokens</div>
-        {(meta.estimatedCostUsd != null || (meta.cacheSavingsUsd ?? 0) > 0.01) && (
-          <div style={{ ...grid, gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', marginBottom: 12 }}>
-            {meta.estimatedCostUsd != null && <Stat label="Cost" value={fmtCost(meta.estimatedCostUsd)} tone="var(--cr-warn-500)" />}
-            {meta.cacheSavingsUsd != null && meta.cacheSavingsUsd > 0.01 && (
-              <Stat label="Cache saved" value={fmtCost(meta.cacheSavingsUsd)} tone="var(--cr-ok-500)" />
-            )}
-          </div>
-        )}
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 22px', fontSize: 13, color: 'var(--cr-fg-2)', padding: '2px 2px' }}>
-          {[
-            ['Input', meta.inputTokens], ['Output', meta.outputTokens],
-            ['Cache read', meta.cacheReadTokens], ['Cache write', meta.cacheCreationTokens],
-          ].map(([label, n]) => (
-            <span key={label as string}>
-              {label}{' '}
-              <b style={{ color: 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>{fmtN((n as number) || 0)}</b>
-            </span>
+        <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', columnGap: 24, rowGap: 7, fontSize: 13, maxWidth: 360 }}>
+          {([
+            meta.estimatedCostUsd != null ? ['Cost', fmtCost(meta.estimatedCostUsd), 'var(--cr-warn-500)'] : null,
+            (meta.cacheSavingsUsd ?? 0) > 0.01 ? ['Cache saved', fmtCost(meta.cacheSavingsUsd), 'var(--cr-ok-500)'] : null,
+            ['Input', fmtN(meta.inputTokens || 0), undefined],
+            ['Output', fmtN(meta.outputTokens || 0), undefined],
+            ['Cache read', fmtN(meta.cacheReadTokens || 0), undefined],
+            ['Cache write', fmtN(meta.cacheCreationTokens || 0), undefined],
+            meta.modelsUsed?.length ? ['Model', meta.modelsUsed.join(', '), undefined] : null,
+          ].filter(Boolean) as Array<[string, string, string | undefined]>).map(([label, value, tone]) => (
+            <React.Fragment key={label}>
+              <span style={{ color: 'var(--cr-fg-3)' }}>{label}</span>
+              <span style={{ textAlign: 'right', color: tone || 'var(--cr-fg-1)', fontWeight: 600, fontVariantNumeric: 'tabular-nums', fontFamily: label === 'Model' ? 'var(--cr-font-mono)' : undefined, fontSize: label === 'Model' ? 12 : 13 }}>{value}</span>
+            </React.Fragment>
           ))}
         </div>
       </div>
-
-      {meta.modelsUsed && meta.modelsUsed.length > 0 && (
-        <div>
-          <div style={cap}>Models</div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {meta.modelsUsed.map((m) => <Chip key={m} kind="mono" size="sm">{m}</Chip>)}
-          </div>
-        </div>
-      )}
-
-      {meta.toolsUsed && meta.toolsUsed.length > 0 && (
-        <div>
-          <div style={cap}>Tools called ({meta.toolsUsed.length})</div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {meta.toolsUsed.map((t) => (
-              <Chip key={t} kind="mono" size="sm"><span title={t}>{prettyToolName(t)}</span></Chip>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
