@@ -163,7 +163,11 @@ export default function CodeExplorer({ projectFilter, embedded, onSessionClick }
   const integrityFindings = findings.filter((f) => f.category === 'crossref' || f.category === 'type_drift' || f.category === 'schema' || f.category === 'migration' || (f.category === 'manifest' && f.rule !== 'credential_in_manifest'));
 
   return (
-    <div className="cr-page-pad" style={{ position: 'relative', paddingBottom: 60 }}>
+    // flex:1 + min-width:0 so the standalone Code page fills the app row like
+    // every other view — without it the content sized to its own width and sat
+    // in a half-screen column. (overflow:auto keeps it independently scrollable;
+    // harmless when embedded in ProjectWorkspace, which already flexes.)
+    <div className="cr-page-pad" style={{ position: 'relative', paddingBottom: 60, flex: 1, minWidth: 0, overflow: 'auto' }}>
       {/* Header: project picker + label + tasks pill */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 18 }}>
         {!embedded && <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}><Icon name="code" size={20} /> Code</h2>}
