@@ -85,7 +85,9 @@ export default function ConversationViewer({
   // ("this session → Diff"). replaceState keeps tab flips out of history;
   // the param clears when the viewer unmounts.
   const VIEWER_TABS = ['summary', 'outcome', 'firstPrompt', 'full', 'trace', 'files', 'diff', 'commits', 'security', 'raw', 'related'];
-  const [viewModeRaw, setViewModeRaw] = useUrlState('tab', 'full', {
+  // Default to Summary — the readable landing (outcome + what the session was
+  // about), not the raw transcript.
+  const [viewModeRaw, setViewModeRaw] = useUrlState('tab', 'summary', {
     valid: (v) => VIEWER_TABS.includes(v),
     clearOnUnmount: true,
   });
@@ -163,7 +165,8 @@ export default function ConversationViewer({
 
     // Re-fire the fetch for the currently-active tab so the new session's
     // data populates without requiring a second user click.
-    if (viewMode === 'outcome') {
+    if (viewMode === 'outcome' || viewMode === 'summary') {
+      // Summary shows the outcome banner, so both tabs need it on session switch.
       setOutcomeLoading(true);
       getSessionOutcome(sessionId)
         .then(setOutcomeData)
@@ -383,6 +386,18 @@ export default function ConversationViewer({
         .then(setSessionMeta)
         .catch(() => {})
         .finally(() => setMetaLoading(false));
+    }
+    // Summary now shows the outcome banner too — load it alongside.
+    if (mode === 'summary' && (!outcomeData || outcomeData._computing) && !outcomeLoading) {
+      setOutcomeLoading(true);
+      setOutcomeError(null);
+      getSessionOutcome(sessionId)
+        .then((d) => {
+          setOutcomeData(d);
+          if (d._computing) setTimeout(() => { if (mode === 'summary') setOutcomeData(null); }, 2000);
+        })
+        .catch(err => setOutcomeError(err instanceof Error ? err.message : 'Failed to load outcome'))
+        .finally(() => setOutcomeLoading(false));
     }
     if (mode === 'diff' && (!diffData || diffData._computing) && !diffLoading) {
       setDiffLoading(true);
@@ -638,48 +653,73 @@ export default function ConversationViewer({
           </div>
         )}
 
-        {/* View mode buttons */}
-        <div className="cr-segmented-scroll" style={{ marginBottom: 20 }}>
-          <SegmentedControl
-            value={viewMode}
-            onChange={(m) => handleViewChange(m as ViewMode)}
-            options={[
-              { value: 'summary', label: 'Summary', icon: 'file' },
-              { value: 'outcome', label: 'Outcome', icon: 'check' },
-              { value: 'firstPrompt', label: 'First Prompt', icon: 'message' },
-              { value: 'full', label: 'Full', icon: 'list' },
-              { value: 'trace', label: 'Trace', icon: 'terminal' },
-              { value: 'files', label: 'Files', icon: 'file' },
-              { value: 'diff', label: 'Diff', icon: 'terminal' },
-              { value: 'commits', label: 'Commits', icon: 'sparkle' },
-              {
-                value: 'security',
-                // Tab badge uses unique-finding count, not raw row count
-                // (the scanner currently writes duplicates — see
-                // SecurityPanel for the dedup logic).
-                label: (() => {
-                  if (!secretsData) return 'Security';
-                  const seen = new Set<string>();
-                  for (const det of Object.keys(secretsData.byDetector)) {
-                    for (const f of secretsData.byDetector[det]) seen.add(`${det}|${f.rule}|${f.line}`);
-                  }
-                  return seen.size > 0 ? `Security · ${seen.size}` : 'Security';
-                })(),
-                icon: 'check',
-              },
-              { value: 'raw', label: 'Raw', icon: 'terminal' },
-              { value: 'related', label: 'Related', icon: 'sparkle' },
-            ]}
-          />
-        </div>
+        {/* View tabs — four plain-language lenses instead of eleven jargon
+            ones. Outcome folds into Summary (what happened + what it was
+            about, together). Transcript is the conversation, with its own
+            message-type filter that covers the old Trace/First-Prompt.
+            Changes groups Diff/Files/Commits. Raw/Related were dropped — debug
+            detail, not something you operate the app with. */}
+        {(() => {
+          const primaryOf = (m: ViewMode): string =>
+            (m === 'summary' || m === 'outcome') ? 'summary'
+            : (m === 'full' || m === 'firstPrompt' || m === 'trace' || m === 'raw' || m === 'related') ? 'transcript'
+            : (m === 'diff' || m === 'files' || m === 'commits') ? 'changes'
+            : m; // 'security'
+          const primary = primaryOf(viewMode);
+          const securityLabel = (() => {
+            if (!secretsData) return 'Security';
+            const seen = new Set<string>();
+            for (const det of Object.keys(secretsData.byDetector)) {
+              for (const f of secretsData.byDetector[det]) seen.add(`${det}|${f.rule}|${f.line}`);
+            }
+            return seen.size > 0 ? `Security · ${seen.size}` : 'Security';
+          })();
+          return (
+            <>
+              <div className="cr-segmented-scroll" style={{ marginBottom: primary === 'changes' ? 10 : 20 }}>
+                <SegmentedControl
+                  value={primary}
+                  onChange={(p) => handleViewChange(
+                    (p === 'summary' ? 'summary' : p === 'transcript' ? 'full' : p === 'changes' ? 'diff' : 'security') as ViewMode,
+                  )}
+                  options={[
+                    { value: 'summary', label: 'Summary', icon: 'file' },
+                    { value: 'transcript', label: 'Transcript', icon: 'message' },
+                    { value: 'changes', label: 'Changes', icon: 'terminal' },
+                    { value: 'security', label: securityLabel, icon: 'check' },
+                  ]}
+                />
+              </div>
+              {primary === 'changes' && (
+                <div className="cr-segmented-scroll" style={{ marginBottom: 20 }}>
+                  <SegmentedControl
+                    value={viewMode}
+                    onChange={(m) => handleViewChange(m as ViewMode)}
+                    options={[
+                      { value: 'diff', label: 'Diff', icon: 'terminal' },
+                      { value: 'files', label: 'Files', icon: 'file' },
+                      { value: 'commits', label: 'Commits', icon: 'sparkle' },
+                    ]}
+                  />
+                </div>
+              )}
+            </>
+          );
+        })()}
 
         {/* Content */}
         {viewMode === 'summary' && (
-          <StructuredSummary
-            summary={summary}
-            loading={metaLoading}
-            sessionId={sessionId}
-          />
+          <>
+            {/* Outcome folded in: what actually happened (shipped/interrupted,
+                files, +/− lines, commits) sits above the AI summary of what the
+                session was about. One place, no separate jargon tab. */}
+            {outcomeData && <div style={{ marginBottom: 20 }}><OutcomePanel data={outcomeData} loading={false} error={null} /></div>}
+            <StructuredSummary
+              summary={summary}
+              loading={metaLoading}
+              sessionId={sessionId}
+            />
+          </>
         )}
 
         {viewMode === 'firstPrompt' && (
