@@ -679,7 +679,20 @@ export default function ConversationViewer({
         )}
 
         {viewMode === 'metrics' && (
-          <MetricsPanel meta={sessionMeta} outcome={outcomeData} loading={metaLoading} />
+          <MetricsPanel
+            meta={sessionMeta}
+            outcome={outcomeData}
+            loading={metaLoading}
+            findingCount={(() => {
+              if (!secretsData) return 0;
+              const seen = new Set<string>();
+              for (const det of Object.keys(secretsData.byDetector)) {
+                for (const f of secretsData.byDetector[det]) seen.add(`${det}|${f.rule}|${f.line}`);
+              }
+              return seen.size;
+            })()}
+            onOpenTab={handleViewChange}
+          />
         )}
 
         {viewMode === 'firstPrompt' && (
@@ -1433,9 +1446,22 @@ function MarkerChip({ marker }: { marker: PromptMarker }) {
 /** The numbers behind a session: cost + tokens, size (messages/duration/files/
  *  commits), and the tools it called. All the quantitative stuff that used to
  *  clutter the header now lives on its own tab. */
+/**
+ * Metrics = the session at a glance. Not a bare number grid — it answers the
+ * questions you actually ask: did it ship, how big/expensive was it, was it
+ * painful (friction), did it leave red flags (blockers, leaked secrets)? The
+ * quantitative stats sit next to the qualitative signals pulled from the
+ * outcome + security scan, each deep-linking to the tab with the detail.
+ */
 function MetricsPanel({
-  meta, outcome, loading,
-}: { meta: SessionMetadataResponse | null; outcome: SessionOutcomeResponse | null; loading: boolean }) {
+  meta, outcome, loading, findingCount, onOpenTab,
+}: {
+  meta: SessionMetadataResponse | null;
+  outcome: SessionOutcomeResponse | null;
+  loading: boolean;
+  findingCount: number;
+  onOpenTab: (m: ViewMode) => void;
+}) {
   if (loading && !meta) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Loading metrics…</div>;
   if (!meta) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>No metrics for this session.</div>;
 
@@ -1445,10 +1471,24 @@ function MetricsPanel({
     ? (meta.durationMs >= 3600_000 ? `${(meta.durationMs / 3600_000).toFixed(1)}h` : `${Math.round(meta.durationMs / 60000)} min`)
     : '—';
 
-  const Stat = ({ label, value, tone }: { label: string; value: string; tone?: string }) => (
-    <div style={{ padding: '12px 14px', background: 'var(--cr-ink-1)', display: 'flex', flexDirection: 'column', gap: 3 }}>
+  const pm = outcome?.promptMarkers;
+  const decisions = outcome?.decisions?.length ?? 0;
+  const blockers = outcome?.blockers?.length ?? 0;
+  const filesAdded = outcome?.totalLinesAdded ?? 0;
+  const filesRemoved = outcome?.totalLinesRemoved ?? 0;
+
+  const Stat = ({ label, value, sub, tone, onClick }: { label: string; value: string; sub?: React.ReactNode; tone?: string; onClick?: () => void }) => (
+    <div
+      onClick={onClick}
+      style={{
+        padding: '12px 14px', background: 'var(--cr-ink-1)', display: 'flex', flexDirection: 'column', gap: 3,
+        cursor: onClick ? 'pointer' : 'default',
+      }}
+      title={onClick ? 'Open detail' : undefined}
+    >
       <div style={{ fontSize: 10, color: 'var(--cr-fg-3)', fontWeight: 500, letterSpacing: '0.04em', textTransform: 'uppercase' }}>{label}</div>
       <div style={{ fontSize: 18, fontWeight: 600, color: tone || 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums' }}>{value}</div>
+      {sub && <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>{sub}</div>}
     </div>
   );
   const grid: React.CSSProperties = {
@@ -1459,16 +1499,48 @@ function MetricsPanel({
 
   return (
     <div data-testid="conversation-metrics" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {/* Outcome headline — the one-line answer to "how did it end". */}
+      {outcome?.status && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <StatusChip status={outcome.status} />
+          {outcome.reason && <span style={{ fontSize: 13, color: 'var(--cr-fg-2)' }}>{outcome.reason}</span>}
+        </div>
+      )}
+
+      {/* Work done */}
       <div>
-        <div style={cap}>Size</div>
+        <div style={cap}>Work done</div>
         <div style={grid}>
           <Stat label="Messages" value={fmtN(meta.messageCount || 0)} />
           <Stat label="Duration" value={dur} />
-          <Stat label="Files edited" value={String(outcome?.fileCount ?? meta.filesModified?.length ?? 0)} />
-          <Stat label="Commits" value={String(outcome?.commits?.totalCommits ?? 0)} />
+          <Stat label="Files edited" value={String(outcome?.fileCount ?? meta.filesModified?.length ?? 0)}
+            sub={(filesAdded || filesRemoved) ? <><span style={{ color: 'var(--cr-ok-500)' }}>+{filesAdded}</span> <span style={{ color: 'var(--cr-err-500)' }}>−{filesRemoved}</span></> : undefined}
+            onClick={() => onOpenTab('files')} />
+          <Stat label="Commits" value={String(outcome?.commits?.totalCommits ?? 0)}
+            sub={outcome?.commits?.repos?.length ? `${outcome.commits.repos.length} repo(s)` : undefined}
+            onClick={() => onOpenTab('commits')} />
         </div>
       </div>
 
+      {/* Signals — friction + red flags, pulled from Insights + Security so
+          this tab tells you whether the session went smoothly, not just how
+          big it was. Each opens the tab with the detail. */}
+      <div>
+        <div style={cap}>Signals</div>
+        <div style={grid}>
+          <Stat label="Decisions" value={String(decisions)} onClick={decisions ? () => onOpenTab('insights') : undefined} />
+          <Stat label="Blockers" value={String(blockers)} tone={blockers > 0 ? 'var(--cr-warn-500)' : undefined}
+            onClick={blockers ? () => onOpenTab('insights') : undefined} />
+          <Stat label="Frustrated" value={String(pm?.frustrated ?? 0)} tone={(pm?.frustrated ?? 0) > 0 ? 'var(--cr-err-500)' : undefined}
+            onClick={(pm?.frustrated ?? 0) > 0 ? () => onOpenTab('insights') : undefined} />
+          <Stat label="Interrupts" value={String(pm?.interrupt ?? 0)} tone={(pm?.interrupt ?? 0) > 0 ? 'var(--cr-warn-500)' : undefined}
+            onClick={(pm?.interrupt ?? 0) > 0 ? () => onOpenTab('insights') : undefined} />
+          <Stat label="Leaked secrets" value={String(findingCount)} tone={findingCount > 0 ? 'var(--cr-err-500)' : 'var(--cr-ok-500)'}
+            onClick={findingCount > 0 ? () => onOpenTab('security') : undefined} />
+        </div>
+      </div>
+
+      {/* Cost */}
       <div>
         <div style={cap}>Cost &amp; tokens</div>
         <div style={grid}>
