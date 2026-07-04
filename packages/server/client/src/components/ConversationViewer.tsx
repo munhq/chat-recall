@@ -85,10 +85,10 @@ export default function ConversationViewer({
   // ("this session → Diff"). replaceState keeps tab flips out of history;
   // the param clears when the viewer unmounts.
   const VIEWER_TABS = ['summary', 'insights', 'metrics', 'outcome', 'firstPrompt', 'full', 'trace', 'files', 'diff', 'commits', 'security', 'raw', 'related'];
-  // Default to Insights — the Delivered / Not done / Frustrations read is what
-  // you actually want when you open a past session. (Summary is one click away
-  // for the AI narrative.)
-  const [viewModeRaw, setViewModeRaw] = useUrlState('tab', 'insights', {
+  // Default to Overview — the at-a-glance dashboard (work done, activity,
+  // arc, context, cost). Recap (Delivered/Not done/Frustrations) and Summary
+  // are one click away.
+  const [viewModeRaw, setViewModeRaw] = useUrlState('tab', 'metrics', {
     valid: (v) => VIEWER_TABS.includes(v),
     clearOnUnmount: true,
   });
@@ -619,11 +619,11 @@ export default function ConversationViewer({
             return seen.size;
           })();
           const tabs = [
-            // Recap leads — it's the default and answers Delivered / Not done /
-            // Frustrations. Summary (the AI narrative) is next.
+            // Overview leads — the at-a-glance dashboard (default). Recap
+            // (Delivered/Not done/Frustrations) and Summary follow.
+            { value: 'metrics', label: 'Overview', icon: 'chart' },
             { value: 'insights', label: 'Recap', icon: 'sparkle' },
             { value: 'summary', label: 'Summary', icon: 'file' },
-            { value: 'metrics', label: 'Generic', icon: 'chart' },
             { value: 'transcript', label: 'Transcript', icon: 'message' },
             { value: 'changes', label: 'Changes', icon: 'terminal' },
             // Security is conditional: a tab only when there's something to see.
@@ -690,6 +690,7 @@ export default function ConversationViewer({
             messages={messages}
             loading={metaLoading}
             onOpenTab={handleViewChange}
+            onOpenTools={() => { setFilter('tools'); handleViewChange('full'); }}
           />
         )}
 
@@ -1464,13 +1465,14 @@ function prettyToolName(raw: string): string {
  * outcome + security scan, each deep-linking to the tab with the detail.
  */
 function MetricsPanel({
-  meta, outcome, messages, loading, onOpenTab,
+  meta, outcome, messages, loading, onOpenTab, onOpenTools,
 }: {
   meta: SessionMetadataResponse | null;
   outcome: SessionOutcomeResponse | null;
   messages: Message[];
   loading: boolean;
   onOpenTab: (m: ViewMode) => void;
+  onOpenTools: () => void;
 }) {
   if (loading && !meta) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Loading…</div>;
   if (!meta) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>No data for this session.</div>;
@@ -1638,7 +1640,7 @@ function MetricsPanel({
             <div style={cap}>Activity · {toolTotal} tool calls</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
               {tools.slice(0, 16).map(([name, n]) => (
-                <div key={name} onClick={() => onOpenTab('full')} title={`${name} — ${n} call(s). Open transcript.`}
+                <div key={name} onClick={onOpenTools} title={`${name} — ${n} call(s). Open the tool calls in the transcript.`}
                   style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
                   <span style={{ width: 150, flexShrink: 0, fontSize: 12, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prettyToolName(name)}</span>
                   <div style={{ flex: 1, height: 14, background: 'var(--cr-ink-2)', borderRadius: 3, overflow: 'hidden' }}>
@@ -1660,27 +1662,48 @@ function MetricsPanel({
         );
       })()}
 
-      {/* Cost, tokens, model — one clean labelled block (was a boxed grid + a
-          cramped inline line + an orphan chip). Values right-aligned, tabular. */}
-      <div>
-        <div style={cap}>Cost &amp; tokens</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', columnGap: 24, rowGap: 7, fontSize: 13, maxWidth: 360 }}>
-          {([
-            meta.estimatedCostUsd != null ? ['Cost', fmtCost(meta.estimatedCostUsd), 'var(--cr-warn-500)'] : null,
-            (meta.cacheSavingsUsd ?? 0) > 0.01 ? ['Cache saved', fmtCost(meta.cacheSavingsUsd), 'var(--cr-ok-500)'] : null,
-            ['Input', fmtN(meta.inputTokens || 0), undefined],
-            ['Output', fmtN(meta.outputTokens || 0), undefined],
-            ['Cache read', fmtN(meta.cacheReadTokens || 0), undefined],
-            ['Cache write', fmtN(meta.cacheCreationTokens || 0), undefined],
-            meta.modelsUsed?.length ? ['Model', meta.modelsUsed.join(', '), undefined] : null,
-          ].filter(Boolean) as Array<[string, string, string | undefined]>).map(([label, value, tone]) => (
-            <React.Fragment key={label}>
-              <span style={{ color: 'var(--cr-fg-3)' }}>{label}</span>
-              <span style={{ textAlign: 'right', color: tone || 'var(--cr-fg-1)', fontWeight: 600, fontVariantNumeric: 'tabular-nums', fontFamily: label === 'Model' ? 'var(--cr-font-mono)' : undefined, fontSize: label === 'Model' ? 12 : 13 }}>{value}</span>
-            </React.Fragment>
-          ))}
-        </div>
-      </div>
+      {/* Cost & tokens — a visual composition, not a value list. Where the
+          tokens went (input / output / cache) as a stacked bar + legend with
+          counts and %, cost as the headline, model inline. */}
+      {(() => {
+        const seg = [
+          { key: 'Input', n: meta.inputTokens || 0, c: 'var(--cr-info-500)' },
+          { key: 'Output', n: meta.outputTokens || 0, c: 'var(--cr-brand-500)' },
+          { key: 'Cache read', n: meta.cacheReadTokens || 0, c: 'var(--cr-ok-500)' },
+          { key: 'Cache write', n: meta.cacheCreationTokens || 0, c: 'var(--cr-tool-claude, #c98bff)' },
+        ].filter(s => s.n > 0);
+        const total = seg.reduce((s, x) => s + x.n, 0);
+        return (
+          <div>
+            <div style={cap}>Cost &amp; tokens</div>
+            <div style={{ display: 'flex', gap: '18px 34px', flexWrap: 'wrap', marginBottom: 14 }}>
+              {meta.estimatedCostUsd != null && <StatInline label="cost" value={fmtCost(meta.estimatedCostUsd)} tone="var(--cr-warn-500)" />}
+              {meta.cacheSavingsUsd != null && meta.cacheSavingsUsd > 0.01 && <StatInline label="cache saved" value={fmtCost(meta.cacheSavingsUsd)} tone="var(--cr-ok-500)" />}
+              <StatInline label="total tokens" value={fmtN(total)} />
+              {meta.modelsUsed?.length ? <StatInline label="model" value={meta.modelsUsed.join(', ')} /> : null}
+            </div>
+            {total > 0 && (
+              <>
+                <div style={{ display: 'flex', height: 12, borderRadius: 4, overflow: 'hidden', gap: 2, background: 'var(--cr-ink-2)' }}>
+                  {seg.map(s => <div key={s.key} title={`${s.key}: ${fmtN(s.n)} (${Math.round(s.n / total * 100)}%)`} style={{ width: `${(s.n / total) * 100}%`, background: s.c, minWidth: 2 }} />)}
+                </div>
+                <div style={{ display: 'flex', gap: '6px 18px', flexWrap: 'wrap', marginTop: 8, fontSize: 12 }}>
+                  {seg.map(s => (
+                    <span key={s.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--cr-fg-2)' }}>
+                      <span style={{ width: 8, height: 8, borderRadius: 2, background: s.c }} />
+                      {s.key} <b style={{ color: 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums' }}>{fmtN(s.n)}</b>
+                      <span style={{ color: 'var(--cr-fg-3)' }}>{Math.round(s.n / total * 100)}%</span>
+                    </span>
+                  ))}
+                </div>
+              </>
+            )}
+            <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 10 }}>
+              Per-tool cost isn't recorded upstream — tokens are billed per message, not per action.
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -2065,47 +2088,22 @@ function DiffPanel({
     .map(f => ({ ...f, churn: f.linesAdded + f.linesRemoved }))
     .sort((a, b) => b.churn - a.churn);
   const maxChurn = Math.max(1, ranked[0]?.churn ?? 1);
-  const topN = ranked.slice(0, 12);
 
   return (
-    <div data-testid="conversation-diff" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div data-testid="conversation-diff" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       <div style={{ display: 'flex', gap: 12, fontSize: 13, color: 'var(--cr-fg-2)', flexWrap: 'wrap', alignItems: 'baseline' }}>
         <span><strong style={{ color: 'var(--cr-fg-1)', fontSize: 15 }}>{data.files.length}</strong> file(s) changed</span>
         <span style={{ color: 'var(--cr-ok-500)', fontVariantNumeric: 'tabular-nums' }}>+{data.totalLinesAdded.toLocaleString()}</span>
         <span style={{ color: 'var(--cr-err-500)', fontVariantNumeric: 'tabular-nums' }}>−{data.totalLinesRemoved.toLocaleString()}</span>
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-        {topN.map((f) => {
-          const base = f.file.split('/').pop() || f.file;
-          const dir = f.file.slice(0, f.file.length - base.length);
-          return (
-            <div key={`churn-${f.file}`} title={f.file}>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 3, fontSize: 12 }}>
-                <span style={{ fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-1)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                  <span style={{ color: 'var(--cr-fg-3)' }}>{dir}</span>{base}
-                </span>
-                {f.failedEvents > 0 && <span style={{ color: 'var(--cr-err-500)', fontSize: 11 }}>{f.failedEvents} failed</span>}
-                {f.reverted && <span style={{ color: 'var(--cr-warn-500)', fontSize: 11 }}>reverted</span>}
-                <span style={{ fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-ok-500)', fontVariantNumeric: 'tabular-nums' }}>+{f.linesAdded}</span>
-                <span style={{ fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-err-500)', fontVariantNumeric: 'tabular-nums' }}>−{f.linesRemoved}</span>
-              </div>
-              {/* bar width = this file's churn vs the busiest file; split add/remove */}
-              <div style={{ display: 'flex', height: 6, width: `${(f.churn / maxChurn) * 100}%`, minWidth: 2, borderRadius: 3, overflow: 'hidden', gap: 1, background: 'var(--cr-ink-2)' }}>
-                <div style={{ width: `${(f.linesAdded / Math.max(1, f.churn)) * 100}%`, background: 'var(--cr-ok-500)' }} />
-                <div style={{ width: `${(f.linesRemoved / Math.max(1, f.churn)) * 100}%`, background: 'var(--cr-err-500)' }} />
-              </div>
-            </div>
-          );
-        })}
-        {ranked.length > topN.length && (
-          <div style={{ fontSize: 11.5, color: 'var(--cr-fg-3)', marginTop: 2 }}>+{ranked.length - topN.length} more file(s) below</div>
-        )}
-      </div>
-
-      <div style={{ fontSize: 11, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--cr-fg-3)', fontWeight: 600, marginTop: 4 }}>Full diffs</div>
-      {data.files.map((f, idx) => {
+      {/* One list, ranked by churn. Each row carries its own churn bar AND
+          expands its diff on click — no scanning a chart up top then hunting
+          the file far below. */}
+      {ranked.map((f, idx) => {
         const isOpen = expanded.has(f.file);
+        const base = f.file.split('/').pop() || f.file;
+        const dir = f.file.slice(0, f.file.length - base.length);
         return (
           <Card key={f.file || `file-${idx}`} style={{ padding: 0, overflow: 'hidden' }}>
             <button
@@ -2113,20 +2111,24 @@ function DiffPanel({
               onClick={() => toggle(f.file)}
               style={{
                 width: '100%', textAlign: 'left', background: 'transparent', border: 'none',
-                padding: '12px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center',
-                gap: 10, color: 'var(--cr-fg-1)', fontFamily: 'inherit',
+                padding: '11px 14px', cursor: 'pointer', display: 'block', color: 'var(--cr-fg-1)', fontFamily: 'inherit',
               }}
             >
-              <Icon name={isOpen ? 'chevronDown' : 'chevronRight'} size={14} />
-              <span style={{ fontFamily: 'var(--cr-font-mono)', fontSize: 12, fontWeight: 600, flex: 1, wordBreak: 'break-all' }}>
-                {f.file}
-              </span>
-              {f.reverted && <Chip kind="warn" size="sm">reverted</Chip>}
-              {!f.initialKnown && <Chip kind="neutral" size="sm">initial unknown</Chip>}
-              {f.failedEvents > 0 && <Chip kind="err" size="sm">{f.failedEvents} failed</Chip>}
-              <span style={{ color: 'var(--cr-ok-500)', fontSize: 12, fontFamily: 'var(--cr-font-mono)' }}>+{f.linesAdded}</span>
-              <span style={{ color: 'var(--cr-err-500)', fontSize: 12, fontFamily: 'var(--cr-font-mono)' }}>−{f.linesRemoved}</span>
-              <span style={{ color: 'var(--cr-fg-3)', fontSize: 11 }}>{f.events.length} event(s)</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <Icon name={isOpen ? 'chevronDown' : 'chevronRight'} size={14} />
+                <span style={{ fontFamily: 'var(--cr-font-mono)', fontSize: 12, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={f.file}>
+                  <span style={{ color: 'var(--cr-fg-3)' }}>{dir}</span>{base}
+                </span>
+                {f.reverted && <Chip kind="warn" size="sm">reverted</Chip>}
+                {f.failedEvents > 0 && <Chip kind="err" size="sm">{f.failedEvents} failed</Chip>}
+                <span style={{ color: 'var(--cr-ok-500)', fontSize: 12, fontFamily: 'var(--cr-font-mono)', fontVariantNumeric: 'tabular-nums' }}>+{f.linesAdded}</span>
+                <span style={{ color: 'var(--cr-err-500)', fontSize: 12, fontFamily: 'var(--cr-font-mono)', fontVariantNumeric: 'tabular-nums' }}>−{f.linesRemoved}</span>
+              </div>
+              {/* churn bar: width = this file's share of the busiest file, split add/remove */}
+              <div style={{ display: 'flex', height: 5, width: `${(f.churn / maxChurn) * 100}%`, minWidth: 2, marginTop: 8, marginLeft: 24, borderRadius: 3, overflow: 'hidden', gap: 1 }}>
+                <div style={{ width: `${(f.linesAdded / Math.max(1, f.churn)) * 100}%`, background: 'var(--cr-ok-500)' }} />
+                <div style={{ width: `${(f.linesRemoved / Math.max(1, f.churn)) * 100}%`, background: 'var(--cr-err-500)' }} />
+              </div>
             </button>
             {isOpen && (
               <div style={{ borderTop: '1px solid var(--cr-line-1)', padding: 16 }}>
