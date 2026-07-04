@@ -85,9 +85,10 @@ export default function ConversationViewer({
   // ("this session → Diff"). replaceState keeps tab flips out of history;
   // the param clears when the viewer unmounts.
   const VIEWER_TABS = ['summary', 'insights', 'metrics', 'outcome', 'firstPrompt', 'full', 'trace', 'files', 'diff', 'commits', 'security', 'raw', 'related'];
-  // Default to Summary — the readable landing (outcome + what the session was
-  // about), not the raw transcript.
-  const [viewModeRaw, setViewModeRaw] = useUrlState('tab', 'summary', {
+  // Default to Insights — the Delivered / Not done / Frustrations read is what
+  // you actually want when you open a past session. (Summary is one click away
+  // for the AI narrative.)
+  const [viewModeRaw, setViewModeRaw] = useUrlState('tab', 'insights', {
     valid: (v) => VIEWER_TABS.includes(v),
     clearOnUnmount: true,
   });
@@ -616,8 +617,10 @@ export default function ConversationViewer({
             return seen.size;
           })();
           const tabs = [
+            // Recap leads — it's the default and answers Delivered / Not done /
+            // Frustrations. Summary (the AI narrative) is next.
+            { value: 'insights', label: 'Recap', icon: 'sparkle' },
             { value: 'summary', label: 'Summary', icon: 'file' },
-            { value: 'insights', label: 'Insights', icon: 'sparkle' },
             { value: 'metrics', label: 'Metrics', icon: 'chart' },
             { value: 'transcript', label: 'Transcript', icon: 'message' },
             { value: 'changes', label: 'Changes', icon: 'terminal' },
@@ -683,14 +686,6 @@ export default function ConversationViewer({
             meta={sessionMeta}
             outcome={outcomeData}
             loading={metaLoading}
-            findingCount={(() => {
-              if (!secretsData) return 0;
-              const seen = new Set<string>();
-              for (const det of Object.keys(secretsData.byDetector)) {
-                for (const f of secretsData.byDetector[det]) seen.add(`${det}|${f.rule}|${f.line}`);
-              }
-              return seen.size;
-            })()}
             onOpenTab={handleViewChange}
           />
         )}
@@ -1466,12 +1461,11 @@ function prettyToolName(raw: string): string {
  * outcome + security scan, each deep-linking to the tab with the detail.
  */
 function MetricsPanel({
-  meta, outcome, loading, findingCount, onOpenTab,
+  meta, outcome, loading, onOpenTab,
 }: {
   meta: SessionMetadataResponse | null;
   outcome: SessionOutcomeResponse | null;
   loading: boolean;
-  findingCount: number;
   onOpenTab: (m: ViewMode) => void;
 }) {
   if (loading && !meta) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Loading metrics…</div>;
@@ -1483,9 +1477,6 @@ function MetricsPanel({
     ? (meta.durationMs >= 3600_000 ? `${(meta.durationMs / 3600_000).toFixed(1)}h` : `${Math.round(meta.durationMs / 60000)} min`)
     : '—';
 
-  const pm = outcome?.promptMarkers;
-  const decisions = outcome?.decisions?.length ?? 0;
-  const blockers = outcome?.blockers?.length ?? 0;
   const filesAdded = outcome?.totalLinesAdded ?? 0;
   const filesRemoved = outcome?.totalLinesRemoved ?? 0;
 
@@ -1519,35 +1510,24 @@ function MetricsPanel({
         </div>
       )}
 
-      {/* Work done — three headline stat tiles (magnitude, no chart needed). */}
+      {/* Work done — headline magnitude stats. Metrics is now purely the
+          numbers; the friction/signals read lives in Recap, so nothing here
+          redirects elsewhere. */}
       <div>
         <div style={cap}>Work done</div>
-        <div style={{ ...grid, gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))' }}>
+        <div style={{ ...grid, gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))' }}>
           <Stat label="Messages" value={fmtN(meta.messageCount || 0)} />
           <Stat label="Duration" value={dur} />
+          <Stat label="Files edited" value={String(outcome?.fileCount ?? meta.filesModified?.length ?? 0)}
+            sub={(filesAdded || filesRemoved)
+              ? <><span style={{ color: 'var(--cr-ok-500)' }}>+{filesAdded.toLocaleString()}</span> <span style={{ color: 'var(--cr-err-500)' }}>−{filesRemoved.toLocaleString()}</span></>
+              : undefined}
+            onClick={() => onOpenTab('diff')} />
           <Stat label="Commits" value={String(outcome?.commits?.totalCommits ?? 0)}
             sub={outcome?.commits?.repos?.length ? `${outcome.commits.repos.length} repo(s)` : undefined}
             onClick={() => onOpenTab('commits')} />
         </div>
       </div>
-
-      {/* Code changes — diverging polarity (added vs removed). A proportional
-          two-tone bar reads the add/delete ratio at a glance. */}
-      {(filesAdded > 0 || filesRemoved > 0) && (
-        <div>
-          <div style={cap}>Code changes · {outcome?.fileCount ?? meta.filesModified?.length ?? 0} file(s)</div>
-          <div onClick={() => onOpenTab('diff')} style={{ cursor: 'pointer' }} title="Open the diff">
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600, marginBottom: 6, fontVariantNumeric: 'tabular-nums' }}>
-              <span style={{ color: 'var(--cr-ok-500)' }}>+{filesAdded.toLocaleString()}</span>
-              <span style={{ color: 'var(--cr-err-500)' }}>−{filesRemoved.toLocaleString()}</span>
-            </div>
-            <div style={{ display: 'flex', height: 8, borderRadius: 4, overflow: 'hidden', background: 'var(--cr-ink-2)', gap: 2 }}>
-              <div style={{ width: `${(filesAdded / Math.max(1, filesAdded + filesRemoved)) * 100}%`, background: 'var(--cr-ok-500)' }} />
-              <div style={{ width: `${(filesRemoved / Math.max(1, filesAdded + filesRemoved)) * 100}%`, background: 'var(--cr-err-500)' }} />
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Context window — a single value against its ceiling. A gauge is the
           right form; it makes "you blew past the window" visible instead of a
@@ -1570,42 +1550,6 @@ function MetricsPanel({
             </div>
             <div style={{ position: 'relative', height: 8, borderRadius: 4, background: 'var(--cr-ink-2)', overflow: 'hidden' }}>
               <div style={{ width: `${Math.min(pct, 1) * 100}%`, height: '100%', background: color, borderRadius: 4 }} />
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* Signals — a health/attention list, not number tiles. Icon + severity
-          color + count, worst first, only the ones that fired. Status colors
-          ship with a label (never color-alone), each drills into its tab. */}
-      {(() => {
-        const rows = [
-          { n: findingCount, label: findingCount === 1 ? 'leaked secret' : 'leaked secrets', sev: 'crit', tab: 'security' as ViewMode, always: true },
-          { n: pm?.frustrated ?? 0, label: 'frustrated prompt(s)', sev: 'crit', tab: 'insights' as ViewMode },
-          { n: blockers, label: 'blocker(s)', sev: 'warn', tab: 'insights' as ViewMode },
-          { n: pm?.interrupt ?? 0, label: 'interrupt(s)', sev: 'warn', tab: 'insights' as ViewMode },
-          { n: decisions, label: 'decision(s)', sev: 'info', tab: 'insights' as ViewMode },
-        ];
-        const sevColor: Record<string, string> = { crit: 'var(--cr-err-500)', warn: 'var(--cr-warn-500)', info: 'var(--cr-fg-2)', ok: 'var(--cr-ok-500)' };
-        const sevIcon: Record<string, string> = { crit: '▲', warn: '⏸', info: '•', ok: '✓' };
-        const shown = rows.filter(r => r.n > 0 || r.always);
-        return (
-          <div>
-            <div style={cap}>Signals</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 1, background: 'var(--cr-line-1)', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-md)', overflow: 'hidden' }}>
-              {shown.map((r) => {
-                const zero = r.n === 0;
-                const sev = zero ? 'ok' : r.sev;
-                return (
-                  <div key={r.label} onClick={r.n > 0 ? () => onOpenTab(r.tab) : undefined}
-                    style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px', background: 'var(--cr-ink-1)', cursor: r.n > 0 ? 'pointer' : 'default' }}>
-                    <span style={{ color: sevColor[sev], fontSize: 12, width: 14, textAlign: 'center' }}>{zero ? '✓' : sevIcon[sev]}</span>
-                    <span style={{ fontSize: 15, fontWeight: 600, color: zero ? 'var(--cr-fg-3)' : sevColor[sev], fontVariantNumeric: 'tabular-nums', minWidth: 24 }}>{r.n}</span>
-                    <span style={{ fontSize: 13, color: 'var(--cr-fg-2)' }}>{r.label}</span>
-                    {r.n > 0 && <span style={{ marginLeft: 'auto', color: 'var(--cr-fg-3)', fontSize: 12 }}>→</span>}
-                  </div>
-                );
-              })}
             </div>
           </div>
         );
@@ -2032,15 +1976,52 @@ function DiffPanel({
     });
   };
 
+  // Churn chart: files ranked by lines changed, each a bar (length = share of
+  // the busiest file) split added/removed. Shows WHERE the work landed — the
+  // useful read a single +/− total can't give. Failed-edit files flagged.
+  const ranked = [...data.files]
+    .map(f => ({ ...f, churn: f.linesAdded + f.linesRemoved }))
+    .sort((a, b) => b.churn - a.churn);
+  const maxChurn = Math.max(1, ranked[0]?.churn ?? 1);
+  const topN = ranked.slice(0, 12);
+
   return (
-    <div data-testid="conversation-diff" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <Card style={{ padding: 14 }}>
-        <div style={{ display: 'flex', gap: 10, fontSize: 13, color: 'var(--cr-fg-2)', flexWrap: 'wrap' }}>
-          <span><strong>{data.files.length}</strong> file(s)</span>
-          <span style={{ color: 'var(--cr-ok-500)' }}>+{data.totalLinesAdded}</span>
-          <span style={{ color: 'var(--cr-err-500)' }}>−{data.totalLinesRemoved}</span>
-        </div>
-      </Card>
+    <div data-testid="conversation-diff" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', gap: 12, fontSize: 13, color: 'var(--cr-fg-2)', flexWrap: 'wrap', alignItems: 'baseline' }}>
+        <span><strong style={{ color: 'var(--cr-fg-1)', fontSize: 15 }}>{data.files.length}</strong> file(s) changed</span>
+        <span style={{ color: 'var(--cr-ok-500)', fontVariantNumeric: 'tabular-nums' }}>+{data.totalLinesAdded.toLocaleString()}</span>
+        <span style={{ color: 'var(--cr-err-500)', fontVariantNumeric: 'tabular-nums' }}>−{data.totalLinesRemoved.toLocaleString()}</span>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+        {topN.map((f) => {
+          const base = f.file.split('/').pop() || f.file;
+          const dir = f.file.slice(0, f.file.length - base.length);
+          return (
+            <div key={`churn-${f.file}`} title={f.file}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 3, fontSize: 12 }}>
+                <span style={{ fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-1)', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                  <span style={{ color: 'var(--cr-fg-3)' }}>{dir}</span>{base}
+                </span>
+                {f.failedEvents > 0 && <span style={{ color: 'var(--cr-err-500)', fontSize: 11 }}>{f.failedEvents} failed</span>}
+                {f.reverted && <span style={{ color: 'var(--cr-warn-500)', fontSize: 11 }}>reverted</span>}
+                <span style={{ fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-ok-500)', fontVariantNumeric: 'tabular-nums' }}>+{f.linesAdded}</span>
+                <span style={{ fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-err-500)', fontVariantNumeric: 'tabular-nums' }}>−{f.linesRemoved}</span>
+              </div>
+              {/* bar width = this file's churn vs the busiest file; split add/remove */}
+              <div style={{ display: 'flex', height: 6, width: `${(f.churn / maxChurn) * 100}%`, minWidth: 2, borderRadius: 3, overflow: 'hidden', gap: 1, background: 'var(--cr-ink-2)' }}>
+                <div style={{ width: `${(f.linesAdded / Math.max(1, f.churn)) * 100}%`, background: 'var(--cr-ok-500)' }} />
+                <div style={{ width: `${(f.linesRemoved / Math.max(1, f.churn)) * 100}%`, background: 'var(--cr-err-500)' }} />
+              </div>
+            </div>
+          );
+        })}
+        {ranked.length > topN.length && (
+          <div style={{ fontSize: 11.5, color: 'var(--cr-fg-3)', marginTop: 2 }}>+{ranked.length - topN.length} more file(s) below</div>
+        )}
+      </div>
+
+      <div style={{ fontSize: 11, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--cr-fg-3)', fontWeight: 600, marginTop: 4 }}>Full diffs</div>
       {data.files.map((f, idx) => {
         const isOpen = expanded.has(f.file);
         return (
