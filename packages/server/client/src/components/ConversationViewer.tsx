@@ -101,6 +101,27 @@ export default function ConversationViewer({
     if (initialTab) setViewMode(initialTab as ViewMode);
   }, [sessionId, initialTab]); // eslint-disable-line react-hooks/exhaustive-deps
   const [filter, setFilter] = useState<MessageFilter>('all');
+  // Line to scroll to + flash in the transcript (set when a Session-arc bar is
+  // clicked, so it jumps to that exact prompt).
+  const [scrollToLine, setScrollToLine] = useState<number | null>(null);
+  // When a target line is set and the transcript is showing, scroll to that
+  // message and let it flash. Messages may still be streaming in, so retry
+  // briefly until the element exists.
+  useEffect(() => {
+    if (viewMode !== 'full' || scrollToLine == null) return;
+    let tries = 0;
+    const t = setInterval(() => {
+      const el = document.querySelector(`[data-line="${scrollToLine}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        clearInterval(t);
+        setTimeout(() => setScrollToLine(null), 2600);
+      } else if (++tries > 24) {
+        clearInterval(t);
+      }
+    }, 150);
+    return () => clearInterval(t);
+  }, [viewMode, scrollToLine, messages.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const [rawData, setRawData] = useState<any[]>([]);
   const [rawLoading, setRawLoading] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -691,6 +712,7 @@ export default function ConversationViewer({
             loading={metaLoading}
             onOpenTab={handleViewChange}
             onOpenTools={() => { setFilter('tools'); handleViewChange('full'); }}
+            onOpenPrompt={(line) => { setFilter('all'); setScrollToLine(line); handleViewChange('full'); }}
           />
         )}
 
@@ -795,7 +817,7 @@ export default function ConversationViewer({
             )}
             {!loading &&
               filteredMessages.map((msg, idx) => (
-                <MessageBlock key={`${msg.line}-${idx}`} message={msg} />
+                <MessageBlock key={`${msg.line}-${idx}`} message={msg} highlight={scrollToLine != null && msg.line === scrollToLine} />
               ))}
 
             {!loading && subagents.length > 0 && (
@@ -1188,7 +1210,7 @@ function getLanguage(path: string): string {
   return map[ext] || 'text';
 }
 
-function MessageBlock({ message }: { message: Message }) {
+function MessageBlock({ message, highlight }: { message: Message; highlight?: boolean }) {
   const renderContent = () => {
     if (!message.content) return null;
     return (
@@ -1222,9 +1244,21 @@ function MessageBlock({ message }: { message: Message }) {
   };
 
   return (
-    <div 
+    <div
       className={`message message-${message.role}`}
-      style={{ marginBottom: 40, display: 'flex', gap: 16 }}
+      data-line={message.line}
+      style={{
+        marginBottom: 40, display: 'flex', gap: 16,
+        // Flash the jumped-to prompt so the eye lands on it.
+        ...(highlight ? {
+          scrollMarginTop: 80,
+          background: 'var(--cr-brand-surf, rgba(240,165,58,0.10))',
+          boxShadow: '0 0 0 2px var(--cr-brand-500)',
+          borderRadius: 'var(--cr-radius-md, 8px)',
+          padding: 12, margin: '-12px -12px 28px',
+          transition: 'background 0.4s, box-shadow 0.4s',
+        } : {}),
+      }}
     >
       <div
         style={{
@@ -1465,7 +1499,7 @@ function prettyToolName(raw: string): string {
  * outcome + security scan, each deep-linking to the tab with the detail.
  */
 function MetricsPanel({
-  meta, outcome, messages, loading, onOpenTab, onOpenTools,
+  meta, outcome, messages, loading, onOpenTab, onOpenTools, onOpenPrompt,
 }: {
   meta: SessionMetadataResponse | null;
   outcome: SessionOutcomeResponse | null;
@@ -1473,6 +1507,7 @@ function MetricsPanel({
   loading: boolean;
   onOpenTab: (m: ViewMode) => void;
   onOpenTools: () => void;
+  onOpenPrompt: (line: number) => void;
 }) {
   if (loading && !meta) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Loading…</div>;
   if (!meta) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>No data for this session.</div>;
@@ -1509,6 +1544,17 @@ function MetricsPanel({
   const maxTool = Math.max(1, ...tools.map(([, n]) => n));
   const toolsByTokens = [...toolTokens.entries()].filter(([, t]) => t > 0).sort((a, b) => b[1] - a[1]);
   const maxToolTokens = Math.max(1, ...toolsByTokens.map(([, t]) => t));
+
+  // The outcome's prompts don't carry transcript line numbers, so map each
+  // prompt back to its user message by text — that message's line is the jump
+  // target for the Session-arc bars.
+  const userMsgs = messages.filter(m => m.role === 'user' && m.content);
+  const norm = (s: string) => s.replace(/\s+/g, ' ').trim();
+  const lineForPrompt = (text: string): number | undefined => {
+    const key = norm(text).slice(0, 30);
+    if (key.length < 6) return undefined;
+    return userMsgs.find(u => norm(u.content).includes(key))?.line;
+  };
 
   // Color a tool by the kind of work it does — shared by both tool charts.
   const toolKindColor = (name: string): string => {
@@ -1598,18 +1644,21 @@ function MetricsPanel({
         return (
           <div>
             <div style={cap}>Session arc · {outcome.prompts.length} prompts</div>
-            <div onClick={() => onOpenTab('insights')} title="Open Recap for the frustrations in full"
-              style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 52, background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-md)', padding: '8px 10px', cursor: 'pointer' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 52, background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-md)', padding: '8px 10px' }}>
               {outcome.prompts.map((p, i) => {
                 const strong = p.markers.some(m => m === 'frustrated' || m === 'correction' || m === 'interrupt');
                 const h = 25 + Math.min(p.intensity || (p.markers.length ? 2 : 1), 5) / 5 * 75;
+                const jumpLine = typeof p.line === 'number' ? p.line : lineForPrompt(p.text);
+                const jumpable = typeof jumpLine === 'number';
                 return (
-                  <div key={i} title={`#${i + 1} · ${p.markers.join(', ') || 'neutral'}\n${p.text.slice(0, 160)}`}
-                    style={{ flex: 1, minWidth: 3, maxWidth: 22, height: `${h}%`, background: markerColor(p.markers), borderRadius: 2, opacity: strong || p.markers.includes('approval') ? 1 : 0.45 }} />
+                  <div key={i}
+                    onClick={jumpable ? () => onOpenPrompt(jumpLine as number) : undefined}
+                    title={`#${i + 1} · ${p.markers.join(', ') || 'neutral'}\n${p.text.slice(0, 160)}${jumpable ? '\n\nClick to jump to this prompt in the transcript' : ''}`}
+                    style={{ flex: 1, minWidth: 3, maxWidth: 22, height: `${h}%`, background: markerColor(p.markers), borderRadius: 2, opacity: strong || p.markers.includes('approval') ? 1 : 0.45, cursor: jumpable ? 'pointer' : 'default' }} />
                 );
               })}
             </div>
-            <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 4 }}>Each bar is a prompt, tallest = most intense · red = frustrated, green = approval · opens Recap ›</div>
+            <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 4 }}>Each bar is a prompt, tallest = most intense · red = frustrated, green = approval · click a bar to jump to it ›</div>
           </div>
         );
       })()}
