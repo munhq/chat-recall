@@ -1936,9 +1936,11 @@ export interface ProjectTreeApiNode {
   count: number;
   totalCount: number;
   children: ProjectTreeApiNode[];
-  source?: 'git-remote' | 'git-local' | 'auto-workspace' | 'path' | 'user' | 'untracked';
+  source?: 'git-remote' | 'git-local' | 'auto-workspace' | 'path' | 'user' | 'untracked' | 'automation';
   workspace?: boolean;
   orphan?: boolean;
+  /** Newest session mtime (ms) under this node — powers the "Recent" group. */
+  lastMtime?: number;
 }
 export interface ProjectTreeResponse {
   nodes: ProjectTreeApiNode[];

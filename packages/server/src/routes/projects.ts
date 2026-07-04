@@ -135,9 +135,49 @@ interface TreeNode {
   count: number;       // items directly at this id
   totalCount: number;  // count + sum of descendants
   children: TreeNode[];
-  source?: string;     // 'git-remote' | 'auto-workspace' | 'path' | …
+  source?: string;     // 'git-remote' | 'auto-workspace' | 'path' | 'automation' | …
   orphan?: boolean;    // path-source rows whose folder no longer exists
   workspace?: boolean; // true for grouping rows
+  lastMtime?: number;  // newest session mtime under this node — powers "Recent"
+}
+
+/**
+ * Path-source rows that are NOT real projects and must never appear as one:
+ * filesystem roots, scratch dirs, the user's home, downloads, chat-recall's
+ * own internal transcript store, and bare session-UUID folders. These polluted
+ * the tree with `/`, `/tmp`, `~/Downloads`, `.claude/projects`, `e0a584b4-…`.
+ */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isJunkPath(p: string): boolean {
+  if (!p) return true;
+  if (p === '/' || p === '.') return true;
+  const segs = p.split('/').filter(Boolean);
+  if (segs.length === 0) return true;
+  const base = segs[segs.length - 1];
+  if (UUID_RE.test(base)) return true;                       // raw session dir
+  if (p.includes('/.claude/projects')) return true;          // internal store
+  if (/^\/tmp(\/|$)/.test(p) || /^\/var\/tmp(\/|$)/.test(p)) return true;
+  if (/\/(Downloads|Desktop|Library)(\/|$)/.test(p)) return true;
+  // The user's home itself (and bare "/home", "/Users") — a container, not a project.
+  if (/^\/(home|Users)\/[^/]+\/?$/.test(p) || /^\/(home|Users)\/?$/.test(p)) return true;
+  return false;
+}
+
+/** A resolver bug produced paths with duplicated segments
+ *  (…/acme/acme/gcp/infrastructure/gcp/infrastructure/…). Detect a segment
+ *  equal to the one before it and drop the phantom project. */
+function isMalformedPath(p: string): boolean {
+  const segs = p.split('/').filter(Boolean);
+  for (let i = 1; i < segs.length; i++) if (segs[i] && segs[i] === segs[i - 1]) return true;
+  return false;
+}
+
+/** Automation roots — throwaway worktrees the bots create. Real work, but not a
+ *  project you browse by; grouped separately and off by default so 9k+ bot
+ *  sessions never bury your actual repos. */
+const AUTOMATION_SUBSTR = ['/.claude-pr-bot', '/.claude-work/worktrees', '/.claude-pr/'];
+function isAutomationPath(p: string): boolean {
+  return AUTOMATION_SUBSTR.some((s) => p.includes(s));
 }
 
 router.get('/tree', async (_req, res) => {
@@ -180,6 +220,7 @@ function buildTreeFromSummaries(
       source,
       orphan,
       workspace: false,
+      lastMtime: s.last_mtime,
       projectPath,
     };
   });
@@ -245,26 +286,49 @@ function buildTreeFromSummaries(
 
   const standaloneGit: TreeNode[] = [];
   const untracked: TreeNode[] = [];
+  const automation: TreeNode[] = [];
   for (const n of annotated) {
     if (n.workspace || isWorkspaceId(n)) continue;
-    if (n.source === 'path') { untracked.push(n); continue; }
+    if (n.source === 'path') {
+      const p = n.projectPath || n.id.replace(/^path:/, '');
+      if (isJunkPath(p) || isMalformedPath(p)) continue;      // never a project — drop
+      if (isAutomationPath(p)) { automation.push(n); continue; }
+      untracked.push(n);
+      continue;
+    }
     const wsId = (n.projectPath ? resolveWorkspaceId(n.projectPath) : null) ?? wsIdByPrefix(n.projectPath);
     if (wsId) {
       const w = ensureWorkspace(wsId);
       w.children.push(n);
       w.totalCount += n.totalCount;
+      w.lastMtime = Math.max(w.lastMtime ?? 0, n.lastMtime ?? 0);
     } else {
       standaloneGit.push(n);
     }
   }
 
-  // Sort: workspaces+standalone by totalCount desc; untracked last.
+  // Sort: workspaces+standalone by totalCount desc; automation + untracked last.
   const sortByActivity = (a: TreeNode, b: TreeNode) => b.totalCount - a.totalCount;
   for (const w of workspaces) w.children.sort(sortByActivity);
   workspaces.sort(sortByActivity);
   standaloneGit.sort(sortByActivity);
 
   const top: TreeNode[] = [...workspaces, ...standaloneGit];
+
+  // Automation (bot worktrees) — its own group, above untracked, default-off in
+  // the UI so it never buries real projects even at 9k+ sessions.
+  if (automation.length > 0) {
+    automation.sort(sortByActivity);
+    top.push({
+      id: 'automation:all',
+      name: 'Automation (bot worktrees)',
+      count: 0,
+      totalCount: automation.reduce((s, n) => s + n.totalCount, 0),
+      children: automation,
+      source: 'automation',
+      lastMtime: automation.reduce((m, n) => Math.max(m, n.lastMtime ?? 0), 0),
+    });
+  }
 
   if (untracked.length > 0) {
     untracked.sort(sortByActivity);
@@ -275,6 +339,7 @@ function buildTreeFromSummaries(
       totalCount: untracked.reduce((s, n) => s + n.totalCount, 0),
       children: untracked,
       source: 'untracked',
+      lastMtime: untracked.reduce((m, n) => Math.max(m, n.lastMtime ?? 0), 0),
     });
   }
 
