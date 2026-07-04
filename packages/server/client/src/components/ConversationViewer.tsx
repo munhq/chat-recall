@@ -1519,46 +1519,104 @@ function MetricsPanel({
         </div>
       )}
 
-      {/* Work done */}
+      {/* Work done — three headline stat tiles (magnitude, no chart needed). */}
       <div>
         <div style={cap}>Work done</div>
-        <div style={grid}>
+        <div style={{ ...grid, gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))' }}>
           <Stat label="Messages" value={fmtN(meta.messageCount || 0)} />
           <Stat label="Duration" value={dur} />
-          <Stat label="Files edited" value={String(outcome?.fileCount ?? meta.filesModified?.length ?? 0)}
-            sub={(filesAdded || filesRemoved) ? <><span style={{ color: 'var(--cr-ok-500)' }}>+{filesAdded}</span> <span style={{ color: 'var(--cr-err-500)' }}>−{filesRemoved}</span></> : undefined}
-            onClick={() => onOpenTab('files')} />
           <Stat label="Commits" value={String(outcome?.commits?.totalCommits ?? 0)}
             sub={outcome?.commits?.repos?.length ? `${outcome.commits.repos.length} repo(s)` : undefined}
             onClick={() => onOpenTab('commits')} />
         </div>
       </div>
 
-      {/* Signals — friction + red flags, pulled from Insights + Security so
-          this tab tells you whether the session went smoothly, not just how
-          big it was. Each opens the tab with the detail. */}
-      <div>
-        <div style={cap}>Signals</div>
-        <div style={grid}>
-          <Stat label="Decisions" value={String(decisions)} onClick={decisions ? () => onOpenTab('insights') : undefined} />
-          <Stat label="Blockers" value={String(blockers)} tone={blockers > 0 ? 'var(--cr-warn-500)' : undefined}
-            onClick={blockers ? () => onOpenTab('insights') : undefined} />
-          <Stat label="Frustrated" value={String(pm?.frustrated ?? 0)} tone={(pm?.frustrated ?? 0) > 0 ? 'var(--cr-err-500)' : undefined}
-            onClick={(pm?.frustrated ?? 0) > 0 ? () => onOpenTab('insights') : undefined} />
-          <Stat label="Interrupts" value={String(pm?.interrupt ?? 0)} tone={(pm?.interrupt ?? 0) > 0 ? 'var(--cr-warn-500)' : undefined}
-            onClick={(pm?.interrupt ?? 0) > 0 ? () => onOpenTab('insights') : undefined} />
-          <Stat label="Leaked secrets" value={String(findingCount)} tone={findingCount > 0 ? 'var(--cr-err-500)' : 'var(--cr-ok-500)'}
-            onClick={findingCount > 0 ? () => onOpenTab('security') : undefined} />
+      {/* Code changes — diverging polarity (added vs removed). A proportional
+          two-tone bar reads the add/delete ratio at a glance. */}
+      {(filesAdded > 0 || filesRemoved > 0) && (
+        <div>
+          <div style={cap}>Code changes · {outcome?.fileCount ?? meta.filesModified?.length ?? 0} file(s)</div>
+          <div onClick={() => onOpenTab('diff')} style={{ cursor: 'pointer' }} title="Open the diff">
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, fontWeight: 600, marginBottom: 6, fontVariantNumeric: 'tabular-nums' }}>
+              <span style={{ color: 'var(--cr-ok-500)' }}>+{filesAdded.toLocaleString()}</span>
+              <span style={{ color: 'var(--cr-err-500)' }}>−{filesRemoved.toLocaleString()}</span>
+            </div>
+            <div style={{ display: 'flex', height: 8, borderRadius: 4, overflow: 'hidden', background: 'var(--cr-ink-2)', gap: 2 }}>
+              <div style={{ width: `${(filesAdded / Math.max(1, filesAdded + filesRemoved)) * 100}%`, background: 'var(--cr-ok-500)' }} />
+              <div style={{ width: `${(filesRemoved / Math.max(1, filesAdded + filesRemoved)) * 100}%`, background: 'var(--cr-err-500)' }} />
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* Cost gets a headline tile only when we actually know it (no broken
-          "—"). Tokens are reference numbers, not headline stats — a compact
-          line, so they don't compete with Work done / Signals. */}
+      {/* Context window — a single value against its ceiling. A gauge is the
+          right form; it makes "you blew past the window" visible instead of a
+          bare 293.7k that means nothing without the limit. */}
+      {(meta.peakContextTokens || 0) > 0 && (() => {
+        const CTX = 200_000; // Claude context window (approx); the insight is the ratio.
+        const peak = meta.peakContextTokens;
+        const pct = peak / CTX;
+        const over = pct > 1;
+        const near = pct > 0.85;
+        const color = over ? 'var(--cr-err-500)' : near ? 'var(--cr-warn-500)' : 'var(--cr-brand-500)';
+        return (
+          <div>
+            <div style={cap}>Context window</div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 13, marginBottom: 6 }}>
+              <span style={{ color: 'var(--cr-fg-2)' }}>peak {fmtN(peak)} <span style={{ color: 'var(--cr-fg-3)' }}>/ 200k</span></span>
+              <span style={{ color, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
+                {Math.round(pct * 100)}%{over ? ' · over window' : ''}
+              </span>
+            </div>
+            <div style={{ position: 'relative', height: 8, borderRadius: 4, background: 'var(--cr-ink-2)', overflow: 'hidden' }}>
+              <div style={{ width: `${Math.min(pct, 1) * 100}%`, height: '100%', background: color, borderRadius: 4 }} />
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Signals — a health/attention list, not number tiles. Icon + severity
+          color + count, worst first, only the ones that fired. Status colors
+          ship with a label (never color-alone), each drills into its tab. */}
+      {(() => {
+        const rows = [
+          { n: findingCount, label: findingCount === 1 ? 'leaked secret' : 'leaked secrets', sev: 'crit', tab: 'security' as ViewMode, always: true },
+          { n: pm?.frustrated ?? 0, label: 'frustrated prompt(s)', sev: 'crit', tab: 'insights' as ViewMode },
+          { n: blockers, label: 'blocker(s)', sev: 'warn', tab: 'insights' as ViewMode },
+          { n: pm?.interrupt ?? 0, label: 'interrupt(s)', sev: 'warn', tab: 'insights' as ViewMode },
+          { n: decisions, label: 'decision(s)', sev: 'info', tab: 'insights' as ViewMode },
+        ];
+        const sevColor: Record<string, string> = { crit: 'var(--cr-err-500)', warn: 'var(--cr-warn-500)', info: 'var(--cr-fg-2)', ok: 'var(--cr-ok-500)' };
+        const sevIcon: Record<string, string> = { crit: '▲', warn: '⏸', info: '•', ok: '✓' };
+        const shown = rows.filter(r => r.n > 0 || r.always);
+        return (
+          <div>
+            <div style={cap}>Signals</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 1, background: 'var(--cr-line-1)', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-md)', overflow: 'hidden' }}>
+              {shown.map((r) => {
+                const zero = r.n === 0;
+                const sev = zero ? 'ok' : r.sev;
+                return (
+                  <div key={r.label} onClick={r.n > 0 ? () => onOpenTab(r.tab) : undefined}
+                    style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 14px', background: 'var(--cr-ink-1)', cursor: r.n > 0 ? 'pointer' : 'default' }}>
+                    <span style={{ color: sevColor[sev], fontSize: 12, width: 14, textAlign: 'center' }}>{zero ? '✓' : sevIcon[sev]}</span>
+                    <span style={{ fontSize: 15, fontWeight: 600, color: zero ? 'var(--cr-fg-3)' : sevColor[sev], fontVariantNumeric: 'tabular-nums', minWidth: 24 }}>{r.n}</span>
+                    <span style={{ fontSize: 13, color: 'var(--cr-fg-2)' }}>{r.label}</span>
+                    {r.n > 0 && <span style={{ marginLeft: 'auto', color: 'var(--cr-fg-3)', fontSize: 12 }}>→</span>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Cost — headline tile only when known (never a broken "—"). Tokens are
+          reference numbers: a compact line, not competing tiles. */}
       <div>
         <div style={cap}>Cost &amp; tokens</div>
         {(meta.estimatedCostUsd != null || (meta.cacheSavingsUsd ?? 0) > 0.01) && (
-          <div style={{ ...grid, marginBottom: 12 }}>
+          <div style={{ ...grid, gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', marginBottom: 12 }}>
             {meta.estimatedCostUsd != null && <Stat label="Cost" value={fmtCost(meta.estimatedCostUsd)} tone="var(--cr-warn-500)" />}
             {meta.cacheSavingsUsd != null && meta.cacheSavingsUsd > 0.01 && (
               <Stat label="Cache saved" value={fmtCost(meta.cacheSavingsUsd)} tone="var(--cr-ok-500)" />
@@ -1569,7 +1627,6 @@ function MetricsPanel({
           {[
             ['Input', meta.inputTokens], ['Output', meta.outputTokens],
             ['Cache read', meta.cacheReadTokens], ['Cache write', meta.cacheCreationTokens],
-            ['Peak context', meta.peakContextTokens],
           ].map(([label, n]) => (
             <span key={label as string}>
               {label}{' '}
