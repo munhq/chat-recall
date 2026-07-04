@@ -1555,6 +1555,62 @@ function MetricsPanel({
         );
       })()}
 
+      {/* Session arc — the emotional shape of the session over time. One bar
+          per prompt, height by intensity, colored by its strongest marker.
+          A red spike three-quarters through = where it went sideways. */}
+      {outcome?.prompts && outcome.prompts.length > 1 && (() => {
+        const markerColor = (ms: PromptMarker[]) =>
+          ms.includes('frustrated') ? 'var(--cr-err-500)'
+          : (ms.includes('correction') || ms.includes('interrupt')) ? 'var(--cr-warn-500)'
+          : ms.includes('approval') ? 'var(--cr-ok-500)'
+          : (ms.includes('question') || ms.includes('clarification_request')) ? 'var(--cr-info-500)'
+          : 'var(--cr-fg-3)';
+        return (
+          <div>
+            <div style={cap}>Session arc · {outcome.prompts.length} prompts</div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 52, background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-md)', padding: '8px 10px' }}>
+              {outcome.prompts.map((p, i) => {
+                const strong = p.markers.some(m => m === 'frustrated' || m === 'correction' || m === 'interrupt');
+                const h = 25 + Math.min(p.intensity || (p.markers.length ? 2 : 1), 5) / 5 * 75;
+                return (
+                  <div key={i} title={`#${i + 1} · ${p.markers.join(', ') || 'neutral'}\n${p.text.slice(0, 160)}`}
+                    style={{ flex: 1, minWidth: 3, maxWidth: 22, height: `${h}%`, background: markerColor(p.markers), borderRadius: 2, opacity: strong || p.markers.includes('approval') ? 1 : 0.45 }} />
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Prompt markers — categorical counts as a proper bar chart (not lopsided:
+          each marker type is its own bar). Colored by sentiment, worst first. */}
+      {outcome?.promptMarkers && outcome.promptMarkers.total > 0 && (() => {
+        const KIND: Record<string, string> = { err: 'var(--cr-err-500)', warn: 'var(--cr-warn-500)', ok: 'var(--cr-ok-500)', info: 'var(--cr-info-500)', neutral: 'var(--cr-fg-3)' };
+        const keys = (['frustrated', 'correction', 'interrupt', 'clarification_request', 'question', 'directive', 'approval'] as PromptMarker[])
+          .filter(k => outcome.promptMarkers[k] > 0);
+        const maxN = Math.max(1, ...keys.map(k => outcome.promptMarkers[k]));
+        return (
+          <div>
+            <div style={cap}>Prompt markers</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+              {keys.map(k => {
+                const n = outcome.promptMarkers[k];
+                const s = MARKER_STYLES[k];
+                return (
+                  <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span style={{ width: 92, fontSize: 12, color: 'var(--cr-fg-2)', flexShrink: 0 }}>{s.symbol} {s.label}</span>
+                    <div style={{ flex: 1, height: 14, background: 'var(--cr-ink-2)', borderRadius: 3, overflow: 'hidden' }}>
+                      <div style={{ width: `${(n / maxN) * 100}%`, height: '100%', background: KIND[s.kind || 'neutral'], borderRadius: 3, minWidth: 3 }} />
+                    </div>
+                    <span style={{ width: 26, textAlign: 'right', fontSize: 12, color: 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{n}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Cost — headline tile only when known (never a broken "—"). Tokens are
           reference numbers: a compact line, not competing tiles. */}
       <div>
