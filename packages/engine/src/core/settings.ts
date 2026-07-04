@@ -217,6 +217,14 @@ export interface SyncSettings {
   excludeTools: Array<'claude' | 'gemini' | 'codex' | 'opencode' | 'agy'>;
   /** Project paths whose findings/meta never leave the device. */
   excludeProjects: string[];
+  /**
+   * Opt personal folders (Pictures/Music/Documents/… — see PERSONAL_DIR_PATTERNS)
+   * back INTO code-index discovery. Those folders are skipped by default so
+   * chat-recall never walks personal media/docs (and never trips the macOS
+   * Photos/Music permission prompts). A substring match here re-permits a
+   * specific path under them (e.g. "/Documents/code/").
+   */
+  includeProjects?: string[];
   /** Last-line regex filter on the redacted `preview` field. */
   excludePreviewPatterns?: string[];
   /**
@@ -343,7 +351,25 @@ function defaultSync(): SyncSettings {
     upload: { findings: true, sessionMeta: true, dismissals: true, customRules: true, raw: true },
     excludeTools: [],
     excludeProjects: [],
+    includeProjects: [],
   };
+}
+
+/**
+ * Personal-folder patterns skipped by code-index discovery UNLESS a path is
+ * opted back in via sync.includeProjects. Privacy default: chat-recall should
+ * never walk your media/docs, and on macOS walking these trips the Photos /
+ * Music / Documents permission prompts. Substring match on the project path.
+ */
+export const PERSONAL_DIR_PATTERNS = [
+  '/Pictures/', '/Music/', '/Movies/', '/Videos/', '/Photos Library',
+  '/Documents/', '/Desktop/', '/Downloads/', '/Library/',
+];
+
+/** True if a path sits under a personal folder and is NOT explicitly opted in. */
+export function isPersonalPath(projectPath: string, includeProjects: string[] = []): boolean {
+  if (includeProjects.some((inc) => inc && projectPath.includes(inc))) return false;
+  return PERSONAL_DIR_PATTERNS.some((pat) => projectPath.includes(pat));
 }
 
 function defaultTeam(): TeamSettings {
