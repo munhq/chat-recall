@@ -36,6 +36,7 @@ import { dirname, basename, join } from 'path';
 
 import { claudeBackend, geminiBackend, opencodeBackend, codexBackend } from '@chat-recall/engine/core/backends/index.js';
 import { getDiaryDir } from '@chat-recall/engine/core/paths.js';
+import { loadSettings } from '@chat-recall/engine/core/settings.js';
 
 // The only "work" import: the HTTP collector that ships sessions to the
 // server. Everything else this daemon used to import (stores, embedder,
@@ -353,7 +354,21 @@ function discoverWorkspaces(): string[] {
       if (prev === undefined || r.mtime > prev) newest.set(r.projectPath, r.mtime);
     }
   }
+  // Honor the SAME exclusions the sync path uses (local settings — the daemon
+  // has no server tenant config here). Without this, code-intelligence walked
+  // every session's project tree regardless of exclude rules — which on macOS
+  // trips Photos/Music/Documents permission prompts when a path sits near a
+  // protected folder, and indexes repos the user explicitly excluded. Excluded
+  // = never handed to codeindex, so its filesystem walk never starts there.
+  let excluded: string[] = [];
+  try {
+    const s = loadSettings();
+    excluded = [...(s.sync?.excludeProjects ?? []), ...(s.privacy?.projectDenylist ?? [])].filter(Boolean);
+  } catch { /* settings unreadable — no extra exclusions */ }
+  const isExcluded = (p: string) => excluded.some((x) => p.includes(x));
+
   return [...newest.entries()]
+    .filter(([p]) => !isExcluded(p))
     .filter(([p]) => { try { return existsSync(p); } catch { return false; } })
     .sort((a, b) => b[1] - a[1])
     .slice(0, CODE_INDEX_MAX)
