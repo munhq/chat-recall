@@ -69,6 +69,8 @@ export interface ProjectTreeNode {
   orphan?: boolean;
   /** Resolver source tag for icon/coloring (git-remote, auto-workspace, path, …). */
   source?: string;
+  /** Newest session mtime (ms) under this node — powers the "Recent" group. */
+  lastMtime?: number;
 }
 
 /**
@@ -87,6 +89,7 @@ function nodeFromApi(n: ProjectTreeApiNode): ProjectTreeNode {
     workspace: !!n.workspace,
     orphan: !!n.orphan,
     source: n.source,
+    lastMtime: n.lastMtime,
   };
 }
 
