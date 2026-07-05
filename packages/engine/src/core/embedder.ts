@@ -203,6 +203,21 @@ export class OpenAICompatibleEmbedder implements Embedder {
     return Number.isFinite(n) && n > 0 ? Math.floor(n) : 60000;
   })();
 
+  // Max input CHARS per text. Hosted embedders enforce a token context window
+  // and HARD-FAIL (HTTP 400) an over-length input — unlike Ollama/llama.cpp,
+  // which silently truncate. A single 200k-char chunk (we have 116 chunks >24k
+  // chars) thus 400s the whole request; axon then treats that 400 as a provider
+  // failure and opens the SHARED circuit breaker, blocking every embed for 30s
+  // — and the poison chunk, never embedded, is re-claimed every sweep, so the
+  // breaker stays open forever. Truncating client-side (as Ollama did
+  // implicitly) makes over-length chunks embed on their prefix instead of
+  // poisoning the pipeline. Default 24000 chars ≈ 6k tokens, safely inside
+  // bge-m3's 8192-token window. 0 disables (for local truncating servers).
+  static readonly MAX_INPUT_CHARS = (() => {
+    const n = Number(process.env.EMBED_MAX_INPUT_CHARS);
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 24000;
+  })();
+
   private baseUrl: string;
   private apiKey: string;
   private model: string;
@@ -239,6 +254,13 @@ export class OpenAICompatibleEmbedder implements Embedder {
   }
 
   private async embedWithType(texts: string[], inputType: 'query' | 'passage', resilient = false): Promise<number[][]> {
+    // Cap each input to the model's context BEFORE slicing — an over-length
+    // text hard-fails the hosted embedder (400) and poisons the shared circuit
+    // breaker (see MAX_INPUT_CHARS). Truncation preserves the semantically
+    // richest prefix; the vector is still a good-enough representation for
+    // search, exactly as the prior Ollama path (which truncated implicitly).
+    const cap = OpenAICompatibleEmbedder.MAX_INPUT_CHARS;
+    if (cap > 0) texts = texts.map(t => (t.length > cap ? t.slice(0, cap) : t));
     // Split into BATCH_SIZE slices, then drain them through a bounded worker
     // pool of CONCURRENCY in-flight requests. Results are written back by index
     // so the returned order matches `texts` regardless of completion order.
