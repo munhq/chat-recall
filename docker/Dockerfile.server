@@ -6,12 +6,32 @@
 # from the chat-recall local binary. No host AI-tool mounts, no in-container
 # indexer — that was the retired docker-as-local design.
 
+# ── Stage 0: compile the engine's shared modules ──────────────────────────────
+# The client imports the shared secret classifier from @chat-recall/engine
+# (single source of truth with the server). Build the engine's dist here so the
+# isolated client stage can resolve that subpath exactly like the dev tree does
+# (via node_modules/@chat-recall/engine), with no barrel/Node deps pulled in.
+FROM node:20-bookworm-slim AS enginebuild
+RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY package.json package-lock.json tsconfig.base.json tsconfig.json ./
+COPY packages/engine/package.json ./packages/engine/
+COPY packages/cli/package.json ./packages/cli/
+COPY packages/server/package.json ./packages/server/
+RUN npm ci
+COPY packages/engine/ ./packages/engine/
+RUN npx tsc -b packages/engine
+
 # ── Stage 1: build the React client → static dist ─────────────────────────────
 FROM node:20-bookworm-slim AS client
 WORKDIR /client
 COPY packages/server/client/package.json packages/server/client/package-lock.json* ./
 RUN npm ci || npm install
 COPY packages/server/client/ ./
+# Provide the compiled engine as a resolvable package so Vite bundles the shared
+# classifier (only the pure subpath is imported — no engine barrel).
+COPY --from=enginebuild /app/packages/engine/package.json ./node_modules/@chat-recall/engine/package.json
+COPY --from=enginebuild /app/packages/engine/dist ./node_modules/@chat-recall/engine/dist
 # Vite bakes these at build time. Unset (compose default) → same-origin /api,
 # no external auth. The SaaS build passes the Keycloak issuer + client id.
 ARG VITE_OIDC_ISSUER
@@ -40,6 +60,7 @@ RUN npx tsc -b packages/engine packages/server \
     && npm run build --workspace=chat-recall \
     && npm pack --workspace=chat-recall --pack-destination /app \
     && mv /app/chat-recall-*.tgz /app/chat-recall.tgz \
+    && node -p "require('./packages/cli/package.json').version" > /app/cli-version.txt \
     && npm prune --omit=dev
 
 # ── Stage 3: runtime ──────────────────────────────────────────────────────────
@@ -68,7 +89,10 @@ COPY packages/server/cloud/migrate.mjs ./migrate/migrate.mjs
 COPY packages/server/cloud/migrations ./migrate/migrations
 
 # The packed CLI, served at /install/chat-recall.tgz (see routes/install.ts).
+# cli-version.txt lets /api/capabilities advertise the packed CLI version so
+# installed clients can self-update (util/cli-release.ts).
 COPY --from=build /app/chat-recall.tgz ./install/chat-recall.tgz
+COPY --from=build /app/cli-version.txt ./install/cli-version.txt
 
 # Build stamp for /health's `build` field — answers "did the deploy actually
 # roll?" without any CI plumbing. GIT_SHA is optional (CI can pass it); the

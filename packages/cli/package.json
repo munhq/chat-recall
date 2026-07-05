@@ -1,6 +1,6 @@
 {
   "name": "chat-recall",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Local-first memory for AI coding tools — indexes Claude Code / Gemini CLI / OpenCode / Codex sessions, exposes them over MCP, optionally syncs redacted history to a chat-recall server",
   "type": "module",
   "license": "MIT",
@@ -9,7 +9,12 @@
     "chat-recall-mcp": "./dist/mcp.js",
     "chat-recall-watch": "./dist/watch.js"
   },
-  "files": ["dist", "hooks", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "hooks",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -b && node scripts/bundle.mjs && node scripts/postbuild.mjs",
     "build:types": "tsc -b",

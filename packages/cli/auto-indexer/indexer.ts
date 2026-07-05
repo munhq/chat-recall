@@ -45,6 +45,12 @@ import { loadSettings, isPersonalPath } from '@chat-recall/engine/core/settings.
 import { syncIncremental, isSyncSkip } from '../src/sync-client.js';
 import { drainSyncIntents } from '../src/intent-drain.js';
 import { loadAllCredentials } from '../src/sync-client.js';
+import { runAutoUpdate } from '../src/auto-update.js';
+import { runCollectorMigration } from '../src/collector-migrate.js';
+
+// Injected by the bundler (scripts/bundle.mjs). Falls back for tsx/dev runs.
+declare const __CLI_VERSION__: string;
+const CLI_VERSION = typeof __CLI_VERSION__ === 'string' ? __CLI_VERSION__ : '0.0.0';
 import { existsSync } from 'fs';
 
 const DEBOUNCE_MS = 5000;  // coalesce a burst of file events into one flush
@@ -422,6 +428,50 @@ if (CODE_INDEX_ON) {
   setTimeout(() => { void codeIndexTick(); }, 90_000);   // first pass shortly after startup
   console.log(`  Code intelligence: AUTO — discovers your repos & indexes them (every ${CODE_INDEX_MS / 60000}m · ${CODE_INDEX_WINDOW_DAYS}d window · max ${CODE_INDEX_MAX})`);
 }
+
+// ── CLI self-update: keep the daemon current with the logged-in server ──────
+// Checksum-pinned, same-origin, default-on for self-host (CHAT_RECALL_AUTO_UPDATE
+// overrides). On success the watch service restarts onto the new binary.
+async function autoUpdateTick(): Promise<void> {
+  for (const cred of loadAllCredentials()) {
+    const base = cred.serverUrl.replace(/\/+$/, '');
+    const headers: Record<string, string> = cred.token ? { authorization: `Bearer ${cred.token}` } : {};
+    try {
+      const r = await runAutoUpdate(base, headers, CLI_VERSION);
+      if (r.updated) console.log(`[${ts()}] auto-update: ${r.reason} (${base}) — restarting service`);
+      else if (!/already current|disabled|no CLI release/.test(r.reason)) console.log(`[${ts()}] auto-update: ${r.reason} (${base})`);
+    } catch { /* best effort — never crash the daemon */ }
+  }
+}
+setTimeout(() => { void autoUpdateTick(); }, 30_000);
+setInterval(() => { void autoUpdateTick(); }, 6 * 60 * 60 * 1000).unref();
+
+// ── Collector-version migration: re-derive projects indexed by an older
+//    collector once on startup (after any self-update settles). Reuses the
+//    same collect+push path as codeIndexTick; the store prune cleans old FPs.
+async function collectorMigrationOnce(): Promise<void> {
+  const creds = loadAllCredentials();
+  if (creds.length === 0) return;
+  const { collectCode, resolveCodeindexBin, COLLECTOR_VERSION } = await import('@chat-recall/engine/core/code/collector.js');
+  let bin: string;
+  try { bin = await resolveCodeindexBin(true); } catch { return; }
+  for (const cred of creds) {
+    const base = cred.serverUrl.replace(/\/+$/, '');
+    const headers: Record<string, string> = { 'content-type': 'application/json', ...(cred.token ? { authorization: `Bearer ${cred.token}` } : {}) };
+    const reindex = async (rootPath: string): Promise<boolean> => {
+      try {
+        const result = await collectCode({ workspace: rootPath, binPath: bin });
+        const res = await fetch(`${base}/api/code/index`, { method: 'POST', headers, body: JSON.stringify(result) });
+        return res.ok;
+      } catch { return false; }
+    };
+    try {
+      const r = await runCollectorMigration({ base, authHeaders: headers, current: COLLECTOR_VERSION, reindex, log: (m) => console.log(`[${ts()}] ${m}`) });
+      if (r.reindexed || r.failed || r.missing) console.log(`[${ts()}] collector migration (${base}): re-derived ${r.reindexed}, failed ${r.failed}, skipped-missing ${r.missing}`);
+    } catch { /* best effort */ }
+  }
+}
+if (CODE_INDEX_ON) setTimeout(() => { void collectorMigrationOnce(); }, 150_000);
 
 // ── Graceful shutdown ───────────────────────────────────────────────
 // No child processes to reap anymore (summary generation moved

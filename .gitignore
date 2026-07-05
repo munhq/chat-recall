@@ -63,3 +63,7 @@ chat-recall-design-system/
 # TS project-reference build cache
 *.tsbuildinfo
 docker-compose.local.yml
+
+# Generated per-repo task files (masked previews + leak/finding locations — not for VCS)
+SECURITY_TASKS.md
+CODE_TASKS.md
