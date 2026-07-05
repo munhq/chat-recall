@@ -668,7 +668,6 @@ export default function ConversationViewer({
                     onChange={(m) => handleViewChange(m as ViewMode)}
                     options={[
                       { value: 'diff', label: 'Diff', icon: 'terminal' },
-                      { value: 'files', label: 'Files', icon: 'file' },
                       { value: 'commits', label: 'Commits', icon: 'sparkle' },
                     ]}
                   />
@@ -890,10 +889,6 @@ export default function ConversationViewer({
           </div>
         )}
 
-        {viewMode === 'files' && (
-          <FilesPanel files={sessionMeta?.filesModified ?? []} loading={metaLoading} />
-        )}
-
         {viewMode === 'raw' && (
           <div>
             {rawLoading ? (
@@ -1004,7 +999,8 @@ export default function ConversationViewer({
         )}
 
         {viewMode === 'security' && (
-          <SecurityPanel data={secretsData} loading={secretsLoading} error={secretsError} />
+          <SecurityPanel data={secretsData} loading={secretsLoading} error={secretsError}
+            onJumpToLine={(line) => { setFilter('all'); setScrollToLine(line); handleViewChange('full'); }} />
         )}
       </div>
     </div>
@@ -1024,8 +1020,8 @@ export default function ConversationViewer({
  * leak); a single-detector hit is "review me" territory.
  */
 function SecurityPanel({
-  data, loading, error,
-}: { data: SessionSecretsResponse | null; loading: boolean; error: string | null }) {
+  data, loading, error, onJumpToLine,
+}: { data: SessionSecretsResponse | null; loading: boolean; error: string | null; onJumpToLine: (line: number) => void }) {
   if (loading) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Scanning for secrets…</div>;
   if (error) return <div style={{ padding: 20, color: 'var(--cr-err-500)' }}>Failed to load findings: {error}</div>;
   if (!data) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>No scan data yet for this session.</div>;
@@ -1081,31 +1077,28 @@ function SecurityPanel({
 
   return (
     <div data-testid="conversation-security" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <Card style={{ padding: 14 }}>
-        <div style={{ display: 'flex', gap: 12, fontSize: 13, color: 'var(--cr-fg-2)', flexWrap: 'wrap', alignItems: 'center' }}>
-          <strong style={{ color: 'var(--cr-err-500)' }}>{uniqueTotal} unique finding{uniqueTotal === 1 ? '' : 's'}</strong>
-          {Object.entries(detectorCounts).map(([d, n]) => (
-            <Chip key={d} kind="neutral" size="sm">{d} {n}</Chip>
-          ))}
-          <span style={{ flex: 1 }} />
-          <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>
-            previews show last 4 chars only — raw secrets are never stored
-          </span>
-        </div>
-      </Card>
+      {/* Real findings (gitleaks + trufflehog, run at sync). The action is
+          always the same: rotate the exposed credential. */}
+      <div style={{ fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--cr-err-500)', fontWeight: 600, display: 'flex', gap: 10, alignItems: 'baseline' }}>
+        <span>Leaked secrets</span>
+        <span style={{ color: 'var(--cr-fg-3)' }}>{uniqueTotal}</span>
+        {Object.entries(detectorCounts).map(([d, n]) => (
+          <span key={d} style={{ color: 'var(--cr-fg-3)', fontWeight: 500, letterSpacing: 0, textTransform: 'none' }}>{d} {n}</span>
+        ))}
+      </div>
+      <div style={{ fontSize: 12.5, color: 'var(--cr-fg-2)', lineHeight: 1.5, padding: '10px 12px', background: 'var(--cr-err-surf, #2a1215)', border: '1px solid var(--cr-err-500)', borderRadius: 'var(--cr-radius-md)' }}>
+        <b>These are real, detected here.</b> Rotate each exposed credential at its source (revoke + reissue), then it no longer matters that it's in an old transcript. Previews show the last 4 chars only — the raw secret was redacted before sync.
+      </div>
 
       {rows.map(row => {
         const agreement = row.detectors.size;
         const tone = agreement >= 2 ? 'err' : 'warn';
         return (
-          <Card key={row.line} style={{ padding: 14, borderLeft: `3px solid var(--cr-${tone === 'err' ? 'err' : 'warn'}-500)` }}>
+          <div key={row.line} style={{ padding: '12px 14px', background: 'var(--cr-ink-1)', borderLeft: `3px solid var(--cr-${tone === 'err' ? 'err' : 'warn'}-500)`, borderRadius: '0 8px 8px 0' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <Chip kind={tone} size="sm">
                 {agreement === 1 ? '1 detector' : `${agreement} detectors agree`}
               </Chip>
-              <span style={{ fontFamily: 'var(--cr-font-mono)', fontSize: 12, color: 'var(--cr-fg-3)' }}>
-                line {row.line}
-              </span>
               {row.maxCross > 0 && (
                 // Cross-session blast radius — same redacted key appears
                 // in N other sessions, each one a parallel leak vector.
@@ -1113,22 +1106,19 @@ function SecurityPanel({
                   ⚠ also in {row.maxCross} other session{row.maxCross === 1 ? '' : 's'}
                 </Chip>
               )}
-              <span style={{ flex: 1 }} />
-              {[...row.detectors].map(d => (
-                <Chip key={d} kind="neutral" size="sm">{d}</Chip>
-              ))}
-            </div>
-            <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
               {[...row.rules].map((r) => (
-                <div key={r} style={{ fontSize: 12, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)' }}>
-                  {r}
-                </div>
+                <span key={r} style={{ fontSize: 11.5, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)' }}>{r}</span>
               ))}
+              <span style={{ flex: 1 }} />
+              <button onClick={() => onJumpToLine(row.line)} title={`Jump to line ${row.line} in the transcript`}
+                style={{ background: 'transparent', border: '1px solid var(--cr-line-2)', color: 'var(--cr-fg-2)', borderRadius: 6, padding: '3px 9px', fontSize: 11.5, cursor: 'pointer', fontFamily: 'inherit' }}>
+                line {row.line} ›
+              </button>
             </div>
             <div style={{ marginTop: 8, fontSize: 12, fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-3)', wordBreak: 'break-all' }}>
               {[...row.previews].join('  ·  ')}
             </div>
-          </Card>
+          </div>
         );
       })}
     </div>
@@ -1141,57 +1131,6 @@ function SecurityPanel({
  * If the session was indexed before file metadata started being captured, the panel
  * shows a hint to re-index.
  */
-function FilesPanel({ files, loading }: { files: string[]; loading: boolean }) {
-  if (loading) {
-    return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Loading…</div>;
-  }
-  if (files.length === 0) {
-    return (
-      <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>
-        <Icon name="file" size={28} style={{ opacity: 0.3, marginBottom: 12 }} />
-        <div style={{ fontSize: 14, marginBottom: 6 }}>No file activity recorded for this session.</div>
-        <div style={{ fontSize: 12 }}>
-          Older sessions may not have <code>filesModified</code> metadata. Re-indexing rebuilds it.
-        </div>
-      </div>
-    );
-  }
-
-  // Group by extension so the agent (and the human) get a quick "what kind of work was this".
-  const byExt = new Map<string, string[]>();
-  for (const f of files) {
-    const ext = f.includes('.') ? f.split('.').pop()!.toLowerCase() : '(no ext)';
-    if (!byExt.has(ext)) byExt.set(ext, []);
-    byExt.get(ext)!.push(f);
-  }
-  const sorted = [...byExt.entries()].sort((a, b) => b[1].length - a[1].length);
-
-  return (
-    <div data-testid="files-panel">
-      <div style={{ fontSize: 13, color: 'var(--cr-fg-2)', marginBottom: 14 }}>
-        <strong style={{ color: 'var(--cr-fg-1)' }}>{files.length}</strong> file{files.length === 1 ? '' : 's'} touched · {byExt.size} extension{byExt.size === 1 ? '' : 's'}
-      </div>
-      {sorted.map(([ext, fs]) => (
-        <Card key={ext} style={{ padding: 14, marginBottom: 10 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-            <span style={{ fontSize: 13, fontWeight: 600 }}>.{ext}</span>
-            <Chip kind="info">{fs.length}</Chip>
-          </div>
-          <ul style={{ margin: 0, padding: 0, listStyle: 'none', fontSize: 12, color: 'var(--cr-fg-2)' }}>
-            {fs.slice(0, 50).map((f) => (
-              <li key={f} style={{ padding: '2px 0', fontFamily: 'var(--cr-mono)', wordBreak: 'break-all' }}>{f}</li>
-            ))}
-            {fs.length > 50 && (
-              <li style={{ padding: '2px 0', color: 'var(--cr-fg-3)', fontStyle: 'italic' }}>
-                …and {fs.length - 50} more
-              </li>
-            )}
-          </ul>
-        </Card>
-      ))}
-    </div>
-  );
-}
 
 function getLanguage(path: string): string {
   const ext = path.split('.').pop()?.toLowerCase() || '';
