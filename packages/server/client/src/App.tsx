@@ -292,6 +292,10 @@ function AppInner() {
   // `projects` field is unused now.
   const [allTimeTree, setAllTimeTree] = useState<ProjectTreeNode[]>([]);
   const [allTimeTotal, setAllTimeTotal] = useState(0);
+  // Whether the first project-tree fetch has resolved — so the Projects picker
+  // can show "Loading…" instead of a false "No projects indexed" while the
+  // tree is still in flight (or after a failed fetch).
+  const [treeLoaded, setTreeLoaded] = useState(false);
   const [indexHealth, setIndexHealth] = useState<{ vectorOk: boolean; vectorError: string | null } | null>(null);
   useEffect(() => {
     let cancelled = false;
@@ -302,12 +306,13 @@ function AppInner() {
           const nodes = projectTreeFromApi(tree.nodes);
           setAllTimeTree(nodes);
           setAllTimeTotal(tree.totalCount);
+          setTreeLoaded(true);
           setIndexHealth({
             vectorOk: stats.vectorOk !== false,
             vectorError: stats.vectorError ?? null,
           });
         })
-        .catch(console.error);
+        .catch((e) => { console.error(e); if (!cancelled) setTreeLoaded(true); });
     };
     refresh();
     // Poll every 30s so a freshly-indexed project surfaces without a manual
@@ -922,7 +927,7 @@ function AppInner() {
                 onBack={() => setView('home')}
               />
             ) : (
-              <ProjectPicker tree={projectTree} onPick={(id) => setProjectFilter(id)} />
+              <ProjectPicker tree={projectTree} loaded={treeLoaded} onPick={(id) => setProjectFilter(id)} />
             )
           )}
           {view === 'dashboard' && (
@@ -966,11 +971,14 @@ function AppInner() {
  * Flattens the sidebar project tree into pickable cards. Picking one drops you
  * into that project's unified workspace.
  */
-function ProjectPicker({ tree, onPick }: { tree: ProjectTreeNode[]; onPick: (id: string) => void }) {
+function ProjectPicker({ tree, loaded, onPick }: { tree: ProjectTreeNode[]; loaded?: boolean; onPick: (id: string) => void }) {
   const flat: Array<{ name: string; id: string; count: number }> = [];
   const walk = (nodes: ProjectTreeNode[]) => {
     for (const n of nodes) {
-      if (n.count > 0) flat.push({ name: n.name, id: n.fullPath, count: n.count });
+      // Skip grouping rows (workspaces roll up their children; automation +
+      // untracked are their own buckets) — list the real projects.
+      const isGroup = n.source === 'automation' || n.source === 'untracked' || n.fullPath.endsWith(':all');
+      if (!isGroup && n.count > 0) flat.push({ name: n.name, id: n.fullPath, count: n.count });
       if (n.children?.length) walk(n.children);
     }
   };
@@ -981,7 +989,7 @@ function ProjectPicker({ tree, onPick }: { tree: ProjectTreeNode[]; onPick: (id:
       <h2 style={{ margin: '0 0 4px', display: 'flex', alignItems: 'center', gap: 8 }}>Projects</h2>
       <div style={{ color: 'var(--cr-fg-2)', fontSize: 13, marginBottom: 20 }}>Pick a project to open its unified workspace — code health, conversations, knowledge and activity for that repo in one place. Or use the project tree on the left.</div>
       {flat.length === 0 ? (
-        <div style={{ color: 'var(--cr-fg-3)' }}>No projects indexed yet.</div>
+        <div style={{ color: 'var(--cr-fg-3)' }}>{loaded === false ? 'Loading projects…' : 'No projects indexed yet.'}</div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 12 }}>
           {flat.map((p) => (
