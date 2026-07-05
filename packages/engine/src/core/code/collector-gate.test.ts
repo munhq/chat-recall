@@ -8,7 +8,7 @@
  * decides which codeindex rules get dropped.
  */
 import { describe, test, expect } from 'vitest';
-import { isSecretRule } from './collector.js';
+import { isSecretRule, isJunkWorkspacePath } from './collector.js';
 
 describe('isSecretRule — codeindex rules replaced by the real scanners', () => {
   test('secret-shaped rules are dropped (gitleaks/trufflehog own this domain)', () => {
@@ -23,5 +23,21 @@ describe('isSecretRule — codeindex rules replaced by the real scanners', () =>
     expect(isSecretRule('command_injection')).toBe(false);
     expect(isSecretRule('unsafe_deserialization')).toBe(false);
     expect(isSecretRule('path_traversal')).toBe(false);
+  });
+});
+
+describe('isJunkWorkspacePath — temp/scratchpad roots never code-indexed', () => {
+  test('rejects temp/scratchpad/cache roots (incl. the bare /tmp root)', () => {
+    expect(isJunkWorkspacePath('/tmp')).toBe(true);            // the bug: bare root
+    expect(isJunkWorkspacePath('/tmp/foo/scratchpad/x')).toBe(true);
+    expect(isJunkWorkspacePath('/var/tmp')).toBe(true);
+    expect(isJunkWorkspacePath('/home/u/.cache/thing')).toBe(true);
+    expect(isJunkWorkspacePath('/x/node_modules/pkg')).toBe(true);
+    expect(isJunkWorkspacePath('/tmp/claude-1000/a/scratchpad/b')).toBe(true);
+  });
+  test('allows real repo roots (tmp only as a bounded component)', () => {
+    expect(isJunkWorkspacePath('/home/adi/code/personal/chat-recall')).toBe(false);
+    expect(isJunkWorkspacePath('/home/adi/code/mytmp')).toBe(false);  // not a bare "tmp" component
+    expect(isJunkWorkspacePath('/home/adi/code/temperature')).toBe(false);
   });
 });
