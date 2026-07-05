@@ -177,14 +177,22 @@ export function isSecretRule(rule: string): boolean {
   return /secret|password|credential|key|token|auth/i.test(rule);
 }
 
+/**
+ * Temp/scratchpad/cache workspace roots that must never be code-indexed —
+ * indexing them produced phantom projects (a god-module with fan-out 1364 on a
+ * /tmp/…/scratchpad/…/binaryblob.py). `tmp` is a BOUNDED path component so it
+ * catches the bare root `/tmp` and `/var/tmp`, not just `/tmp/sub` (and not a
+ * real repo like `.../mytmp`). Call on the trailing-slash-stripped path.
+ */
+export function isJunkWorkspacePath(ws: string): boolean {
+  return /(^|\/)(scratchpad|\.cache|node_modules|\.git|tmp)(\/|$)|claude-1000/i.test(ws);
+}
+
 
 export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
   const ws = opts.workspace.replace(/\/+$/, '');
   const log = opts.log ?? (() => {});
-  // Refuse temp/scratchpad/cache paths — indexing them produced phantom projects
-  // (a god-module with fan-out 1364 on a /tmp/…/scratchpad/…/binaryblob.py). Real
-  // repos never live under these markers.
-  if (/(^|\/)(scratchpad|\.cache|node_modules|\.git)(\/|$)|claude-1000|\/tmp\//i.test(ws)) {
+  if (isJunkWorkspacePath(ws)) {
     throw new Error(`refusing to code-index a temp/scratchpad/cache path: ${ws}`);
   }
   const bin = opts.binPath ?? (await resolveCodeindexBin(opts.autoInstall ?? true));
