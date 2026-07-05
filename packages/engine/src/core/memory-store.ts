@@ -154,6 +154,7 @@ export class MemoryStore {
         label           TEXT,
         indexed_by      TEXT,
         last_indexed_at INTEGER NOT NULL DEFAULT 0,
+        collector_version INTEGER,
         created_at      INTEGER NOT NULL,
         updated_at      INTEGER NOT NULL
       );
@@ -1739,17 +1740,18 @@ export class MemoryStore {
     // label survives every re-index (set separately via setCodeProjectLabel).
     this.db.prepare(`
       INSERT INTO code_projects
-        (project_id, root_path, file_count, symbol_count, langs_json, health_json, map_json, label, indexed_by, last_indexed_at, created_at, updated_at)
-      VALUES (@project_id, @root_path, @file_count, @symbol_count, @langs_json, @health_json, @map_json, @label, @indexed_by, @last_indexed_at, @now, @now)
+        (project_id, root_path, file_count, symbol_count, langs_json, health_json, map_json, label, indexed_by, last_indexed_at, collector_version, created_at, updated_at)
+      VALUES (@project_id, @root_path, @file_count, @symbol_count, @langs_json, @health_json, @map_json, @label, @indexed_by, @last_indexed_at, @collector_version, @now, @now)
       ON CONFLICT(project_id) DO UPDATE SET
         root_path=excluded.root_path, file_count=excluded.file_count, symbol_count=excluded.symbol_count,
         langs_json=excluded.langs_json, health_json=excluded.health_json, map_json=excluded.map_json,
-        indexed_by=excluded.indexed_by, last_indexed_at=excluded.last_indexed_at, updated_at=excluded.updated_at
+        indexed_by=excluded.indexed_by, last_indexed_at=excluded.last_indexed_at,
+        collector_version=excluded.collector_version, updated_at=excluded.updated_at
     `).run({
       project_id: p.projectId, root_path: p.rootPath, file_count: p.fileCount, symbol_count: p.symbolCount,
       langs_json: JSON.stringify(p.langs ?? {}), health_json: JSON.stringify(p.health ?? {}),
       map_json: JSON.stringify(p.map ?? {}), label: p.label ?? null, indexed_by: p.indexedBy ?? null,
-      last_indexed_at: p.lastIndexedAt, now,
+      last_indexed_at: p.lastIndexedAt, collector_version: p.collectorVersion ?? null, now,
     });
   }
 
@@ -1881,14 +1883,21 @@ export class MemoryStore {
           loc_json=excluded.loc_json, agent_prompt=excluded.agent_prompt, updated_at=excluded.updated_at
       `);
       let n = 0;
+      const keepIds = new Set<string>();
       for (const a of items) {
         const id = a.id ?? codeActionId(projectId, a);
+        keepIds.add(id);
         up.run({
           id, project_id: projectId, pri: a.pri | 0, category: a.category, title: a.title,
           fix: a.fix, loc_json: JSON.stringify(a.loc ?? []), agent_prompt: a.agentPrompt, now,
         });
         n++;
       }
+      // Prune stale suggestions the new run didn't produce; keep user-triaged
+      // actions (queued/done/dismissed) so their state survives a re-index.
+      const stale = this.db.prepare(`SELECT id FROM code_actions WHERE project_id=? AND status='suggested'`).all(projectId) as Array<{ id: string }>;
+      const del = this.db.prepare(`DELETE FROM code_actions WHERE id=? AND project_id=?`);
+      for (const s of stale) if (!keepIds.has(s.id)) del.run(s.id, projectId);
       return n;
     });
     return tx(actions);
@@ -1930,7 +1939,9 @@ function rowToCodeProject(r: any): CodeProjectRow {
     health: safeJson<CodeHealth>(r.health_json, {} as CodeHealth),
     map: safeJson<CodeMap>(r.map_json, {} as CodeMap),
     label: (r.label ?? null) as CodeProjectLabel | null, indexedBy: r.indexed_by ?? null,
-    lastIndexedAt: Number(r.last_indexed_at), createdAt: Number(r.created_at), updatedAt: Number(r.updated_at),
+    lastIndexedAt: Number(r.last_indexed_at),
+    collectorVersion: r.collector_version == null ? null : Number(r.collector_version),
+    createdAt: Number(r.created_at), updatedAt: Number(r.updated_at),
   };
 }
 function rowToCodeFinding(r: any): CodeFindingRow {

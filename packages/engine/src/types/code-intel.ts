@@ -128,6 +128,9 @@ export interface CodeProjectInput {
   /** device id that produced this index */
   indexedBy?: string | null;
   lastIndexedAt: number;
+  /** Collector logic version that produced this data (see COLLECTOR_VERSION).
+   *  Lets the watch daemon re-derive projects indexed by an older collector. */
+  collectorVersion?: number | null;
 }
 
 export interface CodeProjectRow extends CodeProjectInput {

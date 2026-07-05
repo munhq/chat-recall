@@ -20,9 +20,168 @@
  */
 
 import express from 'express';
+import { createHash } from 'node:crypto';
 import { createStore } from '../imports.js';
+import { classifySecret, secretSeverityRank, type SecretSeverity } from '@chat-recall/engine/core/secret-classify.js';
+import {
+  dismissalToTaskStatus, taskStatusToDismissal, isSecretTaskStatus, type SecretTaskStatus,
+} from '@chat-recall/engine/core/secret-task-status.js';
 
 const router = express.Router();
+
+/* ── SECURITY_TASKS.md generation ─────────────────────────────────
+ *
+ * Per-project, persistent, status-tracked checklist of every distinct
+ * credential that leaked from this repo into an AI session. Mirrors the
+ * CODE_TASKS.md mechanism: the server renders the file and enqueues a
+ * `write_tasks_file` sync-intent that the user's local drain writes into
+ * the repo — no CLI change needed for generation.
+ *
+ * Two-way + verifiable (server is source of truth):
+ *   - Status lives in `secret_dismissals` (keyed by masked preview, survives
+ *     re-sync). The file mirrors it.
+ *   - Each task carries a stable machine id in an HTML comment so the CLI can
+ *     read the user's/AI's checkmarks back and sync them into dismissals.
+ *   - The id is a hash of the masked preview (never the raw secret), so it is
+ *     stable across regenerations and safe to write to disk.
+ */
+
+/** Stable, non-secret task id derived from the masked preview. */
+function secretTaskId(preview: string): string {
+  return 'sec_' + createHash('sha256').update(preview).digest('hex').slice(0, 12);
+}
+
+/** Server-side twin of the client's shortId — strips tool prefixes. */
+function shortSessionId(id: string): string {
+  return id.replace(/^(opencode_|gemini_|codex_)/, '').slice(0, 8);
+}
+
+interface DistinctSecret {
+  preview: string;
+  rules: Array<{ detector: string; rule: string }>;
+  detectors: string[];
+  sessions: Array<{ sessionId: string; project: string; lines: number[] }>;
+  sessionCount: number;
+  occurrences: number;
+  firstSeen: number;
+  lastSeen: number;
+  verified: boolean | null;
+}
+type Dismissal = { status: string; reason: string | null; dismissed_at: number };
+
+/** Classify a distinct secret by its most-severe rule (matches the dashboard). */
+function classifyDistinct(s: DistinctSecret) {
+  let top = classifySecret('', s.rules[0]?.rule || '');
+  for (const r of s.rules) {
+    const t = classifySecret(r.detector, r.rule);
+    if (secretSeverityRank(t.severity) < secretSeverityRank(top.severity)) top = t;
+  }
+  return top;
+}
+
+/**
+ * Select the distinct secrets that leaked from `projectPath`, scoped to that
+ * repo's own sessions, sorted the way the dashboard sorts Action Required.
+ * `noise`-tier matches are excluded from the checklist body (counted instead).
+ */
+function selectProjectSecrets(all: DistinctSecret[], projectPath: string) {
+  const scoped: Array<DistinctSecret & { type: ReturnType<typeof classifyDistinct> }> = [];
+  let noiseOmitted = 0;
+  for (const s of all) {
+    const here = s.sessions.filter((x) => x.project === projectPath);
+    if (!here.length) continue;
+    const type = classifyDistinct(s);
+    if (type.severity === 'noise') { noiseOmitted++; continue; }
+    scoped.push({ ...s, sessions: here, sessionCount: here.length, type });
+  }
+  scoped.sort((a, b) =>
+    Number(b.verified === true) - Number(a.verified === true) ||
+    secretSeverityRank(a.type.severity) - secretSeverityRank(b.type.severity) ||
+    b.detectors.length - a.detectors.length ||
+    b.sessionCount - a.sessionCount ||
+    b.occurrences - a.occurrences,
+  );
+  return { scoped, noiseOmitted };
+}
+
+const SEVERITY_BADGE: Record<SecretSeverity, string> = {
+  critical: '🔴 CRITICAL', high: '🟠 HIGH', medium: '🟡 MEDIUM', noise: '⚪ NOISE',
+};
+
+/**
+ * Per-secret status for the file. Returns the machine token (for the anchor),
+ * the checkbox state, a human display, and whether there's a CONTRADICTION —
+ * a secret the user marked `rotated` that the scanner still reports live.
+ */
+function statusFor(s: DistinctSecret, dismissal: Dismissal | undefined): {
+  token: SecretTaskStatus; checked: boolean; display: string; contradiction: boolean;
+} {
+  const token = dismissalToTaskStatus(dismissal?.status);
+  if (token === 'open') {
+    return { token, checked: false, display: s.verified === true ? '🔴 OPEN — verified live' : '🔴 open', contradiction: false };
+  }
+  if (token === 'rotated') {
+    const contradiction = s.verified === true; // claimed rotated but scanner still verifies it live
+    return {
+      token, checked: true, contradiction,
+      display: contradiction ? '⚠️ marked ROTATED but scanner still reports LIVE — re-check' : '✅ rotated',
+    };
+  }
+  if (token === 'not-a-secret') return { token, checked: true, display: '⚪ not a secret', contradiction: false };
+  return { token, checked: true, display: '⚪ dismissed', contradiction: false };
+}
+
+function buildSecurityTasksMd(
+  projectPath: string,
+  scoped: Array<DistinctSecret & { type: ReturnType<typeof classifyDistinct> }>,
+  dismissals: Map<string, Dismissal>,
+  noiseOmitted: number,
+): string {
+  const projName = projectPath.split('/').filter(Boolean).pop() || projectPath;
+  const open = scoped.filter((s) => !dismissals.has(s.preview)).length;
+  const head =
+    `# SECURITY_TASKS.md — ${projName}\n\n` +
+    `> Generated by chat-recall. Each item below is a **distinct credential** that leaked from this repo into an AI session. ` +
+    `**${open} open**, ${scoped.length - open} handled` +
+    (noiseOmitted ? ` (+${noiseOmitted} noise-tier matches omitted)` : '') + `.\n>\n` +
+    `> **Do NOT paste raw secrets here.** Only the masked tail is shown — that is the identifier chat-recall tracks.\n>\n` +
+    `> **To resolve a task:** rotate the key on its issuer, then change its \`status:\` from \`open\` to one of ` +
+    `\`rotated\` · \`not-a-secret\` · \`dismissed\`, and tick the box. Set it back to \`open\` to reopen. ` +
+    `Your edits sync to the dashboard on the next \`chat-recall sync\`; chat-recall re-scans on every sync, so a rotated key ` +
+    `that stops reappearing is confirmed resolved, and one flagged \`rotated\` that the scanner still sees live is called out below.\n>\n` +
+    `> The \`<!-- cr-secret … -->\` markers are machine anchors — **leave them intact.**\n\n`;
+
+  if (!scoped.length) {
+    return head + `_No critical/high/medium credentials outstanding for this repo. ✅_\n`;
+  }
+
+  const body = scoped.map((s, i) => {
+    const st = statusFor(s, dismissals.get(s.preview));
+    const id = secretTaskId(s.preview);
+    const detectors = s.detectors.join(' · ') + (s.detectors.length >= 2 ? ` (${s.detectors.length} agree)` : '');
+    const locations = s.sessions
+      .map((x) => `\`${shortSessionId(x.sessionId)}\` ${x.lines.length === 1 ? `L${x.lines[0]}` : `${x.lines.length} lines (L${x.lines.slice(0, 6).join(', L')}${x.lines.length > 6 ? '…' : ''})`}`)
+      .join(' · ');
+    const rotate = s.type.rotateUrl ? `[${s.type.rotateUrl}](${s.type.rotateUrl})` : 'on the issuing service\'s console';
+    // The anchor line is the ONLY machine-parsed line: checkbox + `status: <token>`
+    // + the id/original-status comment. The CLI reads it back verbatim.
+    const instruction = st.token === 'open'
+      ? 'rotate on the issuer, then set the status above and tick this box'
+      : 'resolved — set status back to `open` to reopen';
+    return (
+      `## ${i + 1}. ${s.type.glyph} ${s.type.label} — \`${s.preview}\`\n\n` +
+      `- **Severity / status:** ${SEVERITY_BADGE[s.type.severity]} · ${st.display}\n` +
+      (st.contradiction ? `- **⚠️ Verification conflict:** you marked this rotated, but the scanner still reports it **live**. Confirm the key is actually revoked.\n` : '') +
+      `- **Impact:** ${s.type.impact}\n` +
+      `- **Detectors:** ${detectors}\n` +
+      `- **Rotate:** ${rotate}\n` +
+      `- **Leaked in this repo:** ${locations}\n\n` +
+      `- [${st.checked ? 'x' : ' '}] status: \`${st.token}\` — ${instruction} <!-- cr-secret id=${id} was=${st.token} -->\n`
+    );
+  }).join('\n');
+
+  return head + body + '\n';
+}
 
 router.get('/summary', async (_req, res) => {
   const store = await createStore();
@@ -225,6 +384,111 @@ router.get('/session/:id', async (req, res) => {
     const byDetector: Record<string, typeof enriched> = {};
     for (const f of enriched) (byDetector[f.detector] ||= []).push(f);
     res.json({ sessionId: id, total: enriched.length, byDetector });
+  } finally { await store.close(); }
+});
+
+// GET /api/secrets/tasks/preview?project=<filesystem path>
+// Render SECURITY_TASKS.md for one repo WITHOUT writing anything — powers the
+// dashboard's preview + count so the user sees what they'll get.
+router.get('/tasks/preview', async (req, res) => {
+  const project = typeof req.query.project === 'string' ? req.query.project.trim() : '';
+  if (!project) return res.status(400).json({ error: 'project (filesystem path) is required' });
+  const store = await createStore();
+  try {
+    const all = (await store.secretFindingsByDistinctSecret()) as DistinctSecret[];
+    const dismissals = (await store.getSecretDismissals()) as Map<string, Dismissal>;
+    const { scoped, noiseOmitted } = selectProjectSecrets(all, project);
+    const content = buildSecurityTasksMd(project, scoped, dismissals, noiseOmitted);
+    const open = scoped.filter((s) => !dismissals.has(s.preview)).length;
+    res.json({ project, filename: 'SECURITY_TASKS.md', total: scoped.length, open, noiseOmitted, content });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : 'failed' });
+  } finally { await store.close(); }
+});
+
+// POST /api/secrets/tasks/write — { project }
+// Materialise SECURITY_TASKS.md in the repo via the local drain (same rail as
+// CODE_TASKS.md), so the user can point Claude Code at it: "rotate the secrets
+// in SECURITY_TASKS.md and tick them off".
+router.post('/tasks/write', express.json(), async (req, res) => {
+  const project = typeof req.body?.project === 'string' ? req.body.project.trim() : '';
+  if (!project) return res.status(400).json({ error: 'project (filesystem path) is required' });
+  const store = await createStore();
+  try {
+    const all = (await store.secretFindingsByDistinctSecret()) as DistinctSecret[];
+    const dismissals = (await store.getSecretDismissals()) as Map<string, Dismissal>;
+    const { scoped, noiseOmitted } = selectProjectSecrets(all, project);
+    if (!scoped.length) {
+      return res.json({ ok: true, queued: false, message: 'No outstanding critical/high/medium secrets for this repo — nothing to write.' });
+    }
+    const content = buildSecurityTasksMd(project, scoped, dismissals, noiseOmitted);
+    const intentId = await store.enqueueSyncIntent({
+      kind: 'code_apply', artifactType: 'write_tasks_file',
+      name: JSON.stringify({ rootPath: project, filename: 'SECURITY_TASKS.md', content }),
+      createdBy: 'security-tasks',
+    });
+    const open = scoped.filter((s) => !dismissals.has(s.preview)).length;
+    res.json({
+      ok: true, queued: true, intentId, filename: 'SECURITY_TASKS.md', count: scoped.length, open,
+      message: 'Queued — your local agent writes SECURITY_TASKS.md to the repo (≤45s). Then tell your AI: "Rotate the secrets in SECURITY_TASKS.md and tick each one off."',
+    });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : 'failed' });
+  } finally { await store.close(); }
+});
+
+// GET /api/secrets/tasks/tracked — filesystem project paths that have
+// actionable (non-noise) secrets. The CLI checks each for a SECURITY_TASKS.md
+// to read back. Returns real paths only (drops '' and '/').
+router.get('/tasks/tracked', async (_req, res) => {
+  const store = await createStore();
+  try {
+    const all = (await store.secretFindingsByDistinctSecret()) as DistinctSecret[];
+    const paths = new Set<string>();
+    for (const s of all) {
+      if (classifyDistinct(s).severity === 'noise') continue;
+      for (const x of s.sessions) {
+        if (x.project && x.project !== '/' && x.project.startsWith('/')) paths.add(x.project);
+      }
+    }
+    res.json({ projects: [...paths].sort() });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : 'failed' });
+  } finally { await store.close(); }
+});
+
+// POST /api/secrets/tasks/status — { project, items: [{id, status}] }
+// The file→server half of the two-way sync. The CLI parses SECURITY_TASKS.md
+// and posts each task's id + status token; we recompute id→preview for that
+// project and write `secret_dismissals` (server is the source of truth).
+// Idempotent; unknown/invalid ids are reported, never applied.
+router.post('/tasks/status', express.json(), async (req, res) => {
+  const project = typeof req.body?.project === 'string' ? req.body.project.trim() : '';
+  const items = Array.isArray(req.body?.items) ? req.body.items : null;
+  if (!project) return res.status(400).json({ error: 'project (filesystem path) is required' });
+  if (!items) return res.status(400).json({ error: 'items[] is required' });
+  const store = await createStore();
+  try {
+    const all = (await store.secretFindingsByDistinctSecret()) as DistinctSecret[];
+    const { scoped } = selectProjectSecrets(all, project);
+    // id → preview for this project's secrets (id is a hash of the preview).
+    const idToPreview = new Map<string, string>();
+    for (const s of scoped) idToPreview.set(secretTaskId(s.preview), s.preview);
+
+    let applied = 0, cleared = 0; const unknown: string[] = []; let invalid = 0;
+    for (const it of items) {
+      const id = typeof it?.id === 'string' ? it.id : '';
+      const status = it?.status;
+      if (!id || !isSecretTaskStatus(status)) { invalid++; continue; }
+      const preview = idToPreview.get(id);
+      if (!preview) { unknown.push(id); continue; }
+      const dismissal = taskStatusToDismissal(status as SecretTaskStatus);
+      if (dismissal === null) { await store.clearSecretDismissal(preview); cleared++; }
+      else { await store.setSecretDismissal(preview, dismissal, 'via SECURITY_TASKS.md'); applied++; }
+    }
+    res.json({ ok: true, project, applied, cleared, unknown, unknownCount: unknown.length, invalid });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : 'failed' });
   } finally { await store.close(); }
 });
 
