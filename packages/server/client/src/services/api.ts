@@ -106,7 +106,7 @@ export interface IndexStats {
   projects: Record<string, number>;
   indexPath: string;
   /** False when the most recent vector-index read failed. UI shows a banner
-   *  and continues to operate via FTS5 fallback. */
+   *  and continues to operate via keyword (Postgres full-text) fallback. */
   vectorOk?: boolean;
   /** Error string from the most recent vector-index failure, if any. */
   vectorError?: string | null;

@@ -289,7 +289,7 @@ type EmbeddingChoice = {
 };
 
 const EMBEDDING_CHOICES: EmbeddingChoice[] = [
-  { key: 'none',          group: 'recommended', label: 'Keyword search only (FTS5)',       hint: 'No setup. Works out of the box.' },
+  { key: 'none',          group: 'recommended', label: 'Keyword search only (full-text)',  hint: 'No setup. Works out of the box.' },
   { key: 'ollama',        group: 'local',       label: 'Ollama (local, free)',             hint: 'ollama pull nomic-embed-text' },
   { key: 'nvidia',        group: 'cloud',       label: 'NVIDIA NIM (free credits)',        hint: 'NVIDIA_API_KEY' },
   { key: 'gemini',        group: 'cloud',       label: 'Google Gemini',                    hint: 'GEMINI_API_KEY · ~100 req/day free' },
@@ -334,7 +334,7 @@ function EmbeddingCard({
 
   return (
     <Card title="Search & embeddings"
-      hint="Powers semantic search. Keyword search (FTS5) is the default and works without any provider.">
+      hint="Powers semantic search. Keyword (full-text) search is the default and works without any provider.">
       {renderGroup('No setup', recommended, 'ok')}
       {renderGroup('Local', local)}
       {renderGroup('Hosted APIs', cloud)}

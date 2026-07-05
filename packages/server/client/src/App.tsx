@@ -782,9 +782,9 @@ function AppInner() {
             alignItems: 'center',
           }}
         >
-          <strong style={{ letterSpacing: '0.04em' }}>VECTOR INDEX DEGRADED</strong>
+          <strong style={{ letterSpacing: '0.04em' }}>SEMANTIC SEARCH UNAVAILABLE</strong>
           <span style={{ color: 'var(--cr-fg-2)' }}>
-            Falling back to keyword (FTS5) search. Auto-indexer will recover on next compaction; reload to retry.
+            Using keyword (full-text) search. Usually means pgvector isn't installed on the database, or no embedder is configured (Settings → Search). Reload to retry.
           </span>
           {indexHealth.vectorError && (
             <span
