@@ -502,21 +502,42 @@ router.post('/', async (req, res) => {
           // the turn chunks.
           type EnvSubagent = { id?: string; kind?: string; messages?: Array<{ content?: string }> };
           const subagents = (envelope?.subagents ?? []) as EnvSubagent[];
+          // Window each subagent transcript into embed-safe slices. A subagent's
+          // joined messages can run to 200k chars (real: explore/aside agents);
+          // a single chunk that size is fine for FTS (tsvector) but HARD-FAILS a
+          // hosted embedder's token-context limit (bge-m3: 8192 tokens → HTTP
+          // 400), so it never gets a vector and (pre-fix) poisoned the whole
+          // embed sweep. Slicing into ≤SUBAGENT_WINDOW-char windows gives every
+          // part its own FTS row AND its own vector — full keyword + semantic
+          // coverage, nothing dropped. Window id `:subagent:<id>:w<N>` keeps the
+          // `:subagent:` marker recall_subagent_search parses. 2000 chars matches
+          // the turn-chunk window (retrieval precision) and is safely under any
+          // token limit at any density. Cap at 120 windows (240k chars > the
+          // observed 200k max) so a pathological transcript can't explode the
+          // vector count.
+          const SUBAGENT_WINDOW = 2000, SUBAGENT_OVERLAP = 100, SUBAGENT_MAX_WINDOWS = 120;
           const subChunks = subagents.flatMap((sa) => {
             const text = (sa.messages ?? []).map((m) => m.content).filter((c): c is string => !!c && c.trim().length > 0).join('\n');
             if (!text.trim() || !sa.id) return [];
             const kind = sa.kind || 'other';
-            return [{
-              chunkId: `${cv.session_id}:subagent:${sa.id}`,
+            const step = Math.max(1, SUBAGENT_WINDOW - SUBAGENT_OVERLAP);
+            const windows: string[] = [];
+            for (let i = 0; i < text.length && windows.length < SUBAGENT_MAX_WINDOWS; i += step) {
+              windows.push(text.slice(i, i + SUBAGENT_WINDOW));
+            }
+            return windows.map((w, wi) => ({
+              // First window keeps the legacy id (backward-compatible with any
+              // existing links/rows); subsequent windows get a :w<N> suffix.
+              chunkId: wi === 0 ? `${cv.session_id}:subagent:${sa.id}` : `${cv.session_id}:subagent:${sa.id}:w${wi}`,
               itemId: cv.session_id,
               sourceType: 'session' as SourceType,
-              title: `subagent ${sa.id} [${kind}]`,
-              text: text.slice(0, 200_000), // FTS-friendly cap; samples are short
+              title: `subagent ${sa.id} [${kind}]${wi > 0 ? ` (${wi + 1})` : ''}`,
+              text: w,
               chunkType: `subagent:${kind}`,
               projectPath,
               filePath: '',
               mtime,
-            }];
+            }));
           });
           const allChunks = subChunks.length > 0 ? [...cks, ...subChunks] : cks;
           if (allChunks.length > 0) chunkBatch.push(...allChunks);
