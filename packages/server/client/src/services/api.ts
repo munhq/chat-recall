@@ -1844,6 +1844,40 @@ export async function undismissSecret(preview: string): Promise<void> {
   if (!res.ok) throw new Error(`Undismiss failed: ${res.statusText}`);
 }
 
+/* SECURITY_TASKS.md — per-project, status-tracked rotation checklist the local
+ * agent writes into the repo (same rail as CODE_TASKS.md). */
+export interface SecurityTasksPreview {
+  project: string;
+  filename: string;
+  total: number;
+  open: number;
+  noiseOmitted: number;
+  content: string;
+}
+export async function previewSecurityTasks(project: string): Promise<SecurityTasksPreview> {
+  const res = await fetchWithTimeout(`${API_BASE}/secrets/tasks/preview?project=${encodeURIComponent(project)}`, {}, 15000);
+  if (!res.ok) throw new Error(`Failed to preview security tasks: ${res.statusText}`);
+  return await res.json();
+}
+export interface WriteSecurityTasksResult {
+  ok: boolean;
+  queued: boolean;
+  intentId?: string;
+  filename?: string;
+  count?: number;
+  open?: number;
+  message: string;
+}
+export async function writeSecurityTasks(project: string): Promise<WriteSecurityTasksResult> {
+  const res = await fetchWithTimeout(`${API_BASE}/secrets/tasks/write`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project }),
+  }, 15000);
+  if (!res.ok) throw new Error(`Write security tasks failed: ${res.statusText}`);
+  return await res.json();
+}
+
 /* Custom (tenant-defined) secret-detection rules — CRUD + regex sandbox. */
 export interface CustomSecretRule {
   id: number;

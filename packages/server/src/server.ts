@@ -40,6 +40,7 @@ import syncConfigRouter from './routes/sync-config.js';
 import billingRouter from './routes/billing.js';
 import installRouter from './routes/install.js';
 import { capabilities, isServerMode } from './util/mode.js';
+import { cliRelease } from './util/cli-release.js';
 import { generateMissingSummariesAllTenants, serverSummaryConfig } from './services/summary-worker.js';
 import { sweepSyntheticRetention } from './services/retention.js';
 import { embedMissingVectors, serverEmbedderConfigured } from './services/vector-backfill-worker.js';
@@ -126,7 +127,7 @@ app.use('/metrics', metricsRouter);
 app.use('/', installRouter);
 
 // Open metadata: lets the client decide which views to render before auth.
-app.get('/api/capabilities', (_req, res) => res.json(capabilities()));
+app.get('/api/capabilities', (_req, res) => res.json({ ...capabilities(), cli: cliRelease() }));
 
 // Self-authenticating surfaces, mounted BEFORE tenantAuth:
 //   /api/sync       — agent (device) token; resolves + scopes its own tenant.

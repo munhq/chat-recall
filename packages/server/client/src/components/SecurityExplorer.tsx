@@ -22,11 +22,17 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Card, Chip, SegmentedControl, Button } from './primitives';
 import {
   getSecretsSummary, getFlaggedSessions, getSecretsByRule, getDistinctSecrets,
-  dismissSecret, undismissSecret,
+  dismissSecret, undismissSecret, writeSecurityTasks,
   getCustomSecretRules, saveCustomSecretRule, deleteCustomSecretRule, testCustomSecretRule,
   getAccountRecommendations, applyAccountRecommendation,
   type SecretsSummary, type FlaggedSession, type SecretRuleRollup, type CodeRecommendation,
 } from '../services/api';
+// Single source of truth for secret classification — shared with the server
+// (which renders SECURITY_TASKS.md from the same module).
+import {
+  classifySecret as classify, secretSeverityRank as severityRank,
+  type SecretSeverity as Severity, type SecretType,
+} from '@chat-recall/engine/core/secret-classify.js';
 
 /** Account-level recommendations (security + behaviour) — the same actionable
  *  approach as the Code view, surfaced over chat-recall's own data. */
@@ -86,100 +92,7 @@ interface Props {
   focusSession?: string | null;
 }
 
-type Severity = 'critical' | 'high' | 'medium' | 'noise';
 type Lens = 'action' | 'rules' | 'projects' | 'sessions' | 'config';
-
-/* ── Security expert knowledge: per-detector risk + rotation ───── */
-
-interface SecretType {
-  /** display label (e.g. "AWS Access Token") */
-  label: string;
-  /** plain-English impact — what does an attacker get with this? */
-  impact: string;
-  /** direct link to the issuer's rotation/management console */
-  rotateUrl?: string;
-  /** severity tier (drives sort + colour) */
-  severity: Severity;
-  /** brand glyph or emoji — kept simple, no extra deps */
-  glyph: string;
-}
-
-/** Map a (detector, rule) pair to security-expert metadata. */
-function classify(detector: string, rule: string): SecretType {
-  const r = rule.toLowerCase();
-  // ── CRITICAL: full-account or root-equivalent credentials ─────
-  if (r.includes('private-key') || r.includes('rsa') || r === 'ssh' || r.includes('ssh')) {
-    return { label: 'Private key (SSH/RSA)', severity: 'critical', glyph: '🔑',
-      impact: 'Full server access wherever this key is authorized. Treat as root credential.',
-      rotateUrl: undefined };
-  }
-  if (r === 'aws-access-token' || r === 'aws' || r === 'awssessionkey' || (r.includes('aws') && r.includes('secret'))) {
-    return { label: 'AWS access key', severity: 'critical', glyph: '☁️',
-      impact: 'Programmatic AWS access — IAM, S3, EC2, billing. Active keys can spin up paid resources or read every S3 bucket.',
-      rotateUrl: 'https://console.aws.amazon.com/iam/home#/security_credentials' };
-  }
-  // ── HIGH: named live-service tokens ───────────────────────────
-  if (r.includes('github')) {
-    return { label: 'GitHub token', severity: 'high', glyph: '🐙',
-      impact: 'Repo read/write, workflow trigger, package publish. Scope depends on token type but classic PATs are usually broad.',
-      rotateUrl: 'https://github.com/settings/tokens' };
-  }
-  if (r === 'gitlab' || r.includes('gitlab-pat')) {
-    return { label: 'GitLab token', severity: 'high', glyph: '🦊',
-      impact: 'GitLab repo and CI access.',
-      rotateUrl: 'https://gitlab.com/-/profile/personal_access_tokens' };
-  }
-  if (r === 'jwt' || r === 'JWT'.toLowerCase()) {
-    return { label: 'JWT', severity: 'high', glyph: '🎫',
-      impact: 'Bearer token — whatever permissions the issuing service granted. Rotate the signing key on the issuer side.',
-      rotateUrl: undefined };
-  }
-  if (r === 'slack' || r === 'slack-webhook-url') {
-    return { label: 'Slack token / webhook', severity: 'high', glyph: '💬',
-      impact: 'Read messages, post as bot/user, exfiltrate channel content.',
-      rotateUrl: 'https://api.slack.com/apps' };
-  }
-  if (r === 'gcp') {
-    return { label: 'GCP service account key', severity: 'high', glyph: '🌥',
-      impact: 'GCP project-level access scoped to the service account\'s roles. Often broad in practice.',
-      rotateUrl: 'https://console.cloud.google.com/iam-admin/serviceaccounts' };
-  }
-  if (r === 'nvapi') {
-    return { label: 'NVIDIA API key', severity: 'high', glyph: '🟩',
-      impact: 'NVIDIA AI/build APIs. Quota theft and model access on your account.',
-      rotateUrl: 'https://build.nvidia.com/' };
-  }
-  if (r === 'stripe' || r.includes('stripe')) {
-    return { label: 'Stripe key', severity: 'critical', glyph: '💳',
-      impact: 'Payment processing access — read customer data, issue charges/refunds. Live keys = financial impact.',
-      rotateUrl: 'https://dashboard.stripe.com/apikeys' };
-  }
-  if (r.includes('basicauth')) {
-    return { label: 'Basic auth credential', severity: 'high', glyph: '🔐',
-      impact: 'Username + password embedded in a URL. Whatever the target service does, an attacker can do.',
-      rotateUrl: undefined };
-  }
-  // ── MEDIUM: connection strings, often legit examples ──────────
-  if (r === 'postgres' || r.includes('database-connection-string') || r === 'jdbc') {
-    return { label: 'Database connection string', severity: 'medium', glyph: '🛢',
-      impact: 'Direct DB access (read + write). Can be a real production string OR a dev/example one — verify before action.',
-      rotateUrl: undefined };
-  }
-  if (r === 'infura' || r === 'polygon' || r === 'alchemy') {
-    return { label: 'Blockchain RPC key', severity: 'medium', glyph: '⛓',
-      impact: 'RPC quota theft + read-only chain queries on your billing account.',
-      rotateUrl: 'https://app.infura.io/' };
-  }
-  // ── NOISE: fuzzy detectors confirmed FP-prone on chat content ─
-  if (r === 'generic-api-key' || r === 'curl-auth-header' || r === 'uri'
-   || r === 'box' || r === 'dockerhub' || r === 'npmtoken'
-   || r === 'shortcut' || r === 'privacy' || r === 'miro') {
-    return { label: rule, severity: 'noise', glyph: '◇',
-      impact: 'Fuzzy regex match — likely false positive on UUIDs, base64 blobs, or hex hashes in chat content.' };
-  }
-  return { label: rule, severity: 'medium', glyph: '◇',
-    impact: 'Detected by the named rule. Manually verify whether the matched text is a real credential.' };
-}
 
 const SEVERITY_TONE: Record<Severity, { chip: 'err' | 'warn' | 'info' | 'neutral'; bg: string; border: string }> = {
   critical: { chip: 'err',     bg: 'rgba(255, 80, 80, 0.05)', border: 'var(--cr-err-500)' },
@@ -232,6 +145,9 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   // Re-fetch trigger when a dismiss/undismiss mutation happens.
   const [refreshTick, setRefreshTick] = useState(0);
+  // "Write SECURITY_TASKS.md" per-project state (By project lens).
+  const [taskBusy, setTaskBusy] = useState<string | null>(null);
+  const [taskMsg, setTaskMsg] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -279,6 +195,21 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
       setRefreshTick(t => t + 1);
     } catch (e) {
       setError((e as Error).message);
+    }
+  }
+
+  // Queue SECURITY_TASKS.md for one repo — the local agent writes it into the
+  // repo on next drain (same mechanism as CODE_TASKS.md).
+  async function handleWriteTasks(project: string) {
+    setTaskBusy(project);
+    setTaskMsg(m => ({ ...m, [project]: '' }));
+    try {
+      const r = await writeSecurityTasks(project);
+      setTaskMsg(m => ({ ...m, [project]: r.message }));
+    } catch (e) {
+      setTaskMsg(m => ({ ...m, [project]: (e as Error).message }));
+    } finally {
+      setTaskBusy(null);
     }
   }
 
@@ -720,18 +651,43 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                 <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>High keys</th>
                 <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Medium keys</th>
                 <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Sessions</th>
+                <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Rotation checklist</th>
               </tr>
             </thead>
             <tbody>
-              {byProject.map((p, i) => (
+              {byProject.map((p, i) => {
+                const realPath = p.project && p.project !== '(unknown)';
+                return (
                 <tr key={p.project} style={{ borderTop: i === 0 ? 'none' : '1px solid var(--cr-line-1)' }}>
                   <td style={{ padding: '8px 12px', fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-2)', wordBreak: 'break-all' }}>{projectShort(p.project)}</td>
                   <td style={{ padding: '8px 12px', textAlign: 'right', color: p.critical > 0 ? 'var(--cr-err-500)' : 'var(--cr-fg-3)', fontVariantNumeric: 'tabular-nums', fontWeight: p.critical > 0 ? 700 : 400 }}>{p.critical}</td>
                   <td style={{ padding: '8px 12px', textAlign: 'right', color: p.high > 0 ? 'var(--cr-warn-500)' : 'var(--cr-fg-3)', fontVariantNumeric: 'tabular-nums', fontWeight: p.high > 0 ? 600 : 400 }}>{p.high}</td>
                   <td style={{ padding: '8px 12px', textAlign: 'right', color: 'var(--cr-fg-2)', fontVariantNumeric: 'tabular-nums' }}>{p.medium}</td>
                   <td style={{ padding: '8px 12px', textAlign: 'right', color: 'var(--cr-fg-3)', fontVariantNumeric: 'tabular-nums' }}>{p.sessions}</td>
+                  <td style={{ padding: '8px 12px', textAlign: 'right' }}>
+                    {realPath ? (
+                      <>
+                        <button
+                          onClick={() => handleWriteTasks(p.project)}
+                          disabled={taskBusy === p.project}
+                          title="Write SECURITY_TASKS.md into this repo — a per-secret rotation checklist your AI can act on and tick off"
+                          style={{ background: 'transparent', border: '1px solid var(--cr-line-2)', color: 'var(--cr-brand-500)', borderRadius: 6, padding: '3px 10px', fontSize: 12, cursor: taskBusy === p.project ? 'default' : 'pointer', fontFamily: 'inherit', fontWeight: 600, whiteSpace: 'nowrap' }}
+                        >
+                          {taskBusy === p.project ? 'queuing…' : 'Write SECURITY_TASKS.md →'}
+                        </button>
+                        {taskMsg[p.project] && (
+                          <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 4, maxWidth: 320, marginLeft: 'auto', textAlign: 'right', lineHeight: 1.4 }}>
+                            {taskMsg[p.project]}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <span style={{ fontSize: 11, color: 'var(--cr-fg-4, var(--cr-fg-3))' }}>—</span>
+                    )}
+                  </td>
                 </tr>
-              ))}
+              );
+              })}
             </tbody>
           </table>
         </Card>
@@ -772,10 +728,6 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
       )}
     </div>
   );
-}
-
-function severityRank(s: Severity): number {
-  return s === 'critical' ? 0 : s === 'high' ? 1 : s === 'medium' ? 2 : 3;
 }
 
 /* ── Custom-rules CRUD panel ──────────────────────────────────── */

@@ -21,6 +21,7 @@ import {
   executeSyncAll, executeCopy,
   type SyncType, type TargetTool as SyncTargetTool,
 } from '@chat-recall/engine/core/toolkit-sync.js';
+import { pushProjectTaskStatuses } from './project-tasks.js';
 
 interface PendingIntent {
   id: string;
@@ -138,6 +139,12 @@ export async function drainSyncIntents(opts: { verbose?: boolean } = {}): Promis
         // idempotent: an already-present target acks as a 409 skip).
       }
     }
+
+    // Read-back: push any SECURITY_TASKS.md / CODE_TASKS.md edits (checkbox/
+    // status) up to the server — the file→server half of the two-way sync.
+    try {
+      await pushProjectTaskStatuses(base, authHeaders, { verbose: opts.verbose });
+    } catch { /* never let read-back abort the drain */ }
   }
   return out;
 }

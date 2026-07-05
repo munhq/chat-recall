@@ -43,6 +43,9 @@ await build({
   format: 'esm',
   target: 'node18',
   external,
+  // Bake the CLI version in so the watch daemon can tell the server it's stale
+  // (auto-update) without a runtime package.json read.
+  define: { __CLI_VERSION__: JSON.stringify(cliPkg.version) },
   // Some externalized deps (native addons) use CommonJS require(); shim it for ESM.
   banner: { js: "import { createRequire as __cr } from 'module'; const require = __cr(import.meta.url);" },
   logLevel: 'info',

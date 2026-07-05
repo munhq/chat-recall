@@ -30,6 +30,18 @@ import type {
   CodeSeverity, CodeMapNode, CodeMapEdge, CodeBlastRadius,
 } from '../../types/code-intel.js';
 
+/**
+ * Collector logic version — bump whenever finding/action synthesis changes in a
+ * way that should re-derive stored data. The server stamps this on each project;
+ * the watch daemon re-indexes any project stamped with an older version (see
+ * collector-migrate.ts) so quality fixes propagate without a wipe.
+ *   1 — original.
+ *   2 — FP purge: heuristic-security rules dropped from actions, test/example
+ *       secrets excluded, common-name reinvention skipped, dead-code batch
+ *       removed, non-code hotspots excluded, junk-path guard.
+ */
+export const COLLECTOR_VERSION = 2;
+
 const ANALYSES = [
   'health', 'security', 'duplication', 'clones', 'literal_scan', 'coupling', 'cycles', 'dead_code',
   // deeper analyzers with per-item findings:
@@ -132,6 +144,30 @@ function isTestFile(rel: string): boolean {
   return /\.(test|spec)\.[a-z]+$|__tests__\/|\/fixtures?\/|\/testdata\//i.test(rel);
 }
 
+/** Test OR example/sample files — secrets here (`.env.example`, `*.sample`,
+ *  fixtures) are placeholders by design, so they must never become security
+ *  TASKS. Broader than isTestFile (which only caps severity for the score). */
+function isTestOrExampleFile(rel: string): boolean {
+  return isTestFile(rel) || /(^|\/)\.env\.[a-z].*$|\.(example|sample|dist|template)($|\.)|[._-](example|sample|template)[._/]/i.test(rel);
+}
+
+/** Docs/config/data files — real source lives in code files. Structural
+ *  analyses (hotspots, god-modules) on a README/AGENTS.md/yaml are noise. */
+function isNonCodeFile(rel: string): boolean {
+  return /\.(md|mdx|rst|txt|json|ya?ml|toml|lock|cfg|ini|conf|env|properties|xml|csv|svg|html?)$|(^|\/)(AGENTS|README|CHANGELOG|LICENSE|CONTRIBUTING|CODEOWNERS)(\.|$)/i.test(rel);
+}
+
+/** Generic symbol names that collide across unrelated files by coincidence, so
+ *  "reimplemented in N files" is almost always a false positive for them. */
+const COMMON_SYMBOL_NAMES = new Set([
+  'error', 'err', 'collect', 'run', 'main', 'init', 'setup', 'handler', 'handle', 'index',
+  'args', 'options', 'opts', 'config', 'context', 'ctx', 'get', 'set', 'list', 'create',
+  'update', 'delete', 'remove', 'parse', 'format', 'validate', 'load', 'save', 'close',
+  'open', 'start', 'stop', 'new', 'build', 'make', 'default', 'result', 'response', 'request',
+  'data', 'item', 'value', 'name', 'id', 'test', 'query', 'render', 'process', 'execute',
+  'call', 'send', 'read', 'write', 'find', 'add', 'toString', 'toJSON', 'equals', 'hash',
+]);
+
 /** Secret-shaped security rules — the raw analyzer matches on NAMES
  *  (measured 15/16 false positives, including a `stripe_live_key` critical
  *  that was a doc comment), so this entire domain is delegated to
@@ -145,6 +181,12 @@ export function isSecretRule(rule: string): boolean {
 export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
   const ws = opts.workspace.replace(/\/+$/, '');
   const log = opts.log ?? (() => {});
+  // Refuse temp/scratchpad/cache paths — indexing them produced phantom projects
+  // (a god-module with fan-out 1364 on a /tmp/…/scratchpad/…/binaryblob.py). Real
+  // repos never live under these markers.
+  if (/(^|\/)(scratchpad|\.cache|node_modules|\.git)(\/|$)|claude-1000|\/tmp\//i.test(ws)) {
+    throw new Error(`refusing to code-index a temp/scratchpad/cache path: ${ws}`);
+  }
   const bin = opts.binPath ?? (await resolveCodeindexBin(opts.autoInstall ?? true));
   const projectId = resolveProjectId(ws).id || `path:${ws}`;
   const wsPrefix = ws + '/';
@@ -268,12 +310,21 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
   // security list downstream — rows, per-file counts, actions, and the
   // health score all agree by construction.
   type SecurityRow = { file: string; rule: string; severity: CodeSeverity; line: number | null; snippet: string };
+  // securityRows = REAL scanner secrets only (gitleaks/trufflehog). These drive
+  // the security actions + the health score.
   const securityRows: SecurityRow[] = [];
+  // heuristicSec = codeindex's remaining name/pattern security rules. Measured
+  // heavily false-positive on real repos (62× `command_injection` in a React
+  // view; `solidity_timestamp_dependence` in a TypeScript file; `xss_risk` in
+  // e2e specs). Kept as LOW-confidence findings for browsing, but NEVER promoted
+  // to tasks or the score — the security domain is delegated to the real
+  // scanners, exactly like the secret-shaped rules already are.
+  const heuristicSec: SecurityRow[] = [];
   const rawSec = (sec?.findings ?? []).slice(0, 300);
   for (const f of rawSec) {
-    if (isSecretRule(f.rule ?? '')) continue; // replaced by the real scanners below
-    securityRows.push({
-      file: rel(f.file), rule: f.rule ?? 'security', severity: (f.severity ?? 'medium') as CodeSeverity,
+    if (isSecretRule(f.rule ?? '')) continue; // secret domain delegated to gitleaks/trufflehog
+    heuristicSec.push({
+      file: rel(f.file), rule: f.rule ?? 'security', severity: 'low',
       line: f.line ?? null, snippet: f.line_text ?? '',
     });
   }
@@ -310,7 +361,7 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
   } catch (e) {
     log(`security: repo secret scan unavailable (${e instanceof Error ? e.message : e}) — install gitleaks/trufflehog for secret coverage`);
   }
-  for (const f of securityRows) {
+  for (const f of [...securityRows, ...heuristicSec]) {
     findings.push({
       category: 'security', severity: f.severity, file: f.file, line: f.line,
       rule: f.rule, title: f.rule, snippet: f.snippet,
@@ -487,7 +538,7 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
   const hotspotsAll: CodeHotspotInput[] = [];
   for (const n of tree) {
     const r = rel(n.path); const ch = churn.get(r) ?? 0;
-    if (ch === 0 || isGenerated(r)) continue;
+    if (ch === 0 || isGenerated(r) || isNonCodeFile(r)) continue;
     const cx = complexity(r);
     if (cx <= 2) continue;
     hotspotsAll.push({ file: r, churn: ch, complexity: cx, score: ch * cx, aiAuthored: aiFiles.has(r), lines: n.lines ?? 0, suggestion: suggest(r, ch, cx) });
@@ -524,9 +575,11 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
   const pushAction = (pri: number, category: string, title: string, fix: string, loc: Array<{ file: string; line?: number | null }>, agentPrompt: string) =>
     actions.push({ pri, category, title, fix, loc, agentPrompt });
 
-  // 1. security grouped by rule
+  // 1. security grouped by rule — real scanner secrets only, and never
+  //    test/example fixtures (fake-by-design placeholders aren't tasks).
   const byRule = new Map<string, Array<{ file: string; line: number | null; sev: string }>>();
   for (const f of securityRows) {
+    if (isTestOrExampleFile(f.file)) continue;
     const arr = byRule.get(f.rule) ?? []; arr.push({ file: f.file, line: f.line, sev: f.severity }); byRule.set(f.rule, arr);
   }
   for (const [rule, hits] of byRule) {
@@ -548,10 +601,17 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
         locs.map((f: string) => ({ file: f })), clonePrompt(names, g.lines ?? 0, g.count ?? 0, locs));
     }
   }
-  // 3. reinvented utilities
+  // 3. reinvented utilities — but a symbol NAME colliding across files is not
+  //    reinvention. Skip generic names (error/collect/Args…) and type-only kinds
+  //    (type_alias/interface/enum), where same-name-different-thing is the norm.
   for (const c of (dup?.clusters ?? []).slice(0, 12)) {
-    if ((c.count ?? 0) >= 5) pushAction(2, 'reuse', `${c.name} (${c.kind}) reimplemented in ${c.count} files`,
-      'Consolidate into a single shared utility/module.', [], duplicationPrompt(c.name, c.kind ?? '', c.count));
+    const nm = String(c.name ?? '');
+    const kind = String(c.kind ?? '').toLowerCase();
+    if ((c.count ?? 0) < 5) continue;
+    if (nm.length <= 3 || COMMON_SYMBOL_NAMES.has(nm.toLowerCase())) continue;
+    if (kind === 'type_alias' || kind === 'interface' || kind === 'enum' || kind === 'type') continue;
+    pushAction(2, 'reuse', `${nm} (${c.kind}) reimplemented in ${c.count} files`,
+      'Consolidate into a single shared utility/module.', [], duplicationPrompt(nm, c.kind ?? '', c.count));
   }
   // 4. god modules
   for (const m of (coup?.god_modules ?? []).slice(0, 5)) {
@@ -567,19 +627,16 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
       'Break the cycle: extract the shared type/interface into a separate module.',
       chain.slice(0, 4).map((f: string) => ({ file: f })), cyclePrompt(chain.slice(0, 6)));
   }
-  // 6. hotspots
+  // 6. hotspots — real churn×complexity on code files only.
   for (const h of hotspotsAll.slice(0, 5)) {
     pushAction(2, 'stability', `Hotspot ${h.file} (${h.churn}× changes, complexity ${h.complexity})`,
       'Add regression tests and refactor into smaller functions before the next change.',
       [{ file: h.file }], hotspotPrompt(h.file, h.churn, h.complexity, h.suggestion));
   }
-  // 7. dead code (batch)
-  if ((dead?.symbols ?? []).length) {
-    const names = (dead.symbols as any[]).slice(0, 6).map((s) => s.name);
-    pushAction(3, 'cleanup', `${dead.dead_count ?? dead.symbols.length} unreferenced symbols`,
-      'Remove if truly unused (verify no reflection / FFI / external API first).', [],
-      `Review & remove dead symbols (e.g. ${names.join(', ')}). For each, run codeindex find_callers to confirm it is unreferenced before deleting.`);
-  }
+  // NOTE: the "N unreferenced symbols" batch action was removed — on real repos
+  // the dead-code analyzer can't see cross-package exports, dynamic dispatch,
+  // reflection, or public-API usage (measured 2510 "unreferenced" on this repo),
+  // so it is never a trustworthy task. Dead-code stays as a browsable finding/stat.
   actions.sort((a, b) => a.pri - b.pri);
 
   // ── Health + map blob + project row ─────────────────────────────────────
@@ -659,6 +716,7 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
     label: undefined,
     indexedBy: opts.deviceId ?? null,
     lastIndexedAt: Date.now(),
+    collectorVersion: COLLECTOR_VERSION,
   };
 
   // Redact at the production boundary: a literal `secret_suspect` finding's

@@ -418,10 +418,14 @@ CREATE TABLE IF NOT EXISTS code_projects (
   label           TEXT CHECK (label IN ('poc','production','engineering')),
   indexed_by      TEXT,
   last_indexed_at BIGINT NOT NULL DEFAULT 0,
+  collector_version INTEGER,
   created_at      BIGINT NOT NULL,
   updated_at      BIGINT NOT NULL,
   PRIMARY KEY (tenant, project_id)
 );
+-- Additive for databases created before collector_version existed (idempotent;
+-- lets the watch daemon re-derive projects indexed by an older collector).
+ALTER TABLE code_projects ADD COLUMN IF NOT EXISTS collector_version INTEGER;
 
 CREATE TABLE IF NOT EXISTS code_findings (
   tenant        TEXT NOT NULL DEFAULT 'default',
