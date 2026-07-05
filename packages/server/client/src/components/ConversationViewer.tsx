@@ -1567,20 +1567,20 @@ function MetricsPanel({
     return 'var(--cr-fg-2)';
   };
 
-  // Clean borderless stat — big number + label, matches the chart sections
-  // (the old boxed grid looked like a different app).
-  const cap: React.CSSProperties = { fontSize: 11, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--cr-fg-3)', fontWeight: 600, margin: '4px 2px 10px' };
+  // Shared section caption + stat cell, so every block on this tab reads with
+  // the same rhythm (uppercase caption → aligned content).
+  const cap: React.CSSProperties = { fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--cr-fg-3)', fontWeight: 600, margin: '0 0 12px' };
   const StatInline = ({ label, value, sub, tone, onClick }: { label: string; value: string; sub?: React.ReactNode; tone?: string; onClick?: () => void }) => (
-    <div onClick={onClick} style={{ cursor: onClick ? 'pointer' : 'default', minWidth: 84 }} title={onClick ? 'Open detail' : undefined}>
-      <div style={{ fontSize: 24, fontWeight: 700, color: tone || 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums', lineHeight: 1.1 }}>{value}</div>
-      <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', letterSpacing: '0.03em', marginTop: 3 }}>
+    <div onClick={onClick} style={{ cursor: onClick ? 'pointer' : 'default' }} title={onClick ? 'Open detail' : undefined}>
+      <div style={{ fontSize: 21, fontWeight: 700, color: tone || 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums', lineHeight: 1.15 }}>{value}</div>
+      <div style={{ fontSize: 11.5, color: 'var(--cr-fg-3)', letterSpacing: '0.02em', marginTop: 3 }}>
         {label}{sub ? <> · {sub}</> : null}{onClick ? ' ›' : ''}
       </div>
     </div>
   );
 
   return (
-    <div data-testid="conversation-metrics" style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+    <div data-testid="conversation-metrics" style={{ display: 'flex', flexDirection: 'column', gap: 26 }}>
       {/* Outcome headline — the one-line answer to "how did it end". */}
       {outcome?.status && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -1589,20 +1589,23 @@ function MetricsPanel({
         </div>
       )}
 
-      {/* Work done — a clean borderless stat row (was a boxy grid that clashed
-          with the charts). Files/Commits drill into their tabs. */}
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '18px 34px', paddingBottom: 4, borderBottom: '1px solid var(--cr-line-1)' }}>
-        <StatInline label="messages" value={fmtN(meta.messageCount || 0)} />
-        <StatInline label="duration" value={dur} />
-        <StatInline label="files" value={String(outcome?.fileCount ?? meta.filesModified?.length ?? 0)}
-          sub={(filesAdded || filesRemoved) ? <><span style={{ color: 'var(--cr-ok-500)' }}>+{filesAdded.toLocaleString()}</span> <span style={{ color: 'var(--cr-err-500)' }}>−{filesRemoved.toLocaleString()}</span></> : undefined}
-          onClick={() => onOpenTab('diff')} />
-        <StatInline label="commits" value={String(outcome?.commits?.totalCommits ?? 0)}
-          sub={outcome?.commits?.repos?.length ? `${outcome.commits.repos.length} repo(s)` : undefined}
-          onClick={() => onOpenTab('commits')} />
-        {toolTotal > 0 && <StatInline label="tool calls" value={fmtN(toolTotal)}
-          sub={toolErrors > 0 ? <span style={{ color: 'var(--cr-err-500)' }}>{toolErrors} failed</span> : undefined}
-          onClick={onOpenTools} />}
+      {/* Work done — same caption + aligned grid as every other section, so it
+          no longer reads as a stray header. Files/Commits/Tool calls drill in. */}
+      <div>
+        <div style={cap}>Work done</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(108px, 1fr))', gap: '16px 20px' }}>
+          <StatInline label="messages" value={fmtN(meta.messageCount || 0)} />
+          <StatInline label="duration" value={dur} />
+          <StatInline label="files" value={String(outcome?.fileCount ?? meta.filesModified?.length ?? 0)}
+            sub={(filesAdded || filesRemoved) ? <><span style={{ color: 'var(--cr-ok-500)' }}>+{filesAdded.toLocaleString()}</span> <span style={{ color: 'var(--cr-err-500)' }}>−{filesRemoved.toLocaleString()}</span></> : undefined}
+            onClick={() => onOpenTab('diff')} />
+          <StatInline label="commits" value={String(outcome?.commits?.totalCommits ?? 0)}
+            sub={outcome?.commits?.repos?.length ? `${outcome.commits.repos.length} repo(s)` : undefined}
+            onClick={() => onOpenTab('commits')} />
+          {toolTotal > 0 && <StatInline label="tool calls" value={fmtN(toolTotal)}
+            sub={toolErrors > 0 ? <span style={{ color: 'var(--cr-err-500)' }}>{toolErrors} failed</span> : undefined}
+            onClick={onOpenTools} />}
+        </div>
       </div>
 
       {/* Context window — a single value against its ceiling. A gauge is the
