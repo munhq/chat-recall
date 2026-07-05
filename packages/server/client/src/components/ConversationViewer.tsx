@@ -1819,12 +1819,12 @@ function OutcomePanel({
   const reactionNegative = data.claimReaction.reaction?.markers?.some(m => m === 'frustrated' || m === 'correction');
   const unfinished = data.status === 'interrupted' || data.status === 'abandoned';
 
+  // Same caption rhythm as the Overview tab — uppercase 11px label, tinted by
+  // the section's tone so the green/amber/red meaning still reads at a glance.
   const Section = ({ tone, title, count, children }: { tone: string; title: string; count?: number; children: React.ReactNode }) => (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '4px 2px 10px' }}>
-        <span style={{ width: 8, height: 8, borderRadius: 2, background: tone }} />
-        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--cr-fg-1)', letterSpacing: '0.01em' }}>{title}</span>
-        {count != null && <span style={{ fontSize: 12, color: 'var(--cr-fg-3)', fontVariantNumeric: 'tabular-nums' }}>{count}</span>}
+      <div style={{ fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase', fontWeight: 600, color: tone, margin: '0 0 12px', display: 'flex', gap: 8, alignItems: 'baseline' }}>
+        {title}{count != null && <span style={{ color: 'var(--cr-fg-3)', fontVariantNumeric: 'tabular-nums' }}>{count}</span>}
       </div>
       {children}
     </div>
@@ -1834,7 +1834,7 @@ function OutcomePanel({
   const empty = (txt: string) => <div style={{ fontSize: 13, color: 'var(--cr-fg-3)', fontStyle: 'italic', padding: '2px 2px' }}>{txt}</div>;
 
   return (
-    <div data-testid="conversation-outcome" style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+    <div data-testid="conversation-outcome" style={{ display: 'flex', flexDirection: 'column', gap: 26 }}>
       {/* Headline */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <StatusChip status={data.status} />
@@ -2175,8 +2175,10 @@ function DiffPanel({
 
   return (
     <div data-testid="conversation-diff" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <div style={{ display: 'flex', gap: 12, fontSize: 13, color: 'var(--cr-fg-2)', flexWrap: 'wrap', alignItems: 'baseline' }}>
-        <span><strong style={{ color: 'var(--cr-fg-1)', fontSize: 15 }}>{data.files.length}</strong> file(s) changed</span>
+      {/* Same captioned-section header as the Overview tab. */}
+      <div style={{ fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--cr-fg-3)', fontWeight: 600, display: 'flex', gap: 10, alignItems: 'baseline', margin: '0 0 4px' }}>
+        <span>Files changed</span>
+        <span style={{ color: 'var(--cr-fg-2)' }}>{data.files.length}</span>
         <span style={{ color: 'var(--cr-ok-500)', fontVariantNumeric: 'tabular-nums' }}>+{data.totalLinesAdded.toLocaleString()}</span>
         <span style={{ color: 'var(--cr-err-500)', fontVariantNumeric: 'tabular-nums' }}>−{data.totalLinesRemoved.toLocaleString()}</span>
       </div>
