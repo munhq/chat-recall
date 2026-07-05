@@ -46,7 +46,10 @@ router.get('/search', async (req, res) => {
         const lower = c.text.toLowerCase();
         if (!lower.includes(needle)) continue;
         const marker = ':subagent:';
-        const subagent = c.chunk_id.includes(marker) ? c.chunk_id.slice(c.chunk_id.indexOf(marker) + marker.length) : c.chunk_id;
+        // Strip the `:w<N>` window suffix (sync.ts slices long subagent
+        // transcripts into embed-safe windows) so all windows of one subagent
+        // report under the same id.
+        const subagent = (c.chunk_id.includes(marker) ? c.chunk_id.slice(c.chunk_id.indexOf(marker) + marker.length) : c.chunk_id).replace(/:w\d+$/, '');
         const lineHits = lower.split(needle).length - 1;
         const idx = lower.indexOf(needle);
         const sample = c.text.slice(Math.max(0, idx - 60), idx + 140).replace(/\s+/g, ' ').trim();

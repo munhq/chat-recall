@@ -205,17 +205,18 @@ export class OpenAICompatibleEmbedder implements Embedder {
 
   // Max input CHARS per text. Hosted embedders enforce a token context window
   // and HARD-FAIL (HTTP 400) an over-length input — unlike Ollama/llama.cpp,
-  // which silently truncate. A single 200k-char chunk (we have 116 chunks >24k
-  // chars) thus 400s the whole request; axon then treats that 400 as a provider
-  // failure and opens the SHARED circuit breaker, blocking every embed for 30s
-  // — and the poison chunk, never embedded, is re-claimed every sweep, so the
-  // breaker stays open forever. Truncating client-side (as Ollama did
-  // implicitly) makes over-length chunks embed on their prefix instead of
-  // poisoning the pipeline. Default 24000 chars ≈ 6k tokens, safely inside
-  // bge-m3's 8192-token window. 0 disables (for local truncating servers).
+  // which silently truncate. An over-length chunk thus 400s the whole request;
+  // axon (fixed separately) must not circuit-break on that, but the input
+  // should never be over-length in the first place. Default 8000 chars is a
+  // BULLETPROOF floor: 8192 tokens = at least 1 token/char, so ≤8000 chars can
+  // NEVER exceed the window at any density (base64/minified/CJK). (24000 was
+  // NOT safe — dense chunks passed 8192 tokens well under 24k chars and still
+  // 400'd.) With sources now windowing their own large text (sync.ts subagents,
+  // chunker turns) this cap rarely fires — it's the last line of defense.
+  // 0 disables (for local truncating servers).
   static readonly MAX_INPUT_CHARS = (() => {
     const n = Number(process.env.EMBED_MAX_INPUT_CHARS);
-    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 24000;
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 8000;
   })();
 
   private baseUrl: string;
