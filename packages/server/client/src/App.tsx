@@ -253,6 +253,9 @@ function AppInner() {
 
   const [projectTree, setProjectTree] = useState<ProjectTreeNode[]>([]);
   const [totalProjectCount, setTotalProjectCount] = useState(0);
+  // Session to scope the Security dashboard to when opened via a conversation's
+  // "Manage ›" button — shows just that conversation's leaked secrets.
+  const [securityFocusSession, setSecurityFocusSession] = useState<string | null>(null);
   // When in Activity view, the tree shows only projects with edits in the
   // current window — fed by ActivityTimeline → onActiveProjects → here.
   // Reset to null when leaving the Activity view so the all-time tree
@@ -882,6 +885,7 @@ function AppInner() {
                   searchResult={selectedResult}
                   sessionInfo={selectedSessionInfo}
                   initialTab={viewerInitialTab}
+                  onManageSecurity={() => { setSecurityFocusSession(selectedSessionId); setView('security'); }}
                 />
               ),
               activityPane: (
@@ -948,6 +952,7 @@ function AppInner() {
           {view === 'security' && (
             <SecurityExplorer
               onSessionClick={(sid) => handleMemorySessionClick(sid, { initialTab: 'security' })}
+              focusSession={securityFocusSession}
             />
           )}
           {view === 'home' && (

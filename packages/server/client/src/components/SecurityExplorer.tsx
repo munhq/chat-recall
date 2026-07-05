@@ -81,6 +81,9 @@ interface DistinctSecret {
 
 interface Props {
   onSessionClick?: (sessionId: string) => void;
+  /** Scope the board to one conversation's secrets (set when arriving from a
+   *  conversation's "Rotate & manage →" button). */
+  focusSession?: string | null;
 }
 
 type Severity = 'critical' | 'high' | 'medium' | 'noise';
@@ -216,7 +219,7 @@ function timeAgo(ms: number): string {
 
 /* ── Component ──────────────────────────────────────────────────── */
 
-export default function SecurityExplorer({ onSessionClick }: Props) {
+export default function SecurityExplorer({ onSessionClick, focusSession }: Props) {
   const [summary, setSummary] = useState<SecretsSummary | null>(null);
   const [rules, setRules] = useState<SecretRuleRollup[]>([]);
   const [secrets, setSecrets] = useState<DistinctSecret[]>([]);
@@ -250,6 +253,12 @@ export default function SecurityExplorer({ onSessionClick }: Props) {
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [showDismissed, refreshTick]);
+
+  // Arriving from a conversation's "Rotate & manage →": scope the board to that
+  // conversation's secrets. Local state so the user can clear it ("Show all").
+  const [sessionScope, setSessionScope] = useState<string | null>(null);
+  useEffect(() => { if (focusSession) { setSessionScope(focusSession); setLens('action'); } }, [focusSession]);
+  const inScope = (s: DistinctSecret) => !sessionScope || (s.sessions || []).some(x => x.sessionId === sessionScope);
 
   // Fire-and-forget dismissal: optimistic — locally tag the secret as
   // dismissed, then re-fetch on success. On failure, surface error
@@ -294,20 +303,20 @@ export default function SecurityExplorer({ onSessionClick }: Props) {
   //   3. blast radius (sessions count)
   const actionRequired = useMemo(() => {
     return classifiedSecrets
-      .filter(s => s.type.severity === 'critical' || s.type.severity === 'high')
+      .filter(s => (s.type.severity === 'critical' || s.type.severity === 'high') && inScope(s))
       .sort((a, b) =>
         Number(b.verified === true) - Number(a.verified === true) ||
         b.detectors.length - a.detectors.length ||
         b.sessionCount - a.sessionCount ||
         b.occurrences - a.occurrences,
       );
-  }, [classifiedSecrets]);
+  }, [classifiedSecrets, sessionScope]);
 
   const reviewQueue = useMemo(() => {
     return classifiedSecrets
-      .filter(s => s.type.severity === 'medium' || (showNoise && s.type.severity === 'noise'))
+      .filter(s => (s.type.severity === 'medium' || (showNoise && s.type.severity === 'noise')) && inScope(s))
       .sort((a, b) => b.sessionCount - a.sessionCount || b.occurrences - a.occurrences);
-  }, [classifiedSecrets, showNoise]);
+  }, [classifiedSecrets, showNoise, sessionScope]);
 
   const noiseCount = classifiedSecrets.filter(s => s.type.severity === 'noise').length;
 
@@ -435,6 +444,18 @@ export default function SecurityExplorer({ onSessionClick }: Props) {
       </Card>
 
       {loading && <div style={{ color: 'var(--cr-fg-3)', fontSize: 13, padding: 16 }}>Loading…</div>}
+
+      {/* Scope banner — arrived from a conversation's "Rotate & manage →". */}
+      {sessionScope && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '9px 14px', borderRadius: 'var(--cr-radius-md)', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-2)', fontSize: 13, color: 'var(--cr-fg-2)' }}>
+          <span>Scoped to <b style={{ color: 'var(--cr-fg-1)' }}>one conversation</b>'s secrets.</span>
+          <span style={{ flex: 1 }} />
+          <button onClick={() => setSessionScope(null)}
+            style={{ background: 'transparent', border: '1px solid var(--cr-line-2)', color: 'var(--cr-fg-2)', borderRadius: 6, padding: '3px 10px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}>
+            Show all secrets
+          </button>
+        </div>
+      )}
 
       {/* ── ACTION REQUIRED ─────────────────────────────────────── */}
       {!loading && lens === 'action' && (

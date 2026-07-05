@@ -61,6 +61,9 @@ interface ConversationViewerProps {
    * Search → undefined (defaults to 'full' = the chat itself).
    */
   initialTab?: string;
+  /** Open the top-level Security dashboard scoped to this conversation's leaked
+   *  secrets so they can be rotated/dismissed. */
+  onManageSecurity?: () => void;
 }
 
 export default function ConversationViewer({
@@ -77,6 +80,7 @@ export default function ConversationViewer({
   searchResult,
   sessionInfo,
   initialTab,
+  onManageSecurity,
 }: ConversationViewerProps) {
   // Default to the actual conversation messages, not the Gemini summary.
   // Caller can override (e.g. Activity passes 'diff' since the user just
@@ -1000,7 +1004,8 @@ export default function ConversationViewer({
 
         {viewMode === 'security' && (
           <SecurityPanel data={secretsData} loading={secretsLoading} error={secretsError}
-            onJumpToLine={(line) => { setFilter('all'); setScrollToLine(line); handleViewChange('full'); }} />
+            onJumpToLine={(line) => { setFilter('all'); setScrollToLine(line); handleViewChange('full'); }}
+            onManage={onManageSecurity} />
         )}
       </div>
     </div>
@@ -1020,8 +1025,8 @@ export default function ConversationViewer({
  * leak); a single-detector hit is "review me" territory.
  */
 function SecurityPanel({
-  data, loading, error, onJumpToLine,
-}: { data: SessionSecretsResponse | null; loading: boolean; error: string | null; onJumpToLine: (line: number) => void }) {
+  data, loading, error, onJumpToLine, onManage,
+}: { data: SessionSecretsResponse | null; loading: boolean; error: string | null; onJumpToLine: (line: number) => void; onManage?: () => void }) {
   if (loading) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Scanning for secrets…</div>;
   if (error) return <div style={{ padding: 20, color: 'var(--cr-err-500)' }}>Failed to load findings: {error}</div>;
   if (!data) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>No scan data yet for this session.</div>;
@@ -1086,8 +1091,16 @@ function SecurityPanel({
           <span key={d} style={{ color: 'var(--cr-fg-3)', fontWeight: 500, letterSpacing: 0, textTransform: 'none' }}>{d} {n}</span>
         ))}
       </div>
-      <div style={{ fontSize: 12.5, color: 'var(--cr-fg-2)', lineHeight: 1.5, padding: '10px 12px', background: 'var(--cr-err-surf, #2a1215)', border: '1px solid var(--cr-err-500)', borderRadius: 'var(--cr-radius-md)' }}>
-        <b>These are real, detected here.</b> Rotate each exposed credential at its source (revoke + reissue), then it no longer matters that it's in an old transcript. Previews show the last 4 chars only — the raw secret was redacted before sync.
+      <div style={{ padding: '10px 12px', background: 'var(--cr-err-surf, #2a1215)', border: '1px solid var(--cr-err-500)', borderRadius: 'var(--cr-radius-md)', display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 12.5, color: 'var(--cr-fg-2)', lineHeight: 1.5, flex: 1, minWidth: 220 }}>
+          <b>These are real, detected here.</b> Rotate each exposed credential at its source (revoke + reissue) — then it no longer matters that it's in an old transcript. Previews show the last 4 chars only; the raw secret was redacted before sync.
+        </div>
+        {onManage && (
+          <button onClick={onManage} title="Open the Security dashboard scoped to this conversation's secrets"
+            style={{ background: 'var(--cr-err-500)', border: 'none', color: '#fff', borderRadius: 6, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+            Rotate &amp; manage →
+          </button>
+        )}
       </div>
 
       {rows.map(row => {
