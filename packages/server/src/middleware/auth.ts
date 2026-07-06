@@ -33,9 +33,42 @@ declare global {
 
 type Provider = 'none' | 'static-token' | 'keycloak';
 
+const VALID_PROVIDERS: readonly Provider[] = ['none', 'static-token', 'keycloak'];
+
 function provider(): Provider {
   const p = (process.env.AUTH_PROVIDER || 'none').toLowerCase();
   return p === 'static-token' || p === 'keycloak' ? p : 'none';
+}
+
+/**
+ * Fail-closed config validation, run once at server boot (see server.ts). Two
+ * misconfigurations otherwise bring the server up wide open, silently:
+ *
+ *   SEC-01 — a typo in AUTH_PROVIDER (e.g. "keyclok", "static_token") is not a
+ *            recognized provider, so provider() falls back to 'none' and every
+ *            request resolves to tenant='default' with no auth. An operator who
+ *            intended keycloak/static-token would be running unauthenticated.
+ *   SEC-04 — AUTH_DEV_USER=1 turns the `x-dev-user` header into a login bypass
+ *            (any identity, no token). It's a local dev escape hatch and must
+ *            never be enabled in production.
+ *
+ * Throw (crash the process at startup) rather than degrade to fail-open.
+ */
+export function validateAuthConfig(): void {
+  const raw = process.env.AUTH_PROVIDER;
+  if (raw && !VALID_PROVIDERS.includes(raw.toLowerCase() as Provider)) {
+    throw new Error(
+      `AUTH_PROVIDER='${raw}' is not a supported provider (expected one of: ` +
+        `${VALID_PROVIDERS.join(', ')}). Refusing to start — an unrecognized ` +
+        `value silently falls back to 'none' and disables authentication.`,
+    );
+  }
+  if (process.env.AUTH_DEV_USER === '1' && process.env.NODE_ENV === 'production') {
+    throw new Error(
+      `AUTH_DEV_USER=1 makes the 'x-dev-user' header a login bypass and must ` +
+        `never be set with NODE_ENV=production. Refusing to start.`,
+    );
+  }
 }
 
 let tokenMap: Record<string, string> | null = null;
