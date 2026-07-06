@@ -931,7 +931,7 @@ function AppInner() {
                 onBack={() => setView('home')}
               />
             ) : (
-              <ProjectPicker tree={projectTree} loaded={treeLoaded} onPick={(id) => setProjectFilter(id)} />
+              <ProjectPicker tree={projectTree} loaded={treeLoaded} onPick={(id) => { setProjectFilter(id); setToolFilter('all'); }} />
             )
           )}
           {view === 'dashboard' && (
@@ -958,7 +958,7 @@ function AppInner() {
           {view === 'home' && (
             <CommandCenter
               setView={(v) => setView(v as ViewMode)}
-              onOpenProject={(id) => { setProjectFilter(id); setView('projects'); }}
+              onOpenProject={(id) => { setProjectFilter(id); setToolFilter('all'); setView('projects'); }}
               cloud={capabilities?.edition === 'cloud'}
             />
           )}
