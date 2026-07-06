@@ -457,16 +457,6 @@ export async function getConversationPage(
   };
 }
 
-export async function getRawConversation(sessionId: string): Promise<any[]> {
-  const res = await fetchWithTimeout(`${API_BASE}/conversations/${sessionId}/raw`, {}, 30000);
-
-  if (!res.ok) {
-    throw new Error(`Failed to get raw conversation: ${res.statusText}`);
-  }
-
-  const data = await res.json();
-  return data.lines;
-}
 
 export async function getStatus(): Promise<IndexStats> {
   const res = await fetchWithTimeout(`${API_BASE}/status`);
@@ -1217,12 +1207,6 @@ export async function getToolkitItem(type: ToolkitType, id: string): Promise<Mem
   return await res.json();
 }
 
-export async function getToolkitItemContent(type: ToolkitType, id: string): Promise<{ content: string; filePath: string }> {
-  const res = await fetchWithTimeout(`${API_BASE}/toolkit/item/${type}/${encodeURIComponent(id)}/content`);
-  if (!res.ok) throw new Error(`Failed to load toolkit item content: ${res.statusText}`);
-  return await res.json();
-}
-
 export async function promoteToolkitItem(
   type: ToolkitType,
   sourceId: string,
@@ -1419,33 +1403,6 @@ export async function getEditsTimeline(opts: {
   return await res.json();
 }
 
-export interface LiveSessionFiles {
-  sessionId: string;
-  tool: AiTool;
-  projectPath: string;
-  files: string[];
-  reads: string[];
-  filesByExt: Record<string, string[]>;
-  edits: Array<{
-    ts: number;
-    tsIso?: string;
-    file: string;
-    op: EditOp;
-    toolName: string;
-    tool: AiTool;
-    line: number;
-  }>;
-  source: 'live';
-}
-
-export async function getLiveSessionFiles(sessionId: string): Promise<LiveSessionFiles> {
-  const res = await fetchWithTimeout(`${API_BASE}/conversations/${sessionId}/files-live`);
-  if (!res.ok) {
-    if (res.status === 404) throw new Error('Session not found');
-    throw new Error(`Failed to live-scan session: ${res.statusText}`);
-  }
-  return await res.json();
-}
 
 export async function updateItemProjectPath(
   sourceType: string,

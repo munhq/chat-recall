@@ -17,7 +17,6 @@ import {
   SummaryGenerator,
   parseSessionFile,
   loadSettings,
-  liveScanModifiedFiles,
   type SessionDiffResult,
   getSessionCommits,
   computeOutcome,
@@ -139,7 +138,7 @@ router.param('id', (req, res, next, id) => {
 // computes diffs/outcomes; regenerate-summary rebuilds SessionContent from the
 // synced envelope and summarizes with the server-configured provider).
 router.use([
-  '/:id/files-live', '/:id/raw',
+  '/:id/raw',
 ], requireLocalMode);
 
 // DELETE /api/conversations/:id — purge a session everywhere and tombstone it
@@ -295,48 +294,6 @@ router.get('/outcome-summary', async (req, res) => {
   } catch (error) {
     log.error({ err: error }, 'outcome summary error');
     res.status(500).json({ error: 'Failed to compute outcome summary' });
-  }
-});
-
-// GET /api/conversations/:id/files-live
-// Live transcript scan of the session's tool_uses — works on the active
-// session even though the indexer hasn't run yet.
-router.get('/:id/files-live', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const live = liveScanModifiedFiles(id);
-    if (!live.found) return res.status(404).json({ error: 'Session not found' });
-
-    // Bucket by extension to mirror the MCP tool's response shape.
-    const byExt: Record<string, string[]> = {};
-    for (const f of live.files) {
-      const ext = f.includes('.') ? f.split('.').pop()!.toLowerCase() : '(no ext)';
-      (byExt[ext] = byExt[ext] || []).push(f);
-    }
-
-    res.json({
-      sessionId: id,
-      tool: live.tool,
-      projectPath: live.projectPath,
-      files: live.files,
-      reads: live.reads,
-      filesByExt: byExt,
-      edits: live.edits.map(e => ({
-        ts: e.ts,
-        tsIso: e.tsIso,
-        file: e.file,
-        op: e.op,
-        toolName: e.toolName,
-        tool: e.tool,
-        line: e.line,
-      })),
-      source: 'live',
-    });
-  } catch (error) {
-    log.error({ err: error }, 'files-live error');
-    res.status(500).json({
-      error: error instanceof Error ? error.message : 'Failed to live-scan session',
-    });
   }
 });
 
