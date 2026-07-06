@@ -19,7 +19,6 @@ const BASE = process.env.BASE_URL || 'http://127.0.0.1:5000';
 test.describe('Toolkit', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto(BASE);
-    await page.locator("[data-testid='nav-more']").click();
     await page.locator("[data-testid='nav-toolkit']").click();
     // Sub-tabs are loaded async — wait until at least Skills shows a count.
     await page.getByRole('button', { name: /^Skills \(/ }).waitFor({ state: 'visible' });

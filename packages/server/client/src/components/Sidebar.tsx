@@ -32,14 +32,22 @@ interface SidebarProps {
   enabledViews?: Set<string>;
 }
 
-// Single source of truth for primary navigation — kept in sync with TopBar.
-const MOBILE_NAV_ITEMS: Array<{ id: 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'dashboard'; label: string; icon: string }> = [
+// Primary navigation — the single source of truth for the whole app now that
+// nav lives in the left rail (the topbar is brand · search · actions only).
+// Every destination is visible; nothing hides behind a "More" overflow.
+// Order = the daily loop: the spine (Overview → Conversations → Projects →
+// Activity) first, then the intelligence surfaces, then Security last.
+type NavId = 'home' | 'search' | 'projects' | 'activity' | 'memory' | 'code' | 'toolkit' | 'dashboard' | 'security';
+const NAV_ITEMS: Array<{ id: NavId; label: string; icon: string }> = [
   { id: 'home', label: 'Overview', icon: 'home' },
-  { id: 'projects', label: 'Projects', icon: 'folder' },
   { id: 'search', label: 'Conversations', icon: 'message' },
+  { id: 'projects', label: 'Projects', icon: 'folder' },
+  { id: 'activity', label: 'Activity', icon: 'clock' },
   { id: 'memory', label: 'Memory', icon: 'brain' },
+  { id: 'code', label: 'Code', icon: 'code' },
   { id: 'toolkit', label: 'Toolkit', icon: 'terminal' },
   { id: 'dashboard', label: 'Insights', icon: 'chart' },
+  { id: 'security', label: 'Security', icon: 'shield' },
 ];
 
 // Tool source list comes from the central tools module — adding a tool
@@ -52,7 +60,7 @@ export default function Sidebar({
   view, setView,
   enabledViews,
 }: SidebarProps) {
-  const navItems = MOBILE_NAV_ITEMS.filter((n) => !enabledViews || enabledViews.has(n.id));
+  const navItems = NAV_ITEMS.filter((n) => !enabledViews || enabledViews.has(n.id));
   return (
     <aside
       id="cr-sidebar-drawer"
@@ -69,23 +77,31 @@ export default function Sidebar({
       }}
     >
       <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+        {/* Primary nav rail — always visible (desktop + mobile drawer). Each
+            item carries the canonical `nav-<id>` test id the e2e suite drives. */}
         {setView && (
-          <div className="cr-mobile-only" style={{ padding: '14px 12px 4px' }}>
-            <div className="cr-h4" style={{ marginBottom: 10, paddingLeft: 6 }}>Navigate</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-              {navItems.map((n) => (
-                <SidebarRowItem
-                  key={n.id}
-                  active={view === n.id}
-                  onClick={() => setView(n.id)}
-                  data-testid={`mobile-nav-${n.id}`}
-                  icon={<Icon name={n.icon} size={14} />}
-                  label={n.label}
-                />
-              ))}
-            </div>
-            <div style={{ height: 1, background: 'var(--cr-line-1)', margin: '10px 0 0' }} />
-          </div>
+          <>
+            <nav className="cr-nav" aria-label="Primary">
+              {navItems.map((n) => {
+                const on = view === n.id;
+                return (
+                  <button
+                    key={n.id}
+                    type="button"
+                    className={`cr-nav-item${on ? ' active' : ''}`}
+                    onClick={() => setView(n.id)}
+                    data-testid={`nav-${n.id}`}
+                    aria-current={on ? 'page' : undefined}
+                    title={n.label}
+                  >
+                    <span className="cr-nav-item-icon"><Icon name={n.icon} size={17} /></span>
+                    <span className="cr-nav-item-label">{n.label}</span>
+                  </button>
+                );
+              })}
+            </nav>
+            <div className="cr-sidebar-divider" />
+          </>
         )}
 
         {/* Source filter. A uniform 2-column grid of quiet chips, one per AI
@@ -124,7 +140,7 @@ export default function Sidebar({
 
         {(extraSections || []).map((section) => (
           <React.Fragment key={section.heading}>
-            <div style={{ height: 1, background: 'var(--cr-line-1)', margin: '6px 12px 0' }} />
+            <div className="cr-sidebar-divider" />
             <div style={{ padding: '10px 12px 0' }}>
               <div className="cr-sidebar-section-label">{section.heading}</div>
             </div>
@@ -160,7 +176,7 @@ export default function Sidebar({
           if (recent.length === 0) return null;
           return (
             <>
-              <div style={{ height: 1, background: 'var(--cr-line-1)', margin: '6px 12px 0' }} />
+              <div className="cr-sidebar-divider" />
               <div style={{ padding: '10px 12px 2px' }}>
                 <div className="cr-sidebar-section-label" style={{ marginBottom: 0 }}>Recent</div>
               </div>
@@ -174,7 +190,7 @@ export default function Sidebar({
           );
         })()}
 
-        <div style={{ height: 1, background: 'var(--cr-line-1)', margin: '6px 12px 0' }} />
+        <div className="cr-sidebar-divider" />
         <div style={{ padding: '10px 12px 4px' }}>
           <div className="cr-sidebar-section-label" style={{ marginBottom: 0 }}>Projects</div>
         </div>
