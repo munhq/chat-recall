@@ -443,8 +443,13 @@ router.get('/', async (req, res) => {
     await store.close();
     await cache.close();
 
-    // Load CLAUDE.md descriptions for known projects
-    try {
+    // Load CLAUDE.md descriptions for known projects — LOCAL MODE ONLY. These
+    // are the producer's filesystem paths, which don't exist on a server pod,
+    // so the reads always failed there and produced nothing (just wasted
+    // syscalls). If server-side project descriptions are ever surfaced, read
+    // them from the synced claude_md chunks (see routes/memory.ts content
+    // reconstruction via store.listChunksByItem), not from fs.
+    if (!isServerMode()) try {
       const { readFileSync, existsSync: exists } = await import('fs');
       for (const [projectPath] of projectStats) {
         const claudeMdPath = `${projectPath}/CLAUDE.md`;

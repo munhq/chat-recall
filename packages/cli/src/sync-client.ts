@@ -1199,6 +1199,10 @@ export async function buildConversationSync(
         cacheReadTokens: m.cacheReadTokens, cacheCreationTokens: m.cacheCreationTokens,
         peakContextTokens: m.peakContextTokens, costUsd: m.costUsd, durationMs: m.durationMs,
         modelsUsed: m.modelsUsed, toolsUsed: m.toolsUsed, gitBranch: m.gitBranch,
+        // filesModified drives the analytics Patterns panels (Hot Files,
+        // Redundancy). Without it those panels are permanently empty on the
+        // server — the field simply wasn't in the synced metadata before.
+        filesModified: m.filesModified,
       };
       for (const [k, v] of Object.entries(live)) {
         if (v === undefined) continue;
