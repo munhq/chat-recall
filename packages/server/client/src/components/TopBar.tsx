@@ -433,20 +433,30 @@ export function SyncStatusChip() {
     return () => { dead = true; clearInterval(t); };
   }, []);
   if (!s || typeof s.sessions !== 'number') return null;
-  const age = s.newestSessionAgeMs == null ? '—'
-    : s.newestSessionAgeMs < 120_000 ? 'live'
+  // Freshness is the one signal worth showing at a glance; raw counts are
+  // detail, so they live in the tooltip. A single ok/warn dot + one word keeps
+  // the brand zone clean instead of a monospace telemetry chip.
+  const fresh = s.newestSessionAgeMs != null && s.newestSessionAgeMs < 120_000;
+  const word = s.newestSessionAgeMs == null ? '—'
+    : fresh ? 'live'
     : s.newestSessionAgeMs < 3_600_000 ? `${Math.round(s.newestSessionAgeMs / 60_000)}m behind`
     : `${Math.round(s.newestSessionAgeMs / 3_600_000)}h behind`;
+  const dot = fresh ? 'var(--cr-ok-500)' : s.newestSessionAgeMs == null ? 'var(--cr-fg-3)' : 'var(--cr-warn-500)';
   return (
     <span
-      title={`${s.sessions} sessions held · ${s.rawArchived} raw-archived · newest data ${age}`}
+      className="cr-topbar-sync"
+      title={`${s.sessions.toLocaleString()} sessions held · ${s.rawArchived.toLocaleString()} raw-archived · newest data ${word}`}
       style={{
-        padding: '2px 6px', fontSize: 10, fontWeight: 500, letterSpacing: '0.02em',
-        color: 'var(--cr-fg-3)', border: '1px solid var(--cr-line-1)', borderRadius: 4,
-        fontFamily: 'monospace',
+        display: 'inline-flex', alignItems: 'center', gap: 5,
+        padding: '2px 8px 2px 7px', fontSize: 11, fontWeight: 450,
+        color: 'var(--cr-fg-2)', border: '1px solid var(--cr-line-1)', borderRadius: 999,
       }}
     >
-      {s.sessions.toLocaleString()} sess · {s.rawArchived.toLocaleString()} raw · {age}
+      <span style={{
+        width: 6, height: 6, borderRadius: '50%', background: dot, flexShrink: 0,
+        boxShadow: fresh ? `0 0 5px ${dot}` : 'none',
+      }} />
+      {word}
     </span>
   );
 }
