@@ -16,8 +16,8 @@ import settingsRouter from './routes/settings.js';
 import editsRouter from './routes/edits.js';
 import toolkitRouter from './routes/toolkit.js';
 import secretsRouter from './routes/secrets.js';
-import { tenantAuth } from './middleware/auth.js';
-import { apiLimiter, rl } from './middleware/rate-limit.js';
+import { tenantAuth, validateAuthConfig } from './middleware/auth.js';
+import { apiLimiter, syncLimiter, rl } from './middleware/rate-limit.js';
 import { costMiddleware, startCostTelemetry } from './middleware/request-cost.js';
 import metricsRouter, { startBacklogRefresher, logMetricsExposureAtBoot } from './routes/metrics.js';
 import adminRouter from './routes/admin.js';
@@ -60,6 +60,11 @@ const log = createLogger('server');
 // Every log line emitted while handling a request gets { reqId, tenant }.
 setLogContextProvider(logContext);
 
+// Fail-closed on auth misconfiguration BEFORE we bind a port: an unrecognized
+// AUTH_PROVIDER would silently disable auth (SEC-01), and AUTH_DEV_USER=1 in
+// production is a login bypass (SEC-04). Crash now rather than serve open.
+validateAuthConfig();
+
 // Flipped on SIGTERM so /health starts failing readiness and k8s drains us.
 let shuttingDown = false;
 
@@ -96,6 +101,10 @@ app.use((req, res, next) => {
   if (req.path === '/api/billing/webhook') return next();
   return smallJson(req, res, next);
 });
+// Per-IP ceiling BEFORE the 32mb parser + the route's token lookup — the
+// general apiLimiter skips /api/sync, so this is the only per-IP bound on the
+// pre-auth work an anonymous flood can trigger here (SEC-02 + SEC-03).
+app.use('/api/sync', syncLimiter);
 app.use('/api/sync', express.json({ limit: '32mb' }));
 app.use('/api/code/index', express.json({ limit: '16mb' }));
 

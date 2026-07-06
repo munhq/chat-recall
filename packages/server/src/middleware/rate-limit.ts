@@ -42,6 +42,25 @@ export const sensitiveLimiter = rateLimit({
   message: { error: 'too many attempts — try again later' },
 });
 
+/**
+ * Per-IP ceiling for /api/sync. The general apiLimiter deliberately SKIPS
+ * /api/sync, which left that surface with no per-IP bound at all: an anonymous
+ * flood of `Bearer ct_<random>` forced an uncached control-plane token lookup
+ * AND a 32mb JSON parse on every request, before any tenant existed to key the
+ * in-route ingestGate on. (ingestGate is per-tenant and runs only for VALID
+ * tokens, so it can't shed an unauthenticated flood.) Mounted BEFORE the body
+ * parser and token resolution so a flood is dropped at the edge, cheaply.
+ * Generous by default — real collectors sync chunked multi-session batches and
+ * honor 429 + Retry-After — but bounds the pre-auth work one IP can trigger.
+ */
+export const syncLimiter = rateLimit({
+  windowMs: minutes(5),
+  max: Number(process.env.RATE_LIMIT_SYNC_MAX) || 600, // ~2 req/s sustained per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'rate limit exceeded — slow down' },
+});
+
 // ─────────────────────────────────────────────────────────────────────────
 // Tenant-aware, class-based limiting (token buckets + concurrency).
 // The per-IP limiters above are the coarse anti-abuse net; the layer below
