@@ -35,6 +35,16 @@ jobs:
           npm ci
           npm run build
 
+      - name: Ensure docker compose v2 plugin
+        # The self-hosted ARC runner image ships the docker CLI (talking to the
+        # DinD sidecar) but NOT the compose v2 plugin that ubuntu-latest bundles.
+        run: |
+          mkdir -p ~/.docker/cli-plugins
+          curl -fsSL https://github.com/docker/compose/releases/download/v2.31.0/docker-compose-linux-x86_64 \
+            -o ~/.docker/cli-plugins/docker-compose
+          chmod +x ~/.docker/cli-plugins/docker-compose
+          docker compose version
+
       - name: Boot compose — server (built from source) + Postgres
         run: |
           echo "ADMIN_KEY=$ADMIN_KEY" > .env
