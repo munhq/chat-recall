@@ -17,6 +17,7 @@ import { parseClaudeTranscript, parseClaudeSubagents } from './claude.js';
 import { parseGeminiTranscript } from './gemini.js';
 import { parseOpenCodeTranscript, parseOpenCodeSubagents } from './opencode.js';
 import { parseCodexTranscript, parseCodexSubagents } from './codex.js';
+import { canonicalEventsToMessages } from './from-events.js';
 
 export * from './types.js';
 export {
@@ -94,6 +95,23 @@ export async function parseTranscript(sessionId: string): Promise<ParsedTranscri
     return { messages, subagents, mtime: loc.mtime || safeMtime(loc.path) };
   }
 
+  // Generic fallback for any registered backend that exposes a canonical event
+  // stream (e.g. agy/Antigravity). Without this a newly-added ToolBackend parses
+  // to null here and never syncs — exactly what dropped every agy session until
+  // this was added. Explicit branches above keep their tool-specific handling
+  // (Claude compaction stitching, etc.); this only ever runs for tools that have
+  // none, so it can't regress them.
+  try {
+    const backend = getBackend(tool);
+    if (backend?.readEvents) {
+      const rawId = backend.toRawId(sessionId);
+      const loc = backend.findSession(rawId);
+      if (loc) {
+        const messages = canonicalEventsToMessages(backend.readEvents(rawId));
+        if (messages.length > 0) return { messages, subagents: [], mtime: loc.mtime || safeMtime(loc.path) };
+      }
+    }
+  } catch { /* fall through to null */ }
   return null;
 }
 
