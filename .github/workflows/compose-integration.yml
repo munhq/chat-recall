@@ -18,7 +18,7 @@ on:
 
 jobs:
   compose-e2e:
-    runs-on: ubuntu-latest
+    runs-on: munhq-arc
     timeout-minutes: 25
     env:
       ADMIN_KEY: ci-admin-0123456789abcdef0123
