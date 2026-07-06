@@ -56,6 +56,7 @@ export interface SessionEdit {
   toolName: string;    // raw tool name from the tool's own taxonomy
   tool: AiTool;        // which AI tool produced the edit
   line: number;        // line number in transcript (claude) or 0 for stores w/o lines
+  projectId?: string;  // logical project id (git:/ws:/path:…) — drives Activity's project filter + repo grouping
 }
 
 /**
