@@ -421,8 +421,8 @@ const httpServer = app.listen(PORT, HOST, () => {
           const r = await embedMissingVectors({ batch: VEC_BATCH });
           vectorSweepsTotal.inc({ result: 'ok' });
           vectorsEmbeddedTotal.inc(r.embedded);
-          if (r.embedded > 0) {
-            log.info({ embedded: r.embedded, tenants: r.tenants }, 'vector backfill');
+          if (r.embedded > 0 || r.rewindowed > 0) {
+            log.info({ embedded: r.embedded, tenants: r.tenants, rewindowed: r.rewindowed }, 'vector backfill');
           }
         } catch (err) {
           vectorSweepsTotal.inc({ result: 'error' });

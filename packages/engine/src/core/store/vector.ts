@@ -301,6 +301,67 @@ export class PgVectorStore implements VectorStore {
     });
   }
 
+  /**
+   * Self-healing re-window of OVER-LENGTH chunks. A chunk whose text exceeds a
+   * hosted embedder's token window can only be embedded on its truncated prefix
+   * (embedder.MAX_INPUT_CHARS) — its tail is invisible to vector search. Sources
+   * that build their own chunks cap length at index time, but chunks can still
+   * arrive over-length: synced from ANOTHER device (no local transcript to
+   * re-window from), or from a not-yet-fixed source. This sweep windows any such
+   * chunk IN PLACE from its stored text — no transcript needed — so every part
+   * gets its own vector. Idempotent: once nothing exceeds `maxChars`, it no-ops.
+   *
+   * Matches the source-side windowing (sync.ts): the original id becomes the
+   * first window (w0); the rest become `<id>:w<N>` rows. tsv is a GENERATED
+   * column so FTS follows automatically. The original's now-stale vector is
+   * dropped so the backfill sweep re-embeds w0 at its new length; the new
+   * windows have no vector and get embedded on the same later sweep.
+   */
+  async rewindowOversized(opts: { maxChars?: number; window?: number; overlap?: number; maxWindows?: number; limit?: number } = {}):
+    Promise<{ rewindowed: number; windowsAdded: number }> {
+    if (!this.tableReady) return { rewindowed: 0, windowsAdded: 0 };
+    const maxChars = Math.max(1, opts.maxChars ?? 8000);
+    const win = Math.max(1, opts.window ?? 2000);
+    const overlap = Math.max(0, Math.min(win - 1, opts.overlap ?? 100));
+    const maxWindows = Math.max(1, opts.maxWindows ?? 120);
+    const limit = Math.max(1, opts.limit ?? 50);
+    const step = win - overlap;
+    return tenantTx(this.pool, this.t, async (client: any) => {
+      // Claim over-length chunks (SKIP LOCKED so replicas don't collide). Skip
+      // any that already have a window sibling — a half-applied prior run — so
+      // re-runs stay idempotent.
+      const rows: any[] = (await client.query(
+        `SELECT chunk_id, item_id, source_type, title, text, chunk_type, project_path, project_id, file_path, mtime
+           FROM memory_chunks c
+          WHERE c.tenant=$1 AND length(c.text) > $2
+            AND NOT EXISTS (SELECT 1 FROM memory_chunks w
+                             WHERE w.tenant=c.tenant AND w.chunk_id = c.chunk_id || ':w1')
+          LIMIT $3
+          FOR UPDATE SKIP LOCKED`,
+        [this.t, maxChars, limit])).rows;
+      let rewindowed = 0, windowsAdded = 0;
+      for (const g of rows) {
+        const text: string = g.text;
+        const windows: string[] = [];
+        for (let i = 0; i < text.length && windows.length < maxWindows; i += step) windows.push(text.slice(i, i + win));
+        if (windows.length <= 1) continue; // shouldn't happen (len > maxChars ≥ win), but stay safe
+        await client.query(`UPDATE memory_chunks SET text=$2 WHERE tenant=$1 AND chunk_id=$3`, [this.t, windows[0], g.chunk_id]);
+        await client.query(`DELETE FROM memory_vectors WHERE tenant=$1 AND chunk_id=$2`, [this.t, g.chunk_id]);
+        for (let wi = 1; wi < windows.length; wi++) {
+          await client.query(
+            `INSERT INTO memory_chunks (tenant, chunk_id, item_id, source_type, title, text, chunk_type, project_path, project_id, file_path, mtime)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+             ON CONFLICT (tenant, chunk_id) DO UPDATE SET text=EXCLUDED.text`,
+            [this.t, `${g.chunk_id}:w${wi}`, g.item_id, g.source_type, `${g.title || ''} (${wi + 1})`,
+             windows[wi], g.chunk_type || '', g.project_path || '', g.project_id || '', g.file_path || '', this.intMs(g.mtime)]);
+          windowsAdded++;
+        }
+        rewindowed++;
+      }
+      return { rewindowed, windowsAdded };
+    });
+  }
+
   async search(...a: Args<'search'>): Promise<MemorySearchResult[]> {
     const [query, options = {}] = a;
     const topK = (options as any).topK ?? 20;
