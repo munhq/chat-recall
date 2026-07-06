@@ -2,33 +2,35 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Icon, IconButton, Input, Logo, Button, Avatar } from './primitives';
 import { getSyncStatus } from '../services/api';
 
-type NavView = 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code' | 'settings' | 'account';
+type NavView = 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code' | 'settings' | 'account' | 'admin';
 
 interface NavItem { id: NavView; label: string; icon: string }
 
 /**
- * Primary nav — the 5 core destinations. Projects is intentionally NOT here:
- * it stays reachable via the Overview tiles and the sidebar project picker
- * (the view + ?view=projects deep links keep working).
+ * Primary nav — the 3 destinations you actually use. Security is
+ * promoted because 22 live leaked secrets is urgent. Insights is
+ * the big picture. Everything else (Memory, Code, Toolkit, Activity)
+ * is in the More overflow — real features, but not the daily loop.
+ * Overview is intentionally NOT here: clicking the brand logo goes home.
  */
 const PRIMARY_NAV: NavItem[] = [
-  { id: 'home', label: 'Overview', icon: 'home' },
   { id: 'search', label: 'Conversations', icon: 'message' },
   { id: 'security', label: 'Security', icon: 'shield' },
-  { id: 'code', label: 'Code', icon: 'code' },
   { id: 'dashboard', label: 'Insights', icon: 'chart' },
 ];
 
 /** Secondary destinations, tucked into the "More" overflow menu. */
 const OVERFLOW_NAV: NavItem[] = [
+  { id: 'home', label: 'Overview', icon: 'home' },
   { id: 'memory', label: 'Memory', icon: 'brain' },
+  { id: 'code', label: 'Code', icon: 'code' },
   { id: 'toolkit', label: 'Toolkit', icon: 'terminal' },
   { id: 'activity', label: 'Activity', icon: 'clock' },
 ];
 
 interface TopBarProps {
   view: string;
-  setView: (v: 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code' | 'settings' | 'account') => void;
+  setView: (v: NavView) => void;
   /** Views this deployment supports (/api/capabilities). Absent = all. */
   enabledViews?: Set<string>;
   query: string;
@@ -92,14 +94,30 @@ export default function TopBar({ view, setView, enabledViews, query, setQuery, s
         data-testid="open-mobile-menu"
       />
 
-      {/* Brand */}
-      <div className="cr-topbar-brand" style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 'var(--cr-sidebar-w)', paddingLeft: 4 }}>
+      {/* Brand — clickable, goes home (Overview). The build stamp is
+          developer debug, not user-facing; it's a tooltip on the BETA
+          tag now instead of a visible chip. */}
+      <div
+        className="cr-topbar-brand"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
+          minWidth: 'var(--cr-sidebar-w)',
+          paddingLeft: 4,
+          cursor: 'pointer',
+        }}
+        onClick={() => setView('home')}
+        data-testid="brand"
+        title="Back to Overview"
+      >
         <span className="cr-topbar-brand-logo"><Logo size={26} /></span>
-        <span data-testid="brand" className="cr-topbar-brand-text" style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--cr-fg-1)' }}>
+        <span className="cr-topbar-brand-text" style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--cr-fg-1)' }}>
           Chat Recall
         </span>
         <span
           className="cr-topbar-brand-tag"
+          title={`Beta — build ${typeof __BUILD_STAMP__ !== 'undefined' ? __BUILD_STAMP__ : 'dev'}`}
           style={{
             padding: '2px 6px',
             fontSize: 10,
@@ -110,29 +128,17 @@ export default function TopBar({ view, setView, enabledViews, query, setQuery, s
             border: '1px solid var(--cr-line-1)',
             borderRadius: 4,
             textTransform: 'uppercase',
+            cursor: 'help',
           }}
         >
           Beta
         </span>
-        <span
-          title="Build time (UTC) of the dashboard your tab is running. If this is older than the latest deploy, your browser is serving a stale copy."
-          style={{
-            padding: '2px 6px',
-            fontSize: 10,
-            fontWeight: 500,
-            letterSpacing: '0.02em',
-            color: 'var(--cr-fg-3)',
-            border: '1px dashed var(--cr-line-1)',
-            borderRadius: 4,
-            fontFamily: 'monospace',
-          }}
-        >
-          {typeof __BUILD_STAMP__ !== 'undefined' ? __BUILD_STAMP__ : 'dev'}
-        </span>
         <SyncStatusChip />
       </div>
 
-      {/* Nav */}
+      {/* Nav — 3 primary destinations with brand-colored underline on active.
+          The underline matches the tool rail's visual language: bottom
+          border = "this is where you are." */}
       <nav className="cr-topbar-nav" style={{ display: 'flex', gap: 2 }}>
         {navItems.map((n) => {
           const on = view === n.id;
@@ -147,15 +153,16 @@ export default function TopBar({ view, setView, enabledViews, query, setQuery, s
                 display: 'inline-flex',
                 alignItems: 'center',
                 gap: 7,
-                background: on ? 'var(--cr-ink-2)' : 'transparent',
-                color: on ? 'var(--cr-fg-1)' : 'var(--cr-fg-2)',
+                background: 'transparent',
+                color: on ? 'var(--cr-brand-500)' : 'var(--cr-fg-2)',
                 border: 'none',
-                borderRadius: 6,
+                borderBottom: on ? '2px solid var(--cr-brand-500)' : '2px solid transparent',
+                borderRadius: 0,
                 fontFamily: 'inherit',
                 fontSize: 13,
-                fontWeight: on ? 500 : 400,
+                fontWeight: on ? 600 : 400,
                 cursor: 'pointer',
-                transition: 'background var(--cr-dur-fast), color var(--cr-dur-fast)',
+                transition: 'color var(--cr-dur-fast), border-color var(--cr-dur-fast)',
               }}
               onMouseEnter={(e) => {
                 if (!on) (e.currentTarget as HTMLButtonElement).style.color = 'var(--cr-fg-1)';
@@ -213,6 +220,16 @@ export default function TopBar({ view, setView, enabledViews, query, setQuery, s
           onClick={toggleTheme}
           className="cr-topbar-action-theme"
         />
+        {(!enabledViews || enabledViews.has('admin')) && (
+          <IconButton
+            icon="shield"
+            title="Admin Console"
+            aria-label="Admin Console"
+            onClick={() => setView('admin')}
+            data-testid="open-admin"
+            style={view === 'admin' ? { color: 'var(--cr-brand-500)' } : undefined}
+          />
+        )}
         {(!enabledViews || enabledViews.has('settings')) && (
           <IconButton
             icon="settings"
