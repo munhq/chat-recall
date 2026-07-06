@@ -88,29 +88,35 @@ export default function Sidebar({
           </div>
         )}
 
-        {/* Tool rail — the sidebar's signature element. A horizontal ribbon of
-            brand-colored pills (one per AI tool) instead of a flat vertical
-            list. Each pill carries the tool's color as a 2px bottom border
-            (matching the conversation row's tool rail). Wraps inside 240px. */}
+        {/* Source filter. A uniform 2-column grid of quiet chips, one per AI
+            tool (+ "All"). Each chip's colour identity is a single small dot —
+            the loud tool colours stay on the conversation rows; here they'd be
+            confetti. Selection = solid fill + left accent, the same "you are
+            here" language the project rows use. See .cr-tool-rail in index.css. */}
+        <div style={{ padding: '12px 12px 0' }}>
+          <div className="cr-sidebar-section-label" style={{ marginBottom: 4 }}>Source</div>
+        </div>
         <div className="cr-tool-rail">
           {TOOL_SOURCES.map((t) => {
             const active = toolFilter === t.id;
             const isAll = t.id === 'all';
             const color = isAll ? 'var(--cr-brand-500)' : (t as { color?: string }).color;
-            const surf = isAll ? 'var(--cr-brand-surf)' : (t as { color?: string; surf?: string }).surf;
+            const surf = isAll ? 'var(--cr-brand-surf)' : (t as { surf?: string }).surf;
             return (
               <button
                 key={t.id}
                 onClick={() => setToolFilter(t.id)}
                 data-testid={`tool-filter-${t.id}`}
+                aria-current={active ? 'true' : undefined}
                 className={`cr-tool-pill${active ? ' active' : ''}${isAll ? ' cr-tool-pill-all' : ''}`}
+                title={t.label}
                 style={{
                   ['--cr-pill-color' as string]: color,
                   ['--cr-pill-surf' as string]: surf,
                 } as React.CSSProperties}
               >
-                {!isAll && <span className="cr-tool-pill-dot" />}
-                {t.label}
+                <span className="cr-tool-pill-dot" />
+                <span className="cr-tool-pill-label">{isAll ? 'All' : t.label}</span>
               </button>
             );
           })}

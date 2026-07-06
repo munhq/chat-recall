@@ -48,8 +48,8 @@ test.describe('Tool filter renders first across views', () => {
   test('Conversations: Source filter at top of left sidebar (tool-first equivalent)', async ({ page }) => {
     await page.goto(BASE);
     await page.locator("[data-testid='nav-search']").click();
-    // The Source list lives at the top of the sidebar with one row per tool.
-    for (const label of ['All Messages', 'Claude', 'Gemini', 'OpenCode', 'Codex']) {
+    // The Source list lives at the top of the sidebar with one chip per tool.
+    for (const label of ['All', 'Claude', 'Gemini', 'OpenCode', 'Codex']) {
       await expect(page.getByText(label, { exact: true }).first()).toBeVisible();
     }
   });
