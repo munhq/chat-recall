@@ -937,10 +937,22 @@ export class MemoryStore {
    * Sessions whose file mtime is at-or-after `sinceMs`. Used by the
    * Activity timeline to limit cache scans to the relevant window.
    */
-  listSessionsModifiedSince(sinceMs: number): Array<{ id: string; mtime: number; project_path: string }> {
+  listSessionsModifiedSince(sinceMs: number, projectIdFilter?: string): Array<{ id: string; mtime: number; project_path: string; project_id: string }> {
+    let sql = `SELECT id, mtime, project_path, project_id FROM memory_metadata WHERE source_type='session' AND mtime >= ?`;
+    const params: unknown[] = [sinceMs];
+    if (projectIdFilter) {
+      // Match querySessionIndex: typed scheme id / privacy hash → exact
+      // project_id; bare term → substring across path + id.
+      const f = projectIdFilter;
+      if (f.includes(':') || /^p_/.test(f)) {
+        sql += ` AND project_id = ?`; params.push(f);
+      } else {
+        sql += ` AND (project_path LIKE ? OR project_id LIKE ?)`; params.push(`%${f}%`, `%${f}%`);
+      }
+    }
     return this.db
-      .prepare(`SELECT id, mtime, project_path FROM memory_metadata WHERE source_type='session' AND mtime >= ? ORDER BY mtime DESC`)
-      .all(sinceMs) as Array<{ id: string; mtime: number; project_path: string }>;
+      .prepare(sql + ` ORDER BY mtime DESC`)
+      .all(...params) as Array<{ id: string; mtime: number; project_path: string; project_id: string }>;
   }
 
   /**

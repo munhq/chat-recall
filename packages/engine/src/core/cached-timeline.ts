@@ -30,6 +30,20 @@ import { createStore } from './store/index.js';
 import { createMetadataCache } from './store/caches.js';
 import type { SessionEdit, AiTool, EditOp } from './live-session-scan.js';
 import { liveScanRecentEdits, detectTool } from './live-session-scan.js';
+import { resolveProjectId } from './project-resolver.js';
+
+/**
+ * Does an edit belong to the selected project? A typed logical id
+ * (`git:`/`ws:`/`path:`/`untracked:`) or privacy hash (`p_…`) is an exact
+ * project_id match; a bare term (CLI/MCP) is a substring across id + path.
+ * Mirrors the SQL in listSessionsModifiedSince / querySessionIndex so the
+ * cached rows and the live-scanned rows filter identically.
+ */
+function editMatchesProjectFilter(e: SessionEdit, filter: string): boolean {
+  if (filter.includes(':') || /^p_/.test(filter)) return e.projectId === filter;
+  const f = filter.toLowerCase();
+  return (e.projectId || '').toLowerCase().includes(f) || (e.projectPath || '').toLowerCase().includes(f);
+}
 import { claudeBackend } from './backends/claude.js';
 import './backends/index.js'; // side-effect: registers backends
 
@@ -160,7 +174,6 @@ export async function cachedRecentEdits(opts: {
 }): Promise<SessionEdit[]> {
   const enabled = new Set<AiTool>(opts.tools ?? ['claude', 'gemini', 'opencode', 'codex']);
   const needle = opts.pattern?.toLowerCase();
-  const projectNeedle = opts.projectFilter?.toLowerCase();
   const out: SessionEdit[] = [];
 
   // Sessions to fall back on (cache miss / stale / mid-write).
@@ -185,12 +198,16 @@ export async function cachedRecentEdits(opts: {
     // Find every session whose file mtime is within the window. Older
     // sessions can't have produced events newer than `sinceMs`, so we
     // skip them at the SQL layer rather than decompress and discard.
-    const candidates = await memStore.listSessionsModifiedSince(opts.sinceMs);
+    // Push the project filter into SQL (indexed on project_id) instead of
+    // substring-matching project_path in app code. The sidebar passes a
+    // logical id (e.g. `git:github.com/hotmun/chat-recall`) which is NOT a
+    // substring of the filesystem project_path — matching path was why a
+    // git-grouped project always came back empty.
+    const candidates = await memStore.listSessionsModifiedSince(opts.sinceMs, opts.projectFilter);
 
     for (const sess of candidates) {
       const tool = detectTool(sess.id);
       if (!enabled.has(tool)) continue;
-      if (opts.projectFilter && !(sess.project_path || '').toLowerCase().includes(opts.projectFilter.toLowerCase())) continue;
 
       // Read the cached diff row. If it's stale (file mtime advanced
       // past the cached row), or missing entirely, defer to live scan.
@@ -225,6 +242,7 @@ export async function cachedRecentEdits(opts: {
             tsIso: e.tsIso,
             sessionId: sess.id,
             projectPath: sess.project_path || diff.projectPath || '',
+            projectId: sess.project_id || undefined,
             file: f.file,
             op,
             toolName,
@@ -274,17 +292,21 @@ export async function cachedRecentEdits(opts: {
       // resort. Fixes the chat-recall → chat/recall mangling that the
       // live-scan claude decoder produces from encoded directory names.
       const real = realProjectPaths.get(e.sessionId) || liveCwd.get(e.sessionId);
-      const fixed = real ? { ...e, projectPath: real } : e;
-      out.push(fixed);
+      const path = real || e.projectPath;
+      // Active/unindexed sessions have no stored project_id — resolve it
+      // locally (git/fs exist here, this branch is local-only) so the
+      // project filter below can match the same logical id the sidebar uses.
+      const projectId = path ? resolveProjectId(path).id : undefined;
+      out.push({ ...e, projectPath: path, projectId });
     }
   }
 
-  // Uniform project filter: matches against the real `projectPath`
-  // on each emitted edit, regardless of which discovery path produced
-  // it. Substring match so a click on "/home/user/code/personal/X"
-  // still works for sessions whose path is a subdir of X.
-  const filtered = projectNeedle
-    ? out.filter(e => (e.projectPath || '').toLowerCase().includes(projectNeedle))
+  // Uniform project filter over the merged set (cached rows were already
+  // narrowed in SQL; live-scanned rows carry a locally-resolved projectId).
+  // Matches on the logical project_id the sidebar sends — see
+  // editMatchesProjectFilter.
+  const filtered = opts.projectFilter
+    ? out.filter(e => editMatchesProjectFilter(e, opts.projectFilter!))
     : out;
 
   filtered.sort((a, b) => b.ts - a.ts);
