@@ -53,6 +53,12 @@ export interface CodeHealth {
   totalCommits?: number;
   /** codeindex token-savings vs reading the whole tree (status.savings_pct). */
   savingsPct?: number;
+  totalLines?: number;
+  totalBytes?: number;
+  naiveTokens?: number;
+  outlineTokens?: number;
+  latestSeq?: number;
+  watcher?: boolean;
 }
 
 export interface CodeMapNode {
