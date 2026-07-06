@@ -40,8 +40,12 @@ import {
   type SourceType,
 } from '../imports.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
+import { isServerMode } from '../util/mode.js';
 
 const log = createLogger('summary-worker');
+
+/** Warn once, not once-per-session, when a CLI provider is refused on a server. */
+let warnedCliOnServer = false;
 
 /** Provider names accepted from SUMMARY_PROVIDER, mirroring SummaryGeneratorConfig. */
 type SummaryProvider = SummaryGeneratorConfig['provider'];
@@ -61,6 +65,25 @@ type SummarySource = 'original' | 'gemini' | 'claude' | 'ollama' | 'ai';
 export function serverSummaryConfig(): SummaryGeneratorConfig | null {
   const provider = (process.env.SUMMARY_PROVIDER || '').trim() as SummaryProvider | '';
   if (!provider) return null;
+
+  // CLI-shell providers spawn a local binary (`gemini`, or SUMMARY_CLI_CMD).
+  // That binary is never present on a server pod, so selecting one only
+  // produces a flood of identical exit-127 failures (one per session, forever).
+  // Refuse them in server mode — the operator must pick an API provider
+  // (claude / openai-compat / ollama-cloud). Summaries stay empty and the
+  // structured outcome still renders. Warn once, not once-per-session.
+  if (isServerMode() && (provider === 'gemini-cli' || provider === 'cli')) {
+    if (!warnedCliOnServer) {
+      warnedCliOnServer = true;
+      log.warn(
+        { provider },
+        `SUMMARY_PROVIDER='${provider}' is a CLI-shell provider and cannot run on a server ` +
+          `(no local binary). Summaries disabled — set SUMMARY_PROVIDER=claude (+ANTHROPIC_API_KEY) ` +
+          `or an OpenAI-compatible provider to enable server-side summaries.`,
+      );
+    }
+    return null;
+  }
 
   // Generic key first, then the per-provider conventional env so an operator
   // who already exports ANTHROPIC_API_KEY / GEMINI_API_KEY doesn't have to
