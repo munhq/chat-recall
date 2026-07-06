@@ -46,7 +46,7 @@ export const TOOL_IDS: ToolId[] = TOOLS.map((t) => t.id);
 export const ALL_SOURCE = { id: 'all', label: 'All Messages', icon: 'list' } as const;
 
 /** Full source list including the "All" entry — what the sidebar renders. */
-export const TOOL_SOURCES = [ALL_SOURCE, ...TOOLS.map((t) => ({ id: t.id, label: t.label, icon: t.icon, color: t.color }))];
+export const TOOL_SOURCES = [ALL_SOURCE, ...TOOLS.map((t) => ({ id: t.id, label: t.label, icon: t.icon, color: t.color, surf: t.surf }))];
 
 /** Validation set — coerce unknown strings from URL params / props. */
 export const VALID_TOOL_FILTERS: ReadonlySet<string> = new Set(['all', ...TOOL_IDS]);

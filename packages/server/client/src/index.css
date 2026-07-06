@@ -344,50 +344,60 @@ a:hover { text-decoration: underline; }
  * tool's surface tint + brightens the border to 3px; inactive pills are
  * quiet (transparent + thin border). Wraps to 2 rows inside the 240px
  * sidebar, saving ~60px vs the old 6-row vertical list. */
+/* Source filter. Six sources laid out as a uniform 2-column grid so the
+ * chips align to a clean rectangle instead of ragged-wrapping. Colour lives
+ * in ONE place — a small tool-coloured dot — so the control stays calm; the
+ * loud tool colours belong on the conversation rows, not smeared across the
+ * filter. Selection is shown by a solid fill + a matching left accent, the
+ * same "you are here" language the project rows use. */
 .cr-tool-rail {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 3px;
-  padding: 10px 10px 8px;
+  padding: 2px 12px 4px;
 }
 .cr-tool-pill {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 4px 9px 5px;
-  font-family: var(--cr-font-display);
-  font-size: 10px;
-  font-weight: 500;
-  letter-spacing: 0.01em;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 9px;
+  font-family: var(--cr-font-sans);
+  font-size: 12px;
+  font-weight: 450;
+  letter-spacing: 0;
   line-height: 1.2;
-  color: var(--cr-fg-3);
+  color: var(--cr-fg-2);
   background: transparent;
   border: none;
-  border-bottom: 2px solid var(--cr-pill-color, var(--cr-line-2));
-  border-radius: 3px 3px 0 0;
+  border-radius: 6px;
   cursor: pointer;
   white-space: nowrap;
-  transition: background var(--cr-dur-fast) var(--cr-ease), color var(--cr-dur-fast) var(--cr-ease), border-width var(--cr-dur-fast) var(--cr-ease);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background var(--cr-dur-fast) var(--cr-ease), color var(--cr-dur-fast) var(--cr-ease);
 }
 .cr-tool-pill:hover {
   background: var(--cr-ink-2);
   color: var(--cr-fg-1);
 }
 .cr-tool-pill.active {
-  background: var(--cr-pill-surf, var(--cr-ink-3));
-  color: var(--cr-pill-color, var(--cr-fg-1));
-  font-weight: 700;
-  border-bottom-width: 3px;
+  background: var(--cr-ink-3);
+  color: var(--cr-fg-1);
+  font-weight: 600;
+  box-shadow: inset 2px 0 0 var(--cr-pill-color, var(--cr-brand-500));
 }
 .cr-tool-pill .cr-tool-pill-dot {
-  width: 5px;
-  height: 5px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--cr-pill-color, var(--cr-fg-3));
   flex-shrink: 0;
+  transition: box-shadow var(--cr-dur-fast) var(--cr-ease);
 }
+.cr-tool-pill .cr-tool-pill-label { overflow: hidden; text-overflow: ellipsis; }
 .cr-tool-pill.active .cr-tool-pill-dot {
-  box-shadow: 0 0 4px var(--cr-pill-color);
+  box-shadow: 0 0 0 3px var(--cr-pill-surf, transparent);
 }
 /* "All" pill — neutral (no tool color), uses the brand accent instead */
 .cr-tool-pill.cr-tool-pill-all {
