@@ -5,8 +5,26 @@
  */
 
 import express from 'express';
-import { cachedRecentEdits, findRepoRoot } from '../imports.js';
+import { cachedRecentEdits } from '../imports.js';
 import type { SessionEdit } from '../imports.js';
+
+/**
+ * Display label for the repo/project a set of edits belongs to. Keys off the
+ * logical project_id (`git:host/owner/repo`, `ws:name`, `path:…`) the collector
+ * ships and the sidebar uses — NOT a `.git` filesystem walk, which was
+ * meaningless on the server (synced paths don't exist on the pod, so every row
+ * collapsed to "(no repo)"). Falls back to the path basename for untyped ids.
+ */
+function repoLabel(projectId: string | undefined, projectPath: string): { key: string; name: string } {
+  const pid = projectId || '';
+  if (pid.startsWith('git:')) {
+    const seg = pid.split('/').filter(Boolean);
+    return { key: pid, name: seg[seg.length - 1] || pid };
+  }
+  if (pid.startsWith('ws:')) return { key: pid, name: pid.slice(3) };
+  const base = (projectPath || '').split('/').filter(Boolean).pop();
+  return { key: pid || projectPath || '(unknown)', name: base || pid || '(unknown)' };
+}
 import { isServerMode } from '../util/mode.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { TenantTtlCache } from '../util/tenant-cache.js';
@@ -103,24 +121,16 @@ router.get('/timeline', async (req, res) => {
       byProject[p] = (byProject[p] || 0) + 1;
     }
 
-    // Cache of repo roots so we don't walk the filesystem per edit on a hot path.
-    const repoCache = new Map<string, string | null>();
-    const resolveRepo = (file: string): string | null => {
-      if (repoCache.has(file)) return repoCache.get(file)!;
-      const r = findRepoRoot(file);
-      repoCache.set(file, r);
-      return r;
-    };
-
     const enriched = trimmed.map(e => {
-      const repo = resolveRepo(e.file);
+      const { key, name } = repoLabel(e.projectId, e.projectPath);
       return {
         ts: e.ts,
         tsIso: e.tsIso,
         sessionId: e.sessionId,
         projectPath: e.projectPath,
-        repoRoot: repo,
-        repoName: repo ? repo.split('/').filter(Boolean).pop() : null,
+        projectId: e.projectId || null,
+        repoRoot: key,
+        repoName: name,
         file: e.file,
         op: e.op,
         toolName: e.toolName,
@@ -133,11 +143,9 @@ router.get('/timeline', async (req, res) => {
     if (groupByRepo) {
       byRepo = {};
       for (const e of filtered) {
-        const repo = resolveRepo(e.file);
-        if (!repo) continue;
-        const name = repo.split('/').filter(Boolean).pop() || repo;
-        if (!byRepo[repo]) byRepo[repo] = { name, count: 0, sample: e.file };
-        byRepo[repo].count++;
+        const { key, name } = repoLabel(e.projectId, e.projectPath);
+        if (!byRepo[key]) byRepo[key] = { name, count: 0, sample: e.file };
+        byRepo[key].count++;
       }
     }
 

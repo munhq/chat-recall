@@ -9,6 +9,7 @@ import { Card, Chip, Input, Button, SegmentedControl, ToolBadge } from './primit
 import { getEditsTimeline, type EditRow, type EditOp, type AiTool } from '../services/api';
 import { TOOL_IDS, VALID_TOOL_FILTERS, stripToolPrefix } from '../services/tools';
 import { useSidebarExtrasRegister } from '../context/sidebar-extras';
+import { isCloud } from '../services/auth';
 
 interface Props {
   onSessionClick?: (sessionId: string) => void;
@@ -226,7 +227,9 @@ export default function ActivityTimeline({ onSessionClick, toolFilter: toolFilte
           Activity Timeline
         </h2>
         <span className="cr-page-header-lead" style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
-          live transcript scan — includes the active session
+          {isCloud()
+            ? 'file edits across your synced sessions'
+            : 'live transcript scan — includes the active session'}
         </span>
       </div>
 

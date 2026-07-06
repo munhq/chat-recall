@@ -1374,6 +1374,7 @@ export interface EditRow {
   tsIso?: string;
   sessionId: string;
   projectPath: string;
+  projectId?: string | null;
   repoRoot?: string | null;
   repoName?: string | null;
   file: string;
