@@ -28,6 +28,8 @@ export function serverEmbedderConfigured(): boolean {
 export interface BackfillResult {
   embedded: number;
   tenants: number;
+  /** Over-length chunks split into embed-sized windows this sweep. */
+  rewindowed: number;
 }
 
 export interface BackfillOptions {
@@ -38,7 +40,7 @@ export interface BackfillOptions {
 }
 
 export async function embedMissingVectors(opts: BackfillOptions = {}): Promise<BackfillResult> {
-  if (!serverEmbedderConfigured()) return { embedded: 0, tenants: 0 };
+  if (!serverEmbedderConfigured()) return { embedded: 0, tenants: 0, rewindowed: 0 };
 
   const batch = Math.max(1, opts.batch ?? 256);
   const perTenantCap = Math.max(batch, opts.perTenantCap ?? 5000);
@@ -53,13 +55,27 @@ export async function embedMissingVectors(opts: BackfillOptions = {}): Promise<B
 
   let embedded = 0;
   let touched = 0;
+  let rewindowed = 0;
   for (const tenant of tenants) {
     try {
       // createVectorStore is async and init()s the store internally — await it
       // (don't call init() again). embedMissing lives on the pg vector store.
       const vs = await createVectorStore(embedder, { tenant }) as unknown as {
         embedMissing(limit: number): Promise<{ embedded: number; scanned: number }>;
+        rewindowOversized(opts?: { limit?: number }): Promise<{ rewindowed: number; windowsAdded: number }>;
       };
+      // Self-heal over-length chunks BEFORE embedding, so the windows they
+      // produce get embedded in this same sweep. A chunk can arrive over-length
+      // even though every source caps its own output — synced from another
+      // device (no local transcript to re-window from) or from a not-yet-fixed
+      // source. Without this it would only ever embed on its truncated prefix.
+      // Bounded per tick (drains over successive sweeps); idempotent once clean.
+      let rwGuard = 0;
+      while (rwGuard++ < 20) {
+        const rw = await vs.rewindowOversized({ limit: 50 });
+        rewindowed += rw.rewindowed;
+        if (rw.rewindowed === 0) break;
+      }
       let perTenant = 0;
       while (perTenant < perTenantCap) {
         const r = await vs.embedMissing(batch);
@@ -80,5 +96,5 @@ export async function embedMissingVectors(opts: BackfillOptions = {}): Promise<B
       continue;
     }
   }
-  return { embedded, tenants: touched };
+  return { embedded, tenants: touched, rewindowed };
 }
