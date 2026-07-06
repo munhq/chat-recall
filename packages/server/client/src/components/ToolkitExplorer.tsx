@@ -10,6 +10,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Card, Chip, Input, ToolBadge, Button, SegmentedControl, Icon, pressableProps } from './primitives';
 import { useSidebarExtrasRegister } from '../context/sidebar-extras';
+import { TOOL_IDS, VALID_TOOL_FILTERS, type ToolId } from '../services/tools';
 import {
   browseToolkit,
   getToolkitItem,
@@ -27,7 +28,7 @@ import {
   type SyncIntentRow,
 } from '../services/api';
 
-type ToolFilter = 'all' | 'claude' | 'gemini' | 'opencode' | 'codex';
+type ToolFilter = 'all' | ToolId;
 
 const SUB_TABS: Array<{ id: ToolkitType; label: string }> = [
   { id: 'skill',   label: 'Skills' },
@@ -69,7 +70,7 @@ interface ToolkitExplorerProps {
 export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: ToolkitExplorerProps) {
   const [activeTab, setActiveTab] = useState<ToolkitType>('skill');
   // Sidebar drives the filter; coerce 'unknown' values back to 'all'.
-  const toolFilter = (['all', 'claude', 'gemini', 'opencode', 'codex'] as const).includes(toolFilterProp as any)
+  const toolFilter = VALID_TOOL_FILTERS.has(toolFilterProp as string)
     ? (toolFilterProp as ToolFilter)
     : 'all';
   const [items, setItems] = useState<MemoryMetadataRow[]>([]);
@@ -120,12 +121,13 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
   }, [items, toolFilter, search]);
 
   const counts = useMemo(() => {
-    const c = { claude: 0, gemini: 0, opencode: 0, codex: 0 } as Record<string, number>;
+    const c: Record<string, number> = {};
+    for (const t of TOOL_IDS) c[t] = 0;
     for (const i of items) {
       const t = readTool(i);
       if (t in c) c[t]++;
     }
-    return c as { claude: number; gemini: number; opencode: number; codex: number };
+    return c as Record<ToolId, number>;
   }, [items]);
 
   // Always show all sub-tabs — even when 0 rows for the selected tool.
@@ -137,11 +139,11 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
   const totalForSelectedTool = useMemo(() => {
     if (!status) return 0;
     if (toolFilter === 'all') {
-      let n = 0;
-      for (const t of SUB_TABS) {
-        const m = status.counts[t.id] || {};
-        n += (m.claude || 0) + (m.gemini || 0) + (m.opencode || 0) + (m.codex || 0);
-      }
+        let n = 0;
+        for (const t of SUB_TABS) {
+          const m = status.counts[t.id] || {};
+          for (const toolId of TOOL_IDS) n += (m[toolId] || 0);
+        }
       return n;
     }
     let n = 0;
@@ -151,16 +153,14 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
 
   /** Total per tool across all sub-tabs — drives the per-chip count. */
   const totalsByTool = useMemo(() => {
-    const out = { claude: 0, gemini: 0, opencode: 0, codex: 0 } as Record<string, number>;
-    if (!status) return out;
+    const out: Record<string, number> = {};
+    for (const t of TOOL_IDS) out[t] = 0;
+    if (!status) return out as Record<ToolId, number>;
     for (const t of SUB_TABS) {
       const m = status.counts[t.id] || {};
-      out.claude += m.claude || 0;
-      out.gemini += m.gemini || 0;
-      out.opencode += m.opencode || 0;
-      out.codex += m.codex || 0;
+      for (const toolId of TOOL_IDS) out[toolId] += (m[toolId] || 0);
     }
-    return out as { claude: number; gemini: number; opencode: number; codex: number };
+    return out as Record<ToolId, number>;
   }, [status]);
 
   // Cross-tool grouping: when a skill is named the same in claude and
@@ -192,10 +192,10 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
   useSidebarExtrasRegister(() => ([{
     heading: 'Type',
     rows: visibleSubTabs.map(t => {
-      const c = (status?.counts[t.id] || {}) as Partial<Record<'claude' | 'gemini' | 'opencode' | 'codex', number>>;
+      const c = (status?.counts[t.id] || {}) as Partial<Record<ToolId, number>>;
       const n = toolFilter === 'all'
-        ? (c.claude || 0) + (c.gemini || 0) + (c.opencode || 0) + (c.codex || 0)
-        : (c[toolFilter as keyof typeof c] ?? 0);
+        ? TOOL_IDS.reduce((sum, id) => sum + (c[id] || 0), 0)
+        : (c[toolFilter as ToolId] ?? 0);
       return {
         id: `toolkit-type-${t.id}`,
         label: t.label,
@@ -466,26 +466,19 @@ function ToolkitDetail({ item, kind, allRows }: { item: MemoryMetadataRow; kind:
   );
 }
 
-/** Per-primitive: which AI tools natively expose this surface today. */
-const TOOL_SUPPORT: Record<ToolkitType, ReadonlySet<AiToolName>> = {
-  // Skills: all four use the same SKILL.md shape (Claude, Gemini, OpenCode,
-  // Codex). Gemini gained first-class Skills; the tool-neutral ~/.agents
-  // location is read by every tool.
-  skill:   new Set(['claude', 'gemini', 'opencode', 'codex']),
-  // MCPs: 4-way (cross-format JSON ↔ TOML).
-  mcp:     new Set(['claude', 'gemini', 'opencode', 'codex']),
-  // Plugins: Claude marketplace, Gemini extensions, Codex plugin packs —
-  // different on-disk shapes, but each tool has a "plugin"-flavored slot.
-  plugin:  new Set(['claude', 'gemini', 'codex']),
-  // Commands & Agents: cross-tool via the codec (markdown frontmatter ↔ TOML).
-  command: new Set(['claude', 'gemini', 'opencode', 'codex']),
-  agent:   new Set(['claude', 'gemini', 'opencode', 'codex']),
+/** Per-primitive: which AI tools natively expose this surface today.
+ *  agy (Antigravity) inherits Gemini CLI's formats — same on-disk shape. */
+const TOOL_SUPPORT: Record<ToolkitType, ReadonlySet<ToolId>> = {
+  skill:   new Set<ToolId>(['claude', 'agy', 'gemini', 'opencode', 'codex']),
+  mcp:     new Set<ToolId>(['claude', 'agy', 'gemini', 'opencode', 'codex']),
+  plugin:  new Set<ToolId>(['claude', 'agy', 'gemini', 'codex']),
+  command: new Set<ToolId>(['claude', 'agy', 'gemini', 'opencode', 'codex']),
+  agent:   new Set<ToolId>(['claude', 'agy', 'gemini', 'opencode', 'codex']),
   // Hooks remain Claude-specific (settings.json event handlers).
-  hook:    new Set(['claude']),
+  hook:    new Set<ToolId>(['claude']),
 };
 
-type AiToolName = 'claude' | 'gemini' | 'opencode' | 'codex';
-const ALL_AI_TOOLS: AiToolName[] = ['claude', 'gemini', 'opencode', 'codex'];
+const ALL_AI_TOOLS: ToolId[] = TOOL_IDS;
 
 /** Types with a real cross-tool copy (via the intent queue). Hooks/plugins
  *  are tool-specific and display-only. */
@@ -496,10 +489,9 @@ function computePresence(
   kind: ToolkitType,
   primaryName: string,
   allRows: MemoryMetadataRow[],
-): Record<AiToolName, MemoryMetadataRow | null> {
-  const out: Record<AiToolName, MemoryMetadataRow | null> = {
-    claude: null, gemini: null, opencode: null, codex: null,
-  };
+): Record<ToolId, MemoryMetadataRow | null> {
+  const out = {} as Record<ToolId, MemoryMetadataRow | null>;
+  for (const t of TOOL_IDS) out[t] = null;
   const me = primaryName.toLowerCase();
   // Match by the natural identity field for each kind.
   const idField =
@@ -510,7 +502,7 @@ function computePresence(
     : kind === 'command'? 'commandName'
     :                     null;
   for (const r of allRows) {
-    const t = readTool(r) as AiToolName;
+    const t = readTool(r) as ToolId;
     if (!t || !(t in out)) continue;
     const candidate = idField
       ? (readField<string>(r, idField) || r.title)
@@ -523,7 +515,7 @@ function computePresence(
 function PromoteRow({
   item, kind, fromTool, allRows,
 }: { item: MemoryMetadataRow; kind: ToolkitType; fromTool: string; allRows: MemoryMetadataRow[] }) {
-  const [busy, setBusy] = useState<AiToolName | null>(null);
+  const [busy, setBusy] = useState<ToolId | null>(null);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
   const primaryName = (
@@ -542,7 +534,7 @@ function PromoteRow({
   const supportedTools = TOOL_SUPPORT[kind];
 
   // Copy goes through the Model-B intent queue (works from the SaaS too).
-  const handle = async (toTool: AiToolName) => {
+  const handle = async (toTool: ToolId) => {
     if (!confirm(`Copy ${primaryName} from ${fromTool} → ${toTool}?`)) return;
     setBusy(toTool);
     setMsg(null);
@@ -668,7 +660,7 @@ function EmptyListState({
     return allRows.filter(r => readTool(r) !== tool);
   }, [allRows, tool]);
 
-  const targetTool = tool === 'all' ? null : (tool as AiToolName);
+  const targetTool = tool === 'all' ? null : (tool as ToolId);
   const supports = targetTool ? TOOL_SUPPORT[kind].has(targetTool) : true;
 
   // Either the tool doesn't have this primitive, or it's a tool-specific type
@@ -766,9 +758,9 @@ function EmptyListState({
 // show presence and accept clicks to queue add/remove. Apply runs all
 // queued mutations in parallel and refreshes the matrix.
 
-const ALL_TOOLS_ORDERED: SyncTool[] = ['claude', 'opencode', 'codex', 'gemini'];
+const ALL_TOOLS_ORDERED: SyncTool[] = ['claude', 'agy', 'gemini', 'opencode', 'codex'];
 const TOOL_LABEL: Record<SyncTool, string> = {
-  claude: 'Claude', opencode: 'OpenCode', codex: 'Codex', gemini: 'Gemini',
+  claude: 'Claude', agy: 'Antigravity', gemini: 'Gemini', opencode: 'OpenCode', codex: 'Codex',
 };
 
 type CellAction = 'add' | 'remove';

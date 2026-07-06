@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Icon } from './primitives';
+import { TOOL_SOURCES } from '../services/tools';
 import type { ProjectTreeNode } from '../App';
 
 export interface SidebarSection {
@@ -41,13 +42,8 @@ const MOBILE_NAV_ITEMS: Array<{ id: 'home' | 'projects' | 'search' | 'memory' | 
   { id: 'dashboard', label: 'Insights', icon: 'chart' },
 ];
 
-const TOOL_SOURCES = [
-  { id: 'all', label: 'All Messages', icon: 'list' },
-  { id: 'claude', label: 'Claude', icon: 'zap', color: 'var(--cr-tool-claude)' },
-  { id: 'gemini', label: 'Gemini', icon: 'zap', color: 'var(--cr-tool-gemini)' },
-  { id: 'opencode', label: 'OpenCode', icon: 'zap', color: 'var(--cr-tool-opencode)' },
-  { id: 'codex', label: 'Codex', icon: 'zap', color: 'var(--cr-tool-codex)' },
-];
+// Tool source list comes from the central tools module — adding a tool
+// there automatically appears here. See services/tools.ts.
 
 export default function Sidebar({
   tree, totalCount, selected, onSelect,

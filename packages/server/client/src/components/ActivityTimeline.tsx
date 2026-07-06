@@ -7,6 +7,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Card, Chip, Input, Button, SegmentedControl, ToolBadge } from './primitives';
 import { getEditsTimeline, type EditRow, type EditOp, type AiTool } from '../services/api';
+import { TOOL_IDS, VALID_TOOL_FILTERS, stripToolPrefix } from '../services/tools';
 import { useSidebarExtrasRegister } from '../context/sidebar-extras';
 
 interface Props {
@@ -99,7 +100,7 @@ function shortFile(file: string): string {
   return dir + base;
 }
 
-const ALL_TOOLS: AiTool[] = ['claude', 'gemini', 'opencode', 'codex'];
+const ALL_TOOLS: AiTool[] = TOOL_IDS as unknown as AiTool[];
 
 type ToolFilter = 'all' | AiTool;
 type GroupBy = 'session' | 'repo';
@@ -109,7 +110,7 @@ export default function ActivityTimeline({ onSessionClick, toolFilter: toolFilte
   const [pattern, setPattern] = useState('');
   const [includeReads, setIncludeReads] = useState(false);
   // Sidebar drives the source filter. Coerce unknown strings to 'all'.
-  const toolFilter: ToolFilter = (['all', 'claude', 'gemini', 'opencode', 'codex'] as const).includes(toolFilterProp as any)
+  const toolFilter: ToolFilter = VALID_TOOL_FILTERS.has(toolFilterProp as string)
     ? (toolFilterProp as ToolFilter)
     : 'all';
   const [edits, setEdits] = useState<EditRow[]>([]);
@@ -349,7 +350,7 @@ export default function ActivityTimeline({ onSessionClick, toolFilter: toolFilte
                   }}
                   title={g.sessionId}
                 >
-                  {g.sessionId.replace(/^(opencode_|gemini_|codex_)/, '').slice(0, 8)}
+                  {stripToolPrefix(g.sessionId).slice(0, 8)}
                 </button>
                 <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{g.project}</span>
               </div>

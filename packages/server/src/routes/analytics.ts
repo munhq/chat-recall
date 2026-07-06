@@ -57,7 +57,7 @@ function estimateCost(meta: Record<string, any>): number | null {
 router.get('/', async (req, res) => {
   try {
     const toolFilter = (req.query.tool as string | undefined)?.trim().toLowerCase();
-    const validTools = new Set(['claude', 'gemini', 'opencode', 'codex']);
+    const validTools = new Set(['claude', 'agy', 'gemini', 'opencode', 'codex']);
     const activeToolFilter = toolFilter && validTools.has(toolFilter) ? toolFilter : null;
 
     // Optional time window: only aggregate sessions whose mtime falls in the
