@@ -3,6 +3,7 @@
  */
 
 import express from 'express';
+import { gunzipSync } from 'zlib';
 import { getAllSessions, parseSessionFile, createMetadataCache, createStore, createOutcomeCache } from '../imports.js';
 import type { SessionEntry, SourceType } from '../imports.js';
 import { getModelContextLimit } from '@chat-recall/engine/core/utils.js';
@@ -716,9 +717,19 @@ router.get('/', async (req, res) => {
  *
  * All computed from existing extra_json metadata — no new indexing needed.
  */
+const patternsCache = new TenantTtlCache<Record<string, unknown>>(60_000, 8);
+
 router.get('/patterns', async (_req, res) => {
   try {
+    const cached = patternsCache.get('patterns');
+    if (cached) return res.json(cached);
+
     const store = await createStore();
+    // Metadata cache lets us read each session's synced `diff` compute row to
+    // recover its file list when extra_json.filesModified is absent (rows
+    // indexed before filesModified was synced). The 60s response cache above
+    // amortizes those per-session reads.
+    const metaCache = await createMetadataCache();
     try {
       // Paged (1000-row chunks) with the pre-existing 5k cap — flat memory.
       const items = await listItemsPaged(store, 'session' as SourceType, { cap: 5000, context: 'analytics-patterns' });
@@ -733,10 +744,39 @@ router.get('/patterns', async (_req, res) => {
       // Per-project recency view + redundancy pairs.
       const filesByProj = new Map<string, Array<{ id: string; mtime: number; files: string[] }>>();
 
-      for (const item of items) {
+      // Resolve each session's file list: prefer the synced `filesModified`
+      // field; fall back to the synced `diff` compute row (same source the
+      // Activity timeline uses) for rows indexed before filesModified was
+      // synced. Without the fallback, every pre-existing row is skipped and the
+      // panels stay empty until a full re-sync.
+      const parsed = items.map((item) => {
         let extra: any = {};
         try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
         const files: string[] = Array.isArray(extra.filesModified) ? extra.filesModified : [];
+        return { item, files };
+      });
+
+      // Batch the diff reads (concurrency-limited) so a cold cache stays ~1s
+      // rather than ~7s of sequential decompressions. Shrinks over time as
+      // sessions re-sync and carry filesModified directly.
+      const needDiff = parsed.filter((p) => p.files.length === 0);
+      const DIFF_CONCURRENCY = 40;
+      for (let i = 0; i < needDiff.length; i += DIFF_CONCURRENCY) {
+        await Promise.all(needDiff.slice(i, i + DIFF_CONCURRENCY).map(async (p) => {
+          try {
+            const row = await metaCache.getRawComputeRow(p.item.id, 'diff');
+            if (!row) return;
+            const diff = row.payload_gz
+              ? JSON.parse(gunzipSync(row.payload_gz).toString('utf-8'))
+              : (row.payload_json ? JSON.parse(row.payload_json) : null);
+            if (diff && Array.isArray(diff.files)) {
+              p.files = diff.files.map((f: { file?: string }) => f.file || '').filter(Boolean);
+            }
+          } catch { /* corrupt/missing diff row — this session just has no files */ }
+        }));
+      }
+
+      for (const { item, files } of parsed) {
         if (files.length === 0) continue;
 
         const proj = item.project_path || '(unknown)';
@@ -872,7 +912,7 @@ router.get('/patterns', async (_req, res) => {
       } catch { /* FTS not available */ }
       topics.sort((a, b) => b.sessionCount - a.sessionCount);
 
-      res.json({
+      const payload = {
         hotFiles,
         filesByProjectRecent,
         redundancyPairs: redundancyPairs.slice(0, 10),
@@ -881,9 +921,12 @@ router.get('/patterns', async (_req, res) => {
           sessionsAnalyzed: items.filter(i => i.extra_json && i.extra_json !== '{}').length,
           generatedAt: new Date().toISOString(),
         },
-      });
+      };
+      patternsCache.set('patterns', payload);
+      res.json(payload);
     } finally {
       await store.close();
+      await metaCache.close();
     }
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
