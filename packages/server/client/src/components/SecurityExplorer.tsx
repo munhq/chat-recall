@@ -19,7 +19,7 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Card, Chip, SegmentedControl, Button } from './primitives';
+import { Card, Chip, SegmentedControl, Button, Icon } from './primitives';
 import { stripToolPrefix } from '../services/tools';
 import {
   getSecretsSummary, getFlaggedSessions, getSecretsByRule, getDistinctSecrets,
@@ -343,6 +343,28 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
             </Card>
           </>
         )}
+      </div>
+
+      {/* Prevention hint — the findings below tell you what leaked and how to
+          rotate; this one line teaches how to stop it happening again. Same
+          guidance chat-recall injects into CLAUDE.md, surfaced where it's
+          most relevant. */}
+      <div
+        role="note"
+        style={{
+          display: 'flex', alignItems: 'flex-start', gap: 8,
+          padding: '9px 12px', marginBottom: 16, borderRadius: 'var(--cr-radius-md)',
+          background: 'var(--cr-info-surf)', border: '1px solid var(--cr-info-line)',
+          fontSize: 12.5, lineHeight: 1.5, color: 'var(--cr-fg-2)',
+        }}
+      >
+        <Icon name="shield" size={15} style={{ color: 'var(--cr-info-500)', flexShrink: 0, marginTop: 1 }} />
+        <span>
+          <strong style={{ color: 'var(--cr-fg-1)', fontWeight: 600 }}>Prevent leaks:</strong>{' '}
+          reference the environment variable name in prompts (e.g.{' '}
+          <code style={{ fontFamily: 'var(--cr-font-mono)', fontSize: 11.5, color: 'var(--cr-fg-1)' }}>$OPENAI_API_KEY</code>),
+          never the value. A pasted secret can stay in transcripts even after you delete the chat — if one slips through, rotate it.
+        </span>
       </div>
 
       {error && (
