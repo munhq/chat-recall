@@ -683,7 +683,14 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
       score, findings: findings.length, critical: sevCount.critical, high: sevCount.high,
       medium: sevCount.medium, low: sevCount.low, hotspots: hotspots.length,
       aiAuthoredPct: tree.length ? Math.round((aiAuthoredFiles / tree.length) * 1000) / 1000 : 0,
-      aiCommits, totalCommits, savingsPct: Number(st.savings_pct ?? 0),
+      aiCommits, totalCommits,
+      savingsPct: Number(st.savings_pct ?? 0),
+      totalLines: Number(st.total_lines ?? 0),
+      totalBytes: Number(st.total_bytes ?? 0),
+      naiveTokens: Number(st.naive_tokens ?? 0),
+      outlineTokens: Number(st.outline_tokens ?? 0),
+      latestSeq: Number(st.latest_seq ?? 0),
+      watcher: st.watcher === true,
       // count-only analyzers — folded here so the data ships even without per-item detail.
       stats: {
         god_modules: health?.god_modules ?? (coup?.god_modules?.length ?? 0),

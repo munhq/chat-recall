@@ -196,12 +196,12 @@ export async function getCapabilities(): Promise<ServerCapabilities> {
 }
 
 // ── Code intelligence (codeindex merge) ──────────────────────────────────
-export interface CodeHealth { score: number; findings: number; critical: number; high: number; medium: number; low: number; hotspots: number; aiAuthoredPct: number; aiCommits?: number; totalCommits?: number; savingsPct?: number; stats?: Record<string, number>; }
+export interface CodeHealth { score: number; findings: number; critical: number; high: number; medium: number; low: number; hotspots: number; aiAuthoredPct: number; aiCommits?: number; totalCommits?: number; savingsPct?: number; totalLines?: number; totalBytes?: number; naiveTokens?: number; outlineTokens?: number; latestSeq?: number; watcher?: boolean; stats?: Record<string, number>; }
 export interface CodeMapNode { file: string; pkg?: string; symbols: number; lines: number; }
 export interface CodeCouplingMetric { file: string; fanIn: number; fanOut: number; instability: number; }
 export interface CodeBlastRadius { fileRole: string; fanIn: number; fanOut: number; direct: number; transitive: number; maxDepth: number; directFiles?: string[]; }
 export interface CodeMap { nodes: CodeMapNode[]; edges: Array<{ from: string; to: string }>; buckets: { god_modules: string[]; stable_cores: string[]; unstable_drivers: string[]; islands: string[]; cycles: string[][] }; pkgFiles?: Record<string, string[]>; fileEdges?: Array<{ from: string; to: string }>; fileMeta?: Record<string, { symbols: number; lang: string }>; langSymbols?: Record<string, number>; coupling?: { god_modules: CodeCouplingMetric[]; stable_cores: CodeCouplingMetric[]; unstable_drivers: CodeCouplingMetric[]; islands: CodeCouplingMetric[] }; blast?: Record<string, CodeBlastRadius>; }
-export interface CodeProject { projectId: string; rootPath: string; fileCount: number; symbolCount: number; langs: Record<string, number>; health: CodeHealth; map: CodeMap; label?: string | null; lastIndexedAt: number; }
+export interface CodeProject { projectId: string; rootPath: string; fileCount: number; symbolCount: number; langs: Record<string, number>; health: CodeHealth; map: CodeMap; label?: string | null; lastIndexedAt: number; collectorVersion?: number | null; }
 export interface CodeFinding { id: string; category: string; severity: string; file: string; line: number | null; rule: string; title: string; snippet: string; why: string; agentPrompt: string; status: string; }
 export interface CodeHotspot { id: string; file: string; churn: number; complexity: number; score: number; aiAuthored: boolean; lines: number; suggestion?: string; }
 export interface CodeAction { id: string; pri: number; category: string; title: string; fix: string; loc: Array<{ file: string; line?: number | null }>; agentPrompt: string; status: string; queued: boolean; }
@@ -526,6 +526,42 @@ export async function getSyncStatus(): Promise<SyncStatus> {
     throw new Error(`Failed to get sync status: ${res.statusText}`);
   }
   return await res.json();
+}
+
+export interface AdminMetricsResponse {
+  totals: {
+    tenants: number;
+    sessions: number;
+    chunks: number;
+    raw: number;
+    findings: number;
+    verified: number;
+  };
+  tenants: Array<{
+    tenant: string;
+    sessions: number;
+    chunks: number;
+    raw: number;
+    findings: number;
+    verified: number;
+  }>;
+}
+
+export async function getAdminMetrics(): Promise<AdminMetricsResponse> {
+  // Self-host gates /admin on the x-admin-key header (server ADMIN_KEY). The
+  // console stashes the operator's key in localStorage; forward it here. In
+  // cloud mode the key is absent and fetchWithTimeout attaches the Keycloak
+  // Bearer instead — the admin realm role is what's checked there.
+  const adminKey = (typeof localStorage !== 'undefined' && localStorage.getItem('cr-admin-key')) || '';
+  const res = await fetchWithTimeout(
+    `${API_BASE}/admin/metrics`,
+    adminKey ? { headers: { 'x-admin-key': adminKey } } : {},
+  );
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.error || `Failed to fetch admin metrics (status ${res.status})`);
+  }
+  return res.json();
 }
 
 /** Tenant-wide sync exclusions — edited here, pulled by every device's sync

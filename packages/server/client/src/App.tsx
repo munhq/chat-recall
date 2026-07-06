@@ -22,6 +22,7 @@ import AccountPage, { SubscribeScreen } from './components/AccountPage';
 import ConnectTokenPage from './components/ConnectTokenPage';
 import SecuritySummaryBanner from './components/SecuritySummaryBanner';
 import ProjectMainPane from './components/ProjectMainPane';
+import AdminPage from './components/AdminPage';
 import { SidebarExtrasProvider, useSidebarExtras } from './context/sidebar-extras';
 import { isCloud } from './services/auth';
 import {
@@ -42,7 +43,7 @@ import {
   type ProjectTreeApiNode,
 } from './services/api';
 
-type ViewMode = 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code' | 'settings' | 'account' | 'connect';
+type ViewMode = 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code' | 'settings' | 'account' | 'connect' | 'admin';
 
 /**
  * Recursive tree node used by the project sidebar. One node renders as
@@ -188,10 +189,11 @@ function AppInner() {
     // SUPERSET of every real deployment's views, or deep links to a missing
     // entry get snapped to ?view=search before the server can answer
     // ('account' was absent → ?view=account never worked as a link).
-    if (!f) return new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'dashboard', 'activity', 'security', 'code', 'settings', 'account', 'connect']);
+    if (!f) return new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'dashboard', 'activity', 'security', 'code', 'settings', 'account', 'connect', 'admin']);
     const out = new Set<ViewMode>();
     out.add('home');    // command center is always available
     out.add('connect'); // installer's token page — must never be capability-gated
+    out.add('admin');   // admin console is always available (auth checked via key)
     if (f.codeIntel || f.conversations) out.add('projects');  // the project workspace spine
     if (f.conversations) out.add('search');
     if (f.activity) out.add('activity');
@@ -818,6 +820,10 @@ function AppInner() {
       ) : view === 'account' ? (
         <div className="app-row">
           <AccountPage onClose={() => setView('search')} />
+        </div>
+      ) : view === 'admin' ? (
+        <div className="app-row">
+          <AdminPage onClose={() => setView('search')} />
         </div>
       ) : (
         <div className="app-row" data-testid="app-layout">
