@@ -63,17 +63,17 @@ export const NAME_FIELD: Record<SyncType, string> = {
 };
 
 const SUPPORTED_TARGETS: Record<SyncType, TargetTool[]> = {
-  skill:   ['claude', 'gemini', 'opencode', 'codex'],
-  mcp:     ['claude', 'opencode', 'gemini', 'codex'],
-  command: ['claude', 'gemini', 'opencode', 'codex'],
-  agent:   ['claude', 'gemini', 'opencode', 'codex'],
+  skill:   ['claude', 'agy', 'gemini', 'opencode', 'codex'],
+  mcp:     ['claude', 'opencode', 'agy', 'gemini', 'codex'],
+  command: ['claude', 'agy', 'gemini', 'opencode', 'codex'],
+  agent:   ['claude', 'agy', 'gemini', 'opencode', 'codex'],
 };
 
 const SOURCE_PRECEDENCE: Record<SyncType, TargetTool[]> = {
-  skill:   ['claude', 'codex', 'opencode', 'gemini'],
-  mcp:     ['claude', 'codex', 'gemini', 'opencode'],
-  command: ['claude', 'opencode', 'codex', 'gemini'],
-  agent:   ['claude', 'opencode', 'gemini', 'codex'],
+  skill:   ['claude', 'codex', 'opencode', 'agy', 'gemini'],
+  mcp:     ['claude', 'codex', 'agy', 'gemini', 'opencode'],
+  command: ['claude', 'opencode', 'codex', 'agy', 'gemini'],
+  agent:   ['claude', 'opencode', 'agy', 'gemini', 'codex'],
 };
 
 export function supportedTargetsFor(type: SyncType): TargetTool[] { return SUPPORTED_TARGETS[type]; }
@@ -116,6 +116,7 @@ export function rowFromStore(type: SyncType, row: { id: string; title: string; f
 export function skillsDirFor(tool: TargetTool): string {
   switch (tool) {
     case 'claude':   return CLAUDE.skillsDir();
+    case 'agy':
     case 'gemini':   return GEMINI.skillsDir();
     case 'opencode': return OPENCODE.skillsDir();
     case 'codex':    return CODEX.skillsDir();  // user skills, NOT .system

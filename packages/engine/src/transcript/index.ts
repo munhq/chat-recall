@@ -29,6 +29,7 @@ export { parseClaudeTranscript, parseClaudeSubagents } from './claude.js';
 export { parseGeminiTranscript } from './gemini.js';
 export { parseOpenCodeTranscript, parseOpenCodeSubagents } from './opencode.js';
 export { parseCodexTranscript, parseCodexSubagents } from './codex.js';
+export { canonicalEventsToMessages } from './from-events.js';
 
 export interface ParsedTranscript extends Transcript {
   /** Source file mtime (ms) at parse time — the envelope freshness key. */

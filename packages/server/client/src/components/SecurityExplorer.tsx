@@ -20,6 +20,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { Card, Chip, SegmentedControl, Button } from './primitives';
+import { stripToolPrefix } from '../services/tools';
 import {
   getSecretsSummary, getFlaggedSessions, getSecretsByRule, getDistinctSecrets,
   dismissSecret, undismissSecret, writeSecurityTasks,
@@ -104,7 +105,7 @@ const SEVERITY_TONE: Record<Severity, { chip: 'err' | 'warn' | 'info' | 'neutral
 /* ── Utilities ──────────────────────────────────────────────────── */
 
 function shortId(id: string): string {
-  return id.replace(/^(opencode_|gemini_|codex_)/, '').slice(0, 8);
+  return stripToolPrefix(id).slice(0, 8);
 }
 function projectShort(p: string): string {
   if (!p) return '';

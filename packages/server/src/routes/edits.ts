@@ -52,7 +52,7 @@ async function getCachedTimeline(opts: {
     sinceMs: opts.sinceMs,
     pattern: opts.pattern,
     projectFilter: opts.projectFilter,
-    tools: opts.tools as ('claude' | 'gemini' | 'opencode' | 'codex')[] | undefined,
+    tools: opts.tools as ('claude' | 'agy' | 'gemini' | 'opencode' | 'codex')[] | undefined,
     // Server deployments serve synced diff rows only — never live-scan the
     // server host's own filesystem.
     liveFallback: !isServerMode(),
@@ -77,7 +77,7 @@ router.get('/timeline', async (req, res) => {
     const includeReads = (req.query.include_reads as string | undefined) === 'true';
     const groupByRepo = (req.query.group_by_repo as string | undefined) === 'true';
 
-    const validTools = ['claude', 'gemini', 'opencode', 'codex'] as const;
+    const validTools = ['claude', 'agy', 'gemini', 'opencode', 'codex'] as const;
     type AiTool = typeof validTools[number];
     const toolsParam = (req.query.tools as string | undefined)?.trim();
     const tools: AiTool[] | undefined = toolsParam

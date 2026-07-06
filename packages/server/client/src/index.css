@@ -60,6 +60,9 @@
   --cr-tool-codex: #10A37F;
   --cr-tool-codex-surf: rgba(16, 163, 127, 0.10);
 
+  --cr-tool-agy: #E879B5;
+  --cr-tool-agy-surf: rgba(232, 121, 181, 0.10);
+
   /* Radii */
   --cr-radius-xs: 4px;
   --cr-radius-sm: 6px;
@@ -130,6 +133,9 @@
   --cr-tool-opencode-surf: rgba(9, 105, 218, 0.08);
   --cr-tool-codex: #047857;
   --cr-tool-codex-surf: rgba(4, 120, 87, 0.08);
+
+  --cr-tool-agy: #C026B8;
+  --cr-tool-agy-surf: rgba(192, 38, 184, 0.08);
 }
 
 /* ────────────────────── Base ────────────────────── */

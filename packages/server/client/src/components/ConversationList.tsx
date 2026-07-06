@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Icon, SegmentedControl } from './primitives';
+import { TOOL_MAP, type ToolId } from '../services/tools';
 import type { SessionInfo, SessionOutcomeBadgeResponse } from '../services/api';
 import { getSessionOutcomeBadge } from '../services/api';
 import { stripInjectedBanners, summaryTitle } from '../utils/clean';
@@ -251,18 +252,14 @@ export default function ConversationList({
 
 /* ────────────────────────────── Result row ────────────────────────────── */
 
-const TOOL_COLOR: Record<string, string> = {
-  claude: 'var(--cr-tool-claude)',
-  codex: 'var(--cr-tool-codex)',
-  gemini: 'var(--cr-tool-gemini)',
-  opencode: 'var(--cr-tool-opencode)',
-};
-const TOOL_LABEL: Record<string, string> = {
-  claude: 'Claude',
-  codex: 'Codex',
-  gemini: 'Gemini',
-  opencode: 'OpenCode',
-};
+/* Tool color + label come from the central tools module (services/tools.ts).
+ * Adding a tool there automatically gets a rail color + row label here. */
+function toolColor(tool: string): string {
+  return (TOOL_MAP as Record<string, { color: string }>)[tool]?.color ?? 'var(--cr-line-2)';
+}
+function toolLabel(tool: string): string {
+  return (TOOL_MAP as Record<string, { label: string }>)[tool]?.label ?? tool;
+}
 
 // Source-type badge color/label. `session` rows fall back to the tool color
 // rail and don't need a separate badge — only non-session memory hits show one.
@@ -277,7 +274,7 @@ const SOURCE_BADGE: Record<string, { label: string; bg: string; fg: string; line
 
 function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onClick: () => void; index: number }) {
   const tool = r.tool || 'claude';
-  const toolColor = TOOL_COLOR[tool] || 'var(--cr-line-2)';
+  const tColor = toolColor(tool);
   const timeStr = formatTime(r.modified);
   const path = formatProject(r);
 
@@ -327,7 +324,7 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
       className="cr-conv-row"
       style={
         {
-          '--cr-row-tool': toolColor,
+          '--cr-row-tool': tColor,
           '--cr-row-i': index,
         } as React.CSSProperties
       }
@@ -358,7 +355,7 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
               {sourceBadge.label}
             </span>
           ) : (
-            <span className="cr-conv-meta-tool">{TOOL_LABEL[tool] || tool}</span>
+            <span className="cr-conv-meta-tool">{toolLabel(tool)}</span>
           )}
           <span style={{ color: 'var(--cr-line-3)', flexShrink: 0 }}>·</span>
           <span className="cr-conv-meta-path" title={r.projectPath}>{path}</span>
@@ -780,13 +777,20 @@ function formatPath(path: string): string {
  * `projectId` (e.g. `git:github.com/me/repo`) over `projectPath`, which on the
  * SaaS is a privacy hash that would render as meaningless characters. Falls
  * back to the path for legacy rows that have no project_id.
+ *
+ * When the project_id is a git remote (multiple local checkouts can share
+ * one repo — e.g. `poly/` and `trading/` both point to `trading-bots`),
+ * append the local checkout folder basename from `projectPath` so the row
+ * tells you WHICH checkout the session ran in.
  */
 function formatProject(r: SessionInfo): string {
   const id = r.projectId;
   if (id) {
     if (id.startsWith('git:')) {
       const segs = id.slice(4).split('/').filter(Boolean);
-      return segs.slice(-2).join('/') || id.slice(4);
+      const repoLabel = segs.slice(-2).join('/') || id.slice(4);
+      const folder = r.projectPath ? r.projectPath.replace(/\\/g, '/').split('/').filter(Boolean).pop() : '';
+      return folder ? `${repoLabel}/${folder}` : repoLabel;
     }
     if (id.startsWith('path:')) {
       const segs = id.slice(5).replace(/\\/g, '/').split('/').filter(Boolean);

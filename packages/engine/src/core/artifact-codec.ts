@@ -25,6 +25,9 @@ import { claudeBackend as CLAUDE } from './backends/claude.js';
 import { geminiBackend as GEMINI } from './backends/gemini.js';
 import { opencodeBackend as OPENCODE } from './backends/opencode.js';
 import { codexBackend as CODEX } from './backends/codex.js';
+// agy (Antigravity) inherits Gemini CLI's on-disk layout — same commands,
+// agents, skills directories under the Gemini home.
+import { agyBackend as AGY } from './backends/agy.js';
 import {
   parseFrontmatter,
   stringifyFrontmatter,
@@ -32,7 +35,7 @@ import {
   stringifyScalarToml,
 } from './toolkit-format.js';
 
-export type ToolId = 'claude' | 'gemini' | 'opencode' | 'codex';
+export type ToolId = 'claude' | 'agy' | 'gemini' | 'opencode' | 'codex';
 export type CodecType = 'command' | 'agent' | 'instructions';
 export type Encoding = 'md' | 'toml';
 
@@ -95,6 +98,7 @@ export function readInstructions(filePath: string, name: string): NormalizedArti
 function commandPath(tool: ToolId, name: string): string {
   switch (tool) {
     case 'claude':   return join(CLAUDE.commandsDir(), `${name}.md`);
+    case 'agy':
     case 'gemini':   return join(GEMINI.commandsDir(), `${name}.toml`);
     case 'opencode': return join(OPENCODE.commandsDir(), `${name}.md`);
     case 'codex':    return join(CODEX.promptsDir(), `${name}.md`);
@@ -104,6 +108,7 @@ function commandPath(tool: ToolId, name: string): string {
 function agentPath(tool: ToolId, name: string): string {
   switch (tool) {
     case 'claude':   return join(CLAUDE.agentsDir(), `${name}.md`);
+    case 'agy':
     case 'gemini':   return join(GEMINI.agentsDir(), `${name}.md`);
     case 'opencode': return join(OPENCODE.agentsDir(), `${name}.md`);
     case 'codex':    return join(CODEX.agentsDir(), `${name}.toml`);
@@ -114,6 +119,7 @@ function agentPath(tool: ToolId, name: string): string {
 export function instructionsFilename(tool: ToolId): string {
   switch (tool) {
     case 'claude': return 'CLAUDE.md';
+    case 'agy':
     case 'gemini': return 'GEMINI.md';
     case 'opencode':
     case 'codex':  return 'AGENTS.md';
@@ -130,6 +136,7 @@ function instructionsPath(tool: ToolId, projectPath?: string): string {
   if (projectPath) return join(projectPath, file);
   switch (tool) {
     case 'claude':   return join(CLAUDE.homeDir(), file);
+    case 'agy':
     case 'gemini':   return join(GEMINI.homeDir(), file);
     case 'codex':    return join(CODEX.homeDir(), file);
     case 'opencode': return join(homedir(), '.config', 'opencode', file);

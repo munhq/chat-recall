@@ -1,6 +1,7 @@
 // Chat Recall — UI kit primitives (v2, premium rebuild)
 // Self-contained; uses tokens from index.css.
 import React, { useState } from 'react';
+import { TOOL_MAP } from '../services/tools';
 
 // ────────────────────────────── Icon ──────────────────────────────
 const ICONS: Record<string, string> = {
@@ -187,14 +188,8 @@ interface ToolBadgeProps {
 }
 
 export function ToolBadge({ tool, size = 'md' }: ToolBadgeProps) {
-  const m: Record<string, { fg: string; surf: string; label: string }> = {
-    claude: { fg: 'var(--cr-tool-claude)', surf: 'var(--cr-tool-claude-surf)', label: 'Claude' },
-    gemini: { fg: 'var(--cr-tool-gemini)', surf: 'var(--cr-tool-gemini-surf)', label: 'Gemini' },
-    opencode: { fg: 'var(--cr-tool-opencode)', surf: 'var(--cr-tool-opencode-surf)', label: 'OpenCode' },
-    codex: { fg: 'var(--cr-tool-codex)', surf: 'var(--cr-tool-codex-surf)', label: 'Codex' },
-  };
-  const info = m[tool];
-  if (!info) return null;
+  const def = (TOOL_MAP as Record<string, { color: string; surf: string; label: string }>)[tool];
+  if (!def) return null;
   const s = size === 'sm' ? { h: 18, px: 6, fs: 10, dot: 5 } : { h: 22, px: 8, fs: 11, dot: 6 };
   return (
     <span
@@ -204,17 +199,17 @@ export function ToolBadge({ tool, size = 'md' }: ToolBadgeProps) {
         gap: 6,
         height: s.h,
         padding: `0 ${s.px}px`,
-        background: info.surf,
-        color: info.fg,
-        border: `1px solid ${info.fg}40`,
+        background: def.surf,
+        color: def.color,
+        border: `1px solid ${def.color}40`,
         borderRadius: 'var(--cr-radius-xs)',
         fontSize: s.fs,
         fontWeight: 500,
         letterSpacing: 0,
       }}
     >
-      <span style={{ width: s.dot, height: s.dot, borderRadius: '50%', background: info.fg }} />
-      {info.label}
+      <span style={{ width: s.dot, height: s.dot, borderRadius: '50%', background: def.color }} />
+      {def.label}
     </span>
   );
 }

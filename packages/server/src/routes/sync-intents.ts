@@ -19,7 +19,7 @@ import type { SyncIntentInput } from '../imports.js';
 const router = express.Router();
 
 const VALID_TYPES = new Set(['skill', 'mcp', 'command', 'agent']);
-const VALID_TOOLS = new Set(['claude', 'gemini', 'opencode', 'codex']);
+const VALID_TOOLS = new Set(['claude', 'agy', 'gemini', 'opencode', 'codex']);
 
 /** Agent tokens resolve to userId `device:<id>`; pull the bare device id out. */
 function deviceIdFromUserId(userId?: string): string | null {

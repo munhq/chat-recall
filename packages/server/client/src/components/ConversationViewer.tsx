@@ -1027,6 +1027,7 @@ export default function ConversationViewer({
 function SecurityPanel({
   data, loading, error, onJumpToLine, onManage,
 }: { data: SessionSecretsResponse | null; loading: boolean; error: string | null; onJumpToLine: (line: number) => void; onManage?: () => void }) {
+  const [copiedPrompt, setCopiedPrompt] = useState(false);
   if (loading) return <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Scanning for secrets…</div>;
   if (error) return <div style={{ padding: 20, color: 'var(--cr-err-500)' }}>Failed to load findings: {error}</div>;
   if (!data) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>No scan data yet for this session.</div>;
@@ -1095,6 +1096,24 @@ function SecurityPanel({
         <div style={{ fontSize: 12.5, color: 'var(--cr-fg-2)', lineHeight: 1.5, flex: 1, minWidth: 220 }}>
           <b>These are real, detected here.</b> Rotate each exposed credential at its source (revoke + reissue) — then it no longer matters that it's in an old transcript. Previews show the last 4 chars only; the raw secret was redacted before sync.
         </div>
+        {/* Turn the findings into a task list an AI agent can act on — paste
+            into Claude Code and let it locate + rotate each one. Never includes
+            the raw secret (only type, masked tail, and where it surfaced). */}
+        <button
+          onClick={() => {
+            const tasks = rows.map((r, i) => {
+              const rule = [...r.rules].join(', ');
+              const tail = [...r.previews][0] || '';
+              const cross = r.maxCross > 0 ? ` — also leaked in ${r.maxCross} other session(s)` : '';
+              return `${i + 1}. ${rule} (ends …${tail.replace(/[*]/g, '').slice(-4)}) — surfaced at transcript line ${r.line}${cross}`;
+            }).join('\n');
+            const prompt = `These credentials leaked in one of my AI coding sessions. For EACH: find where the credential actually lives (env file, config, secret manager, CI/CD variable), revoke it at the source, issue a replacement, update every reference, and confirm the old value no longer works. Do not print the new secret back into chat.\n\nLeaked (${rows.length}):\n${tasks}`;
+            navigator.clipboard.writeText(prompt).then(() => { setCopiedPrompt(true); setTimeout(() => setCopiedPrompt(false), 1800); });
+          }}
+          title="Copy a rotation task list to paste into Claude Code (no raw secrets)"
+          style={{ background: 'transparent', border: '1px solid var(--cr-err-500)', color: 'var(--cr-err-500)', borderRadius: 6, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+          {copiedPrompt ? 'Copied ✓' : 'Copy fix prompt'}
+        </button>
         {onManage && (
           <button onClick={onManage} title="Open the Security dashboard scoped to this conversation's secrets"
             style={{ background: 'var(--cr-err-500)', border: 'none', color: '#fff', borderRadius: 6, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>

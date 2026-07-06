@@ -256,6 +256,7 @@ export {
   parseOpenCodeSubagents,
   parseCodexTranscript,
   parseCodexSubagents,
+  canonicalEventsToMessages,
   buildRawContainer,
   gzipContainer,
   gunzipContainer,

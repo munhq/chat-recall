@@ -36,7 +36,7 @@ router.get('/status', async (_req, res) => {
   try {
     const out: Record<string, Record<string, number>> = {};
     for (const t of VALID_TOOLKIT_TYPES) {
-      out[t] = { claude: 0, gemini: 0, opencode: 0, codex: 0 };
+      out[t] = { claude: 0, agy: 0, gemini: 0, opencode: 0, codex: 0 };
       // Paged (1000-row chunks) with the pre-existing 5k cap — flat memory.
       const items = await listItemsPaged(store, t as SourceType, { cap: 5000, context: 'toolkit-status' });
       for (const it of items) {
@@ -131,17 +131,17 @@ router.get('/item/:type/:id/content', async (req, res) => {
 // Note:  cp CLAUDE.md → GEMINI.md or AGENTS.md in same project dir
 // ─────────────────────────────────────────────────────────────────
 
-const TARGET_TOOLS = ['claude', 'gemini', 'opencode', 'codex'] as const;
+const TARGET_TOOLS = ['claude', 'agy', 'gemini', 'opencode', 'codex'] as const;
 type TargetTool = (typeof TARGET_TOOLS)[number];
 
 /** Toolkit primitives that have a clean global-scope cross-tool matrix. */
 type SyncType = 'skill' | 'mcp' | 'command' | 'agent';
 
 const SUPPORTED_TARGETS: Record<SyncType, TargetTool[]> = {
-  skill:   ['claude', 'gemini', 'opencode', 'codex'],  // Gemini gained Skills
-  mcp:     ['claude', 'opencode', 'gemini', 'codex'],
-  command: ['claude', 'gemini', 'opencode', 'codex'],
-  agent:   ['claude', 'gemini', 'opencode', 'codex'],
+  skill:   ['claude', 'agy', 'gemini', 'opencode', 'codex'],
+  mcp:     ['claude', 'opencode', 'agy', 'gemini', 'codex'],
+  command: ['claude', 'agy', 'gemini', 'opencode', 'codex'],
+  agent:   ['claude', 'agy', 'gemini', 'opencode', 'codex'],
 };
 
 /** The extra_json field holding an artifact's display name, per type. */
