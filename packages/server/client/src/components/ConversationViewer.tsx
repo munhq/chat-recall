@@ -4,8 +4,6 @@ import { useUrlState } from '../services/url-state';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import JsonView from '@uiw/react-json-view';
-import { darkTheme } from '@uiw/react-json-view/dark';
 import * as diff from 'diff';
 import { Icon, Button, Chip, ToolBadge, SegmentedControl, Card } from './primitives';
 import type {
@@ -22,7 +20,6 @@ import type {
   PromptMarker,
 } from '../services/api';
 import {
-  getRawConversation,
   getSessionRelated,
   getSessionMetadata,
   getSessionDiff,
@@ -35,7 +32,7 @@ import {
 import { stripInjectedBanners, summaryTitle } from '../utils/clean';
 import SessionTrace from './SessionTrace';
 
-type ViewMode = 'summary' | 'insights' | 'metrics' | 'firstPrompt' | 'full' | 'trace' | 'raw' | 'related' | 'files' | 'diff' | 'commits' | 'outcome' | 'security';
+type ViewMode = 'summary' | 'insights' | 'metrics' | 'firstPrompt' | 'full' | 'trace' | 'related' | 'diff' | 'commits' | 'outcome' | 'security';
 type MessageFilter = 'all' | 'user' | 'assistant' | 'thinking' | 'tools' | 'edits';
 
 interface ConversationViewerProps {
@@ -88,7 +85,7 @@ export default function ConversationViewer({
   // Tab is URL-backed (?tab=) so a specific lens on a session is shareable
   // ("this session → Diff"). replaceState keeps tab flips out of history;
   // the param clears when the viewer unmounts.
-  const VIEWER_TABS = ['summary', 'insights', 'metrics', 'outcome', 'firstPrompt', 'full', 'trace', 'files', 'diff', 'commits', 'security', 'raw', 'related'];
+  const VIEWER_TABS = ['summary', 'insights', 'metrics', 'outcome', 'firstPrompt', 'full', 'trace', 'diff', 'commits', 'security', 'related'];
   // Default to Overview — the at-a-glance dashboard (work done, activity,
   // arc, context, cost). Recap (Delivered/Not done/Frustrations) and Summary
   // are one click away.
@@ -126,8 +123,6 @@ export default function ConversationViewer({
     }, 150);
     return () => clearInterval(t);
   }, [viewMode, scrollToLine, messages.length]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [rawData, setRawData] = useState<any[]>([]);
-  const [rawLoading, setRawLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [relatedData, setRelatedData] = useState<RelatedItemsResponse | null>(null);
   const [relatedLoading, setRelatedLoading] = useState(false);
@@ -394,13 +389,6 @@ export default function ConversationViewer({
     if ((mode === 'full' || mode === 'metrics') && messages.length === 0) {
       onLoadFull();
     }
-    if (mode === 'raw' && rawData.length === 0) {
-      setRawLoading(true);
-      getRawConversation(sessionId)
-        .then(setRawData)
-        .catch(() => alert('Failed to load raw JSONL'))
-        .finally(() => setRawLoading(false));
-    }
     if (mode === 'related' && !relatedData) {
       setRelatedLoading(true);
       getSessionRelated(sessionId)
@@ -631,8 +619,8 @@ export default function ConversationViewer({
             (m === 'summary') ? 'summary'
             : (m === 'insights' || m === 'outcome') ? 'insights'
             : (m === 'metrics') ? 'metrics'
-            : (m === 'full' || m === 'firstPrompt' || m === 'trace' || m === 'raw' || m === 'related') ? 'transcript'
-            : (m === 'diff' || m === 'files' || m === 'commits') ? 'changes'
+            : (m === 'full' || m === 'firstPrompt' || m === 'trace' || m === 'related') ? 'transcript'
+            : (m === 'diff' || m === 'commits') ? 'changes'
             : m; // 'security'
           const primary = primaryOf(viewMode);
           const findingCount = (() => {
@@ -890,21 +878,6 @@ export default function ConversationViewer({
         {viewMode === 'trace' && (
           <div style={{ padding: '4px 2px' }}>
             <SessionTrace messages={messages} subagents={subagents} />
-          </div>
-        )}
-
-        {viewMode === 'raw' && (
-          <div>
-            {rawLoading ? (
-              <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Loading raw JSONL...</div>
-            ) : (
-              <div>
-                <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 8 }}>
-                  Raw JSONL ({rawData.length} lines)
-                </div>
-                <JsonView value={rawData} style={darkTheme} displayDataTypes={false} collapsed={2} />
-              </div>
-            )}
           </div>
         )}
 

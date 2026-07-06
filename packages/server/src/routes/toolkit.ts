@@ -96,31 +96,6 @@ router.get('/item/:type/:id', async (req, res) => {
   } finally { await store.close(); }
 });
 
-// GET /api/toolkit/item/:type/:id/content — raw file contents for editing/preview.
-router.get('/item/:type/:id/content', async (req, res) => {
-  const { type, id } = req.params;
-  if (!isToolkitType(type)) {
-    return res.status(400).json({ error: `Invalid toolkit type: ${type}` });
-  }
-  const store = await createStore();
-  try {
-    const item = await store.getItem(id, type as SourceType);
-    if (!item) return res.status(404).json({ error: 'Not found' });
-    if (!item.file_path) return res.json({ content: '' });
-    let content = '';
-    try {
-      // Lazy require to avoid bringing fs into hot paths that don't need it.
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { readFileSync, existsSync } = require('fs');
-      if (existsSync(item.file_path)) content = readFileSync(item.file_path, 'utf-8');
-    } catch { /* tolerate */ }
-    res.json({ content, filePath: item.file_path });
-  } catch (error) {
-    log.error({ err: error }, 'toolkit content error');
-    res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
-  } finally { await store.close(); }
-});
-
 // ─────────────────────────────────────────────────────────────────
 // POST /api/toolkit/promote
 //
