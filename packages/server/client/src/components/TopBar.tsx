@@ -1,32 +1,12 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { Icon, IconButton, Input, Logo, Button, Avatar } from './primitives';
+import React, { useState } from 'react';
+import { IconButton, Input, Logo, Button, Avatar } from './primitives';
 import { getSyncStatus } from '../services/api';
 
 type NavView = 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code' | 'settings' | 'account' | 'admin';
 
-interface NavItem { id: NavView; label: string; icon: string }
-
-/**
- * Primary nav — the 3 destinations you actually use. Security is
- * promoted because 22 live leaked secrets is urgent. Insights is
- * the big picture. Everything else (Memory, Code, Toolkit, Activity)
- * is in the More overflow — real features, but not the daily loop.
- * Overview is intentionally NOT here: clicking the brand logo goes home.
- */
-const PRIMARY_NAV: NavItem[] = [
-  { id: 'search', label: 'Conversations', icon: 'message' },
-  { id: 'security', label: 'Security', icon: 'shield' },
-  { id: 'dashboard', label: 'Insights', icon: 'chart' },
-];
-
-/** Secondary destinations, tucked into the "More" overflow menu. */
-const OVERFLOW_NAV: NavItem[] = [
-  { id: 'home', label: 'Overview', icon: 'home' },
-  { id: 'memory', label: 'Memory', icon: 'brain' },
-  { id: 'code', label: 'Code', icon: 'code' },
-  { id: 'toolkit', label: 'Toolkit', icon: 'terminal' },
-  { id: 'activity', label: 'Activity', icon: 'clock' },
-];
+// Primary navigation now lives in the left rail (see Sidebar.tsx) where every
+// destination is visible at once. The topbar is deliberately just three zones:
+// brand · global search · status + actions.
 
 interface TopBarProps {
   view: string;
@@ -63,10 +43,6 @@ export default function TopBar({ view, setView, enabledViews, query, setQuery, s
     try { localStorage.setItem('cr-theme', next); } catch (e) {}
     requestAnimationFrame(() => requestAnimationFrame(() => killer.remove()));
   };
-
-  const gate = (n: NavItem) => !enabledViews || enabledViews.has(n.id);
-  const navItems = PRIMARY_NAV.filter(gate);
-  const overflowItems = OVERFLOW_NAV.filter(gate);
 
   return (
     <header
@@ -133,53 +109,7 @@ export default function TopBar({ view, setView, enabledViews, query, setQuery, s
         >
           Beta
         </span>
-        <SyncStatusChip />
       </div>
-
-      {/* Nav — 3 primary destinations with brand-colored underline on active.
-          The underline matches the tool rail's visual language: bottom
-          border = "this is where you are." */}
-      <nav className="cr-topbar-nav" style={{ display: 'flex', gap: 2 }}>
-        {navItems.map((n) => {
-          const on = view === n.id;
-          return (
-            <button
-              key={n.id}
-              onClick={() => setView(n.id)}
-              data-testid={`nav-${n.id}`}
-              style={{
-                height: 32,
-                padding: '0 12px',
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 7,
-                background: 'transparent',
-                color: on ? 'var(--cr-brand-500)' : 'var(--cr-fg-2)',
-                border: 'none',
-                borderBottom: on ? '2px solid var(--cr-brand-500)' : '2px solid transparent',
-                borderRadius: 0,
-                fontFamily: 'inherit',
-                fontSize: 13,
-                fontWeight: on ? 600 : 400,
-                cursor: 'pointer',
-                transition: 'color var(--cr-dur-fast), border-color var(--cr-dur-fast)',
-              }}
-              onMouseEnter={(e) => {
-                if (!on) (e.currentTarget as HTMLButtonElement).style.color = 'var(--cr-fg-1)';
-              }}
-              onMouseLeave={(e) => {
-                if (!on) (e.currentTarget as HTMLButtonElement).style.color = 'var(--cr-fg-2)';
-              }}
-            >
-              <Icon name={n.icon} size={14} />
-              {n.label}
-            </button>
-          );
-        })}
-        {overflowItems.length > 0 && (
-          <MoreMenu items={overflowItems} view={view} setView={setView} />
-        )}
-      </nav>
 
       {/* Global search */}
       <div className="cr-topbar-search" style={{ flex: 1, display: 'flex', justifyContent: 'center', maxWidth: 640, margin: '0 auto', gap: 8 }}>
@@ -210,8 +140,9 @@ export default function TopBar({ view, setView, enabledViews, query, setQuery, s
         </Button>
       </div>
 
-      {/* Right actions */}
+      {/* Right actions — status first (freshness at a glance), then controls. */}
       <div className="cr-topbar-actions" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <SyncStatusChip />
         <IconButton icon="refresh" title="Refresh index" aria-label="Refresh index" className="cr-topbar-action-refresh" />
         <IconButton
           icon={theme === 'dark' ? 'sun' : 'moon'}
@@ -259,161 +190,6 @@ export default function TopBar({ view, setView, enabledViews, query, setQuery, s
         )}
       </div>
     </header>
-  );
-}
-
-
-/**
- * MoreMenu — overflow dropdown for secondary nav destinations (Memory,
- * Toolkit, Activity). Built from existing primitives + the shared nav button
- * style. Keyboard accessible: ArrowDown/ArrowUp walk the items, Escape
- * closes and returns focus to the trigger, Enter/Space activate (native
- * <button> behavior). Closes on outside click.
- */
-function MoreMenu({ items, view, setView }: { items: NavItem[]; view: string; setView: (v: NavView) => void }) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement>(null);
-  const btnRef = useRef<HTMLButtonElement>(null);
-  const itemRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const active = items.some((n) => n.id === view);
-
-  // Close when clicking anywhere outside the trigger + menu.
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, [open]);
-
-  const openAndFocus = (index: number) => {
-    setOpen(true);
-    // Focus after the menu renders.
-    requestAnimationFrame(() => itemRefs.current[index]?.focus());
-  };
-
-  const onMenuKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      e.stopPropagation();
-      setOpen(false);
-      btnRef.current?.focus();
-    } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      const idx = itemRefs.current.findIndex((el) => el === document.activeElement);
-      const delta = e.key === 'ArrowDown' ? 1 : -1;
-      const next = (idx + delta + items.length) % items.length;
-      itemRefs.current[next]?.focus();
-    } else if (e.key === 'Tab') {
-      // Tab walks out of the menu — close it so it doesn't linger.
-      setOpen(false);
-    }
-  };
-
-  const pick = (id: NavView) => {
-    setView(id);
-    setOpen(false);
-    btnRef.current?.focus();
-  };
-
-  return (
-    <div ref={wrapRef} style={{ position: 'relative' }}>
-      <button
-        ref={btnRef}
-        data-testid="nav-more"
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label="More views"
-        onClick={() => (open ? setOpen(false) : openAndFocus(0))}
-        onKeyDown={(e) => {
-          if (e.key === 'ArrowDown' && !open) { e.preventDefault(); openAndFocus(0); }
-          if (e.key === 'Escape' && open) { setOpen(false); }
-        }}
-        style={{
-          height: 32,
-          padding: '0 12px',
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 7,
-          background: active || open ? 'var(--cr-ink-2)' : 'transparent',
-          color: active || open ? 'var(--cr-fg-1)' : 'var(--cr-fg-2)',
-          border: 'none',
-          borderRadius: 6,
-          fontFamily: 'inherit',
-          fontSize: 13,
-          fontWeight: active ? 500 : 400,
-          cursor: 'pointer',
-          transition: 'background var(--cr-dur-fast), color var(--cr-dur-fast)',
-        }}
-        onMouseEnter={(e) => {
-          if (!active && !open) (e.currentTarget as HTMLButtonElement).style.color = 'var(--cr-fg-1)';
-        }}
-        onMouseLeave={(e) => {
-          if (!active && !open) (e.currentTarget as HTMLButtonElement).style.color = 'var(--cr-fg-2)';
-        }}
-      >
-        More
-        <Icon name="chevronDown" size={13} />
-      </button>
-      {open && (
-        <div
-          role="menu"
-          aria-label="More views"
-          data-testid="nav-more-menu"
-          onKeyDown={onMenuKeyDown}
-          style={{
-            position: 'absolute',
-            top: 'calc(100% + 6px)',
-            left: 0,
-            minWidth: 168,
-            padding: 4,
-            background: 'var(--cr-ink-1)',
-            border: '1px solid var(--cr-line-1)',
-            borderRadius: 8,
-            boxShadow: '0 8px 28px rgba(0,0,0,0.35)',
-            zIndex: 200,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 1,
-          }}
-        >
-          {items.map((n, i) => {
-            const on = view === n.id;
-            return (
-              <button
-                key={n.id}
-                role="menuitem"
-                ref={(el) => { itemRefs.current[i] = el; }}
-                data-testid={`nav-${n.id}`}
-                onClick={() => pick(n.id)}
-                style={{
-                  height: 32,
-                  padding: '0 10px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  textAlign: 'left',
-                  background: on ? 'var(--cr-ink-2)' : 'transparent',
-                  color: on ? 'var(--cr-fg-1)' : 'var(--cr-fg-2)',
-                  border: 'none',
-                  borderRadius: 6,
-                  fontFamily: 'inherit',
-                  fontSize: 13,
-                  fontWeight: on ? 500 : 400,
-                  cursor: 'pointer',
-                  transition: 'background var(--cr-dur-fast), color var(--cr-dur-fast)',
-                }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--cr-ink-2)'; }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = on ? 'var(--cr-ink-2)' : 'transparent'; }}
-              >
-                <Icon name={n.icon} size={14} />
-                {n.label}
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
   );
 }
 

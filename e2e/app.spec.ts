@@ -29,11 +29,9 @@ test.describe('App loads', () => {
     // Brand text lives in a span (data-testid="brand"), not an <h1>.
     await expect(page.getByTestId('brand')).toContainText('Chat Recall');
     await expect(page.getByTestId('nav-search')).toBeVisible();
-    // Memory moved into the "More" overflow menu (nav 11 → 5 + overflow).
-    await expect(page.getByTestId('nav-more')).toBeVisible();
-    await page.getByTestId('nav-more').click();
+    // Nav moved to the left rail — every destination is visible at once,
+    // nothing hides behind a "More" overflow anymore.
     await expect(page.getByTestId('nav-memory')).toBeVisible();
-    await page.keyboard.press('Escape');
   });
 
   test('defaults to conversations view', async ({ page }) => {
@@ -224,7 +222,6 @@ test.describe('Navigation', () => {
   });
 
   test('switching to Memory tab shows memory explorer', async ({ page }) => {
-    await page.getByTestId('nav-more').click();
     await page.getByTestId('nav-memory').click();
 
     // Memory explorer should appear
@@ -237,7 +234,6 @@ test.describe('Navigation', () => {
   });
 
   test('switching back to Conversations shows search layout', async ({ page }) => {
-    await page.getByTestId('nav-more').click();
     await page.getByTestId('nav-memory').click();
     await page.getByTestId('nav-search').click();
 
