@@ -335,6 +335,66 @@ a:hover { text-decoration: underline; }
 
 /* ────────────────────── Sidebar ────────────────────── */
 .cr-sidebar {}
+
+/* Tool rail — the sidebar's signature element. A horizontal ribbon of
+ * brand-colored pills (one per AI tool) instead of a flat vertical list.
+ * Each pill carries the tool's color as a 2px bottom border — the same
+ * visual language as the conversation row's tool rail — so the color
+ * identity is consistent from filter to row. Active pill fills with the
+ * tool's surface tint + brightens the border to 3px; inactive pills are
+ * quiet (transparent + thin border). Wraps to 2 rows inside the 240px
+ * sidebar, saving ~60px vs the old 6-row vertical list. */
+.cr-tool-rail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 10px 10px 8px;
+}
+.cr-tool-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px 5px;
+  font-family: var(--cr-font-display);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+  color: var(--cr-fg-3);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid var(--cr-pill-color, var(--cr-line-2));
+  border-radius: 3px 3px 0 0;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--cr-dur-fast) var(--cr-ease), color var(--cr-dur-fast) var(--cr-ease), border-width var(--cr-dur-fast) var(--cr-ease);
+}
+.cr-tool-pill:hover {
+  background: var(--cr-ink-2);
+  color: var(--cr-fg-1);
+}
+.cr-tool-pill.active {
+  background: var(--cr-pill-surf, var(--cr-ink-3));
+  color: var(--cr-pill-color, var(--cr-fg-1));
+  font-weight: 700;
+  border-bottom-width: 3px;
+}
+.cr-tool-pill .cr-tool-pill-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--cr-pill-color, var(--cr-fg-3));
+  flex-shrink: 0;
+}
+.cr-tool-pill.active .cr-tool-pill-dot {
+  box-shadow: 0 0 4px var(--cr-pill-color);
+}
+/* "All" pill — neutral (no tool color), uses the brand accent instead */
+.cr-tool-pill.cr-tool-pill-all {
+  --cr-pill-color: var(--cr-brand-500);
+  --cr-pill-surf: var(--cr-brand-surf);
+}
+
 .cr-sidebar-section-label { font-size: 11px; font-weight: 600; color: var(--cr-fg-3); letter-spacing: 0.05em; text-transform: uppercase; padding-left: 6px; margin-bottom: 8px; }
 
 .cr-sidebar-row {
@@ -343,8 +403,16 @@ a:hover { text-decoration: underline; }
   color: var(--cr-fg-2); transition: background var(--cr-dur-fast), color var(--cr-dur-fast);
 }
 .cr-sidebar-row:hover { background: var(--cr-ink-2); }
-.cr-sidebar-row.active { background: var(--cr-ink-3); color: var(--cr-fg-1); font-weight: 500; }
+.cr-sidebar-row.active {
+  background: var(--cr-ink-3);
+  color: var(--cr-fg-1);
+  font-weight: 500;
+  /* Left accent bar — the "you are here" marker. Brand-colored so it's
+   * unmistakable in both themes. 3px wide, full row height. */
+  box-shadow: inset 3px 0 0 var(--cr-brand-500);
+}
 .cr-sidebar-row.active .cr-sidebar-row-icon { color: var(--cr-brand-500); }
+.cr-sidebar-row.active .cr-sidebar-row-count { color: var(--cr-fg-1); opacity: 1; }
 
 .cr-sidebar-row-icon { flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: var(--cr-fg-3); }
 .cr-sidebar-row-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
@@ -364,7 +432,10 @@ a:hover { text-decoration: underline; }
 .cr-topbar-brand {
   display: flex; align-items: center; gap: 8px;
   min-width: var(--cr-sidebar-w); padding-left: 4px;
+  border-radius: 4px;
+  transition: background var(--cr-dur-fast) var(--cr-ease);
 }
+.cr-topbar-brand:hover { background: var(--cr-ink-2); }
 .cr-topbar-brand-text { font-weight: 700; font-size: 14px; color: var(--cr-fg-1); }
 .cr-topbar-brand-tag {
   font-size: 10px; font-weight: 600; color: var(--cr-fg-3);

@@ -27,7 +27,7 @@ interface SidebarProps {
   setToolFilter: (t: string) => void;
   extraSections?: SidebarSection[];
   view?: string;
-  setView?: (v: 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code' | 'settings' | 'account') => void;
+  setView?: (v: 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code' | 'settings' | 'account' | 'admin') => void;
   /** Views this deployment supports (/api/capabilities). Absent = all. */
   enabledViews?: Set<string>;
 }
@@ -88,26 +88,32 @@ export default function Sidebar({
           </div>
         )}
 
-        <div style={{ padding: '16px 12px 10px' }}>
-          <div className="cr-sidebar-section-label">Source</div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-            {TOOL_SOURCES.map((t) => (
-              <SidebarRowItem
+        {/* Tool rail — the sidebar's signature element. A horizontal ribbon of
+            brand-colored pills (one per AI tool) instead of a flat vertical
+            list. Each pill carries the tool's color as a 2px bottom border
+            (matching the conversation row's tool rail). Wraps inside 240px. */}
+        <div className="cr-tool-rail">
+          {TOOL_SOURCES.map((t) => {
+            const active = toolFilter === t.id;
+            const isAll = t.id === 'all';
+            const color = isAll ? 'var(--cr-brand-500)' : (t as { color?: string }).color;
+            const surf = isAll ? 'var(--cr-brand-surf)' : (t as { color?: string; surf?: string }).surf;
+            return (
+              <button
                 key={t.id}
-                active={toolFilter === t.id}
                 onClick={() => setToolFilter(t.id)}
                 data-testid={`tool-filter-${t.id}`}
-                icon={
-                  t.id === 'all' ? (
-                    <Icon name={t.icon} size={14} />
-                  ) : (
-                    <span style={{ width: 8, height: 8, borderRadius: '50%', background: t.color, flexShrink: 0 }} />
-                  )
-                }
-                label={t.label}
-              />
-            ))}
-          </div>
+                className={`cr-tool-pill${active ? ' active' : ''}${isAll ? ' cr-tool-pill-all' : ''}`}
+                style={{
+                  ['--cr-pill-color' as string]: color,
+                  ['--cr-pill-surf' as string]: surf,
+                } as React.CSSProperties}
+              >
+                {!isAll && <span className="cr-tool-pill-dot" />}
+                {t.label}
+              </button>
+            );
+          })}
         </div>
 
         {(extraSections || []).map((section) => (
