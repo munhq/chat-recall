@@ -7,6 +7,7 @@ import { getRecentSessions, getSessionPath, getSessionPaths, getRelatedItems, ge
 import type { SessionIndexEntry } from '../services/sessions.js';
 import { getConversation, getGeminiConversation, getOpenCodeConversation, getOpenCodeSubagents, getCodexConversation, getCodexSubagents, getSubagents } from '../services/parser.js';
 import type { Subagent } from '../services/parser.js';
+import { canonicalEventsToMessages, getBackendForId } from '../imports.js';
 import {
   MetadataCache,
   OutcomeCache,
@@ -1507,6 +1508,8 @@ router.get('/:id', async (req, res) => {
         // in memory_metadata yet — locate the rollout file on disk so we
         // can still render the conversation.
         tool = 'codex';
+      } else if (id.startsWith('agy_')) {
+        tool = 'agy';
       } else if (id.startsWith('gemini_')) {
         tool = 'gemini';
       } else if (id.startsWith('opencode_')) {
@@ -1624,6 +1627,13 @@ router.get('/:id', async (req, res) => {
       if (tool === 'gemini') {
         if (!filePath) throw new Error('Session path not found');
         messages = await getGeminiConversation(filePath);
+      } else if (tool === 'agy') {
+        // Antigravity — parse through the generic event bridge (no hand-
+        // written parser; the ToolBackend's readEvents() feeds
+        // canonicalEventsToMessages). Same path parseTranscript uses.
+        const backend = getBackendForId(id);
+        if (!backend) throw new Error('No backend registered for agy sessions');
+        messages = canonicalEventsToMessages(backend.readEvents(id));
       } else if (tool === 'opencode') {
         messages = await getOpenCodeConversation(id);
         subagents = await getOpenCodeSubagents(id);

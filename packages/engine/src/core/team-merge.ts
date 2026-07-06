@@ -62,7 +62,7 @@ function ledgerDb(): Database.Database {
  * Returns null when the type doesn't apply to that tool (e.g. 'hook'
  * only meaningful for Claude — we don't fan-hooks out cross-tool).
  */
-function installPathFor(art: { type: TeamArtifactType; name: string }, tool: 'claude' | 'gemini' | 'opencode' | 'codex'): string | null {
+function installPathFor(art: { type: TeamArtifactType; name: string }, tool: 'claude' | 'agy' | 'gemini' | 'opencode' | 'codex'): string | null {
   // SKILL.md naming: every tool with a skills concept stores them as
   // `<dir>/<name>/SKILL.md` — keeps the in-tool layout uniform with
   // what the upstream tools expect.
@@ -70,6 +70,7 @@ function installPathFor(art: { type: TeamArtifactType; name: string }, tool: 'cl
     case 'skill':
       switch (tool) {
         case 'claude':   return join(claudeBackend.skillsDir(),   art.name, 'SKILL.md');
+        case 'agy':
         case 'gemini':   return join(geminiBackend.skillsDir(),   art.name, 'SKILL.md');
         case 'opencode': return join(opencodeBackend.skillsDir(), art.name, 'SKILL.md');
         // User skills go to ~/.codex/skills (NOT .system, which is OpenAI's bundle).
@@ -95,7 +96,8 @@ function installPathFor(art: { type: TeamArtifactType; name: string }, tool: 'cl
       switch (tool) {
         case 'claude':   return join(claudeBackend.plansDir(),    `${art.name}.md`);
         case 'opencode': return join(opencodeBackend.plansDir(),  `${art.name}.md`);
-        case 'gemini':   return null;  // Gemini plans live per-session under tmp/
+        case 'agy':
+        case 'gemini':   return null;  // Gemini/agy plans live per-session under tmp/
         case 'codex':    return null;
       }
       break;

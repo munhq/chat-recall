@@ -31,7 +31,7 @@ import { entitledOr402 } from '../util/billing.js';
 const router = express.Router();
 
 const VALID_TYPES = ['skill', 'command', 'agent', 'mcp', 'plan', 'plugin', 'instructions', 'hook'] as const;
-const VALID_TOOLS = ['claude', 'gemini', 'opencode', 'codex', 'cross_tool'] as const;
+const VALID_TOOLS = ['claude', 'agy', 'gemini', 'opencode', 'codex', 'cross_tool'] as const;
 /** Artifacts are config-sized files; a quarter MB is generous. */
 const MAX_BODY_BYTES = 256 * 1024;
 

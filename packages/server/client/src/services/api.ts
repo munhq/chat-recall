@@ -1152,7 +1152,7 @@ export async function getPatterns(): Promise<PatternsResponse> {
 export type ToolkitType = 'skill' | 'mcp' | 'command' | 'agent' | 'hook' | 'plugin';
 
 export interface ToolkitStatus {
-  counts: Record<ToolkitType, Record<'claude' | 'gemini' | 'opencode' | 'codex', number>>;
+  counts: Record<ToolkitType, Record<'claude' | 'agy' | 'gemini' | 'opencode' | 'codex', number>>;
 }
 
 export async function getToolkitStatus(): Promise<ToolkitStatus> {
@@ -1204,7 +1204,7 @@ export async function promoteToolkitItem(
 
 // --- Sync-all (bulk promote across tools) ---
 
-export type SyncTool = 'claude' | 'gemini' | 'opencode' | 'codex';
+export type SyncTool = 'claude' | 'agy' | 'gemini' | 'opencode' | 'codex';
 /** Toolkit primitives with a clean cross-tool sync matrix. */
 export type SyncType = 'skill' | 'mcp' | 'command' | 'agent';
 
