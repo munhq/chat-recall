@@ -1,6 +1,6 @@
 {
   "name": "@chat-recall/server",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "chat-recall web API + dashboard + multi-tenant SaaS server (BSL)",
   "type": "module",
   "license": "BSL-1.1",
