@@ -32,12 +32,47 @@ import { isSourceEnabled } from '../core/settings.js';
 
 const MAX_CHUNK_CHARS = 2000;
 
+/** A bare session UUID (Claude plan files are often named `<session-uuid>.md`). */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Parse the leading `---` frontmatter block Claude Code writes on newer plans
+ * (`session_id`, `cwd`, `timestamp`). Returns the recognised keys plus the
+ * body with the frontmatter stripped, so it never pollutes indexed chunks.
+ * Content without frontmatter is returned unchanged as `body`.
+ */
+function parseFrontmatter(content: string): { sessionId?: string; cwd?: string; body: string } {
+  if (!content.startsWith('---')) return { body: content };
+  // Closing fence: a line that is exactly `---` after the opening one.
+  const close = content.indexOf('\n---', 3);
+  if (close === -1) return { body: content };
+  const header = content.slice(3, close);
+  const afterFence = content.indexOf('\n', close + 1);
+  const body = afterFence === -1 ? '' : content.slice(afterFence + 1);
+
+  const out: { sessionId?: string; cwd?: string; body: string } = { body };
+  for (const line of header.split('\n')) {
+    const m = line.match(/^\s*([A-Za-z_]+)\s*:\s*(.+?)\s*$/);
+    if (!m) continue;
+    if (m[1] === 'session_id') out.sessionId = m[2].trim();
+    else if (m[1] === 'cwd') out.cwd = m[2].trim();
+  }
+  return out;
+}
+
+function safeReaddir(dir: string): string[] {
+  try { return readdirSync(dir); } catch { return []; }
+}
+
 export class PlanSource implements MemorySource {
   readonly sourceType = 'plan' as const;
 
   private plansDirs: string[];
 
   private _knownProjectDirs: string[] | null = null;
+
+  /** Cache: subagent id (the `-agent-<hash>` suffix) → its parent session id. */
+  private _subagentParents: Map<string, string> | null = null;
 
   constructor(plansDir?: string) {
     this.plansDirs = plansDir ? [plansDir] : discoverSubdirs('plans');
@@ -107,8 +142,18 @@ export class PlanSource implements MemorySource {
           const isAgentPlan = planName.includes('-agent-');
 
           const content = readFileSync(filePath, 'utf-8');
-          const firstLine = content.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim() || planName;
-          const projectPath = this.extractProjectPath(content);
+          const fm = parseFrontmatter(content);
+          const body = fm.body;
+          const firstLine = body.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim() || planName;
+          // `cwd` frontmatter is authoritative; fall back to the content heuristic.
+          const projectPath = fm.cwd || this.extractProjectPath(body);
+
+          // Session linkage: prefer the explicit `session_id` frontmatter, else a
+          // UUID-named file whose basename IS the session id. Agent plans
+          // (`<slug>-agent-<hash>`) carry neither and are resolved from the
+          // subagent transcript in extractLinks().
+          const baseName = planName.replace(/-agent-[a-z0-9]+$/i, '');
+          const claudeSessionId = fm.sessionId || (UUID_RE.test(baseName) ? baseName : undefined);
 
           yield {
             id: planName,
@@ -117,11 +162,12 @@ export class PlanSource implements MemorySource {
             projectPath,
             filePath,
             mtime: stat.mtimeMs,
-            contentPreview: content.slice(0, 300),
+            contentPreview: body.slice(0, 300),
             extra: {
               tool: 'claude',
               isAgentPlan,
               fileSize: stat.size,
+              ...(claudeSessionId ? { claudeSessionId } : {}),
             },
           };
         } catch {
@@ -296,8 +342,11 @@ export class PlanSource implements MemorySource {
     const content = readFileSync(item.filePath, 'utf-8');
     const chunks: MemoryChunk[] = [];
 
+    // Strip `---` frontmatter (session_id/cwd/timestamp) so it isn't indexed.
+    const { body } = parseFrontmatter(content);
+
     // Split by ## headers into sections
-    const sections = splitByHeaders(content);
+    const sections = splitByHeaders(body);
 
     for (let i = 0; i < sections.length; i++) {
       const section = sections[i];
@@ -323,60 +372,102 @@ export class PlanSource implements MemorySource {
     return chunks.slice(0, 10);
   }
 
+  /**
+   * Build (once, lazily) a map from subagent id → parent session id by walking
+   * `~/.claude/projects/<proj>/<session>/subagents/agent-<hash>.jsonl`. Claude
+   * agent plans are named `<slug>-agent-<hash>` where `<hash>` is exactly that
+   * subagent id, so this resolves an agent plan back to the session it ran in.
+   */
+  private getSubagentParents(): Map<string, string> {
+    if (this._subagentParents) return this._subagentParents;
+    const map = new Map<string, string>();
+    const root = CLAUDE.projectsDir();
+    for (const proj of safeReaddir(root)) {
+      const projPath = join(root, proj);
+      for (const sessionEntry of safeReaddir(projPath)) {
+        const subDir = join(projPath, sessionEntry, 'subagents');
+        if (!existsSync(subDir)) continue;
+        for (const f of safeReaddir(subDir)) {
+          const m = f.match(/^agent-([a-z0-9_-]+)\.jsonl$/i);
+          if (m) map.set(m[1], sessionEntry);
+        }
+      }
+    }
+    this._subagentParents = map;
+    return map;
+  }
+
+  /** Resolve the originating session id (already tool-prefixed) for a plan. */
+  private resolveSessionId(item: MemoryItem): string | undefined {
+    const tool = (item.extra?.tool as string) || 'claude';
+    if (tool === 'claude') {
+      // Frontmatter session_id / UUID-named file (claude prefix is '').
+      const csid = item.extra?.claudeSessionId as string | undefined;
+      if (csid) return CLAUDE.toPrefixedId(csid);
+      // Agent plan: hash suffix == subagent id → look up its parent session.
+      const agentMatch = item.id.match(/-agent-([a-z0-9]+)$/i);
+      if (agentMatch) {
+        const parent = this.getSubagentParents().get(agentMatch[1]);
+        if (parent) return CLAUDE.toPrefixedId(parent);
+      }
+      return undefined;
+    }
+    if (tool === 'gemini') {
+      const gid = item.extra?.geminiSessionId as string | undefined;
+      return gid ? GEMINI.toPrefixedId(gid) : undefined;
+    }
+    if (tool === 'agy') {
+      const aid = item.extra?.agySessionId as string | undefined;
+      return aid ? AGY.toPrefixedId(aid) : undefined;
+    }
+    return undefined;
+  }
+
   async extractLinks(item: MemoryItem): Promise<MemoryLink[]> {
     const links: MemoryLink[] = [];
     const planName = item.id;
 
-    // Agent plans link to their parent session via the hash suffix
-    // Pattern: name-agent-<7char_hash> -> parent plan is just name
-    const agentMatch = planName.match(/^(.+)-agent-([a-f0-9]+)$/);
-    if (agentMatch) {
-      const parentPlanName = agentMatch[1];
+    // 1) The plan's originating conversation — the key relationship. Directly
+    //    connects the plan to the session it was written in (any tool).
+    const sessionId = this.resolveSessionId(item);
+    if (sessionId) {
       links.push({
         sourceType: 'plan',
         sourceId: planName,
-        targetType: 'plan',
-        targetId: parentPlanName,
-        linkType: 'agent_plan_for_session',
+        targetType: 'session',
+        targetId: sessionId,
+        linkType: 'plan_for_session',
         confidence: 1.0,
       });
     }
 
-    // Try to extract project paths from plan content
-    if (existsSync(item.filePath)) {
-      const content = readFileSync(item.filePath, 'utf-8');
+    // 2) Agent plans also relate to their parent (top-level) plan.
+    const agentMatch = planName.match(/^(.+)-agent-[a-z0-9]+$/i);
+    if (agentMatch) {
+      links.push({
+        sourceType: 'plan',
+        sourceId: planName,
+        targetType: 'plan',
+        targetId: agentMatch[1],
+        linkType: 'agent_plan_parent',
+        confidence: 1.0,
+      });
+    }
 
-      // Look for file path references that suggest a project
-      const pathPatterns = [
-        /(?:File|Path|Location):\s*`?([~/][^\s`\n]+)`?/gi,
-        /(?:src|web|scripts)\/[^\s\n]+/g,
-      ];
-
-      const mentionedPaths = new Set<string>();
-      for (const pattern of pathPatterns) {
-        const matches = content.matchAll(pattern);
-        for (const match of matches) {
-          const path = match[1] || match[0];
-          if (path.includes('/')) {
-            mentionedPaths.add(path);
-          }
-        }
-      }
-
-      // Extract project path from mentioned paths
-      for (const path of mentionedPaths) {
-        const projectMatch = path.match(/\/home\/\w+\/code\/\w+\/([^/]+)/);
-        if (projectMatch) {
-          links.push({
-            sourceType: 'plan',
-            sourceId: planName,
-            targetType: 'claude_md',
-            targetId: projectMatch[1],
-            linkType: 'plan_for_project',
-            confidence: 0.8,
-          });
-          break; // One project link is enough
-        }
+    // 3) Project association. `projectPath` is already resolved in discover()
+    //    (cwd frontmatter when present, else the content heuristic) — link to
+    //    the project's CLAUDE.md by project name without re-reading the file.
+    if (item.projectPath) {
+      const projectName = basename(item.projectPath);
+      if (projectName) {
+        links.push({
+          sourceType: 'plan',
+          sourceId: planName,
+          targetType: 'claude_md',
+          targetId: projectName,
+          linkType: 'plan_for_project',
+          confidence: sessionId ? 1.0 : 0.8,
+        });
       }
     }
 
