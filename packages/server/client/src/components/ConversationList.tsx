@@ -338,7 +338,7 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
             clearest "where am I" signal, so it leads with a folder icon and
             brighter type; the full path is on hover. */}
         <div className="cr-conv-meta">
-          <span className="cr-conv-meta-path" title={r.projectPath || 'No project'}>
+          <span className="cr-conv-meta-path" title={fullProjectLabel(r)}>
             <Icon name="folder" size={11} />
             {path}
           </span>
@@ -446,7 +446,7 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
           {titleText ? (
             <span
               className={(hasSummary || userTitle || toolTitle) ? undefined : 'cr-conv-title-faded'}
-              title={userTitle ? 'Conversation name' : toolTitle ? 'Title from the tool' : hasSummary ? 'AI-generated summary' : 'Raw first prompt'}
+              title={titleText}
             >
               {userTitle ? `🏷️ ${titleText}` : titleText}
             </span>
@@ -805,6 +805,22 @@ function formatProject(r: SessionInfo): string {
     return id;
   }
   return formatPath(r.projectPath);
+}
+
+/**
+ * The full, human-readable project label for the hover tooltip — the display
+ * label (formatProject) is trimmed to repo/folder and ellipsized, so hovering
+ * should reveal everything. Prefers the real filesystem path; when that's a
+ * SaaS privacy hash (no slash), falls back to the cleartext project id. Shows
+ * both when they add information.
+ */
+function fullProjectLabel(r: SessionInfo): string {
+  const path = r.projectPath || '';
+  const id = r.projectId || '';
+  const pathIsReal = path.includes('/');
+  if (id && pathIsReal && !path.startsWith(id) && !id.endsWith(path)) return `${id} — ${path}`;
+  if (pathIsReal) return path;
+  return id || path || 'No project';
 }
 
 // Search-only helpers ----------------------------------------------------
