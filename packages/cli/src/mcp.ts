@@ -35,6 +35,7 @@ import { markPrompt } from '@chat-recall/engine/core/session-sentiment.js';
 import { statusEmoji } from '@chat-recall/engine/core/outcome-display.js';
 import { sanitizeQuery } from '@chat-recall/engine/core/query-sanitizer.js';
 import { getWAL } from '@chat-recall/engine/core/write-ahead-log.js';
+import { reportClientEvent } from './client-events.js';
 
 // Load .env configuration
 config();
@@ -3012,8 +3013,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // never the raw response body).
     const msg = err instanceof Error ? err.message : String(err);
     if (err instanceof TypeError && /fetch failed/i.test(msg)) {
+      // Offline / server down — expected, not a bug. Don't report (the report
+      // itself couldn't send anyway).
       return { content: [{ type: 'text', text: 'chat-recall server unreachable — is it up / are you logged in? (chat-recall login <url>)' }] };
     }
+    // A real tool failure — surface it to the caller AND report it so the
+    // operator sees recurring breakage per customer.
+    reportClientEvent('tool_error', { tool: name, message: msg });
     return { content: [{ type: 'text', text: `Error: ${msg}` }] };
   }
 });
@@ -3104,11 +3110,13 @@ function startBackgroundSync(): void {
 // faults from killing tool-serving. Log loudly to stderr and stay up.
 function installCrashGuards(): void {
   process.on('unhandledRejection', (reason) => {
-    console.error('[mcp] unhandledRejection (server stays up):',
-      reason instanceof Error ? (reason.stack || reason.message) : reason);
+    const msg = reason instanceof Error ? (reason.stack || reason.message) : String(reason);
+    console.error('[mcp] unhandledRejection (server stays up):', msg);
+    reportClientEvent('mcp_unhandled', { message: msg }); // so the operator sees it
   });
   process.on('uncaughtException', (err) => {
     console.error('[mcp] uncaughtException (server stays up):', err.stack || err.message);
+    reportClientEvent('mcp_crash', { message: err.stack || err.message });
   });
 }
 
