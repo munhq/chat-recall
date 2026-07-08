@@ -32,7 +32,7 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { getDataDir } from '@chat-recall/engine/core/paths.js';
-import { EXTRACTOR_VERSION } from '@chat-recall/engine/core/extractor-version.js';
+import { extractorVersionForId } from '@chat-recall/engine/core/extractor-version.js';
 
 /** Coverage of ONE derived field for one session: the field `version` it was
  *  reconciled at, whether the value was `present` (1) or absent (0 = scanned,
@@ -150,9 +150,12 @@ export function markSynced(
       : {};
     const o = r.offset ?? prevOS.o ?? 0;
     const s = r.size ?? prevOS.s ?? 0;
+    // Record the version that applies to THIS session's tool (per-tool), so a
+    // tool-specific extractor bump only re-ships that tool's sessions.
+    const ev = extractorVersionForId(r.id);
     const base: SyncedRow = prevF
-      ? { m: Math.floor(r.mtime), v: EXTRACTOR_VERSION, f: prevF }
-      : { m: Math.floor(r.mtime), v: EXTRACTOR_VERSION };
+      ? { m: Math.floor(r.mtime), v: ev, f: prevF }
+      : { m: Math.floor(r.mtime), v: ev };
     if (o > 0 || s > 0) { base.o = o; base.s = s; }
     forServer[r.id] = base;
   }
