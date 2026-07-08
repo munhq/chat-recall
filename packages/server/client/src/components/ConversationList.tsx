@@ -334,8 +334,15 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
 
       {/* Content column */}
       <div style={{ minWidth: 0 }}>
-        {/* Meta line: SOURCE/TOOL · path · time */}
+        {/* Meta line: project (lead) · SOURCE/TOOL · time. The project is the
+            clearest "where am I" signal, so it leads with a folder icon and
+            brighter type; the full path is on hover. */}
         <div className="cr-conv-meta">
+          <span className="cr-conv-meta-path" title={r.projectPath || 'No project'}>
+            <Icon name="folder" size={11} />
+            {path}
+          </span>
+          <span style={{ color: 'var(--cr-line-3)', flexShrink: 0 }}>·</span>
           {sourceBadge ? (
             <span
               title={`Memory source: ${sourceType}`}
@@ -350,6 +357,7 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
                 padding: '1px 5px',
                 borderRadius: 3,
                 textTransform: 'uppercase',
+                flexShrink: 0,
               }}
             >
               {sourceBadge.label}
@@ -357,8 +365,6 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
           ) : (
             <span className="cr-conv-meta-tool">{toolLabel(tool)}</span>
           )}
-          <span style={{ color: 'var(--cr-line-3)', flexShrink: 0 }}>·</span>
-          <span className="cr-conv-meta-path" title={r.projectPath}>{path}</span>
           <span className="cr-conv-meta-time">{timeStr}</span>
           {/*
             Collapsed-run badge — the one meta signal kept because it changes
