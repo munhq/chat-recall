@@ -89,6 +89,43 @@ function persist(data: Ledger): void {
   renameSync(tmp, path);
 }
 
+// ── Item-extractor versions (per server, per tool) ───────────────────────
+// Items (plans/tasks/claude_md/…) have no per-item ledger — they re-ship on
+// mtime. But an extraction/attribution change (e.g. the agy project mapping)
+// does NOT move mtime, so already-synced items would never re-ship. Mirror the
+// session freshness dimension at the TOOL level: record the extractor version
+// each tool's items were last fully walked under; when the tool's current
+// version is higher, force a one-time re-ship of that tool's items. Own file so
+// it can't collide with the id-keyed session ledger.
+type ItemVersions = Record<string, Record<string, number>>; // server → tool → version
+const itemVersionsPath = (): string => join(getDataDir(), 'item-versions.json');
+let itemVersionsCache: ItemVersions | null = null;
+
+function loadItemVersionsAll(): ItemVersions {
+  if (itemVersionsCache) return itemVersionsCache;
+  try {
+    const parsed = JSON.parse(readFileSync(itemVersionsPath(), 'utf-8'));
+    itemVersionsCache = parsed && typeof parsed === 'object' ? (parsed as ItemVersions) : {};
+  } catch { itemVersionsCache = {}; }
+  return itemVersionsCache;
+}
+
+/** tool → last item-extractor version fully walked for this server. */
+export function loadItemVersions(server: string): Record<string, number> {
+  return { ...(loadItemVersionsAll()[server] || {}) };
+}
+
+/** Record (merge) the versions this server's items were just walked under. */
+export function saveItemVersions(server: string, versions: Record<string, number>): void {
+  const all = loadItemVersionsAll();
+  all[server] = { ...(all[server] || {}), ...versions };
+  const path = itemVersionsPath();
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify(all));
+  renameSync(tmp, path);
+}
+
 /** session_id → mtime the server has acked, for one target server. */
 export function getSyncedMtimes(server: string): Map<string, number> {
   const data = load();
