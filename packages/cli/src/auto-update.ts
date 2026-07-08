@@ -9,7 +9,7 @@
  * Safety:
  *   - same-origin only (URL derived from the credential base, never caps input)
  *   - checksum-pinned (install only if sha256 matches the advertised value)
- *   - default ON for self-host; opt-in for cloud (CHAT_RECALL_AUTO_UPDATE=1)
+ *   - default ON for every edition; opt OUT with CHAT_RECALL_AUTO_UPDATE=0
  *
  * The decision + checksum logic is pure; the side effects (download/install/
  * restart) are injected so they can be validated without a real global install.
@@ -34,11 +34,20 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-/** Enabled = explicit flag wins; else default ON for self-host, OFF for cloud. */
-export function isAutoUpdateEnabled(edition: string | undefined, flag: string | undefined): boolean {
+/**
+ * Enabled = explicit flag wins; else default ON for EVERY edition.
+ *
+ * Cloud used to default OFF, which — with nothing at install/init ever turning
+ * it on — meant SaaS customers silently ran a stale, buggy collector forever
+ * and never received fixes. That's a dead end, not a security posture. The
+ * update is same-origin only and sha256-pinned to what the server advertises,
+ * so default-on just means "trust the server you're already syncing to." Set
+ * CHAT_RECALL_AUTO_UPDATE=0 to opt out.
+ */
+export function isAutoUpdateEnabled(_edition: string | undefined, flag: string | undefined): boolean {
   if (flag === '0' || flag === 'false' || flag === 'off') return false;
   if (flag === '1' || flag === 'true' || flag === 'on') return true;
-  return edition === 'selfhost';
+  return true;
 }
 
 export const tarballUrl = (base: string) => `${base.replace(/\/+$/, '')}/install/chat-recall.tgz`;
