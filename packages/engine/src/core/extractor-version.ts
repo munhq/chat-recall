@@ -44,8 +44,9 @@ const TOOL_EXTRACTOR_BUMP: Record<string, number> = {
   agy: 2,
 };
 
-/** The tool a prefixed session id belongs to (mirrors the ToolBackend prefixes). */
-function toolOfId(id: string): string {
+/** The tool a prefixed id belongs to (mirrors the ToolBackend prefixes). Works
+ *  for session ids AND item ids (plans/tasks carry the same tool prefix). */
+export function toolOfId(id: string): string {
   if (id.startsWith('agy_')) return 'agy';
   if (id.startsWith('gemini_')) return 'gemini';
   if (id.startsWith('opencode_')) return 'opencode';

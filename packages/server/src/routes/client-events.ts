@@ -67,4 +67,21 @@ router.get('/', async (req, res) => {
   }
 });
 
+// DELETE /api/client-events?kind=<kind>  — purge this tenant's events of one
+// kind (e.g. test/validation rows). Requires an explicit kind so a stray call
+// can't wipe the whole log.
+router.delete('/', async (req, res) => {
+  const tenant = req.tenant;
+  if (!tenant) return res.status(401).json({ error: 'no tenant' });
+  const kind = typeof req.query.kind === 'string' ? req.query.kind : '';
+  if (!kind) return res.status(400).json({ error: 'kind query param required (refusing to wipe all events)' });
+  try {
+    const pool = await openPgPool();
+    const r = await tenantQuery(pool, tenant, `DELETE FROM client_events WHERE tenant=$1 AND kind=$2`, [tenant, kind]);
+    res.json({ ok: true, deleted: r.rowCount ?? 0 });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'client-events delete failed' });
+  }
+});
+
 export default router;
