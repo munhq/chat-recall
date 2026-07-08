@@ -18,6 +18,8 @@ import type {
   SessionOutcomeResponse,
   SessionSecretsResponse,
   PromptMarker,
+  RelatedItem,
+  MemoryMetadataRow,
 } from '../services/api';
 import {
   getSessionRelated,
@@ -31,8 +33,9 @@ import {
 } from '../services/api';
 import { stripInjectedBanners, summaryTitle } from '../utils/clean';
 import SessionTrace from './SessionTrace';
+import { MemoryDetail } from './MemoryExplorer';
 
-type ViewMode = 'summary' | 'insights' | 'metrics' | 'firstPrompt' | 'full' | 'trace' | 'related' | 'diff' | 'commits' | 'outcome' | 'security';
+type ViewMode = 'summary' | 'insights' | 'metrics' | 'firstPrompt' | 'full' | 'trace' | 'related' | 'diff' | 'commits' | 'outcome' | 'security' | 'plans';
 type MessageFilter = 'all' | 'user' | 'assistant' | 'thinking' | 'tools' | 'edits';
 
 interface ConversationViewerProps {
@@ -85,7 +88,7 @@ export default function ConversationViewer({
   // Tab is URL-backed (?tab=) so a specific lens on a session is shareable
   // ("this session → Diff"). replaceState keeps tab flips out of history;
   // the param clears when the viewer unmounts.
-  const VIEWER_TABS = ['summary', 'insights', 'metrics', 'outcome', 'firstPrompt', 'full', 'trace', 'diff', 'commits', 'security', 'related'];
+  const VIEWER_TABS = ['summary', 'insights', 'metrics', 'outcome', 'firstPrompt', 'full', 'trace', 'diff', 'commits', 'security', 'related', 'plans'];
   // Default to Overview — the at-a-glance dashboard (work done, activity,
   // arc, context, cost). Recap (Delivered/Not done/Frustrations) and Summary
   // are one click away.
@@ -126,6 +129,8 @@ export default function ConversationViewer({
   const [copied, setCopied] = useState(false);
   const [relatedData, setRelatedData] = useState<RelatedItemsResponse | null>(null);
   const [relatedLoading, setRelatedLoading] = useState(false);
+  // Plan opened for full-content reading in the Plans tab (overlay).
+  const [openPlan, setOpenPlan] = useState<RelatedItem | null>(null);
   const [sessionMeta, setSessionMeta] = useState<SessionMetadataResponse | null>(null);
   const [metaLoading, setMetaLoading] = useState(false);
   const [diffData, setDiffData] = useState<SessionDiffResponse | null>(null);
@@ -160,6 +165,7 @@ export default function ConversationViewer({
     setOutcomeData(null); setOutcomeError(null);
     setSecretsData(null); setSecretsError(null);
     setSessionMeta(null);
+    setRelatedData(null); setOpenPlan(null);
     setEditingTitle(false); setUserTitleOverride(undefined);
 
     // Always fetch session metadata up-front so the header title
@@ -183,6 +189,14 @@ export default function ConversationViewer({
       .then(setSecretsData)
       .catch(() => {})
       .finally(() => setSecretsLoading(false));
+
+    // Pre-fetch related items so the Plans tab can appear (with a count) before
+    // the user clicks — same rationale as the secrets pre-fetch above.
+    setRelatedLoading(true);
+    getSessionRelated(sessionId)
+      .then(setRelatedData)
+      .catch(() => {})
+      .finally(() => setRelatedLoading(false));
 
     // Re-fire the fetch for the currently-active tab so the new session's
     // data populates without requiring a second user click.
@@ -389,7 +403,7 @@ export default function ConversationViewer({
     if ((mode === 'full' || mode === 'metrics') && messages.length === 0) {
       onLoadFull();
     }
-    if (mode === 'related' && !relatedData) {
+    if ((mode === 'related' || mode === 'plans') && !relatedData) {
       setRelatedLoading(true);
       getSessionRelated(sessionId)
         .then(setRelatedData)
@@ -621,7 +635,7 @@ export default function ConversationViewer({
             : (m === 'metrics') ? 'metrics'
             : (m === 'full' || m === 'firstPrompt' || m === 'trace' || m === 'related') ? 'transcript'
             : (m === 'diff' || m === 'commits') ? 'changes'
-            : m; // 'security'
+            : m; // 'security' | 'plans'
           const primary = primaryOf(viewMode);
           const findingCount = (() => {
             if (!secretsData) return 0;
@@ -631,6 +645,7 @@ export default function ConversationViewer({
             }
             return seen.size;
           })();
+          const planCount = (relatedData?.sessionPlans?.length ?? 0) + (relatedData?.projectPlans?.length ?? 0);
           const tabs = [
             // Overview leads — the at-a-glance dashboard (default). Recap
             // (Delivered/Not done/Frustrations) and Summary follow.
@@ -639,6 +654,9 @@ export default function ConversationViewer({
             { value: 'summary', label: 'Summary', icon: 'file' },
             { value: 'transcript', label: 'Transcript', icon: 'message' },
             { value: 'changes', label: 'Changes', icon: 'terminal' },
+            // Plans is conditional: a tab only when this conversation has (or its
+            // project has) plans. Linked plans lead; project plans follow.
+            ...(planCount > 0 ? [{ value: 'plans', label: `Plans · ${planCount}`, icon: 'file' }] : []),
             // Security is conditional: a tab only when there's something to see.
             ...(findingCount > 0 ? [{ value: 'security', label: `Security · ${findingCount}`, icon: 'check' }] : []),
           ];
@@ -880,6 +898,84 @@ export default function ConversationViewer({
             <SessionTrace messages={messages} subagents={subagents} />
           </div>
         )}
+
+        {viewMode === 'plans' && (() => {
+          const sessionPlans = relatedData?.sessionPlans ?? [];
+          const projectPlans = relatedData?.projectPlans ?? [];
+          const PlanCard = ({ plan }: { plan: RelatedItem }) => (
+            <Card interactive style={{ padding: 14, cursor: 'pointer' }} onClick={() => setOpenPlan(plan)}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cr-fg-1)', marginBottom: 6 }}>{plan.title}</div>
+              {plan.contentPreview && (
+                <div style={{ fontSize: 13, color: 'var(--cr-fg-2)', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                  {plan.contentPreview}
+                </div>
+              )}
+            </Card>
+          );
+          return (
+            <div>
+              {relatedLoading && !relatedData ? (
+                <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Loading plans...</div>
+              ) : sessionPlans.length === 0 && projectPlans.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>No plans for this conversation or project.</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+                  {sessionPlans.length > 0 && (
+                    <div>
+                      <h3 style={{ marginBottom: 4, fontSize: 14 }}>This conversation's plan{sessionPlans.length > 1 ? 's' : ''}</h3>
+                      <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 12 }}>Written in this session.</div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+                        {sessionPlans.map((plan) => <PlanCard key={plan.id} plan={plan} />)}
+                      </div>
+                    </div>
+                  )}
+                  {projectPlans.length > 0 && (
+                    <div>
+                      <h3 style={{ marginBottom: 4, fontSize: 14 }}>Other plans in this project</h3>
+                      <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 12 }}>Not tied to this conversation, but in the same project.</div>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+                        {projectPlans.map((plan) => <PlanCard key={plan.id} plan={plan} />)}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {openPlan && (
+                <div
+                  onClick={() => setOpenPlan(null)}
+                  style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', justifyContent: 'center', alignItems: 'flex-start', overflowY: 'auto', padding: '40px 20px' }}
+                >
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    style={{ background: 'var(--cr-ink-0)', border: '1px solid var(--cr-line-1)', borderRadius: 12, maxWidth: 940, width: '100%', position: 'relative', boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}
+                  >
+                    <Button
+                      variant="ghost"
+                      onClick={() => setOpenPlan(null)}
+                      style={{ position: 'absolute', top: 12, right: 12, zIndex: 1 }}
+                    >
+                      <Icon name="x" /> Close
+                    </Button>
+                    <MemoryDetail
+                      item={{
+                        id: openPlan.id,
+                        source_type: openPlan.sourceType,
+                        title: openPlan.title,
+                        project_path: openPlan.projectPath,
+                        content_preview: openPlan.contentPreview,
+                        file_path: '',
+                        mtime: openPlan.mtime,
+                        indexed_at: openPlan.mtime,
+                        extra_json: '',
+                      } as MemoryMetadataRow}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {viewMode === 'related' && (
           <div>

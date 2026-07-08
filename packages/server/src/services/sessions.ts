@@ -659,6 +659,9 @@ export interface RelatedItemsResponse {
     modified: string;
   }>;
   projectClaudeMd: RelatedItem | null;
+  /** Plans directly linked to THIS session (the plan written in this conversation). */
+  sessionPlans: RelatedItem[];
+  /** Other plans in the same project, excluding the session's own plans. */
   projectPlans: RelatedItem[];
 }
 
@@ -685,9 +688,13 @@ function metadataToRelated(row: MemoryMetadataRow, linkType: string, confidence 
 export async function getRelatedItems(sessionId: string): Promise<RelatedItemsResponse> {
   const store = await createStore();
   try {
-    // 1. Direct links from memory_links
+    // 1. Direct links from memory_links. Plans directly linked to this session
+    //    (linkType 'plan_for_session') are the conversation's OWN plans — split
+    //    them out so the UI can lead with them; everything else stays in `links`.
     const rawLinks = await store.getAllLinks('session' as SourceType, sessionId);
     const linkedItems: RelatedItem[] = [];
+    const sessionPlans: RelatedItem[] = [];
+    const sessionPlanIds = new Set<string>();
 
     for (const link of rawLinks) {
       const isOutgoing = link.source_type === 'session' && link.source_id === sessionId;
@@ -695,7 +702,13 @@ export async function getRelatedItems(sessionId: string): Promise<RelatedItemsRe
       const otherId = isOutgoing ? link.target_id : link.source_id;
 
       const meta = await store.getItem(otherId, otherType);
-      if (meta) {
+      if (!meta) continue;
+
+      if (otherType === 'plan') {
+        if (sessionPlanIds.has(otherId)) continue;
+        sessionPlanIds.add(otherId);
+        sessionPlans.push(metadataToRelated(meta, link.link_type, link.confidence));
+      } else {
         linkedItems.push(metadataToRelated(meta, link.link_type, link.confidence));
       }
     }
@@ -713,12 +726,14 @@ export async function getRelatedItems(sessionId: string): Promise<RelatedItemsRe
       }
     }
 
-    // 4. Plans for this project
+    // 4. Other plans for this project (excluding the session's own plans).
     const projectPlans: RelatedItem[] = [];
     if (projectPath) {
-      const planItems = await store.listItemsByProject('plan' as SourceType, projectPath, 5);
+      const planItems = await store.listItemsByProject('plan' as SourceType, projectPath, 10);
       for (const plan of planItems) {
+        if (sessionPlanIds.has(plan.id)) continue;
         projectPlans.push(metadataToRelated(plan, 'project_plan'));
+        if (projectPlans.length >= 5) break;
       }
     }
 
@@ -741,7 +756,7 @@ export async function getRelatedItems(sessionId: string): Promise<RelatedItemsRe
       await cache.close();
     }
 
-    return { links: linkedItems, siblingSessionsInProject, projectClaudeMd, projectPlans };
+    return { links: linkedItems, siblingSessionsInProject, projectClaudeMd, sessionPlans, projectPlans };
   } finally {
     await store.close();
   }
