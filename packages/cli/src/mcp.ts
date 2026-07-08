@@ -16,7 +16,8 @@ import {
 import { z } from 'zod';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { execSync as _execSync } from 'child_process';
+import { execSync as _execSync, spawn } from 'child_process';
+import { fileURLToPath } from 'node:url';
 
 // KEEP THIS IMPORT LIST LEAN. The MCP is a thin collector — every read goes
 // to the server; local compute moved server-side in the thin-collector
@@ -85,17 +86,30 @@ function remoteCredentials(): { base: string; token: string } | null {
     const raw = readFileSync(join(getDataDir(), 'credentials.json'), 'utf-8');
     const parsed = JSON.parse(raw) as {
       targets?: Array<{ serverUrl?: string; token?: string }>;
+      primary?: string;
       serverUrl?: string; token?: string;
     };
-    // New multi-target format ({targets:[...]}, written by `chat-recall login`).
-    // Prefer a LOCAL self-host target (offline, fast, and tokenless self-host
-    // is valid with an empty token) over the cloud. This is the format the MCP
-    // previously failed to read — it only knew the legacy single-target shape,
-    // so every server-scope recall reported "not logged in" despite a login.
+    // Multi-target format ({targets:[...]}). Recall READS from one server, and
+    // the default is the REMOTE (SaaS) one. A localhost/dev login must never
+    // hijack recall — that pointed reads at an empty dev instance while the
+    // real data lived on the cloud. Resolution order:
+    //   1. CHAT_RECALL_SERVER env  — explicit override
+    //   2. configured `primary`    — set by init/login/`chat-recall use`
+    //   3. the first remote (non-localhost) target  — SaaS by default
+    //   4. the first target        — pure self-host (localhost is the only login)
     if (Array.isArray(parsed.targets) && parsed.targets.length) {
       const valid = parsed.targets.filter((t) => t?.serverUrl);
-      const pick = valid.find((t) => /\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)\b/.test(t.serverUrl!)) ?? valid[0];
-      return pick?.serverUrl ? { base: pick.serverUrl.replace(/\/+$/, ''), token: pick.token || '' } : null;
+      if (!valid.length) return null;
+      const norm = (u: string) => u.replace(/\/+$/, '');
+      const isLocal = (u: string) => /\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)\b/.test(u);
+      const byUrl = (u?: string) => u ? valid.find((t) => norm(t.serverUrl!) === norm(u)) : undefined;
+      const remotes = valid.filter((t) => !isLocal(t.serverUrl!));
+      const pick =
+        byUrl(process.env.CHAT_RECALL_SERVER) ??
+        byUrl(parsed.primary) ??
+        remotes[0] ??
+        valid[0];
+      return pick?.serverUrl ? { base: norm(pick.serverUrl), token: pick.token || '' } : null;
     }
     // Legacy single-target format. Empty token is valid (tokenless self-host).
     if (parsed.serverUrl) return { base: parsed.serverUrl.replace(/\/+$/, ''), token: parsed.token || '' };
@@ -1279,21 +1293,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       
       case 'recall_index': {
         const params = RecallIndexSchema.parse(args);
-        const wal = getWAL();
-        wal.log('index', { force: params.force });
-        // Thin collector: "index" = collect local sessions and SHIP them to the
-        // server (which stores + indexes). There is no local index to build.
+        getWAL().log('index', { force: params.force });
         requireRemote();
-        const { syncSessions } = await import('./sync-client.js');
-        const r = await syncSessions(params.force ? { useLedger: false } : {});
-        return {
-          content: [{
-            type: 'text',
-            text: `Collected + shipped to your chat-recall server.\n` +
-                  `Sessions: ${r.uploaded} · items: ${r.items} · derived rows: ${r.derived} · ` +
-                  `KG triples: ${r.kgTriples} · skipped (already synced): ${r.skipped} · secrets redacted: ${r.redactions}`,
-          }],
-        };
+        // Run the collect-and-ship in a CHILD process, NOT the MCP event loop.
+        // A full walk over a large history (30k+ sessions: transcript parse +
+        // base64 + KG) is memory-heavy; doing it in-process OOMs and kills the
+        // MCP — dropping every tool mid-session (-32000). The child has its own
+        // heap: if it dies, the tool server survives and reports the failure.
+        const text = await runIndexChild(params.force);
+        return { content: [{ type: 'text', text }] };
       }
       
       case 'recall_status': {
@@ -3021,6 +3029,46 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
  * Not logged in → no-op. The 15s startup tick flushes whatever the
  * previous session left behind.
  */
+/**
+ * Run `chat-recall index` in a CHILD process so a large collect can never OOM
+ * the MCP tool server. The child (dist/cli.js) has its own heap; if it dies
+ * (OOM/kill), we report it and the MCP stays up serving tools. Strips ANSI,
+ * returns the child's summary line(s).
+ */
+function runIndexChild(force: boolean): Promise<string> {
+  return new Promise((resolve) => {
+    let cliPath: string;
+    try { cliPath = fileURLToPath(new URL('./cli.js', import.meta.url)); }
+    catch { resolve('Index unavailable: could not locate the CLI entry point.'); return; }
+
+    const args = [cliPath, 'index'];
+    if (force) args.push('--force');
+    let out = '', err = '', done = false;
+    const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '').trim();
+    const finish = (msg: string) => { if (!done) { done = true; resolve(msg); } };
+
+    const child = spawn(process.execPath, args, { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout?.on('data', (d) => { out += d; });
+    child.stderr?.on('data', (d) => { err += d; });
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish('Indexing a large history is still running in the background — it finishes on its own, and the watch daemon syncs continuously regardless.');
+    }, 10 * 60_000);
+    timer.unref?.();
+    child.on('error', (e) => { clearTimeout(timer); finish(`Could not start indexer: ${e.message}`); });
+    child.on('exit', (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        finish(strip(out).split('\n').filter(Boolean).slice(-3).join('\n') || 'Collected + shipped to your chat-recall server.');
+      } else {
+        const reason = signal === 'SIGKILL' || code === 134 ? 'ran out of memory (very large history)' : `exited with code ${code}`;
+        const last = strip(err).split('\n').filter(Boolean).pop() || '';
+        finish(`Indexer ${reason}. The watch daemon keeps syncing in the background, so your history still ships incrementally. ${last}`.trim());
+      }
+    });
+  });
+}
+
 const SYNC_TICK_MS = 3 * 60_000;
 function startBackgroundSync(): void {
   const tick = async (scope: 'full' | 'changed') => {
