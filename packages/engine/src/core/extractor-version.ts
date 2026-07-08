@@ -32,12 +32,16 @@
  *            from the file paths the session touched, and readEvents normalizes
  *            TargetFile → file_path. Only agy sessions re-ship — Claude/Gemini/
  *            OpenCode data is untouched.
+ *   agy +2 — read `transcript_full.jsonl` instead of the compacted
+ *            `transcript.jsonl`. The plain file is only the last exchange, so
+ *            most turns AND edits were dropped; the full log is the complete
+ *            record. Re-ships agy sessions with their full conversation + edits.
  */
 const BASE_EXTRACTOR_VERSION = 2;
 
 /** Per-tool bumps ON TOP of the base. Key by AiTool id (the id prefix's tool). */
 const TOOL_EXTRACTOR_BUMP: Record<string, number> = {
-  agy: 1,
+  agy: 2,
 };
 
 /** The tool a prefixed session id belongs to (mirrors the ToolBackend prefixes). */

@@ -64,11 +64,8 @@ export class AgyBackend implements ToolBackend {
     const brainDir = join(this.homeDir(), 'brain', rawId);
     if (!existsSync(brainDir)) return null;
 
-    let path = join(brainDir, '.system_generated', 'logs', 'transcript.jsonl');
-    if (!existsSync(path)) {
-      path = join(brainDir, '.system_generated', 'logs', 'transcript_full.jsonl');
-    }
-    if (!existsSync(path)) return null;
+    const path = agyTranscriptPath(join(brainDir, '.system_generated', 'logs'));
+    if (!path) return null;
 
     let mtime = 0;
     try { mtime = statSync(path).mtimeMs; } catch { /* ignore */ }
@@ -107,11 +104,8 @@ export class AgyBackend implements ToolBackend {
         continue;
       }
 
-      let filePath = join(sessionPath, '.system_generated', 'logs', 'transcript.jsonl');
-      if (!existsSync(filePath)) {
-        filePath = join(sessionPath, '.system_generated', 'logs', 'transcript_full.jsonl');
-      }
-      if (!existsSync(filePath)) continue;
+      const filePath = agyTranscriptPath(join(sessionPath, '.system_generated', 'logs'));
+      if (!filePath) continue;
 
       let stat;
       try { stat = statSync(filePath); } catch { continue; }
@@ -381,11 +375,8 @@ export class AgyBackend implements ToolBackend {
         continue;
       }
 
-      let filePath = join(sessionPath, '.system_generated', 'logs', 'transcript.jsonl');
-      if (!existsSync(filePath)) {
-        filePath = join(sessionPath, '.system_generated', 'logs', 'transcript_full.jsonl');
-      }
-      if (!existsSync(filePath)) continue;
+      const filePath = agyTranscriptPath(join(sessionPath, '.system_generated', 'logs'));
+      if (!filePath) continue;
 
       try {
         const st = statSync(filePath);
@@ -462,15 +453,30 @@ function getFallbackProjectPath(homeDir: string): string {
 }
 
 /**
- * Resolve a session's project. Derives from `transcript_full.jsonl` (the
- * verbose log carrying the real file activity) when present — the clean
- * `transcript.jsonl` only references Antigravity's own `brain/…` artifacts —
- * and falls back to the settings' trusted workspace only when nothing is found.
+ * The transcript to read for a session. Prefer `transcript_full.jsonl` — it is
+ * the COMPLETE event log (every user turn + every tool call). The plain
+ * `transcript.jsonl` is a compacted tail: for a real session it held only the
+ * last exchange (1 of 6 user turns, 2 of 10 file writes), so reading it dropped
+ * most of the conversation AND most edits. Falls back to the plain file when
+ * the full one is absent; returns '' when neither exists.
+ */
+function agyTranscriptPath(logsDir: string): string {
+  const full = join(logsDir, 'transcript_full.jsonl');
+  if (existsSync(full)) return full;
+  const primary = join(logsDir, 'transcript.jsonl');
+  if (existsSync(primary)) return primary;
+  return '';
+}
+
+/**
+ * Resolve a session's project from the (full) transcript's referenced file
+ * paths, falling back to the settings' trusted workspace only when nothing is
+ * found. The clean `transcript.jsonl` only references Antigravity's own
+ * `brain/…` artifacts, so we always derive from the full log.
  */
 function resolveAgyProject(logsDir: string, homeDir: string): string {
-  const full = join(logsDir, 'transcript_full.jsonl');
-  const primary = join(logsDir, 'transcript.jsonl');
-  const deriveFrom = existsSync(full) ? full : primary;
+  const deriveFrom = agyTranscriptPath(logsDir);
+  if (!deriveFrom) return getFallbackProjectPath(homeDir);
   return extractProjectPathFromTranscript(deriveFrom, homeDir) || getFallbackProjectPath(homeDir);
 }
 

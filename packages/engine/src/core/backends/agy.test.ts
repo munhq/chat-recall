@@ -56,6 +56,24 @@ describe('AgyBackend edit extraction (Q2)', () => {
     expect(use.toolInput.file_path).toBe('/home/u/code/proj/app.ts');
   });
 
+  test('reads transcript_full.jsonl (complete log), not the compacted transcript.jsonl', () => {
+    const logs = join(home, 'brain', '44444444-4444-4444-4444-444444444444', '.system_generated', 'logs');
+    mkdirSync(logs, { recursive: true });
+    // Compacted file: only the last write. Full file: both writes.
+    writeFileSync(join(logs, 'transcript.jsonl'), JSON.stringify(
+      { source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'b', created_at: '2026-07-08T00:00:02Z',
+        tool_calls: [{ name: 'write_to_file', args: { TargetFile: '/p/second.ts', CodeContent: '2' } }] }));
+    writeFileSync(join(logs, 'transcript_full.jsonl'), [
+      { source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'a', created_at: '2026-07-08T00:00:01Z',
+        tool_calls: [{ name: 'write_to_file', args: { TargetFile: '/p/first.ts', CodeContent: '1' } }] },
+      { source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'b', created_at: '2026-07-08T00:00:02Z',
+        tool_calls: [{ name: 'write_to_file', args: { TargetFile: '/p/second.ts', CodeContent: '2' } }] },
+    ].map((o) => JSON.stringify(o)).join('\n'));
+    const events = agyBackend.readEvents('44444444-4444-4444-4444-444444444444');
+    const writes = events.filter((e) => e.kind === 'tool_use' && e.toolName === 'write_to_file');
+    expect(writes.length).toBe(2); // both, from the full log — not the 1 in the compacted file
+  });
+
   test('multi_replace_file_content produces a before/after delta from its chunks', () => {
     const delta = agyBackend.extractEditDelta('multi_replace_file_content', {
       TargetFile: '/x/a.ts',
