@@ -22,8 +22,14 @@
  *       parseSessionFile and resolveSessionContentPaths. Sessions that
  *       spawned sub-agents previously dropped their entire main thread
  *       (all Edit/Write/Bash work) from chunks, summaries, and diffs.
+ *   3 — Antigravity project attribution + edit extraction. agy sessions were
+ *       all mis-attributed to trustedWorkspaces[0] (one global fallback);
+ *       findSession/listSessions now derive the real project from the file
+ *       paths the session touched, and readEvents normalizes TargetFile →
+ *       file_path so agy edits carry a filename. Every device re-ships and
+ *       re-attributes on its next sync — no manual backfill.
  */
-export const EXTRACTOR_VERSION = 2;
+export const EXTRACTOR_VERSION = 3;
 
 // Per-FIELD versions (native title, …) used to live here. They now live with
 // each field in the derived-field registry (core/sync-fields.ts), so adding or

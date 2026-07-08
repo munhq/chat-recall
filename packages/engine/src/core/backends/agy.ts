@@ -8,7 +8,7 @@
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
-import { basename, join } from 'path';
+import { basename, dirname, join } from 'path';
 import { homedir } from 'os';
 import { agyHomeDir } from '../tool-paths.js';
 import { readTailFromOffset } from './tail-read.js';
@@ -27,6 +27,7 @@ import type {
 } from '../tool-backend.js';
 import type { ExtractedTurns } from '../session-turns.js';
 import type { SessionDiffResult } from '../session-replay.js';
+import { findRepoRoot } from '../session-replay.js';
 import type { SessionOutcome } from '../session-outcome.js';
 import type { SessionCommitsResult } from '../session-git.js';
 import type { EditOp, SessionEdit } from '../live-session-scan.js';
@@ -72,7 +73,7 @@ export class AgyBackend implements ToolBackend {
     let mtime = 0;
     try { mtime = statSync(path).mtimeMs; } catch { /* ignore */ }
 
-    const projectPath = extractProjectPathFromTranscript(path) || getFallbackProjectPath(this.homeDir());
+    const projectPath = resolveAgyProject(dirname(path), this.homeDir());
     const projectDir = projectPath ? basename(projectPath) : '';
 
     return {
@@ -116,7 +117,7 @@ export class AgyBackend implements ToolBackend {
       try { stat = statSync(filePath); } catch { continue; }
       if (stat.mtimeMs < cutoff) continue;
 
-      const projectPath = extractProjectPathFromTranscript(filePath) || getFallbackProjectPath(this.homeDir());
+      const projectPath = resolveAgyProject(dirname(filePath), this.homeDir());
       if (filter && (!projectPath || !projectPath.toLowerCase().includes(filter))) continue;
 
       const projectDir = projectPath ? basename(projectPath) : '';
@@ -186,6 +187,23 @@ export class AgyBackend implements ToolBackend {
       const after = typeof inp.CodeContent === 'string' ? inp.CodeContent : null;
       return { before: '', after };
     }
+    if (toolName === 'multi_replace_file_content') {
+      // A single file (TargetFile) edited via N chunks, each carrying its own
+      // TargetContent (before) + ReplacementContent (after). Concatenate the
+      // chunks into one before/after so the diff renders as a real edit.
+      const chunks = Array.isArray(inp.ReplacementChunks) ? inp.ReplacementChunks : [];
+      if (chunks.length === 0) return null;
+      let before = '';
+      let after = '';
+      for (const c of chunks) {
+        if (!c || typeof c !== 'object') continue;
+        const cc = c as Record<string, unknown>;
+        if (typeof cc.TargetContent === 'string') before += (before ? '\n' : '') + cc.TargetContent;
+        if (typeof cc.ReplacementContent === 'string') after += (after ? '\n' : '') + cc.ReplacementContent;
+      }
+      if (!before && !after) return null;
+      return { before: before || null, after: after || null };
+    }
     return null;
   }
 
@@ -236,15 +254,25 @@ export class AgyBackend implements ToolBackend {
 
         const tcs = Array.isArray(obj.tool_calls) ? obj.tool_calls : [];
         for (const tc of tcs) {
-          const toolName = String(tc?.name || '');
+          let toolName = String(tc?.name || '');
           if (!toolName) continue;
+          if (toolName.includes(':')) {
+            toolName = toolName.split(':').pop()!;
+          }
 
           const toolUseId = `agy_tc_${toolUseCounter++}`;
           pendingToolCalls.push({ name: toolName, id: toolUseId });
 
-          const cleanedArgs = cleanArgs(tc?.args);
-          const command = toolName === 'run_command' && typeof (cleanedArgs as Record<string, unknown>)?.CommandLine === 'string'
-            ? ((cleanedArgs as Record<string, unknown>).CommandLine as string)
+          const cleanedArgs = cleanArgs(tc?.args) as Record<string, unknown>;
+          // Normalize Antigravity's file field to the `file_path` the generic
+          // engine reads, so agy edits/reads attribute to a file (and show a
+          // filename) instead of rendering as pathless activity.
+          if (cleanedArgs && typeof cleanedArgs === 'object' && !('file_path' in cleanedArgs)) {
+            const tf = cleanedArgs.TargetFile ?? cleanedArgs.AbsolutePath ?? cleanedArgs.Path;
+            if (typeof tf === 'string' && tf) cleanedArgs.file_path = tf;
+          }
+          const command = toolName === 'run_command' && typeof cleanedArgs?.CommandLine === 'string'
+            ? (cleanedArgs.CommandLine as string)
             : undefined;
 
           events.push({
@@ -433,22 +461,87 @@ function getFallbackProjectPath(homeDir: string): string {
   return '';
 }
 
-function extractProjectPathFromTranscript(path: string): string {
+/**
+ * Resolve a session's project. Derives from `transcript_full.jsonl` (the
+ * verbose log carrying the real file activity) when present — the clean
+ * `transcript.jsonl` only references Antigravity's own `brain/…` artifacts —
+ * and falls back to the settings' trusted workspace only when nothing is found.
+ */
+function resolveAgyProject(logsDir: string, homeDir: string): string {
+  const full = join(logsDir, 'transcript_full.jsonl');
+  const primary = join(logsDir, 'transcript.jsonl');
+  const deriveFrom = existsSync(full) ? full : primary;
+  return extractProjectPathFromTranscript(deriveFrom, homeDir) || getFallbackProjectPath(homeDir);
+}
+
+function extractProjectPathFromTranscript(path: string, homeDir: string): string {
+  let content: string;
   try {
-    const content = readFileSync(path, 'utf-8');
-    for (const line of content.split('\n')) {
-      if (!line.trim()) continue;
-      const obj = JSON.parse(line);
-      if (obj.source === 'USER_EXPLICIT' && obj.type === 'USER_INPUT' && typeof obj.content === 'string') {
-        const text = obj.content;
-        const match = text.match(/format\s+\[URI\]\s*->\s*\[CorpusName\]:\s*\n?\s*([^\s\n]+)\s*->/);
-        if (match && match[1]) {
-          return match[1].trim();
-        }
-      }
+    content = readFileSync(path, 'utf-8');
+  } catch {
+    return '';
+  }
+
+  // 1) An explicit corpus declaration, when present, is authoritative.
+  for (const line of content.split('\n')) {
+    if (!line.trim()) continue;
+    let obj: any;
+    try { obj = JSON.parse(line); } catch { continue; }
+    if (obj.source === 'USER_EXPLICIT' && obj.type === 'USER_INPUT' && typeof obj.content === 'string') {
+      const match = obj.content.match(/format\s+\[URI\]\s*->\s*\[CorpusName\]:\s*\n?\s*([^\s\n]+)\s*->/);
+      if (match && match[1]) return match[1].trim();
     }
-  } catch { /* ignore */ }
-  return '';
+  }
+
+  // 2) Most Antigravity transcripts have no corpus line — derive the project
+  //    from the absolute file paths the session actually touched. Antigravity
+  //    references files via TargetFile / AbsolutePath / DirectoryPath fields
+  //    and `file://` URIs. We map each to its git repo root and pick the
+  //    busiest one; without git, we fall back to the deepest common ancestor.
+  return deriveProjectFromPaths(content, homeDir);
+}
+
+/** Collect the absolute file paths a transcript references and resolve the
+ *  most-referenced project root from them. Paths under `homeDir` (Antigravity's
+ *  own brain/ artifacts) are ignored — they're never the user's project. */
+function deriveProjectFromPaths(content: string, homeDir: string): string {
+  const paths = new Set<string>();
+  const fieldRe = /"(?:AbsolutePath|DirectoryPath|TargetFile|Path)"\s*:\s*"([^"]+)"/g;
+  // Stop the URI at whitespace/quotes/backtick/brackets — transcripts wrap
+  // them like `File Path: \`file:///…/Makefile\``, so backtick must terminate.
+  const uriRe = /file:\/\/(\/[^\s"'`\\)<>]+)/g;
+  for (const re of [fieldRe, uriRe]) {
+    for (const m of content.matchAll(re)) {
+      const p = m[1];
+      // Skip Antigravity's own artifacts (brain/<id>/… under its home dir).
+      if (p && p.startsWith('/') && !p.startsWith(homeDir)) paths.add(p);
+    }
+  }
+  if (paths.size === 0) return '';
+
+  // Tally git repo roots — the same notion of "project" the rest of the
+  // system resolves to (git:… project ids), so agy rows cluster with the
+  // Claude/Gemini sessions in the same repo.
+  const roots = new Map<string, number>();
+  for (const p of paths) {
+    const root = findRepoRoot(p);
+    if (root) roots.set(root, (roots.get(root) || 0) + 1);
+  }
+  if (roots.size > 0) {
+    return [...roots.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  }
+
+  // No git repo — deepest common directory of the referenced paths, as long
+  // as it's specific enough to be a project (≥4 path segments).
+  const dirs = [...paths].map((p) => (/\.[a-zA-Z0-9]+$/.test(p) ? p.slice(0, p.lastIndexOf('/')) : p));
+  let segs = dirs[0].split('/');
+  for (const d of dirs.slice(1)) {
+    const s = d.split('/');
+    let i = 0;
+    while (i < segs.length && i < s.length && segs[i] === s[i]) i++;
+    segs = segs.slice(0, i);
+  }
+  return segs.filter(Boolean).length >= 4 ? segs.join('/') : '';
 }
 
 function cleanArgs(args: unknown): unknown {
