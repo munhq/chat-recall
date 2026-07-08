@@ -1,6 +1,6 @@
 {
   "name": "chat-recall-monorepo",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Cross-tool memory + MCP for Claude Code, Gemini CLI, and OpenCode sessions",
   "private": true,
   "type": "module",
