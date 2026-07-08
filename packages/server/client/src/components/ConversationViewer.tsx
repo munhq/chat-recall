@@ -1596,14 +1596,21 @@ function MetricsPanel({
     return userMsgs.find(u => norm(u.content).includes(key))?.line;
   };
 
-  // Color a tool by the kind of work it does — shared by both tool charts.
+  // Color a tool by the KIND of work it does — shared by both tool charts.
+  // Normalized (lowercased, separators stripped) so it recognizes every
+  // tool's verbs, not just Claude's: Antigravity (write_to_file,
+  // replace_file_content, run_command, view_file), Gemini (write_file,
+  // read_many_files), Codex (apply_patch, shell), etc. Without this, non-Claude
+  // tool names fell through to the generic color and the Overview couldn't show
+  // what type of requests a session was made of.
   const toolKindColor = (name: string): string => {
-    if (/^(Edit|Write|MultiEdit|NotebookEdit)$/.test(name)) return 'var(--cr-ok-500)';
-    if (/^(Read|Glob|Grep|LS)$/.test(name)) return 'var(--cr-fg-3)';
-    if (name === 'Bash') return 'var(--cr-warn-500)';
-    if (/^Web(Fetch|Search)$/.test(name)) return 'var(--cr-info-500)';
-    if (/^(Task|Agent)/.test(name)) return 'var(--cr-tool-claude, #c98bff)';
     if (name.startsWith('mcp__')) return 'var(--cr-brand-500)';
+    const n = name.toLowerCase().replace(/[_-]/g, '');
+    if (/(webfetch|websearch|readwebpage|browse|fetchurl)/.test(n)) return 'var(--cr-info-500)';
+    if (/(edit|write|replace|applypatch|createfile|patch)/.test(n)) return 'var(--cr-ok-500)';
+    if (/(bash|shell|runcommand|runterminal|terminal|exec|command)/.test(n)) return 'var(--cr-warn-500)';
+    if (/(read|view|glob|grep|^ls$|listdir|listdirectory|search|findfile|cat)/.test(n)) return 'var(--cr-fg-3)';
+    if (/(task|agent|subagent)/.test(n)) return 'var(--cr-tool-claude, #c98bff)';
     return 'var(--cr-fg-2)';
   };
 
