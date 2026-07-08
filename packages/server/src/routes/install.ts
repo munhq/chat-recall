@@ -75,6 +75,10 @@ echo ""
 # auto-connects to no-auth self-host servers.
 if chat-recall login ${origin} --check >/dev/null 2>&1; then
   echo "Already connected to ${origin}."
+  # Reuse the existing login; init still (re)registers the MCP and reinstalls/
+  # restarts the background service, so re-running the installer to upgrade
+  # fully lands (new binary + MCP config).
+  chat-recall init --skip-sync || echo "Setup step reported an issue — see above." >&2
 else
   # Fresh machine: send the user to the token page and read the paste back.
   # The device label is a random slug — the hostname must not leak into a URL
@@ -93,30 +97,26 @@ else
 
   if [ ! -r /dev/tty ]; then
     echo "No terminal to read the token from (piped/CI run)." >&2
-    echo "Finish connecting with:  chat-recall login ${origin} --token <your-token>" >&2
+    echo "Finish setup with:  chat-recall init --server ${origin} --token <your-token>" >&2
     exit 1
   fi
   printf "Paste your token here: "
   read TOKEN < /dev/tty
   [ -n "\$TOKEN" ] || { echo "No token entered." >&2; exit 1; }
 
-  # login validates the token against the server before saving it.
-  chat-recall login ${origin} --token "\$TOKEN" || exit 1
+  # init validates the token + logs in, REGISTERS THE RECALL MCP in Claude Code
+  # (~/.mcp.json), and installs the background sync service — the full one-line
+  # setup. --skip-sync: the service (or the MCP's own sync) ships history in the
+  # background so the installer never blocks on a first full sync.
+  chat-recall init --server ${origin} --token "\$TOKEN" --skip-sync || exit 1
 fi
 
 echo ""
-# The first sync of a full history can take a long time — it must NOT hold
-# this terminal hostage. The per-user service (systemd --user / launchd /
-# Scheduled Task; no admin rights) syncs continuously in the background.
-if chat-recall service install; then
-  echo ""
-  echo "Done. Syncing in the background — your history is filling in at ${origin}"
-else
-  echo "Background service install failed — starting a one-off background sync instead." >&2
-  (nohup chat-recall sync >/dev/null 2>&1 &)
-  echo ""
-  echo "Done. Watch your history fill in at ${origin} (re-run 'chat-recall sync' to top up later)"
-fi
+# init (above) already registered the recall MCP in Claude Code and installed
+# the background sync service. The service — or, if it couldn't install, the
+# MCP's own in-process sync — ships history continuously; the installer never
+# blocks on a full first sync (--skip-sync).
+echo "Done. Recall tools are registered in Claude Code and your history is syncing in the background at ${origin}."
 `;
 }
 
