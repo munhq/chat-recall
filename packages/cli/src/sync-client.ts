@@ -55,8 +55,8 @@ import { extractEntities } from '@chat-recall/engine/core/entity-extractor.js';
 import { buildSourceRegistry } from '@chat-recall/engine/parsers/all-sources.js';
 import { getSyncedRows, markSynced, getLedgerData, persistLedgerData,
   fieldNeedsScan, markFieldCoverage, fieldNeedsFullPass, markFieldFullPassDone,
-  syncMode, markFullResync, type SyncedRow } from './sync-ledger.js';
-import { extractorVersionForTool } from '@chat-recall/engine/core/extractor-version.js';
+  syncMode, markFullResync, loadItemVersions, saveItemVersions, type SyncedRow } from './sync-ledger.js';
+import { extractorVersionForTool, extractorVersionForId, toolOfId, EXTRACTOR_VERSION } from '@chat-recall/engine/core/extractor-version.js';
 import { SYNC_FIELDS } from '@chat-recall/engine/core/sync-fields.js';
 import { acquireIndexLock } from '@chat-recall/engine/core/index-lock.js';
 import '@chat-recall/engine/core/backends/index.js'; // register the tool backends
@@ -930,6 +930,14 @@ const refs = listAvailableBackends().flatMap((b) => {
   //    sync coverage tracks index coverage automatically. Session-type
   //    sources are skipped — sessions ship as conversations above.
   //    (excludeTools is session-only: source plugins don't carry a tool id.)
+  // Per-tool item-extractor versions (see sync-ledger). A tool whose recorded
+  // version is below its current version re-ships ALL its items ONCE (mtime
+  // gate bypassed), so an attribution/extraction fix self-heals — same idea as
+  // sessions, at the tool level. Unrecorded tools seed at EXTRACTOR_VERSION
+  // (base), so only tools bumped ABOVE base (e.g. agy) re-ship on first run —
+  // not a blanket re-ship of every item.
+  const itemVersions = loadItemVersions(base);
+  const seenTools = new Set<string>();
   const registry = buildSourceRegistry();
   for (const sourceType of registry.getRegisteredTypes()) {
     if (sourceType === 'session') continue;
@@ -938,7 +946,10 @@ const refs = listAvailableBackends().flatMap((b) => {
       try { discovered = source.discover(); } catch { continue; }
       try {
         for await (const item of discovered) {
-          if ((item.mtime || 0) < (opts.sinceMs ?? 0)) continue;
+          const itemTool = toolOfId(item.id);
+          seenTools.add(itemTool);
+          const versionStale = (itemVersions[itemTool] ?? EXTRACTOR_VERSION) < extractorVersionForId(item.id);
+          if ((item.mtime || 0) < (opts.sinceMs ?? 0) && !versionStale) continue;
           if (excluded(item.projectPath || '')) continue;
           const count = { redactions: 0 };
           let chunks: any[] = [];
@@ -1030,6 +1041,17 @@ const refs = listAvailableBackends().flatMap((b) => {
   // Barrier: wait for every pooled upload to land (and surface any fatal
   // error) before tombstones/prune, which must run strictly after all data.
   await drainInflight();
+
+  // Items shipped successfully → record each seen tool's current item-extractor
+  // version, so a version-triggered re-ship (e.g. the agy attribution fix)
+  // happens exactly ONCE per bump instead of every sync. Best-effort.
+  if (seenTools.size > 0) {
+    try {
+      const rec: Record<string, number> = {};
+      for (const t of seenTools) rec[t] = extractorVersionForTool(t);
+      saveItemVersions(base, rec);
+    } catch { /* local bookkeeping — best-effort */ }
+  }
 
   // ── Tombstones for sessions this device previously synced but that no
   //    longer exist locally (deleted transcript file, cleared cache, etc).
