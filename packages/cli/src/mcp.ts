@@ -3046,7 +3046,26 @@ function startBackgroundSync(): void {
   setTimeout(() => { void tick('full'); }, 15_000).unref();
 }
 
+// ── Crash guards ────────────────────────────────────────────────────────
+// This process serves the recall tools AND runs the background sync/indexer
+// in the same event loop. Without these, a single stray rejection or throw in
+// the sync path (a bad transcript, a dropped socket, a batcher error) takes
+// down the WHOLE process — and the client loses EVERY recall tool mid-session
+// ("tools no longer load"). The tool handlers already have per-call try/catch,
+// so nothing a caller awaits is swallowed here; this only stops background
+// faults from killing tool-serving. Log loudly to stderr and stay up.
+function installCrashGuards(): void {
+  process.on('unhandledRejection', (reason) => {
+    console.error('[mcp] unhandledRejection (server stays up):',
+      reason instanceof Error ? (reason.stack || reason.message) : reason);
+  });
+  process.on('uncaughtException', (err) => {
+    console.error('[mcp] uncaughtException (server stays up):', err.stack || err.message);
+  });
+}
+
 async function main() {
+  installCrashGuards();
   // NOTE on heap bounding: v8.setFlagsFromString('--max-old-space-size=…')
   // does NOT take effect after startup (verified empirically on Node 23) —
   // the cap must come from the spawner. `chat-recall init` writes
@@ -3054,7 +3073,23 @@ async function main() {
   // in-process defense is the bounded 'changed' sync ticks above.
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  startBackgroundSync();
+
+  // The watch daemon owns continuous sync. When it's running, the MCP must NOT
+  // also run the heavy sync in its tool-serving event loop: a full-ledger walk
+  // over a large history (30k+ sessions — transcript parse + base64 + KG
+  // extraction) spikes memory and can OOM/kill THIS process, which drops the
+  // JSON-RPC stdio connection (client sees -32000) and deregisters every recall
+  // tool mid-session. Decoupling keeps the tool server lightweight and alive.
+  let daemonRunning = false;
+  try {
+    const { isServiceRunning } = await import('./service-installer.js');
+    daemonRunning = isServiceRunning();
+  } catch { /* detection best-effort; fall through to running sync */ }
+  if (daemonRunning) {
+    console.error('[mcp] watch daemon active — MCP will not run background sync (keeps the tool server lightweight; the daemon syncs).');
+  } else {
+    startBackgroundSync();
+  }
 }
 
 main().catch(console.error);
