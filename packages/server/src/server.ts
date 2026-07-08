@@ -21,6 +21,7 @@ import { apiLimiter, syncLimiter, rl } from './middleware/rate-limit.js';
 import { costMiddleware, startCostTelemetry } from './middleware/request-cost.js';
 import metricsRouter, { startBacklogRefresher, logMetricsExposureAtBoot } from './routes/metrics.js';
 import adminRouter from './routes/admin.js';
+import clientEventsRouter from './routes/client-events.js';
 import accountRouter from './routes/account.js';
 import { requireEntitlement } from './util/billing.js';
 import projectsRouter from './routes/projects.js';
@@ -170,6 +171,7 @@ app.use('/api', attachTenantToContext);
 // Mounted after tenantAuth so req.tenant is already resolved.
 app.use('/api/teams/security-config', securityConfigRouter);
 app.use('/api/sync-config', syncConfigRouter);
+app.use('/api/client-events', clientEventsRouter);
 
 // Account configuration (secret-alert webhook). Ungated so a lapsed/un-subscribed
 // user can still reach their account to (re)subscribe and configure alerts.

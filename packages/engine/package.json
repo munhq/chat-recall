@@ -1,6 +1,6 @@
 {
   "name": "@chat-recall/engine",
-  "version": "0.3.7",
+  "version": "0.3.8",
   "description": "chat-recall engine — parsers, storage drivers, KG, classifier (shared library)",
   "type": "module",
   "license": "MIT",

@@ -485,6 +485,24 @@ CREATE TABLE IF NOT EXISTS code_actions (
 );
 CREATE INDEX IF NOT EXISTS idx_code_actions_proj ON code_actions(tenant, project_id, pri);
 
+-- Client failure/health telemetry from collectors + MCP (crashes, sync
+-- failures, auth failures, tool errors). Lets the operator see when a
+-- customer's recall breaks instead of waiting to be told. Redacted at the
+-- client; append-only, tenant-isolated.
+CREATE TABLE IF NOT EXISTS client_events (
+  id          BIGSERIAL PRIMARY KEY,
+  tenant      TEXT NOT NULL DEFAULT 'default',
+  ts          BIGINT NOT NULL,
+  kind        TEXT NOT NULL,
+  tool        TEXT NOT NULL DEFAULT '',
+  cli_version TEXT NOT NULL DEFAULT '',
+  os          TEXT NOT NULL DEFAULT '',
+  device_id   TEXT NOT NULL DEFAULT '',
+  message     TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_client_events_tenant_ts ON client_events(tenant, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_client_events_tenant_kind ON client_events(tenant, kind);
+
 -- ── Row-Level Security: the wall between tenants ─────────────────────────
 -- Every tenant-bearing table is force-RLS'd and isolated by the per-transaction
 -- 'app.tenant' GUC the drivers set (see pg-pool.ts tenantQuery). A non-superuser
@@ -499,7 +517,8 @@ BEGIN
     'secret_findings','secret_rules','secret_dismissals','alerted_secrets','session_metadata',
     'summary_errors','summary_leases','compute_cache','session_outcome_cache','kg_entities','kg_triples',
     'wal_log','diary_entries','sync_intents',
-    'code_projects','code_findings','code_hotspots','code_actions'
+    'code_projects','code_findings','code_hotspots','code_actions',
+    'client_events'
   ] LOOP
     -- IDEMPOTENT: only configure a table that isn't already locked down. The
     -- ALTER/DROP/CREATE POLICY statements each take an ACCESS EXCLUSIVE lock on
