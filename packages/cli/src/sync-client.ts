@@ -56,7 +56,7 @@ import { buildSourceRegistry } from '@chat-recall/engine/parsers/all-sources.js'
 import { getSyncedRows, markSynced, getLedgerData, persistLedgerData,
   fieldNeedsScan, markFieldCoverage, fieldNeedsFullPass, markFieldFullPassDone,
   syncMode, markFullResync, type SyncedRow } from './sync-ledger.js';
-import { EXTRACTOR_VERSION } from '@chat-recall/engine/core/extractor-version.js';
+import { extractorVersionForTool } from '@chat-recall/engine/core/extractor-version.js';
 import { SYNC_FIELDS } from '@chat-recall/engine/core/sync-fields.js';
 import { acquireIndexLock } from '@chat-recall/engine/core/index-lock.js';
 import '@chat-recall/engine/core/backends/index.js'; // register the tool backends
@@ -748,7 +748,7 @@ const refs = listAvailableBackends().flatMap((b) => {
     const backend = backendFor(ref);
     const isAO = !!backend?.isAppendOnly?.();
     const size = isAO ? (backend?.fileSize?.(ref.prefixedId) ?? 0) : 0;
-    return syncMode(ack, ref.mtime, size, EXTRACTOR_VERSION, isAO);
+    return syncMode(ack, ref.mtime, size, extractorVersionForTool(ref.toolId), isAO);
   };
   const willBuild = (ref: SessionRef): boolean => modeOf(ref) !== 'skip';
 
