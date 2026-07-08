@@ -87,7 +87,10 @@ function installSystemd(watchJs: string, node: string, logFile: string): Service
   mkdirSync(unitDir, { recursive: true });
   writeFileSync(unitPath, unit);
   try {
-    execSync('systemctl --user daemon-reload && systemctl --user enable --now chat-recall-watch.service', { stdio: 'inherit' });
+    // `restart` (not `enable --now`) so an upgrade reload actually replaces a
+    // running daemon — `--now` no-ops on an already-running unit, leaving the
+    // old binary in memory. restart starts it if stopped, restarts if running.
+    execSync('systemctl --user daemon-reload && systemctl --user enable chat-recall-watch.service && systemctl --user restart chat-recall-watch.service', { stdio: 'inherit' });
     // Survive logout/reboot when no session is open (best-effort; needs the
     // user's password once on some distros).
     try { execSync('loginctl enable-linger "$USER" 2>/dev/null', { stdio: 'ignore' }); } catch { /* optional */ }

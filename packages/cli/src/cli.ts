@@ -1679,12 +1679,15 @@ program
     const { installService, uninstallService, isServiceRunning, platformName, ServiceInstallError } = await import('./service-installer.js');
     try {
       if (action === 'install') {
-        if (isServiceRunning()) {
-          console.log(chalk.green(`✓ chat-recall-watch service already running (${platformName()}).`));
-          return;
-        }
+        // Always (re)install — installService() reloads/restarts the daemon, so
+        // an upgrade run (installer, `service install` after `npm i -g`) loads
+        // the NEW binary. Skipping when "already running" was a real bug: the
+        // updated binary sat on disk while the old daemon kept running old code.
+        const wasRunning = isServiceRunning();
         const paths = installService();
-        console.log(chalk.green(`✓ chat-recall-watch service installed and started (${platformName()}).`));
+        console.log(chalk.green(wasRunning
+          ? `✓ chat-recall-watch service restarted with the current binary (${platformName()}).`
+          : `✓ chat-recall-watch service installed and started (${platformName()}).`));
         if (paths.definitionPath) console.log(chalk.dim(`  unit: ${paths.definitionPath}`));
         console.log(chalk.dim(`  logs: ${paths.logFile}`));
       } else if (action === 'uninstall') {
