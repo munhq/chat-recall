@@ -8,11 +8,11 @@ describe('per-tool extractor version', () => {
     expect(claude).toBe(EXTRACTOR_VERSION);            // base — unchanged
     expect(extractorVersionForTool('gemini')).toBe(EXTRACTOR_VERSION);
     expect(extractorVersionForTool('opencode')).toBe(EXTRACTOR_VERSION);
-    expect(agy).toBe(EXTRACTOR_VERSION + 1);           // only agy bumped
+    expect(agy).toBe(EXTRACTOR_VERSION + 2);           // only agy bumped
   });
 
   test('derives the tool from the prefixed session id', () => {
-    expect(extractorVersionForId('agy_abc')).toBe(EXTRACTOR_VERSION + 1);
+    expect(extractorVersionForId('agy_abc')).toBe(EXTRACTOR_VERSION + 2);
     expect(extractorVersionForId('gemini_abc')).toBe(EXTRACTOR_VERSION);
     expect(extractorVersionForId('f8268be2-uuid')).toBe(EXTRACTOR_VERSION); // claude, no prefix
   });
