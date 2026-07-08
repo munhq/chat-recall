@@ -691,6 +691,8 @@ export interface RelatedItemsResponse {
   links: RelatedItem[];
   siblingSessionsInProject: SiblingSession[];
   projectClaudeMd: RelatedItem | null;
+  /** Plans directly linked to this session (its own plan). */
+  sessionPlans?: RelatedItem[];
   projectPlans: RelatedItem[];
 }
 

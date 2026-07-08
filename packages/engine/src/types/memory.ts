@@ -71,7 +71,9 @@ export type LinkType =
   | 'history_has_paste'    // contentHash -> paste-cache file
   | 'claude_md_for_project' // CLAUDE.md in project directory
   | 'plan_for_project'     // Plan references project file paths
-  | 'agent_plan_for_session' // Agent plan filename contains session hash
+  | 'plan_for_session'     // Plan links to the session it was written in (frontmatter session_id / UUID-named file / subagent hash / tool session id)
+  | 'agent_plan_parent'    // Agent plan (`<slug>-agent-<hash>`) → its parent top-level plan
+  | 'agent_plan_for_session' // Deprecated: legacy agent-plan→parent-plan link (superseded by plan_for_session + agent_plan_parent)
   | 'brain_artifact_for_session' // Gemini brain artifact linked to session
   | 'diary_for_session'
   | 'agent_memory_from_session' // Claude Code memory file with originSessionId frontmatter
