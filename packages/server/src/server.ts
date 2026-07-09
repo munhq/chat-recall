@@ -450,6 +450,35 @@ const httpServer = app.listen(PORT, HOST, () => {
     }
   }
 
+  // Self-heal: rebuild any session whose rendered view is thinner than its own
+  // shrink-protected raw archive (the Claude Code 2.1.20x resume-truncation
+  // fingerprint). Fully automatic, no client/customer action. A full backlog
+  // pass runs once shortly after boot; a windowed pass repeats hourly to catch
+  // ongoing truncations. Only ever grows a conversation, from its own archive.
+  if (isServerMode() && runWorkers) {
+    const SELFHEAL_SWEEP_MS = 60 * 60 * 1000;      // hourly recurring pass
+    const SELFHEAL_WINDOW_MS = 7 * 24 * 3600 * 1000; // recurring pass scans last 7d
+    let healInFlight = false;
+    const healSweep = async (sinceMs: number, label: string): Promise<void> => {
+      if (healInFlight) return;
+      healInFlight = true;
+      try {
+        const { selfHealSweepAllTenants } = await import('./services/self-heal.js');
+        const r = await selfHealSweepAllTenants({ sinceMs });
+        if (r.healed > 0) log.info({ ...r, pass: label }, 'self-heal sweep healed sessions');
+        else log.info({ scanned: r.scanned, tenants: r.tenants, pass: label }, 'self-heal sweep: nothing to heal');
+      } catch (err) {
+        log.error({ err, pass: label }, 'self-heal sweep failed');
+      } finally {
+        healInFlight = false;
+      }
+    };
+    // One full backlog pass (all archives) ~15s after boot, then hourly windowed.
+    setTimeout(() => { void healSweep(0, 'backlog'); }, 15_000).unref();
+    setInterval(() => { void healSweep(Date.now() - SELFHEAL_WINDOW_MS, 'recurring'); }, SELFHEAL_SWEEP_MS).unref();
+    log.info('self-heal sweep enabled (server mode)');
+  }
+
   // Cache prewarming only makes sense in local mode — in server mode there
   // is no filesystem to walk and (with keycloak auth) the warm fetches
   // would just 401.
