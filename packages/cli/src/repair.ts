@@ -82,11 +82,11 @@ export interface RepairResult {
  * Repair one session: gather the fullest archive across the local shadow and
  * every configured server, seed the shadow, rebuild, and push where smaller.
  */
-export async function repairSession(id: string, opts: { dryRun?: boolean; force?: boolean; verbose?: boolean } = {}): Promise<RepairResult> {
+export async function repairSession(id: string, opts: { dryRun?: boolean; force?: boolean; verbose?: boolean; server?: string } = {}): Promise<RepairResult> {
   const backend = getBackendForId(id) ?? getBackend('claude');
   const tool = backend.id;
   const rawId = backend.toRawId(id);
-  const endpoints = resolveEndpoints();
+  const endpoints = resolveEndpoints(opts.server);
   const log = (m: string) => { if (opts.verbose) console.error(`  [repair ${id}] ${m}`); };
 
   const candidates: Candidate[] = [];
@@ -198,7 +198,7 @@ export async function repairSession(id: string, opts: { dryRun?: boolean; force?
   return { sessionId: id, status: 'repaired', fullestMessages: builtCount, fullestSource: fullest.source, pushed };
 }
 
-export async function repairSessions(ids: string[], opts: { dryRun?: boolean; force?: boolean; verbose?: boolean } = {}): Promise<RepairResult[]> {
+export async function repairSessions(ids: string[], opts: { dryRun?: boolean; force?: boolean; verbose?: boolean; server?: string } = {}): Promise<RepairResult[]> {
   const out: RepairResult[] = [];
   for (const id of ids) {
     try { out.push(await repairSession(id, opts)); }
@@ -223,10 +223,10 @@ export interface RepairAllReport {
  *
  * Read-only unless opts.apply — the default is a dry run that mutates nothing.
  */
-export async function repairAll(opts: { sinceHours?: number; apply?: boolean; verbose?: boolean; minMessages?: number } = {}): Promise<RepairAllReport> {
+export async function repairAll(opts: { sinceHours?: number; apply?: boolean; verbose?: boolean; minMessages?: number; server?: string } = {}): Promise<RepairAllReport> {
   const sinceHours = opts.sinceHours ?? 72;
   const minMessages = opts.minMessages ?? 2;
-  const endpoints = resolveEndpoints();
+  const endpoints = resolveEndpoints(opts.server);
   const primary = endpoints.find((e) => e.token) ?? endpoints[0];
   if (!primary) return { scanned: 0, candidates: [], discoveryServer: '' };
   const log = (m: string) => { if (opts.verbose) console.error(`  [repair --all] ${m}`); };
@@ -254,7 +254,7 @@ export async function repairAll(opts: { sinceHours?: number; apply?: boolean; ve
     const current = typeof meta?.messageCount === 'number' ? meta.messageCount : 0;
     if (archiveMsgs <= current) continue; // healthy — archive not fuller than the live view
     // Damaged. Dry-run reports; apply rebuilds + pushes via the canonical path.
-    const r = await repairSession(id, { dryRun: !opts.apply, verbose: opts.verbose });
+    const r = await repairSession(id, { dryRun: !opts.apply, verbose: opts.verbose, server: opts.server });
     // Skip the 'already-full' verdict repairSession may return once the on-disk
     // tail union doesn't actually beat the server (rare; keeps the report clean).
     if (r.status === 'already-full') continue;
