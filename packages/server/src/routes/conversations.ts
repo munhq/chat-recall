@@ -1754,19 +1754,24 @@ router.get('/:id/raw', async (req, res) => {
 // Response (JSON): { sessionId, tool, mtime, size, capturedAt, gzB64, messages }.
 //   gzB64    — base64 of the gzipped RawContainer (feed to seedShadow / gunzip).
 //   messages — count parsed from the container (for quick verification).
+//
+// `?count=1` — read-only discovery mode for the `repair --all` sweep: parse and
+// return the message count + byte size WITHOUT the gzB64 payload. Same read, no
+// multi-MB transfer per session, so a scan of many sessions stays cheap. This
+// endpoint never mutates anything in either mode.
 router.get('/:id/raw-archive', async (req, res) => {
   const { id } = req.params;
+  const countOnly = req.query.count === '1' || req.query.count === 'true';
   const store = await createStore();
   try {
     const row = await store.getRawSession(id);
     if (!row) return res.status(404).json({ error: 'No raw archive for this session' });
 
     let messages = 0;
-    let container: ReturnType<typeof gunzipContainer> = null;
     try {
-      container = gunzipContainer(row.gz);
+      const container = gunzipContainer(row.gz);
       if (container) messages = parseTranscriptFromContainer(container).messages.length;
-    } catch { /* corrupt archive — still return the bytes so the caller can inspect */ }
+    } catch { /* corrupt archive — still return metadata/bytes so the caller can inspect */ }
 
     res.json({
       sessionId: id,
@@ -1774,8 +1779,8 @@ router.get('/:id/raw-archive', async (req, res) => {
       mtime: row.mtime,
       size: row.size,
       capturedAt: row.captured_at,
-      gzB64: Buffer.from(row.gz).toString('base64'),
       messages,
+      ...(countOnly ? {} : { gzB64: Buffer.from(row.gz).toString('base64') }),
     });
   } catch (error) {
     log.error({ err: error, session: id }, 'raw-archive error');
