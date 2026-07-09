@@ -33,6 +33,8 @@ import {
   detectTool,
   isFresh,
   fingerprintFile,
+  gunzipContainer,
+  parseTranscriptFromContainer,
   type CachedOutcome,
   type CachedOutcomeStatus,
 } from '../imports.js';
@@ -1737,6 +1739,49 @@ router.get('/:id/raw', async (req, res) => {
     res.status(500).json({
       error: error instanceof Error ? error.message : 'Failed to get raw conversation',
     });
+  }
+});
+
+// GET /api/conversations/:id/raw-archive
+//
+// Serve the shrink-protected `raw_sessions` archive for a session. Unlike
+// `/:id/raw` (which reads the local filesystem and is 501 in server mode), this
+// reads the archived, redacted raw container the sync path stored — so it works
+// on the SaaS and self-host alike. It is the recovery path's source of truth:
+// `chat-recall repair` pulls this to seed the local shadow and rebuild a
+// history an upstream tool truncated in place.
+//
+// Response (JSON): { sessionId, tool, mtime, size, capturedAt, gzB64, messages }.
+//   gzB64    — base64 of the gzipped RawContainer (feed to seedShadow / gunzip).
+//   messages — count parsed from the container (for quick verification).
+router.get('/:id/raw-archive', async (req, res) => {
+  const { id } = req.params;
+  const store = await createStore();
+  try {
+    const row = await store.getRawSession(id);
+    if (!row) return res.status(404).json({ error: 'No raw archive for this session' });
+
+    let messages = 0;
+    let container: ReturnType<typeof gunzipContainer> = null;
+    try {
+      container = gunzipContainer(row.gz);
+      if (container) messages = parseTranscriptFromContainer(container).messages.length;
+    } catch { /* corrupt archive — still return the bytes so the caller can inspect */ }
+
+    res.json({
+      sessionId: id,
+      tool: row.tool,
+      mtime: row.mtime,
+      size: row.size,
+      capturedAt: row.captured_at,
+      gzB64: Buffer.from(row.gz).toString('base64'),
+      messages,
+    });
+  } catch (error) {
+    log.error({ err: error, session: id }, 'raw-archive error');
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to read raw archive' });
+  } finally {
+    await store.close();
   }
 });
 

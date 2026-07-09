@@ -378,6 +378,38 @@ program
   });
 
 program
+  .command('repair [sessionIds...]')
+  .description('Rebuild sessions an upstream tool truncated in place (e.g. Claude Code resume rewrite) from the shrink-protected raw archive')
+  .option('--dry-run', 'Report what would be recovered without writing or pushing', false)
+  .option('--force', 'Push the recovered conversation even to servers that already look full', false)
+  .option('-v, --verbose', 'Per-session detail', false)
+  .action(async (sessionIds: string[], options: { dryRun?: boolean; force?: boolean; verbose?: boolean }) => {
+    try {
+      if (!sessionIds || sessionIds.length === 0) {
+        console.error(chalk.red('Give one or more session ids to repair, e.g. `chat-recall repair <uuid> <uuid>`.'));
+        process.exit(1);
+      }
+      const { repairSessions } = await import('./repair.js');
+      const results = await repairSessions(sessionIds, options);
+      for (const r of results) {
+        const head = `${r.sessionId.slice(0, 8)}…`;
+        if (r.status === 'no-archive') { console.log(chalk.yellow(`  ? ${head} no archive found (${r.note})`)); continue; }
+        if (r.status === 'already-full') { console.log(chalk.dim(`  = ${head} already full (${r.fullestMessages} msgs)`)); continue; }
+        if (r.status === 'error') { console.log(chalk.red(`  ✗ ${head} ${r.note}`)); continue; }
+        const verb = r.status === 'would-repair' ? 'would recover' : 'recovered';
+        console.log(chalk.green(`  ${r.status === 'would-repair' ? '·' : '+'} ${head} ${verb} ${r.fullestMessages} msgs`) + chalk.dim(` from ${r.fullestSource}`));
+        for (const p of r.pushed) console.log(chalk.dim(`      ${p.server}: ${p.before} → ${p.after}`));
+      }
+      const fixed = results.filter((r) => r.status === 'repaired').length;
+      const would = results.filter((r) => r.status === 'would-repair').length;
+      console.log(chalk.bold(options.dryRun ? `${would} session(s) would be repaired.` : `Repaired ${fixed} session(s).`));
+    } catch (err) {
+      console.error(chalk.red('Error:'), err instanceof Error ? err.message : err);
+      process.exit(1);
+    }
+  });
+
+program
   .command('search <query>')
   .description('Search your server for relevant sessions (requires login)')
   .option('-n, --top <number>', 'Number of results to show', '5')

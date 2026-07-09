@@ -322,7 +322,7 @@ router.post('/', async (req, res) => {
       const store = await createStore();
       const metaCache = await createMetadataCache();
       let conv = 0, item = 0, link = 0, find = 0, der = 0, kgE = 0, kgT = 0, chunks = 0, dead = 0, fielded = 0;
-      let appendConv = 0;
+      let appendConv = 0, shrinkGuarded = 0;
       const fullResyncNeeded: string[] = [];
       // Accumulate chunks + item-metadata across the WHOLE batch and flush each
       // ONCE (bulk, single transaction) instead of per conversation/item — turns
@@ -437,12 +437,13 @@ router.post('/', async (req, res) => {
           // derive the envelope from the bytes with the canonical parser.
           // Falls back to the client envelope, then legacy turns.
           let envelope: { v: number; messages: SyncEnvelopeMessage[]; subagents: unknown[] } | null = null;
+          let rawArchiveResult: 'stored' | 'shrink-protected' | 'unchanged' | null = null;
           if (cv.raw_b64) {
             try {
               const gz = Buffer.from(cv.raw_b64, 'base64');
               const container = gunzipContainer(gz);
               if (container) {
-                await store.putRawSession(cv.session_id, container.tool, mtime, gz, Number(cv.raw_size) || gz.length);
+                rawArchiveResult = await store.putRawSession(cv.session_id, container.tool, mtime, gz, Number(cv.raw_size) || gz.length);
                 const t = parseTranscriptFromContainer(container);
                 if (t.messages.length > 0 || t.subagents.length > 0) {
                   envelope = { v: PARSER_VERSION, messages: t.messages as any, subagents: t.subagents };
@@ -452,6 +453,42 @@ router.post('/', async (req, res) => {
           }
           if (!envelope && cv.envelope && cv.envelope.v === PARSER_VERSION && Array.isArray(cv.envelope.messages)) {
             envelope = { v: PARSER_VERSION, messages: cv.envelope.messages, subagents: cv.envelope.subagents ?? [] };
+          }
+
+          // ── SHRINK GUARD (server-side defense-in-depth) ─────────────────
+          // The client shadow (packages/engine/src/transcript/shadow.ts) is the
+          // primary fix: it merges a resume-truncated transcript back to full
+          // BEFORE shipping, so a current client never sends a shrink. But an
+          // OLD client (no shadow), or one whose local shadow was wiped, can
+          // still send a FULL sync carrying LESS than the server already holds —
+          // the exact way the 2026-07-09 incident emptied conversations. The raw
+          // archive is already shrink-protected in putRawSession; extend that to
+          // the envelope + search chunks: never overwrite a fuller stored
+          // conversation with a smaller one. Two-signal test (bytes shrank AND
+          // fewer messages, or — when no raw was sent — a large message drop)
+          // keeps false positives near zero; a genuine edit that merely re-trims
+          // is not fewer messages. Best-effort: any error falls through to the
+          // normal ingest, never blocking a legitimate sync.
+          if (envelope) {
+            try {
+              const stored = await store.getCachedContentStale(cv.session_id, 'session');
+              if (stored?.content) {
+                const prevEnv = JSON.parse(stored.content) as { messages?: unknown[] };
+                const storedCount = Array.isArray(prevEnv.messages) ? prevEnv.messages.length : 0;
+                const incomingCount = envelope.messages.length;
+                const bytesShrank = rawArchiveResult === 'shrink-protected';
+                const suspectedShrink = incomingCount < storedCount &&
+                  (bytesShrank || (rawArchiveResult === null && incomingCount * 2 < storedCount));
+                if (suspectedShrink) {
+                  log.warn(
+                    { session: cv.session_id, storedCount, incomingCount, bytesShrank, device: agent.deviceId },
+                    'shrink-guard: kept fuller stored conversation, ignored a smaller full sync (upstream in-place truncation reached a client without a shadow)',
+                  );
+                  shrinkGuarded++;
+                  continue; // preserve stored envelope/chunks/title — write nothing
+                }
+              }
+            } catch { /* guard is best-effort — fall through to normal ingest */ }
           }
           const turns: SyncTurn[] = envelope
             ? []
@@ -766,7 +803,7 @@ router.post('/', async (req, res) => {
       if (req.body?.prune_empty_sessions === true) {
         try { pruned = await store.pruneEmptySessions(); } catch { /* best-effort */ }
       }
-      return { conv, item, link, find, der, kgE, kgT, chunks, dead, pruned, fielded, appendConv, full_resync_needed: fullResyncNeeded };
+      return { conv, item, link, find, der, kgE, kgT, chunks, dead, pruned, fielded, appendConv, shrinkGuarded, full_resync_needed: fullResyncNeeded };
     });
 
     res.json({ ok: true, ...result, tenant: agent.tenant, ack_at: new Date().toISOString() });

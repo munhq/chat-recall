@@ -201,6 +201,17 @@ export interface ToolBackend {
    */
   readEvents(rawId: string): CanonicalEvent[];
 
+  /**
+   * Parse canonical events from raw transcript TEXT (not a disk path). Lets a
+   * session be reconstructed from archived/shadow container bytes anywhere —
+   * `parseTranscriptFromContainer` calls this as its generic fallback for any
+   * tool without a hardcoded branch. Backends whose format is a single text
+   * file (agy, and future single-file tools) should implement it; those with a
+   * dedicated container parser (claude/codex/gemini/opencode) need not. Only
+   * meaningful for single-file formats — a multi-file/DB tool can omit it.
+   */
+  readEventsFromText?(text: string, mtimeFallback?: number): CanonicalEvent[];
+
   /** Tool-call name → normalized EditOp. Anything unmapped is non-file-touching. */
   readonly fileToolMap: Record<string, EditOp>;
 
@@ -324,6 +335,10 @@ export function getBackend(id: AiTool): ToolBackend {
 }
 
 export function tryGetBackend(id: AiTool): ToolBackend | null {
+  // Bootstrap on access, like getBackendForId — registration is deferred to
+  // first use, so a bare REGISTRY.get would miss backends on a cold registry
+  // (this bit parseTranscriptFromContainer's agy fallback: null → empty parse).
+  ensureBootstrapped();
   return REGISTRY.get(id) ?? null;
 }
 
