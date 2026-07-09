@@ -160,13 +160,26 @@ function scheduleSync(): void {
  * the session id it names. Snapshot that session into the shadow IMMEDIATELY
  * (no debounce — we're racing the in-place rewrite) to preserve the full
  * pre-resume transcript. Best-effort: never throws into the watcher.
+ *
+ * Deduped by id + a re-arm window: Claude Code re-touches current-resume every
+ * few seconds during an active session, so without this the daemon would
+ * re-export and merge a multi-MB transcript on every touch. We snapshot when
+ * the id CHANGES (a genuinely new resume), and at most once per re-arm window
+ * for the same id (the sync path's own shadow update covers the rest).
  */
+let lastResumeId = '';
+let lastResumeAt = 0;
+const RESUME_REARM_MS = 60_000;
 async function onResumeSignal(path: string): Promise<void> {
   try {
     const txt = readFileSync(path, 'utf-8');
     const m = /--resume\s+([0-9a-fA-F-]{36})/.exec(txt);
     if (!m) return;
     const id = m[1];
+    const now = Date.now();
+    if (id === lastResumeId && now - lastResumeAt < RESUME_REARM_MS) return; // same resume, still armed
+    lastResumeId = id;
+    lastResumeAt = now;
     const { snapshotShadow } = await import('@chat-recall/engine/transcript/index.js');
     const r = await snapshotShadow(id);
     console.log(`[${ts()}] [resume-guard] shadow ${r.status} for ${id.slice(0, 8)}…` + (r.recovered > 0 ? ` (recovered ${r.recovered} record(s))` : ''));
