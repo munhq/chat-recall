@@ -206,3 +206,59 @@ export async function repairSessions(ids: string[], opts: { dryRun?: boolean; fo
   }
   return out;
 }
+
+export interface RepairAllReport {
+  scanned: number;
+  candidates: RepairResult[];
+  discoveryServer: string;
+}
+
+/**
+ * Discover every damaged session in a recency window and repair it — the
+ * automated sweep behind `repair --all`. A session is DAMAGED when its
+ * shrink-protected raw archive parses to MORE messages than the server's
+ * current item count (the exact fingerprint of the resume-truncation
+ * incident). Discovery reads the primary server only (the one we hold a token
+ * for); repairSession then fixes every configured target that's behind.
+ *
+ * Read-only unless opts.apply — the default is a dry run that mutates nothing.
+ */
+export async function repairAll(opts: { sinceHours?: number; apply?: boolean; verbose?: boolean; minMessages?: number } = {}): Promise<RepairAllReport> {
+  const sinceHours = opts.sinceHours ?? 72;
+  const minMessages = opts.minMessages ?? 2;
+  const endpoints = resolveEndpoints();
+  const primary = endpoints.find((e) => e.token) ?? endpoints[0];
+  if (!primary) return { scanned: 0, candidates: [], discoveryServer: '' };
+  const log = (m: string) => { if (opts.verbose) console.error(`  [repair --all] ${m}`); };
+
+  // Page through the sessions modified in the window.
+  const ids: string[] = [];
+  const limit = 200;
+  for (let offset = 0; ; offset += limit) {
+    const page = await fetchJson(`${primary.url}/api/conversations/recent?since_hours=${sinceHours}&limit=${limit}&offset=${offset}&include_untracked=1`, primary.token);
+    const sessions: Array<{ sessionId: string }> = page?.sessions ?? [];
+    for (const s of sessions) if (s.sessionId) ids.push(s.sessionId);
+    if (!page?.hasMore || sessions.length === 0) break;
+  }
+  log(`window=${sinceHours}h → ${ids.length} session(s) to check on ${primary.url}`);
+
+  const candidates: RepairResult[] = [];
+  let scanned = 0;
+  for (const id of ids) {
+    scanned++;
+    if (opts.verbose && scanned % 50 === 0) log(`checked ${scanned}/${ids.length}…`);
+    const arch = await fetchJson(`${primary.url}/api/conversations/${id}/raw-archive?count=1`, primary.token);
+    const archiveMsgs = typeof arch?.messages === 'number' ? arch.messages : 0;
+    if (archiveMsgs < minMessages) continue; // no/thin archive — nothing to recover
+    const meta = await fetchJson(`${primary.url}/api/conversations/${id}/metadata`, primary.token);
+    const current = typeof meta?.messageCount === 'number' ? meta.messageCount : 0;
+    if (archiveMsgs <= current) continue; // healthy — archive not fuller than the live view
+    // Damaged. Dry-run reports; apply rebuilds + pushes via the canonical path.
+    const r = await repairSession(id, { dryRun: !opts.apply, verbose: opts.verbose });
+    // Skip the 'already-full' verdict repairSession may return once the on-disk
+    // tail union doesn't actually beat the server (rare; keeps the report clean).
+    if (r.status === 'already-full') continue;
+    candidates.push(r);
+  }
+  return { scanned, candidates, discoveryServer: primary.url };
+}

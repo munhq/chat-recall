@@ -379,30 +379,54 @@ program
 
 program
   .command('repair [sessionIds...]')
-  .description('Rebuild sessions an upstream tool truncated in place (e.g. Claude Code resume rewrite) from the shrink-protected raw archive')
-  .option('--dry-run', 'Report what would be recovered without writing or pushing', false)
-  .option('--force', 'Push the recovered conversation even to servers that already look full', false)
+  .description('Rebuild sessions an upstream tool truncated in place (e.g. Claude Code resume rewrite) from the shrink-protected raw archive. DRY-RUN by default — pass --apply to write.')
+  .option('--all', 'Scan the recency window and repair EVERY damaged session (no ids needed)', false)
+  .option('--since-hours <n>', 'With --all: only scan sessions modified in the last N hours', '72')
+  .option('--apply', 'Actually write the recovered conversations to the server(s). Without this, nothing is mutated.', false)
+  .option('--force', 'Push even to servers that already look full', false)
   .option('-v, --verbose', 'Per-session detail', false)
-  .action(async (sessionIds: string[], options: { dryRun?: boolean; force?: boolean; verbose?: boolean }) => {
+  .action(async (sessionIds: string[], options: { all?: boolean; sinceHours?: string; apply?: boolean; force?: boolean; verbose?: boolean }) => {
     try {
-      if (!sessionIds || sessionIds.length === 0) {
-        console.error(chalk.red('Give one or more session ids to repair, e.g. `chat-recall repair <uuid> <uuid>`.'));
-        process.exit(1);
-      }
-      const { repairSessions } = await import('./repair.js');
-      const results = await repairSessions(sessionIds, options);
-      for (const r of results) {
+      const mode = options.apply ? chalk.red('APPLY (writing to server)') : chalk.cyan('DRY-RUN (read-only)');
+      const render = (r: import('./repair.js').RepairResult) => {
         const head = `${r.sessionId.slice(0, 8)}…`;
-        if (r.status === 'no-archive') { console.log(chalk.yellow(`  ? ${head} no archive found (${r.note})`)); continue; }
-        if (r.status === 'already-full') { console.log(chalk.dim(`  = ${head} already full (${r.fullestMessages} msgs)`)); continue; }
-        if (r.status === 'error') { console.log(chalk.red(`  ✗ ${head} ${r.note}`)); continue; }
+        if (r.status === 'no-archive') { console.log(chalk.yellow(`  ? ${head} no archive found`)); return; }
+        if (r.status === 'already-full') { console.log(chalk.dim(`  = ${head} already full (${r.fullestMessages} msgs)`)); return; }
+        if (r.status === 'error') { console.log(chalk.red(`  ✗ ${head} ${r.note}`)); return; }
         const verb = r.status === 'would-repair' ? 'would recover' : 'recovered';
         console.log(chalk.green(`  ${r.status === 'would-repair' ? '·' : '+'} ${head} ${verb} ${r.fullestMessages} msgs`) + chalk.dim(` from ${r.fullestSource}`));
         for (const p of r.pushed) console.log(chalk.dim(`      ${p.server}: ${p.before} → ${p.after}`));
+      };
+
+      if (options.all) {
+        console.log(chalk.bold(`repair --all · ${mode} · window ${options.sinceHours}h`));
+        const { repairAll } = await import('./repair.js');
+        const report = await repairAll({
+          sinceHours: Number(options.sinceHours) || 72,
+          apply: options.apply,
+          verbose: options.verbose,
+        });
+        report.candidates.forEach(render);
+        const fixed = report.candidates.filter((r) => r.status === 'repaired').length;
+        const would = report.candidates.filter((r) => r.status === 'would-repair').length;
+        console.log(chalk.bold(
+          `Scanned ${report.scanned} session(s) on ${report.discoveryServer}; ` +
+          (options.apply ? `repaired ${fixed}.` : `${would} damaged, would repair. Re-run with --apply to write.`),
+        ));
+        return;
       }
+
+      if (!sessionIds || sessionIds.length === 0) {
+        console.error(chalk.red('Give session ids, or use --all. e.g. `chat-recall repair <uuid>` or `chat-recall repair --all`.'));
+        process.exit(1);
+      }
+      console.log(chalk.bold(`repair · ${mode}`));
+      const { repairSessions } = await import('./repair.js');
+      const results = await repairSessions(sessionIds, { dryRun: !options.apply, force: options.force, verbose: options.verbose });
+      results.forEach(render);
       const fixed = results.filter((r) => r.status === 'repaired').length;
       const would = results.filter((r) => r.status === 'would-repair').length;
-      console.log(chalk.bold(options.dryRun ? `${would} session(s) would be repaired.` : `Repaired ${fixed} session(s).`));
+      console.log(chalk.bold(options.apply ? `Repaired ${fixed} session(s).` : `${would} session(s) would be repaired. Re-run with --apply to write.`));
     } catch (err) {
       console.error(chalk.red('Error:'), err instanceof Error ? err.message : err);
       process.exit(1);
