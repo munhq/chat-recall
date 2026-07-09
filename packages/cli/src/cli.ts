@@ -383,9 +383,10 @@ program
   .option('--all', 'Scan the recency window and repair EVERY damaged session (no ids needed)', false)
   .option('--since-hours <n>', 'With --all: only scan sessions modified in the last N hours', '72')
   .option('--apply', 'Actually write the recovered conversations to the server(s). Without this, nothing is mutated.', false)
+  .option('--server <url>', 'Target ONLY this server (e.g. the SaaS), instead of every configured sync endpoint')
   .option('--force', 'Push even to servers that already look full', false)
   .option('-v, --verbose', 'Per-session detail', false)
-  .action(async (sessionIds: string[], options: { all?: boolean; sinceHours?: string; apply?: boolean; force?: boolean; verbose?: boolean }) => {
+  .action(async (sessionIds: string[], options: { all?: boolean; sinceHours?: string; apply?: boolean; server?: string; force?: boolean; verbose?: boolean }) => {
     try {
       const mode = options.apply ? chalk.red('APPLY (writing to server)') : chalk.cyan('DRY-RUN (read-only)');
       const render = (r: import('./repair.js').RepairResult) => {
@@ -405,6 +406,7 @@ program
           sinceHours: Number(options.sinceHours) || 72,
           apply: options.apply,
           verbose: options.verbose,
+          server: options.server,
         });
         report.candidates.forEach(render);
         const fixed = report.candidates.filter((r) => r.status === 'repaired').length;
@@ -422,7 +424,7 @@ program
       }
       console.log(chalk.bold(`repair · ${mode}`));
       const { repairSessions } = await import('./repair.js');
-      const results = await repairSessions(sessionIds, { dryRun: !options.apply, force: options.force, verbose: options.verbose });
+      const results = await repairSessions(sessionIds, { dryRun: !options.apply, force: options.force, verbose: options.verbose, server: options.server });
       results.forEach(render);
       const fixed = results.filter((r) => r.status === 'repaired').length;
       const would = results.filter((r) => r.status === 'would-repair').length;
