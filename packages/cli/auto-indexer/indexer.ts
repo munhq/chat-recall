@@ -51,7 +51,7 @@ import { runCollectorMigration } from '../src/collector-migrate.js';
 // Injected by the bundler (scripts/bundle.mjs). Falls back for tsx/dev runs.
 declare const __CLI_VERSION__: string;
 const CLI_VERSION = typeof __CLI_VERSION__ === 'string' ? __CLI_VERSION__ : '0.0.0';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 
 const DEBOUNCE_MS = 5000;  // coalesce a burst of file events into one flush
 
@@ -77,6 +77,18 @@ const OPENCODE_DB_PATH = opencodeBackend.dbPath();
 // file, not the main db. Watching all three (db, db-wal, db-shm) catches
 // every kind of write activity.
 const OPENCODE_DB_DIR = dirname(OPENCODE_DB_PATH);
+
+// Resume-guard signal. Claude Code 2.1.20x writes `~/.claude/current-resume`
+// (contents: `claude --resume <id>`) when a resume STARTS, and then rewrites
+// that session's transcript in place — keeping only the continuation, dropping
+// the earlier history from disk. We race that rewrite: the instant this file
+// changes we snapshot the target session into the shadow archive, capturing the
+// still-full transcript before it's truncated. Even if the rewrite wins the
+// race, the snapshot merges with any prior shadow, so history is never lost.
+const CURRENT_RESUME_PATH = join(claudeBackend.homeDir(), 'current-resume');
+// A cleanup pass (trims/deletes transcripts) touches this; a change means the
+// on-disk set shifted and a reconcile ship is worth scheduling.
+const LAST_CLEANUP_PATH = join(claudeBackend.homeDir(), '.last-cleanup');
 
 // ── Debounced ship ──────────────────────────────────────────────────
 // File events accumulate; after DEBOUNCE_MS of quiet we ship once. The
@@ -141,6 +153,26 @@ function scheduleSync(): void {
     pendingFileCount = 0;
     void shipToServer('file-change');
   }, DEBOUNCE_MS);
+}
+
+/**
+ * Resume-guard: `~/.claude/current-resume` changed → a resume is starting for
+ * the session id it names. Snapshot that session into the shadow IMMEDIATELY
+ * (no debounce — we're racing the in-place rewrite) to preserve the full
+ * pre-resume transcript. Best-effort: never throws into the watcher.
+ */
+async function onResumeSignal(path: string): Promise<void> {
+  try {
+    const txt = readFileSync(path, 'utf-8');
+    const m = /--resume\s+([0-9a-fA-F-]{36})/.exec(txt);
+    if (!m) return;
+    const id = m[1];
+    const { snapshotShadow } = await import('@chat-recall/engine/transcript/index.js');
+    const r = await snapshotShadow(id);
+    console.log(`[${ts()}] [resume-guard] shadow ${r.status} for ${id.slice(0, 8)}…` + (r.recovered > 0 ? ` (recovered ${r.recovered} record(s))` : ''));
+  } catch (e) {
+    console.error(`[${ts()}] [resume-guard] ${e instanceof Error ? e.message : e}`);
+  }
 }
 
 // ── File watchers ───────────────────────────────────────────────────
@@ -244,6 +276,16 @@ const agentMemoryWatcher = chokidar.watch(`${CLAUDE_DIR}/*/memory/*.md`, {
   interval: 10000,
 });
 
+// 10. Cleanup marker — a change means Claude Code trimmed/deleted transcripts;
+// schedule a reconcile ship so the server converges to the new on-disk set.
+const cleanupWatcher = chokidar.watch(LAST_CLEANUP_PATH, {
+  persistent: true,
+  ignoreInitial: true,
+  awaitWriteFinish: { stabilityThreshold: 1000, pollInterval: 200 },
+  usePolling: true,
+  interval: 30000,
+});
+
 // Wire up all watchers. Every add/change just arms the debounced ship —
 // the daemon no longer cares which source/type changed, because the sync
 // client rescans and ledgers everything itself.
@@ -257,7 +299,23 @@ const watchers: Record<string, chokidar.FSWatcher> = {
   gemini: geminiWatcher,
   opencode: opencodeWatcher,
   agentMemory: agentMemoryWatcher,
+  cleanup: cleanupWatcher,
 };
+
+// 11. Resume-guard — watched separately because its handler is NOT the
+// debounced ship: it must snapshot the shadow immediately, before the resume
+// rewrite lands. Fast poll for the same reason. `ignoreInitial: false` also
+// snapshots whatever resume was last recorded when the daemon starts.
+const resumeWatcher = chokidar.watch(CURRENT_RESUME_PATH, {
+  persistent: true,
+  ignoreInitial: false,
+  usePolling: true,
+  interval: 1000,
+});
+resumeWatcher
+  .on('add', (p) => { void onResumeSignal(p); })
+  .on('change', (p) => { void onResumeSignal(p); })
+  .on('error', (error) => { console.error(`[${ts()}] [resume-guard] watcher error:`, error); });
 
 for (const [name, watcher] of Object.entries(watchers)) {
   watcher
@@ -288,6 +346,7 @@ console.log(`  Watching codex:    ${CODEX_SESSIONS_DIR}`);
 console.log(`  Watching gemini:   ${GEMINI_TMP_DIR}`);
 console.log(`  Watching opencode: ${OPENCODE_DB_DIR}`);
 console.log(`  Watching agent memory: ${CLAUDE_DIR}/*/memory/`);
+console.log(`  Resume-guard:      ${CURRENT_RESUME_PATH}`);
 console.log(`  Debounce: ${DEBOUNCE_MS}ms · ships via syncIncremental() to the configured server`);
 console.log(`  Ready for changes...`);
 

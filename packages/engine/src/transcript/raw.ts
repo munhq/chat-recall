@@ -13,10 +13,12 @@
  */
 import { gzipSync, gunzipSync } from 'zlib';
 import type { AiTool, RawSessionExport } from '../core/tool-backend.js';
+import { tryGetBackend } from '../core/tool-backend.js';
 import type { Transcript, TranscriptMessage, Subagent } from './types.js';
 import { parseClaudeTranscriptText } from './claude.js';
 import { parseGeminiTranscriptText } from './gemini.js';
 import { parseCodexTranscriptText } from './codex.js';
+import { canonicalEventsToMessages } from './from-events.js';
 
 export interface RawContainer {
   v: 1;
@@ -157,6 +159,25 @@ export function parseTranscriptFromContainer(c: RawContainer): Transcript {
     const main = c.files[0];
     return { messages: main ? parseOpenCodeDumpText(main.text) : [], subagents: [] };
   }
+
+  // Generic fallback for any tool without a hardcoded branch (e.g. agy, and
+  // future single-file tools): if its backend can parse raw text into canonical
+  // events, use that — the container twin of parseTranscript()'s generic
+  // readEvents fallback. Without this an agy session reconstructed from an
+  // archived/shadow container parsed to ZERO messages. Backend registration is
+  // a side-effect import the callers (sync/server/repair) already perform; if
+  // the registry is empty we degrade to empty, same as before.
+  try {
+    const main = c.files.find((f) => !isSub(f.name)) ?? c.files[0];
+    // tryGetBackend is non-throwing and does NOT trigger registration; the
+    // callers that reconstruct containers (sync/server/repair) already import
+    // the backends. Empty registry → null → we degrade to empty, as before.
+    const backend = main ? tryGetBackend(c.tool) : null;
+    if (main && backend?.readEventsFromText) {
+      const messages = canonicalEventsToMessages(backend.readEventsFromText(main.text, c.mtime));
+      if (messages.length > 0) return { messages, subagents: [] };
+    }
+  } catch { /* unparseable — fall through to empty */ }
 
   return { messages: [], subagents: [] };
 }

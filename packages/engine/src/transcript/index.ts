@@ -23,8 +23,14 @@ export * from './types.js';
 export {
   buildRawContainer, gzipContainer, gunzipContainer, mapContainerText,
   parseTranscriptFromContainer, parseOpenCodeDumpText, archiveRawSession,
+  detectForkPredecessor,
   type RawContainer,
 } from './raw.js';
+export {
+  updateShadow, snapshotShadow, seedShadow, readShadowContainer, writeShadowContainer,
+  mergeContainer, mergeLineText, shadowFileFor, shadowRoot, shadowSizeOnDisk,
+  type ShadowUpdate, type ShadowStatus, type ShadowMerge,
+} from './shadow.js';
 export { parseClaudeTranscript, parseClaudeSubagents } from './claude.js';
 export { parseGeminiTranscript } from './gemini.js';
 export { parseOpenCodeTranscript, parseOpenCodeSubagents } from './opencode.js';
