@@ -1,0 +1,88 @@
+/**
+ * Self-heal unit test: a session whose raw archive is FULL but whose rendered
+ * view (content_cache envelope + FTS chunks) was truncated must heal back to
+ * the full message count from its own archive — and a healthy session must be
+ * left untouched (heal only ever grows).
+ */
+import { describe, test, expect, beforeAll, afterAll } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+let dataDir: string;
+let prevDataDir: string | undefined;
+
+beforeAll(() => {
+  prevDataDir = process.env.CHAT_RECALL_DATA_DIR;
+  dataDir = mkdtempSync(join(tmpdir(), 'cr-selfheal-'));
+  process.env.CHAT_RECALL_DATA_DIR = dataDir;
+});
+afterAll(() => {
+  if (prevDataDir === undefined) delete process.env.CHAT_RECALL_DATA_DIR;
+  else process.env.CHAT_RECALL_DATA_DIR = prevDataDir;
+  rmSync(dataDir, { recursive: true, force: true });
+});
+
+// A claude JSONL transcript of N user/assistant messages.
+function jsonl(n: number): string {
+  return Array.from({ length: n }, (_, i) =>
+    JSON.stringify({ type: i % 2 ? 'assistant' : 'user', uuid: `u${i}`, parentUuid: i ? `u${i - 1}` : null, message: { role: i % 2 ? 'assistant' : 'user', content: `message ${i} zorptext` } }),
+  ).join('\n') + '\n';
+}
+
+describe('healSessionFromArchive', () => {
+  test('rebuilds a truncated view from the full raw archive; leaves a healthy one alone', async () => {
+    const { createStore, buildRawContainer, gzipContainer, parseTranscriptFromContainer, TRANSCRIPT_VERSION } = await import('../imports.js');
+    const { healSessionFromArchive } = await import('./self-heal.js');
+
+    const store = await createStore();
+    const id = 'heal-0001';
+    const mtime = 1760000000000;
+
+    // Full archive. The exact parsed count is whatever the canonical parser
+    // yields from these bytes — assert against THAT, not a guess.
+    const container = buildRawContainer({ tool: 'claude', mtime, files: [{ name: `${id}.jsonl`, bytes: Buffer.from(jsonl(40), 'utf-8') }] });
+    const expectedFull = parseTranscriptFromContainer(container).messages.length;
+    expect(expectedFull).toBeGreaterThan(3); // sanity: archive is fuller than the damaged stub
+    const { gz, size } = gzipContainer(container);
+    await store.putRawSession(id, 'claude', mtime, gz, size);
+
+    // Metadata row (head-derived; survives truncation).
+    await store.setItem({
+      id, sourceType: 'session', title: 'message 0 zorptext', projectPath: '/tmp/heal',
+      projectId: 'ws:heal', contentPreview: 'message 0', filePath: '', mtime,
+      extra: { tool: 'claude', synced: true },
+    } as Parameters<typeof store.setItem>[0]);
+
+    // DAMAGED view: envelope with only 3 messages (a resume-truncated sync).
+    await store.setCachedContent(id, 'session', mtime, JSON.stringify({
+      v: TRANSCRIPT_VERSION, messages: Array.from({ length: 3 }, (_, i) => ({ line: i + 1, role: 'user', content: `stub ${i}` })), subagents: [], o: 0,
+    }));
+
+    // Heal it.
+    const r = await healSessionFromArchive(store, id);
+    expect(r.healed).toBe(true);
+    expect(r.from).toBe(3);
+    expect(r.to).toBe(expectedFull);
+
+    // Envelope now full.
+    const healed = JSON.parse((await store.getCachedContentStale(id, 'session'))!.content);
+    expect(healed.messages).toHaveLength(expectedFull);
+
+    // Search now finds it (chunks rebuilt).
+    const hits = await store.searchFTS('zorptext', { topK: 5 });
+    expect(hits.some((h) => h.itemId === id)).toBe(true);
+
+    // Idempotent: a second heal is a no-op (already full, only-ever-grow).
+    const again = await healSessionFromArchive(store, id);
+    expect(again.healed).toBe(false);
+    expect(again.reason).toBe('healthy');
+
+    // No archive → nothing to heal (candidate for client recheck, not an error).
+    const none = await healSessionFromArchive(store, 'does-not-exist');
+    expect(none.healed).toBe(false);
+    expect(none.reason).toBe('no-archive');
+
+    await store.close();
+  });
+});
