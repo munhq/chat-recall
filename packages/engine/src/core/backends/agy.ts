@@ -204,14 +204,24 @@ export class AgyBackend implements ToolBackend {
   readEvents(rawId: string): CanonicalEvent[] {
     const located = this.findSession(rawId);
     if (!located) return [];
-
     let rawText: string;
     try {
       rawText = readFileSync(located.path, 'utf-8');
     } catch {
       return [];
     }
+    return this.readEventsFromText(rawText, located.mtime);
+  }
 
+  /**
+   * Parse agy transcript text into canonical events. Split out from readEvents
+   * so the SAME parser runs on archived/​shadow container bytes (via
+   * parseTranscriptFromContainer's generic fallback), not just the live file —
+   * without it, a recovered or synced-from-raw agy session parsed to zero
+   * messages. `mtimeFallback` stands in for the file mtime when a line has no
+   * timestamp.
+   */
+  readEventsFromText(rawText: string, mtimeFallback = 0): CanonicalEvent[] {
     const events: CanonicalEvent[] = [];
     const lines = rawText.split('\n');
     let lineNum = 0;
@@ -231,7 +241,7 @@ export class AgyBackend implements ToolBackend {
       }
 
       const tsIso = typeof obj.created_at === 'string' ? obj.created_at : undefined;
-      const ts = tsIso ? Date.parse(tsIso) || located.mtime : located.mtime;
+      const ts = tsIso ? Date.parse(tsIso) || mtimeFallback : mtimeFallback;
 
       if (obj.source === 'USER_EXPLICIT' && obj.type === 'USER_INPUT') {
         const content = typeof obj.content === 'string' ? obj.content : '';

@@ -214,6 +214,47 @@ describe('POST /api/sync (ingest)', () => {
     await store.close();
   });
 
+  // ── Shrink guard (server-side defense-in-depth vs. upstream truncation) ──
+  test('shrink guard: a smaller full sync never overwrites a fuller stored conversation', async () => {
+    const { createControlPlane, createStore } = await import('../imports.js');
+    const syncRouter = (await import('./sync.js')).default;
+    const app = express();
+    app.use(express.json({ limit: '16mb' }));
+    app.use('/api/sync', syncRouter);
+    const cp = await createControlPlane();
+    const token = await cp.mintAgentToken('default', 'shrink-test');
+    await cp.close();
+
+    const sessionId = 'aaaabbbb-cccc-dddd-eeee-ffff00001111';
+    const mtime = 1750002000000;
+    const env = (n: number) => ({
+      v: 6,
+      messages: Array.from({ length: n }, (_, i) => ({ line: i + 1, role: i % 2 ? 'assistant' : 'user', content: `msg number ${i} zorptastic` })),
+      subagents: [],
+    });
+    const post = (body: unknown) => request(app).post('/api/sync').set('authorization', `Bearer ${token}`).send(body as object);
+
+    // Seed the full 10-message conversation.
+    let res = await post({ conversations: [{ session_id: sessionId, tool: 'claude', project_path: '/tmp/shrink', mtime, envelope: env(10) }] });
+    expect(res.body.conv).toBe(1);
+    const store = await createStore();
+    expect(JSON.parse((await store.getCachedContent(sessionId, 'session', mtime))!).messages).toHaveLength(10);
+
+    // An OLD client (no shadow) re-ships the same session resume-truncated to 2
+    // messages. The guard must keep the stored 10 and count it, not overwrite.
+    res = await post({ conversations: [{ session_id: sessionId, tool: 'claude', project_path: '/tmp/shrink', mtime: mtime + 1000, envelope: env(2) }] });
+    expect(res.body.shrinkGuarded).toBe(1);
+    expect(res.body.conv).toBe(0);
+    expect(JSON.parse((await store.getCachedContentStale(sessionId, 'session'))!.content).messages).toHaveLength(10);
+
+    // A legitimate growth to 12 messages still ingests normally.
+    res = await post({ conversations: [{ session_id: sessionId, tool: 'claude', project_path: '/tmp/shrink', mtime: mtime + 2000, envelope: env(12) }] });
+    expect(res.body.shrinkGuarded).toBeFalsy();
+    expect(res.body.conv).toBe(1);
+    expect(JSON.parse((await store.getCachedContentStale(sessionId, 'session'))!.content).messages).toHaveLength(12);
+    await store.close();
+  });
+
   test('self-host none-mode accepts a TOKENLESS push as the default tenant', async () => {
     const prev = process.env.AUTH_PROVIDER;
     process.env.AUTH_PROVIDER = 'none';

@@ -42,7 +42,7 @@ import { loadSettings, saveSettings } from '@chat-recall/engine/core/settings.js
 import { getDataDir } from '@chat-recall/engine/core/paths.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
 import { extractTurnsAny, replaySessionAny } from '@chat-recall/engine/core/session-multi-tool.js';
-import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION, gzipContainer, mapContainerText, buildRawContainer } from '@chat-recall/engine/transcript/index.js';
+import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION, gzipContainer, mapContainerText, buildRawContainer, parseTranscriptFromContainer, updateShadow, type RawContainer } from '@chat-recall/engine/transcript/index.js';
 import { parseClaudeTranscriptText } from '@chat-recall/engine/transcript/claude.js';
 import { parseGeminiTranscriptText } from '@chat-recall/engine/transcript/gemini.js';
 import { parseCodexTranscriptText } from '@chat-recall/engine/transcript/codex.js';
@@ -1151,8 +1151,11 @@ export async function buildConversationSync(
   let tailOffsetEnd = 0;
 
   // Parse the transcript live — this is the single canonical parse; the
-  // envelope and the redacted text both come from it.
+  // envelope and the redacted text both come from it. When the shadow path
+  // runs (normal-size sessions) it also yields the fullest raw container, which
+  // the secret scan + raw archive below reuse instead of re-exporting.
   let transcript: { messages: any[]; subagents: any[] } | null = null;
+  let fullestContainer: RawContainer | null = null;
   if (oversized) {
     const backend = getBackendForId(ref.prefixedId);
     if (!backend?.readFromOffset) return null;
@@ -1165,11 +1168,36 @@ export async function buildConversationSync(
     } catch { /* unreadable tail */ }
     includeRaw = false;   // exportRawSession would read the whole file
     includeMeta = false;  // parseSessionFile would read the whole file
+    // NB: oversized sessions are NOT shadowed — a full export would OOM the
+    // walk (the very reason for the tail path). A session truncated FROM
+    // oversized down to normal falls back to a fresh 'created' shadow; the
+    // recovery command backfills its pre-truncation history from the archive.
   } else {
+    // Export the raw transcript ONCE, fold it into the shadow archive, and
+    // parse the FULLEST-known state. If an upstream tool truncated the file in
+    // place (e.g. a Claude Code 2.1.20x `--resume` rewrite), the shadow still
+    // holds the lost history, and the merged container — not the shrunken disk
+    // file — is what we parse and ship. The server therefore never sees a
+    // shrink, and every viewer tab keeps its full history.
     try {
-      const t = await parseTranscript(ref.prefixedId);
-      if (t && (t.messages.length > 0 || t.subagents.length > 0)) transcript = t;
-    } catch { /* unparseable */ }
+      const backend = getBackendForId(ref.prefixedId) ?? getBackend('claude');
+      const exp = backend.exportRawSession(ref.prefixedId);
+      const shadow = updateShadow(ref.rawId, exp);
+      if (shadow.container) {
+        fullestContainer = shadow.container;
+        if (shadow.status === 'rewrite-merged' && shadow.recovered > 0) {
+          console.error(`[sync] shadow recovered ${shadow.recovered} record(s) for ${ref.prefixedId} after an upstream rewrite/truncation`);
+        }
+        const t = parseTranscriptFromContainer(shadow.container);
+        if (t.messages.length > 0 || t.subagents.length > 0) transcript = { messages: t.messages, subagents: t.subagents };
+      }
+    } catch { /* shadow/export failed — fall back to the live parse below */ }
+    if (!transcript) {
+      try {
+        const t = await parseTranscript(ref.prefixedId);
+        if (t && (t.messages.length > 0 || t.subagents.length > 0)) transcript = t;
+      } catch { /* unparseable */ }
+    }
   }
   if (!transcript) return null;
 
@@ -1241,8 +1269,11 @@ export async function buildConversationSync(
   // Oversized sessions never materialize the container — the builtin regex
   // scan runs over the bounded tail instead (same coverage the APPEND path
   // gives a growing session's new bytes).
-  let container: ReturnType<typeof buildRawContainer> | null = null;
-  if (!oversized) {
+  // Reuse the shadow's fullest container (already exported + merged above) so
+  // the secret scan and raw archive cover the RECOVERED full history, not the
+  // truncated disk file. Only re-export when the shadow path didn't produce one.
+  let container: RawContainer | null = fullestContainer;
+  if (!container && !oversized) {
     try {
       const backend = getBackendForId(ref.prefixedId) ?? getBackend('claude');
       const exp = backend.exportRawSession(ref.prefixedId);
