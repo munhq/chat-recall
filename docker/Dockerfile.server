@@ -37,6 +37,10 @@ COPY --from=enginebuild /app/packages/engine/dist ./node_modules/@chat-recall/en
 ARG VITE_OIDC_ISSUER
 ARG VITE_OIDC_CLIENT_ID
 ARG VITE_API_BASE
+# GlitchTip DSN for browser crash reporting (shared munhq-frontend project).
+# Public key, baked into the client bundle; Vite reads it from the env.
+ARG VITE_GLITCHTIP_DSN
+ENV VITE_GLITCHTIP_DSN=$VITE_GLITCHTIP_DSN
 RUN npm run build
 
 # ── Stage 2: compile the TypeScript workspaces ────────────────────────────────

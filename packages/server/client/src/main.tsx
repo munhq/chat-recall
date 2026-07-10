@@ -1,10 +1,24 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import * as Sentry from '@sentry/browser';
 import App from './App';
 import LandingPage from './components/LandingPage';
 import ErrorBoundary from './components/ErrorBoundary';
 import { isCloud, ensureLogin, hasStoredSession, isAuthCallback, beginLogin } from './services/auth';
 import './index.css';
+
+// Crash reporting → shared munhq-frontend GlitchTip project. The `app` tag
+// marks these as chat-recall (tier project stays per-app filterable). The DSN
+// is a public key, baked at build (Vite inlines VITE_GLITCHTIP_DSN); no-ops
+// when unset. Default integrations capture window.onerror + unhandledrejection.
+const glitchtipDsn = import.meta.env.VITE_GLITCHTIP_DSN;
+if (glitchtipDsn) {
+  Sentry.init({
+    dsn: glitchtipDsn,
+    initialScope: { tags: { app: 'chat-recall' } },
+    tracesSampleRate: 0,
+  });
+}
 
 const root = ReactDOM.createRoot(document.getElementById('root')!);
 

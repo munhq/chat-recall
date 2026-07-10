@@ -2,6 +2,9 @@
  * Express server for chat-recall UI backend.
  */
 
+// MUST be first — installs @sentry/node instrumentation before other modules load.
+import './instrument.js';
+import * as Sentry from '@sentry/node';
 import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
@@ -280,6 +283,11 @@ if (existsSync(STATIC_DIR)) {
   });
   log.info({ staticDir: STATIC_DIR }, 'serving client');
 }
+
+// Capture request errors to GlitchTip before our own handler formats the 500.
+// Registered after all routes, before the JSON error handler (no-ops if Sentry
+// wasn't initialized — i.e. GLITCHTIP_DSN unset).
+Sentry.setupExpressErrorHandler(app);
 
 // Error handler. pino serializes the `err` key (message + stack); the reqId and
 // tenant ride along from the request log context.
