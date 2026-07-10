@@ -1369,6 +1369,21 @@ export class MemoryStore {
     return this.db.prepare(`SELECT session_id, mtime, size FROM raw_sessions`).all() as any;
   }
 
+  /** Session ids that HAVE a rendered envelope but NO raw archive — the server
+   *  has no fallback to self-heal them, so the client (disk + shadow) is the
+   *  only fuller source. The self-heal sweep enqueues a client recheck for
+   *  these. `sinceMs` bounds to recent envelopes; `limit` caps one pass. */
+  listEnvelopesMissingRawArchive(sinceMs = 0, limit = 200): string[] {
+    this.ensureRawSessionsTable();
+    const rows = this.db.prepare(`
+      SELECT c.id FROM content_cache c
+      WHERE c.source_type = 'session' AND c.mtime >= ?
+        AND NOT EXISTS (SELECT 1 FROM raw_sessions r WHERE r.session_id = c.id)
+      ORDER BY c.mtime DESC LIMIT ?
+    `).all(Math.floor(sinceMs) || 0, limit) as Array<{ id: string }>;
+    return rows.map((r) => r.id);
+  }
+
   /** Latest cached content for an item regardless of mtime — the
    *  stale-serving read: a snapshot from the last sync beats degrading
    *  to a lossier representation while a re-sync is mid-flight. */
@@ -1980,7 +1995,7 @@ function rowToCodeAction(r: any): CodeActionRow {
 
 /** Input to enqueue a cross-tool sync intent. */
 export interface SyncIntentInput {
-  kind: 'copy' | 'sync_all' | 'code_apply';
+  kind: 'copy' | 'sync_all' | 'code_apply' | 'recheck_session';
   /** Target device (null/undefined = any device in the tenant). */
   deviceId?: string | null;
   artifactType?: string | null;  // skill|mcp|command|agent (copy only)
@@ -1994,7 +2009,7 @@ export interface SyncIntentInput {
 export interface SyncIntentRow {
   id: string;
   device_id: string | null;
-  kind: 'copy' | 'sync_all' | 'code_apply';
+  kind: 'copy' | 'sync_all' | 'code_apply' | 'recheck_session';
   artifact_type: string | null;
   name: string | null;
   from_tool: string | null;

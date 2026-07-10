@@ -25,7 +25,7 @@ import { pushProjectTaskStatuses } from './project-tasks.js';
 
 interface PendingIntent {
   id: string;
-  kind: 'copy' | 'sync_all' | 'code_apply';
+  kind: 'copy' | 'sync_all' | 'code_apply' | 'recheck_session';
   artifact_type: string | null;
   name: string | null;
   from_tool: string | null;
@@ -77,8 +77,19 @@ export interface DrainResult {
 }
 
 /** Run one intent and return the (status, result-json) to ack with. */
-async function runIntent(intent: PendingIntent): Promise<{ status: 'done' | 'error'; result: string }> {
+async function runIntent(intent: PendingIntent, ctx: { base: string }): Promise<{ status: 'done' | 'error'; result: string }> {
   try {
+    if (intent.kind === 'recheck_session') {
+      // The server has a thin/absent copy of this session and is asking us to
+      // re-verify from THIS machine (disk + shadow = the fullest local truth)
+      // and re-push if we have more. repairSession does exactly that, scoped to
+      // the requesting server, writing (not a dry run).
+      const id = intent.name;
+      if (!id) return { status: 'error', result: JSON.stringify({ error: 'recheck missing session id' }) };
+      const { repairSession } = await import('./repair.js');
+      const r = await repairSession(id, { dryRun: false, server: ctx.base });
+      return { status: r.status === 'error' ? 'error' : 'done', result: JSON.stringify(r) };
+    }
     if (intent.kind === 'code_apply') {
       return applyCodeRecommendation(intent);
     }
@@ -121,11 +132,13 @@ export async function drainSyncIntents(opts: { verbose?: boolean } = {}): Promis
     }
 
     for (const intent of pending) {
-      const { status, result } = await runIntent(intent);
+      const { status, result } = await runIntent(intent, { base });
       out.processed++;
       if (status === 'done') out.done++; else out.errored++;
       if (opts.verbose) {
-        const label = intent.kind === 'sync_all' ? 'sync_all' : `${intent.artifact_type} "${intent.name}" ${intent.from_tool}→${intent.to_tool}`;
+        const label = intent.kind === 'sync_all' ? 'sync_all'
+          : intent.kind === 'recheck_session' ? `recheck ${intent.name}`
+          : `${intent.artifact_type} "${intent.name}" ${intent.from_tool}→${intent.to_tool}`;
         console.error(`[sync-intent] ${label}: ${status}`);
       }
       try {

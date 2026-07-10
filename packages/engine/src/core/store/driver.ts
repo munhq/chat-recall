@@ -109,6 +109,7 @@ export interface StorageDriver {
   putRawSession: AsyncMethod<MemoryStore['putRawSession']>;
   getRawSession: AsyncMethod<MemoryStore['getRawSession']>;
   listRawSessionVersions: AsyncMethod<MemoryStore['listRawSessionVersions']>;
+  listEnvelopesMissingRawArchive: AsyncMethod<MemoryStore['listEnvelopesMissingRawArchive']>;
 
   // ── KV store ──
   kvSet: AsyncMethod<MemoryStore['kvSet']>;

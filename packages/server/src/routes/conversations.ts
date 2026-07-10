@@ -176,6 +176,29 @@ router.delete('/:id', async (req, res) => {
 // No filesystem walk, no JS sort, no in-process index cache — the page
 // rows + total count both come back in <5ms even on a 10k-session install.
 //
+// GET /api/conversations/heal-audit — read-only self-heal audit for the
+// caller's tenant. Dry-runs the same envelope-vs-archive comparison the sweep
+// uses and reports how many sessions are still damaged (archive fuller than the
+// rendered view). `?since_hours=N` bounds the scan. Writes NOTHING — this is the
+// authoritative "0 remaining" check (the CLI repair --all scan is metric-fuzzy).
+// Registered BEFORE '/:id' so the literal path isn't captured as an id.
+router.get('/heal-audit', async (req, res) => {
+  const sinceHoursRaw = req.query.since_hours as string | undefined;
+  const sinceHours = sinceHoursRaw ? Number(sinceHoursRaw) : undefined;
+  const sinceMs = sinceHours && Number.isFinite(sinceHours) && sinceHours > 0 ? Date.now() - sinceHours * 3600 * 1000 : 0;
+  const store = await createStore();
+  try {
+    const { selfHealTenant } = await import('../services/self-heal.js');
+    const r = await selfHealTenant(store, { sinceMs, dryRun: true });
+    res.json({ scanned: r.scanned, damaged: r.damaged, healthy: r.scanned - r.damaged });
+  } catch (error) {
+    log.error({ err: error }, 'heal-audit error');
+    res.status(500).json({ error: error instanceof Error ? error.message : 'heal-audit failed' });
+  } finally {
+    await store.close();
+  }
+});
+
 // Falls back to the legacy filesystem walk only when the index is empty
 // (fresh install before the auto-indexer has populated anything).
 router.get('/recent', async (req, res) => {

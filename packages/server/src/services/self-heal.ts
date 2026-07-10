@@ -36,23 +36,25 @@ type Store = Awaited<ReturnType<typeof createStore>>;
 
 export interface HealResult {
   sessionId: string;
-  healed: boolean;
-  from: number;   // message count before
-  to: number;     // message count after (archive count)
+  damaged: boolean;  // archive is fuller than the current view
+  healed: boolean;   // we actually rebuilt (damaged && !dryRun && wrote)
+  from: number;      // message count before
+  to: number;        // message count after / would-be (archive count)
   reason?: 'no-archive' | 'corrupt-archive' | 'healthy' | 'error';
 }
 
 /**
  * Rebuild ONE session's view (envelope + FTS chunks) from its raw archive when
- * the archive is fuller than the current view. No-op (fast) otherwise. Must be
- * called inside the target tenant's context (the store is tenant-scoped).
+ * the archive is fuller than the current view. No-op (fast) otherwise. With
+ * `dryRun`, detects damage but writes nothing (the audit path). Must run inside
+ * the target tenant's context (the store is tenant-scoped).
  */
-export async function healSessionFromArchive(store: Store, sessionId: string): Promise<HealResult> {
+export async function healSessionFromArchive(store: Store, sessionId: string, opts: { dryRun?: boolean } = {}): Promise<HealResult> {
   try {
     const raw = await store.getRawSession(sessionId);
-    if (!raw) return { sessionId, healed: false, from: 0, to: 0, reason: 'no-archive' };
+    if (!raw) return { sessionId, damaged: false, healed: false, from: 0, to: 0, reason: 'no-archive' };
     const container = gunzipContainer(raw.gz);
-    if (!container) return { sessionId, healed: false, from: 0, to: 0, reason: 'corrupt-archive' };
+    if (!container) return { sessionId, damaged: false, healed: false, from: 0, to: 0, reason: 'corrupt-archive' };
 
     const parsed = parseTranscriptFromContainer(container);
     const archiveMsgs = parsed.messages.length;
@@ -69,7 +71,8 @@ export async function healSessionFromArchive(store: Store, sessionId: string): P
     }
 
     // Only ever grow. Archive not fuller ⇒ nothing to do.
-    if (archiveMsgs <= itemMsgs) return { sessionId, healed: false, from: itemMsgs, to: archiveMsgs, reason: 'healthy' };
+    if (archiveMsgs <= itemMsgs) return { sessionId, damaged: false, healed: false, from: itemMsgs, to: archiveMsgs, reason: 'healthy' };
+    if (opts.dryRun) return { sessionId, damaged: true, healed: false, from: itemMsgs, to: archiveMsgs };
 
     // Project context for chunk rows comes from the metadata row (title/project
     // are head-derived and unaffected by truncation, so they're trustworthy).
@@ -94,24 +97,69 @@ export async function healSessionFromArchive(store: Store, sessionId: string): P
     const all = subs.length > 0 ? [...cks, ...subs] : cks;
     if (all.length > 0) await store.addChunksFTS(all);
 
-    return { sessionId, healed: true, from: itemMsgs, to: archiveMsgs };
+    return { sessionId, damaged: true, healed: true, from: itemMsgs, to: archiveMsgs };
   } catch (err) {
     log.error({ err, session: sessionId }, 'self-heal failed for session');
-    return { sessionId, healed: false, from: 0, to: 0, reason: 'error' };
+    return { sessionId, damaged: false, healed: false, from: 0, to: 0, reason: 'error' };
   }
 }
 
-export interface SweepResult { scanned: number; healed: number; tenants: number }
+export interface SweepResult { scanned: number; healed: number; damaged: number; recheckEnqueued: number; tenants: number }
+
+/** Heal every session in ONE (already tenant-scoped) store whose archive is
+ *  fuller than its view; then enqueue client-recheck intents for sessions the
+ *  server CANNOT heal (an envelope but no raw archive — the client may hold the
+ *  fuller copy in its shadow). Returns per-tenant counts. */
+export async function selfHealTenant(store: Store, opts: { sinceMs?: number; dryRun?: boolean } = {}): Promise<{ scanned: number; healed: number; damaged: number; recheckEnqueued: number }> {
+  const sinceMs = opts.sinceMs ?? 0;
+  let scanned = 0, healed = 0, damaged = 0, recheckEnqueued = 0;
+
+  // 1. Server-side heal (archive fuller than view). No cap — a full backlog
+  //    pass must cover EVERY session, or old-but-damaged ones get left behind.
+  let rows = await store.listRawSessionVersions(); // [{ session_id, mtime, size }]
+  if (sinceMs > 0) rows = rows.filter((r) => (r.mtime || 0) >= sinceMs);
+  rows.sort((a, b) => (b.mtime || 0) - (a.mtime || 0)); // freshest first (only matters if ever capped upstream)
+  for (const r of rows) {
+    scanned++;
+    const res = await healSessionFromArchive(store, r.session_id, { dryRun: opts.dryRun });
+    if (res.damaged) damaged++;
+    if (res.healed) healed++;
+  }
+
+  // 2. Client-recheck for what the server can't heal: sessions that HAVE a view
+  //    but NO raw archive — the archive is the only server-side truth, so if
+  //    it's absent the client (disk + shadow) is the only fuller source. Ask it.
+  //    Deduped against already-pending recheck intents; bounded per tick.
+  if (!opts.dryRun && typeof store.listEnvelopesMissingRawArchive === 'function') {
+    try {
+      const RECHECK_CAP = 200;
+      const missing = await store.listEnvelopesMissingRawArchive(sinceMs, RECHECK_CAP);
+      if (missing.length > 0) {
+        const pending = await store.listPendingSyncIntents(undefined, 5000);
+        const pendingRecheck = new Set(
+          (pending as Array<{ kind?: string; name?: string }>).filter((p) => p.kind === 'recheck_session').map((p) => p.name),
+        );
+        for (const sid of missing) {
+          if (pendingRecheck.has(sid)) continue;
+          await store.enqueueSyncIntent({ kind: 'recheck_session', name: sid });
+          recheckEnqueued++;
+        }
+      }
+    } catch (err) {
+      log.error({ err }, 'recheck-intent enqueue failed');
+    }
+  }
+
+  return { scanned, healed, damaged, recheckEnqueued };
+}
 
 /**
- * Sweep every tenant, healing sessions whose archive is fuller than their view.
- * `sinceMs` bounds the scan to recently-captured archives (0 = all). Per-tenant
- * `limit` bounds one tick. Enumerates tenants from the control plane, exactly
- * like the vector/summary workers.
+ * Sweep every tenant. Enumerates tenants from the control plane (like the
+ * vector/summary workers). `sinceMs` bounds to recently-captured archives
+ * (0 = full backlog). `dryRun` = audit only, writes nothing.
  */
-export async function selfHealSweepAllTenants(opts: { sinceMs?: number; limitPerTenant?: number } = {}): Promise<SweepResult> {
+export async function selfHealSweepAllTenants(opts: { sinceMs?: number; dryRun?: boolean } = {}): Promise<SweepResult> {
   const sinceMs = opts.sinceMs ?? 0;
-  const limit = opts.limitPerTenant ?? 5000;
 
   const cp = await createControlPlane();
   let tenants: string[] = [];
@@ -121,27 +169,20 @@ export async function selfHealSweepAllTenants(opts: { sinceMs?: number; limitPer
   const excluded = new Set((process.env.SELFHEAL_EXCLUDE_TENANTS ?? 'synccheck').split(',').map((s) => s.trim()).filter(Boolean));
   tenants = tenants.filter((t) => !excluded.has(t));
 
-  let scanned = 0, healed = 0;
+  let scanned = 0, healed = 0, damaged = 0, recheckEnqueued = 0;
   for (const tenant of tenants) {
     await runWithTenant(tenant, async () => {
       const store = await createStore();
       try {
-        let rows = await store.listRawSessionVersions(); // [{ session_id, mtime, size }]
-        if (sinceMs > 0) rows = rows.filter((r) => (r.mtime || 0) >= sinceMs);
-        rows.sort((a, b) => (b.mtime || 0) - (a.mtime || 0)); // freshest first
-        if (rows.length > limit) rows = rows.slice(0, limit);
-        for (const r of rows) {
-          scanned++;
-          const res = await healSessionFromArchive(store, r.session_id);
-          if (res.healed) {
-            healed++;
-            log.info({ tenant, session: r.session_id, from: res.from, to: res.to }, 'self-healed session from archive');
-          }
+        const r = await selfHealTenant(store, { sinceMs, dryRun: opts.dryRun });
+        scanned += r.scanned; healed += r.healed; damaged += r.damaged; recheckEnqueued += r.recheckEnqueued;
+        if (r.healed > 0 || r.recheckEnqueued > 0) {
+          log.info({ tenant, ...r }, opts.dryRun ? 'self-heal audit (tenant)' : 'self-heal sweep (tenant)');
         }
       } finally {
         await store.close();
       }
     });
   }
-  return { scanned, healed, tenants: tenants.length };
+  return { scanned, healed, damaged, recheckEnqueued, tenants: tenants.length };
 }

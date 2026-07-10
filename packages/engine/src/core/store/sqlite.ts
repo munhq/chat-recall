@@ -103,6 +103,7 @@ export class SqliteStore implements StorageDriver {
   async putRawSession(...a: Args<'putRawSession'>) { return this.inner.putRawSession(...a); }
   async getRawSession(...a: Args<'getRawSession'>) { return this.inner.getRawSession(...a); }
   async listRawSessionVersions(...a: Args<'listRawSessionVersions'>) { return this.inner.listRawSessionVersions(...a); }
+  async listEnvelopesMissingRawArchive(...a: Args<'listEnvelopesMissingRawArchive'>) { return this.inner.listEnvelopesMissingRawArchive(...a); }
 
   // ── KV ──
   async kvSet(...a: Args<'kvSet'>) { return this.inner.kvSet(...a); }
