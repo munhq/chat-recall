@@ -85,4 +85,46 @@ describe('healSessionFromArchive', () => {
 
     await store.close();
   });
+
+  test('dry-run detects damage but writes nothing', async () => {
+    const { createStore, buildRawContainer, gzipContainer, parseTranscriptFromContainer, TRANSCRIPT_VERSION } = await import('../imports.js');
+    const { healSessionFromArchive } = await import('./self-heal.js');
+    const store = await createStore();
+    const id = 'heal-dry-1';
+    const mtime = 1760000100000;
+    const container = buildRawContainer({ tool: 'claude', mtime, files: [{ name: `${id}.jsonl`, bytes: Buffer.from(jsonl(30), 'utf-8') }] });
+    const full = parseTranscriptFromContainer(container).messages.length;
+    const { gz, size } = gzipContainer(container);
+    await store.putRawSession(id, 'claude', mtime, gz, size);
+    await store.setCachedContent(id, 'session', mtime, JSON.stringify({ v: TRANSCRIPT_VERSION, messages: [{ line: 1, role: 'user', content: 'stub' }], subagents: [], o: 0 }));
+
+    const dry = await healSessionFromArchive(store, id, { dryRun: true });
+    expect(dry.damaged).toBe(true);
+    expect(dry.healed).toBe(false);
+    expect(dry.to).toBe(full);
+    // Envelope untouched by the dry run.
+    expect(JSON.parse((await store.getCachedContentStale(id, 'session'))!.content).messages).toHaveLength(1);
+    await store.close();
+  });
+
+  test('recheck: a session with an envelope but no archive is enqueued for client recheck', async () => {
+    const { createStore, TRANSCRIPT_VERSION } = await import('../imports.js');
+    const { selfHealTenant } = await import('./self-heal.js');
+    const store = await createStore();
+    const id = 'recheck-1';
+    const mtime = 1760000200000;
+    // Envelope present, NO raw archive → server can't self-heal → client recheck.
+    await store.setItem({ id, sourceType: 'session', title: 't', projectPath: '/tmp/r', contentPreview: 'c', filePath: '', mtime, extra: { tool: 'claude' } } as Parameters<typeof store.setItem>[0]);
+    await store.setCachedContent(id, 'session', mtime, JSON.stringify({ v: TRANSCRIPT_VERSION, messages: [{ line: 1, role: 'user', content: 'thin' }], subagents: [], o: 0 }));
+
+    const r = await selfHealTenant(store, { sinceMs: 0, dryRun: false });
+    expect(r.recheckEnqueued).toBeGreaterThanOrEqual(1);
+    const pending = await store.listPendingSyncIntents(undefined, 100);
+    expect(pending.some((p) => p.kind === 'recheck_session' && p.name === id)).toBe(true);
+
+    // Idempotent: a second sweep doesn't double-enqueue (dedup vs pending).
+    const r2 = await selfHealTenant(store, { sinceMs: 0, dryRun: false });
+    expect(r2.recheckEnqueued).toBe(0);
+    await store.close();
+  });
 });
