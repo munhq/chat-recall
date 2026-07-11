@@ -16,6 +16,18 @@ const INJECTED_BANNERS: RegExp[] = [
   /MCP issues detected\. ?Run \/mcp list for status\.?/g,
   /Context low[^\n]*Run \/compact[^\n]*/g,
   /API Error:[^\n]{0,120}/g,
+  // Slash-command / local-command plumbing Claude Code logs as `user` turns:
+  // the caveat banner, the `/command` invocation record, and its stdout. These
+  // are UI/tooling noise, not conversation — strip them so a message that is
+  // ONLY this plumbing collapses to empty and is dropped (see the user branch).
+  /<local-command-caveat>[\s\S]*?<\/local-command-caveat>/g,
+  /<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g,
+  /<command-name>[\s\S]*?<\/command-name>/g,
+  /<command-message>[\s\S]*?<\/command-message>/g,
+  /<command-args>[\s\S]*?<\/command-args>/g,
+  // ANSI SGR escapes that leak into logged stdout (e.g. "[1mSonnet 5[22m").
+  // eslint-disable-next-line no-control-regex
+  /\[[0-9;]*m/g,
 ];
 function stripBanners(text: string): string {
   let out = text;
@@ -108,7 +120,9 @@ function messagesFromRawLines(raw: Array<{ line: number; obj: any }>): Message[]
           .join('\n');
       }
       if (!text.trim()) continue; // tool_result-only user messages are attached to the preceding assistant
-      messages.push({ line, role: 'user', content: stripBanners(text), timestamp });
+      const cleaned = stripBanners(text);
+      if (!cleaned) continue; // was ONLY banners / local-command plumbing → drop it
+      messages.push({ line, role: 'user', content: cleaned, timestamp });
     } else if (obj.type === 'assistant') {
       const blocks = Array.isArray(obj.message?.content) ? obj.message.content : [];
       const thinkingBlock = blocks.find((c: any) => c?.type === 'thinking');
