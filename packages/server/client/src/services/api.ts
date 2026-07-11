@@ -439,6 +439,24 @@ export async function getConversationWithSubagents(
  *   - limit=0 → no slice (legacy / debug only — large sessions = MB of JSON)
  *   - limit>0 → server returns up to `limit` messages from `offset`
  */
+// Claude Code logs slash-command / local-command plumbing as `user` turns
+// (the caveat banner, the `/command` record, its stdout). The parser strips
+// these at the source now, but envelopes synced before that fix still carry
+// them — so we also drop them at render for immediate effect on existing data.
+const COMMAND_NOISE = [
+  /<local-command-caveat>[\s\S]*?<\/local-command-caveat>/g,
+  /<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g,
+  /<command-name>[\s\S]*?<\/command-name>/g,
+  /<command-message>[\s\S]*?<\/command-message>/g,
+  /<command-args>[\s\S]*?<\/command-args>/g,
+];
+function isCommandNoise(m: Message): boolean {
+  if (m.role !== 'user' || m.toolCalls?.length) return false;
+  let t = m.content ?? '';
+  for (const re of COMMAND_NOISE) t = t.replace(re, ' ');
+  return t.trim().length === 0 && (m.content ?? '').trim().length > 0;
+}
+
 export async function getConversationPage(
   sessionId: string,
   offset = 0,
@@ -448,10 +466,11 @@ export async function getConversationPage(
   const res = await fetchWithTimeout(`${API_BASE}/conversations/${sessionId}?${params}`, {}, 30000);
   if (!res.ok) throw new Error(`Failed to get conversation: ${res.statusText}`);
   const data = await res.json();
+  const messages = (data.messages ?? []).filter((m: Message) => !isCommandNoise(m));
   return {
-    messages: data.messages ?? [],
+    messages,
     subagents: data.subagents ?? [],
-    total: data.total ?? (data.messages?.length ?? 0),
+    total: data.total ?? (messages.length),
     offset: data.offset ?? offset,
     hasMore: !!data.hasMore,
   };
