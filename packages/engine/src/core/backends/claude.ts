@@ -279,13 +279,31 @@ export class ClaudeBackend implements ToolBackend {
     const paths = resolveSessionContentPaths(located.path);
     const events: CanonicalEvent[] = [];
     let lineNum = 0;
-
     for (const filePath of paths) {
       let mtime = 0;
       try { mtime = statSync(filePath).mtimeMs; } catch { /* ignore */ }
       let raw: string;
       try { raw = readFileSync(filePath, 'utf-8'); } catch { continue; }
+      lineNum = this.appendEventsFromText(events, raw, mtime, lineNum);
+    }
+    return events;
+  }
 
+  /**
+   * Parse events from one file's JSONL TEXT (not a path) — so the server can
+   * replay a session's diff from its archived/shadow container bytes, not just
+   * the live file. `startLine` continues line numbering across a multi-file
+   * (main + subagents) container; returns the next line number. Same per-line
+   * logic as readEvents (extracted verbatim). */
+  readEventsFromText(text: string, mtimeFallback = 0): CanonicalEvent[] {
+    const events: CanonicalEvent[] = [];
+    this.appendEventsFromText(events, text, mtimeFallback, 0);
+    return events;
+  }
+
+  private appendEventsFromText(events: CanonicalEvent[], raw: string, mtime: number, startLine: number): number {
+    let lineNum = startLine;
+    {
       for (const line of raw.split('\n')) {
         lineNum++;
         if (!line.trim()) continue;
@@ -368,8 +386,7 @@ export class ClaudeBackend implements ToolBackend {
         }
       }
     }
-
-    return events;
+    return lineNum;
   }
 
   // ── Per-session operations — all delegate to the generic engine ─
