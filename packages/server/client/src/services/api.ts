@@ -1424,6 +1424,32 @@ export async function getEditsTimeline(opts: {
   return await res.json();
 }
 
+// ── Activity summary (the "work rhythm" view) ──
+export interface ActivityOutcomes { shipped: number; interrupted: number; abandoned: number; inProgress: number }
+export interface ActivityProject {
+  id: string; name: string; files: number; linesAdded: number; linesRemoved: number;
+  sessions: number; outcomes: ActivityOutcomes; sparkline: number[];
+  hotFiles: Array<{ file: string; edits: number }>;
+}
+export interface ActivitySummaryResponse {
+  window: { sinceHours: number; from: number; to: number };
+  pulse: Array<{ bucket: number; edits: number; sessions: number }>;
+  totals: { sessions: number; files: number; linesAdded: number; linesRemoved: number } & ActivityOutcomes;
+  projects: ActivityProject[];
+  hotFiles: Array<{ file: string; project: string; edits: number }>;
+  sessions: Array<{ id: string; title: string; tool: AiTool; project: string; outcome: string; files: number; linesAdded: number; linesRemoved: number; mtime: number }>;
+}
+
+export async function getActivitySummary(opts: { sinceHours?: number; project?: string; tools?: AiTool[] } = {}): Promise<ActivitySummaryResponse> {
+  const params = new URLSearchParams();
+  if (opts.sinceHours !== undefined) params.append('since_hours', String(opts.sinceHours));
+  if (opts.project) params.append('project', opts.project);
+  if (opts.tools && opts.tools.length > 0) params.append('tools', opts.tools.join(','));
+  const res = await fetchWithTimeout(`${API_BASE}/edits/summary?${params}`, {}, 60000);
+  if (!res.ok) throw new Error(`Failed to load activity summary: ${res.statusText}`);
+  return await res.json();
+}
+
 
 export async function updateItemProjectPath(
   sourceType: string,

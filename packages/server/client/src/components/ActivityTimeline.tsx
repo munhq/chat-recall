@@ -1,125 +1,136 @@
 /**
- * Activity Timeline — chronological view of file edits across recent
- * Claude Code sessions. Sourced from a live transcript scan so the
- * currently-running session shows up immediately.
+ * Activity — the "work rhythm" view. Not a raw edit-op log (that read like
+ * syslog and answered a question nobody asked); instead it answers "where did
+ * my effort go, what's hot, am I shipping or thrashing?" from data we already
+ * compute: the edits timeline + per-session diff/outcome, aggregated server-side
+ * by /api/edits/summary.
+ *
+ * Sections: pulse heatmap (intensity over the window) · totals · by-project
+ * churn (files, ±lines, sessions, sparkline, outcome mix, hot files) · global
+ * hottest files · titled session rows (click → the session's Changes tab).
+ *
+ * Visuals follow the dataviz method with the app's own cr-* tokens as the
+ * palette: sequential brand hue for magnitude (heatmap/sparkline), status
+ * colors WITH labels for outcomes (never color-alone), green/red for ±lines.
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Card, Chip, Input, Button, SegmentedControl, ToolBadge } from './primitives';
-import { getEditsTimeline, type EditRow, type EditOp, type AiTool } from '../services/api';
-import { TOOL_IDS, VALID_TOOL_FILTERS, stripToolPrefix } from '../services/tools';
+import { Card, Chip, ToolBadge } from './primitives';
+import { getActivitySummary, type ActivitySummaryResponse, type AiTool } from '../services/api';
+import { VALID_TOOL_FILTERS } from '../services/tools';
 import { useSidebarExtrasRegister } from '../context/sidebar-extras';
 import { isCloud } from '../services/auth';
 
 interface Props {
   onSessionClick?: (sessionId: string) => void;
-  /** Source filter from the global Sidebar. */
   toolFilter?: string;
-  /** Project filter from the global Sidebar. */
   projectFilter?: string | null;
-  /**
-   * Optional: report the projects that have edits in the current window
-   * back to the parent so it can rebuild the Sidebar tree to show only
-   * active projects (not the stale all-time list from getStatus).
-   */
   onActiveProjects?: (byProject: Record<string, number>) => void;
 }
 
 const PRESETS = [
-  { label: '1h',  value: 1 },
-  { label: '6h',  value: 6 },
   { label: '24h', value: 24 },
-  { label: '7d',  value: 24 * 7 },
+  { label: '7d', value: 24 * 7 },
   { label: '30d', value: 24 * 30 },
   { label: '90d', value: 24 * 90 },
-  { label: '1y',  value: 24 * 365 },
 ];
 
-const OP_LABELS: Record<EditOp, string> = {
-  edit: 'Edit',
-  write: 'Write',
-  multi_edit: 'MultiEdit',
-  notebook_edit: 'NotebookEdit',
-  read: 'Read',
+const OUTCOME_META: Record<string, { label: string; kind: 'ok' | 'warn' | 'err' | 'neutral' }> = {
+  shipped: { label: 'shipped', kind: 'ok' },
+  interrupted: { label: 'interrupted', kind: 'warn' },
+  abandoned: { label: 'abandoned', kind: 'err' },
+  inProgress: { label: 'in progress', kind: 'neutral' },
+  in_progress: { label: 'in progress', kind: 'neutral' },
+};
+const OUTCOME_COLOR: Record<string, string> = {
+  shipped: 'var(--cr-ok-500)',
+  interrupted: 'var(--cr-warn-500)',
+  abandoned: 'var(--cr-err-500)',
+  inProgress: 'var(--cr-fg-3)',
 };
 
-const OP_TONE: Record<EditOp, 'ok' | 'info' | 'warn' | 'neutral'> = {
-  write: 'ok',
-  edit: 'info',
-  multi_edit: 'info',
-  notebook_edit: 'info',
-  read: 'neutral',
-};
-
-function formatTs(iso: string | undefined, ms: number): string {
-  const d = iso ? new Date(iso) : new Date(ms);
-  if (Number.isNaN(d.getTime())) return '';
-  const ageMs = Date.now() - d.getTime();
-  const min = Math.round(ageMs / 60000);
-  if (min < 1) return 'just now';
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.round(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  // Older than a day → calendar form, "MM-DD HH:MM" without seconds.
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+function fmtLines(added: number, removed: number): React.ReactNode {
+  return (
+    <span style={{ fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)', fontSize: 12 }}>
+      <span style={{ color: 'var(--cr-ok-500)' }}>+{added.toLocaleString()}</span>
+      <span style={{ color: 'var(--cr-fg-3)' }}> / </span>
+      <span style={{ color: 'var(--cr-err-500)' }}>−{removed.toLocaleString()}</span>
+    </span>
+  );
 }
 
-/**
- * Bucket a timestamp to a stable label for day-grouping headers.
- * Returns "Today", "Yesterday", or "Mon Jul 14".
- */
-function dayBucket(ms: number): string {
+function base(file: string): string { return file.split('/').filter(Boolean).pop() || file; }
+
+function bucketLabel(ms: number, hourly: boolean): string {
   const d = new Date(ms);
-  if (Number.isNaN(d.getTime())) return 'Unknown';
-  const now = new Date();
-  const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
-  const dayMs = 86400_000;
-  const diffDays = Math.round((startOf(now) - startOf(d)) / dayMs);
-  if (diffDays === 0) return 'Today';
-  if (diffDays === 1) return 'Yesterday';
-  return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return hourly ? `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:00`
+    : `${pad(d.getMonth() + 1)}/${pad(d.getDate())}`;
 }
 
-function splitFilePath(file: string): { dir: string; base: string } {
-  // Strip $HOME-ish prefix to "~/…" for readability, then split into
-  // (dir, basename) so the UI can render the basename emphasized.
-  let displayed = file;
-  const home = '/home/';
-  if (file.startsWith(home)) {
-    const rest = file.slice(home.length);
-    const slash = rest.indexOf('/');
-    if (slash > 0) displayed = '~' + rest.slice(slash);
-  }
-  const i = displayed.lastIndexOf('/');
-  if (i < 0) return { dir: '', base: displayed };
-  return { dir: displayed.slice(0, i + 1), base: displayed.slice(i + 1) };
+/** Sequential magnitude heatmap — one hue (brand), intensity by edits/max. */
+function Pulse({ pulse, hourly }: { pulse: ActivitySummaryResponse['pulse']; hourly: boolean }) {
+  const max = Math.max(1, ...pulse.map(p => p.edits));
+  return (
+    <div style={{ display: 'flex', gap: 3, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+      {pulse.map((p) => {
+        const t = p.edits / max; // 0..1 intensity
+        const bg = p.edits === 0 ? 'var(--cr-ink-2)' : `color-mix(in srgb, var(--cr-brand-500) ${Math.round(18 + t * 82)}%, transparent)`;
+        return (
+          <div
+            key={p.bucket}
+            title={`${bucketLabel(p.bucket, hourly)} · ${p.edits} edit${p.edits === 1 ? '' : 's'} · ${p.sessions} session${p.sessions === 1 ? '' : 's'}`}
+            style={{ width: 16, height: 34, borderRadius: 3, background: bg, border: '1px solid var(--cr-line-1)', flex: '0 0 auto' }}
+          />
+        );
+      })}
+    </div>
+  );
 }
 
-function shortFile(file: string): string {
-  const { dir, base } = splitFilePath(file);
-  return dir + base;
+/** Single-series sparkline (change over time) — brand hue, no legend. */
+function Sparkline({ data, w = 96, h = 22 }: { data: number[]; w?: number; h?: number }) {
+  if (!data.length) return null;
+  const max = Math.max(1, ...data);
+  const step = data.length > 1 ? w / (data.length - 1) : w;
+  const pts = data.map((v, i) => `${(i * step).toFixed(1)},${(h - (v / max) * (h - 2) - 1).toFixed(1)}`).join(' ');
+  return (
+    <svg width={w} height={h} style={{ display: 'block' }} aria-hidden>
+      <polyline points={pts} fill="none" stroke="var(--cr-brand-500)" strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
 }
 
-const ALL_TOOLS: AiTool[] = TOOL_IDS as unknown as AiTool[];
+/** Outcome mix as a thin stacked bar — status colors, with a labeled legend. */
+function OutcomeBar({ o }: { o: ActivitySummaryResponse['totals'] }) {
+  const parts: Array<[keyof typeof OUTCOME_COLOR, number]> = [
+    ['shipped', o.shipped], ['interrupted', o.interrupted], ['abandoned', o.abandoned], ['inProgress', o.inProgress],
+  ];
+  const total = parts.reduce((s, [, n]) => s + n, 0);
+  if (total === 0) return null;
+  return (
+    <div style={{ display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', gap: 1, background: 'var(--cr-ink-2)' }}>
+      {parts.filter(([, n]) => n > 0).map(([k, n]) => (
+        <div key={k} title={`${OUTCOME_META[k].label}: ${n}`} style={{ width: `${(n / total) * 100}%`, background: OUTCOME_COLOR[k] }} />
+      ))}
+    </div>
+  );
+}
 
-type ToolFilter = 'all' | AiTool;
-type GroupBy = 'session' | 'repo';
+function StatTile({ value, label, sub }: { value: React.ReactNode; label: string; sub?: React.ReactNode }) {
+  return (
+    <div style={{ padding: '10px 14px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-sm)', minWidth: 96 }}>
+      <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--cr-fg-1)', lineHeight: 1.1 }}>{value}</div>
+      <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 2, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
+      {sub && <div style={{ marginTop: 4 }}>{sub}</div>}
+    </div>
+  );
+}
 
 export default function ActivityTimeline({ onSessionClick, toolFilter: toolFilterProp = 'all', projectFilter = null, onActiveProjects }: Props) {
-  const [sinceHours, setSinceHours] = useState<number>(24);
-  const [pattern, setPattern] = useState('');
-  const [includeReads, setIncludeReads] = useState(false);
-  // Sidebar drives the source filter. Coerce unknown strings to 'all'.
-  const toolFilter: ToolFilter = VALID_TOOL_FILTERS.has(toolFilterProp as string)
-    ? (toolFilterProp as ToolFilter)
-    : 'all';
-  const [edits, setEdits] = useState<EditRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [truncated, setTruncated] = useState(false);
-  const [byTool, setByTool] = useState<Partial<Record<AiTool, number>>>({});
-  const [byRepo, setByRepo] = useState<Record<string, { name: string; count: number; sample: string }>>({});
-  const [groupBy, setGroupBy] = useState<GroupBy>('session');
+  const [sinceHours, setSinceHours] = useState<number>(24 * 7);
+  const toolFilter = VALID_TOOL_FILTERS.has(toolFilterProp as string) ? (toolFilterProp as string) : 'all';
+  const [data, setData] = useState<ActivitySummaryResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -127,335 +138,149 @@ export default function ActivityTimeline({ onSessionClick, toolFilter: toolFilte
     let cancelled = false;
     setLoading(true);
     setError(null);
-    // Radio-style: 'all' = no filter, otherwise restrict to that one tool.
-    const tools = toolFilter === 'all' ? undefined : [toolFilter];
-    getEditsTimeline({
-      sinceHours,
-      pattern: pattern.trim() || undefined,
-      project: projectFilter || undefined,
-      includeReads,
-      limit: 500,
-      groupByRepo: groupBy === 'repo',
-      tools,
-    })
+    const tools = toolFilter === 'all' ? undefined : ([toolFilter] as AiTool[]);
+    getActivitySummary({ sinceHours, project: projectFilter || undefined, tools })
       .then((res) => {
         if (cancelled) return;
-        setEdits(res.edits);
-        setTotal(res.total);
-        setTruncated(res.truncated);
-        setByTool(res.byTool || {});
-        setByRepo(res.byRepo || {});
-        // Report active projects up so the global Sidebar tree can
-        // re-render with only the projects relevant to this window.
-        if (onActiveProjects) onActiveProjects(res.byProject || {});
+        setData(res);
+        if (onActiveProjects) onActiveProjects(Object.fromEntries(res.projects.map(p => [p.id, p.sessions])));
       })
-      .catch((e: Error) => {
-        if (cancelled) return;
-        setError(e.message);
-        setEdits([]);
-        setTotal(0);
-        setTruncated(false);
-        setByTool({});
-        setByRepo({});
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+      .catch((e: Error) => { if (!cancelled) { setError(e.message); setData(null); } })
+      .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [sinceHours, pattern, includeReads, toolFilter, groupBy, projectFilter]);
+  }, [sinceHours, toolFilter, projectFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const grouped = useMemo(() => {
-    const out: { sessionId: string; project: string; latest: number; tool: AiTool; rows: EditRow[] }[] = [];
-    const idx = new Map<string, number>();
-    for (const e of edits) {
-      const key = e.sessionId;
-      if (!idx.has(key)) {
-        idx.set(key, out.length);
-        out.push({ sessionId: e.sessionId, project: e.projectPath, latest: e.ts, tool: e.tool, rows: [] });
-      }
-      const slot = out[idx.get(key)!];
-      slot.rows.push(e);
-      if (e.ts > slot.latest) slot.latest = e.ts;
-    }
-    out.sort((a, b) => b.latest - a.latest);
-    return out;
-  }, [edits]);
-
-  const groupedByRepo = useMemo(() => {
-    if (groupBy !== 'repo') return [];
-    const out: { repo: string; name: string; latest: number; rows: EditRow[] }[] = [];
-    const idx = new Map<string, number>();
-    for (const e of edits) {
-      const repo = e.repoRoot || '__no_repo__';
-      if (!idx.has(repo)) {
-        idx.set(repo, out.length);
-        out.push({
-          repo,
-          name: e.repoName || (repo === '__no_repo__' ? '(no repo)' : repo.split('/').pop() || repo),
-          latest: e.ts,
-          rows: [],
-        });
-      }
-      const slot = out[idx.get(repo)!];
-      slot.rows.push(e);
-      if (e.ts > slot.latest) slot.latest = e.ts;
-    }
-    out.sort((a, b) => b.rows.length - a.rows.length);
-    return out;
-  }, [edits, groupBy]);
-
-  const distinctSessions = grouped.length;
-  const distinctFiles = useMemo(() => new Set(edits.map(e => e.file)).size, [edits]);
-  const distinctRepos = Object.keys(byRepo).length;
-
-  // Time-window selector → Sidebar.
   useSidebarExtrasRegister(() => ([{
     heading: 'Window',
     rows: PRESETS.map(p => ({
-      id: `activity-window-${p.value}`,
-      label: p.label,
-      on: sinceHours === p.value,
-      onClick: () => setSinceHours(p.value),
-      testId: `activity-window-${p.value}`,
+      id: `activity-window-${p.value}`, label: p.label, on: sinceHours === p.value,
+      onClick: () => setSinceHours(p.value), testId: `activity-window-${p.value}`,
     })),
   }]), [sinceHours]);
 
+  const hourly = sinceHours <= 48;
+  const t = data?.totals;
+  const hasData = !!data && (data.projects.length > 0 || data.sessions.length > 0);
+
   return (
     <div className="cr-page-pad" style={{ flex: 1, overflow: 'auto', padding: '20px 24px' }}>
-      <div className="cr-page-header-row" style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
-        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600, color: 'var(--cr-fg-1)' }}>
-          Activity Timeline
-        </h2>
-        <span className="cr-page-header-lead" style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
-          {isCloud()
-            ? 'file edits across your synced sessions'
-            : 'live transcript scan — includes the active session'}
+      <div className="cr-page-header-row" style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 4, flexWrap: 'wrap' }}>
+        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600, color: 'var(--cr-fg-1)' }}>Activity</h2>
+        <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
+          {isCloud() ? 'what you worked on, and how much' : 'what you worked on — includes the live session'}
         </span>
       </div>
 
-      {/* Tool filter and Window live in the global Sidebar. The
-          remaining controls (search by path, include-reads, group-by)
-          stay here since they're activity-specific. */}
-      <Card style={{ padding: 14, marginBottom: 16 }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>
-          <div style={{ flex: 1, minWidth: 220 }}>
-            <Input
-              value={pattern}
-              onChange={(e) => setPattern(e.target.value)}
-              placeholder="Filter by file path substring (e.g. src/core)"
-              onClear={pattern ? () => setPattern('') : undefined}
-              inputSize="sm"
-            />
-          </div>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--cr-fg-2)' }}>
-            <input
-              type="checkbox"
-              checked={includeReads}
-              onChange={(e) => setIncludeReads(e.target.checked)}
-            />
-            Include reads
-          </label>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>Group by</span>
-            <SegmentedControl
-              options={[
-                { value: 'session', label: 'Session' },
-                { value: 'repo',    label: 'Repo' },
-              ]}
-              value={groupBy}
-              onChange={(v) => setGroupBy(v as GroupBy)}
-              size="sm"
-            />
-          </div>
-          <Button size="sm" variant="ghost" onClick={() => { setPattern(''); setIncludeReads(false); setSinceHours(24); setGroupBy('session'); }}>
-            Reset
-          </Button>
-        </div>
-      </Card>
+      {loading && !data && <Card style={{ padding: 20, color: 'var(--cr-fg-3)' }}>Loading activity…</Card>}
+      {error && <Card style={{ padding: 12, marginTop: 12, borderColor: 'var(--cr-err-500)' }}><span style={{ color: 'var(--cr-err-500)' }}>Error: {error}</span></Card>}
 
-      <div style={{ display: 'flex', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
-        <Chip kind="info">{total} edit{total === 1 ? '' : 's'}</Chip>
-        <Chip kind="neutral">{distinctSessions} session{distinctSessions === 1 ? '' : 's'}</Chip>
-        <Chip kind="neutral">{distinctFiles} file{distinctFiles === 1 ? '' : 's'}</Chip>
-        {groupBy === 'repo' && distinctRepos > 0 && (
-          <Chip kind="brand">{distinctRepos} repo{distinctRepos === 1 ? '' : 's'}</Chip>
-        )}
-        {truncated && <Chip kind="warn">truncated — narrow filter to see more</Chip>}
-      </div>
-
-      {error && (
-        <Card style={{ padding: 12, marginBottom: 12, borderColor: 'var(--cr-err-500)' }}>
-          <span style={{ color: 'var(--cr-err-500)' }}>Error: {error}</span>
+      {data && !hasData && !loading && (
+        <Card style={{ padding: 20, color: 'var(--cr-fg-3)', marginTop: 12 }}>
+          No changes in this window. Widen it, or clear the project/tool filter.
         </Card>
       )}
 
-      {loading && (
-        <div style={{ color: 'var(--cr-fg-3)', fontSize: 13, padding: 16 }}>Scanning transcripts…</div>
-      )}
-
-      {!loading && grouped.length === 0 && !error && (
-        <div style={{ color: 'var(--cr-fg-3)', fontSize: 13, padding: 16, display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
-          <span>No edits in the last {sinceHours >= 24 ? `${Math.round(sinceHours / 24)}d` : `${sinceHours}h`}{pattern ? ` matching "${pattern}"` : ''}. Synced data may be older.</span>
-          {sinceHours < 24 * 365 && (
-            <button
-              onClick={() => setSinceHours(24 * 365)}
-              style={{ padding: '5px 12px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-2)', borderRadius: 'var(--cr-radius-sm)', color: 'var(--cr-fg-1)', cursor: 'pointer', fontSize: 12 }}
-            >
-              Widen to 1 year →
-            </button>
-          )}
-        </div>
-      )}
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {groupBy === 'session' && grouped.map((g, gi) => {
-          const bucket = dayBucket(g.latest);
-          const prevBucket = gi > 0 ? dayBucket(grouped[gi - 1].latest) : null;
-          const showDayHeader = bucket !== prevBucket;
-          return (
-          <React.Fragment key={g.sessionId}>
-          {showDayHeader && (
-            <div style={{
-              fontSize: 11,
-              fontWeight: 600,
-              letterSpacing: '0.05em',
-              textTransform: 'uppercase',
-              color: 'var(--cr-fg-3)',
-              padding: '12px 4px 2px',
-              borderBottom: '1px solid var(--cr-line-1)',
-              marginTop: gi > 0 ? 6 : 0,
-            }}>
-              {bucket}
+      {data && hasData && t && (
+        <>
+          {/* Pulse + totals */}
+          <Card style={{ padding: 16, marginTop: 12, marginBottom: 16 }}>
+            <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+              Pulse · {hourly ? 'hourly' : 'daily'}
             </div>
-          )}
-          <Card style={{ padding: 12 }}>
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              marginBottom: 8,
-              gap: 8,
-              flexWrap: 'wrap',
-            }}>
-              <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                <ToolBadge tool={g.tool} size="sm" />
-                <button
-                  onClick={() => onSessionClick?.(g.sessionId)}
-                  style={{
-                    background: 'transparent',
-                    border: 0,
-                    padding: 0,
-                    color: 'var(--cr-brand-500)',
-                    fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)',
-                    fontSize: 12,
-                    cursor: onSessionClick ? 'pointer' : 'default',
-                    textDecoration: onSessionClick ? 'underline' : 'none',
-                  }}
-                  title={g.sessionId}
-                >
-                  {stripToolPrefix(g.sessionId).slice(0, 8)}
-                </button>
-                <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{g.project}</span>
-              </div>
-              <Chip kind="neutral" size="sm">{g.rows.length} edit{g.rows.length === 1 ? '' : 's'}</Chip>
+            <Pulse pulse={data.pulse} hourly={hourly} />
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 16 }}>
+              <StatTile value={t.sessions} label="sessions" />
+              <StatTile value={t.files} label="files touched" />
+              <StatTile value={fmtLines(t.linesAdded, t.linesRemoved)} label="lines changed" />
+              <StatTile
+                value={<span style={{ color: 'var(--cr-ok-500)' }}>{t.shipped}</span>}
+                label="shipped"
+                sub={<div style={{ display: 'flex', gap: 8, fontSize: 11, color: 'var(--cr-fg-3)' }}>
+                  <span>⚠ {t.interrupted}</span><span>✕ {t.abandoned}</span><span>◐ {t.inProgress}</span>
+                </div>}
+              />
             </div>
-
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <tbody>
-                {g.rows.map((e, i) => (
-                  <tr key={`${e.sessionId}-${e.line}-${i}`} style={{ borderTop: i === 0 ? 'none' : '1px solid var(--cr-line-1)' }}>
-                    <td style={{ padding: '6px 8px 6px 0', color: 'var(--cr-fg-3)', whiteSpace: 'nowrap', fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)' }}>
-                      {formatTs(e.tsIso, e.ts)}
-                    </td>
-                    <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
-                      <Chip kind={OP_TONE[e.op]} size="sm">{OP_LABELS[e.op]}</Chip>
-                    </td>
-                    <td style={{ padding: '6px 0', fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)', wordBreak: 'break-all' }}>
-                      {(() => { const { dir, base } = splitFilePath(e.file); return (
-                        <>
-                          <span style={{ color: 'var(--cr-fg-3)' }}>{dir}</span>
-                          <span style={{ color: 'var(--cr-fg-1)', fontWeight: 600 }}>{base}</span>
-                        </>
-                      ); })()}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
           </Card>
-          </React.Fragment>
-          );
-        })}
 
-        {groupBy === 'repo' && groupedByRepo.map((g) => (
-          <Card key={g.repo} style={{ padding: 12 }}>
-            <div style={{
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              marginBottom: 8,
-              gap: 8,
-              flexWrap: 'wrap',
-            }}>
-              <div style={{ display: 'flex', gap: 10, alignItems: 'baseline' }}>
-                <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--cr-fg-1)' }}>{g.name}</span>
-                {g.repo !== '__no_repo__' && (
-                  <span style={{ fontSize: 11, color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)' }}>{g.repo}</span>
-                )}
-              </div>
-              <Chip kind="neutral" size="sm">{g.rows.length} edit{g.rows.length === 1 ? '' : 's'}</Chip>
-            </div>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-              <tbody>
-                {g.rows.map((e, i) => (
-                  <tr key={`${e.sessionId}-${e.line}-${i}`} style={{ borderTop: i === 0 ? 'none' : '1px solid var(--cr-line-1)' }}>
-                    <td style={{ padding: '6px 8px 6px 0', color: 'var(--cr-fg-3)', whiteSpace: 'nowrap', fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)' }}>
-                      {formatTs(e.tsIso, e.ts)}
-                    </td>
-                    <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
-                      <ToolBadge tool={e.tool} size="sm" />
-                    </td>
-                    <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
-                      <button
-                        onClick={() => onSessionClick?.(e.sessionId)}
-                        style={{
-                          background: 'transparent', border: 0, padding: 0,
-                          color: 'var(--cr-brand-500)',
-                          fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)',
-                          fontSize: 11,
-                          cursor: onSessionClick ? 'pointer' : 'default',
-                        }}
-                        title={e.sessionId}
-                      >
-                        {e.sessionId.replace(/^(opencode_|gemini_|codex_)/, '').slice(0, 8)}
-                      </button>
-                    </td>
-                    <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
-                      <Chip kind={OP_TONE[e.op]} size="sm">{OP_LABELS[e.op]}</Chip>
-                    </td>
-                    <td style={{ padding: '6px 0', fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)', wordBreak: 'break-all' }}>
-                      {(() => {
-                        const display = g.repo !== '__no_repo__' && e.file.startsWith(g.repo + '/')
-                          ? e.file.slice(g.repo.length + 1)
-                          : shortFile(e.file);
-                        const i = display.lastIndexOf('/');
-                        const dir = i >= 0 ? display.slice(0, i + 1) : '';
-                        const base = i >= 0 ? display.slice(i + 1) : display;
-                        return (
-                          <>
-                            <span style={{ color: 'var(--cr-fg-3)' }}>{dir}</span>
-                            <span style={{ color: 'var(--cr-fg-1)', fontWeight: 600 }}>{base}</span>
-                          </>
-                        );
-                      })()}
-                    </td>
-                  </tr>
+          {/* By project */}
+          {data.projects.length > 0 && (
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 4px 8px' }}>By project</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 12 }}>
+                {data.projects.map((p) => (
+                  <Card key={p.id} style={{ padding: 14 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--cr-fg-1)', wordBreak: 'break-word' }}>{p.name}</span>
+                      <Sparkline data={p.sparkline} />
+                    </div>
+                    <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', fontSize: 12, color: 'var(--cr-fg-2)', marginBottom: 8 }}>
+                      <span>{p.files} file{p.files === 1 ? '' : 's'}</span>
+                      {fmtLines(p.linesAdded, p.linesRemoved)}
+                      <span>{p.sessions} session{p.sessions === 1 ? '' : 's'}</span>
+                    </div>
+                    <OutcomeBar o={{ ...p.outcomes, sessions: p.sessions, files: p.files, linesAdded: p.linesAdded, linesRemoved: p.linesRemoved }} />
+                    {p.hotFiles.length > 0 && (
+                      <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                        {p.hotFiles.map((h) => (
+                          <span key={h.file} title={h.file} style={{ fontSize: 11, fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)', color: 'var(--cr-fg-2)', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 4, padding: '2px 6px' }}>
+                            {base(h.file)} <span style={{ color: 'var(--cr-fg-3)' }}>×{h.edits}</span>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </Card>
                 ))}
-              </tbody>
-            </table>
-          </Card>
-        ))}
-      </div>
+              </div>
+            </div>
+          )}
+
+          {/* Hottest files */}
+          {data.hotFiles.length > 0 && (
+            <Card style={{ padding: 14, marginBottom: 18 }}>
+              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Hottest files</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {data.hotFiles.map((h) => (
+                  <div key={`${h.project}-${h.file}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12, padding: '3px 0', borderTop: '1px solid var(--cr-line-1)' }}>
+                    <span style={{ fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)', color: 'var(--cr-fg-1)', wordBreak: 'break-all' }} title={h.file}>{base(h.file)}</span>
+                    <span style={{ display: 'flex', gap: 10, whiteSpace: 'nowrap', color: 'var(--cr-fg-3)' }}>
+                      <span>{h.project}</span><span style={{ color: 'var(--cr-brand-500)', fontWeight: 600 }}>{h.edits} edits</span>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {/* Sessions — narrative rows */}
+          {data.sessions.length > 0 && (
+            <div>
+              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 4px 8px' }}>Sessions</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {data.sessions.map((s) => {
+                  const om = OUTCOME_META[s.outcome] || OUTCOME_META.in_progress;
+                  return (
+                    <Card
+                      key={s.id}
+                      style={{ padding: '10px 14px', cursor: onSessionClick ? 'pointer' : 'default' }}
+                      onClick={() => onSessionClick?.(s.id)}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                        <Chip kind={om.kind} size="sm">{om.label}</Chip>
+                        <ToolBadge tool={s.tool} size="sm" />
+                        <span style={{ flex: 1, minWidth: 160, fontSize: 13, color: 'var(--cr-fg-1)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {s.title || <span style={{ color: 'var(--cr-fg-3)', fontStyle: 'italic' }}>(untitled session)</span>}
+                        </span>
+                        <span style={{ fontSize: 12, color: 'var(--cr-fg-3)', whiteSpace: 'nowrap' }}>{s.files} file{s.files === 1 ? '' : 's'}</span>
+                        {(s.linesAdded > 0 || s.linesRemoved > 0) && fmtLines(s.linesAdded, s.linesRemoved)}
+                      </div>
+                    </Card>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
