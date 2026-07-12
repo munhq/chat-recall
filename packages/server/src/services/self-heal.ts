@@ -155,9 +155,10 @@ export interface SweepResult { scanned: number; healed: number; damaged: number;
  *  fuller than its view; then enqueue client-recheck intents for sessions the
  *  server CANNOT heal (an envelope but no raw archive — the client may hold the
  *  fuller copy in its shadow). Returns per-tenant counts. */
-export async function selfHealTenant(store: Store, opts: { sinceMs?: number; dryRun?: boolean } = {}): Promise<{ scanned: number; healed: number; damaged: number; recheckEnqueued: number }> {
+export async function selfHealTenant(store: Store, opts: { sinceMs?: number; dryRun?: boolean } = {}): Promise<{ scanned: number; healed: number; damaged: number; recheckEnqueued: number; damagedIds: string[] }> {
   const sinceMs = opts.sinceMs ?? 0;
   let scanned = 0, healed = 0, damaged = 0, recheckEnqueued = 0;
+  const damagedIds: string[] = [];
 
   // The diff heal lives in the metadata cache (compute_cache), not the store.
   const metaCache = await createMetadataCache();
@@ -170,7 +171,7 @@ export async function selfHealTenant(store: Store, opts: { sinceMs?: number; dry
     for (const r of rows) {
       scanned++;
       const res = await healSessionFromArchive(store, r.session_id, { dryRun: opts.dryRun, metaCache });
-      if (res.damaged) damaged++;
+      if (res.damaged) { damaged++; if (damagedIds.length < 200) damagedIds.push(`${r.session_id}:${res.from}->${res.to}`); }
       if (res.healed) healed++;
     }
   } finally {
@@ -201,7 +202,7 @@ export async function selfHealTenant(store: Store, opts: { sinceMs?: number; dry
     }
   }
 
-  return { scanned, healed, damaged, recheckEnqueued };
+  return { scanned, healed, damaged, recheckEnqueued, damagedIds };
 }
 
 /**

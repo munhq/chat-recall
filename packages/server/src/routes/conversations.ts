@@ -186,11 +186,14 @@ router.get('/heal-audit', async (req, res) => {
   const sinceHoursRaw = req.query.since_hours as string | undefined;
   const sinceHours = sinceHoursRaw ? Number(sinceHoursRaw) : undefined;
   const sinceMs = sinceHours && Number.isFinite(sinceHours) && sinceHours > 0 ? Date.now() - sinceHours * 3600 * 1000 : 0;
+  // ?apply=1 actually heals (not just audits) the caller's tenant — a manual
+  // "heal now" for when you don't want to wait for the hourly sweep.
+  const apply = req.query.apply === '1' || req.query.apply === 'true';
   const store = await createStore();
   try {
     const { selfHealTenant } = await import('../services/self-heal.js');
-    const r = await selfHealTenant(store, { sinceMs, dryRun: true });
-    res.json({ scanned: r.scanned, damaged: r.damaged, healthy: r.scanned - r.damaged });
+    const r = await selfHealTenant(store, { sinceMs, dryRun: !apply });
+    res.json({ scanned: r.scanned, damaged: r.damaged, healed: r.healed, healthy: r.scanned - r.damaged, applied: apply, damagedIds: r.damagedIds });
   } catch (error) {
     log.error({ err: error }, 'heal-audit error');
     res.status(500).json({ error: error instanceof Error ? error.message : 'heal-audit failed' });
