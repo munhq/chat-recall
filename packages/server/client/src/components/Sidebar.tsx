@@ -27,7 +27,7 @@ interface SidebarProps {
   setToolFilter: (t: string) => void;
   extraSections?: SidebarSection[];
   view?: string;
-  setView?: (v: 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code' | 'settings' | 'account' | 'admin') => void;
+  setView?: (v: 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'security' | 'deployment' | 'settings' | 'account' | 'admin') => void;
   /** Views this deployment supports (/api/capabilities). Absent = all. */
   enabledViews?: Set<string>;
 }
@@ -35,19 +35,17 @@ interface SidebarProps {
 // Primary navigation — the single source of truth for the whole app now that
 // nav lives in the left rail (the topbar is brand · search · actions only).
 // Every destination is visible; nothing hides behind a "More" overflow.
-// Order = the daily loop: the spine (Overview → Conversations → Projects →
-// Activity) first, then the intelligence surfaces, then Security last.
-type NavId = 'home' | 'search' | 'projects' | 'activity' | 'memory' | 'code' | 'toolkit' | 'dashboard' | 'security';
+// Order = the daily loop: the spine (Overview → Conversations → Projects)
+// first, then the intelligence surfaces, then Security & Deployment last.
+type NavId = 'home' | 'search' | 'projects' | 'memory' | 'toolkit' | 'security' | 'deployment';
 const NAV_ITEMS: Array<{ id: NavId; label: string; icon: string }> = [
   { id: 'home', label: 'Overview', icon: 'home' },
   { id: 'search', label: 'Conversations', icon: 'message' },
   { id: 'projects', label: 'Projects', icon: 'folder' },
-  { id: 'activity', label: 'Activity', icon: 'clock' },
-  { id: 'memory', label: 'Memory', icon: 'brain' },
-  { id: 'code', label: 'Code', icon: 'code' },
+  { id: 'memory', label: 'Memory Hub', icon: 'brain' },
   { id: 'toolkit', label: 'Toolkit', icon: 'terminal' },
-  { id: 'dashboard', label: 'Insights', icon: 'chart' },
   { id: 'security', label: 'Security', icon: 'shield' },
+  { id: 'deployment', label: 'Deployment', icon: 'server' },
 ];
 
 // Tool source list comes from the central tools module — adding a tool

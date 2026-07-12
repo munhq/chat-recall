@@ -21,8 +21,9 @@ import SettingsPage from './components/SettingsPage';
 import AccountPage, { SubscribeScreen } from './components/AccountPage';
 import ConnectTokenPage from './components/ConnectTokenPage';
 import SecuritySummaryBanner from './components/SecuritySummaryBanner';
-import ProjectMainPane from './components/ProjectMainPane';
 import AdminPage from './components/AdminPage';
+import ProjectsDashboard from './components/ProjectsDashboard';
+import DeploymentPage from './components/DeploymentPage';
 import { SidebarExtrasProvider, useSidebarExtras } from './context/sidebar-extras';
 import { isCloud } from './services/auth';
 import {
@@ -43,7 +44,7 @@ import {
   type ProjectTreeApiNode,
 } from './services/api';
 
-type ViewMode = 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'dashboard' | 'activity' | 'security' | 'code' | 'settings' | 'account' | 'connect' | 'admin';
+type ViewMode = 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'security' | 'deployment' | 'settings' | 'account' | 'connect' | 'admin';
 
 /**
  * Recursive tree node used by the project sidebar. One node renders as
@@ -110,44 +111,10 @@ function findProjectName(tree: ProjectTreeNode[], projectId: string | null): str
   return undefined;
 }
 
-/**
- * Decide whether the search view wraps in a ProjectMainPane (with the
- * `Conversations | Dossier | Activity` tab strip) or renders the
- * conversation list + viewer bare.
- *
- * Wrap when a real project is selected — i.e. a project_id (`git:*`,
- * `git-local:*`, `ws:*`, user-declared). Skip wrapping for `untracked:`
- * footer node, raw `path:` rows, and the "All Projects" deselected
- * state — those don't have a dossier worth showing.
- */
-function renderSearchView(opts: {
-  projectFilter: string | null;
-  projectDisplayName?: string;
-  conversationList: React.ReactNode;
-  conversationViewer: React.ReactNode;
-  activityPane: React.ReactNode;
-}): React.ReactNode {
-  const id = opts.projectFilter;
-  const eligible = !!id && /^(git:|git-local:|ws:|user:)/.test(id) || (!!id && !id.startsWith('untracked:') && !id.startsWith('path:') && !id.startsWith('ignored:'));
 
-  if (!id || !eligible) {
-    return <>{opts.conversationList}{opts.conversationViewer}</>;
-  }
-
-  return (
-    <ProjectMainPane
-      projectId={id}
-      displayName={opts.projectDisplayName}
-      renderConversations={() => (
-        <>{opts.conversationList}{opts.conversationViewer}</>
-      )}
-      renderActivity={() => opts.activityPane}
-    />
-  );
-}
 
 /** Views that may be addressed via the ?view= deep link. */
-const URL_VIEWS = new Set<ViewMode>(['home', 'projects', 'search', 'activity', 'memory', 'security', 'code', 'toolkit', 'dashboard', 'account', 'settings', 'connect']);
+const URL_VIEWS = new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'security', 'deployment', 'account', 'settings', 'connect']);
 
 /**
  * Initial view from the URL. Reading it during state init (not in an effect)
@@ -174,6 +141,7 @@ export default function App() {
 function AppInner() {
   const sidebarExtras = useSidebarExtras();
   const [view, setView] = useState<ViewMode>(initialViewFromUrl);
+  const [homeSubTab, setHomeSubTab] = useState<'dashboard' | 'insights'>('dashboard');
   // Memory now hosts the two "how you think" corpora: the knowledge GRAPH
   // (temporal facts — previously invisible) and NOTES (plans/tasks/diary/etc).
   // Toolkit is its own top-level view now (no longer buried here).
@@ -189,19 +157,17 @@ function AppInner() {
     // SUPERSET of every real deployment's views, or deep links to a missing
     // entry get snapped to ?view=search before the server can answer
     // ('account' was absent → ?view=account never worked as a link).
-    if (!f) return new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'dashboard', 'activity', 'security', 'code', 'settings', 'account', 'connect', 'admin']);
+    if (!f) return new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'security', 'deployment', 'settings', 'account', 'connect', 'admin']);
     const out = new Set<ViewMode>();
     out.add('home');    // command center is always available
     out.add('connect'); // installer's token page — must never be capability-gated
     out.add('admin');   // admin console is always available (auth checked via key)
     if (f.codeIntel || f.conversations) out.add('projects');  // the project workspace spine
     if (f.conversations) out.add('search');
-    if (f.activity) out.add('activity');
     if (f.memory) out.add('memory');
     if (f.toolkit) out.add('toolkit');
-    if (f.analytics) out.add('dashboard');
     if (f.security) out.add('security');
-    if (f.codeIntel) out.add('code');
+    out.add('deployment'); // deployment diagnostics is always available
     if (f.settings) out.add('settings');
     if (f.account) out.add('account');
     return out;
@@ -338,7 +304,7 @@ function AppInner() {
   // Keep the activity setter alive for downstream pass-through to
   // ActivityTimeline; the value is no longer used to rebuild the tree.
   useEffect(() => {
-    if (view !== 'activity') setActiveProjectsForView(null);
+    if (view !== 'projects') setActiveProjectsForView(null);
   }, [view]);
 
   // Keyboard shortcut for search (Cmd/Ctrl + K) and Escape-to-close
@@ -554,7 +520,7 @@ function AppInner() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const v = params.get('view');
-    if (v && ['home', 'projects', 'search', 'activity', 'memory', 'security', 'code', 'toolkit', 'dashboard'].includes(v)) setView(v as ViewMode);
+    if (v && ['home', 'projects', 'search', 'memory', 'toolkit', 'security', 'deployment', 'settings', 'account'].includes(v)) setView(v as ViewMode);
     const id = params.get('session');
     if (id && looksLikeSessionId(id)) handleSelectSession(id);
     // Back/forward restore the full navigational state recorded in that URL
@@ -855,25 +821,21 @@ function AppInner() {
           />
 
           {view === 'search' && (
-            renderSearchView({
-              projectFilter,
-              projectDisplayName: findProjectName(projectTree, projectFilter),
-              conversationList: (
-                <ConversationList
-                  results={displayedSessions}
-                  selected={selectedSessionId}
-                  onSelect={handleSelectSession}
-                  sort={sort}
-                  setSort={setSort}
-                  hasMore={!query.trim() && recentHasMore}
-                  loadingMore={recentLoadingMore}
-                  total={recentTotal}
-                  onLoadMore={loadMoreRecent}
-                  loading={recentLoadingFirstPage && !query.trim()}
-                />
-              ),
-              conversationViewer: selectedMemoryItem ? (
-                <div style={{ overflowY: 'auto', height: '100%' }}>
+            <>
+              <ConversationList
+                results={displayedSessions}
+                selected={selectedSessionId}
+                onSelect={handleSelectSession}
+                sort={sort}
+                setSort={setSort}
+                hasMore={!query.trim() && recentHasMore}
+                loadingMore={recentLoadingMore}
+                total={recentTotal}
+                onLoadMore={loadMoreRecent}
+                loading={recentLoadingFirstPage && !query.trim()}
+              />
+              {selectedMemoryItem ? (
+                <div style={{ overflowY: 'auto', height: '100%', flex: 1 }}>
                   <MemoryDetail item={selectedMemoryItem} onSessionClick={handleSelectSession} />
                 </div>
               ) : (
@@ -893,16 +855,8 @@ function AppInner() {
                   initialTab={viewerInitialTab}
                   onManageSecurity={() => { setSecurityFocusSession(selectedSessionId); setView('security'); }}
                 />
-              ),
-              activityPane: (
-                <ActivityTimeline
-                  onSessionClick={handleActivitySessionClick}
-                  toolFilter={toolFilter}
-                  projectFilter={projectFilter}
-                  onActiveProjects={setActiveProjectsForView}
-                />
-              ),
-            })
+              )}
+            </>
           )}
           {view === 'memory' && (
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -934,26 +888,18 @@ function AppInner() {
                 projectName={findProjectName(projectTree, projectFilter) || projectFilter}
                 toolFilter={toolFilter}
                 onOpenSession={(sid) => handleMemorySessionClick(sid)}
-                onBack={() => setView('home')}
+                onBack={() => { setProjectFilter(null); setView('projects'); }}
               />
             ) : (
-              <ProjectPicker tree={projectTree} loaded={treeLoaded} onPick={(id) => { setProjectFilter(id); setToolFilter('all'); }} />
+              <ProjectsDashboard
+                tree={projectTree}
+                loaded={treeLoaded}
+                onPick={(id) => { setProjectFilter(id); setToolFilter('all'); }}
+                toolFilter={toolFilter}
+                onSessionClick={handleActivitySessionClick}
+                onActiveProjects={setActiveProjectsForView}
+              />
             )
-          )}
-          {view === 'dashboard' && (
-            <Dashboard
-              onJumpToSession={handleMemorySessionClick}
-              onJumpToSearch={(q) => { setQuery(q); setView('search'); }}
-              toolFilter={toolFilter}
-            />
-          )}
-          {view === 'activity' && (
-            <ActivityTimeline
-              onSessionClick={handleActivitySessionClick}
-              toolFilter={toolFilter}
-              projectFilter={projectFilter}
-              onActiveProjects={setActiveProjectsForView}
-            />
           )}
           {view === 'security' && (
             <SecurityExplorer
@@ -962,14 +908,42 @@ function AppInner() {
             />
           )}
           {view === 'home' && (
-            <CommandCenter
-              setView={(v) => setView(v as ViewMode)}
-              onOpenProject={(id) => { setProjectFilter(id); setToolFilter('all'); setView('projects'); }}
-              cloud={capabilities?.edition === 'cloud'}
-            />
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+              <div style={{ padding: '12px 16px 0', borderBottom: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-1)' }}>
+                <SegmentedControl
+                  value={homeSubTab}
+                  onChange={(v) => setHomeSubTab(v as 'dashboard' | 'insights')}
+                  options={[
+                    { value: 'dashboard', label: 'Command Center' },
+                    { value: 'insights', label: 'Analytics & Insights' }
+                  ]}
+                />
+              </div>
+              <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+                {homeSubTab === 'dashboard' ? (
+                  <CommandCenter
+                    setView={(v) => {
+                      if (v === 'dashboard') {
+                        setHomeSubTab('insights');
+                      } else {
+                        setView(v as ViewMode);
+                      }
+                    }}
+                    onOpenProject={(id) => { setProjectFilter(id); setToolFilter('all'); setView('projects'); }}
+                    cloud={capabilities?.edition === 'cloud'}
+                  />
+                ) : (
+                  <Dashboard
+                    onJumpToSession={handleMemorySessionClick}
+                    onJumpToSearch={(q) => { setQuery(q); setView('search'); }}
+                    toolFilter={toolFilter}
+                  />
+                )}
+              </div>
+            </div>
           )}
-          {view === 'code' && (
-            <CodeExplorer projectFilter={projectFilter} onSessionClick={handleMemorySessionClick} />
+          {view === 'deployment' && (
+            <DeploymentPage onClose={() => setView('home')} />
           )}
         </div>
       )}
@@ -977,40 +951,3 @@ function AppInner() {
   );
 }
 
-/**
- * ProjectPicker — shown in the Projects view when no project is selected yet.
- * Flattens the sidebar project tree into pickable cards. Picking one drops you
- * into that project's unified workspace.
- */
-function ProjectPicker({ tree, loaded, onPick }: { tree: ProjectTreeNode[]; loaded?: boolean; onPick: (id: string) => void }) {
-  const flat: Array<{ name: string; id: string; count: number }> = [];
-  const walk = (nodes: ProjectTreeNode[]) => {
-    for (const n of nodes) {
-      // Skip grouping rows (workspaces roll up their children; automation +
-      // untracked are their own buckets) — list the real projects.
-      const isGroup = n.source === 'automation' || n.source === 'untracked' || n.fullPath.endsWith(':all');
-      if (!isGroup && n.count > 0) flat.push({ name: n.name, id: n.fullPath, count: n.count });
-      if (n.children?.length) walk(n.children);
-    }
-  };
-  walk(tree);
-  flat.sort((a, b) => b.count - a.count);
-  return (
-    <div style={{ flex: 1, overflow: 'auto', padding: '28px 32px' }}>
-      <h2 style={{ margin: '0 0 4px', display: 'flex', alignItems: 'center', gap: 8 }}>Projects</h2>
-      <div style={{ color: 'var(--cr-fg-2)', fontSize: 13, marginBottom: 20 }}>Pick a project to open its unified workspace — code health, conversations, knowledge and activity for that repo in one place. Or use the project tree on the left.</div>
-      {flat.length === 0 ? (
-        <div style={{ color: 'var(--cr-fg-3)' }}>{loaded === false ? 'Loading projects…' : 'No projects indexed yet.'}</div>
-      ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(260px,1fr))', gap: 12 }}>
-          {flat.map((p) => (
-            <Card key={p.id} interactive onClick={() => onPick(p.id)} style={{ padding: 16, cursor: 'pointer' }}>
-              <div className="mono" style={{ fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
-              <div style={{ color: 'var(--cr-fg-3)', fontSize: 12, marginTop: 6 }}>{p.count} session(s)</div>
-            </Card>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
