@@ -141,6 +141,9 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lens, setLens] = useState<Lens>('action');
+  // Clicking a severity tile filters the action list to just that severity —
+  // the counts become a burn-down control, not decoration.
+  const [sevFilter, setSevFilter] = useState<'critical' | 'high' | null>(null);
   const [showNoise, setShowNoise] = useState(false);
   const [showDismissed, setShowDismissed] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -304,6 +307,12 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
     });
   }
 
+  // The one number that matters: unresolved critical/high secrets. The banner's
+  // "857 secrets / 720 sessions" and the per-severity tiles are context; THIS is
+  // the to-do count. `live` = confirmed still-working keys → rotate first.
+  const needRotation = actionRequired.filter(s => !s.dismissal).length;
+  const liveCount = actionRequired.filter(s => s.verified === true && !s.dismissal).length;
+
   return (
     <div className="cr-page-pad" style={{ flex: 1, overflow: 'auto', padding: '20px 24px' }}>
       <AccountRecsStrip />
@@ -311,6 +320,14 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
       <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', marginBottom: 16, flexWrap: 'wrap' }}>
         <div>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: 'var(--cr-fg-1)' }}>Security</h2>
+          {!loading && needRotation > 0 ? (
+            <div style={{ fontSize: 13, marginTop: 3, color: 'var(--cr-err-500)', fontWeight: 600 }}>
+              🔴 {needRotation} secret{needRotation === 1 ? '' : 's'} need rotation now
+              {liveCount > 0 && <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400 }}> · {liveCount} confirmed live</span>}
+            </div>
+          ) : !loading ? (
+            <div style={{ fontSize: 13, marginTop: 3, color: 'var(--cr-ok-500)', fontWeight: 600 }}>✓ Nothing needs rotation right now</div>
+          ) : null}
           <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginTop: 2 }}>
             Per-secret analysis · raw values never leave the database
           </div>
@@ -318,12 +335,20 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
         <span style={{ flex: 1 }} />
         {!loading && (
           <>
-            <Card style={{ padding: '10px 14px', minWidth: 130, borderLeft: '3px solid var(--cr-err-500)' }}>
+            <Card
+              onClick={() => { setLens('action'); setSevFilter(f => f === 'critical' ? null : 'critical'); }}
+              title="Show only critical secrets"
+              style={{ padding: '10px 14px', minWidth: 130, borderLeft: '3px solid var(--cr-err-500)', cursor: 'pointer', outline: sevFilter === 'critical' ? '2px solid var(--cr-err-500)' : 'none', outlineOffset: 2 }}
+            >
               <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Critical</div>
               <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--cr-err-500)' }}>{headline.counts.critical}</div>
               <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>distinct keys</div>
             </Card>
-            <Card style={{ padding: '10px 14px', minWidth: 130, borderLeft: '3px solid var(--cr-warn-500)' }}>
+            <Card
+              onClick={() => { setLens('action'); setSevFilter(f => f === 'high' ? null : 'high'); }}
+              title="Show only high-severity secrets"
+              style={{ padding: '10px 14px', minWidth: 130, borderLeft: '3px solid var(--cr-warn-500)', cursor: 'pointer', outline: sevFilter === 'high' ? '2px solid var(--cr-warn-500)' : 'none', outlineOffset: 2 }}
+            >
               <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>High</div>
               <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--cr-warn-500)' }}>{headline.counts.high}</div>
               <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>distinct keys</div>
@@ -412,9 +437,22 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
       )}
 
       {/* ── ACTION REQUIRED ─────────────────────────────────────── */}
-      {!loading && lens === 'action' && (
+      {!loading && lens === 'action' && (() => {
+        const shownAction = sevFilter ? actionRequired.filter(s => s.type.severity === sevFilter) : actionRequired;
+        return (
         <>
-          {actionRequired.length === 0 && (
+          {sevFilter && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, fontSize: 12, color: 'var(--cr-fg-3)' }}>
+              <span>Filtered to <b style={{ color: 'var(--cr-fg-1)' }}>{sevFilter}</b> · {shownAction.length} secret{shownAction.length === 1 ? '' : 's'}</span>
+              <button
+                onClick={() => setSevFilter(null)}
+                style={{ background: 'transparent', border: '1px solid var(--cr-line-2)', color: 'var(--cr-fg-2)', borderRadius: 6, padding: '2px 10px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}
+              >
+                Clear filter
+              </button>
+            </div>
+          )}
+          {shownAction.length === 0 && (
             <Card style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>
               <div style={{ fontSize: 14, marginBottom: 6, color: 'var(--cr-ok-500)' }}>
                 ✓ No critical or high-severity secrets detected
@@ -428,7 +466,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
           )}
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {actionRequired.map(s => {
+            {shownAction.map(s => {
               const tone = SEVERITY_TONE[s.type.severity];
               const isOpen = expanded.has(s.preview);
               return (
@@ -573,7 +611,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
           </div>
 
           {/* Review queue — medium severity */}
-          {reviewQueue.length > 0 && (
+          {!sevFilter && reviewQueue.length > 0 && (
             <div style={{ marginTop: 24 }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
                 <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--cr-fg-2)' }}>Review queue</span>
@@ -611,7 +649,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
             </div>
           )}
 
-          {noiseCount > 0 && (
+          {!sevFilter && noiseCount > 0 && (
             <div style={{ marginTop: 16, fontSize: 12, color: 'var(--cr-fg-3)' }}>
               <button
                 onClick={() => setShowNoise(v => !v)}
@@ -625,7 +663,8 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
             </div>
           )}
         </>
-      )}
+        );
+      })()}
 
       {/* ── BY RULE ─────────────────────────────────────────────── */}
       {!loading && lens === 'rules' && (

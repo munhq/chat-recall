@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { IconButton, Input, Logo, Button, Avatar } from './primitives';
 import { getSyncStatus } from '../services/api';
 
-type NavView = 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'security' | 'deployment' | 'settings' | 'account' | 'connect' | 'admin';
+type NavView = 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'security' | 'settings' | 'account' | 'connect' | 'admin';
 
 // Primary navigation now lives in the left rail (see Sidebar.tsx) where every
 // destination is visible at once. The topbar is deliberately just three zones:
