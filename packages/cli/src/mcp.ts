@@ -1881,7 +1881,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Thin collector: memory search always runs against the synced server.
         // The `scope` param is accepted for back-compat but ignored.
         requireRemote();
-        const remote = await remotePost<{ results: Array<{ itemId: string; sourceType: string; title: string; text: string; score: number; projectPath?: string }>; count: number }>(
+        const remote = await remotePost<{ results: Array<{ itemId: string; sourceType: string; title: string; text: string; score: number; projectPath?: string; mtime?: number; chunkType?: string; matchedChunks?: Array<{ chunkType?: string; text: string }> }>; count: number }>(
           '/api/memory/search', { query: memSearchQuery, topK: params.top_k, sourceTypes: params.source_types, projectIdFilter: params.project_filter },
         );
         if (!remote.results?.length) {
@@ -1890,9 +1890,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const lines = [`# Server memory search: "${params.query}"`, '_(synced history across your devices)_', ''];
         for (let i = 0; i < remote.results.length; i++) {
           const r = remote.results[i];
-          lines.push(`## #${i + 1} [${r.sourceType}] ${(r.title || r.itemId).slice(0, 90)}`);
-          if (r.projectPath) lines.push(`**Project:** ${r.projectPath}`);
-          lines.push((r.text || '').replace(/\n/g, ' ').slice(0, 300));
+          // Memory-type tag (decision/milestone/…) parsed from chunk_type so the
+          // caller can weight the hit without another lookup.
+          const kind = r.chunkType?.match(/:(\w+):imp([0-9])/);
+          const tag = kind ? ` · ${kind[1]} (imp${kind[2]})` : '';
+          const when = r.mtime ? ` · ${new Date(r.mtime).toISOString().slice(0, 10)}` : '';
+          lines.push(`## #${i + 1} [${r.sourceType}${tag}] ${(r.title || r.itemId).slice(0, 90)}`);
+          // FULL item id + a ready-to-use fetch handle — so the AI can pull the
+          // whole item without guessing the id (eliminates a second round trip).
+          lines.push(`**id:** \`${r.itemId}\`${when}${r.projectPath ? ` · ${r.projectPath}` : ''}`);
+          if (r.sourceType === 'session') lines.push(`_fetch: recall_context / recall_show "${r.itemId}"_`);
+          // Up to 3 matched snippets (the server already returns them) instead of
+          // one 300-char fragment — enough context to act on the spot.
+          const snippets = (r.matchedChunks?.length ? r.matchedChunks.map((c) => c.text) : [r.text]).filter(Boolean).slice(0, 3);
+          for (const s of snippets) lines.push(`- ${s.replace(/\n/g, ' ').trim().slice(0, 220)}`);
           lines.push('');
         }
         return { content: [{ type: 'text', text: lines.join('\n') }] };

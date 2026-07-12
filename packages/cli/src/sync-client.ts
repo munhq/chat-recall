@@ -881,7 +881,7 @@ const refs = listAvailableBackends().flatMap((b) => {
     // Knowledge graph: extract triples live from the redacted conversation
     // text (no local KG DB is read). Accumulated + deduped, flushed at the end.
     if (upload.sessionMeta) {
-      accumulateKg(extractEntities(built.kgText, { projectPath: built.projectPath, sourceType: 'session', sessionId: ref.prefixedId }), ref.prefixedId);
+      accumulateKg(extractEntities(built.kgText, { projectPath: built.projectPath, sourceType: 'session', sessionId: ref.prefixedId, validFrom: ref.mtime ? new Date(ref.mtime).toISOString().slice(0, 10) : undefined }), ref.prefixedId);
     }
 
     // Derived data — the CLI has the FS/git/transcript, the server doesn't.
@@ -979,7 +979,7 @@ const refs = listAvailableBackends().flatMap((b) => {
           // KG: extract triples live from this item's redacted chunk text.
           if (upload.sessionMeta && redactedChunks.length > 0) {
             accumulateKg(
-              extractEntities(redactedChunks.map((c) => c.text).join('\n'), { projectPath: item.projectPath || '', sourceType: item.sourceType }),
+              extractEntities(redactedChunks.map((c) => c.text).join('\n'), { projectPath: item.projectPath || '', sourceType: item.sourceType, validFrom: item.mtime ? new Date(Number(item.mtime)).toISOString().slice(0, 10) : undefined }),
               null,
             );
           }

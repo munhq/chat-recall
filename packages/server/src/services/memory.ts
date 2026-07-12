@@ -12,6 +12,7 @@ import {
 import type { Embedder, EmbedderProvider, SourceType, MemorySearchResult, MemoryMetadataRow, MemoryLinkRow, StorageDriver, VectorStore } from '../imports.js';
 import { isServerMode } from '../util/mode.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
+import { QueryExpander } from './query-expander.js';
 
 const log = createLogger('memory');
 
@@ -22,6 +23,10 @@ export class MemoryService {
   // context (createStore/createVectorStore read currentTenant()).
   private indexes = new Map<string, Promise<VectorStore>>();
   private stores = new Map<string, Promise<StorageDriver>>();
+  // R6: same keyword-expansion the sessions-only SearchService uses — the
+  // unified memory search was the one path that got no semantic help.
+  private expander = new QueryExpander();
+  private vectorOkCache = new Map<string, { ok: boolean; t: number }>();
 
   private idx(): Promise<VectorStore> {
     const t = currentTenant() ?? 'default';
@@ -70,14 +75,32 @@ export class MemoryService {
   }
 
 
+  /** True when pgvector is serving semantic results — then expansion is
+   *  redundant (embeddings already generalize). Cached 60s. */
+  private async vectorActive(): Promise<boolean> {
+    const t = currentTenant() ?? 'default';
+    const cached = this.vectorOkCache.get(t);
+    const now = Date.now();
+    if (cached && now - cached.t < 60_000) return cached.ok;
+    let ok = false;
+    try { ok = (await (await this.idx()).getStats()).vectorOk === true; } catch { ok = false; }
+    this.vectorOkCache.set(t, { ok, t: now });
+    return ok;
+  }
+
+  private async expandIfKeyword(query: string): Promise<string> {
+    if (!this.expander.isEnabled) return query;
+    if (await this.vectorActive()) return query;
+    try { return (await this.expander.expand(query)).expanded; } catch { return query; }
+  }
+
   async search(
     query: string,
     topK = 10,
     sourceTypes?: SourceType[],
     projectIdFilter?: string
   ): Promise<MemorySearchResult[]> {
-
-    return await (await this.idx()).search(query, { topK, sourceTypes, projectIdFilter });
+    return await (await this.idx()).search(await this.expandIfKeyword(query), { topK, sourceTypes, projectIdFilter });
   }
 
   async getStatus() {

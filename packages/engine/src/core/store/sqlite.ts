@@ -91,6 +91,7 @@ export class SqliteStore implements StorageDriver {
   async rebuildFTS(...a: Args<'rebuildFTS'>) { return this.inner.rebuildFTS(...a); }
   async clearFTS(...a: Args<'clearFTS'>) { return this.inner.clearFTS(...a); }
   async searchFTS(...a: Args<'searchFTS'>) { return this.inner.searchFTS(...a); }
+  async topImportantChunks(...a: Args<'topImportantChunks'>) { return this.inner.topImportantChunks(...a); }
   async getFTSCount(...a: Args<'getFTSCount'>) { return this.inner.getFTSCount(...a); }
   async countDistinctItemsMatching(...a: Args<'countDistinctItemsMatching'>) { return this.inner.countDistinctItemsMatching(...a); }
 

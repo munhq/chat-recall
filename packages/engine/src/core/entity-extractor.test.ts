@@ -6,10 +6,12 @@ describe('extractEntities', () => {
     expect(extractEntities('')).toEqual([]);
   });
 
-  test('extracts a tool/technology mention with category', () => {
-    const ts = extractEntities('we use postgres for transactional storage');
-    const has = ts.find(t => t.predicate === 'is_a' && t.subject.toLowerCase().includes('postgres'));
-    expect(has).toBeDefined();
+  test('extracts a project→tool "uses" fact (no glossary is_a triple)', () => {
+    const ts = extractEntities('we use postgres for transactional storage', { projectPath: '/code/myapp' });
+    // Glossary "postgres is_a database" triples are no longer emitted (noise);
+    // the user-specific dependency fact is what we keep.
+    expect(ts.find(t => t.predicate === 'uses' && t.object.toLowerCase() === 'postgres')).toBeDefined();
+    expect(ts.find(t => t.predicate === 'is_a' && t.object === 'database')).toBeUndefined();
   });
 
   test('links tool to project when projectPath is provided', () => {
@@ -68,17 +70,16 @@ describe('precision — prose words are not technologies (anti-noise regression)
     expect(ts.find(t => t.subject === 'move')).toBeUndefined();
   });
 
-  test('"written in go" DOES mint the go triple', () => {
+  test('"written in go" DOES mint the go dependency', () => {
     const ts = extractEntities('The collector is written in go for speed.', { projectPath: '/code/myapp' });
-    expect(ts.find(t => t.subject === 'go' && t.predicate === 'is_a')).toBeDefined();
     expect(ts.find(t => t.predicate === 'uses' && t.object === 'go')).toBeDefined();
   });
 
   test('a single passing mention does not become a project dependency', () => {
     const ts = extractEntities('Someone mentioned redis at the meetup.', { projectPath: '/code/myapp' });
     expect(ts.find(t => t.predicate === 'uses' && t.object === 'redis')).toBeUndefined();
-    // The category fact is still fine — redis IS a database.
-    expect(ts.find(t => t.subject === 'redis' && t.predicate === 'is_a')).toBeDefined();
+    // And no glossary "redis is_a database" triple is emitted either.
+    expect(ts.find(t => t.subject === 'redis' && t.predicate === 'is_a')).toBeUndefined();
   });
 
   test('claude/gemini never become tool entities (they are in every transcript)', () => {
@@ -90,5 +91,30 @@ describe('precision — prose words are not technologies (anti-noise regression)
   test('npm scopes are not people', () => {
     const ts = extractEntities('Import it from @playwright/test and @chat-recall/engine.');
     expect(ts.find(t => t.predicate === 'is_a' && t.object === 'person')).toBeUndefined();
+  });
+
+  test('decorators / JSDoc tags are not people (@param, @app.route, @Component)', () => {
+    const ts = extractEntities('@param foo the input. @app.route("/x"). @Component({}) @override', { projectPath: '/code/myapp' });
+    expect(ts.find(t => t.predicate === 'is_a' && t.object === 'person')).toBeUndefined();
+  });
+
+  test('"I\'m <state>" is not a person (I\'m Sorry / I am Working)', () => {
+    for (const s of ["I'm Sorry about that", 'I am Working on it', "I'm Done", "I'm Trying now"]) {
+      const ts = extractEntities(s, { projectPath: '/code/myapp' });
+      expect(ts.find(t => t.predicate === 'is_a' && t.object === 'person'), s).toBeUndefined();
+    }
+  });
+
+  test('symmetric "X over Y" needs real tools — no "Monday over Tuesday" garbage', () => {
+    const junk = extractEntities('I prefer Monday over Tuesday for releases.', { projectPath: '/code/myapp' });
+    expect(junk.find(t => t.predicate === 'chosen_over')).toBeUndefined();
+    const real = extractEntities('We went with postgres over mongodb.', { projectPath: '/code/myapp' });
+    expect(real.find(t => t.predicate === 'chosen_over' && t.subject === 'postgres')).toBeDefined();
+  });
+
+  test('tool aliases are canonicalized (postgresql → postgres)', () => {
+    const ts = extractEntities('The app uses postgresql heavily; postgresql everywhere.', { projectPath: '/code/myapp' });
+    expect(ts.find(t => t.predicate === 'uses' && t.object === 'postgres')).toBeDefined();
+    expect(ts.find(t => t.predicate === 'uses' && t.object === 'postgresql')).toBeUndefined();
   });
 });

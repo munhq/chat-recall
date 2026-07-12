@@ -1557,6 +1557,46 @@ export class MemoryStore {
     return searchResults.slice(0, topK);
   }
 
+  /**
+   * The high-importance memory feed (recall_wake_up).
+   *
+   * Selected by the classifier's OWN tag — chunks whose chunk_type carries
+   * `:imp{minImportance..5}` (e.g. `assistant:decision:imp5`) — newest-first,
+   * ranked by importance. This replaces the old approach of FTS-searching for
+   * the literal words "decision preference milestone", which missed every
+   * high-importance chunk that didn't happen to contain those nouns and
+   * ordered results by keyword relevance instead of importance.
+   */
+  topImportantChunks(opts: { limit?: number; minImportance?: number; projectIdFilter?: string; sourceTypes?: SourceType[] } = {}): MemorySearchResult[] {
+    const { limit = 10, minImportance = 4, projectIdFilter, sourceTypes } = opts;
+    const impClauses: string[] = [];
+    for (let i = minImportance; i <= 5; i++) impClauses.push(`chunk_type LIKE '%:imp${i}'`);
+    let sql = `SELECT chunk_id, item_id, source_type, title, text, chunk_type, project_path, file_path, mtime
+               FROM memory_chunks_fts WHERE (${impClauses.join(' OR ')})`;
+    const params: (string | number)[] = [];
+    if (sourceTypes && sourceTypes.length > 0) {
+      sql += ` AND source_type IN (${sourceTypes.map(() => '?').join(', ')})`;
+      params.push(...sourceTypes);
+    }
+    if (projectIdFilter) { sql += ` AND project_path LIKE ?`; params.push(`%${projectIdFilter}%`); }
+    // chunk_type DESC puts :imp5 above :imp4 lexically; mtime breaks ties toward recent.
+    sql += ` ORDER BY chunk_type DESC, mtime DESC LIMIT ?`; params.push(limit);
+    let rows: Array<{ item_id: string; source_type: string; title: string; text: string; chunk_type: string; project_path: string; file_path: string; mtime: number }>;
+    try { rows = this.db.prepare(sql).all(...params) as typeof rows; } catch { return []; }
+    return rows.map((r) => ({
+      itemId: r.item_id,
+      sourceType: r.source_type as SourceType,
+      title: r.title,
+      text: r.text,
+      score: 1,
+      chunkType: r.chunk_type,
+      projectPath: r.project_path,
+      filePath: r.file_path,
+      mtime: r.mtime,
+      matchedChunks: [{ chunkType: r.chunk_type, text: r.text, score: 1 }],
+    }));
+  }
+
   /** Get FTS5 chunk count */
   getFTSCount(): number {
     try {
