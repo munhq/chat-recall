@@ -23,7 +23,6 @@ import ConnectTokenPage from './components/ConnectTokenPage';
 import SecuritySummaryBanner from './components/SecuritySummaryBanner';
 import AdminPage from './components/AdminPage';
 import ProjectsDashboard from './components/ProjectsDashboard';
-import DeploymentPage from './components/DeploymentPage';
 import { SidebarExtrasProvider, useSidebarExtras } from './context/sidebar-extras';
 import { isCloud } from './services/auth';
 import {
@@ -44,7 +43,7 @@ import {
   type ProjectTreeApiNode,
 } from './services/api';
 
-type ViewMode = 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'security' | 'deployment' | 'settings' | 'account' | 'connect' | 'admin';
+type ViewMode = 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'security' | 'settings' | 'account' | 'connect' | 'admin';
 
 /**
  * Recursive tree node used by the project sidebar. One node renders as
@@ -114,7 +113,7 @@ function findProjectName(tree: ProjectTreeNode[], projectId: string | null): str
 
 
 /** Views that may be addressed via the ?view= deep link. */
-const URL_VIEWS = new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'security', 'deployment', 'account', 'settings', 'connect']);
+const URL_VIEWS = new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'security', 'account', 'settings', 'connect']);
 
 /**
  * Initial view from the URL. Reading it during state init (not in an effect)
@@ -157,7 +156,7 @@ function AppInner() {
     // SUPERSET of every real deployment's views, or deep links to a missing
     // entry get snapped to ?view=search before the server can answer
     // ('account' was absent → ?view=account never worked as a link).
-    if (!f) return new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'security', 'deployment', 'settings', 'account', 'connect', 'admin']);
+    if (!f) return new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'security', 'settings', 'account', 'connect', 'admin']);
     const out = new Set<ViewMode>();
     out.add('home');    // command center is always available
     out.add('connect'); // installer's token page — must never be capability-gated
@@ -167,7 +166,6 @@ function AppInner() {
     if (f.memory) out.add('memory');
     if (f.toolkit) out.add('toolkit');
     if (f.security) out.add('security');
-    out.add('deployment'); // deployment diagnostics is always available
     if (f.settings) out.add('settings');
     if (f.account) out.add('account');
     return out;
@@ -520,7 +518,7 @@ function AppInner() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const v = params.get('view');
-    if (v && ['home', 'projects', 'search', 'memory', 'toolkit', 'security', 'deployment', 'settings', 'account'].includes(v)) setView(v as ViewMode);
+    if (v && ['home', 'projects', 'search', 'memory', 'toolkit', 'security', 'settings', 'account'].includes(v)) setView(v as ViewMode);
     const id = params.get('session');
     if (id && looksLikeSessionId(id)) handleSelectSession(id);
     // Back/forward restore the full navigational state recorded in that URL
@@ -941,9 +939,6 @@ function AppInner() {
                 )}
               </div>
             </div>
-          )}
-          {view === 'deployment' && (
-            <DeploymentPage onClose={() => setView('home')} />
           )}
         </div>
       )}
