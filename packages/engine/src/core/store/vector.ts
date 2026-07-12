@@ -131,6 +131,15 @@ export class PgVectorStore implements VectorStore {
            project_path TEXT DEFAULT '', project_id TEXT DEFAULT '', file_path TEXT DEFAULT '', mtime BIGINT DEFAULT 0,
            embedding vector(${this.dim}), PRIMARY KEY (tenant, chunk_id))`);
       await this.pool.query(`CREATE INDEX IF NOT EXISTS idx_vec_item ON memory_vectors(tenant, source_type, item_id)`);
+      // ANN index so semantic search is a sublinear HNSW probe, not a full
+      // sequential scan of every embedding (the `<=>` in search()). Cosine ops
+      // match the `1/(1+(embedding <=> q))` scoring. Best-effort: older pgvector
+      // builds lack hnsw — fall back silently to the sequential scan.
+      try {
+        await this.pool.query(`CREATE INDEX IF NOT EXISTS idx_vec_hnsw ON memory_vectors USING hnsw (embedding vector_cosine_ops)`);
+      } catch (e) {
+        console.warn(`[vector] could not create HNSW index (semantic search will sequential-scan): ${e instanceof Error ? e.message : String(e)}`);
+      }
       // RLS: memory_vectors lives outside pg-schema.ts, so wall it here too.
       await this.pool.query(`ALTER TABLE memory_vectors ENABLE ROW LEVEL SECURITY`);
       await this.pool.query(`ALTER TABLE memory_vectors FORCE ROW LEVEL SECURITY`);
@@ -391,8 +400,11 @@ export class PgVectorStore implements VectorStore {
     const nowP = params.length;
     params.push(topK * 5);
     sql += ` ORDER BY (1/(1+(embedding <=> $2::vector)))
-                      * (CASE WHEN chunk_type LIKE 'subagent%' THEN 0.55 ELSE 1.0 END)
-                      + 0.15 * exp(-LEAST(GREATEST($${nowP}::double precision - COALESCE(mtime, 0), 0) / (14.0 * 86400000), 60)) DESC
+                      * (CASE WHEN chunk_type LIKE 'subagent%' THEN 0.55
+                              WHEN chunk_type LIKE 'tool_result%' THEN 0.5
+                              ELSE 1.0 END)
+                      + 0.15 * exp(-LEAST(GREATEST($${nowP}::double precision - COALESCE(mtime, 0), 0) / (14.0 * 86400000), 60))
+                      + 0.10 * (COALESCE(NULLIF(substring(chunk_type from 'imp([0-9])'), '')::int, 1) / 5.0) DESC
              LIMIT $${params.length}`;
     const rows = await this.qRo(sql, params);
     // Group by item (best score wins), mirroring the FTS grouping.
@@ -405,14 +417,39 @@ export class PgVectorStore implements VectorStore {
     }
     const vectorResults: MemorySearchResult[] = [...byItem.values()].map(it => ({ itemId: it.itemId, sourceType: it.sourceType, title: it.title, text: it.chunks[0]?.text || '', score: it.bestScore, chunkType: it.chunks[0]?.chunkType || 'unknown', projectPath: it.projectPath, filePath: it.filePath, mtime: it.mtime, matchedChunks: it.chunks.slice(0, 3) }))
       .sort((a, b) => b.score - a.score);
-    // Union: FTS hits keep their natural position, vector hits fill the rest.
-    const seen = new Set(ftsResults.map(r => `${r.sourceType}:${r.itemId}`));
-    const merged = [...ftsResults];
-    for (const vr of vectorResults) {
-      const key = `${vr.sourceType}:${vr.itemId}`;
-      if (!seen.has(key)) { seen.add(key); merged.push(vr); }
+    // Reciprocal Rank Fusion: score each item by Σ 1/(K + rank) across BOTH
+    // ranked lists, then sort by the fused score. Unlike the old FTS-first
+    // concat (where a vector-only match could never outrank the weakest keyword
+    // hit), an item ranked highly by BOTH backends floats to the top, and a
+    // strong semantic-only match can beat a weak keyword one. K=60 is the
+    // standard RRF constant — damps the contribution of deep-rank items.
+    const K = 60;
+    const fused = new Map<string, { result: MemorySearchResult; score: number }>();
+    const fuse = (list: MemorySearchResult[]) => {
+      list.forEach((r, i) => {
+        const key = `${r.sourceType}:${r.itemId}`;
+        const add = 1 / (K + i + 1);
+        const cur = fused.get(key);
+        if (cur) cur.score += add;
+        else fused.set(key, { result: r, score: add });
+      });
+    };
+    fuse(ftsResults);
+    fuse(vectorResults);
+    const ranked = [...fused.values()].sort((a, b) => b.score - a.score).map((x) => x.result);
+    // R4: drop near-duplicate items — the same content often lives in a session,
+    // its subagent transcript, AND a paste; without this they eat 3 of 5 slots.
+    // Signature = normalized 120-char text prefix.
+    const out: MemorySearchResult[] = [];
+    const seenSig = new Set<string>();
+    for (const r of ranked) {
+      const sig = (r.text || r.title || '').replace(/\s+/g, ' ').trim().slice(0, 120).toLowerCase();
+      if (sig && seenSig.has(sig)) continue;
+      if (sig) seenSig.add(sig);
+      out.push(r);
+      if (out.length >= topK) break;
     }
-    return merged.slice(0, topK);
+    return out;
   }
 
   async getHealth(..._a: Args<'getHealth'>) {

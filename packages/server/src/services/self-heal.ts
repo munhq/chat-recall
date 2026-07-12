@@ -131,7 +131,8 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
       const textSource = parsed.messages
         .filter((m) => m.content?.trim())
         .map((m) => ({ role: m.role as 'user' | 'assistant', text: m.content! }));
-      const cks = chunksFromTurns(sessionId, textSource, projectPath, mtime, projectId);
+      const healFirstPrompt = parsed.messages.find((m) => m.role === 'user' && m.content?.trim())?.content;
+      const cks = chunksFromTurns(sessionId, textSource, projectPath, mtime, projectId, healFirstPrompt);
       const subs = subagentChunks(sessionId, (parsed.subagents ?? []) as unknown as EnvSubagent[], projectPath, mtime);
       const all = subs.length > 0 ? [...cks, ...subs] : cks;
       if (all.length > 0) await store.addChunksFTS(all);

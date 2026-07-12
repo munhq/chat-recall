@@ -83,10 +83,20 @@ export class PgKnowledgeGraph implements KnowledgeGraphDriver {
     await this.q(`INSERT INTO kg_entities (tenant,id,name) VALUES ($1,$2,$3) ON CONFLICT (tenant,id) DO NOTHING`, [this.t, objId, object]);
     const existing = (await this.q(`SELECT id FROM kg_triples WHERE tenant=$1 AND subject=$2 AND predicate=$3 AND object=$4 AND valid_to IS NULL`, [this.t, subId, pred, objId]))[0];
     if (existing) return existing.id;
+    const { normalizeKgDate } = await import('../knowledge-graph.js');
+    const validFrom = normalizeKgDate(options.validFrom);
+    const validTo = normalizeKgDate(options.validTo);
+    // Supersede a contradictory active fact (same subject+predicate, different
+    // object) — see the sqlite reference impl. Opt-in via options.supersede.
+    if (options.supersede) {
+      const asOf = validFrom || new Date().toISOString().slice(0, 10);
+      await this.q(`UPDATE kg_triples SET valid_to=$5 WHERE tenant=$1 AND subject=$2 AND predicate=$3 AND object<>$4 AND valid_to IS NULL`,
+        [this.t, subId, pred, objId, asOf]);
+    }
     const id = await this.tripleId(subject, pred, object);
     await this.q(
-      `INSERT INTO kg_triples (tenant,id,subject,predicate,object,valid_from,valid_to,confidence,source_session,source_file) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [this.t, id, subId, pred, objId, options.validFrom || null, options.validTo || null, options.confidence ?? 1.0, options.sourceSession || null, options.sourceFile || null]);
+      `INSERT INTO kg_triples (tenant,id,subject,predicate,object,valid_from,valid_to,confidence,source_session,source_file,origin) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [this.t, id, subId, pred, objId, validFrom, validTo, options.confidence ?? 1.0, options.sourceSession || null, options.sourceFile || null, options.origin || 'extracted']);
     return id;
   }
 
@@ -152,7 +162,7 @@ export class PgKnowledgeGraph implements KnowledgeGraphDriver {
     } else {
       rows = await this.qRo(`SELECT t.*, s.name AS sub_name, o.name AS obj_name FROM kg_triples t JOIN kg_entities s ON s.tenant=t.tenant AND t.subject=s.id JOIN kg_entities o ON o.tenant=t.tenant AND t.object=o.id WHERE t.tenant=$1 ORDER BY t.valid_from ASC NULLS LAST LIMIT $2`, [this.t, limit]);
     }
-    return rows.map(r => ({ subject: r.sub_name, predicate: r.predicate, object: r.obj_name, valid_from: r.valid_from, valid_to: r.valid_to, current: r.valid_to === null }));
+    return rows.map(r => ({ subject: r.sub_name, predicate: r.predicate, object: r.obj_name, valid_from: r.valid_from, valid_to: r.valid_to, current: r.valid_to === null, confidence: r.confidence ?? 1.0, origin: r.origin ?? 'extracted' }));
   }
 
   async stats(..._a: Args<'stats'>) {

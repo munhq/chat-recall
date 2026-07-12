@@ -53,6 +53,46 @@ describe('KnowledgeGraph', () => {
     expect(apr.find(f => f.object === 'project-b')).toBeDefined();
   });
 
+  test('KG2: stamped valid_from makes as_of time-travel exclude future facts', () => {
+    kg.addTriple('proj', 'uses', 'redis', { validFrom: '2026-03-01' });
+    // Before the fact was true → not returned (previously auto-facts had NULL
+    // valid_from and matched every date).
+    expect(kg.queryEntity('proj', '2026-01-01').find(f => f.object === 'redis')).toBeUndefined();
+    // At/after → returned.
+    expect(kg.queryEntity('proj', '2026-04-01').find(f => f.object === 'redis')).toBeDefined();
+  });
+
+  test('KG5: a full ISO timestamp validFrom is normalized to date-only', () => {
+    kg.addTriple('proj2', 'uses', 'kafka', { validFrom: '2026-06-15T10:30:00Z' });
+    const f = kg.queryEntity('proj2').find(x => x.object === 'kafka');
+    expect(f?.valid_from).toBe('2026-06-15');
+  });
+
+  test('KG3: origin distinguishes asserted from extracted facts', () => {
+    kg.addTriple('me', 'prefers', 'tabs', { origin: 'asserted' });
+    kg.addTriple('me', 'prefers', 'spaces'); // default extracted
+    const tl = kg.timeline('me');
+    expect(tl.find(f => f.object === 'tabs')?.origin).toBe('asserted');
+    expect(tl.find(f => f.object === 'spaces')?.origin).toBe('extracted');
+  });
+
+  test('supersede invalidates a contradictory current fact', () => {
+    kg.addTriple('svc', 'defaults_to', 'lancedb');
+    // New value for the same (subject, predicate) with supersede → old one ends.
+    kg.addTriple('svc', 'defaults_to', 'postgres', { supersede: true, validFrom: '2026-05-01' });
+    const current = kg.queryEntity('svc');
+    const active = current.filter(f => f.predicate === 'defaults_to' && !f.valid_to);
+    expect(active).toHaveLength(1);
+    expect(active[0].object).toBe('postgres');
+  });
+
+  test('without supersede, both values stay current (multi-valued facts)', () => {
+    kg.addTriple('proj', 'uses', 'redis');
+    kg.addTriple('proj', 'uses', 'postgres');
+    const active = kg.queryEntity('proj').filter(f => f.predicate === 'uses' && !f.valid_to);
+    expect(active).toHaveLength(2);
+  });
+
   test('stats reports entity + triple counts', () => {
     kg.addTriple('a', 'uses', 'b');
     kg.addTriple('a', 'uses', 'c');
