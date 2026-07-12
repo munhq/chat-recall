@@ -1597,6 +1597,16 @@ export class MemoryStore {
     }));
   }
 
+  /** Number of FTS chunks indexed for one item. 0 = listed-but-unsearchable
+   *  (metadata/envelope exist but chunks were never written — the ingest
+   *  atomicity gap the self-heal reconciler repairs). */
+  countItemChunks(sourceType: string, itemId: string): number {
+    try {
+      const r = this.db.prepare(`SELECT COUNT(*) AS n FROM memory_chunks_fts WHERE item_id = ? AND source_type = ?`).get(itemId, sourceType) as { n: number };
+      return r?.n ?? 0;
+    } catch { return 0; }
+  }
+
   /** Get FTS5 chunk count */
   getFTSCount(): number {
     try {

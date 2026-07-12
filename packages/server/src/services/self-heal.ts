@@ -81,6 +81,11 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
       } catch { /* corrupt envelope — treat as 0, heal will replace it */ }
     }
     const envelopeDamaged = archiveMsgs > itemMsgs; // only ever grow
+    // S2: listed-but-unsearchable — the session has content (archive/envelope)
+    // but ZERO search chunks. Happens when ingest wrote metadata + envelope but
+    // the chunk batch didn't land (non-atomic write). The envelope check above
+    // won't catch it (envelope is fine), so search silently misses the session.
+    const chunksMissing = archiveMsgs > 0 && (await store.countItemChunks('session', sessionId)) === 0;
 
     const item = await store.getItem(sessionId, 'session');
     const projectPath = item?.project_path || '';
@@ -117,17 +122,21 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
     }
     const diffDamaged = newDiff !== null;
 
-    const damaged = envelopeDamaged || diffDamaged;
+    const damaged = envelopeDamaged || diffDamaged || chunksMissing;
     if (!damaged) return { sessionId, damaged: false, healed: false, from: itemMsgs, to: archiveMsgs, reason: 'healthy' };
     if (opts.dryRun) return { sessionId, damaged: true, healed: false, from: itemMsgs, to: archiveMsgs };
 
-    // 1. Envelope — the viewer's source of truth.
+    // 1. Envelope — the viewer's source of truth. Only rebuilt when the archive
+    //    is fuller (a truncation victim); a chunks-only gap leaves it untouched.
     if (envelopeDamaged) {
       const envelope = { v: TRANSCRIPT_VERSION, messages: parsed.messages, subagents: parsed.subagents, o: storedOffset };
       await store.setCachedContent(sessionId, 'session', mtime, JSON.stringify(envelope));
+    }
 
-      // 2. FTS chunks — search. Same builders the sync ingest uses; addChunksFTS
-      //    deletes the item's rows first, so this replaces cleanly.
+    // 2. FTS chunks — search. Rebuilt when the envelope grew OR when the session
+    //    has none at all (the S2 orphan). Same builders the sync ingest uses;
+    //    addChunksFTS deletes the item's rows first, so it replaces cleanly.
+    if (envelopeDamaged || chunksMissing) {
       const textSource = parsed.messages
         .filter((m) => m.content?.trim())
         .map((m) => ({ role: m.role as 'user' | 'assistant', text: m.content! }));
