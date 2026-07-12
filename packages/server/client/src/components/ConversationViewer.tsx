@@ -226,6 +226,38 @@ export default function ConversationViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
+  // Fetch the active lazy tab's data when the SELECTED TAB changes (keyed on
+  // viewMode) — not only on session change or tab CLICK. Navigating in from
+  // Activity (or any ?tab= deep link) flips the tab to 'diff'/'commits'/… via
+  // initialTab/URL *after* the session-change effect above already ran, so that
+  // effect fetched the previous tab and Diff stayed empty until a manual
+  // refresh. This closes that gap. Guards (`!data && !loading && !error`) dedupe
+  // against the session-change effect and handleViewChange, and let a
+  // `_computing` result re-poll (it nulls the data, re-triggering this).
+  useEffect(() => {
+    if (!sessionId) return;
+    if (viewMode === 'diff' && !diffData && !diffLoading && !diffError) {
+      setDiffLoading(true);
+      getSessionDiff(sessionId)
+        .then((d) => { setDiffData(d); if (d._computing) setTimeout(() => setDiffData(null), 2000); })
+        .catch((err) => setDiffError(err instanceof Error ? err.message : 'Failed to load diff'))
+        .finally(() => setDiffLoading(false));
+    } else if (viewMode === 'commits' && !commitsData && !commitsLoading && !commitsError) {
+      setCommitsLoading(true);
+      getSessionCommits(sessionId)
+        .then((d) => { setCommitsData(d); if (d._computing) setTimeout(() => setCommitsData(null), 2000); })
+        .catch((err) => setCommitsError(err instanceof Error ? err.message : 'Failed to load commits'))
+        .finally(() => setCommitsLoading(false));
+    } else if ((viewMode === 'outcome' || viewMode === 'summary' || viewMode === 'insights' || viewMode === 'metrics') && !outcomeData && !outcomeLoading && !outcomeError) {
+      setOutcomeLoading(true);
+      getSessionOutcome(sessionId)
+        .then((d) => { setOutcomeData(d); if (d._computing) setTimeout(() => setOutcomeData(null), 2000); })
+        .catch((err) => setOutcomeError(err instanceof Error ? err.message : 'Failed to load outcome'))
+        .finally(() => setOutcomeLoading(false));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, viewMode, diffData, commitsData, outcomeData]);
+
   // ── Hooks ──
 
   useEffect(() => {
