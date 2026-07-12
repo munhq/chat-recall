@@ -110,6 +110,12 @@ CREATE TABLE IF NOT EXISTS memory_chunks (
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_tsv ON memory_chunks USING GIN (tsv);
 CREATE INDEX IF NOT EXISTS idx_chunks_item ON memory_chunks(tenant, source_type, item_id);
+-- Importance feed (recall_wake_up / topImportantChunks): filter + order by the
+-- imp digit parsed out of chunk_type. Expression index so the scan is an index
+-- range, not a full table scan, on every wake-up. The expression is IMMUTABLE
+-- (substring/nullif/coalesce/cast), so it's index-eligible.
+CREATE INDEX IF NOT EXISTS idx_chunks_importance ON memory_chunks
+  (tenant, (COALESCE(NULLIF(substring(chunk_type FROM 'imp([0-9])'), '')::int, 0)) DESC, mtime DESC);
 
 CREATE TABLE IF NOT EXISTS secret_findings (
   id          BIGSERIAL PRIMARY KEY,
@@ -354,9 +360,12 @@ CREATE TABLE IF NOT EXISTS kg_triples (
   confidence     REAL NOT NULL DEFAULT 1.0,
   source_session TEXT,
   source_file    TEXT,
+  origin         TEXT NOT NULL DEFAULT 'extracted',
   extracted_at   TEXT NOT NULL DEFAULT to_char(now(),'YYYY-MM-DD"T"HH24:MI:SS'),
   PRIMARY KEY (tenant, id)
 );
+-- Backfill the origin column on pre-existing deployments (idempotent).
+ALTER TABLE kg_triples ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'extracted';
 CREATE INDEX IF NOT EXISTS idx_kgt_subject ON kg_triples(tenant, subject);
 CREATE INDEX IF NOT EXISTS idx_kgt_object ON kg_triples(tenant, object);
 CREATE INDEX IF NOT EXISTS idx_kgt_predicate ON kg_triples(tenant, predicate);

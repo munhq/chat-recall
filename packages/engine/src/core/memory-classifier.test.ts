@@ -1,5 +1,29 @@
 import { describe, test, expect } from 'vitest';
-import { classifyChunk } from './memory-classifier.js';
+import { classifyChunk, reclassifyChunkType } from './memory-classifier.js';
+
+describe('reclassifyChunkType', () => {
+  test('re-derives the tag from current rules, preserving the base', () => {
+    // A stale tentative-decision tag (imp5 under old rules) drops below the
+    // wake-up bar under current rules.
+    const out = reclassifyChunkType('user_context:decision:imp5', 'yes switch to that branch');
+    expect(out.startsWith('user_context')).toBe(true);
+    const imp = Number(out.match(/imp([0-9])/)?.[1] ?? '0');
+    expect(imp).toBeLessThan(4);
+  });
+  test('leaves subagent and tool_result chunks untouched', () => {
+    expect(reclassifyChunkType('subagent:explore', 'we decided to use postgres')).toBe('subagent:explore');
+    expect(reclassifyChunkType('tool_result', 'we decided to use postgres')).toBe('tool_result');
+  });
+  test('promotes a real committed decision', () => {
+    // Two commit markers ("we chose" + "chose X over") → corroborated → imp5.
+    const out = reclassifyChunkType('assistant', 'We chose Postgres over DynamoDB.');
+    expect(out).toMatch(/^assistant:decision:imp[45]$/);
+  });
+  test('is idempotent', () => {
+    const once = reclassifyChunkType('assistant', 'We chose Postgres over DynamoDB.');
+    expect(reclassifyChunkType(once, 'We chose Postgres over DynamoDB.')).toBe(once);
+  });
+});
 
 describe('classifyChunk', () => {
   test('classifies a tool-choice statement as decision', () => {
@@ -81,6 +105,29 @@ describe('precision — topical words are not decisions (anti-slop regression)',
   test('bare "bug/error" mentions without explicit phrasing stay general', () => {
     const r = classifyChunk('There is a bug tracker and an error page in this repo.');
     expect(r.memoryType).toBe('general');
+  });
+
+  test('CL3: a committed decision with no concrete object stays below the bar', () => {
+    // Decision verb but no substance → base-3, out of wake-up.
+    expect(classifyChunk('We decided to add a log line here.').importance).toBeLessThan(4);
+    // Same verb, real object → reaches the bar.
+    expect(classifyChunk('We decided to use Postgres for the store.').importance).toBeGreaterThanOrEqual(4);
+  });
+
+  test('COMMITTED decisions reach the wake-up bar; TENTATIVE ones stay below it', () => {
+    // Committed: an actual landed call → importance ≥ 4 (surfaces in wake-up).
+    expect(classifyChunk('We chose Postgres over DynamoDB for the primary store.').importance).toBeGreaterThanOrEqual(4);
+    expect(classifyChunk('Decided to drop Redux and use Zustand.').importance).toBeGreaterThanOrEqual(4);
+    // Tentative: a proposal / chore phrased with a decision verb → tagged
+    // 'decision' (findable) but importance < 4 so it never pollutes wake-up.
+    for (const t of [
+      'we should probably rename this variable',
+      "let's try running the tests again",
+      'switch to branch main and rebuild',
+    ]) {
+      const r = classifyChunk(t);
+      expect(r.importance, `"${t}" must stay below the wake-up bar`).toBeLessThan(4);
+    }
   });
 
   test('long text gets no importance boost from length alone', () => {

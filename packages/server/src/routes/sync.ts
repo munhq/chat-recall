@@ -492,7 +492,7 @@ router.post('/', async (req, res) => {
           const cks = chunksFromTurns(
             cv.session_id,
             textSource.map((t) => ({ role: t.role as SyncTurn['role'], text: t.text })),
-            projectPath, mtime, cv.project_id || undefined,
+            projectPath, mtime, cv.project_id || undefined, firstPrompt,
           );
           // Subagent chunks — the envelope carries each subagent's (redacted,
           // trimmed) messages; index them as `subagent:<kind>` chunks so

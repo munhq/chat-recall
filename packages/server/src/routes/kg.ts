@@ -60,7 +60,7 @@ router.get('/stats', async (_req, res) => {
 // POST /api/kg/add — { subject, predicate, object, valid_from?, valid_to?,
 // confidence?, source_session? } → triple id. Upserts entities implicitly.
 router.post('/add', async (req, res) => {
-  const { subject, predicate, object, valid_from, valid_to, confidence, source_session } = req.body ?? {};
+  const { subject, predicate, object, valid_from, valid_to, confidence, source_session, supersede } = req.body ?? {};
   if (!subject || !predicate || !object) {
     return res.status(400).json({ error: 'subject, predicate, and object are required' });
   }
@@ -71,6 +71,12 @@ router.post('/add', async (req, res) => {
       validTo: valid_to || undefined,
       confidence: typeof confidence === 'number' ? confidence : undefined,
       sourceSession: source_session || undefined,
+      // Explicit human/agent assertion: a new value for the same (subject,
+      // predicate) supersedes the prior one so contradictions don't pile up.
+      // Callers can opt out with supersede:false for genuinely multi-valued facts.
+      supersede: supersede !== false,
+      // Provenance — distinguishes a recorded decision from an auto-mined guess.
+      origin: 'asserted',
     });
     res.json({ id });
   } catch (error) {

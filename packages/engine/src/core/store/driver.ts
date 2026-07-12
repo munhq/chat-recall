@@ -97,6 +97,7 @@ export interface StorageDriver {
   rebuildFTS: AsyncMethod<MemoryStore['rebuildFTS']>;
   clearFTS: AsyncMethod<MemoryStore['clearFTS']>;
   searchFTS: AsyncMethod<MemoryStore['searchFTS']>;
+  topImportantChunks: AsyncMethod<MemoryStore['topImportantChunks']>;
   getFTSCount: AsyncMethod<MemoryStore['getFTSCount']>;
   countDistinctItemsMatching: AsyncMethod<MemoryStore['countDistinctItemsMatching']>;
 

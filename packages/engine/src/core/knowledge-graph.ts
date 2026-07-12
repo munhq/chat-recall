@@ -57,6 +57,22 @@ export interface KGTimelineEntry {
   valid_from: string | null;
   valid_to: string | null;
   current: boolean;
+  confidence: number;
+  /** 'extracted' (auto-mined from chat) or 'asserted' (a human/agent recorded it). */
+  origin: string;
+}
+
+/**
+ * Normalize a KG date to date-only `YYYY-MM-DD`. Facts are day-granular, and
+ * storing a mix of full ISO timestamps and date-only strings broke lexical
+ * comparison (`'2026-01-01T10:00Z' <= '2026-01-01'` is false), so `as_of`
+ * queries silently dropped facts. Canonical date-only makes string compare
+ * chronological again.
+ */
+export function normalizeKgDate(d?: string | null): string | null {
+  if (!d) return null;
+  const m = d.match(/^\d{4}-\d{2}-\d{2}/);
+  return m ? m[0] : d;
 }
 
 export interface KGStats {
@@ -105,6 +121,7 @@ export class KnowledgeGraph {
         confidence REAL NOT NULL DEFAULT 1.0,
         source_session TEXT,
         source_file TEXT,
+        origin TEXT NOT NULL DEFAULT 'extracted',
         extracted_at TEXT NOT NULL DEFAULT (datetime('now')),
         FOREIGN KEY (subject) REFERENCES entities(id),
         FOREIGN KEY (object) REFERENCES entities(id)
@@ -166,6 +183,13 @@ export class KnowledgeGraph {
       confidence?: number;
       sourceSession?: string;
       sourceFile?: string;
+      /** When true, a new object for this (subject, predicate) invalidates the
+       *  prior one — so contradictory facts don't both stay "current". Opt-in:
+       *  human assertions / single-valued predicates pass it; auto-extraction
+       *  leaves it off (facts like `uses` are legitimately multi-valued). */
+      supersede?: boolean;
+      /** Provenance: 'extracted' (auto) vs 'asserted' (human/agent recorded). */
+      origin?: string;
     } = {}
   ): string {
     const subId = this.entityId(subject);
@@ -188,21 +212,34 @@ export class KnowledgeGraph {
 
     if (existing) return existing.id;
 
+    // Supersede any contradictory active fact (same subject+predicate, different
+    // object) so "current" never holds two conflicting values at once.
+    const validFrom = normalizeKgDate(options.validFrom);
+    const validTo = normalizeKgDate(options.validTo);
+    if (options.supersede) {
+      const asOf = validFrom || new Date().toISOString().slice(0, 10);
+      this.db.prepare(`
+        UPDATE triples SET valid_to = ?
+        WHERE subject = ? AND predicate = ? AND object != ? AND valid_to IS NULL
+      `).run(asOf, subId, pred, objId);
+    }
+
     const tripleId = this.tripleId(subject, pred, object);
 
     this.db.prepare(`
-      INSERT INTO triples (id, subject, predicate, object, valid_from, valid_to, confidence, source_session, source_file)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO triples (id, subject, predicate, object, valid_from, valid_to, confidence, source_session, source_file, origin)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       tripleId,
       subId,
       pred,
       objId,
-      options.validFrom || null,
-      options.validTo || null,
+      validFrom,
+      validTo,
       options.confidence ?? 1.0,
       options.sourceSession || null,
       options.sourceFile || null,
+      options.origin || 'extracted',
     );
 
     return tripleId;
@@ -431,6 +468,7 @@ export class KnowledgeGraph {
     const rows = this.db.prepare(sql).all(...params) as Array<{
       sub_name: string; obj_name: string; predicate: string;
       valid_from: string | null; valid_to: string | null;
+      confidence: number; origin: string | null;
     }>;
 
     return rows.map(r => ({
@@ -440,6 +478,8 @@ export class KnowledgeGraph {
       valid_from: r.valid_from,
       valid_to: r.valid_to,
       current: r.valid_to === null,
+      confidence: r.confidence ?? 1.0,
+      origin: r.origin ?? 'extracted',
     }));
   }
 

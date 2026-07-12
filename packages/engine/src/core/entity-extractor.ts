@@ -153,6 +153,29 @@ const KNOWN_TOOL_NAMES = new Set(
   Object.keys(KNOWN_TOOLS).map(t => t.replace(/\\\+/g, '+').replace(/\[.\]/g, '.').replace(/\[([^\]]+)\]/g, '$1').toLowerCase()),
 );
 
+// Alias → canonical, so a project doesn't accrue BOTH `uses postgres` and
+// `uses postgresql` (or k8s/kubernetes, nextjs/next.js) as distinct facts.
+const CANONICAL_TOOL: Record<string, string> = {
+  'postgresql': 'postgres',
+  'k8s': 'kubernetes',
+  'nextjs': 'next.js',
+};
+const canonTool = (n: string): string => CANONICAL_TOOL[n.toLowerCase()] ?? n;
+
+/**
+ * Strict tool check for SYMMETRIC decision captures ("X over Y", "replaced X
+ * with Y"). Both sides must be a known tool or a dotted/hyphenated identifier —
+ * NOT a bare proper noun — so "Monday over Tuesday" / "Stripe over Twilio" don't
+ * mint `chosen_over` triples. (The single-object "decided to use X" pattern
+ * still uses the lenient proper-noun check.)
+ */
+function looksLikeStrictTool(raw: string): boolean {
+  const t = raw.trim().toLowerCase();
+  if (KNOWN_TOOL_NAMES.has(t)) return true;
+  if (/[.-]/.test(t) && t.length >= 3 && !DECISION_OBJECT_STOPWORDS.has(t)) return true;
+  return false;
+}
+
 /**
  * Decide whether a captured decision object is worth keeping. Accepts:
  *  - known tools (postgres, react, …)
@@ -193,6 +216,15 @@ const NOT_PEOPLE = new Set([
   'true', 'false', 'null', 'undefined', 'none', 'string', 'number',
   'react', 'node', 'python', 'rust', 'typescript', 'javascript',
   'file', 'function', 'class', 'module', 'import', 'export', 'return',
+  // E4: "I'm <state/adjective>" is not a colleague — "I'm Sorry", "I am Done".
+  'sorry', 'sure', 'done', 'ready', 'happy', 'glad', 'afraid', 'fine', 'good',
+  'back', 'okay', 'ok', 'not', 'still', 'just', 'also', 'now', 'gonna', 'about',
+  'confident', 'certain', 'curious', 'aware', 'unsure', 'thinking', 'wondering',
+  // E3: JSDoc/decorator/Slack tokens from un-stripped code — "@param", "@app.route".
+  'param', 'params', 'returns', 'throws', 'throw', 'example', 'deprecated',
+  'override', 'see', 'since', 'staticmethod', 'classmethod', 'property',
+  'app', 'router', 'route', 'get', 'post', 'put', 'delete', 'patch',
+  'channel', 'everyone', 'media', 'mention', 'component', 'injectable',
 ]);
 
 // ── Main extraction ──────────────────────────────────────────────
@@ -207,6 +239,10 @@ export function extractEntities(
     projectPath?: string;
     sourceType?: string;
     sessionId?: string;
+    /** When the source was created — stamped as each fact's valid_from so KG
+     *  `as_of` time-travel actually works (auto-facts were shipped with a NULL
+     *  valid_from, which matched every date). */
+    validFrom?: string;
   } = {}
 ): ExtractedTriple[] {
   const triples: ExtractedTriple[] = [];
@@ -216,7 +252,7 @@ export function extractEntities(
     const key = `${s.toLowerCase()}|${p}|${o.toLowerCase()}`;
     if (seen.has(key)) return;
     seen.add(key);
-    triples.push({ subject: s, predicate: p, object: o, confidence: conf });
+    triples.push({ subject: s, predicate: p, object: o, confidence: conf, validFrom: context.validFrom });
   };
 
   // Derive project name from path
@@ -235,10 +271,13 @@ export function extractEntities(
     const mentions = (text.match(countPattern) || []).length;
     const contextual = contextPattern.test(text);
     if (projectName && (mentions >= 2 || contextual)) {
-      addTriple(projectName, 'uses', name, Math.min(0.9, 0.5 + 0.1 * Math.min(mentions, 4) + (contextual ? 0.1 : 0)));
+      addTriple(projectName, 'uses', canonTool(name), Math.min(0.9, 0.5 + 0.1 * Math.min(mentions, 4) + (contextual ? 0.1 : 0)));
     }
-    // Category fact — true by definition of the KNOWN_TOOLS table.
-    addTriple(name, 'is_a', category, 0.9);
+    // NOTE: we deliberately do NOT emit a `name is_a category` glossary triple.
+    // "postgres is_a database" carries zero user-specific memory, fires for any
+    // mention, and floods the KG (diluting the capped fact list in wake-up /
+    // smart_resume). Category is derivable from KNOWN_TOOLS at read time.
+    void category;
   }
 
   // 2. Extract decisions — only emit when the captured object passes
@@ -251,14 +290,17 @@ export function extractEntities(
       const chosen = match[1]?.trim();
       const rejected = match[2]?.trim();
 
-      if (chosen && looksLikeDecisionObject(chosen)) {
-        if (projectName) {
-          addTriple(projectName, 'chose', chosen, 0.8);
+      if (rejected) {
+        // Symmetric capture ("X over Y", "replaced X with Y") — require BOTH
+        // sides to be tool-ish, or skip. Kills "Monday over Tuesday" garbage.
+        if (chosen && looksLikeStrictTool(chosen) && looksLikeStrictTool(rejected)) {
+          const c = canonTool(chosen), r = canonTool(rejected);
+          if (projectName) addTriple(projectName, 'chose', c, 0.8);
+          addTriple(projectName || 'project', 'rejected', r, 0.7);
+          addTriple(c, 'chosen_over', r, 0.8);
         }
-        if (rejected && looksLikeDecisionObject(rejected)) {
-          addTriple(projectName || 'project', 'rejected', rejected, 0.7);
-          addTriple(chosen, 'chosen_over', rejected, 0.8);
-        }
+      } else if (chosen && looksLikeDecisionObject(chosen) && projectName) {
+        addTriple(projectName, 'chose', canonTool(chosen), 0.8);
       }
     }
   }
@@ -284,10 +326,12 @@ export function extractEntities(
       if (!name || name.length < 2 || name.length >= 30) continue;
       const lower = name.toLowerCase();
       if (NOT_PEOPLE.has(lower) || KNOWN_TOOL_NAMES.has(lower)) continue;
-      // @handle immediately followed by '/' is an npm scope (@playwright/test),
-      // not a person — this pattern minted "playwright is_a person" triples.
+      // E4: gerunds are states, not names — "I'm Working", "I am Trying".
+      if (/ing$/i.test(name)) continue;
+      // @handle followed by '/' '.' or '(' is a code token, not a person:
+      // @playwright/test (npm scope), @app.route / @Component (decorator/call).
       const after = text[(match.index ?? 0) + match[0].length];
-      if (match[0].startsWith('@') && after === '/') continue;
+      if (match[0].startsWith('@') && (after === '/' || after === '.' || after === '(')) continue;
       addTriple(name, 'is_a', 'person', 0.6);
       if (projectName) {
         addTriple(name, 'works_on', projectName, 0.5);

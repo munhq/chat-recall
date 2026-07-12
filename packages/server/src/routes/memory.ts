@@ -228,6 +228,24 @@ router.post('/reindex', async (req, res) => {
   }
 });
 
+// POST /api/memory/reclassify — re-run the current classifier over already-
+// indexed chunks so classifier improvements reach old data (the reclassify
+// sweep). Idempotent; only rewrites tags that actually changed.
+router.post('/reclassify', async (req, res) => {
+  try {
+    const { createStore } = await import('../imports.js');
+    const store = await createStore() as { reclassifyChunks?: (batch?: number) => Promise<{ scanned: number; updated: number }> };
+    if (typeof store.reclassifyChunks !== 'function') {
+      return res.status(501).json({ error: 'reclassify not supported by this storage backend' });
+    }
+    const result = await store.reclassifyChunks();
+    res.json({ message: 'Reclassify sweep complete', ...result });
+  } catch (error) {
+    log.error({ err: error }, 'memory reclassify error');
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Reclassify failed' });
+  }
+});
+
 // PATCH /api/memory/item/:sourceType/:id
 router.patch('/item/:sourceType/:id', async (req, res) => {
   try {
@@ -269,23 +287,42 @@ router.get('/wake-up', async (req, res) => {
   const { createStore, createKnowledgeGraph } = await import('../imports.js');
   const store = await createStore();
   try {
-    const hits = await store.searchFTS('decision preference milestone', { topK: 60, projectIdFilter: projectFilter });
-    const highFacts = hits
-      .filter((r) => r.chunkType.includes(':imp4') || r.chunkType.includes(':imp5'))
-      .slice(0, Number.isFinite(maxFacts) ? maxFacts : 10)
-      .map((c) => ({ type: c.chunkType.match(/:(\w+):imp/)?.[1] ?? 'fact', text: c.text.replace(/\n/g, ' ').trim().slice(0, 150) }));
+    // Select high-importance facts by the classifier's OWN tag (imp4/imp5),
+    // ordered by importance — not by keyword-searching the words "decision
+    // preference milestone", which missed every tagged chunk that didn't
+    // literally contain those nouns and ordered by relevance instead.
+    const hits = await store.topImportantChunks({
+      limit: Number.isFinite(maxFacts) ? maxFacts : 10,
+      minImportance: 4,
+      projectIdFilter: projectFilter,
+      // Decisions/milestones/preferences live in real work artifacts — not in
+      // shell command history or paste-cache, which the classifier also tags
+      // but which are noise in a "high-importance facts" feed.
+      sourceTypes: ['session', 'plan', 'claude_md', 'diary'],
+    });
+    const highFacts = hits.map((c) => ({
+      type: c.chunkType.match(/:(\w+):imp/)?.[1] ?? 'fact',
+      text: c.text.replace(/\n/g, ' ').trim().slice(0, 150),
+    }));
 
-    let kg: { stats: unknown; facts: Array<{ subject: string; predicate: string; object: string }> } = { stats: {}, facts: [] };
+    let kg: { stats: unknown; facts: Array<{ subject: string; predicate: string; object: string; origin: string }> } = { stats: {}, facts: [] };
     const graph = await createKnowledgeGraph();
     try {
       const stats = await graph.stats();
-      let facts: Array<{ subject: string; predicate: string; object: string }> = [];
+      let facts: Array<{ subject: string; predicate: string; object: string; origin: string }> = [];
       if (stats.current_facts > 0) {
-        const all = (await graph.timeline(undefined, 500)).filter((e) => e.current);
+        const all = (await graph.timeline(undefined, 500))
+          // KG4: only surface facts we're reasonably sure of — a 0.5 single-mention
+          // auto-guess shouldn't carry the same weight as a recorded decision.
+          // Human-asserted facts are always trusted regardless of confidence.
+          .filter((e) => e.current && (e.origin === 'asserted' || (e.confidence ?? 1) >= 0.7));
         const filtered = projectFilter
           ? all.filter((f) => f.subject.toLowerCase().includes(projectFilter.toLowerCase()) || f.object.toLowerCase().includes(projectFilter.toLowerCase()))
           : all;
-        facts = filtered.slice(0, Number.isFinite(maxKgFacts) ? maxKgFacts : 15).map((f) => ({ subject: f.subject, predicate: f.predicate, object: f.object }));
+        // Asserted facts first (they're the ones you deliberately recorded).
+        filtered.sort((a, b) => (a.origin === 'asserted' ? 0 : 1) - (b.origin === 'asserted' ? 0 : 1));
+        facts = filtered.slice(0, Number.isFinite(maxKgFacts) ? maxKgFacts : 15)
+          .map((f) => ({ subject: f.subject, predicate: f.predicate, object: f.object, origin: f.origin }));
       }
       kg = { stats, facts };
     } finally {

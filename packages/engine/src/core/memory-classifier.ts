@@ -21,6 +21,32 @@
 
 export type MemoryType = 'decision' | 'preference' | 'milestone' | 'problem' | 'discovery' | 'general';
 
+/**
+ * Bump this whenever the classifier's rules change. Chunks are stamped with the
+ * version they were classified under; the reclassify sweep re-runs the current
+ * classifier over anything below the current version so improvements reach
+ * already-indexed data instead of only new syncs.
+ */
+export const CLASSIFIER_VERSION = 2;
+
+const CLASSIFICATION_SUFFIX = /:(?:decision|preference|milestone|problem|discovery):imp[0-9]$/;
+
+/**
+ * Re-derive a chunk's classification tag under the CURRENT rules.
+ *
+ * Strips any existing `:type:impN` suffix to recover the base chunk_type
+ * (e.g. `assistant`, `user_context`, `plan_section`), then re-applies the
+ * classifier. Subagent transcripts and raw tool output are never classified,
+ * so their chunk_type is returned unchanged. Idempotent — running it twice is
+ * a no-op once the tag matches current rules.
+ */
+export function reclassifyChunkType(chunkType: string, text: string): string {
+  const base = chunkType.replace(CLASSIFICATION_SUFFIX, '');
+  if (base.startsWith('subagent') || base === 'tool_result') return chunkType;
+  const cls = classifyChunk(text);
+  return cls.memoryType !== 'general' ? `${base}:${cls.memoryType}:imp${cls.importance}` : base;
+}
+
 export interface ClassificationResult {
   memoryType: MemoryType;
   /** Evidence strength on a 0-5 scale (regex-derived; ≥4 needs explicit phrasing). */
@@ -32,15 +58,52 @@ export interface ClassificationResult {
 // STRONG = explicit phrasing that on its own justifies the label.
 // WEAK   = topical hint; only counts once a strong marker set the type.
 
-const DECISION_STRONG = [
-  /\b(?:let's|lets)\s+(?:use|go with|try|pick|choose|switch to)\b/i,
-  /\bwe\s+(?:should|decided|chose|went with|picked|settled on)\b/i,
+// COMMITTED decisions — the user actually landed on something. These reach the
+// wake-up bar (importance 4). "we chose Postgres", "decided to drop Redux".
+const DECISION_COMMIT = [
+  /\bwe\s+(?:decided|chose|went with|picked|settled on)\b/i,
   /\b(?:i'm|im|i am)\s+going\s+(?:to use|with)\b/i,
   /\bdecided\s+(?:to|on|against)\b/i,
   /\bwe(?:'ll| will)\s+(?:use|go with|stick with)\b/i,
   /\bchose\s+\S+\s+over\b/i,
+];
+// TENTATIVE decisions — a proposal in flight, not a landed call. Still tagged
+// 'decision' so they're findable, but capped BELOW the wake-up bar (importance
+// 3) so "we should rename this" / "let's try X" / "switch to branch main" never
+// masquerade as high-importance decisions in recall_wake_up. Corroboration can
+// still lift a tentative marker to 4 (that's a decision being argued, with
+// substance behind it).
+const DECISION_TENTATIVE = [
+  /\b(?:let's|lets)\s+(?:use|go with|try|pick|choose|switch to)\b/i,
+  /\bwe\s+should\b/i,
   /\bswitch(?:ed|ing)?\s+(?:to|from)\b/i,
 ];
+const DECISION_STRONG = [...DECISION_COMMIT, ...DECISION_TENTATIVE];
+
+// A committed decision only earns the wake-up tier (imp4) when it names a
+// concrete OBJECT — otherwise "we decided to add a log line" (a chore) would
+// rank as a high-importance decision. Two signals count as an object:
+//   1. a known tech / `backtick` token / dotted-hyphenated identifier, or
+//   2. a proper noun that is NOT sentence-initial (so "Redux"/"Zustand"/
+//      "Postgres" count, but a sentence-leading "We"/"The" does not).
+const DECISION_OBJECT_TECH = /`[^`]+`|\b\w+[._-]\w+|\b(postgres\w*|mysql|redis|sqlite|mongo\w*|dynamo\w*|react|next\w*|vue|svelte|angular|docker|k8s|kubernetes|rust|typescript|javascript|python|golang|express|fastapi|django|flask|rails|tailwind|zod|vite|webpack|esbuild|graphql|grpc|kafka|rabbitmq|terraform|ansible|nginx|caddy|pgvector|ollama|lancedb)\b/i;
+// Capitalized words that are common sentence-starters/pronouns, not objects.
+const DECISION_OBJECT_STOP = new Set([
+  'i', 'we', 'the', 'this', 'that', 'it', 'let', 'our', 'my', 'a', 'an',
+  'but', 'and', 'so', 'now', 'then', 'yes', 'no', 'please', 'here', 'there',
+  'if', 'when', 'why', 'how', 'ok', 'okay',
+]);
+function hasDecisionObject(prose: string): boolean {
+  if (DECISION_OBJECT_TECH.test(prose)) return true;
+  // A capitalized token preceded by a lowercase char/comma → mid-sentence
+  // proper noun (e.g. "…drop Redux", "use Zustand", "chose Postgres").
+  const re = /[a-z0-9,)]\s+([A-Z][A-Za-z0-9.+_-]{2,})/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(prose)) !== null) {
+    if (!DECISION_OBJECT_STOP.has(m[1].toLowerCase())) return true;
+  }
+  return false;
+}
 
 const DECISION_WEAK = [
   /\binstead of\b/i,
@@ -256,7 +319,17 @@ export function classifyChunk(text: string): ClassificationResult {
   }
 
   const confidence = Math.min(1.0, bestScore / 5.0);
-  const importance = computeImportance(bestType, bestStrong, bestWeak);
+  // A decision only earns the base-4 (wake-up) tier when it's COMMITTED phrasing
+  // AND names a concrete object (CL3); tentative or object-less decisions stay
+  // base-3 unless corroborated.
+  const committed = bestType === 'decision'
+    && countMatches(prose, DECISION_COMMIT) > 0
+    && hasDecisionObject(prose);
+  let importance = computeImportance(bestType, bestStrong, bestWeak, committed);
+  // Hard-cap non-committed decisions at 3 so an object-less "we decided to …"
+  // can't reach the wake-up bar via corroboration (overlapping decision markers
+  // like "we decided" + "decided to" would otherwise double-count to imp4).
+  if (bestType === 'decision' && !committed) importance = Math.min(importance, 3);
 
   return { memoryType: bestType, importance, confidence };
 }
@@ -281,9 +354,13 @@ function computeImportance(
   memoryType: MemoryType,
   strongMatches: number,
   weakMatches: number,
+  decisionCommitted = false,
 ): number {
   const base: Record<MemoryType, number> = {
-    decision: 4,
+    // A committed decision ("we chose X") is the highest-value memory; a
+    // tentative one ("we should", "let's try") is base-3 — below the wake-up
+    // bar — so proposals-in-flight don't surface as settled facts.
+    decision: decisionCommitted ? 4 : 3,
     preference: 3,
     milestone: 3,
     problem: 3,
