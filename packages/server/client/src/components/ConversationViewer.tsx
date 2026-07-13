@@ -66,6 +66,24 @@ interface ConversationViewerProps {
   onManageSecurity?: () => void;
 }
 
+// Map a search hit's top matched snippet back to the transcript message that
+// contains it, so opening a result jumps to those exact lines (not the
+// Overview). Whitespace-normalized substring match; tries each matched chunk
+// best-score-first and returns the first message line that contains one.
+function normalizeForMatch(s: string): string {
+  return s.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+function findMatchedLine(messages: Message[], chunks: Array<{ text: string }>): number | null {
+  const haystack = messages.map((m) => ({ line: m.line, norm: m.content ? normalizeForMatch(m.content) : '' }));
+  for (const c of chunks) {
+    const needle = normalizeForMatch(c.text || '').slice(0, 60);
+    if (needle.length < 12) continue;
+    const hit = haystack.find((m) => m.norm && m.norm.includes(needle));
+    if (hit) return hit.line;
+  }
+  return null;
+}
+
 export default function ConversationViewer({
   sessionId,
   selectionNonce,
@@ -505,6 +523,36 @@ export default function ConversationViewer({
     setViewMode(mode);
   };
 
+  // ── Search → jump to the matching lines ─────────────────────────────
+  // When a session is opened from a search hit, land on the transcript at the
+  // matched lines instead of the Overview. We route the tab once per selection
+  // (searchJumpedNonce guards it) so the user can navigate freely afterward,
+  // then scroll to the snippet once the messages have loaded.
+  const [pendingSearchJump, setPendingSearchJump] = useState(false);
+  const searchJumpedNonce = React.useRef<number | null>(null);
+  useEffect(() => {
+    const chunks = searchResult?.matchedChunks;
+    if (!chunks || chunks.length === 0) return;
+    if (searchJumpedNonce.current === selectionNonce) return;
+    searchJumpedNonce.current = selectionNonce ?? null;
+    setFilter('all');
+    handleViewChange('full'); // switch to transcript + trigger the message load
+    setPendingSearchJump(true);
+  }, [selectionNonce, searchResult]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!pendingSearchJump) return;
+    const chunks = searchResult?.matchedChunks;
+    if (!chunks || messages.length === 0) return;
+    const line = findMatchedLine(messages, chunks);
+    if (line != null) {
+      setScrollToLine(line);
+      setPendingSearchJump(false);
+    } else if (!hasMoreMessages) {
+      // Match was a summary/non-transcript chunk with no message line — leave
+      // the transcript at the top rather than jumping nowhere.
+      setPendingSearchJump(false);
+    }
+  }, [pendingSearchJump, messages, searchResult, hasMoreMessages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const formatCost = (n: number) => {
     if (n < 0.01) return `<$0.01`;
