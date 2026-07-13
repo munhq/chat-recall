@@ -526,6 +526,16 @@ a:hover { text-decoration: underline; }
 .cr-split { display: flex; flex: 1; overflow: hidden; }
 .cr-split-list { flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--cr-line-1); }
 .cr-split-detail { flex: 1; overflow-y: auto; }
+
+/* Conversations lens (project workspace) reuses <ConversationList>, whose root
+   sizes itself for the row-flex search view with `flex: 0 0 var(--cr-convos-w)`.
+   Inside the *column*-flex .cr-split-list wrapper that same shorthand governs the
+   MAIN axis (height), pinning the whole list to 360px tall — so only ~2 rows show
+   before it scrolls. Reset it to fill the wrapper's height on every viewport; the
+   width still comes from the wrapper (column cross-axis stretch). !important beats
+   the component's inline flex (same shared-in-two-layouts pattern as the viewer
+   override below). On mobile --cr-convos-w is 100%, so this is a no-op there. */
+.cr-split-list > .cr-conv-list { flex: 1 1 auto !important; min-height: 0; }
 .cr-split-back {
   display: flex; align-items: center; gap: 6px;
   margin-bottom: 16px; padding: 10px 14px;

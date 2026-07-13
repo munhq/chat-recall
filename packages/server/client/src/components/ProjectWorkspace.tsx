@@ -169,6 +169,70 @@ function SectionTitle({ title, hint, action, actionLabel }: { title: string; hin
   );
 }
 
+// Outcome → dot color, mirrors the ConversationList status badges so a session's
+// fate reads the same everywhere in the app.
+const OUTCOME_TONE: Record<string, string> = {
+  shipped: 'var(--cr-ok-500)', completed: 'var(--cr-ok-500)',
+  in_progress: 'var(--cr-info-500)', interrupted: 'var(--cr-warn-500)',
+  abandoned: 'var(--cr-err-500)', discussion: 'var(--cr-fg-3)', unknown: 'var(--cr-fg-3)',
+};
+
+// ── Structure summary: the *conclusion* the dependency graph only implies ─────
+// A force graph of 40 package-dots is a hairball with no takeaway. codeindex
+// already classifies every file by coupling role (god-module / cycle / island)
+// with fan-in/out — the same data the Code lens tables use. Surfacing the top of
+// that ranking above the graph turns "a blob" into "here's the load-bearing code
+// and where the risk is"; every row jumps to the full Code lens.
+function StructureSummary({ map, onJump }: { map: CodeProject['map']; onJump: (l: Lens) => void }) {
+  const base = (f: string) => f.split('/').pop() || f;
+  const gods = (map.coupling?.god_modules?.slice(0, 3).map((g) => ({ file: g.file, fanIn: g.fanIn, fanOut: g.fanOut }))
+    ?? (map.buckets?.god_modules ?? []).slice(0, 3).map((f) => ({ file: f, fanIn: undefined as number | undefined, fanOut: undefined as number | undefined })));
+  const cycles = (map.buckets?.cycles ?? []).slice(0, 2);
+  const nGods = map.coupling?.god_modules?.length ?? map.buckets?.god_modules?.length ?? 0;
+  const nCycles = map.buckets?.cycles?.length ?? 0;
+  const nIslands = map.coupling?.islands?.length ?? map.buckets?.islands?.length ?? 0;
+  const rowStyle: React.CSSProperties = { display: 'flex', width: '100%', alignItems: 'center', gap: 8, padding: '4px 6px', background: 'none', border: 'none', borderRadius: 4, cursor: 'pointer', textAlign: 'left' };
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: gods.length || cycles.length ? 8 : 0 }}>
+        <Chip kind="mono" size="sm">{map.nodes.length} pkgs</Chip>
+        <Chip kind="mono" size="sm">{map.edges.length} imports</Chip>
+        {nGods > 0 && <Chip kind="err" size="sm">{nGods} god-module{nGods > 1 ? 's' : ''}</Chip>}
+        {nCycles > 0 && <Chip kind="err" size="sm">{nCycles} cycle{nCycles > 1 ? 's' : ''}</Chip>}
+        {nIslands > 0 && <Chip kind="neutral" size="sm">{nIslands} island{nIslands > 1 ? 's' : ''}</Chip>}
+      </div>
+      {gods.map((g) => (
+        <button key={g.file} onClick={() => onJump('code')} style={{ ...rowStyle, color: 'var(--cr-fg-1)' }}
+          title={`${g.file} — high fan-in AND fan-out (god module). Big blast radius; change carefully. Open Code lens.`}>
+          <span style={{ width: 6, height: 6, borderRadius: 999, background: 'var(--cr-err-500)', flexShrink: 0 }} />
+          <span className="mono" style={{ flex: 1, minWidth: 0, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{base(g.file)}</span>
+          {g.fanIn != null && <span style={{ fontSize: 11, color: 'var(--cr-fg-3)', whiteSpace: 'nowrap' }}>in {g.fanIn} / out {g.fanOut}</span>}
+        </button>
+      ))}
+      {cycles.map((c, i) => (
+        <button key={`cyc${i}`} onClick={() => onJump('code')} style={{ ...rowStyle, color: 'var(--cr-fg-2)' }}
+          title="Circular dependency — these modules import each other. Break the cycle to decouple. Open Code lens.">
+          <span style={{ color: 'var(--cr-err-500)', flexShrink: 0, fontSize: 13, lineHeight: 1 }}>⟳</span>
+          <span className="mono" style={{ flex: 1, minWidth: 0, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.map(base).join(' → ')}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ── Stack strip: the KG's most-useful fact at a glance — what this repo is built
+// with. The graph below is for exploring how facts connect; this answers the
+// first question ("what stack?") without making you read a node cloud.
+function StackStrip({ langs }: { langs?: Record<string, number> }) {
+  const items = Object.entries(langs ?? {}).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  if (!items.length) return null;
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
+      {items.map(([lang]) => <Chip key={lang} kind="brand" size="sm">{lang}</Chip>)}
+    </div>
+  );
+}
+
 // ── Overview = the command surface: Do next → Understand → History ───────────
 function MissionControl({ canonicalId, kgEntity, toolFilter, code, onJump, onOpenSession }: {
   canonicalId: string; kgEntity: string; toolFilter: string; code: UseCodeProject;
@@ -182,32 +246,38 @@ function MissionControl({ canonicalId, kgEntity, toolFilter, code, onJump, onOpe
       {/* 1 — DO NEXT: one ranked stream (fixes + rules + tasks) */}
       <section><DoNext recs={recs} actions={actions} projectId={project?.projectId ?? canonicalId} hasCode={!!project} onReload={reload} /></section>
 
-      {/* 2 — UNDERSTAND: the two graphs, in place */}
+      {/* 2 — UNDERSTAND: conclusion first, graph second. Each card leads with the
+          ranked takeaway (what's load-bearing / what stack) so the graph beneath
+          illustrates rather than carries the meaning. */}
       <section>
-        <SectionTitle title="Understand" hint="how this repo is wired · what was decided" />
+        <SectionTitle title="Understand" hint="what's load-bearing · what it's built with" />
         <div style={{ display: 'grid', gridTemplateColumns: hasGraph ? 'repeat(auto-fit,minmax(380px,1fr))' : '1fr', gap: 16 }}>
           {hasGraph && (
             <Card style={{ padding: 12 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <strong style={{ fontSize: 12 }}>Dependency graph <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400 }}>scroll to zoom · drag to pan</span></strong>
-                <button onClick={() => onJump('code')} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12 }}>full →</button>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <strong style={{ fontSize: 12 }}>Structure <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400 }}>coupling &amp; risk</span></strong>
+                <button onClick={() => onJump('code')} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12 }}>full map →</button>
               </div>
+              <StructureSummary map={project!.map} onJump={onJump} />
+              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', margin: '2px 0 6px' }}>dot size = symbols · lines = imports · scroll to zoom, drag to pan</div>
               <DependencyMap map={project!.map} />
             </Card>
           )}
           <Card style={{ padding: 12 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <strong style={{ fontSize: 12 }}>Knowledge graph <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400 }}>decisions · tools</span></strong>
-              <button onClick={() => onJump('knowledge')} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12 }}>open →</button>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <strong style={{ fontSize: 12 }}>Decisions &amp; stack <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400 }}>from your sessions</span></strong>
+              <button onClick={() => onJump('knowledge')} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12 }}>explore →</button>
             </div>
+            <StackStrip langs={project?.langs} />
             <KnowledgeGraph entity={kgEntity} embedded />
           </Card>
         </div>
       </section>
 
-      {/* 3 — HISTORY: what happened here */}
+      {/* 3 — JUMP BACK IN: a short shortcut to recent work, distinct from the full
+          Conversations archive (read/search) and the Activity timeline (edits). */}
       <section>
-        <SectionTitle title="History" hint="recent work in this repo" action={() => onJump('activity')} actionLabel="full timeline →" />
+        <SectionTitle title="Jump back in" hint="pick up where you left off" action={() => onJump('conversations')} actionLabel="all conversations →" />
         <ProjectHistory projectId={canonicalId} toolFilter={toolFilter} onOpenSession={onOpenSession} />
       </section>
     </div>
@@ -282,23 +352,25 @@ function DoNextRow({ item, projectId, onReload }: { item: DoItem; projectId: str
   );
 }
 
-// ── Project history (compact) — recent sessions; full timeline = Activity lens
+// ── Jump back in (compact) — the 3 most recent sessions as a shortcut. The full
+// searchable archive is the Conversations lens; the edits+sessions feed is the
+// Activity lens. This is deliberately short so it reads as "resume", not a list.
 function ProjectHistory({ projectId, toolFilter, onOpenSession }: { projectId: string; toolFilter: string; onOpenSession: (sid: string, info?: SessionInfo | null) => void }) {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     let on = true; setLoading(true);
-    getRecentSessionsPage({ limit: 8, offset: 0, projectFilter: projectId, toolFilter: toolFilter === 'all' ? undefined : toolFilter })
+    getRecentSessionsPage({ limit: 3, offset: 0, projectFilter: projectId, toolFilter: toolFilter === 'all' ? undefined : toolFilter })
       .then((p) => { if (on) { setSessions(p.sessions); setTotal(p.total); setLoading(false); } });
     return () => { on = false; };
   }, [projectId, toolFilter]);
-  if (loading) return <Card style={{ padding: 16, color: 'var(--cr-fg-3)' }}>Loading history…</Card>;
+  if (loading) return <Card style={{ padding: 16, color: 'var(--cr-fg-3)' }}>Loading…</Card>;
   if (!sessions.length) return <Card style={{ padding: 16, color: 'var(--cr-fg-3)', fontSize: 13 }}>No recorded sessions for this project.</Card>;
   return (
     <Card style={{ padding: 6 }}>
-      <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', padding: '4px 10px' }}>{total} session(s) · newest first</div>
       {sessions.map((s) => <SessionRow key={s.sessionId} s={s} onOpen={() => onOpenSession(s.sessionId, s)} />)}
+      <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', padding: '6px 10px 2px' }}>{total} conversation{total === 1 ? '' : 's'} in this project</div>
     </Card>
   );
 }
@@ -433,8 +505,10 @@ function ProjectActivity({ projectId, toolFilter, onOpenSession }: { projectId: 
 function SessionRow({ s, onOpen }: { s: SessionInfo; onOpen: () => void }) {
   const title = (s as any).userTitle || summaryTitle((s as any).summary, 120) || (s as any).firstPrompt || s.sessionId;
   const when = (s as any).modified ? new Date((s as any).modified).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+  const status = s.outcome?.status;
   return (
     <div onClick={onOpen} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', cursor: 'pointer', borderBottom: '1px solid var(--cr-line-1)' }}>
+      {status && <span title={status.replace('_', ' ')} style={{ width: 7, height: 7, borderRadius: 999, background: OUTCOME_TONE[status] ?? 'var(--cr-fg-3)', flexShrink: 0 }} />}
       <div style={{ minWidth: 0, flex: 1, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</div>
       {(s as any).gitBranch && <Chip kind="mono" size="sm">{(s as any).gitBranch}</Chip>}
       <span style={{ fontSize: 11, color: 'var(--cr-fg-3)', whiteSpace: 'nowrap' }}>{when}</span>
