@@ -24,6 +24,30 @@ import { createLogger } from '../logger.js';
 
 const log = createLogger('vector');
 
+// Query-embedding cache — the same in-process, size-bounded Map pattern the
+// server's QueryExpander uses (no Redis in this stack). A query→vector mapping
+// is tenant-INDEPENDENT (same model + text ⇒ same embedding), so it's safe to
+// share across tenants; keying includes the dimension so an embedder/model swap
+// can't serve stale-space vectors. Kills the per-search GPU round-trip for
+// repeated/near-repeated queries (the search box re-fires the same text often).
+// Per-pod, which is fine: it only ever avoids an embed, never changes results.
+const QUERY_EMBED_CACHE = new Map<string, number[]>();
+const QUERY_EMBED_CACHE_MAX = Math.max(0, Number(process.env.QUERY_EMBED_CACHE_MAX) || 512);
+function queryEmbedCacheGet(key: string): number[] | undefined {
+  if (QUERY_EMBED_CACHE_MAX === 0) return undefined;
+  const v = QUERY_EMBED_CACHE.get(key);
+  if (v) { QUERY_EMBED_CACHE.delete(key); QUERY_EMBED_CACHE.set(key, v); } // LRU bump
+  return v;
+}
+function queryEmbedCachePut(key: string, v: number[]): void {
+  if (QUERY_EMBED_CACHE_MAX === 0) return;
+  if (QUERY_EMBED_CACHE.size >= QUERY_EMBED_CACHE_MAX) {
+    const oldest = QUERY_EMBED_CACHE.keys().next().value;
+    if (oldest !== undefined) QUERY_EMBED_CACHE.delete(oldest);
+  }
+  QUERY_EMBED_CACHE.set(key, v);
+}
+
 type AsyncMethod<M> = M extends (...args: infer A) => infer R
   ? (...args: A) => Promise<Awaited<R>>
   : never;
@@ -442,12 +466,27 @@ export class PgVectorStore implements VectorStore {
     if (this.fts) { try { ftsResults = await this.fts.searchFTS(query, options as any); } catch { ftsResults = []; } }
     // FTS is the default tier. Vector/semantic search is opt-in: embedding every
     // query on a remote GPU for keyword-shaped searches is the cost/latency/scale
-    // sink (see docs/search-scaling-decision.md). Enable per-request via
-    // options.semantic, or globally with SEARCH_SEMANTIC=on. Default = FTS only.
-    const semantic = (options as any).semantic === true || process.env.SEARCH_SEMANTIC === 'on';
+    // sink (see docs/search-scaling-decision.md). Modes (options.semantic):
+    //   true   — always run the vector path and RRF-fuse (explicit "smart search")
+    //   'auto' — HYBRID: only embed + vector-search when FTS came back THIN, so a
+    //            keyword query that already found plenty never pays the embed.
+    //   falsy  — FTS only (unless SEARCH_SEMANTIC=on forces the vector path).
+    const semanticOpt = (options as any).semantic;
+    const semantic = semanticOpt === true || semanticOpt === 'auto' || process.env.SEARCH_SEMANTIC === 'on';
     if (!semantic || !this.embedder || !this.vectorOk) return ftsResults;
-    let qv: number[];
-    try { qv = await (this.embedder as any).embedQuery(query); } catch { return ftsResults; }
+    // Hybrid cutoff: if keyword search already filled the page, skip the embed
+    // entirely. SEARCH_SEMANTIC=on forces full semantic (mode escalates to true).
+    const autoMode = semanticOpt === 'auto' && process.env.SEARCH_SEMANTIC !== 'on';
+    const autoMinHits = Math.max(0, Number(process.env.SEARCH_AUTO_MIN_HITS) || topK);
+    if (autoMode && ftsResults.length >= autoMinHits) return ftsResults;
+    // Query embedding — cache-checked first (keyed by model dimension + text) so
+    // repeats skip the gateway round-trip entirely.
+    const cacheKey = `${this.dim}:${query}`;
+    let qv = queryEmbedCacheGet(cacheKey);
+    if (!qv) {
+      try { qv = await (this.embedder as any).embedQuery(query) as number[]; } catch { return ftsResults; }
+      queryEmbedCachePut(cacheKey, qv);
+    }
     // Two-phase, so the binary index carries the cost and the fp32 column only
     // rescoring the shortlist restores precision:
     //   1. SHORTLIST via the tiny binary hamming HNSW index — cheap ANN over

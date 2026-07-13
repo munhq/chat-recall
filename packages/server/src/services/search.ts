@@ -107,10 +107,17 @@ export class SearchService {
     projectIdFilter?: string
   ): Promise<SearchResult[]> {
     const idx = await this.index();
+    // Hybrid: when real embeddings are live, run the vector tier in 'auto' mode
+    // (embeds only when FTS is thin, and the query-embed cache makes repeats
+    // free) and RRF-fuse it with FTS. When vectors are off, expandIfKeyword does
+    // the keyword-side "semantic-lite" instead. vectorActive() is 60s-cached, so
+    // reading it here and inside expandIfKeyword is one lookup.
+    const semantic = (await this.vectorActive()) ? 'auto' as const : false;
     const results = await idx.search(await this.expandIfKeyword(query), {
       topK,
       sourceTypes: ['session'],
       projectIdFilter,
+      semantic,
     });
 
     // Enrich with metadata from cache (summaries, dates). Pre-fetch all cached
@@ -147,7 +154,8 @@ export class SearchService {
     projectIdFilter?: string
   ): Promise<MemorySearchResult[]> {
     const idx = await this.index();
-    return await idx.search(await this.expandIfKeyword(query), { topK, sourceTypes, projectIdFilter });
+    const semantic = (await this.vectorActive()) ? 'auto' as const : false;
+    return await idx.search(await this.expandIfKeyword(query), { topK, sourceTypes, projectIdFilter, semantic });
   }
 
   async getStatus() {

@@ -389,6 +389,10 @@ export class MemoryIndex {
       topK?: number;
       sourceTypes?: SourceType[];
       projectIdFilter?: string;
+      // Vector/semantic tier control (honored by the pg VectorStore): true =
+      // always run vectors + RRF-fuse; 'auto' = only when FTS is thin; falsy =
+      // FTS only. See store/vector.ts search(). Ignored by this LanceDB path.
+      semantic?: boolean | 'auto';
     } = {}
   ): Promise<MemorySearchResult[]> {
     const { topK = 20, sourceTypes, projectIdFilter } = options;
