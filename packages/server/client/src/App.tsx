@@ -427,6 +427,10 @@ function AppInner() {
         return;
       }
       if (looksLikeSessionId(q)) { openById(q); return; }
+      // A search always lands you in the conversations/search view. Without this,
+      // typing from Projects/Overview fetched results into state that only the
+      // search view renders — so it looked like the search box did nothing.
+      setView('search');
       try {
         const { sessions: hits, memory } = await searchSessions(q, 50, projectFilter || undefined);
         setSearchResults(hits);
