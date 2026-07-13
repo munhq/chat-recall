@@ -1,4 +1,16 @@
 /**
+ * ⚠️ RESERVED — NOT THE PRODUCTION CHUNKER. Do not assume this runs.
+ *
+ * This "smart chunker" feeds the DISABLED LanceDB local index (via
+ * `SessionSource`, itself only reached on the sqlite/test backend). The shipped
+ * product chunks synced sessions with `chunksFromTurns` in
+ * `server/src/services/session-chunks.ts` — that is what actually indexes your
+ * data. This file is kept as a head-start for a possible future local mode and
+ * because its ideas (summary-first, tool-output, overlap) informed the server
+ * chunker. If you change chunking behaviour, change `chunksFromTurns`, not this.
+ * See docs/memory-quality-fixes.md (C8).
+ *
+ * ── original doc ──
  * Smart chunking for Claude Code sessions.
  *
  * Strategy:

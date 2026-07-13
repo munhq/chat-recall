@@ -1,9 +1,19 @@
 /**
- * LanceDB vector index for unified memory chunks.
+ * ⚠️ RESERVED — NOT WIRED INTO THE PRODUCT. Do not assume this runs.
  *
- * Stores all memory types in a single `memory_chunks` table alongside
- * the existing `session_chunks` table, enabling cross-type semantic
- * search in one query with optional source type filtering.
+ * This LanceDB on-disk vector index is the (currently disabled) local/offline
+ * storage path. The shipped product is Postgres-only: `resolveBackend`
+ * (store/index.ts) returns 'postgres' or throws, so this code is reached ONLY
+ * via the 'sqlite' unit-test branch — never for a real user. It's kept
+ * deliberately as a head-start for a possible future local mode, NOT because
+ * it's active. If you're tracing how sessions get chunked/indexed in
+ * production, this is the WRONG file — see `server/src/services/session-chunks.ts`
+ * (chunksFromTurns) + the pg StorageDriver. See docs/memory-quality-fixes.md (C8).
+ *
+ * ── original doc ──
+ * LanceDB vector index for unified memory chunks. Stores all memory types in a
+ * single `memory_chunks` table, enabling cross-type semantic search in one
+ * query with optional source-type filtering.
  */
 
 import lancedb from '@lancedb/lancedb';
