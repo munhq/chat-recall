@@ -21,20 +21,15 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'Query is required' });
     }
 
-    // Standard session search
-    const results = await searchService.search(query, topK, projectFilter);
-
-    // Optionally include unified memory results
-    let memoryResults: any[] | undefined = undefined;
-    let memoryCount = 0;
-    if (includeMemory) {
-      try {
-        memoryResults = await searchService.searchUnified(query, topK, sourceTypes, projectFilter);
-        memoryCount = memoryResults.length;
-      } catch {
-        // Memory search is optional - don't fail the whole request
-      }
-    }
+    // Session + memory search run in parallel — they're independent, so there's
+    // no reason to pay their latencies back-to-back (was sequential awaits).
+    const [results, memoryResults] = await Promise.all([
+      searchService.search(query, topK, projectFilter),
+      includeMemory
+        ? searchService.searchUnified(query, topK, sourceTypes, projectFilter).catch(() => undefined)
+        : Promise.resolve(undefined),
+    ]);
+    const memoryCount = memoryResults?.length ?? 0;
 
     res.json({
       query,
