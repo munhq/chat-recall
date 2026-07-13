@@ -77,7 +77,8 @@ async function getRedis(): Promise<any | null> {
     client.on('error', () => {});
     await client.connect();
     redisClient = client;
-  } catch { try { client?.disconnect(); } catch { /* ignore */ } redisClient = null; }
+    log.info({ url: url.replace(/\/\/[^@]*@/, '//') }, 'L2 query-embed cache connected [DIAG]');
+  } catch (e) { try { client?.disconnect(); } catch { /* ignore */ } redisClient = null; log.warn({ err: e instanceof Error ? e.message : String(e) }, 'L2 query-embed cache connect failed [DIAG]'); }
   return redisClient;
 }
 const REDIS_EMBED_TTL = Math.max(60, Number(process.env.QUERY_EMBED_TTL) || 86400);
@@ -541,6 +542,7 @@ export class PgVectorStore implements VectorStore {
     //   falsy  — FTS only (unless SEARCH_SEMANTIC=on forces the vector path).
     const semanticOpt = (options as any).semantic;
     const semantic = semanticOpt === true || semanticOpt === 'auto' || process.env.SEARCH_SEMANTIC === 'on';
+    log.info({ semanticOpt, hasEmbedder: !!this.embedder, vectorOk: this.vectorOk, strictHits, ftsCount: ftsResults.length }, 'search semantic gate [DIAG]');
     if (!semantic || !this.embedder || !this.vectorOk) return ftsResults;
     // Strength-based hybrid gate: if keyword search found a solid all-terms match
     // (>= threshold distinct strict hits), the query is keyword-shaped — skip the
