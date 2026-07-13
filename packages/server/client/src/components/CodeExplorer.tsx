@@ -396,54 +396,103 @@ export function HotspotTable({ hotspots, onOpen }: { hotspots: CodeHotspot[]; on
   ))}</>;
 }
 
-// ── Dependency map: shared ForceGraph (see components/ForceGraph.tsx) ────────
-// CircleGraph is now a thin adapter: it maps codeindex package/file nodes
-// (sized by symbol count, faded = imported neighbour) onto the shared
-// force-directed engine, keeping the same layout tuning and pan/zoom/click
-// behavior as before the extraction.
-function CircleGraph({ nodes, edges, onNode }: { nodes: Array<{ id: string; label: string; symbols: number; faded?: boolean }>; edges: Array<{ from: string; to: string }>; onNode?: (id: string) => void; dim?: boolean }) {
+// ── Dependency map: files colored by coupling ROLE ───────────────────────────
+// The old default drew packages as uniform dots — and for many repos there are
+// ZERO cross-package edges (a disconnected blob with no takeaway). This instead
+// draws the *coupled files* colored by role (god-module / cycle / unstable-
+// driver / stable-core / island) with their import edges + a legend, so the
+// graph reads as a risk map at a glance. Falls back to the package view only
+// for older indexes that predate coupling data.
+const ROLE_COLOR: Record<string, string> = {
+  god: '#ef4444', cycle: '#a855f7', driver: '#f59e0b', stable: '#22c55e', island: '#6b7280',
+};
+const ROLE_LABEL: Record<string, string> = {
+  god: 'god module', cycle: 'in a cycle', driver: 'unstable driver', stable: 'stable core', island: 'island (dead?)',
+};
+const ROLE_HINT: Record<string, string> = {
+  god: 'high fan-in AND fan-out — big blast radius',
+  cycle: 'imports form a cycle — tangled, blocks modular build/test',
+  driver: 'high fan-out — depends on a lot, breaks as those change',
+  stable: 'high fan-in — many modules depend on it',
+  island: 'no imports in or out — possibly dead code',
+};
+
+function CircleGraph({ nodes, edges, onNode }: { nodes: Array<{ id: string; label: string; symbols: number; faded?: boolean; role?: string }>; edges: Array<{ from: string; to: string }>; onNode?: (id: string) => void; dim?: boolean }) {
   const maxSym = Math.max(1, ...nodes.map((n) => n.symbols));
   const fgNodes = useMemo(() => nodes.map((n) => ({
     id: n.id,
     label: n.label,
     r: 4 + Math.round((n.symbols / maxSym) * 16),
-    fill: n.faded ? 'var(--cr-line-1)' : 'var(--cr-brand-500)',
-    opacity: n.faded ? 0.45 : 0.85,
+    fill: n.role ? (ROLE_COLOR[n.role] || 'var(--cr-brand-500)') : (n.faded ? 'var(--cr-line-1)' : 'var(--cr-brand-500)'),
+    opacity: n.faded ? 0.45 : 0.9,
     labelGap: 6,
-    title: `${n.id} · ${n.symbols} symbols${onNode ? ' (click to drill in)' : ''}`,
+    title: `${n.id} · ${n.symbols} symbols${n.role ? ' · ' + (ROLE_LABEL[n.role] || n.role) : ''}${onNode ? ' (click to drill in)' : ''}`,
   })), [nodes, maxSym, onNode]);
   if (nodes.length === 0) return <Empty>Nothing to graph here.</Empty>;
   return <ForceGraph nodes={fgNodes} edges={edges} onNode={onNode} resetKey={nodes} />;
 }
+
+function RoleLegend({ counts }: { counts: Record<string, number> }) {
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 8, fontSize: 11 }}>
+      {['god', 'cycle', 'driver', 'stable', 'island'].filter((r) => counts[r]).map((r) => (
+        <span key={r} title={ROLE_HINT[r]} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: 'var(--cr-fg-2)', cursor: 'help' }}>
+          <span style={{ width: 9, height: 9, borderRadius: 999, background: ROLE_COLOR[r], flexShrink: 0 }} />
+          {ROLE_LABEL[r]} <span style={{ color: 'var(--cr-fg-3)' }}>({counts[r]})</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export function DependencyMap({ map }: { map?: CodeProject['map'] }) {
-  const [pkg, setPkg] = useState<string | null>(null);
   if (!map || map.nodes.length === 0) return <Empty>No dependency graph (single-package or no cross-package imports).</Empty>;
 
-  if (pkg && map.pkgFiles) {
-    // Drill-down: files in the package + their neighbours (POC drawFiles).
-    const inPkg = new Set(map.pkgFiles[pkg] || []);
-    const visible = new Set(inPkg);
-    (map.fileEdges || []).forEach((e) => { if (inPkg.has(e.from)) visible.add(e.to); if (inPkg.has(e.to)) visible.add(e.from); });
-    const fileArr = [...visible].slice(0, 120);
-    const vset = new Set(fileArr);
-    const nodes = fileArr.map((f) => ({ id: f, label: f.split('/').pop() || f, symbols: map.fileMeta?.[f]?.symbols ?? 0, faded: !inPkg.has(f) }));
-    const edges = (map.fileEdges || []).filter((e) => vset.has(e.from) && vset.has(e.to));
-    return (
-      <Card style={{ padding: 12, overflow: 'auto' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-          <Button variant="ghost" onClick={() => setPkg(null)}>← packages</Button>
-          <span className="mono" style={{ fontSize: 12, color: 'var(--cr-fg-2)' }}>{pkg} · {inPkg.size} files (faded = imported neighbours)</span>
-        </div>
-        <CircleGraph nodes={nodes} edges={edges} />
-      </Card>
-    );
+  // Primary view: coupled files colored by role — the readable "risk map".
+  const coupling = map.coupling; const buckets = map.buckets;
+  if (coupling || buckets) {
+    const roleOf = new Map<string, string>();
+    const tag = (files: string[] | undefined, role: string) => (files || []).forEach((f) => roleOf.set(f, role));
+    // Tag low→high priority so god/cycle win when a file is in multiple buckets.
+    tag((coupling?.islands?.map((x) => x.file)) ?? buckets?.islands, 'island');
+    tag((coupling?.stable_cores?.map((x) => x.file)) ?? buckets?.stable_cores, 'stable');
+    tag((coupling?.unstable_drivers?.map((x) => x.file)) ?? buckets?.unstable_drivers, 'driver');
+    (buckets?.cycles || []).forEach((cy) => cy.forEach((f) => roleOf.set(f, 'cycle')));
+    tag((coupling?.god_modules?.map((x) => x.file)) ?? buckets?.god_modules, 'god');
+
+    const metric = new Map<string, number>();
+    for (const g of ['god_modules', 'stable_cores', 'unstable_drivers', 'islands'] as const) {
+      for (const r of (coupling?.[g] || [])) metric.set(r.file, r.fanIn + r.fanOut);
+    }
+    // Most-coupled first, capped so the graph stays legible.
+    const files = [...roleOf.keys()].sort((a, z) => (metric.get(z) ?? 0) - (metric.get(a) ?? 0)).slice(0, 60);
+    if (files.length > 0) {
+      const fset = new Set(files);
+      const nodes = files.map((f) => ({
+        id: f, label: f.split('/').pop() || f, role: roleOf.get(f),
+        symbols: map.fileMeta?.[f]?.symbols ?? ((metric.get(f) ?? 0) + 1),
+      }));
+      const edges = (map.fileEdges || []).filter((e) => fset.has(e.from) && fset.has(e.to));
+      const counts: Record<string, number> = {};
+      for (const r of roleOf.values()) counts[r] = (counts[r] || 0) + 1;
+      return (
+        <Card style={{ padding: 12, overflow: 'auto' }}>
+          <RoleLegend counts={counts} />
+          <div style={{ color: 'var(--cr-fg-3)', fontSize: 11, marginBottom: 8 }}>
+            {files.length} coupled files · {edges.length} imports · dot size = symbols · scroll to zoom, drag to pan
+          </div>
+          <CircleGraph nodes={nodes} edges={edges} />
+        </Card>
+      );
+    }
   }
 
+  // Fallback: package view (older indexes without coupling data).
   const nodes = map.nodes.slice(0, 40).map((n) => ({ id: n.file, label: n.file.split('/').pop() || n.file, symbols: n.symbols }));
   return (
     <Card style={{ padding: 12, overflow: 'auto' }}>
-      <div style={{ color: 'var(--cr-fg-3)', fontSize: 12, marginBottom: 8 }}>{nodes.length} packages · {map.edges.length} dependency edges · click a package to drill into its files</div>
-      <CircleGraph nodes={nodes} edges={map.edges} onNode={(id) => map.pkgFiles?.[id] && setPkg(id)} />
+      <div style={{ color: 'var(--cr-fg-3)', fontSize: 12, marginBottom: 8 }}>{nodes.length} packages · {map.edges.length} dependency edges</div>
+      <CircleGraph nodes={nodes} edges={map.edges} />
     </Card>
   );
 }
