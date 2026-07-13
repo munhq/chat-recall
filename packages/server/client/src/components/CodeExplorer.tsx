@@ -464,8 +464,18 @@ export function DependencyMap({ map }: { map?: CodeProject['map'] }) {
     for (const g of ['god_modules', 'stable_cores', 'unstable_drivers', 'islands'] as const) {
       for (const r of (coupling?.[g] || [])) metric.set(r.file, r.fanIn + r.fanOut);
     }
+    // Count every role (incl. islands) for the legend before we trim the graph.
+    const counts: Record<string, number> = {};
+    for (const r of roleOf.values()) counts[r] = (counts[r] || 0) + 1;
+    // Islands have no imports in or out — by definition zero edges — so the force
+    // sim can't pull them in and they scatter as a ring of lonely dots that crowds
+    // out the real structure. Drop them from the *graph*; the legend keeps the
+    // count and the Structure tab's Islands list keeps the files.
     // Most-coupled first, capped so the graph stays legible.
-    const files = [...roleOf.keys()].sort((a, z) => (metric.get(z) ?? 0) - (metric.get(a) ?? 0)).slice(0, 60);
+    const files = [...roleOf.keys()]
+      .filter((f) => roleOf.get(f) !== 'island')
+      .sort((a, z) => (metric.get(z) ?? 0) - (metric.get(a) ?? 0))
+      .slice(0, 60);
     if (files.length > 0) {
       const fset = new Set(files);
       const nodes = files.map((f) => ({
@@ -473,13 +483,12 @@ export function DependencyMap({ map }: { map?: CodeProject['map'] }) {
         symbols: map.fileMeta?.[f]?.symbols ?? ((metric.get(f) ?? 0) + 1),
       }));
       const edges = (map.fileEdges || []).filter((e) => fset.has(e.from) && fset.has(e.to));
-      const counts: Record<string, number> = {};
-      for (const r of roleOf.values()) counts[r] = (counts[r] || 0) + 1;
       return (
         <Card style={{ padding: 12, overflow: 'auto' }}>
           <RoleLegend counts={counts} />
           <div style={{ color: 'var(--cr-fg-3)', fontSize: 11, marginBottom: 8 }}>
-            {files.length} coupled files · {edges.length} imports · dot size = symbols · scroll to zoom, drag to pan
+            {files.length} coupled files · {edges.length} imports
+            {counts.island ? ` · ${counts.island} islands hidden (see Structure)` : ''} · dot size = symbols · scroll to zoom, drag to pan
           </div>
           <CircleGraph nodes={nodes} edges={edges} />
         </Card>
