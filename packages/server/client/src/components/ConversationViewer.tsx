@@ -144,6 +144,40 @@ export default function ConversationViewer({
     }, 150);
     return () => clearInterval(t);
   }, [viewMode, scrollToLine, messages.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Search → jump to the matching lines ─────────────────────────────
+  // A session opened from a search hit lands on the transcript at the matched
+  // lines, not the Overview. Route the tab once per selection (guarded by
+  // searchJumpedNonce so later navigation is free), then scroll to the snippet
+  // once the messages load. These hooks MUST sit above the early return below
+  // so the hook order is stable whether or not a session is selected.
+  const [pendingSearchJump, setPendingSearchJump] = useState(false);
+  const searchJumpedNonce = React.useRef<number | null>(null);
+  useEffect(() => {
+    const chunks = searchResult?.matchedChunks;
+    if (!chunks || chunks.length === 0) return;
+    if (searchJumpedNonce.current === selectionNonce) return;
+    searchJumpedNonce.current = selectionNonce ?? null;
+    setFilter('all');
+    setViewMode('full');            // show the transcript…
+    if (messages.length === 0) onLoadFull(); // …and load it if not already in
+    setPendingSearchJump(true);
+  }, [selectionNonce, searchResult]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!pendingSearchJump) return;
+    const chunks = searchResult?.matchedChunks;
+    if (!chunks || messages.length === 0) return;
+    const line = findMatchedLine(messages, chunks);
+    if (line != null) {
+      setScrollToLine(line);
+      setPendingSearchJump(false);
+    } else if (!hasMoreMessages) {
+      // Matched a summary/title chunk with no message line — stay at the top of
+      // the transcript rather than jumping nowhere.
+      setPendingSearchJump(false);
+    }
+  }, [pendingSearchJump, messages, searchResult, hasMoreMessages]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const [copied, setCopied] = useState(false);
   const [relatedData, setRelatedData] = useState<RelatedItemsResponse | null>(null);
   const [relatedLoading, setRelatedLoading] = useState(false);
@@ -522,37 +556,6 @@ export default function ConversationViewer({
     }
     setViewMode(mode);
   };
-
-  // ── Search → jump to the matching lines ─────────────────────────────
-  // When a session is opened from a search hit, land on the transcript at the
-  // matched lines instead of the Overview. We route the tab once per selection
-  // (searchJumpedNonce guards it) so the user can navigate freely afterward,
-  // then scroll to the snippet once the messages have loaded.
-  const [pendingSearchJump, setPendingSearchJump] = useState(false);
-  const searchJumpedNonce = React.useRef<number | null>(null);
-  useEffect(() => {
-    const chunks = searchResult?.matchedChunks;
-    if (!chunks || chunks.length === 0) return;
-    if (searchJumpedNonce.current === selectionNonce) return;
-    searchJumpedNonce.current = selectionNonce ?? null;
-    setFilter('all');
-    handleViewChange('full'); // switch to transcript + trigger the message load
-    setPendingSearchJump(true);
-  }, [selectionNonce, searchResult]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (!pendingSearchJump) return;
-    const chunks = searchResult?.matchedChunks;
-    if (!chunks || messages.length === 0) return;
-    const line = findMatchedLine(messages, chunks);
-    if (line != null) {
-      setScrollToLine(line);
-      setPendingSearchJump(false);
-    } else if (!hasMoreMessages) {
-      // Match was a summary/non-transcript chunk with no message line — leave
-      // the transcript at the top rather than jumping nowhere.
-      setPendingSearchJump(false);
-    }
-  }, [pendingSearchJump, messages, searchResult, hasMoreMessages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const formatCost = (n: number) => {
     if (n < 0.01) return `<$0.01`;
