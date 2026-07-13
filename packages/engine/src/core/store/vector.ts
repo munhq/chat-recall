@@ -462,23 +462,35 @@ export class PgVectorStore implements VectorStore {
     // FTS first — always — exactly like MemoryIndex.search: keyword hits are
     // never garbage, and they carry the result set when pgvector is absent.
     // Vector hits union in afterwards as additional context.
+    // Capture keyword-match STRENGTH (strict all-terms hit count) as FTS runs —
+    // this is the hybrid trigger, not the raw result count. FTS OR-widens, so a
+    // conceptual query still returns tons of loose hits; the count is useless but
+    // the strict-AND count is ~0. -1 = FTS didn't report (error/empty) ⇒ treat as
+    // weak so semantic fires (FTS gave nothing to lose).
+    let strictHits = -1;
     let ftsResults: MemorySearchResult[] = [];
-    if (this.fts) { try { ftsResults = await this.fts.searchFTS(query, options as any); } catch { ftsResults = []; } }
+    if (this.fts) {
+      try { ftsResults = await this.fts.searchFTS(query, { ...(options as any), onStrength: (n: number) => { strictHits = n; } }); }
+      catch { ftsResults = []; }
+    }
     // FTS is the default tier. Vector/semantic search is opt-in: embedding every
     // query on a remote GPU for keyword-shaped searches is the cost/latency/scale
     // sink (see docs/search-scaling-decision.md). Modes (options.semantic):
     //   true   — always run the vector path and RRF-fuse (explicit "smart search")
-    //   'auto' — HYBRID: only embed + vector-search when FTS came back THIN, so a
-    //            keyword query that already found plenty never pays the embed.
+    //   'auto' — HYBRID: embed + vector-search only when keyword search lacks a
+    //            STRONG exact-terms match (conceptual/paraphrased query), so a
+    //            solid keyword hit never pays the embed.
     //   falsy  — FTS only (unless SEARCH_SEMANTIC=on forces the vector path).
     const semanticOpt = (options as any).semantic;
     const semantic = semanticOpt === true || semanticOpt === 'auto' || process.env.SEARCH_SEMANTIC === 'on';
     if (!semantic || !this.embedder || !this.vectorOk) return ftsResults;
-    // Hybrid cutoff: if keyword search already filled the page, skip the embed
-    // entirely. SEARCH_SEMANTIC=on forces full semantic (mode escalates to true).
+    // Strength-based hybrid gate: if keyword search found a solid all-terms match
+    // (>= threshold distinct strict hits), the query is keyword-shaped — skip the
+    // embed. Only a weak/absent exact match (conceptual query) is worth the vector
+    // tier. SEARCH_SEMANTIC=on forces full semantic (escalates mode to true).
     const autoMode = semanticOpt === 'auto' && process.env.SEARCH_SEMANTIC !== 'on';
-    const autoMinHits = Math.max(0, Number(process.env.SEARCH_AUTO_MIN_HITS) || topK);
-    if (autoMode && ftsResults.length >= autoMinHits) return ftsResults;
+    const autoMinStrict = Math.max(1, Number(process.env.SEARCH_AUTO_MIN_STRICT) || 3);
+    if (autoMode && strictHits >= autoMinStrict) return ftsResults;
     // Query embedding — cache-checked first (keyed by model dimension + text) so
     // repeats skip the gateway round-trip entirely.
     const cacheKey = `${this.dim}:${query}`;
