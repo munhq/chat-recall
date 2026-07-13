@@ -48,6 +48,57 @@ function queryEmbedCachePut(key: string, v: number[]): void {
   QUERY_EMBED_CACHE.set(key, v);
 }
 
+// Optional SHARED L2 (Redis/Dragonfly). The Map above is L1 — per-pod, so with N
+// replicas a query embedded on one pod is still a miss on the other N-1. When
+// REDIS_URL is set we add a shared L2 so an embed by ANY pod is free for ALL of
+// them (the self-host/CLI path leaves REDIS_URL unset → L1-only, no dependency
+// loaded). Lazy + fail-safe: any Redis error degrades to L1, never breaks search.
+let redisClient: any = null;
+let redisInit = false;
+async function getRedis(): Promise<any | null> {
+  if (redisInit) return redisClient;
+  redisInit = true;
+  const url = process.env.REDIS_URL;
+  if (!url || QUERY_EMBED_CACHE_MAX === 0) return null;
+  try {
+    // ioredis ships CJS (`export =`); the constructable class lands on .default
+    // under NodeNext but can vary by interop — resolve defensively.
+    const mod: any = await import('ioredis');
+    const Redis = mod.default ?? mod.Redis ?? mod;
+    // Bounded, non-blocking: a down Redis must never stall or fail a search, so
+    // no offline queue, one retry, short connect timeout. Background 'error'
+    // events are swallowed (the get/put try-catch is the real guard).
+    redisClient = new Redis(url, { maxRetriesPerRequest: 1, enableOfflineQueue: false, connectTimeout: 1500, lazyConnect: false });
+    redisClient.on('error', () => {});
+  } catch { redisClient = null; }
+  return redisClient;
+}
+const REDIS_EMBED_TTL = Math.max(60, Number(process.env.QUERY_EMBED_TTL) || 86400);
+// L1 → L2 read-through. Populates L1 on an L2 hit so the next same-pod repeat is
+// instant. Returns undefined on any miss/error.
+async function queryEmbedGet(key: string): Promise<number[] | undefined> {
+  const l1 = queryEmbedCacheGet(key);
+  if (l1) return l1;
+  const r = await getRedis();
+  if (!r) return undefined;
+  try {
+    const s = await r.get(`cr:qembed:${key}`);
+    if (s) { const v = JSON.parse(s) as number[]; queryEmbedCachePut(key, v); return v; }
+  } catch { /* Redis down/slow — fall through to a fresh embed */ }
+  return undefined;
+}
+// Write L1 synchronously (immediate same-pod benefit); write L2 fire-and-forget
+// with a TTL so a stale-space vector can't live forever (also see the dim in the
+// key). Caller does not await this — the cache write never adds search latency.
+function queryEmbedPut(key: string, v: number[]): void {
+  queryEmbedCachePut(key, v);
+  void (async () => {
+    const r = await getRedis();
+    if (!r) return;
+    try { await r.set(`cr:qembed:${key}`, JSON.stringify(v), 'EX', REDIS_EMBED_TTL); } catch { /* ignore */ }
+  })();
+}
+
 type AsyncMethod<M> = M extends (...args: infer A) => infer R
   ? (...args: A) => Promise<Awaited<R>>
   : never;
@@ -491,13 +542,14 @@ export class PgVectorStore implements VectorStore {
     const autoMode = semanticOpt === 'auto' && process.env.SEARCH_SEMANTIC !== 'on';
     const autoMinStrict = Math.max(1, Number(process.env.SEARCH_AUTO_MIN_STRICT) || 3);
     if (autoMode && strictHits >= autoMinStrict) return ftsResults;
-    // Query embedding — cache-checked first (keyed by model dimension + text) so
-    // repeats skip the gateway round-trip entirely.
+    // Query embedding — cache-checked first (L1 in-process → shared L2 Redis when
+    // configured), keyed by model dimension + text, so repeats across any pod
+    // skip the gateway round-trip entirely.
     const cacheKey = `${this.dim}:${query}`;
-    let qv = queryEmbedCacheGet(cacheKey);
+    let qv = await queryEmbedGet(cacheKey);
     if (!qv) {
       try { qv = await (this.embedder as any).embedQuery(query) as number[]; } catch { return ftsResults; }
-      queryEmbedCachePut(cacheKey, qv);
+      queryEmbedPut(cacheKey, qv);
     }
     // Two-phase, so the binary index carries the cost and the fp32 column only
     // rescoring the shortlist restores precision:
