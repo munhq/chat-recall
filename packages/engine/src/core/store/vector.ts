@@ -60,17 +60,24 @@ async function getRedis(): Promise<any | null> {
   redisInit = true;
   const url = process.env.REDIS_URL;
   if (!url || QUERY_EMBED_CACHE_MAX === 0) return null;
+  let client: any = null;
   try {
     // ioredis ships CJS (`export =`); the constructable class lands on .default
     // under NodeNext but can vary by interop — resolve defensively.
     const mod: any = await import('ioredis');
     const Redis = mod.default ?? mod.Redis ?? mod;
-    // Bounded, non-blocking: a down Redis must never stall or fail a search, so
-    // no offline queue, one retry, short connect timeout. Background 'error'
-    // events are swallowed (the get/put try-catch is the real guard).
-    redisClient = new Redis(url, { maxRetriesPerRequest: 1, enableOfflineQueue: false, connectTimeout: 1500, lazyConnect: false });
-    redisClient.on('error', () => {});
-  } catch { redisClient = null; }
+    // lazyConnect + an explicit awaited connect(): establish the socket ONCE
+    // here so the first get/set runs on a ready client (the earlier
+    // enableOfflineQueue:false raced the connection — "Stream isn't writeable").
+    // commandTimeout bounds every op so a later Redis hiccup degrades to a fresh
+    // embed instead of hanging the search; a failed initial connect → disconnect
+    // the client (so it stops reconnecting) and fall back to L1. Background
+    // 'error' events are swallowed; the get/put try/catch + commandTimeout guard.
+    client = new Redis(url, { lazyConnect: true, maxRetriesPerRequest: 1, commandTimeout: 1000, connectTimeout: 1500 });
+    client.on('error', () => {});
+    await client.connect();
+    redisClient = client;
+  } catch { try { client?.disconnect(); } catch { /* ignore */ } redisClient = null; }
   return redisClient;
 }
 const REDIS_EMBED_TTL = Math.max(60, Number(process.env.QUERY_EMBED_TTL) || 86400);
