@@ -146,4 +146,36 @@ describe('thin collector — buildConversationSync ships live-computed data, no 
     expect(conv.session_id).toBe(SESSION_ID);
     expect(conv.mtime).toBe(MTIME);
   }, 60_000); // cold-transpiling the engine import graph takes ~20s on first load
+
+  test('content-hash gate: identical content + matching priorContentHash → unchanged bail', async () => {
+    writeFixture();
+    const { buildConversationSync } = await import('./sync-client.js');
+    const { listAvailableBackends } = await import('@chat-recall/engine/core/tool-backend.js');
+    await import('@chat-recall/engine/core/backends/index.js');
+
+    const refs = listAvailableBackends().flatMap((b) => { try { return b.listSessions(); } catch { return []; } });
+    const ref = refs.find((r) => r.prefixedId === SESSION_ID)!;
+    expect(ref).toBeDefined();
+
+    // First build: full payload, exposes the content fingerprint.
+    const first = await buildConversationSync(ref, MTIME, { includeRaw: false, includeMeta: true });
+    expect(first).not.toBeNull();
+    expect('unchanged' in first!).toBe(false);
+    const srcHash = (first as any).srcHash as string;
+    expect(typeof srcHash).toBe('string');
+    expect(srcHash.length).toBeGreaterThan(0);
+
+    // Second build with the same content and the matching prior hash → the whole
+    // rebuild (parse/redact/KG/git-replay) is skipped; only { unchanged, srcHash }.
+    const again = await buildConversationSync(ref, MTIME, { includeRaw: false, includeMeta: true, priorContentHash: srcHash });
+    expect(again && 'unchanged' in again).toBe(true);
+    expect((again as any).unchanged).toBe(true);
+    expect((again as any).srcHash).toBe(srcHash);
+    expect((again as any).conv).toBeUndefined();
+
+    // A stale/non-matching prior hash must NOT bail — real content still ships.
+    const stale = await buildConversationSync(ref, MTIME, { includeRaw: false, includeMeta: true, priorContentHash: 'deadbeef' });
+    expect(stale && 'unchanged' in stale).toBe(false);
+    expect((stale as any).conv?.session_id).toBe(SESSION_ID);
+  }, 60_000);
 });

@@ -39,6 +39,7 @@ import { getDataDir } from '../core/paths.js';
 import type { AiTool, RawSessionExport } from '../core/tool-backend.js';
 import {
   buildRawContainer,
+  containerSrcHash,
   type RawContainer,
 } from './raw.js';
 
@@ -265,15 +266,31 @@ export function updateShadow(sessionId: string, exp: RawSessionExport | null): S
   try { current = buildRawContainer(exp); }
   catch { return { status: 'unavailable', sessionId, tool, container: prior, recovered: 0, path }; }
 
+  const curHash = containerSrcHash(current);
+
   if (!prior) {
+    current.srcHash = curHash;
     try { writeShadowContainer(tool, rawId, current); } catch { /* disk full etc. — ship live anyway */ }
     return { status: 'created', sessionId, tool, container: current, recovered: 0, path };
   }
 
+  // Fast path: the on-disk export is byte-identical (content, ignoring mtime) to
+  // what last updated this shadow. The stored container IS the fullest-known
+  // state, so return it WITHOUT the O(n) line-split + per-line SHA1 merge. This
+  // is the hot path for a resume-truncated session re-evaluated repeatedly (the
+  // disk stays truncated, the shadow stays full — every tick re-recovered the
+  // same 1500 records before this gate) and for any mtime-only touch.
+  if (prior.srcHash && prior.srcHash === curHash) {
+    return { status: 'unchanged', sessionId, tool, container: prior, recovered: 0, path };
+  }
+
   const merged = mergeContainer(prior, current);
-  // Only rewrite the shadow when it actually changed — an 'unchanged' tick
-  // shouldn't churn the disk. 'grew' and 'rewrite-merged' both advance it.
-  if (merged.status !== 'unchanged') {
+  // Rewrite the shadow when its content advanced, OR when we merely need to
+  // record the current srcHash (first time on a legacy shadow, or identical
+  // content whose hash we hadn't stored yet) so the next tick can fast-path.
+  // After that one write, an unchanged session never touches disk again.
+  if (merged.status !== 'unchanged' || prior.srcHash !== curHash) {
+    merged.container.srcHash = curHash;
     try { writeShadowContainer(tool, rawId, merged.container); } catch { /* ship merged in-memory regardless */ }
   }
   return {

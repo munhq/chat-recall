@@ -164,7 +164,9 @@ export async function repairSession(id: string, opts: { dryRun?: boolean; force?
   const built = await buildConversationSync(ref, Math.floor(mtime), {
     mapPath, includeRaw: true, includeMeta: true, scanSecrets: false,
   });
-  if (!built) {
+  // No priorContentHash passed → the unchanged-content early-out can't fire here;
+  // the `'unchanged' in built` arm is only for exhaustive narrowing.
+  if (!built || 'unchanged' in built) {
     return { sessionId: id, status: 'error', fullestMessages: fullest.messages, fullestSource: fullest.source, pushed: [], note: 'rebuild produced no conversation' };
   }
   // The rebuilt count is the true fullness (archive ∪ on-disk tail) and drives
