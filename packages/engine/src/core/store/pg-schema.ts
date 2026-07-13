@@ -116,6 +116,17 @@ CREATE INDEX IF NOT EXISTS idx_chunks_item ON memory_chunks(tenant, source_type,
 -- (substring/nullif/coalesce/cast), so it's index-eligible.
 CREATE INDEX IF NOT EXISTS idx_chunks_importance ON memory_chunks
   (tenant, (COALESCE(NULLIF(substring(chunk_type FROM 'imp([0-9])'), '')::int, 0)) DESC, mtime DESC);
+-- Typo tolerance: pg_trgm + a trigram GIN index on chunk text powers the
+-- word-similarity fallback in searchFTS (a misspelled query still finds the
+-- right sessions). Best-effort: pg_trgm is a "trusted" extension (a non-super
+-- DB owner can create it), but if the role can't, swallow it — searchFTS's
+-- trigram fallback is itself try/wrapped, so search degrades to plain FTS.
+DO $$ BEGIN
+  CREATE EXTENSION IF NOT EXISTS pg_trgm;
+  CREATE INDEX IF NOT EXISTS idx_chunks_text_trgm ON memory_chunks USING GIN (text gin_trgm_ops);
+EXCEPTION WHEN OTHERS THEN
+  RAISE NOTICE 'pg_trgm/trigram index unavailable (%) — search falls back to plain FTS', SQLERRM;
+END $$;
 
 CREATE TABLE IF NOT EXISTS secret_findings (
   id          BIGSERIAL PRIMARY KEY,
