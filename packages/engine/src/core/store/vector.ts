@@ -379,7 +379,12 @@ export class PgVectorStore implements VectorStore {
     // Vector hits union in afterwards as additional context.
     let ftsResults: MemorySearchResult[] = [];
     if (this.fts) { try { ftsResults = await this.fts.searchFTS(query, options as any); } catch { ftsResults = []; } }
-    if (!this.embedder || !this.vectorOk) return ftsResults;
+    // FTS is the default tier. Vector/semantic search is opt-in: embedding every
+    // query on a remote GPU for keyword-shaped searches is the cost/latency/scale
+    // sink (see docs/search-scaling-decision.md). Enable per-request via
+    // options.semantic, or globally with SEARCH_SEMANTIC=on. Default = FTS only.
+    const semantic = (options as any).semantic === true || process.env.SEARCH_SEMANTIC === 'on';
+    if (!semantic || !this.embedder || !this.vectorOk) return ftsResults;
     let qv: number[];
     try { qv = await (this.embedder as any).embedQuery(query); } catch { return ftsResults; }
     const params: unknown[] = [this.t, this.vecLiteral(qv)];
