@@ -115,36 +115,86 @@ export class PgVectorStore implements VectorStore {
       // configured width instead of requiring a hand-run migration. Old-model
       // vectors would be a different vector space anyway — unusable for
       // similarity against new-model query embeddings, not worth preserving.
-      const dimRow = await this.pool.query(
-        `SELECT atttypmod AS dim FROM pg_attribute
-          WHERE attrelid = to_regclass('memory_vectors') AND attname = 'embedding'`);
-      const existingDim = dimRow.rows[0]?.dim;
-      if (existingDim != null && existingDim > 0 && existingDim !== this.dim) {
-        const n = await this.pool.query(`SELECT count(*)::int AS c FROM memory_vectors`);
-        console.warn(`[vector] memory_vectors is vector(${existingDim}) but embedder is ${this.dim}-dim — dropping ${n.rows[0].c} stale vector(s) and recreating; the backfill sweep re-embeds from memory_chunks`);
-        await this.pool.query(`DROP TABLE memory_vectors`);
-      }
-      await this.pool.query(
-        `CREATE TABLE IF NOT EXISTS memory_vectors (
-           tenant TEXT NOT NULL DEFAULT 'default', chunk_id TEXT NOT NULL, item_id TEXT NOT NULL,
-           source_type TEXT NOT NULL, title TEXT DEFAULT '', text TEXT DEFAULT '', chunk_type TEXT DEFAULT '',
-           project_path TEXT DEFAULT '', project_id TEXT DEFAULT '', file_path TEXT DEFAULT '', mtime BIGINT DEFAULT 0,
-           embedding vector(${this.dim}), PRIMARY KEY (tenant, chunk_id))`);
-      await this.pool.query(`CREATE INDEX IF NOT EXISTS idx_vec_item ON memory_vectors(tenant, source_type, item_id)`);
-      // ANN index so semantic search is a sublinear HNSW probe, not a full
-      // sequential scan of every embedding (the `<=>` in search()). Cosine ops
-      // match the `1/(1+(embedding <=> q))` scoring. Best-effort: older pgvector
-      // builds lack hnsw — fall back silently to the sequential scan.
+      // memory_vectors is HASH-partitioned by tenant so each tenant's semantic
+      // search prunes to (and probes the HNSW index of) ONLY its own partition —
+      // per-tenant cost + latency isolation at 1000+ tenants instead of every
+      // query walking one global index. The ANN index is BINARY (binary_quantize
+      // → bit(dim), hamming) so it stays tiny in RAM; the fp32 `embedding` column
+      // lives on disk and is read only to rescore the shortlist (see search()).
+      // Vectors are derived (the backfill re-embeds from memory_chunks), so on any
+      // layout drift — dimension change OR a pre-partitioning regular table — we
+      // DROP and recreate instead of running a hand migration.
+      // All of the schema setup runs on ONE client inside a transaction guarded
+      // by an advisory lock: on a rollout every pod calls init() at once, and
+      // without this two pods race DROP TABLE against each other's CREATE (one
+      // drops the table the other just built). The xact lock serializes them —
+      // the loser waits, then sees relkind='p' and skips the rebuild — and it
+      // auto-releases on COMMIT/ROLLBACK. Index builds here hit only the freshly
+      // emptied partitions, so the lock is held briefly.
+      const client = await this.pool.connect();
       try {
-        await this.pool.query(`CREATE INDEX IF NOT EXISTS idx_vec_hnsw ON memory_vectors USING hnsw (embedding vector_cosine_ops)`);
+        await client.query('BEGIN');
+        await client.query(`SELECT pg_advisory_xact_lock(hashtext('memory_vectors_schema'))`);
+        const meta = await client.query(
+          `SELECT (SELECT atttypmod FROM pg_attribute
+                    WHERE attrelid = to_regclass('memory_vectors') AND attname='embedding') AS dim,
+                  (SELECT relkind FROM pg_class WHERE relname='memory_vectors') AS relkind`);
+        const existingDim = meta.rows[0]?.dim;
+        const relkind = meta.rows[0]?.relkind;              // 'p' partitioned · 'r' regular · null absent
+        const dimDrift = existingDim != null && existingDim > 0 && existingDim !== this.dim;
+        const notPartitioned = relkind != null && relkind !== 'p';
+        if (dimDrift || notPartitioned) {
+          const reason = dimDrift ? `dim ${existingDim}→${this.dim}` : 'converting to tenant-partitioned';
+          console.warn(`[vector] rebuilding memory_vectors (${reason}); vectors are derived — the backfill re-embeds from memory_chunks`);
+          await client.query(`DROP TABLE IF EXISTS memory_vectors CASCADE`);
+        }
+        await client.query(
+          `CREATE TABLE IF NOT EXISTS memory_vectors (
+             tenant TEXT NOT NULL DEFAULT 'default', chunk_id TEXT NOT NULL, item_id TEXT NOT NULL,
+             source_type TEXT NOT NULL, title TEXT DEFAULT '', text TEXT DEFAULT '', chunk_type TEXT DEFAULT '',
+             project_path TEXT DEFAULT '', project_id TEXT DEFAULT '', file_path TEXT DEFAULT '', mtime BIGINT DEFAULT 0,
+             embedding vector(${this.dim}), PRIMARY KEY (tenant, chunk_id))
+           PARTITION BY HASH (tenant)`);
+        // Materialize the hash partitions (idempotent). Bounded, fixed count — a
+        // tenant hashes to exactly one, so equality on tenant prunes to it.
+        const nparts = Math.max(1, Number(process.env.CHAT_RECALL_VECTOR_PARTITIONS) || 16);
+        for (let i = 0; i < nparts; i++) {
+          await client.query(
+            `CREATE TABLE IF NOT EXISTS memory_vectors_p${i} PARTITION OF memory_vectors
+               FOR VALUES WITH (MODULUS ${nparts}, REMAINDER ${i})`);
+        }
+        await client.query(`CREATE INDEX IF NOT EXISTS idx_vec_item ON memory_vectors(tenant, source_type, item_id)`);
+        // Drop the legacy fp32 cosine HNSW index — its RAM footprint is the whole
+        // reason we moved to binary. Build the binary hamming HNSW index instead
+        // (propagates to every partition; the exact-cosine rescore in search()
+        // recovers the precision quantization drops). Best-effort: pre-0.7 pgvector
+        // lacks binary_quantize/bit ops — fall back to the sequential rescan.
+        await client.query(`DROP INDEX IF EXISTS idx_vec_hnsw`);
+        // SAVEPOINT so a failed index build (pre-0.7 pgvector) doesn't poison the
+        // whole transaction — we roll back just this statement and still commit
+        // the table + RLS, falling back to a sequential rescan for search.
+        await client.query(`SAVEPOINT bin_idx`);
+        try {
+          await client.query(
+            `CREATE INDEX IF NOT EXISTS idx_vec_bin_hnsw ON memory_vectors
+               USING hnsw ((binary_quantize(embedding)::bit(${this.dim})) bit_hamming_ops)`);
+          await client.query(`RELEASE SAVEPOINT bin_idx`);
+        } catch (e) {
+          await client.query(`ROLLBACK TO SAVEPOINT bin_idx`).catch(() => {});
+          console.warn(`[vector] could not create binary HNSW index (semantic search will sequential-scan): ${e instanceof Error ? e.message : String(e)}`);
+        }
+        // RLS: memory_vectors lives outside pg-schema.ts, so wall it here too.
+        await client.query(`ALTER TABLE memory_vectors ENABLE ROW LEVEL SECURITY`);
+        await client.query(`ALTER TABLE memory_vectors FORCE ROW LEVEL SECURITY`);
+        await client.query(`DROP POLICY IF EXISTS tenant_isolation ON memory_vectors`);
+        await client.query(`CREATE POLICY tenant_isolation ON memory_vectors USING (tenant = current_setting('app.tenant', true)) WITH CHECK (tenant = current_setting('app.tenant', true))`);
+        await client.query('COMMIT');
       } catch (e) {
-        console.warn(`[vector] could not create HNSW index (semantic search will sequential-scan): ${e instanceof Error ? e.message : String(e)}`);
+        await client.query('ROLLBACK').catch(() => {});
+        throw e;
+      } finally {
+        client.release();
       }
-      // RLS: memory_vectors lives outside pg-schema.ts, so wall it here too.
-      await this.pool.query(`ALTER TABLE memory_vectors ENABLE ROW LEVEL SECURITY`);
-      await this.pool.query(`ALTER TABLE memory_vectors FORCE ROW LEVEL SECURITY`);
-      await this.pool.query(`DROP POLICY IF EXISTS tenant_isolation ON memory_vectors`);
-      await this.pool.query(`CREATE POLICY tenant_isolation ON memory_vectors USING (tenant = current_setting('app.tenant', true)) WITH CHECK (tenant = current_setting('app.tenant', true))`);
       this.tableReady = true;
       this.vectorOk = !!this.embedder;
     } catch (e) {
@@ -263,6 +313,16 @@ export class PgVectorStore implements VectorStore {
     const minTurns = Math.max(0, Number(process.env.EMBED_MIN_TURNS ?? process.env.SUMMARY_MIN_TURNS) || 4);
     const maxTrivialOut = Math.max(0, Number(
       process.env.EMBED_TRIVIAL_MAX_OUTPUT_TOKENS ?? process.env.SUMMARY_TRIVIAL_MAX_OUTPUT_TOKENS) || 2000);
+    // Item 5 — embed-less policy. Plain `assistant` chatter (~64% of chunks) and
+    // `subagent:*` internal fan-out (~8%) are low-signal for semantic recall and
+    // stay fully keyword-searchable via FTS, so we DON'T vectorize them: ~72%
+    // fewer vectors with ~zero semantic-recall loss. CLASSIFIED assistant chunks
+    // (assistant:decision:impN, …) and user_context are high-value and kept.
+    // Override with EMBED_INCLUDE_ALL_CHUNKS=1 to vectorize everything (e.g. to
+    // A/B recall). No new bind params — the predicate is literal.
+    const chunkFilter = process.env.EMBED_INCLUDE_ALL_CHUNKS
+      ? ''
+      : `AND NOT (c.chunk_type = 'assistant' OR c.chunk_type LIKE 'subagent%')`;
     return tenantTx(this.pool, this.t, async (client: any) => {
       const rows: any[] = (await client.query(
         `SELECT c.chunk_id, c.item_id, c.source_type, c.title, c.text, c.chunk_type, c.project_path, c.file_path, c.mtime
@@ -270,6 +330,7 @@ export class PgVectorStore implements VectorStore {
            WHERE c.tenant = $1 AND length(c.text) > 0
              AND NOT EXISTS (
                SELECT 1 FROM memory_vectors v WHERE v.tenant = c.tenant AND v.chunk_id = c.chunk_id)
+             ${chunkFilter}
              AND NOT (
                c.source_type = 'session'
                AND EXISTS (
@@ -387,30 +448,47 @@ export class PgVectorStore implements VectorStore {
     if (!semantic || !this.embedder || !this.vectorOk) return ftsResults;
     let qv: number[];
     try { qv = await (this.embedder as any).embedQuery(query); } catch { return ftsResults; }
-    const params: unknown[] = [this.t, this.vecLiteral(qv)];
-    let sql = `SELECT chunk_id, item_id, source_type, title, text, chunk_type, project_path, file_path, mtime,
-                      1/(1+(embedding <=> $2::vector)) AS score
-               FROM memory_vectors WHERE tenant=$1 AND embedding IS NOT NULL`;
-    if ((options as any).sourceTypes?.length) { params.push((options as any).sourceTypes); sql += ` AND source_type = ANY($${params.length})`; }
+    // Two-phase, so the binary index carries the cost and the fp32 column only
+    // rescoring the shortlist restores precision:
+    //   1. SHORTLIST via the tiny binary hamming HNSW index — cheap ANN over
+    //      bit(dim) codes, tenant-pruned to one partition. Over-fetch generously
+    //      to absorb what 1-bit quantization drops.
+    //   2. RESCORE the shortlist with the exact fp32 cosine + the same
+    //      demotion/recency/importance blend as searchFTS (pg.ts).
+    const params: unknown[] = [this.t, this.vecLiteral(qv)];   // $1 tenant · $2 query vector
+    let candWhere = `tenant=$1 AND embedding IS NOT NULL`;
+    if ((options as any).sourceTypes?.length) { params.push((options as any).sourceTypes); candWhere += ` AND source_type = ANY($${params.length})`; }
     // Path SUBSTRING, not an exact project_id — see searchFTS (pg.ts). Keeps the
     // vector path consistent with FTS so `-p` filters identically either way.
-    if ((options as any).projectIdFilter) { params.push(`%${(options as any).projectIdFilter}%`); sql += ` AND project_path ILIKE $${params.length}`; }
-    // Same ranking posture as searchFTS (pg.ts): subagent chunks are
-    // keyword/semantics-dense internal expansions — demoted so they never
-    // bury the user's own conversations; a small bounded recency bonus makes
-    // "when" a prior, not just a tiebreak. Age exponent clamped (LEAST(…, 60))
-    // for the same reason as searchFTS: Postgres RAISES underflow for exp() of
-    // a large negative, so one mtime=0 row would error every vector search.
-    params.push(Date.now());
-    const nowP = params.length;
-    params.push(topK * 5);
-    sql += ` ORDER BY (1/(1+(embedding <=> $2::vector)))
-                      * (CASE WHEN chunk_type LIKE 'subagent%' THEN 0.55
-                              WHEN chunk_type LIKE 'tool_result%' THEN 0.5
-                              ELSE 1.0 END)
-                      + 0.15 * exp(-LEAST(GREATEST($${nowP}::double precision - COALESCE(mtime, 0), 0) / (14.0 * 86400000), 60))
-                      + 0.10 * (COALESCE(NULLIF(substring(chunk_type from 'imp([0-9])'), '')::int, 1) / 5.0) DESC
-             LIMIT $${params.length}`;
+    // Filters live INSIDE the shortlist so we don't spend candidates on rows
+    // that'd be filtered out after rescoring.
+    if ((options as any).projectIdFilter) { params.push(`%${(options as any).projectIdFilter}%`); candWhere += ` AND project_path ILIKE $${params.length}`; }
+    // Shortlist size: generous over-fetch (binary loses precision) but bounded.
+    // Tune via VECTOR_RESCORE_CANDIDATES; recover exact ranking in phase 2.
+    const candN = Math.max(Number(process.env.VECTOR_RESCORE_CANDIDATES) || 0, 500, topK * 40);
+    params.push(candN); const candP = params.length;
+    // Age exponent clamped (LEAST(…, 60)) for the same reason as searchFTS:
+    // Postgres RAISES underflow for exp() of a large negative, so one mtime=0
+    // row would error every vector search.
+    params.push(Date.now()); const nowP = params.length;
+    params.push(topK * 5); const limP = params.length;
+    const dim = this.dim;
+    const sql = `WITH cand AS (
+                   SELECT chunk_id, item_id, source_type, title, text, chunk_type, project_path, file_path, mtime, embedding
+                     FROM memory_vectors
+                    WHERE ${candWhere}
+                    ORDER BY binary_quantize(embedding)::bit(${dim}) <~> binary_quantize($2::vector)::bit(${dim})
+                    LIMIT $${candP})
+                 SELECT chunk_id, item_id, source_type, title, text, chunk_type, project_path, file_path, mtime,
+                        1/(1+(embedding <=> $2::vector)) AS score
+                   FROM cand
+                  ORDER BY (1/(1+(embedding <=> $2::vector)))
+                           * (CASE WHEN chunk_type LIKE 'subagent%' THEN 0.55
+                                   WHEN chunk_type LIKE 'tool_result%' THEN 0.5
+                                   ELSE 1.0 END)
+                           + 0.15 * exp(-LEAST(GREATEST($${nowP}::double precision - COALESCE(mtime, 0), 0) / (14.0 * 86400000), 60))
+                           + 0.10 * (COALESCE(NULLIF(substring(chunk_type from 'imp([0-9])'), '')::int, 1) / 5.0) DESC
+                  LIMIT $${limP}`;
     const rows = await this.qRo(sql, params);
     // Group by item (best score wins), mirroring the FTS grouping.
     const byItem = new Map<string, any>();
