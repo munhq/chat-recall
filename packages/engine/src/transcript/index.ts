@@ -21,7 +21,7 @@ import { canonicalEventsToMessages } from './from-events.js';
 
 export * from './types.js';
 export {
-  buildRawContainer, gzipContainer, gunzipContainer, mapContainerText,
+  buildRawContainer, containerSrcHash, gzipContainer, gunzipContainer, mapContainerText,
   parseTranscriptFromContainer, parseOpenCodeDumpText, archiveRawSession,
   detectForkPredecessor,
   type RawContainer,

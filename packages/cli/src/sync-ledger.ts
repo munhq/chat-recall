@@ -52,6 +52,13 @@ export interface SyncedRow {
   /** File size at the time `o` was captured. Lets the freshness gate detect
    *  growth (append) vs rotation/truncation (shrink → FULL). */
   s?: number;
+  /** Content fingerprint (containerSrcHash) of the transcript at the last FULL
+   *  sync to this target. Lets the walk skip a session that re-classified as
+   *  FULL (mtime bumped / resume rewrite / OpenCode summary bump) but whose
+   *  actual content is byte-identical to what was already shipped — no re-parse,
+   *  re-redact, KG or git-replay. Only trusted when `v` is the current extractor
+   *  version. Absent after an APPEND (the head hash is stale) and on legacy rows. */
+  h?: string;
 }
 /** On disk a row is the {m,v[,f,o,s]} shape OR a legacy bare mtime number. */
 type LedgerEntry = SyncedRow | number;
@@ -171,7 +178,7 @@ export function persistLedgerData(server: string, serverData: Record<string, Led
  */
 export function markSynced(
   server: string,
-  rows: Array<{ id: string; mtime: number; offset?: number; size?: number }>,
+  rows: Array<{ id: string; mtime: number; offset?: number; size?: number; hash?: string }>,
 ): void {
   if (rows.length === 0) return;
   const data = load();
@@ -194,6 +201,10 @@ export function markSynced(
       ? { m: Math.floor(r.mtime), v: ev, f: prevF }
       : { m: Math.floor(r.mtime), v: ev };
     if (o > 0 || s > 0) { base.o = o; base.s = s; }
+    // Content hash: set when a FULL sync (or an unchanged-content skip) supplies
+    // it. An APPEND passes no hash → the stale head hash is dropped, so a later
+    // FULL never falsely matches the grown content.
+    if (r.hash !== undefined) base.h = r.hash;
     forServer[r.id] = base;
   }
   persist(data);

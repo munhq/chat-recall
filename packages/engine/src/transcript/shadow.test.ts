@@ -162,12 +162,34 @@ describe('updateShadow (disk round-trip)', () => {
     const order = second.container!.files[0].text.trim().split('\n').map((l) => JSON.parse(l).uuid);
     expect(order).toEqual(['a', 'b', 'c', 'd', 'z']);
 
-    // Tick 3: shadow is now the fullest; a re-read of the still-truncated file
-    // must not lose the recovered history.
+    // Tick 3: same still-truncated file, unchanged since tick 2. The content-hash
+    // fast-path short-circuits the O(n) line-split + per-line SHA1 merge instead
+    // of re-"recovering" the same 4 records every tick (the resource bug this
+    // gate fixes) — status 'unchanged', recovered 0 — but the returned container
+    // is STILL the fullest-known history, so nothing is lost.
     const third = updateShadow(id, exportOf('claude', `${id}.jsonl`, jsonl(['z']), 2000));
-    expect(third.recovered).toBe(4);
+    expect(third.status).toBe('unchanged');
+    expect(third.recovered).toBe(0);
     const order3 = third.container!.files[0].text.trim().split('\n').map((l) => JSON.parse(l).uuid);
     expect(order3).toEqual(['a', 'b', 'c', 'd', 'z']);
+  });
+
+  test('content-hash fast path: an mtime-only bump does not re-merge', () => {
+    const id = 'sess-mtime';
+    const text = jsonl(['a', 'b', 'c']);
+    const first = updateShadow(id, exportOf('claude', `${id}.jsonl`, text, 1000));
+    expect(first.status).toBe('created');
+
+    // Identical content, newer mtime (a touch / resume rewrite producing the same
+    // bytes). Must NOT count as a change — this is what stops the sync path from
+    // re-parsing/re-redacting/re-KG-ing an unchanged transcript every tick.
+    const again = updateShadow(id, exportOf('claude', `${id}.jsonl`, text, 5000));
+    expect(again.status).toBe('unchanged');
+    expect(again.recovered).toBe(0);
+    // A genuine append after that is still detected (fast path only fires on an
+    // exact content match).
+    const grown = updateShadow(id, exportOf('claude', `${id}.jsonl`, jsonl(['a', 'b', 'c', 'd']), 6000));
+    expect(grown.status).toBe('grew');
   });
 
   test('unavailable export still surfaces the prior shadow', () => {
