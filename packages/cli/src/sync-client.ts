@@ -42,7 +42,7 @@ import { loadSettings, saveSettings } from '@chat-recall/engine/core/settings.js
 import { getDataDir } from '@chat-recall/engine/core/paths.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
 import { extractTurnsAny, replaySessionAny } from '@chat-recall/engine/core/session-multi-tool.js';
-import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION, gzipContainer, mapContainerText, buildRawContainer, parseTranscriptFromContainer, updateShadow, type RawContainer } from '@chat-recall/engine/transcript/index.js';
+import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION, gzipContainer, mapContainerText, buildRawContainer, containerSrcHash, parseTranscriptFromContainer, updateShadow, type RawContainer } from '@chat-recall/engine/transcript/index.js';
 import { parseClaudeTranscriptText } from '@chat-recall/engine/transcript/claude.js';
 import { parseGeminiTranscriptText } from '@chat-recall/engine/transcript/gemini.js';
 import { parseCodexTranscriptText } from '@chat-recall/engine/transcript/codex.js';
@@ -555,6 +555,12 @@ const refs = listAvailableBackends().flatMap((b) => {
   // handled by their own collectors.
   const localSessionIds = new Set<string>();
 
+  // session_id → content hash for the FULL conversations shipped this run, so
+  // the convBatch ack can stamp the ledger `h` alongside {m,o,s}. A later tick
+  // that re-classifies the session as FULL on an mtime-only change then matches
+  // this hash and skips the rebuild entirely.
+  const shippedHash = new Map<string, string>();
+
   // `flatten`: each add() is a GROUP of rows that must land in the same
   // POST (e.g. one session's findings — the server replaces a session's
   // findings wholesale, so splitting a session across two batches would
@@ -603,9 +609,10 @@ const refs = listAvailableBackends().flatMap((b) => {
         // check and fall back to FULL. Consistency here is what lets the active
         // session actually append.
         const off = typeof r.from_offset === 'number' ? r.from_offset : 0;
+        const hash = shippedHash.get(r.session_id);
         return off > 0
-          ? { id: r.session_id, mtime: r.mtime, offset: off, size: off }
-          : { id: r.session_id, mtime: r.mtime };
+          ? { id: r.session_id, mtime: r.mtime, offset: off, size: off, hash }
+          : { id: r.session_id, mtime: r.mtime, hash };
       }));
     }
     catch { /* ledger is local bookkeeping — never fail an upload over it */ }
@@ -855,7 +862,32 @@ const refs = listAvailableBackends().flatMap((b) => {
     // on). `?? []` means "batch ran, found nothing here" — distinct from the
     // `undefined` that triggers the per-session fallback inside the builder.
     const precomputedExternal = externalFindings ? (externalFindings.get(ref.prefixedId) ?? []) : undefined;
-    const built = await buildConversationSync(ref, mtime, { mapPath, includeRaw: upload.raw, includeMeta: upload.sessionMeta, scanSecrets, verifySecrets: verifySecretsScan, tenantRules, precomputedExternal });
+    // Only trust the ledger's content hash for the skip-gate when the row is at
+    // the current extractor version — a version bump must force a real re-derive
+    // even if the transcript bytes are unchanged.
+    const ackRow = ledger?.get(ref.prefixedId);
+    const priorContentHash = ackRow && ackRow.v >= extractorVersionForId(ref.prefixedId) ? ackRow.h : undefined;
+    const built = await buildConversationSync(ref, mtime, { mapPath, includeRaw: upload.raw, includeMeta: upload.sessionMeta, scanSecrets, verifySecrets: verifySecretsScan, tenantRules, precomputedExternal, priorContentHash });
+    if (built && 'unchanged' in built) {
+      // Content byte-identical to the last FULL sync to this target (mtime bumped
+      // / resume rewrite / OpenCode summary bump). Nothing to re-ship, re-extract
+      // or git-replay. Re-stamp the ledger exactly as a real FULL ack would —
+      // mtime, the (unchanged) hash, and the current byte cursor — so the NEXT
+      // tick reaches a true SKIP and doesn't even re-export. Byte-identical
+      // content ⇒ identical size, so the cursor we write equals the one already
+      // there for append-only backends; for OpenCode fileSize() is absent (0).
+      if (ledger) {
+        try {
+          const off = getBackendForId(ref.prefixedId)?.fileSize?.(ref.rawId) ?? 0;
+          markSynced(base, [off > 0
+            ? { id: ref.prefixedId, mtime: ref.mtime, offset: off, size: off, hash: built.srcHash }
+            : { id: ref.prefixedId, mtime: ref.mtime, hash: built.srcHash }]);
+        }
+        catch { /* ledger is local bookkeeping — never fail a sync over it */ }
+      }
+      skipped++;
+      continue;
+    }
     if (!built) {
       // Nothing worth shipping for THIS content — empty, unparseable, or one
       // of chat-recall's own internal LLM invocations (roughly half of all
@@ -874,6 +906,9 @@ const refs = listAvailableBackends().flatMap((b) => {
     }
     redactions += built.redactions;
 
+    // Remember the content hash so the convBatch ack stamps ledger `h` (enables
+    // the mtime-only skip on a later tick). Undefined for the oversized-tail path.
+    if (built.srcHash) shippedHash.set(ref.prefixedId, built.srcHash);
     await convBatch.add(built.conv);
     // Ship this session's secret findings as one group (server replaces wholesale).
     if (built.findings.length > 0) await findingsBatch.add(built.findings);
@@ -1108,7 +1143,17 @@ export interface BuiltConversation {
   findings: Array<{ session_id: string; detector: string; rule: string; line: number; preview: string; verified_at?: string | null }>;
   /** Wall-clock ms spent scanning this session (0 if nothing to scan). */
   scanMs: number;
+  /** Content fingerprint of the transcript this payload was built from
+   *  (containerSrcHash of the raw export). The walk stamps it into the ledger so
+   *  a later mtime-only bump with identical content can skip the whole rebuild.
+   *  Undefined for the oversized-tail path (no full container is materialized). */
+  srcHash?: string;
 }
+
+/** buildConversationSync's early-out when the caller passed a priorContentHash
+ *  that matches the freshly-exported content: nothing changed since the last
+ *  FULL sync, so the caller just re-stamps the ledger mtime and skips. */
+export interface UnchangedConversation { unchanged: true; srcHash: string; }
 
 /** Transcript bytes beyond which a FULL sync must not materialize the whole
  *  file. The FULL pipeline copies the transcript ~5× (parse, trim+redact,
@@ -1134,11 +1179,18 @@ export async function buildConversationSync(
     /** Batch-scan results for THIS session (gitleaks/trufflehog already run
      *  over a directory). When provided, skip the per-session subprocess scan
      *  and use these instead — built-in regex + tenant rules still run inline. */
-    precomputedExternal?: ScanFinding[] } = {},
-): Promise<BuiltConversation | null> {
+    precomputedExternal?: ScanFinding[];
+    /** The content hash this target last FULL-synced (ledger `h`). When the
+     *  freshly-exported transcript hashes equal to it, the whole build is
+     *  redundant — we bail immediately with { unchanged, srcHash } so the caller
+     *  just advances the ledger mtime. Only pass it when the ledger row is at the
+     *  current extractor version (else a re-derive is genuinely owed). */
+    priorContentHash?: string } = {},
+): Promise<BuiltConversation | UnchangedConversation | null> {
   const mapPath = opts.mapPath ?? ((p: string) => p);
   let includeRaw = opts.includeRaw !== false;
   let includeMeta = opts.includeMeta !== false;
+  let srcHash: string | undefined;
 
   // Oversized-transcript guard: ship the newest FULL_BUILD_TAIL_BYTES as this
   // session's FULL sync instead of materializing the whole file. The envelope
@@ -1182,6 +1234,18 @@ export async function buildConversationSync(
     try {
       const backend = getBackendForId(ref.prefixedId) ?? getBackend('claude');
       const exp = backend.exportRawSession(ref.prefixedId);
+      // Content-identity gate: hash the raw export (mtime-independent) BEFORE the
+      // shadow merge / parse / redact / KG / git-replay. If it equals what this
+      // target last FULL-synced, nothing downstream can differ — bail now. This
+      // is what stops a resume-truncated or mtime-touched session from being
+      // fully rebuilt on every tick (the export/read still happens — it's how we
+      // know — but everything expensive after it is skipped).
+      if (exp) {
+        try { srcHash = containerSrcHash(buildRawContainer(exp)); } catch { srcHash = undefined; }
+        if (srcHash && opts.priorContentHash && srcHash === opts.priorContentHash) {
+          return { unchanged: true, srcHash };
+        }
+      }
       const shadow = updateShadow(ref.rawId, exp);
       if (shadow.container) {
         fullestContainer = shadow.container;
@@ -1406,6 +1470,7 @@ export async function buildConversationSync(
     redactions: count.redactions,
     findings,
     scanMs,
+    srcHash,
   };
 }
 

@@ -264,11 +264,21 @@ const geminiWatcher = chokidar.watch(`${GEMINI_TMP_DIR}/**/session-*.json`, {
   interval: 5000,
 });
 
-// 8. OpenCode SQLite — watch the db + WAL/SHM. SQLite in WAL mode writes
-// new rows to the .db-wal file; the main .db is touched on checkpoint.
-// Watching all three catches every kind of activity.
+// 8. OpenCode SQLite — watch the db + WAL only. SQLite in WAL mode writes new
+// rows to the .db-wal file; the main .db is touched on checkpoint. Together
+// those two catch every real write.
+//
+// We deliberately do NOT watch the .db-shm sidecar. The -shm is the WAL index
+// in shared memory; SQLite touches it on *every* connection open — including
+// our own read-only opens during a sync (listSessions/exportRawSession). With
+// -shm watched, each sync's own DB reads bumped -shm's mtime, the poller saw a
+// "change", and armed another sync — a self-sustaining ~10s loop that ran even
+// when OpenCode wasn't running (verified 2026-07-13: -shm mtime advancing with
+// no OpenCode process alive, ~830 spurious ticks per 2k log lines). Watching
+// only .db + .db-wal breaks the loop: our reads don't append to -wal, so a
+// genuine OpenCode write is still the only thing that fires an event.
 const opencodeWatcher = chokidar.watch(
-  [`${OPENCODE_DB_PATH}`, `${OPENCODE_DB_PATH}-wal`, `${OPENCODE_DB_PATH}-shm`],
+  [`${OPENCODE_DB_PATH}`, `${OPENCODE_DB_PATH}-wal`],
   {
     persistent: true,
     ignoreInitial: true,
