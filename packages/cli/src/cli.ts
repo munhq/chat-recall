@@ -1852,7 +1852,17 @@ async function runLogin(
 
   try {
     const { deviceLogin } = await import('./device-auth.js');
-    const tokens = await deviceLogin({ issuer: opts.issuer, clientId: opts.clientId }, (p) => {
+    // Learn the OIDC issuer from the target server (no hardcoded default) unless
+    // one was passed explicitly. A no-auth server returns null → deviceLogin
+    // throws a clear "use --token" message instead of hitting someone's realm.
+    let issuer = opts.issuer;
+    if (!issuer) {
+      try {
+        const caps = await fetch(`${base}/api/capabilities`, { signal: AbortSignal.timeout(8000) }).then((r) => r.json()) as { oidcIssuer?: string | null };
+        if (caps?.oidcIssuer) issuer = caps.oidcIssuer;
+      } catch { /* fall through — deviceLogin surfaces the missing-issuer error */ }
+    }
+    const tokens = await deviceLogin({ issuer, clientId: opts.clientId }, (p) => {
       console.log();
       console.log(chalk.bold('To log in, open:'));
       console.log('  ' + chalk.cyan(p.url));
@@ -2039,7 +2049,7 @@ program
   .description('Log in via Keycloak (device flow) and mint a sync device token → ~/.chat-recall/credentials.json (0600)')
   .option('--token <token>', 'Self-host: skip OIDC and save this device token directly')
   .option('--check', 'Report-only: exit 0 if a working credential for this server exists, 1 otherwise (never interactive)')
-  .option('--issuer <url>', 'OIDC issuer (default: hotmun realm)')
+  .option('--issuer <url>', 'OIDC issuer URL (default: learned from the server via /api/capabilities)')
   .option('--client-id <id>', 'OIDC client id (default: chat-recall-web)')
   .option('--team <slug>', 'Team to mint the device token for (default: your only team)')
   .option('--device-id <id>', 'Device id for this machine (default: hostname)')
