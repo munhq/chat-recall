@@ -731,7 +731,7 @@ function AppInner() {
         query={query}
         setQuery={setQuery}
         searchRef={searchRef}
-        onSearch={(q) => handleSearch(q, true)}
+        onSearch={handleSearch}
         onMobileMenu={() => setMobileSidebarOpen((v) => !v)}
         mobileSidebarOpen={mobileSidebarOpen}
       />

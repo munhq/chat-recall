@@ -529,7 +529,13 @@ export class PgVectorStore implements VectorStore {
     // it embeds the query (cache-checked L1→L2), vector-searches its partition, and
     // RRF-fuses with FTS below. The intent gate lives in the caller, not a fragile
     // FTS-strength heuristic (which never discriminated — every query matched many).
-    const semantic = (options as any).semantic === true || process.env.SEARCH_SEMANTIC === 'on';
+    // Master kill-switch (default OFF): the semantic/vector tier is disabled
+    // unless SEMANTIC_SEARCH_ENABLED=true. Off ⇒ pure keyword FTS (+ pg_trgm typo
+    // tolerance), no embed, no remote call. All the vector code below is kept, just
+    // gated — flip the flag to bring it back. When on, options.semantic===true
+    // (or SEARCH_SEMANTIC=on) selects the vector path per query.
+    const enabled = process.env.SEMANTIC_SEARCH_ENABLED === 'true';
+    const semantic = enabled && ((options as any).semantic === true || process.env.SEARCH_SEMANTIC === 'on');
     if (!semantic || !this.embedder || !this.vectorOk) return ftsResults;
     // Query embedding — cache-checked first (L1 in-process → shared L2 Redis when
     // configured), keyed by model dimension + text, so repeats across any pod
