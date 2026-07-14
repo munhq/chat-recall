@@ -428,7 +428,13 @@ const httpServer = app.listen(PORT, HOST, () => {
   // New ingests embed on the fly; this sweep catches up the backlog across all
   // tenants so semantic search becomes complete on its own. Gated like the
   // summary worker: server mode + an embedder actually configured.
-  if (isServerMode() && runWorkers) {
+  // Master kill-switch: semantic search is OFF by default (SEMANTIC_SEARCH_ENABLED
+  // unset). When off we do NOT embed — the vector tier is dormant (keyword FTS +
+  // pg_trgm typo tolerance cover search), so we don't burn embed quota for a
+  // feature nobody's querying. Flip SEMANTIC_SEARCH_ENABLED=true to bring it back
+  // (embedder config is retained). All vector code is kept, just gated.
+  const semanticEnabled = process.env.SEMANTIC_SEARCH_ENABLED === 'true';
+  if (isServerMode() && runWorkers && semanticEnabled) {
     if (serverEmbedderConfigured()) {
       const VEC_SWEEP_MS = 30 * 1000;   // keep it moving; inFlight guard prevents overlap
       const VEC_BATCH = 256;
@@ -456,6 +462,8 @@ const httpServer = app.listen(PORT, HOST, () => {
     } else {
       log.info('vector backfill worker disabled (no EMBEDDING_PROVIDER)');
     }
+  } else if (isServerMode() && runWorkers && !semanticEnabled) {
+    log.info('vector backfill worker disabled (SEMANTIC_SEARCH_ENABLED not set — no embedding)');
   }
 
   // Self-heal: rebuild any session whose rendered view is thinner than its own
