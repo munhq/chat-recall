@@ -141,9 +141,12 @@ describe('POST /api/sync (ingest)', () => {
     expect(envelope.v).toBe(6);
     expect(envelope.messages).toHaveLength(2);
     const chunks = await store.listChunksByItem('session', sessionId);
+    // The opening prompt is indexed as a dedicated `first_prompt` chunk (C4);
+    // the identical user turn then dedups against it, leaving [first_prompt,
+    // assistant]. The assistant turn carries the searchable content.
     expect(chunks).toHaveLength(2);
-    expect(chunks[0].chunk_type.startsWith('user')).toBe(true);
-    expect(chunks[1].text).toContain('zorbofrang coil');
+    expect(chunks[0].chunk_type).toBe('first_prompt');
+    expect(chunks.some((c) => c.text.includes('zorbofrang coil'))).toBe(true);
 
     const planItem = await store.getItem('plan-test-1', 'plan');
     expect(planItem).not.toBeNull();

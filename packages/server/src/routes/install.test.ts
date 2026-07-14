@@ -61,12 +61,13 @@ describe('GET /install.sh', () => {
     expect(res.text).not.toContain('$(hostname');
     // ...read the pasted token from the TERMINAL, not the piped-in script...
     expect(res.text).toContain('read TOKEN < /dev/tty');
-    // ...log in with it (login validates before saving)...
-    expect(res.text).toContain('chat-recall login https://chat-recall.example.com --token "$TOKEN"');
-    // ...and sync in the BACKGROUND (service, or nohup fallback) — the first
-    // sync of a big history must not hold the terminal hostage.
-    expect(res.text).toContain('chat-recall service install');
-    expect(res.text).toContain('nohup chat-recall sync');
+    // ...connect with `init` (validates the token, registers the recall MCP in
+    // Claude Code, and installs the background sync service in one step)...
+    expect(res.text).toContain('chat-recall init --server https://chat-recall.example.com --token "$TOKEN"');
+    // ...with --skip-sync so the first full sync runs in the BACKGROUND (the
+    // installed service, or the MCP's own sync) and never holds the terminal.
+    expect(res.text).toContain('--skip-sync');
+    expect(res.text).toContain('syncing in the background');
     expect(res.text).not.toMatch(/^chat-recall sync\b/m);
     // No stale "open the site and mint a token by hand" instructions.
     expect(res.text).not.toMatch(/mint a device token/i);
