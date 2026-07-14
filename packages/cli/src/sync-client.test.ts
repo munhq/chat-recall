@@ -128,9 +128,12 @@ describe('thin collector — buildConversationSync ships live-computed data, no 
     // (b) At least one KG triple extracted live from the redacted text.
     const triples = extractEntities(built!.kgText, { projectPath: built!.projectPath, sourceType: 'session', sessionId: SESSION_ID });
     expect(triples.length).toBeGreaterThan(0);
-    // TypeScript + Postgres are both known tools the extractor should find.
-    const tools = triples.filter((t) => t.predicate === 'is_a').map((t) => t.subject.toLowerCase());
-    expect(tools).toContain('typescript');
+    // Postgres is mentioned twice → a `<project> uses postgres` DEPENDENCY triple.
+    // (The extractor deliberately no longer emits `is_a` glossary triples, and a
+    // single passing mention like "TypeScript" is treated as a topic, not a dep —
+    // see entity-extractor.ts: needs mentions>=2 or a linguistic tech-context.)
+    const uses = triples.filter((t) => t.predicate === 'uses').map((t) => t.object.toLowerCase());
+    expect(uses).toContain('postgres');
 
     // (c) The envelope messages match the fixture: both user prompts and both
     //     assistant text replies survive, with the tool call attached.
