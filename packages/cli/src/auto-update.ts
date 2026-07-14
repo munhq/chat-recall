@@ -15,6 +15,7 @@
  * restart) are injected so they can be validated without a real global install.
  */
 import { execSync } from 'node:child_process';
+import { fetchWithTimeout } from './http.js';
 import { writeFileSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -99,7 +100,7 @@ export async function executeAutoUpdate(plan: UpdatePlan, deps: UpdateDeps): Pro
 /* ── real side effects (defaults) ─────────────────────────────────── */
 
 async function realDownload(url: string): Promise<Buffer> {
-  const res = await fetch(url);
+  const res = await fetchWithTimeout(url, {}, 120_000);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return Buffer.from(await res.arrayBuffer());
 }
@@ -127,7 +128,7 @@ export async function runAutoUpdate(
 ): Promise<UpdateResult> {
   let caps: Caps;
   try {
-    const res = await fetch(`${base.replace(/\/+$/, '')}/api/capabilities`, { headers: authHeaders });
+    const res = await fetchWithTimeout(`${base.replace(/\/+$/, '')}/api/capabilities`, { headers: authHeaders });
     if (!res.ok) return { updated: false, reason: `capabilities HTTP ${res.status}` };
     caps = (await res.json()) as Caps;
   } catch (e) { return { updated: false, reason: `capabilities unreachable: ${e instanceof Error ? e.message : e}` }; }

@@ -43,6 +43,7 @@ import { loadSettings, isPersonalPath } from '@chat-recall/engine/core/settings.
 // summary generator, knowledge graph, source parsers) is gone — those
 // responsibilities live on the server now.
 import { syncIncremental, isSyncSkip } from '../src/sync-client.js';
+import { fetchWithTimeout } from '../src/http.js';
 import { drainSyncIntents } from '../src/intent-drain.js';
 import { loadAllCredentials } from '../src/sync-client.js';
 import { runAutoUpdate } from '../src/auto-update.js';
@@ -167,8 +168,10 @@ function scheduleSync(): void {
  * the id CHANGES (a genuinely new resume), and at most once per re-arm window
  * for the same id (the sync path's own shadow update covers the rest).
  */
-let lastResumeId = '';
-let lastResumeAt = 0;
+// Per-id re-arm window. A single global lastResumeId thrashed when two sessions
+// were resumed close together (each id reset the other's guard → repeated
+// re-snapshots + log spam); keying by id dedups each session independently.
+const lastResumeAt = new Map<string, number>();
 const RESUME_REARM_MS = 60_000;
 async function onResumeSignal(path: string): Promise<void> {
   try {
@@ -177,9 +180,9 @@ async function onResumeSignal(path: string): Promise<void> {
     if (!m) return;
     const id = m[1];
     const now = Date.now();
-    if (id === lastResumeId && now - lastResumeAt < RESUME_REARM_MS) return; // same resume, still armed
-    lastResumeId = id;
-    lastResumeAt = now;
+    const prev = lastResumeAt.get(id);
+    if (prev !== undefined && now - prev < RESUME_REARM_MS) return; // same resume, still armed
+    lastResumeAt.set(id, now);
     const { snapshotShadow } = await import('@chat-recall/engine/transcript/index.js');
     const r = await snapshotShadow(id);
     console.log(`[${ts()}] [resume-guard] shadow ${r.status} for ${id.slice(0, 8)}…` + (r.recovered > 0 ? ` (recovered ${r.recovered} record(s))` : ''));
@@ -496,7 +499,7 @@ async function codeIndexTick(): Promise<void> {
       for (const cred of creds) {
         const base = cred.serverUrl.replace(/\/+$/, '');
         const headers: Record<string, string> = { 'content-type': 'application/json', ...(cred.token ? { authorization: `Bearer ${cred.token}` } : {}) };
-        try { await fetch(`${base}/api/code/index`, { method: 'POST', headers, body: JSON.stringify(result) }); } catch { /* retry next tick */ }
+        try { await fetchWithTimeout(`${base}/api/code/index`, { method: 'POST', headers, body: JSON.stringify(result) }, 60_000); } catch { /* retry next tick */ }
       }
       ok++;
     }
@@ -543,7 +546,7 @@ async function collectorMigrationOnce(): Promise<void> {
     const reindex = async (rootPath: string): Promise<boolean> => {
       try {
         const result = await collectCode({ workspace: rootPath, binPath: bin });
-        const res = await fetch(`${base}/api/code/index`, { method: 'POST', headers, body: JSON.stringify(result) });
+        const res = await fetchWithTimeout(`${base}/api/code/index`, { method: 'POST', headers, body: JSON.stringify(result) }, 60_000);
         return res.ok;
       } catch { return false; }
     };

@@ -11,6 +11,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync } from 'node:fs';
+import { fetchWithTimeout } from './http.js';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { loadAllCredentials } from './sync-client.js';
@@ -124,7 +125,7 @@ export async function drainSyncIntents(opts: { verbose?: boolean } = {}): Promis
 
     let pending: PendingIntent[];
     try {
-      const res = await fetch(`${base}/api/sync-intents/pending`, { headers: authHeaders });
+      const res = await fetchWithTimeout(`${base}/api/sync-intents/pending`, { headers: authHeaders });
       if (!res.ok) continue;
       pending = ((await res.json()) as { intents?: PendingIntent[] }).intents || [];
     } catch {
@@ -142,7 +143,7 @@ export async function drainSyncIntents(opts: { verbose?: boolean } = {}): Promis
         console.error(`[sync-intent] ${label}: ${status}`);
       }
       try {
-        await fetch(`${base}/api/sync-intents/${intent.id}/ack`, {
+        await fetchWithTimeout(`${base}/api/sync-intents/${intent.id}/ack`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', ...authHeaders },
           body: JSON.stringify({ status, result }),

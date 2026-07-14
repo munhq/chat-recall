@@ -59,6 +59,7 @@ import { getSyncedRows, markSynced, getLedgerData, persistLedgerData,
 import { extractorVersionForTool, extractorVersionForId, toolOfId, EXTRACTOR_VERSION } from '@chat-recall/engine/core/extractor-version.js';
 import { SYNC_FIELDS } from '@chat-recall/engine/core/sync-fields.js';
 import { acquireIndexLock } from '@chat-recall/engine/core/index-lock.js';
+import { fetchWithTimeout } from './http.js';
 import '@chat-recall/engine/core/backends/index.js'; // register the tool backends
 
 // Lives under the data dir so CHAT_RECALL_DATA_DIR isolates credentials the
@@ -123,8 +124,8 @@ async function fetchTenantSecurityConfig(cred: Credentials): Promise<TenantSecur
 
   try {
     const [rulesRes, settingsRes] = await Promise.all([
-      fetch(`${base}/api/secrets/rules`, { headers }),
-      fetch(`${base}/api/teams/security-config`, { headers }).catch(() => null),
+      fetchWithTimeout(`${base}/api/secrets/rules`, { headers }),
+      fetchWithTimeout(`${base}/api/teams/security-config`, { headers }).catch(() => null),
     ]);
 
     let tenantRules: Array<{ name: string; regex: string }> = [];
@@ -173,7 +174,7 @@ async function fetchTenantSyncConfig(cred: Credentials): Promise<TenantSyncConfi
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (cred.token) headers.authorization = `Bearer ${cred.token}`;
   try {
-    const res = await fetch(`${base}/api/sync-config`, { headers });
+    const res = await fetchWithTimeout(`${base}/api/sync-config`, { headers });
     if (!res.ok) return { excludeTools: [], excludeProjects: [] };
     const body = await res.json().catch(() => ({})) as Partial<TenantSyncConfig>;
     const config: TenantSyncConfig = {
@@ -296,7 +297,7 @@ async function postFieldBatch(base: string, token: string, rows: Array<{ session
   if (token) headers.authorization = `Bearer ${token}`;
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(`${base}/api/sync`, { method: 'POST', headers, body: JSON.stringify({ fields: rows }) });
+    const res = await fetchWithTimeout(`${base}/api/sync`, { method: 'POST', headers, body: JSON.stringify({ fields: rows }) }, 60_000);
     if (res.ok) return;
     const retryable = res.status === 429 || res.status >= 500;
     if (!retryable || attempt >= 5) throw new Error(`${base}: fields batch HTTP ${res.status} ${await res.text().catch(() => '')}`);
@@ -416,7 +417,7 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
   // success and produces gutted data (lived experience, June 2026).
 const MIN_SERVER_API = 2;
 try {
-  const caps = await fetch(`${cred.serverUrl.replace(/\/$/, '')}/api/capabilities`).then((r) => r.json()) as { apiVersion?: number };
+  const caps = await fetchWithTimeout(`${cred.serverUrl.replace(/\/$/, '')}/api/capabilities`).then((r) => r.json()) as { apiVersion?: number };
   if ((caps.apiVersion ?? 0) < MIN_SERVER_API) {
     throw new Error(`server too old: apiVersion ${caps.apiVersion ?? 'none'} < required ${MIN_SERVER_API} — update the server image before syncing`);
   }
@@ -819,19 +820,25 @@ const refs = listAvailableBackends().flatMap((b) => {
     trace?.(`build (${mode}) ${ref.prefixedId} · ${(sessionFileBytes(ref) / 1048576).toFixed(1)}MB`);
 
     // ── APPEND: tail-only ship (no raw_b64, no telemetry, no derived) ──
+    // `promotedForFindings` flips true when the tail carried a secret finding:
+    // the server replaces findings wholesale per session, so a tail-only ship
+    // would WIPE the head's findings. Instead of hiding the tail's secret until
+    // some far-future FULL re-sync, we fall through to the FULL path NOW (which
+    // re-scans head+tail and ships the complete set). Rare event — a secret
+    // pasted into a long-lived, still-appending session.
+    let promotedForFindings = false;
     if (mode === 'append' && ledger) {
       const ack = ledger.get(ref.prefixedId)!;
       try {
         const tail = await buildConversationTail(ref, ack.o ?? 0, { mapPath, tenantRules });
-        if (tail) {
+        if (tail && tail.findings.length > 0) {
+          promotedForFindings = true;   // fall through to FULL (do NOT continue)
+        } else if (tail) {
           redactions += tail.redactions;
           await appendAdd(tail.conv);
-          // NOTE: tail.findings are NOT shipped here — the server's findings
-          // path does wholesale replaceSecretFindings, so shipping only the
-          // tail's findings would WIPE the head's. Defer findings to the FULL
-          // re-sync (same as raw_b64 + derived). The head's findings stand.
           walked++;
           if (walked % 250 === 0) console.error(`[sync] ${walked}/${slice.length} sessions…`);
+          continue;
         } else {
           // Nothing new to ship (tail empty/unparseable). Re-stamp the cursor
           // at the current size so the gate doesn't re-attempt every tick
@@ -843,14 +850,15 @@ const refs = listAvailableBackends().flatMap((b) => {
             catch { /* ledger — best-effort */ }
           }
           skipped++;
+          continue;
         }
       } catch (err) {
         console.error(`[sync] append tail failed for ${ref.prefixedId} (will retry as full next tick): ${err instanceof Error ? err.message : err}`);
         // Don't mark synced → next tick re-classifies. If the tail failed, a
         // FULL sync is the safe fallback (the gate sees an unchanged cursor).
         skipped++;
+        continue;
       }
-      continue;
     }
 
     // ── FULL: the existing whole-conversation path ──
@@ -861,7 +869,12 @@ const refs = listAvailableBackends().flatMap((b) => {
     // Hand this session its slice of the batch-scan results (when scanning is
     // on). `?? []` means "batch ran, found nothing here" — distinct from the
     // `undefined` that triggers the per-session fallback inside the builder.
-    const precomputedExternal = externalFindings ? (externalFindings.get(ref.prefixedId) ?? []) : undefined;
+    // A session promoted from append (secret in the tail) wasn't in the batch
+    // scan set — pass undefined so buildConversationSync runs the per-session
+    // external detector over the whole file, yielding the COMPLETE finding set.
+    const precomputedExternal = promotedForFindings
+      ? undefined
+      : (externalFindings ? (externalFindings.get(ref.prefixedId) ?? []) : undefined);
     // Only trust the ledger's content hash for the skip-gate when the row is at
     // the current extractor version — a version bump must force a real re-derive
     // even if the transcript bytes are unchanged.
@@ -1029,7 +1042,12 @@ const refs = listAvailableBackends().flatMap((b) => {
           } catch { /* links are best-effort */ }
           redactions += count.redactions;
         }
-      } catch { /* one broken source must not kill the sync */ }
+      } catch (err) {
+        // One broken source must not kill the sync — but a SYSTEMATICALLY failing
+        // source (bad discover/parse) would otherwise silently ship zero items
+        // for its type forever, with no signal. Log it (once per source per run).
+        console.error(`[sync] source '${sourceType}' failed mid-walk (its items may be incomplete this run): ${err instanceof Error ? err.message : err}`);
+      }
     }
   }
 

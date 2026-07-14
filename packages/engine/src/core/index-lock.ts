@@ -1,23 +1,25 @@
 /**
- * Filesystem advisory lock for index-mutating operations.
+ * Cross-process single-writer lock for the collector.
  *
- * Two writers contending on a LanceDB index can produce wedged versions
- * (a partial compaction colliding with an in-flight insert). We don't
- * actually use OS file locking — we use an O_EXCL marker file with a
- * PID + start-time payload. That's portable, no native deps, and lets
- * us detect a stale lock from a crashed indexer.
+ * Its primary use today is the SYNC lock: every background sync (the watch
+ * daemon, per-session MCP ticks, a manual `chat-recall sync`) serializes on one
+ * lock so exactly one writer advances the sync ledger at a time. We don't use OS
+ * file locking — an O_EXCL marker file with a PID + start-time payload. That's
+ * portable, no native deps, and lets us detect a stale lock from a crashed
+ * holder.
  *
  * Pattern:
  *
- *   const lock = await acquireIndexLock('compact', { staleAfterMs: 10*60_000 });
- *   if (!lock) return;          // someone else holds it; bail
+ *   const lock = acquireIndexLock({ kind: 'sync-incremental', staleAfterMs: 10*60_000 });
+ *   if (!lock) return;          // someone else holds it; bail this tick
  *   try { ...write... } finally { lock.release(); }
  *
- * `staleAfterMs`: if a lock file exists but is older than this AND the
- * PID inside it is no longer alive, take it over. Default 10 minutes.
+ * `staleAfterMs`: if a lock file exists but is older than this AND the PID
+ * inside it is no longer alive, take it over. Default 10 minutes.
  *
- * Reader-side: tasks that ONLY read the index don't take this lock.
- * The lock guards mutations (compaction, schema change, full reindex).
+ * (The name "index" and the `.compact.lock` marker are historical — this used
+ * to guard a local LanceDB index's compaction. The thin collector keeps no
+ * local index; the same primitive now guards the sync writer.)
  */
 
 import { existsSync, mkdirSync, openSync, writeFileSync, readFileSync, rmSync, statSync, closeSync } from 'fs';

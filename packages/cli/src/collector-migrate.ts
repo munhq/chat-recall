@@ -10,6 +10,7 @@
  * SKIPPED, never deleted (its data ages out, it is not lost).
  */
 import { existsSync } from 'node:fs';
+import { fetchWithTimeout } from './http.js';
 
 export interface ProjectRef { projectId: string; rootPath: string; collectorVersion?: number | null; }
 
@@ -44,7 +45,7 @@ export async function runCollectorMigration(opts: {
 }): Promise<MigrateResult> {
   const log = opts.log ?? (() => {});
   const fetchProjects = opts.fetchProjects ?? (async () => {
-    const res = await fetch(`${opts.base.replace(/\/+$/, '')}/api/code/projects`, { headers: opts.authHeaders });
+    const res = await fetchWithTimeout(`${opts.base.replace(/\/+$/, '')}/api/code/projects`, { headers: opts.authHeaders });
     if (!res.ok) return [];
     return ((await res.json()) as { projects?: ProjectRef[] }).projects ?? [];
   });
