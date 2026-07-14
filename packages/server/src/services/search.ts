@@ -104,15 +104,15 @@ export class SearchService {
   async search(
     query: string,
     topK = 10,
-    projectIdFilter?: string
+    projectIdFilter?: string,
+    // Only an explicit search (Enter / Search button) asks for the semantic
+    // tier; the debounced type-ahead leaves this false → FTS only, no embed.
+    wantSemantic = false
   ): Promise<SearchResult[]> {
     const idx = await this.index();
-    // Hybrid: when real embeddings are live, run the vector tier in 'auto' mode
-    // (embeds only when FTS is thin, and the query-embed cache makes repeats
-    // free) and RRF-fuse it with FTS. When vectors are off, expandIfKeyword does
-    // the keyword-side "semantic-lite" instead. vectorActive() is 60s-cached, so
-    // reading it here and inside expandIfKeyword is one lookup.
-    const semantic = (await this.vectorActive()) ? 'auto' as const : false;
+    // Run the vector tier only when the caller asked AND embeddings are live;
+    // then it embeds once (cached) and RRF-fuses with FTS. Otherwise pure FTS.
+    const semantic = wantSemantic && (await this.vectorActive());
     const results = await idx.search(await this.expandIfKeyword(query), {
       topK,
       sourceTypes: ['session'],
@@ -151,10 +151,11 @@ export class SearchService {
     query: string,
     topK = 10,
     sourceTypes?: SourceType[],
-    projectIdFilter?: string
+    projectIdFilter?: string,
+    wantSemantic = false
   ): Promise<MemorySearchResult[]> {
     const idx = await this.index();
-    const semantic = (await this.vectorActive()) ? 'auto' as const : false;
+    const semantic = wantSemantic && (await this.vectorActive());
     return await idx.search(await this.expandIfKeyword(query), { topK, sourceTypes, projectIdFilter, semantic });
   }
 

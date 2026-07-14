@@ -316,7 +316,10 @@ export interface SearchResponse {
 export async function searchSessions(
   query: string,
   topK = 10,
-  projectFilter?: string
+  projectFilter?: string,
+  // Only an explicit search (Enter / Search button) requests the semantic tier;
+  // the debounced type-ahead leaves this false and stays FTS-only (no embed).
+  semantic = false
 ): Promise<SearchResponse> {
   const res = await fetchWithTimeout(`${API_BASE}/search`, {
     method: 'POST',
@@ -325,6 +328,7 @@ export async function searchSessions(
       query,
       topK,
       projectFilter,
+      semantic,
       includeMemory: true,
       // Everything except `session` (already in `results`) and `history`.
       // A `history` item is a per-project aggregate of every shell line —
