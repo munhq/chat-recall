@@ -21,15 +21,17 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@lancedb/lancedb": "^0.13.0",
     "@noble/ciphers": "^2.2.0",
     "@noble/hashes": "^2.2.0",
-    "better-sqlite3": "12.9.0",
     "diff": "^9.0.0",
     "dotenv": "^17.2.3",
     "ioredis": "^5.11.1",
     "pg": "^8.13.0",
     "pino": "^9.14.0",
     "zod": "^3.22.0"
+  },
+  "optionalDependencies": {
+    "@lancedb/lancedb": "^0.13.0",
+    "better-sqlite3": "12.9.0"
   }
 }

@@ -6,7 +6,10 @@
  * token endpoint until they do. Returns the realm access token — server.mjs
  * (`authUser`) verifies it via JWKS, so it's accepted at /api/me, /api/teams*.
  *
- * Defaults target the munhq cloud realm; both are overridable for self-host.
+ * There is NO baked-in issuer: the CLI learns it from the server it's logging
+ * into (the server advertises `oidcIssuer` at /api/capabilities) or from an
+ * explicit `--issuer` / `CHAT_RECALL_OIDC_ISSUER`. Self-host with
+ * AUTH_PROVIDER=none skips this flow entirely (token / no-auth login).
  *
  * The chat-recall-web client enforces PKCE (S256), so the device flow carries
  * a code_challenge on init and the matching code_verifier on the token poll.
@@ -15,7 +18,9 @@ import { createHash, randomBytes } from 'node:crypto';
 
 const b64url = (b: Buffer) => b.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
-export const DEFAULT_ISSUER = 'https://auth.munhq.com/realms/munhq';
+/** Optional env fallback for the OIDC issuer. No hardcoded default — the value
+ *  comes from the target server's /api/capabilities, `--issuer`, or this var. */
+export const DEFAULT_ISSUER = process.env.CHAT_RECALL_OIDC_ISSUER || '';
 export const DEFAULT_CLIENT_ID = 'chat-recall-web';
 
 export interface DeviceTokens {
@@ -44,6 +49,14 @@ export async function deviceLogin(
   onPrompt: (p: { url: string; userCode: string; verificationUri: string }) => void,
 ): Promise<DeviceTokens> {
   const issuer = (opts.issuer || DEFAULT_ISSUER).replace(/\/+$/, '');
+  if (!issuer) {
+    throw new Error(
+      'No OIDC issuer configured for SSO login. Pass --issuer <url>, set '
+      + 'CHAT_RECALL_OIDC_ISSUER, or log in with a token instead: '
+      + '`chat-recall login <server-url> --token <token>` '
+      + '(self-host with AUTH_PROVIDER=none needs no token at all).',
+    );
+  }
   const clientId = opts.clientId || DEFAULT_CLIENT_ID;
   const scope = opts.scope || 'openid email profile';
 
