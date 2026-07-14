@@ -140,7 +140,9 @@ app.use('/metrics', metricsRouter);
 app.use('/', installRouter);
 
 // Open metadata: lets the client decide which views to render before auth.
-app.get('/api/capabilities', (_req, res) => res.json({ ...capabilities(), cli: cliRelease() }));
+// `oidcIssuer` lets the CLI learn where to run the SSO device flow without any
+// baked-in issuer (null on a no-auth self-host server → CLI uses token login).
+app.get('/api/capabilities', (_req, res) => res.json({ ...capabilities(), cli: cliRelease(), oidcIssuer: process.env.OIDC_ISSUER || null }));
 
 // Self-authenticating surfaces, mounted BEFORE tenantAuth:
 //   /api/sync       — agent (device) token; resolves + scopes its own tenant.

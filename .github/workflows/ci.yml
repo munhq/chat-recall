@@ -1,0 +1,45 @@
+# PR gate that ANY contributor / fork can run — no self-hosted runners, no org
+# secrets, no private registries. Typechecks, builds the bundles, and runs the
+# full unit suite. This is the check a pull request must pass; the heavier
+# compose-integration / cloud-image / fresh-install workflows stay push-only
+# because they need infra a fork can't reach.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref so a busy PR doesn't queue up.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # `npm ci` needs an in-sync lockfile. Native optional deps
+      # (better-sqlite3) build here because ubuntu-latest has a toolchain; if
+      # one can't build it's skipped (optionalDependencies), never fatal.
+      - name: Install
+        run: npm ci
+
+      # Typecheck every workspace (tsc -b) and produce the CLI bundles
+      # (esbuild) — this is the same `npm run build` the release image runs.
+      - name: Build
+        run: npm run build
+
+      - name: Test
+        run: npx vitest run

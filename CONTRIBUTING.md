@@ -1,59 +1,96 @@
 # Contributing to chat-recall
 
+## Repo layout
+
+A TypeScript monorepo (npm workspaces):
+
+- `packages/engine` — shared library: parsers, storage drivers, knowledge graph,
+  classifier, secret redactor, tool backends. **MIT.**
+- `packages/cli` — the collector CLI + MCP server (`chat-recall`,
+  `chat-recall-mcp`, `chat-recall-watch`). **MIT.**
+- `packages/server` — Express API + React dashboard + multi-tenant SaaS server.
+  **Business Source License 1.1** (source-available, not OSI open source).
+
 ## Before opening a PR
 
-1. **There's probably a session for this already.** Run `chat-recall search "<topic>"` against your own index — if you've worked on something similar, link it in the PR. Eat the dogfood.
-2. Open an issue first if the change is more than a one-file fix. Saves both of us if the approach is wrong.
-3. Run `npm run build` and `cd web/server && npm run build && cd ../client && npm run build`. Both must pass tsc cleanly.
-4. Run `npm run test:e2e` for any UI change. There are 21 Playwright tests; don't add a 22nd unless it's actually testing new behavior.
+1. **There's probably a session for this already.** Run
+   `chat-recall search "<topic>"` against your own history — if you've worked on
+   something similar, link it in the PR.
+2. Open an issue first if the change is more than a one-file fix.
+3. Green checks: `npm run build` (typechecks every workspace via `tsc -b` and
+   bundles the CLI) and `npx vitest run` (the unit suite) must both pass. The
+   `CI` workflow runs exactly these on every PR.
+4. Run `npm run test:e2e` for any dashboard/UI change.
 
 ## Local dev
 
 ```bash
 git clone https://github.com/darkkraft/chat-recall.git
 cd chat-recall
-npm install
-npm run build
-npm run web:install
-CHAT_RECALL_STORAGE=sqlite npm run web:dev   # API :5000, UI :5174
+npm install          # optional native deps (better-sqlite3) build here; skipped
+                     # gracefully if you have no C++ toolchain
+npm run build        # tsc -b + CLI bundles
+npx vitest run       # unit suite
 ```
 
-`CHAT_RECALL_STORAGE` is required — the server refuses to guess a storage
-backend (fail-closed; a misconfigured deployment must not silently land on a
-local file). Use `sqlite` for quick local dev, or `postgres` + `DATABASE_URL`
-to develop against the docker-compose stack.
+To work on the **dashboard/server**, run it against a real Postgres (there is no
+user-facing SQLite mode — the `sqlite` storage driver exists only for unit
+tests):
+
+```bash
+docker compose up -d db                 # Postgres (pgvector) from the compose
+npm run web:install                     # install dashboard deps
+CHAT_RECALL_STORAGE=postgres \
+  DATABASE_URL=postgres://chat_recall:chat_recall@localhost:5432/chat_recall \
+  npm run web:dev                       # prints the API + UI URLs on startup
+```
+
+`CHAT_RECALL_STORAGE` is required — the server fails closed rather than guessing
+a backend.
 
 ## Code style
 
 - TypeScript, ES modules. Imports use `.js` extensions even for `.ts` files (NodeNext).
-- No new dependencies without a sentence in the PR explaining why a stdlib + 20 lines wouldn't do.
-- Don't write comments that describe **what** the code does — write the code clearly. Reserve comments for **why** when the answer isn't obvious.
+- No new dependencies without a sentence in the PR explaining why stdlib + 20 lines wouldn't do.
+- Comments explain **why**, not **what**. Write the code clearly instead of narrating it.
 - Errors propagate. Don't catch-and-log-and-continue unless you've thought about why a partial result is acceptable.
 
 ## Adding a new memory source
 
-The plugin interface is in `src/types/memory.ts`. A new source needs three methods: `discover()`, `parse()`, `extractLinks()`. See `src/parsers/diary-source.ts` for a small example. After implementing:
+The plugin interface is in `packages/engine/src/types/memory.ts`. A new source
+implements `discover()`, `parse()`, `extractLinks()`. See
+`packages/engine/src/parsers/diary-source.ts` for a small example. After
+implementing:
 
-1. Add the source-type literal to `SourceType` in `src/types/memory.ts` and `web/client/src/services/api.ts`.
-2. Register it in `src/cli.ts`, `src/mcp.ts`, and `web/server/src/imports.ts`.
-3. Add a badge entry in `web/client/src/components/primitives.tsx` (`SourceBadge`).
-4. Add a tab to `web/client/src/components/MemoryExplorer.tsx`.
-5. Add `'<sourceType>'` to `VALID_SOURCE_TYPES` in `web/server/src/routes/memory.ts`.
-6. Auto-indexer watch entry if applicable.
+1. Add the literal to `SourceType` in `packages/engine/src/types/memory.ts`.
+2. Register it where the source registry is built (`packages/engine/src/parsers/all-sources.ts`).
+3. Surface it in the dashboard under `packages/server/client/src/` if it should be browsable.
+4. Add an auto-indexer/collector watch entry if it lives in a new directory.
 
-Diary integration is the canonical end-to-end example — diff `git log -p -- src/parsers/diary-source.ts web/client/src/components/MemoryExplorer.tsx web/server/src/routes/memory.ts`.
+## Adding a new AI tool backend
+
+One new file in `packages/engine/src/core/backends/`, one line in
+`backends/index.ts`, zero edits elsewhere — the generic engine consumes the
+`ToolBackend` interface. Walkthrough: [`docs/ADDING_A_TOOL.md`](docs/ADDING_A_TOOL.md).
 
 ## Adding a new MCP tool
 
-Tools live in `src/mcp.ts`. Each one has a Zod input schema, a description, and a handler. Keep handlers under ~60 lines — anything bigger probably belongs in `src/core/`. Test by running `node dist/mcp.js` and pointing a Claude Code session at it.
+Tools live in `packages/cli/src/mcp.ts` — each has a Zod input schema, a
+description, and a handler. Keep handlers small; heavy logic belongs in
+`packages/engine/src/core/`. Test with `node packages/cli/dist/mcp.js` pointed
+at a Claude Code session.
 
-## What I (probably) won't merge
+## What probably won't be merged
 
 - Refactors that don't fix a real bug or feature.
-- Adding analytics, telemetry, or "phone home" features. Chat-recall is local-first by intent.
-- New summary/embedding providers without a `Test connection` probe wired up.
-- PRs that disable the e2e tests "because they're flaky on my machine".
+- Analytics/telemetry/"phone home" defaults. Redaction and explicit opt-in are core.
+- New summary/embedding providers without a `Test connection` probe.
+- PRs that disable tests "because they're flaky on my machine".
 
 ## Releases
 
-Maintainer publishes from `main` after CI is green and CHANGELOG.md has an entry for the new version. `npm publish --access public` from a clean checkout. The CI workflow handles the npm publish on tag push.
+The maintainer publishes from `main` after CI is green and `CHANGELOG.md` has an
+entry. The CLI is distributed **as a tarball baked into the server image**
+(`npm pack` of `packages/cli`, served at `/install/chat-recall.tgz`) — collectors
+auto-update from the server they're logged in to. `packages/engine` and
+`packages/server` are `private` and are not published to the npm registry.

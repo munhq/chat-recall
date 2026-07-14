@@ -2,12 +2,12 @@
 
 > Search, browse, and resume past AI coding sessions across Claude Code, Gemini CLI, and OpenCode — and let the agent search its own history via MCP.
 
-`chat-recall` is a **CLI** that indexes the transcripts your AI tools already write to disk, redacts secrets, and syncs them to a **chat-recall server**. The server runs **either locally with Postgres (Docker Compose) or as the hosted SaaS** — it gives you a web UI to browse everything and exposes it to Claude Code through **42 MCP tools** so the agent can recall its own past work without you copy-pasting context. There is no local store and no offline mode: the CLI always talks to a server.
+`chat-recall` is a **CLI** that indexes the transcripts your AI tools already write to disk, redacts secrets, and syncs them to a **chat-recall server**. The server runs **either locally with Postgres (Docker Compose) or as the hosted SaaS** — it gives you a web UI to browse everything and exposes it to Claude Code through **34 MCP tools** so the agent can recall its own past work without you copy-pasting context. There is no local store and no offline mode: the CLI always talks to a server.
 
 ## Four things it actually does
 
 1. **Cross-tool unified memory.** One index, one search, one UI for Claude Code (`~/.claude/projects/`), Gemini CLI (`~/.gemini/tmp/`), and OpenCode (`~/.local/share/opencode/`). Sessions, plans, tasks, CLAUDE.md, paste cache, command history, and agent diaries all share a single pluggable `MemorySource` interface.
-2. **The agent recalls itself.** 42 MCP tools so Claude Code can `recall_smart_resume`, `recall_similar_sessions`, `recall_files_touched`, `recall_subagent_search`, `recall_redundant_files`, etc., instead of you describing what happened last time. It can also write decisions back via `recall_decision_record` and stash small state via `recall_set` / `recall_get`.
+2. **The agent recalls itself.** 34 MCP tools so Claude Code can `recall_smart_resume`, `recall_similar_sessions`, `recall_files_touched`, `recall_subagent_search`, `recall_redundant_files`, etc., instead of you describing what happened last time. It can also write decisions back via `recall_decision_record` and stash small state via `recall_set` / `recall_get`.
 3. **Warns before redoing work.** A `UserPromptSubmit` hook fires on every prompt you type, runs a quick search for similar past sessions, and injects a brief "you've worked on this before in session X" notice into the agent's context. Pair with the bundled **codeindex** companion (see below) to also warn when the new code you're about to write looks like code that already exists.
 4. **Temporal knowledge graph.** Decisions and tool/library mentions become entity-relationship triples with `valid_from`/`valid_to` windows, so you (and the agent) can ask "what did we decide about X in March, and is it still true?".
 
@@ -55,11 +55,12 @@ Postgres-only; data bind-mounts to `${PG_DATA_DIR}`). See the quick start at
 the top of `docker-compose.yml` (set `ADMIN_KEY`, mint a device token, then
 `chat-recall login <url> --token <ct_…>` from each machine).
 
-Bring-your-own-Postgres is supported by the engine (it's how the hosted SaaS
-runs): point the container at it with `CHAT_RECALL_STORAGE=postgres` and
-`DATABASE_URL=postgres://…` — needs Postgres 16+; install the `pgvector`
-extension only if you want server-side semantic vectors (everything degrades
-to FTS without it). The compose deliberately doesn't ship a Postgres service.
+The default compose already ships a `pgvector/pgvector` Postgres service, so a
+plain `docker compose up` is self-contained. Bring-your-own-Postgres is also
+supported (it's how the hosted SaaS runs): point the server at an external
+database with `CHAT_RECALL_STORAGE=postgres` and `DATABASE_URL=postgres://…`
+(Postgres 16+; the `pgvector` extension is needed only for server-side semantic
+vectors — everything degrades to FTS without it).
 
 ### Keep the index live (+ optional server sync)
 
@@ -138,7 +139,7 @@ The codeindex release artifacts are currently in a private repo, so `--with-code
 | **Paste** | `~/.claude/paste-cache/*.txt` | Large pasted blobs |
 | **Diary** | `~/.chat-recall/index/diary/<agent>/*.json` | What the agent told its future self via `recall_diary_write` |
 
-## MCP tools (42)
+## MCP tools (34, plus 4 code-intelligence tools when the codeindex companion is installed)
 
 **Search & retrieve** — `recall_search`, `recall_memory_search`, `recall_recent`, `recall_show`, `recall_context`, `recall_summary`, `recall_smart_resume`, `recall_project_context`, `recall_weekly_digest`, `recall_analytics_summary`, `recall_wake_up`.
 
