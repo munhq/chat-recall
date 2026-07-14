@@ -3,6 +3,7 @@
   "version": "0.4.0",
   "description": "chat-recall web API + dashboard + multi-tenant SaaS server (BSL)",
   "type": "module",
+  "private": true,
   "license": "BSL-1.1",
   "main": "dist/server.js",
   "scripts": {
