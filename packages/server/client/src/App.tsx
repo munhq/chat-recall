@@ -420,7 +420,11 @@ function AppInner() {
   }, [recentLoadingMore, recentHasMore, recentSessions.length, projectFilter, toolFilter]);
 
   const handleSearch = useCallback(
-    async (q: string) => {
+    // `explicit` = the user committed to the search (Enter / Search button) vs.
+    // the debounced type-ahead. Type-ahead stays FTS-only (free, no embed);
+    // an explicit search also runs the semantic tier (one remote embed, cached)
+    // and RRF-fuses it in. This is what keeps keystrokes from each embedding.
+    async (q: string, explicit = false) => {
       if (!q.trim()) {
         setSearchResults([]);
         setMemoryResults([]);
@@ -432,7 +436,7 @@ function AppInner() {
       // search view renders — so it looked like the search box did nothing.
       setView('search');
       try {
-        const { sessions: hits, memory } = await searchSessions(q, 50, projectFilter || undefined);
+        const { sessions: hits, memory } = await searchSessions(q, 50, projectFilter || undefined, explicit);
         setSearchResults(hits);
         setMemoryResults(memory);
       } catch (err) {
@@ -727,7 +731,7 @@ function AppInner() {
         query={query}
         setQuery={setQuery}
         searchRef={searchRef}
-        onSearch={handleSearch}
+        onSearch={(q) => handleSearch(q, true)}
         onMobileMenu={() => setMobileSidebarOpen((v) => !v)}
         mobileSidebarOpen={mobileSidebarOpen}
       />
