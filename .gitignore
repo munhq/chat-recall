@@ -55,6 +55,18 @@ coverage/
 # scratch screenshots from manual UI checks — never track root-level PNGs
 /*.png
 .tmp-*.png
+/*.jpg
+/*.jpeg
+/*.gif
+
+# Loose exported session transcripts / scratch dumps — never publish
+session_*.txt
+
+# Operator-only runbook (prod infra access) — never publish
+CLAUDE.local.md
+
+# Operator-only deploy script (private cluster blueprint) — never publish
+scripts/deploy-local.sh
 
 # design exports (kept locally, not part of the repo)
 Chat Recall Design System.zip

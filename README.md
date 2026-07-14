@@ -231,4 +231,13 @@ Two extension points, both registry-driven:
 
 ## License
 
-MIT.
+This repository is **dual-licensed by component**:
+
+- **`packages/cli` and `packages/engine` — [MIT](packages/cli/LICENSE).** The
+  collector CLI and the shared engine are permissively licensed.
+- **`packages/server` — [Business Source License 1.1](packages/server/LICENSE).**
+  The server is source-available (not OSI open source); see its `LICENSE` for the
+  additional-use grant and the change date after which it converts to an open
+  license.
+
+See each package's `LICENSE` file for the authoritative terms.
