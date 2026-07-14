@@ -857,6 +857,7 @@ function AppInner() {
                   onClose={handleCloseConversation}
                   onLoadFull={handleLoadFull}
                   searchResult={selectedResult}
+                  query={query}
                   sessionInfo={selectedSessionInfo}
                   initialTab={viewerInitialTab}
                   onManageSecurity={() => { setSecurityFocusSession(selectedSessionId); setView('security'); }}

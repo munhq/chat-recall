@@ -54,6 +54,9 @@ interface ConversationViewerProps {
   onClose: () => void;
   onLoadFull: () => void;
   searchResult: SearchResult | null;
+  /** The search query that surfaced this session, so the transcript can
+   *  highlight the literal term occurrences (keyword matches). */
+  query?: string;
   sessionInfo: SessionInfo | null;
   /**
    * Optional hint from the caller about which tab to land on.
@@ -84,6 +87,49 @@ function findMatchedLine(messages: Message[], chunks: Array<{ text: string }>): 
   return null;
 }
 
+// Highlight literal query-term occurrences in a transcript message. Returns a
+// react-markdown rehype plugin (or null when there's nothing to mark) that walks
+// the rendered HTML tree and wraps matches in <mark class="cr-hl">. It runs on
+// the HAST (post-markdown) tree — never the raw source — so it can't corrupt
+// markdown, and it skips `code`/`pre` so code stays verbatim. Literal terms
+// only: a pure-semantic hit with no literal occurrence simply gets no marks
+// (the jump-to-matched-line already lands the reader on the relevant message).
+function makeTermHighlighter(query: string | undefined) {
+  const terms = (query || '').split(/\s+/).filter((t) => t.length >= 2);
+  if (!terms.length) return null;
+  const escaped = terms.sort((a, b) => b.length - a.length).map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const re = new RegExp(`(${escaped.join('|')})`, 'gi');
+  // react-markdown rehypePlugins entry: a plugin () => transformer(tree).
+  return () => (tree: any) => {
+    const visit = (node: any) => {
+      if (!node || !Array.isArray(node.children)) return;
+      const out: any[] = [];
+      for (const child of node.children) {
+        if (child.type === 'element') {
+          if (child.tagName !== 'code' && child.tagName !== 'pre') visit(child);
+          out.push(child);
+          continue;
+        }
+        if (child.type !== 'text') { out.push(child); continue; }
+        const v: string = child.value;
+        re.lastIndex = 0;
+        if (!re.test(v)) { out.push(child); continue; }
+        re.lastIndex = 0;
+        let last = 0; let m: RegExpExecArray | null;
+        while ((m = re.exec(v)) !== null) {
+          if (m.index > last) out.push({ type: 'text', value: v.slice(last, m.index) });
+          out.push({ type: 'element', tagName: 'mark', properties: { className: ['cr-hl'] }, children: [{ type: 'text', value: m[0] }] });
+          last = m.index + m[0].length;
+          if (m.index === re.lastIndex) re.lastIndex++; // guard against zero-width
+        }
+        if (last < v.length) out.push({ type: 'text', value: v.slice(last) });
+      }
+      node.children = out;
+    };
+    visit(tree);
+  };
+}
+
 export default function ConversationViewer({
   sessionId,
   selectionNonce,
@@ -96,6 +142,7 @@ export default function ConversationViewer({
   onClose,
   onLoadFull,
   searchResult,
+  query,
   sessionInfo,
   initialTab,
   onManageSecurity,
@@ -909,7 +956,7 @@ export default function ConversationViewer({
             )}
             {!loading &&
               filteredMessages.map((msg, idx) => (
-                <MessageBlock key={`${msg.line}-${idx}`} message={msg} highlight={scrollToLine != null && msg.line === scrollToLine} />
+                <MessageBlock key={`${msg.line}-${idx}`} message={msg} highlight={scrollToLine != null && msg.line === scrollToLine} query={query} />
               ))}
 
             {!loading && subagents.length > 0 && (
@@ -966,7 +1013,7 @@ export default function ConversationViewer({
                     </summary>
                     <div style={{ marginTop: 12 }}>
                       {sa.messages.map((msg, idx) => (
-                        <MessageBlock key={`${sa.id}-${msg.line}-${idx}`} message={msg} />
+                        <MessageBlock key={`${sa.id}-${msg.line}-${idx}`} message={msg} query={query} />
                       ))}
                     </div>
                   </details>
@@ -1333,13 +1380,23 @@ function getLanguage(path: string): string {
   return map[ext] || 'text';
 }
 
-function MessageBlock({ message, highlight }: { message: Message; highlight?: boolean }) {
+function MessageBlock({ message, highlight, query }: { message: Message; highlight?: boolean; query?: string }) {
+  // Rehype plugin that <mark>s literal query-term occurrences in this message's
+  // rendered markdown. Memoized on the query so it isn't rebuilt per render.
+  const hlPlugin = useMemo(() => makeTermHighlighter(query), [query]);
   const renderContent = () => {
     if (!message.content) return null;
     return (
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        rehypePlugins={hlPlugin ? [hlPlugin] : []}
         components={{
+          // Same look as the results-list <mark> (ConversationList) for consistency.
+          mark: ({ children }) => (
+            <mark style={{ background: 'var(--cr-warn-surf, #553)', color: 'var(--cr-warn-500, #fc6)', padding: '0 2px', borderRadius: 2 }}>
+              {children}
+            </mark>
+          ),
           code({ className, children, ...props }) {
             const match = /language-(\w+)/.exec(className || '');
             if (match && String(children).includes('\n')) {
