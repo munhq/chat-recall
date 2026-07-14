@@ -1430,11 +1430,6 @@ export class MemoryStore {
       sourceTypes?: SourceType[];
       /** Logical project identifier (project_id) — exact match. */
       projectIdFilter?: string;
-      /** Reports how many chunks matched the STRICT all-terms (AND) query before
-       *  any OR-widening — i.e. how strong the exact keyword match was. The pg
-       *  store's hybrid `search()` uses this to decide whether to also run the
-       *  semantic tier (weak keyword match ⇒ conceptual query ⇒ embed helps). */
-      onStrength?: (strictHits: number) => void;
     } = {}
   ): MemorySearchResult[] {
     const { topK = 20, sourceTypes, projectIdFilter } = options;

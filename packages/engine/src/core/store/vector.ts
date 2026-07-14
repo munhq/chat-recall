@@ -77,8 +77,7 @@ async function getRedis(): Promise<any | null> {
     client.on('error', () => {});
     await client.connect();
     redisClient = client;
-    log.info({ url: url.replace(/\/\/[^@]*@/, '//') }, 'L2 query-embed cache connected [DIAG]');
-  } catch (e) { try { client?.disconnect(); } catch { /* ignore */ } redisClient = null; log.warn({ err: e instanceof Error ? e.message : String(e) }, 'L2 query-embed cache connect failed [DIAG]'); }
+  } catch { try { client?.disconnect(); } catch { /* ignore */ } redisClient = null; }
   return redisClient;
 }
 const REDIS_EMBED_TTL = Math.max(60, Number(process.env.QUERY_EMBED_TTL) || 86400);
@@ -521,36 +520,17 @@ export class PgVectorStore implements VectorStore {
     // FTS first — always — exactly like MemoryIndex.search: keyword hits are
     // never garbage, and they carry the result set when pgvector is absent.
     // Vector hits union in afterwards as additional context.
-    // Capture keyword-match STRENGTH (strict all-terms hit count) as FTS runs —
-    // this is the hybrid trigger, not the raw result count. FTS OR-widens, so a
-    // conceptual query still returns tons of loose hits; the count is useless but
-    // the strict-AND count is ~0. -1 = FTS didn't report (error/empty) ⇒ treat as
-    // weak so semantic fires (FTS gave nothing to lose).
-    let strictHits = -1;
     let ftsResults: MemorySearchResult[] = [];
-    if (this.fts) {
-      try { ftsResults = await this.fts.searchFTS(query, { ...(options as any), onStrength: (n: number) => { strictHits = n; } }); }
-      catch { ftsResults = []; }
-    }
-    // FTS is the default tier. Vector/semantic search is opt-in: embedding every
-    // query on a remote GPU for keyword-shaped searches is the cost/latency/scale
-    // sink (see docs/search-scaling-decision.md). Modes (options.semantic):
-    //   true   — always run the vector path and RRF-fuse (explicit "smart search")
-    //   'auto' — HYBRID: embed + vector-search only when keyword search lacks a
-    //            STRONG exact-terms match (conceptual/paraphrased query), so a
-    //            solid keyword hit never pays the embed.
-    //   falsy  — FTS only (unless SEARCH_SEMANTIC=on forces the vector path).
-    const semanticOpt = (options as any).semantic;
-    const semantic = semanticOpt === true || semanticOpt === 'auto' || process.env.SEARCH_SEMANTIC === 'on';
-    log.info({ semanticOpt, hasEmbedder: !!this.embedder, vectorOk: this.vectorOk, strictHits, ftsCount: ftsResults.length }, 'search semantic gate [DIAG]');
+    if (this.fts) { try { ftsResults = await this.fts.searchFTS(query, options as any); } catch { ftsResults = []; } }
+    // FTS is the default tier. The vector/semantic tier runs ONLY when the caller
+    // asks for it — options.semantic===true, which the server sets for an EXPLICIT
+    // search (Enter / Search button); the debounced type-ahead leaves it false and
+    // stays FTS-only (no embed). SEARCH_SEMANTIC=on forces it on globally. When on,
+    // it embeds the query (cache-checked L1→L2), vector-searches its partition, and
+    // RRF-fuses with FTS below. The intent gate lives in the caller, not a fragile
+    // FTS-strength heuristic (which never discriminated — every query matched many).
+    const semantic = (options as any).semantic === true || process.env.SEARCH_SEMANTIC === 'on';
     if (!semantic || !this.embedder || !this.vectorOk) return ftsResults;
-    // Strength-based hybrid gate: if keyword search found a solid all-terms match
-    // (>= threshold distinct strict hits), the query is keyword-shaped — skip the
-    // embed. Only a weak/absent exact match (conceptual query) is worth the vector
-    // tier. SEARCH_SEMANTIC=on forces full semantic (escalates mode to true).
-    const autoMode = semanticOpt === 'auto' && process.env.SEARCH_SEMANTIC !== 'on';
-    const autoMinStrict = Math.max(1, Number(process.env.SEARCH_AUTO_MIN_STRICT) || 3);
-    if (autoMode && strictHits >= autoMinStrict) return ftsResults;
     // Query embedding — cache-checked first (L1 in-process → shared L2 Redis when
     // configured), keyed by model dimension + text, so repeats across any pod
     // skip the gateway round-trip entirely.
