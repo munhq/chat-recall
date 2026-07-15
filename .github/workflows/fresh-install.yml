@@ -6,12 +6,6 @@
 name: Fresh-machine install gate
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'packages/**'
-      - '.github/workflows/fresh-install.yml'
-      - '.github/scripts/mcp-boot-check.cjs'
   workflow_dispatch:
 
 jobs:
