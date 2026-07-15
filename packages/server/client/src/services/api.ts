@@ -1251,7 +1251,7 @@ export async function promoteToolkitItem(
 
 export type SyncTool = 'claude' | 'agy' | 'gemini' | 'opencode' | 'codex';
 /** Toolkit primitives with a clean cross-tool sync matrix. */
-export type SyncType = 'skill' | 'mcp' | 'command' | 'agent';
+export type SyncType = 'skill' | 'mcp' | 'command' | 'agent' | 'instructions';
 
 export interface SyncPlanEntry {
   type: SyncType;
