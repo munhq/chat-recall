@@ -410,8 +410,8 @@ async function drainIntentsTick(): Promise<void> {
     intentDrainInFlight = false;
   }
 }
-setInterval(() => { void drainIntentsTick(); }, 45_000).unref();
-setTimeout(() => { void drainIntentsTick(); }, 10_000);
+setInterval(() => { void drainIntentsTick(); }, 15_000).unref();
+setTimeout(() => { void drainIntentsTick(); }, 5_000);
 
 // Automatic code intelligence (codeindex merge). The daemon DISCOVERS the
 // workspaces you actually work in — distinct project paths across ALL tool

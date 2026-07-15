@@ -112,6 +112,20 @@ async function runIntent(intent: PendingIntent, ctx: { base: string }): Promise<
   }
 }
 
+import { fileURLToPath } from 'node:url';
+import { dirname } from 'node:path';
+
+let ownVersion = '0.0.0';
+try {
+  const dir = dirname(fileURLToPath(import.meta.url));
+  ownVersion = (JSON.parse(readFileSync(join(dir, '../package.json'), 'utf-8')) as { version?: string }).version || ownVersion;
+} catch {
+  try {
+    // @ts-ignore
+    if (typeof __CLI_VERSION__ === 'string') ownVersion = __CLI_VERSION__;
+  } catch {}
+}
+
 /**
  * Poll every logged-in server once, execute pending intents locally, ack each.
  * Best-effort: network failures are swallowed (the intent stays pending and is
@@ -127,7 +141,16 @@ export async function drainSyncIntents(opts: { verbose?: boolean } = {}): Promis
     try {
       const res = await fetchWithTimeout(`${base}/api/sync-intents/pending`, { headers: authHeaders });
       if (!res.ok) continue;
-      pending = ((await res.json()) as { intents?: PendingIntent[] }).intents || [];
+      const data = (await res.json()) as { intents?: PendingIntent[]; cli?: { version: string; sha256: string } | null };
+      pending = data.intents || [];
+
+      if (data.cli && data.cli.version) {
+        const { planAutoUpdate, runAutoUpdate } = await import('./auto-update.js');
+        const plan = planAutoUpdate(base, { cli: data.cli }, ownVersion, process.env.CHAT_RECALL_AUTO_UPDATE);
+        if (plan.update) {
+          void runAutoUpdate(base, authHeaders, ownVersion).catch(() => {});
+        }
+      }
     } catch {
       continue; // server unreachable — try again next tick
     }
