@@ -69,7 +69,8 @@ router.get('/pending', async (req, res) => {
   const limit = req.query.limit ? Math.min(parseInt(String(req.query.limit), 10) || 50, 500) : 50;
   const store = await createStore();
   try {
-    res.json({ intents: await store.listPendingSyncIntents(deviceId, limit) });
+    const { cliRelease } = await import('../util/cli-release.js');
+    res.json({ intents: await store.listPendingSyncIntents(deviceId, limit), cli: cliRelease() });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : 'list failed' });
   } finally {

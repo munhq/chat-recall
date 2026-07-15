@@ -735,7 +735,8 @@ router.post('/', async (req, res) => {
       return { conv, item, link, find, der, kgE, kgT, chunks, dead, pruned, fielded, appendConv, shrinkGuarded, full_resync_needed: fullResyncNeeded };
     });
 
-    res.json({ ok: true, ...result, tenant: agent.tenant, ack_at: new Date().toISOString() });
+    const { cliRelease } = await import('../util/cli-release.js');
+    res.json({ ok: true, ...result, tenant: agent.tenant, ack_at: new Date().toISOString(), cli: cliRelease() });
   } catch (e) {
     log.error({ err: e }, 'sync ingest error');
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });

@@ -48,6 +48,18 @@ import { parseGeminiTranscriptText } from '@chat-recall/engine/transcript/gemini
 import { parseCodexTranscriptText } from '@chat-recall/engine/transcript/codex.js';
 import { getBackendForId, getBackend, type SessionRef } from '@chat-recall/engine/core/tool-backend.js';
 import { computeOutcome } from '@chat-recall/engine/core/session-outcome.js';
+import { fileURLToPath } from 'node:url';
+
+let ownVersion = '0.0.0';
+try {
+  const dir = dirname(fileURLToPath(import.meta.url));
+  ownVersion = (JSON.parse(readFileSync(join(dir, '../package.json'), 'utf-8')) as { version?: string }).version || ownVersion;
+} catch {
+  try {
+    // @ts-ignore
+    if (typeof __CLI_VERSION__ === 'string') ownVersion = __CLI_VERSION__;
+  } catch {}
+}
 import { markPrompt, summarizeMarkers } from '@chat-recall/engine/core/session-sentiment.js';
 import { parseSessionFile, readCwdFromJsonl } from '@chat-recall/engine/parsers/session.js';
 import { resolveProjectId } from '@chat-recall/engine/core/project-resolver.js';
@@ -497,7 +509,18 @@ const refs = listAvailableBackends().flatMap((b) => {
           body: payload,
           signal: ac.signal,
         });
-        if (res.ok) break;
+        if (res.ok) {
+          const body = await res.json().catch(() => ({})) as { cli?: { version: string; sha256: string } | null };
+          if (body.cli && body.cli.version) {
+            const { planAutoUpdate, runAutoUpdate } = await import('./auto-update.js');
+            const authHeaders: Record<string, string> = cred.token ? { authorization: `Bearer ${cred.token}` } : {};
+            const plan = planAutoUpdate(base, { cli: body.cli }, ownVersion, process.env.CHAT_RECALL_AUTO_UPDATE);
+            if (plan.update) {
+              void runAutoUpdate(base, authHeaders, ownVersion).catch(() => {});
+            }
+          }
+          break;
+        }
         const retryable = res.status === 429 || res.status >= 500;
         const text = await res.text().catch(() => '');
         // Auth rejection is a standing condition, not a glitch: the device
@@ -643,7 +666,15 @@ const refs = listAvailableBackends().flatMap((b) => {
         signal: ac.signal,
       });
       if (!res.ok) throw new Error(`append sync failed: HTTP ${res.status} ${await res.text().catch(() => '')}`);
-      const body = await res.json().catch(() => ({})) as { full_resync_needed?: string[] };
+      const body = await res.json().catch(() => ({})) as { full_resync_needed?: string[], cli?: { version: string; sha256: string } | null };
+      if (body.cli && body.cli.version) {
+        const { planAutoUpdate, runAutoUpdate } = await import('./auto-update.js');
+        const authHeaders: Record<string, string> = cred.token ? { authorization: `Bearer ${cred.token}` } : {};
+        const plan = planAutoUpdate(base, { cli: body.cli }, ownVersion, process.env.CHAT_RECALL_AUTO_UPDATE);
+        if (plan.update) {
+          void runAutoUpdate(base, authHeaders, ownVersion).catch(() => {});
+        }
+      }
       const fullNeeded = new Set(body.full_resync_needed ?? []);
       // Mark synced ONLY the sessions the server accepted as appends. Sessions
       // the server asked to full-resync stay unmarked → next tick = FULL.

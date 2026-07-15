@@ -933,6 +933,23 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
   }, [matrix, activeType, search, filter, devices]);
 
   const supportedTools = matrix ? matrix.supportedTargets[activeType] : ALL_TOOLS_ORDERED;
+
+  const syncRowToAll = useCallback((name: string, rowPresence: Record<string, any>) => {
+    setPending((prev) => {
+      const next = new Map(prev);
+      devices.forEach(d => {
+        supportedTools.forEach(t => {
+          const cellKeyString = `${d}:${t}`;
+          const present = !!rowPresence[cellKeyString];
+          if (!present) {
+            const k = cellKey(activeType, name, d, t);
+            next.set(k, 'add');
+          }
+        });
+      });
+      return next;
+    });
+  }, [devices, supportedTools, activeType]);
   const adds = [...pending.values()].filter(v => v === 'add').length;
   const removes = [...pending.values()].filter(v => v === 'remove').length;
 
@@ -1088,6 +1105,30 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <code style={{ color: 'var(--cr-fg-1)' }}>{row.name}</code>
                         {row.incomplete && <Chip kind="warn" size="sm">{row.presentCount}/{row.supportedCount}</Chip>}
+                        {row.incomplete && (
+                          <button
+                            type="button"
+                            onClick={() => syncRowToAll(row.name, row.presence)}
+                            title={`Queue sync of ${row.name} to all tools on all devices`}
+                            style={{
+                              marginLeft: 6,
+                              padding: '2px 6px',
+                              fontSize: '10px',
+                              fontWeight: 500,
+                              color: 'var(--cr-brand-solid-fg, #ffffff)',
+                              background: 'var(--cr-brand, #3b82f6)',
+                              border: 'none',
+                              borderRadius: '4px',
+                              cursor: 'pointer',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 3,
+                            }}
+                          >
+                            <span>⚡</span>
+                            <span>Sync to all</span>
+                          </button>
+                        )}
                       </div>
                     </td>
                     {devices.flatMap(d =>
