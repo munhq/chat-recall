@@ -359,7 +359,7 @@ router.get('/matrix', async (_req, res) => {
 
     let pendingIntents: any[] = [];
     try {
-      pendingIntents = await store.listPendingSyncIntents(null, 1000);
+      pendingIntents = await store.listAllPendingSyncIntents(1000);
     } catch { /* ignore */ }
 
     res.json({ ...out, supportedTargets: SUPPORTED_TARGETS, devices: Array.from(deviceSet), pendingIntents });
