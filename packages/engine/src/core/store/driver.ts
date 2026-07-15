@@ -122,6 +122,7 @@ export interface StorageDriver {
   // ── cross-tool sync intents (Model B queue) ──
   enqueueSyncIntent: AsyncMethod<MemoryStore['enqueueSyncIntent']>;
   listPendingSyncIntents: AsyncMethod<MemoryStore['listPendingSyncIntents']>;
+  listAllPendingSyncIntents: AsyncMethod<MemoryStore['listAllPendingSyncIntents']>;
   ackSyncIntent: AsyncMethod<MemoryStore['ackSyncIntent']>;
   listSyncIntents: AsyncMethod<MemoryStore['listSyncIntents']>;
 

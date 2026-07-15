@@ -1791,6 +1791,16 @@ export class MemoryStore {
     `).all(deviceId ?? null, limit) as SyncIntentRow[];
   }
 
+  /** All pending intents across all devices (used for the global matrix UI). */
+  listAllPendingSyncIntents(limit = 1000): SyncIntentRow[] {
+    return this.db.prepare(`
+      SELECT id, device_id, kind, artifact_type, name, from_tool, to_tool, status, result, created_at, updated_at, created_by
+      FROM sync_intents
+      WHERE status = 'pending'
+      ORDER BY created_at ASC LIMIT ?
+    `).all(limit) as SyncIntentRow[];
+  }
+
   /** Mark an intent done/error with a JSON result/error string. */
   ackSyncIntent(id: string, status: 'done' | 'error', result?: string | null): boolean {
     const r = this.db.prepare(`UPDATE sync_intents SET status = ?, result = ?, updated_at = ? WHERE id = ?`)
