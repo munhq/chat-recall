@@ -116,6 +116,7 @@ export class SqliteStore implements StorageDriver {
   // ── cross-tool sync intents (Model B queue) ──
   async enqueueSyncIntent(...a: Args<'enqueueSyncIntent'>) { return this.inner.enqueueSyncIntent(...a); }
   async listPendingSyncIntents(...a: Args<'listPendingSyncIntents'>) { return this.inner.listPendingSyncIntents(...a); }
+  async listAllPendingSyncIntents(...a: Args<'listAllPendingSyncIntents'>) { return this.inner.listAllPendingSyncIntents(...a); }
   async ackSyncIntent(...a: Args<'ackSyncIntent'>) { return this.inner.ackSyncIntent(...a); }
   async listSyncIntents(...a: Args<'listSyncIntents'>) { return this.inner.listSyncIntents(...a); }
 
