@@ -14,7 +14,7 @@ import { existsSync, readFileSync, writeFileSync, appendFileSync, mkdirSync } fr
 import { fetchWithTimeout } from './http.js';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { loadAllCredentials } from './sync-client.js';
+import { loadAllCredentials, syncIncremental } from './sync-client.js';
 // Concrete module, NOT the engine barrel: the barrel statically re-exports
 // MemoryIndex -> @lancedb/lancedb, and a static barrel import hoists that
 // native dep to boot-time in the published bundle (breaks fresh installs).
@@ -183,5 +183,12 @@ export async function drainSyncIntents(opts: { verbose?: boolean } = {}): Promis
       await pushProjectTaskStatuses(base, authHeaders, { verbose: opts.verbose });
     } catch { /* never let read-back abort the drain */ }
   }
+
+  if (out.processed > 0) {
+    try {
+      await syncIncremental({ scope: 'changed' });
+    } catch { /* best-effort */ }
+  }
+
   return out;
 }
