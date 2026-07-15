@@ -764,17 +764,18 @@ const TOOL_LABEL: Record<SyncTool, string> = {
 };
 
 type CellAction = 'add' | 'remove';
-type PendingMap = Map<string, CellAction>; // key = "<type>:<name>:<tool>"
-const cellKey = (type: SyncType, name: string, tool: SyncTool) => `${type}:${name}:${tool}`;
+type PendingMap = Map<string, CellAction>; // key = "<type>:<name>:<deviceId>:<tool>"
+const cellKey = (type: SyncType, name: string, deviceId: string, tool: SyncTool) => `${type}:${name}:${deviceId}:${tool}`;
 
 const SYNC_TYPE_TABS: Array<{ id: SyncType; label: string }> = [
   { id: 'skill',   label: 'Skills' },
   { id: 'mcp',     label: 'MCPs' },
   { id: 'command', label: 'Commands' },
   { id: 'agent',   label: 'Subagents' },
+  { id: 'instructions', label: 'Rules (MD)' },
 ];
-/** DELETE is only implemented server-side for skills + MCPs. */
-const REMOVABLE_TYPES = new Set<SyncType>(['skill', 'mcp']);
+/** DELETE is only implemented server-side for skills, MCPs, and instructions. */
+const REMOVABLE_TYPES = new Set<SyncType>(['skill', 'mcp', 'instructions']);
 
 function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMutated: () => void; inline?: boolean }) {
   const [matrix, setMatrix] = useState<ToolkitMatrix | null>(null);
@@ -799,12 +800,12 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
   }, []);
   useEffect(() => { reload(); }, [reload]);
 
-  const togglePending = useCallback((type: SyncType, name: string, tool: SyncTool, currentlyPresent: boolean) => {
-    // Removing is only supported for skills + MCPs.
+  const togglePending = useCallback((type: SyncType, name: string, deviceId: string, tool: SyncTool, currentlyPresent: boolean) => {
+    // Removing is only supported for certain types.
     if (currentlyPresent && !REMOVABLE_TYPES.has(type)) return;
     setPending((prev) => {
       const next = new Map(prev);
-      const k = cellKey(type, name, tool);
+      const k = cellKey(type, name, deviceId, tool);
       const existing = next.get(k);
       const desired: CellAction = currentlyPresent ? 'remove' : 'add';
       if (existing === desired) {
@@ -815,6 +816,12 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
       return next;
     });
   }, []);
+
+  const devices = useMemo(() => {
+    return matrix && Array.isArray(matrix.devices) && matrix.devices.length > 0
+      ? matrix.devices
+      : ['local'];
+  }, [matrix]);
 
   /**
    * One-click: queue a full cross-tool fan-out. The copy runs on the user's
@@ -836,7 +843,7 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
       else {
         let summary = 'Synced.';
         try { const r = JSON.parse(done.result || '{}'); summary = `Synced: ${r.copied ?? 0} copied · ${r.skipped ?? 0} already present · ${(r.failed?.length ?? r.failed ?? 0)} failed.`; } catch { /* keep default */ }
-        setOneClickMsg(summary);
+        oneClickMsg ? setOneClickMsg(summary) : void 0;
       }
       onMutated();
       await reload();
@@ -849,8 +856,12 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
   const apply = useCallback(async () => {
     if (!matrix || pending.size === 0) return;
     const ops = [...pending.entries()].map(([k, action]) => {
-      const [type, name, tool] = k.split(':') as [SyncType, string, SyncTool];
-      return { k, type, name, tool, action };
+      const parts = k.split(':');
+      const tool = parts.pop() as SyncTool;
+      const deviceId = parts.pop() as string;
+      const type = parts.shift() as SyncType;
+      const name = parts.join(':');
+      return { k, type, name, deviceId, tool, action };
     });
     setApplying(true);
     setErrors([]);
@@ -865,15 +876,23 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
           // Model B: enqueue a copy intent; the local agent does the file copy.
           // Source tool = the first tool that already has this artifact.
           const slot = matrix[op.type][op.name] || {};
-          const source = (Object.keys(slot) as SyncTool[]).find(t => slot[t]);
-          if (!source) {
+          const sourceKey = Object.keys(slot).find(key => slot[key]);
+          if (!sourceKey) {
             errorList.push({ key: op.k, error: `no source tool has ${op.name}` });
           } else {
-            const r = await enqueueSyncIntent({ kind: 'copy', artifactType: op.type, name: op.name, fromTool: source, toTool: op.tool });
+            const [sourceDevice, sourceTool] = sourceKey.split(':');
+            const r = await enqueueSyncIntent({
+              kind: 'copy',
+              artifactType: op.type,
+              name: op.name,
+              fromTool: sourceTool as SyncTool,
+              toTool: op.tool,
+              deviceId: op.deviceId === 'local' ? null : op.deviceId
+            });
             if (!r.ok) errorList.push({ key: op.k, error: r.error || 'failed' });
           }
         } else {
-          // Guarded by togglePending → only skill/mcp reach here.
+          // Guarded by togglePending → only skill/mcp/instructions reach here.
           const r = await removeToolkitItem(op.type as 'skill' | 'mcp', op.name, op.tool);
           if (!r.ok) errorList.push({ key: op.k, error: r.error || 'failed' });
         }
@@ -897,19 +916,21 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
     if (!matrix) return [];
     const data = matrix[activeType];
     const supported = new Set(matrix.supportedTargets[activeType]);
-    const supportedCount = supported.size;
+    const supportedCount = devices.length * supported.size;
     const needle = search.trim().toLowerCase();
     return Object.keys(data)
       .filter(name => !needle || name.toLowerCase().includes(needle))
       .map(name => {
         const presence = data[name] || {};
-        const presentCount = ALL_TOOLS_ORDERED.filter(t => supported.has(t) && presence[t]).length;
+        const presentCount = devices.flatMap(d =>
+          ALL_TOOLS_ORDERED.map(t => `${d}:${t}`)
+        ).filter(key => presence[key]).length;
         const incomplete = presentCount > 0 && presentCount < supportedCount;
         return { name, presence, incomplete, presentCount, supportedCount };
       })
       .filter(r => filter === 'all' || r.incomplete)
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [matrix, activeType, search, filter]);
+  }, [matrix, activeType, search, filter, devices]);
 
   const supportedTools = matrix ? matrix.supportedTargets[activeType] : ALL_TOOLS_ORDERED;
   const adds = [...pending.values()].filter(v => v === 'add').length;
@@ -982,13 +1003,19 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
             onChange={(v) => setActiveType(v as SyncType)}
             options={SYNC_TYPE_TABS.map(t => ({
               value: t.id,
-              label: matrix ? `${t.label} (${Object.keys(matrix[t.id]).length})` : t.label,
+              label: matrix ? `${t.label} (${Object.keys(matrix[t.id] || {}).length})` : t.label,
             }))}
             size="sm"
           />
           <div style={{ flex: 1, maxWidth: 320 }}>
             <Input
-              placeholder={`Filter ${activeType === 'skill' ? 'skills' : 'MCPs'}…`}
+              placeholder={`Filter ${
+                activeType === 'skill' ? 'skills'
+                : activeType === 'mcp' ? 'MCPs'
+                : activeType === 'command' ? 'commands'
+                : activeType === 'agent' ? 'subagents'
+                : 'rules'
+              }…`}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               onClear={search ? () => setSearch('') : undefined}
@@ -1034,15 +1061,24 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead style={{ position: 'sticky', top: 0, background: 'var(--cr-ink-1)', zIndex: 1 }}>
                 <tr>
-                  <th style={thStyle('left')}>Name</th>
-                  {ALL_TOOLS_ORDERED.map(t => (
-                    <th key={t} style={thStyle('center')}>
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                        <ToolBadge tool={t} size="sm" />
-                        <span>{TOOL_LABEL[t]}</span>
-                      </span>
+                  <th rowSpan={2} style={{ ...thStyle('left'), borderBottom: '1px solid var(--cr-line-1)' }}>Name</th>
+                  {devices.map(d => (
+                    <th key={d} colSpan={supportedTools.length} style={{ ...thStyle('center'), borderBottom: '1px solid var(--cr-line-1)', fontWeight: 600 }}>
+                      🖥️ {d === 'local' ? 'This Machine' : d}
                     </th>
                   ))}
+                </tr>
+                <tr>
+                  {devices.flatMap(d =>
+                    supportedTools.map(t => (
+                      <th key={`${d}:${t}`} style={{ ...thStyle('center'), borderBottom: '1px solid var(--cr-line-1)' }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                          <ToolBadge tool={t} size="sm" />
+                          <span style={{ fontSize: 10 }}>{TOOL_LABEL[t]}</span>
+                        </span>
+                      </th>
+                    ))
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -1054,21 +1090,23 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
                         {row.incomplete && <Chip kind="warn" size="sm">{row.presentCount}/{row.supportedCount}</Chip>}
                       </div>
                     </td>
-                    {ALL_TOOLS_ORDERED.map(t => {
-                      const supported = supportedTools.includes(t);
-                      const present = !!row.presence[t];
-                      const queued = pending.get(cellKey(activeType, row.name, t));
-                      return (
-                        <td key={t} style={tdStyle('center')}>
-                          <CellButton
-                            supported={supported}
-                            present={present}
-                            queued={queued}
-                            onClick={() => togglePending(activeType, row.name, t, present)}
-                          />
-                        </td>
-                      );
-                    })}
+                    {devices.flatMap(d =>
+                      supportedTools.map(t => {
+                        const cellKeyString = `${d}:${t}`;
+                        const present = !!row.presence[cellKeyString];
+                        const queued = pending.get(cellKey(activeType, row.name, d, t));
+                        return (
+                          <td key={`${d}:${t}`} style={tdStyle('center')}>
+                            <CellButton
+                              supported={true}
+                              present={present}
+                              queued={queued}
+                              onClick={() => togglePending(activeType, row.name, d, t, present)}
+                            />
+                          </td>
+                        );
+                      })
+                    )}
                   </tr>
                 ))}
               </tbody>
