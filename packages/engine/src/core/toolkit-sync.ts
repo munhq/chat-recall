@@ -24,16 +24,17 @@ import { opencodeBackend as OPENCODE } from './backends/opencode.js';
 import { codexBackend as CODEX } from './backends/codex.js';
 import { agyBackend as AGY } from './backends/agy.js';
 import {
-  emit as emitArtifact, readCommand, readAgent,
+  emit as emitArtifact, readCommand, readAgent, readInstructions,
   type ToolId, type CodecType, type Encoding,
 } from './artifact-codec.js';
 import { SkillsSource } from '../parsers/skills-source.js';
 import { McpsSource } from '../parsers/mcps-source.js';
 import { SlashCommandsSource } from '../parsers/slash-commands-source.js';
 import { SubagentsSource } from '../parsers/subagents-source.js';
+import { ClaudeMdSource } from '../parsers/claude-md-source.js';
 import type { MemoryItem } from '../types/memory.js';
 
-export type SyncType = 'skill' | 'mcp' | 'command' | 'agent';
+export type SyncType = 'skill' | 'mcp' | 'command' | 'agent' | 'instructions';
 export type TargetTool = ToolId;
 
 /** Tool-neutral source row both the parsers and the store can produce. */
@@ -41,6 +42,7 @@ export interface ArtifactRow {
   id: string;
   title: string;
   filePath: string;
+  projectPath?: string;
   tool: string;
   name: string;
   extra: Record<string, unknown>;
@@ -56,11 +58,11 @@ export interface CopyResult {
   status?: number;
 }
 
-export const ALL_SYNC_TYPES: SyncType[] = ['skill', 'mcp', 'command', 'agent'];
+export const ALL_SYNC_TYPES: SyncType[] = ['skill', 'mcp', 'command', 'agent', 'instructions'];
 
 /** extra_json field holding an artifact's display name, per type. */
 export const NAME_FIELD: Record<SyncType, string> = {
-  skill: 'skillName', mcp: 'mcpName', command: 'commandName', agent: 'agentName',
+  skill: 'skillName', mcp: 'mcpName', command: 'commandName', agent: 'agentName', instructions: 'filename',
 };
 
 const SUPPORTED_TARGETS: Record<SyncType, TargetTool[]> = {
@@ -68,6 +70,7 @@ const SUPPORTED_TARGETS: Record<SyncType, TargetTool[]> = {
   mcp:     ['claude', 'opencode', 'agy', 'gemini', 'codex'],
   command: ['claude', 'agy', 'gemini', 'opencode', 'codex'],
   agent:   ['claude', 'agy', 'gemini', 'opencode', 'codex'],
+  instructions: ['claude', 'agy', 'gemini', 'opencode', 'codex'],
 };
 
 const SOURCE_PRECEDENCE: Record<SyncType, TargetTool[]> = {
@@ -75,6 +78,7 @@ const SOURCE_PRECEDENCE: Record<SyncType, TargetTool[]> = {
   mcp:     ['claude', 'codex', 'agy', 'gemini', 'opencode'],
   command: ['claude', 'opencode', 'codex', 'agy', 'gemini'],
   agent:   ['claude', 'opencode', 'agy', 'gemini', 'codex'],
+  instructions: ['claude', 'codex', 'opencode', 'agy', 'gemini'],
 };
 
 export function supportedTargetsFor(type: SyncType): TargetTool[] { return SUPPORTED_TARGETS[type]; }
@@ -87,7 +91,8 @@ export function rowFromMemoryItem(type: SyncType, item: MemoryItem): ArtifactRow
   return {
     id: item.id,
     title: item.title,
-    filePath: item.filePath,
+    filePath: item.filePath || '',
+    projectPath: item.projectPath,
     tool: String(extra.tool || 'claude'),
     name: String(extra[NAME_FIELD[type]] || item.title),
     extra,
@@ -97,13 +102,25 @@ export function rowFromMemoryItem(type: SyncType, item: MemoryItem): ArtifactRow
 }
 
 /** Normalize an indexed store row (memory_metadata) into an ArtifactRow. */
-export function rowFromStore(type: SyncType, row: { id: string; title: string; file_path?: string | null; extra_json?: string | null }): ArtifactRow {
+export function rowFromStore(
+  type: SyncType,
+  row: {
+    id: string;
+    title: string;
+    file_path?: string | null;
+    filePath?: string;
+    project_path?: string | null;
+    projectPath?: string;
+    extra_json?: string | null;
+  }
+): ArtifactRow {
   let extra: Record<string, unknown> = {};
   try { extra = JSON.parse(row.extra_json || '{}'); } catch { /* tolerate */ }
   return {
     id: row.id,
     title: row.title,
-    filePath: row.file_path || '',
+    filePath: row.file_path || row.filePath || '',
+    projectPath: row.project_path || row.projectPath || '',
     tool: String(extra.tool || 'claude'),
     name: String(extra[NAME_FIELD[type]] || row.title),
     extra,
@@ -289,6 +306,20 @@ function copyCommandOrAgent(type: 'command' | 'agent', row: ArtifactRow, toTool:
   } catch (e) { return { ok: false, status: 500, error: e instanceof Error ? e.message : 'write failed' }; }
 }
 
+function copyInstructions(row: ArtifactRow, toTool: TargetTool): CopyResult {
+  if (!row.filePath) return { ok: false, status: 404, error: 'Source has no file on disk' };
+  let art;
+  try { art = readInstructions(row.filePath, row.name); }
+  catch (e) { return { ok: false, status: 404, error: `Source unreadable: ${e instanceof Error ? e.message : 'failed'}` }; }
+  const out = emitArtifact('instructions', art, toTool, row.projectPath || undefined);
+  if (existsSync(out.path)) return { ok: false, status: 409, error: `Already exists: ${out.path}` };
+  try {
+    mkdirSync(dirname(out.path), { recursive: true });
+    writeFileSync(out.path, out.content);
+    return { ok: true, targetPath: out.path };
+  } catch (e) { return { ok: false, status: 500, error: e instanceof Error ? e.message : 'write failed' }; }
+}
+
 // ── Unified copy dispatch ──────────────────────────────────────────
 
 /** Copy one artifact into `toTool`. Never overwrites (409 if present). */
@@ -297,6 +328,7 @@ export function copyArtifactToTool(type: SyncType, row: ArtifactRow, toTool: Tar
   if (row.tool === toTool) return { ok: false, status: 400, error: 'Source and target are the same tool.' };
   if (type === 'skill') return copySkill(row, toTool);
   if (type === 'mcp')   return copyMcp(row, toTool);
+  if (type === 'instructions') return copyInstructions(row, toTool);
   return copyCommandOrAgent(type, row, toTool);
 }
 
@@ -344,12 +376,13 @@ export function planSync(rowsByType: Partial<Record<SyncType, ArtifactRow[]>>, t
 
 /** Discover every syncable artifact from disk via the source parsers. */
 export async function discoverLocalArtifacts(): Promise<Record<SyncType, ArtifactRow[]>> {
-  const out: Record<SyncType, ArtifactRow[]> = { skill: [], mcp: [], command: [], agent: [] };
+  const out: Record<SyncType, ArtifactRow[]> = { skill: [], mcp: [], command: [], agent: [], instructions: [] };
   const sources: Array<[SyncType, AsyncGenerator<MemoryItem>]> = [
     ['skill', new SkillsSource().discover()],
     ['mcp', new McpsSource().discover()],
     ['command', new SlashCommandsSource().discover()],
     ['agent', new SubagentsSource().discover()],
+    ['instructions', new ClaudeMdSource().discover()],
   ];
   for (const [type, gen] of sources) {
     for await (const item of gen) out[type].push(rowFromMemoryItem(type, item));

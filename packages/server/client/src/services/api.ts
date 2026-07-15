@@ -1270,28 +1270,26 @@ export interface SyncResultEntry extends SyncPlanEntry {
 export interface SyncDryRunResponse {
   dryRun: true;
   plan: SyncPlanEntry[];
-  totalToCopy: number;
+  tool: SyncTool;
+  action: 'add' | 'remove';
 }
 
-export interface SyncRunResponse {
-  dryRun: false;
-  summary: {
-    itemsConsidered: number;
-    itemsCopied: number;
-    itemsSkipped: number;
-    itemsFailed: number;
-  };
-  results: SyncResultEntry[];
+export interface SyncResult {
+  ok: boolean;
+  total: number;
+  copied: { tool: string; path?: string }[];
+  skipped: { tool: string; reason: string }[];
+  errors: { tool: string; error: string }[];
 }
 
-export async function syncToolkit(
+export async function bulkSyncToolkit(
   opts: { types?: SyncType[]; dryRun?: boolean } = {},
-): Promise<SyncDryRunResponse | SyncRunResponse> {
+): Promise<SyncResult> {
   const res = await fetchWithTimeout(`${API_BASE}/toolkit/sync-all`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(opts),
-  }, 120_000);
+  }, 60_000);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.error || `Sync failed: ${res.statusText}`);
@@ -1302,13 +1300,15 @@ export async function syncToolkit(
 // --- Matrix view: name × tool presence ---
 
 /** Each cell holds the source row id for that (name, tool), or is absent. */
-export type MatrixCells = Record<string, Partial<Record<SyncTool, string>>>;
+export type MatrixCells = Record<string, Partial<Record<string, string>>>;
 
 export interface ToolkitMatrix {
   skill:   MatrixCells;
   mcp:     MatrixCells;
   command: MatrixCells;
   agent:   MatrixCells;
+  instructions: MatrixCells;
+  devices: string[];
   supportedTargets: Record<SyncType, SyncTool[]>;
 }
 
@@ -1336,7 +1336,7 @@ export interface SyncIntentRow {
 
 export type SyncIntentBody =
   | { kind: 'sync_all' }
-  | { kind: 'copy'; artifactType: SyncType; name: string; fromTool: SyncTool; toTool: SyncTool };
+  | { kind: 'copy'; artifactType: SyncType; name: string; fromTool: SyncTool; toTool: SyncTool; deviceId?: string | null };
 
 /** Queue a cross-tool sync intent. The user's local CLI agent drains + executes it. */
 export async function enqueueSyncIntent(body: SyncIntentBody): Promise<{ ok: boolean; id?: string; error?: string }> {
