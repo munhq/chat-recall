@@ -1315,7 +1315,7 @@ function SecurityPanel({
         </button>
         {onManage && (
           <button onClick={onManage} title="Open the Security dashboard scoped to this conversation's secrets"
-            style={{ background: 'var(--cr-err-500)', border: 'none', color: '#fff', borderRadius: 6, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+            style={{ background: 'var(--cr-err-500)', border: 'none', color: 'var(--cr-on-danger)', borderRadius: 6, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
             Rotate &amp; manage →
           </button>
         )}
@@ -2191,7 +2191,7 @@ function StructuredSummary({
             justifyContent: 'center', background: 'var(--cr-brand-500)',
             borderRadius: 6, flexShrink: 0, marginTop: 1,
           }}>
-            <Icon name="file" size={13} style={{ color: '#1A0E06' }} />
+            <Icon name="file" size={13} style={{ color: 'var(--cr-on-brand)' }} />
           </span>
           <div style={{ flex: 1 }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cr-fg-1)', letterSpacing: '-0.005em' }}>
@@ -2247,7 +2247,7 @@ function StructuredFirstPrompt({ firstPrompt }: { firstPrompt: string }) {
             justifyContent: 'center', background: 'var(--cr-info-500)',
             borderRadius: 6, flexShrink: 0, marginTop: 1,
           }}>
-            <Icon name="message" size={13} style={{ color: '#FFFFFF' }} />
+            <Icon name="message" size={13} style={{ color: 'var(--cr-on-info)' }} />
           </span>
           <div>
             <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cr-fg-1)', letterSpacing: '-0.005em' }}>

@@ -898,7 +898,7 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
         <Card style={{ padding: 14 }}>
           <button
             onClick={() => setEditing({ name: '', regex: '', severity: 'high', enabled: 1 })}
-            style={{ background: 'var(--cr-brand-500)', color: '#fff', border: 0, padding: '8px 14px', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}
+            style={{ background: 'var(--cr-brand-500)', color: 'var(--cr-on-brand)', border: 0, padding: '8px 14px', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}
           >
             + Add rule
           </button>
@@ -962,7 +962,7 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
               Enabled
             </label>
             <div style={{ display: 'flex', gap: 10 }}>
-              <button onClick={save} style={{ background: 'var(--cr-brand-500)', color: '#fff', border: 0, padding: '8px 14px', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}>Save</button>
+              <button onClick={save} style={{ background: 'var(--cr-brand-500)', color: 'var(--cr-on-brand)', border: 0, padding: '8px 14px', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}>Save</button>
               <button onClick={() => { setEditing(null); setError(null); }} style={{ background: 'transparent', color: 'var(--cr-fg-2)', border: '1px solid var(--cr-line-1)', padding: '8px 14px', borderRadius: 4, cursor: 'pointer' }}>Cancel</button>
             </div>
           </div>
@@ -997,7 +997,7 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
             </div>
             {testResult.matches.map((m, i) => (
               <div key={i} style={{ fontSize: 11, fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-2)' }}>
-                @{m.index}: <span style={{ background: 'var(--cr-warn-500)', color: '#000', padding: '0 4px' }}>{m.match}</span>
+                @{m.index}: <span style={{ background: 'var(--cr-warn-500)', color: 'var(--cr-on-warn)', padding: '0 4px' }}>{m.match}</span>
               </div>
             ))}
           </div>

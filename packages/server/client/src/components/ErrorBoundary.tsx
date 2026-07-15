@@ -18,15 +18,15 @@ export default class ErrorBoundary extends React.Component<
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: '2rem', color: '#c9d1d9', textAlign: 'center' }}>
-          <h2 style={{ color: '#f85149' }}>Something went wrong</h2>
-          <p style={{ color: '#8b949e' }}>{this.state.error?.message}</p>
+        <div style={{ padding: '2rem', color: 'var(--cr-fg-1)', textAlign: 'center' }}>
+          <h2 style={{ color: 'var(--cr-err-500)' }}>Something went wrong</h2>
+          <p style={{ color: 'var(--cr-fg-2)' }}>{this.state.error?.message}</p>
           <button
             onClick={() => this.setState({ hasError: false, error: null })}
             style={{
               marginTop: '1rem', padding: '0.5rem 1rem',
-              background: '#238636', border: 'none', borderRadius: '6px',
-              color: 'white', cursor: 'pointer',
+              background: 'var(--cr-brand-500)', border: 'none', borderRadius: '6px',
+              color: 'var(--cr-on-brand)', cursor: 'pointer',
             }}
           >
             Try Again

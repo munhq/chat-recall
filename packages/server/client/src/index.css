@@ -16,10 +16,13 @@
   --cr-ink-3: #243042;
   --cr-ink-4: #324058;
 
-  /* Foreground — crisp white with diminishing secondary/tertiary */
+  /* Foreground — crisp white with diminishing secondary/tertiary.
+   * fg-2/fg-3 are tuned so even the smallest caption text (10–11px meta lines,
+   * counts, dividers) clears WCAG AA (4.5:1) on every ink surface it lands on,
+   * including active ink-3 rows. */
   --cr-fg-1: #EBF0F8;
-  --cr-fg-2: #8693A6;
-  --cr-fg-3: #607088;
+  --cr-fg-2: #909CAF;
+  --cr-fg-3: #8A9AB0;
 
   /* Lines */
   --cr-line-1: #1B2433;
@@ -32,6 +35,13 @@
   --cr-brand-700: #C9734A;
   --cr-brand-surf: rgba(245, 169, 127, 0.10);
   --cr-brand-line: rgba(245, 169, 127, 0.22);
+  /* Text/icons that sit ON a solid brand/danger fill (filled buttons). Dark
+   * theme fills are LIGHT (amber #F5A97F / red #F85149) so near-black ink reads
+   * best; the light-theme override flips these to white for the deep fills. */
+  --cr-on-brand: #1A0E06;
+  --cr-on-danger: #1A0709;
+  --cr-on-info: #04121F;
+  --cr-on-warn: #140F00;
 
   /* Semantic colors */
   --cr-ok-500: #3FB950;
@@ -95,19 +105,32 @@
 
   --cr-fg-1: #12151C;
   --cr-fg-2: #4A5464;
-  --cr-fg-3: #7C8698;
+  /* fg-3 darkened from #7C8698 → clears AA for small caption text on the light
+   * ink-0/1/2 surfaces (was failing at ~3:1 everywhere). */
+  --cr-fg-3: #586170;
 
   --cr-line-1: #D9DEE5;
   --cr-line-2: #C4C9D1;
   --cr-line-3: #A6AEB9;
 
-  --cr-brand-500: #D46830;
-  --cr-brand-600: #B85225;
-  --cr-brand-700: #96421C;
-  --cr-brand-surf: rgba(212, 104, 48, 0.08);
-  --cr-brand-line: rgba(212, 104, 48, 0.18);
+  /* Brand — burnt amber. Deepened one step vs the old ramp: brand-500 is used
+   * as TEXT throughout the app (links, eyebrows, session ids, inline labels), so
+   * on light it must clear AA (4.5:1), not just read as a decorative accent. The
+   * old #D46830 sat at ~3.2:1 as text and was unreadable on cards. Ramp stays
+   * ordered 500 → 600 → 700 (increasing depth) for hover/active states. */
+  --cr-brand-500: #A8491D;
+  --cr-brand-600: #96421C;
+  --cr-brand-700: #7E3717;
+  --cr-brand-surf: rgba(168, 73, 29, 0.08);
+  --cr-brand-line: rgba(168, 73, 29, 0.18);
 
-  --cr-focus-ring: 0 0 0 3px rgba(212, 104, 48, 0.18);
+  --cr-focus-ring: 0 0 0 3px rgba(168, 73, 29, 0.18);
+
+  /* Deep light-theme fills need white text, not near-black ink. */
+  --cr-on-brand: #FFFFFF;
+  --cr-on-danger: #FFFFFF;
+  --cr-on-info: #FFFFFF;
+  --cr-on-warn: #FFFFFF;
 
   --cr-ok-500: #1A7F37;
   --cr-ok-surf: rgba(26, 127, 55, 0.08);

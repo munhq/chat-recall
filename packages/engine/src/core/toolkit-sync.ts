@@ -22,6 +22,7 @@ import { claudeBackend as CLAUDE } from './backends/claude.js';
 import { geminiBackend as GEMINI } from './backends/gemini.js';
 import { opencodeBackend as OPENCODE } from './backends/opencode.js';
 import { codexBackend as CODEX } from './backends/codex.js';
+import { agyBackend as AGY } from './backends/agy.js';
 import {
   emit as emitArtifact, readCommand, readAgent,
   type ToolId, type CodecType, type Encoding,
@@ -116,7 +117,7 @@ export function rowFromStore(type: SyncType, row: { id: string; title: string; f
 export function skillsDirFor(tool: TargetTool): string {
   switch (tool) {
     case 'claude':   return CLAUDE.skillsDir();
-    case 'agy':
+    case 'agy':      return join(AGY.homeDir(), 'skills');
     case 'gemini':   return GEMINI.skillsDir();
     case 'opencode': return OPENCODE.skillsDir();
     case 'codex':    return CODEX.skillsDir();  // user skills, NOT .system
@@ -148,6 +149,8 @@ export function readMcpEntry(tool: string, name: string): any | null {
     tries.push({ path: join(home, '.claude.json'), key: 'mcpServers' });
   } else if (tool === 'gemini') {
     tries.push({ path: join(home, '.gemini', 'settings.json'), key: 'mcpServers' });
+  } else if (tool === 'agy') {
+    tries.push({ path: join(home, '.gemini', 'config', 'mcp_config.json'), key: 'mcpServers' });
   } else if (tool === 'opencode') {
     tries.push({ path: join(home, '.config', 'opencode', 'opencode.json'), key: 'mcp' });
     tries.push({ path: join(home, '.config', 'opencode', 'config.json'), key: 'mcp' });
@@ -228,6 +231,7 @@ export function writeMcpEntry(toTool: TargetTool, name: string, entry: any): Cop
   let path: string; let key: string;
   if (toTool === 'claude') { path = join(home, '.mcp.json'); key = 'mcpServers'; }
   else if (toTool === 'gemini') { path = join(home, '.gemini', 'settings.json'); key = 'mcpServers'; }
+  else if (toTool === 'agy') { path = join(home, '.gemini', 'config', 'mcp_config.json'); key = 'mcpServers'; }
   else { path = join(home, '.config', 'opencode', 'opencode.json'); key = 'mcp'; }
 
   let cfg: any = {};
