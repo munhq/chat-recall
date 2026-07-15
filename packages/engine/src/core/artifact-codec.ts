@@ -98,7 +98,7 @@ export function readInstructions(filePath: string, name: string): NormalizedArti
 function commandPath(tool: ToolId, name: string): string {
   switch (tool) {
     case 'claude':   return join(CLAUDE.commandsDir(), `${name}.md`);
-    case 'agy':
+    case 'agy':      return join(join(AGY.homeDir(), 'commands'), `${name}.toml`);
     case 'gemini':   return join(GEMINI.commandsDir(), `${name}.toml`);
     case 'opencode': return join(OPENCODE.commandsDir(), `${name}.md`);
     case 'codex':    return join(CODEX.promptsDir(), `${name}.md`);
@@ -108,7 +108,7 @@ function commandPath(tool: ToolId, name: string): string {
 function agentPath(tool: ToolId, name: string): string {
   switch (tool) {
     case 'claude':   return join(CLAUDE.agentsDir(), `${name}.md`);
-    case 'agy':
+    case 'agy':      return join(join(AGY.homeDir(), 'agents'), `${name}.md`);
     case 'gemini':   return join(GEMINI.agentsDir(), `${name}.md`);
     case 'opencode': return join(OPENCODE.agentsDir(), `${name}.md`);
     case 'codex':    return join(CODEX.agentsDir(), `${name}.toml`);
@@ -136,7 +136,7 @@ function instructionsPath(tool: ToolId, projectPath?: string): string {
   if (projectPath) return join(projectPath, file);
   switch (tool) {
     case 'claude':   return join(CLAUDE.homeDir(), file);
-    case 'agy':
+    case 'agy':      return join(AGY.homeDir(), file);
     case 'gemini':   return join(GEMINI.homeDir(), file);
     case 'codex':    return join(CODEX.homeDir(), file);
     case 'opencode': return join(homedir(), '.config', 'opencode', file);
@@ -156,8 +156,8 @@ export function emit(
     return { path: instructionsPath(toTool, projectPath), content: art.body.endsWith('\n') ? art.body : art.body + '\n' };
   }
   if (type === 'command') {
-    if (toTool === 'gemini') {
-      return { path: commandPath('gemini', art.name),
+    if (toTool === 'gemini' || toTool === 'agy') {
+      return { path: commandPath(toTool, art.name),
         content: stringifyScalarToml({ description: art.description, prompt: art.body }) };
     }
     return { path: commandPath(toTool, art.name),

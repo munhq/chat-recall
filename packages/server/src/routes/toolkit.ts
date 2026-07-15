@@ -12,7 +12,7 @@ import express from 'express';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'fs';
 import { dirname, join } from 'path';
 import { homedir } from 'os';
-import { createStore, copyArtifactToTool, rowFromStore, skillsDirFor } from '../imports.js';
+import { createStore, copyArtifactToTool, rowFromStore, skillsDirFor, currentTenant, createControlPlane } from '../imports.js';
 import type { SourceType } from '../imports.js';
 import { requireLocalMode } from '../util/mode.js';
 import { listItemsPaged } from '../util/paged-items.js';
@@ -22,7 +22,7 @@ const log = createLogger('toolkit');
 
 const router = express.Router();
 
-const VALID_TOOLKIT_TYPES = ['skill', 'mcp', 'command', 'agent', 'hook', 'plugin'] as const;
+const VALID_TOOLKIT_TYPES = ['skill', 'mcp', 'command', 'agent', 'hook', 'plugin', 'instructions'] as const;
 type ToolkitType = (typeof VALID_TOOLKIT_TYPES)[number];
 
 function isToolkitType(t: string): t is ToolkitType {
@@ -110,18 +110,19 @@ const TARGET_TOOLS = ['claude', 'agy', 'gemini', 'opencode', 'codex'] as const;
 type TargetTool = (typeof TARGET_TOOLS)[number];
 
 /** Toolkit primitives that have a clean global-scope cross-tool matrix. */
-type SyncType = 'skill' | 'mcp' | 'command' | 'agent';
+type SyncType = 'skill' | 'mcp' | 'command' | 'agent' | 'instructions';
 
 const SUPPORTED_TARGETS: Record<SyncType, TargetTool[]> = {
   skill:   ['claude', 'agy', 'gemini', 'opencode', 'codex'],
   mcp:     ['claude', 'opencode', 'agy', 'gemini', 'codex'],
   command: ['claude', 'agy', 'gemini', 'opencode', 'codex'],
   agent:   ['claude', 'agy', 'gemini', 'opencode', 'codex'],
+  instructions: ['claude', 'agy', 'gemini', 'opencode', 'codex'],
 };
 
 /** The extra_json field holding an artifact's display name, per type. */
 const NAME_FIELD: Record<SyncType, string> = {
-  skill: 'skillName', mcp: 'mcpName', command: 'commandName', agent: 'agentName',
+  skill: 'skillName', mcp: 'mcpName', command: 'commandName', agent: 'agentName', instructions: 'filename',
 };
 
 
@@ -150,7 +151,7 @@ router.post('/promote', requireLocalMode, express.json(), async (req, res) => {
       return res.status(400).json({ error: 'This artifact is read-only (system/bundled) and cannot be promoted.' });
     }
 
-    if (type === 'skill' || type === 'mcp' || type === 'command' || type === 'agent') {
+    if (type === 'skill' || type === 'mcp' || type === 'command' || type === 'agent' || type === 'instructions') {
       // The single copy implementation lives in the engine executor (shared
       // with the CLI agent). The route just adapts the store row and delegates.
       const r = copyArtifactToTool(type, rowFromStore(type, item), toTool as TargetTool);
@@ -314,12 +315,25 @@ function stripCodexMcpBlock(content: string, name: string): string {
 
 router.get('/matrix', async (_req, res) => {
   const store = await createStore();
+  const tenant = currentTenant() || 'default';
+  const cp = await createControlPlane();
   try {
-    const types: SyncType[] = ['skill', 'mcp', 'command', 'agent'];
+    const types: SyncType[] = ['skill', 'mcp', 'command', 'agent', 'instructions'];
     // Each cell holds the source row id (so the UI can promote a precise
     // item), not just a boolean. Truthiness still answers "is it present?".
     const out: Record<SyncType, Record<string, Record<string, string>>> =
-      { skill: {}, mcp: {}, command: {}, agent: {} };
+      { skill: {}, mcp: {}, command: {}, agent: {}, instructions: {} };
+    const deviceSet = new Set<string>();
+
+    try {
+      const tokens = await cp.listAgentTokens(tenant);
+      for (const t of tokens) {
+        if (!t.revoked) deviceSet.add(t.deviceId);
+      }
+    } catch {
+      // ignore control plane errors
+    }
+
     for (const type of types) {
       // Paged in 1000-row chunks, 20k hard cap (was a single 100k fetch) —
       // the helper warns when the cap truncates the matrix for a tenant.
@@ -333,12 +347,16 @@ router.get('/matrix', async (_req, res) => {
         const tool = String(extra.tool || 'claude');
         const name = String(extra[NAME_FIELD[type]] || row.title);
         if (!name) continue;
+        const deviceId = String(extra.syncedDeviceId || 'local');
+        deviceSet.add(deviceId);
+
         out[type][name] = out[type][name] || {};
+        const key = `${deviceId}:${tool}`;
         // First writer wins per tool — stable id for the cell.
-        if (!out[type][name][tool]) out[type][name][tool] = row.id;
+        if (!out[type][name][key]) out[type][name][key] = row.id;
       }
     }
-    res.json({ ...out, supportedTargets: SUPPORTED_TARGETS });
+    res.json({ ...out, supportedTargets: SUPPORTED_TARGETS, devices: Array.from(deviceSet) });
   } catch (error) {
     log.error({ err: error }, 'matrix error');
     res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
@@ -368,6 +386,7 @@ const SOURCE_PRECEDENCE: Record<SyncType, TargetTool[]> = {
   mcp:     ['claude', 'codex', 'gemini', 'opencode'],
   command: ['claude', 'opencode', 'codex', 'gemini'],
   agent:   ['claude', 'opencode', 'gemini', 'codex'],
+  instructions: ['claude', 'codex', 'opencode', 'gemini'],
 };
 
 interface SyncPlanEntry {
@@ -389,7 +408,7 @@ function readField(item: any, key: string): unknown {
   catch { return undefined; }
 }
 
-const ALL_SYNC_TYPES: SyncType[] = ['skill', 'mcp', 'command', 'agent'];
+const ALL_SYNC_TYPES: SyncType[] = ['skill', 'mcp', 'command', 'agent', 'instructions'];
 
 /** True for rows that must never act as a sync source (system/bundled/shared). */
 function isReadonlyRow(row: any): boolean {
