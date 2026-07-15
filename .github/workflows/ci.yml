@@ -6,9 +6,6 @@
 name: CI
 
 on:
-  pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 # Cancel superseded runs on the same ref so a busy PR doesn't queue up.
