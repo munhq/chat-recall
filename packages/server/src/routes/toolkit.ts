@@ -356,7 +356,13 @@ router.get('/matrix', async (_req, res) => {
         if (!out[type][name][key]) out[type][name][key] = row.id;
       }
     }
-    res.json({ ...out, supportedTargets: SUPPORTED_TARGETS, devices: Array.from(deviceSet) });
+
+    let pendingIntents: any[] = [];
+    try {
+      pendingIntents = await store.listPendingSyncIntents(null, 1000);
+    } catch { /* ignore */ }
+
+    res.json({ ...out, supportedTargets: SUPPORTED_TARGETS, devices: Array.from(deviceSet), pendingIntents });
   } catch (error) {
     log.error({ err: error }, 'matrix error');
     res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });

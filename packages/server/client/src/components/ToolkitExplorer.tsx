@@ -794,6 +794,23 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
       const m = await getToolkitMatrix();
       setMatrix(m);
       setLoadErr(null);
+      if (m && Array.isArray(m.pendingIntents)) {
+        setPending((prev) => {
+          const next = new Map(prev);
+          m.pendingIntents?.forEach((intent: any) => {
+            if (intent.kind === 'copy' && intent.artifact_type && intent.name && intent.to_tool) {
+              const k = cellKey(
+                intent.artifact_type as SyncType,
+                intent.name,
+                intent.device_id || 'local',
+                intent.to_tool as SyncTool
+              );
+              next.set(k, 'add');
+            }
+          });
+          return next;
+        });
+      }
     } catch (e) {
       setLoadErr(e instanceof Error ? e.message : 'failed to load matrix');
     }

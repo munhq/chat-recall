@@ -1310,6 +1310,7 @@ export interface ToolkitMatrix {
   instructions: MatrixCells;
   devices: string[];
   supportedTargets: Record<SyncType, SyncTool[]>;
+  pendingIntents?: any[];
 }
 
 export async function getToolkitMatrix(): Promise<ToolkitMatrix> {
