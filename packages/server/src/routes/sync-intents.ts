@@ -15,10 +15,15 @@
 import express from 'express';
 import { createStore } from '../imports.js';
 import type { SyncIntentInput } from '../imports.js';
+import { ALL_SYNC_TYPES } from '@chat-recall/engine/core/toolkit-sync.js';
 
 const router = express.Router();
 
-const VALID_TYPES = new Set(['skill', 'mcp', 'command', 'agent']);
+// Derive the accepted artifact types from the engine's canonical list rather
+// than hardcoding — a hardcoded {skill,mcp,command,agent} silently 400'd every
+// `instructions` (Rules/MD) copy intent after that type was added to the client
+// + engine but not here. Single source of truth = no drift.
+const VALID_TYPES = new Set<string>(ALL_SYNC_TYPES);
 const VALID_TOOLS = new Set(['claude', 'agy', 'gemini', 'opencode', 'codex']);
 
 /** Agent tokens resolve to userId `device:<id>`; pull the bare device id out. */
