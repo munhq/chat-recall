@@ -46,6 +46,17 @@ describe('POST /api/sync-intents (validation)', () => {
       .send({ kind: 'copy', artifactType: 'skill', name: 'x', fromTool: 'claude', toTool: 'claude' });
     expect(res.status).toBe(400);
   });
+
+  test('copy ACCEPTS the instructions (Rules/MD) artifact type', async () => {
+    // Regression: VALID_TYPES was hardcoded to {skill,mcp,command,agent}, so
+    // every `instructions` copy the client + engine support was 400'd — the
+    // exact "POST /api/sync-intents 400" the sync UI hit. VALID_TYPES now derives
+    // from the engine's ALL_SYNC_TYPES, which includes `instructions`.
+    const res = await request(app).post('/api/sync-intents')
+      .send({ kind: 'copy', artifactType: 'instructions', name: 'CLAUDE.md', fromTool: 'claude', toTool: 'gemini' });
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(true);
+  });
 });
 
 describe('enqueue → pending → ack round-trip', () => {
