@@ -336,18 +336,20 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
         {!loading && (
           <>
             <Card
+              interactive
               onClick={() => { setLens('action'); setSevFilter(f => f === 'critical' ? null : 'critical'); }}
               title="Show only critical secrets"
-              style={{ padding: '10px 14px', minWidth: 130, borderLeft: '3px solid var(--cr-err-500)', cursor: 'pointer', outline: sevFilter === 'critical' ? '2px solid var(--cr-err-500)' : 'none', outlineOffset: 2 }}
+              style={{ padding: '10px 14px', minWidth: 130, borderLeft: '3px solid var(--cr-err-500)', outline: sevFilter === 'critical' ? '2px solid var(--cr-err-500)' : undefined, outlineOffset: 2 }}
             >
               <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Critical</div>
               <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--cr-err-500)' }}>{headline.counts.critical}</div>
               <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>distinct keys</div>
             </Card>
             <Card
+              interactive
               onClick={() => { setLens('action'); setSevFilter(f => f === 'high' ? null : 'high'); }}
               title="Show only high-severity secrets"
-              style={{ padding: '10px 14px', minWidth: 130, borderLeft: '3px solid var(--cr-warn-500)', cursor: 'pointer', outline: sevFilter === 'high' ? '2px solid var(--cr-warn-500)' : 'none', outlineOffset: 2 }}
+              style={{ padding: '10px 14px', minWidth: 130, borderLeft: '3px solid var(--cr-warn-500)', outline: sevFilter === 'high' ? '2px solid var(--cr-warn-500)' : undefined, outlineOffset: 2 }}
             >
               <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>High</div>
               <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--cr-warn-500)' }}>{headline.counts.high}</div>
@@ -358,11 +360,21 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
               <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--cr-fg-1)' }}>{headline.sessionsHit}</div>
               <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>contain critical or high</div>
             </Card>
-            <Card style={{ padding: '10px 14px', minWidth: 110 }}>
+            <Card
+              interactive={headline.counts.medium > 0}
+              onClick={headline.counts.medium > 0 ? () => { setLens('action'); setSevFilter(null); requestAnimationFrame(() => document.getElementById('sec-review-queue')?.scrollIntoView({ behavior: 'smooth', block: 'start' })); } : undefined}
+              title={headline.counts.medium > 0 ? 'Jump to the medium-severity review queue' : undefined}
+              style={{ padding: '10px 14px', minWidth: 110 }}
+            >
               <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Medium</div>
               <div style={{ fontSize: 22, fontWeight: 600, color: 'var(--cr-fg-2)' }}>{headline.counts.medium}</div>
             </Card>
-            <Card style={{ padding: '10px 14px', minWidth: 110, opacity: 0.6 }}>
+            <Card
+              interactive={headline.counts.noise > 0}
+              onClick={headline.counts.noise > 0 ? () => { setLens('action'); setSevFilter(null); setShowNoise(true); requestAnimationFrame(() => document.getElementById('sec-review-queue')?.scrollIntoView({ behavior: 'smooth', block: 'start' })); } : undefined}
+              title={headline.counts.noise > 0 ? 'Reveal noise-tier findings in the review queue' : undefined}
+              style={{ padding: '10px 14px', minWidth: 110, opacity: 0.6 }}
+            >
               <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Noise</div>
               <div style={{ fontSize: 22, fontWeight: 600, color: 'var(--cr-fg-3)' }}>{headline.counts.noise}</div>
             </Card>
@@ -612,7 +624,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
 
           {/* Review queue — medium severity */}
           {!sevFilter && reviewQueue.length > 0 && (
-            <div style={{ marginTop: 24 }}>
+            <div id="sec-review-queue" style={{ marginTop: 24, scrollMarginTop: 16 }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
                 <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--cr-fg-2)' }}>Review queue</span>
                 <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>

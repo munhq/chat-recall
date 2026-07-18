@@ -67,6 +67,10 @@ interface ConversationViewerProps {
   /** Open the top-level Security dashboard scoped to this conversation's leaked
    *  secrets so they can be rotated/dismissed. */
   onManageSecurity?: () => void;
+  /** Open another session by id (Related tab → sibling sessions). */
+  onOpenSession?: (id: string) => void;
+  /** Open a related memory item by (sourceType, id) — Related tab links/plans. */
+  onOpenItem?: (sourceType: string, id: string) => void;
 }
 
 // Map a search hit's top matched snippet back to the transcript message that
@@ -146,6 +150,8 @@ export default function ConversationViewer({
   sessionInfo,
   initialTab,
   onManageSecurity,
+  onOpenSession,
+  onOpenItem,
 }: ConversationViewerProps) {
   // Default to the actual conversation messages, not the Gemini summary.
   // Caller can override (e.g. Activity passes 'diff' since the user just
@@ -763,7 +769,7 @@ export default function ConversationViewer({
             (m === 'summary') ? 'summary'
             : (m === 'insights' || m === 'outcome') ? 'insights'
             : (m === 'metrics') ? 'metrics'
-            : (m === 'full' || m === 'firstPrompt' || m === 'trace' || m === 'related') ? 'transcript'
+            : (m === 'full' || m === 'firstPrompt' || m === 'trace') ? 'transcript'
             : (m === 'diff' || m === 'commits') ? 'changes'
             : m; // 'security' | 'plans'
           const primary = primaryOf(viewMode);
@@ -776,6 +782,9 @@ export default function ConversationViewer({
             return seen.size;
           })();
           const planCount = (relatedData?.sessionPlans?.length ?? 0) + (relatedData?.projectPlans?.length ?? 0);
+          // Sibling sessions + cross-memory links are unique to the Related view
+          // (plans get their own tab). Without a tab this content was unreachable.
+          const relatedCount = (relatedData?.siblingSessionsInProject?.length ?? 0) + (relatedData?.links?.length ?? 0);
           const tabs = [
             // Overview leads — the at-a-glance dashboard (default). Recap
             // (Delivered/Not done/Frustrations) and Summary follow.
@@ -787,6 +796,8 @@ export default function ConversationViewer({
             // Plans is conditional: a tab only when this conversation has (or its
             // project has) plans. Linked plans lead; project plans follow.
             ...(planCount > 0 ? [{ value: 'plans', label: `Plans · ${planCount}`, icon: 'file' }] : []),
+            // Related is conditional: sibling sessions / cross-memory links.
+            ...(relatedCount > 0 ? [{ value: 'related', label: 'Related', icon: 'grid' }] : []),
             // Security is conditional: a tab only when there's something to see.
             ...(findingCount > 0 ? [{ value: 'security', label: `Security · ${findingCount}`, icon: 'check' }] : []),
           ];
@@ -1099,6 +1110,8 @@ export default function ConversationViewer({
                         indexed_at: openPlan.mtime,
                         extra_json: '',
                       } as MemoryMetadataRow}
+                      onSessionClick={onOpenSession}
+                      onOpenItem={onOpenItem}
                     />
                   </div>
                 </div>
@@ -1125,6 +1138,7 @@ export default function ConversationViewer({
                         <Card
                           key={`${item.sourceType}-${item.id}`}
                           interactive
+                          onClick={() => (item.sourceType === 'session' ? onOpenSession?.(item.id) : onOpenItem?.(item.sourceType, item.id))}
                           style={{ padding: 14 }}
                         >
                           <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.02em' }}>
@@ -1148,6 +1162,7 @@ export default function ConversationViewer({
                         <Card
                           key={plan.id}
                           interactive
+                          onClick={() => onOpenItem?.(plan.sourceType, plan.id)}
                           style={{ padding: 14 }}
                         >
                           <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cr-fg-1)', marginBottom: 6 }}>{plan.title}</div>
@@ -1168,6 +1183,7 @@ export default function ConversationViewer({
                         <Card
                           key={sib.sessionId}
                           interactive
+                          onClick={() => onOpenSession?.(sib.sessionId)}
                           style={{ padding: 14 }}
                         >
                           <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cr-fg-1)', marginBottom: 6 }}>

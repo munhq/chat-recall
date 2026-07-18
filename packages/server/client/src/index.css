@@ -132,19 +132,24 @@
   --cr-on-info: #FFFFFF;
   --cr-on-warn: #FFFFFF;
 
-  --cr-ok-500: #1A7F37;
+  /* Semantic 500s deepened one notch vs GitHub's light palette: these are used
+   * as chip TEXT on their own -surf tint (e.g. a green "96" health badge), where
+   * the tint costs ~0.5 contrast and left them at ~4.0–4.3 (just under AA). These
+   * values clear AA both on plain ink and on the tint. Same hues; dark theme
+   * (light-on-dark) is unaffected. */
+  --cr-ok-500: #157031;
   --cr-ok-surf: rgba(26, 127, 55, 0.08);
   --cr-ok-line: rgba(26, 127, 55, 0.20);
 
-  --cr-warn-500: #9A6700;
+  --cr-warn-500: #845700;
   --cr-warn-surf: rgba(154, 103, 0, 0.08);
   --cr-warn-line: rgba(154, 103, 0, 0.20);
 
-  --cr-err-500: #CF222E;
+  --cr-err-500: #C21D28;
   --cr-err-surf: rgba(207, 34, 46, 0.07);
   --cr-err-line: rgba(207, 34, 46, 0.22);
 
-  --cr-info-500: #0969DA;
+  --cr-info-500: #0A5FBE;
   --cr-info-surf: rgba(9, 105, 218, 0.07);
   --cr-info-line: rgba(9, 105, 218, 0.20);
 
@@ -217,6 +222,12 @@ a:hover { text-decoration: underline; }
 @keyframes cr-pulse {
   0%, 100% { opacity: 1; }
   50%      { opacity: 0.45; }
+}
+@keyframes cr-spin { to { transform: rotate(360deg); } }
+/* Spins the refresh icon while a manual refresh is in flight. */
+.cr-spin svg { animation: cr-spin 0.8s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .cr-spin svg { animation: none; }
 }
 
 .cr-conv-list { min-width: 0; }

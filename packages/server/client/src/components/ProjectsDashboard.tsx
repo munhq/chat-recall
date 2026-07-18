@@ -4,6 +4,7 @@ import type { ProjectTreeNode } from '../App';
 import { getCodeProjects, type CodeProject } from '../services/api';
 import ActivityTimeline from './ActivityTimeline';
 import CodeExplorer from './CodeExplorer';
+import FindingsPanel from './FindingsPanel';
 
 interface ProjectsDashboardProps {
   tree: ProjectTreeNode[];
@@ -12,9 +13,13 @@ interface ProjectsDashboardProps {
   toolFilter: string;
   onSessionClick: (sessionId: string) => void;
   onActiveProjects?: (byProject: Record<string, number>) => void;
+  /** Surface repos with the most critical findings / hotspots first — carries
+   *  the intent of a Command Center metric click. */
+  emphasis?: 'critical' | 'hotspots' | null;
+  onClearEmphasis?: () => void;
 }
 
-type TabId = 'repos' | 'activity' | 'code';
+type TabId = 'repos' | 'findings' | 'activity' | 'code';
 
 export default function ProjectsDashboard({
   tree,
@@ -23,8 +28,16 @@ export default function ProjectsDashboard({
   toolFilter,
   onSessionClick,
   onActiveProjects,
+  emphasis,
+  onClearEmphasis,
 }: ProjectsDashboardProps) {
   const [activeTab, setActiveTab] = useState<TabId>('repos');
+  // A metric click lands on the surface that answers it: "critical findings"
+  // opens the cross-project Findings worklist; "hotspots" sorts the repo grid.
+  useEffect(() => {
+    if (emphasis === 'critical') setActiveTab('findings');
+    else if (emphasis === 'hotspots') setActiveTab('repos');
+  }, [emphasis]);
   const [searchQuery, setSearchQuery] = useState('');
   const [codeProjects, setCodeProjects] = useState<CodeProject[]>([]);
   const [loadingCodeProjects, setLoadingCodeProjects] = useState(false);
@@ -62,6 +75,13 @@ export default function ProjectsDashboard({
     return flat;
   }, [tree]);
 
+  // Friendly name for a project_id — prefer the tree's display name, else strip
+  // the git:host/owner/ prefix so a finding reads "munbot", not the full id.
+  const projectNameOf = useMemo(() => {
+    const map = new Map(flatTree.map((p) => [p.id, p.name]));
+    return (id: string) => map.get(id) || id.replace(/^git:[^/]+\/[^/]+\//, '').replace(/^(git|path|ws):/, '');
+  }, [flatTree]);
+
   // Combine flatTree items with rich CodeProject details
   const projects = useMemo(() => {
     const codeMap = new Map(codeProjects.map(p => [p.projectId, p]));
@@ -75,14 +95,18 @@ export default function ProjectsDashboard({
     });
   }, [flatTree, codeProjects]);
 
-  // Filter based on search query
+  // Filter based on search query, then (when a metric was clicked) sort the
+  // relevant metric to the top so the intent of the click is honored.
   const filteredProjects = useMemo(() => {
-    if (!searchQuery.trim()) return projects;
-    const q = searchQuery.toLowerCase().trim();
-    return projects.filter(
-      p => p.name.toLowerCase().includes(q) || p.id.toLowerCase().includes(q)
-    );
-  }, [projects, searchQuery]);
+    const q = searchQuery.trim().toLowerCase();
+    const base = q
+      ? projects.filter(p => p.name.toLowerCase().includes(q) || p.id.toLowerCase().includes(q))
+      : projects;
+    if (!emphasis) return base;
+    const metric = (p: typeof base[number]) =>
+      emphasis === 'critical' ? (p.details?.health?.critical ?? 0) : (p.details?.health?.hotspots ?? 0);
+    return [...base].sort((a, b) => metric(b) - metric(a));
+  }, [projects, searchQuery, emphasis]);
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -103,6 +127,7 @@ export default function ProjectsDashboard({
           onChange={(v) => setActiveTab(v as TabId)}
           options={[
             { value: 'repos', label: 'Active Repositories' },
+            { value: 'findings', label: 'Findings' },
             { value: 'activity', label: 'Global Activity' },
             { value: 'code', label: 'System Code Map' },
           ]}
@@ -113,6 +138,13 @@ export default function ProjectsDashboard({
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
         {activeTab === 'repos' && (
           <div style={{ padding: '20px 28px 40px' }}>
+            {emphasis && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, padding: '8px 12px', fontSize: 13, color: 'var(--cr-fg-1)', background: 'var(--cr-brand-surf)', border: '1px solid var(--cr-brand-line)', borderRadius: 'var(--cr-radius-sm)' }}>
+                <span>Sorted by <b>{emphasis === 'critical' ? 'critical findings' : 'hotspots'}</b> — repos with the most appear first.</span>
+                <span style={{ flex: 1 }} />
+                <button onClick={onClearEmphasis} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Clear</button>
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 12, marginBottom: 18, maxWidth: 480 }}>
               <Input
                 placeholder="Filter repositories..."
@@ -221,6 +253,14 @@ export default function ProjectsDashboard({
               </div>
             )}
           </div>
+        )}
+
+        {activeTab === 'findings' && (
+          <FindingsPanel
+            onOpenProject={onPick}
+            projectNameOf={projectNameOf}
+            initialSeverity={emphasis === 'critical' ? 'critical' : null}
+          />
         )}
 
         {activeTab === 'activity' && (

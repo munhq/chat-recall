@@ -326,13 +326,40 @@ function DoNext({ recs, actions, projectId, hasCode, onReload }: { recs: CodeRec
 function DoNextRow({ item, projectId, onReload }: { item: DoItem; projectId: string; onReload: () => void }) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
+  const [err, setErr] = useState(false);
   const [copied, setCopied] = useState(false);
   const [open, setOpen] = useState(false);
   const isRec = !!item.rec;
   const expandText = item.rec ? String((item.rec.action.payload as any)?.text || '') : (item.action?.agentPrompt || '');
-  const apply = async () => { if (!item.rec) return; setBusy(true); const res = await applyCodeRecommendation(projectId, item.rec.id); setMsg(res.message || (res.ok ? 'done' : 'failed')); setBusy(false); if (res.applied) onReload(); };
+  const apply = async () => {
+    if (!item.rec) return;
+    setBusy(true); setErr(false); setMsg('');
+    try {
+      const res = await applyCodeRecommendation(projectId, item.rec.id);
+      setErr(!res.ok);
+      setMsg(res.message || (res.ok ? 'done' : 'failed'));
+      if (res.applied) onReload();
+    } catch (e) {
+      setErr(true);
+      setMsg(e instanceof Error ? `failed: ${e.message}` : 'failed — try again');
+    } finally {
+      setBusy(false);
+    }
+  };
   const copy = () => { if (item.action) { navigator.clipboard.writeText(item.action.agentPrompt); setCopied(true); setTimeout(() => setCopied(false), 1300); } };
-  const done = async () => { if (item.action) { await patchCodeAction(item.action.id, { status: 'done', queued: false }); onReload(); } };
+  const done = async () => {
+    if (!item.action) return;
+    setBusy(true); setErr(false); setMsg('');
+    try {
+      await patchCodeAction(item.action.id, { status: 'done', queued: false });
+      onReload();
+    } catch (e) {
+      setErr(true);
+      setMsg(e instanceof Error ? `failed: ${e.message}` : 'failed — try again');
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <div style={{ padding: '9px 10px', borderBottom: '1px solid var(--cr-line-1)' }}>
       <div className="cr-wrap-mobile" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -342,12 +369,12 @@ function DoNextRow({ item, projectId, onReload }: { item: DoItem; projectId: str
         {isRec
           ? <Button variant="primary" onClick={apply} disabled={busy}>{busy ? 'applying…' : item.rec!.kind === 'rule' ? 'Apply to CLAUDE.md' : item.rec!.kind === 'label' ? 'Apply label' : item.rec!.kind === 'skill' ? 'Install skill' : 'Apply'}</Button>
           : <Button variant="primary" onClick={copy}>{copied ? 'copied ✓' : 'Copy prompt'}</Button>}
-        {!isRec && <Button variant="ghost" onClick={done}>Done</Button>}
+        {!isRec && <Button variant="ghost" onClick={done} disabled={busy}>Done</Button>}
         {expandText && <button onClick={() => setOpen(!open)} title="Show detail" style={{ background: 'none', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-sm)', color: 'var(--cr-fg-2)', cursor: 'pointer', padding: '2px 7px', fontSize: 12 }}>{open ? '−' : '⌄'}</button>}
       </div>
       {item.detail && <div style={{ color: 'var(--cr-fg-2)', fontSize: 12, marginTop: 4 }}>{item.detail}</div>}
       {open && expandText && <pre style={{ background: 'var(--cr-ink-2, #0d1117)', border: '1px solid var(--cr-line-1)', borderRadius: 6, padding: 10, fontSize: 11, whiteSpace: 'pre-wrap', fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-1)', marginTop: 6 }}>{expandText}</pre>}
-      {msg && <span style={{ fontSize: 12, color: 'var(--cr-fg-2)', marginLeft: 4 }}>{msg}</span>}
+      {msg && <span style={{ fontSize: 12, color: err ? 'var(--cr-err-500)' : 'var(--cr-fg-2)', marginLeft: 4 }}>{msg}</span>}
     </div>
   );
 }

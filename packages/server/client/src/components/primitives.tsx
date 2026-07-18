@@ -643,10 +643,23 @@ interface CardProps extends React.HTMLAttributes<HTMLDivElement> {
   interactive?: boolean;
 }
 
-export function Card({ children, style, interactive, ...rest }: CardProps) {
+export function Card({ children, style, interactive, onClick, ...rest }: CardProps) {
   const [hov, setHov] = useState(false);
+  const [foc, setFoc] = useState(false);
+  // A card that both looks interactive AND has a click handler is a real
+  // control: give it button semantics + keyboard operation + a focus ring so
+  // it isn't a mouse-only dead end.
+  const clickable = interactive && !!onClick;
   return (
     <div
+      onClick={onClick}
+      role={clickable ? 'button' : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onKeyDown={clickable ? (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); (onClick as React.MouseEventHandler<HTMLDivElement>)(e as unknown as React.MouseEvent<HTMLDivElement>); }
+      } : undefined}
+      onFocus={clickable ? () => setFoc(true) : undefined}
+      onBlur={clickable ? () => setFoc(false) : undefined}
       onMouseEnter={interactive ? () => setHov(true) : undefined}
       onMouseLeave={interactive ? () => setHov(false) : undefined}
       style={{
@@ -656,6 +669,8 @@ export function Card({ children, style, interactive, ...rest }: CardProps) {
         padding: 20,
         transition: 'border-color var(--cr-dur-fast), background var(--cr-dur-fast)',
         cursor: interactive ? 'pointer' : 'default',
+        outline: 'none',
+        boxShadow: foc ? 'var(--cr-focus-ring)' : undefined,
         ...style,
       }}
       {...rest}

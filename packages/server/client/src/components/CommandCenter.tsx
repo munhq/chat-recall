@@ -22,9 +22,10 @@ import {
 
 type Nav = (v: string) => void;
 
-export default function CommandCenter({ setView, onOpenProject, cloud }: { setView: Nav; onOpenProject: (id: string) => void; cloud?: boolean }) {
+export default function CommandCenter({ setView, onOpenProject, onFocusProjects, cloud }: { setView: Nav; onOpenProject: (id: string) => void; onFocusProjects?: (emphasis: 'critical' | 'hotspots') => void; cloud?: boolean }) {
   const [projects, setProjects] = useState<CodeProject[]>([]);
   const [recs, setRecs] = useState<CodeRecommendation[]>([]);
+  const [showAllRecs, setShowAllRecs] = useState(false);
   const [secrets, setSecrets] = useState<SecretsSummary | null>(null);
   const [status, setStatus] = useState<{ totalSessions?: number } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -157,8 +158,8 @@ export default function CommandCenter({ setView, onOpenProject, cloud }: { setVi
           can't act on — the Code health panel below ranks per-project. */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12, marginBottom: 22 }}>
         <Metric label="Projects" value={loading ? '—' : String(projects.length)} onClick={() => setView('projects')} />
-        <Metric label="Critical findings" value={loading ? '—' : String(criticals)} tone={criticals > 0 ? 'err' : 'ok'} onClick={() => setView('projects')} />
-        <Metric label="Hotspots" value={loading ? '—' : String(hotspots)} onClick={() => setView('projects')} />
+        <Metric label="Critical findings" value={loading ? '—' : String(criticals)} tone={criticals > 0 ? 'err' : 'ok'} onClick={() => (onFocusProjects ? onFocusProjects('critical') : setView('projects'))} />
+        <Metric label="Hotspots" value={loading ? '—' : String(hotspots)} onClick={() => (onFocusProjects ? onFocusProjects('hotspots') : setView('projects'))} />
         <Metric label="Leaked secrets" value={loading ? '—' : String(leaked)} tone={leaked > 0 ? 'err' : 'ok'} onClick={() => setView('security')} />
         <Metric
           label={syncTick?.arriving ? 'Sessions · syncing…' : 'Sessions'}
@@ -173,8 +174,13 @@ export default function CommandCenter({ setView, onOpenProject, cloud }: { setVi
           <Panel title="Last 7 days" hint="what actually happened" action={() => setView('search')}>
             <WeekStrip />
           </Panel>
-          <Panel title="Recommendations" hint="behaviour × code" action={recs.length ? undefined : null}>
-            {recs.length === 0 ? <Empty>No recommendations right now — clean signals.</Empty> : recs.slice(0, 4).map((r) => (
+          <Panel
+            title="Recommendations"
+            hint="behaviour × code"
+            action={recs.length > 4 ? () => setShowAllRecs((v) => !v) : null}
+            actionLabel={showAllRecs ? 'show less' : `view all ${recs.length} →`}
+          >
+            {recs.length === 0 ? <Empty>No recommendations right now — clean signals.</Empty> : (showAllRecs ? recs : recs.slice(0, 4)).map((r) => (
               <RecRow key={r.id} rec={r} />
             ))}
           </Panel>
@@ -234,12 +240,12 @@ function Metric({ label, value, suffix, tone = 'neutral', onClick }: { label: st
   );
 }
 
-function Panel({ title, hint, action, children }: { title: string; hint?: string; action?: (() => void) | null; children: React.ReactNode }) {
+function Panel({ title, hint, action, actionLabel = 'view all →', children }: { title: string; hint?: string; action?: (() => void) | null; actionLabel?: string; children: React.ReactNode }) {
   return (
     <Card style={{ padding: 16 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <span style={{ fontFamily: 'var(--cr-font-display)', fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--cr-fg-2)' }}>{title}{hint ? <span style={{ color: 'var(--cr-fg-3)', marginLeft: 8 }}>{hint}</span> : null}</span>
-        {action ? <button onClick={action} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12 }}>view all →</button> : null}
+        {action ? <button onClick={action} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12 }}>{actionLabel}</button> : null}
       </div>
       {children}
     </Card>
@@ -265,8 +271,21 @@ function ProjectRow({ p, onOpen }: { p: CodeProject; onOpen: () => void }) {
 
 function RecRow({ rec }: { rec: CodeRecommendation }) {
   const [msg, setMsg] = useState('');
+  const [err, setErr] = useState(false);
   const [busy, setBusy] = useState(false);
-  const apply = async () => { setBusy(true); const r = await applyAccountRecommendation(rec.id); setMsg(r.message || (r.ok ? 'queued' : 'failed')); setBusy(false); };
+  const apply = async () => {
+    setBusy(true); setErr(false); setMsg('');
+    try {
+      const r = await applyAccountRecommendation(rec.id);
+      setErr(!r.ok);
+      setMsg(r.message || (r.ok ? 'queued' : 'failed'));
+    } catch (e) {
+      setErr(true);
+      setMsg(e instanceof Error ? `failed: ${e.message}` : 'failed — try again');
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <div style={{ padding: '10px 0', borderBottom: '1px solid var(--cr-line-1)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
@@ -276,7 +295,7 @@ function RecRow({ rec }: { rec: CodeRecommendation }) {
       <div style={{ color: 'var(--cr-fg-2)', fontSize: 12, marginBottom: 8 }}>{rec.rationale}</div>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <Button variant="primary" onClick={apply} disabled={busy}>{busy ? 'applying…' : rec.action.type === 'append_claude_md' ? 'Apply rule' : 'Apply'}</Button>
-        {msg && <span style={{ fontSize: 12, color: 'var(--cr-fg-2)' }}>{msg}</span>}
+        {msg && <span style={{ fontSize: 12, color: err ? 'var(--cr-err-500)' : 'var(--cr-fg-2)' }}>{msg}</span>}
       </div>
     </div>
   );
