@@ -22,12 +22,23 @@ interface TopBarProps {
   /** Mobile drawer state — drives aria-expanded on the hamburger so
    *  screen readers announce open/closed transitions. */
   mobileSidebarOpen?: boolean;
+  /** Re-fetch the current view's data + freshness (the "Refresh index" button). */
+  onRefresh?: () => void;
 }
 
-export default function TopBar({ view, setView, enabledViews, query, setQuery, searchRef, onSearch, onMobileMenu, mobileSidebarOpen }: TopBarProps) {
+export default function TopBar({ view, setView, enabledViews, query, setQuery, searchRef, onSearch, onMobileMenu, mobileSidebarOpen, onRefresh }: TopBarProps) {
   const [theme, setTheme] = useState(() =>
     document.documentElement.getAttribute('data-theme') || 'dark'
   );
+  const [refreshing, setRefreshing] = useState(false);
+  const [chipRefresh, setChipRefresh] = useState(0);
+  const handleRefresh = () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    setChipRefresh((n) => n + 1);
+    onRefresh?.();
+    window.setTimeout(() => setRefreshing(false), 900);
+  };
 
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark';
@@ -142,8 +153,15 @@ export default function TopBar({ view, setView, enabledViews, query, setQuery, s
 
       {/* Right actions — status first (freshness at a glance), then controls. */}
       <div className="cr-topbar-actions" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <SyncStatusChip />
-        <IconButton icon="refresh" title="Refresh index" aria-label="Refresh index" className="cr-topbar-action-refresh" />
+        <SyncStatusChip refreshSignal={chipRefresh} />
+        <IconButton
+          icon="refresh"
+          title="Refresh data"
+          aria-label="Refresh data"
+          disabled={refreshing}
+          onClick={handleRefresh}
+          className={`cr-topbar-action-refresh${refreshing ? ' cr-spin' : ''}`}
+        />
         <IconButton
           icon={theme === 'dark' ? 'sun' : 'moon'}
           title={theme === 'dark' ? 'Switch to light' : 'Switch to dark'}
@@ -197,7 +215,7 @@ export default function TopBar({ view, setView, enabledViews, query, setQuery, s
  * Live data-coverage chip: sessions held, raw-archived count, freshness of
  * the newest session. Trust-by-glance — replaces "is it synced?" arguments.
  */
-export function SyncStatusChip() {
+export function SyncStatusChip({ refreshSignal }: { refreshSignal?: number }) {
   const [s, setS] = React.useState<{ sessions: number; rawArchived: number; newestSessionAgeMs: number | null } | null>(null);
   React.useEffect(() => {
     let dead = false;
@@ -207,7 +225,7 @@ export function SyncStatusChip() {
     load();
     const t = setInterval(load, 60_000);
     return () => { dead = true; clearInterval(t); };
-  }, []);
+  }, [refreshSignal]);
   if (!s || typeof s.sessions !== 'number') return null;
   // Freshness is the one signal worth showing at a glance; raw counts are
   // detail, so they live in the tooltip. A single ok/warn dot + one word keeps

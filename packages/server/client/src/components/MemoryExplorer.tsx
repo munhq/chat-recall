@@ -32,6 +32,7 @@ import {
   browseMemory,
   reindexMemory,
   getMemoryItemContent,
+  getMemoryItem,
 } from '../services/api';
 
 // Sessions live under the Conversations tab — Memory is for non-session memory
@@ -120,6 +121,9 @@ interface MemoryExplorerProps {
   onSessionClick?: (sessionId: string) => void;
   toolFilter?: string;
   projectFilter?: string | null;
+  /** Resolved filesystem path for the selected project. Memory search/browse
+   *  scope on project_path (a substring), not the project_id the sidebar holds. */
+  projectPathFilter?: string | null;
 }
 
 type SessionToolFilter = 'all' | 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy';
@@ -136,7 +140,7 @@ function readItemTool(item: { source_type: string; extra_json?: string }): strin
   return 'claude';
 }
 
-export default function MemoryExplorer({ onSessionClick, toolFilter = 'all', projectFilter = null }: MemoryExplorerProps) {
+export default function MemoryExplorer({ onSessionClick, toolFilter = 'all', projectFilter = null, projectPathFilter = null }: MemoryExplorerProps) {
   const [activeType, setActiveType] = useState<SourceType | 'all'>('all');
   const [query, setQuery] = useState('');
   const [items, setItems] = useState<MemoryMetadataRow[]>([]);
@@ -145,46 +149,65 @@ export default function MemoryExplorer({ onSessionClick, toolFilter = 'all', pro
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<MemoryStatus | null>(null);
   const [reindexing, setReindexing] = useState<Set<string>>(new Set());
+  const [error, setError] = useState<string | null>(null);
   const sessionTool = (toolFilter || 'all') as SessionToolFilter;
-  void projectFilter;
+  const errMsg = (e: unknown, verb: string) => `Couldn't ${verb}${e instanceof Error ? `: ${e.message}` : '. Try again.'}`;
 
   useEffect(() => {
     getMemoryStatus().then(setStatus).catch(console.error);
   }, []);
 
+  // The server scopes memory by project_path SUBSTRING (see store.searchFTS),
+  // so browse — which has no server-side project param — is scoped here on the
+  // fetched rows' project_path. Search passes the path substring to the server.
+  const scopeToProject = (rows: MemoryMetadataRow[]) =>
+    projectPathFilter ? rows.filter(r => (r.project_path || '').includes(projectPathFilter)) : rows;
+
   useEffect(() => {
     if (activeType !== 'all' && query === '') {
-      setLoading(true);
+      setLoading(true); setError(null);
       const limit = TOOL_FILTERABLE.has(activeType) ? 1000 : 50;
       browseMemory(activeType, limit)
-        .then(setItems)
+        .then((rows) => setItems(scopeToProject(rows)))
+        .catch((e) => setError(errMsg(e, 'load these items')))
         .finally(() => setLoading(false));
     } else if (activeType === 'all' && query === '') {
       // "Everything" browse: pull a mixed recent page across the primitive sources.
-      setLoading(true);
+      setLoading(true); setError(null);
       Promise.all(SOURCE_TABS.filter(t => t.id !== 'all').map(t => browseMemory(t.id as SourceType, 40).catch(() => [])))
-        .then(lists => setItems(lists.flat().sort((a, b) => b.mtime - a.mtime)))
+        .then(lists => setItems(scopeToProject(lists.flat().sort((a, b) => b.mtime - a.mtime))))
+        .catch((e) => setError(errMsg(e, 'load your memory')))
         .finally(() => setLoading(false));
     } else {
       setItems([]);
     }
-  }, [activeType, query]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeType, query, projectPathFilter]);
 
   const handleSearch = () => {
     if (!query.trim()) return;
-    setLoading(true);
-    searchMemory(query, 30, activeType === 'all' ? undefined : [activeType as SourceType])
+    setLoading(true); setError(null);
+    searchMemory(query, 30, activeType === 'all' ? undefined : [activeType as SourceType], projectPathFilter || undefined)
       .then(setSearchResults)
+      .catch((e) => setError(errMsg(e, 'run that search')))
       .finally(() => setLoading(false));
   };
 
+  // Re-run an active search when the project scope changes.
+  useEffect(() => {
+    if (query.trim()) handleSearch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectPathFilter]);
+
   const handleReindex = (type: SourceType) => {
     setReindexing((s) => new Set(s).add(type));
+    setError(null);
     reindexMemory([type])
       .then(() => {
-        getMemoryStatus().then(setStatus);
-        if (activeType === type) browseMemory(type).then(setItems);
+        getMemoryStatus().then(setStatus).catch(() => {});
+        if (activeType === type) browseMemory(type).then((rows) => setItems(scopeToProject(rows))).catch(() => {});
       })
+      .catch((e) => setError(errMsg(e, `re-index ${type}`)))
       .finally(() => {
         setReindexing((s) => { const next = new Set(s); next.delete(type); return next; });
       });
@@ -254,7 +277,16 @@ export default function MemoryExplorer({ onSessionClick, toolFilter = 'all', pro
     return pa.localeCompare(pb) || (b.mtime - a.mtime);
   });
 
-  const selectedItem = displayedItems.find((i) => i.id === selectedId);
+  // A connected item can live outside the currently-browsed list, so opening
+  // one fetches it directly and holds it as an override keyed by id.
+  const [detailOverride, setDetailOverride] = useState<MemoryMetadataRow | null>(null);
+  const selectedItem =
+    displayedItems.find((i) => i.id === selectedId) ||
+    (detailOverride && detailOverride.id === selectedId ? detailOverride : undefined);
+  const openConnectedItem = (sourceType: string, id: string) => {
+    setSelectedId(id);
+    getMemoryItem(sourceType, id).then(setDetailOverride).catch(console.error);
+  };
 
   // Overview tiles from status — total memory + a compact source breakdown.
   const overview = useMemo(() => {
@@ -333,6 +365,14 @@ export default function MemoryExplorer({ onSessionClick, toolFilter = 'all', pro
         </div>
       </div>
 
+      {error && (
+        <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 16px 8px', padding: '8px 12px', fontSize: 13, color: 'var(--cr-err-500)', background: 'var(--cr-err-surf)', border: '1px solid var(--cr-err-line)', borderRadius: 'var(--cr-radius-sm)' }}>
+          <Icon name="shield" size={14} />
+          <span style={{ flex: 1 }}>{error}</span>
+          <button onClick={() => setError(null)} style={{ background: 'none', border: 'none', color: 'var(--cr-fg-2)', cursor: 'pointer', fontSize: 12 }}>Dismiss</button>
+        </div>
+      )}
+
       {/* Body: list + detail */}
       <div className="cr-split" data-has-selection={selectedId ? 'true' : undefined} style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         {/* List */}
@@ -393,7 +433,7 @@ export default function MemoryExplorer({ onSessionClick, toolFilter = 'all', pro
               <button type="button" className="cr-mobile-only cr-split-back" onClick={() => setSelectedId(null)} aria-label="Back to list">
                 <Icon name="chevronLeft" size={14} /> Back
               </button>
-              <MemoryDetail item={selectedItem} onSessionClick={onSessionClick} />
+              <MemoryDetail item={selectedItem} onSessionClick={onSessionClick} onOpenItem={openConnectedItem} />
             </>
           ) : (
             <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--cr-fg-3)' }}>
@@ -409,7 +449,7 @@ export default function MemoryExplorer({ onSessionClick, toolFilter = 'all', pro
   );
 }
 
-export function MemoryDetail({ item, onSessionClick }: { item: MemoryMetadataRow & { chunkType?: string }; onSessionClick?: (id: string) => void }) {
+export function MemoryDetail({ item, onSessionClick, onOpenItem }: { item: MemoryMetadataRow & { chunkType?: string }; onSessionClick?: (id: string) => void; onOpenItem?: (sourceType: string, id: string) => void }) {
   const [links, setLinks] = useState<MemoryLinkRow[]>([]);
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -457,8 +497,15 @@ export function MemoryDetail({ item, onSessionClick }: { item: MemoryMetadataRow
               const isTarget = link.source_id === item.id;
               const otherId = isTarget ? link.target_id : link.source_id;
               const otherType = isTarget ? link.target_type : link.source_type;
+              const canOpen = otherType === 'session' ? !!onSessionClick : !!onOpenItem;
               return (
-                <Card key={link.id} interactive style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Card
+                  key={link.id}
+                  interactive={canOpen}
+                  onClick={canOpen ? () => (otherType === 'session' ? onSessionClick!(otherId) : onOpenItem!(otherType, otherId)) : undefined}
+                  title={canOpen ? `Open ${otherType} ${otherId}` : otherId}
+                  style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 8 }}
+                >
                   <SourceBadge source={otherType as any} />
                   <span style={{ fontSize: 13, fontWeight: 500 }}>{otherId.slice(0, 20)}…</span>
                 </Card>
