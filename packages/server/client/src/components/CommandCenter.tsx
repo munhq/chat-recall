@@ -145,18 +145,18 @@ export default function CommandCenter({ setView, onOpenProject, onFocusProjects,
         </div>
       )}
       {/* Eyebrow + title */}
-      <div style={{ marginBottom: 22 }}>
-        <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 10, letterSpacing: '0.32em', textTransform: 'uppercase', color: 'var(--cr-brand-500)', display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div style={{ marginBottom: 28 }}>
+        <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 10, letterSpacing: '0.32em', textTransform: 'uppercase', color: 'var(--cr-brand-500)', display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
           <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--cr-ok-500)', boxShadow: '0 0 8px var(--cr-ok-500)' }} /> command center
         </div>
-        <h1 style={{ fontFamily: 'var(--cr-font-display)', fontWeight: 700, fontSize: 26, margin: '8px 0 0', letterSpacing: '-0.01em' }}>Everything you’re building, at a glance</h1>
-        <div style={{ color: 'var(--cr-fg-2)', fontSize: 13, marginTop: 4 }}>How you build × what you build — with the next move on every signal.</div>
+        <h1 style={{ fontFamily: 'var(--cr-font-display)', fontWeight: 700, fontSize: 32, margin: 0, letterSpacing: '-0.015em', lineHeight: 1.16, maxWidth: 620 }}>Everything you’re building, at a glance</h1>
+        <div style={{ color: 'var(--cr-fg-2)', fontSize: 14, marginTop: 10, maxWidth: 560, lineHeight: 1.5 }}>How you build × what you build — with the next move on every signal.</div>
       </div>
 
       {/* Hero metric strip. No "avg health": averaging N repos into one
           number hides the one that's on fire and moves for reasons you
           can't act on — the Code health panel below ranks per-project. */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12, marginBottom: 22 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12, marginBottom: 28 }}>
         <Metric label="Projects" value={loading ? '—' : String(projects.length)} onClick={() => setView('projects')} />
         <Metric label="Critical findings" value={loading ? '—' : String(criticals)} tone={criticals > 0 ? 'err' : 'ok'} onClick={() => (onFocusProjects ? onFocusProjects('critical') : setView('projects'))} />
         <Metric label="Hotspots" value={loading ? '—' : String(hotspots)} onClick={() => (onFocusProjects ? onFocusProjects('hotspots') : setView('projects'))} />
@@ -231,11 +231,23 @@ export default function CommandCenter({ setView, onOpenProject, onFocusProjects,
 }
 
 function Metric({ label, value, suffix, tone = 'neutral', onClick }: { label: string; value: string; suffix?: string; tone?: 'neutral' | 'ok' | 'warn' | 'err'; onClick?: () => void }) {
-  const color = tone === 'ok' ? 'var(--cr-ok-500)' : tone === 'warn' ? 'var(--cr-warn-500)' : tone === 'err' ? 'var(--cr-err-500)' : 'var(--cr-fg-1)';
+  const toneColor = tone === 'ok' ? 'var(--cr-ok-500)' : tone === 'warn' ? 'var(--cr-warn-500)' : tone === 'err' ? 'var(--cr-err-500)' : null;
+  // A toned tile (a problem worth acting on) carries a colored top edge so it
+  // reads at a glance across the strip — the signal, not just a red number.
   return (
-    <Card interactive={!!onClick} onClick={onClick} style={{ padding: '14px 16px', cursor: onClick ? 'pointer' : 'default' }}>
-      <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 26, fontWeight: 700, color, lineHeight: 1, letterSpacing: '-0.02em' }}>{value}<span style={{ fontSize: 13, color: 'var(--cr-fg-3)' }}>{suffix}</span></div>
-      <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 9, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--cr-fg-3)', marginTop: 8 }}>{label}</div>
+    <Card
+      interactive={!!onClick}
+      onClick={onClick}
+      style={{
+        padding: '18px 18px 16px',
+        cursor: onClick ? 'pointer' : 'default',
+        boxShadow: toneColor ? `inset 0 2px 0 ${toneColor}` : undefined,
+      }}
+    >
+      <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 32, fontWeight: 700, color: toneColor || 'var(--cr-fg-1)', lineHeight: 1, letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums' }}>
+        {value}<span style={{ fontSize: 14, color: 'var(--cr-fg-3)' }}>{suffix}</span>
+      </div>
+      <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--cr-fg-2)', marginTop: 12 }}>{label}</div>
     </Card>
   );
 }
