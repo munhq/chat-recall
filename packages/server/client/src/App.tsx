@@ -72,6 +72,8 @@ export interface ProjectTreeNode {
   source?: string;
   /** Newest session mtime (ms) under this node — powers the "Recent" group. */
   lastMtime?: number;
+  /** Filesystem path (for path-substring scoping of memory search/browse). */
+  projectPath?: string;
 }
 
 /**
@@ -91,6 +93,7 @@ function nodeFromApi(n: ProjectTreeApiNode): ProjectTreeNode {
     orphan: !!n.orphan,
     source: n.source,
     lastMtime: n.lastMtime,
+    projectPath: n.projectPath,
   };
 }
 
@@ -105,6 +108,19 @@ function findProjectName(tree: ProjectTreeNode[], projectId: string | null): str
   for (const n of tree) {
     if (n.fullPath === projectId) return n.name;
     const inChild = findProjectName(n.children, projectId);
+    if (inChild) return inChild;
+  }
+  return undefined;
+}
+
+/** Walk the tree to find a node's filesystem path for a given project_id.
+ *  Memory search/browse filter on project_path (a substring), not project_id,
+ *  so scoping needs the path, not the id the sidebar carries. */
+function findProjectPath(tree: ProjectTreeNode[], projectId: string | null): string | undefined {
+  if (!projectId) return undefined;
+  for (const n of tree) {
+    if (n.fullPath === projectId) return n.projectPath;
+    const inChild = findProjectPath(n.children, projectId);
     if (inChild) return inChild;
   }
   return undefined;
@@ -210,6 +226,10 @@ function AppInner() {
     try { return new URLSearchParams(window.location.search).get('project'); } catch { return null; }
   });
   const [query, setQuery] = useState('');
+  // When the user clicks a Command Center metric (Critical findings / Hotspots),
+  // the projects list opens sorted to surface that metric — carrying the intent
+  // of the click instead of dumping them on an unsorted repo grid.
+  const [projectsEmphasis, setProjectsEmphasis] = useState<'critical' | 'hotspots' | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [selectionNonce, setSelectionNonce] = useState(0);
   const [sort, setSort] = useState('recent');
@@ -266,6 +286,10 @@ function AppInner() {
   // tree is still in flight (or after a failed fetch).
   const [treeLoaded, setTreeLoaded] = useState(false);
   const [indexHealth, setIndexHealth] = useState<{ vectorOk: boolean; vectorError: string | null } | null>(null);
+  // Bumped by the topbar "Refresh" button to force an immediate re-fetch of
+  // sessions, project tree, and status without waiting for the 30s poll.
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  const handleRefreshAll = useCallback(() => setRefreshNonce((n) => n + 1), []);
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
@@ -288,7 +312,7 @@ function AppInner() {
     // reload, and the vector-health banner clears once it self-heals.
     const id = setInterval(refresh, 30_000);
     return () => { cancelled = true; clearInterval(id); };
-  }, []);
+  }, [refreshNonce]);
 
   // Sidebar now shows the same project-id tree in every view. The Activity
   // pane filters its own content by recent window; we no longer rebuild a
@@ -389,7 +413,7 @@ function AppInner() {
       });
 
     return () => { cancelled = true; };
-  }, [projectFilter, toolFilter]);
+  }, [projectFilter, toolFilter, refreshNonce]);
 
   // Load the next page of recent sessions. Driven by the
   // ConversationList's bottom-of-list intersection observer.
@@ -523,6 +547,24 @@ function AppInner() {
     setView('search');
     handleSelectSession(id.trim()); // writes ?session= itself
   }, [handleSelectSession]);
+
+  // Open a related item from the conversation viewer's Related tab. Sessions
+  // route to the transcript viewer; every other source type (plan, task,
+  // claude_md, …) opens in the memory-item viewer, mirroring how a memory
+  // search hit is opened.
+  const openMemoryByTypeId = useCallback((sourceType: string, id: string) => {
+    if (sourceType === 'session') { openById(id); return; }
+    setView('search');
+    setSelectedSessionId(null);
+    setSelectedSessionInfo(null);
+    setSelectedResult(null);
+    setMessages([]);
+    setSubagents([]);
+    setSelectedMemoryItem(null);
+    getMemoryItem(sourceType, id)
+      .then(setSelectedMemoryItem)
+      .catch((err) => console.error('Failed to load related item:', err));
+  }, [openById]);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const v = params.get('view');
@@ -734,6 +776,7 @@ function AppInner() {
         onSearch={handleSearch}
         onMobileMenu={() => setMobileSidebarOpen((v) => !v)}
         mobileSidebarOpen={mobileSidebarOpen}
+        onRefresh={handleRefreshAll}
       />
 
       {enabledViews.has('security') && view !== 'settings' && view !== 'account' && (
@@ -842,7 +885,7 @@ function AppInner() {
               />
               {selectedMemoryItem ? (
                 <div style={{ overflowY: 'auto', height: '100%', flex: 1 }}>
-                  <MemoryDetail item={selectedMemoryItem} onSessionClick={handleSelectSession} />
+                  <MemoryDetail item={selectedMemoryItem} onSessionClick={handleSelectSession} onOpenItem={openMemoryByTypeId} />
                 </div>
               ) : (
                 <ConversationViewer
@@ -861,6 +904,8 @@ function AppInner() {
                   sessionInfo={selectedSessionInfo}
                   initialTab={viewerInitialTab}
                   onManageSecurity={() => { setSecurityFocusSession(selectedSessionId); setView('security'); }}
+                  onOpenSession={openById}
+                  onOpenItem={openMemoryByTypeId}
                 />
               )}
             </>
@@ -878,7 +923,7 @@ function AppInner() {
                 {memorySub === 'graph' ? (
                   <KnowledgeGraph />
                 ) : (
-                  <MemoryExplorer onSessionClick={handleMemorySessionClick} toolFilter={toolFilter} projectFilter={projectFilter} />
+                  <MemoryExplorer onSessionClick={handleMemorySessionClick} toolFilter={toolFilter} projectFilter={projectFilter} projectPathFilter={findProjectPath(projectTree, projectFilter)} />
                 )}
               </div>
             </div>
@@ -901,10 +946,12 @@ function AppInner() {
               <ProjectsDashboard
                 tree={projectTree}
                 loaded={treeLoaded}
-                onPick={(id) => { setProjectFilter(id); setToolFilter('all'); }}
+                onPick={(id) => { setProjectFilter(id); setToolFilter('all'); setProjectsEmphasis(null); }}
                 toolFilter={toolFilter}
                 onSessionClick={handleActivitySessionClick}
                 onActiveProjects={setActiveProjectsForView}
+                emphasis={projectsEmphasis}
+                onClearEmphasis={() => setProjectsEmphasis(null)}
               />
             )
           )}
@@ -937,6 +984,7 @@ function AppInner() {
                       }
                     }}
                     onOpenProject={(id) => { setProjectFilter(id); setToolFilter('all'); setView('projects'); }}
+                    onFocusProjects={(emphasis) => { setProjectsEmphasis(emphasis); setProjectFilter(null); setToolFilter('all'); setView('projects'); }}
                     cloud={capabilities?.edition === 'cloud'}
                   />
                 ) : (

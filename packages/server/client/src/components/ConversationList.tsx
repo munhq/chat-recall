@@ -175,7 +175,9 @@ export default function ConversationList({
             style={{
               padding: '6px 18px',
               fontSize: 11,
-              color: 'var(--cr-warn-500)',
+              // High-contrast text on the warn tint (the tint + border carry the
+              // "warning" signal); warn-on-warn-surf sat just under AA in light.
+              color: 'var(--cr-fg-1)',
               background: 'var(--cr-warn-surf)',
               borderBottom: '1px solid var(--cr-warn-line)',
               cursor: 'help',

@@ -202,7 +202,7 @@ export interface CodeCouplingMetric { file: string; fanIn: number; fanOut: numbe
 export interface CodeBlastRadius { fileRole: string; fanIn: number; fanOut: number; direct: number; transitive: number; maxDepth: number; directFiles?: string[]; }
 export interface CodeMap { nodes: CodeMapNode[]; edges: Array<{ from: string; to: string }>; buckets: { god_modules: string[]; stable_cores: string[]; unstable_drivers: string[]; islands: string[]; cycles: string[][] }; pkgFiles?: Record<string, string[]>; fileEdges?: Array<{ from: string; to: string }>; fileMeta?: Record<string, { symbols: number; lang: string }>; langSymbols?: Record<string, number>; coupling?: { god_modules: CodeCouplingMetric[]; stable_cores: CodeCouplingMetric[]; unstable_drivers: CodeCouplingMetric[]; islands: CodeCouplingMetric[] }; blast?: Record<string, CodeBlastRadius>; }
 export interface CodeProject { projectId: string; rootPath: string; fileCount: number; symbolCount: number; langs: Record<string, number>; health: CodeHealth; map: CodeMap; label?: string | null; lastIndexedAt: number; collectorVersion?: number | null; }
-export interface CodeFinding { id: string; category: string; severity: string; file: string; line: number | null; rule: string; title: string; snippet: string; why: string; agentPrompt: string; status: string; }
+export interface CodeFinding { id: string; projectId: string; category: string; severity: string; file: string; line: number | null; rule: string; title: string; snippet: string; why: string; agentPrompt: string; status: string; }
 export interface CodeHotspot { id: string; file: string; churn: number; complexity: number; score: number; aiAuthored: boolean; lines: number; suggestion?: string; }
 export interface CodeAction { id: string; pri: number; category: string; title: string; fix: string; loc: Array<{ file: string; line?: number | null }>; agentPrompt: string; status: string; queued: boolean; }
 export interface CodeFindingsSummary { total: number; bySeverity: Record<string, number>; byCategory: Record<string, number>; }
@@ -2021,6 +2021,9 @@ export interface ProjectTreeApiNode {
   orphan?: boolean;
   /** Newest session mtime (ms) under this node — powers the "Recent" group. */
   lastMtime?: number;
+  /** Filesystem path this project maps to. Needed to scope path-substring
+   *  filters (memory search/browse filter on project_path, not project_id). */
+  projectPath?: string;
 }
 export interface ProjectTreeResponse {
   nodes: ProjectTreeApiNode[];
