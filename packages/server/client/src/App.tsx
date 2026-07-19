@@ -19,6 +19,7 @@ import KnowledgeGraph from './components/KnowledgeGraph';
 import { SegmentedControl, Card } from './components/primitives';
 import SettingsPage from './components/SettingsPage';
 import AccountPage, { SubscribeScreen } from './components/AccountPage';
+import TeamView from './components/TeamView';
 import ConnectTokenPage from './components/ConnectTokenPage';
 import SecuritySummaryBanner from './components/SecuritySummaryBanner';
 import AdminPage from './components/AdminPage';
@@ -34,6 +35,9 @@ import {
   getMemoryItem,
   getCapabilities,
   getEntitlement,
+  getMe,
+  setActiveTeam,
+  getActiveTeam,
   type ServerCapabilities,
   type SessionInfo,
   type SearchResult,
@@ -43,7 +47,7 @@ import {
   type ProjectTreeApiNode,
 } from './services/api';
 
-type ViewMode = 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'security' | 'settings' | 'account' | 'connect' | 'admin';
+type ViewMode = 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'security' | 'settings' | 'account' | 'connect' | 'admin' | 'team';
 
 /**
  * Recursive tree node used by the project sidebar. One node renders as
@@ -129,7 +133,7 @@ function findProjectPath(tree: ProjectTreeNode[], projectId: string | null): str
 
 
 /** Views that may be addressed via the ?view= deep link. */
-const URL_VIEWS = new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'security', 'account', 'settings', 'connect']);
+const URL_VIEWS = new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'security', 'account', 'settings', 'connect', 'team']);
 
 /**
  * Initial view from the URL. Reading it during state init (not in an effect)
@@ -166,13 +170,28 @@ function AppInner() {
   // until /api/capabilities answers, so local mode renders unchanged.
   const [capabilities, setCapabilities] = useState<ServerCapabilities | null>(null);
   useEffect(() => { void getCapabilities().then(setCapabilities); }, []);
+  // Cloud multi-team: the server needs `x-team` to resolve a >1-team user to a
+  // tenant (else every data route 400s). Pick the first membership once so the
+  // whole app (search/memory/activity/tasks/shares) resolves consistently; the
+  // Team view can switch it later. No-op on self-host (no teams).
+  useEffect(() => {
+    if (!capabilities?.features.teams) return;
+    // Reconcile the stored active team against actual memberships every load: a
+    // stale slug (removed from that team) would otherwise 403 every data route.
+    // Keep a still-valid selection; else fall back to the first membership.
+    void getMe().then((me) => {
+      const slugs = me.teams.map((t) => t.team_slug);
+      const cur = getActiveTeam();
+      if (!cur || !slugs.includes(cur)) setActiveTeam(me.teams[0]?.team_slug ?? null);
+    }).catch(() => {});
+  }, [capabilities]);
   const enabledViews = useMemo<Set<ViewMode>>(() => {
     const f = capabilities?.features;
     // Optimistic default while /api/capabilities is in flight — it must be a
     // SUPERSET of every real deployment's views, or deep links to a missing
     // entry get snapped to ?view=search before the server can answer
     // ('account' was absent → ?view=account never worked as a link).
-    if (!f) return new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'security', 'settings', 'account', 'connect', 'admin']);
+    if (!f) return new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'security', 'settings', 'account', 'connect', 'admin', 'team']);
     const out = new Set<ViewMode>();
     out.add('home');    // command center is always available
     out.add('connect'); // installer's token page — must never be capability-gated
@@ -184,6 +203,7 @@ function AppInner() {
     if (f.security) out.add('security');
     if (f.settings) out.add('settings');
     if (f.account) out.add('account');
+    if (f.teams) out.add('team');   // per-project team activity + sharing
     return out;
   }, [capabilities]);
 
@@ -931,6 +951,11 @@ function AppInner() {
           {view === 'toolkit' && (
             <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
               <ToolkitExplorer toolFilter={toolFilter} />
+            </div>
+          )}
+          {view === 'team' && (
+            <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+              <TeamView onOpenProject={(pid) => { setProjectFilter(pid); setToolFilter('all'); setView('projects'); }} />
             </div>
           )}
           {view === 'projects' && (

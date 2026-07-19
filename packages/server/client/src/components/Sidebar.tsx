@@ -27,7 +27,7 @@ interface SidebarProps {
   setToolFilter: (t: string) => void;
   extraSections?: SidebarSection[];
   view?: string;
-  setView?: (v: 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'security' | 'settings' | 'account' | 'admin') => void;
+  setView?: (v: 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'security' | 'settings' | 'account' | 'admin' | 'team') => void;
   /** Views this deployment supports (/api/capabilities). Absent = all. */
   enabledViews?: Set<string>;
 }
@@ -37,12 +37,13 @@ interface SidebarProps {
 // Every destination is visible; nothing hides behind a "More" overflow.
 // Order = the daily loop: the spine (Overview → Conversations → Projects)
 // first, then the intelligence surfaces, then Security & Deployment last.
-type NavId = 'home' | 'search' | 'projects' | 'memory' | 'toolkit' | 'security';
+type NavId = 'home' | 'search' | 'projects' | 'memory' | 'toolkit' | 'security' | 'team';
 const NAV_ITEMS: Array<{ id: NavId; label: string; icon: string }> = [
   { id: 'home', label: 'Overview', icon: 'home' },
   { id: 'search', label: 'Conversations', icon: 'message' },
   { id: 'projects', label: 'Projects', icon: 'folder' },
   { id: 'memory', label: 'Memory Hub', icon: 'brain' },
+  { id: 'team', label: 'Team', icon: 'grid' },
   { id: 'toolkit', label: 'Toolkit', icon: 'terminal' },
   { id: 'security', label: 'Security', icon: 'shield' },
 ];

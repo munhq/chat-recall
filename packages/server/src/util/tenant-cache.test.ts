@@ -8,7 +8,7 @@
  * wrote it.
  */
 import { describe, test, expect, vi, afterEach } from 'vitest';
-import { runWithTenant } from '@chat-recall/engine/core/store/tenant-context.js';
+import { runWithTenant, runWithAuthor } from '@chat-recall/engine/core/store/tenant-context.js';
 import { TenantTtlCache } from './tenant-cache.js';
 
 afterEach(() => {
@@ -64,6 +64,19 @@ describe('TenantTtlCache', () => {
     runWithTenant('t4', () => cache.set('d', 4)); // evicts t1's entry
     expect(runWithTenant('t1', () => cache.get('a'))).toBeUndefined();
     expect(runWithTenant('t4', () => cache.get('d'))).toBe(4);
+  });
+
+  test('within one tenant, different VIEWERS get independent entries (no per-member leak)', () => {
+    // Many cached reads are RLS-filtered per viewer now; a cache keyed by tenant
+    // alone would serve member A's filtered aggregate to member B. Entries must
+    // be invisible across viewers within the same tenant.
+    const cache = new TenantTtlCache<string>(60_000);
+    runWithTenant('team', () => runWithAuthor({ sub: 'alice', device: null }, () => cache.set('alice-only view')));
+    expect(runWithTenant('team', () => runWithAuthor({ sub: 'alice', device: null }, () => cache.get()))).toBe('alice-only view');
+    // bob (same tenant, different viewer) must NOT see alice's cached entry.
+    expect(runWithTenant('team', () => runWithAuthor({ sub: 'bob', device: null }, () => cache.get()))).toBeUndefined();
+    // a worker (no author context → '*' scope) must not see it either.
+    expect(runWithTenant('team', () => cache.get())).toBeUndefined();
   });
 
   test('clear() empties every tenant scope', () => {

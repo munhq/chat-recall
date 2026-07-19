@@ -54,7 +54,11 @@ interface SessionExtra {
   status?: string;
 }
 
-interface TaskExtra { status?: string; content?: string }
+// What TaskSource actually writes to extra_json (parsers/task-source.ts):
+// counts, not per-task status. The old shape ({status,content}) was never
+// populated, so Open Work rendered every list as "[?]" and never filtered
+// completed ones — fixed to use the real counts + the [status] preview lines.
+interface TaskExtra { taskCount?: number; completedCount?: number }
 
 /* -----------------------------------------------------------------------
  * Public entry points
@@ -219,14 +223,24 @@ function activitySection(sessions: MemoryMetadataRow[], limit: number): string {
 }
 
 function openWorkSection(tasks: MemoryMetadataRow[], limit: number): string {
+  // A task-list row carries {taskCount, completedCount}; it has open work when
+  // not everything is done (or when counts are absent, e.g. agent todos — treat
+  // as open so we don't silently hide them). content_preview holds the actual
+  // "[status] subject" lines the parser captured.
   const open = tasks
     .map(t => ({ row: t, extra: parseExtra<TaskExtra>(t.extra_json) }))
-    .filter(t => (t.extra.status || '').toLowerCase() !== 'completed');
+    .filter(t => {
+      const total = t.extra.taskCount ?? 0;
+      const done = t.extra.completedCount ?? 0;
+      return total === 0 || done < total;
+    });
   if (open.length === 0) return '';
   const lines = open.slice(0, limit).map(t => {
-    const content = (t.extra.content || t.row.title || '').slice(0, 140);
-    const status = t.extra.status || '?';
-    return `- [${status}] ${content}`;
+    const total = t.extra.taskCount ?? 0;
+    const done = t.extra.completedCount ?? 0;
+    const progress = total > 0 ? ` (${done}/${total} done)` : '';
+    const title = (t.row.title || t.row.content_preview || 'tasks').slice(0, 140);
+    return `- ${title}${progress}`;
   });
   return `## Open Work (${open.length})\n\n${lines.join('\n')}`;
 }

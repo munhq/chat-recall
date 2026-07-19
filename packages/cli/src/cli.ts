@@ -90,6 +90,34 @@ async function serverPost<T>(path: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** PATCH <path> with a JSON body on the first target. Throws on non-2xx. */
+async function serverPatch<T>(path: string, body: unknown): Promise<T> {
+  const t = requireTarget();
+  const res = await fetch(t.base + path, {
+    method: 'PATCH',
+    headers: t.token
+      ? { 'content-type': 'application/json', authorization: `Bearer ${t.token}` }
+      : { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
+  return res.json() as Promise<T>;
+}
+
+/** DELETE <path> with a JSON body on the first target. Throws on non-2xx. */
+async function serverDelete<T>(path: string, body: unknown): Promise<T> {
+  const t = requireTarget();
+  const res = await fetch(t.base + path, {
+    method: 'DELETE',
+    headers: t.token
+      ? { 'content-type': 'application/json', authorization: `Bearer ${t.token}` }
+      : { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
+  return res.json() as Promise<T>;
+}
+
 // Resolves to packages/cli/package.json from both src/ and the bundled dist/
 const pkgVersion: string = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf-8')
@@ -1237,6 +1265,106 @@ toolkit
     const r = await executeCopy(type as any, name, fromTool, toTool as any);
     if (r.ok) console.log(chalk.green(`Copied to ${r.targetPath}`));
     else { console.error(chalk.red(r.error || 'failed')); process.exit(1); }
+  });
+
+// ── Per-project team sharing ────────────────────────────────────────────
+// Default is private: teammates see your work on a project only after you
+// share it. Backed by the data-plane /api/shares (device-token capable).
+
+program
+  .command('shares')
+  .description('List the projects you share with your team')
+  .action(async () => {
+    try {
+      const { shares } = await serverGet<{ shares: Array<{ projectId: string; scope: string; sharedAt: number }> }>('/api/shares');
+      if (!shares.length) { console.log(chalk.gray('You are not sharing any projects. Share one with'), chalk.bold('chat-recall share <project_id>')); return; }
+      console.log(chalk.bold(`Shared projects (${shares.length}):`));
+      for (const s of shares) console.log(`  ${chalk.cyan(s.projectId)}  ${chalk.gray(s.scope)}`);
+    } catch (e) { console.error(chalk.red(e instanceof Error ? e.message : String(e))); process.exit(1); }
+  });
+
+program
+  .command('share <project_id>')
+  .description('Share a project with your team (teammates can then see your work on it)')
+  .action(async (projectId: string) => {
+    try {
+      await serverPost('/api/shares', { project_id: projectId });
+      console.log(chalk.green('✓ shared'), chalk.cyan(projectId), chalk.gray('with your team'));
+    } catch (e) { console.error(chalk.red(e instanceof Error ? e.message : String(e))); process.exit(1); }
+  });
+
+program
+  .command('unshare <project_id>')
+  .description('Stop sharing a project with your team')
+  .action(async (projectId: string) => {
+    try {
+      const r = await serverDelete<{ removed: boolean }>('/api/shares', { project_id: projectId });
+      console.log(r.removed ? chalk.green('✓ unshared') : chalk.yellow('was not shared'), chalk.cyan(projectId));
+    } catch (e) { console.error(chalk.red(e instanceof Error ? e.message : String(e))); process.exit(1); }
+  });
+
+// ── Collaborative tasks (board lives in the web UI; the CLI syncs a
+//    TEAM_TASKS.md in your repo for the terminal / coding-agent workflow) ──
+type CliTeamTask = { id: string; title: string; status: string; assigneeSub: string | null; projectId: string };
+
+const tasks = program.command('tasks').description('Collaborative team tasks');
+
+tasks
+  .command('list')
+  .description('List team tasks assigned to you')
+  .action(async () => {
+    try {
+      const { tasks } = await serverGet<{ tasks: CliTeamTask[] }>('/api/tasks?assignee=@me');
+      if (!tasks.length) { console.log(chalk.gray('No tasks assigned to you.')); return; }
+      for (const t of tasks) console.log(`  [${t.status}] ${t.title}  ${chalk.gray(t.id)}${t.projectId ? chalk.gray(' · ' + t.projectId) : ''}`);
+    } catch (e) { console.error(chalk.red(e instanceof Error ? e.message : String(e))); process.exit(1); }
+  });
+
+tasks
+  .command('pull [dir]')
+  .description('Write TEAM_TASKS.md for your tasks in this project (default: cwd)')
+  .option('-f, --force', 'overwrite even if the local file has unpushed edits')
+  .action(async (dir: string | undefined, opts: { force?: boolean }) => {
+    const cwd = dir || process.cwd();
+    try {
+      const { resolveProjectId } = await import('@chat-recall/engine/core/project-resolver.js');
+      const { renderTeamTasksMd, parseTeamTasksFile } = await import('./project-tasks.js');
+      const { writeFileSync, readFileSync, existsSync } = await import('node:fs');
+      const { join } = await import('node:path');
+      const file = join(cwd, 'TEAM_TASKS.md');
+      // Clobber guard: don't silently discard unpushed local edits.
+      if (!opts.force && existsSync(file) && parseTeamTasksFile(readFileSync(file, 'utf8')).length > 0) {
+        console.error(chalk.red('TEAM_TASKS.md has unpushed edits.'), 'Run', chalk.bold('chat-recall tasks push'), 'first, or', chalk.bold('tasks pull --force'), 'to discard.');
+        process.exit(1);
+      }
+      const resolved = resolveProjectId(cwd);
+      const pid = resolved && resolved.source !== 'ignored' ? resolved.id : '';
+      // Fetch ALL my assigned tasks, then keep this project's + un-projected
+      // ones (the web board creates tasks with no project) — so pull is never
+      // empty on the main creation path.
+      const { tasks } = await serverGet<{ tasks: CliTeamTask[] }>('/api/tasks?assignee=@me');
+      const mine = tasks.filter((t) => !pid || !t.projectId || t.projectId === pid);
+      writeFileSync(file, renderTeamTasksMd(mine));
+      console.log(chalk.green('✓ wrote'), 'TEAM_TASKS.md', chalk.gray(`(${mine.length} task(s))`), '— edit, then', chalk.bold('chat-recall tasks push'));
+    } catch (e) { console.error(chalk.red(e instanceof Error ? e.message : String(e))); process.exit(1); }
+  });
+
+tasks
+  .command('push [dir]')
+  .description('Push TEAM_TASKS.md status edits back to the team')
+  .action(async (dir?: string) => {
+    const cwd = dir || process.cwd();
+    try {
+      const { parseTeamTasksFile } = await import('./project-tasks.js');
+      const { readFileSync, existsSync } = await import('node:fs');
+      const { join } = await import('node:path');
+      const file = join(cwd, 'TEAM_TASKS.md');
+      if (!existsSync(file)) { console.error(chalk.red('no TEAM_TASKS.md here —'), 'run', chalk.bold('chat-recall tasks pull'), 'first'); process.exit(1); }
+      const edits = parseTeamTasksFile(readFileSync(file, 'utf8'));
+      let n = 0;
+      for (const e of edits) { await serverPatch(`/api/tasks/${encodeURIComponent(e.id)}`, { status: e.intent }); n++; }
+      console.log(n ? chalk.green(`✓ pushed ${n} status change(s)`) : chalk.gray('no changes to push'));
+    } catch (e) { console.error(chalk.red(e instanceof Error ? e.message : String(e))); process.exit(1); }
   });
 
 const team = program

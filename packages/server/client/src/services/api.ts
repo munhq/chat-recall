@@ -129,13 +129,29 @@ const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 // timeout would spuriously abort those cold-path requests and leave the
 // UI blank. The hot path is ~50ms so 30s is well above the worst-case
 // honest latency without being so long it hides real outages.
+// Active team (cloud, multi-membership). The server resolves a JWT user to a
+// tenant via team membership and REQUIRES `x-team` when the user is in more
+// than one team (auth.ts resolveTenantForUser → 400 otherwise). We send it on
+// every request so activity/tasks/shares/search all resolve to the same team.
+// Single-team users can send it harmlessly; self-host ignores it.
+const ACTIVE_TEAM_LS = 'cr-active-team';
+let activeTeam: string | null = (() => { try { return localStorage.getItem(ACTIVE_TEAM_LS); } catch { return null; } })();
+export function setActiveTeam(slug: string | null): void {
+  activeTeam = slug || null;
+  try { if (slug) localStorage.setItem(ACTIVE_TEAM_LS, slug); else localStorage.removeItem(ACTIVE_TEAM_LS); } catch { /* no storage */ }
+}
+export function getActiveTeam(): string | null { return activeTeam; }
+
 async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 30000): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    // Cloud mode: attach the Keycloak Bearer (no-op in local mode).
+    // Cloud mode: attach the Keycloak Bearer (no-op in local mode) + the active
+    // team so a multi-team user's requests resolve deterministically.
     const token = await getAccessToken();
-    const headers = token ? { ...options.headers, Authorization: `Bearer ${token}` } : options.headers;
+    const headers: Record<string, string> = { ...(options.headers as Record<string, string> | undefined) };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    if (activeTeam) headers['x-team'] = activeTeam;
     const res = await fetch(url, { ...options, headers, signal: controller.signal });
     // 402 from any value route = subscription required. Broadcast once so the
     // app shell can drop the user onto the Subscribe screen instead of each
@@ -2131,6 +2147,126 @@ export async function revokeDevice(teamSlug: string, deviceId: string): Promise<
     { method: 'DELETE' },
   );
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `revoke failed: ${res.statusText}`);
+}
+
+// ── Team collaboration (Phase 2/1): activity view + per-project sharing ──
+
+export interface TeamActivityRow {
+  authorSub: string | null;
+  memberEmail: string | null;
+  projectId: string;
+  sessions: number;
+  lastMtime: number;
+}
+export interface TeamActivityResponse {
+  tenant: string;
+  members: Array<{ sub: string; email: string | null; role: string }>;
+  activity: TeamActivityRow[];
+}
+export interface ProjectShare {
+  teamSlug: string;
+  ownerSub: string;
+  projectId: string;
+  scope: string;
+  sharedAt: number;
+}
+
+/** Per-member × per-project activity, RLS-scoped to what the caller may see. */
+export async function getTeamActivity(opts: { project?: string; member?: string; sinceDays?: number } = {}): Promise<TeamActivityResponse> {
+  const qs = new URLSearchParams();
+  if (opts.project) qs.set('project', opts.project);
+  if (opts.member) qs.set('member', opts.member);
+  if (opts.sinceDays && opts.sinceDays > 0) qs.set('since', String(Date.now() - opts.sinceDays * 86400000));
+  const suffix = qs.toString() ? `?${qs}` : '';
+  const res = await fetchWithTimeout(`${API_BASE}/activity${suffix}`);
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `getTeamActivity failed: ${res.statusText}`);
+  return await res.json();
+}
+
+// Per-project sharing goes through the data-plane /api/shares (tenant + owner
+// resolved from the request), so no team slug is threaded — the active-team
+// header selects the team, exactly like every other data route.
+
+/** Every share in the team (all members) — the "who shares what" overview. */
+export async function listTeamShares(): Promise<ProjectShare[]> {
+  const res = await fetchWithTimeout(`${API_BASE}/shares/all`);
+  if (!res.ok) throw new Error(`listTeamShares failed: ${res.statusText}`);
+  return (await res.json()).shares ?? [];
+}
+
+/** Just the caller's own shares (what YOU expose to the team). */
+export async function listMyShares(): Promise<ProjectShare[]> {
+  const res = await fetchWithTimeout(`${API_BASE}/shares`);
+  if (!res.ok) throw new Error(`listMyShares failed: ${res.statusText}`);
+  return (await res.json()).shares ?? [];
+}
+
+/** Share one of the caller's projects into the team. */
+export async function addShare(projectId: string): Promise<void> {
+  const res = await fetchWithTimeout(`${API_BASE}/shares`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project_id: projectId }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `addShare failed: ${res.statusText}`);
+}
+
+/** Stop sharing one of the caller's projects. */
+export async function removeShare(projectId: string): Promise<void> {
+  const res = await fetchWithTimeout(`${API_BASE}/shares`, {
+    method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project_id: projectId }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `removeShare failed: ${res.statusText}`);
+}
+
+// ── Collaborative team tasks (Phase 3) ───────────────────────────────────
+
+export type TeamTaskStatus = 'todo' | 'in_progress' | 'blocked' | 'done';
+export interface TeamTask {
+  id: string; projectId: string; title: string; description: string;
+  status: TeamTaskStatus; assigneeSub: string | null; createdBy: string;
+  blocks: string[]; blockedBy: string[]; linkedSessionId: string | null;
+  due: number | null; createdAt: number; updatedAt: number;
+}
+export interface TeamTaskComment { id: string; taskId: string; authorSub: string; body: string; createdAt: number; }
+
+export async function listTasks(opts: { project?: string; assignee?: string; status?: TeamTaskStatus } = {}): Promise<TeamTask[]> {
+  const qs = new URLSearchParams();
+  if (opts.project) qs.set('project', opts.project);
+  if (opts.assignee) qs.set('assignee', opts.assignee);
+  if (opts.status) qs.set('status', opts.status);
+  const suffix = qs.toString() ? `?${qs}` : '';
+  const res = await fetchWithTimeout(`${API_BASE}/tasks${suffix}`);
+  if (!res.ok) throw new Error(`listTasks failed: ${res.statusText}`);
+  return (await res.json()).tasks ?? [];
+}
+
+export async function createTask(input: { title: string; description?: string; projectId?: string; assigneeSub?: string | null }): Promise<TeamTask> {
+  const res = await fetchWithTimeout(`${API_BASE}/tasks`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `createTask failed: ${res.statusText}`);
+  return (await res.json()).task;
+}
+
+export async function getTask(id: string): Promise<{ task: TeamTask; comments: TeamTaskComment[] }> {
+  const res = await fetchWithTimeout(`${API_BASE}/tasks/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error(`getTask failed: ${res.statusText}`);
+  return await res.json();
+}
+
+export async function updateTask(id: string, patch: { status?: TeamTaskStatus; assigneeSub?: string | null; title?: string; description?: string }): Promise<TeamTask> {
+  const res = await fetchWithTimeout(`${API_BASE}/tasks/${encodeURIComponent(id)}`, {
+    method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `updateTask failed: ${res.statusText}`);
+  return (await res.json()).task;
+}
+
+export async function addTaskComment(id: string, body: string): Promise<TeamTaskComment> {
+  const res = await fetchWithTimeout(`${API_BASE}/tasks/${encodeURIComponent(id)}/comments`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ body }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `addTaskComment failed: ${res.statusText}`);
+  return (await res.json()).comment;
 }
 
 /** Current subscription/entitlement for the caller's tenant. Throws with the

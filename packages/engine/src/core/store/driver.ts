@@ -23,6 +23,43 @@ type AsyncMethod<M> = M extends (...args: infer A) => infer R
   ? (...args: A) => Promise<Awaited<R>>
   : never;
 
+// ── Collaborative tasks (Phase 3) ────────────────────────────────────────
+export type TeamTaskStatus = 'todo' | 'in_progress' | 'blocked' | 'done';
+export interface TeamTask {
+  id: string;
+  projectId: string;
+  title: string;
+  description: string;
+  status: TeamTaskStatus;
+  assigneeSub: string | null;
+  createdBy: string;
+  blocks: string[];
+  blockedBy: string[];
+  linkedSessionId: string | null;
+  due: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+export interface TeamTaskComment { id: string; taskId: string; authorSub: string; body: string; createdAt: number; }
+export interface CreateTeamTaskInput {
+  title: string;
+  createdBy: string;
+  projectId?: string;
+  description?: string;
+  assigneeSub?: string | null;
+  due?: number | null;
+  linkedSessionId?: string | null;
+}
+export interface UpdateTeamTaskPatch {
+  title?: string;
+  description?: string;
+  status?: TeamTaskStatus;
+  assigneeSub?: string | null;
+  due?: number | null;
+  blocks?: string[];
+  blockedBy?: string[];
+}
+
 /**
  * Async mirror of MemoryStore's public surface. Listed explicitly (not a
  * mapped type over `keyof MemoryStore`) so private fields/methods don't leak
@@ -48,6 +85,26 @@ export interface StorageDriver {
   clearSourceType: AsyncMethod<MemoryStore['clearSourceType']>;
   deleteItem: AsyncMethod<MemoryStore['deleteItem']>;
   updateItemProjectPath: AsyncMethod<MemoryStore['updateItemProjectPath']>;
+
+  /**
+   * Per-(author, project) session-activity rollup for the team view (Phase 2).
+   * RLS-scoped to what the current viewer may see (own + shared), so a member's
+   * team activity naturally shows their own work plus teammates' work on
+   * projects shared into the team — never a private project. See
+   * docs/TEAM_COLLAB_PLAN.md.
+   */
+  teamActivity(opts?: { projectId?: string; author?: string; sinceMs?: number; limit?: number }):
+    Promise<Array<{ authorSub: string | null; projectId: string; sessions: number; lastMtime: number }>>;
+
+  // ── Collaborative tasks (Phase 3). Team-visible within the tenant (RLS by
+  //    tenant only — tasks ARE the collaboration surface, independent of the
+  //    per-project content boundary). Cloud/Postgres only; the sqlite driver
+  //    (single-user) throws on writes and returns empty on reads. ──
+  createTeamTask(input: CreateTeamTaskInput): Promise<TeamTask>;
+  listTeamTasks(opts?: { projectId?: string; assigneeSub?: string; status?: TeamTaskStatus }): Promise<TeamTask[]>;
+  getTeamTask(id: string): Promise<{ task: TeamTask; comments: TeamTaskComment[] } | null>;
+  updateTeamTask(id: string, patch: UpdateTeamTaskPatch): Promise<TeamTask | null>;
+  addTeamTaskComment(taskId: string, authorSub: string, body: string): Promise<TeamTaskComment | null>;
 
   // ── links ──
   addLink: AsyncMethod<MemoryStore['addLink']>;

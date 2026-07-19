@@ -23,24 +23,38 @@ import { homedir } from 'node:os';
 import { isSecretTaskStatus } from '@chat-recall/engine/core/secret-task-status.js';
 import { isCodeTaskStatus } from '@chat-recall/engine/core/code-task-status.js';
 
-export type TaskKind = 'secret' | 'code';
+export type TaskKind = 'secret' | 'code' | 'team';
 export interface TaskEdit { kind: TaskKind; id: string; was: string; intent: string; }
 
+/** Collaborative-task statuses (mirrors the team_tasks CHECK constraint). */
+const TEAM_STATUSES = new Set(['todo', 'in_progress', 'blocked', 'done']);
+export function isTeamTaskStatus(v: string | undefined): boolean { return !!v && TEAM_STATUSES.has(v); }
+
 // Matches both `cr-secret id=…` (kind implied secret) and `cr-task kind=… id=…`.
-const ANCHOR_RE = /<!--\s*cr-(secret|task)\b(?:\s+kind=([a-z]+))?\s+id=([A-Za-z0-9_-]+)(?:\s+was=([a-z-]+))?\s*-->/;
+// Status tokens can contain underscores (`in_progress`, `false_positive`), so
+// the `was=` capture and the inline `status:` token both allow `_`.
+const ANCHOR_RE = /<!--\s*cr-(secret|task)\b(?:\s+kind=([a-z]+))?\s+id=([A-Za-z0-9_-]+)(?:\s+was=([a-z_-]+))?\s*-->/;
 const CHECKBOX_RE = /^\s*-\s*\[([ xX])\]/;
-const STATUS_TOKEN_RE = /status:\s*`?([a-z-]+)`?/i;
+const STATUS_TOKEN_RE = /status:\s*`?([a-z_-]+)`?/i;
 
 function defaultWas(kind: TaskKind): string { return kind === 'secret' ? 'open' : 'todo'; }
 function isValidStatus(kind: TaskKind, v: string | undefined): boolean {
-  return kind === 'secret' ? isSecretTaskStatus(v) : isCodeTaskStatus(v);
+  return kind === 'secret' ? isSecretTaskStatus(v) : kind === 'team' ? isTeamTaskStatus(v) : isCodeTaskStatus(v);
 }
 
 /** Reconcile the `status:` token with the checkbox into the user's intent. */
 function reconcile(kind: TaskKind, was: string, token: string | null, checked: boolean): string {
-  const open = defaultWas(kind);              // 'open' (secret) | 'todo' (code) = the not-done state
-  const done = kind === 'secret' ? 'rotated' : 'done'; // what a bare tick means
-  if (token && token !== was) return token;   // explicit status edit wins
+  const open = defaultWas(kind);              // 'open' (secret) | 'todo' (code/team) = the not-done state
+  const done = kind === 'secret' ? 'rotated' : 'done'; // what a bare tick means (code/team → 'done')
+  if (token && token !== was) return token;   // explicit status edit wins (all kinds)
+  if (kind === 'team') {
+    // Team tasks have 4 states; the checkbox encodes ONLY done-ness, decoupled
+    // from in_progress/blocked. So a tick means done, an untick resets ONLY a
+    // done task (an unchecked in_progress/blocked task is normal, not a reset).
+    if (checked && was !== 'done') return 'done';
+    if (!checked && was === 'done') return 'todo';
+    return token ?? was;
+  }
   if (checked && was === open) return done;   // bare tick on a not-done task
   if (!checked && was !== open) return open;   // bare untick on a resolved task
   return token ?? was;                        // no meaningful change
@@ -145,4 +159,35 @@ export async function pushProjectTaskStatuses(
 
   if (ledgerDirty) writeLedger(ledger);
   return out;
+}
+
+/* ── TEAM_TASKS.md projection (collaborative tasks in the repo) ──────────
+ * Unlike SECURITY/CODE (server-rendered, server-tracked), team tasks are
+ * projected on demand into the repo you're in via `chat-recall tasks pull`
+ * and pushed back with `chat-recall tasks push`. Each task line carries a
+ * `cr-task kind=team` anchor so a checkbox/status edit round-trips to the
+ * server. Statuses: todo · in_progress · blocked · done.
+ */
+export interface TeamTaskLite { id: string; title: string; status: string; assigneeSub?: string | null; projectId?: string; }
+
+/** Render assigned team tasks as TEAM_TASKS.md (anchored for push-back). */
+export function renderTeamTasksMd(tasks: TeamTaskLite[]): string {
+  const lines: string[] = [
+    '# Team tasks',
+    '',
+    '<!-- Managed by chat-recall. Tick a box or edit the `status:` token, then run',
+    '     `chat-recall tasks push`. Statuses: todo · in_progress · blocked · done. -->',
+    '',
+  ];
+  if (tasks.length === 0) lines.push('_No tasks assigned to you here._');
+  for (const t of tasks) {
+    const checked = t.status === 'done' ? 'x' : ' ';
+    lines.push(`- [${checked}] ${t.title}  status: \`${t.status}\` <!-- cr-task kind=team id=${t.id} was=${t.status} -->`);
+  }
+  return lines.join('\n') + '\n';
+}
+
+/** Parse a TEAM_TASKS.md and return the team-task edits the user actually made. */
+export function parseTeamTasksFile(content: string): TaskEdit[] {
+  return parseTaskFile(content).filter((t) => t.kind === 'team');
 }

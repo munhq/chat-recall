@@ -8,8 +8,15 @@
  * prefixes every key with the request's ambient tenant (AsyncLocalStorage,
  * set by the auth middleware via runWithTenant), so entries can never cross
  * tenants no matter what the caller uses as a key.
+ *
+ * It ALSO prefixes the ambient VIEWER (per-project team visibility): many cached
+ * reads are RLS-filtered per viewer now, so a cache keyed by tenant alone would
+ * serve member A's filtered aggregate (project counts, outcome summaries) to
+ * member B — leaking exactly what the per-project boundary hides. The viewer
+ * segment uses the same '*' (worker/CLI) / '' (null-sub) sentinels as the
+ * app.viewer GUC, so a worker-populated entry and a member's entry never collide.
  */
-import { currentTenant } from '@chat-recall/engine/core/store/tenant-context.js';
+import { currentTenant, currentViewer } from '@chat-recall/engine/core/store/tenant-context.js';
 
 const SEP = '\u0000'; // NUL can't appear in a tenant slug or a sane cache key.
 
@@ -23,7 +30,9 @@ export class TenantTtlCache<T> {
   ) {}
 
   private scopedKey(key: string): string {
-    return `${currentTenant() ?? 'default'}${SEP}${key}`;
+    const v = currentViewer();
+    const viewer = v === undefined ? '*' : (v ?? '');
+    return `${currentTenant() ?? 'default'}${SEP}${viewer}${SEP}${key}`;
   }
 
   get(key = ''): T | undefined {

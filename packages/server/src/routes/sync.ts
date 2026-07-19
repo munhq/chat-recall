@@ -39,7 +39,7 @@
 import express from 'express';
 import {
   createControlPlane, createStore, createMetadataCache, createOutcomeCache,
-  createKnowledgeGraph, runWithTenant, classifyChunk,
+  createKnowledgeGraph, runWithTenant, runWithAuthor, classifyChunk,
   gunzipContainer, parseTranscriptFromContainer,
 } from '../imports.js';
 import type { SourceType } from '../imports.js';
@@ -242,14 +242,14 @@ router.post('/', async (req, res) => {
   // 'default' tenant the dashboard reads — that's how a local collector syncs
   // with no token. Any other auth mode still requires a valid agent token.
   const m = /^Bearer\s+(.+)$/.exec(req.get('authorization') || '');
-  let agent: { tenant: string; deviceId: string } | null;
+  let agent: { tenant: string; deviceId: string; userSub: string | null } | null;
   if (m) {
     const cp = await createControlPlane();
     try { agent = await cp.resolveAgentToken(m[1]); }
     finally { await cp.close(); }
     if (!agent) return res.status(401).json({ error: 'invalid agent token' });
   } else if ((process.env.AUTH_PROVIDER || 'none').toLowerCase() === 'none') {
-    agent = { tenant: 'default', deviceId: 'local' };
+    agent = { tenant: 'default', deviceId: 'local', userSub: null };
   } else {
     return res.status(401).json({ error: 'agent token required' });
   }
@@ -282,7 +282,7 @@ router.post('/', async (req, res) => {
   }
 
   try {
-    const result = await runWithTenant(agent.tenant, async () => {
+    const result = await runWithTenant(agent.tenant, () => runWithAuthor({ sub: agent!.userSub, device: agent!.deviceId }, async () => {
       const store = await createStore();
       const metaCache = await createMetadataCache();
       let conv = 0, item = 0, link = 0, find = 0, der = 0, kgE = 0, kgT = 0, chunks = 0, dead = 0, fielded = 0;
@@ -733,7 +733,7 @@ router.post('/', async (req, res) => {
         try { pruned = await store.pruneEmptySessions(); } catch { /* best-effort */ }
       }
       return { conv, item, link, find, der, kgE, kgT, chunks, dead, pruned, fielded, appendConv, shrinkGuarded, full_resync_needed: fullResyncNeeded };
-    });
+    }));
 
     const { cliRelease } = await import('../util/cli-release.js');
     res.json({ ok: true, ...result, tenant: agent.tenant, ack_at: new Date().toISOString(), cli: cliRelease() });
