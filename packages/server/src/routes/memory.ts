@@ -20,6 +20,10 @@ const log = createLogger('memory');
 const router = express.Router();
 const memoryService = new MemoryService();
 
+// Per-project team visibility is enforced in the DB (RLS `author_visibility`),
+// so a fetch of an unshared item returns no rows under the request's
+// `app.viewer` and these handlers 404 naturally — no per-route guard needed.
+
 // Memory route only validates the "what was said / what happened" set.
 // Toolkit primitives (skill, mcp, command, agent, hook, plugin) are
 // validated separately by /api/toolkit. The underlying store is shared.

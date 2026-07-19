@@ -1,4 +1,4 @@
-import { currentTenant } from './tenant-context.js';
+import { currentTenant, currentAuthor } from './tenant-context.js';
 /**
  * Async driver for the temporal knowledge graph (knowledge_graph.db, a
  * separate SQLite file from cache.db). Same pattern as StorageDriver:
@@ -95,8 +95,8 @@ export class PgKnowledgeGraph implements KnowledgeGraphDriver {
     }
     const id = await this.tripleId(subject, pred, object);
     await this.q(
-      `INSERT INTO kg_triples (tenant,id,subject,predicate,object,valid_from,valid_to,confidence,source_session,source_file,origin) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-      [this.t, id, subId, pred, objId, validFrom, validTo, options.confidence ?? 1.0, options.sourceSession || null, options.sourceFile || null, options.origin || 'extracted']);
+      `INSERT INTO kg_triples (tenant,id,subject,predicate,object,valid_from,valid_to,confidence,source_session,source_file,origin,author_sub) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      [this.t, id, subId, pred, objId, validFrom, validTo, options.confidence ?? 1.0, options.sourceSession || null, options.sourceFile || null, options.origin || 'extracted', currentAuthor().sub]);
     return id;
   }
 
@@ -112,8 +112,8 @@ export class PgKnowledgeGraph implements KnowledgeGraphDriver {
     if (existing) return 'exists' as const;
     const id = await this.tripleId(t.subject, pred, t.object);
     await this.q(
-      `INSERT INTO kg_triples (tenant,id,subject,predicate,object,valid_from,valid_to,confidence,source_session,source_file) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL)`,
-      [this.t, id, subId, pred, objId, t.valid_from ?? null, t.valid_to ?? null, t.confidence ?? 1.0, t.source_session ?? null]);
+      `INSERT INTO kg_triples (tenant,id,subject,predicate,object,valid_from,valid_to,confidence,source_session,source_file,author_sub) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,$10)`,
+      [this.t, id, subId, pred, objId, t.valid_from ?? null, t.valid_to ?? null, t.confidence ?? 1.0, t.source_session ?? null, currentAuthor().sub]);
     return 'inserted' as const;
   }
 

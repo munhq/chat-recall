@@ -19,7 +19,7 @@
  * provider that requires one.
  */
 import type { Request, Response, NextFunction } from 'express';
-import { runWithTenant, createControlPlane } from '../imports.js';
+import { runWithTenant, runWithAuthor, createControlPlane } from '../imports.js';
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -27,6 +27,10 @@ declare global {
     interface Request {
       tenant?: string;
       userId?: string;
+      /** Attribution: Keycloak user that owns this write (null for solo/self-host). */
+      authorSub?: string | null;
+      /** Attribution: syncing device id, or null for a web/JWT session. */
+      authorDevice?: string | null;
     }
   }
 }
@@ -184,29 +188,41 @@ export async function requireUser(req: Request, res: Response): Promise<{ sub: s
  * a manual "revoke device" action.
  */
 const AGENT_TOKEN_TTL_MS = 30_000;
-const agentTokenCache = new Map<string, { tenant: string; userId: string; expires: number }>();
+const agentTokenCache = new Map<string, { tenant: string; userId: string; authorSub: string | null; authorDevice: string; expires: number }>();
 
-async function resolveAgentToken(tok: string): Promise<{ tenant: string; userId: string } | null> {
+async function resolveAgentToken(tok: string): Promise<{ tenant: string; userId: string; authorSub: string | null; authorDevice: string } | null> {
   const hit = agentTokenCache.get(tok);
-  if (hit && hit.expires > Date.now()) return { tenant: hit.tenant, userId: hit.userId };
+  if (hit && hit.expires > Date.now()) return { tenant: hit.tenant, userId: hit.userId, authorSub: hit.authorSub, authorDevice: hit.authorDevice };
   const cp = await createControlPlane();
   try {
     const info = await cp.resolveAgentToken(tok);
     if (!info) return null;
-    const entry = { tenant: info.tenant, userId: `device:${info.deviceId}`, expires: Date.now() + AGENT_TOKEN_TTL_MS };
+    // author_sub = the Keycloak user that owns this device token (null for
+    // admin-minted/self-host tokens); userId keeps the `device:` form for the
+    // existing per-request identity, attribution uses the real user_sub.
+    const entry = {
+      tenant: info.tenant,
+      userId: `device:${info.deviceId}`,
+      authorSub: info.userSub,
+      authorDevice: info.deviceId,
+      expires: Date.now() + AGENT_TOKEN_TTL_MS,
+    };
     // Crude size cap — a scan of garbage tokens must not grow this unbounded.
     // (Garbage never lands here — negatives aren't cached — but tenants with
     // thousands of devices are.) Clearing rebuilds within one TTL window.
     if (agentTokenCache.size >= 5000) agentTokenCache.clear();
     agentTokenCache.set(tok, entry);
-    return { tenant: entry.tenant, userId: entry.userId };
+    return { tenant: entry.tenant, userId: entry.userId, authorSub: entry.authorSub, authorDevice: entry.authorDevice };
   } finally {
     await cp.close();
   }
 }
 
-/** Resolve { tenant, userId } or null (a 401 has been sent). */
-async function resolve(req: Request, res: Response): Promise<{ tenant: string; userId: string } | null> {
+/** The identity resolved for a request: tenant + display userId + attribution. */
+type Resolved = { tenant: string; userId: string; authorSub: string | null; authorDevice: string | null };
+
+/** Resolve identity + attribution, or null (a 401/403 has been sent). */
+async function resolve(req: Request, res: Response): Promise<Resolved | null> {
   const tok = bearer(req);
 
   // Agent tokens work in EVERY provider — they're how the binary and the
@@ -220,11 +236,11 @@ async function resolve(req: Request, res: Response): Promise<{ tenant: string; u
 
   switch (provider()) {
     case 'none':
-      return { tenant: 'default', userId: 'local' };
+      return { tenant: 'default', userId: 'local', authorSub: null, authorDevice: 'local' };
     case 'static-token': {
       const tenant = tok ? staticTokens()[tok] : undefined;
       if (!tenant) { res.status(401).json({ error: 'invalid or missing token' }); return null; }
-      return { tenant, userId: tok!.slice(0, 8) };
+      return { tenant, userId: tok!.slice(0, 8), authorSub: null, authorDevice: `token:${tok!.slice(0, 8)}` };
     }
     case 'keycloak': {
       const user = tok ? await verifyKeycloakJwt(tok) : null;
@@ -242,12 +258,14 @@ async function resolve(req: Request, res: Response): Promise<{ tenant: string; u
   }
 }
 
-/** Map a verified user to a tenant via team membership (+ x-team header). */
+/** Map a verified user to a tenant via team membership (+ x-team header).
+ *  The user IS the author of any writes on this request (a web/JWT session,
+ *  so authorDevice is null). */
 async function resolveTenantForUser(
   req: Request,
   res: Response,
   user: { sub: string; email: string | null },
-): Promise<{ tenant: string; userId: string } | null> {
+): Promise<Resolved | null> {
   const cp = await createControlPlane();
   try {
     const memberships = await cp.listMemberships(user.sub);
@@ -257,9 +275,9 @@ async function resolveTenantForUser(
         res.status(403).json({ error: `not a member of team '${wanted}'` });
         return null;
       }
-      return { tenant: wanted, userId: user.sub };
+      return { tenant: wanted, userId: user.sub, authorSub: user.sub, authorDevice: null };
     }
-    if (memberships.length === 1) return { tenant: memberships[0].team_slug, userId: user.sub };
+    if (memberships.length === 1) return { tenant: memberships[0].team_slug, userId: user.sub, authorSub: user.sub, authorDevice: null };
     if (memberships.length === 0) {
       res.status(403).json({ error: 'no team yet — create one via POST /api/teams' });
       return null;
@@ -280,7 +298,11 @@ export function tenantAuth(req: Request, res: Response, next: NextFunction): voi
       if (!r) return; // 401/403 already sent
       req.tenant = r.tenant;
       req.userId = r.userId;
-      runWithTenant(r.tenant, () => next());
+      req.authorSub = r.authorSub;
+      req.authorDevice = r.authorDevice;
+      // Ambient tenant + author for the whole request: the engine store methods
+      // read currentTenant()/currentAuthor() to scope and attribute every write.
+      runWithTenant(r.tenant, () => runWithAuthor({ sub: r.authorSub, device: r.authorDevice }, () => next()));
     })
     .catch(next);
 }

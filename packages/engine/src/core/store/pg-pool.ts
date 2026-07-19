@@ -21,9 +21,32 @@
  * traffic. The cached pool is shared; drivers must NOT end() it (their close()
  * is a no-op for pooled pg connections — see closePgPools for process shutdown).
  */
+import { currentViewer } from './tenant-context.js';
+
 let int8ParserSet = false;
 const POOLS = new Map<string, Promise<any>>();
 const SCHEMA_READY = new Map<string, Promise<void>>();
+
+/**
+ * Set the per-transaction scope GUCs on a checked-out client: always
+ * `app.tenant` (the RLS tenant wall), and — for an authenticated request only —
+ * `app.viewer` (per-project team visibility). Both are LOCAL (txn-scoped), so
+ * they reset at COMMIT/ROLLBACK and never leak across pooled checkouts. A
+ * background worker / CLI (no ambient author context) leaves `app.viewer` unset,
+ * and the RLS policy's `IS NULL` short-circuit lets it read the whole tenant.
+ * See currentViewer() for the tri-state rationale.
+ */
+async function setScopeGucs(c: any, tenant: string): Promise<void> {
+  await c.query("SELECT set_config('app.tenant', $1, true)", [tenant]);
+  // ALWAYS set app.viewer to a well-defined value — never rely on "unset". A
+  // custom GUC reverts to EMPTY STRING (not NULL) on a pooled connection once
+  // it's been set even once, so an `IS NULL` short-circuit is unreliable across
+  // checkouts. The '*' sentinel means "no author context → a worker/CLI → see
+  // the whole tenant"; a real request sets the viewer's sub (or '' for a
+  // null-sub self-host request, which then sees only NULL-author rows).
+  const viewer = currentViewer();
+  await c.query("SELECT set_config('app.viewer', $1, true)", [viewer === undefined ? '*' : (viewer ?? '')]);
+}
 
 /** Open (and cache) a connection pool. Pure — NO schema/DDL side effect, so it
  *  is safe against a read-only replica. Callers that need tables to exist must
@@ -140,7 +163,7 @@ export async function tenantQuery(pool: any, tenant: string, sql: string, params
   c.on('error', onErr);
   try {
     await c.query('BEGIN');
-    await c.query("SELECT set_config('app.tenant', $1, true)", [tenant]);
+    await setScopeGucs(c, tenant);
     const r = await c.query(sql, params);
     await c.query('COMMIT');
     return r;
@@ -168,7 +191,7 @@ export async function tenantTx<T>(pool: any, tenant: string, fn: (client: any) =
   c.on('error', onErr);
   try {
     await c.query('BEGIN');
-    await c.query("SELECT set_config('app.tenant', $1, true)", [tenant]);
+    await setScopeGucs(c, tenant);
     // The callback may hold this tx open across slow work — the summary worker
     // runs a multi-second LLM call INSIDE the tx (it deliberately holds the
     // FOR UPDATE … SKIP LOCKED locks to dedupe across replicas). That makes the

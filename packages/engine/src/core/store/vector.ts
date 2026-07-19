@@ -270,6 +270,17 @@ export class PgVectorStore implements VectorStore {
         await client.query(`ALTER TABLE memory_vectors FORCE ROW LEVEL SECURITY`);
         await client.query(`DROP POLICY IF EXISTS tenant_isolation ON memory_vectors`);
         await client.query(`CREATE POLICY tenant_isolation ON memory_vectors USING (tenant = current_setting('app.tenant', true)) WITH CHECK (tenant = current_setting('app.tenant', true))`);
+        // Per-project team visibility (RESTRICTIVE, SELECT-only): a vector is
+        // visible iff its parent memory_chunks/memory_metadata item is. Mirrors
+        // pg-schema.ts's author_visibility so semantic search can't leak an
+        // unshared teammate's chunks. Worker/solo (app.viewer unset) short-circuits.
+        await client.query(`DROP POLICY IF EXISTS author_visibility ON memory_vectors`);
+        await client.query(
+          `CREATE POLICY author_visibility ON memory_vectors AS RESTRICTIVE FOR SELECT USING (
+             current_setting('app.viewer', true) = '*'
+             OR EXISTS (SELECT 1 FROM memory_metadata m
+                        WHERE m.tenant = memory_vectors.tenant AND m.id = memory_vectors.item_id AND m.source_type = memory_vectors.source_type)
+           )`);
         await client.query('COMMIT');
       } catch (e) {
         await client.query('ROLLBACK').catch(() => {});
@@ -483,7 +494,7 @@ export class PgVectorStore implements VectorStore {
       // any that already have a window sibling — a half-applied prior run — so
       // re-runs stay idempotent.
       const rows: any[] = (await client.query(
-        `SELECT chunk_id, item_id, source_type, title, text, chunk_type, project_path, project_id, file_path, mtime
+        `SELECT chunk_id, item_id, source_type, title, text, chunk_type, project_path, project_id, file_path, mtime, author_sub, author_device
            FROM memory_chunks c
           WHERE c.tenant=$1 AND length(c.text) > $2
             AND NOT EXISTS (SELECT 1 FROM memory_chunks w
@@ -501,11 +512,12 @@ export class PgVectorStore implements VectorStore {
         await client.query(`DELETE FROM memory_vectors WHERE tenant=$1 AND chunk_id=$2`, [this.t, g.chunk_id]);
         for (let wi = 1; wi < windows.length; wi++) {
           await client.query(
-            `INSERT INTO memory_chunks (tenant, chunk_id, item_id, source_type, title, text, chunk_type, project_path, project_id, file_path, mtime)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            `INSERT INTO memory_chunks (tenant, chunk_id, item_id, source_type, title, text, chunk_type, project_path, project_id, file_path, mtime, author_sub, author_device)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
              ON CONFLICT (tenant, chunk_id) DO UPDATE SET text=EXCLUDED.text`,
             [this.t, `${g.chunk_id}:w${wi}`, g.item_id, g.source_type, `${g.title || ''} (${wi + 1})`,
-             windows[wi], g.chunk_type || '', g.project_path || '', g.project_id || '', g.file_path || '', this.intMs(g.mtime)]);
+             windows[wi], g.chunk_type || '', g.project_path || '', g.project_id || '', g.file_path || '', this.intMs(g.mtime),
+             g.author_sub ?? null, g.author_device ?? null]);
           windowsAdded++;
         }
         rewindowed++;

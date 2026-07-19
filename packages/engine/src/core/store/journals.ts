@@ -15,6 +15,7 @@ import { WriteAheadLog } from '../write-ahead-log.js';
 import { DiarySource } from '../../parsers/diary-source.js';
 import { resolveBackend, type CreateStoreOptions } from './index.js';
 import { openPgPool, ensurePgSchema, pgTenant, tenantQuery } from './pg-pool.js';
+import { currentAuthor } from './tenant-context.js';
 
 type AsyncMethod<M> = M extends (...args: infer A) => infer R
   ? (...args: A) => Promise<Awaited<R>>
@@ -85,9 +86,9 @@ export class PgDiary implements DiaryDriver {
   async write(entry: DiaryEntryArg): Promise<string> {
     const id = `d_${createHash('sha256').update(`${entry.agent}|${entry.timestamp}|${entry.content}`).digest('hex').slice(0, 16)}`;
     await tenantQuery(this.pool, this.t, 
-      `INSERT INTO diary_entries (tenant,id,agent,topic,content,ts,session_id,project_path) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+      `INSERT INTO diary_entries (tenant,id,agent,topic,content,ts,session_id,project_path,author_sub) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
        ON CONFLICT (tenant,id) DO UPDATE SET content=excluded.content, topic=excluded.topic`,
-      [this.t, id, entry.agent, entry.topic ?? '', entry.content, entry.timestamp, entry.sessionId ?? null, entry.projectPath ?? null]);
+      [this.t, id, entry.agent, entry.topic ?? '', entry.content, entry.timestamp, entry.sessionId ?? null, entry.projectPath ?? null, currentAuthor().sub]);
     return id;
   }
   async read(agentName: string, lastN = 10): Promise<DiaryEntryOut> {
