@@ -17,6 +17,9 @@ import memoryRouter from './routes/memory.js';
 import analyticsRouter from './routes/analytics.js';
 import settingsRouter from './routes/settings.js';
 import editsRouter from './routes/edits.js';
+import activityRouter from './routes/activity.js';
+import tasksRouter from './routes/tasks.js';
+import sharesRouter from './routes/shares.js';
 import toolkitRouter from './routes/toolkit.js';
 import secretsRouter from './routes/secrets.js';
 import { tenantAuth, validateAuthConfig } from './middleware/auth.js';
@@ -198,6 +201,14 @@ app.use('/api/conversations', paid, rl('read-heavy'), conversationsRouter);
 app.use('/api/status', rl('read-light'), statusRouter);
 app.use('/api/memory', paid, rl('read-heavy'), memoryRouter);
 app.use('/api/analytics', paid, rl('read-heavy'), analyticsRouter);
+// Team activity view (per-member × per-project). RLS-scoped to the requesting
+// member's visibility, so it only ever shows own + team-shared work.
+app.use('/api/activity', paid, rl('read-heavy'), activityRouter);
+// Collaborative team tasks (server-authoritative board). Team-visible within
+// the tenant; write-light covers the POST/PATCH.
+app.use('/api/tasks', paid, rl('write-light'), tasksRouter);
+// Per-project sharing, data-plane (device-token capable, for the CLI).
+app.use('/api/shares', paid, rl('write-light'), sharesRouter);
 app.use('/api/secrets', paid, rl('read-light'), secretsRouter);
 
 // Store-backed in both modes: the edits timeline reads synced compute_cache

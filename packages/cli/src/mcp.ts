@@ -333,6 +333,32 @@ const RecallWeeklyDigestSchema = z.object({
   weeks_back: z.number().optional().default(0).describe('0 = current week, 1 = last week, etc.'),
 });
 
+const RecallTeamActivitySchema = z.object({
+  project: z.string().optional().describe('Filter to one project_id (e.g. "git:github.com/org/repo")'),
+  member: z.string().optional().describe('Filter to one teammate by their user id (sub)'),
+  since_days: z.number().optional().describe('Only activity in the last N days'),
+});
+
+const TASK_STATUSES = ['todo', 'in_progress', 'blocked', 'done'] as const;
+const RecallTasksSchema = z.object({
+  mine: z.boolean().optional().describe('Only tasks assigned to me'),
+  project: z.string().optional().describe('Filter to one project_id'),
+  status: z.enum(TASK_STATUSES).optional().describe('Filter by status'),
+});
+const RecallTaskCreateSchema = z.object({
+  title: z.string().describe('Task title'),
+  description: z.string().optional(),
+  project: z.string().optional().describe('project_id this task belongs to'),
+  assignee: z.string().optional().describe("Teammate user id (sub) to assign; omit to leave unassigned"),
+});
+const RecallTaskUpdateSchema = z.object({
+  id: z.string().describe('Task id (t_…)'),
+  status: z.enum(TASK_STATUSES).optional(),
+  assignee: z.string().optional().describe('Reassign to this user id (sub); empty string unassigns'),
+  title: z.string().optional(),
+  comment: z.string().optional().describe('Add a comment to the task'),
+});
+
 // ── Knowledge Graph Schemas ──────────────────────────────────────
 
 const RecallKGQuerySchema = z.object({
@@ -839,6 +865,72 @@ Use to understand overall productivity and spending.`,
           properties: {
             weeks_back: { type: 'number', default: 0, description: '0 = current week, 1 = last week' },
           },
+        },
+      },
+      {
+        name: 'recall_team_activity',
+        description: `See what each teammate did, grouped by project — the team activity view.
+
+Returns a per-member × per-project rollup (session counts + last activity) for
+your team. Scoped to what you're allowed to see: your own work plus teammates'
+work on projects they've shared into the team (private projects never appear).
+
+Use for "what has the team been working on", "what did <teammate> do on <project>",
+or standup/status. Filter by project, by member, or by recency (since_days).`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Filter to one project_id' },
+            member: { type: 'string', description: 'Filter to one teammate (user id / sub)' },
+            since_days: { type: 'number', description: 'Only activity in the last N days' },
+          },
+        },
+      },
+      {
+        name: 'recall_tasks',
+        description: `List collaborative team tasks (the shared task board).
+
+Team-visible tasks with status, assignee, and project. Use for "what's on the
+team's plate", "my tasks", or to find a task id to update. Filter by mine /
+project / status.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            mine: { type: 'boolean', description: 'Only tasks assigned to me' },
+            project: { type: 'string', description: 'Filter to one project_id' },
+            status: { type: 'string', enum: [...TASK_STATUSES], description: 'Filter by status' },
+          },
+        },
+      },
+      {
+        name: 'recall_task_create',
+        description: `Create a collaborative team task. Optionally assign it to a teammate and
+attach it to a project. Returns the new task id.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', description: 'Task title' },
+            description: { type: 'string' },
+            project: { type: 'string', description: 'project_id this task belongs to' },
+            assignee: { type: 'string', description: 'Teammate user id (sub) to assign' },
+          },
+          required: ['title'],
+        },
+      },
+      {
+        name: 'recall_task_update',
+        description: `Update a team task: change status, reassign, rename, and/or add a comment.
+Pass the task id (t_…) from recall_tasks.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'Task id (t_…)' },
+            status: { type: 'string', enum: [...TASK_STATUSES] },
+            assignee: { type: 'string', description: 'Reassign to this user id (sub)' },
+            title: { type: 'string' },
+            comment: { type: 'string', description: 'Add a comment' },
+          },
+          required: ['id'],
         },
       },
       // ── Knowledge Graph Tools ──────────────────────────────────
@@ -2257,6 +2349,77 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         } catch { /* kg optional */ }
 
         return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_team_activity': {
+        const params = RecallTeamActivitySchema.parse(args);
+        requireRemote();
+        const qs: Record<string, string | number> = {};
+        if (params.project) qs.project = params.project;
+        if (params.member) qs.member = params.member;
+        if (params.since_days && params.since_days > 0) qs.since = Date.now() - params.since_days * 86400000;
+        type Activity = {
+          activity: Array<{ authorSub: string | null; memberEmail: string | null; projectId: string; sessions: number; lastMtime: number }>;
+        };
+        const a = await remoteGetQS<Activity>('/api/activity', qs);
+        if (!a.activity || a.activity.length === 0) {
+          return { content: [{ type: 'text', text: 'No team activity visible — nothing has been shared into the team yet, or no sessions match the filter. (Teammates share a project with `chat-recall share <project>`.)' }] };
+        }
+        // Group by member for a readable "who did what, where" rollup.
+        const byMember = new Map<string, Activity['activity']>();
+        for (const r of a.activity) {
+          const key = r.memberEmail || r.authorSub || 'unattributed';
+          (byMember.get(key) ?? byMember.set(key, []).get(key)!).push(r);
+        }
+        const lines: string[] = ['# Team activity\n'];
+        for (const [member, rows] of byMember) {
+          const total = rows.reduce((n, r) => n + r.sessions, 0);
+          lines.push(`## ${member} — ${total} session(s)`);
+          for (const r of [...rows].sort((x, y) => y.lastMtime - x.lastMtime)) {
+            const when = r.lastMtime ? new Date(r.lastMtime).toISOString().slice(0, 10) : '????';
+            lines.push(`- ${r.projectId} · ${r.sessions} session(s) · last active ${when}`);
+          }
+          lines.push('');
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_tasks': {
+        const params = RecallTasksSchema.parse(args);
+        requireRemote();
+        const qs: Record<string, string> = {};
+        if (params.mine) qs.assignee = '@me';
+        if (params.project) qs.project = params.project;
+        if (params.status) qs.status = params.status;
+        type Task = { id: string; title: string; status: string; assigneeSub: string | null; projectId: string; updatedAt: number };
+        const { tasks } = await remoteGetQS<{ tasks: Task[] }>('/api/tasks', qs);
+        if (!tasks || tasks.length === 0) return { content: [{ type: 'text', text: 'No team tasks match.' }] };
+        const lines = tasks.map((t) =>
+          `- [${t.status}] ${t.title}  \`${t.id}\`${t.projectId ? ` · ${t.projectId}` : ''}${t.assigneeSub ? ` · @${t.assigneeSub.slice(0, 8)}` : ' · unassigned'}`);
+        return { content: [{ type: 'text', text: `# Team tasks (${tasks.length})\n\n${lines.join('\n')}` }] };
+      }
+
+      case 'recall_task_create': {
+        const params = RecallTaskCreateSchema.parse(args);
+        requireRemote();
+        const { task } = await remotePost<{ task: { id: string; title: string } }>('/api/tasks', {
+          title: params.title, description: params.description, projectId: params.project, assigneeSub: params.assignee ?? null,
+        });
+        return { content: [{ type: 'text', text: `Created task \`${task.id}\`: ${task.title}` }] };
+      }
+
+      case 'recall_task_update': {
+        const params = RecallTaskUpdateSchema.parse(args);
+        requireRemote();
+        const patch: Record<string, unknown> = {};
+        if (params.status) patch.status = params.status;
+        if (params.assignee !== undefined) patch.assigneeSub = params.assignee || null;
+        if (params.title) patch.title = params.title;
+        let did = false;
+        if (Object.keys(patch).length > 0) { await remotePatch(`/api/tasks/${encodeURIComponent(params.id)}`, patch); did = true; }
+        if (params.comment) { await remotePost(`/api/tasks/${encodeURIComponent(params.id)}/comments`, { body: params.comment }); did = true; }
+        if (!did) return { content: [{ type: 'text', text: 'Nothing to update — pass status, assignee, title, and/or comment.' }] };
+        return { content: [{ type: 'text', text: `Updated task ${params.id}.` }] };
       }
 
       // ── Knowledge Graph Handlers ─────────────────────────────────

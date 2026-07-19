@@ -28,7 +28,7 @@ import { getCacheDbPath } from '../paths.js';
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 const INVITE_TTL_MS = 7 * 24 * 3600 * 1000;
 
-export interface AgentTokenInfo { tenant: string; deviceId: string }
+export interface AgentTokenInfo { tenant: string; deviceId: string; userSub: string | null }
 export interface AgentTokenMeta { deviceId: string; createdAt: number; revoked: boolean }
 
 /**
@@ -123,7 +123,26 @@ export interface ControlPlane {
   getTenantSetting(tenant: string, key: string): Promise<string | null>;
   setTenantSetting(tenant: string, key: string, value: string): Promise<void>;
 
+  // ── Per-project team sharing (team collaboration) ──
+  /** Every share in the team (all members). Powers the owner's overview. */
+  listShares(teamSlug: string): Promise<ProjectShare[]>;
+  /** The projects one member has shared into the team. */
+  listSharesForUser(teamSlug: string, ownerSub: string): Promise<ProjectShare[]>;
+  /** Opt a member's project into team visibility (upsert scope). */
+  setShare(teamSlug: string, ownerSub: string, projectId: string, scope: ShareScope): Promise<void>;
+  /** Stop sharing a member's project; false when it wasn't shared. */
+  removeShare(teamSlug: string, ownerSub: string, projectId: string): Promise<boolean>;
+
   close(): Promise<void>;
+}
+
+export type ShareScope = 'activity' | 'full';
+export interface ProjectShare {
+  teamSlug: string;
+  ownerSub: string;
+  projectId: string;
+  scope: ShareScope;
+  sharedAt: number;
 }
 
 /** Deterministic artifact id: same (team,type,tool,name) ⇒ same id, so
@@ -198,6 +217,14 @@ class SqliteControlPlane implements ControlPlane {
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (tenant, key)
       );
+      CREATE TABLE IF NOT EXISTS team_project_shares (
+        team_slug  TEXT NOT NULL,
+        owner_sub  TEXT NOT NULL,
+        project_id TEXT NOT NULL,
+        scope      TEXT NOT NULL DEFAULT 'full',
+        shared_at  INTEGER NOT NULL,
+        PRIMARY KEY (team_slug, owner_sub, project_id)
+      );
     `);
   }
 
@@ -208,9 +235,9 @@ class SqliteControlPlane implements ControlPlane {
 
   async resolveAgentToken(rawToken: string): Promise<AgentTokenInfo | null> {
     const r = this.db.prepare(
-      `SELECT tenant, device_id FROM cp_agent_tokens WHERE token_hash = ? AND revoked_at IS NULL`,
-    ).get(sha256(rawToken)) as { tenant: string; device_id: string } | undefined;
-    return r ? { tenant: r.tenant, deviceId: r.device_id } : null;
+      `SELECT tenant, device_id, user_sub FROM cp_agent_tokens WHERE token_hash = ? AND revoked_at IS NULL`,
+    ).get(sha256(rawToken)) as { tenant: string; device_id: string; user_sub: string | null } | undefined;
+    return r ? { tenant: r.tenant, deviceId: r.device_id, userSub: r.user_sub ?? null } : null;
   }
 
   async mintAgentToken(tenant: string, deviceId: string, userSub?: string): Promise<string> {
@@ -375,6 +402,23 @@ class SqliteControlPlane implements ControlPlane {
     this.db.prepare(`INSERT INTO cp_tenant_settings (tenant, key, value, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (tenant, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`).run(tenant, key, value, Date.now());
   }
 
+  async listShares(teamSlug: string): Promise<ProjectShare[]> {
+    return (this.db.prepare(`SELECT team_slug, owner_sub, project_id, scope, shared_at FROM team_project_shares WHERE team_slug = ? ORDER BY shared_at DESC`).all(teamSlug) as any[])
+      .map((r) => ({ teamSlug: r.team_slug, ownerSub: r.owner_sub, projectId: r.project_id, scope: r.scope as ShareScope, sharedAt: r.shared_at }));
+  }
+  async listSharesForUser(teamSlug: string, ownerSub: string): Promise<ProjectShare[]> {
+    return (this.db.prepare(`SELECT team_slug, owner_sub, project_id, scope, shared_at FROM team_project_shares WHERE team_slug = ? AND owner_sub = ? ORDER BY shared_at DESC`).all(teamSlug, ownerSub) as any[])
+      .map((r) => ({ teamSlug: r.team_slug, ownerSub: r.owner_sub, projectId: r.project_id, scope: r.scope as ShareScope, sharedAt: r.shared_at }));
+  }
+  async setShare(teamSlug: string, ownerSub: string, projectId: string, scope: ShareScope): Promise<void> {
+    this.db.prepare(`INSERT INTO team_project_shares (team_slug, owner_sub, project_id, scope, shared_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (team_slug, owner_sub, project_id) DO UPDATE SET scope=excluded.scope, shared_at=excluded.shared_at`)
+      .run(teamSlug, ownerSub, projectId, scope, Date.now());
+  }
+  async removeShare(teamSlug: string, ownerSub: string, projectId: string): Promise<boolean> {
+    return this.db.prepare(`DELETE FROM team_project_shares WHERE team_slug = ? AND owner_sub = ? AND project_id = ?`).run(teamSlug, ownerSub, projectId).changes > 0;
+  }
+
   async deleteTenant(tenant: string): Promise<boolean> {
     const exists = this.db.prepare(`SELECT 1 FROM cp_tenants WHERE tenant = ?`).get(tenant);
     if (!exists) return false;
@@ -387,6 +431,7 @@ class SqliteControlPlane implements ControlPlane {
     this.db.prepare(`DELETE FROM cp_team_artifacts   WHERE team_slug = ?`).run(tenant);
     this.db.prepare(`DELETE FROM cp_entitlements     WHERE tenant = ?`).run(tenant);
     this.db.prepare(`DELETE FROM cp_tenant_settings  WHERE tenant = ?`).run(tenant);
+    this.db.prepare(`DELETE FROM team_project_shares WHERE team_slug = ?`).run(tenant);
     this.db.prepare(`DELETE FROM cp_teams            WHERE slug = ?`).run(tenant);
     this.db.prepare(`DELETE FROM cp_tenants          WHERE tenant = ?`).run(tenant);
     return true;
@@ -468,10 +513,10 @@ class PgControlPlane implements ControlPlane {
 
   async resolveAgentToken(rawToken: string): Promise<AgentTokenInfo | null> {
     const r = (await this.q(
-      `SELECT tenant, device_id FROM agent_tokens WHERE token_hash = $1 AND revoked_at IS NULL`,
+      `SELECT tenant, device_id, user_sub FROM agent_tokens WHERE token_hash = $1 AND revoked_at IS NULL`,
       [sha256(rawToken)],
     ))[0];
-    return r ? { tenant: r.tenant, deviceId: r.device_id } : null;
+    return r ? { tenant: r.tenant, deviceId: r.device_id, userSub: r.user_sub ?? null } : null;
   }
 
   async mintAgentToken(tenant: string, deviceId: string, userSub?: string): Promise<string> {
@@ -657,6 +702,26 @@ class PgControlPlane implements ControlPlane {
     );
   }
 
+  async listShares(teamSlug: string): Promise<ProjectShare[]> {
+    return (await this.q(`SELECT team_slug, owner_sub, project_id, scope, shared_at FROM team_project_shares WHERE team_slug = $1 ORDER BY shared_at DESC`, [teamSlug]))
+      .map((r: any) => ({ teamSlug: r.team_slug, ownerSub: r.owner_sub, projectId: r.project_id, scope: r.scope as ShareScope, sharedAt: Number(r.shared_at) }));
+  }
+  async listSharesForUser(teamSlug: string, ownerSub: string): Promise<ProjectShare[]> {
+    return (await this.q(`SELECT team_slug, owner_sub, project_id, scope, shared_at FROM team_project_shares WHERE team_slug = $1 AND owner_sub = $2 ORDER BY shared_at DESC`, [teamSlug, ownerSub]))
+      .map((r: any) => ({ teamSlug: r.team_slug, ownerSub: r.owner_sub, projectId: r.project_id, scope: r.scope as ShareScope, sharedAt: Number(r.shared_at) }));
+  }
+  async setShare(teamSlug: string, ownerSub: string, projectId: string, scope: ShareScope): Promise<void> {
+    await this.q(
+      `INSERT INTO team_project_shares (team_slug, owner_sub, project_id, scope, shared_at) VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (team_slug, owner_sub, project_id) DO UPDATE SET scope=excluded.scope, shared_at=excluded.shared_at`,
+      [teamSlug, ownerSub, projectId, scope, Date.now()],
+    );
+  }
+  async removeShare(teamSlug: string, ownerSub: string, projectId: string): Promise<boolean> {
+    const r = await this.pool.query(`DELETE FROM team_project_shares WHERE team_slug = $1 AND owner_sub = $2 AND project_id = $3`, [teamSlug, ownerSub, projectId]);
+    return (r.rowCount || 0) > 0;
+  }
+
   async deleteTenant(tenant: string): Promise<boolean> {
     const exists = (await this.q(`SELECT 1 FROM tenants WHERE tenant = $1`, [tenant]))[0];
     if (!exists) return false;
@@ -668,7 +733,7 @@ class PgControlPlane implements ControlPlane {
       'memory_metadata', 'memory_links', 'content_cache', 'kv_store', 'memory_chunks',
       'secret_findings', 'secret_rules', 'secret_dismissals', 'session_metadata',
       'summary_errors', 'compute_cache', 'session_outcome_cache', 'kg_entities',
-      'kg_triples', 'wal_log', 'diary_entries',
+      'kg_triples', 'wal_log', 'diary_entries', 'team_tasks', 'team_task_comments',
     ]) {
       // FORCE RLS applies to the owner too — scope the GUC to this tenant so
       // the policy permits the delete.
@@ -680,6 +745,7 @@ class PgControlPlane implements ControlPlane {
     await this.q(`DELETE FROM memberships      WHERE team_slug = $1`, [tenant]);
     await this.q(`DELETE FROM invites          WHERE team_slug = $1`, [tenant]);
     await this.q(`DELETE FROM team_artifacts   WHERE team_slug = $1`, [tenant]);
+    await this.q(`DELETE FROM team_project_shares WHERE team_slug = $1`, [tenant]);
     await this.q(`DELETE FROM entitlements     WHERE tenant = $1`, [tenant]);
     await this.q(`DELETE FROM tenant_settings  WHERE tenant = $1`, [tenant]);
     await this.q(`DELETE FROM teams            WHERE slug = $1`, [tenant]);

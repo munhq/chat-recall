@@ -241,8 +241,9 @@ export type {
 } from './types/memory.js';
 export { CodexSessionSource } from './parsers/codex-session-source.js';
 
-// Ambient tenant context (server auth middleware → store factories)
-export { runWithTenant, currentTenant } from './core/store/tenant-context.js';
+// Ambient tenant + author context (server auth middleware → store factories)
+export { runWithTenant, currentTenant, runWithAuthor, currentAuthor, currentViewer } from './core/store/tenant-context.js';
+export type { AuthorContext } from './core/store/tenant-context.js';
 
 // Canonical transcript parser — THE one way conversations are parsed
 // (docs/ARCHITECTURE_RESET.md). Everything renders from this shape.

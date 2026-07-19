@@ -42,6 +42,15 @@ export class SqliteStore implements StorageDriver {
   async clearSourceType(...a: Args<'clearSourceType'>) { return this.inner.clearSourceType(...a); }
   async deleteItem(...a: Args<'deleteItem'>) { return this.inner.deleteItem(...a); }
   async updateItemProjectPath(...a: Args<'updateItemProjectPath'>) { return this.inner.updateItemProjectPath(...a); }
+  // Team activity is a cloud/multi-user (Postgres) concept — sqlite is single-user.
+  async teamActivity(): Promise<Array<{ authorSub: string | null; projectId: string; sessions: number; lastMtime: number }>> { return []; }
+
+  // Collaborative tasks are a cloud/team (Postgres) feature; sqlite is single-user.
+  async createTeamTask(): Promise<never> { throw new Error('team tasks require the Postgres backend (cloud/team mode)'); }
+  async listTeamTasks(): Promise<[]> { return []; }
+  async getTeamTask(): Promise<null> { return null; }
+  async updateTeamTask(): Promise<null> { return null; }
+  async addTeamTaskComment(): Promise<null> { return null; }
 
   // ── links ──
   async addLink(...a: Args<'addLink'>) { return this.inner.addLink(...a); }

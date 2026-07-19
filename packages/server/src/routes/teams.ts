@@ -153,6 +153,16 @@ router.delete('/teams/:slug/tokens/:deviceId', sensitiveLimiter, async (req, res
   } finally { await cp.close(); }
 });
 
+// ── Per-project sharing (team collaboration) ────────────────────────────
+// A member opts THEIR OWN work on a project into team visibility. Default is
+// private — nothing is visible to teammates until shared.
+//
+// NOTE: per-project share management lives on the DATA-PLANE router
+// `/api/shares` (routes/shares.ts), which runs after tenantAuth and therefore
+// works for BOTH the web (JWT) and the CLI (ct_ device token). The earlier
+// JWT-only /api/teams/:slug/shares routes were removed to avoid two surfaces
+// (and their inverted GET defaults) for one feature.
+
 // ── Admin bootstrap (self-host without Keycloak) ────────────────────────
 
 router.post('/tenants', sensitiveLimiter, async (req, res) => {
