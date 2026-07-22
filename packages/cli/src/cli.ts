@@ -2113,6 +2113,87 @@ include
     console.log(chalk.green(`✓ Removed ${path}`) + chalk.dim(' — back to skipped.'));
   });
 
+// ── Selective sync: opt-in project allowlist ───────────────────────────────
+// The inverse of `exclude`: with mode 'only', ONLY the listed projects sync.
+const syncOnly = program
+  .command('sync-only')
+  .description("Opt-in sync: ship ONLY chosen projects. Bare `sync-only` shows the mode + allowlist.");
+
+syncOnly
+  .command('list', { isDefault: true })
+  .description('Show the sync mode and allowlisted projects')
+  .action(async () => {
+    const { loadSettings } = await import('@chat-recall/engine/core/settings.js');
+    const s = loadSettings();
+    const mode = s.sync.syncMode ?? 'all';
+    console.log(chalk.bold('Selective sync') + chalk.dim(' (~/.chat-recall/settings/settings.json)'));
+    console.log(`  mode: ${mode === 'only' ? chalk.yellow('only (allowlist)') : chalk.green('all (default)')}`);
+    const list = s.sync.syncOnlyProjects ?? [];
+    console.log(`  projects: ${list.length ? '' : chalk.dim('none')}`);
+    for (const p of list) console.log(`    ${p}`);
+    if (mode === 'only' && list.length === 0) console.log(chalk.red('  ⚠ mode is "only" but the allowlist is empty → NOTHING syncs.'));
+    console.log(chalk.dim('\nList ids with `chat-recall projects`, then `chat-recall sync-only add <id>`.'));
+  });
+
+syncOnly
+  .command('add <project>')
+  .description('Add a project id (git:…/ws:…/path:…) or path substring to the allowlist (switches mode to "only")')
+  .action(async (project: string) => {
+    const { loadSettings, saveSettings } = await import('@chat-recall/engine/core/settings.js');
+    const s = loadSettings();
+    s.sync.syncOnlyProjects = s.sync.syncOnlyProjects || [];
+    if (!s.sync.syncOnlyProjects.includes(project)) s.sync.syncOnlyProjects.push(project);
+    s.sync.syncMode = 'only';
+    saveSettings(s);
+    console.log(chalk.green(`✓ Added ${project}`) + chalk.dim(' — mode is now "only"; next sync ships only allowlisted projects.'));
+  });
+
+syncOnly
+  .command('remove <project>')
+  .description('Remove a project from the allowlist')
+  .action(async (project: string) => {
+    const { loadSettings, saveSettings } = await import('@chat-recall/engine/core/settings.js');
+    const s = loadSettings();
+    const before = (s.sync.syncOnlyProjects || []).length;
+    s.sync.syncOnlyProjects = (s.sync.syncOnlyProjects || []).filter((p) => p !== project);
+    if (s.sync.syncOnlyProjects.length === before) { console.error(chalk.red(`Not in the allowlist: ${project}`)); process.exit(1); }
+    saveSettings(s);
+    console.log(chalk.green(`✓ Removed ${project}`));
+  });
+
+syncOnly
+  .command('all')
+  .description('Switch back to syncing ALL non-excluded projects (keeps the list, just disables opt-in mode)')
+  .action(async () => {
+    const { loadSettings, saveSettings } = await import('@chat-recall/engine/core/settings.js');
+    const s = loadSettings();
+    s.sync.syncMode = 'all';
+    saveSettings(s);
+    console.log(chalk.green('✓ Sync mode: all') + chalk.dim(' — every non-excluded project syncs again.'));
+  });
+
+program
+  .command('projects')
+  .description('List distinct project ids discovered on this machine (for `sync-only add`)')
+  .action(async () => {
+    const { listAvailableBackends } = await import('@chat-recall/engine/core/tool-backend.js');
+    const { resolveProjectId } = await import('@chat-recall/engine/core/project-resolver.js');
+    const counts = new Map<string, number>();
+    for (const b of listAvailableBackends()) {
+      let refs: Array<{ projectPath?: string }> = [];
+      try { refs = b.listSessions() as any; } catch { /* backend unavailable */ }
+      for (const r of refs) {
+        const res = resolveProjectId(r.projectPath || '');
+        if (res.source === 'ignored') continue;
+        counts.set(res.id, (counts.get(res.id) || 0) + 1);
+      }
+    }
+    const rows = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    if (!rows.length) { console.log(chalk.dim('No projects discovered.')); return; }
+    console.log(chalk.bold('Discovered projects') + chalk.dim('  (id · sessions)'));
+    for (const [id, n] of rows) console.log(`  ${chalk.cyan(id)} ${chalk.dim('· ' + n)}`);
+  });
+
 exclude
   .command('project <path>')
   .description('Exclude a project path from syncing (substring match on the project path; e.g. ~/.claude-pr-bot)')

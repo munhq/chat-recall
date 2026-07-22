@@ -42,6 +42,10 @@ const RLS_PASS = 'rlspass';
     try {
       await c.query('BEGIN');
       if (tenant !== null) await c.query("SELECT set_config('app.tenant', $1, true)", [tenant]);
+      // The pool always sets app.viewer too (setScopeGucs); '*' is the no-author
+      // / worker context these raw inserts represent. Without it the author-safe
+      // write-guard (RESTRICTIVE) correctly blocks the un-attributed INSERT.
+      await c.query("SELECT set_config('app.viewer', $1, true)", ['*']);
       const r = await fn(c);
       await c.query('COMMIT');
       return r;
