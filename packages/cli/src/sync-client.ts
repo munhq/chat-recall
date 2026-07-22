@@ -38,7 +38,7 @@ import { redactSecrets, scanTextForFindings } from '@chat-recall/engine/core/sec
 import { scanFileForSecrets, scanDirForSecrets, scanTenantRules, isSecretScannerAvailable, type ScanFinding } from '@chat-recall/engine/core/secret-scanner.js';
 import { isInternalToolPrompt } from '@chat-recall/engine/core/internal-prompts.js';
 import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js';
-import { loadSettings, saveSettings } from '@chat-recall/engine/core/settings.js';
+import { loadSettings, saveSettings, isProjectSyncable } from '@chat-recall/engine/core/settings.js';
 import { getDataDir } from '@chat-recall/engine/core/paths.js';
 import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js';
 import { extractTurnsAny, replaySessionAny } from '@chat-recall/engine/core/session-multi-tool.js';
@@ -420,6 +420,16 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
   const mapPath = (p: string): string => (cleartext ? p : hashPath(p));
   const excluded = (projectPath: string): boolean =>
     excludeProjects.some((x) => x && projectPath.includes(x));
+  // Opt-in selective sync (settings.sync.syncMode='only'): ship ONLY allowlisted
+  // projects. Allowlist = local ∪ tenant config; matched on the resolved project
+  // id (what the dashboard picker lists) or a path substring. 'all'/unset ships
+  // every non-excluded project (unchanged default).
+  const syncOnly = new Set<string>([...(sync?.syncOnlyProjects ?? []), ...((serverCfg as { syncOnlyProjects?: string[] }).syncOnlyProjects ?? [])]);
+  const includedProject = (projectPath: string): boolean => {
+    if ((sync?.syncMode ?? 'all') !== 'only') return true; // fast path: no resolve
+    const r = resolveProjectId(projectPath);
+    return isProjectSyncable(r.source === 'ignored' ? '' : r.id, projectPath, { syncMode: 'only', syncOnly });
+  };
 
   // Ledger mode walks ALL sessions (the ledger does the skipping — that's
   // what lets a previously-failed session retry no matter how old it is).
@@ -782,6 +792,7 @@ const refs = listAvailableBackends().flatMap((b) => {
   const modeOf = (ref: SessionRef): 'skip' | 'append' | 'full' => {
     if (excludeTools.has(ref.toolId as any)) return 'skip';
     if (excluded(ref.projectPath)) return 'skip';
+    if (!includedProject(ref.projectPath)) return 'skip';
     if (!ledger) return ref.mtime >= (opts.sinceMs ?? 0) ? 'full' : 'skip';
     const ack = ledger.get(ref.prefixedId);
     const backend = backendFor(ref);
@@ -1030,6 +1041,7 @@ const refs = listAvailableBackends().flatMap((b) => {
           const versionStale = (itemVersions[itemTool] ?? EXTRACTOR_VERSION) < extractorVersionForId(item.id);
           if ((item.mtime || 0) < (opts.sinceMs ?? 0) && !versionStale) continue;
           if (excluded(item.projectPath || '')) continue;
+          if (!includedProject(item.projectPath || '')) continue;
           const count = { redactions: 0 };
           let chunks: any[] = [];
           try { chunks = await source.parse(item); } catch { /* unparseable item still ships metadata */ }

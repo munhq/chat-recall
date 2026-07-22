@@ -750,5 +750,89 @@ BEGIN
             WHERE m.tenant = diary_entries.tenant AND m.id = diary_entries.session_id AND m.source_type='session'))
     );
   END IF;
+
+  -- memory_links — relationship edges. A link is visible only when BOTH of its
+  -- endpoints are visible to the viewer; otherwise the edge leaks the existence
+  -- of a hidden (unshared teammate) item and how it relates to yours. The two
+  -- EXISTS subqueries are themselves RLS-filtered by memory_metadata's
+  -- author_visibility, so a hidden endpoint → no row → link hidden.
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='memory_links' AND policyname='author_visibility') THEN
+    CREATE POLICY author_visibility ON memory_links AS RESTRICTIVE FOR SELECT USING (
+      current_setting('app.viewer', true) = '*'
+      OR (
+        EXISTS (SELECT 1 FROM memory_metadata m
+                WHERE m.tenant = memory_links.tenant AND m.id = memory_links.source_id AND m.source_type = memory_links.source_type)
+        AND EXISTS (SELECT 1 FROM memory_metadata m
+                WHERE m.tenant = memory_links.tenant AND m.id = memory_links.target_id AND m.source_type = memory_links.target_type)
+      )
+    );
+  END IF;
+
+  -- kg_entities — entity nodes (no author column). Visible only when referenced
+  -- by a triple the viewer can see; kg_triples carries its own author_visibility,
+  -- so an entity that appears only in a teammate's private triples stays hidden.
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='kg_entities' AND policyname='author_visibility') THEN
+    CREATE POLICY author_visibility ON kg_entities AS RESTRICTIVE FOR SELECT USING (
+      current_setting('app.viewer', true) = '*'
+      OR EXISTS (SELECT 1 FROM kg_triples t
+                 WHERE t.tenant = kg_entities.tenant
+                   AND (t.subject = kg_entities.name OR t.object = kg_entities.name
+                        OR t.subject = kg_entities.id OR t.object = kg_entities.id))
+    );
+  END IF;
+END $$;
+
+-- ── Author-safe writes (RLS, RESTRICTIVE, per write command) ─────────────
+-- Multi-tenant integrity within a team: a NAMED member (app.viewer = their
+-- Keycloak sub) may only INSERT/UPDATE/DELETE rows they author. They can NEVER
+-- overwrite or delete another member's row, nor write a row attributed to
+-- someone else. Worker/CLI ('*') and self-host single-user ('') are
+-- unrestricted (they also write NULL-author rows). Legacy NULL-author rows may
+-- be CLAIMED (updated to self) by a member — safe because session ids are unique
+-- per user, so a member only ever collides with their own rows; the guard still
+-- blocks touching another *named* author's row. Pairs with the reverse-COALESCE
+-- in setItem/addChunksFTS (existing author preserved on conflict, never flipped).
+-- This closes the attribution-flip corruption class. RESTRICTIVE → ANDs with
+-- tenant_isolation. Idempotent: only creates policies not already present.
+DO $$
+DECLARE t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY[
+    'memory_metadata','memory_chunks','session_metadata','secret_findings',
+    'kg_triples','diary_entries','code_projects','code_findings','code_hotspots','code_actions'
+  ] LOOP
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename=t AND policyname='author_write_insert') THEN
+      -- INSERT: the new row must be authored by the writer (or unrestricted ctx).
+      EXECUTE format($p$
+        CREATE POLICY author_write_insert ON %1$I AS RESTRICTIVE FOR INSERT WITH CHECK (
+          current_setting('app.viewer', true) = '*'
+          OR current_setting('app.viewer', true) = ''
+          OR %1$I.author_sub = current_setting('app.viewer', true)
+        )$p$, t);
+      -- UPDATE: may target own rows or claim a legacy NULL row; result must be
+      -- authored by the writer. A different named author's row is invisible here
+      -- (USING false) → an ON CONFLICT DO UPDATE against it fails closed.
+      EXECUTE format($p$
+        CREATE POLICY author_write_update ON %1$I AS RESTRICTIVE FOR UPDATE
+          USING (
+            current_setting('app.viewer', true) IN ('*','')
+            OR %1$I.author_sub = current_setting('app.viewer', true)
+            OR %1$I.author_sub IS NULL
+          )
+          WITH CHECK (
+            current_setting('app.viewer', true) = '*'
+            OR current_setting('app.viewer', true) = ''
+            OR %1$I.author_sub = current_setting('app.viewer', true)
+          )$p$, t);
+      -- DELETE: own rows or legacy NULL only; never another member's.
+      EXECUTE format($p$
+        CREATE POLICY author_write_delete ON %1$I AS RESTRICTIVE FOR DELETE
+          USING (
+            current_setting('app.viewer', true) IN ('*','')
+            OR %1$I.author_sub = current_setting('app.viewer', true)
+            OR %1$I.author_sub IS NULL
+          )$p$, t);
+    END IF;
+  END LOOP;
 END $$;
 `;

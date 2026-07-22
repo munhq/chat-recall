@@ -225,6 +225,19 @@ export interface SyncSettings {
    * specific path under them (e.g. "/Documents/code/").
    */
   includeProjects?: string[];
+  /**
+   * Selective sync mode. 'all' (default) ships every non-excluded project;
+   * 'only' ships ONLY the projects in `syncOnlyProjects` (opt-in). An empty
+   * `syncOnlyProjects` while in 'only' mode ships nothing — the member has
+   * explicitly narrowed scope to a set they haven't populated yet.
+   */
+  syncMode?: 'all' | 'only';
+  /**
+   * Project ids (e.g. `git:github.com/org/repo`, `ws:name`, `path:/abs`) — or
+   * raw path substrings — that sync when `syncMode='only'`. Matched against each
+   * session/item's resolved project id and its project path.
+   */
+  syncOnlyProjects?: string[];
   /** Last-line regex filter on the redacted `preview` field. */
   excludePreviewPatterns?: string[];
   /**
@@ -233,6 +246,24 @@ export interface SyncSettings {
    * this, then advance it. Absent = full sync on the next run.
    */
   lastSyncAt?: number;
+}
+
+/**
+ * Opt-in selective-sync gate (pure). Returns whether a project may sync.
+ * - 'all' (or unset): everything passes (exclusions are applied separately).
+ * - 'only': passes ONLY when the resolved project id is in the allowlist, or the
+ *   project path contains one of the allowlist entries (so a user can list a
+ *   path substring too). Empty allowlist in 'only' mode → nothing passes.
+ */
+export function isProjectSyncable(
+  projectId: string,
+  projectPath: string,
+  cfg: { syncMode?: 'all' | 'only'; syncOnly: ReadonlySet<string> },
+): boolean {
+  if ((cfg.syncMode ?? 'all') !== 'only') return true;
+  if (projectId && cfg.syncOnly.has(projectId)) return true;
+  for (const x of cfg.syncOnly) if (x && projectPath.includes(x)) return true;
+  return false;
 }
 
 /**

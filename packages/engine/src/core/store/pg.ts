@@ -117,8 +117,8 @@ export class PgStore implements StorageDriver {
          title=excluded.title, project_path=excluded.project_path, project_id=excluded.project_id,
          content_preview=excluded.content_preview, file_path=excluded.file_path, mtime=excluded.mtime,
          indexed_at=excluded.indexed_at, extra_json=excluded.extra_json,
-         author_sub=COALESCE(excluded.author_sub, memory_metadata.author_sub),
-         author_device=COALESCE(excluded.author_device, memory_metadata.author_device)`,
+         author_sub=COALESCE(memory_metadata.author_sub, excluded.author_sub),
+         author_device=COALESCE(memory_metadata.author_device, excluded.author_device)`,
       [this.t, item.id, item.sourceType, item.title, item.projectPath, projectId,
        item.contentPreview || '', item.filePath, intMs(item.mtime), Date.now(), JSON.stringify(item.extra || {}), a.sub, a.device],
     );
@@ -150,8 +150,8 @@ export class PgStore implements StorageDriver {
            title=excluded.title, project_path=excluded.project_path, project_id=excluded.project_id,
            content_preview=excluded.content_preview, file_path=excluded.file_path, mtime=excluded.mtime,
            indexed_at=excluded.indexed_at, extra_json=excluded.extra_json,
-           author_sub=COALESCE(excluded.author_sub, memory_metadata.author_sub),
-           author_device=COALESCE(excluded.author_device, memory_metadata.author_device)`);
+           author_sub=COALESCE(memory_metadata.author_sub, excluded.author_sub),
+           author_device=COALESCE(memory_metadata.author_device, excluded.author_device)`);
     });
   }
 
@@ -614,8 +614,8 @@ export class PgStore implements StorageDriver {
         ['tenant', 'chunk_id', 'item_id', 'source_type', 'title', 'text', 'chunk_type', 'project_path', 'project_id', 'file_path', 'mtime', 'author_sub', 'author_device'],
         insertRows,
         `ON CONFLICT (tenant,chunk_id) DO UPDATE SET text=excluded.text, title=excluded.title,
-           author_sub=COALESCE(excluded.author_sub, memory_chunks.author_sub),
-           author_device=COALESCE(excluded.author_device, memory_chunks.author_device)`);
+           author_sub=COALESCE(memory_chunks.author_sub, excluded.author_sub),
+           author_device=COALESCE(memory_chunks.author_device, excluded.author_device)`);
     });
     return rows.length;
   }
@@ -648,8 +648,8 @@ export class PgStore implements StorageDriver {
         ['tenant', 'chunk_id', 'item_id', 'source_type', 'title', 'text', 'chunk_type', 'project_path', 'project_id', 'file_path', 'mtime', 'author_sub', 'author_device'],
         insertRows,
         `ON CONFLICT (tenant,chunk_id) DO UPDATE SET text=excluded.text, title=excluded.title,
-           author_sub=COALESCE(excluded.author_sub, memory_chunks.author_sub),
-           author_device=COALESCE(excluded.author_device, memory_chunks.author_device)`);
+           author_sub=COALESCE(memory_chunks.author_sub, excluded.author_sub),
+           author_device=COALESCE(memory_chunks.author_device, excluded.author_device)`);
     });
     return rows.length;
   }
