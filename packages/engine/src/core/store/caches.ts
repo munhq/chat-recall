@@ -1,4 +1,4 @@
-import { currentTenant } from './tenant-context.js';
+import { currentTenant, currentAuthor } from './tenant-context.js';
 /**
  * Async drivers for the two other cache.db-backed stores:
  *   - MetadataCache — session metadata, summaries, per-session compute cache,
@@ -148,27 +148,41 @@ export class PgMetadataCache implements MetadataCacheDriver {
   }
   async set(...a: MArgs<'set'>) {
     const m = a[0];
+    // Stamp the ambient author so the author_write_insert RLS guard accepts a
+    // NAMED member's write (author_sub must equal app.viewer for a named viewer;
+    // '*'/'' worker/self-host are unrestricted). reverse-COALESCE preserves an
+    // existing author on conflict — a later worker summary pass never flips it.
+    const au = currentAuthor();
     await this.q(
-      `INSERT INTO session_metadata (tenant,session_id,first_prompt,summary,summary_source,mtime,indexed_at) VALUES ($1,$2,$3,$4,$5,$6,$7)
-       ON CONFLICT (tenant,session_id) DO UPDATE SET first_prompt=excluded.first_prompt, summary=excluded.summary, summary_source=excluded.summary_source, mtime=excluded.mtime, indexed_at=excluded.indexed_at`,
-      [this.t, m.sessionId, m.firstPrompt, m.summary, m.summarySource, intMs(m.mtime), m.indexedAt]);
+      `INSERT INTO session_metadata (tenant,session_id,first_prompt,summary,summary_source,mtime,indexed_at,author_sub,author_device) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (tenant,session_id) DO UPDATE SET first_prompt=excluded.first_prompt, summary=excluded.summary, summary_source=excluded.summary_source, mtime=excluded.mtime, indexed_at=excluded.indexed_at,
+         author_sub=COALESCE(session_metadata.author_sub, excluded.author_sub),
+         author_device=COALESCE(session_metadata.author_device, excluded.author_device)`,
+      [this.t, m.sessionId, m.firstPrompt, m.summary, m.summarySource, intMs(m.mtime), m.indexedAt, au.sub, au.device]);
   }
   async setUserTitle(sessionId: string, title: string | null) {
     // Touches only user_title; the summary/indexer set() above never does, so
     // the two writers can't clobber each other. Stub-row insert mirrors SQLite.
+    // author_sub/device stamped on the INSERT branch so a first-touch rename by
+    // a named member isn't rejected by author_write_insert (see set()); the
+    // ON CONFLICT branch leaves author_* untouched, preserving any real author.
+    const au = currentAuthor();
     await this.q(
-      `INSERT INTO session_metadata (tenant,session_id,first_prompt,summary,summary_source,mtime,indexed_at,user_title)
-       VALUES ($1,$2,'','','original',0,$3,$4)
+      `INSERT INTO session_metadata (tenant,session_id,first_prompt,summary,summary_source,mtime,indexed_at,user_title,author_sub,author_device)
+       VALUES ($1,$2,'','','original',0,$3,$4,$5,$6)
        ON CONFLICT (tenant,session_id) DO UPDATE SET user_title=excluded.user_title`,
-      [this.t, sessionId, Date.now(), title]);
+      [this.t, sessionId, Date.now(), title, au.sub, au.device]);
   }
   async setToolTitle(sessionId: string, title: string | null) {
-    // Native tool title (synced); touches only tool_title.
+    // Native tool title (synced); touches only tool_title. Same author stamping
+    // rationale as setUserTitle — a first-touch stub insert must attribute to the
+    // writing member so the write-guard accepts it.
+    const au = currentAuthor();
     await this.q(
-      `INSERT INTO session_metadata (tenant,session_id,first_prompt,summary,summary_source,mtime,indexed_at,tool_title)
-       VALUES ($1,$2,'','','original',0,$3,$4)
+      `INSERT INTO session_metadata (tenant,session_id,first_prompt,summary,summary_source,mtime,indexed_at,tool_title,author_sub,author_device)
+       VALUES ($1,$2,'','','original',0,$3,$4,$5,$6)
        ON CONFLICT (tenant,session_id) DO UPDATE SET tool_title=excluded.tool_title`,
-      [this.t, sessionId, Date.now(), title]);
+      [this.t, sessionId, Date.now(), title, au.sub, au.device]);
   }
   async get(...a: MArgs<'get'>) {
     const r = (await this.q(`SELECT session_id, first_prompt, summary, summary_source, mtime, indexed_at, user_title, tool_title FROM session_metadata WHERE tenant=$1 AND session_id=$2`, [this.t, a[0]]))[0];
