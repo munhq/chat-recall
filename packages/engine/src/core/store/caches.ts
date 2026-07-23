@@ -163,25 +163,34 @@ export class PgMetadataCache implements MetadataCacheDriver {
   async setUserTitle(sessionId: string, title: string | null) {
     // Touches only user_title; the summary/indexer set() above never does, so
     // the two writers can't clobber each other. Stub-row insert mirrors SQLite.
-    // author_sub/device stamped on the INSERT branch so a first-touch rename by
-    // a named member isn't rejected by author_write_insert (see set()); the
-    // ON CONFLICT branch leaves author_* untouched, preserving any real author.
+    // author_sub/device are stamped on INSERT and CLAIMED on conflict (reverse-
+    // COALESCE): a first-touch by a named member must attribute to them
+    // (author_write_insert), and updating a legacy NULL-author row must claim it
+    // to the writer so the post-update row passes author_write_update's WITH
+    // CHECK (author_sub = app.viewer). An existing named author is preserved. Made
+    // self-sufficient (not reliant on set() running first) so any single writer
+    // satisfies the guard on its own.
     const au = currentAuthor();
     await this.q(
       `INSERT INTO session_metadata (tenant,session_id,first_prompt,summary,summary_source,mtime,indexed_at,user_title,author_sub,author_device)
        VALUES ($1,$2,'','','original',0,$3,$4,$5,$6)
-       ON CONFLICT (tenant,session_id) DO UPDATE SET user_title=excluded.user_title`,
+       ON CONFLICT (tenant,session_id) DO UPDATE SET user_title=excluded.user_title,
+         author_sub=COALESCE(session_metadata.author_sub, excluded.author_sub),
+         author_device=COALESCE(session_metadata.author_device, excluded.author_device)`,
       [this.t, sessionId, Date.now(), title, au.sub, au.device]);
   }
   async setToolTitle(sessionId: string, title: string | null) {
-    // Native tool title (synced); touches only tool_title. Same author stamping
-    // rationale as setUserTitle — a first-touch stub insert must attribute to the
-    // writing member so the write-guard accepts it.
+    // Native tool title (synced); touches only tool_title. Same author
+    // stamp-on-insert + claim-on-conflict rationale as setUserTitle — updating a
+    // legacy NULL-author row (the pre-attribution backlog) must claim it or the
+    // write-guard's UPDATE WITH CHECK rejects the sync.
     const au = currentAuthor();
     await this.q(
       `INSERT INTO session_metadata (tenant,session_id,first_prompt,summary,summary_source,mtime,indexed_at,tool_title,author_sub,author_device)
        VALUES ($1,$2,'','','original',0,$3,$4,$5,$6)
-       ON CONFLICT (tenant,session_id) DO UPDATE SET tool_title=excluded.tool_title`,
+       ON CONFLICT (tenant,session_id) DO UPDATE SET tool_title=excluded.tool_title,
+         author_sub=COALESCE(session_metadata.author_sub, excluded.author_sub),
+         author_device=COALESCE(session_metadata.author_device, excluded.author_device)`,
       [this.t, sessionId, Date.now(), title, au.sub, au.device]);
   }
   async get(...a: MArgs<'get'>) {
