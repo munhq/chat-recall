@@ -25,7 +25,7 @@ const PROJ = 'git:h/o/shared-repo';
   let store: any;
 
   const clean = async () => {
-    for (const tbl of ['code_projects', 'code_findings', 'code_hotspots', 'code_actions', 'memory_metadata']) {
+    for (const tbl of ['code_projects', 'code_findings', 'code_hotspots', 'code_actions', 'memory_links', 'memory_metadata']) {
       await sudo.query(`DELETE FROM ${tbl} WHERE tenant=$1`, [T]);
     }
   };
@@ -86,5 +86,20 @@ const PROJ = 'git:h/o/shared-repo';
     // does not open reads.
     const findings = await runWithAuthor({ sub: BOB, device: 'd' }, () => store.listCodeFindings(PROJ));
     expect(findings.length).toBe(0);
+  });
+
+  test('memory_links: a member can write a link whose TARGET endpoint is invisible', async () => {
+    // Two-endpoint ON CONFLICT upsert. Source is BOB's own session (visible);
+    // target 'ghostplan' has no memory_metadata row (invisible). Without the
+    // unrestricted write, the conflict-check fail-closes on author_visibility
+    // (a link is visible only when BOTH endpoints are). addLinks must succeed.
+    await sudo.query(
+      `INSERT INTO memory_metadata (tenant,id,source_type,title,project_id,indexed_at,author_sub) VALUES ($1,'bobsess','session','s','p',1,$2) ON CONFLICT DO NOTHING`,
+      [T, BOB],
+    );
+    await expect(runWithAuthor({ sub: BOB, device: 'd' }, () =>
+      store.addLinks([{ sourceType: 'session', sourceId: 'bobsess', targetType: 'plan', targetId: 'ghostplan', linkType: 'relates', confidence: 1 }]),
+    )).resolves.toBeUndefined();
+    expect((await sudo.query(`SELECT count(*)::int n FROM memory_links WHERE tenant=$1 AND source_id='bobsess'`, [T])).rows[0].n).toBe(1);
   });
 });
