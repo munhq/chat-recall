@@ -20,7 +20,7 @@ import type { StorageDriver, TeamTask, TeamTaskComment, CreateTeamTaskInput, Upd
 import { resolveProjectId } from '../project-resolver.js';
 import { METADATA_VERSION } from '../model-pricing.js';
 import { applyChunkPrivacy } from '../secret-redactor.js';
-import { currentAuthor } from './tenant-context.js';
+import { currentAuthor, runUnrestricted } from './tenant-context.js';
 
 type Args<M extends keyof MemoryStore> = MemoryStore[M] extends (...a: infer A) => any ? A : never;
 type Ret<M extends keyof MemoryStore> = MemoryStore[M] extends (...a: any) => infer R ? Awaited<R> : never;
@@ -1028,8 +1028,13 @@ export class PgStore implements StorageDriver {
   // ── code intelligence (codeindex merge) ──
   async upsertCodeProject(p: Args<'upsertCodeProject'>[0]): Promise<void> {
     const now = Date.now();
+    // code_* is PROJECT-scoped SHARED data (one row per project, any member may
+    // re-index it). Run the upsert UNRESTRICTED so the ON CONFLICT conflict-check
+    // isn't fail-closed by the author_visibility SELECT gate when the indexing
+    // member has no visible session in the project. Safe: no author-write-guard on
+    // code_*, tenant isolation still applies, reads stay gated. See runUnrestricted.
     // label omitted from the UPDATE set so a user-assigned label survives re-index.
-    await this.q(`INSERT INTO code_projects
+    await runUnrestricted(() => this.q(`INSERT INTO code_projects
       (tenant, project_id, root_path, file_count, symbol_count, langs_json, health_json, map_json, label, indexed_by, last_indexed_at, collector_version, created_at, updated_at)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13)
       ON CONFLICT (tenant, project_id) DO UPDATE SET
@@ -1039,7 +1044,7 @@ export class PgStore implements StorageDriver {
         collector_version=excluded.collector_version, updated_at=excluded.updated_at`,
       [this.t, p.projectId, p.rootPath, p.fileCount | 0, p.symbolCount | 0,
        JSON.stringify(p.langs ?? {}), JSON.stringify(p.health ?? {}), JSON.stringify(p.map ?? {}),
-       p.label ?? null, p.indexedBy ?? null, intMs(p.lastIndexedAt), p.collectorVersion ?? null, now]);
+       p.label ?? null, p.indexedBy ?? null, intMs(p.lastIndexedAt), p.collectorVersion ?? null, now]));
   }
   async getCodeProject(projectId: string): Promise<Ret<'getCodeProject'>> {
     const r = await this.oneRo(`SELECT * FROM code_projects WHERE tenant=$1 AND project_id=$2`, [this.t, projectId]);
@@ -1067,7 +1072,8 @@ export class PgStore implements StorageDriver {
 
   async replaceCodeFindings(projectId: string, findings: Args<'replaceCodeFindings'>[1]): Promise<number> {
     const now = Date.now();
-    return tenantTx(this.pool, this.tenant, async (c) => {
+    // Unrestricted: PROJECT-scoped shared data — see upsertCodeProject.
+    return runUnrestricted(() => tenantTx(this.pool, this.tenant, async (c) => {
       const prev = (await c.query(`SELECT id, first_seen_at, status FROM code_findings WHERE tenant=$1 AND project_id=$2`, [this.t, projectId])).rows;
       const prevById = new Map<string, any>(prev.map((r: any) => [r.id, r]));
       await c.query(`DELETE FROM code_findings WHERE tenant=$1 AND project_id=$2`, [this.t, projectId]);
@@ -1082,7 +1088,7 @@ export class PgStore implements StorageDriver {
         ['tenant','id','project_id','category','severity','file','line','rule','title','snippet','why','agent_prompt','status','first_seen_at','last_seen_at','extra_json'],
         dedupeById(rows));
       return findings.length;
-    });
+    }));
   }
   async listCodeFindings(projectId?: string, opts: Args<'listCodeFindings'>[1] = {}): Promise<Ret<'listCodeFindings'>> {
     const where: string[] = ['tenant=$1']; const params: unknown[] = [this.t];
@@ -1111,14 +1117,15 @@ export class PgStore implements StorageDriver {
 
   async replaceCodeHotspots(projectId: string, hotspots: Args<'replaceCodeHotspots'>[1]): Promise<number> {
     const now = Date.now();
-    return tenantTx(this.pool, this.tenant, async (c) => {
+    // Unrestricted: PROJECT-scoped shared data — see upsertCodeProject.
+    return runUnrestricted(() => tenantTx(this.pool, this.tenant, async (c) => {
       await c.query(`DELETE FROM code_hotspots WHERE tenant=$1 AND project_id=$2`, [this.t, projectId]);
       const rows = hotspots.map((h) => [this.t, codeHotspotId(projectId, h.file), projectId, h.file,
         h.churn | 0, h.complexity | 0, h.score, h.aiAuthored ? 1 : 0, h.lines | 0, h.suggestion ?? '', now]);
       await bulkInsert(c, 'code_hotspots',
         ['tenant','id','project_id','file','churn','complexity','score','ai_authored','lines','suggestion','last_seen_at'], dedupeById(rows));
       return hotspots.length;
-    });
+    }));
   }
   async listCodeHotspots(projectId?: string, limit = 100): Promise<Ret<'listCodeHotspots'>> {
     const params: unknown[] = [this.t];
@@ -1131,7 +1138,8 @@ export class PgStore implements StorageDriver {
 
   async upsertCodeActions(projectId: string, actions: Args<'upsertCodeActions'>[1]): Promise<number> {
     const now = Date.now();
-    return tenantTx(this.pool, this.tenant, async (c) => {
+    // Unrestricted: PROJECT-scoped shared data — see upsertCodeProject.
+    return runUnrestricted(() => tenantTx(this.pool, this.tenant, async (c) => {
       const rows = actions.map((a) => {
         const id = a.id ?? codeActionId(projectId, a);
         return [this.t, id, projectId, a.pri | 0, a.category, a.title, a.fix,
@@ -1151,7 +1159,7 @@ export class PgStore implements StorageDriver {
         `DELETE FROM code_actions WHERE tenant=$1 AND project_id=$2 AND status='suggested' AND id <> ALL($3::text[])`,
         [this.t, projectId, rows.map((r) => r[1] as string)]);
       return actions.length;
-    });
+    }));
   }
   async listCodeActions(projectId?: string, opts: Args<'listCodeActions'>[1] = {}): Promise<Ret<'listCodeActions'>> {
     const where: string[] = ['tenant=$1']; const params: unknown[] = [this.t];

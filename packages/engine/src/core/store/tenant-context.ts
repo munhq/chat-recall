@@ -48,6 +48,24 @@ export function runWithAuthor<T>(author: AuthorContext, fn: () => T): T {
   return authorAls.run(author, fn);
 }
 
+/**
+ * Run `fn` with NO ambient author — i.e. as the unrestricted worker/system
+ * context. currentViewer() then returns `undefined`, so the pool sets
+ * `app.viewer='*'` and RLS author_visibility short-circuits to "see the whole
+ * tenant". Tenant isolation is UNAFFECTED (app.tenant comes from a separate
+ * context), so this stays scoped to the caller's tenant.
+ *
+ * Used for writes to PROJECT-scoped SHARED tables (code_*), where a member
+ * re-indexing a project must be able to upsert the single shared row even when
+ * they have no visible session in it — an ON CONFLICT write otherwise fail-closes
+ * on the RESTRICTIVE author_visibility SELECT policy (which gates READS only).
+ * These tables carry no author-write-guard, so elevating the WRITE leaks nothing;
+ * reads keep the member's real viewer and stay gated.
+ */
+export function runUnrestricted<T>(fn: () => T): T {
+  return authorAls.exit(fn);
+}
+
 /** The ambient author for the current async context; `{sub:null,device:null}` outside one. */
 export function currentAuthor(): AuthorContext {
   return authorAls.getStore() ?? { sub: null, device: null };
