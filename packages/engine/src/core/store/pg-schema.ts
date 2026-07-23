@@ -797,9 +797,17 @@ END $$;
 DO $$
 DECLARE t TEXT;
 BEGIN
+  -- NOTE: code_* (code_projects/findings/hotspots/actions) are deliberately NOT
+  -- here — they are PROJECT-scoped shared team data (PK = tenant,project_id: one
+  -- row per project, written by ANY member who indexes it). An author-write-guard
+  -- is the wrong model for them: it lets the first indexer "own" the row and
+  -- fail-closes every other member's ON CONFLICT re-index. They remain walled by
+  -- tenant_isolation + author_visibility (project visibility inherited from
+  -- memory_metadata). See the DROP block below that removes the guard on upgraded
+  -- DBs where an earlier build created it.
   FOREACH t IN ARRAY ARRAY[
     'memory_metadata','memory_chunks','session_metadata','secret_findings',
-    'kg_triples','diary_entries','code_projects','code_findings','code_hotspots','code_actions'
+    'kg_triples','diary_entries'
   ] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename=t AND policyname='author_write_insert') THEN
       -- INSERT: the new row must be authored by the writer (or unrestricted ctx).
@@ -833,6 +841,23 @@ BEGIN
             OR %1$I.author_sub IS NULL
           )$p$, t);
     END IF;
+  END LOOP;
+END $$;
+
+-- Remove the author-write-guard from code intel on any DB where an earlier build
+-- created it. code_* is project-scoped shared team data (see the note above); the
+-- guard blocked a second member from re-indexing a shared project (their ON
+-- CONFLICT upsert hit the first indexer's author_sub and fail-closed). Dropping
+-- it changes nothing about who can SEE these rows — author_visibility (which
+-- inherits project visibility from memory_metadata) and tenant_isolation stay.
+-- Idempotent, mirrors the tenants NO-FORCE precedent above.
+DO $$
+DECLARE t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['code_projects','code_findings','code_hotspots','code_actions'] LOOP
+    EXECUTE format('DROP POLICY IF EXISTS author_write_insert ON %I', t);
+    EXECUTE format('DROP POLICY IF EXISTS author_write_update ON %I', t);
+    EXECUTE format('DROP POLICY IF EXISTS author_write_delete ON %I', t);
   END LOOP;
 END $$;
 `;
