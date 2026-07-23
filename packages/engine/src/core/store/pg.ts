@@ -379,13 +379,20 @@ export class PgStore implements StorageDriver {
   }
 
   // ── links ──
+  // memory_links has a RESTRICTIVE author_visibility SELECT policy (a link is
+  // visible only when BOTH endpoints are). The write is a two-endpoint ON CONFLICT
+  // upsert, and a link's TARGET (a plan/task/claude_md/sibling) may not be visible
+  // to the writing member at write time (e.g. its memory_metadata row isn't in this
+  // sync batch) — the conflict-check then fail-closes the whole sync on
+  // author_visibility. memory_links carries NO author-write-guard, so run the write
+  // UNRESTRICTED; reads keep the member's viewer and stay gated. See runUnrestricted.
   async addLink(link: MemoryLink): Promise<void> {
-    await this.q(
+    await runUnrestricted(() => this.q(
       `INSERT INTO memory_links (tenant,source_type,source_id,target_type,target_id,link_type,confidence,created_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
        ON CONFLICT (tenant,source_type,source_id,target_type,target_id,link_type) DO UPDATE SET confidence=excluded.confidence, created_at=excluded.created_at`,
       [this.t, link.sourceType, link.sourceId, link.targetType, link.targetId, link.linkType, link.confidence, Date.now()],
-    );
+    ));
   }
   async addLinks(links: MemoryLink[]): Promise<void> {
     if (links.length === 0) return;
@@ -394,12 +401,13 @@ export class PgStore implements StorageDriver {
     for (const l of links) byKey.set(`${l.sourceType}\u0000${l.sourceId}\u0000${l.targetType}\u0000${l.targetId}\u0000${l.linkType}`, l);
     const now = Date.now();
     const rows = [...byKey.values()].map((l) => [this.t, l.sourceType, l.sourceId, l.targetType, l.targetId, l.linkType, l.confidence ?? null, now]);
-    await tenantTx(this.pool, this.t, async (client) => {
+    // Unrestricted write — see addLink.
+    await runUnrestricted(() => tenantTx(this.pool, this.t, async (client) => {
       await bulkInsert(client, 'memory_links',
         ['tenant', 'source_type', 'source_id', 'target_type', 'target_id', 'link_type', 'confidence', 'created_at'],
         rows,
         'ON CONFLICT (tenant,source_type,source_id,target_type,target_id,link_type) DO UPDATE SET confidence=excluded.confidence, created_at=excluded.created_at');
-    });
+    }));
   }
   async getLinksFrom(sourceType: SourceType, sourceId: string): Promise<MemoryLinkRow[]> {
     return this.qr(`SELECT * FROM memory_links WHERE tenant=$1 AND source_type=$2 AND source_id=$3`, [this.t, sourceType, sourceId]);
