@@ -768,18 +768,19 @@ BEGIN
     );
   END IF;
 
-  -- kg_entities — entity nodes (no author column). Visible only when referenced
-  -- by a triple the viewer can see; kg_triples carries its own author_visibility,
-  -- so an entity that appears only in a teammate's private triples stays hidden.
-  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename='kg_entities' AND policyname='author_visibility') THEN
-    CREATE POLICY author_visibility ON kg_entities AS RESTRICTIVE FOR SELECT USING (
-      current_setting('app.viewer', true) = '*'
-      OR EXISTS (SELECT 1 FROM kg_triples t
-                 WHERE t.tenant = kg_entities.tenant
-                   AND (t.subject = kg_entities.name OR t.object = kg_entities.name
-                        OR t.subject = kg_entities.id OR t.object = kg_entities.id))
-    );
-  END IF;
+  -- kg_entities — entity nodes are SHARED tenant vocabulary (Postgres, React, a
+  -- person's name), keyed by a name-derived id and upserted (ON CONFLICT) by any
+  -- member who mentions them. A RESTRICTIVE author_visibility SELECT policy here
+  -- is INCOMPATIBLE with those writes: ON CONFLICT (DO UPDATE *and* DO NOTHING)
+  -- conflict-checks the existing row against the SELECT policy, so a named member
+  -- re-adding a shared entity created by the worker/another member (which they
+  -- can't yet see) fail-closes their ENTIRE sync — and entity extraction runs on
+  -- every sync. So kg_entities is gated by tenant_isolation only; the sensitive
+  -- layer — the FACTS (kg_triples: who-asserted-what) — keeps its own
+  -- author_visibility, and memory_links stays gated too. Only bare entity NAMES
+  -- are visible within a team. Drop the gate on any DB where an earlier build
+  -- created it (idempotent).
+  DROP POLICY IF EXISTS author_visibility ON kg_entities;
 END $$;
 
 -- ── Author-safe writes (RLS, RESTRICTIVE, per write command) ─────────────

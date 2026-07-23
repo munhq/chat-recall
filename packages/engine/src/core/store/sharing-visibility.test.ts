@@ -74,25 +74,46 @@ const PROJ = 'git:h/o/secret';
 
   const countLinks = (v: string) => asViewer(v, (c) => c.query(`SELECT count(*)::int n FROM memory_links WHERE tenant='${T}'`).then((r: any) => r.rows[0].n));
   const countEntities = (v: string) => asViewer(v, (c) => c.query(`SELECT count(*)::int n FROM kg_entities WHERE tenant='${T}'`).then((r: any) => r.rows[0].n));
+  const countTriples = (v: string) => asViewer(v, (c) => c.query(`SELECT count(*)::int n FROM kg_triples WHERE tenant='${T}'`).then((r: any) => r.rows[0].n));
 
-  test('owner sees her own link + entity; worker sees all', async () => {
+  test('owner sees her own link + fact; worker sees all', async () => {
     expect(await countLinks(ALICE)).toBe(1);
-    expect(await countEntities(ALICE)).toBe(1);
+    expect(await countTriples(ALICE)).toBe(1);
     expect(await countLinks('*')).toBe(1);
-    expect(await countEntities('*')).toBe(1);
+    expect(await countTriples('*')).toBe(1);
   });
 
-  test('a teammate CANNOT see the link or entity of unshared work', async () => {
+  test('a teammate CANNOT see the LINK or the FACT of unshared work — but entity names are shared vocabulary', async () => {
+    // The sensitive layer stays gated: BOB sees neither the relationship edge
+    // (memory_links) nor the fact (kg_triples: who-asserted-what).
     expect(await countLinks(BOB)).toBe(0);
-    expect(await countEntities(BOB)).toBe(0);
+    expect(await countTriples(BOB)).toBe(0);
+    // kg_entities has NO per-member gate (shared vocabulary — see pg-schema): a
+    // RESTRICTIVE gate there fail-closed every member's entity-extraction upsert.
+    // Only bare entity NAMES are visible team-wide; the facts above stay hidden.
+    expect(await countEntities(BOB)).toBe(1);
   });
 
-  test('after the owner shares the project, the teammate CAN see them', async () => {
+  test('after the owner shares the project, the teammate CAN see the link + fact', async () => {
     await sudo.query(
       `INSERT INTO team_project_shares (team_slug, owner_sub, project_id, scope, shared_at) VALUES ($1,$2,$3,'full',1)`,
       [T, ALICE, PROJ],
     );
     expect(await countLinks(BOB)).toBe(1);
-    expect(await countEntities(BOB)).toBe(1);
+    expect(await countTriples(BOB)).toBe(1);
+  });
+
+  test('a member can upsert a SHARED entity created by the worker (kg_entities has no per-member gate)', async () => {
+    // The prod regression: entity extraction upserts kg_entities on EVERY member
+    // sync. With a RESTRICTIVE author_visibility gate on kg_entities, a named
+    // member re-adding a worker/legacy entity they could not see fail-closed the
+    // whole sync — because ON CONFLICT (DO UPDATE and DO NOTHING alike)
+    // conflict-checks the existing row against the SELECT policy. The gate is
+    // removed for kg_entities, so this upsert must succeed for BOB.
+    await asViewer('*', (c) => c.query(
+      `INSERT INTO kg_entities (tenant,id,name,type) VALUES ('${T}','ent-worker','WorkerTool','tool') ON CONFLICT (tenant,id) DO NOTHING`));
+    await expect(asViewer(BOB, (c) => c.query(
+      `INSERT INTO kg_entities (tenant,id,name,type,properties) VALUES ('${T}','ent-worker','WorkerTool','tool','{}')
+       ON CONFLICT (tenant,id) DO UPDATE SET type=excluded.type`))).resolves.toBeDefined();
   });
 });

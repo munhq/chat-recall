@@ -68,6 +68,9 @@ export class PgKnowledgeGraph implements KnowledgeGraphDriver {
   async addEntity(...a: Args<'addEntity'>) {
     const [name, entityType, properties] = a;
     const eid = this.entityId(name);
+    // kg_entities has no per-member SELECT gate (see pg-schema: shared tenant
+    // vocabulary), so this upsert is safe for named members. DO UPDATE keeps
+    // type/properties refreshed as extraction improves.
     await this.q(
       `INSERT INTO kg_entities (tenant,id,name,type,properties) VALUES ($1,$2,$3,$4,$5)
        ON CONFLICT (tenant,id) DO UPDATE SET name=excluded.name, type=excluded.type, properties=excluded.properties`,
