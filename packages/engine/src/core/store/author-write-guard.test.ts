@@ -147,6 +147,26 @@ const BOB = 'user-bob';
     await expect(asViewer(BOB, (c) => c.query(smUpsert('sm3', ALICE)))).rejects.toThrow();
   });
 
+  test('session_metadata: a member CLAIMS a legacy NULL-author row on a title-only update', async () => {
+    // The SECOND prod regression: the pre-attribution backlog has author_sub=NULL.
+    // setToolTitle/setUserTitle do an ON CONFLICT update touching only the title;
+    // if they don't also claim author, the post-update row stays NULL-authored and
+    // author_write_update's WITH CHECK (author_sub = app.viewer) fail-closes the
+    // sync. Seed a legacy parent + legacy metadata row, then apply the real
+    // setToolTitle SQL (claim-on-conflict) as a named member.
+    await sudo.query(`INSERT INTO memory_metadata (tenant,id,source_type,title,project_id,indexed_at,author_sub)
+      VALUES ('${T}','sm-legacy','session','s','git:h/o/r',1,NULL) ON CONFLICT DO NOTHING`);
+    await sudo.query(`INSERT INTO session_metadata (tenant,session_id,first_prompt,summary,summary_source,mtime,indexed_at,author_sub)
+      VALUES ('${T}','sm-legacy','','','original',0,0,NULL) ON CONFLICT DO NOTHING`);
+    await asViewer(ALICE, (c) => c.query(
+      `INSERT INTO session_metadata (tenant,session_id,first_prompt,summary,summary_source,mtime,indexed_at,tool_title,author_sub,author_device)
+       VALUES ('${T}','sm-legacy','','','original',0,1,'t','${ALICE}','dev-a')
+       ON CONFLICT (tenant,session_id) DO UPDATE SET tool_title=excluded.tool_title,
+         author_sub=COALESCE(session_metadata.author_sub, excluded.author_sub),
+         author_device=COALESCE(session_metadata.author_device, excluded.author_device)`));
+    expect(await readSm('sm-legacy')).toMatchObject({ author_sub: ALICE }); // claimed, not rejected
+  });
+
   // ── code intel is project-scoped SHARED data — the author-write-guard was
   // removed from code_* (PK is tenant,project_id: one row per project, any
   // member may (re-)index it). With the guard present, a second member's ON
