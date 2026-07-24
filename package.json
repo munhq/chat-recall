@@ -1,6 +1,6 @@
 {
   "name": "chat-recall-monorepo",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Cross-tool memory + MCP for Claude Code, Gemini CLI, and OpenCode sessions",
   "private": true,
   "type": "module",
@@ -16,7 +16,7 @@
     "packages/server"
   ],
   "scripts": {
-    "build": "tsc -b && npm run build -w chat-recall",
+    "build": "tsc -b && npm run build -w chat-recall && node scripts/build-plugin.mjs",
     "dev": "tsc -b --watch",
     "test": "vitest run",
     "test:watch": "vitest",

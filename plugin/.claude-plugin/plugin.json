@@ -1,0 +1,18 @@
+{
+  "name": "chat-recall",
+  "description": "Skills that teach any agent to use the chat-recall MCP — resume prior sessions, search past work, recall decisions, and get project intelligence across all your AI coding tools. Bundles the chat-recall MCP server so install wires everything in one step.",
+  "version": "0.4.4",
+  "author": {
+    "name": "munhq"
+  },
+  "homepage": "https://github.com/munhq/chat-recall",
+  "repository": "https://github.com/munhq/chat-recall",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "recall",
+    "sessions",
+    "knowledge-graph",
+    "mcp"
+  ]
+}
