@@ -134,6 +134,30 @@ function makeTermHighlighter(query: string | undefined) {
   };
 }
 
+/**
+ * The terminal command that resumes a session in its origin tool, or null when
+ * the tool has no resume-by-id (chat-recall is read-only; you resume in your own
+ * terminal). Single source of truth for the Resume affordance — keep in sync with
+ * the tool backends (packages/engine/src/core/backends). ids are prefixed
+ * `<tool>_<inner>` except claude (no prefix); strip the prefix for the CLI.
+ *   claude   → claude --resume <id>
+ *   codex    → codex resume <id>            (codex_)
+ *   opencode → opencode -s <id>             (opencode_;  -s/--session "id to continue")
+ *   agy      → agy --conversation <id>      (agy_;  Antigravity "resume conversation by ID")
+ *   gemini   → (none) — `gemini --resume` takes an index/"latest", not a UUID.
+ */
+export function resumeCommandFor(tool: string | undefined, sessionId: string): string | null {
+  if (!sessionId) return null;
+  const raw = (p: string) => (sessionId.startsWith(p) ? sessionId.slice(p.length) : sessionId);
+  switch (tool) {
+    case 'claude': return `claude --resume ${sessionId}`;
+    case 'codex': return `codex resume ${raw('codex_')}`;
+    case 'opencode': return `opencode -s ${raw('opencode_')}`;
+    case 'agy': return `agy --conversation ${raw('agy_')}`;
+    default: return null;
+  }
+}
+
 export default function ConversationViewer({
   sessionId,
   selectionNonce,
@@ -511,8 +535,8 @@ export default function ConversationViewer({
   };
 
   const handleResume = () => {
-    if (!sessionId) return;
-    const command = tool === 'codex' ? `codex resume ${sessionId.replace('codex_', '')}` : `claude --resume ${sessionId}`;
+    const command = resumeCommandFor(tool, sessionId);
+    if (!command) return;
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(command).then(() => {
@@ -634,7 +658,7 @@ export default function ConversationViewer({
             Back
           </Button>
           <div style={{ flex: 1 }} />
-          {(tool === 'claude' || tool === 'codex') && (
+          {resumeCommandFor(tool, sessionId) && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               {copied && <span style={{ fontSize: 12, color: 'var(--cr-ok-500)', fontWeight: 600 }}>Copied!</span>}
               <Button 
