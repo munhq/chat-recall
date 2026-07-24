@@ -3304,6 +3304,24 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
+  // Deliver the chat-recall skills to this machine's AI tools. This is THE
+  // delivery hook that works no matter how the MCP was configured — `chat-recall
+  // init`, CLI auto-update, the Claude plugin, or an MCP-store / hand-written
+  // .mcp.json entry: whenever the MCP process runs, it refreshes the skills.
+  // Version-gated (only writes when the bundled version differs from what's
+  // installed) + marker-guarded (only ever touches chat-recall-* skills) +
+  // best-effort (skills are a nicety; never break or block the tool server).
+  void (async () => {
+    try {
+      const m = await import('./install-skills.js');
+      if (m.skillsNeedRefresh()) {
+        const r = m.installSkills();
+        const n = r.perTarget.reduce((s, t) => s + t.installed.length, 0);
+        if (n > 0) console.error(`[mcp] chat-recall skills refreshed into local AI tools (${n} file group(s), v${r.version})`);
+      }
+    } catch { /* best-effort — never break the tool server over skills */ }
+  })();
+
   // The watch daemon owns continuous sync. When it's running, the MCP must NOT
   // also run the heavy sync in its tool-serving event loop: a full-ledger walk
   // over a large history (30k+ sessions — transcript parse + base64 + KG

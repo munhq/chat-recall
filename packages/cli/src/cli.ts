@@ -320,6 +320,26 @@ program
       }
       console.log();
 
+      // Install the chat-recall skills into every detected AI tool so agents
+      // know when/how to reach for the recall_* tools (drop-in — the only
+      // mechanism that covers all tools; see install-skills.ts).
+      console.log(chalk.bold('Installing chat-recall skills into your AI tools...'));
+      try {
+        const { installSkills } = await import('./install-skills.js');
+        const r = installSkills();
+        const hits = r.perTarget.filter((t) => t.installed.length > 0);
+        if (hits.length) {
+          for (const t of hits) console.log(`   ${chalk.green(t.label)}: ${t.installed.length} skill(s) → ${t.dir}`);
+        } else {
+          console.log(chalk.dim('   No supported AI tools detected — skills not installed.'));
+        }
+        const userOwned = [...new Set(r.perTarget.flatMap((t) => t.skippedUserOwned))];
+        if (userOwned.length) console.log(chalk.yellow(`   Kept your existing skill(s) of the same name: ${userOwned.join(', ')}`));
+      } catch (err) {
+        console.log(`   ${chalk.yellow('Skill install failed')} — ${err instanceof Error ? err.message : err}`);
+      }
+      console.log();
+
       // Step 6: First sync — collect this machine's local sessions and ship
       // them to the server. Skipped when there's no login (nothing to ship to)
       // or when --skip-sync is passed.
@@ -385,6 +405,33 @@ program
       console.error(chalk.red('Error:'), err);
       process.exit(1);
     }
+  });
+
+program
+  .command('install-skills')
+  .description('Install the chat-recall skills into every local AI tool (Claude/Gemini/Codex/OpenCode/Antigravity) so agents know how to use the recall_* tools')
+  .option('--uninstall', 'Remove the chat-recall-managed skills from every tool')
+  .option('--all-tools', 'Install to every supported tool, even ones not detected on this machine')
+  .action(async (opts: { uninstall?: boolean; allTools?: boolean }) => {
+    const mod = await import('./install-skills.js');
+    if (opts.uninstall) {
+      const r = mod.uninstallSkills();
+      const hits = r.perTarget.filter((t) => t.removed.length > 0);
+      if (!hits.length) { console.log(chalk.dim('No chat-recall skills were installed.')); return; }
+      for (const t of hits) console.log(`${chalk.green('✓')} ${t.label}: removed ${t.removed.length} skill(s)`);
+      return;
+    }
+    const r = mod.installSkills({ onlyAvailable: !opts.allTools });
+    const names = mod.bundledSkillNames();
+    console.log(chalk.bold(`Installing ${names.length} chat-recall skill(s) (v${r.version}):`), chalk.dim(names.join(', ')));
+    const hits = r.perTarget.filter((t) => t.installed.length > 0);
+    if (!hits.length) {
+      console.log(chalk.yellow('No supported AI tools detected. Use --all-tools to install anyway.'));
+      return;
+    }
+    for (const t of hits) console.log(`${chalk.green('✓')} ${t.label}: ${t.installed.length} → ${chalk.dim(t.dir)}`);
+    const userOwned = [...new Set(r.perTarget.flatMap((t) => t.skippedUserOwned))];
+    if (userOwned.length) console.log(chalk.yellow(`Kept your existing skill(s) of the same name: ${userOwned.join(', ')}`));
   });
 
 program
