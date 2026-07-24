@@ -1,6 +1,6 @@
 {
   "name": "chat-recall",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Local-first memory for AI coding tools — indexes Claude Code / Gemini CLI / OpenCode / Codex sessions, exposes them over MCP, optionally syncs redacted history to a chat-recall server",
   "type": "module",
   "license": "MIT",
@@ -12,6 +12,7 @@
   "files": [
     "dist",
     "hooks",
+    "skills",
     "README.md",
     "LICENSE"
   ],
