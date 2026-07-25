@@ -407,7 +407,7 @@ router.post('/', async (req, res) => {
               const gz = Buffer.from(cv.raw_b64, 'base64');
               const container = gunzipContainer(gz);
               if (container) {
-                rawArchiveResult = await store.putRawSession(cv.session_id, container.tool, mtime, gz, Number(cv.raw_size) || gz.length);
+                rawArchiveResult = await store.putRawSession(cv.session_id, container.tool, mtime, gz, Number(cv.raw_size) || gz.length, cv.project_id || '', projectPath);
                 const t = parseTranscriptFromContainer(container);
                 if (t.messages.length > 0 || t.subagents.length > 0) {
                   envelope = { v: PARSER_VERSION, messages: t.messages as any, subagents: t.subagents };

@@ -397,8 +397,15 @@ CREATE TABLE IF NOT EXISTS raw_sessions (
   size         BIGINT NOT NULL,
   gz           BYTEA NOT NULL,
   captured_at  BIGINT NOT NULL,
+  -- Session's project identity, captured on the client (where git resolves) so
+  -- the shrink-protected archive is SELF-SUFFICIENT: server-side self-heal can
+  -- fully rebuild a lost session — content AND grouping — from raw alone.
+  project_id   TEXT NOT NULL DEFAULT '',
+  project_path TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (tenant, session_id)
 );
+ALTER TABLE raw_sessions ADD COLUMN IF NOT EXISTS project_id   TEXT NOT NULL DEFAULT '';
+ALTER TABLE raw_sessions ADD COLUMN IF NOT EXISTS project_path TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS wal_log (
   tenant     TEXT NOT NULL DEFAULT 'default',

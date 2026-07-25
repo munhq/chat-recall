@@ -1329,38 +1329,54 @@ export class MemoryStore {
   ensureRawSessionsTable(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS raw_sessions (
-        session_id  TEXT NOT NULL,
-        tool        TEXT NOT NULL,
-        mtime       INTEGER NOT NULL,
-        size        INTEGER NOT NULL,
-        gz          BLOB NOT NULL,
-        captured_at INTEGER NOT NULL,
+        session_id   TEXT NOT NULL,
+        tool         TEXT NOT NULL,
+        mtime        INTEGER NOT NULL,
+        size         INTEGER NOT NULL,
+        gz           BLOB NOT NULL,
+        captured_at  INTEGER NOT NULL,
+        project_id   TEXT NOT NULL DEFAULT '',
+        project_path TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (session_id)
       );
     `);
+    // Backfill columns on an already-created archive table (older local stores).
+    for (const col of ['project_id', 'project_path']) {
+      try { this.db.exec(`ALTER TABLE raw_sessions ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`); } catch { /* already present */ }
+    }
   }
 
-  /** Archive a raw capture. Returns 'stored' | 'shrink-protected' | 'unchanged'. */
-  putRawSession(sessionId: string, tool: string, mtime: number, gz: Buffer, uncompressedSize: number): 'stored' | 'shrink-protected' | 'unchanged' {
+  /** Archive a raw capture. Returns 'stored' | 'shrink-protected' | 'unchanged'.
+   *  projectId/projectPath make the archive SELF-SUFFICIENT: server-side rebuild
+   *  (self-heal) can restore a session's grouping from raw alone, no client. */
+  putRawSession(sessionId: string, tool: string, mtime: number, gz: Buffer, uncompressedSize: number, projectId = '', projectPath = ''): 'stored' | 'shrink-protected' | 'unchanged' {
     this.ensureRawSessionsTable();
-    const existing = this.db.prepare(`SELECT size, mtime FROM raw_sessions WHERE session_id = ?`).get(sessionId) as { size: number; mtime: number } | undefined;
+    const existing = this.db.prepare(`SELECT size, mtime, project_id FROM raw_sessions WHERE session_id = ?`).get(sessionId) as { size: number; mtime: number; project_id: string } | undefined;
     if (existing) {
+      // Fill a missing project id even when the capture is unchanged/shrunk, so a
+      // legacy archive becomes self-sufficient the next time it's re-synced.
+      if (projectId && !existing.project_id) {
+        this.db.prepare(`UPDATE raw_sessions SET project_id = ?, project_path = ? WHERE session_id = ?`).run(projectId, projectPath, sessionId);
+      }
       if (existing.size === uncompressedSize && existing.mtime >= Math.floor(mtime)) return 'unchanged';
       if (uncompressedSize < existing.size) return 'shrink-protected';
     }
     this.db.prepare(`
-      INSERT INTO raw_sessions (session_id, tool, mtime, size, gz, captured_at)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO raw_sessions (session_id, tool, mtime, size, gz, captured_at, project_id, project_path)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(session_id) DO UPDATE SET
         tool = excluded.tool, mtime = excluded.mtime, size = excluded.size,
-        gz = excluded.gz, captured_at = excluded.captured_at
-    `).run(sessionId, tool, Math.floor(mtime), uncompressedSize, gz, Date.now());
+        gz = excluded.gz, captured_at = excluded.captured_at,
+        project_id = CASE WHEN excluded.project_id <> '' THEN excluded.project_id ELSE raw_sessions.project_id END,
+        project_path = CASE WHEN excluded.project_path <> '' THEN excluded.project_path ELSE raw_sessions.project_path END
+    `).run(sessionId, tool, Math.floor(mtime), uncompressedSize, gz, Date.now(), projectId, projectPath);
     return 'stored';
   }
 
-  getRawSession(sessionId: string): { tool: string; mtime: number; size: number; gz: Buffer; captured_at: number } | null {
+  getRawSession(sessionId: string): { tool: string; mtime: number; size: number; gz: Buffer; captured_at: number; project_id: string; project_path: string } | null {
     this.ensureRawSessionsTable();
-    return (this.db.prepare(`SELECT tool, mtime, size, gz, captured_at FROM raw_sessions WHERE session_id = ?`).get(sessionId) as any) ?? null;
+    const r = this.db.prepare(`SELECT tool, mtime, size, gz, captured_at, project_id, project_path FROM raw_sessions WHERE session_id = ?`).get(sessionId) as any;
+    return r ? { ...r, project_id: r.project_id ?? '', project_path: r.project_path ?? '' } : null;
   }
 
   /** session_id → archived (mtime, size) for sync-ledger style skipping. */
