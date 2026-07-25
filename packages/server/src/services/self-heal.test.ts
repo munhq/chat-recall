@@ -107,6 +107,33 @@ describe('healSessionFromArchive', () => {
     await store.close();
   });
 
+  test('recreates a hard-deleted metadata row from the archive, with grouping from raw_sessions', async () => {
+    const { createStore, buildRawContainer, gzipContainer } = await import('../imports.js');
+    const { healSessionFromArchive } = await import('./self-heal.js');
+    const store = await createStore();
+    const id = 'heal-regroup-1';
+    const mtime = 1760000300000;
+    const container = buildRawContainer({ tool: 'claude', mtime, files: [{ name: `${id}.jsonl`, bytes: Buffer.from(jsonl(20), 'utf-8') }] });
+    const { gz, size } = gzipContainer(container);
+    // Archive carries the project identity; NO metadata/chunks/envelope exist
+    // (simulates a hard-deleted item whose raw archive survived — the incident).
+    await store.putRawSession(id, 'claude', mtime, gz, size, 'git:github.com/o/repo', '/home/u/repo');
+    expect(await store.getItem(id, 'session')).toBeNull();
+
+    const r = await healSessionFromArchive(store, id);
+    expect(r.healed).toBe(true);
+
+    // Metadata row is back — grouped from the archive's own stored project id,
+    // no client, no manual patch.
+    const item = await store.getItem(id, 'session');
+    expect(item).not.toBeNull();
+    expect(item!.project_id).toBe('git:github.com/o/repo');
+    // And searchable again (chunks rebuilt).
+    const hits = await store.searchFTS('zorptext', { topK: 5 });
+    expect(hits.some((h) => h.itemId === id)).toBe(true);
+    await store.close();
+  });
+
   test('recheck: a session with an envelope but no archive is enqueued for client recheck', async () => {
     const { createStore, TRANSCRIPT_VERSION } = await import('../imports.js');
     const { selfHealTenant } = await import('./self-heal.js');
