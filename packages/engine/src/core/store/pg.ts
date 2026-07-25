@@ -947,26 +947,33 @@ export class PgStore implements StorageDriver {
   }
 
   // ── raw session archive (shrink-protected — see memory-store.ts) ──
-  async putRawSession(sessionId: string, tool: string, mtime: number, gz: Buffer, uncompressedSize: number): Promise<'stored' | 'shrink-protected' | 'unchanged'> {
-    const existing = await this.one(`SELECT size, mtime FROM raw_sessions WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
+  async putRawSession(sessionId: string, tool: string, mtime: number, gz: Buffer, uncompressedSize: number, projectId = '', projectPath = ''): Promise<'stored' | 'shrink-protected' | 'unchanged'> {
+    const existing = await this.one(`SELECT size, mtime, project_id FROM raw_sessions WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
     if (existing) {
+      // Fill a missing project id even when the capture is unchanged/shrunk, so a
+      // legacy archive becomes self-sufficient the next time it's re-synced.
+      if (projectId && !existing.project_id) {
+        await this.q(`UPDATE raw_sessions SET project_id=$3, project_path=$4 WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId, projectId, projectPath]);
+      }
       if (Number(existing.size) === uncompressedSize && Number(existing.mtime) >= intMs(mtime)) return 'unchanged';
       if (uncompressedSize < Number(existing.size)) return 'shrink-protected';
     }
     await this.q(
-      `INSERT INTO raw_sessions (tenant, session_id, tool, mtime, size, gz, captured_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
+      `INSERT INTO raw_sessions (tenant, session_id, tool, mtime, size, gz, captured_at, project_id, project_path)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
        ON CONFLICT (tenant, session_id) DO UPDATE SET
          tool=excluded.tool, mtime=excluded.mtime, size=excluded.size,
-         gz=excluded.gz, captured_at=excluded.captured_at`,
-      [this.t, sessionId, tool, intMs(mtime), uncompressedSize, gz, Date.now()]);
+         gz=excluded.gz, captured_at=excluded.captured_at,
+         project_id=CASE WHEN excluded.project_id <> '' THEN excluded.project_id ELSE raw_sessions.project_id END,
+         project_path=CASE WHEN excluded.project_path <> '' THEN excluded.project_path ELSE raw_sessions.project_path END`,
+      [this.t, sessionId, tool, intMs(mtime), uncompressedSize, gz, Date.now(), projectId, projectPath]);
     return 'stored';
   }
   // Primary: fetching a raw archived session is re-processing-adjacent (and may
   // run right after a sync writes it), so keep it strongly consistent.
-  async getRawSession(sessionId: string): Promise<{ tool: string; mtime: number; size: number; gz: Buffer; captured_at: number } | null> {
-    const r = await this.one(`SELECT tool, mtime, size, gz, captured_at FROM raw_sessions WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
-    return r ? { tool: r.tool, mtime: Number(r.mtime), size: Number(r.size), gz: r.gz, captured_at: Number(r.captured_at) } : null;
+  async getRawSession(sessionId: string): Promise<{ tool: string; mtime: number; size: number; gz: Buffer; captured_at: number; project_id: string; project_path: string } | null> {
+    const r = await this.one(`SELECT tool, mtime, size, gz, captured_at, project_id, project_path FROM raw_sessions WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
+    return r ? { tool: r.tool, mtime: Number(r.mtime), size: Number(r.size), gz: r.gz, captured_at: Number(r.captured_at), project_id: r.project_id ?? '', project_path: r.project_path ?? '' } : null;
   }
   async listRawSessionVersions(): Promise<Array<{ session_id: string; mtime: number; size: number }>> {
     const rows = await this.qr(`SELECT session_id, mtime, size FROM raw_sessions WHERE tenant=$1`, [this.t]);

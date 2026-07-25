@@ -88,8 +88,12 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
     const chunksMissing = archiveMsgs > 0 && (await store.countItemChunks('session', sessionId)) === 0;
 
     const item = await store.getItem(sessionId, 'session');
-    const projectPath = item?.project_path || '';
-    const projectId = item?.project_id || undefined;
+    // Hard-deleted item (archive survives, metadata row gone) — recreate it from
+    // the archive, using the project id stamped into raw_sessions so listing AND
+    // grouping are restored server-side with zero client involvement.
+    const metadataMissing = !item;
+    const projectPath = item?.project_path || raw.project_path || '';
+    const projectId = item?.project_id || raw.project_id || undefined;
     // Heal with an mtime >= whatever the read path requests, so the primary
     // getCachedContent(>=mtime) hits (not just the stale fallback).
     const mtime = Math.max(raw.mtime || 0, item?.mtime || 0);
@@ -122,9 +126,20 @@ export async function healSessionFromArchive(store: Store, sessionId: string, op
     }
     const diffDamaged = newDiff !== null;
 
-    const damaged = envelopeDamaged || diffDamaged || chunksMissing;
+    const damaged = envelopeDamaged || diffDamaged || chunksMissing || metadataMissing;
     if (!damaged) return { sessionId, damaged: false, healed: false, from: itemMsgs, to: archiveMsgs, reason: 'healthy' };
     if (opts.dryRun) return { sessionId, damaged: true, healed: false, from: itemMsgs, to: archiveMsgs };
+
+    // 0. Metadata row — recreate the item when the archive exists but its
+    //    memory_metadata row was hard-deleted (restores listing + grouping).
+    if (metadataMissing) {
+      const healFirst = parsed.messages.find((m) => m.role === 'user' && m.content?.trim())?.content || '';
+      await store.setItem({
+        id: sessionId, sourceType: 'session' as SourceType, title: healFirst.slice(0, 100),
+        projectPath, projectId, contentPreview: healFirst.slice(0, 200), filePath: '', mtime,
+        extra: { tool: container.tool, healed: true },
+      } as Parameters<typeof store.setItem>[0]);
+    }
 
     // 1. Envelope — the viewer's source of truth. Only rebuilt when the archive
     //    is fuller (a truncation victim); a chunks-only gap leaves it untouched.
