@@ -262,9 +262,14 @@ export function writeMcpEntry(toTool: TargetTool, name: string, entry: any): Cop
 
   let normalized = entry;
   if (toTool === 'opencode') {
-    if (entry.url) normalized = { type: 'remote', url: entry.url };
-    else if (Array.isArray(entry.command)) normalized = { type: 'local', command: entry.command };
-    else if (typeof entry.command === 'string') normalized = { type: 'local', command: [entry.command, ...(entry.args || [])] };
+    // opencode's schema is { type: 'local'|'remote', …, enabled }. Its validator
+    // REQUIRES `type` and `enabled`; writing the generic {command,args} shape, or
+    // omitting `enabled`, makes opencode refuse to start (the 2026-07 config
+    // incident). `command` must be an array (command + args flattened).
+    const env = entry.env && typeof entry.env === 'object' ? { environment: entry.env } : {};
+    if (entry.url) normalized = { type: 'remote', url: entry.url, enabled: true, ...env };
+    else if (Array.isArray(entry.command)) normalized = { type: 'local', command: entry.command, enabled: true, ...env };
+    else if (typeof entry.command === 'string') normalized = { type: 'local', command: [entry.command, ...(entry.args || [])], enabled: true, ...env };
   } else {
     if (Array.isArray(entry.command)) { const [cmd, ...args] = entry.command; normalized = { command: cmd, args }; }
     else normalized = { command: entry.command, ...(entry.args ? { args: entry.args } : {}) };

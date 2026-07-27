@@ -9,7 +9,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import {
-  discoverLocalArtifacts, planSync, executeSyncAll, executeCopy,
+  discoverLocalArtifacts, planSync, executeSyncAll, executeCopy, writeMcpEntry,
 } from './toolkit-sync.js';
 
 let tmp: string;
@@ -18,6 +18,23 @@ beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'tksync-')); process.env.HOM
 afterEach(() => { process.env.HOME = origHome; rmSync(tmp, { recursive: true, force: true }); });
 
 function w(p: string, c: string) { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, c); }
+
+// Regression guard for the 2026-07 opencode-config incident: an MCP copied to
+// opencode MUST use opencode's schema (type + array command + enabled), never
+// the generic {command,args} shape — else opencode refuses to start.
+describe('writeMcpEntry → opencode schema', () => {
+  test('converts {command,args} to {type:"local", command:[], enabled:true}', () => {
+    const r = writeMcpEntry('opencode', 'fff', { command: '/bin/fff-mcp', args: ['--mcp'] });
+    expect(r.ok).toBe(true);
+    const cfg = JSON.parse(readFileSync(join(tmp, '.config', 'opencode', 'opencode.json'), 'utf-8'));
+    expect(cfg.mcp.fff).toEqual({ type: 'local', command: ['/bin/fff-mcp', '--mcp'], enabled: true });
+  });
+  test('remote (url) entries carry type:"remote" + enabled', () => {
+    writeMcpEntry('opencode', 'remote1', { url: 'https://example.com/mcp' });
+    const cfg = JSON.parse(readFileSync(join(tmp, '.config', 'opencode', 'opencode.json'), 'utf-8'));
+    expect(cfg.mcp.remote1).toEqual({ type: 'remote', url: 'https://example.com/mcp', enabled: true });
+  });
+});
 
 describe('discoverLocalArtifacts', () => {
   test('reads skills/commands/agents/mcp across tools from disk', async () => {
