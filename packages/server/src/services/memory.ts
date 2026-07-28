@@ -3,37 +3,27 @@
  */
 
 import {
-  createStore, createVectorStore, getEmbedder, SourceRegistry,
+  createStore, SourceRegistry,
   SessionSource, PlanSource, TaskSource, ClaudeMdSource, AgentMemorySource, HistorySource, PasteSource,
   GeminiSessionSource, GeminiBrainSource, OpenCodeSource, OpenCodeTodoSource, DiarySource,
   SkillsSource, McpsSource, SlashCommandsSource, SubagentsSource, HooksSource, PluginsSource,
   CodexSessionSource, currentTenant,
 } from '../imports.js';
-import type { Embedder, EmbedderProvider, SourceType, MemorySearchResult, MemoryMetadataRow, MemoryLinkRow, StorageDriver, VectorStore } from '../imports.js';
+import type { SourceType, MemorySearchResult, MemoryMetadataRow, MemoryLinkRow, StorageDriver } from '../imports.js';
 import { isServerMode } from '../util/mode.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
-import { QueryExpander } from './query-expander.js';
+import { SearchCore } from './search-core.js';
 
 const log = createLogger('memory');
 
-export class MemoryService {
-  private embedder: Embedder;
+export class MemoryService extends SearchCore {
   private registry: SourceRegistry;
-  // Per-tenant store/index, built lazily in the request's ambient-tenant
-  // context (createStore/createVectorStore read currentTenant()).
-  private indexes = new Map<string, Promise<VectorStore>>();
+  // Per-tenant store, built lazily in the request's ambient-tenant context
+  // (createStore reads currentTenant()). The per-tenant vector index, embedder,
+  // query expansion and vectorOk cache all live in SearchCore, shared with
+  // SearchService — see search-core.ts.
   private stores = new Map<string, Promise<StorageDriver>>();
-  // R6: same keyword-expansion the sessions-only SearchService uses — the
-  // unified memory search was the one path that got no semantic help.
-  private expander = new QueryExpander();
-  private vectorOkCache = new Map<string, { ok: boolean; t: number }>();
 
-  private idx(): Promise<VectorStore> {
-    const t = currentTenant() ?? 'default';
-    let p = this.indexes.get(t);
-    if (!p) { p = createVectorStore(this.embedder); this.indexes.set(t, p); }
-    return p;
-  }
   private st(): Promise<StorageDriver> {
     const t = currentTenant() ?? 'default';
     let p = this.stores.get(t);
@@ -42,9 +32,7 @@ export class MemoryService {
   }
 
   constructor() {
-    // Env-driven embedder factory (same as SearchService / backfill worker) —
-    // one embedding model everywhere; default 'ollama' keeps local behavior.
-    this.embedder = getEmbedder((process.env.EMBEDDING_PROVIDER || 'ollama') as EmbedderProvider);
+    super();
 
     // Initialize source registry. In server mode there is no local
     // filesystem to discover from (data arrives via /api/sync) and several
@@ -75,39 +63,34 @@ export class MemoryService {
   }
 
 
-  /** True when pgvector is serving semantic results — then expansion is
-   *  redundant (embeddings already generalize). Cached 60s. */
-  private async vectorActive(): Promise<boolean> {
-    const t = currentTenant() ?? 'default';
-    const cached = this.vectorOkCache.get(t);
-    const now = Date.now();
-    if (cached && now - cached.t < 60_000) return cached.ok;
-    let ok = false;
-    try { ok = (await (await this.idx()).getStats()).vectorOk === true; } catch { ok = false; }
-    this.vectorOkCache.set(t, { ok, t: now });
-    return ok;
-  }
-
-  private async expandIfKeyword(query: string): Promise<string> {
-    if (!this.expander.isEnabled) return query;
-    if (await this.vectorActive()) return query;
-    try { return (await this.expander.expand(query)).expanded; } catch { return query; }
-  }
-
+  /**
+   * Unified search across every source type.
+   *
+   * `wantSemantic` used to be absent here, which silently made this path — and
+   * therefore `/api/memory/search`, the MemoryExplorer UI, `chat-recall memory
+   * search` and the `recall_memory_search` MCP tool — FTS-only even with an
+   * embedder configured, while `/api/search?includeMemory=true&semantic=true`
+   * ran the vector tier over the same data. Threaded through `useSemantic` so
+   * both services now make one shared decision.
+   */
   async search(
     query: string,
     topK = 10,
     sourceTypes?: SourceType[],
-    projectIdFilter?: string
+    projectIdFilter?: string,
+    wantSemantic = false
   ): Promise<MemorySearchResult[]> {
-    return await (await this.idx()).search(await this.expandIfKeyword(query), { topK, sourceTypes, projectIdFilter });
+    const semantic = await this.useSemantic(wantSemantic);
+    return await (await this.index()).search(await this.expandIfKeyword(query), {
+      topK, sourceTypes, projectIdFilter, semantic,
+    });
   }
 
   async getStatus() {
 
     let indexStats;
     try {
-      indexStats = await (await this.idx()).getStats();
+      indexStats = await (await this.index()).getStats();
     } catch {
       // LanceDB may be corrupted — fall back to SQLite-only stats
       indexStats = { totalChunks: 0, totalItems: 0, bySourceType: {}, indexPath: '' };
@@ -206,17 +189,17 @@ export class MemoryService {
         for await (const item of source.discover()) {
           try {
             // Check if update needed (unless force)
-            if (!force && !(await (await this.idx()).needsUpdate(item.sourceType, item.id, item.mtime))) {
+            if (!force && !(await (await this.index()).needsUpdate(item.sourceType, item.id, item.mtime))) {
               continue;
             }
 
             // Delete old data
-            await (await this.idx()).deleteItem(item.sourceType, item.id);
+            await (await this.index()).deleteItem(item.sourceType, item.id);
 
             // Parse and buffer chunks (flushed in batches to reduce LanceDB versions)
             const chunks = await source.parse(item);
             if (chunks.length > 0) {
-              await (await this.idx()).bufferChunks(chunks);
+              await (await this.index()).bufferChunks(chunks);
               totalChunks += chunks.length;
             }
 
@@ -244,7 +227,7 @@ export class MemoryService {
     }
 
     // Flush remaining buffered chunks and optimize
-    await (await this.idx()).flushBuffer();
+    await (await this.index()).flushBuffer();
     // optimize() removed from auto flows to prevent data corruption
 
     return {

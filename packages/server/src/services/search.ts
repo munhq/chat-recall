@@ -4,9 +4,9 @@
 
 // getAllSessions deliberately NOT imported here: the only FS walk this service
 // needs runs via getSessionProjectCounts (sessions.ts), which is server-mode-guarded.
-import { createVectorStore, getEmbedder, createMetadataCache, currentTenant } from '../imports.js';
-import type { Embedder, EmbedderProvider, SourceType, MemorySearchResult, VectorStore } from '../imports.js';
-import { QueryExpander } from './query-expander.js';
+import { createMetadataCache, currentTenant } from '../imports.js';
+import type { SourceType, MemorySearchResult, VectorStore } from '../imports.js';
+import { SearchCore } from './search-core.js';
 import { TenantTtlCache } from '../util/tenant-cache.js';
 
 // See sessions.ts for why we strip client-injected banners here.
@@ -40,62 +40,16 @@ export interface SearchResult {
   }>;
 }
 
-export class SearchService {
-  private embedder: Embedder;
-  // One vector store per tenant (built lazily in the request's ambient-tenant
-  // context). createVectorStore reads currentTenant(), so a single shared
-  // instance would leak the startup tenant ('default') to every team.
-  private indexes = new Map<string, Promise<VectorStore>>();
-
+export class SearchService extends SearchCore {
   // Cache project counts for 30 seconds to avoid scanning filesystem on every
-  // SSE tick. Tenant-scoped for the same reason `indexes` above is per-tenant:
-  // this service is a process-wide singleton, and an unscoped cache here
-  // served one tenant's project names + session counts to every other tenant
-  // via /api/status.
+  // SSE tick. Tenant-scoped for the same reason `indexes` in SearchCore is
+  // per-tenant: this service is a process-wide singleton, and an unscoped cache
+  // here served one tenant's project names + session counts to every other
+  // tenant via /api/status.
   private projectCountsCache = new TenantTtlCache<{ projects: Record<string, number>; totalSessions: number }>(30_000);
 
-  // LLM query expansion ("semantic without embeddings"). Shared across tenants —
-  // it holds no tenant state, only a query→terms cache keyed by the query text.
-  private expander = new QueryExpander();
-  // Per-tenant cache of "is the vector path actually serving semantic results?"
-  // Expansion is the keyword-mode booster; when real embeddings are active it
-  // steps aside (embedding a keyword-soup query is worse than the natural one).
-  private vectorOkCache = new Map<string, { ok: boolean; t: number }>();
-
-  constructor() {
-    // Same env-driven factory the backfill worker uses — query embeddings and
-    // stored vectors MUST come from the same model or similarity is garbage.
-    // Default 'ollama' preserves the local/self-host behavior when unset.
-    this.embedder = getEmbedder((process.env.EMBEDDING_PROVIDER || 'ollama') as EmbedderProvider);
-  }
-
-  private index(): Promise<VectorStore> {
-    const t = currentTenant() ?? 'default';
-    let p = this.indexes.get(t);
-    if (!p) { p = createVectorStore(this.embedder); this.indexes.set(t, p); }
-    return p;
-  }
-
-  /** True when the tenant's vector store is serving real semantic results
-   *  (pgvector active + embedder). Cached 60s; falls back to false on error. */
-  private async vectorActive(): Promise<boolean> {
-    const t = currentTenant() ?? 'default';
-    const cached = this.vectorOkCache.get(t);
-    const now = Date.now();
-    if (cached && now - cached.t < 60_000) return cached.ok;
-    let ok = false;
-    try { ok = (await (await this.index()).getStats()).vectorOk === true; } catch { ok = false; }
-    this.vectorOkCache.set(t, { ok, t: now });
-    return ok;
-  }
-
-  /** Expand the query with related keywords iff expansion is enabled AND the
-   *  store is in keyword (FTS) mode. Always returns a usable query string. */
-  private async expandIfKeyword(query: string): Promise<string> {
-    if (!this.expander.isEnabled) return query;
-    if (await this.vectorActive()) return query;
-    return (await this.expander.expand(query)).expanded;
-  }
+  // embedder / per-tenant index map / query expansion / vectorOk cache all live
+  // in SearchCore, shared with MemoryService — see search-core.ts for why.
 
   /**
    * Search sessions only — returns results in the legacy SearchResult format
@@ -110,9 +64,7 @@ export class SearchService {
     wantSemantic = false
   ): Promise<SearchResult[]> {
     const idx = await this.index();
-    // Run the vector tier only when the caller asked AND embeddings are live;
-    // then it embeds once (cached) and RRF-fuses with FTS. Otherwise pure FTS.
-    const semantic = wantSemantic && (await this.vectorActive());
+    const semantic = await this.useSemantic(wantSemantic);
     const results = await idx.search(await this.expandIfKeyword(query), {
       topK,
       sourceTypes: ['session'],
@@ -155,7 +107,7 @@ export class SearchService {
     wantSemantic = false
   ): Promise<MemorySearchResult[]> {
     const idx = await this.index();
-    const semantic = wantSemantic && (await this.vectorActive());
+    const semantic = await this.useSemantic(wantSemantic);
     return await idx.search(await this.expandIfKeyword(query), { topK, sourceTypes, projectIdFilter, semantic });
   }
 
