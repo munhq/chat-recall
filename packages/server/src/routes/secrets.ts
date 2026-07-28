@@ -22,6 +22,7 @@
 import express from 'express';
 import { createHash } from 'node:crypto';
 import { createStore } from '../imports.js';
+import { enqueueTasksFile } from '../util/tasks-file-intent.js';
 import { classifySecret, secretSeverityRank, type SecretSeverity } from '@chat-recall/engine/core/secret-classify.js';
 import {
   dismissalToTaskStatus, taskStatusToDismissal, isSecretTaskStatus, type SecretTaskStatus,
@@ -403,10 +404,8 @@ router.post('/tasks/write', express.json(), async (req, res) => {
       return res.json({ ok: true, queued: false, message: 'No outstanding critical/high/medium secrets for this repo — nothing to write.' });
     }
     const content = buildSecurityTasksMd(project, scoped, dismissals, noiseOmitted);
-    const intentId = await store.enqueueSyncIntent({
-      kind: 'code_apply', artifactType: 'write_tasks_file',
-      name: JSON.stringify({ rootPath: project, filename: 'SECURITY_TASKS.md', content }),
-      createdBy: 'security-tasks',
+    const intentId = await enqueueTasksFile(store, {
+      rootPath: project, filename: 'SECURITY_TASKS.md', content, createdBy: 'security-tasks',
     });
     const open = scoped.filter((s) => !dismissals.has(s.preview)).length;
     res.json({
