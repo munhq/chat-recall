@@ -7,10 +7,11 @@
  *
  *   GET  /api/me                       → user + memberships
  *   POST /api/teams                    → create team (caller becomes owner; team = tenant)
- *   POST /api/teams/join               → redeem invite
- *   GET  /api/teams/:slug/members      → list members (members only)
- *   POST /api/teams/:slug/invites      → mint single-use invite (owner only)
  *   POST /api/teams/:slug/tokens       → mint a device sync token (members)
+ *
+ * Join and invite live on the `/api/team*` router (routes/team-artifacts.ts) —
+ * that is what `engine/core/team-client.ts` calls. The duplicates that used to
+ * sit here had no callers and were removed; see the note above the tokens route.
  *
  * Admin bootstrap (x-admin-key === ADMIN_KEY env) for self-host where no
  * Keycloak exists:
@@ -24,7 +25,6 @@
 import express from 'express';
 import { createControlPlane } from '../imports.js';
 import { requireUser } from '../middleware/auth.js';
-import { entitledOr402 } from '../util/billing.js';
 import { sensitiveLimiter } from '../middleware/rate-limit.js';
 
 const router = express.Router();
@@ -64,50 +64,15 @@ router.post('/teams', async (req, res) => {
   } finally { await cp.close(); }
 });
 
-router.post('/teams/join', async (req, res) => {
-  const user = await requireUser(req, res);
-  if (!user) return;
-  const invite = req.body?.invite || '';
-  const cp = await createControlPlane();
-  try {
-    const m = await cp.redeemInvite(user.sub, user.email, invite);
-    if (!m) return res.status(400).json({ error: 'invalid or expired invite' });
-    res.json({ team_slug: m.team_slug, name: m.name, role: m.role });
-  } finally { await cp.close(); }
-});
-
-router.get('/teams/:slug/members', async (req, res) => {
-  const user = await requireUser(req, res);
-  if (!user) return;
-  const cp = await createControlPlane();
-  try {
-    if (!(await cp.roleOf(user.sub, req.params.slug))) {
-      return res.status(403).json({ error: 'not a member' });
-    }
-    res.json({ team_slug: req.params.slug, members: await cp.listMembers(req.params.slug) });
-  } finally { await cp.close(); }
-});
-
-router.post('/teams/:slug/invites', async (req, res) => {
-  const user = await requireUser(req, res);
-  if (!user) return;
-  const cp = await createControlPlane();
-  try {
-    if ((await cp.roleOf(user.sub, req.params.slug)) !== 'owner') {
-      return res.status(403).json({ error: 'owner only' });
-    }
-    // Inviting teammates grants paid value — gate on the team's subscription.
-    if (!(await entitledOr402(res, req.params.slug))) return;
-    const role = req.body?.role === 'owner' ? 'owner' as const : 'member' as const;
-    const r = await cp.createInvite(req.params.slug, role, req.body?.email || null, user.sub);
-    res.json({
-      invite: r.invite,
-      team_slug: req.params.slug,
-      expires_at: new Date(r.expiresAt).toISOString(),
-      note: 'shown once',
-    });
-  } finally { await cp.close(); }
-});
+// REMOVED (no callers anywhere — client, CLI, engine or tests):
+//   POST /api/teams/join          → the live redeemer is POST /api/team/join
+//   GET  /api/teams/:slug/members
+//   POST /api/teams/:slug/invites → the live minter is POST /api/team/:teamId/invite
+// The `/api/team*` router (routes/team-artifacts.ts) owns join + invite because
+// `engine/core/team-client.ts:120,130` is what actually calls them, via the
+// `chat-recall team` CLI (cli.ts:1418). Removing the duplicates here loses only
+// the ability to mint an OWNER invite, which nothing used. Same de-dup as the
+// JWT-only `/api/teams/:slug/shares` removal recorded below.
 
 router.post('/teams/:slug/tokens', sensitiveLimiter, async (req, res) => {
   const user = await requireUser(req, res);
