@@ -387,25 +387,6 @@ router.get('/session/:id', async (req, res) => {
   } finally { await store.close(); }
 });
 
-// GET /api/secrets/tasks/preview?project=<filesystem path>
-// Render SECURITY_TASKS.md for one repo WITHOUT writing anything — powers the
-// dashboard's preview + count so the user sees what they'll get.
-router.get('/tasks/preview', async (req, res) => {
-  const project = typeof req.query.project === 'string' ? req.query.project.trim() : '';
-  if (!project) return res.status(400).json({ error: 'project (filesystem path) is required' });
-  const store = await createStore();
-  try {
-    const all = (await store.secretFindingsByDistinctSecret()) as DistinctSecret[];
-    const dismissals = (await store.getSecretDismissals()) as Map<string, Dismissal>;
-    const { scoped, noiseOmitted } = selectProjectSecrets(all, project);
-    const content = buildSecurityTasksMd(project, scoped, dismissals, noiseOmitted);
-    const open = scoped.filter((s) => !dismissals.has(s.preview)).length;
-    res.json({ project, filename: 'SECURITY_TASKS.md', total: scoped.length, open, noiseOmitted, content });
-  } catch (e) {
-    res.status(500).json({ error: e instanceof Error ? e.message : 'failed' });
-  } finally { await store.close(); }
-});
-
 // POST /api/secrets/tasks/write — { project }
 // Materialise SECURITY_TASKS.md in the repo via the local drain (same rail as
 // CODE_TASKS.md), so the user can point Claude Code at it: "rotate the secrets
