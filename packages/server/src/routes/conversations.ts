@@ -1166,7 +1166,17 @@ router.get('/:id/markers', async (req, res) => {
     // Resolve mtime from the badge resolver — same source-of-truth that
     // the outcome cache uses, so freshness checks match across endpoints.
     const resolved = await resolveSessionForBadge(id);
-    if (resolved) {
+
+    // Local mode only: a fresh mtime-keyed hit is authoritative, because the
+    // transcript on disk IS the source and the cache is keyed to its mtime.
+    //
+    // In server mode this must NOT short-circuit. The synced markers row and the
+    // metadata row carry the same mtime, so a thinned row looks perfectly
+    // "fresh" and would be returned unconditionally — which is exactly what
+    // happened in prod: 3 prompts served for a session whose envelope holds 67.
+    // There, freshness is not evidence of fullness, so the cached row is demoted
+    // to just another candidate below.
+    if (resolved && !isServerMode()) {
       const cached = await getCachedMarkers(id, resolved.mtime);
       if (cached) {
         const etag = buildETag([id, 'markers', resolved.mtime]);
@@ -1186,11 +1196,17 @@ router.get('/:id/markers', async (req, res) => {
     if (isServerMode()) {
       const candidates: MarkersPayload[] = [];
 
-      // 1. The synced markers row (any mtime) — what this route used to return
-      //    unconditionally.
+      // 1. The synced markers row — what this route used to return
+      //    unconditionally. Both the mtime-fresh row and the latest-by-any-mtime
+      //    row are considered, since neither being "fresh" implies being full.
+      let rowCount = 0;
+      if (resolved) {
+        const fresh = await getCachedMarkers(id, resolved.mtime);
+        if (fresh?.prompts?.length) { candidates.push(fresh); rowCount = fresh.prompts.length; }
+      }
       const stale = await getStaleHeavy<MarkersPayload>(id, 'markers');
       const staleCount = stale?.data?.prompts?.length ?? 0;
-      if (staleCount > 0) candidates.push(stale!.data);
+      if (staleCount > 0) { candidates.push(stale!.data); rowCount = Math.max(rowCount, staleCount); }
 
       const store = await createStore();
       try {
@@ -1248,8 +1264,10 @@ router.get('/:id/markers', async (req, res) => {
       }
       const best = candidates.reduce((a, b) => (b.prompts.length > a.prompts.length ? b : a));
       // Promote a rebuild into the mtime-keyed cache so the next read is cheap.
-      // Only when it actually beats the stored row — never cache a downgrade.
-      if (resolved && best.prompts.length > staleCount) {
+      // Only when it actually beats every stored row — never cache a downgrade.
+      // (setCompute enforces the same rule independently; this just avoids a
+      // pointless write.)
+      if (resolved && best.prompts.length > rowCount) {
         await setCachedMarkers(id, resolved.mtime, best);
       }
       return res.json(best);
