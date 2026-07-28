@@ -166,9 +166,7 @@ export default function TeamView({ onOpenProject }: { onOpenProject?: (projectId
 
 const TEAM_CSS = `
 .team-tabs { display: flex; gap: 6px; margin-bottom: 16px; }
-/* Scroll its own overflow: .team is a flex child of .app-row (overflow:hidden),
- * stretched to the row height — without this the page clips and can't scroll. */
-.team { max-width: 1100px; margin: 0 auto; padding: 20px; min-height: 0; overflow-y: auto; }
+.team { max-width: 1100px; margin: 0 auto; padding: 20px; }
 .team-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 16px; }
 .team-head h1 { margin: 0 0 4px; }
 .team .muted { color: var(--text-muted, #888); font-size: 13px; margin: 0; }

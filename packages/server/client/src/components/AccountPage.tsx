@@ -190,9 +190,7 @@ function labelFor(s: Entitlement['status']): string {
 }
 
 const ACCT_CSS = `
-/* Scroll its own overflow: .acct is a flex child of .app-row (overflow:hidden),
- * stretched to the row height — without this the page clips and can't scroll. */
-.acct { max-width: 720px; margin: 0 auto; padding: 32px 24px; color: var(--cr-fg-1,#e8eaed); width:100%; min-height: 0; overflow-y: auto; }
+.acct { max-width: 720px; margin: 0 auto; padding: 32px 24px; color: var(--cr-fg-1,#e8eaed); width:100%; }
 .acct-head { display:flex; align-items:center; justify-content:space-between; margin-bottom: 24px; }
 .acct-head h1 { font-size: 26px; margin: 0; letter-spacing:-0.02em; }
 .acct-card { background: var(--cr-ink-1,#12151a); border:1px solid var(--cr-line-1,#1e232b); border-radius: 14px; padding: 22px; margin-bottom: 18px; }

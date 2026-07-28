@@ -854,7 +854,11 @@ function AppInner() {
         </div>
       ) : view === 'account' ? (
         <div className="app-row">
-          <AccountPage onClose={() => setView('search')} />
+          {/* Full-width scroll pane (matches Home/Team): scrollbar sits at the
+              viewport edge; AccountPage's centered column stays centered inside. */}
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+            <AccountPage onClose={() => setView('search')} />
+          </div>
         </div>
       ) : view === 'admin' ? (
         <div className="app-row">
