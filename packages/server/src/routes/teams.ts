@@ -25,6 +25,7 @@
 import express from 'express';
 import { createControlPlane } from '../imports.js';
 import { requireUser } from '../middleware/auth.js';
+import { loadMemberships, createTeamFor } from '../util/memberships.js';
 import { sensitiveLimiter } from '../middleware/rate-limit.js';
 
 const router = express.Router();
@@ -42,14 +43,11 @@ function adminOk(req: express.Request, res: express.Response): boolean {
   return true;
 }
 
+// Raw-row shape; /api/team/me renames the same rows. See util/memberships.ts.
 router.get('/me', async (req, res) => {
   const user = await requireUser(req, res);
   if (!user) return;
-  const cp = await createControlPlane();
-  try {
-    const teams = await cp.listMemberships(user.sub);
-    res.json({ user, teams });
-  } finally { await cp.close(); }
+  res.json({ user, teams: await loadMemberships(user.sub) });
 });
 
 router.post('/teams', async (req, res) => {
@@ -57,11 +55,8 @@ router.post('/teams', async (req, res) => {
   if (!user) return;
   const name = (req.body?.name || '').trim();
   if (!name) return res.status(400).json({ error: 'name required' });
-  const cp = await createControlPlane();
-  try {
-    const t = await cp.createTeam(name, user.sub, user.email);
-    res.json({ slug: t.slug, name: t.name, role: 'owner' });
-  } finally { await cp.close(); }
+  const t = await createTeamFor(user.sub, user.email, name);
+  res.json({ slug: t.slug, name: t.name, role: 'owner' });
 });
 
 // REMOVED (no callers anywhere — client, CLI, engine or tests):

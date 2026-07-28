@@ -26,6 +26,7 @@
 import express from 'express';
 import { createControlPlane } from '../imports.js';
 import { requireUser } from '../middleware/auth.js';
+import { loadMemberships, createTeamFor } from '../util/memberships.js';
 import { entitledOr402 } from '../util/billing.js';
 
 const router = express.Router();
@@ -35,36 +36,28 @@ const VALID_TOOLS = ['claude', 'agy', 'gemini', 'opencode', 'codex', 'cross_tool
 /** Artifacts are config-sized files; a quarter MB is generous. */
 const MAX_BODY_BYTES = 256 * 1024;
 
+// Same rows as /api/me, renamed for the team-client contract (`TeamMe`).
 router.get('/me', async (req, res) => {
   const user = await requireUser(req, res);
   if (!user) return;
-  const cp = await createControlPlane();
-  try {
-    const memberships = (await cp.listMemberships(user.sub)).map((m) => ({
-      teamId: m.team_slug,
-      teamName: m.name,
-      role: m.role,
-      plan: 'team',
-    }));
-    res.json({ user: { id: user.sub, email: user.email ?? '' }, memberships });
-  } finally { await cp.close(); }
+  const memberships = (await loadMemberships(user.sub)).map((m) => ({
+    teamId: m.team_slug,
+    teamName: m.name,
+    role: m.role,
+    plan: 'team',
+  }));
+  res.json({ user: { id: user.sub, email: user.email ?? '' }, memberships });
 });
 
 router.post('/', async (req, res) => {
-  // Team CREATION is intentionally NOT entitlement-gated: it's the on-ramp to
-  // subscribing. A cloud user logs in with no tenant, creates a team (= tenant),
-  // THEN runs /api/billing/checkout for it. Gating creation would deadlock that
-  // (checkout needs a membership to bill). The paid value — PUBLISH and INVITE —
-  // is gated below via entitledOr402, which is what actually unlocks the library.
+  // Not entitlement-gated — see createTeamFor for why (creation is the on-ramp
+  // to subscribing; PUBLISH and INVITE below carry the entitledOr402 gate).
   const user = await requireUser(req, res);
   if (!user) return;
   const name = (req.body?.name || '').trim();
   if (!name) return res.status(400).json({ error: 'name required' });
-  const cp = await createControlPlane();
-  try {
-    const t = await cp.createTeam(name, user.sub, user.email);
-    res.json({ team: { id: t.slug, name: t.name } });
-  } finally { await cp.close(); }
+  const t = await createTeamFor(user.sub, user.email, name);
+  res.json({ team: { id: t.slug, name: t.name } });
 });
 
 router.post('/join', async (req, res) => {

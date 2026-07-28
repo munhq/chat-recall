@@ -9,7 +9,8 @@
  */
 
 import express from 'express';
-import { createStore, createOutcomeCache, buildAccountRecommendations, createControlPlane, type BehaviorSignal } from '../imports.js';
+import { createStore, buildAccountRecommendations, createControlPlane } from '../imports.js';
+import { behaviorSignal } from '../util/behavior-signal.js';
 
 const router = express.Router();
 const APPLIED_KEY = 'applied_recommendations';
@@ -41,20 +42,9 @@ async function loadAccountRecs(store: any) {
   const sum = await store.secretFindingsSummary();
   const leakedSecrets = (sum.totals as Array<{ findings: number }>).reduce((a, t) => a + (t.findings || 0), 0);
   const distinctSecretRules = [...new Set((sum.topRules as Array<{ rule: string }>).map((r) => r.rule))];
-  let behavior: BehaviorSignal | undefined;
-  try {
-    const sessions = await store.listItems('session', 500, 0);
-    const ids = sessions.map((s: any) => s.id);
-    if (ids.length) {
-      const oc = await createOutcomeCache();
-      try {
-        const rows = await oc.getMany(ids);
-        let failed = 0;
-        for (const [, r] of rows) if (r && r.status === 'interrupted') failed++;
-        behavior = { failedOrAbandoned: failed, totalSessions: ids.length };
-      } finally { await oc.close(); }
-    }
-  } catch { /* behavioral signal optional */ }
+  // Tenant-wide sessions; the project-scoped variant lives in routes/code.ts.
+  const behavior = await behaviorSignal(async () =>
+    (await store.listItems('session', 500, 0)).map((s: any) => s.id));
   const recommendations = buildAccountRecommendations({ leakedSecrets, distinctSecretRules, behavior });
   return { recommendations, behavior };
 }
