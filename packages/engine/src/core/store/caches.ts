@@ -63,11 +63,58 @@ export interface MetadataCacheDriver {
 
 type MArgs<M extends keyof MetadataCache> = MetadataCache[M] extends (...a: infer A) => any ? A : never;
 
+/**
+ * Prompt count of a `markers` compute payload. `null` when the value isn't
+ * shaped like one, so non-markers kinds and malformed rows are never guarded.
+ */
+export function markersPromptCount(data: unknown): number | null {
+  const prompts = (data as { prompts?: unknown } | null | undefined)?.prompts;
+  return Array.isArray(prompts) ? prompts.length : null;
+}
+
+/**
+ * Shrink guard for DERIVED rows, mirroring the rule `putRawSession` already
+ * enforces for the raw archive (`store/pg.ts:959` —
+ * `if (uncompressedSize < existing.size) return 'shrink-protected'`).
+ *
+ * Why this is needed: the raw archive was shrink-protected but `compute_cache`
+ * was not, and the two are written in the SAME sync. When a transcript is
+ * truncated upstream (a compaction rewrite, or a consolidation script mirroring
+ * a shorter file over a longer one), the archive refuses the downgrade while the
+ * derived `markers` row accepts it. The result is the UI and the MCP disagreeing
+ * about the same session — measured on a real session: 1035 messages / 67 user
+ * prompts in the archive-backed envelope versus 3 prompts in the markers row.
+ *
+ * Only `markers` is guarded today because prompt count is a meaningful measure
+ * of fullness for it. `diff`/`outcome`/`commits` legitimately change shape
+ * rather than grow, so they are left alone.
+ *
+ * Escape hatch: `invalidateCompute(sessionId)` deletes the rows, after which any
+ * payload lands. `chat-recall repair` is the intended way to make a session
+ * fuller — like the raw guard, this one only ever blocks a REDUCTION.
+ */
+export async function computeShrinkRefused(
+  kind: string,
+  data: unknown,
+  readStale: (kind: string) => Promise<{ data: unknown } | null>,
+): Promise<boolean> {
+  if (kind !== 'markers') return false;
+  const incoming = markersPromptCount(data);
+  if (incoming === null) return false;
+  const existing = await readStale(kind);
+  const stored = existing ? markersPromptCount(existing.data) : null;
+  return stored !== null && incoming < stored;
+}
+
 export class SqliteMetadataCache implements MetadataCacheDriver {
   readonly inner: MetadataCache;
   constructor(inner: MetadataCache) { this.inner = inner; }
 
-  async setCompute(...a: MArgs<'setCompute'>) { return this.inner.setCompute(...a); }
+  async setCompute(...a: MArgs<'setCompute'>) {
+    const [sessionId, kind, , data] = a;
+    if (await computeShrinkRefused(kind, data, (k) => this.getComputeStale(sessionId, k))) return;
+    return this.inner.setCompute(...a);
+  }
   async invalidateCompute(...a: MArgs<'invalidateCompute'>) { return this.inner.invalidateCompute(...a); }
   async getRawComputeRow(...a: MArgs<'getRawComputeRow'>) { return this.inner.getRawComputeRow(...a); }
   async getCompute<T = unknown>(sessionId: string, kind: string, mtime: number) { return this.inner.getCompute<T>(sessionId, kind, mtime); }
@@ -98,6 +145,7 @@ export class PgMetadataCache implements MetadataCacheDriver {
 
   async setCompute(...a: MArgs<'setCompute'>) {
     const [sessionId, kind, mtime, data] = a;
+    if (await computeShrinkRefused(kind, data, (k) => this.getComputeStale(sessionId, k))) return;
     let payload: string;
     try { payload = JSON.stringify(data); } catch { return; }
     if (payload.length > 20_000_000) return;

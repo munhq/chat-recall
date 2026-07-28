@@ -1144,68 +1144,6 @@ router.post('/outcome/badges', async (req, res) => {
   }
 });
 
-// GET /api/conversations/:id/turns
-// Interleaved user/assistant/tool turns with bash command + tool-result snippets.
-// mtime-cached. The compute cost is dominated by the JSONL parse, not by
-// the limit — we cache the maxed-out result and slice client-side via the
-// limit param so different limit= values share the same cached payload.
-router.get('/:id/turns', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const limit = Math.max(1, Math.min(parseInt(req.query.limit as string) || 5000, 50_000));
-
-    const resolved = await resolveSessionForBadge(id);
-    let result = resolved
-      ? await heavyCacheGet<ReturnType<typeof extractTurnsAny>>(`turns:${id}`, resolved.mtime)
-      : null;
-    if (!result && isServerMode()) {
-      // No transcript on the server — rebuild user/assistant turns from the
-      // synced per-turn chunks. Tool/bash turns aren't synced, so this is a
-      // conversation-only view (same fidelity as the message list).
-      const store = await createStore();
-      try {
-        const chunks = await store.listChunksByItem('session', id);
-        if (chunks.length === 0) return res.status(404).json({ error: 'Session not found' });
-        result = {
-          sessionId: id,
-          found: true,
-          turns: chunks.map((c, i) => ({
-            kind: c.chunk_type.startsWith('user') ? 'user' : 'assistant_text',
-            text: c.text,
-            ts: 0,
-            line: i + 1,
-          })) as any,
-          startMs: 0,
-          endMs: 0,
-        };
-      } finally {
-        await store.close();
-      }
-    }
-    if (!result) {
-      // Cache the full extraction (50k cap) so subsequent requests with
-      // any smaller limit can reuse the cached result and slice in JS.
-      result = extractTurnsAny(id, { maxTurns: 50_000 });
-      if (resolved && result.found) await heavyCacheSet(`turns:${id}`, resolved.mtime, result);
-    }
-    if (!result.found) return res.status(404).json({ error: 'Session not found' });
-
-    // ETag/Cache-Control: payload is immutable per (sessionId, mtime, limit).
-    if (resolved) {
-      const etag = buildETag([id, 'turns', resolved.mtime, limit]);
-      if (maybeSendNotModified(req, res, etag)) return;
-    }
-    // Apply the request's limit on the cached full result.
-    if (result.turns.length > limit) {
-      result = { ...result, turns: result.turns.slice(0, limit) };
-    }
-    res.json(result);
-  } catch (error) {
-    log.error({ err: error }, 'turns error');
-    res.status(500).json({ error: error instanceof Error ? error.message : 'Failed to extract turns' });
-  }
-});
-
 // Markers wrapped on top of the same two-tier cache as outcome/diff/commits
 // — `kind: 'markers'` rows in `compute_cache`, mtime-keyed, persistent.
 // The `getCachedMarkers` / `setCachedMarkers` shims keep the call sites
@@ -1237,12 +1175,84 @@ router.get('/:id/markers', async (req, res) => {
       }
     }
 
-    // Server mode: no transcript to extract from — serve the latest synced
-    // row (any mtime) or report not-yet-synced.
+    // Server mode: there is no transcript on disk, and THREE sources can answer.
+    // Take whichever yields the MOST prompts, so a thin synced row can never
+    // mask a fuller source. `GET /:id` already tiers this way (:1563-1611);
+    // markers was the only route in this router that didn't, and that asymmetry
+    // is how a truncated transcript made the UI (1035 messages) and
+    // recall_user_prompts (3 prompts) disagree about the same session: the raw
+    // archive refused the downgrade (putRawSession is shrink-protected) while
+    // the derived markers row accepted it in the very same sync.
     if (isServerMode()) {
+      const candidates: MarkersPayload[] = [];
+
+      // 1. The synced markers row (any mtime) — what this route used to return
+      //    unconditionally.
       const stale = await getStaleHeavy<MarkersPayload>(id, 'markers');
-      if (stale) return res.json(stale.data);
-      return res.status(404).json({ error: 'No synced markers for this session' });
+      const staleCount = stale?.data?.prompts?.length ?? 0;
+      if (staleCount > 0) candidates.push(stale!.data);
+
+      const store = await createStore();
+      try {
+        // 2. The full synced conversation envelope — the same source `GET /:id`
+        //    prefers. Carries real line numbers and timestamps (see
+        //    `envelopeFromTurns`, routes/sync.ts:203-210), unlike the chunks.
+        let gotEnvelope = false;
+        const snapshot = await store.getCachedContentStale(id, 'session');
+        if (snapshot) {
+          try {
+            const parsed = JSON.parse(snapshot.content) as {
+              messages?: Array<{ line?: number; role?: string; content?: string; timestamp?: string }>;
+            };
+            const prompts = (parsed.messages ?? [])
+              .filter((m) => m.role === 'user' && m.content && m.content.trim())
+              .map((m, i) => {
+                const parsedTs = m.timestamp ? Date.parse(m.timestamp) : NaN;
+                return {
+                  line: m.line ?? i + 1,
+                  ts: Number.isFinite(parsedTs) ? parsedTs : 0,
+                  tsIso: m.timestamp,
+                  ...markPrompt(m.content!),
+                };
+              });
+            if (prompts.length > 0) {
+              candidates.push({ sessionId: id, prompts, summary: summarizeMarkers(prompts) });
+              gotEnvelope = true;
+            }
+          } catch { /* corrupt envelope row — fall through to chunks */ }
+        }
+
+        // 3. Per-turn chunks, only when the envelope is missing or corrupt.
+        //    Lowest fidelity: synthetic line numbers, no timestamps — same
+        //    trade-off `GET /:id` documents at :1558-1562. It also OVER-counts:
+        //    long turns are split into ~2KB chunks at ingest, so one user
+        //    message can be several `user*` chunks (measured on a real session:
+        //    67 user messages in the envelope vs 86 user chunks). That is why
+        //    this is gated on the envelope being unavailable rather than folded
+        //    into the max() below — otherwise fragments would beat real prompts.
+        if (!gotEnvelope) {
+          const chunks = await store.listChunksByItem('session', id);
+          const prompts = chunks
+            .filter((c) => c.chunk_type.startsWith('user') && c.text && c.text.trim())
+            .map((c, i) => ({ line: i + 1, ts: 0, tsIso: undefined, ...markPrompt(c.text) }));
+          if (prompts.length > 0) {
+            candidates.push({ sessionId: id, prompts, summary: summarizeMarkers(prompts) });
+          }
+        }
+      } finally {
+        await store.close();
+      }
+
+      if (candidates.length === 0) {
+        return res.status(404).json({ error: 'No synced markers for this session' });
+      }
+      const best = candidates.reduce((a, b) => (b.prompts.length > a.prompts.length ? b : a));
+      // Promote a rebuild into the mtime-keyed cache so the next read is cheap.
+      // Only when it actually beats the stored row — never cache a downgrade.
+      if (resolved && best.prompts.length > staleCount) {
+        await setCachedMarkers(id, resolved.mtime, best);
+      }
+      return res.json(best);
     }
 
     const turns = extractTurnsAny(id, { maxTurns: 50_000 });
