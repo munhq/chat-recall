@@ -39,18 +39,23 @@ router.post('/search', async (req, res) => {
     // `projectFilter` body field is accepted for backwards compatibility
     // with older clients (web build pre-deploy) but now treated as a
     // project_id, matching the rest of the system.
-    const { query, topK: rawTopK = 10, sourceTypes, projectFilter, projectIdFilter } = req.body;
+    const { query, topK: rawTopK = 10, sourceTypes, projectFilter, projectIdFilter, semantic } = req.body;
     const topK = Math.min(Math.max(parseInt(rawTopK) || 10, 1), 100);
 
     if (!query) {
       return res.status(400).json({ error: 'Query is required' });
     }
 
+    // `semantic` opts into the vector tier, matching /api/search. Without it
+    // this route could never reach pgvector — the flag was missing all the way
+    // down, so unified memory search was FTS-only even with an embedder
+    // configured. Default stays false: only an explicit search asks to embed.
     const results = await memoryService.search(
       query,
       topK,
       sourceTypes as SourceType[] | undefined,
-      projectIdFilter ?? projectFilter
+      projectIdFilter ?? projectFilter,
+      semantic === true || semantic === 'true'
     );
 
     res.json({ query, results, count: results.length });
