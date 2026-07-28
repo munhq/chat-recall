@@ -316,6 +316,8 @@ const RecallMemorySearchSchema = z.object({
   source_types: z.array(z.enum(['session', 'plan', 'task', 'claude_md', 'paste', 'history', 'diary'])).optional()
     .describe('Filter by source types (default: all)'),
   project_filter: z.string().optional().describe('Filter by project path'),
+  semantic: z.boolean().optional().default(false)
+    .describe('Run the pgvector semantic tier as well as keyword FTS (needs an embedder configured server-side; ignored otherwise).'),
 });
 
 const RecallSmartResumeSchema = z.object({
@@ -796,6 +798,7 @@ with recall_show (pass the plan id).`,
             project_filter: { type: 'string', description: 'Filter by project path' },
             provider: { type: 'string', enum: ['ollama', 'gemini'], default: 'ollama' },
             scope: { type: 'string', enum: ['local', 'server'], default: 'local', description: 'server = synced cross-device history (needs chat-recall login).' },
+            semantic: { type: 'boolean', default: false, description: 'Also run the pgvector semantic tier, not just keyword FTS. Needs an embedder configured server-side; ignored otherwise.' },
           },
           required: ['query'],
         },
@@ -1974,7 +1977,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // The `scope` param is accepted for back-compat but ignored.
         requireRemote();
         const remote = await remotePost<{ results: Array<{ itemId: string; sourceType: string; title: string; text: string; score: number; projectPath?: string; mtime?: number; chunkType?: string; matchedChunks?: Array<{ chunkType?: string; text: string }> }>; count: number }>(
-          '/api/memory/search', { query: memSearchQuery, topK: params.top_k, sourceTypes: params.source_types, projectIdFilter: params.project_filter },
+          '/api/memory/search', { query: memSearchQuery, topK: params.top_k, sourceTypes: params.source_types, projectIdFilter: params.project_filter, semantic: params.semantic },
         );
         if (!remote.results?.length) {
           return { content: [{ type: 'text', text: `No server-side matches for "${params.query}".` }] };
@@ -3241,7 +3244,15 @@ function runIndexChild(force: boolean): Promise<string> {
       if (code === 0) {
         finish(strip(out).split('\n').filter(Boolean).slice(-3).join('\n') || 'Collected + shipped to your chat-recall server.');
       } else {
-        const reason = signal === 'SIGKILL' || code === 134 ? 'ran out of memory (very large history)' : `exited with code ${code}`;
+        // A child killed by a signal reports code === null, so `code` alone
+        // yields the useless "exited with code null". Name the signal instead —
+        // that string was seen in the field and told us nothing about the cause
+        // (it is NOT the OOM path below, which says so explicitly).
+        const reason = signal === 'SIGKILL' || code === 134
+          ? 'ran out of memory (very large history)'
+          : signal
+            ? `was killed by ${signal}`
+            : `exited with code ${code}`;
         const last = strip(err).split('\n').filter(Boolean).pop() || '';
         finish(`Indexer ${reason}. The watch daemon keeps syncing in the background, so your history still ships incrementally. ${last}`.trim());
       }
