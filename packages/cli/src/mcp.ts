@@ -270,6 +270,8 @@ const RecallEditsTimelineSchema = z.object({
     .describe('Restrict to a subset of AI tools. Default: all four (claude+gemini+opencode+codex).'),
   group_by_repo: z.boolean().optional().default(false)
     .describe('Group output by detected git repo root instead of returning a flat list. Useful when a single session touched multiple repos.'),
+  view: z.enum(['timeline', 'summary']).optional().default('timeline')
+    .describe('timeline = the chronological edit rows; summary = an aggregated rollup over the same window'),
   group_by: z.enum(['session']).optional()
     .describe('"session" = aggregate edits per session instead of a flat timeline — answers "which sessions touched files matching X?" (pass `pattern` + a wide `since_hours`, e.g. 720 for 30 days).'),
 });
@@ -323,6 +325,56 @@ const RecallMemorySearchSchema = z.object({
 const RecallSmartResumeSchema = z.object({
   session_id: z.string().describe('Session ID to get smart resume context for'),
 });
+
+// ── Tools added to close the UI↔MCP gap ─────────────────────────────
+// Several server endpoints existed with no MCP tool at all — two of them
+// (`/api/subagents/search`, `/api/files/redundant`) were written explicitly as
+// "the server surface for the MCP tool" and then never wired up.
+
+const RecallSubagentSearchSchema = z.object({
+  query: z.string().describe('Text to find inside subagent transcripts (explore/compact/aside sub-tasks)'),
+  session_id: z.string().optional().describe('Restrict to one session'),
+  kind: z.string().optional().describe('Restrict to one subagent kind'),
+  limit: z.number().optional().default(20),
+});
+
+const RecallRedundantFilesSchema = z.object({
+  filename: z.string().describe('Filename you are about to create — scored against files you have written before'),
+  project: z.string().optional().describe('Restrict to one project'),
+  limit: z.number().optional().default(20),
+});
+
+const RecallHealAuditSchema = z.object({
+  since_hours: z.number().optional().describe('Bound the scan to sessions touched in the last N hours'),
+  apply: z.boolean().optional().default(false)
+    .describe('Actually heal (default false = read-only audit). Healing only ever makes a conversation FULLER.'),
+});
+
+const RecallMemoryItemSchema = z.object({
+  // Must match VALID_SOURCE_TYPES in routes/memory.ts:30 — the item/browse/links
+  // routes 400 on anything else. A wider enum here just produced HTTP 400s.
+  source_type: z.enum(['session', 'plan', 'task', 'claude_md', 'paste', 'history', 'diary'])
+    .describe('Which memory source type'),
+  id: z.string().optional().describe('Item id. Omit with mode=browse to list the type.'),
+  mode: z.enum(['item', 'content', 'links', 'browse']).optional().default('item')
+    .describe('item = metadata, content = full text, links = related items, browse = list the source type'),
+  limit: z.number().optional().default(50).describe('browse mode only'),
+});
+
+const RecallRegenerateSummarySchema = z.object({
+  session_id: z.string().describe('Session whose AI summary should be regenerated'),
+});
+
+const RecallOutcomeSummarySchema = z.object({
+  days: z.number().optional().default(7).describe('Window in days (1-90)'),
+});
+
+const RecallSharesSchema = z.object({
+  scope: z.enum(['mine', 'all']).optional().default('mine')
+    .describe('mine = projects you shared into the team; all = every share visible to you'),
+});
+
+const RecallReclassifySchema = z.object({});
 
 const RecallProjectContextSchema = z.object({
   project_path: z.string().describe('Project path, name substring, OR a stable project_id ("git:github.com/me/repo", "ws:name", "git-local:<sha1>", "user:<custom>")'),
@@ -416,6 +468,9 @@ const RecallCodeFindingsSchema = z.object({
   severity: z.enum(['critical', 'high', 'medium', 'low', 'info']).optional(),
   category: z.string().optional().describe('security|literal|clone|duplication|dead_code|coupling|cycle'),
   limit: z.number().optional().default(50),
+  view: z.enum(['findings', 'summary', 'hotspots', 'file-sessions']).optional().default('findings')
+    .describe('findings = the list; summary = counts by severity/category; hotspots = churn-ranked files; file-sessions = which sessions actually touched `file` (turns a hotspot into a navigable cause)'),
+  file: z.string().optional().describe('view=file-sessions only: repo-relative path'),
 });
 const RecallCodeActionsSchema = z.object({
   project: z.string().optional().describe('Project id (omit for all)'),
@@ -452,6 +507,8 @@ const RecallDecisionRecordSchema = z.object({
 
 const RecallAnalyticsSummarySchema = z.object({
   // No required inputs — returns the same summary the dashboard renders.
+  view: z.enum(['summary', 'patterns']).optional().default('summary')
+    .describe('summary = spend/activity rollup; patterns = behavioural patterns across sessions'),
 });
 
 const RecallWakeUpSchema = z.object({
@@ -488,6 +545,10 @@ const RecallSecuritySummarySchema = z.object({
   include_dismissed: z.boolean().optional().default(false)
     .describe('Show secrets the user already marked as rotated / false_positive / dismissed'),
   top_k: z.number().optional().default(20).describe('Max distinct secrets to return'),
+  group_by: z.enum(['detector', 'rule', 'project', 'trend', 'sessions']).optional().default('detector')
+    .describe('detector = the default action-required view; rule / project = findings grouped that way; trend = daily counts; sessions = one row per session with findings'),
+  days: z.number().optional().default(30).describe('group_by=trend only: window in days (1-365)'),
+  min_detectors: z.number().optional().describe('group_by=sessions only: require at least N detectors agreeing (signal vs noise)'),
 });
 
 const RecallSecuritySessionSchema = z.object({
@@ -496,8 +557,8 @@ const RecallSecuritySessionSchema = z.object({
 
 const RecallSecurityDismissSchema = z.object({
   preview: z.string().describe('The masked secret preview (e.g. "************************ZeMa")'),
-  status: z.enum(['rotated', 'false_positive', 'dismissed'])
-    .describe('Why this finding is no longer actionable'),
+  status: z.enum(['rotated', 'false_positive', 'dismissed', 'undismissed'])
+    .describe('Why this finding is no longer actionable — or `undismissed` to put it BACK on the action-required list (the inverse this tool was missing).'),
   reason: z.string().optional().describe('Optional note'),
 });
 
@@ -665,6 +726,7 @@ aggregate per session instead — "which sessions edited auth.rs in the last mon
               description: 'Restrict to specific AI tools. Default: all four.',
             },
             group_by_repo:  { type: 'boolean', default: false, description: 'Group results by detected git repo root.' },
+            view:           { type: 'string', enum: ['timeline', 'summary'], default: 'timeline', description: 'timeline = chronological edit rows; summary = aggregated rollup over the same window' },
             group_by:       { type: 'string', enum: ['session'], description: '"session" = aggregate edits per session (which sessions touched files matching pattern).' },
           },
         },
@@ -1063,6 +1125,8 @@ or when you learn something important that should persist.`,
               severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low', 'info'] },
               category: { type: 'string', description: 'security|literal|clone|duplication|dead_code|coupling|cycle' },
               limit: { type: 'number', default: 50 },
+              view: { type: 'string', enum: ['findings', 'summary', 'hotspots', 'file-sessions'], default: 'findings', description: 'findings = the list; summary = counts by severity/category; hotspots = churn-ranked files; file-sessions = which sessions touched `file`' },
+              file: { type: 'string', description: 'view=file-sessions only: repo-relative path' },
             },
           },
         },
@@ -1137,8 +1201,15 @@ something non-obvious that future sessions should remember.`,
         description: `Cross-tool spend & activity overview. Returns total sessions, total cost,
 weekly delta, top tools/projects/models, and how many sessions had unknown pricing
 (Gemini/Ollama/custom). Same data as the web Dashboard, available to the agent so it
-can answer "how much have I spent this week" without you opening the UI.`,
-        inputSchema: { type: 'object', properties: {} },
+can answer "how much have I spent this week" without you opening the UI.
+
+\`view: "patterns"\` returns behavioural patterns across sessions instead of the spend rollup.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            view: { type: 'string', enum: ['summary', 'patterns'], default: 'summary', description: 'summary = spend/activity rollup; patterns = behavioural patterns across sessions' },
+          },
+        },
       },
       {
         name: 'recall_wake_up',
@@ -1201,6 +1272,9 @@ Call this first; then call recall_security_session for specific sessions.`,
           properties: {
             include_dismissed: { type: 'boolean', default: false, description: 'Show previously dismissed findings' },
             top_k: { type: 'number', default: 20, description: 'Max distinct secrets to list' },
+            group_by: { type: 'string', enum: ['detector', 'rule', 'project', 'trend', 'sessions'], default: 'detector', description: 'detector = action-required view; rule/project = grouped counts; trend = daily counts; sessions = one row per session with findings' },
+            days: { type: 'number', default: 30, description: 'group_by=trend only: window in days (1-365)' },
+            min_detectors: { type: 'number', description: 'group_by=sessions only: require N detectors agreeing' },
           },
         },
       },
@@ -1228,7 +1302,7 @@ secret. The dismissal syncs across devices.`,
           type: 'object',
           properties: {
             preview: { type: 'string', description: 'Masked secret preview from the security dashboard' },
-            status: { type: 'string', enum: ['rotated', 'false_positive', 'dismissed'], description: 'Resolution status' },
+            status: { type: 'string', enum: ['rotated', 'false_positive', 'dismissed', 'undismissed'], description: 'Resolution status, or `undismissed` to put the finding back on the action-required list' },
             reason: { type: 'string', description: 'Optional note' },
           },
           required: ['preview', 'status'],
@@ -1249,6 +1323,96 @@ to the agent and lets you test new regexes without persisting them.`,
             sample: { type: 'string', description: 'For test: text to match against' },
           },
         },
+      },
+      {
+        name: 'recall_subagent_search',
+        description: `Search inside SUBAGENT transcripts — the explore/compact/aside sub-tasks that run within a session and whose work never appears in the main conversation.
+
+Use when a session's own turns don't contain what you remember: the finding may have come from a subagent. Indexed server-side, so it works across devices.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Text to find inside subagent transcripts' },
+            session_id: { type: 'string', description: 'Restrict to one session' },
+            kind: { type: 'string', description: 'Restrict to one subagent kind' },
+            limit: { type: 'number', default: 20 },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'recall_redundant_files',
+        description: `Before creating a file, check whether you have written one like it before. Scores the filename against every file touched in your synced history.
+
+Answers "have I built this already?" — the reinvention check.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            filename: { type: 'string', description: 'Filename you are about to create' },
+            project: { type: 'string', description: 'Restrict to one project' },
+            limit: { type: 'number', default: 20 },
+          },
+          required: ['filename'],
+        },
+      },
+      {
+        name: 'recall_heal_audit',
+        description: `Report how many of your sessions are DAMAGED — the rendered conversation is thinner than the shrink-protected raw archive, which happens when an upstream tool truncates a transcript in place (a resume/compaction rewrite, or a script mirroring a shorter file over a longer one).
+
+This is the authoritative "0 remaining" check. Read-only by default; apply=true heals, and healing only ever makes a conversation FULLER.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            since_hours: { type: 'number', description: 'Bound the scan to the last N hours' },
+            apply: { type: 'boolean', default: false, description: 'false = audit only; true = heal now' },
+          },
+        },
+      },
+      {
+        name: 'recall_memory_item',
+        description: `Fetch ONE memory item, its full text, or its links — or browse a whole source type.
+
+Complements recall_memory_search: search finds candidates, this reads the specific item. mode=browse lists a type (e.g. every skill, every plan) without a query.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            source_type: { type: 'string', enum: ['session', 'plan', 'task', 'claude_md', 'paste', 'history', 'diary'] },
+            id: { type: 'string', description: 'Item id. Omit with mode=browse.' },
+            mode: { type: 'string', enum: ['item', 'content', 'links', 'browse'], default: 'item', description: 'item = metadata, content = full text, links = related items, browse = list the type' },
+            limit: { type: 'number', default: 50, description: 'browse mode only' },
+          },
+          required: ['source_type'],
+        },
+      },
+      {
+        name: 'recall_regenerate_summary',
+        description: 'Force a fresh AI summary for one session — use when its stored summary is missing, stale, or plainly wrong.',
+        inputSchema: {
+          type: 'object',
+          properties: { session_id: { type: 'string' } },
+          required: ['session_id'],
+        },
+      },
+      {
+        name: 'recall_outcome_summary',
+        description: 'Aggregate session outcomes (shipped / interrupted / abandoned / in_progress) over the last N days — "how much of my work actually landed?".',
+        inputSchema: {
+          type: 'object',
+          properties: { days: { type: 'number', default: 7, description: '1-90' } },
+        },
+      },
+      {
+        name: 'recall_shares',
+        description: 'Which projects are shared into your team. scope=mine for your own shares, scope=all for every share visible to you. Private by default — nothing is visible to teammates until shared.',
+        inputSchema: {
+          type: 'object',
+          properties: { scope: { type: 'string', enum: ['mine', 'all'], default: 'mine' } },
+        },
+      },
+      {
+        name: 'recall_reclassify',
+        description: 'Re-run the memory classifier over already-indexed chunks so classifier improvements reach old data. Idempotent — only rewrites tags that actually changed.',
+        inputSchema: { type: 'object', properties: {} },
       },
     ],
   };
@@ -2582,6 +2746,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'recall_code_findings': {
         const params = RecallCodeFindingsSchema.parse(args);
         requireRemote();
+
+        // Sibling views of the same code index that had no MCP surface.
+        if (params.view === 'summary') {
+          const r = await remoteGetQS<Record<string, unknown>>('/api/code/summary', { project: params.project });
+          return { content: [{ type: 'text', text: '# Code findings summary\n\n```json\n' + JSON.stringify(r, null, 2) + '\n```' }] };
+        }
+        if (params.view === 'hotspots') {
+          const r = await remoteGetQS<{ hotspots: Array<{ file: string; churn?: number; commits?: number; score?: number }> }>(
+            '/api/code/hotspots', { project: params.project, limit: params.limit });
+          if (!r.hotspots?.length) return { content: [{ type: 'text', text: 'No hotspots recorded — run `chat-recall code index` in the repo.' }] };
+          const lines = [`# Code hotspots (${r.hotspots.length})`, '_Churn-ranked; pair with view=file-sessions to see which sessions touched one._\n'];
+          for (const h of r.hotspots) {
+            lines.push(`- \`${h.file}\`${h.churn !== undefined ? ` · churn ${h.churn}` : ''}${h.commits !== undefined ? ` · ${h.commits} commits` : ''}${h.score !== undefined ? ` · score ${h.score}` : ''}`);
+          }
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+        if (params.view === 'file-sessions') {
+          if (!params.file) return { content: [{ type: 'text', text: 'view=file-sessions needs `file` (repo-relative path) and `project`.' }] };
+          const r = await remoteGetQS<{ sessions: Array<{ sessionId?: string; title?: string; status?: string }> }>(
+            '/api/code/file-sessions', { project: params.project, file: params.file, limit: params.limit });
+          if (!r.sessions?.length) return { content: [{ type: 'text', text: `No synced sessions edited \`${params.file}\`.` }] };
+          const lines = [`# Sessions that touched \`${params.file}\` (${r.sessions.length})\n`];
+          for (const s of r.sessions) lines.push(`- **${s.sessionId ?? '(unknown)'}**${s.status ? ` · ${s.status}` : ''}${s.title ? ` — ${s.title}` : ''}`);
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+
         const { findings } = await remoteGetQS<{ findings: Array<{ category: string; severity: string; file: string; line: number | null; title: string; why: string; agentPrompt: string }> }>(
           '/api/code/findings', { project: params.project, severity: params.severity, category: params.category, limit: params.limit });
         if (!findings.length) return { content: [{ type: 'text', text: 'No findings match.' }] };
@@ -2654,6 +2844,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // ── Edits timeline (chronological tool_use list across recent sessions) ──
       case 'recall_edits_timeline': {
         const params = RecallEditsTimelineSchema.parse(args);
+
+        // Aggregated rollup over the same window — /api/edits/summary had no MCP
+        // surface, so only the row-by-row view was reachable.
+        if (params.view === 'summary') {
+          requireRemote();
+          const r = await remoteGetQS<Record<string, unknown>>('/api/edits/summary', {
+            since_hours: params.since_hours,
+            project: params.project_filter,
+            tools: params.tools?.join(','),
+          });
+          return { content: [{ type: 'text', text: `# Edit summary — last ${params.since_hours}h\n\n\`\`\`json\n${JSON.stringify(r, null, 2)}\n\`\`\`` }] };
+        }
 
         // group_by "session" (absorbed from recall_files_touched): aggregate
         // the edit rows per session — "which sessions touched files matching
@@ -2936,8 +3138,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // ── Analytics summary ──────────────────────────────────────
       case 'recall_analytics_summary': {
-        RecallAnalyticsSummarySchema.parse(args);
+        const analyticsParams = RecallAnalyticsSummarySchema.parse(args ?? {});
         requireRemote();
+
+        // Behavioural patterns across sessions — same analytics family, no MCP
+        // surface until now.
+        if (analyticsParams.view === 'patterns') {
+          const r = await remoteGet<Record<string, unknown>>('/api/analytics/patterns');
+          return { content: [{ type: 'text', text: '# Session patterns\n\n```json\n' + JSON.stringify(r, null, 2) + '\n```' }] };
+        }
 
         // Same analytics aggregate the dashboard renders. The server already
         // computed all per-project / per-tool / per-model rollups (single
@@ -3108,6 +3317,54 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'recall_security_summary': {
         const params = RecallSecuritySummarySchema.parse(args);
         requireRemote();
+
+        // Alternate groupings of the same findings — endpoints that existed with
+        // no MCP surface at all. Kept as a `group_by` param rather than four more
+        // tools, matching how recall_edits_timeline absorbs `group_by`.
+        if (params.group_by !== 'detector') {
+          // Field names below are the store's actual columns (pg.ts:477-500):
+          // `occurrences`, `distinctSecrets`, `verified`, `sessions`,
+          // `project_path`. Guessing them printed "undefined" in a live call.
+          if (params.group_by === 'rule') {
+            const r = await remoteGet<{ rules: Array<{ rule: string; detector?: string; occurrences?: number; distinctSecrets?: number; sessions?: number }> }>('/api/secrets/by-rule');
+            const lines = ['# Secret findings by rule\n'];
+            for (const x of r.rules ?? []) {
+              lines.push(`- **${x.rule}**${x.detector ? ` (${x.detector})` : ''} — ${x.distinctSecrets ?? 0} distinct, ${x.occurrences ?? 0} occurrence(s) across ${x.sessions ?? 0} session(s)`);
+            }
+            if (!r.rules?.length) lines.push('_No findings._');
+            return { content: [{ type: 'text', text: lines.join('\n') }] };
+          }
+          if (params.group_by === 'project') {
+            const r = await remoteGet<{ projects: Array<{ project_path?: string; occurrences?: number; distinctSecrets?: number; verified?: number; sessions?: number }> }>('/api/secrets/by-project');
+            const lines = ['# Secret findings by project\n'];
+            for (const x of r.projects ?? []) {
+              lines.push(`- **${x.project_path || '(unknown)'}** — ${x.distinctSecrets ?? 0} distinct${x.verified ? `, ${x.verified} verified live` : ''} across ${x.sessions ?? 0} session(s)`);
+            }
+            if (!r.projects?.length) lines.push('_No findings._');
+            return { content: [{ type: 'text', text: lines.join('\n') }] };
+          }
+          if (params.group_by === 'trend') {
+            const r = await remoteGetQS<{ days: number; trend: Array<{ day: string; occurrences?: number; distinctSecrets?: number; verified?: number }> }>(
+              '/api/secrets/trend', { days: params.days });
+            const lines = [`# Secret findings trend — last ${r.days ?? params.days}d\n`];
+            for (const d of r.trend ?? []) {
+              lines.push(`- ${d.day}: ${d.distinctSecrets ?? 0} distinct, ${d.occurrences ?? 0} occurrence(s)${d.verified ? `, ${d.verified} verified live` : ''}`);
+            }
+            if (!r.trend?.length) lines.push('_No data in window._');
+            return { content: [{ type: 'text', text: lines.join('\n') }] };
+          }
+          // sessions
+          const r = await remoteGetQS<{ sessions: Array<{ sessionId: string; total?: number; byDetector?: Record<string, number> }> }>(
+            '/api/secrets/sessions', { min: params.min_detectors });
+          const lines = ['# Sessions with secret findings\n'];
+          for (const s of (r.sessions ?? []).slice(0, params.top_k)) {
+            const det = s.byDetector ? Object.entries(s.byDetector).map(([k, n]) => `${k}:${n}`).join(' · ') : '';
+            lines.push(`- **${s.sessionId}** — ${s.total ?? 0} finding(s)${det ? ` · ${det}` : ''}`);
+          }
+          if (!r.sessions?.length) lines.push('_No sessions with findings._');
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+
         const [summary, distinct] = await Promise.all([
           remoteGet<{ detectors: any[]; total: number; verified: number; bySeverity?: Record<string, number> }>('/api/secrets/summary'),
           remoteGetQS<any>('/api/secrets/distinct', { include_dismissed: params.include_dismissed }),
@@ -3150,6 +3407,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'recall_security_dismiss': {
         const params = RecallSecurityDismissSchema.parse(args);
         requireRemote();
+        // The inverse operation existed server-side but had no MCP surface, so a
+        // finding could be dismissed by an agent and never put back.
+        if (params.status === 'undismissed') {
+          await remotePost('/api/secrets/undismiss', { preview: params.preview });
+          return { content: [{ type: 'text', text: `Restored \`${params.preview}\` to the action-required list.` }] };
+        }
         await remotePost('/api/secrets/dismiss', {
           preview: params.preview,
           status: params.status,
@@ -3177,6 +3440,152 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         if (data.rules.length === 0) lines.push('_No custom rules configured._');
         return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_subagent_search': {
+        const params = RecallSubagentSearchSchema.parse(args);
+        requireRemote();
+        const clean = sanitizeQuery(params.query).cleanQuery;
+        const data = await remoteGetQS<{ hits: Array<{ sessionId: string; subagent: string; kind: string; lineHits: number; sample: string }> }>(
+          '/api/subagents/search',
+          { query: clean, session_id: params.session_id, kind: params.kind, limit: params.limit },
+        );
+        if (!data.hits?.length) {
+          return { content: [{ type: 'text', text: `No subagent transcripts match "${params.query}".` }] };
+        }
+        const lines = [`# Subagent matches for "${params.query}" (${data.hits.length})\n`];
+        for (const h of data.hits) {
+          lines.push(`- **${h.sessionId}** · ${h.kind} · ${h.lineHits} hit${h.lineHits === 1 ? '' : 's'}`);
+          lines.push(`  ${h.sample.replace(/\n/g, ' ').slice(0, 240)}`);
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_redundant_files': {
+        const params = RecallRedundantFilesSchema.parse(args);
+        requireRemote();
+        const data = await remoteGetQS<{ hits: Array<{ file: string; sessionId: string; project: string; mtime: number; score: number; reason: string }> }>(
+          '/api/files/redundant',
+          { filename: params.filename, project: params.project, limit: params.limit },
+        );
+        if (!data.hits?.length) {
+          return { content: [{ type: 'text', text: `No prior files resemble \`${params.filename}\` — looks new.` }] };
+        }
+        const lines = [`# Files resembling \`${params.filename}\` (${data.hits.length})`, '_You may have built this before._\n'];
+        for (const h of data.hits) {
+          const when = h.mtime ? new Date(h.mtime).toISOString().slice(0, 10) : '';
+          lines.push(`- \`${h.file}\` — ${h.reason} (score ${h.score})`);
+          lines.push(`  ${h.project || '(no project)'} · ${h.sessionId}${when ? ` · ${when}` : ''}`);
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_heal_audit': {
+        const params = RecallHealAuditSchema.parse(args);
+        requireRemote();
+        const r = await remoteGetQS<{ scanned: number; damaged: number; healed: number; healthy: number; applied: boolean; damagedIds?: string[] }>(
+          '/api/conversations/heal-audit',
+          { since_hours: params.since_hours, apply: params.apply ? '1' : undefined },
+        );
+        const lines = [
+          `# Transcript integrity${params.since_hours ? ` (last ${params.since_hours}h)` : ''}`,
+          '',
+          `- scanned: **${r.scanned}**`,
+          `- healthy: **${r.healthy}**`,
+          `- damaged: **${r.damaged}**${r.damaged ? ' — the archive holds more than the rendered view' : ' ✅'}`,
+        ];
+        if (r.applied) lines.push(`- healed this run: **${r.healed}**`);
+        else if (r.damaged) lines.push('', 'Re-run with `apply: true` to heal, or run `chat-recall repair`.');
+        if (r.damagedIds?.length) {
+          lines.push('', 'Damaged sessions:');
+          for (const id of r.damagedIds.slice(0, 25)) lines.push(`- ${id}`);
+          if (r.damagedIds.length > 25) lines.push(`- …and ${r.damagedIds.length - 25} more`);
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_memory_item': {
+        const params = RecallMemoryItemSchema.parse(args);
+        requireRemote();
+        const st = encodeURIComponent(params.source_type);
+
+        if (params.mode === 'browse') {
+          const data = await remoteGetQS<{ items: Array<{ id: string; title?: string; project_path?: string; mtime?: number }> }>(
+            `/api/memory/browse/${st}`, { limit: params.limit });
+          if (!data.items?.length) return { content: [{ type: 'text', text: `No ${params.source_type} items indexed.` }] };
+          const lines = [`# ${params.source_type} items (${data.items.length})\n`];
+          for (const it of data.items) {
+            const when = it.mtime ? new Date(it.mtime).toISOString().slice(0, 10) : '';
+            lines.push(`- **${it.id}**${it.title ? ` — ${it.title}` : ''}${when ? ` · ${when}` : ''}`);
+          }
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+
+        if (!params.id) {
+          return { content: [{ type: 'text', text: 'id is required unless mode=browse.' }] };
+        }
+        const idEnc = encodeURIComponent(params.id);
+
+        if (params.mode === 'links') {
+          const soft = await remoteGetSoft<{ links: Array<{ from_type: string; from_id: string; to_type: string; to_id: string; link_type: string }> }>(
+            `/api/memory/links/${st}/${idEnc}`);
+          if (!soft.data) return { content: [{ type: 'text', text: soft.message || `No links for ${params.id}.` }] };
+          const links = soft.data.links ?? [];
+          if (!links.length) return { content: [{ type: 'text', text: `No links recorded for ${params.id}.` }] };
+          const lines = [`# Links for ${params.source_type} ${params.id} (${links.length})\n`];
+          for (const l of links) lines.push(`- ${l.from_type}:${l.from_id} —${l.link_type}→ ${l.to_type}:${l.to_id}`);
+          return { content: [{ type: 'text', text: lines.join('\n') }] };
+        }
+
+        if (params.mode === 'content') {
+          const soft = await remoteGetSoft<{ content?: string }>(`/api/memory/item/${st}/${idEnc}/content`);
+          if (!soft.data?.content) return { content: [{ type: 'text', text: soft.message || `No content stored for ${params.id}.` }] };
+          return { content: [{ type: 'text', text: soft.data.content }] };
+        }
+
+        const soft = await remoteGetSoft<Record<string, unknown>>(`/api/memory/item/${st}/${idEnc}`);
+        if (!soft.data) return { content: [{ type: 'text', text: soft.message || `${params.source_type} ${params.id} not found.` }] };
+        return { content: [{ type: 'text', text: '```json\n' + JSON.stringify(soft.data, null, 2) + '\n```' }] };
+      }
+
+      case 'recall_regenerate_summary': {
+        const params = RecallRegenerateSummarySchema.parse(args);
+        requireRemote();
+        const r = await remotePost<{ ok?: boolean; summary?: string; message?: string; error?: string }>(
+          `/api/conversations/${encodeURIComponent(params.session_id)}/regenerate-summary`, {});
+        if (r.summary) {
+          return { content: [{ type: 'text', text: `# Regenerated summary — ${params.session_id}\n\n${r.summary}` }] };
+        }
+        return { content: [{ type: 'text', text: r.message || r.error || 'Summary regeneration requested.' }] };
+      }
+
+      case 'recall_outcome_summary': {
+        const params = RecallOutcomeSummarySchema.parse(args);
+        requireRemote();
+        const r = await remoteGetQS<Record<string, unknown>>('/api/conversations/outcome-summary', { days: params.days });
+        return { content: [{ type: 'text', text: `# Session outcomes — last ${params.days}d\n\n\`\`\`json\n${JSON.stringify(r, null, 2)}\n\`\`\`` }] };
+      }
+
+      case 'recall_shares': {
+        const params = RecallSharesSchema.parse(args);
+        requireRemote();
+        const path = params.scope === 'all' ? '/api/shares/all' : '/api/shares';
+        const r = await remoteGet<{ shares?: Array<{ project_id?: string; projectId?: string; user_sub?: string }> }>(path);
+        const shares = r.shares ?? [];
+        if (!shares.length) {
+          return { content: [{ type: 'text', text: params.scope === 'all' ? 'No projects are shared in your team.' : 'You have not shared any projects. Everything stays private until shared.' }] };
+        }
+        const lines = [`# Shared projects (${params.scope}, ${shares.length})\n`];
+        for (const s of shares) lines.push(`- ${s.project_id ?? s.projectId ?? '(unknown)'}${s.user_sub ? ` · ${s.user_sub}` : ''}`);
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_reclassify': {
+        RecallReclassifySchema.parse(args ?? {});
+        requireRemote();
+        const r = await remotePost<{ message?: string; scanned?: number; updated?: number; error?: string }>('/api/memory/reclassify', {});
+        if (r.error) return { content: [{ type: 'text', text: `Reclassify unavailable: ${r.error}` }] };
+        return { content: [{ type: 'text', text: `${r.message ?? 'Reclassify complete'} — scanned ${r.scanned ?? 0}, updated ${r.updated ?? 0}.` }] };
       }
 
       default:
