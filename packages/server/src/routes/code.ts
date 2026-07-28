@@ -12,10 +12,12 @@
 
 import express from 'express';
 import { gunzipSync } from 'zlib';
-import { createStore, buildRecommendations, createOutcomeCache, cachedRecentEdits, detectTool } from '../imports.js';
+import { createStore, buildRecommendations, cachedRecentEdits, detectTool } from '../imports.js';
+import { behaviorSignal } from '../util/behavior-signal.js';
+import { enqueueTasksFile } from '../util/tasks-file-intent.js';
 import type {
   CodeProjectInput, CodeFindingInput, CodeHotspotInput, CodeActionInput,
-  CodeProjectLabel, CodeActionStatus, CodeSeverity, BehaviorSignal, SourceType,
+  CodeProjectLabel, CodeActionStatus, CodeSeverity, SourceType,
 } from '@chat-recall/engine';
 import { openPgPoolRo, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
 import {
@@ -264,21 +266,10 @@ router.get('/recommendations', async (req, res) => {
     ]);
     // Behavioral signal: outcomes of this project's own sessions (the other half
     // of the moat). Optional — empty when no sessions are synced for the project.
-    let behavior: BehaviorSignal | undefined;
-    try {
-      const sessions = await store.listItemsByProjectId('session', projectId, 200);
-      const ids = sessions.map((s) => s.id);
-      if (ids.length) {
-        const oc = await createOutcomeCache();
-        try {
-          const rows = await oc.getMany(ids);
-          let failed = 0;
-          // 'interrupted' = the user bailed before resolution — our unresolved signal.
-          for (const [, r] of rows) if (r && r.status === 'interrupted') failed++;
-          behavior = { failedOrAbandoned: failed, totalSessions: ids.length };
-        } finally { await oc.close(); }
-      }
-    } catch { /* behavioral signal is optional */ }
+    // Project-scoped sessions; the tenant-wide variant lives in
+    // routes/recommendations.ts. Shared helper — see util/behavior-signal.ts.
+    const behavior = await behaviorSignal(async () =>
+      (await store.listItemsByProjectId('session', projectId, 200)).map((s) => s.id));
     const recommendations = buildRecommendations({ project, summary, findings, hotspots, behavior });
     res.json({ recommendations, behavior: behavior ?? null });
   } catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : 'failed' }); }
@@ -317,10 +308,8 @@ router.post('/tasks/write', async (req, res) => {
       .filter((a) => a.status !== 'dismissed').sort((a, b) => a.pri - b.pri);
     if (!actions.length) return res.json({ ok: true, queued: false, message: 'No actionable code tasks. Run `chat-recall code index` in the repo to generate them.' });
     const content = buildTasksMd(project.projectId, actions);
-    const intentId = await store.enqueueSyncIntent({
-      kind: 'code_apply', artifactType: 'write_tasks_file',
-      name: JSON.stringify({ rootPath: project.rootPath, filename: 'CODE_TASKS.md', content }),
-      createdBy: 'code-tasks',
+    const intentId = await enqueueTasksFile(store, {
+      rootPath: project.rootPath, filename: 'CODE_TASKS.md', content, createdBy: 'code-tasks',
     });
     res.json({ ok: true, queued: true, intentId, filename: 'CODE_TASKS.md', count: actions.length, message: 'Queued — your local agent writes CODE_TASKS.md to the repo (≤45s). Then tell your AI: "Read CODE_TASKS.md and complete the tasks."' });
   } catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : 'failed' }); }
