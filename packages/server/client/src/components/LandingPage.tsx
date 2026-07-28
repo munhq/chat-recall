@@ -149,7 +149,11 @@ const FEATURES = [
 ];
 
 const LANDING_CSS = `
-.cr-landing { min-height: 100vh; min-height: 100dvh; background: var(--cr-ink-0, #0b0d10); color: var(--cr-fg-1, #e8eaed); font-family: system-ui, -apple-system, sans-serif; overflow-x: hidden; }
+/* height + own scroll: the landing renders OUTSIDE the .app shell, and the
+ * global `body { overflow: hidden }` (for the fixed-viewport app) would clip a
+ * tall landing page. Making .cr-landing a bounded scroll container lets it
+ * scroll on its own. (Was min-height:100dvh → grew past the viewport, unscrollable.) */
+.cr-landing { height: 100vh; height: 100dvh; overflow-y: auto; overflow-x: hidden; background: var(--cr-ink-0, #0b0d10); color: var(--cr-fg-1, #e8eaed); font-family: system-ui, -apple-system, sans-serif; }
 .cr-landing * { box-sizing: border-box; }
 .ln-nav { display:flex; align-items:center; justify-content:space-between; padding: 20px 32px; max-width: 1100px; margin: 0 auto; }
 .ln-brand { font-weight: 700; font-size: 18px; letter-spacing: -0.01em; }
