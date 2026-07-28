@@ -1766,40 +1766,6 @@ export async function getSessionMarkers(sessionId: string): Promise<SessionMarke
   return await res.json();
 }
 
-export type TurnKind = 'user' | 'assistant_text' | 'tool_use' | 'tool_result';
-export interface SessionTurn {
-  kind: TurnKind;
-  ts: number;
-  tsIso?: string;
-  line: number;
-  text?: string;
-  toolName?: string;
-  toolUseId?: string;
-  toolInputSummary?: string;
-  command?: string;
-  resultSummary?: string;
-  resultIsError?: boolean;
-  resultExitCode?: number;
-  resultBytes?: number;
-}
-export interface SessionTurnsResponse {
-  sessionId: string;
-  found: boolean;
-  startMs: number;
-  endMs: number;
-  turns: SessionTurn[];
-}
-
-export async function getSessionTurns(sessionId: string, limit?: number): Promise<SessionTurnsResponse> {
-  const qp = limit ? `?limit=${limit}` : '';
-  const res = await fetchWithTimeout(`${API_BASE}/conversations/${sessionId}/turns${qp}`, {}, 30000);
-  if (!res.ok) {
-    if (res.status === 404) throw new Error('Session not found');
-    throw new Error(`Failed to load turns: ${res.statusText}`);
-  }
-  return await res.json();
-}
-
 // ── Secret findings ────────────────────────────────────────────────
 export interface SecretFinding {
   detector: string;
@@ -1908,19 +1874,6 @@ export async function undismissSecret(preview: string): Promise<void> {
 
 /* SECURITY_TASKS.md — per-project, status-tracked rotation checklist the local
  * agent writes into the repo (same rail as CODE_TASKS.md). */
-export interface SecurityTasksPreview {
-  project: string;
-  filename: string;
-  total: number;
-  open: number;
-  noiseOmitted: number;
-  content: string;
-}
-export async function previewSecurityTasks(project: string): Promise<SecurityTasksPreview> {
-  const res = await fetchWithTimeout(`${API_BASE}/secrets/tasks/preview?project=${encodeURIComponent(project)}`, {}, 15000);
-  if (!res.ok) throw new Error(`Failed to preview security tasks: ${res.statusText}`);
-  return await res.json();
-}
 export interface WriteSecurityTasksResult {
   ok: boolean;
   queued: boolean;

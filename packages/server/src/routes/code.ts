@@ -327,23 +327,6 @@ router.post('/tasks/write', async (req, res) => {
   finally { await store.close(); }
 });
 
-// GET /api/code/tasks/preview?project=<projectId> — render CODE_TASKS.md for one
-// project WITHOUT writing anything (powers a preview + validation).
-router.get('/tasks/preview', async (req, res) => {
-  const projectId = typeof req.query.project === 'string' ? req.query.project : '';
-  if (!projectId) return res.status(400).json({ error: 'project (projectId) is required' });
-  const store = await createStore();
-  try {
-    const project = await store.getCodeProject(projectId);
-    if (!project) return res.status(404).json({ error: 'project not indexed' });
-    const actions = (await store.listCodeActions(projectId, { limit: 200 }))
-      .filter((a) => a.status !== 'dismissed').sort((a, b) => a.pri - b.pri);
-    const content = buildTasksMd(project.projectId, actions);
-    res.json({ project: projectId, rootPath: project.rootPath, filename: 'CODE_TASKS.md', count: actions.length, content });
-  } catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : 'failed' }); }
-  finally { await store.close(); }
-});
-
 // GET /api/code/tasks/tracked — filesystem rootPaths of code projects that have
 // queued tasks. The CLI checks each for a CODE_TASKS.md to read back.
 router.get('/tasks/tracked', async (_req, res) => {
