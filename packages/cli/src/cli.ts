@@ -1627,14 +1627,29 @@ async function runVault(label: string, fn: () => Promise<void>): Promise<void> {
   }
 }
 
-/** Read passphrase from CLI prompt, env, or `--passphrase` flag. */
-async function resolvePassphrase(opts: { passphrase?: string; envVar?: string }): Promise<string> {
+/**
+ * Resolve the vault passphrase, most explicit source first:
+ *   --passphrase → --passphrase-env → OS keyring → interactive prompt.
+ *
+ * The keyring step is what lets the unattended daemon decrypt at all; a human
+ * at a terminal still gets the prompt when nothing is stored. `noKeyring` is for
+ * `vault enable`, which must ask the human rather than silently reuse whatever
+ * is already stored.
+ */
+async function resolvePassphrase(opts: { passphrase?: string; envVar?: string; noKeyring?: boolean }): Promise<string> {
   if (opts.passphrase) return opts.passphrase;
   if (opts.envVar) {
     const v = process.env[opts.envVar];
     if (v) return v;
     console.error(chalk.red(`Env var ${opts.envVar} is not set.`));
     process.exit(1);
+  }
+  if (!opts.noKeyring) {
+    try {
+      const { keyringGet } = await import('./keyring.js');
+      const stored = keyringGet();
+      if (stored) return stored;
+    } catch { /* no keyring here — fall through to the prompt */ }
   }
   // Interactive prompt (silent) — uses readline-sync style by reading stdin
   // with echoing off. Done with built-in node so no extra dep.
@@ -1654,13 +1669,32 @@ vault
   .option('--passphrase <s>', 'Passphrase (insecure — prefer interactive or --passphrase-env)')
   .option('--passphrase-env <name>', 'Read passphrase from this env var')
   .option('--existing-salt <hex>', 'Reuse a salt from another device (64 hex chars)')
-  .action(async (opts: { passphrase?: string; passphraseEnv?: string; existingSalt?: string }) => runVault('vault enable', async () => {
-    const passphrase = await resolvePassphrase({ passphrase: opts.passphrase, envVar: opts.passphraseEnv });
+  .option('--no-keyring', "Don't store the passphrase in the OS keyring (the background daemon then cannot decrypt)")
+  .action(async (opts: { passphrase?: string; passphraseEnv?: string; existingSalt?: string; keyring?: boolean }) => runVault('vault enable', async () => {
+    // noKeyring: enabling must ask the human, not silently adopt a stored value.
+    const passphrase = await resolvePassphrase({ passphrase: opts.passphrase, envVar: opts.passphraseEnv, noKeyring: true });
     const { vaultEnable } = await import('@chat-recall/engine/core/vault-client.js');
     const r = vaultEnable(passphrase, { existingSaltHex: opts.existingSalt });
     console.log(chalk.green('✓ Vault enabled on this device.'));
     console.log(chalk.dim(`  keyId: ${r.keyId}`));
     console.log(chalk.dim(`  salt:  ${r.saltHex}`));
+
+    // Hand the passphrase to the OS keyring: without it the watch daemon has no
+    // way to decrypt, so cross-device artifacts would only ever apply while a
+    // human was sitting at a terminal. Never falls back to a file on disk — a
+    // machine with no keyring is told, not silently downgraded.
+    if (opts.keyring === false) {
+      console.log(chalk.yellow('  keyring: skipped (--no-keyring) — the background daemon will not be able to decrypt.'));
+    } else {
+      const { keyringSet, probeKeyring } = await import('./keyring.js');
+      try {
+        keyringSet(passphrase);
+        console.log(chalk.dim(`  keyring: stored (${probeKeyring().backend}) — the daemon can decrypt unattended.`));
+      } catch (err) {
+        console.log(chalk.yellow(`  keyring: unavailable — ${err instanceof Error ? err.message : err}`));
+        console.log(chalk.yellow('  The vault still works for foreground commands; cross-device artifacts will not apply on this machine.'));
+      }
+    }
     console.log();
     console.log(chalk.yellow('To set up another device, run there:'));
     console.log(`  chat-recall vault enable --existing-salt ${r.saltHex}`);
@@ -1710,12 +1744,32 @@ vault
 
 vault
   .command('status')
-  .description('Show whether the Vault is enabled, salt fingerprint, last sync time')
+  .description('Show whether the Vault is enabled, salt fingerprint, last sync time, and whether this machine can decrypt unattended')
   .action(async () => runVault('vault status', async () => {
     const { vaultStatus } = await import('@chat-recall/engine/core/vault-client.js');
+    const { probeKeyring, keyringGet } = await import('./keyring.js');
     const s = vaultStatus();
+
+    // Report the keyring even when the vault is off: "can this machine decrypt
+    // in the background?" is the question that decides whether cross-device
+    // artifacts will ever apply here, and it must never be a silent no.
+    const probe = probeKeyring();
+    const reportKeyring = () => {
+      if (!probe.available) {
+        console.log(chalk.yellow(`  keyring:      unavailable (${probe.backend}) — cross-device artifacts will not apply on this machine`));
+        if (probe.hint) console.log(chalk.dim(`                ${probe.hint}`));
+        return;
+      }
+      let stored = false;
+      try { stored = keyringGet() !== null; } catch { stored = false; }
+      console.log(stored
+        ? chalk.dim(`  keyring:      ${probe.backend}, passphrase stored — the daemon can decrypt unattended`)
+        : chalk.yellow(`  keyring:      ${probe.backend}, no passphrase stored — run \`chat-recall vault enable\` to let the daemon decrypt`));
+    };
+
     if (!s.enabled) {
       console.log(chalk.dim('Vault: disabled. Run `chat-recall vault enable`.'));
+      reportKeyring();
       return;
     }
     console.log(chalk.green('Vault: enabled'));
@@ -1724,6 +1778,17 @@ vault
     console.log(chalk.dim(`  lastSyncAt:   ${s.lastSyncAt ? new Date(s.lastSyncAt).toISOString() : 'never'}`));
     console.log(chalk.dim(`  syncTools:    ${s.syncTools.join(', ')}`));
     console.log(chalk.dim(`  excludeProj:  ${s.excludeProjects.length ? s.excludeProjects.join(', ') : '(none)'}`));
+    reportKeyring();
+  }));
+
+vault
+  .command('forget')
+  .description('Remove the stored passphrase from this machine\'s OS keyring (the vault stays enabled; the daemon stops being able to decrypt)')
+  .action(async () => runVault('vault forget', async () => {
+    const { keyringDelete } = await import('./keyring.js');
+    console.log(keyringDelete()
+      ? chalk.green('✓ Passphrase removed from the OS keyring.')
+      : chalk.dim('Nothing stored in the OS keyring.'));
   }));
 
 program
