@@ -103,6 +103,11 @@ export async function openPgPoolRo(): Promise<any> {
  * streaming replication; issuing DDL there fails ("cannot execute CREATE TABLE
  * in a read-only transaction"). No URL configured (sqlite/local) ⇒ no-op.
  */
+/** Arbitrary constant, shared by every replica: the schema-bootstrap mutex. */
+const SCHEMA_LOCK_KEY = 8_246_113_001;
+/** How long to wait for another replica's bootstrap before applying anyway. */
+const SCHEMA_LOCK_WAIT_MS = 60_000;
+
 export async function ensurePgSchema(databaseUrl?: string): Promise<void> {
   const url = databaseUrl || process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
   if (!url) return; // not a Postgres deployment — nothing to bootstrap
@@ -121,8 +126,33 @@ export async function ensurePgSchema(databaseUrl?: string): Promise<void> {
       try {
         await client.query('SET statement_timeout = 0');
         await client.query("SET lock_timeout = '30s'");
-        await client.query(PG_SCHEMA);
+        // Cross-PROCESS mutex. SCHEMA_READY above only dedupes within one
+        // process, but a rollout boots every replica at once (server + worker)
+        // and each runs this same DDL: their ALTER TABLEs grab
+        // AccessExclusiveLock on overlapping tables in interleaved order and
+        // deadlock (40P01), which crash-loops pods through the rollout. One
+        // applier at a time removes the interleaving entirely.
+        //
+        // try-lock + bounded wait rather than pg_advisory_lock: lock_timeout
+        // does NOT apply to advisory locks, so an unconditional wait could hang
+        // boot forever behind a wedged holder. After the budget we apply anyway
+        // — the DDL is idempotent, so the worst case is exactly today's
+        // behavior, never a pod that refuses to start.
+        const deadline = Date.now() + SCHEMA_LOCK_WAIT_MS;
+        let held = false;
+        while (Date.now() < deadline) {
+          const r = await client.query('SELECT pg_try_advisory_lock($1) AS ok', [SCHEMA_LOCK_KEY]);
+          if (r.rows[0]?.ok) { held = true; break; }
+          await new Promise((res) => setTimeout(res, 500));
+        }
+        try {
+          await client.query(PG_SCHEMA);
+        } finally {
+          if (held) await client.query('SELECT pg_advisory_unlock($1)', [SCHEMA_LOCK_KEY]).catch(() => {});
+        }
       } finally {
+        // Destroys the connection, so the advisory lock is released even if the
+        // explicit unlock above never ran.
         client.release(true);
       }
     })();
