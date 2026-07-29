@@ -20,6 +20,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
+import { fetchWithTimeout } from './http.js';
 import { isSecretTaskStatus } from '@chat-recall/engine/core/secret-task-status.js';
 import { isCodeTaskStatus } from '@chat-recall/engine/core/code-task-status.js';
 
@@ -125,7 +126,11 @@ export async function pushProjectTaskStatuses(
   for (const fk of FILE_KINDS) {
     let projects: string[];
     try {
-      const res = await fetch(`${base}${fk.trackedPath}`, { headers: authHeaders });
+      // Bounded: this runs INSIDE the intent drain, whose tick is guarded by a
+      // single in-flight flag — one silent, never-settling request here stops
+      // the daemon from ever draining another intent (exactly what happened on
+      // adi-pc: 18 intents queued, none applied, no error anywhere).
+      const res = await fetchWithTimeout(`${base}${fk.trackedPath}`, { headers: authHeaders });
       if (!res.ok) continue;
       projects = ((await res.json()) as { projects?: string[] }).projects || [];
     } catch { continue; }
@@ -143,7 +148,7 @@ export async function pushProjectTaskStatuses(
 
       if (changed.length === 0) { ledger[file] = mtime; ledgerDirty = true; continue; }
       try {
-        const res = await fetch(`${base}${fk.statusPath}`, {
+        const res = await fetchWithTimeout(`${base}${fk.statusPath}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', ...authHeaders },
           body: JSON.stringify({ project, items: changed.map((t) => ({ id: t.id, status: t.intent })) }),
