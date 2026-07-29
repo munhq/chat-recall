@@ -37,8 +37,15 @@ import { sanitizeQuery } from '@chat-recall/engine/core/query-sanitizer.js';
 import { getWAL } from '@chat-recall/engine/core/write-ahead-log.js';
 import { reportClientEvent } from './client-events.js';
 
-// Load .env configuration
-config();
+// Load .env configuration.
+//
+// quiet: dotenv 17 prints "[dotenv@17.x] injecting env …" ON STDOUT, and stdout
+// here IS the JSON-RPC channel. Clients that don't tolerate junk lines fail the
+// handshake outright — Antigravity/Gemini report `calling "initialize": invalid
+// character 'd' looking for beginning of value` (it parses the leading '[' as a
+// JSON array, then hits the 'd' of "dotenv"). Claude Code happened to skip the
+// line, which is why this hid for so long.
+config({ quiet: true });
 
 /**
  * Cached check for whether the codeindex companion is available. We only run

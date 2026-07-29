@@ -17,8 +17,10 @@ import { resolveProjectId } from '@chat-recall/engine/core/project-resolver.js';
 import { loadAllCredentials, type Credentials } from './sync-client.js';
 import { printUpdateNotice, updateNotice } from './update-notice.js';
 
-// Load .env configuration
-config();
+// Load .env configuration. quiet: dotenv 17 writes its banner to STDOUT, which
+// corrupts every machine-readable command (`chat-recall search … | jq` parsed
+// the banner as data) — same reason the MCP server sets it.
+config({ quiet: true });
 
 // ── Remote scope (chat-recall server) ───────────────────────────────────────
 // The CLI is a thin collector: it ships local sessions to a server (`sync`)
