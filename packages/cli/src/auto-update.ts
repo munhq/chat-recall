@@ -135,10 +135,25 @@ export async function runAutoUpdate(
 
   const plan = planAutoUpdate(base, caps, ownVersion, process.env.CHAT_RECALL_AUTO_UPDATE);
   if (!plan.update) return { updated: false, reason: plan.reason };
-  return executeAutoUpdate(plan, {
+  const result = await executeAutoUpdate(plan, {
     download: deps?.download ?? realDownload,
     install: deps?.install ?? realInstall,
     restart: deps?.restart ?? realRestart,
     platform: deps?.platform,
   });
+
+  // A self-update that KEEPS failing is the worst failure mode this system has:
+  // the machine silently runs an old collector forever, and the only trace was a
+  // reason string that two of the three call sites threw away
+  // (`void runAutoUpdate(…).catch(() => {})`). Report it so the failure is
+  // visible server-side instead of being discovered months later by hand.
+  // Dynamic import: client-events → sync-client → auto-update is a cycle at
+  // module scope, and telemetry must never be load-order-sensitive.
+  if (!result.updated) {
+    try {
+      const { reportClientEvent } = await import('./client-events.js');
+      reportClientEvent('auto_update_failed', { message: `${plan.from} → ${plan.to}: ${result.reason}` });
+    } catch { /* telemetry is best-effort */ }
+  }
+  return result;
 }
