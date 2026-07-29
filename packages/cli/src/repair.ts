@@ -25,6 +25,7 @@ import { createHash } from 'node:crypto';
 import { gunzipContainer, parseTranscriptFromContainer, seedShadow, readShadowContainer, type RawContainer } from '@chat-recall/engine/transcript/index.js';
 import { getBackendForId, getBackend, type SessionRef } from '@chat-recall/engine/core/tool-backend.js';
 import { loadSettings } from '@chat-recall/engine/core/settings.js';
+import { fetchWithTimeout } from './http.js';
 import { loadAllCredentials } from './sync-client.js';
 import { buildConversationSync } from './sync-client.js';
 
@@ -184,7 +185,9 @@ export async function repairSession(id: string, opts: { dryRun?: boolean; force?
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (ep.token) headers.authorization = `Bearer ${ep.token}`;
     try {
-      const res = await fetch(`${ep.url}/api/sync`, { method: 'POST', headers, body: JSON.stringify({ conversations: [built.conv] }) });
+      // Bounded (60s — a repair push carries a whole transcript): repair runs
+      // inside the intent drain, and an unbounded upload wedges every later tick.
+      const res = await fetchWithTimeout(`${ep.url}/api/sync`, { method: 'POST', headers, body: JSON.stringify({ conversations: [built.conv] }) }, 60_000);
       if (!res.ok) { pushed.push({ server: ep.url, before, after: before }); log(`push to ${ep.url} FAILED: HTTP ${res.status}`); continue; }
       // Confirm the new count.
       const after = await fetchJson(`${ep.url}/api/conversations/${id}?limit=0`, ep.token);
