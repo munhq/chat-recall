@@ -15,5 +15,10 @@
     "noEmit": true
   },
   "include": ["src"],
+  // Tests are compiled by vitest (root devDependency, run from the repo root),
+  // never by the app build. The image's client stage installs ONLY the client's
+  // own deps, so leaving *.test.ts in scope made `tsc` fail there on a missing
+  // 'vitest' type — while passing locally on the hoisted root copy.
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }
