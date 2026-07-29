@@ -324,11 +324,17 @@ router.get('/matrix', async (_req, res) => {
     const out: Record<SyncType, Record<string, Record<string, string>>> =
       { skill: {}, mcp: {}, command: {}, agent: {}, instructions: {} };
     const deviceSet = new Set<string>();
+    // Liveness per device: a column whose agent hasn't checked in can't apply
+    // anything you queue into it, and the grid gave no hint of that — so a
+    // dead machine looked exactly like a live one with missing artifacts.
+    const deviceMeta: Record<string, { lastSeenAt: number | null; cliVersion: string | null; os: string | null }> = {};
 
     try {
       const tokens = await cp.listAgentTokens(tenant);
       for (const t of tokens) {
-        if (!t.revoked) deviceSet.add(t.deviceId);
+        if (t.revoked) continue;
+        deviceSet.add(t.deviceId);
+        deviceMeta[t.deviceId] = { lastSeenAt: t.lastSeenAt, cliVersion: t.cliVersion, os: t.os };
       }
     } catch {
       // ignore control plane errors
@@ -362,7 +368,7 @@ router.get('/matrix', async (_req, res) => {
       pendingIntents = await store.listAllPendingSyncIntents(1000);
     } catch { /* ignore */ }
 
-    res.json({ ...out, supportedTargets: SUPPORTED_TARGETS, devices: Array.from(deviceSet), pendingIntents });
+    res.json({ ...out, supportedTargets: SUPPORTED_TARGETS, devices: Array.from(deviceSet), deviceMeta, pendingIntents });
   } catch (error) {
     log.error({ err: error }, 'matrix error');
     res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });

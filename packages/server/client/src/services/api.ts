@@ -169,6 +169,8 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
 export interface ServerCapabilities {
   mode: 'local' | 'server';
   edition: 'selfhost' | 'cloud';
+  /** The CLI release this server serves — what a device's version is judged against. */
+  cli?: { version: string; sha256: string } | null;
   features: {
     conversations: boolean;
     search: boolean;
@@ -1325,6 +1327,8 @@ export interface ToolkitMatrix {
   agent:   MatrixCells;
   instructions: MatrixCells;
   devices: string[];
+  /** Per-device liveness — a column whose agent is offline can't apply anything. */
+  deviceMeta?: Record<string, { lastSeenAt: number | null; cliVersion: string | null; os: string | null }>;
   supportedTargets: Record<SyncType, SyncTool[]>;
   pendingIntents?: any[];
 }
@@ -2076,7 +2080,42 @@ export async function createTeam(name: string): Promise<{ slug: string; name: st
 
 // ── Device sync tokens (connect-your-machine onboarding) ────────────────
 
-export interface DeviceInfo { deviceId: string; createdAt: number; revoked: boolean }
+export interface DeviceInfo {
+  deviceId: string;
+  createdAt: number;
+  revoked: boolean;
+  /** Last authenticated request from this device (null = never since heartbeats shipped). */
+  lastSeenAt?: number | null;
+  /** CLI version the device last advertised, and its platform. */
+  cliVersion?: string | null;
+  os?: string | null;
+}
+
+/** semver-ish compare, mirroring the CLI's — -1 (a<b), 0, 1. Prereleases ignored. */
+export function compareVersions(a: string, b: string): number {
+  const pa = String(a).split('-')[0].split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = String(b).split('-')[0].split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (d) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
+
+/** A device is "offline" once it hasn't authenticated for 24h — the watch
+ *  daemon heartbeats far more often than that, so silence this long is real. */
+export const DEVICE_OFFLINE_MS = 24 * 3600 * 1000;
+
+export type DeviceHealth = 'ok' | 'outdated' | 'offline' | 'unknown' | 'revoked';
+
+/** Health of one device against the CLI release the server serves. */
+export function deviceHealth(d: DeviceInfo, serverCli?: string | null, now = Date.now()): DeviceHealth {
+  if (d.revoked) return 'revoked';
+  if (!d.lastSeenAt) return 'unknown';
+  if (now - d.lastSeenAt > DEVICE_OFFLINE_MS) return 'offline';
+  if (serverCli && d.cliVersion && compareVersions(serverCli, d.cliVersion) > 0) return 'outdated';
+  return 'ok';
+}
 
 /** Mint (or rotate) a device sync token. The raw token is shown ONCE. */
 export async function mintDeviceToken(teamSlug: string, deviceId: string): Promise<{ token: string; device_id: string }> {

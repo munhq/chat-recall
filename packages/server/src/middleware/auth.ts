@@ -218,6 +218,55 @@ async function resolveAgentToken(tok: string): Promise<{ tenant: string; userId:
   }
 }
 
+/**
+ * Device liveness heartbeat.
+ *
+ * Every authenticated device-token request stamps last_seen_at (+ the CLI
+ * version/OS it advertises) on the device's row, throttled to once a minute per
+ * device so a busy sync doesn't turn into a write per HTTP call. Fire-and-forget
+ * on purpose: a failed heartbeat must never fail the request it observes.
+ *
+ * This is the ONLY place the server learns a device exists and what it runs —
+ * without it a machine can quietly go dark, or sit on a CLI too old to know how
+ * to self-update, and nothing in the product can say so.
+ */
+const DEVICE_TOUCH_TTL_MS = 60_000;
+const deviceTouchedAt = new Map<string, number>();
+
+/** Header value, trimmed + length-capped (never trust a client string raw). */
+function headerVal(req: Request, name: string, max: number): string | null {
+  const v = req.get(name);
+  if (!v) return null;
+  const s = String(v).trim().slice(0, max);
+  return s || null;
+}
+
+function touchDevice(req: Request, tenant: string, deviceId: string): void {
+  const key = `${tenant}/${deviceId}`;
+  const now = Date.now();
+  const last = deviceTouchedAt.get(key);
+  if (last && now - last < DEVICE_TOUCH_TTL_MS) return;
+  deviceTouchedAt.set(key, now);
+  // Same crude cap as the token cache — a huge fleet must not grow this forever.
+  if (deviceTouchedAt.size >= 5000) deviceTouchedAt.clear();
+  const cliVersion = headerVal(req, 'x-chat-recall-cli', 32);
+  const os = headerVal(req, 'x-chat-recall-os', 32);
+  // The catch wraps createControlPlane() too: an unhandled rejection from a
+  // detached async IIFE takes the process down on modern Node, and a database
+  // hiccup must never be able to kill the server through a heartbeat.
+  void (async () => {
+    let cp: Awaited<ReturnType<typeof createControlPlane>> | null = null;
+    try {
+      cp = await createControlPlane();
+      await cp.touchAgentToken(tenant, deviceId, { cliVersion, os });
+    } catch {
+      /* heartbeat is best-effort — never break the request it observes */
+    } finally {
+      if (cp) await cp.close().catch(() => {});
+    }
+  })();
+}
+
 /** The identity resolved for a request: tenant + display userId + attribution. */
 type Resolved = { tenant: string; userId: string; authorSub: string | null; authorDevice: string | null };
 
@@ -229,7 +278,10 @@ async function resolve(req: Request, res: Response): Promise<Resolved | null> {
   // MCP remote mode talk to the server.
   if (tok && tok.startsWith('ct_')) {
     const agent = await resolveAgentToken(tok);
-    if (agent) return agent;
+    if (agent) {
+      touchDevice(req, agent.tenant, agent.authorDevice);
+      return agent;
+    }
     res.status(401).json({ error: 'invalid agent token' });
     return null;
   }

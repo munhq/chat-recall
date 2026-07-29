@@ -13,8 +13,29 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Card, Button, Chip } from './primitives';
 import {
   getMe, createTeam, mintDeviceToken, listDevices, revokeDevice, getSyncStatus,
-  type DeviceInfo,
+  getCapabilities, deviceHealth,
+  type DeviceInfo, type DeviceHealth,
 } from '../services/api';
+
+/** Relative "last seen", short enough to sit in a row. */
+function ago(ms: number | null | undefined): string {
+  if (!ms) return 'never';
+  const d = Date.now() - ms;
+  if (d < 120_000) return 'just now';
+  if (d < 3600_000) return `${Math.round(d / 60_000)}m ago`;
+  if (d < 48 * 3600_000) return `${Math.round(d / 3600_000)}h ago`;
+  return `${Math.round(d / (24 * 3600_000))}d ago`;
+}
+
+/** How each health state reads in the row. `unknown` is deliberately neutral:
+ *  a device that predates heartbeats hasn't done anything wrong. */
+const HEALTH_LABEL: Record<DeviceHealth, { text: string; tone: string } | null> = {
+  ok: null,
+  outdated: { text: 'outdated CLI', tone: 'var(--cr-warn, #d08700)' },
+  offline: { text: 'not syncing', tone: 'var(--cr-danger, #d04437)' },
+  unknown: { text: 'never checked in', tone: 'var(--cr-fg-3)' },
+  revoked: null,
+};
 
 /** Public server origin for the `chat-recall login` command. Cloud builds set
  *  VITE_API_BASE (…/api); local mode serves the API on the same origin. */
@@ -51,7 +72,15 @@ export default function ConnectMachine({ compact, onFirstData }: { compact?: boo
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [synced, setSynced] = useState<number | null>(null);
+  // The CLI release this server serves — the yardstick for "outdated".
+  const [serverCli, setServerCli] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    let on = true;
+    getCapabilities().then((c) => { if (on) setServerCli(c.cli?.version ?? null); }).catch(() => {});
+    return () => { on = false; };
+  }, []);
 
   async function resolveTeam(): Promise<string> {
     const me = await getMe();
@@ -194,15 +223,35 @@ export default function ConnectMachine({ compact, onFirstData }: { compact?: boo
       {!compact && devices.length > 0 && (
         <div style={{ marginTop: 18 }}>
           <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cr-fg-2)', marginBottom: 6 }}>Devices</div>
-          {devices.map((d) => (
-            <div key={d.deviceId} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid var(--cr-line-1)', fontSize: 13 }}>
-              <span style={{ flex: 1 }}>{d.deviceId}</span>
-              <span style={{ color: 'var(--cr-fg-3)' }}>{new Date(d.createdAt).toLocaleDateString()}</span>
-              {d.revoked
-                ? <Chip size="sm">revoked</Chip>
-                : <Button variant="secondary" onClick={() => revoke(d.deviceId)}>Revoke</Button>}
+          {devices.map((d) => {
+            const health = deviceHealth(d, serverCli);
+            const flag = HEALTH_LABEL[health];
+            return (
+              <div key={d.deviceId} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid var(--cr-line-1)', fontSize: 13 }}>
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.deviceId}</span>
+                  {!d.revoked && (
+                    <span style={{ color: 'var(--cr-fg-3)', fontSize: 12 }}>
+                      {d.cliVersion ? `CLI ${d.cliVersion}` : 'CLI unknown'}
+                      {d.os ? ` · ${d.os}` : ''}
+                      {` · seen ${ago(d.lastSeenAt)}`}
+                    </span>
+                  )}
+                </span>
+                {flag && <span style={{ color: flag.tone, fontSize: 12, whiteSpace: 'nowrap' }}>{flag.text}</span>}
+                <span style={{ color: 'var(--cr-fg-3)' }}>{new Date(d.createdAt).toLocaleDateString()}</span>
+                {d.revoked
+                  ? <Chip size="sm">revoked</Chip>
+                  : <Button variant="secondary" onClick={() => revoke(d.deviceId)}>Revoke</Button>}
+              </div>
+            );
+          })}
+          {devices.some((d) => deviceHealth(d, serverCli) === 'outdated') && (
+            <div style={{ color: 'var(--cr-fg-3)', fontSize: 12.5, marginTop: 8 }}>
+              A device on an old CLI keeps syncing but misses fixes, and one old enough
+              predates self-update entirely. On that machine run <code>chat-recall update</code>.
             </div>
-          ))}
+          )}
           {activeDevices.length === 0 && (
             <div style={{ color: 'var(--cr-fg-3)', fontSize: 12.5, marginTop: 6 }}>No active devices — nothing is syncing to this workspace.</div>
           )}

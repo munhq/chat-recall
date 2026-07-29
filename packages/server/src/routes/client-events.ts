@@ -27,6 +27,12 @@ router.post('/', async (req, res) => {
   if (!tenant) return res.status(401).json({ error: 'no tenant' });
   const events: InEvent[] = Array.isArray(req.body?.events) ? req.body.events.slice(0, MAX_BATCH) : [];
   if (!events.length) return res.json({ ok: true, ingested: 0 });
+  // The client can't know its own device id — the id lives on the token, which
+  // only the server can resolve. Stamp it here from the authenticated identity
+  // (`device:<id>`), and prefer it over anything the body claims: every event
+  // ingested before this was attributed to nobody, which made the whole table
+  // useless for answering "which machine is broken?".
+  const authDevice = req.authorDevice || (req.userId?.startsWith('device:') ? req.userId.slice('device:'.length) : '');
   try {
     const pool = await openPgPool();
     let n = 0;
@@ -38,7 +44,7 @@ router.post('/', async (req, res) => {
         `INSERT INTO client_events (tenant, ts, kind, tool, cli_version, os, device_id, message)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
         [tenant, Number(e?.ts) || Date.now(), kind, clip(e?.tool, 64),
-         clip(e?.cliVersion, 32), clip(e?.os, 32), clip(e?.deviceId, 64), clip(e?.message, 2000)],
+         clip(e?.cliVersion, 32), clip(e?.os, 32), clip(authDevice, 64) || clip(e?.deviceId, 64), clip(e?.message, 2000)],
       );
       n++;
     }

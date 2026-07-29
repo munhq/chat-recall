@@ -15,6 +15,7 @@ import { getDataDir, getIdentityFilePath, getHooksDir } from '@chat-recall/engin
 import { claudeBackend } from '@chat-recall/engine/core/backends/claude.js';
 import { resolveProjectId } from '@chat-recall/engine/core/project-resolver.js';
 import { loadAllCredentials, type Credentials } from './sync-client.js';
+import { printUpdateNotice, updateNotice } from './update-notice.js';
 
 // Load .env configuration
 config();
@@ -966,8 +967,15 @@ program
     // and confirms the server is up and speaks a version we can sync to.
     if (target) {
       try {
-        const caps = await fetch(`${target.base}/api/capabilities`).then((r) => r.json() as Promise<{ apiVersion?: number; edition?: string }>);
+        const caps = await fetch(`${target.base}/api/capabilities`).then((r) => r.json() as Promise<{ apiVersion?: number; edition?: string; cli?: { version?: string } | null }>);
         note((caps.apiVersion ?? 0) >= 2, 'Server reachable', `apiVersion ${caps.apiVersion ?? 'unknown'}${caps.edition ? `, edition ${caps.edition}` : ''}`);
+        // A stale CLI is the quietest failure this product has — it keeps
+        // "working" while collecting with months-old logic. Make it a first-
+        // class doctor row, not something you infer from missing data.
+        const { refreshUpdateCheck } = await import('./update-notice.js');
+        await refreshUpdateCheck(true).catch(() => null);
+        const stale = updateNotice();
+        note(!stale, 'CLI up to date', stale ? `${stale} (server serves ${caps.cli?.version ?? '?'})` : `${pkgVersion} — current`);
       } catch (err) {
         note(false, 'Server reachable', `unreachable: ${err instanceof Error ? err.message : err}`);
       }
@@ -2461,5 +2469,44 @@ program
       process.exit(1);
     }
   });
+
+program
+  .command('update')
+  .description('Update this CLI now from the server you sync to (same-origin, checksum-pinned) and report exactly why if it cannot')
+  .action(async () => {
+    const { runAutoUpdate } = await import('./auto-update.js');
+    const { refreshUpdateCheck } = await import('./update-notice.js');
+    const { cliVersion } = await import('./http.js');
+    const targets = loadAllCredentials();
+    if (!targets.length) {
+      console.error(chalk.red('Not logged in — run `chat-recall login <server-url>` first.'));
+      process.exit(1);
+    }
+    // "Nothing to do" and "tried and failed" are completely different answers;
+    // the whole point of this command is that the second one stops being silent.
+    let installFailed = false;
+    for (const cred of targets) {
+      const base = cred.serverUrl.replace(/\/+$/, '');
+      const headers: Record<string, string> = cred.token ? { authorization: `Bearer ${cred.token}` } : {};
+      const r = await runAutoUpdate(base, headers, cliVersion());
+      if (r.updated) { console.log(chalk.green(`✓ ${r.reason}`) + chalk.dim(` (${base})`)); continue; }
+      const benign = /already current|no CLI release|disabled/.test(r.reason);
+      // Only an install/download/checksum failure points at npm — an unreachable
+      // server is a different problem and deserves no misleading hint.
+      if (/install failed|download failed|checksum/.test(r.reason)) installFailed = true;
+      console.log((benign ? chalk.dim('• ') : chalk.red('✗ ')) + r.reason + chalk.dim(` (${base})`));
+    }
+    await refreshUpdateCheck(true);
+    if (installFailed) {
+      console.log(chalk.dim('\nThe update was available but did not install — usually npm cannot write the global prefix. Retry with:'));
+      console.log(chalk.dim(`  npm install -g chat-recall   (or re-run the installer: curl -fsSL ${targets[0].serverUrl.replace(/\/+$/, '')}/install | sh)`));
+    }
+  });
+
+// One stderr line when the server we sync to serves a newer CLI. Auto-update
+// handles this silently in the happy path; this is the channel for when it
+// can't (client too old to self-update, or `npm i -g` failing every retry) —
+// otherwise a stale machine is invisible until someone audits it by hand.
+program.hook('preAction', () => { printUpdateNotice(); });
 
 program.parse();

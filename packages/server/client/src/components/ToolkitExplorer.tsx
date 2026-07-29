@@ -19,6 +19,7 @@ import {
   removeToolkitItem,
   enqueueSyncIntent,
   listSyncIntents,
+  DEVICE_OFFLINE_MS,
   type ToolkitType,
   type ToolkitStatus,
   type MemoryMetadataRow,
@@ -1096,11 +1097,23 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
               <thead style={{ position: 'sticky', top: 0, background: 'var(--cr-ink-1)', zIndex: 1 }}>
                 <tr>
                   <th rowSpan={2} style={{ ...thStyle('left'), borderBottom: '1px solid var(--cr-line-1)' }}>Name</th>
-                  {devices.map(d => (
-                    <th key={d} colSpan={supportedTools.length} style={{ ...thStyle('center'), borderBottom: '1px solid var(--cr-line-1)', fontWeight: 600 }}>
-                      🖥️ {d === 'local' ? 'This Machine' : d}
-                    </th>
-                  ))}
+                  {devices.map(d => {
+                    // Offline column: everything you tick here queues fine but
+                    // sits unapplied until that machine's agent runs again. Say
+                    // so in the header instead of letting it look healthy.
+                    const meta = matrix?.deviceMeta?.[d];
+                    const offline = !!meta && (!meta.lastSeenAt || Date.now() - meta.lastSeenAt > DEVICE_OFFLINE_MS);
+                    return (
+                      <th key={d} colSpan={supportedTools.length} style={{ ...thStyle('center'), borderBottom: '1px solid var(--cr-line-1)', fontWeight: 600, opacity: offline ? 0.55 : 1 }}>
+                        <span title={meta ? `CLI ${meta.cliVersion || 'unknown'}${meta.os ? ` · ${meta.os}` : ''} · last seen ${meta.lastSeenAt ? new Date(meta.lastSeenAt).toLocaleString() : 'never'}` : undefined}>
+                          🖥️ {d === 'local' ? 'This Machine' : d}
+                        </span>
+                        {offline && (
+                          <div style={{ fontWeight: 400, fontSize: 10, color: 'var(--cr-danger, #d04437)' }}>not syncing</div>
+                        )}
+                      </th>
+                    );
+                  })}
                 </tr>
                 <tr>
                   {devices.flatMap(d =>
