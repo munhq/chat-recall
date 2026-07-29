@@ -31,7 +31,7 @@
  * server owns them.
  */
 import { join, dirname, basename } from 'node:path';
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, chmodSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, chmodSync, unlinkSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { redactSecrets, scanTextForFindings } from '@chat-recall/engine/core/secret-redactor.js';
@@ -399,6 +399,34 @@ export async function reconcileFields(opts: { force?: boolean } = {}): Promise<R
     perTarget[cred.serverUrl.replace(/\/+$/, '')] = { pushed: r.pushed, absent: r.absent };
   }
   return { sessions: fullRefs().length, scanned, pushed, absent, perTarget };
+}
+
+/**
+ * Reap batch-scan temp dirs leaked by a previous run.
+ *
+ * The scan below deletes its dir in a `finally` — which a SIGKILL or the OOM
+ * killer skips entirely, and this loop is exactly the one that has OOM-killed
+ * the daemon before. Each leaked dir holds one file per session: one of them
+ * was found at 3.4GB / 309k files, and together with other cruft it filled a
+ * 31GB tmpfs, at which point *everything* on the box that needed /tmp broke.
+ *
+ * So: before starting a scan, delete our own stale dirs. 6h is far longer than
+ * any real scan, so an in-flight dir from a concurrent process is never at risk.
+ */
+export function reapStaleScanDirs(dir: string = tmpdir(), maxAgeMs = 6 * 3600_000, now = Date.now()): number {
+  let reaped = 0;
+  let names: string[];
+  try { names = readdirSync(dir); } catch { return 0; }
+  for (const name of names) {
+    if (!name.startsWith('cr-batchscan-')) continue;
+    const p = join(dir, name);
+    try {
+      if (now - statSync(p).mtimeMs < maxAgeMs) continue;
+      rmSync(p, { recursive: true, force: true });
+      reaped++;
+    } catch { /* raced with its owner, or not ours to remove */ }
+  }
+  return reaped;
 }
 
 async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number; prune?: boolean; useLedger?: boolean; walk?: 'full' | 'changed' } = {}): Promise<SyncResult> {
@@ -821,6 +849,7 @@ const refs = listAvailableBackends().flatMap((b) => {
     const toScan = slice.filter((ref) => modeOf(ref) === 'full' && sessionFileBytes(ref) <= FULL_BUILD_MAX_BYTES);
     trace?.(`batch secret scan start: ${toScan.length} session(s)`);
     if (toScan.length > 0) {
+      reapStaleScanDirs();
       const scanDir = mkdtempSync(join(tmpdir(), 'cr-batchscan-'));
       const safeToId = new Map<string, string>();
       try {

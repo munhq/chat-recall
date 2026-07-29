@@ -22,7 +22,10 @@ export default defineConfig({
     ],
   },
   test: {
-    include: ['packages/*/src/**/*.test.ts'],
+    // The second glob picks up the web client's own pure modules (services/*),
+    // which the first misses — its sources live at packages/server/client/src.
+    // Component files stay untested here; this is for the logic underneath them.
+    include: ['packages/*/src/**/*.test.ts', 'packages/*/client/src/**/*.test.ts'],
     setupFiles: ['./vitest.setup.ts'],
     environment: 'node',
     isolate: true,

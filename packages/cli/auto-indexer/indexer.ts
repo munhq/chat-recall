@@ -391,10 +391,30 @@ setInterval(() => {
 // UI created and execute them locally. 45s cadence keeps "click in UI → files
 // copied on disk" feeling prompt without hammering the server. Best-effort —
 // errors are swallowed inside the drainer and retried next tick.
+//
+// The in-flight flag is a single point of failure: it is only cleared in the
+// `finally`, so ONE await that never settles means the daemon stops draining
+// forever, silently — no error, no log, just a queue that never empties (seen
+// on adi-pc: 18 intents pending for days while the daemon logged healthy
+// heartbeats the whole time). Every request in the drain path is now bounded,
+// and this watchdog is the backstop for whatever comes next: if a tick has
+// been running longer than any legitimate drain, say so and start a new one.
 let intentDrainInFlight = false;
+let intentDrainStartedAt = 0;
+let intentDrainGeneration = 0;
+const DRAIN_STALL_MS = 5 * 60_000;
+
 async function drainIntentsTick(): Promise<void> {
-  if (intentDrainInFlight) return;
+  if (intentDrainInFlight) {
+    const stuckMs = Date.now() - intentDrainStartedAt;
+    if (stuckMs < DRAIN_STALL_MS) return;
+    console.error(`[${ts()}] sync-intents: previous drain has been running ${Math.round(stuckMs / 1000)}s — abandoning it and starting a fresh tick`);
+  }
   intentDrainInFlight = true;
+  intentDrainStartedAt = Date.now();
+  // Generation guard: if an abandoned tick finally settles, its `finally` must
+  // not clear the flag out from under the tick that replaced it.
+  const gen = ++intentDrainGeneration;
   try {
     const r = await drainSyncIntents();
     if (r.processed > 0) {
@@ -407,7 +427,7 @@ async function drainIntentsTick(): Promise<void> {
   } catch (err) {
     console.error(`[${ts()}] sync-intents drain failed: ${err instanceof Error ? err.message : err}`);
   } finally {
-    intentDrainInFlight = false;
+    if (gen === intentDrainGeneration) intentDrainInFlight = false;
   }
 }
 setInterval(() => { void drainIntentsTick(); }, 15_000).unref();

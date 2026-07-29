@@ -11,6 +11,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Card, Chip, Input, ToolBadge, Button, SegmentedControl, Icon, pressableProps } from './primitives';
 import { useSidebarExtrasRegister } from '../context/sidebar-extras';
 import { TOOL_IDS, VALID_TOOL_FILTERS, type ToolId } from '../services/tools';
+import { sourceToolOnDevice, deviceHasArtifact, noSourceMessage } from '../services/toolkit-sync-plan';
 import {
   browseToolkit,
   getToolkitItem,
@@ -539,7 +540,11 @@ function PromoteRow({
     if (!confirm(`Copy ${primaryName} from ${fromTool} → ${toTool}?`)) return;
     setBusy(toTool);
     setMsg(null);
-    const e = await enqueueSyncIntent({ kind: 'copy', artifactType: kind as SyncType, name: primaryName, fromTool: fromTool as SyncTool, toTool });
+    // Target the device that actually HOLDS the source: the copy is executed
+    // locally by that machine's agent. Left untargeted, any device could pick
+    // the intent up and fail with "no <type> named X found for <tool>".
+    const sourceDevice = readField<string>(item, 'syncedDeviceId') || null;
+    const e = await enqueueSyncIntent({ kind: 'copy', artifactType: kind as SyncType, name: primaryName, fromTool: fromTool as SyncTool, toTool, deviceId: sourceDevice });
     setBusy(null);
     if (e.ok) setMsg({ kind: 'ok', text: `Queued — your local agent will copy it to ${toTool}.` });
     else setMsg({ kind: 'err', text: e.error || 'failed' });
@@ -696,7 +701,9 @@ function EmptyListState({
     const nameField = kind === 'skill' ? 'skillName' : kind === 'mcp' ? 'mcpName' : kind === 'command' ? 'commandName' : 'agentName';
     const name = readField<string>(row, nameField) || row.title;
     const fromTool = readTool(row) as SyncTool;
-    const e = await enqueueSyncIntent({ kind: 'copy', artifactType: kind as SyncType, name, fromTool, toTool: targetTool });
+    // Same rule as PromoteRow: the copy runs on the machine that has the source.
+    const sourceDevice = readField<string>(row, 'syncedDeviceId') || null;
+    const e = await enqueueSyncIntent({ kind: 'copy', artifactType: kind as SyncType, name, fromTool, toTool: targetTool, deviceId: sourceDevice });
     setBusyId(null);
     if (e.ok) alert(`Queued — your local agent will copy "${name}" to ${targetTool}.`);
     else alert(`Queue failed: ${e.error || 'unknown error'}`);
@@ -892,18 +899,23 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
       try {
         if (op.action === 'add') {
           // Model B: enqueue a copy intent; the local agent does the file copy.
-          // Source tool = the first tool that already has this artifact.
-          const slot = matrix[op.type][op.name] || {};
-          const sourceKey = Object.keys(slot).find(key => slot[key]);
-          if (!sourceKey) {
-            errorList.push({ key: op.k, error: `no source tool has ${op.name}` });
+          //
+          // The source MUST be on the same device as the target. The intent is
+          // drained by op.deviceId's agent, and executeCopy resolves the source
+          // from THAT machine's own filesystem — there is no device-to-device
+          // transfer. Picking "the first cell that has it" ignored the device
+          // half of the `<device>:<tool>` key, so a laptop's opencode entry got
+          // sent as the source for a PC's opencode column: fromTool === toTool,
+          // rejected 400 by the server, 9 at a time.
+          const sourceTool = sourceToolOnDevice(matrix, op.type, op.name, op.deviceId, op.tool);
+          if (!sourceTool) {
+            errorList.push({ key: op.k, error: noSourceMessage(op.name, op.deviceId) });
           } else {
-            const [sourceDevice, sourceTool] = sourceKey.split(':');
             const r = await enqueueSyncIntent({
               kind: 'copy',
               artifactType: op.type,
               name: op.name,
-              fromTool: sourceTool as SyncTool,
+              fromTool: sourceTool,
               toTool: op.tool,
               deviceId: op.deviceId === 'local' ? null : op.deviceId
             });
@@ -956,6 +968,10 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
     setPending((prev) => {
       const next = new Map(prev);
       devices.forEach(d => {
+        // Only devices that already hold this artifact under SOME tool can copy
+        // it into their other tools. Marking a cell on a device that has no
+        // local source just queues a guaranteed failure.
+        if (!deviceHasArtifact(rowPresence, d)) return;
         supportedTools.forEach(t => {
           const cellKeyString = `${d}:${t}`;
           const present = !!rowPresence[cellKeyString];
