@@ -29,7 +29,23 @@ const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 const INVITE_TTL_MS = 7 * 24 * 3600 * 1000;
 
 export interface AgentTokenInfo { tenant: string; deviceId: string; userSub: string | null }
-export interface AgentTokenMeta { deviceId: string; createdAt: number; revoked: boolean }
+/**
+ * Device metadata for the Account "Devices" card.
+ *
+ * `lastSeenAt` / `cliVersion` / `os` are stamped by the server on every
+ * authenticated data-plane request (see touchAgentToken) — without them a stale
+ * or dead machine is invisible: it simply stops syncing and nothing anywhere
+ * says so. They are nullable because a device that hasn't checked in since the
+ * columns were added has never reported.
+ */
+export interface AgentTokenMeta {
+  deviceId: string;
+  createdAt: number;
+  revoked: boolean;
+  lastSeenAt: number | null;
+  cliVersion: string | null;
+  os: string | null;
+}
 
 /**
  * Per-tenant subscription state — the billing spine. A tenant is "entitled"
@@ -75,6 +91,12 @@ export interface ControlPlane {
   /** Mint (or rotate) a device token. Returns the raw token — shown once. */
   mintAgentToken(tenant: string, deviceId: string, userSub?: string): Promise<string>;
   revokeAgentToken(tenant: string, deviceId: string): Promise<boolean>;
+  /**
+   * Record that `deviceId` just talked to us, and with which CLI. Called
+   * (throttled) from the auth layer on every device-token request — this is the
+   * ONLY source of "is that machine alive, and is it current?".
+   */
+  touchAgentToken(tenant: string, deviceId: string, meta?: { cliVersion?: string | null; os?: string | null }): Promise<void>;
   /** Devices with a token (active or revoked) — metadata only, never hashes. */
   listAgentTokens(tenant: string): Promise<AgentTokenMeta[]>;
 
@@ -176,6 +198,7 @@ class SqliteControlPlane implements ControlPlane {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         tenant TEXT NOT NULL, device_id TEXT NOT NULL, token_hash TEXT NOT NULL,
         user_sub TEXT, created_at INTEGER NOT NULL, revoked_at INTEGER,
+        last_seen_at INTEGER, cli_version TEXT, os TEXT,
         UNIQUE (tenant, device_id)
       );
       CREATE INDEX IF NOT EXISTS idx_cp_tokens_hash ON cp_agent_tokens(token_hash);
@@ -226,6 +249,11 @@ class SqliteControlPlane implements ControlPlane {
         PRIMARY KEY (team_slug, owner_sub, project_id)
       );
     `);
+    // Device liveness columns on a table that may predate them. SQLite has no
+    // ADD COLUMN IF NOT EXISTS — a duplicate-column error is the no-op case.
+    for (const col of ['last_seen_at INTEGER', 'cli_version TEXT', 'os TEXT']) {
+      try { this.db.exec(`ALTER TABLE cp_agent_tokens ADD COLUMN ${col}`); } catch { /* already there */ }
+    }
   }
 
   async ensureTenant(tenant: string, displayName?: string): Promise<void> {
@@ -258,11 +286,24 @@ class SqliteControlPlane implements ControlPlane {
     return r.changes > 0;
   }
 
+  async touchAgentToken(tenant: string, deviceId: string, meta?: { cliVersion?: string | null; os?: string | null }): Promise<void> {
+    // COALESCE: a request that carries no version header must not erase the
+    // version a previous one reported.
+    this.db.prepare(
+      `UPDATE cp_agent_tokens SET last_seen_at = ?, cli_version = COALESCE(?, cli_version), os = COALESCE(?, os)
+       WHERE tenant = ? AND device_id = ?`,
+    ).run(Date.now(), meta?.cliVersion ?? null, meta?.os ?? null, tenant, deviceId);
+  }
+
   async listAgentTokens(tenant: string): Promise<AgentTokenMeta[]> {
     const rows = this.db.prepare(
-      `SELECT device_id, created_at, revoked_at FROM cp_agent_tokens WHERE tenant = ? ORDER BY created_at DESC`,
-    ).all(tenant) as Array<{ device_id: string; created_at: number; revoked_at: number | null }>;
-    return rows.map(r => ({ deviceId: r.device_id, createdAt: r.created_at, revoked: r.revoked_at != null }));
+      `SELECT device_id, created_at, revoked_at, last_seen_at, cli_version, os
+         FROM cp_agent_tokens WHERE tenant = ? ORDER BY created_at DESC`,
+    ).all(tenant) as Array<{ device_id: string; created_at: number; revoked_at: number | null; last_seen_at: number | null; cli_version: string | null; os: string | null }>;
+    return rows.map(r => ({
+      deviceId: r.device_id, createdAt: r.created_at, revoked: r.revoked_at != null,
+      lastSeenAt: r.last_seen_at ?? null, cliVersion: r.cli_version ?? null, os: r.os ?? null,
+    }));
   }
 
   async createTeam(name: string, ownerSub: string, ownerEmail?: string | null): Promise<{ slug: string; name: string }> {
@@ -539,15 +580,29 @@ class PgControlPlane implements ControlPlane {
     return (r.rowCount || 0) > 0;
   }
 
+  async touchAgentToken(tenant: string, deviceId: string, meta?: { cliVersion?: string | null; os?: string | null }): Promise<void> {
+    // COALESCE: a request that carries no version header must not erase the
+    // version a previous one reported.
+    await this.q(
+      `UPDATE agent_tokens SET last_seen_at = $1, cli_version = COALESCE($2, cli_version), os = COALESCE($3, os)
+        WHERE tenant = $4 AND device_id = $5`,
+      [Date.now(), meta?.cliVersion ?? null, meta?.os ?? null, tenant, deviceId],
+    );
+  }
+
   async listAgentTokens(tenant: string): Promise<AgentTokenMeta[]> {
     const r = await this.pool.query(
-      `SELECT device_id, created_at, revoked_at FROM agent_tokens WHERE tenant = $1 ORDER BY created_at DESC`,
+      `SELECT device_id, created_at, revoked_at, last_seen_at, cli_version, os
+         FROM agent_tokens WHERE tenant = $1 ORDER BY created_at DESC`,
       [tenant],
     );
-    return r.rows.map((row: { device_id: string; created_at: string | number; revoked_at: string | number | null }) => ({
+    return r.rows.map((row: { device_id: string; created_at: string | number; revoked_at: string | number | null; last_seen_at: string | number | null; cli_version: string | null; os: string | null }) => ({
       deviceId: row.device_id,
       createdAt: Number(row.created_at),
       revoked: row.revoked_at != null,
+      lastSeenAt: row.last_seen_at != null ? Number(row.last_seen_at) : null,
+      cliVersion: row.cli_version ?? null,
+      os: row.os ?? null,
     }));
   }
 

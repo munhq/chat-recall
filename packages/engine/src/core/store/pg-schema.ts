@@ -236,6 +236,14 @@ CREATE TABLE IF NOT EXISTS agent_tokens (
   UNIQUE (tenant, device_id)
 );
 CREATE INDEX IF NOT EXISTS idx_agent_tokens_hash ON agent_tokens(token_hash);
+-- Device liveness: stamped (throttled) by the auth layer on every device-token
+-- request. Without these a machine that stops syncing — or runs a CLI too old
+-- to self-update — is invisible: nothing on the server knows it exists, so no
+-- UI can warn about it. Additive + nullable; NULL = "has not checked in since
+-- this shipped", which the UI renders as unknown rather than as a problem.
+ALTER TABLE agent_tokens ADD COLUMN IF NOT EXISTS last_seen_at BIGINT;
+ALTER TABLE agent_tokens ADD COLUMN IF NOT EXISTS cli_version  TEXT;
+ALTER TABLE agent_tokens ADD COLUMN IF NOT EXISTS os           TEXT;
 
 CREATE TABLE IF NOT EXISTS teams (
   slug        TEXT PRIMARY KEY,
