@@ -1673,11 +1673,30 @@ vault
   .action(async (opts: { passphrase?: string; passphraseEnv?: string; existingSalt?: string; keyring?: boolean }) => runVault('vault enable', async () => {
     // noKeyring: enabling must ask the human, not silently adopt a stored value.
     const passphrase = await resolvePassphrase({ passphrase: opts.passphrase, envVar: opts.passphraseEnv, noKeyring: true });
-    const { vaultEnable } = await import('@chat-recall/engine/core/vault-client.js');
-    const r = vaultEnable(passphrase, { existingSaltHex: opts.existingSalt });
+    const { vaultEnable, vaultEnableWithRemote, VaultPassphraseMismatchError } =
+      await import('@chat-recall/engine/core/vault-client.js');
+
+    // Default path: take the salt from the workspace, so a second machine needs
+    // nothing but the passphrase. --existing-salt stays for offline/manual use.
+    const cred = loadAllCredentials()[0];
+    let r: { keyId: string; saltHex: string; saltSource?: 'server' | 'local' };
+    if (opts.existingSalt || !cred?.token) {
+      r = vaultEnable(passphrase, { existingSaltHex: opts.existingSalt });
+    } else {
+      try {
+        r = await vaultEnableWithRemote(passphrase, { baseUrl: cred.serverUrl, token: cred.token });
+      } catch (err) {
+        if (err instanceof VaultPassphraseMismatchError) {
+          console.error(chalk.red(`vault enable: ${err.message}`));
+          process.exit(1);
+        }
+        throw err;
+      }
+    }
     console.log(chalk.green('✓ Vault enabled on this device.'));
     console.log(chalk.dim(`  keyId: ${r.keyId}`));
-    console.log(chalk.dim(`  salt:  ${r.saltHex}`));
+    console.log(chalk.dim(`  salt:  ${r.saltHex}`)
+      + (r.saltSource === 'server' ? chalk.dim('  (from your workspace)') : ''));
 
     // Hand the passphrase to the OS keyring: without it the watch daemon has no
     // way to decrypt, so cross-device artifacts would only ever apply while a
@@ -1696,9 +1715,14 @@ vault
       }
     }
     console.log();
-    console.log(chalk.yellow('To set up another device, run there:'));
-    console.log(`  chat-recall vault enable --existing-salt ${r.saltHex}`);
-    console.log(chalk.yellow('Then enter the SAME passphrase. Lose the passphrase = lose chat history. There is no recovery.'));
+    if (r.saltSource === 'server') {
+      console.log(chalk.dim('This device joined your existing vault — same passphrase, same key.'));
+    } else {
+      console.log(chalk.yellow('To set up another device, run there:'));
+      console.log('  chat-recall vault enable');
+      console.log(chalk.dim('  (it picks up this workspace\'s salt automatically — only the passphrase is needed)'));
+    }
+    console.log(chalk.yellow('Lose the passphrase = lose encrypted history. There is no recovery.'));
   }));
 
 vault

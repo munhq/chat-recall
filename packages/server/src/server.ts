@@ -28,6 +28,7 @@ import { costMiddleware, startCostTelemetry } from './middleware/request-cost.js
 import metricsRouter, { startBacklogRefresher, logMetricsExposureAtBoot } from './routes/metrics.js';
 import adminRouter from './routes/admin.js';
 import clientEventsRouter from './routes/client-events.js';
+import vaultRouter from './routes/vault.js';
 import accountRouter from './routes/account.js';
 import { requireEntitlement } from './util/billing.js';
 import projectsRouter from './routes/projects.js';
@@ -180,6 +181,11 @@ app.use('/api', attachTenantToContext);
 app.use('/api/teams/security-config', securityConfigRouter);
 app.use('/api/sync-config', syncConfigRouter);
 app.use('/api/client-events', clientEventsRouter);
+
+// Vault key parameters (salt + keyId fingerprint). Ungated like /api/account:
+// a device must be able to fetch these to set the vault up at all, and they are
+// not the paid surface — no key material or blob content lives here.
+app.use('/api/vault', vaultRouter);
 
 // Account configuration (secret-alert webhook). Ungated so a lapsed/un-subscribed
 // user can still reach their account to (re)subscribe and configure alerts.

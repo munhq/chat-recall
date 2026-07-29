@@ -136,6 +136,94 @@ export function vaultEnable(passphrase: string, opts: { existingSaltHex?: string
   return { keyId, saltHex };
 }
 
+/** A server this device can reach, with a bearer token. Supplied by the caller
+ *  (the CLI has the credentials file) so the engine stays credential-agnostic —
+ *  and so this path does NOT require team config, which `context()` demands. */
+export interface VaultRemote { baseUrl: string; token: string }
+
+export interface VaultEnableRemoteResult extends VaultEnableResult {
+  /** 'server' = adopted an existing workspace salt; 'local' = we published ours. */
+  saltSource: 'server' | 'local';
+  /** True when the server already knew a keyId and ours matches it. */
+  keyIdMatches?: boolean;
+}
+
+/** Thrown when the derived key disagrees with the workspace's published keyId —
+ *  i.e. this is a DIFFERENT passphrase than the one the other device used. */
+export class VaultPassphraseMismatchError extends Error {}
+
+/**
+ * Enable the vault using the workspace's shared salt.
+ *
+ * The manual alternative was `--existing-salt <64 hex>` copied off the first
+ * machine plus retyping the passphrase from memory — with a wrong passphrase
+ * failing SILENTLY, producing blobs no other device could ever open. Here the
+ * salt comes from the server (it is a KDF salt, not a secret), and the
+ * published keyId — a fingerprint of the derived key, never the key — turns a
+ * mistyped passphrase into an immediate, explicit error.
+ *
+ * The passphrase and the derived key never leave this process.
+ */
+export async function vaultEnableWithRemote(
+  passphrase: string,
+  remote: VaultRemote,
+  opts: { fetchImpl?: typeof fetch } = {},
+): Promise<VaultEnableRemoteResult> {
+  const doFetch = opts.fetchImpl ?? fetch;
+  const base = remote.baseUrl.replace(/\/+$/, '');
+  const headers = { authorization: `Bearer ${remote.token}`, 'content-type': 'application/json' };
+
+  let published: { saltHex: string | null; keyId: string | null } = { saltHex: null, keyId: null };
+  try {
+    const r = await doFetch(`${base}/api/vault/salt`, { headers });
+    if (r.ok) published = (await r.json()) as typeof published;
+  } catch {
+    // Offline: fall through and set up locally. Publishing is retried the next
+    // time enable runs; a device that never reaches the server can still work.
+  }
+
+  if (published.saltHex) {
+    const result = vaultEnable(passphrase, { existingSaltHex: published.saltHex });
+    if (published.keyId && published.keyId !== result.keyId) {
+      throw new VaultPassphraseMismatchError(
+        'That passphrase does not match the one your other device used for this workspace. '
+        + 'Nothing was changed — re-run with the original passphrase, or use `vault forget` on every '
+        + 'device and start over (existing encrypted history becomes unreadable).',
+      );
+    }
+    return { ...result, saltSource: 'server', keyIdMatches: published.keyId ? true : undefined };
+  }
+
+  // Nothing published yet — this is device one. Generate, then publish so the
+  // next device needs nothing but the passphrase.
+  const result = vaultEnable(passphrase);
+  try {
+    const r = await doFetch(`${base}/api/vault/salt`, {
+      method: 'POST', headers, body: JSON.stringify({ saltHex: result.saltHex, keyId: result.keyId }),
+    });
+    // 409 = another device published first, in the window between our GET and
+    // POST. Theirs wins: redo the derivation against it rather than leaving this
+    // device on an orphaned salt.
+    if (r.status === 409) {
+      const body = (await r.json()) as { saltHex?: string; keyId?: string | null };
+      if (body.saltHex && body.saltHex !== result.saltHex) {
+        const redone = vaultEnable(passphrase, { existingSaltHex: body.saltHex });
+        if (body.keyId && body.keyId !== redone.keyId) {
+          throw new VaultPassphraseMismatchError(
+            'Another device published a vault with a different passphrase. Nothing was changed here.',
+          );
+        }
+        return { ...redone, saltSource: 'server', keyIdMatches: body.keyId ? true : undefined };
+      }
+    }
+  } catch (err) {
+    if (err instanceof VaultPassphraseMismatchError) throw err;
+    // Publishing failed (offline / old server): the vault still works on this
+    // device; the next enable re-publishes.
+  }
+  return { ...result, saltSource: 'local' };
+}
+
 export interface VaultSyncReport {
   uploaded: Array<{ sessionId: string; tool: string; bytes: number }>;
   skipped:  Array<{ sessionId: string; tool: string; reason: 'unchanged' | 'denylisted' }>;
