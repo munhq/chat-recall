@@ -219,6 +219,115 @@ function settingsView(): { enabled: boolean; rules: RedactionRule[] } {
   return cache;
 }
 
+// ---------------------------------------------------------------------------
+// Server-served rule pack.
+//
+// Detection has to run on the client (the server never receives unredacted
+// text), but the RULES don't have to ship with the client. A tenant rule marked
+// `redact` is installed here at the start of a sync and joins the redaction set
+// for this process, so coverage can be improved from the dashboard without
+// waiting for every device to upgrade its CLI.
+//
+// Two invariants, both deliberate:
+//   1. ADD-ONLY. A pack can never remove or weaken DEFAULT_REDACTION_RULES. A
+//      compromised or fat-fingered server can therefore make us redact more,
+//      never less — the same fail-safe direction as the sync exclusions union.
+//   2. VALIDATED. A remote regex runs against every string we ship, so an
+//      over-broad one would shred the product's usefulness (and a pathological
+//      one would hang the walk). Rules that fail the checks below are dropped
+//      individually; the rest of the pack still installs.
+// ---------------------------------------------------------------------------
+
+/** A rule as it arrives from the server (regex as a string, not a RegExp). */
+export interface ServerRuleSpec { name: string; regex: string; flags?: string; redact?: boolean }
+
+/** Rejected rule + why, returned to the caller for logging. */
+export interface RejectedRule { name: string; reason: string }
+
+/** Text that must NEVER match a redaction rule. A pattern that fires on
+ *  ordinary prose or a git SHA is over-broad, and applying it would replace
+ *  legitimate content with sentinels across the whole corpus. */
+const CANARY = 'the quick brown fox jumps over the lazy dog 0123456789 '
+  + 'commit 8ba1f109551bd432803012645ac136ddd475d0fb src/index.ts:42';
+
+const MAX_PACK_RULES = 200;
+const MAX_PATTERN_LEN = 512;
+
+let serverPack: { version: string; rules: RedactionRule[] } | null = null;
+
+/** Validate one server rule; returns the compiled rule or a rejection reason. */
+function compileServerRule(spec: ServerRuleSpec): RedactionRule | RejectedRule {
+  const name = spec.name || '(unnamed)';
+  if (!spec.regex) return { name, reason: 'empty pattern' };
+  if (spec.regex.length > MAX_PATTERN_LEN) return { name, reason: `pattern longer than ${MAX_PATTERN_LEN} chars` };
+  let re: RegExp;
+  try {
+    // 'g' is required (we replace every occurrence); anything else the server
+    // asked for is dropped — 'i'/'m'/'s' are fine, but we don't accept 'y'/'d'
+    // whose lastIndex/indices semantics would change the replace behaviour.
+    const flags = 'g' + (spec.flags || '').replace(/[^ims]/g, '');
+    re = new RegExp(spec.regex, flags);
+  } catch (e) {
+    return { name, reason: `invalid regex: ${e instanceof Error ? e.message : e}` };
+  }
+  if (re.test('')) return { name, reason: 'matches the empty string (would redact everything)' };
+  re.lastIndex = 0;
+  if (re.test(CANARY)) return { name, reason: 'matches benign text — too broad' };
+  re.lastIndex = 0;
+  return { label: `tenant:${name}`, pattern: re };
+}
+
+/**
+ * Would this rule be accepted as a REDACTING rule? Same checks the collector
+ * applies, exposed so the server can reject an over-broad rule at write time —
+ * otherwise the dashboard would happily save a rule that every client silently
+ * drops, which looks like coverage the operator does not have.
+ */
+export function validateRedactionRule(spec: ServerRuleSpec): { ok: true } | { ok: false; reason: string } {
+  const out = compileServerRule(spec);
+  return 'reason' in out ? { ok: false, reason: out.reason } : { ok: true };
+}
+
+/**
+ * Install the server's rule pack for this process. Returns what was accepted
+ * and what was rejected (callers log the rejections — a silently ignored rule
+ * looks like coverage the operator does not actually have).
+ *
+ * Idempotent: installing again replaces the previous pack, never the builtins.
+ */
+export function installServerRulePack(
+  pack: { version?: string; rules: ServerRuleSpec[] },
+): { version: string; accepted: number; rejected: RejectedRule[] } {
+  const rejected: RejectedRule[] = [];
+  const rules: RedactionRule[] = [];
+  for (const spec of pack.rules || []) {
+    if (rules.length >= MAX_PACK_RULES) {
+      rejected.push({ name: spec.name || '(unnamed)', reason: `pack exceeds ${MAX_PACK_RULES} rules` });
+      continue;
+    }
+    const out = compileServerRule(spec);
+    if ('reason' in out) rejected.push(out); else rules.push(out);
+  }
+  const version = pack.version || '';
+  serverPack = { version, rules };
+  return { version, accepted: rules.length, rejected };
+}
+
+/** Version string of the installed pack, or null when none is installed. */
+export function serverRulePackVersion(): string | null {
+  return serverPack ? (serverPack.version || 'unversioned') : null;
+}
+
+/** Drop the installed pack (tests, and `logout`). */
+export function _clearServerRulePack(): void { serverPack = null; }
+
+/** Builtins + settings rules + the installed server pack, in that order. The
+ *  baseline always comes first so its labels win on overlapping matches. */
+function activeRules(): RedactionRule[] {
+  const base = settingsView().rules;
+  return serverPack && serverPack.rules.length > 0 ? [...base, ...serverPack.rules] : base;
+}
+
 /** Public flag — true if env asks OR settings opt-in. */
 export function isRedactionEnabled(): boolean {
   const env = isEnvRedactionRequested();
@@ -242,9 +351,10 @@ export function redactSecrets(text: string, opts: { rules?: RedactionRule[]; cou
   // before anything leaves the machine, even when index-time redaction is off.
   if (!opts.force && !isRedactionEnabled()) return text;
   if (!text) return text;
-  // Default rule set = baseline + user-added rules from settings. Caller
-  // can still override entirely via `opts.rules` if they need a clean set.
-  const rules = opts.rules || settingsView().rules;
+  // Default rule set = baseline + user-added rules from settings + the
+  // server-served pack. Caller can still override entirely via `opts.rules` if
+  // they need a clean set.
+  const rules = opts.rules || activeRules();
   let out = text;
   for (const r of rules) {
     out = out.replace(r.pattern, () => {

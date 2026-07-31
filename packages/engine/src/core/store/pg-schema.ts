@@ -154,6 +154,11 @@ CREATE TABLE IF NOT EXISTS secret_rules (
   updated_at  BIGINT NOT NULL,
   UNIQUE (tenant, name)
 );
+-- redact: promotes a tenant rule from report-only to REDACTING. The collector
+-- installs those rules into its in-process redactor, so a rule added in the
+-- dashboard starts masking on every device without a CLI release. Add-only --
+-- see installServerRulePack() in secret-redactor.ts.
+ALTER TABLE secret_rules ADD COLUMN IF NOT EXISTS redact INTEGER NOT NULL DEFAULT 0;
 
 CREATE TABLE IF NOT EXISTS secret_dismissals (
   tenant       TEXT NOT NULL DEFAULT 'default',
