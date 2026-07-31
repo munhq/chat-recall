@@ -27,9 +27,20 @@ embedded/offline datastore — the collector keeps only local bookkeeping.
   same server origin you logged into.
 - **Redaction is unconditional**: every string that leaves the machine is run
   through the secret redactor first (`packages/engine/src/core/secret-redactor.ts`),
-  regardless of any setting. Optional deeper scanning (gitleaks/trufflehog,
-  tenant rules) runs client-side too, so the server only ever receives masked
-  previews (last-4), never raw secrets.
+  regardless of any setting. It is in-process regex with no external dependency,
+  so it behaves identically on every device.
+- **Detection runs where the raw text is — on your machine.** The server only
+  ever receives masked previews (last-4), never raw secrets, which also means it
+  cannot scan for what your client didn't catch. Tenant rules are *configured*
+  server-side and *executed* client-side for exactly this reason.
+- **The external detectors are opt-in and off by default.** gitleaks/trufflehog
+  only run with `CHAT_RECALL_EXTERNAL_SCANNERS=1` — they are third-party
+  subprocesses, they require pre-redaction text to be written to disk (bounded
+  and deleted per slice, see `CHAT_RECALL_BATCHSCAN_MAX_MB`), and having them
+  installed on one device but not another would make findings device-dependent.
+- **Live key verification** (`--only-verified`) also stays client-side by
+  construction: confirming a key is live requires the raw value, so that request
+  goes from your machine to the key's own issuer, never through us.
 - **Server data at rest**: conversations, chunks, and the knowledge graph live
   in Postgres, scoped per tenant. Auth is OIDC (device flow) or a per-device
   token; a self-host server may run `AUTH_PROVIDER=none` for a single-tenant
