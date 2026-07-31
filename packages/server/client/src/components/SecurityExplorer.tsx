@@ -868,6 +868,8 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
           Patterns added here run alongside the built-in detectors. Each rule is a regex
           matched against the raw session text. Use this for internal API key shapes,
           custom token prefixes, or hostnames you don't want pasted into AI sessions.
+          Rules are stored here and executed on each device at sync time — the server never
+          receives unredacted text, so matching has to happen where the text still is.
         </div>
       </Card>
 
@@ -895,6 +897,7 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
                     {r.severity}
                   </Chip>
                   {!r.enabled && <Chip kind="neutral" size="sm" style={{ marginLeft: 6 }}>disabled</Chip>}
+                  {!!r.redact && <Chip kind="ok" size="sm" style={{ marginLeft: 6 }}>redacts</Chip>}
                 </td>
                 <td style={{ padding: '8px 12px', textAlign: 'right' }}>
                   <button onClick={() => setEditing(r)} style={{ background: 'transparent', border: 0, color: 'var(--cr-brand-500)', cursor: 'pointer', marginRight: 8, fontWeight: 600 }}>Edit</button>
@@ -972,6 +975,21 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
                 onChange={(e) => setEditing({ ...editing, enabled: e.target.checked ? 1 : 0 })}
               />
               Enabled
+            </label>
+            <label style={{ fontSize: 12, color: 'var(--cr-fg-3)', display: 'inline-flex', gap: 6, alignItems: 'flex-start' }}>
+              <input
+                type="checkbox"
+                checked={!!editing.redact}
+                onChange={(e) => setEditing({ ...editing, redact: e.target.checked ? 1 : 0 })}
+              />
+              <span>
+                Also redact matches (not just report them)
+                <span style={{ display: 'block', color: 'var(--cr-fg-3)', marginTop: 2 }}>
+                  Every device applies this pattern when redacting, from its next sync on — no CLI
+                  upgrade needed. Over-broad patterns are rejected on save, because a rule that
+                  matches ordinary text would replace real content with [REDACTED] everywhere.
+                </span>
+              </span>
             </label>
             <div style={{ display: 'flex', gap: 10 }}>
               <button onClick={save} style={{ background: 'var(--cr-brand-500)', color: 'var(--cr-on-brand)', border: 0, padding: '8px 14px', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}>Save</button>

@@ -34,7 +34,7 @@ import { join, dirname, basename } from 'node:path';
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, chmodSync, unlinkSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { redactSecrets, scanTextForFindings } from '@chat-recall/engine/core/secret-redactor.js';
+import { redactSecrets, scanTextForFindings, installServerRulePack, serverRulePackVersion } from '@chat-recall/engine/core/secret-redactor.js';
 import { scanFileForSecrets, scanDirForSecrets, scanTenantRules, isSecretScannerAvailable, type ScanFinding, type DirScanFinding } from '@chat-recall/engine/core/secret-scanner.js';
 import { isInternalToolPrompt } from '@chat-recall/engine/core/internal-prompts.js';
 import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js';
@@ -118,6 +118,8 @@ export function loadAllCredentials(): Credentials[] {
 interface TenantSecurityConfig {
   tenantRules: Array<{ name: string; regex: string }>;
   verifySecrets: boolean;
+  /** Content hash of the server's rule pack, or null when none was served. */
+  rulePackVersion: string | null;
 }
 
 // In-memory cache for tenant security configuration. Fetched at the start of
@@ -141,9 +143,31 @@ async function fetchTenantSecurityConfig(cred: Credentials): Promise<TenantSecur
     ]);
 
     let tenantRules: Array<{ name: string; regex: string }> = [];
+    let rulePackVersion: string | null = null;
     if (rulesRes.ok) {
-      const body = await rulesRes.json().catch(() => ({})) as { rules?: Array<{ name: string; regex: string; enabled?: boolean }> };
-      tenantRules = (body.rules || []).filter((r) => r.enabled !== false);
+      const body = await rulesRes.json().catch(() => ({})) as {
+        version?: string;
+        rules?: Array<{ name: string; regex: string; enabled?: boolean; redact?: boolean }>;
+      };
+      const enabled = (body.rules || []).filter((r) => r.enabled !== false);
+      tenantRules = enabled;
+      // Rules flagged `redact` join this process's REDACTION set, not just the
+      // findings scan — that is how detection improves without every device
+      // needing a new CLI. installServerRulePack is add-only (it can never
+      // weaken the builtins) and drops individual rules that fail its safety
+      // checks; we log those, because a silently ignored rule reads as coverage
+      // the operator does not actually have.
+      const pack = installServerRulePack({
+        version: body.version,
+        rules: enabled.filter((r) => r.redact === true).map((r) => ({ name: r.name, regex: r.regex, redact: true })),
+      });
+      rulePackVersion = serverRulePackVersion();
+      for (const r of pack.rejected) {
+        console.error(`[sync] server redaction rule "${r.name}" ignored: ${r.reason}`);
+      }
+      if (pack.accepted > 0) {
+        console.error(`[sync] ${pack.accepted} server redaction rule(s) active (pack ${rulePackVersion})`);
+      }
     }
 
     // Default verification ON. The server endpoint may not exist yet (older
@@ -154,14 +178,14 @@ async function fetchTenantSecurityConfig(cred: Credentials): Promise<TenantSecur
       if (typeof body.verifySecrets === 'boolean') verifySecrets = body.verifySecrets;
     }
 
-    const config: TenantSecurityConfig = { tenantRules, verifySecrets };
+    const config: TenantSecurityConfig = { tenantRules, verifySecrets, rulePackVersion };
     _securityConfigCache.set(base, { fetchedAt: Date.now(), config });
     return config;
   } catch {
     // If the server is unreachable or the endpoints don't exist, fall back to
     // no tenant rules and verification enabled. This keeps the collector
     // working during transient outages and with older server images.
-    return { tenantRules: [], verifySecrets: true };
+    return { tenantRules: [], verifySecrets: true, rulePackVersion: null };
   }
 }
 

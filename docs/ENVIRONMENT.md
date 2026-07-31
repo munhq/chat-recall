@@ -54,6 +54,9 @@ Set on the **server** container, not the CLI. See the quick-start header of
 | `CHAT_RECALL_DATABASE_URL` / `..._URL_RO` | Postgres connection string(s) for bring-your-own-Postgres. |
 | `OIDC_ISSUER` | The server's OIDC issuer — advertised to CLIs via `/api/capabilities` for SSO login. |
 | `ADMIN_KEY`, `AUTH_PROVIDER` | Admin key and auth mode (`none` for a single-tenant local box). |
+| `SECRET_RESCAN` | `0` disables the daily re-scan of ALREADY-STORED (redacted) text with today's rules. That pass is the only thing that can notice a secret a client's redactor missed — it is in the DB in cleartext at that point — so leave it on unless you have a reason. |
+| `SECRET_RESCAN_LIMIT` | Sessions per re-scan run (default `2000`, freshest first). |
+| `SECRET_RESCAN_EXCLUDE_TENANTS` | Comma-separated tenants to skip (default `synccheck`). |
 
 Other server-internal flags (`CHAT_RECALL_EDITION`, `_ROLE`, `_SERVER_MODE`,
 `_TENANT`, `_FEATURE_*`, `_VECTOR_PARTITIONS`, `_TELEMETRY`) tune SaaS/edition

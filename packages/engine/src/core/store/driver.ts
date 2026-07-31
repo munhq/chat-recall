@@ -132,6 +132,7 @@ export interface StorageDriver {
   // ── secret findings writer (scanner) ──
   ensureSecretFindingsTable: AsyncMethod<MemoryStore['ensureSecretFindingsTable']>;
   replaceSecretFindings: AsyncMethod<MemoryStore['replaceSecretFindings']>;
+  addSecretFindings: AsyncMethod<MemoryStore['addSecretFindings']>;
 
   // ── secret rules + dismissals ──
   ensureSecretRulesTable: AsyncMethod<MemoryStore['ensureSecretRulesTable']>;

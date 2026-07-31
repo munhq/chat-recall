@@ -78,6 +78,7 @@ export class SqliteStore implements StorageDriver {
   // ── secret findings writer ──
   async ensureSecretFindingsTable(...a: Args<'ensureSecretFindingsTable'>) { return this.inner.ensureSecretFindingsTable(...a); }
   async replaceSecretFindings(...a: Args<'replaceSecretFindings'>) { return this.inner.replaceSecretFindings(...a); }
+  async addSecretFindings(...a: Args<'addSecretFindings'>) { return this.inner.addSecretFindings(...a); }
 
   // ── secret rules + dismissals ──
   async ensureSecretRulesTable(...a: Args<'ensureSecretRulesTable'>) { return this.inner.ensureSecretRulesTable(...a); }

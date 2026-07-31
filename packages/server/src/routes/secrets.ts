@@ -27,6 +27,7 @@ import { classifySecret, secretSeverityRank, type SecretSeverity } from '@chat-r
 import {
   dismissalToTaskStatus, taskStatusToDismissal, isSecretTaskStatus, type SecretTaskStatus,
 } from '@chat-recall/engine/core/secret-task-status.js';
+import { validateRedactionRule } from '@chat-recall/engine/core/secret-redactor.js';
 
 const router = express.Router();
 
@@ -266,17 +267,61 @@ router.post('/undismiss', express.json(), async (req, res) => {
   } finally { await store.close(); }
 });
 
+/**
+ * On-demand server re-scan of ALREADY-STORED (redacted) text with today's
+ * rules. Anything it finds got past the redactor on some device, which means it
+ * is in our database in cleartext — so it is recorded as a server-owned finding
+ * and alerted on. Runs on a daily sweep too (see server.ts); this endpoint is
+ * for "check my tenant now", e.g. right after shipping better rules.
+ *
+ * Body: { since_hours?: number, limit?: number }
+ */
+router.post('/rescan', express.json(), async (req, res) => {
+  const tenant = (req as any).tenant || process.env.CHAT_RECALL_TENANT || 'default';
+  const sinceHours = Number(req.body?.since_hours);
+  const limit = Number(req.body?.limit);
+  const store = await createStore();
+  try {
+    const { rescanTenant } = await import('../services/secret-rescan.js');
+    const r = await rescanTenant(store, tenant, {
+      sinceMs: Number.isFinite(sinceHours) && sinceHours > 0 ? Date.now() - sinceHours * 3600_000 : 0,
+      limit: Number.isFinite(limit) && limit > 0 ? limit : 2000,
+    });
+    res.json(r);
+  } finally { await store.close(); }
+});
+
 /* ── Tenant-configurable rules CRUD ──────────────────────────── */
 
+/**
+ * The rule pack the collector pulls at the start of every sync.
+ *
+ * `version` is a content hash of the enabled rules: the client logs it, and it
+ * makes "which rules was this device actually running?" answerable after the
+ * fact. It changes whenever a rule's name/pattern/redact flag changes, so a
+ * client can also use it to skip re-installing an unchanged pack.
+ *
+ * Rules are CONFIGURED here and EXECUTED on the client — the server never sees
+ * unredacted text, so it could not apply them itself even if it wanted to.
+ */
 router.get('/rules', async (_req, res) => {
   const store = await createStore();
   try {
-    res.json({ rules: await store.listSecretRules() });
+    const rules = await store.listSecretRules();
+    const material = rules
+      .filter((r) => r.enabled)
+      .map((r) => `${r.name} ${r.regex} ${r.redact ? 1 : 0}`)
+      .sort()
+      .join('');
+    const version = rules.length === 0
+      ? 'empty'
+      : createHash('sha256').update(material).digest('hex').slice(0, 12);
+    res.json({ rules, version });
   } finally { await store.close(); }
 });
 
 router.post('/rules', express.json(), async (req, res) => {
-  const { id, name, regex, severity, description, enabled } = req.body || {};
+  const { id, name, regex, severity, description, enabled, redact } = req.body || {};
   if (!name || !regex || !severity) {
     return res.status(400).json({ error: 'name, regex, severity required' });
   }
@@ -288,9 +333,17 @@ router.post('/rules', express.json(), async (req, res) => {
   try { new RegExp(regex); }
   catch (e) { return res.status(400).json({ error: 'invalid regex: ' + (e as Error).message }); }
 
+  // A `redact` rule runs against every string leaving the user's machine, so it
+  // must clear the collector's safety checks here rather than being dropped
+  // client-side (which would look like coverage that isn't there).
+  if (redact === true) {
+    const v = validateRedactionRule({ name, regex });
+    if (!v.ok) return res.status(400).json({ error: `not safe to redact with: ${v.reason}` });
+  }
+
   const store = await createStore();
   try {
-    const r = await store.upsertSecretRule({ id, name, regex, severity, description, enabled });
+    const r = await store.upsertSecretRule({ id, name, regex, severity, description, enabled, redact });
     res.json(r);
   } finally { await store.close(); }
 });

@@ -514,6 +514,37 @@ const httpServer = app.listen(PORT, HOST, () => {
     log.info('self-heal sweep enabled (server mode)');
   }
 
+  // Secret re-scan: run TODAY's rules over text we ALREADY store. Detection
+  // has to happen client-side (we never receive unredacted text), so the one
+  // gap that leaves is a device whose redactor missed something — the secret is
+  // then sitting in our DB in cleartext with nothing to notice it. This pass
+  // notices, records it as a server-owned finding, and alerts. Daily window +
+  // one backlog pass after boot; off by default via SECRET_RESCAN=0.
+  if (isServerMode() && runWorkers && process.env.SECRET_RESCAN !== '0') {
+    const RESCAN_SWEEP_MS = 24 * 60 * 60 * 1000;
+    const RESCAN_WINDOW_MS = 2 * 24 * 3600 * 1000;   // recurring pass: last 2d
+    const RESCAN_LIMIT = Math.max(0, parseInt(process.env.SECRET_RESCAN_LIMIT || '2000', 10));
+    let rescanInFlight = false;
+    const rescanSweep = async (sinceMs: number, label: string): Promise<void> => {
+      if (rescanInFlight) return;
+      rescanInFlight = true;
+      try {
+        const { rescanAllTenants } = await import('./services/secret-rescan.js');
+        const r = await rescanAllTenants({ sinceMs, limit: RESCAN_LIMIT });
+        if (r.sessionsWithMisses > 0) log.warn({ ...r, pass: label }, 'secret re-scan found redaction misses');
+        else log.info({ scanned: r.scanned, tenants: r.tenants, pass: label }, 'secret re-scan: nothing missed');
+      } catch (err) {
+        log.error({ err, pass: label }, 'secret re-scan failed');
+      } finally {
+        rescanInFlight = false;
+      }
+    };
+    // After self-heal's backlog pass, so re-scan sees healed (fuller) envelopes.
+    setTimeout(() => { void rescanSweep(0, 'backlog'); }, 90_000).unref();
+    setInterval(() => { void rescanSweep(Date.now() - RESCAN_WINDOW_MS, 'recurring'); }, RESCAN_SWEEP_MS).unref();
+    log.info('secret re-scan sweep enabled (server mode)');
+  }
+
   // Cache prewarming only makes sense in local mode — in server mode there
   // is no filesystem to walk and (with keycloak auth) the warm fetches
   // would just 401.

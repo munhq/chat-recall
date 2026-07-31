@@ -41,6 +41,18 @@ embedded/offline datastore — the collector keeps only local bookkeeping.
 - **Live key verification** (`--only-verified`) also stays client-side by
   construction: confirming a key is live requires the raw value, so that request
   goes from your machine to the key's own issuer, never through us.
+- **Rules are served, execution is local.** A tenant rule marked *redact* is
+  pulled at sync time and installed into the collector's in-process redactor, so
+  detection improves without every device upgrading its CLI. The pack is
+  **add-only** — it can make a client redact more, never less — and each rule is
+  validated (must compile, must not match the empty string or benign text) both
+  when saved and when installed.
+- **Server-side re-scan (defence in depth).** Because detection is client-side, a
+  device running old rules can ship us text with a secret still in it. The server
+  periodically re-runs today's rules over the text it *already* stores; anything
+  it finds is by definition a redaction miss, so it is recorded as a
+  server-owned finding (which the offending client's next sync cannot delete) and
+  alerted on so you can rotate. It only ever sees post-redaction text.
 - **Server data at rest**: conversations, chunks, and the knowledge graph live
   in Postgres, scoped per tenant. Auth is OIDC (device flow) or a per-device
   token; a self-host server may run `AUTH_PROVIDER=none` for a single-tenant

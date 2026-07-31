@@ -20,6 +20,7 @@ import type { StorageDriver, TeamTask, TeamTaskComment, CreateTeamTaskInput, Upd
 import { resolveProjectId } from '../project-resolver.js';
 import { METADATA_VERSION } from '../model-pricing.js';
 import { applyChunkPrivacy } from '../secret-redactor.js';
+import { SERVER_DETECTOR } from '../secret-detectors.js';
 import { currentAuthor, runUnrestricted } from './tenant-context.js';
 
 type Args<M extends keyof MemoryStore> = MemoryStore[M] extends (...a: infer A) => any ? A : never;
@@ -444,8 +445,20 @@ export class PgStore implements StorageDriver {
   async ensureSecretRulesTable(): Promise<void> { /* created in init() */ }
   async ensureSecretDismissalsTable(): Promise<void> { /* created in init() */ }
 
+  /** Replaces the CLIENT-owned findings only — SERVER_DETECTOR rows come from the
+   *  server's own re-scan of stored text and outlive any client sync. See
+   *  secret-detectors.ts for the ownership split. */
   async replaceSecretFindings(sessionId: string, findings: Args<'replaceSecretFindings'>[1]): Promise<{ written: number }> {
-    await this.q(`DELETE FROM secret_findings WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
+    await this.q(`DELETE FROM secret_findings WHERE tenant=$1 AND session_id=$2 AND detector<>$3`, [this.t, sessionId, SERVER_DETECTOR]);
+    return this.insertSecretFindings(sessionId, findings);
+  }
+
+  /** Insert-only: used by the server re-scan, which must not retract anything. */
+  async addSecretFindings(sessionId: string, findings: Args<'addSecretFindings'>[1]): Promise<{ written: number }> {
+    return this.insertSecretFindings(sessionId, findings);
+  }
+
+  private async insertSecretFindings(sessionId: string, findings: Args<'replaceSecretFindings'>[1]): Promise<{ written: number }> {
     const now = Date.now();
     const a = currentAuthor();
     let written = 0;
@@ -549,21 +562,21 @@ export class PgStore implements StorageDriver {
   // ── secret rules + dismissals ──
   async listSecretRules(tenantId = 'default'): Promise<Ret<'listSecretRules'>> {
     void tenantId; // tenant is the store's scope, not the legacy per-row tenant_id
-    return this.q(`SELECT id, $1::text AS tenant_id, name, regex, severity, description, enabled, created_at, updated_at FROM secret_rules WHERE tenant=$1 ORDER BY name`, [this.t]) as any;
+    return this.q(`SELECT id, $1::text AS tenant_id, name, regex, severity, description, enabled, redact, created_at, updated_at FROM secret_rules WHERE tenant=$1 ORDER BY name`, [this.t]) as any;
   }
   async upsertSecretRule(rule: Args<'upsertSecretRule'>[0]): Promise<{ id: number }> {
-    const enabled = rule.enabled === false ? 0 : 1; const now = Date.now();
+    const enabled = rule.enabled === false ? 0 : 1; const redact = rule.redact === true ? 1 : 0; const now = Date.now();
     if (rule.id) {
-      await this.q(`UPDATE secret_rules SET name=$2,regex=$3,severity=$4,description=$5,enabled=$6,updated_at=$7 WHERE tenant=$1 AND id=$8`,
-        [this.t, rule.name, rule.regex, rule.severity, rule.description || null, enabled, now, rule.id]);
+      await this.q(`UPDATE secret_rules SET name=$2,regex=$3,severity=$4,description=$5,enabled=$6,redact=$7,updated_at=$8 WHERE tenant=$1 AND id=$9`,
+        [this.t, rule.name, rule.regex, rule.severity, rule.description || null, enabled, redact, now, rule.id]);
       return { id: rule.id };
     }
     const row = await this.one(
-      `INSERT INTO secret_rules (tenant,name,regex,severity,description,enabled,created_at,updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-       ON CONFLICT (tenant,name) DO UPDATE SET regex=excluded.regex, severity=excluded.severity, description=excluded.description, enabled=excluded.enabled, updated_at=excluded.updated_at
+      `INSERT INTO secret_rules (tenant,name,regex,severity,description,enabled,redact,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (tenant,name) DO UPDATE SET regex=excluded.regex, severity=excluded.severity, description=excluded.description, enabled=excluded.enabled, redact=excluded.redact, updated_at=excluded.updated_at
        RETURNING id`,
-      [this.t, rule.name, rule.regex, rule.severity, rule.description || null, enabled, now, now]);
+      [this.t, rule.name, rule.regex, rule.severity, rule.description || null, enabled, redact, now, now]);
     return { id: Number(row.id) };
   }
   async deleteSecretRule(id: number, tenantId = 'default'): Promise<void> {

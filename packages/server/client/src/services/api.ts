@@ -1906,9 +1906,13 @@ export interface CustomSecretRule {
   description: string | null;
   /** SQLite-style flag from the server row: 1 = enabled, 0 = disabled. */
   enabled: number;
+  /** 1 = this rule also REDACTS on the client (not just reports). The collector
+   *  installs redact rules into its in-process redactor at sync time, so the
+   *  pattern starts masking on every device without a CLI release. */
+  redact?: number;
   updated_at: number;
 }
-export async function getCustomSecretRules(): Promise<{ rules: CustomSecretRule[] }> {
+export async function getCustomSecretRules(): Promise<{ rules: CustomSecretRule[]; version?: string }> {
   const res = await fetchWithTimeout(`${API_BASE}/secrets/rules`, {}, 10000);
   if (!res.ok) throw new Error(`Failed to load custom rules: ${res.statusText}`);
   return await res.json();
