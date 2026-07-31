@@ -27,9 +27,15 @@ export interface VerifiedHit {
   rule: string;
   preview: string;
   projectPath?: string | null;
+  /** Why this is being alerted. 'verified-live' = the client confirmed the key
+   *  is live with its issuer. 'server-rescan' = the server's own pass over
+   *  ALREADY-STORED redacted text found a secret the client's rules missed,
+   *  which means it is sitting in our database in cleartext. Both are
+   *  actionable; the wording differs so the operator knows which happened. */
+  reason?: 'verified-live' | 'server-rescan';
 }
 
-/** Fire alerts for newly-seen verified-live secrets. Returns how many were sent. */
+/** Fire alerts for newly-seen secrets. Returns how many were sent. */
 export async function notifyVerifiedSecrets(tenant: string, hits: VerifiedHit[]): Promise<number> {
   const candidates = hits.filter((h) => h.preview);
   if (candidates.length === 0) return 0;
@@ -75,9 +81,12 @@ export async function notifyVerifiedSecrets(tenant: string, hits: VerifiedHit[])
 async function postWebhook(url: string, h: VerifiedHit): Promise<boolean> {
   const tail = h.preview.slice(-4);
   const where = h.projectPath ? ` (project ${h.projectPath})` : '';
-  const msg =
-    `⚠️ chat-recall: a LIVE \`${h.detector}/${h.rule}\` secret was detected in session ` +
-    `\`${h.sessionId}\`${where} — preview \`****${tail}\`. Rotate it now.`;
+  const msg = h.reason === 'server-rescan'
+    ? `⚠️ chat-recall: a \`${h.rule}\` secret slipped past this device's redactor and is stored ` +
+      `in cleartext for session \`${h.sessionId}\`${where} — preview \`****${tail}\`. Rotate it, and ` +
+      `update the CLI on that machine.`
+    : `⚠️ chat-recall: a LIVE \`${h.detector}/${h.rule}\` secret was detected in session ` +
+      `\`${h.sessionId}\`${where} — preview \`****${tail}\`. Rotate it now.`;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 10_000);
   try {

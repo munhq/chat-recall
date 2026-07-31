@@ -30,6 +30,7 @@ import { getCacheDbPath } from './paths.js';
 import { resolveProjectId } from './project-resolver.js';
 import { METADATA_VERSION } from './model-pricing.js';
 import { applyChunkPrivacy } from './secret-redactor.js';
+import { SERVER_DETECTOR } from './secret-detectors.js';
 
 /**
  * Redact known secret shapes + (optionally) hash absolute paths before
@@ -798,9 +799,15 @@ export class MemoryStore {
   }
 
   /**
-   * Replace all findings for a session (delete-then-insert in one tx).
+   * Replace a session's CLIENT-REPORTED findings (delete-then-insert in one tx).
    * The scanner calls this after each scan; the (session,detector,rule,line)
    * unique index makes re-inserts idempotent. Returns the count written.
+   *
+   * Rows with detector='server' are left alone: those come from the server's own
+   * pass over already-stored text (see addSecretFindings) and are not the
+   * client's to retract. Without this scope, every sync from a client whose
+   * rules are older than the server's would silently erase the very findings
+   * that exist BECAUSE that client's rules are old.
    */
   replaceSecretFindings(
     sessionId: string,
@@ -808,7 +815,7 @@ export class MemoryStore {
   ): { written: number } {
     this.ensureSecretFindingsTable();
     const run = this.db.transaction(() => {
-      this.db.prepare('DELETE FROM secret_findings WHERE session_id = ?').run(sessionId);
+      this.db.prepare(`DELETE FROM secret_findings WHERE session_id = ? AND detector <> '${SERVER_DETECTOR}'`).run(sessionId);
       const stmt = this.db.prepare(
         `INSERT OR IGNORE INTO secret_findings
          (session_id, detector, rule, line, preview, scanned_at, verified)
@@ -822,6 +829,38 @@ export class MemoryStore {
           f.verified === true ? 1 : f.verified === false ? 0 : null,
         );
         n++;
+      }
+      return n;
+    });
+    return { written: run() };
+  }
+
+  /**
+   * INSERT-ONLY companion to replaceSecretFindings, for the server's own re-scan
+   * of text it already holds. Nothing is deleted: these findings exist precisely
+   * because the client that shipped the session could not produce them, so they
+   * must survive that client's next sync. Duplicate (session,detector,rule,line)
+   * rows are ignored, making re-runs idempotent.
+   */
+  addSecretFindings(
+    sessionId: string,
+    findings: Array<{ detector: string; rule: string; line: number; preview: string; verified?: boolean }>,
+  ): { written: number } {
+    this.ensureSecretFindingsTable();
+    const run = this.db.transaction(() => {
+      const stmt = this.db.prepare(
+        `INSERT OR IGNORE INTO secret_findings
+         (session_id, detector, rule, line, preview, scanned_at, verified)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      );
+      const now = Date.now();
+      let n = 0;
+      for (const f of findings) {
+        const r = stmt.run(
+          sessionId, f.detector, f.rule, f.line, f.preview, now,
+          f.verified === true ? 1 : f.verified === false ? 0 : null,
+        );
+        n += r.changes;
       }
       return n;
     });
@@ -843,34 +882,39 @@ export class MemoryStore {
         UNIQUE(tenant_id, name)
       );
     `);
+    // `redact` promotes a rule from report-only to REDACTING on the client.
+    // Added best-effort for tables created before the column existed.
+    try { this.db.exec(`ALTER TABLE secret_rules ADD COLUMN redact INTEGER NOT NULL DEFAULT 0;`); } catch { /* exists */ }
   }
-  listSecretRules(tenantId = 'default'): Array<{ id: number; tenant_id: string; name: string; regex: string; severity: string; description: string | null; enabled: number; created_at: number; updated_at: number }> {
+  listSecretRules(tenantId = 'default'): Array<{ id: number; tenant_id: string; name: string; regex: string; severity: string; description: string | null; enabled: number; redact: number; created_at: number; updated_at: number }> {
     this.ensureSecretRulesTable();
     return this.db.prepare(`SELECT * FROM secret_rules WHERE tenant_id = ? ORDER BY name`).all(tenantId) as any;
   }
-  upsertSecretRule(rule: { id?: number; tenant_id?: string; name: string; regex: string; severity: string; description?: string; enabled?: boolean }): { id: number } {
+  upsertSecretRule(rule: { id?: number; tenant_id?: string; name: string; regex: string; severity: string; description?: string; enabled?: boolean; redact?: boolean }): { id: number } {
     this.ensureSecretRulesTable();
     const tenant = rule.tenant_id || 'default';
     const enabled = rule.enabled === false ? 0 : 1;
+    const redact = rule.redact === true ? 1 : 0;
     const now = Date.now();
     if (rule.id) {
       this.db.prepare(`
         UPDATE secret_rules
-           SET name = ?, regex = ?, severity = ?, description = ?, enabled = ?, updated_at = ?
+           SET name = ?, regex = ?, severity = ?, description = ?, enabled = ?, redact = ?, updated_at = ?
          WHERE id = ? AND tenant_id = ?
-      `).run(rule.name, rule.regex, rule.severity, rule.description || null, enabled, now, rule.id, tenant);
+      `).run(rule.name, rule.regex, rule.severity, rule.description || null, enabled, redact, now, rule.id, tenant);
       return { id: rule.id };
     }
     const result = this.db.prepare(`
-      INSERT INTO secret_rules (tenant_id, name, regex, severity, description, enabled, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO secret_rules (tenant_id, name, regex, severity, description, enabled, redact, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(tenant_id, name) DO UPDATE SET
         regex = excluded.regex,
         severity = excluded.severity,
         description = excluded.description,
         enabled = excluded.enabled,
+        redact = excluded.redact,
         updated_at = excluded.updated_at
-    `).run(tenant, rule.name, rule.regex, rule.severity, rule.description || null, enabled, now, now);
+    `).run(tenant, rule.name, rule.regex, rule.severity, rule.description || null, enabled, redact, now, now);
     return { id: Number(result.lastInsertRowid) };
   }
   deleteSecretRule(id: number, tenantId = 'default'): void {
