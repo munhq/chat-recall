@@ -11,7 +11,9 @@ behavior; defaults below are current at time of writing).
 | `CHAT_RECALL_UPLOAD_TIMEOUT_MS` | `90000` | Per-request abort timeout for conversation uploads. |
 | `CHAT_RECALL_FULL_BUILD_MAX_MB` | `64` | Transcripts larger than this aren't fully materialized on a FULL sync — only the newest tail ships (prevents OOM on huge sessions). |
 | `CHAT_RECALL_TAIL_APPEND` | on | Set `0` to disable incremental tail-append and force FULL syncs (emergency off-switch for the offset-continuity path). |
-| `CHAT_RECALL_SCAN_SECRETS` | on | Set `0` to skip the external secret scanners (gitleaks/trufflehog). Built-in regex redaction always runs regardless. |
+| `CHAT_RECALL_EXTERNAL_SCANNERS` | **off** | Set `1` to enable the external secret detectors (gitleaks/trufflehog). Off by default: they are third-party subprocesses that need pre-redaction text materialized on disk, and coverage would vary per device. Built-in regex redaction + findings and tenant rules run for everyone regardless. |
+| `CHAT_RECALL_SCAN_SECRETS` | on | Set `0` to skip the external secret scanners even when they're enabled above (e.g. to keep a huge backfill fast). |
+| `CHAT_RECALL_BATCHSCAN_MAX_MB` | `64` | Cap on pre-redaction text the external-detector batch scan keeps on disk at once. The batch dir is scanned and deleted each time it crosses this, bounding what a SIGKILL/OOM can strand in `/tmp`. |
 | `CHAT_RECALL_INCLUDE_FUZZY` | off | Set `1` to keep low-precision detector findings (generic-api-key, URI, …) instead of dropping them. |
 | `CHAT_RECALL_SYNC_TRACE` | off | Set `1` to print per-phase progress + heap/RSS to stderr — how walk OOMs get localized. |
 | `CHAT_RECALL_REDACT_INDEX` | — | Index-time redaction toggle (sync-path redaction is always on regardless). |
