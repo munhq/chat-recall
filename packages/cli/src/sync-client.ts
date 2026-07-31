@@ -35,7 +35,7 @@ import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, chmodSync,
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { redactSecrets, scanTextForFindings } from '@chat-recall/engine/core/secret-redactor.js';
-import { scanFileForSecrets, scanDirForSecrets, scanTenantRules, isSecretScannerAvailable, type ScanFinding } from '@chat-recall/engine/core/secret-scanner.js';
+import { scanFileForSecrets, scanDirForSecrets, scanTenantRules, isSecretScannerAvailable, type ScanFinding, type DirScanFinding } from '@chat-recall/engine/core/secret-scanner.js';
 import { isInternalToolPrompt } from '@chat-recall/engine/core/internal-prompts.js';
 import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js';
 import { loadSettings, saveSettings, isProjectSyncable } from '@chat-recall/engine/core/settings.js';
@@ -429,6 +429,89 @@ export function reapStaleScanDirs(dir: string = tmpdir(), maxAgeMs = 6 * 3600_00
   return reaped;
 }
 
+/**
+ * Run the optional external detectors (gitleaks/trufflehog) over many sessions
+ * with a BOUNDED amount of pre-redaction text on disk at any one time.
+ *
+ * The detectors take a path, so their input has to be materialized — and that
+ * input is raw session text, i.e. real credentials in cleartext. Writing all of
+ * it at once is what left 3.4GB / 309k such files in /tmp when the daemon was
+ * OOM-killed mid-scan (the `finally` never ran). So we fill a temp dir up to
+ * `maxBytes`, scan it, delete it, and repeat: worst-case exposure — and
+ * worst-case leak if this process is killed — is one slice, not the whole walk.
+ *
+ * Cost of slicing is 2 detector spawns per extra slice, still far below the
+ * 2·N of per-session scanning.
+ *
+ * `text()` returning null (unexportable session) is skipped silently: it just
+ * gets no external findings, the builtin scan still covers it.
+ * `scan` is injectable so tests don't need the binaries installed.
+ */
+export function batchScanExternal(
+  items: Array<{ id: string; text: () => string | null }>,
+  opts: {
+    verifyOnly?: boolean;
+    maxBytes?: number;
+    scan?: (dir: string, o: { verifyOnly?: boolean }) => DirScanFinding[];
+  } = {},
+): { findings: Map<string, ScanFinding[]>; scanned: number; slices: number; scanMs: number } {
+  const maxBytes = opts.maxBytes ?? BATCH_SCAN_MAX_BYTES;
+  const scan = opts.scan ?? scanDirForSecrets;
+  const findings = new Map<string, ScanFinding[]>();
+  let scanned = 0, slices = 0, scanMs = 0;
+  if (items.length === 0) return { findings, scanned, slices, scanMs };
+
+  reapStaleScanDirs();
+  let scanDir = mkdtempSync(join(tmpdir(), 'cr-batchscan-'));
+  let safeToId = new Map<string, string>();
+  let bytesInDir = 0;
+
+  /** Scan what's currently materialized, record findings, then delete the dir. */
+  const flushSlice = (): void => {
+    if (safeToId.size > 0) {
+      const t0 = performance.now();
+      for (const f of scan(scanDir, { verifyOnly: opts.verifyOnly })) {
+        const id = safeToId.get(basename(f.file).replace(/\.txt$/, ''));
+        if (!id) continue;
+        const list = findings.get(id) ?? [];
+        list.push({ detector: f.detector, rule: f.rule, line: f.line, preview: f.preview, verified: f.verified });
+        findings.set(id, list);
+      }
+      scanMs += performance.now() - t0;
+      scanned += safeToId.size;
+      slices++;
+    }
+    try { rmSync(scanDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    safeToId = new Map();
+    bytesInDir = 0;
+  };
+
+  try {
+    for (const item of items) {
+      try {
+        const raw = item.text();
+        if (raw === null) continue;
+        const safe = item.id.replace(/[^A-Za-z0-9_-]/g, '');
+        safeToId.set(safe, item.id);
+        writeFileSync(join(scanDir, `${safe}.txt`), raw);
+        bytesInDir += Buffer.byteLength(raw);
+      } catch { /* unexportable session — no external findings for it */ }
+      // Bound on bytes ACTUALLY written, not an estimate. A single session
+      // larger than the cap still gets scanned — alone, in its own slice.
+      if (bytesInDir >= maxBytes) {
+        flushSlice();
+        scanDir = mkdtempSync(join(tmpdir(), 'cr-batchscan-'));
+      }
+    }
+    flushSlice();
+  } finally {
+    // flushSlice removed the final dir already (force:true makes this a no-op);
+    // this is what cleans up when the loop above threw.
+    try { rmSync(scanDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+  return { findings, scanned, slices, scanMs };
+}
+
 async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number; prune?: boolean; useLedger?: boolean; walk?: 'full' | 'changed' } = {}): Promise<SyncResult> {
   const sync = loadSettings().sync;
   // Exclusions = local settings ∪ server-side tenant config (dashboard-edited).
@@ -753,10 +836,14 @@ const refs = listAvailableBackends().flatMap((b) => {
   // Secret findings ship per-session as a GROUP (flatten=true) — the server
   // replaces a session's findings wholesale, so they must land in one POST.
   const findingsBatch = makeBatcher('findings', 200, true);
-  // Scanning lights up automatically when a detector binary (gitleaks/
-  // trufflehog) is on PATH. Resolved once (each check spawns `which`).
-  // CHAT_RECALL_SCAN_SECRETS=0 opts out (e.g. to keep a huge backfill fast).
-  // upload.findings=false also disables secret scanning/shipping.
+  // External detectors (gitleaks/trufflehog) are OPT-IN and default OFF:
+  // isSecretScannerAvailable() returns false unless CHAT_RECALL_EXTERNAL_SCANNERS
+  // is set AND a binary is on PATH. Resolved once (each check spawns `which`).
+  // CHAT_RECALL_SCAN_SECRETS=0 opts out even when enabled (e.g. to keep a huge
+  // backfill fast); upload.findings=false disables shipping too.
+  // NOTE: this flag gates ONLY the external binaries. Builtin regex findings
+  // and tenant rules run for every user further down (buildConversationSync),
+  // and redaction of everything shipped is unconditional.
   const scanSecrets = isSecretScannerAvailable() && upload.findings && process.env.CHAT_RECALL_SCAN_SECRETS !== '0';
   const verifySecretsScan = verifySecrets;
 
@@ -830,13 +917,25 @@ const refs = listAvailableBackends().flatMap((b) => {
   };
   const willBuild = (ref: SessionRef): boolean => modeOf(ref) !== 'skip';
 
-  // ── Batch secret scan ──────────────────────────────────────────────
+  // ── Batch secret scan (optional external detectors) ────────────────
+  // Only runs when CHAT_RECALL_EXTERNAL_SCANNERS=1 and gitleaks/trufflehog are
+  // on PATH — `scanSecrets` above already folds that gate in, so by default
+  // nothing here executes and no raw text is ever written to disk.
+  //
   // gitleaks/trufflehog are directory-capable and report each finding's file.
-  // Materialize every to-be-FULL-synced session's raw text into ONE temp dir
-  // (filename = sanitized session id), scan the dir ONCE per detector, then
-  // map findings back to sessions by filename. This replaces 2·N cold process
-  // spawns (the dominant per-session cost) with 2 total. null ⇒ no batch ran
-  // (scanning off) and buildConversationSync falls back to its per-session path.
+  // Materialize to-be-FULL-synced sessions' raw text into a temp dir (filename
+  // = sanitized session id), scan the dir ONCE per detector, then map findings
+  // back to sessions by filename. That replaces 2·N cold process spawns (the
+  // dominant per-session cost) with 2 per SLICE. null ⇒ no batch ran (scanning
+  // off) and buildConversationSync falls back to its per-session path.
+  //
+  // SLICED, not one big dir: this text is PRE-redaction — real credentials in
+  // cleartext on the customer's disk — and cleanup lives in a `finally` that a
+  // SIGKILL/OOM skips (that is how 3.4GB / 309k files were left behind in
+  // /tmp). Bounding the dir to BATCH_SCAN_MAX_BYTES bounds the worst-case
+  // exposure and the worst-case leak to that many bytes, at a cost of 2 extra
+  // spawns per additional slice.
+  //
   // APPEND sessions are excluded — they skip external detectors (the head was
   // already scanned; the tail uses builtin regex only; the FULL re-sync when
   // the session closes covers the whole file).
@@ -847,38 +946,23 @@ const refs = listAvailableBackends().flatMap((b) => {
     // whole file (hundreds of MB — this loop is what OOM-killed the daemon).
     // Their bounded tail still gets the builtin scan in buildConversationSync.
     const toScan = slice.filter((ref) => modeOf(ref) === 'full' && sessionFileBytes(ref) <= FULL_BUILD_MAX_BYTES);
-    trace?.(`batch secret scan start: ${toScan.length} session(s)`);
-    if (toScan.length > 0) {
-      reapStaleScanDirs();
-      const scanDir = mkdtempSync(join(tmpdir(), 'cr-batchscan-'));
-      const safeToId = new Map<string, string>();
-      try {
-        for (const ref of toScan) {
-          try {
-            const backend = getBackendForId(ref.prefixedId) ?? getBackend('claude');
-            const exp = backend.exportRawSession(ref.prefixedId);
-            const container = exp ? buildRawContainer(exp) : null;
-            if (!container) continue;
-            const rawText = container.files.map((f) => f.text).join('\n');
-            const safe = ref.prefixedId.replace(/[^A-Za-z0-9_-]/g, '');
-            safeToId.set(safe, ref.prefixedId);
-            writeFileSync(join(scanDir, `${safe}.txt`), rawText);
-          } catch { /* unexportable session — it just gets no external findings */ }
-        }
-        const t0 = performance.now();
-        for (const f of scanDirForSecrets(scanDir, { verifyOnly: verifySecretsScan })) {
-          const id = safeToId.get(basename(f.file).replace(/\.txt$/, ''));
-          if (!id) continue;
-          const list = externalFindings.get(id) ?? [];
-          list.push({ detector: f.detector, rule: f.rule, line: f.line, preview: f.preview, verified: f.verified });
-          externalFindings.set(id, list);
-        }
-        scanMs = performance.now() - t0;
-        scanned = toScan.length;
-      } finally {
-        try { rmSync(scanDir, { recursive: true, force: true }); } catch { /* best-effort */ }
-      }
-    }
+    trace?.(`batch secret scan start: ${toScan.length} session(s), ≤${(BATCH_SCAN_MAX_BYTES / 1048576).toFixed(0)}MB per slice`);
+    const batch = batchScanExternal(
+      toScan.map((ref) => ({
+        id: ref.prefixedId,
+        text: () => {
+          const backend = getBackendForId(ref.prefixedId) ?? getBackend('claude');
+          const exp = backend.exportRawSession(ref.prefixedId);
+          const container = exp ? buildRawContainer(exp) : null;
+          return container ? container.files.map((f) => f.text).join('\n') : null;
+        },
+      })),
+      { verifyOnly: verifySecretsScan },
+    );
+    externalFindings = batch.findings;
+    scanned = batch.scanned;
+    scanMs = batch.scanMs;
+    trace?.(`batch secret scan done: ${scanned} session(s) in ${batch.slices} slice(s)`);
   }
 
   trace?.('conversation walk start');
@@ -1254,6 +1338,15 @@ export const FULL_BUILD_MAX_BYTES =
   Math.max(8, parseInt(process.env.CHAT_RECALL_FULL_BUILD_MAX_MB || '64', 10)) * 1024 * 1024;
 /** How much of an oversized transcript's tail still ships (newest content). */
 const FULL_BUILD_TAIL_BYTES = 16 * 1024 * 1024;
+
+/** Ceiling on PRE-REDACTION session text materialized on disk at any one moment
+ *  by the optional external-detector batch scan. The batch dir is flushed and
+ *  deleted every time it crosses this, so a SIGKILL/OOM mid-scan can strand at
+ *  most this many bytes of cleartext (the incident stranded 3.4GB), and the
+ *  window in which they exist is proportionally short. Raising it buys fewer
+ *  detector spawns; lowering it buys a smaller blast radius. */
+export const BATCH_SCAN_MAX_BYTES =
+  Math.max(1, parseInt(process.env.CHAT_RECALL_BATCHSCAN_MAX_MB || '64', 10)) * 1024 * 1024;
 
 /** Bytes an append-only session occupies on disk (0 for non-AO backends). */
 export function sessionFileBytes(ref: SessionRef): number {
