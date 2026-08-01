@@ -103,3 +103,61 @@ describe('ToolBackend registry', () => {
     expect(ids).toEqual(['agy', 'claude', 'codex', 'gemini', 'opencode']);
   });
 });
+
+/**
+ * Registration is DEFERRED to first registry access (to dodge a circular-import
+ * race), so every accessor has to bootstrap on its way in. `getBackend` did not,
+ * which made it succeed or throw depending on whether anything else had touched
+ * the registry first.
+ *
+ * That is not a theoretical ordering concern: it broke the server's self-heal
+ * sweep in production. The sweep runs on a timer during startup, before any
+ * request path warms the registry, so `getBackend('claude')` threw for every
+ * session and the sweep reported `healed: 0` indefinitely — while the backends
+ * sat registered, one sibling call away.
+ */
+describe('registry accessors work on a COLD registry', () => {
+  // Deliberately no beforeEach warm-up: each test must be the FIRST access.
+  beforeEach(async () => {
+    _resetRegistryForTests();
+    // Importing the barrel re-arms the deferred bootstrapper without registering
+    // anything, which is exactly the state a freshly-booted process is in.
+    await import('./backends/index.js');
+  });
+
+  it('getBackend resolves without any prior registry access', () => {
+    // The regression: this threw "No backend registered for tool 'claude'".
+    expect(getBackend('claude').id).toBe('claude');
+  });
+
+  it.each(['claude', 'gemini', 'opencode', 'codex', 'agy'] as const)(
+    'getBackend(%s) resolves cold',
+    (id) => {
+      _resetRegistryForTests();
+      expect(getBackend(id).id).toBe(id);
+    },
+  );
+
+  it('every accessor is order-independent — none depends on being called second', async () => {
+    const probes: Array<[string, () => unknown]> = [
+      ['getBackend', () => getBackend('claude')],
+      ['tryGetBackend', () => tryGetBackend('claude')],
+      ['getBackendForId', () => getBackendForId('gemini_abc123')],
+      ['listAllBackends', () => listAllBackends()],
+      ['listAvailableBackends', () => listAvailableBackends()],
+    ];
+    for (const [name, probe] of probes) {
+      _resetRegistryForTests();
+      await import('./backends/index.js');
+      expect(() => probe(), `${name} must not throw as the first registry access`).not.toThrow();
+      expect(probe(), `${name} returned nothing on a cold registry`).toBeTruthy();
+    }
+  });
+
+  it('an unknown tool still errors, and names what IS registered', () => {
+    // The old message told the reader to check an import that was already
+    // present. After bootstrapping, an empty result means the id is genuinely
+    // unknown, so the error should say so.
+    expect(() => getBackend('nope' as never)).toThrow(/Known tools: .*claude/);
+  });
+});
