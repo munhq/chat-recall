@@ -325,10 +325,21 @@ export function registerBackend(backend: ToolBackend): void {
 }
 
 export function getBackend(id: AiTool): ToolBackend {
+  // Bootstrap on access, like every sibling accessor. Omitting this made the
+  // function ORDER-DEPENDENT: it succeeded only if something else had already
+  // touched the registry, and threw on a cold one even though the backends were
+  // registered and one call to listAllBackends() away. That is what broke the
+  // server's self-heal sweep — it runs on a timer during startup, before any
+  // request path warms the registry, so every archive diff replay threw and the
+  // sweep reported `healed: 0` forever.
+  ensureBootstrapped();
   const b = REGISTRY.get(id);
   if (!b) {
+    // Reaching here now means the id genuinely has no backend, not that
+    // bootstrapping was skipped — so say that instead of sending the reader
+    // off to check an import that is already present.
     throw new Error(
-      `No backend registered for tool '${id}'. Make sure ./backends/index.js was imported.`,
+      `No backend registered for tool '${id}'. Known tools: ${[...REGISTRY.keys()].join(', ') || '(registry empty — bootstrap failed)'}.`,
     );
   }
   return b;
