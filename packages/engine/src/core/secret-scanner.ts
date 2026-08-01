@@ -17,10 +17,11 @@
  * customer's sync daemon has costs we do not control:
  *   - Coverage becomes device-dependent (laptop with trufflehog and
  *     laptop without produce different findings for the same session).
- *   - We inherit their process behaviour. trufflehog ships wrapped in
- *     jpillora/overseer, which copies its own 34MB binary into $TMPDIR
- *     on every spawn and never removes it — 451 copies (15GB) filled a
- *     31GB tmpfs on a dev machine and broke every process needing /tmp.
+ *   - We inherit their process behaviour, including behaviour that depends
+ *     on how the operator installed them. A root-owned trufflehog cannot
+ *     self-update in place, so it leaves a 34MB copy of itself in the temp
+ *     dir on every spawn — that filled a 31GB tmpfs on a dev machine and
+ *     broke every process needing /tmp. (spawnScoped has the measurements.)
  *   - Scanning takes place BEFORE redaction, so it needs raw session
  *     text on disk (see the caller's bounded batch dir).
  * Legitimate homes for them: a developer/CI machine, or a self-hosted
@@ -109,17 +110,26 @@ interface RawFinding { rule: string; line: number; preview: string; }
 /**
  * Run a scanner subprocess in a PRIVATE temp dir, then delete it.
  *
- * `--no-update` is not a sufficient defence. trufflehog is wrapped in
- * jpillora/overseer, which copies the 34MB binary to $TMPDIR/overseer-<hash>
- * as part of process startup — before the app ever looks at its flags — and
- * never removes it. Continuous scanning therefore accretes 34MB per spawn: 451
- * copies (15GB) were found on one machine, which filled a 31GB tmpfs to 100%
- * and broke every process that needed /tmp.
+ * Measured mechanism (2026-08-01, trufflehog 3.96.0 — do not "simplify" this
+ * away without re-measuring): trufflehog is wrapped in jpillora/overseer, whose
+ * self-update path wants to replace the binary in place. When the running user
+ * CANNOT WRITE the binary, it instead copies all 34MB to $TMPDIR/overseer-<hash>
+ * and execs that — and never removes it. So the leak depends on where the
+ * binary is installed, not on what we pass:
  *
- * Rather than depend on a flag whose behaviour we don't control, we give the
- * child its own TMPDIR. Whatever it drops there is ours, and we delete the
- * whole directory when it exits. This is robust to any future scanner that
- * scribbles in the temp dir for reasons of its own.
+ *     /usr/local/bin/trufflehog  (root-owned)  → +1 copy of 34MB per spawn
+ *     ~/.local/bin/trufflehog    (user-owned)  →  no copy
+ *
+ * Byte-identical binaries; only the write permission differs. On the machine
+ * where this was found, a daemon resolving the root-owned copy accreted 34MB
+ * per sync until a 31GB tmpfs hit 100% and every process needing /tmp broke.
+ *
+ * Two independent defences, because PATH decides which install you get and that
+ * is not ours to control:
+ *   1. `--no-update` on the trufflehog calls — verified to suppress the copy.
+ *   2. this scoped TMPDIR — overseer honours TMPDIR, so when the copy does
+ *      happen it lands in a directory we own and delete on exit. Also covers
+ *      any future scanner that scribbles in the temp dir for its own reasons.
  */
 function spawnScoped(binary: string, args: string[], opts: Parameters<typeof spawnSync>[2] & object) {
   const scratch = mkdtempSync(join(tmpdir(), 'cr-scan-tmp-'));
@@ -170,12 +180,11 @@ function runTrufflehog(binary: string, filePath: string, opts: RunOpts = {}): Ar
   // expired. Live ones are the actionable subset.
   // --no-verification: skip the call (default; safe for offline use).
   const verifyArgs = opts.verifyOnly ? ['--only-verified'] : ['--no-verification'];
-  // --no-update is NOT optional here. Without it trufflehog's self-updater
-  // (overseer) copies its own 34MB binary to /tmp/overseer-<hash> on EVERY
-  // invocation and never removes it. Measured on this machine: a real scan
-  // leaves one copy, the same scan with --no-update leaves none. With scanning
-  // running continuously that filled a 31GB tmpfs to 100% and took the shell
-  // down with ENOSPC. This path is per-FILE, so it is the worse of the two.
+  // --no-update is NOT optional here: without it, a trufflehog the user cannot
+  // write (the usual root-owned /usr/local/bin install) leaves a 34MB copy of
+  // itself in the temp dir on every invocation. Verified both ways on the same
+  // binary — see spawnScoped above for the full mechanism. This path is
+  // per-FILE, so it is the worse of the two to get wrong.
   const r = spawnScoped(binary,
     ['filesystem', filePath, ...verifyArgs, '--json', '--no-update'],
     { encoding: 'utf-8', timeout: 120_000, maxBuffer: 64 * 1024 * 1024 },
@@ -239,8 +248,8 @@ function runGitleaksDir(binary: string, dir: string): Array<RawFinding & { file:
  *  `file` path so each finding maps back to its source file. */
 function runTrufflehogDir(binary: string, dir: string, opts: RunOpts = {}): Array<RawFinding & { verified?: boolean; file: string }> {
   const verifyArgs = opts.verifyOnly ? ['--only-verified'] : ['--no-verification'];
-  // --no-update: see runTrufflehog above. Every invocation without it leaves a
-  // 34MB copy of the trufflehog binary in /tmp that nothing ever cleans up.
+  // --no-update: see spawnScoped above. Without it, an install the user cannot
+  // write leaves a 34MB copy of the trufflehog binary in the temp dir per run.
   const r = spawnScoped(binary,
     ['filesystem', dir, ...verifyArgs, '--json', '--no-update'],
     { encoding: 'utf-8', timeout: 600_000, maxBuffer: 256 * 1024 * 1024 },
