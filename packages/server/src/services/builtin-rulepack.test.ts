@@ -12,6 +12,7 @@
 import { describe, test, expect, beforeEach } from 'vitest';
 import {
   builtinPackRules, builtinPackHash, BUILTIN_RULEPACK_SOURCE, _resetBuiltinPackCache,
+  _rawBuiltinPackRules,
 } from './builtin-rulepack.js';
 import {
   installServerRulePack, redactSecrets, scanTextForFindings, _clearServerRulePack,
@@ -30,11 +31,26 @@ describe('the pack is well-formed', () => {
     expect(builtinPackRules().length).toBeGreaterThan(50);
   });
 
-  test('every rule passes the client-side validator', () => {
-    // builtinPackRules() filters silently by design (better to serve 74 rules
-    // than 500s), so assert against the RAW list: a drop means this file is
-    // wrong and must be fixed, not tolerated.
-    for (const r of builtinPackRules()) {
+  test('serve-time validation drops NOTHING', () => {
+    // builtinPackRules() filters silently by design (better to serve a short
+    // pack than 500 the whole endpoint), so this must compare against the RAW
+    // list. Asserting over the filtered list is a tautology — and that is
+    // exactly how `telegram-bot-api-token`, which uses the RE2-only `(?-i:A)`
+    // group, reached production and was dropped by every consumer while the
+    // dashboard implied it was active.
+    const raw = _rawBuiltinPackRules();
+    const served = builtinPackRules();
+    const droppedNames = raw.filter((r) => !served.some((s) => s.name === r.name)).map((r) => r.name);
+    expect(droppedNames, 'these rules are shipped but silently dropped at serve time').toEqual([]);
+    expect(served.length).toBe(raw.length);
+  });
+
+  test('every rule compiles as a JavaScript regex', () => {
+    // The generator translates from Go RE2. Anything RE2 accepts that JS does
+    // not — scoped flag groups, POSIX classes, Unicode script classes — must be
+    // caught here rather than at runtime on a customer's device.
+    for (const r of _rawBuiltinPackRules()) {
+      expect(() => new RegExp(r.regex, 'g' + (r.flags || '')), `${r.name}: ${r.regex}`).not.toThrow();
       expect(validateRedactionRule({ name: r.name, regex: r.regex, flags: r.flags }), r.name)
         .toEqual({ ok: true });
     }
