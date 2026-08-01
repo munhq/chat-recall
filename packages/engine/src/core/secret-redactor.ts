@@ -238,8 +238,12 @@ function settingsView(): { enabled: boolean; rules: RedactionRule[] } {
 //      individually; the rest of the pack still installs.
 // ---------------------------------------------------------------------------
 
-/** A rule as it arrives from the server (regex as a string, not a RegExp). */
-export interface ServerRuleSpec { name: string; regex: string; flags?: string; redact?: boolean }
+/** A rule as it arrives from the server (regex as a string, not a RegExp).
+ *  `source` only decides the sentinel label: `pack:` for rules chat-recall
+ *  curates and ships to every tenant, `tenant:` for ones this customer wrote.
+ *  Keeping them distinguishable matters when someone asks "why was this
+ *  redacted?" — the answer is a different conversation in each case. */
+export interface ServerRuleSpec { name: string; regex: string; flags?: string; redact?: boolean; source?: 'tenant' | 'pack' }
 
 /** Rejected rule + why, returned to the caller for logging. */
 export interface RejectedRule { name: string; reason: string }
@@ -274,7 +278,7 @@ function compileServerRule(spec: ServerRuleSpec): RedactionRule | RejectedRule {
   re.lastIndex = 0;
   if (re.test(CANARY)) return { name, reason: 'matches benign text — too broad' };
   re.lastIndex = 0;
-  return { label: `tenant:${name}`, pattern: re };
+  return { label: `${spec.source === 'pack' ? 'pack' : 'tenant'}:${name}`, pattern: re };
 }
 
 /**
@@ -397,14 +401,31 @@ function maskSecret(s: string): string {
  */
 export function scanTextForFindings(text: string, opts: { rules?: RedactionRule[] } = {}): RedactorFinding[] {
   if (!text) return [];
-  const rules = opts.rules || settingsView().rules;
+  // activeRules(), not settingsView().rules: a rule served by the server must
+  // both REDACT and be REPORTED. Using the narrower set here meant a pack rule
+  // silently scrubbed text without ever producing a finding — so the dashboard
+  // showed nothing while the redaction that fired was the only evidence a
+  // credential had been there at all. Also what makes the server's re-scan
+  // ("today's rules over stored text") actually mean today's rules.
+  const rules = opts.rules || activeRules();
   const findings: RedactorFinding[] = [];
+  // One secret = one finding, even when several rules recognise it. The server
+  // rule pack deliberately overlaps the builtins in places (a pack rule may be
+  // BROADER for the same vendor), and without this the same leaked key would be
+  // counted twice, inflating both the occurrence count and the "how many
+  // detectors agree" signal the dashboard sorts on. Keyed by exact span, so a
+  // genuinely different (merely overlapping) match still reports.
+  const seenSpans = new Set<string>();
   for (const r of rules) {
     const re = new RegExp(r.pattern.source, r.pattern.flags.includes('g') ? r.pattern.flags : r.pattern.flags + 'g');
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) {
-      const line = text.slice(0, m.index).split('\n').length; // 1-based, handles multi-line patterns
-      findings.push({ rule: r.label, line, preview: maskSecret(m[0]) });
+      const span = `${m.index}:${m[0].length}`;
+      if (!seenSpans.has(span)) {
+        seenSpans.add(span);
+        const line = text.slice(0, m.index).split('\n').length; // 1-based, handles multi-line patterns
+        findings.push({ rule: r.label, line, preview: maskSecret(m[0]) });
+      }
       if (re.lastIndex === m.index) re.lastIndex++; // guard zero-width (lookbehind matches)
     }
   }

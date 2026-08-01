@@ -1196,6 +1196,91 @@ companions
     if (u.removed) console.log(chalk.dim(`  Unregistered MCP server from ${mcpJsonPath}`));
   });
 
+// ── detectors: the OPTIONAL external secret scanners ─────────────────────
+// These are a developer/CI/self-host tool, not part of the SaaS path — the
+// detection every user relies on is in-process (see docs/SECRET-DETECTION.md).
+// When they are used, they are used on our terms: pinned version, checksum
+// verified, installed under the user's own data dir, invoked by absolute path.
+// PATH is never consulted, because PATH is what made the same trufflehog
+// version leak 34MB per spawn on one machine and not on another.
+const detectors = program
+  .command('detectors')
+  .description('Manage the optional external secret detectors (gitleaks, trufflehog)');
+
+detectors
+  .command('status')
+  .description('Show which detectors are installed, pinned and verified')
+  .action(async () => {
+    const { detectorStatus } = await import('@chat-recall/engine/core/detector-install.js');
+    const { externalScannersEnabled } = await import('@chat-recall/engine/core/secret-scanner.js');
+    console.log(chalk.bold('external secret detectors'));
+    console.log(
+      externalScannersEnabled()
+        ? `  gate: ${chalk.green('enabled')} (CHAT_RECALL_EXTERNAL_SCANNERS)`
+        : `  gate: ${chalk.yellow('disabled')} — set CHAT_RECALL_EXTERNAL_SCANNERS=1 to use them`,
+    );
+    if (process.env.CHAT_RECALL_DETECTOR_DIR) {
+      console.log(`  dir:  ${chalk.dim(process.env.CHAT_RECALL_DETECTOR_DIR)} ${chalk.dim('(operator-supplied, unverified)')}`);
+    }
+    console.log();
+    for (const d of detectorStatus()) {
+      const label = `${d.name} ${chalk.dim(d.pinnedVersion)} ${chalk.dim(`[${d.license}]`)}`;
+      if (d.state === 'ready')            console.log(`  ${chalk.green('✓')} ${label} → ${chalk.dim(d.path!)}`);
+      else if (d.state === 'configured')  console.log(`  ${chalk.green('✓')} ${label} → ${chalk.dim(d.path!)} ${chalk.dim('(operator-supplied)')}`);
+      else if (d.state === 'not-installed') console.log(`  ${chalk.dim('·')} ${label} — not installed`);
+      else if (!d.supported)              console.log(`  ${chalk.dim('·')} ${label} — no build for this platform`);
+      else console.log(`  ${chalk.red('✗')} ${label} — ${d.state}, reinstall with \`chat-recall detectors install ${d.name}\``);
+    }
+    console.log();
+    console.log(chalk.dim('Builtin in-process detection runs for every user and needs none of this.'));
+  });
+
+detectors
+  .command('install [name]')
+  .description('Download + verify a pinned detector into ~/.chat-recall/bin (default: both)')
+  .option('--force', 'Re-download even if the pinned version is already installed')
+  .action(async (name: string | undefined, opts: { force?: boolean }) => {
+    const { installDetector, DETECTOR_MANIFEST } = await import('@chat-recall/engine/core/detector-install.js');
+    const names = name ? [name] : Object.keys(DETECTOR_MANIFEST);
+    const valid = Object.keys(DETECTOR_MANIFEST);
+    let failed = false;
+    for (const n of names) {
+      if (!valid.includes(n)) {
+        console.error(chalk.red(`unknown detector "${n}" — expected one of: ${valid.join(', ')}`));
+        failed = true;
+        continue;
+      }
+      try {
+        const r = await installDetector(n as 'gitleaks' | 'trufflehog', { force: opts.force });
+        console.log(r.installed
+          ? chalk.green(`✓ ${r.name} ${r.version} installed → ${r.path}`)
+          : chalk.dim(`· ${r.name} ${r.version} already installed and verified → ${r.path}`));
+        if (r.installed) console.log(chalk.dim(`  sha256 ${r.binarySha256}`));
+      } catch (err) {
+        failed = true;
+        console.error(chalk.red(`${n} install failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    }
+    if (failed) process.exit(1);
+    console.log();
+    console.log(chalk.dim('Enable them with CHAT_RECALL_EXTERNAL_SCANNERS=1. They enrich the findings'));
+    console.log(chalk.dim('dashboard; they are not what redacts your data before it syncs.'));
+  });
+
+detectors
+  .command('remove [name]')
+  .description('Remove detectors chat-recall installed (never touches your own binaries)')
+  .action(async (name: string | undefined) => {
+    const { removeDetector, DETECTOR_MANIFEST, managedDetectorPath } = await import('@chat-recall/engine/core/detector-install.js');
+    for (const n of (name ? [name] : Object.keys(DETECTOR_MANIFEST))) {
+      if (!(n in DETECTOR_MANIFEST)) { console.error(chalk.red(`unknown detector "${n}"`)); continue; }
+      const removed = removeDetector(n as 'gitleaks' | 'trufflehog');
+      console.log(removed
+        ? chalk.green(`✓ removed ${n}`)
+        : chalk.dim(`· nothing to remove at ${managedDetectorPath(n as 'gitleaks' | 'trufflehog')}`));
+    }
+  });
+
 // ── code: index a repo with codeindex + ship findings to the server ──────
 // The collector runs LOCALLY (needs the repo files + git history), then POSTs
 // its output to /api/code/index. The dashboard reads it back. Mirrors the

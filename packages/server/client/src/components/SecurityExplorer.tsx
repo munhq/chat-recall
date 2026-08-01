@@ -27,6 +27,7 @@ import {
   getCustomSecretRules, saveCustomSecretRule, deleteCustomSecretRule, testCustomSecretRule,
   getAccountRecommendations, applyAccountRecommendation,
   type SecretsSummary, type FlaggedSession, type SecretRuleRollup, type CodeRecommendation,
+  type ServedRulePack,
 } from '../services/api';
 // Single source of truth for secret classification — shared with the server
 // (which renders SECURITY_TASKS.md from the same module).
@@ -808,8 +809,50 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
 
 type TenantRule = import('../services/api').CustomSecretRule;
 
+/**
+ * What chat-recall already protects, before the customer configures anything.
+ *
+ * Without this the panel opened on an empty table reading "No custom rules
+ * yet", which for a SaaS user is indistinguishable from "nothing is protecting
+ * you" — while in fact a curated pack is installed into their redactor on every
+ * sync. These rules are ours: served, versioned and not editable here, so the
+ * card states that plainly instead of offering buttons that would not work.
+ */
+function ManagedPackCard({ pack }: { pack?: ServedRulePack }) {
+  const [open, setOpen] = useState(false);
+  const managed = (pack?.rules || []).filter((r) => r.source === 'pack');
+  if (!managed.length) return null;
+  return (
+    <Card style={{ padding: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <Chip kind="ok" size="sm">{managed.length} managed rules active</Chip>
+        <span style={{ fontSize: 12, color: 'var(--cr-fg-2)' }}>
+          Maintained by chat-recall and installed into every device's redactor at sync time — nothing to configure.
+        </span>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 8, fontFamily: 'var(--cr-font-mono)' }}>
+        pack {pack?.version}{pack?.revision ? ` · rev ${pack.revision}` : ''}{pack?.source ? ` · ${pack.source}` : ''}
+      </div>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        style={{ background: 'transparent', border: 0, color: 'var(--cr-brand-500)', cursor: 'pointer', fontWeight: 600, fontSize: 12, padding: '8px 0 0' }}
+      >
+        {open ? 'Hide' : 'Show'} the {managed.length} rules
+      </button>
+      {open && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+          {managed.map((r) => (
+            <Chip key={r.name} kind="neutral" size="sm">{r.name}</Chip>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
   const [rules, setRules] = useState<TenantRule[]>([]);
+  const [pack, setPack] = useState<ServedRulePack | undefined>(undefined);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<Partial<TenantRule> | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -823,6 +866,7 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
     try {
       const j = await getCustomSecretRules();
       setRules(j.rules || []);
+      setPack(j.pack);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -863,9 +907,11 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <ManagedPackCard pack={pack} />
+
       <Card style={{ padding: 14 }}>
         <div style={{ fontSize: 13, color: 'var(--cr-fg-2)', lineHeight: 1.5 }}>
-          Patterns added here run alongside the built-in detectors. Each rule is a regex
+          Patterns added here run alongside the managed rules above. Each rule is a regex
           matched against the raw session text. Use this for internal API key shapes,
           custom token prefixes, or hostnames you don't want pasted into AI sessions.
           Rules are stored here and executed on each device at sync time — the server never
@@ -886,7 +932,7 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
           </thead>
           <tbody>
             {!loading && rules.length === 0 && (
-              <tr><td colSpan={4} style={{ padding: 18, textAlign: 'center', color: 'var(--cr-fg-3)' }}>No custom rules yet.</td></tr>
+              <tr><td colSpan={4} style={{ padding: 18, textAlign: 'center', color: 'var(--cr-fg-3)' }}>No rules of your own yet — the managed pack above is already running.</td></tr>
             )}
             {rules.map((r, i) => (
               <tr key={r.id} style={{ borderTop: i === 0 ? 'none' : '1px solid var(--cr-line-1)' }}>

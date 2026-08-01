@@ -21,11 +21,19 @@
  *     on how the operator installed them. A root-owned trufflehog cannot
  *     self-update in place, so it leaves a 34MB copy of itself in the temp
  *     dir on every spawn — that filled a 31GB tmpfs on a dev machine and
- *     broke every process needing /tmp. (spawnScoped has the measurements.)
+ *     broke every process needing /tmp. (spawnScoped has the measurements;
+ *     detector-install.ts removes the precondition by owning the install.)
  *   - Scanning takes place BEFORE redaction, so it needs raw session
  *     text on disk (see the caller's bounded batch dir).
+ *   - trufflehog is AGPL-3.0. We may invoke it; we may not port its
+ *     detectors into the product. That alone rules it out of the default
+ *     path — see docs/SECRET-DETECTION.md for the measured trade-off.
  * Legitimate homes for them: a developer/CI machine, or a self-hosted
  * deployment where the operator owns the data and the container.
+ *
+ * When they DO run, the binary is resolved from our own pinned, checksum-
+ * verified install (`~/.chat-recall/bin`) — never from PATH. See
+ * detector-install.ts for why that distinction is load-bearing.
  * ────────────────────────────────────────────────────────────────────
  *
  * Why subprocesses (vs an in-process JS lib) when they ARE enabled: the
@@ -39,11 +47,12 @@
  * already covers everything secretlint flagged that mattered.
  */
 
-import { spawnSync, execFileSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { existsSync, writeFileSync, unlinkSync, readFileSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { StorageDriver } from './store/driver.js';
+import { resolveDetector, type DetectorName } from './detector-install.js';
 
 /** Last 4 chars only — never the raw secret. */
 function mask(s: string | undefined | null): string {
@@ -82,28 +91,43 @@ export function externalScannersEnabled(): boolean {
   return v === '1' || v === 'true' || v === 'yes' || v === 'on';
 }
 
-/** `which`, but returns null whenever external detectors are disabled — one
- *  choke point so no code path can spawn a detector behind the gate's back. */
-function whichDetector(bin: string): string | null {
-  return externalScannersEnabled() ? which(bin) : null;
+/**
+ * Resolve a detector to an absolute path, or null.
+ *
+ * ONE choke point, and it does two things:
+ *   - returns null whenever the external detectors are gated off, so no code
+ *     path can spawn one behind the gate's back;
+ *   - resolves through the MANAGED install (detector-install.ts) — pinned
+ *     version, sha256-verified, user-owned dir — and NEVER through PATH.
+ *
+ * The PATH lookup this replaced is what made the /tmp leak possible: the
+ * daemon and the operator's shell resolved two different installs of the same
+ * version, and only the root-owned one leaked. With an absolute managed path
+ * there is nothing left for the environment to decide.
+ *
+ * A resolve that fails for a reason the operator can act on (installed but
+ * stale, or bytes that no longer match) is logged once — silently skipping a
+ * detector the operator believes is running is exactly the "coverage you don't
+ * actually have" failure we refuse elsewhere.
+ */
+const _resolveWarned = new Set<string>();
+
+function whichDetector(bin: DetectorName): string | null {
+  if (!externalScannersEnabled()) return null;
+  const r = resolveDetector(bin);
+  if ('path' in r) return r.path;
+  if (r.error !== 'not-installed' && !_resolveWarned.has(bin)) {
+    _resolveWarned.add(bin);
+    console.error(
+      `[secret-scanner] ${bin} not usable (${r.error}) — run \`chat-recall detectors install\`. ` +
+      `Skipping it; builtin in-process detection is unaffected.`,
+    );
+  }
+  return null;
 }
 
-/**
- * Resolve a tool from PATH — cross-platform. Unix uses `which`; Windows uses
- * the `where` builtin (which.exe doesn't exist there). `where` returns the full
- * path incl. the `.exe`, which the subsequent spawnSync executes directly, and
- * can list multiple matches (one per line) — we take the first. We don't
- * hard-fail if missing: the scanner is opt-in. Returns the path, or `null` to
- * skip this detector.
- */
-function which(bin: string): string | null {
-  const finder = process.platform === 'win32' ? 'where' : 'which';
-  try {
-    const out = execFileSync(finder, [bin], { encoding: 'utf-8' }).trim();
-    const first = out.split(/\r?\n/)[0]?.trim();
-    return first || null;
-  } catch { return null; }
-}
+/** Tests re-resolve after changing the environment. */
+export function _resetDetectorWarnings(): void { _resolveWarned.clear(); }
 
 interface RawFinding { rule: string; line: number; preview: string; }
 
@@ -459,8 +483,9 @@ export async function scanSessionForSecrets(opts: {
 }
 
 /** True when the external detectors are ENABLED (CHAT_RECALL_EXTERNAL_SCANNERS)
- *  and at least one binary is on PATH. False by default — callers use this to
- *  decide whether to do the expensive raw-text materialization at all. */
+ *  and at least one is installed AND verified in the managed bin dir. False by
+ *  default — callers use this to decide whether to do the expensive raw-text
+ *  materialization at all. */
 export function isSecretScannerAvailable(): boolean {
   return !!whichDetector('gitleaks') || !!whichDetector('trufflehog');
 }

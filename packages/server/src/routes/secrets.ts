@@ -296,10 +296,24 @@ router.post('/rescan', express.json(), async (req, res) => {
 /**
  * The rule pack the collector pulls at the start of every sync.
  *
- * `version` is a content hash of the enabled rules: the client logs it, and it
- * makes "which rules was this device actually running?" answerable after the
- * fact. It changes whenever a rule's name/pattern/redact flag changes, so a
- * client can also use it to skip re-installing an unchanged pack.
+ * Two distinct things come back here, and conflating them was the gap that left
+ * the whole mechanism inert:
+ *
+ *   `rules` — THIS TENANT's own rules, as configured in the dashboard, editable
+ *             via the CRUD below. The client uses them for tenant findings.
+ *   `pack`  — the REDACTION SET the client compiles in-process: chat-recall's
+ *             curated builtin pack (services/builtin-rulepack.ts) plus any
+ *             tenant rule flagged `redact`. This is the piece that makes
+ *             coverage a server deploy rather than a CLI release on every
+ *             customer device.
+ *
+ * Until the builtin pack existed, a fresh tenant got `version: "empty"` and no
+ * server-side coverage at all: the plumbing worked and carried nothing.
+ *
+ * `version` still hashes ONLY the tenant rules, so the dashboard's change
+ * detection is unaffected; `pack.version` covers builtin + tenant redact rules
+ * together, which is what lets a client skip an unchanged pack and lets an
+ * operator answer "which rules was that device actually running?" after the fact.
  *
  * Rules are CONFIGURED here and EXECUTED on the client — the server never sees
  * unredacted text, so it could not apply them itself even if it wanted to.
@@ -316,7 +330,31 @@ router.get('/rules', async (_req, res) => {
     const version = rules.length === 0
       ? 'empty'
       : createHash('sha256').update(material).digest('hex').slice(0, 12);
-    res.json({ rules, version });
+
+    const { builtinPackRules, builtinPackHash, BUILTIN_RULEPACK_REVISION, BUILTIN_RULEPACK_SOURCE } =
+      await import('../services/builtin-rulepack.js');
+
+    // Builtins first, tenant redact rules after: a customer's own rule is the
+    // more specific statement about their data, so it should win the label on
+    // an identical match.
+    const packRules = [
+      ...builtinPackRules().map((r) => ({ name: r.name, regex: r.regex, flags: r.flags, redact: true, source: 'pack' as const })),
+      ...rules.filter((r) => r.enabled && r.redact).map((r) => ({ name: r.name, regex: r.regex, redact: true, source: 'tenant' as const })),
+    ];
+    const packVersion = createHash('sha256')
+      .update(builtinPackHash() + '|' + material)
+      .digest('hex').slice(0, 12);
+
+    res.json({
+      rules,
+      version,
+      pack: {
+        version: packVersion,
+        revision: BUILTIN_RULEPACK_REVISION,
+        source: BUILTIN_RULEPACK_SOURCE,
+        rules: packRules,
+      },
+    });
   } finally { await store.close(); }
 });
 

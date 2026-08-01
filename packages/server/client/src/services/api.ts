@@ -1912,7 +1912,17 @@ export interface CustomSecretRule {
   redact?: number;
   updated_at: number;
 }
-export async function getCustomSecretRules(): Promise<{ rules: CustomSecretRule[]; version?: string }> {
+/** The redaction set the collector installs at sync time: chat-recall's curated
+ *  rules plus any tenant rule flagged `redact`. Served alongside the tenant's
+ *  own rules so the dashboard can show what protection is already in place
+ *  rather than an empty table. */
+export interface ServedRulePack {
+  version: string;
+  revision?: string;
+  source?: string;
+  rules: Array<{ name: string; regex: string; flags?: string; redact: boolean; source: 'pack' | 'tenant' }>;
+}
+export async function getCustomSecretRules(): Promise<{ rules: CustomSecretRule[]; version?: string; pack?: ServedRulePack }> {
   const res = await fetchWithTimeout(`${API_BASE}/secrets/rules`, {}, 10000);
   if (!res.ok) throw new Error(`Failed to load custom rules: ${res.statusText}`);
   return await res.json();

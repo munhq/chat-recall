@@ -148,25 +148,37 @@ async function fetchTenantSecurityConfig(cred: Credentials): Promise<TenantSecur
       const body = await rulesRes.json().catch(() => ({})) as {
         version?: string;
         rules?: Array<{ name: string; regex: string; enabled?: boolean; redact?: boolean }>;
+        pack?: {
+          version?: string;
+          revision?: string;
+          rules?: Array<{ name: string; regex: string; flags?: string; source?: 'tenant' | 'pack' }>;
+        };
       };
       const enabled = (body.rules || []).filter((r) => r.enabled !== false);
       tenantRules = enabled;
-      // Rules flagged `redact` join this process's REDACTION set, not just the
-      // findings scan — that is how detection improves without every device
-      // needing a new CLI. installServerRulePack is add-only (it can never
-      // weaken the builtins) and drops individual rules that fail its safety
-      // checks; we log those, because a silently ignored rule reads as coverage
-      // the operator does not actually have.
-      const pack = installServerRulePack({
-        version: body.version,
-        rules: enabled.filter((r) => r.redact === true).map((r) => ({ name: r.name, regex: r.regex, redact: true })),
-      });
+
+      // The REDACTION set. Prefer the server's `pack` — it carries chat-recall's
+      // curated builtin rules as well as this tenant's `redact` ones, which is
+      // what lets coverage improve for every customer from a server deploy
+      // instead of a CLI release on each device. Fall back to deriving it from
+      // the tenant rules when talking to a server that predates `pack`.
+      //
+      // installServerRulePack is add-only (it can never weaken the compiled-in
+      // builtins) and drops individual rules that fail its safety checks; we log
+      // those, because a silently ignored rule reads as coverage the operator
+      // does not actually have.
+      const packSpec = body.pack?.rules
+        ? { version: body.pack.version, rules: body.pack.rules.map((r) => ({ name: r.name, regex: r.regex, flags: r.flags, redact: true, source: r.source })) }
+        : { version: body.version, rules: enabled.filter((r) => r.redact === true).map((r) => ({ name: r.name, regex: r.regex, redact: true, source: 'tenant' as const })) };
+
+      const pack = installServerRulePack(packSpec);
       rulePackVersion = serverRulePackVersion();
       for (const r of pack.rejected) {
         console.error(`[sync] server redaction rule "${r.name}" ignored: ${r.reason}`);
       }
       if (pack.accepted > 0) {
-        console.error(`[sync] ${pack.accepted} server redaction rule(s) active (pack ${rulePackVersion})`);
+        const rev = body.pack?.revision ? `, rev ${body.pack.revision}` : '';
+        console.error(`[sync] ${pack.accepted} server redaction rule(s) active (pack ${rulePackVersion}${rev})`);
       }
     }
 
