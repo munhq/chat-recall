@@ -96,6 +96,13 @@ function toJs(goRe) {
   const inline = src.match(/^\(\?([ims]+)\)/);
   if (inline) { flags = inline[1]; src = src.slice(inline[0].length); }
   if (/\(\?[ims]+\)/.test(src)) return null;       // scoped inline flags differ from JS
+  // RE2 flag-scoping groups: `(?-i:A)` (turn a flag OFF for a subexpression) and
+  // `(?i:...)`. JavaScript has no such construct and throws "Invalid group" at
+  // compile time. telegram-bot-api-token shipped through this hole once — it
+  // reached production and was silently dropped by every consumer, which is the
+  // exact "coverage you don't actually have" failure the pack is supposed to
+  // make impossible.
+  if (/\(\?[a-z]*-[a-z]+[:)]|\(\?[ims]+:/.test(src)) return null;
   if (/\\p\{|\[\[:/.test(src)) return null;        // Unicode script / POSIX classes
   return { src, flags };
 }
@@ -220,6 +227,12 @@ export const BUILTIN_RULEPACK_SOURCE = 'gitleaks ${GITLEAKS_VERSION} (MIT)';
 const RULES: BuiltinPackRule[] = [
 ${body}
 ];
+
+/** The list as generated, BEFORE serve-time validation. Exposed so a test can
+ *  assert that validation drops nothing: comparing against the filtered list
+ *  would be a tautology, and that is precisely how a rule using RE2-only syntax
+ *  once reached production and was dropped by every consumer. */
+export function _rawBuiltinPackRules(): BuiltinPackRule[] { return RULES; }
 
 let validated: BuiltinPackRule[] | null = null;
 

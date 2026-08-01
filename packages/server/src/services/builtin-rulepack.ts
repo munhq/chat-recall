@@ -141,7 +141,6 @@ const RULES: BuiltinPackRule[] = [
   { name: 'snyk-api-token', regex: '(?:snyk[_.-]?(?:(?:api|oauth)[_.-]?)?(?:key|token))(?:[ \\t\\w.-]{0,20})[\\s\'"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60\'"\\s=]{0,5}([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[\\x60\'"\\s;]|\\\\[nr]|$)', flags: 'i', severity: 'medium' },
   { name: 'sonar-api-token', regex: '(?:sonar[_.-]?(login|token))(?:[ \\t\\w.-]{0,20})[\\s\'"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60\'"\\s=]{0,5}((?:squ_|sqp_|sqa_)?[a-z0-9=_\\-]{40})(?:[\\x60\'"\\s;]|\\\\[nr]|$)', flags: 'i', severity: 'medium' },
   { name: 'squarespace-access-token', regex: '(?:squarespace)(?:[ \\t\\w.-]{0,20})[\\s\'"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60\'"\\s=]{0,5}([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:[\\x60\'"\\s;]|\\\\[nr]|$)', flags: 'i', severity: 'medium' },
-  { name: 'telegram-bot-api-token', regex: '(?:telegr)(?:[ \\t\\w.-]{0,20})[\\s\'"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60\'"\\s=]{0,5}([0-9]{5,16}:(?-i:A)[a-z0-9_\\-]{34})(?:[\\x60\'"\\s;]|\\\\[nr]|$)', flags: 'i', severity: 'medium' },
   { name: 'travisci-access-token', regex: '(?:travis)(?:[ \\t\\w.-]{0,20})[\\s\'"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60\'"\\s=]{0,5}([a-z0-9]{22})(?:[\\x60\'"\\s;]|\\\\[nr]|$)', flags: 'i', severity: 'medium' },
   { name: 'twitch-api-token', regex: '(?:twitch)(?:[ \\t\\w.-]{0,20})[\\s\'"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60\'"\\s=]{0,5}([a-z0-9]{30})(?:[\\x60\'"\\s;]|\\\\[nr]|$)', flags: 'i', severity: 'medium' },
   { name: 'twitter-access-secret', regex: '(?:twitter)(?:[ \\t\\w.-]{0,20})[\\s\'"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60\'"\\s=]{0,5}([a-z0-9]{45})(?:[\\x60\'"\\s;]|\\\\[nr]|$)', flags: 'i', severity: 'high' },
@@ -155,6 +154,12 @@ const RULES: BuiltinPackRule[] = [
   { name: 'yandex-aws-access-token', regex: '(?:yandex)(?:[ \\t\\w.-]{0,20})[\\s\'"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60\'"\\s=]{0,5}(YC[a-zA-Z0-9_\\-]{38})(?:[\\x60\'"\\s;]|\\\\[nr]|$)', flags: 'i', severity: 'medium' },
   { name: 'zendesk-secret-key', regex: '(?:zendesk)(?:[ \\t\\w.-]{0,20})[\\s\'"]{0,3}(?:=|>|:{1,3}=|\\|\\||:|=>|\\?=|,)[\\x60\'"\\s=]{0,5}([a-z0-9]{40})(?:[\\x60\'"\\s;]|\\\\[nr]|$)', flags: 'i', severity: 'high' },
 ];
+
+/** The list as generated, BEFORE serve-time validation. Exposed so a test can
+ *  assert that validation drops nothing: comparing against the filtered list
+ *  would be a tautology, and that is precisely how a rule using RE2-only syntax
+ *  once reached production and was dropped by every consumer. */
+export function _rawBuiltinPackRules(): BuiltinPackRule[] { return RULES; }
 
 let validated: BuiltinPackRule[] | null = null;
 
