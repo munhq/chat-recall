@@ -77,6 +77,49 @@ describe('GET/POST /api/secrets/rules — the collector rule pack', () => {
     expect((await request(app).get('/api/secrets/rules')).body.version).not.toBe(v1);
   });
 
+  test('a tenant with no rules of its own still gets the curated pack', async () => {
+    // The regression this endpoint shipped with: `version: "empty"` and no
+    // redaction rules at all, so every customer's coverage was whatever their
+    // installed CLI had compiled in. The pack is what makes coverage improve
+    // from a server deploy.
+    const app = await makeApp();
+    const res = await request(app).get('/api/secrets/rules');
+    expect(res.status).toBe(200);
+    expect(res.body.pack).toBeTruthy();
+    expect(res.body.pack.rules.length).toBeGreaterThan(50);
+    expect(res.body.pack.version).toMatch(/^[0-9a-f]{12}$/);
+    expect(res.body.pack.source).toMatch(/MIT/);
+    for (const r of res.body.pack.rules) {
+      expect(r.redact).toBe(true);       // the pack IS the redaction set
+      expect(['pack', 'tenant']).toContain(r.source);
+    }
+  });
+
+  test('a tenant redact rule joins the pack, and moves pack.version', async () => {
+    const app = await makeApp();
+    const before = await request(app).get('/api/secrets/rules');
+    const beforeCount = before.body.pack.rules.length;
+    const beforeVersion = before.body.pack.version;
+
+    await request(app).post('/api/secrets/rules').send({
+      name: 'acme-pack-member', regex: 'acme_pack_[a-zA-Z0-9]{20}',
+      severity: 'high', redact: true,
+    });
+
+    const after = await request(app).get('/api/secrets/rules');
+    expect(after.body.pack.rules.length).toBe(beforeCount + 1);
+    expect(after.body.pack.version).not.toBe(beforeVersion);
+    const mine = after.body.pack.rules.find((r: { name: string }) => r.name === 'acme-pack-member');
+    expect(mine.source).toBe('tenant');
+
+    // A REPORT-ONLY tenant rule must not join the redaction set.
+    await request(app).post('/api/secrets/rules').send({
+      name: 'acme-report-only', regex: 'acme_report_[a-zA-Z0-9]{20}', severity: 'low',
+    });
+    const third = await request(app).get('/api/secrets/rules');
+    expect(third.body.pack.rules.find((r: { name: string }) => r.name === 'acme-report-only')).toBeUndefined();
+  });
+
   test('refuses to save an over-broad rule as a redact rule', async () => {
     const app = await makeApp();
     const res = await request(app).post('/api/secrets/rules').send({

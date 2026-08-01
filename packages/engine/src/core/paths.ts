@@ -80,6 +80,19 @@ export function getMemoryDir(): string {
   ensureDir(p);
   return p;
 }
+/**
+ * Where the optional external secret detectors are installed.
+ *
+ * Deliberately under the user's own data dir: a binary the invoking user owns
+ * cannot trigger the self-updater copy-to-temp behaviour that filled a 31GB
+ * tmpfs when the same binary was resolved from a root-owned /usr/local/bin.
+ * See detector-install.ts. NOT ensured here — `status` must be able to report
+ * "not installed" without creating anything.
+ */
+export function getDetectorBinDir(): string {
+  return join(getDataDir(), 'bin');
+}
+
 export function getIdentityFilePath(): string {
   ensureMigrated();
   ensureDir(getDataDir());
