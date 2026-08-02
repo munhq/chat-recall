@@ -18,6 +18,10 @@ import { existsSync, readdirSync, readFileSync, statSync, openSync, readSync, cl
 import { join, basename } from 'path';
 import { createHash } from 'crypto';
 import { hasSubagentsDir } from '../parsers/session.js';
+// Record-identity + union live in the shadow; cross-home merging must agree
+// with shadow recovery on what "the same record" means, so it reuses that
+// primitive rather than defining a second one.
+import { mergeLineText } from '../transcript/shadow.js';
 import { getBackendForId, listAvailableBackends } from './tool-backend.js';
 import {
   claudeProjectDirs,
@@ -111,6 +115,116 @@ export function findSessionFile(sessionId: string): {
  * edit, which empties diff / files / commits / edits-timeline for any
  * session that ever used the Agent/Task tool.
  */
+/**
+ * EVERY home's copy of a session, primary home first.
+ *
+ * `findSessionFile` returns the first match and stops, which is right when a
+ * session lives in exactly one home and wrong the moment it doesn't. A session
+ * resumed under a different CLAUDE_CONFIG_DIR (or mid-consolidation between
+ * profiles) exists under the SAME id in two homes holding DISJOINT records —
+ * measured 2026-08-02: `~/.claude` 955 messages, `~/.claude-t2` 20 messages,
+ * zero shared uuids. First-match silently returned the stale primary and the
+ * live half was never read, indexed or synced.
+ *
+ * A session is a SET OF RECORDS, not a file to pick between. Callers that need
+ * content use this and merge; callers that need one canonical path (project
+ * grouping, titles) can still take the first.
+ */
+export function findSessionFiles(sessionId: string): Array<{
+  path: string;
+  projectDir: string;
+  projectPath: string;
+}> {
+  const out: Array<{ path: string; projectDir: string; projectPath: string }> = [];
+  const seen = new Set<string>();
+  for (const root of claudeProjectDirs()) {
+    if (!existsSync(root)) continue;
+    let entries;
+    try { entries = readdirSync(root, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const candidate = join(root, entry.name, `${sessionId}.jsonl`);
+      if (!existsSync(candidate) || seen.has(candidate)) continue;
+      seen.add(candidate);
+      out.push({
+        path: candidate,
+        projectDir: entry.name,
+        projectPath: entry.name.replace(/-/g, '/').replace(/^\//, '/'),
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * One logical transcript file (the main JSONL, or one subagent sidecar) and
+ * every physical copy of it across homes, primary first.
+ */
+export interface SessionContentGroup {
+  /** Stable logical name — `main` or `subagents/<file>`. */
+  name: string;
+  paths: string[];
+}
+
+/**
+ * Content paths for a session, GROUPED by logical file across all homes.
+ *
+ * Same ordering as the single-home version (main first, then subagents sorted)
+ * so event line numbering is unchanged for the common one-home case. Copies of
+ * the same logical file are grouped together so the caller can union their
+ * records instead of picking one.
+ */
+export function resolveSessionContentGroups(sessionId: string): SessionContentGroup[] {
+  const groups = new Map<string, string[]>();
+  const add = (name: string, path: string) => {
+    const list = groups.get(name);
+    if (list) { if (!list.includes(path)) list.push(path); }
+    else groups.set(name, [path]);
+  };
+  for (const located of findSessionFiles(sessionId)) {
+    for (const p of resolveSessionContentPaths(located.path)) {
+      // `main` for the transcript itself; sidecars keep their filename so the
+      // same subagent from two homes lands in one group.
+      add(p === located.path ? 'main' : `subagents/${basename(p)}`, p);
+    }
+  }
+  // main first, then subagents in stable name order.
+  const names = [...groups.keys()].sort((a, b) =>
+    (a === 'main' ? -1 : b === 'main' ? 1 : a.localeCompare(b)));
+  return names.map((name) => ({ name, paths: groups.get(name)! }));
+}
+
+/**
+ * Read one group and return the UNION of its copies' records, deduped by
+ * record uuid (falling back to the exact line). Reuses the transcript shadow's
+ * merge so cross-home union and shadow recovery agree on record identity.
+ *
+ * `mtime` is the NEWEST copy's — a secondary home receiving the live writes
+ * must make the session look fresh, or change detection never fires.
+ *
+ * NOTE, because it looks like a bug and isn't: the merged text can have FEWER
+ * lines than the largest input. Message records (uuid-keyed) are always a strict
+ * union, but `mergeLineText` collapses SINGLETON metadata (`mode`, `ai-title`,
+ * `summary`, …) to the most recent — those describe current state, not history.
+ * Verified on a real split session: primary 1082 lines / 818 uuids, secondary 83
+ * lines / 61 uuids, merged 951 lines / 879 uuids — i.e. every one of the 879
+ * distinct records survived and only duplicate metadata collapsed.
+ *
+ * A single copy is returned verbatim (no merge pass), so the one-home case is
+ * byte-for-byte what it always was.
+ */
+export function readSessionGroupText(group: SessionContentGroup): { text: string; mtime: number } {
+  let text = '';
+  let mtime = 0;
+  for (const p of group.paths) {
+    let raw: string;
+    try { raw = readFileSync(p, 'utf-8'); } catch { continue; }
+    try { mtime = Math.max(mtime, statSync(p).mtimeMs); } catch { /* ignore */ }
+    text = text ? mergeLineText(text, raw).text : raw;
+  }
+  return { text, mtime };
+}
+
 export function resolveSessionContentPaths(sessionFile: string): string[] {
   if (!hasSubagentsDir(sessionFile)) return [sessionFile];
   const subDir = join(sessionFile.slice(0, -6), 'subagents');

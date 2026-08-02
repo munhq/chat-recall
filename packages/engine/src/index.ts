@@ -261,6 +261,9 @@ export {
   buildRawContainer,
   gzipContainer,
   gunzipContainer,
+  // Record-level container union — the server needs it to merge a disjoint
+  // fragment that the archive's size-based shrink guard would otherwise drop.
+  mergeContainer,
   mapContainerText,
   parseTranscriptFromContainer,
   archiveRawSession,
