@@ -28,7 +28,10 @@ import type { SessionOutcome } from '../session-outcome.js';
 import type { SessionCommitsResult } from '../session-git.js';
 import type { EditOp, SessionEdit } from '../live-session-scan.js';
 
-import { findSessionFile, resolveSessionContentPaths } from '../live-session-scan.js';
+import {
+  findSessionFile, findSessionFiles, resolveSessionContentPaths,
+  resolveSessionContentGroups, readSessionGroupText,
+} from '../live-session-scan.js';
 import { computeOutcome } from '../session-outcome.js';
 import { getSessionCommits } from '../session-git.js';
 import { extractFirstUserPromptSync } from '../first-prompt.js';
@@ -113,10 +116,18 @@ export class ClaudeBackend implements ToolBackend {
   }
 
   findSession(id: string): SessionLocation | null {
-    const located = findSessionFile(this.toRawId(id));
+    const rawId = this.toRawId(id);
+    const copies = findSessionFiles(rawId);
+    const located = copies[0];
     if (!located) return null;
+    // Path stays the primary home's (it is the canonical location for project
+    // grouping), but mtime is the NEWEST across homes — otherwise a session
+    // whose live half sits in a secondary profile reports the stale primary's
+    // timestamp and every freshness check downstream believes it is untouched.
     let mtime = 0;
-    try { mtime = statSync(located.path).mtimeMs; } catch { /* ignore */ }
+    for (const c of copies) {
+      try { mtime = Math.max(mtime, statSync(c.path).mtimeMs); } catch { /* skip */ }
+    }
     return {
       path: located.path,
       format: 'jsonl',
@@ -274,17 +285,19 @@ export class ClaudeBackend implements ToolBackend {
    * splits show up alongside the parent.
    */
   readEvents(rawId: string): CanonicalEvent[] {
-    const located = findSessionFile(rawId);
-    if (!located) return [];
-    const paths = resolveSessionContentPaths(located.path);
+    // Groups, not paths: the same logical transcript can exist in several homes
+    // holding disjoint records (a session resumed under another
+    // CLAUDE_CONFIG_DIR). Each group is unioned by record uuid before parsing,
+    // so a session split across profiles replays as one conversation instead of
+    // whichever half happened to be in the primary home.
+    const groups = resolveSessionContentGroups(rawId);
+    if (groups.length === 0) return [];
     const events: CanonicalEvent[] = [];
     let lineNum = 0;
-    for (const filePath of paths) {
-      let mtime = 0;
-      try { mtime = statSync(filePath).mtimeMs; } catch { /* ignore */ }
-      let raw: string;
-      try { raw = readFileSync(filePath, 'utf-8'); } catch { continue; }
-      lineNum = this.appendEventsFromText(events, raw, mtime, lineNum);
+    for (const group of groups) {
+      const { text, mtime } = readSessionGroupText(group);
+      if (!text) continue;
+      lineNum = this.appendEventsFromText(events, text, mtime, lineNum);
     }
     return events;
   }
@@ -490,34 +503,43 @@ export class ClaudeBackend implements ToolBackend {
     return getSessionCommits(this.toRawId(id), files, startMs, endMs, bufferMinutes);
   }
 
+  /**
+   * The container shipped to the server's raw archive. Each logical file is the
+   * UNION of its copies across homes — if this exported only the primary home's
+   * half of a split session, the archive would be missing records that exist on
+   * this very machine, and the server's shrink guard would then refuse the
+   * fuller version that a later sync tried to send.
+   */
   exportRawSession(id: string): RawSessionExport | null {
-    const located = findSessionFile(this.toRawId(id));
-    if (!located) return null;
+    const rawId = this.toRawId(id);
+    const groups = resolveSessionContentGroups(rawId);
+    if (groups.length === 0) return null;
     const files: RawSessionExport['files'] = [];
     let mtime = 0;
-    const push = (path: string, name: string) => {
-      try {
-        const st = statSync(path);
-        files.push({ name, bytes: readFileSync(path) });
-        if (st.mtimeMs > mtime) mtime = st.mtimeMs;
-      } catch { /* part unreadable — capture the rest */ }
-    };
-    push(located.path, basename(located.path));
-    const subDir = join(located.path.slice(0, -6), 'subagents');
-    if (existsSync(subDir)) {
-      for (const f of readdirSync(subDir)) {
-        push(join(subDir, f), `subagents/${f}`);
-      }
+    for (const group of groups) {
+      const { text, mtime: groupMtime } = readSessionGroupText(group);
+      if (!text) continue;
+      const name = group.name === 'main' ? `${rawId}.jsonl` : group.name;
+      files.push({ name, bytes: Buffer.from(text, 'utf-8') });
+      if (groupMtime > mtime) mtime = groupMtime;
     }
     return files.length > 0 ? { tool: 'claude', mtime, files } : null;
   }
 
   isAppendOnly(): boolean { return true; }
 
+  /**
+   * Total bytes across every home's copy. This drives append-only change
+   * detection, so it has to grow when a SECONDARY home receives the writes —
+   * reading only the primary made a session resumed under another profile look
+   * frozen forever, which is precisely how one went 24h without re-indexing.
+   */
   fileSize(prefixedId: string): number {
-    const located = findSessionFile(this.toRawId(prefixedId));
-    if (!located) return 0;
-    try { return statSync(located.path).size; } catch { return 0; }
+    let total = 0;
+    for (const located of findSessionFiles(this.toRawId(prefixedId))) {
+      try { total += statSync(located.path).size; } catch { /* skip */ }
+    }
+    return total;
   }
 
   async readFromOffset(prefixedId: string, offset: number): Promise<{ text: string; newOffset: number }> {

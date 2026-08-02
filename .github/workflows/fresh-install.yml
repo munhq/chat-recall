@@ -6,7 +6,15 @@
 name: Fresh-machine install gate
 
 on:
+  # Manual runs only meant this gate went 18 days without executing and was red
+  # on all three platforms the whole time — while being, by its own description,
+  # the only check that exercises what a customer actually runs. Unit tests run
+  # on ubuntu and mock the platform, so nothing else covers macOS or Windows.
   workflow_dispatch:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * *'   # daily, so a broken install surfaces within a day
 
 jobs:
   install:
