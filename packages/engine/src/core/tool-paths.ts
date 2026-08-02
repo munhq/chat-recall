@@ -42,7 +42,7 @@ export function claudeHomeDir(): string {
  * backend's listSessions (sync) and findSessionFile (lookup) so all three see
  * the same set — index, sync, and read stay consistent across profiles.
  */
-export function claudeProjectDirs(): string[] {
+export function claudeProjectDirs(opts: { includeExcluded?: boolean } = {}): string[] {
   const home = homedir();
   const dirs: string[] = [];
   const addHome = (d: string) => {
@@ -67,7 +67,25 @@ export function claudeProjectDirs(): string[] {
     }
   }
   if (dirs.length === 0) dirs.push(join(claudeHomeDir(), 'projects'));
+  // Tenant-configured source exclusions (dashboard → sync client → here). The
+  // server can only switch OFF a source this machine already discovered; it can
+  // never name a new path. Lazy require-free import: source-discovery imports
+  // this module, so the dependency is inverted through a late binding to avoid
+  // a cycle at module-init time.
+  if (!opts.includeExcluded && _sourceExclusionFilter) {
+    const kept = dirs.filter((d) => !_sourceExclusionFilter!(d));
+    // Never let configuration leave the collector with nothing to scan — an
+    // empty result would look identical to "this machine has no sessions".
+    if (kept.length > 0) return kept;
+  }
   return dirs;
+}
+
+/** Late-bound predicate installed by source-discovery.ts, which imports this
+ *  module — binding it here instead of importing keeps the cycle from forming. */
+let _sourceExclusionFilter: ((projectsDir: string) => boolean) | null = null;
+export function _setSourceExclusionFilter(fn: ((projectsDir: string) => boolean) | null): void {
+  _sourceExclusionFilter = fn;
 }
 
 /** Gemini CLI root (`~/.gemini` by default). */

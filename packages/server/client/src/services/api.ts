@@ -597,7 +597,33 @@ export async function getAdminMetrics(): Promise<AdminMetricsResponse> {
 
 /** Tenant-wide sync exclusions — edited here, pulled by every device's sync
  *  client and UNIONED with its local rules (server config only adds). */
-export interface TenantSyncConfig { excludeTools: string[]; excludeProjects: string[] }
+export interface TenantSyncConfig {
+  excludeTools: string[];
+  excludeProjects: string[];
+  /** Transcript sources switched off, by client-reported id. Exclusion-only:
+   *  the dashboard can turn a discovered source off, but cannot name a path for
+   *  a collector to start reading. */
+  excludeSources: string[];
+}
+
+/** A transcript source a collector reported finding on its machine. Paths only
+ *  ever travel machine → server; this is the read-back for rendering toggles. */
+export interface ReportedSource {
+  id: string;
+  tool: string;
+  path: string;
+  sessions: number;
+  newestMtime: number;
+  isPrimary: boolean;
+  device?: string;
+  reportedAt: number;
+}
+
+export async function getSyncSources(): Promise<{ sources: ReportedSource[]; excludeSources: string[] }> {
+  const res = await fetchWithTimeout(`${API_BASE}/sync-config/sources`);
+  if (!res.ok) throw new Error(`Failed to get sync sources: ${res.statusText}`);
+  return await res.json();
+}
 
 export async function getSyncConfig(): Promise<TenantSyncConfig> {
   const res = await fetchWithTimeout(`${API_BASE}/sync-config`);

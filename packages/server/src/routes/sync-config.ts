@@ -21,16 +21,42 @@ const VALID_TOOLS = ['claude', 'gemini', 'codex', 'opencode', 'agy'] as const;
 export interface TenantSyncConfig {
   excludeTools: string[];
   excludeProjects: string[];
+  /** Transcript SOURCES (per-machine home dirs) switched off for this tenant,
+   *  by client-reported source id. Exclusion-only on purpose: the dashboard can
+   *  turn a discovered source OFF, but nothing here can name a filesystem path
+   *  for a collector to start reading. See engine core/source-discovery.ts. */
+  excludeSources: string[];
 }
+
+/** Sources the collectors have reported seeing, so the dashboard can render a
+ *  toggle for something it never gets to name itself. Written by the sync
+ *  client, read by the UI; advisory only — the client re-derives the real list
+ *  from disk on every run. */
+export interface ReportedSource {
+  id: string;
+  tool: string;
+  path: string;
+  sessions: number;
+  newestMtime: number;
+  isPrimary: boolean;
+  device?: string;
+  reportedAt: number;
+}
+const SOURCES_KEY = 'sync_sources';
 
 function sanitize(body: unknown): TenantSyncConfig | null {
   if (typeof body !== 'object' || body === null) return null;
   const b = body as Record<string, unknown>;
   const tools = Array.isArray(b.excludeTools) ? b.excludeTools : [];
   const projects = Array.isArray(b.excludeProjects) ? b.excludeProjects : [];
+  const sources = Array.isArray(b.excludeSources) ? b.excludeSources : [];
   if (tools.some((t) => typeof t !== 'string' || !VALID_TOOLS.includes(t as never))) return null;
   if (projects.some((p) => typeof p !== 'string')) return null;
+  // Ids only. Rejecting anything path-shaped here is the server-side half of
+  // the guarantee that this endpoint can never widen what a collector reads.
+  if (sources.some((x) => typeof x !== 'string' || !/^src_[0-9a-f]{12}$/.test(x))) return null;
   return {
+    excludeSources: [...new Set(sources as string[])].slice(0, 100),
     excludeTools: [...new Set(tools as string[])],
     // Substring patterns matched against project paths on the device. Cap
     // count + length so a bad dashboard call can't grow the setting unbounded.
@@ -44,7 +70,7 @@ router.get('/', async (req, res) => {
   const cp = await createControlPlane();
   try {
     const raw = await cp.getTenantSetting(tenant, SYNC_CONFIG_KEY);
-    let cfg: TenantSyncConfig = { excludeTools: [], excludeProjects: [] };
+    let cfg: TenantSyncConfig = { excludeTools: [], excludeProjects: [], excludeSources: [] };
     if (raw) {
       try { cfg = sanitize(JSON.parse(raw)) ?? cfg; } catch { /* corrupt setting → defaults */ }
     }
@@ -61,6 +87,66 @@ router.post('/', express.json(), async (req, res) => {
   try {
     await cp.setTenantSetting(tenant, SYNC_CONFIG_KEY, JSON.stringify(cfg));
     res.json(cfg);
+  } finally { await cp.close(); }
+});
+
+/**
+ * Collector → server: "here is what this machine actually has."
+ *
+ * The ONLY direction a filesystem path travels. The dashboard renders these so
+ * an operator can switch one off; the collector re-discovers the real list from
+ * disk every run and never trusts this back.
+ */
+router.post('/sources', express.json(), async (req, res) => {
+  const tenant = (req as any).tenant;
+  if (!tenant) return res.status(401).json({ error: 'tenant required' });
+  const incoming = Array.isArray(req.body?.sources) ? req.body.sources : null;
+  if (!incoming) return res.status(400).json({ error: 'sources[] required' });
+  const device = typeof req.body?.device === 'string' ? req.body.device.slice(0, 128) : '';
+
+  const clean: ReportedSource[] = [];
+  for (const s of incoming.slice(0, 50)) {
+    if (!s || typeof s.id !== 'string' || !/^src_[0-9a-f]{12}$/.test(s.id)) continue;
+    if (typeof s.path !== 'string') continue;
+    clean.push({
+      id: s.id,
+      tool: typeof s.tool === 'string' ? s.tool.slice(0, 32) : 'claude',
+      path: s.path.slice(0, 512),
+      sessions: Number.isFinite(s.sessions) ? Math.max(0, Math.trunc(s.sessions)) : 0,
+      newestMtime: Number.isFinite(s.newestMtime) ? Math.trunc(s.newestMtime) : 0,
+      isPrimary: !!s.isPrimary,
+      device,
+      reportedAt: Date.now(),
+    });
+  }
+
+  const cp = await createControlPlane();
+  try {
+    // Merge by (device, id) so several machines each keep their own entry.
+    let existing: ReportedSource[] = [];
+    const raw = await cp.getTenantSetting(tenant, SOURCES_KEY);
+    if (raw) { try { existing = JSON.parse(raw); } catch { /* corrupt → replace */ } }
+    if (!Array.isArray(existing)) existing = [];
+    const byKey = new Map(existing.map((s) => [`${s.device || ''}|${s.id}`, s]));
+    for (const s of clean) byKey.set(`${s.device || ''}|${s.id}`, s);
+    const merged = [...byKey.values()].slice(-200);
+    await cp.setTenantSetting(tenant, SOURCES_KEY, JSON.stringify(merged));
+    res.json({ ok: true, count: clean.length });
+  } finally { await cp.close(); }
+});
+
+router.get('/sources', async (req, res) => {
+  const tenant = (req as any).tenant;
+  if (!tenant) return res.status(401).json({ error: 'tenant required' });
+  const cp = await createControlPlane();
+  try {
+    const raw = await cp.getTenantSetting(tenant, SOURCES_KEY);
+    let sources: ReportedSource[] = [];
+    if (raw) { try { sources = JSON.parse(raw) || []; } catch { /* corrupt → empty */ } }
+    const cfgRaw = await cp.getTenantSetting(tenant, SYNC_CONFIG_KEY);
+    let excluded: string[] = [];
+    if (cfgRaw) { try { excluded = JSON.parse(cfgRaw)?.excludeSources ?? []; } catch { /* ignore */ } }
+    res.json({ sources: Array.isArray(sources) ? sources : [], excludeSources: excluded });
   } finally { await cp.close(); }
 });
 

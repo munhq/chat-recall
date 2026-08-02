@@ -10,7 +10,7 @@
  */
 import React, { useEffect, useState } from 'react';
 import { Button } from './primitives';
-import { getSyncConfig, saveSyncConfig } from '../services/api';
+import { getSyncConfig, saveSyncConfig, getSyncSources, type ReportedSource } from '../services/api';
 
 const TOOLS: Array<[string, string]> = [
   ['claude', 'Claude Code'], ['gemini', 'Gemini CLI'], ['opencode', 'OpenCode'], ['codex', 'Codex'], ['agy', 'Antigravity'],
@@ -21,12 +21,25 @@ export default function SyncRules() {
   const [projects, setProjects] = useState('');
   const [state, setState] = useState<'loading' | 'ready' | 'saving' | 'saved' | 'error'>('loading');
   const [err, setErr] = useState('');
+  const [sources, setSources] = useState<ReportedSource[]>([]);
+  const [excludedSources, setExcludedSources] = useState<string[]>([]);
 
   useEffect(() => {
     let on = true;
     getSyncConfig()
-      .then((c) => { if (!on) return; setTools(c.excludeTools); setProjects(c.excludeProjects.join('\n')); setState('ready'); })
+      .then((c) => {
+        if (!on) return;
+        setTools(c.excludeTools);
+        setProjects(c.excludeProjects.join('\n'));
+        setExcludedSources(c.excludeSources ?? []);
+        setState('ready');
+      })
       .catch((e) => { if (!on) return; setErr(String(e.message || e)); setState('error'); });
+    // Sources are reported by each collector; a server that has never been
+    // synced simply shows none. Never fatal — the rest of the panel works.
+    getSyncSources()
+      .then((r) => { if (on) setSources(r.sources ?? []); })
+      .catch(() => { /* older server, or nothing reported yet */ });
     return () => { on = false; };
   }, []);
 
@@ -36,9 +49,11 @@ export default function SyncRules() {
       const cfg = await saveSyncConfig({
         excludeTools: tools,
         excludeProjects: projects.split('\n').map((s) => s.trim()).filter(Boolean),
+        excludeSources: excludedSources,
       });
       setTools(cfg.excludeTools);
       setProjects(cfg.excludeProjects.join('\n'));
+      setExcludedSources(cfg.excludeSources ?? []);
       setState('saved');
       setTimeout(() => setState('ready'), 1500);
     } catch (e: any) {
@@ -67,6 +82,52 @@ export default function SyncRules() {
         <strong> never indexed by default</strong>. To include a project that lives in one, run
         <code> chat-recall include project &lt;path&gt;</code> on that machine.
       </div>
+
+      {sources.length > 0 && (
+        <>
+          <div style={cap}>Transcript sources on your machines</div>
+          <div style={{ color: 'var(--cr-fg-2)', fontSize: 12.5, lineHeight: 1.5, margin: '6px 0 10px' }}>
+            Each machine reports the Claude profile folders it finds. Untick one to stop syncing it —
+            useful when a work profile shouldn't reach this workspace. chat-recall can only switch off
+            a folder a machine already found; it can never be pointed at a new path from here.
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, margin: '0 0 16px' }}>
+            {sources.map((src) => {
+              const off = excludedSources.includes(src.id);
+              return (
+                <label
+                  key={`${src.device || ''}|${src.id}`}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
+                    padding: '8px 10px', borderRadius: 'var(--cr-radius-md, 8px)',
+                    border: '1px solid var(--cr-line-1)',
+                    background: off ? 'transparent' : 'var(--cr-ink-1)',
+                    opacity: off ? 0.6 : 1,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={!off}
+                    onChange={(e) => setExcludedSources((prev) =>
+                      e.target.checked ? prev.filter((x) => x !== src.id) : [...prev, src.id])}
+                  />
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    <span style={{
+                      fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-1)',
+                      wordBreak: 'break-all', fontSize: 12.5,
+                    }}>{src.path}</span>
+                    <span style={{ display: 'block', color: 'var(--cr-fg-3)', fontSize: 11.5, marginTop: 2 }}>
+                      {src.device ? `${src.device} · ` : ''}{src.sessions} session{src.sessions === 1 ? '' : 's'}
+                      {src.isPrimary ? ' · main profile' : ''}
+                      {off ? ' · not syncing' : ''}
+                    </span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </>
+      )}
 
       <div style={cap}>Don't sync these AI tools</div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, margin: '8px 0 14px' }}>
