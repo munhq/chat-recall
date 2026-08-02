@@ -32,9 +32,10 @@
  */
 import { join, dirname, basename } from 'node:path';
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, chmodSync, unlinkSync, readdirSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, hostname } from 'node:os';
 import { createHash } from 'node:crypto';
 import { redactSecrets, scanTextForFindings, installServerRulePack, serverRulePackVersion } from '@chat-recall/engine/core/secret-redactor.js';
+import { discoverSessionSources, installSourceExclusions } from '@chat-recall/engine/core/source-discovery.js';
 import { scanFileForSecrets, scanDirForSecrets, scanTenantRules, isSecretScannerAvailable, type ScanFinding, type DirScanFinding } from '@chat-recall/engine/core/secret-scanner.js';
 import { isInternalToolPrompt } from '@chat-recall/engine/core/internal-prompts.js';
 import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js';
@@ -212,7 +213,7 @@ export function _resetTenantSecurityConfigCache(): void {
 // never re-enable something a machine excluded locally. Same 5-minute cache
 // policy as the security config; fail-open to empty (older servers have no
 // endpoint, and an outage must not stop the collector).
-interface TenantSyncConfig { excludeTools: string[]; excludeProjects: string[] }
+interface TenantSyncConfig { excludeTools: string[]; excludeProjects: string[]; excludeSources: string[] }
 const _syncConfigCache = new Map<string, { fetchedAt: number; config: TenantSyncConfig }>();
 
 async function fetchTenantSyncConfig(cred: Credentials): Promise<TenantSyncConfig> {
@@ -222,18 +223,43 @@ async function fetchTenantSyncConfig(cred: Credentials): Promise<TenantSyncConfi
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (cred.token) headers.authorization = `Bearer ${cred.token}`;
   try {
+    // Report what this machine has BEFORE reading the selection back, so a
+    // freshly-discovered source shows up in the dashboard on the first sync
+    // rather than the second. Paths travel in this direction only.
+    try {
+      const sources = discoverSessionSources();
+      if (sources.length > 0) {
+        await fetchWithTimeout(`${base}/api/sync-config/sources`, {
+          method: 'POST', headers,
+          body: JSON.stringify({ device: deviceLabel(), sources }),
+        }).catch(() => null);
+      }
+    } catch { /* reporting is advisory — never block a sync on it */ }
+
     const res = await fetchWithTimeout(`${base}/api/sync-config`, { headers });
-    if (!res.ok) return { excludeTools: [], excludeProjects: [] };
+    if (!res.ok) return { excludeTools: [], excludeProjects: [], excludeSources: [] };
     const body = await res.json().catch(() => ({})) as Partial<TenantSyncConfig>;
     const config: TenantSyncConfig = {
       excludeTools: Array.isArray(body.excludeTools) ? body.excludeTools.filter((t): t is string => typeof t === 'string') : [],
       excludeProjects: Array.isArray(body.excludeProjects) ? body.excludeProjects.filter((p): p is string => typeof p === 'string') : [],
+      // Ids only — installSourceExclusions drops anything else, so a server
+      // sending a path cannot make this collector read it.
+      excludeSources: Array.isArray(body.excludeSources) ? body.excludeSources.filter((x): x is string => typeof x === 'string') : [],
     };
+    const applied = installSourceExclusions(config.excludeSources);
+    if (applied.excluded > 0) {
+      console.error(`[sync] ${applied.excluded} transcript source(s) excluded by tenant config`);
+    }
     _syncConfigCache.set(base, { fetchedAt: Date.now(), config });
     return config;
   } catch {
-    return { excludeTools: [], excludeProjects: [] };
+    return { excludeTools: [], excludeProjects: [], excludeSources: [] };
   }
+}
+
+/** Stable-ish machine label for the dashboard's per-device grouping. */
+function deviceLabel(): string {
+  try { return hostname(); } catch { return 'unknown'; }
 }
 
 export function _resetTenantSyncConfigCache(): void {

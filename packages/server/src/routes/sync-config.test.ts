@@ -40,7 +40,7 @@ describe('/api/sync-config', () => {
 
     const empty = await request(app).get('/api/sync-config');
     expect(empty.status).toBe(200);
-    expect(empty.body).toEqual({ excludeTools: [], excludeProjects: [] });
+    expect(empty.body).toEqual({ excludeTools: [], excludeProjects: [], excludeSources: [] });
 
     const saved = await request(app).post('/api/sync-config').send({
       excludeTools: ['gemini', 'gemini'],
@@ -48,10 +48,10 @@ describe('/api/sync-config', () => {
       junk: 'ignored',
     });
     expect(saved.status).toBe(200);
-    expect(saved.body).toEqual({ excludeTools: ['gemini'], excludeProjects: ['/home/x/secret', '.claude-pr-bot'] });
+    expect(saved.body).toEqual({ excludeTools: ['gemini'], excludeProjects: ['/home/x/secret', '.claude-pr-bot'], excludeSources: [] });
 
     const read = await request(app).get('/api/sync-config');
-    expect(read.body).toEqual({ excludeTools: ['gemini'], excludeProjects: ['/home/x/secret', '.claude-pr-bot'] });
+    expect(read.body).toEqual({ excludeTools: ['gemini'], excludeProjects: ['/home/x/secret', '.claude-pr-bot'], excludeSources: [] });
   });
 
   test('invalid tool name → 400; nothing persisted', async () => {
@@ -59,16 +59,36 @@ describe('/api/sync-config', () => {
     const bad = await request(app).post('/api/sync-config').send({ excludeTools: ['copilot'], excludeProjects: [] });
     expect(bad.status).toBe(400);
     const read = await request(app).get('/api/sync-config');
-    expect(read.body).toEqual({ excludeTools: [], excludeProjects: [] });
+    expect(read.body).toEqual({ excludeTools: [], excludeProjects: [], excludeSources: [] });
   });
 
   test('tenant isolation: t1 rules invisible to t3; no tenant → 401', async () => {
     const t3 = await makeApp('t3');
     const read = await request(t3).get('/api/sync-config');
-    expect(read.body).toEqual({ excludeTools: [], excludeProjects: [] });
+    expect(read.body).toEqual({ excludeTools: [], excludeProjects: [], excludeSources: [] });
 
     const anon = await makeApp();
     expect((await request(anon).get('/api/sync-config')).status).toBe(401);
     expect((await request(anon).post('/api/sync-config').send({ excludeTools: [], excludeProjects: [] })).status).toBe(401);
+  });
+
+  test('excludeSources accepts ids only — a path is rejected outright', async () => {
+    const app = await makeApp('t4');
+    // The endpoint must never become a way to hand collectors a path to read.
+    const bad = await request(app).post('/api/sync-config').send({
+      excludeTools: [], excludeProjects: [], excludeSources: ['/home/adi/.ssh'],
+    });
+    expect(bad.status).toBe(400);
+
+    const alsoBad = await request(app).post('/api/sync-config').send({
+      excludeTools: [], excludeProjects: [], excludeSources: ['src_nothex'],
+    });
+    expect(alsoBad.status).toBe(400);
+
+    const ok = await request(app).post('/api/sync-config').send({
+      excludeTools: [], excludeProjects: [], excludeSources: ['src_0123456789ab'],
+    });
+    expect(ok.status).toBe(200);
+    expect(ok.body.excludeSources).toEqual(['src_0123456789ab']);
   });
 });
