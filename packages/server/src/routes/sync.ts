@@ -40,7 +40,7 @@ import express from 'express';
 import {
   createControlPlane, createStore, createMetadataCache, createOutcomeCache,
   createKnowledgeGraph, runWithTenant, runWithAuthor, classifyChunk,
-  gunzipContainer, parseTranscriptFromContainer,
+  gunzipContainer, gzipContainer, mergeContainer, parseTranscriptFromContainer,
 } from '../imports.js';
 import type { SourceType } from '../imports.js';
 import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js';
@@ -408,6 +408,44 @@ router.post('/', async (req, res) => {
               const container = gunzipContainer(gz);
               if (container) {
                 rawArchiveResult = await store.putRawSession(cv.session_id, container.tool, mtime, gz, Number(cv.raw_size) || gz.length, cv.project_id || '', projectPath);
+
+                // ── Smaller is not the same as stale ────────────────────────
+                // The shrink guard exists to survive a resume-truncated file,
+                // and for that it is exactly right. But it decides on SIZE, and
+                // size cannot tell a truncation from a DISJOINT FRAGMENT: a
+                // second device, or a session resumed under another profile,
+                // legitimately holds records this archive has never seen while
+                // being smaller overall. Rejecting those loses them silently —
+                // the client has already moved on, and nothing ever retries.
+                //
+                // So on a rejection, merge by RECORD (the same union the client
+                // shadow uses) and re-store only if the result actually grew.
+                // Truncation still cannot shrink the archive: a strict subset
+                // merges back to the stored container and is a no-op.
+                if (rawArchiveResult === 'shrink-protected') {
+                  try {
+                    const prior = await store.getRawSession(cv.session_id);
+                    const priorContainer = prior?.gz ? gunzipContainer(prior.gz) : null;
+                    if (priorContainer) {
+                      const merged = mergeContainer(priorContainer, container);
+                      const { gz: mergedGz, size: mergedSize } = gzipContainer(merged.container);
+                      if (mergedSize > Number(prior!.size)) {
+                        rawArchiveResult = await store.putRawSession(
+                          cv.session_id, merged.container.tool, mtime, mergedGz, mergedSize,
+                          cv.project_id || '', projectPath,
+                        );
+                        log.info(
+                          { session: cv.session_id, priorSize: Number(prior!.size), incoming: Number(cv.raw_size) || gz.length, mergedSize },
+                          'raw archive: merged a disjoint fragment that the shrink guard would have dropped',
+                        );
+                      }
+                    }
+                  } catch (err) {
+                    // A failed merge must leave the stored archive exactly as it
+                    // was — the fragment is lost either way, but the history is not.
+                    log.warn({ err, session: cv.session_id }, 'raw archive fragment merge failed; kept the stored copy');
+                  }
+                }
                 const t = parseTranscriptFromContainer(container);
                 if (t.messages.length > 0 || t.subagents.length > 0) {
                   envelope = { v: PARSER_VERSION, messages: t.messages as any, subagents: t.subagents };
