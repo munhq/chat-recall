@@ -13,7 +13,7 @@
 import { createHash } from 'crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { basename, join } from 'path';
-import { geminiHomeDir } from '../tool-paths.js';
+import { geminiHomeDir, geminiTmpDirs } from '../tool-paths.js';
 
 import type {
   ToolBackend,
@@ -74,7 +74,7 @@ export class GeminiBackend implements ToolBackend {
   agentsDir(): string { return join(this.homeDir(), 'agents'); }
 
   isAvailable(): boolean {
-    return existsSync(this.tmpDir());
+    return geminiTmpDirs().length > 0;
   }
 
   // ── ID handling ────────────────────────────────────────────────
@@ -98,13 +98,15 @@ export class GeminiBackend implements ToolBackend {
   }
 
   listSessions(opts: ListSessionsOpts = {}): SessionRef[] {
-    const root = this.tmpDir();
-    if (!existsSync(root)) return [];
     const projMap = this.loadProjectMap();
     const cutoff = opts.sinceMs ?? 0;
     const filter = opts.projectFilter?.toLowerCase();
     const out: SessionRef[] = [];
+    const seen = new Map<string, SessionRef>();
 
+    // Every configured Gemini home, primary first — a second profile holds its
+    // own chats/ tree for the same conversations.
+    for (const root of geminiTmpDirs()) {
     for (const projDir of readdirSync(root, { withFileTypes: true })) {
       if (!projDir.isDirectory()) continue;
       const projectPath = projMap.get(projDir.name) || '';
@@ -157,7 +159,18 @@ export class GeminiBackend implements ToolBackend {
         // from the stat alone (basename id, no preview).
         const innerId = sessionId || basename(f).replace(/\.jsonl?$/, '');
 
-        out.push({
+        // One entry per session id across profiles; keep the freshest sighting
+        // so change detection follows the half that is actually being written.
+        const prior = seen.get(innerId);
+        if (prior) {
+          if (stat.mtimeMs > prior.mtime) {
+            prior.mtime = stat.mtimeMs;
+            prior.modified = stat.mtime.toISOString();
+            prior.fullPath = fullPath;
+          }
+          continue;
+        }
+        const ref: SessionRef = {
           toolId: 'gemini',
           rawId: innerId,
           prefixedId: this.toPrefixedId(innerId),
@@ -169,8 +182,11 @@ export class GeminiBackend implements ToolBackend {
           mtime: stat.mtimeMs,
           firstPrompt,
           messageCount,
-        });
+        };
+        seen.set(innerId, ref);
+        out.push(ref);
       }
+    }
     }
 
     out.sort((a, b) => b.mtime - a.mtime);

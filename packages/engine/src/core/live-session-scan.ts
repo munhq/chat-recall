@@ -26,8 +26,12 @@ import { getBackendForId, listAvailableBackends } from './tool-backend.js';
 import {
   claudeProjectDirs,
   geminiHomeDir,
+  geminiTmpDirs,
   opencodeDbPath,
+  opencodeDbPaths,
   codexHomeDir,
+  codexSessionDirs,
+  agyBrainDirs,
 } from './tool-paths.js';
 // Side-effect import: bootstraps the four ToolBackend implementations into
 // the registry so getBackendForId works at call time. Loaded here because
@@ -277,7 +281,16 @@ function loadGeminiProjectMap(): Map<string, string> {
 }
 
 export function findGeminiSessionFile(sessionIdOrFileBase: string): { path: string; projectDir: string; projectPath: string; format: 'json' | 'jsonl' } | null {
-  const tmpRoot = lazyGeminiTmpDir();
+  // Every configured Gemini home, primary first — same reason as Claude and
+  // Codex: a second profile holds its own half of the same conversation.
+  for (const tmpRoot of geminiTmpDirs()) {
+    const found = findGeminiSessionFileIn(tmpRoot, sessionIdOrFileBase);
+    if (found) return found;
+  }
+  return null;
+}
+
+function findGeminiSessionFileIn(tmpRoot: string, sessionIdOrFileBase: string): { path: string; projectDir: string; projectPath: string; format: 'json' | 'jsonl' } | null {
   if (!existsSync(tmpRoot)) return null;
   const projMap = loadGeminiProjectMap();
 
@@ -407,7 +420,17 @@ export function readGeminiMessages(path: string, format: 'json' | 'jsonl'): Gemi
 // ── Codex ──────────────────────────────────────────────────────────
 
 export function findCodexSessionFile(sessionId: string): { path: string; projectPath: string } | null {
-  const root = lazyCodexSessionsDir();
+  // Every configured Codex home, not just the primary — a session resumed under
+  // a second profile lives in that profile's sessions/ tree, and searching only
+  // the first would report it missing.
+  for (const root of codexSessionDirs()) {
+    const found = findCodexSessionFileIn(root, sessionId);
+    if (found) return found;
+  }
+  return null;
+}
+
+function findCodexSessionFileIn(root: string, sessionId: string): { path: string; projectPath: string } | null {
   if (!existsSync(root)) return null;
 
   // Walk YYYY/MM/DD directories

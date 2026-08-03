@@ -15,7 +15,7 @@
 
 import { existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { join, dirname, basename } from 'path';
 import { loadSourceSettings, _resetSourceSettingsCache } from './settings.js';
 
 // Re-export so existing test imports from this module keep working.
@@ -114,6 +114,91 @@ export function agyHomeDir(): string {
   return process.env.CHAT_RECALL_AGY_HOME
     || sources().agyHome
     || join(homedir(), '.gemini', 'antigravity-cli');
+}
+
+/**
+ * Sibling homes for a tool: `<base>` plus every `<base>-*` next to it.
+ *
+ * Multi-profile users get one dir per account (`~/.claude-work`, `~/.gemini-t2`),
+ * and a tool resumed under a different config dir writes a DISJOINT half of the
+ * same session there. Reading only the primary silently drops it — see
+ * live-session-scan's cross-home union for the measured case.
+ *
+ * An explicit override (env or settings) means the operator has said exactly
+ * where to look, so discovery is off in that case for every tool — matching how
+ * claudeProjectDirs has always behaved.
+ *
+ * `suffix` is appended to each home to reach the session root (e.g. 'projects',
+ * 'sessions', 'tmp'); pass '' for the home itself. Only roots that EXIST are
+ * returned, so callers never have to re-check.
+ */
+function siblingHomes(base: string, overridden: boolean, suffix: string): string[] {
+  const roots: string[] = [];
+  const add = (home: string) => {
+    const root = suffix ? join(home, suffix) : home;
+    if (existsSync(root) && !roots.includes(root)) roots.push(root);
+  };
+  add(base);
+  if (!overridden) {
+    const parent = dirname(base);
+    const leaf = basename(base);
+    try {
+      for (const entry of readdirSync(parent, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (entry.name === leaf || !entry.name.startsWith(leaf + '-')) continue;
+        add(join(parent, entry.name));
+      }
+    } catch { /* parent unreadable — primary only */ }
+  }
+  return roots;
+}
+
+/** Apply tenant source exclusions, failing safe to the unfiltered list: an
+ *  empty root set is indistinguishable from "this machine has no sessions". */
+function applyExclusions(roots: string[], includeExcluded?: boolean): string[] {
+  if (includeExcluded || !_sourceExclusionFilter || roots.length === 0) return roots;
+  const kept = roots.filter((r) => !_sourceExclusionFilter!(r));
+  return kept.length > 0 ? kept : roots;
+}
+
+export interface RootsOpts { includeExcluded?: boolean }
+
+/** Every Gemini `tmp/` root (chats live at `<root>/<project>/chats`). */
+export function geminiTmpDirs(opts: RootsOpts = {}): string[] {
+  const overridden = !!(process.env.CHAT_RECALL_GEMINI_HOME || sources().geminiHome);
+  return applyExclusions(siblingHomes(geminiHomeDir(), overridden, 'tmp'), opts.includeExcluded);
+}
+
+/** Every Codex `sessions/` root. */
+export function codexSessionDirs(opts: RootsOpts = {}): string[] {
+  const overridden = !!(process.env.CHAT_RECALL_CODEX_HOME || sources().codexHome);
+  return applyExclusions(siblingHomes(codexHomeDir(), overridden, 'sessions'), opts.includeExcluded);
+}
+
+/** Every Antigravity `brain/` root. */
+export function agyBrainDirs(opts: RootsOpts = {}): string[] {
+  const overridden = !!(process.env.CHAT_RECALL_AGY_HOME || sources().agyHome);
+  return applyExclusions(siblingHomes(agyHomeDir(), overridden, 'brain'), opts.includeExcluded);
+}
+
+/**
+ * Every OpenCode database. Unlike the others this is a FILE, so siblings are
+ * discovered on the containing data dir (`~/.local/share/opencode-work/…`).
+ */
+export function opencodeDbPaths(opts: RootsOpts = {}): string[] {
+  const primary = opencodeDbPath();
+  const overridden = !!(process.env.CHAT_RECALL_OPENCODE_DB || sources().opencodeDbPath);
+  const dbFile = basename(primary);
+  const dirs = siblingHomes(dirname(primary), overridden, '');
+  const dbs: string[] = [];
+  for (const d of dirs) {
+    const p = join(d, dbFile);
+    if (existsSync(p) && !dbs.includes(p)) dbs.push(p);
+  }
+  // The primary may not exist yet (fresh install) — keep it so callers that
+  // create/open it still get a path.
+  if (dbs.length === 0) dbs.push(primary);
+  return applyExclusions(dbs, opts.includeExcluded);
 }
 
 /**

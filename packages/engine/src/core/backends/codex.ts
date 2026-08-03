@@ -11,7 +11,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync, openSync, readSync, closeSync } from 'fs';
 import { basename, dirname, join } from 'path';
-import { codexHomeDir } from '../tool-paths.js';
+import { codexHomeDir, codexSessionDirs } from '../tool-paths.js';
 
 import type {
   ToolBackend,
@@ -65,7 +65,12 @@ export class CodexBackend implements ToolBackend {
   /** Subagent definitions — one TOML file per agent. */
   agentsDir(): string { return join(this.homeDir(), 'agents'); }
 
-  isAvailable(): boolean { return existsSync(this.sessionsDir()); }
+  /** Any configured home having a sessions/ tree makes Codex available — a
+   *  machine whose only Codex profile is a secondary one still counts. */
+  isAvailable(): boolean { return codexSessionDirs().length > 0; }
+
+  /** Every configured sessions/ root, primary first. */
+  sessionDirs(): string[] { return codexSessionDirs(); }
 
   // ── ID handling ────────────────────────────────────────────────
   matchesId(id: string): boolean { return id.startsWith(PREFIX); }
@@ -88,12 +93,15 @@ export class CodexBackend implements ToolBackend {
   }
 
   listSessions(opts: ListSessionsOpts = {}): SessionRef[] {
-    const root = this.sessionsDir();
-    if (!existsSync(root)) return [];
     const cutoff = opts.sinceMs ?? 0;
     const filter = opts.projectFilter?.toLowerCase();
     const out: SessionRef[] = [];
+    const seen = new Map<string, SessionRef>();
 
+    // Walk every configured home. `seen` keeps one entry per session id when a
+    // conversation exists in two profiles; the fullest content is resolved
+    // later by the reader, not here.
+    for (const root of this.sessionDirs()) {
     for (const filePath of walkRollouts(root)) {
       let stat;
       try { stat = statSync(filePath); } catch { continue; }
@@ -134,7 +142,19 @@ export class CodexBackend implements ToolBackend {
         }
       } catch { /* unreadable — leave defaults */ }
 
-      out.push({
+      // One entry per session id — a conversation present in two profiles is
+      // still one conversation. Keep the freshest sighting so mtime-based
+      // change detection sees the live half.
+      const prior = seen.get(rawId);
+      if (prior) {
+        if (stat.mtimeMs > prior.mtime) {
+          prior.mtime = stat.mtimeMs;
+          prior.modified = stat.mtime.toISOString();
+          prior.fullPath = filePath;
+        }
+        continue;
+      }
+      const ref: SessionRef = {
         toolId: 'codex',
         rawId,
         prefixedId: this.toPrefixedId(rawId),
@@ -146,7 +166,10 @@ export class CodexBackend implements ToolBackend {
         mtime: stat.mtimeMs,
         firstPrompt,
         messageCount,
-      });
+      };
+      seen.set(rawId, ref);
+      out.push(ref);
+    }
     }
 
     out.sort((a, b) => b.mtime - a.mtime);
@@ -403,8 +426,11 @@ export class CodexBackend implements ToolBackend {
    * touching files still passes the `sinceMs` cutoff.
    */
   collectRecentEdits(opts: CollectRecentEditsOpts): SessionEdit[] {
-    const root = this.sessionsDir();
-    if (!existsSync(root)) return [];
+    // Recent-edit scanning must cover every profile, or activity from a
+    // secondary Codex home is invisible in the timeline.
+    const roots = this.sessionDirs();
+    if (roots.length === 0) return [];
+    const root = roots[0];
 
     interface RolloutMeta {
       rawId: string;
