@@ -1215,7 +1215,8 @@ program
     }
     const { verifyAgainstServer, verifyTargets } = await import('./verify-deep.js');
     const { getBackend } = await import('@chat-recall/engine/core/tool-backend.js');
-    const { gzipContainer } = await import('@chat-recall/engine/transcript/index.js');
+    const { gzipContainer, mapContainerText } = await import('@chat-recall/engine/transcript/index.js');
+    const { redactSecrets } = await import('@chat-recall/engine/core/secret-redactor.js');
     const { fetchWithTimeout } = await import('./http.js');
     const { forceFullResync } = await import('./verify-repair.js');
 
@@ -1236,10 +1237,18 @@ program
         try {
           const exp = claude.exportRawSession?.(rawId);
           if (!exp) return null;
-          return gzipContainer({
+          const container = {
             v: 1, tool: 'claude', mtime: exp.mtime,
             files: exp.files.map((f) => ({ name: f.name, text: f.bytes.toString('utf-8') })),
-          } as never).size;
+          } as never;
+          // REDACT FIRST — the sync ships a redacted container, so measuring the
+          // raw one compares different things. Redaction changes size (a long
+          // secret becomes a short sentinel), which showed up as a permanent
+          // deficit that no amount of re-syncing could close: two sessions stayed
+          // "stranded" through a full repair+sync cycle purely because they
+          // contained secrets. Same call the sync path makes.
+          const redacted = mapContainerText(container, (t) => redactSecrets(t, { force: true }));
+          return gzipContainer(redacted).size;
         } catch { return null; }
       },
       serverSizes: async (server: string, token: string) => {

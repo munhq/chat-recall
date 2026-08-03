@@ -13,6 +13,10 @@
  * the server is genuinely missing records, not that two measurements disagree.
  * Sub-unit noise is ignored via a tolerance.
  *
+ * Both sides must be the REDACTED container (see Deps.localContainerSize): the
+ * archive stores what was shipped, and what was shipped had its secrets
+ * replaced by sentinels.
+ *
  * Deliberately NOT an mtime comparison: the server stores the client-sent mtime,
  * which drifts sub-second against the file for essentially every session. An
  * mtime-based version of this check reported 9,975 of 10,032 sessions suspect
@@ -50,8 +54,31 @@ export interface VerifyReport {
  *  missing records. */
 const TOLERANCE_BYTES = 512;
 
+/**
+ * A session written within this window is being TYPED INTO. Its bytes grow
+ * between the cursor read and the container build, so `cursor >= fileSize`
+ * momentarily holds for a session that is simply mid-flight — and it gets
+ * reported as stranded on every run.
+ *
+ * This is not theoretical: the first real run flagged the live session it was
+ * being run from, short by 902 bytes. A checker that always cries wolf about the
+ * session you are in is a checker people learn to ignore, so recent writes are
+ * classified `pending` regardless of what the cursor says.
+ */
+const LIVE_GRACE_MS = 10 * 60_000;
+
 interface Deps {
   listSessions(sinceMs: number): Array<{ rawId: string; prefixedId: string; projectPath: string; mtime: number }>;
+  /**
+   * Size of the container as it WOULD BE SHIPPED — i.e. REDACTED, then gzipped.
+   *
+   * This is a hard requirement, not a preference. The sync path redacts before
+   * archiving, so measuring the raw container compares two different artifacts:
+   * a long secret becomes a short sentinel and the local side reads bigger
+   * forever. Two sessions were reported stranded through a full repair+sync
+   * cycle for exactly this reason — the deficit was redaction, not loss, and no
+   * amount of re-shipping could ever close it.
+   */
   localContainerSize(rawId: string): number | null;
   fileSize(rawId: string): number;
   serverSizes(server: string, token: string): Promise<Map<string, number>>;
@@ -66,6 +93,7 @@ export async function verifyAgainstServer(
   token: string,
   sinceMs: number,
   deps: Deps,
+  now: number = Date.now(),
 ): Promise<VerifyReport> {
   const serverSize = await deps.serverSizes(server, token);
   const ledger = getSyncedRows(server);
@@ -90,7 +118,8 @@ export async function verifyAgainstServer(
     // send — so this session will never re-ship on its own.
     const row = ledger.get(s.prefixedId) ?? ledger.get(s.rawId);
     const cursor = row?.s ?? 0;
-    const stranded = !!row && cursor >= deps.fileSize(s.rawId);
+    const live = s.mtime >= now - LIVE_GRACE_MS;
+    const stranded = !live && !!row && cursor >= deps.fileSize(s.rawId);
 
     const finding: VerifyFinding = {
       sessionId: s.rawId,
