@@ -12,6 +12,12 @@ import React, { useEffect, useState } from 'react';
 import { Button } from './primitives';
 import { getSyncConfig, saveSyncConfig, getSyncSources, type ReportedSource } from '../services/api';
 
+/** Display names for the tool a source belongs to. */
+const TOOL_LABELS: Record<string, string> = {
+  claude: 'Claude Code', gemini: 'Gemini CLI', codex: 'Codex',
+  agy: 'Antigravity', opencode: 'OpenCode',
+};
+
 const TOOLS: Array<[string, string]> = [
   ['claude', 'Claude Code'], ['gemini', 'Gemini CLI'], ['opencode', 'OpenCode'], ['codex', 'Codex'], ['agy', 'Antigravity'],
 ];
@@ -87,9 +93,10 @@ export default function SyncRules() {
         <>
           <div style={cap}>Transcript sources on your machines</div>
           <div style={{ color: 'var(--cr-fg-2)', fontSize: 12.5, lineHeight: 1.5, margin: '6px 0 10px' }}>
-            Each machine reports the Claude profile folders it finds. Untick one to stop syncing it —
-            useful when a work profile shouldn't reach this workspace. chat-recall can only switch off
-            a folder a machine already found; it can never be pointed at a new path from here.
+            Each machine reports the profile folders it finds for every AI tool — Claude Code, Gemini,
+            Codex, Antigravity and OpenCode. Untick one to stop syncing it, which is how you keep a
+            work profile out of this workspace. chat-recall can only switch off a folder a machine
+            already found; it can never be pointed at a new path from here.
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6, margin: '0 0 16px' }}>
             {sources.map((src) => {
@@ -117,7 +124,12 @@ export default function SyncRules() {
                       wordBreak: 'break-all', fontSize: 12.5,
                     }}>{src.path}</span>
                     <span style={{ display: 'block', color: 'var(--cr-fg-3)', fontSize: 11.5, marginTop: 2 }}>
-                      {src.device ? `${src.device} · ` : ''}{src.sessions} session{src.sessions === 1 ? '' : 's'}
+                      {TOOL_LABELS[src.tool] || src.tool}
+                      {src.device ? ` · ${src.device}` : ''}
+                      {/* OpenCode keeps sessions in a SQLite file, so a row count
+                          would mean loading a native driver just to draw a
+                          checkbox — the profile is listed without one. */}
+                      {src.sessions > 0 ? ` · ${src.sessions} session${src.sessions === 1 ? '' : 's'}` : ''}
                       {src.isPrimary ? ' · main profile' : ''}
                       {off ? ' · not syncing' : ''}
                     </span>
