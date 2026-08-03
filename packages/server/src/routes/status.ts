@@ -40,6 +40,33 @@ router.get('/sync', async (_req, res) => {
   }
 });
 
+/**
+ * GET /api/status/archives — per-session archive sizes for this tenant.
+ *
+ * The client cannot tell whether the server is missing records without knowing
+ * what the server holds. Returns `size` in the SAME unit the shrink guard
+ * compares (gzipContainer().size, as stored), so `chat-recall verify --deep` can
+ * diff it against the local union directly instead of guessing from mtimes.
+ *
+ * Ids + sizes only — no content, so this is cheap and leaks nothing a device
+ * that owns the tenant did not already send.
+ */
+router.get('/archives', async (_req, res) => {
+  try {
+    const { createStore } = await import('../imports.js');
+    const store = await createStore();
+    try {
+      const rows = await store.listRawSessionVersions();
+      res.json({
+        count: rows.length,
+        archives: rows.map((r) => ({ id: r.session_id, size: Number(r.size) || 0, mtime: Number(r.mtime) || 0 })),
+      });
+    } finally { await store.close(); }
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'archive listing failed' });
+  }
+});
+
 // GET /api/status
 router.get('/', async (req, res) => {
   try {
