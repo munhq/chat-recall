@@ -1196,6 +1196,104 @@ companions
     if (u.removed) console.log(chalk.dim(`  Unregistered MCP server from ${mcpJsonPath}`));
   });
 
+// ── verify: is the server actually holding what this machine has? ────────
+// Every silent-loss incident here was found by a human asking about one
+// session. `15604 skipped` prints identically whether the corpus is complete or
+// a third of a session is missing, so this is the check that makes the
+// difference visible without an investigation.
+program
+  .command('verify')
+  .description('Check that the server holds everything this machine has, per session')
+  .option('--deep', 'Compare per-session content size against each server (slower, exact)', false)
+  .option('--since-hours <n>', 'Only check sessions modified in the last N hours (default: all)')
+  .option('--repair', 'Re-ship every STRANDED session found (clears its ledger cursor)', false)
+  .option('--json', 'Machine-readable output', false)
+  .action(async (opts: { deep?: boolean; sinceHours?: string; repair?: boolean; json?: boolean }) => {
+    if (!opts.deep) {
+      console.log(chalk.yellow('verify currently implements only --deep; re-run with --deep.'));
+      return;
+    }
+    const { verifyAgainstServer, verifyTargets } = await import('./verify-deep.js');
+    const { getBackend } = await import('@chat-recall/engine/core/tool-backend.js');
+    const { gzipContainer } = await import('@chat-recall/engine/transcript/index.js');
+    const { fetchWithTimeout } = await import('./http.js');
+    const { forceFullResync } = await import('./verify-repair.js');
+
+    const targets = verifyTargets();
+    if (targets.length === 0) {
+      console.error(chalk.red('No server configured — run `chat-recall login` first.'));
+      process.exit(1);
+    }
+    const sinceMs = opts.sinceHours ? Date.now() - Number(opts.sinceHours) * 3600_000 : 0;
+    const claude = getBackend('claude');
+
+    const deps = {
+      listSessions: (since: number) => claude.listSessions({ sinceMs: since }).map((s) => ({
+        rawId: s.rawId, prefixedId: s.prefixedId, projectPath: s.projectPath, mtime: s.mtime,
+      })),
+      fileSize: (rawId: string) => claude.fileSize?.(rawId) ?? 0,
+      localContainerSize: (rawId: string): number | null => {
+        try {
+          const exp = claude.exportRawSession?.(rawId);
+          if (!exp) return null;
+          return gzipContainer({
+            v: 1, tool: 'claude', mtime: exp.mtime,
+            files: exp.files.map((f) => ({ name: f.name, text: f.bytes.toString('utf-8') })),
+          } as never).size;
+        } catch { return null; }
+      },
+      serverSizes: async (server: string, token: string) => {
+        const headers: Record<string, string> = {};
+        if (token) headers.authorization = `Bearer ${token}`;
+        const res = await fetchWithTimeout(`${server}/api/status/archives`, { headers }, 120_000);
+        if (!res.ok) throw new Error(`${server}: HTTP ${res.status} from /api/status/archives`);
+        const body = await res.json() as { archives?: Array<{ id: string; size: number }> };
+        return new Map((body.archives || []).map((a) => [a.id, Number(a.size) || 0]));
+      },
+    };
+
+    let exitCode = 0;
+    const reports = [];
+    for (const t of targets) {
+      let report;
+      try {
+        report = await verifyAgainstServer(t.serverUrl, t.token, sinceMs, deps);
+      } catch (e) {
+        console.error(chalk.red(`${t.serverUrl}: ${e instanceof Error ? e.message : e}`));
+        exitCode = 1;
+        continue;
+      }
+      reports.push(report);
+      if (opts.json) continue;
+
+      console.log(chalk.bold(`\n${t.serverUrl}`));
+      console.log(`  checked ${report.checked} · complete ${report.complete} · no archive ${report.missingArchive}`);
+      if (report.pending.length > 0) {
+        console.log(chalk.dim(`  ${report.pending.length} pending (the ledger knows there is more to send — these go on their own)`));
+      }
+      if (report.stranded.length === 0) {
+        console.log(chalk.green('  ✓ nothing stranded'));
+      } else {
+        exitCode = 2;
+        console.log(chalk.red(`  ✗ ${report.stranded.length} STRANDED — the ledger claims complete while the server holds less:`));
+        for (const f of report.stranded.slice(0, 25)) {
+          console.log(`      ${f.sessionId.slice(0, 8)}  server short by ${String(f.deficit).padStart(9)} B  ${(f.projectPath || '').slice(-44)}`);
+        }
+        if (report.stranded.length > 25) console.log(chalk.dim(`      …and ${report.stranded.length - 25} more`));
+        if (!opts.repair) {
+          console.log(chalk.dim('  Re-run with --repair to clear their cursors and re-ship.'));
+        }
+      }
+
+      if (opts.repair && report.stranded.length > 0) {
+        const n = forceFullResync(t.serverUrl, report.stranded.map((f) => f.sessionId));
+        console.log(chalk.green(`  ↻ cleared ${n} ledger cursor(s) — run \`chat-recall sync\` to re-ship`));
+      }
+    }
+    if (opts.json) console.log(JSON.stringify({ reports }, null, 2));
+    process.exit(exitCode);
+  });
+
 // ── detectors: the OPTIONAL external secret scanners ─────────────────────
 // These are a developer/CI/self-host tool, not part of the SaaS path — the
 // detection every user relies on is in-process (see docs/SECRET-DETECTION.md).

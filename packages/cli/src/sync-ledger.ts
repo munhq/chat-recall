@@ -72,6 +72,10 @@ function toRow(entry: LedgerEntry | undefined): SyncedRow | undefined {
 
 const ledgerPath = (): string => join(getDataDir(), 'sync-ledger.json');
 
+/** Where the ledger lives — exposed so repair tooling can back it up before
+ *  editing the file that decides what gets uploaded. */
+export function ledgerFilePath(): string { return ledgerPath(); }
+
 // In-memory cache so a sync walk doesn't re-read the file per batch. Loaded
 // lazily; writes go through atomic tmp+rename so a crash mid-write can't
 // corrupt the ledger (worst case: a session re-uploads, which is safe).
@@ -176,9 +180,41 @@ export function persistLedgerData(server: string, serverData: Record<string, Led
  * leave them absent/0 → the next tick treats the session as FULL-eligible
  * only when mtime advances, exactly as before this field existed.
  */
+/**
+ * Record sync progress.
+ *
+ * ── The byte cursor is a DELIVERY RECEIPT, not a measurement ──────────────
+ * `o`/`s` mean "the server has these bytes". `syncMode` returns SKIP/APPEND off
+ * them, so writing a cursor the server never acknowledged makes a session look
+ * complete forever: skipped on every pass, never re-exported, unreachable.
+ * Self-sealing, and silent — nothing reports it.
+ *
+ * That is not hypothetical. A call site stamped the cursor at the LOCAL
+ * `fileSize()` after a tail came back empty, purely to stop the gate retrying.
+ * Once `fileSize()` began summing copies across profile homes, the cursor
+ * jumped to the union size while the server still held one home's half —
+ * measured on session 7adc748c: ledger `s: 7195821`, server 2004 of 2698
+ * records, and it could never re-ship because it read as done.
+ *
+ * So the cursor now moves ONLY when the caller passes `acked: true`, meaning a
+ * server write for those bytes succeeded. Anti-thrash callers that just want to
+ * stop retrying within an mtime pass a row WITHOUT `acked` — mtime alone
+ * already yields SKIP for an unchanged file, which was all they needed.
+ */
+/** How many times a caller tried to move the cursor without an ack. Surfaced so
+ *  a regression shows up as a number instead of silent data loss. */
+let unackedCursorAttempts = 0;
+export function unackedCursorAttemptCount(): number { return unackedCursorAttempts; }
+export function _resetUnackedCursorCount(): void { unackedCursorAttempts = 0; }
+
 export function markSynced(
   server: string,
-  rows: Array<{ id: string; mtime: number; offset?: number; size?: number; hash?: string }>,
+  rows: Array<{
+    id: string; mtime: number; offset?: number; size?: number; hash?: string;
+    /** The server confirmed a write covering `offset`/`size`. Required for the
+     *  cursor to advance; without it those fields are ignored. */
+    acked?: boolean;
+  }>,
 ): void {
   if (rows.length === 0) return;
   const data = load();
@@ -192,8 +228,14 @@ export function markSynced(
     const prevOS = prev && (prev.o !== undefined || prev.s !== undefined)
       ? { o: prev.o, s: prev.s }
       : {};
-    const o = r.offset ?? prevOS.o ?? 0;
-    const s = r.size ?? prevOS.s ?? 0;
+    // Unacknowledged rows keep whatever cursor the server last confirmed. A
+    // local measurement must never move it forward — see the header.
+    const cursorFromCaller = r.acked === true;
+    if (!cursorFromCaller && (r.offset !== undefined || r.size !== undefined)) {
+      unackedCursorAttempts++;
+    }
+    const o = (cursorFromCaller ? r.offset : undefined) ?? prevOS.o ?? 0;
+    const s = (cursorFromCaller ? r.size : undefined) ?? prevOS.s ?? 0;
     // Record the version that applies to THIS session's tool (per-tool), so a
     // tool-specific extractor bump only re-ships that tool's sessions.
     const ev = extractorVersionForId(r.id);

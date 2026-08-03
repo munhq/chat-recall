@@ -119,7 +119,7 @@ describe('sync-ledger (JSON watermark)', () => {
     expect(syncMode(undefined, 1000, 500, V, AO)).toBe('full');
 
     // FULL sync ships the whole file; mark with offset=size so the cursor covers.
-    markSynced(SRV, [{ id: 's1', mtime: 1000, offset: 500, size: 500 }]);
+    markSynced(SRV, [{ id: 's1', mtime: 1000, offset: 500, size: 500, acked: true }]);
     _resetLedgerCacheForTests();
     // Unchanged mtime + cursor covers size → skip.
     expect(syncMode(getSyncedRows(SRV).get('s1'), 1000, 500, V, AO)).toBe('skip');
@@ -138,7 +138,7 @@ describe('sync-ledger (JSON watermark)', () => {
     expect(syncMode(getSyncedRows(SRV).get('s1'), 1000, 800, V + 1, AO)).toBe('full');
 
     // File shrank (rotation/truncation, size < offset) → full.
-    markSynced(SRV, [{ id: 's2', mtime: 2000, offset: 1000, size: 1000 }]);
+    markSynced(SRV, [{ id: 's2', mtime: 2000, offset: 1000, size: 1000, acked: true }]);
     _resetLedgerCacheForTests();
     expect(syncMode(getSyncedRows(SRV).get('s2'), 2000, 400, V, AO)).toBe('full');
 
@@ -162,14 +162,14 @@ describe('sync-ledger (JSON watermark)', () => {
     const F = { name: 'tool_title', version: 1, mtimeSensitive: true };
     // Field coverage first, then a FULL conversation sync with offset.
     markFieldCoverage(SRV, F, [{ id: 's1', present: true, mtime: 1000 }]);
-    markSynced(SRV, [{ id: 's1', mtime: 1000, offset: 500, size: 500 }]);
+    markSynced(SRV, [{ id: 's1', mtime: 1000, offset: 500, size: 500, acked: true }]);
     _resetLedgerCacheForTests();
     const row = getSyncedRows(SRV).get('s1')!;
     expect(row.o).toBe(500);
     expect(row.s).toBe(500);
     expect(row.f?.tool_title?.p).toBe(1); // f survived
     // A later APPEND ack advances o/s without touching f.
-    markSynced(SRV, [{ id: 's1', mtime: 1000, offset: 800, size: 800 }]);
+    markSynced(SRV, [{ id: 's1', mtime: 1000, offset: 800, size: 800, acked: true }]);
     _resetLedgerCacheForTests();
     const row2 = getSyncedRows(SRV).get('s1')!;
     expect(row2.o).toBe(800);
@@ -182,7 +182,7 @@ describe('sync-ledger (JSON watermark)', () => {
     const { EXTRACTOR_VERSION } = await import('@chat-recall/engine/core/extractor-version.js');
     const SRV = 'https://resync.example';
     // A fully-synced session with an offset cursor.
-    markSynced(SRV, [{ id: 's1', mtime: 1000, offset: 500, size: 500 }]);
+    markSynced(SRV, [{ id: 's1', mtime: 1000, offset: 500, size: 500, acked: true }]);
     _resetLedgerCacheForTests();
     expect(getSyncedRows(SRV).get('s1')).toBeDefined();
     // Server says full_resync_needed → wipe the row.
