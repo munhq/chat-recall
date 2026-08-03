@@ -25,13 +25,18 @@
 import { createHash } from 'crypto';
 import { existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
-import { claudeProjectDirs, _setSourceExclusionFilter } from './tool-paths.js';
+import {
+  claudeProjectDirs, geminiTmpDirs, codexSessionDirs, agyBrainDirs, opencodeDbPaths,
+  _setSourceExclusionFilter,
+} from './tool-paths.js';
+
+export type SourceTool = 'claude' | 'gemini' | 'codex' | 'agy' | 'opencode';
 
 export interface SessionSource {
   /** Stable id derived from the path — what the dashboard toggles and the
    *  server stores. Never a raw path in the server→client direction. */
   id: string;
-  tool: 'claude';
+  tool: SourceTool;
   /** Absolute projects dir on this machine. Reported UP only. */
   path: string;
   /** Transcript count, so the dashboard can show what is at stake. */
@@ -83,38 +88,93 @@ export function isSourceExcluded(path: string): boolean {
 /** Current exclusions, for logging and for the sync summary. */
 export function excludedSourceIds(): string[] { return [...excludedIds]; }
 
-function countTranscripts(projectsDir: string): { sessions: number; newestMtime: number } {
+/**
+ * Count transcripts under a source root. Each tool nests differently — Claude
+ * one level (`<project>/<id>.jsonl`), Gemini two (`<project>/chats/session-*.json`),
+ * Codex three (`YYYY/MM/DD/rollout-*.jsonl`), Antigravity four
+ * (`<id>/.system_generated/logs/*.jsonl`) — so this walks to a bounded depth
+ * with a per-tool filename test rather than assuming a shape. Counting the
+ * wrong thing here shows the operator "0 sessions" next to a profile that has
+ * thousands, which is exactly the sort of number people make decisions on.
+ */
+const MAX_DEPTH = 5;
+
+function isTranscript(tool: SourceTool, name: string): boolean {
+  if (name === 'sessions-index.json') return false;
+  switch (tool) {
+    case 'gemini':
+      return name.startsWith('session-') && (name.endsWith('.json') || name.endsWith('.jsonl'));
+    case 'claude':
+    case 'codex':
+    case 'agy':
+      return name.endsWith('.jsonl');
+    default:
+      return false;
+  }
+}
+
+function countTranscripts(root: string, tool: SourceTool): { sessions: number; newestMtime: number } {
   let sessions = 0;
   let newestMtime = 0;
-  let projects: string[];
-  try { projects = readdirSync(projectsDir); } catch { return { sessions, newestMtime }; }
-  for (const proj of projects) {
-    let files: string[];
-    try { files = readdirSync(join(projectsDir, proj)); } catch { continue; }
-    for (const f of files) {
-      if (!f.endsWith('.jsonl') || f === 'sessions-index.json') continue;
+
+  const walk = (dir: string, depth: number): void => {
+    if (depth > MAX_DEPTH) return;
+    let entries;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) { walk(full, depth + 1); continue; }
+      if (!isTranscript(tool, e.name)) continue;
       sessions++;
       try {
-        const m = statSync(join(projectsDir, proj, f)).mtimeMs;
+        const m = statSync(full).mtimeMs;
         if (m > newestMtime) newestMtime = m;
       } catch { /* vanished mid-scan */ }
     }
-  }
+  };
+  walk(root, 0);
   return { sessions, newestMtime };
 }
 
+/** Count sessions in an OpenCode database — one row per session, so the file
+ *  itself is the unit rather than a directory of transcripts. */
+function countOpencodeSessions(dbPath: string): { sessions: number; newestMtime: number } {
+  try {
+    const st = statSync(dbPath);
+    // Reading the db here would mean loading better-sqlite3 just to render a
+    // checkbox. The file's own mtime answers "is this profile active?", and the
+    // exact count is not worth an optional native dependency on this path.
+    return { sessions: 0, newestMtime: st.mtimeMs };
+  } catch { return { sessions: 0, newestMtime: 0 }; }
+}
+
 /**
- * Every transcript source on this machine, INCLUDING ones currently excluded —
- * the dashboard has to be able to show a switched-off source in order to switch
- * it back on. Ordered as scanned, primary first.
+ * Every transcript source on this machine, for EVERY tool, INCLUDING ones
+ * currently excluded — the dashboard has to be able to show a switched-off
+ * source in order to switch it back on. Primary first within each tool.
  */
 export function discoverSessionSources(): SessionSource[] {
   const out: SessionSource[] = [];
-  const dirs = claudeProjectDirs({ includeExcluded: true });
-  for (const [i, path] of dirs.entries()) {
-    if (!existsSync(path)) continue;
-    const { sessions, newestMtime } = countTranscripts(path);
-    out.push({ id: sourceId(path), tool: 'claude', path, sessions, newestMtime, isPrimary: i === 0 });
+
+  const dirTools: Array<[SourceTool, string[]]> = [
+    ['claude',  claudeProjectDirs({ includeExcluded: true })],
+    ['gemini',  geminiTmpDirs({ includeExcluded: true })],
+    ['codex',   codexSessionDirs({ includeExcluded: true })],
+    ['agy',     agyBrainDirs({ includeExcluded: true })],
+  ];
+  for (const [tool, dirs] of dirTools) {
+    for (const [i, path] of dirs.entries()) {
+      if (!existsSync(path)) continue;
+      const { sessions, newestMtime } = countTranscripts(path, tool);
+      out.push({ id: sourceId(path), tool, path, sessions, newestMtime, isPrimary: i === 0 });
+    }
   }
+
+  for (const [i, path] of opencodeDbPaths({ includeExcluded: true }).entries()) {
+    if (!existsSync(path)) continue;
+    const { sessions, newestMtime } = countOpencodeSessions(path);
+    out.push({ id: sourceId(path), tool: 'opencode', path, sessions, newestMtime, isPrimary: i === 0 });
+  }
+
   return out;
 }

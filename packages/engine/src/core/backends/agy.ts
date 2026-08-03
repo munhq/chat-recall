@@ -10,7 +10,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import { homedir } from 'os';
-import { agyHomeDir } from '../tool-paths.js';
+import { agyHomeDir, agyBrainDirs } from '../tool-paths.js';
 import { readTailFromOffset } from './tail-read.js';
 
 import type {
@@ -50,7 +50,7 @@ export class AgyBackend implements ToolBackend {
   homeDir(): string { return agyHomeDir(); }
 
   isAvailable(): boolean {
-    return existsSync(join(this.homeDir(), 'brain'));
+    return agyBrainDirs().length > 0;
   }
 
   // ── ID handling ────────────────────────────────────────────────
@@ -61,10 +61,21 @@ export class AgyBackend implements ToolBackend {
   // ── Location ───────────────────────────────────────────────────
   findSession(id: string): SessionLocation | null {
     const rawId = this.toRawId(id);
-    const brainDir = join(this.homeDir(), 'brain', rawId);
-    if (!existsSync(brainDir)) return null;
+    // Every configured Antigravity home, primary first — searching only the
+    // first would report a session held by a second profile as missing.
+    for (const brainDir of agyBrainDirs()) {
+      const found = this.findSessionIn(brainDir, rawId);
+      if (found) return found;
+    }
+    return null;
+  }
 
-    const path = agyTranscriptPath(join(brainDir, '.system_generated', 'logs'));
+  /** Resolve a session inside ONE brain root. */
+  private findSessionIn(brainDir: string, rawId: string): SessionLocation | null {
+    const sessionDir = join(brainDir, rawId);
+    if (!existsSync(sessionDir)) return null;
+
+    const path = agyTranscriptPath(join(sessionDir, '.system_generated', 'logs'));
     if (!path) return null;
 
     let mtime = 0;
@@ -83,17 +94,18 @@ export class AgyBackend implements ToolBackend {
   }
 
   listSessions(opts: ListSessionsOpts = {}): SessionRef[] {
-    const brainDir = join(this.homeDir(), 'brain');
-    if (!existsSync(brainDir)) return [];
     const cutoff = opts.sinceMs ?? 0;
     const filter = opts.projectFilter?.toLowerCase();
     const out: SessionRef[] = [];
+    const seenIds = new Set<string>();
 
+    // Every configured Antigravity home, primary first.
+    for (const brainDir of agyBrainDirs()) {
     let sessionDirs: string[];
     try {
       sessionDirs = readdirSync(brainDir);
     } catch {
-      return [];
+      continue;
     }
 
     for (const rawId of sessionDirs) {
@@ -134,6 +146,10 @@ export class AgyBackend implements ToolBackend {
         }
       } catch { /* ignore */ }
 
+      // A session id appears once even when two profiles hold it.
+      if (seenIds.has(rawId)) continue;
+      seenIds.add(rawId);
+
       out.push({
         toolId: 'agy',
         rawId,
@@ -147,6 +163,7 @@ export class AgyBackend implements ToolBackend {
         firstPrompt,
         messageCount,
       });
+    }
     }
 
     out.sort((a, b) => b.mtime - a.mtime);
@@ -366,8 +383,11 @@ export class AgyBackend implements ToolBackend {
   }
 
   collectRecentEdits(opts: CollectRecentEditsOpts): SessionEdit[] {
-    const brainDir = join(this.homeDir(), 'brain');
-    if (!existsSync(brainDir)) return [];
+    // Recent activity must include secondary profiles, or their edits never
+    // appear in the timeline.
+    const brainRoots = agyBrainDirs();
+    if (brainRoots.length === 0) return [];
+    const brainDir = brainRoots[0];
 
     const candidates: { rawId: string; mtime: number }[] = [];
     let sessionDirs: string[];

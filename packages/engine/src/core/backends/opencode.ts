@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
-import { opencodeDbPath } from '../tool-paths.js';
+import { opencodeDbPath, opencodeDbPaths } from '../tool-paths.js';
 
 const require = createRequire(import.meta.url);
 
@@ -109,7 +109,44 @@ export class OpencodeBackend implements ToolBackend {
 
   // Available only when both the DB exists AND better-sqlite3 can be loaded —
   // without the driver we cannot read it, so OpenCode is effectively absent.
-  isAvailable(): boolean { return existsSync(this.dbPath()) && loadBetterSqlite3() !== null; }
+  /** Every configured OpenCode database, primary first. Unlike the other tools
+   *  OpenCode stores sessions in a FILE, so a second profile means a second db
+   *  (`~/.local/share/opencode-work/opencode.db`) rather than a second dir. */
+  dbPaths(): string[] { return opencodeDbPaths(); }
+
+  isAvailable(): boolean {
+    if (loadBetterSqlite3() === null) return false;
+    return this.dbPaths().some((p) => existsSync(p));
+  }
+
+  /**
+   * Which database holds this session. Sessions are keyed by id inside a db, so
+   * a per-session query has to be routed to the right file — using the primary
+   * for everything made every session in a secondary profile look absent.
+   * Cached because it costs one query per db and is asked repeatedly.
+   */
+  dbPathFor(rawId: string): string {
+    const cached = this._dbForSession.get(rawId);
+    if (cached) return cached;
+    for (const path of this.dbPaths()) {
+      if (!existsSync(path)) continue;
+      const db = openReadonly(path);
+      if (!db) continue;
+      try {
+        const row = db.prepare('SELECT 1 AS ok FROM session WHERE id = ?').get(rawId);
+        if (row) { this._dbForSession.set(rawId, path); return path; }
+      } catch { /* schema mismatch — try the next db */ }
+      finally { db.close(); }
+    }
+    // Not found anywhere: return the primary so callers fail the same way they
+    // did before rather than throwing.
+    return this.dbPaths()[0] ?? opencodeDbPath();
+  }
+
+  private readonly _dbForSession = new Map<string, string>();
+
+  /** Tests, and anything that adds a profile mid-process. */
+  _clearDbRouting(): void { this._dbForSession.clear(); }
 
   // ── ID handling ────────────────────────────────────────────────
   matchesId(id: string): boolean { return id.startsWith(PREFIX); }
@@ -120,7 +157,7 @@ export class OpencodeBackend implements ToolBackend {
   findSession(id: string): SessionLocation | null {
     if (!this.isAvailable()) return null;
     const rawId = this.toRawId(id);
-    const db = openReadonly(this.dbPath());
+    const db = openReadonly(this.dbPathFor(rawId));
     if (!db) return null;
     try {
       const row = db.prepare(`
@@ -130,7 +167,7 @@ export class OpencodeBackend implements ToolBackend {
       `).get(rawId) as { directory: string | null; time_updated: number; project_path: string | null } | undefined;
       if (!row) return null;
       return {
-        path: this.dbPath(),
+        path: this.dbPathFor(rawId),
         format: 'sqlite',
         projectDir: '',
         projectPath: row.project_path || row.directory || '',
@@ -141,9 +178,24 @@ export class OpencodeBackend implements ToolBackend {
 
   listSessions(opts: ListSessionsOpts = {}): SessionRef[] {
     if (!this.isAvailable()) return [];
+    // Sessions live in a db per profile, so listing spans every db. Dedupe by
+    // id (one conversation, wherever it is stored) keeping the freshest row.
+    const byId = new Map<string, SessionRef>();
+    for (const dbPath of this.dbPaths()) {
+      for (const ref of this.listSessionsInDb(dbPath, opts)) {
+        const prior = byId.get(ref.rawId);
+        if (!prior || ref.mtime > prior.mtime) byId.set(ref.rawId, ref);
+      }
+    }
+    const all = [...byId.values()].sort((a, b) => b.mtime - a.mtime);
+    return opts.limit ? all.slice(0, opts.limit) : all;
+  }
+
+  /** listSessions against ONE database. */
+  private listSessionsInDb(dbPath: string, opts: ListSessionsOpts): SessionRef[] {
     const cutoff = opts.sinceMs ?? 0;
     const filter = opts.projectFilter?.toLowerCase();
-    const db = openReadonly(this.dbPath());
+    const db = openReadonly(dbPath);
     if (!db) return [];
 
     try {
@@ -194,7 +246,7 @@ export class OpencodeBackend implements ToolBackend {
           prefixedId: this.toPrefixedId(row.id),
           projectPath,
           projectDir: '',
-          fullPath: this.dbPath(),
+          fullPath: dbPath,
           created,
           modified,
           mtime: row.time_updated,
@@ -212,7 +264,7 @@ export class OpencodeBackend implements ToolBackend {
    *  first prompt — e.g. "Replacing Claude with Gemini CLI"). It's a plain
    *  column on the session row. */
   getNativeTitle(rawId: string): string | null {
-    const db = openReadonly(this.dbPath());
+    const db = openReadonly(this.dbPathFor(rawId));
     if (!db) return null;
     try {
       const row = db.prepare('SELECT title FROM session WHERE id = ?').get(rawId) as { title: string | null } | undefined;
@@ -263,7 +315,7 @@ export class OpencodeBackend implements ToolBackend {
   readEvents(rawId: string): CanonicalEvent[] {
     if (!this.isAvailable()) return [];
     const ocId = this.toRawId(rawId);
-    const db = openReadonly(this.dbPath());
+    const db = openReadonly(this.dbPathFor(rawId));
     if (!db) return [];
 
     try {
@@ -372,7 +424,7 @@ export class OpencodeBackend implements ToolBackend {
   preComputedOutcomeStats(id: string): { filesChanged: string[]; totalLinesAdded: number; totalLinesRemoved: number } | null {
     if (!this.isAvailable()) return null;
     const ocId = this.toRawId(id);
-    const db = openReadonly(this.dbPath());
+    const db = openReadonly(this.dbPathFor(this.toRawId(id)));
     if (!db) return null;
     try {
       const row = db.prepare(`
