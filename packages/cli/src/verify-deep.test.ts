@@ -45,9 +45,9 @@ function makeDeps(rows: Array<{ id: string; local: number; disk: number; server?
   };
 }
 
-async function run(deps: ReturnType<typeof makeDeps>) {
+async function run(deps: ReturnType<typeof makeDeps>, now = 10_000_000) {
   const { verifyAgainstServer } = await import('./verify-deep.js');
-  return verifyAgainstServer(SRV, 'tok', 0, deps);
+  return verifyAgainstServer(SRV, 'tok', 0, deps, now);
 }
 
 /** Seed ledger cursors. Takes every id at once — resetting the cache per call
@@ -127,6 +127,31 @@ describe('classification', () => {
       { id: 'big', local: 90_000, disk: 100, server: 1_000 },
     ]));
     expect(r.stranded.map((f) => f.sessionId)).toEqual(['big', 'small']);
+  });
+});
+
+describe('a session being written right now', () => {
+  test('is pending, not stranded, even when the cursor says complete', async () => {
+    // The first real run flagged the live session it was invoked from (short by
+    // 902 B): bytes grow between the cursor read and the container build, so
+    // `cursor >= fileSize` holds momentarily for a session that is simply
+    // mid-flight. Reporting that on every run is how a checker gets ignored.
+    await seedLedger([{ id: 'live', cursor: 9000, mtime: 9_999_000 }]);
+    const deps = makeDeps([{ id: 'live', local: 12_000, disk: 9000, server: 5000 }]);
+    deps.listSessions = () => [{ rawId: 'live', prefixedId: 'live', projectPath: '/p', mtime: 9_999_000 }];
+
+    const r = await run(deps, 10_000_000);   // written 1 000 ms ago
+    expect(r.stranded).toHaveLength(0);
+    expect(r.pending).toHaveLength(1);
+  });
+
+  test('the same session IS stranded once it goes quiet', async () => {
+    await seedLedger([{ id: 'quiet', cursor: 9000, mtime: 1_000_000 }]);
+    const deps = makeDeps([{ id: 'quiet', local: 12_000, disk: 9000, server: 5000 }]);
+    deps.listSessions = () => [{ rawId: 'quiet', prefixedId: 'quiet', projectPath: '/p', mtime: 1_000_000 }];
+
+    const r = await run(deps, 10_000_000);   // written 2.5 h ago
+    expect(r.stranded).toHaveLength(1);
   });
 });
 
