@@ -817,8 +817,10 @@ const refs = listAvailableBackends().flatMap((b) => {
         // session actually append.
         const off = typeof r.from_offset === 'number' ? r.from_offset : 0;
         const hash = shippedHash.get(r.session_id);
+        // acked: the server accepted the batch containing this conversation, so
+        // the cursor is a real delivery receipt.
         return off > 0
-          ? { id: r.session_id, mtime: r.mtime, offset: off, size: off, hash }
+          ? { id: r.session_id, mtime: r.mtime, offset: off, size: off, hash, acked: true }
           : { id: r.session_id, mtime: r.mtime, hash };
       }));
     }
@@ -869,6 +871,7 @@ const refs = listAvailableBackends().flatMap((b) => {
             mtime: c.mtime as number,
             offset: c.from_offset as number,
             size: c.from_offset as number, // size = new offset (file grew to here)
+            acked: true,                   // server merged this tail
           })));
         } catch { /* ledger — never fail an upload over it */ }
       }
@@ -1057,15 +1060,18 @@ const refs = listAvailableBackends().flatMap((b) => {
           if (walked % 250 === 0) console.error(`[sync] ${walked}/${slice.length} sessions…`);
           continue;
         } else {
-          // Nothing new to ship (tail empty/unparseable). Re-stamp the cursor
-          // at the current size so the gate doesn't re-attempt every tick
-          // when the file hasn't grown since.
-          const backend = backendFor(ref);
-          const size = backend?.fileSize?.(ref.prefixedId) ?? 0;
-          if (size > 0) {
-            try { markSynced(base, [{ id: ref.prefixedId, mtime: ref.mtime, offset: size, size }]); }
-            catch { /* ledger — best-effort */ }
-          }
+          // Nothing new to ship (tail empty/unparseable). Stamp the MTIME only.
+          //
+          // This used to re-stamp the cursor at the local fileSize() to stop the
+          // gate retrying every tick. That was a delivery receipt for bytes the
+          // server never received: once fileSize() started summing profile homes,
+          // the cursor jumped to the union size and the session was sealed as
+          // complete with a third of its records missing (7adc748c: 2004 of
+          // 2698). mtime alone gives the same anti-thrash — syncMode SKIPs an
+          // unchanged file on mtime — while leaving the cursor where the server
+          // actually is, so the next growth re-attempts from the true offset.
+          try { markSynced(base, [{ id: ref.prefixedId, mtime: ref.mtime }]); }
+          catch { /* ledger — best-effort */ }
           skipped++;
           continue;
         }
@@ -1108,9 +1114,16 @@ const refs = listAvailableBackends().flatMap((b) => {
       // there for append-only backends; for OpenCode fileSize() is absent (0).
       if (ledger) {
         try {
+          // Content is byte-identical to the last FULL sync, so the server
+          // already holds these bytes — that makes this a legitimate ack. But
+          // only up to the cursor it already had: if the local size now EXCEEDS
+          // it (e.g. fileSize() sums a second profile home that was never
+          // shipped), advancing would again receipt undelivered bytes.
           const off = getBackendForId(ref.prefixedId)?.fileSize?.(ref.rawId) ?? 0;
-          markSynced(base, [off > 0
-            ? { id: ref.prefixedId, mtime: ref.mtime, offset: off, size: off, hash: built.srcHash }
+          const priorCursor = ackRow?.s ?? 0;
+          const safeToAck = off > 0 && off <= priorCursor;
+          markSynced(base, [safeToAck
+            ? { id: ref.prefixedId, mtime: ref.mtime, offset: off, size: off, hash: built.srcHash, acked: true }
             : { id: ref.prefixedId, mtime: ref.mtime, hash: built.srcHash }]);
         }
         catch { /* ledger is local bookkeeping — never fail a sync over it */ }
