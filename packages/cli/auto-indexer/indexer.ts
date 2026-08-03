@@ -47,6 +47,7 @@ import { fetchWithTimeout } from '../src/http.js';
 import { drainSyncIntents } from '../src/intent-drain.js';
 import { loadAllCredentials } from '../src/sync-client.js';
 import { runAutoUpdate } from '../src/auto-update.js';
+import { codeFingerprint, checkSelfRestart } from '../src/self-restart.js';
 import { runCollectorMigration } from '../src/collector-migrate.js';
 
 // Injected by the bundler (scripts/bundle.mjs). Falls back for tsx/dev runs.
@@ -382,8 +383,22 @@ console.log(`  Ready for changes...`);
 setInterval(() => { void shipToServer('heartbeat'); }, 15 * 60 * 1000).unref();
 setTimeout(() => { void shipToServer('startup'); }, 20_000);
 
+// The bundle we booted with. A daemon keeps whatever code Node already parsed,
+// so replacing dist/watch.js changes nothing until the process restarts — which
+// silently kept THREE separate fixes out of effect for a day each (see
+// self-restart.ts). Checked on the liveness tick: cheap (one stat) and frequent
+// enough that a build is picked up within a minute.
+const BOOT_CODE = codeFingerprint();
+if (BOOT_CODE) {
+  console.log(`[${ts()}] running bundle ${BOOT_CODE.path} (${BOOT_CODE.size} bytes)`);
+}
+
 // Liveness heartbeat for the journal.
 setInterval(() => {
+  // Before reporting liveness, make sure we are still the current code. Restarts
+  // mid-sync are safe: the ledger only advances on server-acked writes, so an
+  // interrupted pass re-ships rather than skipping.
+  if (checkSelfRestart({ boot: BOOT_CODE, log: (m) => console.log(`[${ts()}] ${m}`) })) return;
   console.log(`[${ts()}] Heartbeat - ${pendingFileCount} pending file event(s), sync ${syncInFlight ? 'in-flight' : 'idle'}`);
 }, 60000);
 
