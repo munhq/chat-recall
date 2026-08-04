@@ -127,17 +127,31 @@ describe('a session split across two homes', () => {
     expect(events.length).toBe(4);
   });
 
-  test('fileSize counts every home, so growth in a secondary is detected', async () => {
+  test('a home appearing AFTER onboarding is pending, so it is not scanned yet', async () => {
     const { claudeBackend } = await mods();
+    const { homeDecision } = await import('./home-approval.js');
+    writeSession('.claude', [rec('a', 'one')]);
+    const before = claudeBackend.fileSize(SID);           // primes the one-shot migration
+
+    // A second profile created later needs a decision — silence must not mean
+    // "we started uploading a work account".
+    const secondary = writeSession('.claude-t2', [rec('x', 'live')]);
+    expect(homeDecision(secondary.replace(/\/projects\/.*$/, ''))).toBe('pending');
+    expect(claudeBackend.fileSize(SID)).toBe(before);      // not scanned while pending
+  });
+
+  test('once approved, fileSize counts it, so growth in a secondary is detected', async () => {
+    const { claudeBackend } = await mods();
+    const { approveHome } = await import('./home-approval.js');
     writeSession('.claude', [rec('a', 'one')]);
     const before = claudeBackend.fileSize(SID);
 
-    writeSession('.claude-t2', [rec('x', 'a much longer live record'.repeat(4))]);
-    const after = claudeBackend.fileSize(SID);
+    const secondary = writeSession('.claude-t2', [rec('x', 'a much longer live record'.repeat(4))]);
+    approveHome(secondary.replace(/\/projects\/.*$/, ''));
 
     // A frozen primary + growing secondary previously reported a constant size,
     // so append-only change detection never fired and the session never re-synced.
-    expect(after).toBeGreaterThan(before);
+    expect(claudeBackend.fileSize(SID)).toBeGreaterThan(before);
   });
 
   test('findSession reports the NEWEST mtime across homes', async () => {

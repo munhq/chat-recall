@@ -7,13 +7,16 @@
  * content_cache; every dashboard (local, self-host, SaaS) renders that.
  */
 import { statSync } from 'fs';
-import { detectTool, findSessionFile } from '../core/live-session-scan.js';
+import {
+  detectTool, findSessionFile,
+  resolveSessionContentGroups, readSessionGroupText,
+} from '../core/live-session-scan.js';
 import { getBackend } from '../core/tool-backend.js';
 import '../core/backends/index.js'; // side-effect: registers the backends
 
 import type { Transcript, TranscriptMessage, Subagent } from './types.js';
 import { TRANSCRIPT_VERSION } from './types.js';
-import { parseClaudeTranscript, parseClaudeSubagents } from './claude.js';
+import { parseClaudeTranscript, parseClaudeTranscriptText, parseClaudeSubagents } from './claude.js';
 import { parseGeminiTranscript } from './gemini.js';
 import { parseOpenCodeTranscript, parseOpenCodeSubagents } from './opencode.js';
 import { parseCodexTranscript, parseCodexSubagents } from './codex.js';
@@ -48,11 +51,27 @@ export async function parseTranscript(sessionId: string): Promise<ParsedTranscri
   const tool = detectTool(sessionId);
 
   if (tool === 'claude') {
-    const located = findSessionFile(sessionId);
-    if (!located) return null;
+    // UNION ACROSS HOMES, not the first copy found.
+    //
+    // This function builds the sync envelope AND the conversation view, so
+    // reading one home silently drops the other half of any session that was
+    // resumed under a different CLAUDE_CONFIG_DIR. Measured on
+    // ec05f266: ~/.claude held 963 messages, ~/.claude-work held 119 more with
+    // ZERO overlap, and the envelope shipped 963 — the gap did not show up in a
+    // local-vs-server comparison because BOTH sides were reading the same half.
+    const groups = resolveSessionContentGroups(sessionId);
+    if (groups.length === 0) return null;
+    const mainGroup = groups.find((g) => g.name === 'main');
+    if (!mainGroup) return null;
+
+    // The primary copy's path is still the canonical location (project grouping,
+    // subagent sidecar discovery); only the CONTENT is unioned.
+    const primaryPath = mainGroup.paths[0];
+    const merged = readSessionGroupText(mainGroup);
+
     const [tail, allSubagents] = await Promise.all([
-      parseClaudeTranscript(located.path),
-      parseClaudeSubagents(located.path),
+      Promise.resolve(parseClaudeTranscriptText(merged.text)),
+      parseClaudeSubagents(primaryPath),
     ]);
     // Compaction stitching: when Claude Code compacts, the prior history
     // moves into agent-acompact-* sidecars and the main JSONL keeps only
@@ -75,7 +94,9 @@ export async function parseTranscript(sessionId: string): Promise<ParsedTranscri
       }
       messages = [...stitched, ...tail].map((m, i) => ({ ...m, line: i + 1 }));
     }
-    return { messages, subagents, mtime: safeMtime(located.path) };
+    // Newest mtime across copies — a session whose live half is in a secondary
+    // home must not report the stale primary's timestamp.
+    return { messages, subagents, mtime: merged.mtime || safeMtime(primaryPath) };
   }
 
   if (tool === 'gemini') {

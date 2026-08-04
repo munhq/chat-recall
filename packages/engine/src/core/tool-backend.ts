@@ -287,6 +287,11 @@ export interface ToolBackend {
    *  JSONL). False for DB-backed tools (OpenCode SQLite) — those have no byte
    *  offset and always full-sync. */
   isAppendOnly?(): boolean;
+  /** True when this session's content lives in MORE THAN ONE source (e.g. two
+   *  profile homes holding disjoint halves). Such a session cannot be
+   *  tail-appended — size is the sum across copies while a byte offset
+   *  addresses one file — so the caller forces a FULL sync. */
+  spansMultipleSources?(prefixedId: string): boolean;
 
   /** Current byte size of the transcript file. Returns 0 when unknown or the
    *  backend is not append-only (the freshness gate treats 0 as "no tail
