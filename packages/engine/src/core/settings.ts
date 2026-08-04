@@ -147,6 +147,20 @@ export interface SourceSettings {
   agyHome?: string;
   /** Additional Claude home directories (multi-install: ~/.claude-work, …). */
   extraClaudeHomes?: string[];
+  /**
+   * Transcript homes the operator has decided ABOUT. Discovery finds homes; these
+   * record the answer. A home that is neither approved nor declined is PENDING
+   * and is not synced — silence must never mean "we shipped your work account".
+   *
+   * The primary home for each tool is implicitly approved (it is the thing the
+   * user installed chat-recall to sync); only additional homes need a decision.
+   */
+  approvedHomes?: string[];
+  declinedHomes?: string[];
+  /** One-shot marker: existing installs had every `~/.claude-*` sibling synced
+   *  automatically, so on upgrade those are grandfathered into `approvedHomes`
+   *  rather than silently going dark. Set once, never re-run. */
+  homesGrandfathered?: boolean;
   enabled: SourcesEnabled;
 }
 
@@ -457,6 +471,9 @@ function mergeSources(base: SourceSettings, partial?: Partial<SourceSettings>): 
     opencodeDbPath:   partial.opencodeDbPath   ?? base.opencodeDbPath,
     agyHome:          partial.agyHome          ?? base.agyHome,
     extraClaudeHomes: partial.extraClaudeHomes ?? base.extraClaudeHomes,
+    approvedHomes:    partial.approvedHomes    ?? base.approvedHomes,
+    declinedHomes:    partial.declinedHomes    ?? base.declinedHomes,
+    homesGrandfathered: partial.homesGrandfathered ?? base.homesGrandfathered,
     enabled,
   };
 }
