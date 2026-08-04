@@ -1204,11 +1204,12 @@ companions
 program
   .command('verify')
   .description('Check that the server holds everything this machine has, per session')
-  .option('--deep', 'Compare per-session content size against each server (slower, exact)', false)
+  .option('--deep', 'Compare per-session content size against each server', false)
+  .option('--records', 'With --deep: also diff the exact record (uuid) sets — proof, not inference', false)
   .option('--since-hours <n>', 'Only check sessions modified in the last N hours (default: all)')
   .option('--repair', 'Re-ship every STRANDED session found (clears its ledger cursor)', false)
   .option('--json', 'Machine-readable output', false)
-  .action(async (opts: { deep?: boolean; sinceHours?: string; repair?: boolean; json?: boolean }) => {
+  .action(async (opts: { deep?: boolean; records?: boolean; sinceHours?: string; repair?: boolean; json?: boolean }) => {
     if (!opts.deep) {
       console.log(chalk.yellow('verify currently implements only --deep; re-run with --deep.'));
       return;
@@ -1227,6 +1228,26 @@ program
     }
     const sinceMs = opts.sinceHours ? Date.now() - Number(opts.sinceHours) * 3600_000 : 0;
     const claude = getBackend('claude');
+
+    /** Local record (uuid) set for a session — the union across homes, which is
+     *  what the archive is supposed to contain. */
+    const localRecordIds = (rawId: string): Set<string> | null => {
+      try {
+        const exp = claude.exportRawSession?.(rawId);
+        if (!exp) return null;
+        const ids = new Set<string>();
+        for (const f of exp.files) {
+          for (const line of f.bytes.toString('utf-8').split('\n')) {
+            if (!line.trim()) continue;
+            try {
+              const u = (JSON.parse(line) as { uuid?: unknown }).uuid;
+              if (typeof u === 'string' && u) ids.add(u);
+            } catch { /* not a record line */ }
+          }
+        }
+        return ids;
+      } catch { return null; }
+    };
 
     const deps = {
       listSessions: (since: number) => claude.listSessions({ sinceMs: since }).map((s) => ({
@@ -1294,6 +1315,45 @@ program
         }
       }
 
+      // --records: size parity is evidence, a record diff is proof. Two
+      // containers can agree on bytes and differ in content, and a session that
+      // size comparison called merely "pending" turned out to be missing 589
+      // records. Run against everything the size pass did not call complete.
+      if (opts.records) {
+        const suspects = [...report.stranded, ...report.pending];
+        if (suspects.length === 0) {
+          console.log(chalk.dim('  --records: nothing to deep-check (size pass found no gaps)'));
+        } else {
+          console.log(chalk.bold(`\n  record-level diff (${suspects.length} session(s)):`));
+          for (const f of suspects) {
+            let serverIds: Set<string>;
+            try {
+              const headers: Record<string, string> = {};
+              if (t.token) headers.authorization = `Bearer ${t.token}`;
+              const res = await fetchWithTimeout(`${t.serverUrl}/api/status/archives/${f.sessionId}/records`, { headers }, 120_000);
+              if (!res.ok) { console.log(`      ${f.sessionId.slice(0, 8)}  server records unavailable (HTTP ${res.status})`); continue; }
+              const body = await res.json() as { records?: string[] };
+              serverIds = new Set(body.records || []);
+            } catch (e) {
+              console.log(`      ${f.sessionId.slice(0, 8)}  record fetch failed: ${e instanceof Error ? e.message : e}`);
+              continue;
+            }
+            const localIds = localRecordIds(f.sessionId);
+            if (localIds === null) { console.log(`      ${f.sessionId.slice(0, 8)}  local unreadable`); continue; }
+            const missing = [...localIds].filter((u) => !serverIds.has(u)).length;
+            const onlyServer = [...serverIds].filter((u) => !localIds.has(u)).length;
+            const verdict = missing === 0
+              ? chalk.green('in sync')
+              : chalk.red(`${missing} MISSING server-side`);
+            console.log(
+              `      ${f.sessionId.slice(0, 8)}  local ${String(localIds.size).padStart(6)}  server ${String(serverIds.size).padStart(6)}  ${verdict}` +
+              (onlyServer > 0 ? chalk.dim(`  (+${onlyServer} server-only — resume truncation)`) : ''),
+            );
+            if (missing > 0) exitCode = 2;
+          }
+        }
+      }
+
       if (opts.repair && report.stranded.length > 0) {
         const n = forceFullResync(t.serverUrl, report.stranded.map((f) => f.sessionId));
         console.log(chalk.green(`  ↻ cleared ${n} ledger cursor(s) — run \`chat-recall sync\` to re-ship`));
@@ -1301,6 +1361,111 @@ program
     }
     if (opts.json) console.log(JSON.stringify({ reports }, null, 2));
     process.exit(exitCode);
+  });
+
+// ── sources: which transcript homes this machine syncs ───────────────────
+// The answer to "can a user configure this?" — before this existed the only
+// options were an undocumented env var or hand-editing settings.json, and there
+// was no way to even SEE what was being synced. A profile not named
+// `~/.claude-*` got silent zero coverage.
+const sources = program
+  .command('sources')
+  .description('See and choose which AI-tool transcript folders get synced');
+
+function decisionBadge(d: string): string {
+  if (d === 'primary')  return chalk.green('syncing') + chalk.dim(' (main)');
+  if (d === 'approved') return chalk.green('syncing');
+  if (d === 'declined') return chalk.dim('not syncing');
+  return chalk.yellow('NEEDS A DECISION');
+}
+
+async function listSources(): Promise<{ pending: number }> {
+  const { discoverHomes } = await import('@chat-recall/engine/core/home-discovery.js');
+  const { homeDecision, grandfatherLegacyHomes } = await import('@chat-recall/engine/core/home-approval.js');
+  grandfatherLegacyHomes();
+  const homes = discoverHomes();
+  console.log(chalk.bold('Transcript folders found on this machine'));
+  if (homes.length === 0) {
+    console.log(chalk.dim('  none — no AI tool transcripts detected'));
+    return { pending: 0 };
+  }
+  let pending = 0;
+  for (const h of homes) {
+    const d = homeDecision(h.path);
+    if (d === 'pending') pending++;
+    const count = h.sessions > 0 ? `${h.sessions} session${h.sessions === 1 ? '' : 's'}` : '—';
+    console.log(
+      `  ${h.tool.padEnd(9)} ${count.padStart(14)}  ${decisionBadge(d).padEnd(30)} ${h.path}` +
+      (h.via === 'declared' ? chalk.dim('  (you configured this)') : ''),
+    );
+  }
+  if (pending > 0) {
+    console.log();
+    console.log(chalk.yellow(`  ${pending} folder(s) need a decision — they are NOT being synced yet.`));
+    console.log(chalk.dim('  chat-recall sources approve <path>   start syncing it'));
+    console.log(chalk.dim('  chat-recall sources decline <path>   keep it out (e.g. a work account)'));
+  }
+  return { pending };
+}
+
+sources
+  .command('list', { isDefault: true })
+  .description('Show every transcript folder found, and whether it is synced')
+  .action(async () => { await listSources(); });
+
+sources
+  .command('add <path>')
+  .description('Sync a transcript folder we did not find automatically')
+  .action(async (path: string) => {
+    const { identifyHome } = await import('@chat-recall/engine/core/home-discovery.js');
+    const { approveHome, normalizeHomePath } = await import('@chat-recall/engine/core/home-approval.js');
+    const abs = normalizeHomePath(path);
+    const tool = identifyHome(abs);
+    if (!tool) {
+      // Refuse rather than accept a path that will silently sync nothing.
+      console.error(chalk.red(`Not a transcript folder: ${abs}`));
+      console.error(chalk.dim('  Expected one of:'));
+      console.error(chalk.dim('    <dir>/projects/<project>/<uuid>.jsonl        (Claude Code)'));
+      console.error(chalk.dim('    <dir>/sessions/YYYY/MM/DD/rollout-*.jsonl    (Codex)'));
+      console.error(chalk.dim('    <dir>/tmp/<project>/chats/session-*.json      (Gemini)'));
+      console.error(chalk.dim('    <dir>/brain/<id>/.system_generated/logs/*     (Antigravity)'));
+      console.error(chalk.dim('    <dir>/opencode.db                             (OpenCode)'));
+      process.exit(1);
+    }
+    if (!approveHome(abs)) { console.error(chalk.red('Could not write settings.')); process.exit(1); }
+    console.log(chalk.green(`✓ syncing ${tool} transcripts from ${abs}`));
+    console.log(chalk.dim('  Takes effect on the next sync; run `chat-recall sync` to do it now.'));
+  });
+
+sources
+  .command('approve <path>')
+  .description('Start syncing a folder that was waiting for a decision')
+  .action(async (path: string) => {
+    const { approveHome, normalizeHomePath } = await import('@chat-recall/engine/core/home-approval.js');
+    const abs = normalizeHomePath(path);
+    if (!approveHome(abs)) { console.error(chalk.red('Could not write settings.')); process.exit(1); }
+    console.log(chalk.green(`✓ now syncing ${abs}`));
+  });
+
+sources
+  .command('decline <path>')
+  .description('Keep a folder out of sync (e.g. a work account you do not want here)')
+  .action(async (path: string) => {
+    const { declineHome, normalizeHomePath } = await import('@chat-recall/engine/core/home-approval.js');
+    const abs = normalizeHomePath(path);
+    if (!declineHome(abs)) { console.error(chalk.red('Could not write settings.')); process.exit(1); }
+    console.log(chalk.green(`✓ not syncing ${abs}`));
+    console.log(chalk.dim('  Sessions already uploaded from it stay on the server — use the dashboard to delete those.'));
+  });
+
+sources
+  .command('forget <path>')
+  .description('Undo a decision, so the folder is asked about again')
+  .action(async (path: string) => {
+    const { resetHomeDecision, normalizeHomePath } = await import('@chat-recall/engine/core/home-approval.js');
+    const abs = normalizeHomePath(path);
+    resetHomeDecision(abs);
+    console.log(chalk.green(`✓ ${abs} is undecided again (not syncing until approved)`));
   });
 
 // ── detectors: the OPTIONAL external secret scanners ─────────────────────
