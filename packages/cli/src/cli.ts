@@ -1047,6 +1047,31 @@ program
       note(false, 'codeindex companion', `error: ${err}`);
     }
 
+    // Transcript folders — the check that would have surfaced a work profile
+    // sitting unsynced for a day. A folder we found but nobody decided about is
+    // NOT being collected, and until this line existed nothing said so.
+    try {
+      const { discoverHomes } = await import('@chat-recall/engine/core/home-discovery.js');
+      const { homeDecision, grandfatherLegacyHomes } = await import('@chat-recall/engine/core/home-approval.js');
+      grandfatherLegacyHomes();
+      const homes = discoverHomes({ includeRunning: false });
+      const pending = homes.filter((h) => homeDecision(h.path) === 'pending');
+      const syncing = homes.filter((h) => ['primary', 'approved'].includes(homeDecision(h.path)));
+      if (homes.length === 0) {
+        note(false, 'transcript folders', 'none found — is an AI coding tool installed for this user?');
+      } else if (pending.length > 0) {
+        const n = pending.reduce((a, h) => a + h.sessions, 0);
+        note(false, 'transcript folders',
+          `${syncing.length} syncing, ${pending.length} awaiting a decision` +
+          (n > 0 ? ` (${n} session${n === 1 ? '' : 's'} NOT synced)` : '') +
+          ' — run `chat-recall sources`');
+      } else {
+        note(true, 'transcript folders', `${syncing.length} syncing across ${new Set(homes.map((h) => h.tool)).size} tool(s)`);
+      }
+    } catch (err) {
+      note(false, 'transcript folders', `check failed: ${err instanceof Error ? err.message : err}`);
+    }
+
     // Watch daemon detection — cross-platform (best effort). Checks the
     // installed per-user service first (the supported way to keep collection
     // running), then falls back to a foreground process scan on Unix. `pgrep`

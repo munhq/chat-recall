@@ -45,6 +45,7 @@ import teamsRouter from './routes/teams.js';
 import teamArtifactsRouter from './routes/team-artifacts.js';
 import securityConfigRouter from './routes/security-config.js';
 import syncConfigRouter from './routes/sync-config.js';
+import fleetHealthRouter from './routes/fleet-health.js';
 import billingRouter from './routes/billing.js';
 import installRouter from './routes/install.js';
 import { capabilities, isServerMode } from './util/mode.js';
@@ -205,6 +206,9 @@ const paid = requireEntitlement;
 app.use('/api/search', paid, rl('read-heavy'), searchRouter);
 app.use('/api/conversations', paid, rl('read-heavy'), conversationsRouter);
 app.use('/api/status', rl('read-light'), statusRouter);
+// Fleet health — the one place that answers "is it working on my machines?".
+// Mounted after tenantAuth like the other tenant-scoped reads.
+app.use('/api/health', rl('read-light'), fleetHealthRouter);
 app.use('/api/memory', paid, rl('read-heavy'), memoryRouter);
 app.use('/api/analytics', paid, rl('read-heavy'), analyticsRouter);
 // Team activity view (per-member × per-project). RLS-scoped to the requesting

@@ -487,6 +487,26 @@ export class PgStore implements StorageDriver {
        WHERE sf.tenant=$1 GROUP BY sf.session_id, sf.detector, m.project_path, m.title, m.mtime`, [this.t]) as any;
   }
 
+  /**
+   * Sessions + newest activity per device, for the fleet health panel.
+   *
+   * `author_device` is NULL for the pre-attribution backlog, and that row is
+   * returned too — a large unattributed count must be visible as exactly that,
+   * not silently folded into a device or dropped so it looks like data is gone.
+   */
+  async sessionCountsByDevice(): Promise<Array<{ device: string | null; sessions: number; lastIndexedAt: number }>> {
+    const rows = await this.qr(
+      `SELECT author_device AS device, COUNT(*)::int AS sessions, MAX(indexed_at) AS last_indexed
+         FROM session_metadata WHERE tenant=$1 GROUP BY author_device`,
+      [this.t],
+    );
+    return rows.map((r: { device: string | null; sessions: number; last_indexed: string | number | null }) => ({
+      device: r.device ?? null,
+      sessions: Number(r.sessions) || 0,
+      lastIndexedAt: r.last_indexed != null ? Number(r.last_indexed) : 0,
+    }));
+  }
+
   async secretFindingsByProject(): Promise<Ret<'secretFindingsByProject'>> {
     return this.qr(
       `SELECT COALESCE(NULLIF(m.project_path,''),'(unknown)') AS project_path,
