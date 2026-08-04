@@ -219,9 +219,13 @@ export class PgMetadataCache implements MetadataCacheDriver {
     // self-sufficient (not reliant on set() running first) so any single writer
     // satisfies the guard on its own.
     const au = currentAuthor();
+    // Parent-guarded for the same reason as setToolTitle below — an orphan row
+    // here is permanently un-updatable under the author_visibility policy.
     await this.q(
       `INSERT INTO session_metadata (tenant,session_id,first_prompt,summary,summary_source,mtime,indexed_at,user_title,author_sub,author_device)
-       VALUES ($1,$2,'','','original',0,$3,$4,$5,$6)
+       SELECT $1,$2,'','','original',0,$3,$4,$5,$6
+       WHERE EXISTS (SELECT 1 FROM memory_metadata m
+                     WHERE m.tenant=$1 AND m.id=$2 AND m.source_type='session')
        ON CONFLICT (tenant,session_id) DO UPDATE SET user_title=excluded.user_title,
          author_sub=COALESCE(session_metadata.author_sub, excluded.author_sub),
          author_device=COALESCE(session_metadata.author_device, excluded.author_device)`,
@@ -233,9 +237,24 @@ export class PgMetadataCache implements MetadataCacheDriver {
     // legacy NULL-author row (the pre-attribution backlog) must claim it or the
     // write-guard's UPDATE WITH CHECK rejects the sync.
     const au = currentAuthor();
+    // INSERT ONLY IF THE CONVERSATION EXISTS.
+    //
+    // A blind upsert here created `session_metadata` rows for sessions with no
+    // `memory_metadata` parent. The `author_visibility` SELECT policy hides
+    // parentless rows unless app.viewer='*' (the sync path sets the author's sub,
+    // deliberately), and ON CONFLICT DO UPDATE must READ the conflicting row — so
+    // once such a row existed, every later field sync failed with
+    // "new row violates row-level security policy author_visibility" and returned
+    // 500. Self-perpetuating and silent: 4 rows sat stuck from 2026-07-22, and
+    // ordinary conversation pushes kept succeeding so nothing looked wrong.
+    //
+    // Guarding the insert on the parent keeps first-write working for real
+    // sessions while making the orphan state unreachable.
     await this.q(
       `INSERT INTO session_metadata (tenant,session_id,first_prompt,summary,summary_source,mtime,indexed_at,tool_title,author_sub,author_device)
-       VALUES ($1,$2,'','','original',0,$3,$4,$5,$6)
+       SELECT $1,$2,'','','original',0,$3,$4,$5,$6
+       WHERE EXISTS (SELECT 1 FROM memory_metadata m
+                     WHERE m.tenant=$1 AND m.id=$2 AND m.source_type='session')
        ON CONFLICT (tenant,session_id) DO UPDATE SET tool_title=excluded.tool_title,
          author_sub=COALESCE(session_metadata.author_sub, excluded.author_sub),
          author_device=COALESCE(session_metadata.author_device, excluded.author_device)`,
