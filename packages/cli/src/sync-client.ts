@@ -35,7 +35,9 @@ import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, chmodSync,
 import { tmpdir, hostname } from 'node:os';
 import { createHash } from 'node:crypto';
 import { redactSecrets, scanTextForFindings, installServerRulePack, serverRulePackVersion } from '@chat-recall/engine/core/secret-redactor.js';
-import { discoverSessionSources, installSourceExclusions } from '@chat-recall/engine/core/source-discovery.js';
+import { discoverSessionSources, installSourceExclusions, sourceId } from '@chat-recall/engine/core/source-discovery.js';
+import { discoverHomes } from '@chat-recall/engine/core/home-discovery.js';
+import { homeDecision, approveHome, declineHome, grandfatherLegacyHomes } from '@chat-recall/engine/core/home-approval.js';
 import { scanFileForSecrets, scanDirForSecrets, scanTenantRules, isSecretScannerAvailable, type ScanFinding, type DirScanFinding } from '@chat-recall/engine/core/secret-scanner.js';
 import { isInternalToolPrompt } from '@chat-recall/engine/core/internal-prompts.js';
 import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js';
@@ -213,7 +215,7 @@ export function _resetTenantSecurityConfigCache(): void {
 // never re-enable something a machine excluded locally. Same 5-minute cache
 // policy as the security config; fail-open to empty (older servers have no
 // endpoint, and an outage must not stop the collector).
-interface TenantSyncConfig { excludeTools: string[]; excludeProjects: string[]; excludeSources: string[] }
+interface TenantSyncConfig { excludeTools: string[]; excludeProjects: string[]; excludeSources: string[]; approveSources: string[] }
 const _syncConfigCache = new Map<string, { fetchedAt: number; config: TenantSyncConfig }>();
 
 async function fetchTenantSyncConfig(cred: Credentials): Promise<TenantSyncConfig> {
@@ -237,7 +239,7 @@ async function fetchTenantSyncConfig(cred: Credentials): Promise<TenantSyncConfi
     } catch { /* reporting is advisory — never block a sync on it */ }
 
     const res = await fetchWithTimeout(`${base}/api/sync-config`, { headers });
-    if (!res.ok) return { excludeTools: [], excludeProjects: [], excludeSources: [] };
+    if (!res.ok) return { excludeTools: [], excludeProjects: [], excludeSources: [], approveSources: [] };
     const body = await res.json().catch(() => ({})) as Partial<TenantSyncConfig>;
     const config: TenantSyncConfig = {
       excludeTools: Array.isArray(body.excludeTools) ? body.excludeTools.filter((t): t is string => typeof t === 'string') : [],
@@ -245,15 +247,38 @@ async function fetchTenantSyncConfig(cred: Credentials): Promise<TenantSyncConfi
       // Ids only — installSourceExclusions drops anything else, so a server
       // sending a path cannot make this collector read it.
       excludeSources: Array.isArray(body.excludeSources) ? body.excludeSources.filter((x): x is string => typeof x === 'string') : [],
+      approveSources: Array.isArray(body.approveSources) ? body.approveSources.filter((x): x is string => typeof x === 'string') : [],
     };
     const applied = installSourceExclusions(config.excludeSources);
     if (applied.excluded > 0) {
       console.error(`[sync] ${applied.excluded} transcript source(s) excluded by tenant config`);
     }
+
+    // Decisions made in the dashboard become LOCAL decisions here. The server
+    // sends ids, never paths: we approve/decline only a home this machine itself
+    // discovered, so the dashboard can answer the question but can never
+    // introduce a folder for us to read.
+    try {
+      const byId = new Map(
+        discoverHomes({ includeRunning: false }).map((h) => [sourceId(h.path), h.path]),
+      );
+      let decided = 0;
+      for (const id of config.approveSources) {
+        const path = byId.get(id);
+        if (path && homeDecision(path) === 'pending') { approveHome(path); decided++; }
+      }
+      for (const id of config.excludeSources) {
+        const path = byId.get(id);
+        const d = path ? homeDecision(path) : null;
+        if (path && d !== 'declined' && d !== 'primary') { declineHome(path); decided++; }
+      }
+      if (decided > 0) console.error(`[sync] applied ${decided} folder decision(s) from the dashboard`);
+    } catch { /* advisory — a failure must not stop the sync */ }
+
     _syncConfigCache.set(base, { fetchedAt: Date.now(), config });
     return config;
   } catch {
-    return { excludeTools: [], excludeProjects: [], excludeSources: [] };
+    return { excludeTools: [], excludeProjects: [], excludeSources: [], approveSources: [] };
   }
 }
 
@@ -976,7 +1001,12 @@ const refs = listAvailableBackends().flatMap((b) => {
     if (!ledger) return ref.mtime >= (opts.sinceMs ?? 0) ? 'full' : 'skip';
     const ack = ledger.get(ref.prefixedId);
     const backend = backendFor(ref);
-    const isAO = !!backend?.isAppendOnly?.();
+    // A session that exists in more than one home cannot be tail-appended: the
+    // size is the SUM across copies while a byte offset addresses one file, so
+    // an append would ship bytes that do not match the recorded offset. Force
+    // FULL, which ships the unioned container and is correct either way.
+    const split = !!backend?.spansMultipleSources?.(ref.prefixedId);
+    const isAO = !!backend?.isAppendOnly?.() && !split;
     const size = isAO ? (backend?.fileSize?.(ref.prefixedId) ?? 0) : 0;
     return syncMode(ack, ref.mtime, size, extractorVersionForTool(ref.toolId), isAO);
   };
