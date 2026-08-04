@@ -16,6 +16,9 @@
 import { existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname, basename } from 'path';
+// Local approval decisions + the one-shot upgrade migration. Imported directly
+// (no cycle: home-approval reads settings, which knows nothing about paths).
+import { isHomeSynced, grandfatherLegacyHomes } from './home-approval.js';
 import { loadSourceSettings, _resetSourceSettingsCache } from './settings.js';
 
 // Re-export so existing test imports from this module keep working.
@@ -67,18 +70,11 @@ export function claudeProjectDirs(opts: { includeExcluded?: boolean } = {}): str
     }
   }
   if (dirs.length === 0) dirs.push(join(claudeHomeDir(), 'projects'));
-  // Tenant-configured source exclusions (dashboard → sync client → here). The
-  // server can only switch OFF a source this machine already discovered; it can
-  // never name a new path. Lazy require-free import: source-discovery imports
-  // this module, so the dependency is inverted through a late binding to avoid
-  // a cycle at module-init time.
-  if (!opts.includeExcluded && _sourceExclusionFilter) {
-    const kept = dirs.filter((d) => !_sourceExclusionFilter!(d));
-    // Never let configuration leave the collector with nothing to scan — an
-    // empty result would look identical to "this machine has no sessions".
-    if (kept.length > 0) return kept;
-  }
-  return dirs;
+  // Same decision pipeline as every other tool — local approval first, then
+  // tenant exclusions. Claude used to have its own inline exclusion check, which
+  // meant the tool with the most sessions was the one that skipped the approval
+  // gate entirely.
+  return applyDecisions(dirs, opts.includeExcluded);
 }
 
 /** Late-bound predicate installed by source-discovery.ts, which imports this
@@ -153,12 +149,45 @@ function siblingHomes(base: string, overridden: boolean, suffix: string): string
   return roots;
 }
 
-/** Apply tenant source exclusions, failing safe to the unfiltered list: an
- *  empty root set is indistinguishable from "this machine has no sessions". */
+/**
+ * Apply the operator's decisions to a candidate root list:
+ *   1. HOME APPROVAL (local) — a discovered home that is pending or declined is
+ *      not scanned. Primary homes are always in.
+ *   2. TENANT EXCLUSIONS (server) — a discovered source switched off in the
+ *      dashboard.
+ *
+ * Both fail safe to the unfiltered list when they would leave nothing: an empty
+ * root set is indistinguishable from "this machine has no sessions", and that
+ * reads as data loss.
+ *
+ * The grandfather migration runs HERE, before the first gating decision, which
+ * is the only ordering that cannot silently stop syncing a home that an existing
+ * install had been syncing for months. It is a no-op after the first call.
+ */
+function applyDecisions(roots: string[], includeExcluded?: boolean): string[] {
+  if (roots.length === 0) return roots;
+  let kept = roots;
+
+  if (!includeExcluded) {
+    try {
+      grandfatherLegacyHomes();
+      // A root is <home>/<subdir> (or the opencode db's dir), so the home is its
+      // parent — one rule for every tool.
+      const approved = kept.filter((r) => isHomeSynced(dirname(r)));
+      if (approved.length > 0) kept = approved;
+    } catch { /* settings unreadable — scan everything rather than nothing */ }
+  }
+
+  if (!includeExcluded && _sourceExclusionFilter) {
+    const notExcluded = kept.filter((r) => !_sourceExclusionFilter!(r));
+    if (notExcluded.length > 0) kept = notExcluded;
+  }
+  return kept;
+}
+
+/** @deprecated kept for the call sites below; use applyDecisions. */
 function applyExclusions(roots: string[], includeExcluded?: boolean): string[] {
-  if (includeExcluded || !_sourceExclusionFilter || roots.length === 0) return roots;
-  const kept = roots.filter((r) => !_sourceExclusionFilter!(r));
-  return kept.length > 0 ? kept : roots;
+  return applyDecisions(roots, includeExcluded);
 }
 
 export interface RootsOpts { includeExcluded?: boolean }
