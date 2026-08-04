@@ -142,6 +142,64 @@ function countSessions(dir: string, tool: HomeTool): number {
   return n;
 }
 
+/**
+ * The session ids stored in ONE home.
+ *
+ * Needed because the server does not record which folder a session came from —
+ * so "delete everything you uploaded from my work folder" can only be answered
+ * by the machine that owns the path. Without this, declining a folder stops
+ * FUTURE uploads but leaves prior ones in place, which makes "keep my work data
+ * out of here" unenforceable after the fact.
+ *
+ * Claude/Codex/Gemini/Antigravity name their transcripts after the session id, so
+ * the filename is the answer. OpenCode keys sessions by row and would need the
+ * db opened, so it returns empty rather than guessing.
+ */
+export function sessionIdsInHome(dir: string, tool: HomeTool): string[] {
+  const out = new Set<string>();
+  const spec: Record<HomeTool, { sub: string; depth: number; idOf: (f: string) => string | null }> = {
+    claude: { sub: 'projects', depth: 2,
+      idOf: (f) => (f.endsWith('.jsonl') && f !== 'sessions-index.json' ? f.slice(0, -6) : null) },
+    codex: { sub: 'sessions', depth: 4,
+      // rollout-<iso>-<uuid>.jsonl — the id is the trailing uuid.
+      idOf: (f) => {
+        if (!f.startsWith('rollout-') || !f.endsWith('.jsonl')) return null;
+        const m = f.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i);
+        return m ? `codex_${m[1]}` : null;
+      } },
+    gemini: { sub: 'tmp', depth: 3,
+      idOf: (f) => (f.startsWith('session-') ? `gemini_${f.replace(/\.jsonl?$/, '')}` : null) },
+    agy: { sub: 'brain', depth: 1, idOf: () => null },   // id is the DIRECTORY name
+    opencode: { sub: '', depth: 0, idOf: () => null },   // rows, not files
+  };
+  const s = spec[tool];
+  if (!s.sub) return [];
+
+  // Antigravity names the session DIR, not the file.
+  if (tool === 'agy') {
+    try {
+      for (const e of readdirSync(join(dir, 'brain'), { withFileTypes: true })) {
+        if (e.isDirectory()) out.add(`agy_${e.name}`);
+      }
+    } catch { /* unreadable */ }
+    return [...out];
+  }
+
+  const walk = (d: string, depth: number) => {
+    if (depth < 0) return;
+    let entries;
+    try { entries = readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      if (SKIP.has(e.name)) continue;
+      if (e.isDirectory()) { walk(join(d, e.name), depth - 1); continue; }
+      const id = s.idOf(e.name);
+      if (id) out.add(id);
+    }
+  };
+  walk(join(dir, s.sub), s.depth);
+  return [...out];
+}
+
 /** Signal 1 — paths the USER declared, which is the strongest evidence. */
 export function declaredHomes(env = process.env, plat: NodeJS.Platform = osPlatform()): string[] {
   const out: string[] = [];
