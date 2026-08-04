@@ -604,6 +604,8 @@ export interface TenantSyncConfig {
    *  the dashboard can turn a discovered source off, but cannot name a path for
    *  a collector to start reading. */
   excludeSources: string[];
+  /** Homes approved in the dashboard, by client-reported id. */
+  approveSources: string[];
 }
 
 /** A transcript source a collector reported finding on its machine. Paths only
@@ -615,11 +617,14 @@ export interface ReportedSource {
   sessions: number;
   newestMtime: number;
   isPrimary: boolean;
+  /** primary | approved | declined | pending — `pending` is a prompt. */
+  decision?: string;
+  via?: string;
   device?: string;
   reportedAt: number;
 }
 
-export async function getSyncSources(): Promise<{ sources: ReportedSource[]; excludeSources: string[] }> {
+export async function getSyncSources(): Promise<{ sources: ReportedSource[]; excludeSources: string[]; approveSources: string[] }> {
   const res = await fetchWithTimeout(`${API_BASE}/sync-config/sources`);
   if (!res.ok) throw new Error(`Failed to get sync sources: ${res.statusText}`);
   return await res.json();

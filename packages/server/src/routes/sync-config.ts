@@ -26,6 +26,10 @@ export interface TenantSyncConfig {
    *  turn a discovered source OFF, but nothing here can name a filesystem path
    *  for a collector to start reading. See engine core/source-discovery.ts. */
   excludeSources: string[];
+  /** Homes the operator APPROVED in the dashboard. Ids only — the client maps
+   *  each back to a home IT discovered, so this can answer the pending question
+   *  without ever letting the server name a filesystem path. */
+  approveSources: string[];
 }
 
 /** Sources the collectors have reported seeing, so the dashboard can render a
@@ -39,6 +43,11 @@ export interface ReportedSource {
   sessions: number;
   newestMtime: number;
   isPrimary: boolean;
+  /** The client's own decision: primary | approved | declined | pending. The UI
+   *  turns `pending` into a prompt — that is the whole point of reporting it. */
+  decision?: string;
+  /** How the client found it: declared | signature | running-process. */
+  via?: string;
   device?: string;
   reportedAt: number;
 }
@@ -50,12 +59,15 @@ function sanitize(body: unknown): TenantSyncConfig | null {
   const tools = Array.isArray(b.excludeTools) ? b.excludeTools : [];
   const projects = Array.isArray(b.excludeProjects) ? b.excludeProjects : [];
   const sources = Array.isArray(b.excludeSources) ? b.excludeSources : [];
+  const approve = Array.isArray(b.approveSources) ? b.approveSources : [];
   if (tools.some((t) => typeof t !== 'string' || !VALID_TOOLS.includes(t as never))) return null;
   if (projects.some((p) => typeof p !== 'string')) return null;
   // Ids only. Rejecting anything path-shaped here is the server-side half of
   // the guarantee that this endpoint can never widen what a collector reads.
   if (sources.some((x) => typeof x !== 'string' || !/^src_[0-9a-f]{12}$/.test(x))) return null;
+  if (approve.some((x) => typeof x !== 'string' || !/^src_[0-9a-f]{12}$/.test(x))) return null;
   return {
+    approveSources: [...new Set(approve as string[])].slice(0, 100),
     excludeSources: [...new Set(sources as string[])].slice(0, 100),
     excludeTools: [...new Set(tools as string[])],
     // Substring patterns matched against project paths on the device. Cap
@@ -70,7 +82,7 @@ router.get('/', async (req, res) => {
   const cp = await createControlPlane();
   try {
     const raw = await cp.getTenantSetting(tenant, SYNC_CONFIG_KEY);
-    let cfg: TenantSyncConfig = { excludeTools: [], excludeProjects: [], excludeSources: [] };
+    let cfg: TenantSyncConfig = { excludeTools: [], excludeProjects: [], excludeSources: [], approveSources: [] };
     if (raw) {
       try { cfg = sanitize(JSON.parse(raw)) ?? cfg; } catch { /* corrupt setting → defaults */ }
     }
@@ -115,6 +127,8 @@ router.post('/sources', express.json(), async (req, res) => {
       sessions: Number.isFinite(s.sessions) ? Math.max(0, Math.trunc(s.sessions)) : 0,
       newestMtime: Number.isFinite(s.newestMtime) ? Math.trunc(s.newestMtime) : 0,
       isPrimary: !!s.isPrimary,
+      decision: typeof s.decision === 'string' ? s.decision.slice(0, 16) : undefined,
+      via: typeof s.via === 'string' ? s.via.slice(0, 24) : undefined,
       device,
       reportedAt: Date.now(),
     });
@@ -145,8 +159,19 @@ router.get('/sources', async (req, res) => {
     if (raw) { try { sources = JSON.parse(raw) || []; } catch { /* corrupt → empty */ } }
     const cfgRaw = await cp.getTenantSetting(tenant, SYNC_CONFIG_KEY);
     let excluded: string[] = [];
-    if (cfgRaw) { try { excluded = JSON.parse(cfgRaw)?.excludeSources ?? []; } catch { /* ignore */ } }
-    res.json({ sources: Array.isArray(sources) ? sources : [], excludeSources: excluded });
+    let approved: string[] = [];
+    if (cfgRaw) {
+      try {
+        const parsed = JSON.parse(cfgRaw);
+        excluded = parsed?.excludeSources ?? [];
+        approved = parsed?.approveSources ?? [];
+      } catch { /* ignore */ }
+    }
+    res.json({
+      sources: Array.isArray(sources) ? sources : [],
+      excludeSources: excluded,
+      approveSources: approved,
+    });
   } finally { await cp.close(); }
 });
 

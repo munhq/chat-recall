@@ -40,7 +40,7 @@ describe('/api/sync-config', () => {
 
     const empty = await request(app).get('/api/sync-config');
     expect(empty.status).toBe(200);
-    expect(empty.body).toEqual({ excludeTools: [], excludeProjects: [], excludeSources: [] });
+    expect(empty.body).toEqual({ excludeTools: [], excludeProjects: [], excludeSources: [], approveSources: [] });
 
     const saved = await request(app).post('/api/sync-config').send({
       excludeTools: ['gemini', 'gemini'],
@@ -48,10 +48,10 @@ describe('/api/sync-config', () => {
       junk: 'ignored',
     });
     expect(saved.status).toBe(200);
-    expect(saved.body).toEqual({ excludeTools: ['gemini'], excludeProjects: ['/home/x/secret', '.claude-pr-bot'], excludeSources: [] });
+    expect(saved.body).toEqual({ excludeTools: ['gemini'], excludeProjects: ['/home/x/secret', '.claude-pr-bot'], excludeSources: [], approveSources: [] });
 
     const read = await request(app).get('/api/sync-config');
-    expect(read.body).toEqual({ excludeTools: ['gemini'], excludeProjects: ['/home/x/secret', '.claude-pr-bot'], excludeSources: [] });
+    expect(read.body).toEqual({ excludeTools: ['gemini'], excludeProjects: ['/home/x/secret', '.claude-pr-bot'], excludeSources: [], approveSources: [] });
   });
 
   test('invalid tool name → 400; nothing persisted', async () => {
@@ -59,13 +59,13 @@ describe('/api/sync-config', () => {
     const bad = await request(app).post('/api/sync-config').send({ excludeTools: ['copilot'], excludeProjects: [] });
     expect(bad.status).toBe(400);
     const read = await request(app).get('/api/sync-config');
-    expect(read.body).toEqual({ excludeTools: [], excludeProjects: [], excludeSources: [] });
+    expect(read.body).toEqual({ excludeTools: [], excludeProjects: [], excludeSources: [], approveSources: [] });
   });
 
   test('tenant isolation: t1 rules invisible to t3; no tenant → 401', async () => {
     const t3 = await makeApp('t3');
     const read = await request(t3).get('/api/sync-config');
-    expect(read.body).toEqual({ excludeTools: [], excludeProjects: [], excludeSources: [] });
+    expect(read.body).toEqual({ excludeTools: [], excludeProjects: [], excludeSources: [], approveSources: [] });
 
     const anon = await makeApp();
     expect((await request(anon).get('/api/sync-config')).status).toBe(401);

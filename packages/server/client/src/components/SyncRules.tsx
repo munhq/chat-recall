@@ -29,6 +29,7 @@ export default function SyncRules() {
   const [err, setErr] = useState('');
   const [sources, setSources] = useState<ReportedSource[]>([]);
   const [excludedSources, setExcludedSources] = useState<string[]>([]);
+  const [approvedSources, setApprovedSources] = useState<string[]>([]);
 
   useEffect(() => {
     let on = true;
@@ -38,13 +39,14 @@ export default function SyncRules() {
         setTools(c.excludeTools);
         setProjects(c.excludeProjects.join('\n'));
         setExcludedSources(c.excludeSources ?? []);
+        setApprovedSources(c.approveSources ?? []);
         setState('ready');
       })
       .catch((e) => { if (!on) return; setErr(String(e.message || e)); setState('error'); });
     // Sources are reported by each collector; a server that has never been
     // synced simply shows none. Never fatal — the rest of the panel works.
     getSyncSources()
-      .then((r) => { if (on) setSources(r.sources ?? []); })
+      .then((r) => { if (on) { setSources(r.sources ?? []); } })
       .catch(() => { /* older server, or nothing reported yet */ });
     return () => { on = false; };
   }, []);
@@ -56,10 +58,12 @@ export default function SyncRules() {
         excludeTools: tools,
         excludeProjects: projects.split('\n').map((s) => s.trim()).filter(Boolean),
         excludeSources: excludedSources,
+        approveSources: approvedSources,
       });
       setTools(cfg.excludeTools);
       setProjects(cfg.excludeProjects.join('\n'));
       setExcludedSources(cfg.excludeSources ?? []);
+      setApprovedSources(cfg.approveSources ?? []);
       setState('saved');
       setTimeout(() => setState('ready'), 1500);
     } catch (e: any) {
@@ -88,6 +92,58 @@ export default function SyncRules() {
         <strong> never indexed by default</strong>. To include a project that lives in one, run
         <code> chat-recall include project &lt;path&gt;</code> on that machine.
       </div>
+
+      {/* Folders the collector found but nobody has decided about yet. These are
+          NOT syncing — silence must never mean "we uploaded your work account" —
+          so they get an explicit prompt rather than an easily-missed checkbox. */}
+      {sources.filter((x) => x.decision === 'pending' && !approvedSources.includes(x.id)).length > 0 && (
+        <div style={{
+          margin: '0 0 16px', padding: '12px 14px', borderRadius: 'var(--cr-radius-md, 8px)',
+          border: '1px solid var(--cr-warn-500, #c98a00)', background: 'var(--cr-ink-1)',
+        }}>
+          <div style={{ fontWeight: 700, color: 'var(--cr-fg-1)', marginBottom: 6 }}>
+            New transcript folders found — not syncing yet
+          </div>
+          <div style={{ fontSize: 12.5, color: 'var(--cr-fg-2)', lineHeight: 1.5, marginBottom: 10 }}>
+            One of your machines found these and is waiting for a decision. A separate work
+            account usually belongs out of this workspace — nothing from them has been uploaded.
+          </div>
+          {sources
+            .filter((x) => x.decision === 'pending' && !approvedSources.includes(x.id))
+            .map((src) => (
+              <div key={`${src.device || ''}|${src.id}`} style={{
+                display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+                padding: '7px 0', borderTop: '1px solid var(--cr-line-1)',
+              }}>
+                <span style={{ flex: 1, minWidth: 220 }}>
+                  <span style={{ fontFamily: 'var(--cr-font-mono)', fontSize: 12.5, color: 'var(--cr-fg-1)', wordBreak: 'break-all' }}>
+                    {src.path}
+                  </span>
+                  <span style={{ display: 'block', color: 'var(--cr-fg-3)', fontSize: 11.5, marginTop: 2 }}>
+                    {TOOL_LABELS[src.tool] || src.tool}
+                    {src.device ? ` · ${src.device}` : ''}
+                    {src.sessions > 0 ? ` · ${src.sessions} session${src.sessions === 1 ? '' : 's'}` : ''}
+                  </span>
+                </span>
+                <Button
+                  onClick={() => setApprovedSources((prev) => [...new Set([...prev, src.id])])}
+                >
+                  Sync this
+                </Button>
+                <button
+                  onClick={() => setExcludedSources((prev) => [...new Set([...prev, src.id])])}
+                  style={{ background: 'transparent', border: '1px solid var(--cr-line-1)', color: 'var(--cr-fg-2)', padding: '6px 12px', borderRadius: 4, cursor: 'pointer' }}
+                >
+                  Keep out
+                </button>
+              </div>
+            ))}
+          <div style={{ fontSize: 11.5, color: 'var(--cr-fg-3)', marginTop: 10 }}>
+            Applies on that machine's next sync. Same thing from a terminal:
+            <code style={{ marginLeft: 4 }}>chat-recall sources</code>
+          </div>
+        </div>
+      )}
 
       {sources.length > 0 && (
         <>
