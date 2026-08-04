@@ -123,6 +123,9 @@ export interface StorageDriver {
   secretFindingsSummary: AsyncMethod<MemoryStore['secretFindingsSummary']>;
   secretFindingsBySession: AsyncMethod<MemoryStore['secretFindingsBySession']>;
   secretFindingsByProject: AsyncMethod<MemoryStore['secretFindingsByProject']>;
+  /** Sessions + newest activity per device (fleet health). Optional: only the
+   *  pg driver implements it; the sqlite test driver has no fleet. */
+  sessionCountsByDevice?: () => Promise<Array<{ device: string | null; sessions: number; lastIndexedAt: number }>>;
   secretFindingsTrend: AsyncMethod<MemoryStore['secretFindingsTrend']>;
   secretFindingsByRule: AsyncMethod<MemoryStore['secretFindingsByRule']>;
   secretFindingsByDistinctSecret: AsyncMethod<MemoryStore['secretFindingsByDistinctSecret']>;
