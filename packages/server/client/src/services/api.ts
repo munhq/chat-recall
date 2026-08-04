@@ -624,6 +624,28 @@ export interface ReportedSource {
   reportedAt: number;
 }
 
+/** Per-device health for the fleet panel. `warnings` is the payload that matters —
+ *  empty means nothing is wrong with that machine. */
+export interface FleetDeviceHealth {
+  deviceId: string;
+  os: string | null;
+  cliVersion: string | null;
+  lastSeenAt: number | null;
+  lastSyncAt: number | null;
+  sessions: number;
+  folders: { syncing: number; pending: number; declined: number };
+  warnings: string[];
+}
+
+export async function getFleetHealth(): Promise<{
+  devices: FleetDeviceHealth[];
+  summary: { devices: number; healthy: number; needsAttention: number; pendingFolders: number; unattributedSessions: number };
+}> {
+  const res = await fetchWithTimeout(`${API_BASE}/health/fleet`, {}, 15000);
+  if (!res.ok) throw new Error(`Failed to load device health: ${res.statusText}`);
+  return await res.json();
+}
+
 export async function getSyncSources(): Promise<{ sources: ReportedSource[]; excludeSources: string[]; approveSources: string[] }> {
   const res = await fetchWithTimeout(`${API_BASE}/sync-config/sources`);
   if (!res.ok) throw new Error(`Failed to get sync sources: ${res.statusText}`);
