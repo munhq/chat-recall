@@ -26,6 +26,7 @@ const FILES = [
   './migrations/0003_teams.sql',
   './migrations/0004_unified_server.sql',
   './migrations/0005_kg_junk_cleanup.sql',
+  './migrations/0006_orphan_session_metadata.sql',
 ];
 
 for (const f of FILES) {
