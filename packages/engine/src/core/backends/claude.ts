@@ -542,10 +542,32 @@ export class ClaudeBackend implements ToolBackend {
     return total;
   }
 
+  /**
+   * True when this session exists in MORE THAN ONE home.
+   *
+   * Such a session cannot be tail-appended: `fileSize()` is the SUM across
+   * copies while a byte offset addresses ONE file, so the two disagree by
+   * construction and the "tail" is either empty or the wrong bytes. The caller
+   * uses this to force a FULL sync, which ships the unioned container and is
+   * correct regardless of how the halves are arranged.
+   *
+   * Measured on ec05f266: ~/.claude 1715 records, ~/.claude-work 205 records,
+   * zero overlap. An offset-based append against a 5846662-byte "size" that no
+   * single file has could only ever ship nonsense.
+   */
+  spansMultipleSources(prefixedId: string): boolean {
+    return findSessionFiles(this.toRawId(prefixedId)).length > 1;
+  }
+
   async readFromOffset(prefixedId: string, offset: number): Promise<{ text: string; newOffset: number }> {
-    const located = findSessionFile(this.toRawId(prefixedId));
-    if (!located) return { text: '', newOffset: offset };
-    return readTailFromOffset(located.path, offset);
+    const rawId = this.toRawId(prefixedId);
+    const copies = findSessionFiles(rawId);
+    if (copies.length === 0) return { text: '', newOffset: offset };
+    // Refuse to serve a tail for a split session — see spansMultipleSources.
+    // Returning the primary's tail here would ship bytes that do not correspond
+    // to the offset the ledger recorded.
+    if (copies.length > 1) return { text: '', newOffset: offset };
+    return readTailFromOffset(copies[0].path, offset);
   }
 }
 
