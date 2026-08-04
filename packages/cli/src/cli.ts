@@ -1475,12 +1475,72 @@ sources
 sources
   .command('decline <path>')
   .description('Keep a folder out of sync (e.g. a work account you do not want here)')
-  .action(async (path: string) => {
+  .option('--delete-remote', 'Also delete sessions already uploaded FROM this folder (irreversible)', false)
+  .option('--yes', 'Skip the confirmation prompt for --delete-remote', false)
+  .action(async (path: string, opts: { deleteRemote?: boolean; yes?: boolean }) => {
     const { declineHome, normalizeHomePath } = await import('@chat-recall/engine/core/home-approval.js');
+    const { identifyHome, sessionIdsInHome } = await import('@chat-recall/engine/core/home-discovery.js');
     const abs = normalizeHomePath(path);
     if (!declineHome(abs)) { console.error(chalk.red('Could not write settings.')); process.exit(1); }
     console.log(chalk.green(`✓ not syncing ${abs}`));
-    console.log(chalk.dim('  Sessions already uploaded from it stay on the server — use the dashboard to delete those.'));
+
+    if (!opts.deleteRemote) {
+      console.log(chalk.dim('  Sessions already uploaded from it stay on the server.'));
+      console.log(chalk.dim(`  To remove those too: chat-recall sources decline ${path} --delete-remote`));
+      return;
+    }
+
+    // The SERVER cannot do this on its own: it never records which folder a
+    // session came from, so only this machine can map folder → session ids.
+    // Without it, declining stops future uploads but leaves prior ones — which
+    // makes "keep my work data out of here" unenforceable after the fact.
+    const tool = identifyHome(abs);
+    if (!tool) { console.error(chalk.red(`Not a transcript folder: ${abs}`)); process.exit(1); }
+    const ids = sessionIdsInHome(abs, tool);
+    if (ids.length === 0) {
+      console.log(chalk.dim('  Nothing to delete — no session files found in that folder.'));
+      if (tool === 'opencode') {
+        console.log(chalk.dim('  (OpenCode keys sessions by database row, so they cannot be enumerated from the path.)'));
+      }
+      return;
+    }
+
+    const targets = loadAllCredentials();
+    if (targets.length === 0) { console.error(chalk.red('Not logged in — nothing to delete from.')); process.exit(1); }
+
+    if (!opts.yes) {
+      console.log();
+      console.log(chalk.yellow(`About to DELETE ${ids.length} session(s) from ${targets.length} server(s).`));
+      console.log(chalk.yellow('This is irreversible — the transcripts stay on this machine, but the'));
+      console.log(chalk.yellow('server copies (search index, conversation view, archive) are removed.'));
+      const { createInterface } = await import('node:readline/promises');
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const answer = (await rl.question('Type the number of sessions to confirm: ')).trim();
+      rl.close();
+      if (answer !== String(ids.length)) {
+        console.log(chalk.dim('Cancelled — nothing deleted.'));
+        return;
+      }
+    }
+
+    const { fetchWithTimeout } = await import('./http.js');
+    for (const t of targets) {
+      const base = t.serverUrl.replace(/\/+$/, '');
+      const headers: Record<string, string> = {};
+      if (t.token) headers.authorization = `Bearer ${t.token}`;
+      let deleted = 0, missing = 0, failed = 0;
+      for (const id of ids) {
+        try {
+          const res = await fetchWithTimeout(`${base}/api/conversations/${encodeURIComponent(id)}`, { method: 'DELETE', headers }, 30_000);
+          if (res.ok) deleted++;
+          else if (res.status === 404) missing++;
+          else failed++;
+        } catch { failed++; }
+      }
+      const line = `  ${base}: deleted ${deleted}` + (missing ? `, ${missing} were not there` : '') + (failed ? chalk.red(`, ${failed} FAILED`) : '');
+      console.log(failed ? chalk.yellow(line) : chalk.green(line));
+      if (failed) process.exitCode = 1;
+    }
   });
 
 sources
