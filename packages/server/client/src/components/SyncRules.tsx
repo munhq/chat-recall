@@ -138,9 +138,17 @@ export default function SyncRules() {
                 </button>
               </div>
             ))}
-          <div style={{ fontSize: 11.5, color: 'var(--cr-fg-3)', marginTop: 10 }}>
+          <div style={{ fontSize: 11.5, color: 'var(--cr-fg-3)', marginTop: 10, lineHeight: 1.5 }}>
             Applies on that machine's next sync. Same thing from a terminal:
             <code style={{ marginLeft: 4 }}>chat-recall sources</code>
+            <br />
+            {/* Be explicit: "Keep out" stops FUTURE uploads. Deleting what was
+                already uploaded can only run on the machine that owns the path,
+                because the server never records which folder a session came
+                from — promising deletion here would be a promise we cannot keep. */}
+            "Keep out" stops future uploads. To also remove what was already uploaded, run
+            <code style={{ margin: '0 4px' }}>chat-recall sources decline &lt;path&gt; --delete-remote</code>
+            on that machine.
           </div>
         </div>
       )}
