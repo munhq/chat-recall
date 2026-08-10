@@ -909,30 +909,38 @@ export class PgStore implements StorageDriver {
    */
   async reclassifyChunks(batch = 2000): Promise<{ scanned: number; updated: number }> {
     const { reclassifyChunkType } = await import('../memory-classifier.js');
-    let scanned = 0, updated = 0, lastId = '';
-    for (;;) {
-      const rows = await this.qr(
-        `SELECT chunk_id, chunk_type, text FROM memory_chunks
-         WHERE tenant=$1 AND chunk_id > $2 AND chunk_type NOT LIKE 'subagent%' AND chunk_type <> 'tool_result'
-         ORDER BY chunk_id LIMIT $3`, [this.t, lastId, batch]);
-      if (rows.length === 0) break;
-      const changed: Array<[string, string]> = [];
-      for (const r of rows) {
-        scanned++;
-        lastId = r.chunk_id;
-        const nt = reclassifyChunkType(r.chunk_type, r.text);
-        if (nt !== r.chunk_type) changed.push([r.chunk_id, nt]);
+    // Maintenance sweep, so it runs as the worker/system context: the tag is a
+    // pure function of the chunk text, and the sweep must reach EVERY chunk in
+    // the tenant — other members' rows are invisible to a named viewer, and an
+    // UPDATE of a legacy NULL-author row fails the author_write_update WITH
+    // CHECK (the row stays NULL-authored). Tenant isolation is unaffected.
+    // See runUnrestricted.
+    return runUnrestricted(async () => {
+      let scanned = 0, updated = 0, lastId = '';
+      for (;;) {
+        const rows = await this.qr(
+          `SELECT chunk_id, chunk_type, text FROM memory_chunks
+           WHERE tenant=$1 AND chunk_id > $2 AND chunk_type NOT LIKE 'subagent%' AND chunk_type <> 'tool_result'
+           ORDER BY chunk_id LIMIT $3`, [this.t, lastId, batch]);
+        if (rows.length === 0) break;
+        const changed: Array<[string, string]> = [];
+        for (const r of rows) {
+          scanned++;
+          lastId = r.chunk_id;
+          const nt = reclassifyChunkType(r.chunk_type, r.text);
+          if (nt !== r.chunk_type) changed.push([r.chunk_id, nt]);
+        }
+        if (changed.length) {
+          await tenantTx(this.pool, this.t, async (client) => {
+            for (const [id, nt] of changed) {
+              await client.query(`UPDATE memory_chunks SET chunk_type=$3 WHERE tenant=$1 AND chunk_id=$2`, [this.t, id, nt]);
+            }
+          });
+          updated += changed.length;
+        }
       }
-      if (changed.length) {
-        await tenantTx(this.pool, this.t, async (client) => {
-          for (const [id, nt] of changed) {
-            await client.query(`UPDATE memory_chunks SET chunk_type=$3 WHERE tenant=$1 AND chunk_id=$2`, [this.t, id, nt]);
-          }
-        });
-        updated += changed.length;
-      }
-    }
-    return { scanned, updated };
+      return { scanned, updated };
+    });
   }
 
   async countItemChunks(sourceType: string, itemId: string): Promise<number> {
