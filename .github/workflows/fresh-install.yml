@@ -3,26 +3,59 @@
 # MCP server. This exact flow caught the unbundled-tarball crash that every
 # unit test missed — it is the only check that exercises what a customer
 # actually runs.
+#
+# ── Where each platform runs, and why ────────────────────────────────────────
+# Linux runs on `munhq-arc` (self-hosted ARC in the k3s cluster), so it costs
+# no billed minutes and stays on EVERY push — the always-on signal.
+#
+# macOS and Windows have no self-hosted capacity (the ARC scale set is a single
+# Linux/amd64 pool on Linux nodes), so they are the only GitHub-hosted jobs left,
+# billing at ×10 and ×2 with each job rounded up to a full minute. Measured over
+# 30 days they cost ~1044 billed minutes — 780 of it macOS — for ~15s of real
+# work per run, because they fired on every push to main.
+#
+# They now run only when someone is about to ship or explicitly asks:
+#   * workflow_dispatch — on demand, before you hand the tarball to anyone;
+#   * a `v*` tag        — the release gate, once releases are tagged;
+#   * the daily cron    — early warning that main still installs everywhere.
+# A plain push to main gets Linux only.
+#
+# NOTE ON THE TAG TRIGGER: as of writing there is no release process — no
+# version tags, no GitHub releases, and `chat-recall` is not on npm. The `v*`
+# trigger is therefore dormant, deliberately: it arms itself the day you cut a
+# real tag. Until then `workflow_dispatch` and the cron are the only paths that
+# reach macOS/Windows, which is why the cron stays even though it costs minutes.
+# Gating cross-platform coverage on tags ALONE would silently never run — the
+# exact 18-day blind spot the cron was added to end.
 name: Fresh-machine install gate
 
 on:
-  # Manual runs only meant this gate went 18 days without executing and was red
-  # on all three platforms the whole time — while being, by its own description,
-  # the only check that exercises what a customer actually runs. Unit tests run
-  # on ubuntu and mock the platform, so nothing else covers macOS or Windows.
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main]      # Linux only (see the matrix expression below)
+    tags: ['v*']          # release: all three platforms
   schedule:
     - cron: '0 6 * * *'   # daily, so a broken install surfaces within a day
 
+permissions:
+  contents: read
+
 jobs:
   install:
+    name: install (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+        # A job-level `if:` cannot read the `matrix` context, so the platform
+        # set is chosen here instead — `strategy` can read `github`. Everything
+        # except a plain branch push gets the full matrix.
+        runner: >-
+          ${{ fromJSON(
+                (github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v'))
+                && '["munhq-arc","macos-latest","windows-latest"]'
+                || '["munhq-arc"]'
+              ) }}
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
