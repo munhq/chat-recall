@@ -10,7 +10,7 @@
 
 import express from 'express';
 import { MemoryService } from '../services/memory.js';
-import { createStore } from '../imports.js';
+import { createStore, classifyChunk } from '../imports.js';
 import type { SourceType } from '../imports.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { TenantTtlCache } from '../util/tenant-cache.js';
@@ -398,13 +398,34 @@ export function selectWakeUpFacts(
       text = rest;
     }
 
-    // 2. Word-boundary truncation with an ellipsis.
+    // 2. Surface the EVIDENCE, not the chunk head. The classifier tags whole
+    //    chunks, so a chunk can earn imp5 from one sentence deep inside while
+    //    its head shows unrelated text. Find the first 1-2 sentence window
+    //    that itself classifies at wake-up importance for this type and show
+    //    that; keep the cleaned head only when no window fires (evidence
+    //    spread across the chunk).
+    const type = c.chunkType.match(/:(\w+):imp/)?.[1] ?? 'fact';
+    const sentences = text.split(/(?<=[.!?])\s+/);
+    if (sentences.length > 1) {
+      outer: for (const windowSize of [1, 2]) {
+        for (let i = 0; i + windowSize <= sentences.length; i++) {
+          const win = sentences.slice(i, i + windowSize).join(' ');
+          const cls = classifyChunk(win);
+          if (cls.memoryType === type && cls.importance >= 4) {
+            text = win;
+            break outer;
+          }
+        }
+      }
+    }
+
+    // 3. Word-boundary truncation with an ellipsis.
     if (text.length > FACT_MAX_CHARS) {
       const cut = text.lastIndexOf(' ', FACT_MAX_CHARS - 1);
       text = `${text.slice(0, cut > 60 ? cut : FACT_MAX_CHARS - 1).trimEnd()}…`;
     }
 
-    // 3. Dedup by normalized prefix + cap facts per source item, so one
+    // 4. Dedup by normalized prefix + cap facts per source item, so one
     //    session cannot fill the whole feed with the same content.
     const key = text.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 80);
     if (seen.has(key)) continue;
@@ -413,10 +434,7 @@ export function selectWakeUpFacts(
     seen.add(key);
     perItem.set(c.itemId, itemCount + 1);
 
-    out.push({
-      type: c.chunkType.match(/:(\w+):imp/)?.[1] ?? 'fact',
-      text,
-    });
+    out.push({ type, text });
   }
   return out;
 }
