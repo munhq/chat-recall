@@ -145,6 +145,28 @@ describe('selectWakeUpFacts — wake-up fact cleanup', () => {
     expect(texts.some((t) => t.startsWith('A fact from another session'))).toBe(true);
   });
 
+  test('drops a fragment whose leading letter run is glued to punctuation', async () => {
+    const { selectWakeUpFacts } = await import('./memory.js');
+    const facts = selectWakeUpFacts(
+      [chunk('i1', 's."chat-recall fixes this. Just tell it to pick up where you left off."Clean synth boot up chord; mechanical keyboard typing')],
+      10,
+    );
+    // The remainder after the fragment is quote-glued prose, but whatever
+    // survives must not still start with the mid-word stump.
+    for (const f of facts) {
+      expect(f.text.startsWith('s."')).toBe(false);
+    }
+  });
+
+  test('drops markdown table dumps', async () => {
+    const { selectWakeUpFacts } = await import('./memory.js');
+    const facts = selectWakeUpFacts(
+      [chunk('i1', '5 most recent conversations (newest first): | When | Session | What happened | |------|---------|-----| | today | abc | fixed the thing |')],
+      10,
+    );
+    expect(facts).toHaveLength(0);
+  });
+
   test('extracts the classifier type from the chunk tag', async () => {
     const { selectWakeUpFacts } = await import('./memory.js');
     const facts = selectWakeUpFacts(

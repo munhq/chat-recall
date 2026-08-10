@@ -378,15 +378,19 @@ export function selectWakeUpFacts(
     let text = c.text.replace(/\s+/g, ' ').trim();
     if (!text) continue;
 
-    // 1. Fragment start: opening token is lowercase, very short, and not a
-    //    real short word ("ed", 's."…'), or the text opens with stray
-    //    punctuation. Advance to the first sentence start; if the remainder
+    // Markdown table dumps ("| When | Session | …") are listings the
+    // classifier tags as decisions; they are never a useful one-line fact.
+    if ((text.match(/ \| /g) ?? []).length >= 3) continue;
+
+    // 1. Fragment start: the LEADING LETTER RUN is lowercase, very short,
+    //    and not a real short word — "ed server…" (run "ed" + space) and
+    //    's."chat-recall…' (run "s" + punctuation) are both mid-word chunk
+    //    openings. Advance to the first sentence start; if the remainder
     //    is too short to be a useful fact, drop the candidate.
-    const firstToken = text.split(' ', 1)[0] ?? '';
-    const bareToken = firstToken.replace(/[^a-z]/gi, '').toLowerCase();
+    const leadingRun = text.match(/^[a-z]+/)?.[0] ?? '';
     const fragmentStart =
       /^[^A-Za-z0-9"'`*#>\[-]/.test(text) ||
-      (/^[a-z]/.test(firstToken) && bareToken.length <= 2 && !FRAGMENT_ALLOWED_STARTS.has(bareToken));
+      (leadingRun.length > 0 && leadingRun.length <= 2 && !FRAGMENT_ALLOWED_STARTS.has(leadingRun));
     if (fragmentStart) {
       const m = text.match(/[.!?]\s+(?=[A-Z0-9"'`*#-])/);
       const rest = m && m.index !== undefined ? text.slice(m.index + m[0].length).trim() : '';
