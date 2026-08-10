@@ -300,8 +300,11 @@ router.get('/wake-up', async (req, res) => {
     // ordered by importance — not by keyword-searching the words "decision
     // preference milestone", which missed every tagged chunk that didn't
     // literally contain those nouns and ordered by relevance instead.
+    const want = Number.isFinite(maxFacts) ? maxFacts : 10;
     const hits = await store.topImportantChunks({
-      limit: Number.isFinite(maxFacts) ? maxFacts : 10,
+      // Over-fetch: the presentation filter below drops fragments and
+      // duplicates, so it needs a candidate pool larger than the ask.
+      limit: want * 3,
       minImportance: 4,
       projectIdFilter: projectFilter,
       // Decisions/milestones/preferences live in real work artifacts — not in
@@ -309,10 +312,7 @@ router.get('/wake-up', async (req, res) => {
       // but which are noise in a "high-importance facts" feed.
       sourceTypes: ['session', 'plan', 'claude_md', 'diary'],
     });
-    const highFacts = hits.map((c) => ({
-      type: c.chunkType.match(/:(\w+):imp/)?.[1] ?? 'fact',
-      text: c.text.replace(/\n/g, ' ').trim().slice(0, 150),
-    }));
+    const highFacts = selectWakeUpFacts(hits, want);
 
     let kg: { stats: unknown; facts: Array<{ subject: string; predicate: string; object: string; origin: string }> } = { stats: {}, facts: [] };
     const graph = await createKnowledgeGraph();
@@ -344,5 +344,77 @@ router.get('/wake-up', async (req, res) => {
     await store.close();
   }
 });
+
+/**
+ * Presentation cleanup for wake-up facts. Raw top-importance chunks arrive
+ * with three defects the chunker/classifier can't avoid, and this fixes all
+ * three at the serving edge so every consumer (CLI, MCP, coolcode) benefits:
+ *
+ * 1. Leading fragments — the chunker splits mid-word, so a chunk can open
+ *    with "ed server hardware…". Detect a fragment start, advance to the
+ *    first clean sentence start, and drop the candidate if none exists.
+ * 2. Hard mid-word truncation — cut at a word boundary and add an ellipsis
+ *    instead of slicing at a fixed byte offset.
+ * 3. Near-duplicates — overlapping chunks repeat the same sentence, and one
+ *    verbose session can fill every slot. Dedup by normalized prefix and cap
+ *    facts per source item.
+ */
+const FRAGMENT_ALLOWED_STARTS = new Set([
+  'a', 'an', 'as', 'at', 'be', 'by', 'do', 'go', 'i', 'if', 'in', 'is',
+  'it', 'my', 'no', 'of', 'ok', 'on', 'or', 'so', 'to', 'up', 'we', 'use',
+]);
+const FACT_MAX_CHARS = 160;
+
+export function selectWakeUpFacts(
+  hits: Array<{ itemId: string; chunkType: string; text: string }>,
+  want: number,
+): Array<{ type: string; text: string }> {
+  const out: Array<{ type: string; text: string }> = [];
+  const seen = new Set<string>();
+  const perItem = new Map<string, number>();
+
+  for (const c of hits) {
+    if (out.length >= want) break;
+    let text = c.text.replace(/\s+/g, ' ').trim();
+    if (!text) continue;
+
+    // 1. Fragment start: opening token is lowercase, very short, and not a
+    //    real short word ("ed", 's."…'), or the text opens with stray
+    //    punctuation. Advance to the first sentence start; if the remainder
+    //    is too short to be a useful fact, drop the candidate.
+    const firstToken = text.split(' ', 1)[0] ?? '';
+    const bareToken = firstToken.replace(/[^a-z]/gi, '').toLowerCase();
+    const fragmentStart =
+      /^[^A-Za-z0-9"'`*#>\[-]/.test(text) ||
+      (/^[a-z]/.test(firstToken) && bareToken.length <= 2 && !FRAGMENT_ALLOWED_STARTS.has(bareToken));
+    if (fragmentStart) {
+      const m = text.match(/[.!?]\s+(?=[A-Z0-9"'`*#-])/);
+      const rest = m && m.index !== undefined ? text.slice(m.index + m[0].length).trim() : '';
+      if (rest.length < 40) continue;
+      text = rest;
+    }
+
+    // 2. Word-boundary truncation with an ellipsis.
+    if (text.length > FACT_MAX_CHARS) {
+      const cut = text.lastIndexOf(' ', FACT_MAX_CHARS - 1);
+      text = `${text.slice(0, cut > 60 ? cut : FACT_MAX_CHARS - 1).trimEnd()}…`;
+    }
+
+    // 3. Dedup by normalized prefix + cap facts per source item, so one
+    //    session cannot fill the whole feed with the same content.
+    const key = text.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 80);
+    if (seen.has(key)) continue;
+    const itemCount = perItem.get(c.itemId) ?? 0;
+    if (itemCount >= 2) continue;
+    seen.add(key);
+    perItem.set(c.itemId, itemCount + 1);
+
+    out.push({
+      type: c.chunkType.match(/:(\w+):imp/)?.[1] ?? 'fact',
+      text,
+    });
+  }
+  return out;
+}
 
 export default router;
