@@ -78,6 +78,83 @@ describe('Memory route validator', () => {
   });
 });
 
+describe('selectWakeUpFacts — wake-up fact cleanup', () => {
+  const chunk = (itemId: string, text: string, type = 'assistant:decision:imp5') => ({
+    itemId,
+    chunkType: type,
+    text,
+  });
+
+  test('truncates at a word boundary with an ellipsis, not mid-word', async () => {
+    const { selectWakeUpFacts } = await import('./memory.js');
+    const long = `We chose Postgres over DynamoDB because the relational model fits our join-heavy queries and the team already operates CloudNativePG in production today, verified`;
+    const [fact] = selectWakeUpFacts([chunk('i1', long)], 10);
+    expect(fact.text.length).toBeLessThanOrEqual(160);
+    expect(fact.text.endsWith('…')).toBe(true);
+    // The cut lands on a word boundary: the char before the ellipsis is a word end.
+    expect(fact.text).toMatch(/\S…$/);
+    expect(fact.text).not.toMatch(/\w{1,2}…$/); // no obvious mid-word stump like "verifi…"
+  });
+
+  test('drops chunks that start with a mid-word fragment and have no sentence restart', async () => {
+    const { selectWakeUpFacts } = await import('./memory.js');
+    const facts = selectWakeUpFacts(
+      [chunk('i1', 'ed server hardware with very subtle pulsing cyan LED lights and anamorphic lens flare across the whole frame')],
+      10,
+    );
+    expect(facts).toHaveLength(0);
+  });
+
+  test('recovers the first clean sentence after a fragment start', async () => {
+    const { selectWakeUpFacts } = await import('./memory.js');
+    const facts = selectWakeUpFacts(
+      [chunk('i1', 'ng the old driver. We chose Postgres over DynamoDB because the relational model fits the workload here.')],
+      10,
+    );
+    expect(facts).toHaveLength(1);
+    expect(facts[0].text.startsWith('We chose Postgres')).toBe(true);
+  });
+
+  test('keeps legitimate lowercase sentence starts', async () => {
+    const { selectWakeUpFacts } = await import('./memory.js');
+    const facts = selectWakeUpFacts(
+      [chunk('i1', 'we decided to keep the sqlite driver for unit tests only, never as a user-facing storage mode')],
+      10,
+    );
+    expect(facts).toHaveLength(1);
+    expect(facts[0].text.startsWith('we decided')).toBe(true);
+  });
+
+  test('dedups near-identical chunks and caps facts per item at 2', async () => {
+    const { selectWakeUpFacts } = await import('./memory.js');
+    const facts = selectWakeUpFacts(
+      [
+        chunk('i1', 'Switched the embedder to a 1024-dimension model behind the gateway.'),
+        chunk('i2', 'Switched the embedder to a 1024-dimension model behind the gateway.'), // dup text
+        chunk('i1', 'Milestone one from the same session: the sync matrix went green.'),
+        chunk('i1', 'Milestone two from the same session: the health page shipped.'),
+        chunk('i1', 'Milestone three from the same session must be capped away entirely.'),
+        chunk('i3', 'A fact from another session survives the per-item cap unharmed.'),
+      ],
+      10,
+    );
+    const texts = facts.map((f) => f.text);
+    expect(texts.filter((t) => t.startsWith('Switched the embedder'))).toHaveLength(1);
+    // i1 contributes at most 2 facts total.
+    expect(texts.filter((t) => t.includes('from the same session'))).toHaveLength(1);
+    expect(texts.some((t) => t.startsWith('A fact from another session'))).toBe(true);
+  });
+
+  test('extracts the classifier type from the chunk tag', async () => {
+    const { selectWakeUpFacts } = await import('./memory.js');
+    const facts = selectWakeUpFacts(
+      [chunk('i1', 'Milestone: all 752 tests green and pushed to main.', 'assistant:milestone:imp4')],
+      10,
+    );
+    expect(facts[0].type).toBe('milestone');
+  });
+});
+
 describe('GET /api/memory/item/:type/:id/content — server-mode reconstruction', () => {
   test('rebuilds content from stored chunks when the item has no file on disk', async () => {
     const { createStore } = await import('../imports.js');
