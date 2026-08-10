@@ -167,6 +167,28 @@ describe('selectWakeUpFacts — wake-up fact cleanup', () => {
     expect(facts).toHaveLength(0);
   });
 
+  test('surfaces the evidence sentence, not the chunk head', async () => {
+    const { selectWakeUpFacts } = await import('./memory.js');
+    const facts = selectWakeUpFacts(
+      [chunk('i1', 'The morning standup covered three unrelated topics and ran long again. Someone demoed the new dashboard theme. We chose Postgres over DynamoDB because the relational model fits the workload. The meeting ended at noon.')],
+      10,
+    );
+    expect(facts).toHaveLength(1);
+    expect(facts[0].text.startsWith('We chose Postgres over DynamoDB')).toBe(true);
+  });
+
+  test('keeps the cleaned head when no single window carries the evidence', async () => {
+    const { selectWakeUpFacts } = await import('./memory.js');
+    // No 1-2 sentence window fires decision imp>=4 here; the stored tag is
+    // stale or the evidence is diffuse — fall back to the head.
+    const facts = selectWakeUpFacts(
+      [chunk('i1', 'The dashboard uses the new theme now. The sidebar moved to the left side. The footer shows the build number.')],
+      10,
+    );
+    expect(facts).toHaveLength(1);
+    expect(facts[0].text.startsWith('The dashboard uses')).toBe(true);
+  });
+
   test('extracts the classifier type from the chunk tag', async () => {
     const { selectWakeUpFacts } = await import('./memory.js');
     const facts = selectWakeUpFacts(
