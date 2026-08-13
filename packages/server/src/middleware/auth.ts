@@ -4,10 +4,15 @@
  *   none          (default) — self-host single-tenant. No token; tenant='default'.
  *   static-token            — self-host multi-user. Bearer token → tenant via the
  *                             CHAT_RECALL_TOKENS env (JSON: {"<token>":"<tenant>"}).
- *   keycloak                — cloud. Verify a Keycloak JWT (JWKS) → tenant via
- *                             team membership (control plane). The client sends
- *                             `x-team: <slug>` to pick a team; with exactly one
- *                             membership the header is optional.
+ *   keycloak                — cloud (legacy). Verify a Keycloak JWT (JWKS) →
+ *                             tenant via team membership (control plane). The
+ *                             client sends `x-team: <slug>` to pick a team;
+ *                             with exactly one membership the header is
+ *                             optional.
+ *   better-auth             — cloud. Embedded auth (../auth/better-auth.ts):
+ *                             the session token (cookie or Bearer) resolves to
+ *                             a user id that plays the exact role the Keycloak
+ *                             sub played; tenant resolution is identical.
  *
  * In every provider, a Bearer token starting with `ct_` is treated as an
  * AGENT (device) token and resolved through the control plane — this is how
@@ -35,13 +40,27 @@ declare global {
   }
 }
 
-type Provider = 'none' | 'static-token' | 'keycloak';
+type Provider = 'none' | 'static-token' | 'keycloak' | 'better-auth';
 
-const VALID_PROVIDERS: readonly Provider[] = ['none', 'static-token', 'keycloak'];
+const VALID_PROVIDERS: readonly Provider[] = ['none', 'static-token', 'keycloak', 'better-auth'];
 
 function provider(): Provider {
   const p = (process.env.AUTH_PROVIDER || 'none').toLowerCase();
-  return p === 'static-token' || p === 'keycloak' ? p : 'none';
+  return p === 'static-token' || p === 'keycloak' || p === 'better-auth' ? p : 'none';
+}
+
+/** The active provider name, for /api/capabilities (the CLI picks its login
+ *  flow from this: better-auth → in-server device flow; keycloak → realm
+ *  device flow via oidcIssuer; none → tokenless/token login). */
+export function authProviderName(): Provider {
+  return provider();
+}
+
+/** True when the provider authenticates a USER (not a static tenant token) —
+ *  the two providers share requireUser/requireAdmin/tenant resolution. */
+function isUserProvider(): boolean {
+  const p = provider();
+  return p === 'keycloak' || p === 'better-auth';
 }
 
 /**
@@ -71,6 +90,23 @@ export function validateAuthConfig(): void {
     throw new Error(
       `AUTH_DEV_USER=1 makes the 'x-dev-user' header a login bypass and must ` +
         `never be set with NODE_ENV=production. Refusing to start.`,
+    );
+  }
+  // SEC-05 — better-auth without its secret would throw on the first login
+  // attempt instead of at boot; crash with a clear message now.
+  if (provider() === 'better-auth' && !process.env.BETTER_AUTH_SECRET) {
+    throw new Error(
+      `AUTH_PROVIDER=better-auth requires BETTER_AUTH_SECRET. Refusing to start.`,
+    );
+  }
+  // The embedded multi-user provider is a CLOUD-edition surface: self-host
+  // stays single-user (none) or static-token. This is a product boundary,
+  // not a security one — it keeps the default install from drifting into
+  // hosting the paid product shape by accident.
+  if (provider() === 'better-auth' && (process.env.CHAT_RECALL_EDITION || 'selfhost').toLowerCase() !== 'cloud') {
+    throw new Error(
+      `AUTH_PROVIDER=better-auth requires CHAT_RECALL_EDITION=cloud. ` +
+        `Self-host deployments use AUTH_PROVIDER=none or static-token.`,
     );
   }
 }
@@ -130,7 +166,25 @@ async function verifyKeycloakJwt(token: string): Promise<{ sub: string; email: s
   }
 }
 
-/** Realm role that marks a Keycloak user as a chat-recall platform operator. */
+/**
+ * Verify the requesting USER for the active user-provider:
+ *   keycloak     → Bearer realm JWT via JWKS (verifyKeycloakJwt)
+ *   better-auth  → session token (cookie or Bearer) via the embedded instance
+ * Both return the same shape; `sub` is the identity every control-plane row
+ * is keyed on. Null = not authenticated (caller sends the 401).
+ */
+async function verifyUser(req: Request): Promise<{ sub: string; email: string | null; roles: string[] } | null> {
+  if (provider() === 'better-auth') {
+    const { getSessionUser } = await import('../auth/better-auth.js');
+    return getSessionUser(req.headers);
+  }
+  const tok = bearer(req);
+  return tok ? verifyKeycloakJwt(tok) : null;
+}
+
+/** Role that marks a user as a chat-recall platform operator. Keycloak: a
+ *  realm role of this name. better-auth: granted via the ADMIN_EMAILS
+ *  allowlist (see auth/better-auth.ts getSessionUser). */
 export const ADMIN_ROLE = 'chat-recall-admin';
 
 /**
@@ -146,13 +200,12 @@ export const ADMIN_ROLE = 'chat-recall-admin';
  * Returns true when allowed; otherwise sends 401/403 and returns false.
  */
 export async function requireAdmin(req: Request, res: Response): Promise<boolean> {
-  if (provider() === 'keycloak') {
+  if (isUserProvider()) {
     if (process.env.AUTH_DEV_USER === '1' && req.get('x-dev-admin') === '1') return true;
-    const tok = bearer(req);
-    const user = tok ? await verifyKeycloakJwt(tok) : null;
+    const user = await verifyUser(req);
     if (!user) { res.status(401).json({ error: 'login required' }); return false; }
     if (!user.roles.includes(ADMIN_ROLE)) {
-      res.status(403).json({ error: `requires the '${ADMIN_ROLE}' realm role` });
+      res.status(403).json({ error: `requires the '${ADMIN_ROLE}' operator role` });
       return false;
     }
     return true;
@@ -163,16 +216,16 @@ export async function requireAdmin(req: Request, res: Response): Promise<boolean
   return true;
 }
 
-/** Resolve a Keycloak user (JWT) for routes that need identity, not a tenant
- *  (team create/join). Returns null after sending a 401. */
+/** Resolve the authenticated user (Keycloak JWT or better-auth session) for
+ *  routes that need identity, not a tenant (team create/join). Returns null
+ *  after sending a 401. */
 export async function requireUser(req: Request, res: Response): Promise<{ sub: string; email: string | null } | null> {
   // Local/dev: AUTH_DEV_USER=1 lets `x-dev-user: <id>` stand in for a login.
   if (process.env.AUTH_DEV_USER === '1') {
     const u = req.get('x-dev-user');
     if (u) return { sub: u, email: `${u}@dev.local` };
   }
-  const tok = bearer(req);
-  const user = tok ? await verifyKeycloakJwt(tok) : null;
+  const user = await verifyUser(req);
   if (!user) { res.status(401).json({ error: 'login required' }); return null; }
   return user;
 }
@@ -294,8 +347,9 @@ async function resolve(req: Request, res: Response): Promise<Resolved | null> {
       if (!tenant) { res.status(401).json({ error: 'invalid or missing token' }); return null; }
       return { tenant, userId: tok!.slice(0, 8), authorSub: null, authorDevice: `token:${tok!.slice(0, 8)}` };
     }
-    case 'keycloak': {
-      const user = tok ? await verifyKeycloakJwt(tok) : null;
+    case 'keycloak':
+    case 'better-auth': {
+      const user = await verifyUser(req);
       if (!user) {
         // Dev-header escape hatch mirrors requireUser().
         if (process.env.AUTH_DEV_USER === '1') {

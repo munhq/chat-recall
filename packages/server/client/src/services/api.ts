@@ -1,7 +1,7 @@
 /**
  * API client for backend.
  */
-import { getAccessToken } from './auth';
+import { getAccessToken, handleUnauthorized } from './auth';
 
 export interface SearchResult {
   sessionId: string;
@@ -153,6 +153,10 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
     if (token) headers.Authorization = `Bearer ${token}`;
     if (activeTeam) headers['x-team'] = activeTeam;
     const res = await fetch(url, { ...options, headers, signal: controller.signal });
+    // 401 with a token attached = the stored session died server-side
+    // (revoked/expired). Clear it and return to the front door instead of
+    // leaving a half-dead app throwing on every call.
+    if (res.status === 401 && token) handleUnauthorized();
     // 402 from any value route = subscription required. Broadcast once so the
     // app shell can drop the user onto the Subscribe screen instead of each
     // caller surfacing a dead error.

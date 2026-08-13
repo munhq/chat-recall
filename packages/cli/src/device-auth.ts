@@ -1,18 +1,23 @@
 /**
- * OIDC Device Authorization Grant (RFC 8628) for `chat-recall login`.
+ * Device Authorization Grant (RFC 8628) for `chat-recall login` — two flavors,
+ * picked by the target server's /api/capabilities `authProvider`:
  *
- * The CLI can't host a redirect URI, so we use the device flow: ask Keycloak
- * for a user_code, tell the human to approve it in a browser, then poll the
- * token endpoint until they do. Returns the realm access token — server.mjs
- * (`authUser`) verifies it via JWKS, so it's accepted at /api/me, /api/teams*.
+ *   better-auth  (betterAuthDeviceLogin) — the flow runs against the SERVER
+ *                ITSELF (/api/auth/device/*). The token it returns is a
+ *                better-auth session token; the server accepts it as a Bearer
+ *                at /api/me, /api/teams* via its bearer plugin.
+ *   keycloak     (deviceLogin, legacy) — the flow runs against the realm the
+ *                server advertises as `oidcIssuer`. Returns a realm access
+ *                token, verified server-side via JWKS.
  *
- * There is NO baked-in issuer: the CLI learns it from the server it's logging
- * into (the server advertises `oidcIssuer` at /api/capabilities) or from an
- * explicit `--issuer` / `CHAT_RECALL_OIDC_ISSUER`. Self-host with
- * AUTH_PROVIDER=none skips this flow entirely (token / no-auth login).
+ * Either way the CLI can't host a redirect URI, so: mint a user_code, tell the
+ * human to approve it in a browser, poll the token endpoint until they do.
+ * There is NO baked-in issuer or server: everything is discovered from the
+ * server being logged into. Self-host with AUTH_PROVIDER=none skips this flow
+ * entirely (token / no-auth login).
  *
- * The chat-recall-web client enforces PKCE (S256), so the device flow carries
- * a code_challenge on init and the matching code_verifier on the token poll.
+ * The Keycloak chat-recall-web client enforces PKCE (S256), so that flavor
+ * carries a code_challenge on init and the matching code_verifier on the poll.
  */
 import { createHash, randomBytes } from 'node:crypto';
 
@@ -113,6 +118,70 @@ export async function deviceLogin(
     if (err === 'authorization_pending') continue;
     if (err === 'slow_down') { interval += 5000; continue; }
     if (err === 'expired_token') break;
+    throw new Error(`device-auth failed: ${String(err || `HTTP ${res.status}`)}`);
+  }
+  throw new Error('device-auth timed out — the code expired before approval.');
+}
+
+/** Client id the CLI presents to the server's embedded provider. A public
+ *  identifier (not a secret) — the server pins it via validateClient. */
+export const BETTER_AUTH_CLI_CLIENT_ID = 'chat-recall-cli';
+
+/**
+ * Device flow against the server's EMBEDDED better-auth provider
+ * (AUTH_PROVIDER=better-auth): POST /api/auth/device/code, send the human to
+ * the server's own /device page, poll /api/auth/device/token. Same RFC 8628
+ * poll semantics as the Keycloak flavor; JSON bodies instead of form-encoded.
+ */
+export async function betterAuthDeviceLogin(
+  serverUrl: string,
+  onPrompt: (p: { url: string; userCode: string; verificationUri: string }) => void,
+): Promise<DeviceTokens> {
+  const base = serverUrl.replace(/\/+$/, '');
+  const startRes = await fetch(`${base}/api/auth/device/code`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ client_id: BETTER_AUTH_CLI_CLIENT_ID }),
+  });
+  if (!startRes.ok) {
+    throw new Error(`device-auth init failed: HTTP ${startRes.status} ${await startRes.text().catch(() => '')}`);
+  }
+  const start = (await startRes.json()) as DeviceAuthResponse;
+
+  onPrompt({
+    url: start.verification_uri_complete || start.verification_uri,
+    userCode: start.user_code,
+    verificationUri: start.verification_uri,
+  });
+
+  const deadline = Date.now() + start.expires_in * 1000;
+  let interval = (start.interval ?? 5) * 1000;
+
+  while (Date.now() < deadline) {
+    await sleep(interval);
+    const res = await fetch(`${base}/api/auth/device/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+        device_code: start.device_code,
+        client_id: BETTER_AUTH_CLI_CLIENT_ID,
+      }),
+    });
+    const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+    if (res.ok && typeof body.access_token === 'string') {
+      return {
+        accessToken: body.access_token,
+        expiresIn: typeof body.expires_in === 'number' ? body.expires_in : 0,
+      };
+    }
+    // RFC 8628 §3.5 — same contract as the Keycloak flavor.
+    const err = body.error;
+    if (err === 'authorization_pending') continue;
+    if (err === 'slow_down') { interval += 5000; continue; }
+    if (err === 'expired_token' || err === 'access_denied') {
+      throw new Error(err === 'access_denied' ? 'device-auth denied in the browser.' : 'device-auth timed out — the code expired before approval.');
+    }
     throw new Error(`device-auth failed: ${String(err || `HTTP ${res.status}`)}`);
   }
   throw new Error('device-auth timed out — the code expired before approval.');
