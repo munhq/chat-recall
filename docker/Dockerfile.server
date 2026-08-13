@@ -79,6 +79,11 @@ COPY package.json package-lock.json ./
 COPY packages/engine/package.json ./packages/engine/
 COPY packages/server/package.json ./packages/server/
 COPY --from=build /app/node_modules ./node_modules
+# npm nests non-hoistable deps under the workspace (better-auth lives at
+# packages/server/node_modules — a peer-version clash keeps it out of the
+# root). Copying only the root node_modules shipped an image that crashed
+# with ERR_MODULE_NOT_FOUND at boot.
+COPY --from=build /app/packages/server/node_modules ./packages/server/node_modules
 
 # Compiled JS + the engine workspace the server resolves via the symlink.
 COPY --from=build /app/packages/engine/dist ./packages/engine/dist
@@ -93,8 +98,9 @@ COPY packages/server/cloud/migrate.mjs ./migrate/migrate.mjs
 COPY packages/server/cloud/migrations ./migrate/migrations
 
 # One-time Keycloak → better-auth user import (kubectl exec, see the script
-# header). Ships in the image so it runs with the image's own node_modules.
-COPY packages/server/scripts/import-keycloak-users.mjs ./scripts/import-keycloak-users.mjs
+# header). Lives UNDER packages/server so its better-auth import resolves
+# against the workspace-nested node_modules above.
+COPY packages/server/scripts/import-keycloak-users.mjs ./packages/server/scripts/import-keycloak-users.mjs
 
 # The packed CLI, served at /install/chat-recall.tgz (see routes/install.ts).
 # cli-version.txt lets /api/capabilities advertise the packed CLI version so
