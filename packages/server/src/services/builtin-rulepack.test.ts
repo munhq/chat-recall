@@ -87,7 +87,7 @@ const BENIGN = [
   'SELECT id, email FROM users WHERE created_at > now() - interval \'7 days\';',
   'session 6ec051d9-693f-4605-873d-a25a548c0106 finished in 1432ms',
   'export interface BuiltinPackRule { name: string; regex: string }',
-  'docker pull ghcr.io/hotmun/chat-recall-cloud:main',
+  'docker pull ghcr.io/munhq/chat-recall-cloud:main',
   'Error: connect ECONNREFUSED 127.0.0.1:5432 at TCPConnectWrap.afterConnect',
   'we discussed twitter and dropbox integrations in the meeting yesterday',
   'heroku logs --tail --app my-app | grep -i error',

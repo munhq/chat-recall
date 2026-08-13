@@ -6,6 +6,8 @@ dist/
 web/client/dist/
 web/server/dist/
 *.js.map
+# postbuild copies repo-root hooks/ into the CLI package for findHook + npm pack
+packages/cli/hooks/
 
 # Environment (contains API keys)
 .env

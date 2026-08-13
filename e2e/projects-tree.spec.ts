@@ -29,11 +29,11 @@ test('project tree: workspace → repo → dossier tab', async ({ page }) => {
   await expect(personalWs).toBeVisible({ timeout: 15000 });
 
   // Real repo leaves render under the workspace (not as ws:personal/foo bare paths).
-  const munbot = page.locator('[data-path="git:github.com/hotmun/munbot"]');
+  const munbot = page.locator('[data-path="git:github.com/munhq/munbot"]');
   await expect(munbot).toBeVisible();
 
   // Click chat-recall — should switch into the project pane.
-  const chatRecall = page.locator('[data-path="git:github.com/hotmun/chat-recall"]');
+  const chatRecall = page.locator('[data-path="git:github.com/munhq/chat-recall"]');
   await chatRecall.click();
 
   // Tab strip appears and Dossier is the default first-visit tab.

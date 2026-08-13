@@ -22,7 +22,7 @@ import tasksRouter from './routes/tasks.js';
 import sharesRouter from './routes/shares.js';
 import toolkitRouter from './routes/toolkit.js';
 import secretsRouter from './routes/secrets.js';
-import { tenantAuth, validateAuthConfig } from './middleware/auth.js';
+import { tenantAuth, validateAuthConfig, authProviderName } from './middleware/auth.js';
 import { apiLimiter, syncLimiter, rl } from './middleware/rate-limit.js';
 import { costMiddleware, startCostTelemetry } from './middleware/request-cost.js';
 import metricsRouter, { startBacklogRefresher, logMetricsExposureAtBoot } from './routes/metrics.js';
@@ -103,6 +103,8 @@ const smallJson = express.json({ limit: '100kb' });
 // the billing router owns express.raw for that one path and we skip the global
 // JSON parser for it here.
 app.use((req, res, next) => {
+  // better-auth reads its own request body — a pre-consumed stream breaks it.
+  if (req.path.startsWith('/api/auth/')) return next();
   if (req.path.startsWith('/api/sync')) return next();
   // /api/code/index carries a full collector run (findings + map + actions) —
   // bigger than 100kb on a large repo. Its reads/PATCHes stay tight.
@@ -144,10 +146,25 @@ app.use('/metrics', metricsRouter);
 // top-level like /metrics: outside /api auth, limiters, and entitlements.
 app.use('/', installRouter);
 
+// Embedded auth (AUTH_PROVIDER=better-auth): better-auth owns everything
+// under /api/auth/* — sign-in/up/out, get-session, and the RFC 8628 device
+// flow the CLI uses. Registered BEFORE tenantAuth (it IS the login) and
+// excluded from the JSON parsers above (the handler reads its own body).
+// Boot-time migrations create/upgrade the auth tables in the same Postgres —
+// same fail-fast contract as ensurePgSchema() below.
+if (authProviderName() === 'better-auth') {
+  const { toNodeHandler } = await import('better-auth/node');
+  const { getAuth, runAuthMigrations } = await import('./auth/better-auth.js');
+  await runAuthMigrations();
+  app.all('/api/auth/*', toNodeHandler(getAuth()));
+  log.info('better-auth mounted at /api/auth (embedded provider)');
+}
+
 // Open metadata: lets the client decide which views to render before auth.
-// `oidcIssuer` lets the CLI learn where to run the SSO device flow without any
-// baked-in issuer (null on a no-auth self-host server → CLI uses token login).
-app.get('/api/capabilities', (_req, res) => res.json({ ...capabilities(), cli: cliRelease(), oidcIssuer: process.env.OIDC_ISSUER || null }));
+// `authProvider` tells the CLI which login flow to run: 'better-auth' → the
+// server's own device flow; 'keycloak' → the realm device flow at
+// `oidcIssuer`; 'none' → tokenless/token login (no baked-in issuer anywhere).
+app.get('/api/capabilities', (_req, res) => res.json({ ...capabilities(), cli: cliRelease(), authProvider: authProviderName(), oidcIssuer: process.env.OIDC_ISSUER || null }));
 
 // Self-authenticating surfaces, mounted BEFORE tenantAuth:
 //   /api/sync       — agent (device) token; resolves + scopes its own tenant.

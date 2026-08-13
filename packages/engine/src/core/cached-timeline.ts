@@ -200,7 +200,7 @@ export async function cachedRecentEdits(opts: {
     // skip them at the SQL layer rather than decompress and discard.
     // Push the project filter into SQL (indexed on project_id) instead of
     // substring-matching project_path in app code. The sidebar passes a
-    // logical id (e.g. `git:github.com/hotmun/chat-recall`) which is NOT a
+    // logical id (e.g. `git:github.com/munhq/chat-recall`) which is NOT a
     // substring of the filesystem project_path — matching path was why a
     // git-grouped project always came back empty.
     const candidates = await memStore.listSessionsModifiedSince(opts.sinceMs, opts.projectFilter);

@@ -5,8 +5,8 @@
   "author": {
     "name": "hotmun"
   },
-  "homepage": "https://github.com/hotmun/chat-recall",
-  "repository": "https://github.com/hotmun/chat-recall",
+  "homepage": "https://github.com/munhq/chat-recall",
+  "repository": "https://github.com/munhq/chat-recall",
   "license": "MIT",
   "keywords": [
     "memory",

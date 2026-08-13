@@ -104,7 +104,7 @@ chat-recall install-hooks --uninstall     # remove all of ours, leave third-part
 
 ## Companion: codeindex (auto-detected)
 
-There's a separate MCP server called **codeindex** (Zig binary, ~56 MB) by [@hotmun](https://github.com/hotmun/codeindex) that gives the agent code-level lookup. The two compose:
+There's a separate MCP server called **codeindex** (Zig binary, ~56 MB) by [@hotmun](https://github.com/munhq/codeindex) that gives the agent code-level lookup. The two compose:
 
 - **chat-recall** = session memory. *What have I worked on? What did we decide?*
 - **codeindex** = code memory. *Where is this symbol? Who calls it? What breaks if I change it?*

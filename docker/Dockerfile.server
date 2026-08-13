@@ -33,9 +33,9 @@ COPY packages/server/client/ ./
 COPY --from=enginebuild /app/packages/engine/package.json ./node_modules/@chat-recall/engine/package.json
 COPY --from=enginebuild /app/packages/engine/dist ./node_modules/@chat-recall/engine/dist
 # Vite bakes these at build time. Unset (compose default) → same-origin /api,
-# no external auth. The SaaS build passes the Keycloak issuer + client id.
-ARG VITE_OIDC_ISSUER
-ARG VITE_OIDC_CLIENT_ID
+# no external auth. The SaaS build sets VITE_CLOUD=1: the client renders the
+# landing + embedded better-auth login (services/auth.ts).
+ARG VITE_CLOUD
 ARG VITE_API_BASE
 # GlitchTip DSN for browser crash reporting (shared hotmun-frontend project).
 # Public key, baked into the client bundle; Vite reads it from the env.
@@ -91,6 +91,10 @@ COPY --from=client /client/dist ./client
 # `node migrate/migrate.mjs` from this same image (pg comes from node_modules).
 COPY packages/server/cloud/migrate.mjs ./migrate/migrate.mjs
 COPY packages/server/cloud/migrations ./migrate/migrations
+
+# One-time Keycloak → better-auth user import (kubectl exec, see the script
+# header). Ships in the image so it runs with the image's own node_modules.
+COPY packages/server/scripts/import-keycloak-users.mjs ./scripts/import-keycloak-users.mjs
 
 # The packed CLI, served at /install/chat-recall.tgz (see routes/install.ts).
 # cli-version.txt lets /api/capabilities advertise the packed CLI version so
