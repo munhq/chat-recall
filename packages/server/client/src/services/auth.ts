@@ -1,132 +1,118 @@
 /**
- * Cloud-mode auth: OIDC Authorization Code + PKCE against Keycloak, for when
- * the dashboard talks to the cloud API (chat-recall.munhq.com) instead of the
- * local server. Dependency-free (no keycloak-js) — the flow is small and the
- * cloud API only needs a realm Bearer (server.mjs verifies it via JWKS).
+ * Cloud-mode auth against the server's EMBEDDED better-auth provider
+ * (AUTH_PROVIDER=better-auth) — this replaced the Keycloak PKCE flow, so there
+ * is no IdP redirect anymore: the login form is ours (components/AuthPage.tsx)
+ * and the whole exchange stays on this origin under /api/auth/*.
  *
- * Enabled when VITE_OIDC_ISSUER is set at build time; otherwise the app runs
- * in local mode with no auth (getAccessToken() returns null, isCloud()=false).
+ * The SPA keeps its localStorage Bearer model from the Keycloak era: the
+ * bearer() plugin returns the session token in the `set-auth-token` response
+ * header on sign-in/sign-up, we store it, and api.ts attaches it as
+ * `Authorization: Bearer` on every call. No cookies, no refresh dance — the
+ * session lives 30 days server-side and a 401 clears the stored token.
  *
- *   VITE_OIDC_ISSUER     e.g. https://auth.munhq.com/realms/munhq
- *   VITE_OIDC_CLIENT_ID  default: chat-recall-web
- *   VITE_API_BASE        e.g. https://chat-recall.munhq.com/api
+ * Enabled when VITE_CLOUD is set at build time (legacy builds that set
+ * VITE_OIDC_ISSUER also count as cloud, so an old build recipe fails loud at
+ * login rather than silently rendering the local no-auth app).
  */
 
-const ISSUER = (import.meta.env.VITE_OIDC_ISSUER || '').replace(/\/+$/, '');
-const CLIENT_ID = import.meta.env.VITE_OIDC_CLIENT_ID || 'chat-recall-web';
-const LS = 'chat-recall.oidc'; // { access_token, refresh_token, expires_at }
+const CLOUD = !!(import.meta.env.VITE_CLOUD || import.meta.env.VITE_OIDC_ISSUER);
+const LS = 'chat-recall.session'; // { token }
+const LEGACY_LS = 'chat-recall.oidc'; // Keycloak-era tokens — cleared on sight
 
-export const isCloud = (): boolean => !!ISSUER;
+export const isCloud = (): boolean => CLOUD;
 
-/** True when a token is already stored (sync; doesn't refresh). Lets the shell
- *  decide between the public landing and the authenticated app on first paint. */
+/** True when a session token is already stored (sync; no server roundtrip).
+ *  Lets the shell decide between the public landing and the app on first paint. */
 export const hasStoredSession = (): boolean => !!localStorage.getItem(LS);
 
-/** True when the URL is an OIDC redirect callback (?code&state) coming back from
- *  Keycloak — in that case we must complete the exchange, not show the landing. */
-export const isAuthCallback = (): boolean => {
-  const q = new URLSearchParams(window.location.search);
-  return q.has('code') && q.has('state');
-};
-
-const b64url = (buf: ArrayBuffer) =>
-  btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-const rand = () => b64url(crypto.getRandomValues(new Uint8Array(32)).buffer);
-async function challenge(verifier: string): Promise<string> {
-  return b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
-}
-
-interface Stored { access_token: string; refresh_token?: string; expires_at: number }
+interface Stored { token: string }
 const load = (): Stored | null => { try { return JSON.parse(localStorage.getItem(LS) || 'null'); } catch { return null; } };
 const save = (s: Stored) => localStorage.setItem(LS, JSON.stringify(s));
-const clear = () => localStorage.removeItem(LS);
-const redirectUri = () => window.location.origin + window.location.pathname;
+const clear = () => { localStorage.removeItem(LS); localStorage.removeItem(LEGACY_LS); };
 
-function storeTokens(t: Record<string, unknown>): void {
-  save({
-    access_token: String(t.access_token),
-    refresh_token: typeof t.refresh_token === 'string' ? t.refresh_token : undefined,
-    expires_at: Date.now() + (Number(t.expires_in) || 60) * 1000,
-  });
+/** /api/auth lives on the same origin as the API base. '' = same origin. */
+function apiOrigin(): string {
+  const base = import.meta.env.VITE_API_BASE || '/api';
+  return base.replace(/\/api\/?$/, '');
 }
+const authUrl = (path: string) => `${apiOrigin()}/api/auth${path}`;
 
-/** Begin login: redirect the browser to Keycloak's authorize endpoint (PKCE).
- *  Exported so the public landing page's "Get started" CTA can start the flow. */
-export async function beginLogin(): Promise<void> {
-  const verifier = rand();
-  const state = rand();
-  sessionStorage.setItem('oidc.v', verifier);
-  sessionStorage.setItem('oidc.s', state);
-  const p = new URLSearchParams({
-    client_id: CLIENT_ID,
-    response_type: 'code',
-    scope: 'openid email profile',
-    redirect_uri: redirectUri(),
-    state,
-    code_challenge: await challenge(verifier),
-    code_challenge_method: 'S256',
-  });
-  window.location.assign(`${ISSUER}/protocol/openid-connect/auth?${p}`);
-}
-
-/** If we're returning from Keycloak (?code&state), exchange the code. Returns
- *  true if a callback was handled (URL is then cleaned). */
-export async function handleRedirectCallback(): Promise<boolean> {
-  const q = new URLSearchParams(window.location.search);
-  const code = q.get('code');
-  if (!code) return false;
-  const expected = sessionStorage.getItem('oidc.s');
-  if (!expected || q.get('state') !== expected) { clear(); return false; }
-  const verifier = sessionStorage.getItem('oidc.v') || '';
-  const res = await fetch(`${ISSUER}/protocol/openid-connect/token`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code', client_id: CLIENT_ID, code,
-      redirect_uri: redirectUri(), code_verifier: verifier,
-    }),
-  });
-  if (res.ok) storeTokens(await res.json());
-  sessionStorage.removeItem('oidc.v');
-  sessionStorage.removeItem('oidc.s');
-  window.history.replaceState({}, '', redirectUri()); // strip ?code&state
-  return true;
-}
-
-async function refresh(rt: string): Promise<boolean> {
-  const res = await fetch(`${ISSUER}/protocol/openid-connect/token`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ grant_type: 'refresh_token', client_id: CLIENT_ID, refresh_token: rt }),
-  });
-  if (!res.ok) { clear(); return false; }
-  storeTokens(await res.json());
-  return true;
-}
-
-/** Current access token (refreshing if near expiry), or null if not logged in. */
+/** Current session token, or null when logged out. (No expiry bookkeeping —
+ *  the server owns session lifetime; api.ts calls handleUnauthorized() on 401.) */
 export async function getAccessToken(): Promise<string | null> {
-  if (!isCloud()) return null;
-  const s = load();
-  if (!s) return null;
-  if (Date.now() < s.expires_at - 30_000) return s.access_token;
-  if (s.refresh_token && (await refresh(s.refresh_token))) return load()!.access_token;
-  return null;
+  if (!CLOUD) return null;
+  return load()?.token ?? null;
 }
 
-/** Ensure the user is logged in. Handles the redirect callback, then redirects
- *  to Keycloak if there's no valid token. Resolves with a token when present;
- *  if it triggers a redirect the promise never resolves (page navigates away). */
-export async function ensureLogin(): Promise<string | null> {
-  if (!isCloud()) return null;
-  await handleRedirectCallback();
-  const tok = await getAccessToken();
-  if (tok) return tok;
-  await beginLogin();
-  return null; // navigating away
+type AuthResult = { ok: true } | { ok: false; error: string };
+
+async function authError(res: Response, fallback: string): Promise<string> {
+  const body = (await res.json().catch(() => null)) as { message?: string; error?: string } | null;
+  return body?.message || body?.error || `${fallback} (HTTP ${res.status})`;
+}
+
+/** Email + password sign-in. Stores the session token on success. */
+export async function signInEmail(email: string, password: string): Promise<AuthResult> {
+  const res = await fetch(authUrl('/sign-in/email'), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  const token = res.headers.get('set-auth-token');
+  if (res.ok && token) { save({ token }); return { ok: true }; }
+  return { ok: false, error: await authError(res, 'sign-in failed') };
+}
+
+/** Email + password sign-up (auto-signs-in). Stores the session token. */
+export async function signUpEmail(name: string, email: string, password: string): Promise<AuthResult> {
+  const res = await fetch(authUrl('/sign-up/email'), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name, email, password }),
+  });
+  const token = res.headers.get('set-auth-token');
+  if (res.ok && token) { save({ token }); return { ok: true }; }
+  return { ok: false, error: await authError(res, 'sign-up failed') };
+}
+
+/** Approve or deny a CLI device-login request (?user_code=… on /device).
+ *  GET /device first: it binds the pending code to THIS session, which the
+ *  approve/deny endpoints require. */
+export async function deviceDecision(userCode: string, approve: boolean): Promise<AuthResult> {
+  const token = await getAccessToken();
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const verify = await fetch(authUrl(`/device?user_code=${encodeURIComponent(userCode)}`), { headers });
+  if (!verify.ok) return { ok: false, error: await authError(verify, 'device code lookup failed') };
+  const res = await fetch(authUrl(approve ? '/device/approve' : '/device/deny'), {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ userCode }),
+  });
+  if (res.ok) return { ok: true };
+  return { ok: false, error: await authError(res, approve ? 'approval failed' : 'deny failed') };
+}
+
+/** Called by api.ts when a cloud API call comes back 401 with a token
+ *  attached: the session is gone server-side. Clear it and return to the
+ *  front door (landing) rather than leaving a half-dead app. */
+export function handleUnauthorized(): void {
+  if (!CLOUD || !hasStoredSession()) return;
+  clear();
+  window.location.assign('/');
 }
 
 export function logout(): void {
+  const token = load()?.token;
   clear();
-  if (isCloud()) window.location.assign(`${ISSUER}/protocol/openid-connect/logout?client_id=${CLIENT_ID}&post_logout_redirect_uri=${encodeURIComponent(redirectUri())}`);
+  if (!CLOUD) return;
+  // Best-effort server-side revoke; the redirect must not wait on it.
+  if (token) {
+    void fetch(authUrl('/sign-out'), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: '{}',
+    }).catch(() => {});
+  }
+  window.location.assign('/');
 }

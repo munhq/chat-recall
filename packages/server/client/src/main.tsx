@@ -3,8 +3,10 @@ import ReactDOM from 'react-dom/client';
 import * as Sentry from '@sentry/browser';
 import App from './App';
 import LandingPage from './components/LandingPage';
+import AuthPage from './components/AuthPage';
+import DeviceApprovePage from './components/DeviceApprovePage';
 import ErrorBoundary from './components/ErrorBoundary';
-import { isCloud, ensureLogin, hasStoredSession, isAuthCallback, beginLogin } from './services/auth';
+import { isCloud, hasStoredSession } from './services/auth';
 import './index.css';
 
 // Crash reporting → shared munhq-frontend GlitchTip project. The `app` tag
@@ -26,47 +28,33 @@ function render(node: React.ReactNode) {
   root.render(<React.StrictMode><ErrorBoundary>{node}</ErrorBoundary></React.StrictMode>);
 }
 
-// Cloud mode routing on first paint:
-//   - logged out (no token) and NOT returning from the IdP → public landing.
-//     The static shell + /api/capabilities + /api/billing/plan are all public,
-//     so the marketing page renders with zero auth.
-//   - otherwise → complete login (handles ?code callback / refresh) then app.
-// Local mode renders the app immediately (no auth at all).
+// Cloud mode routing on first paint. Auth is the embedded better-auth
+// provider (services/auth.ts) — the login form is ours, there is NO IdP
+// redirect, so the URL (and any ?view=connect&device=… query from the
+// installer) survives login untouched; the old Keycloak resume-query stash
+// is gone with the redirect that required it.
 //
-// ?view=connect (the installer's token page) is special: the visitor arrived
-// from a terminal mid-`install.sh`, so (a) skip the marketing page and go
-// straight to the IdP, and (b) stash the query string — the OIDC redirect_uri
-// is origin+pathname only, so ?view=connect&device=… would otherwise be lost
-// on the Keycloak roundtrip.
-const RESUME_KEY = 'cr.resume-query';
+//   /device?user_code=…  — CLI device-login approval. Needs a session first;
+//                          logged-out visitors get the sign-in form, then the
+//                          approve card (the URL is preserved).
+//   ?view=connect        — the installer's token page: skip the marketing
+//                          landing, go straight to sign-in, then the app.
+//   logged out otherwise — public landing; "Sign in" renders the auth form.
+//   logged in            — the app (a dead session 401s → handleUnauthorized
+//                          clears it and returns here).
 function isConnectVisit(): boolean {
   try { return new URLSearchParams(window.location.search).get('view') === 'connect'; } catch { return false; }
 }
+const isDeviceVisit = window.location.pathname === '/device';
+
 if (isCloud()) {
-  if (isConnectVisit()) sessionStorage.setItem(RESUME_KEY, window.location.search);
-  if (!hasStoredSession() && !isAuthCallback()) {
-    if (isConnectVisit()) {
-      void beginLogin();
-    } else {
-      render(<LandingPage onGetStarted={() => beginLogin()} />);
-    }
+  if (hasStoredSession()) {
+    render(isDeviceVisit ? <DeviceApprovePage /> : <App />);
+  } else if (isDeviceVisit || isConnectVisit()) {
+    const after = () => render(isDeviceVisit ? <DeviceApprovePage /> : <App />);
+    render(<AuthPage onSuccess={after} />);
   } else {
-    ensureLogin()
-      .then((token) => {
-        if (!token) return;
-        const stashed = sessionStorage.getItem(RESUME_KEY);
-        if (stashed && !window.location.search) {
-          sessionStorage.removeItem(RESUME_KEY);
-          window.history.replaceState({}, '', window.location.pathname + stashed);
-        } else if (stashed) {
-          sessionStorage.removeItem(RESUME_KEY);
-        }
-        render(<App />);
-      })
-      .catch((err) => {
-        document.getElementById('root')!.innerHTML =
-          `<div style="font-family:system-ui;padding:2rem;color:#b00">Login failed: ${String(err)}</div>`;
-      });
+    render(<LandingPage onGetStarted={() => render(<AuthPage onSuccess={() => render(<App />)} />)} />);
   }
 } else {
   render(<App />);

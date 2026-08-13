@@ -936,6 +936,38 @@ memory
     }
   });
 
+program
+  .command('escalate [sessionId]')
+  .description("Escalate a finished session's learnings (decisions, user corrections, outcome) into the knowledge graph (requires login)")
+  .option('--latest', 'Pick the most recent synced session of the current project')
+  .option('-p, --project <name>', 'Knowledge-graph entity name for the facts (default: project folder name)')
+  .option('--dry-run', 'Extract and print the learnings without writing them')
+  .action(async (sessionId: string | undefined, opts: { latest?: boolean; project?: string; dryRun?: boolean }) => {
+    // Argument misuse is a real error (interactive user), but everything
+    // environmental (no login, server down, session not synced) must be a
+    // note + exit 0: this command runs from a SessionEnd hook, and a hook
+    // must never break session end.
+    if (!sessionId && !opts.latest) {
+      console.error(chalk.red('Pass a session id or --latest.'));
+      process.exit(1);
+    }
+    const target = firstTarget();
+    if (!target) {
+      console.log(chalk.dim('escalate: not logged in — nothing to do. Run `chat-recall login <server-url>` to enable learnings escalation.'));
+      return;
+    }
+    try {
+      const { runEscalate } = await import('./escalate.js');
+      await runEscalate(
+        { get: serverGet, getSoft: serverGetSoft, post: serverPost, log: (line) => console.log(chalk.dim(line)) },
+        { sessionId, latest: opts.latest, project: opts.project, dryRun: opts.dryRun, cwd: process.cwd() },
+      );
+    } catch (err) {
+      // Server unreachable / 5xx / anything unexpected: note, exit 0.
+      console.log(chalk.dim(`escalate: skipped — ${err instanceof Error ? err.message : err}`));
+    }
+  });
+
 /**
  * `chat-recall doctor` — single-command health check.
  *
@@ -2259,10 +2291,11 @@ vault
 
 program
   .command('install-hooks')
-  .description('Install Claude Code hooks (Stop + PreCompact + UserPromptSubmit)')
+  .description('Install Claude Code hooks (Stop + PreCompact + UserPromptSubmit + SessionEnd)')
   .option('--uninstall', 'Remove hooks instead of installing them')
   .option('--no-resume-hint', "Don't install the UserPromptSubmit resume-hint hook")
-  .action(async (opts: { uninstall?: boolean; resumeHint?: boolean }) => {
+  .option('--no-escalate', "Don't install the SessionEnd learnings-escalation hook")
+  .action(async (opts: { uninstall?: boolean; resumeHint?: boolean; escalate?: boolean }) => {
     const { mkdirSync, copyFileSync, chmodSync, existsSync, readFileSync, writeFileSync, statSync } = await import('fs');
     const { fileURLToPath } = await import('url');
 
@@ -2278,6 +2311,7 @@ program
     };
     const sourceSaveHook = findHook('chat_recall_save_hook.sh');
     const sourceResumeHook = findHook('chat_recall_resume_hook.sh');
+    const sourceEscalateHook = findHook('chat_recall_escalate_hook.sh');
     if (!sourceSaveHook) {
       console.error(chalk.red('Could not locate chat_recall_save_hook.sh in the package.'));
       process.exit(1);
@@ -2286,6 +2320,7 @@ program
     const hooksDir = getHooksDir();
     const installedSaveHook = join(hooksDir, 'chat_recall_save_hook.sh');
     const installedResumeHook = join(hooksDir, 'chat_recall_resume_hook.sh');
+    const installedEscalateHook = join(hooksDir, 'chat_recall_escalate_hook.sh');
     const hooksJson = claudeBackend.hooksFile();
 
     // Read existing hooks.json or start fresh.
@@ -2301,18 +2336,19 @@ program
     }
     if (!config.hooks || typeof config.hooks !== 'object') config.hooks = {};
 
-    // Identify our entries by command path. Two scripts now: save + resume.
+    // Identify our entries by command path. Three scripts now: save + resume + escalate.
     const matchesOurs = (h: any) => {
       const cmd = h?.hooks?.[0]?.command;
       return typeof cmd === 'string' && (
         cmd.includes('chat_recall_save_hook.sh') ||
-        cmd.includes('chat_recall_resume_hook.sh')
+        cmd.includes('chat_recall_resume_hook.sh') ||
+        cmd.includes('chat_recall_escalate_hook.sh')
       );
     };
 
     if (opts.uninstall) {
       let removed = 0;
-      for (const event of ['Stop', 'PreCompact', 'UserPromptSubmit']) {
+      for (const event of ['Stop', 'PreCompact', 'UserPromptSubmit', 'SessionEnd']) {
         const arr = Array.isArray(config.hooks[event]) ? config.hooks[event] : [];
         const filtered = arr.filter((h: any) => !matchesOurs(h));
         removed += arr.length - filtered.length;
@@ -2336,19 +2372,30 @@ program
       chmodSync(installedResumeHook, 0o755);
     }
 
+    const installEscalate = opts.escalate !== false && !!sourceEscalateHook;
+    if (installEscalate) {
+      copyFileSync(sourceEscalateHook!, installedEscalateHook);
+      chmodSync(installedEscalateHook, 0o755);
+    }
+
     const stopEntry = { matcher: '', hooks: [{ type: 'command', command: installedSaveHook }] };
     const precompactEntry = { matcher: '', hooks: [{ type: 'command', command: `${installedSaveHook} --precompact` }] };
     const resumeEntry = { matcher: '', hooks: [{ type: 'command', command: installedResumeHook }] };
+    // The escalate script detaches its own background work and exits
+    // immediately, so session end is never delayed by network writes.
+    const escalateEntry = { matcher: '', hooks: [{ type: 'command', command: installedEscalateHook }] };
 
     const events: Array<[string, any]> = [
       ['Stop', stopEntry],
       ['PreCompact', precompactEntry],
     ];
     if (installResume) events.push(['UserPromptSubmit', resumeEntry]);
+    if (installEscalate) events.push(['SessionEnd', escalateEntry]);
 
-    // Always strip our prior UserPromptSubmit entry too — even when reinstalling
-    // without the resume hint, so we don't leave orphan registrations behind.
-    for (const event of ['Stop', 'PreCompact', 'UserPromptSubmit']) {
+    // Always strip our prior UserPromptSubmit/SessionEnd entries too — even
+    // when reinstalling with those hooks disabled, so we don't leave orphan
+    // registrations behind.
+    for (const event of ['Stop', 'PreCompact', 'UserPromptSubmit', 'SessionEnd']) {
       const arr = Array.isArray(config.hooks[event]) ? config.hooks[event] : [];
       const without = arr.filter((h: any) => !matchesOurs(h));
       const wanted = events.find(([e]) => e === event);
@@ -2364,13 +2411,20 @@ program
       const resumeSz = statSync(installedResumeHook).size;
       console.log(chalk.green(`✓ Installed chat-recall resume-hint hook (${resumeSz} bytes)`));
     }
+    if (installEscalate) {
+      const escalateSz = statSync(installedEscalateHook).size;
+      console.log(chalk.green(`✓ Installed chat-recall learnings-escalation hook (${escalateSz} bytes)`));
+    }
     console.log(chalk.dim(`  scripts:   ${hooksDir}`));
     console.log(chalk.dim(`  config:    ${hooksJson}`));
-    console.log(chalk.dim(`  events:    Stop, PreCompact${installResume ? ', UserPromptSubmit' : ''}`));
+    console.log(chalk.dim(`  events:    Stop, PreCompact${installResume ? ', UserPromptSubmit' : ''}${installEscalate ? ', SessionEnd' : ''}`));
     console.log();
     console.log(chalk.dim('Run `chat-recall install-hooks --uninstall` to remove later.'));
     if (!installResume) {
       console.log(chalk.dim('(--no-resume-hint passed — UserPromptSubmit hook skipped)'));
+    }
+    if (!installEscalate) {
+      console.log(chalk.dim('(--no-escalate passed — SessionEnd hook skipped)'));
     }
   });
 
@@ -2576,25 +2630,32 @@ async function runLogin(
   }
 
   try {
-    const { deviceLogin } = await import('./device-auth.js');
-    // Learn the OIDC issuer from the target server (no hardcoded default) unless
-    // one was passed explicitly. A no-auth server returns null → deviceLogin
-    // throws a clear "use --token" message instead of hitting someone's realm.
+    const { deviceLogin, betterAuthDeviceLogin } = await import('./device-auth.js');
+    // Learn HOW to log in from the target server: `authProvider` picks the
+    // flow (better-auth → the server's own device endpoints; keycloak → the
+    // realm device flow at `oidcIssuer`). No hardcoded default anywhere. A
+    // no-auth server returns provider 'none' → deviceLogin surfaces a clear
+    // "use --token" message instead of hitting someone's realm.
     let issuer = opts.issuer;
+    let authProvider: string | undefined;
     if (!issuer) {
       try {
-        const caps = await fetch(`${base}/api/capabilities`, { signal: AbortSignal.timeout(8000) }).then((r) => r.json()) as { oidcIssuer?: string | null };
+        const caps = await fetch(`${base}/api/capabilities`, { signal: AbortSignal.timeout(8000) }).then((r) => r.json()) as { authProvider?: string; oidcIssuer?: string | null };
+        authProvider = caps?.authProvider;
         if (caps?.oidcIssuer) issuer = caps.oidcIssuer;
       } catch { /* fall through — deviceLogin surfaces the missing-issuer error */ }
     }
-    const tokens = await deviceLogin({ issuer, clientId: opts.clientId }, (p) => {
+    const onPrompt = (p: { url: string; userCode: string; verificationUri: string }) => {
       console.log();
       console.log(chalk.bold('To log in, open:'));
       console.log('  ' + chalk.cyan(p.url));
       console.log(chalk.dim(`  (if prompted, enter code: ${chalk.bold(p.userCode)} at ${p.verificationUri})`));
       console.log(chalk.dim('After approving, come back to THIS terminal — it finishes the login by itself.'));
       console.log(chalk.dim('Waiting for approval…'));
-    });
+    };
+    const tokens = authProvider === 'better-auth'
+      ? await betterAuthDeviceLogin(base, onPrompt)
+      : await deviceLogin({ issuer, clientId: opts.clientId }, onPrompt);
 
     const authHdr = { authorization: `Bearer ${tokens.accessToken}`, 'content-type': 'application/json' };
 
