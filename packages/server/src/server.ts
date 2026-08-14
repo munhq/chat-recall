@@ -9,7 +9,7 @@ import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
 import helmet from 'helmet';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import searchRouter from './routes/search.js';
@@ -90,10 +90,10 @@ app.set('trust proxy', 1);
 const STATIC_DIR = resolve(process.env.STATIC_DIR || '../client/dist');
 
 /**
- * SHA-256 hashes of every INLINE <script> in the shipped index.html, in the
- * base64 form a CSP wants.
+ * SHA-256 hashes of every INLINE <script> in every shipped HTML document, in
+ * the base64 form a CSP wants.
  *
- * Derived, never typed. index.html carries a pre-paint theme bootstrap that has
+ * Derived, never typed. Each document carries a pre-paint theme bootstrap that has
  * to run before first paint (a persisted light theme would otherwise flash dark
  * and revert), so it cannot move to an external file, and 'unsafe-inline' would
  * defeat the point of having a script-src at all. A hash pinned by hand would
@@ -103,15 +103,37 @@ const STATIC_DIR = resolve(process.env.STATIC_DIR || '../client/dist');
  * from what actually ships.
  */
 function inlineScriptHashes(): string[] {
-  const html = resolve(STATIC_DIR, 'index.html');
-  if (!existsSync(html)) return [];
-  const source = readFileSync(html, 'utf8');
-  const hashes: string[] = [];
-  // Inline only: a tag carrying src= loads an external file, which 'self' covers.
-  for (const m of source.matchAll(/<script(?![^>]*\ssrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
-    hashes.push(`'sha256-${createHash('sha256').update(m[1], 'utf8').digest('base64')}'`);
+  const hashes = new Set<string>();
+
+  // EVERY served HTML document, not just the SPA shell. Getting this wrong is
+  // not theoretical: the first version read index.html only, and the static
+  // marketing pages added later carry their own pre-paint theme bootstrap and a
+  // theme toggle. Both were blocked in production, so the public pages were
+  // stuck in dark mode with a button that did nothing — a silent failure,
+  // because the documents still rendered perfectly.
+  const files: string[] = [];
+  const walk = (dir: string, depth: number) => {
+    if (depth > 2 || !existsSync(dir)) return;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = resolve(dir, entry.name);
+      // assets/ is hashed JS and CSS, never HTML; skipping it keeps boot cheap.
+      if (entry.isDirectory() && entry.name !== 'assets' && entry.name !== 'fonts') walk(full, depth + 1);
+      else if (entry.isFile() && entry.name.endsWith('.html')) files.push(full);
+    }
+  };
+  walk(STATIC_DIR, 0);
+
+  for (const file of files) {
+    const source = readFileSync(file, 'utf8');
+    // Inline only: a tag carrying src= loads an external file, which 'self' covers.
+    for (const m of source.matchAll(/<script(?![^>]*\ssrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+      // A JSON-LD block is data, not script. The browser never executes it, so
+      // it needs no hash, and including one would be noise in the header.
+      if (/type=["']application\/ld\+json["']/i.test(m[0])) continue;
+      hashes.add(`'sha256-${createHash('sha256').update(m[1], 'utf8').digest('base64')}'`);
+    }
   }
-  return hashes;
+  return [...hashes];
 }
 
 // Origin of the crash reporter, so the browser is allowed to POST to it. Parsed
