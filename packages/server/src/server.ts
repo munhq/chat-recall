@@ -8,7 +8,9 @@ import * as Sentry from '@sentry/node';
 import express from 'express';
 import cors from 'cors';
 import compression from 'compression';
+import helmet from 'helmet';
 import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import searchRouter from './routes/search.js';
 import conversationsRouter from './routes/conversations.js';
@@ -81,6 +83,97 @@ let shuttingDown = false;
 // Trust the first proxy hop so rate limiting keys on the real client, not the
 // proxy's single IP. (No proxy in local dev → harmless.)
 app.set('trust proxy', 1);
+
+// Where the built client lives. Hoisted above the security middleware because
+// the CSP hashes the inline <script> in index.html, so it has to read the very
+// file we serve. Consumed again by the static handler further down.
+const STATIC_DIR = resolve(process.env.STATIC_DIR || '../client/dist');
+
+/**
+ * SHA-256 hashes of every INLINE <script> in the shipped index.html, in the
+ * base64 form a CSP wants.
+ *
+ * Derived, never typed. index.html carries a pre-paint theme bootstrap that has
+ * to run before first paint (a persisted light theme would otherwise flash dark
+ * and revert), so it cannot move to an external file, and 'unsafe-inline' would
+ * defeat the point of having a script-src at all. A hash pinned by hand would
+ * silently stop matching the first time that script is edited by one character,
+ * and the failure mode is invisible in dev (no CSP) and total in prod (the
+ * theme bootstrap is blocked). Reading it at boot means the policy cannot drift
+ * from what actually ships.
+ */
+function inlineScriptHashes(): string[] {
+  const html = resolve(STATIC_DIR, 'index.html');
+  if (!existsSync(html)) return [];
+  const source = readFileSync(html, 'utf8');
+  const hashes: string[] = [];
+  // Inline only: a tag carrying src= loads an external file, which 'self' covers.
+  for (const m of source.matchAll(/<script(?![^>]*\ssrc=)[^>]*>([\s\S]*?)<\/script>/gi)) {
+    hashes.push(`'sha256-${createHash('sha256').update(m[1], 'utf8').digest('base64')}'`);
+  }
+  return hashes;
+}
+
+// Origin of the crash reporter, so the browser is allowed to POST to it. Parsed
+// from the DSN rather than hardcoded: self-hosters point this at their own
+// GlitchTip/Sentry, and a wrong literal here silently swallows every crash report.
+function sentryOrigin(): string[] {
+  const dsn = process.env.GLITCHTIP_DSN || process.env.SENTRY_DSN || '';
+  try { return dsn ? [new URL(dsn).origin] : []; } catch { return []; }
+}
+
+// ── Security headers ─────────────────────────────────────────────────────────
+//
+// The browser session is a Bearer token in localStorage (inherited from the
+// Keycloak era, kept through the better-auth migration). That model has exactly
+// one load-bearing assumption: no script the app did not ship ever runs on this
+// origin. Today that holds — there is no dangerouslySetInnerHTML, no rehype-raw
+// and no .innerHTML anywhere in the client, so markdown from indexed sessions
+// renders through React's escaping. But "we audited it once" is not a control.
+// This is the layer that survives one mistake: with a real script-src, an
+// injected script cannot execute and cannot exfiltrate the token.
+//
+// CSP_REPORT_ONLY=1 emits Content-Security-Policy-Report-Only instead, so a
+// policy change can be watched in prod before it is allowed to break anything.
+const cspReportOnly = process.env.CSP_REPORT_ONLY === '1';
+app.use(helmet({
+  contentSecurityPolicy: {
+    reportOnly: cspReportOnly,
+    useDefaults: false,
+    directives: {
+      defaultSrc: ["'self'"],
+      // No 'unsafe-inline' and no 'unsafe-eval'. The one inline script is hashed.
+      scriptSrc: ["'self'", ...inlineScriptHashes()],
+      // 'unsafe-inline' IS required here and is a deliberate, bounded call:
+      // React writes style="" attributes on nearly every component and several
+      // components ship a <style> block. Removing it means rewriting the whole
+      // client's styling. Injected CSS cannot run code, so the risk it leaves is
+      // defacement and data-exfil via selectors, not session theft.
+      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+      fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+      imgSrc: ["'self'", 'data:', 'blob:'],
+      connectSrc: ["'self'", ...sentryOrigin()],
+      // Nothing here is meant to be framed. Blocks clickjacking outright.
+      frameAncestors: ["'none'"],
+      frameSrc: ["'none'"],
+      objectSrc: ["'none'"],
+      // Stops an injected <base> from re-pointing every relative URL.
+      baseUri: ["'self'"],
+      formAction: ["'self'"],
+      upgradeInsecureRequests: [],
+    },
+  },
+  // 1 year, subdomains included. NOT preloaded: the preload list is effectively
+  // permanent and is the operator's decision, not a default.
+  strictTransportSecurity: { maxAge: 31536000, includeSubDomains: true, preload: false },
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+  // Keeps the API's JSON from being sniffed into something executable.
+  xContentTypeOptions: true,
+  // Same intent as frame-ancestors, for browsers that predate CSP Level 2.
+  xFrameOptions: { action: 'deny' },
+  // Off: it would require COEP on every embedded resource for no gain here.
+  crossOriginEmbedderPolicy: false,
+}));
 
 // Middleware
 app.use(cors({
@@ -304,9 +397,6 @@ app.get('/health', (req, res) => {
 // Serve the built React client from the same origin in production / Docker.
 // Tries STATIC_DIR first (set in the Dockerfile), then falls back to the
 // repo-relative path used during development.
-const STATIC_DIR = resolve(
-  process.env.STATIC_DIR || '../client/dist',
-);
 if (existsSync(STATIC_DIR)) {
   // index.html must NEVER be cached: a browser running a stale app shell
   // renders current data with outdated code — the worst kind of lie
