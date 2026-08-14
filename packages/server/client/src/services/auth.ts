@@ -4,11 +4,30 @@
  * is no IdP redirect anymore: the login form is ours (components/AuthPage.tsx)
  * and the whole exchange stays on this origin under /api/auth/*.
  *
- * The SPA keeps its localStorage Bearer model from the Keycloak era: the
- * bearer() plugin returns the session token in the `set-auth-token` response
- * header on sign-in/sign-up, we store it, and api.ts attaches it as
- * `Authorization: Bearer` on every call. No cookies, no refresh dance — the
- * session lives 30 days server-side and a 401 clears the stored token.
+ * ── The session is an httpOnly cookie, NOT a stored token ───────────────────
+ *
+ * It used to be a Bearer token in localStorage, inherited from the Keycloak era
+ * and carried through the better-auth migration out of momentum rather than
+ * intent. That model rests on one assumption — that no script the app did not
+ * ship ever runs on this origin — and it pays for a broken assumption with the
+ * whole session, because any script on the page can read localStorage and post
+ * the token somewhere else. A CSP now makes that hard (server.ts), but defense
+ * in depth means not leaving the credential readable in the first place.
+ *
+ * An httpOnly cookie cannot be read by script at all. An injected script can
+ * still make requests as the user while the page is open, which is bad, but it
+ * cannot walk away with a credential that stays valid after the tab closes.
+ *
+ * The server needed no change to accept this: getSessionUser() forwards the raw
+ * request headers to better-auth, which reads its own cookie. The bearer()
+ * plugin stays mounted for the CLI and the MCP server, which are not browsers
+ * and hold their tokens in a 600 file.
+ *
+ * The cost is that "am I signed in" stops being a synchronous localStorage read.
+ * It is now one /api/auth/get-session call at boot (main.tsx). That is the
+ * honest shape of the question — only the server ever knew the real answer, and
+ * the old sync check was really asking "is there a string in localStorage",
+ * which was true for revoked and expired sessions too.
  *
  * Enabled when VITE_CLOUD is set at build time (legacy builds that set
  * VITE_OIDC_ISSUER also count as cloud, so an old build recipe fails loud at
@@ -16,19 +35,17 @@
  */
 
 const CLOUD = !!(import.meta.env.VITE_CLOUD || import.meta.env.VITE_OIDC_ISSUER);
-const LS = 'chat-recall.session'; // { token }
-const LEGACY_LS = 'chat-recall.oidc'; // Keycloak-era tokens — cleared on sight
+// Both are pre-cookie storage keys. Nothing writes them any more; they are
+// cleared on sight so a token minted before the cutover cannot sit in a browser
+// profile for 30 days as a second, weaker credential for the same account.
+const LEGACY_KEYS = ['chat-recall.session', 'chat-recall.oidc'];
 
 export const isCloud = (): boolean => CLOUD;
 
-/** True when a session token is already stored (sync; no server roundtrip).
- *  Lets the shell decide between the public landing and the app on first paint. */
-export const hasStoredSession = (): boolean => !!localStorage.getItem(LS);
-
-interface Stored { token: string }
-const load = (): Stored | null => { try { return JSON.parse(localStorage.getItem(LS) || 'null'); } catch { return null; } };
-const save = (s: Stored) => localStorage.setItem(LS, JSON.stringify(s));
-const clear = () => { localStorage.removeItem(LS); localStorage.removeItem(LEGACY_LS); };
+/** Drop any pre-cookie token. Safe to call on every boot. */
+export function clearLegacyTokens(): void {
+  try { for (const k of LEGACY_KEYS) localStorage.removeItem(k); } catch { /* storage blocked */ }
+}
 
 /** /api/auth lives on the same origin as the API base. '' = same origin. */
 function apiOrigin(): string {
@@ -37,11 +54,26 @@ function apiOrigin(): string {
 }
 const authUrl = (path: string) => `${apiOrigin()}/api/auth${path}`;
 
-/** Current session token, or null when logged out. (No expiry bookkeeping —
- *  the server owns session lifetime; api.ts calls handleUnauthorized() on 401.) */
-export async function getAccessToken(): Promise<string | null> {
-  if (!CLOUD) return null;
-  return load()?.token ?? null;
+/**
+ * Ask the server whether this browser has a live session.
+ *
+ * The only source of truth. Returns false on any network or parse failure,
+ * which is the safe direction: a false negative shows the public landing, a
+ * false positive would render the app shell and then throw on every call.
+ */
+export async function isSignedIn(): Promise<boolean> {
+  if (!CLOUD) return false;
+  try {
+    const res = await fetch(authUrl('/get-session'), {
+      credentials: 'include',
+      headers: { accept: 'application/json' },
+    });
+    if (!res.ok) return false;
+    const body = (await res.json().catch(() => null)) as { user?: { id?: string } } | null;
+    return !!body?.user?.id;
+  } catch {
+    return false;
+  }
 }
 
 type AuthResult = { ok: true } | { ok: false; error: string };
@@ -51,68 +83,77 @@ async function authError(res: Response, fallback: string): Promise<string> {
   return body?.message || body?.error || `${fallback} (HTTP ${res.status})`;
 }
 
-/** Email + password sign-in. Stores the session token on success. */
+/** Email + password sign-in. The session arrives as an httpOnly cookie; there
+ *  is deliberately nothing to store on this side. */
 export async function signInEmail(email: string, password: string): Promise<AuthResult> {
   const res = await fetch(authUrl('/sign-in/email'), {
     method: 'POST',
+    credentials: 'include',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email, password }),
   });
-  const token = res.headers.get('set-auth-token');
-  if (res.ok && token) { save({ token }); return { ok: true }; }
+  if (res.ok) { clearLegacyTokens(); return { ok: true }; }
   return { ok: false, error: await authError(res, 'sign-in failed') };
 }
 
-/** Email + password sign-up (auto-signs-in). Stores the session token. */
+/** Email + password sign-up (auto-signs-in). Same cookie contract as sign-in. */
 export async function signUpEmail(name: string, email: string, password: string): Promise<AuthResult> {
   const res = await fetch(authUrl('/sign-up/email'), {
     method: 'POST',
+    credentials: 'include',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name, email, password }),
   });
-  const token = res.headers.get('set-auth-token');
-  if (res.ok && token) { save({ token }); return { ok: true }; }
+  if (res.ok) { clearLegacyTokens(); return { ok: true }; }
   return { ok: false, error: await authError(res, 'sign-up failed') };
 }
 
 /** Approve or deny a CLI device-login request (?user_code=… on /device).
  *  GET /device first: it binds the pending code to THIS session, which the
- *  approve/deny endpoints require. */
+ *  approve/deny endpoints require. Both calls carry the session cookie. */
 export async function deviceDecision(userCode: string, approve: boolean): Promise<AuthResult> {
-  const token = await getAccessToken();
-  const headers: Record<string, string> = { 'content-type': 'application/json' };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  const verify = await fetch(authUrl(`/device?user_code=${encodeURIComponent(userCode)}`), { headers });
+  const init: RequestInit = {
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+  };
+  const verify = await fetch(authUrl(`/device?user_code=${encodeURIComponent(userCode)}`), init);
   if (!verify.ok) return { ok: false, error: await authError(verify, 'device code lookup failed') };
   const res = await fetch(authUrl(approve ? '/device/approve' : '/device/deny'), {
+    ...init,
     method: 'POST',
-    headers,
     body: JSON.stringify({ userCode }),
   });
   if (res.ok) return { ok: true };
   return { ok: false, error: await authError(res, approve ? 'approval failed' : 'deny failed') };
 }
 
-/** Called by api.ts when a cloud API call comes back 401 with a token
- *  attached: the session is gone server-side. Clear it and return to the
- *  front door (landing) rather than leaving a half-dead app. */
+/** Called by api.ts when a cloud API call comes back 401: the session is gone
+ *  server-side. Return to the front door rather than leaving a half-dead app.
+ *
+ *  Guarded against a redirect loop — the landing itself makes no authenticated
+ *  calls, but a 401 storm from a background poller must not re-trigger this
+ *  once we are already on the way out. */
+let leaving = false;
 export function handleUnauthorized(): void {
-  if (!CLOUD || !hasStoredSession()) return;
-  clear();
+  if (!CLOUD || leaving) return;
+  leaving = true;
+  clearLegacyTokens();
   window.location.assign('/');
 }
 
 export function logout(): void {
-  const token = load()?.token;
-  clear();
-  if (!CLOUD) return;
-  // Best-effort server-side revoke; the redirect must not wait on it.
-  if (token) {
-    void fetch(authUrl('/sign-out'), {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: '{}',
-    }).catch(() => {});
-  }
-  window.location.assign('/');
+  clearLegacyTokens();
+  if (!CLOUD) { window.location.assign('/'); return; }
+  // Revoke server-side, THEN leave. Unlike the old token model there is nothing
+  // we can delete locally to end the session, so a redirect that races the
+  // revoke would leave a live cookie behind on a shared machine. The catch
+  // keeps a failed revoke from stranding the user in a signed-in-looking app.
+  void fetch(authUrl('/sign-out'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  })
+    .catch(() => {})
+    .finally(() => window.location.assign('/'));
 }

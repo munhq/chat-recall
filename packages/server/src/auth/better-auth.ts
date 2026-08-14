@@ -67,7 +67,38 @@ function createAuth() {
       requireEmailVerification: false,
     },
     session: {
-      expiresIn: 60 * 60 * 24 * 30, // 30 days, matching the ct_ token culture
+      // 7 days, rolling. Was a flat 30 days "matching the ct_ token culture",
+      // but a ct_ device token and a browser session are not the same risk: the
+      // device token lives in a 600 file on a developer's own machine, the
+      // browser session rides in a cookie on whatever laptop was last used.
+      //
+      // Rolling, so this is not a usability tax: updateAge refreshes the session
+      // on any request older than a day, meaning anyone who uses the product in
+      // a given week is never logged out, while an abandoned session dies in
+      // seven days instead of a month.
+      expiresIn: 60 * 60 * 24 * 7,
+      updateAge: 60 * 60 * 24,
+    },
+    advanced: {
+      // Explicit rather than inherited. better-auth already defaults these to
+      // safe values, but the whole point of the change that introduced this
+      // block is that the session stops being readable by JavaScript, and a
+      // security property that matters should be stated where it is read, not
+      // inferred from a library's defaults across an upgrade.
+      //
+      // Secure is conditional on the deployment actually being https: pinning it
+      // true unconditionally means the cookie is silently never set over plain
+      // http, which is exactly how local development breaks with no error.
+      useSecureCookies: baseURL().startsWith('https://'),
+      defaultCookieAttributes: {
+        httpOnly: true,
+        // Lax, not Strict: the CLI device flow sends the browser to /device from
+        // a terminal-opened tab, and Strict withholds the cookie on that
+        // top-level cross-site navigation, so the approve page would render
+        // logged out. Lax still blocks the cross-site POSTs that CSRF needs.
+        sameSite: 'lax',
+        path: '/',
+      },
     },
     plugins: [
       bearer(),

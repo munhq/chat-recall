@@ -1,7 +1,7 @@
 /**
  * API client for backend.
  */
-import { getAccessToken, handleUnauthorized } from './auth';
+import { isCloud, handleUnauthorized } from './auth';
 
 export interface SearchResult {
   sessionId: string;
@@ -146,17 +146,25 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    // Cloud mode: attach the Keycloak Bearer (no-op in local mode) + the active
-    // team so a multi-team user's requests resolve deterministically.
-    const token = await getAccessToken();
+    // Cloud mode: the session rides as an httpOnly cookie, so there is no token
+    // to attach — `credentials: 'include'` is what authenticates the call. It is
+    // set unconditionally because it is inert in local mode (no cookie exists)
+    // and omitting it in cloud mode 401s every request.
+    //
+    // NOTE for cross-origin deployments (VITE_API_BASE pointing at another
+    // host): the browser will refuse a credentialed response unless the server
+    // echoes a concrete Access-Control-Allow-Origin and Allow-Credentials, so
+    // CORS_ORIGIN must be set there. Wildcard CORS and credentials are mutually
+    // exclusive by spec. Same-origin deployments, which is how the SaaS runs,
+    // never reach that path.
     const headers: Record<string, string> = { ...(options.headers as Record<string, string> | undefined) };
-    if (token) headers.Authorization = `Bearer ${token}`;
     if (activeTeam) headers['x-team'] = activeTeam;
-    const res = await fetch(url, { ...options, headers, signal: controller.signal });
-    // 401 with a token attached = the stored session died server-side
-    // (revoked/expired). Clear it and return to the front door instead of
-    // leaving a half-dead app throwing on every call.
-    if (res.status === 401 && token) handleUnauthorized();
+    const res = await fetch(url, { ...options, headers, credentials: 'include', signal: controller.signal });
+    // 401 = the session died server-side (revoked, expired, or never existed).
+    // Previously this was gated on "we had a token attached"; with cookies the
+    // client cannot see the credential, so the response IS the signal.
+    // handleUnauthorized() is idempotent and guards its own redirect loop.
+    if (res.status === 401 && isCloud()) handleUnauthorized();
     // 402 from any value route = subscription required. Broadcast once so the
     // app shell can drop the user onto the Subscribe screen instead of each
     // caller surfacing a dead error.
