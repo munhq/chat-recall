@@ -419,20 +419,79 @@ app.get('/health', (req, res) => {
 // Tries STATIC_DIR first (set in the Dockerfile), then falls back to the
 // repo-relative path used during development.
 if (existsSync(STATIC_DIR)) {
+  const SPA_SHELL = resolve(STATIC_DIR, 'index.html');
+  const LANDING = resolve(STATIC_DIR, 'landing.html');
+  const hasLanding = existsSync(LANDING);
+
+  /**
+   * Does this request carry a live-looking session cookie?
+   *
+   * Presence only — this decides which HTML to hand back, never what anyone is
+   * allowed to read. A forged cookie gets the app shell, whose every API call
+   * then fails auth exactly as it should. Matching both the plain and
+   * __Secure- prefixed names because better-auth adds the prefix only when the
+   * deployment is https, so local dev and production differ.
+   */
+  const looksSignedIn = (req: express.Request): boolean =>
+    /(?:^|;\s*)(?:__Secure-)?better-auth\.session_token=/.test(req.headers.cookie || '');
+
+  /**
+   * '/' is the one path that serves two different documents.
+   *
+   * Registered BEFORE express.static, because static's own index resolution
+   * would otherwise answer '/' with index.html (the SPA shell) and this would
+   * never run.
+   *
+   *   no session  → landing.html, the static marketing page. This is what every
+   *                 crawler gets, and it is the entire reason the page is not a
+   *                 React component any more: a client-rendered SPA serves
+   *                 `<div id="root"></div>` to anything that does not execute
+   *                 JavaScript, which includes most AI crawlers.
+   *   session     → the app shell, so returning users are not bounced through a
+   *                 marketing page to reach their own data.
+   *   any query   → the app shell. ?view=connect is the installer's token page
+   *                 and ?view=account is where Stripe returns; both are app
+   *                 routes that happen to live on '/'.
+   *
+   * Cache-Control is no-store rather than something edge-cacheable, and that is
+   * a deliberate cost. The response varies on a cookie, and Cloudflare ignores
+   * Vary: Cookie below Enterprise, so an edge-cached '/' would eventually serve
+   * one user's document to the other kind of visitor. The page is a single
+   * ~15KB file with inline CSS and no JavaScript, so serving it from origin is
+   * cheap; serving the wrong one is not.
+   */
+  app.get('/', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Vary', 'Cookie');
+    const wantsApp = looksSignedIn(req) || Object.keys(req.query).length > 0;
+    res.sendFile(wantsApp || !hasLanding ? SPA_SHELL : LANDING);
+  });
+
   // index.html must NEVER be cached: a browser running a stale app shell
   // renders current data with outdated code — the worst kind of lie
   // (hashed JS/CSS assets stay cacheable; their names change per build).
+  //
+  // The marketing pages are the opposite case: they are static documents with
+  // no session in them, so they get a short public TTL. Fonts are immutable
+  // (their content is their name's whole reason to exist) and get a year.
   app.use(express.static(STATIC_DIR, {
     setHeaders: (res, path) => {
-      if (path.endsWith('index.html')) res.setHeader('Cache-Control', 'no-store');
+      if (path.endsWith('index.html') || path.endsWith('landing.html')) {
+        res.setHeader('Cache-Control', 'no-store');
+      } else if (path.includes('/fonts/')) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
     },
   }));
-  // SPA fallback — any non-API path returns index.html so client-side routes work.
+
+  // SPA fallback — any non-API path returns index.html so client-side routes
+  // work. The static marketing pages are matched above by express.static, so
+  // they never reach this.
   app.get(/^\/(?!api|health).*/, (_req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.sendFile(resolve(STATIC_DIR, 'index.html'));
+    res.sendFile(SPA_SHELL);
   });
-  log.info({ staticDir: STATIC_DIR }, 'serving client');
+  log.info({ staticDir: STATIC_DIR, landing: hasLanding }, 'serving client');
 }
 
 // Capture request errors to GlitchTip before our own handler formats the 500.
