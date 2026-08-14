@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "tsc && vite build && node scripts/build-marketing.mjs",
+    "build:marketing": "node scripts/build-marketing.mjs",
+    "sync-fonts": "node scripts/sync-fonts.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
