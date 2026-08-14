@@ -6,7 +6,7 @@ import LandingPage from './components/LandingPage';
 import AuthPage from './components/AuthPage';
 import DeviceApprovePage from './components/DeviceApprovePage';
 import ErrorBoundary from './components/ErrorBoundary';
-import { isCloud, hasStoredSession } from './services/auth';
+import { isCloud, isSignedIn, clearLegacyTokens } from './services/auth';
 import './index.css';
 
 // Crash reporting → shared hotmun-frontend GlitchTip project. The `app` tag
@@ -41,21 +41,47 @@ function render(node: React.ReactNode) {
 //                          landing, go straight to sign-in, then the app.
 //   logged out otherwise — public landing; "Sign in" renders the auth form.
 //   logged in            — the app (a dead session 401s → handleUnauthorized
-//                          clears it and returns here).
+//                          returns here).
+//
+// The signed-in test is ASYNC now, because the session is an httpOnly cookie
+// that script cannot read (services/auth.ts explains why). It was a synchronous
+// localStorage lookup, which was fast and also wrong: it answered "is there a
+// string in storage", which stayed true for revoked and expired sessions, so
+// those users got the app shell and a wall of failing calls instead of a login
+// form. One /api/auth/get-session call gets the real answer.
+//
+// The wait is covered by a neutral splash rather than a guess. Rendering the
+// landing first and swapping to the app would show every returning user a flash
+// of marketing copy for their own product.
 function isConnectVisit(): boolean {
   try { return new URLSearchParams(window.location.search).get('view') === 'connect'; } catch { return false; }
 }
 const isDeviceVisit = window.location.pathname === '/device';
 
+/** Pre-auth splash. Deliberately not a spinner: at ~50ms a spinner is a flicker
+ *  that reads as jank, while a still surface in the page background reads as
+ *  the page still loading. Uses the theme tokens so it cannot flash white on a
+ *  dark shell. */
+function Splash() {
+  return <div style={{ position: 'fixed', inset: 0, background: 'var(--cr-ink-0, #090D14)' }} aria-hidden="true" />;
+}
+
 if (isCloud()) {
-  if (hasStoredSession()) {
-    render(isDeviceVisit ? <DeviceApprovePage /> : <App />);
-  } else if (isDeviceVisit || isConnectVisit()) {
-    const after = () => render(isDeviceVisit ? <DeviceApprovePage /> : <App />);
-    render(<AuthPage onSuccess={after} />);
-  } else {
-    render(<LandingPage onGetStarted={() => render(<AuthPage onSuccess={() => render(<App />)} />)} />);
-  }
+  // Any pre-cookie token is dead weight from here on: nothing reads it, and a
+  // 30-day-valid string sitting in a browser profile is a second credential for
+  // the same account with none of the protection the cookie has.
+  clearLegacyTokens();
+  render(<Splash />);
+  void isSignedIn().then((signedIn) => {
+    if (signedIn) {
+      render(isDeviceVisit ? <DeviceApprovePage /> : <App />);
+    } else if (isDeviceVisit || isConnectVisit()) {
+      const after = () => render(isDeviceVisit ? <DeviceApprovePage /> : <App />);
+      render(<AuthPage onSuccess={after} />);
+    } else {
+      render(<LandingPage onGetStarted={() => render(<AuthPage onSuccess={() => render(<App />)} />)} />);
+    }
+  });
 } else {
   render(<App />);
 }

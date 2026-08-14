@@ -176,8 +176,25 @@ app.use(helmet({
 }));
 
 // Middleware
+// The browser session is an httpOnly cookie, so the SPA sends every request
+// with credentials. Two consequences, both load-bearing:
+//
+//  1. credentials:true is required or the browser discards the response.
+//  2. The spec forbids pairing credentials with a wildcard origin. When
+//     CORS_ORIGIN is unset, the `cors` package reflects the request's own
+//     Origin, which is effectively "allow any site to make credentialed calls
+//     with the user's cookie". That is fine for local dev, where the API is
+//     same-origin behind the Vite proxy and no cookie is issued over http, and
+//     it is NOT fine on a public deployment. So a cloud deployment MUST set
+//     CORS_ORIGIN; the boot log below says so loudly rather than leaving it to
+//     be discovered.
+const corsOrigin = process.env.CORS_ORIGIN || undefined;
+if (!corsOrigin && process.env.AUTH_PROVIDER && process.env.AUTH_PROVIDER !== 'none') {
+  log.warn('CORS_ORIGIN is unset while auth is enabled: cross-origin sites can make credentialed calls. Set it to the app origin.');
+}
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || undefined, // undefined = allow all (for local dev); set in prod
+  origin: corsOrigin, // undefined = reflect origin (local dev only); set in prod
+  credentials: true,
 }));
 // Gzip/deflate compression. Skips already-compressed responses (images,
 // pre-compressed assets) automatically. Threshold avoids the overhead on
