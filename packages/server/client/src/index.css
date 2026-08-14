@@ -6,6 +6,12 @@
  * `node scripts/sync-fonts.mjs`; licence in public/fonts/OFL.txt. */
 @import './fonts.css';
 
+/* TOKENS:START — everything between these markers is lifted verbatim into the
+ * static marketing pages by scripts/build-marketing.mjs. That is why the block
+ * is pure custom properties with no rules: the marketing site and the app must
+ * be the same colours and the same type, and the only way to guarantee that is
+ * to have one definition rather than two that agree today. Keep declarations
+ * only; put anything that needs a selector below TOKENS:END. */
 /* ────────────────────── Dark (default) ────────────────────── */
 :root {
   /* Typography — intelligence-console direction (distinctive, not system slop):
@@ -170,6 +176,7 @@
   --cr-tool-agy: #C026B8;
   --cr-tool-agy-surf: rgba(192, 38, 184, 0.08);
 }
+/* TOKENS:END */
 
 /* ────────────────────── Base ────────────────────── */
 *,
