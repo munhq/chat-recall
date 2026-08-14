@@ -149,8 +149,12 @@ app.use(helmet({
       // components ship a <style> block. Removing it means rewriting the whole
       // client's styling. Injected CSS cannot run code, so the risk it leaves is
       // defacement and data-exfil via selectors, not session theft.
-      styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
-      fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+      // Both are 'self' only, because the three brand webfonts are vendored into
+      // public/fonts (client/scripts/sync-fonts.mjs). Before that they came from
+      // fonts.googleapis.com, which meant a third party was allowed to serve CSS
+      // to this origin — and CSS it serves can restyle any element on the page.
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      fontSrc: ["'self'"],
       imgSrc: ["'self'", 'data:', 'blob:'],
       connectSrc: ["'self'", ...sentryOrigin()],
       // Nothing here is meant to be framed. Blocks clickjacking outright.
