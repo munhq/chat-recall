@@ -1,5 +1,10 @@
 /* Chat Recall — Design System Tokens */
-@import url('https://fonts.googleapis.com/css2?family=Martian+Mono:wght@500;700&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+/* Self-hosted webfonts. This was an @import from fonts.googleapis.com, which
+ * cost a CSP exception (a third party allowed to serve CSS to this origin can
+ * restyle anything on the page), every visitor's IP, and two serial cross-origin
+ * round trips before any text could paint in the right face. Regenerate with
+ * `node scripts/sync-fonts.mjs`; licence in public/fonts/OFL.txt. */
+@import './fonts.css';
 
 /* ────────────────────── Dark (default) ────────────────────── */
 :root {

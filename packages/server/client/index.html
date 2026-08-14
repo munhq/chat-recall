@@ -8,6 +8,15 @@
          cross-origin destination via the Referer header. Same-origin keeps the
          full URL so internal navigation/analytics are unaffected. -->
     <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <!-- The two faces that render before anything else: body copy and the
+         display face used by the header and every metric. They are discovered
+         late otherwise, because a font inside an @import'd stylesheet cannot be
+         requested until index.css has been fetched AND parsed. crossorigin is
+         required even same-origin — fonts are always fetched in CORS mode, and
+         omitting it downloads the file twice. Only the `latin` subsets are
+         preloaded; latin-ext loads on demand for the characters that need it. -->
+    <link rel="preload" href="/fonts/hanken-grotesk-400-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/martian-mono-500-latin.woff2" as="font" type="font/woff2" crossorigin />
     <!-- Pre-paint theme bootstrap. Mirrors the TopBar toggle exactly:
          'light' → data-theme="light" on <html>; anything else → attribute
          absent (dark default). Runs before first paint so a persisted light
