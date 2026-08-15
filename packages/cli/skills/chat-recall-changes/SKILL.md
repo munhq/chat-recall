@@ -13,22 +13,31 @@ description: >-
 ## Recent edits across everything
 
 `mcp__chat-recall__recall_edits_timeline` — chronological file edits across
-Claude/Gemini/OpenCode/Codex sessions. `since_hours: 2` for "what was I doing
-recently"; `pattern` to filter by path; `group_by: "session"` (+ wide
-`since_hours`) to answer "which sessions edited <file> this month".
+every AI tool chat-recall indexes, read live from each tool's own session store.
+`since_hours: 2` for "what was I doing recently"; `pattern` to filter by path;
+`group_by: "session"` (+ wide `since_hours`) to answer "which sessions edited
+<file> this month".
 
 ## One session's changes
 
-- `mcp__chat-recall__recall_diff <id>` — per-file unified diffs of what a session
+Every tool here takes a NAMED `session_id` (not a positional argument).
+
+- `mcp__chat-recall__recall_diff` — per-file unified diffs of what a session
   actually changed (detects reverts). `files_only: true` = just the touched-files
   list; `context_only: true` = per-file add/remove stats.
-- `mcp__chat-recall__recall_commits <id>` — git commits that landed in the
+- `mcp__chat-recall__recall_commits` — git commits that landed in the
   session's edit window, grouped by repo. Use to verify "shipped" claims: many
   edits but no commit = work stayed local.
-- `mcp__chat-recall__recall_summary <id>` — AI summary + outcome classification
+- `mcp__chat-recall__recall_summary` — AI summary + outcome classification
   (shipped / interrupted / abandoned) + last-claim-vs-user-reaction.
-- `mcp__chat-recall__recall_markers <id>` — per-prompt sentiment/correction
+- `mcp__chat-recall__recall_markers` — per-prompt sentiment/correction
   markers (frustrated, correction, approval) to spot where a session went sideways.
+
+## Across many sessions
+
+`mcp__chat-recall__recall_outcome_summary` — how sessions ended over the last N
+days (shipped / interrupted / abandoned / in_progress). Use for "am I finishing
+what I start", never for one session — `recall_summary` answers that.
 
 ## Workflow
 
