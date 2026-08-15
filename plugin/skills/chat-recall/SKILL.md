@@ -6,9 +6,12 @@ description: >-
   user says "continue" / "pick up where we left off", "did we decide X",
   "remember when we…", "what was I doing", "what do you know about this
   project/me", or otherwise references earlier work that is not in the current
-  context. This is the hub: it routes to the focused chat-recall skills and
-  lists every recall_* tool. Reach for it whenever the answer lives in PAST work
-  rather than the files in front of you.
+  context. Also the entry point for the surfaces no focused skill owns: leaked
+  secrets ("did I paste an API key"), the shared task board and team activity
+  ("what are my open tasks", "what is my team working on"), and index health
+  ("is chat-recall working", "re-index my sessions"). This is the hub: it routes
+  to the focused chat-recall skills and lists every recall_* tool. Reach for it
+  whenever the answer lives in PAST work rather than the files in front of you.
 ---
 
 # chat-recall — cross-session memory for AI coding
@@ -20,7 +23,15 @@ on something that happened in an *earlier* session (a decision, a past fix, "wha
 were we doing"), don't guess or ask the user to re-explain — recall it.
 
 All tools are MCP tools on the `chat-recall` server, named
-`mcp__chat-recall__<tool>`. They are read-mostly and safe to call proactively.
+`mcp__chat-recall__<tool>`.
+
+**Reads are safe to call proactively. Writes are not.** Everything below is a
+read except these, which change stored memory or state — treat each as an edit
+and apply the test in `chat-recall-memory` before calling one:
+`recall_kg_add`, `recall_kg_invalidate`, `recall_decision_record`,
+`recall_diary_write`, `recall_set`, `recall_task_create`, `recall_task_update`,
+`recall_security_dismiss`, `recall_rename_session`, `recall_regenerate_summary`,
+`recall_reclassify`, `recall_index`, `recall_code_index`.
 
 ## Route to the right skill
 
@@ -34,24 +45,32 @@ Match the intent, then read that skill and follow its workflow:
 | The state of a project — "what's been happening in X", cost, findings | `chat-recall-project` |
 | What changed — edits, diffs, commits; "what was I doing 2h ago" | `chat-recall-changes` |
 
+Leaked secrets, the shared task board, team activity and index health have no
+focused skill — use the catalog below directly.
+
 ## Tool catalog
 
-<!-- BEGIN GENERATED TOOL CATALOG (scripts/gen-skills.ts — do not edit by hand) -->
-**Resume / cold start** — `recall_smart_resume` (structured resume bundle), `recall_recent` (list recent sessions), `recall_wake_up` (identity + high-signal facts), `recall_context`, `recall_show`, `recall_summary`.
-**Search** — `recall_search` (sessions; `include_outcome`, `like_session`), `recall_memory_search` (all 9 memory types), `recall_user_prompts` (what the user actually typed).
-**Project** — `recall_project_context` (rich dump), `recall_weekly_digest`, `recall_analytics_summary`, `recall_code_findings` / `recall_code_actions` / `recall_code_projects`.
-**What changed** — `recall_edits_timeline` (cross-tool edits), `recall_diff` (per-session diffs), `recall_commits`, `recall_markers`.
+Every `recall_*` tool. `packages/cli/src/skills-catalog.test.ts` fails when a
+tool is registered and never named here, so adding a tool means placing it.
+
+**Resume / cold start** — `recall_smart_resume` (structured resume bundle; needs a session id), `recall_recent` (list recent sessions), `recall_wake_up` (identity + high-signal facts), `recall_context` (structured dump of one session), `recall_show` (raw slice — returns 10 messages unless you raise `max_messages`), `recall_summary` (AI summary + outcome).
+**Search** — `recall_search` (sessions; `include_outcome`, `like_session`), `recall_memory_search` (every memory type), `recall_memory_item` (read ONE item found by search, or browse a source type), `recall_user_prompts` (what the user actually typed), `recall_subagent_search` (inside subagent transcripts, whose work never reaches the main conversation), `recall_redundant_files` (before writing a new file, check you have not written one like it already).
+**Project** — `recall_project_context` (rich dump), `recall_weekly_digest`, `recall_analytics_summary`, `recall_outcome_summary` (how many recent sessions actually shipped), `recall_code_findings` / `recall_code_actions` / `recall_code_projects` / `recall_code_index` / `recall_recommendations`.
+**What changed** — `recall_edits_timeline` (cross-tool edits), `recall_diff` (per-session diffs), `recall_commits` (did it actually land), `recall_markers` (where a session went sideways).
 **Durable memory / KG** — `recall_kg_query` / `recall_kg_add` / `recall_kg_invalidate` / `recall_kg_timeline` / `recall_kg_stats`, `recall_decision_record`, `recall_diary_write` / `recall_diary_read`, `recall_set` / `recall_get`.
-**Security** — `recall_security_summary` / `recall_security_session` / `recall_security_dismiss`.
-**Housekeeping** — `recall_status`, `recall_index`, `recall_rename_session`.
-<!-- END GENERATED TOOL CATALOG -->
+**Team** — `recall_tasks` (the shared task board), `recall_task_create`, `recall_task_update` (status, assignee, comment; task ids look like `t_…`), `recall_team_activity` (per-teammate × per-project rollup), `recall_shares` (which projects are shared — private by default, nothing is visible to teammates until shared).
+**Security** — `recall_security_summary` (leaked secrets that still need action — start here for "did I paste a key somewhere"), `recall_security_session` (findings for one session), `recall_security_dismiss` (mark rotated / false positive — do this only when the user confirms which), `recall_security_rules` (tenant detection rules; also tests a regex).
+**Health / maintenance** — `recall_status` (is the index alive, what is synced), `recall_index` (sync now), `recall_heal_audit` (sessions whose rendered text is thinner than the raw archive, i.e. truncated upstream), `recall_regenerate_summary` (stored summary is stale or wrong), `recall_reclassify` (re-run the classifier over old chunks), `recall_rename_session`.
 
 ## If you're unsure where to start
 
 - Free-text "is there past work relevant to this?" → `recall_search` with `include_outcome: true`.
 - Broader ("plans, tasks, CLAUDE.md, diaries too") → `recall_memory_search`.
 - "What do you know about me / this project right now?" → `recall_wake_up` (add a project filter) or `recall_project_context`.
-- "Continue where we left off" → `recall_smart_resume`.
+- "Continue where we left off" → you need a session id first. `recall_smart_resume`
+  takes one and REQUIRES it, so get the id from `recall_recent` (most recent work)
+  or `recall_search` (`include_outcome: true`, when the user described the task),
+  then resume. See `chat-recall-resume`.
 
 Prefer one targeted recall over asking the user to recap. Cite what you found
 (session id / decision) so the user can verify.

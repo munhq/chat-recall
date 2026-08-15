@@ -706,8 +706,8 @@ The name persists across re-syncs and summary regeneration (it's stored separate
       },
       {
         name: 'recall_edits_timeline',
-        description: `Chronological list of file edits across recent sessions, spanning Claude Code,
-Gemini CLI, and OpenCode.
+        description: `Chronological list of file edits across recent sessions, spanning every AI tool
+chat-recall indexes — Claude Code, Gemini CLI, OpenCode, Codex and Antigravity.
 
 Returns rows shaped like (timestamp, tool, session_id, project, file, op) sorted newest
 first. Pulls live from each tool's native session store — Claude JSONL, Gemini chat
