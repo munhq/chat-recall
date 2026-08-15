@@ -13,8 +13,9 @@
  * holding the version. We only ever overwrite/remove dirs that carry OUR marker,
  * so a user's own skill of the same name is never clobbered.
  */
-import { readdirSync, existsSync, mkdirSync, rmSync, cpSync, writeFileSync, readFileSync, statSync } from 'fs';
-import { join } from 'path';
+import { readdirSync, existsSync, mkdirSync, rmSync, cpSync, writeFileSync, readFileSync, statSync, realpathSync } from 'fs';
+import { join, basename } from 'path';
+import { claudeHomeDirs } from '@chat-recall/engine/core/tool-paths.js';
 import { claudeBackend } from '@chat-recall/engine/core/backends/claude.js';
 import { geminiBackend } from '@chat-recall/engine/core/backends/gemini.js';
 import { opencodeBackend } from '@chat-recall/engine/core/backends/opencode.js';
@@ -49,6 +50,51 @@ export function bundledSkillNames(): string[] {
 
 export interface SkillTarget { id: string; label: string; dir: string; available: boolean; }
 
+/** Resolve symlinks so two targets that name the SAME directory collapse to one.
+ *  A dir that does not exist yet has nothing to resolve — use it as written. */
+function realPathOrSelf(p: string): string {
+  try { return realpathSync(p); } catch { return p; }
+}
+
+/**
+ * Claude profile targets: one per home returned by `claudeHomeDirs()`.
+ *
+ * Claude is the only backend with profiles. `CLAUDE_CONFIG_DIR=~/.claude-work`
+ * makes that directory the ENTIRE config root for the session — Claude Code
+ * reads skills from `<that home>/skills` and nowhere else. So installing into
+ * `~/.claude/skills` alone means a profile session sees zero recall skills,
+ * while its transcripts index normally and every other check looks green.
+ *
+ * Deduped by REAL path because the usual multi-profile setup symlinks each
+ * profile's `skills/` back to the primary. Without this, one directory would be
+ * reported as four separate installs.
+ */
+function claudeSkillTargets(): SkillTarget[] {
+  const targets: SkillTarget[] = [];
+  const seen = new Set<string>();
+  for (const home of claudeHomeDirs()) {
+    const dir = join(home, 'skills');
+    const key = realPathOrSelf(dir);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const primary = targets.length === 0;
+    targets.push({
+      id: primary ? 'claude' : `claude:${basename(home)}`,
+      label: primary ? 'Claude Code' : `Claude Code (${basename(home)})`,
+      dir,
+      // Judge each profile on ITS OWN transcripts, not the primary's: a home
+      // with no projects/ is a directory someone made, not a Claude install.
+      available: existsSync(join(home, 'projects')),
+    });
+  }
+  // A machine with no Claude home at all still gets the primary target, so
+  // `--all-tools` can install ahead of first launch.
+  if (targets.length === 0) {
+    targets.push({ id: 'claude', label: 'Claude Code', dir: claudeBackend.skillsDir(), available: claudeBackend.isAvailable() });
+  }
+  return targets;
+}
+
 /** Per-tool skills dir. agy keeps its own (~/.gemini/antigravity-cli/skills) AND
  *  we also cover ~/.agents/skills (tool-neutral) so any future consumer sees them. */
 export function skillTargets(): SkillTarget[] {
@@ -59,7 +105,7 @@ export function skillTargets(): SkillTarget[] {
     // we support has its own dir, so per-tool coverage is complete.
     // Antigravity (agy) has no dir of its own — it reads Gemini's ~/.gemini/skills
     // (same mapping as team-merge), so the Gemini target covers it.
-    { id: 'claude',   label: 'Claude Code',  dir: claudeBackend.skillsDir(),   available: claudeBackend.isAvailable() },
+    ...claudeSkillTargets(),
     { id: 'gemini',   label: 'Gemini CLI / Antigravity', dir: geminiBackend.skillsDir(), available: geminiBackend.isAvailable() || agyBackend.isAvailable() },
     { id: 'codex',    label: 'Codex',        dir: codexBackend.skillsDir(),    available: codexBackend.isAvailable() },
     { id: 'opencode', label: 'OpenCode',     dir: opencodeBackend.skillsDir(), available: opencodeBackend.isAvailable() },

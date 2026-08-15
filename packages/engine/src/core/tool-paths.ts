@@ -240,3 +240,26 @@ export function extraClaudeHomeDirs(): string[] {
   const primary = claudeHomeDir();
   return Array.from(new Set(extras)).filter(p => p && p !== primary);
 }
+
+/**
+ * Every Claude home on this machine, as HOMES rather than session roots: the
+ * resolved primary, every sibling `~/.claude-*` profile (minus `.claude-code`,
+ * same carve-out as claudeProjectDirs), and any configured extra home.
+ *
+ * Claude is the only backend with profiles — `CLAUDE_CONFIG_DIR` selects one
+ * per session, so `~/.claude-work` is a complete Claude install with its own
+ * skills/, hooks.json and settings.json. The READ side has always fanned out
+ * over them (claudeProjectDirs). This is that same set for WRITE-side callers,
+ * which is the half that was missing: installing only into the primary home
+ * leaves a profile running an agent with no chat-recall skills and no hooks,
+ * while that profile's sessions index perfectly — so nothing looks broken.
+ */
+export function claudeHomeDirs(): string[] {
+  const overridden = !!(process.env.CHAT_RECALL_CLAUDE_HOME || sources().claudeHome);
+  const homes = siblingHomes(claudeHomeDir(), overridden, '')
+    .filter((h) => basename(h) !== '.claude-code');
+  for (const extra of extraClaudeHomeDirs()) {
+    if (existsSync(extra) && !homes.includes(extra)) homes.push(extra);
+  }
+  return homes;
+}
