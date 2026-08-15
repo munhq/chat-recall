@@ -1071,14 +1071,27 @@ program
         continue;
       }
       try {
-        const cfg = JSON.parse(readFileSync(hooksJson, 'utf-8'));
-        const all = ['Stop', 'PreCompact', 'UserPromptSubmit', 'SessionEnd'];
+        // Claude reads hooks from settings.json AS WELL as hooks.json, and the
+        // wake-up hook is commonly hand-wired in the former. Reading only
+        // hooks.json reports a working hook as missing.
+        const readHooks = (file: string): Record<string, any[]> => {
+          if (!existsSync(file)) return {};
+          try { return JSON.parse(readFileSync(file, 'utf-8')).hooks || {}; } catch { return {}; }
+        };
+        const cfg = readHooks(hooksJson);
+        const settings = readHooks(join(dirname(hooksJson), 'settings.json'));
+        const all = ['SessionStart', 'UserPromptSubmit', 'Stop', 'PreCompact', 'SessionEnd'];
         const hits: string[] = [];
         for (const ev of all) {
-          const arr = Array.isArray(cfg.hooks?.[ev]) ? cfg.hooks[ev] : [];
+          const arr = [
+            ...(Array.isArray(cfg[ev]) ? cfg[ev] : []),
+            ...(Array.isArray(settings[ev]) ? settings[ev] : []),
+          ];
           if (arr.some((h: any) => (h.hooks?.[0]?.command || '').includes('chat_recall'))) hits.push(ev);
         }
-        note(hits.length > 0, label, `installed for: ${hits.join(', ') || 'none — run install-hooks'}`);
+        note(hits.length === all.length, label,
+          hits.length === 0 ? 'none — run `chat-recall install-hooks`'
+            : `${hits.join(', ')}${hits.length < all.length ? ` (missing ${all.filter((e) => !hits.includes(e)).join(', ')} — run install-hooks)` : ''}`);
       } catch {
         note(false, label, `${hooksJson} unparseable`);
       }
