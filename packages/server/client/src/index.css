@@ -771,7 +771,12 @@ a:hover { text-decoration: underline; }
    * scrolling page container with this and it stops spending 64-80px of a
    * 375px screen on empty margin. Only the horizontal sides are touched, so
    * each view keeps its own vertical rhythm. */
-  .cr-pad-mobile { padding-left: 14px !important; padding-right: 14px !important; }
+  /* max(…, env(…)) like the other gutter rules in this file: the enclosing
+   * query matches landscape phones too, where the notch is at the side. */
+  .cr-pad-mobile {
+    padding-left: max(14px, env(safe-area-inset-left)) !important;
+    padding-right: max(14px, env(safe-area-inset-right)) !important;
+  }
 
   /* Generic guard: nothing inside the app may force horizontal scroll.
    * Tables are excluded on purpose — see .cr-tablescroll. */
@@ -806,10 +811,20 @@ a:hover { text-decoration: underline; }
   overflow-x: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain;
 }
 
-/* Row-label column that survives a sideways scroll in a wide data table. */
+/* Row-label column that survives a sideways scroll in a wide data table.
+ *
+ * z-index 1, not 2: a sticky <thead> sits at z-index 1 in the same stacking
+ * context, and at 2 the body's row labels painted OVER the header as soon as
+ * the matrix was tall enough to scroll vertically. The header is lifted to 3 at
+ * its own site; this only has to beat the ordinary cells, which are auto.
+ *
+ * The background is required — a sticky cell scrolls over its neighbours, so
+ * without one the columns underneath show through it. It is a variable so the
+ * cell can match whatever surface hosts the table; the default suits a panel on
+ * --cr-ink-1. */
 .cr-sticky-col {
-  position: sticky; left: 0; z-index: 2;
-  background: var(--cr-ink-1);
+  position: sticky; left: 0; z-index: 1;
+  background: var(--cr-sticky-col-bg, var(--cr-ink-1));
 }
 
 @media (max-width: 480px) {

@@ -119,6 +119,11 @@ export function forceLayout(
   return pos.map((p) => ({ x: p.x, y: p.y }));
 }
 
+/** Movement (in CSS px) before a press counts as a pan rather than a click.
+ *  Below this the pointer is never captured, so the click still reaches the
+ *  node handler. */
+const DRAG_SLOP = 4;
+
 export default function ForceGraph({
   nodes,
   edges,
@@ -142,7 +147,7 @@ export default function ForceGraph({
   const idx = useMemo(() => new Map(nodes.map((n, i) => [n.id, i])), [nodes]);
   const [view, setView] = useState({ k: 1, x: 0, y: 0 });
   const svgRef = useRef<SVGSVGElement | null>(null);
-  const drag = useRef<{ mx: number; my: number; vx: number; vy: number } | null>(null);
+  const drag = useRef<{ mx: number; my: number; vx: number; vy: number; moved: boolean; id: number } | null>(null);
   const [grabbing, setGrabbing] = useState(false);
   useEffect(() => { setView({ k: 1, x: 0, y: 0 }); }, [resetKey]);
 
@@ -163,18 +168,40 @@ export default function ForceGraph({
   // phone. Paired with `touch-action: pan-y` below, a horizontal drag pans the
   // graph while a vertical swipe still scrolls the page.
   const onDown = (e: React.PointerEvent) => {
-    drag.current = { mx: e.clientX, my: e.clientY, vx: view.x, vy: view.y };
+    if (e.button !== 0 && e.pointerType === 'mouse') return; // left button only
+    // Capture is NOT taken here. Capturing on pointerdown retargets the
+    // following `click` to the capture element, so it never reaches the per-node
+    // <g onClick>, and clicking a node silently did nothing in both the
+    // knowledge graph and the code map. Capture is taken on the first move past
+    // DRAG_SLOP instead, so a plain click never captures at all.
+    drag.current = { mx: e.clientX, my: e.clientY, vx: view.x, vy: view.y, moved: false, id: e.pointerId };
     setGrabbing(true);
-    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not fatal */ }
   };
   const onMove = (e: React.PointerEvent) => {
-    if (!drag.current) return;
+    const d = drag.current;
+    if (!d) return;
     const r = svgRef.current!.getBoundingClientRect();
-    const dx = (e.clientX - drag.current.mx) * (W / r.width);
-    const dy = (e.clientY - drag.current.my) * (H / r.height);
-    setView((v) => ({ ...v, x: drag.current!.vx + dx, y: drag.current!.vy + dy }));
+    if (!d.moved) {
+      if (Math.hypot(e.clientX - d.mx, e.clientY - d.my) < DRAG_SLOP) return;
+      d.moved = true;
+      // Now it is genuinely a drag: capture so it survives leaving the element,
+      // and so the browser suppresses the click that would otherwise land on
+      // whatever node happens to be under the finger at the end.
+      try { e.currentTarget.setPointerCapture(d.id); } catch { /* not fatal */ }
+    }
+    const dx = (e.clientX - d.mx) * (W / r.width);
+    const dy = (e.clientY - d.my) * (H / r.height);
+    setView((v) => ({ ...v, x: d.vx + dx, y: d.vy + dy }));
   };
   const onUp = () => { drag.current = null; setGrabbing(false); };
+  // The browser claims a vertical swipe mid-gesture (touch-action: pan-y) after
+  // one move has already panned the graph. Put the view back so scrolling past
+  // the graph does not leave it nudged.
+  const onCancel = () => {
+    const d = drag.current;
+    if (d?.moved) setView((v) => ({ ...v, x: d.vx, y: d.vy }));
+    onUp();
+  };
 
   const btn = {
     background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 6,
@@ -197,7 +224,7 @@ export default function ForceGraph({
          * the viewBox scales to the narrow width and letterboxes ~283px of dead
          * space on a phone. maxHeight keeps the desktop size unchanged. */
         style={{ maxWidth: '100%', width: '100%', height: 'auto', aspectRatio: `${W} / ${H}`, maxHeight: H, background: 'var(--cr-ink-1)', borderRadius: 8, cursor: grabbing ? 'grabbing' : 'grab', touchAction: 'pan-y', userSelect: 'none' }}
-        onWheel={onWheel} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onPointerLeave={onUp}
+        onWheel={onWheel} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onCancel} onPointerLeave={onUp}
       >
         <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
           {edges.map((e, i) => {
