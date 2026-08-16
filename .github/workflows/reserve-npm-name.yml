@@ -55,12 +55,25 @@ jobs:
 
       # Reject anything npm would reject, before we touch the registry: npm
       # names are lowercase, may not start with . or _, and are URL-safe.
+      #
+      # The semver guard is not paranoia — it already happened. Digits and dots
+      # are legal in npm names, so a version typed into the name box ("0.0.1")
+      # passed the grammar check and went on to query the registry for a package
+      # called 0.0.1. It failed safe, but only by luck: had that name been free
+      # we would have reserved it.
       - name: Validate the requested name
         run: |
           NAME='${{ inputs.package }}'
-          echo "requested: $NAME"
+          VERSION='${{ inputs.version }}'
+          echo "package: '$NAME'"
+          echo "version: '$VERSION'"
           echo "$NAME" | grep -Eq '^[a-z0-9][a-z0-9._-]{0,213}$' \
             || { echo "::error::'$NAME' is not a valid npm package name"; exit 1; }
+          echo "$NAME" | grep -Eq '^[0-9]+\.[0-9]+' \
+            && { echo "::error::'$NAME' looks like a version, not a package name — check the fields"; exit 1; }
+          echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+' \
+            || { echo "::error::version '$VERSION' is not semver"; exit 1; }
+          echo "names look right"
 
       # A name already on the registry is either yours or someone else's; either
       # way publishing a placeholder over it is wrong, so stop.
