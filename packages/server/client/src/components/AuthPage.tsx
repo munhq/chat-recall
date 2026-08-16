@@ -1,30 +1,89 @@
 import { useState } from 'react';
-import { signInEmail, signUpEmail } from '../services/auth';
+import { signInEmail, signUpEmail, requestPasswordReset, resetPassword } from '../services/auth';
 
 /**
- * Email + password sign-in / sign-up for cloud mode. This form replaced the
- * Keycloak-hosted login page: the exchange runs against our own
- * /api/auth/sign-{in,up}/email endpoints and never leaves this origin.
+ * What better-auth left in the URL after its /reset-password/:token redirect.
+ *
+ * It redirects to the callback with `{ token }` when the token is good and
+ * `{ error: 'INVALID_TOKEN' }` when it is expired or already spent. Reading
+ * only the token would drop that second case silently onto the sign-in form,
+ * which reads as "my link did nothing" — the one moment a user needs to be
+ * told to request a fresh one.
+ */
+function resetParamsFromUrl(): { token: string | null; error: string | null } {
+  try {
+    const p = new URLSearchParams(window.location.search);
+    return { token: p.get('token'), error: p.get('error') };
+  } catch { return { token: null, error: null }; }
+}
+
+type Mode = 'signin' | 'signup' | 'forgot' | 'reset';
+
+/**
+ * Email + password sign-in / sign-up / password reset for cloud mode. This form
+ * replaced the Keycloak-hosted login page: the exchange runs against our own
+ * /api/auth/* endpoints and never leaves this origin.
  * On success the session token is already stored — the caller re-renders
  * the app (no redirect, so any query string like ?view=connect survives).
+ *
+ * The reset half is entered two ways: the user clicks "Forgot your password?"
+ * (mode 'forgot' → we mail a link), or they arrive from that link carrying a
+ * ?token= (mode 'reset' → they choose a new password). Landing straight in
+ * 'reset' when a token is present is what makes the emailed link work without
+ * a separate route or page.
  */
 export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
   onSuccess: () => void;
   initialMode?: 'signin' | 'signup';
 }) {
-  const [mode, setMode] = useState<'signin' | 'signup'>(initialMode);
+  const [{ token: resetToken, error: linkError }] = useState(resetParamsFromUrl);
+  const [mode, setMode] = useState<Mode>(resetToken ? 'reset' : initialMode);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(
+    linkError ? 'That reset link has expired or was already used. Request a new one.' : null,
+  );
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const signup = mode === 'signup';
+  const forgot = mode === 'forgot';
+  const resetting = mode === 'reset';
+
+  const go = (m: Mode) => { setMode(m); setError(null); setNotice(null); };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy) return;
     setBusy(true);
     setError(null);
+    setNotice(null);
+
+    if (forgot) {
+      const r = await requestPasswordReset(email.trim());
+      setBusy(false);
+      // Deliberately the same message whether or not the account exists — see
+      // requestPasswordReset() on why this must not confirm an address.
+      if (r.ok) setNotice('If that address has an account, a reset link is on its way. The link expires in an hour.');
+      else setError(r.error);
+      return;
+    }
+
+    if (resetting) {
+      const r = await resetPassword(resetToken || '', password);
+      setBusy(false);
+      if (r.ok) {
+        // Resetting does not sign you in, so send them to a clean sign-in form
+        // rather than the app — and drop the spent token from the URL so a
+        // refresh does not retry it and show a confusing "invalid token".
+        window.history.replaceState({}, '', window.location.pathname);
+        setPassword('');
+        go('signin');
+        setNotice('Password updated. Sign in with it.');
+      } else setError(r.error);
+      return;
+    }
+
     const r = signup
       ? await signUpEmail(name.trim() || email.split('@')[0], email.trim(), password)
       : await signInEmail(email.trim(), password);
@@ -33,12 +92,19 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
     else setError(r.error);
   };
 
+  const heading = resetting ? 'Choose a new password'
+    : forgot ? 'Reset your password'
+      : signup ? 'Create your account' : 'Sign in';
+  const cta = resetting ? 'Update password'
+    : forgot ? 'Send reset link'
+      : signup ? 'Create account' : 'Sign in';
+
   return (
     <div className="au-wrap">
       <style>{AUTH_CSS}</style>
       <div className="au-card">
         <div className="au-brand"><span className="au-logo">◆</span> chat-recall</div>
-        <h1>{signup ? 'Create your account' : 'Sign in'}</h1>
+        <h1>{heading}</h1>
         <form onSubmit={submit}>
           {signup && (
             <label>
@@ -47,25 +113,38 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
                 autoComplete="name" placeholder="Ada" />
             </label>
           )}
-          <label>
-            Email
-            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
-              autoComplete="email" required placeholder="you@example.com" />
-          </label>
-          <label>
-            Password
-            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
-              autoComplete={signup ? 'new-password' : 'current-password'} required minLength={8}
-              placeholder={signup ? 'At least 8 characters' : ''} />
-          </label>
+          {!resetting && (
+            <label>
+              Email
+              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+                autoComplete="email" required placeholder="you@example.com" />
+            </label>
+          )}
+          {!forgot && (
+            <label>
+              {resetting ? 'New password' : 'Password'}
+              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+                autoComplete={signup || resetting ? 'new-password' : 'current-password'} required minLength={8}
+                placeholder={signup || resetting ? 'At least 8 characters' : ''} />
+            </label>
+          )}
           {error && <div className="au-error">{error}</div>}
+          {notice && <div className="au-notice">{notice}</div>}
           <button className="au-submit" type="submit" disabled={busy}>
-            {busy ? '…' : signup ? 'Create account' : 'Sign in'}
+            {busy ? '…' : cta}
           </button>
         </form>
-        <button className="au-toggle" onClick={() => { setMode(signup ? 'signin' : 'signup'); setError(null); }}>
-          {signup ? 'Already have an account? Sign in' : 'New here? Create an account'}
-        </button>
+        {!resetting && (
+          <button className="au-toggle" onClick={() => go(signup ? 'signin' : 'signup')}>
+            {signup ? 'Already have an account? Sign in' : 'New here? Create an account'}
+          </button>
+        )}
+        {mode === 'signin' && (
+          <button className="au-toggle" onClick={() => go('forgot')}>Forgot your password?</button>
+        )}
+        {(forgot || resetting) && (
+          <button className="au-toggle" onClick={() => go('signin')}>Back to sign in</button>
+        )}
       </div>
     </div>
   );
@@ -89,6 +168,8 @@ const AUTH_CSS = `
   font-size: 14px; box-sizing: border-box; }
 .au-card input:focus { outline: none; border-color: #5b8cff; }
 .au-error { background: #2a1215; border: 1px solid #6b2a31; color: #ff8f98;
+  padding: 8px 12px; border-radius: 8px; font-size: 13px; margin-bottom: 14px; }
+.au-notice { background: #0f2019; border: 1px solid #235b41; color: #7fd6a4;
   padding: 8px 12px; border-radius: 8px; font-size: 13px; margin-bottom: 14px; }
 .au-submit { width: 100%; padding: 10px 12px; background: #5b8cff; color: #fff;
   border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
