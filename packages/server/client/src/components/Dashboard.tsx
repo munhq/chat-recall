@@ -123,7 +123,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
     <div className="cr-dashboard" style={{ flex: 1, overflowY: 'auto', background: 'var(--cr-ink-0)' }}>
       <div className="cr-dashboard-inner" style={{ maxWidth: 1280, margin: '0 auto', padding: '32px 40px 64px' }}>
         {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 16 }}>
+        <div className="cr-wrap-mobile" style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 16 }}>
           <div>
             <h2>Insights</h2>
             <p className="cr-lead" style={{ marginTop: 4 }}>
@@ -292,7 +292,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
         {/* Cost chart */}
         {data.dailyCost.length > 0 && (
           <Card style={{ padding: 24, marginBottom: 24 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+            <div className="cr-wrap-mobile" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
               <h3>Daily cost</h3>
               <div style={{ display: 'flex', alignItems: 'center', gap: 14, fontSize: 12, color: 'var(--cr-fg-3)' }}>
                 <LegendDot color="var(--cr-brand-500)" label="Normal" />
@@ -334,7 +334,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
         {/* Two-column: tools + projects */}
         <div className="cr-stat-grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           <Card style={{ padding: 24 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+            <div className="cr-wrap-mobile" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
               <h3>Top tools</h3>
               <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{data.tools.length} total</span>
             </div>
@@ -385,7 +385,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
           </Card>
 
           <Card style={{ padding: 24 }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+            <div className="cr-wrap-mobile" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
               <h3>Top projects</h3>
               <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{data.projects.length} total</span>
             </div>
@@ -479,7 +479,7 @@ function PatternsSection({
 
   return (
     <div data-testid="patterns-section" style={{ marginTop: 32 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 16 }}>
+      <div className="cr-wrap-mobile" style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 16 }}>
         <h2 style={{ margin: 0 }}>Patterns</h2>
         <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
           across {patterns.meta.sessionsAnalyzed} indexed sessions
@@ -492,7 +492,7 @@ function PatternsSection({
           <p style={{ fontSize: 12, color: 'var(--cr-fg-3)', margin: '4px 0 16px' }}>
             Topics that show up across many sessions — recurring problem areas.
           </p>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(280px, 100%), 1fr))', gap: 12 }}>
             {patterns.topics.slice(0, 9).map((t) => (
               <div
                 key={t.topic}
@@ -551,7 +551,7 @@ function PatternsSection({
                   title={onClick ? `Click to search for sessions touching ${basename}` : undefined}
                   style={{
                     display: 'grid',
-                    gridTemplateColumns: '1fr auto auto',
+                    gridTemplateColumns: 'minmax(0,1fr) auto auto',
                     gap: 12,
                     padding: '6px 8px',
                     borderBottom: '1px solid var(--cr-line-1)',

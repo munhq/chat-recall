@@ -111,7 +111,7 @@ export default function ProjectsDashboard({
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       {/* Header */}
-      <div style={{ padding: '24px 28px 12px', flexShrink: 0 }}>
+      <div className="cr-pad-mobile" style={{ padding: '24px 28px 12px', flexShrink: 0 }}>
         <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
           Projects &amp; Activity
         </h2>
@@ -137,7 +137,7 @@ export default function ProjectsDashboard({
       {/* Content */}
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
         {activeTab === 'repos' && (
-          <div style={{ padding: '20px 28px 40px' }}>
+          <div className="cr-pad-mobile" style={{ padding: '20px 28px 40px' }}>
             {emphasis && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, padding: '8px 12px', fontSize: 13, color: 'var(--cr-fg-1)', background: 'var(--cr-brand-surf)', border: '1px solid var(--cr-brand-line)', borderRadius: 'var(--cr-radius-sm)' }}>
                 <span>Sorted by <b>{emphasis === 'critical' ? 'critical findings' : 'hotspots'}</b> — repos with the most appear first.</span>

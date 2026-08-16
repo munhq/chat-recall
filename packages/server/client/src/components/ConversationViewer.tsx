@@ -1089,7 +1089,7 @@ export default function ConversationViewer({
                     <div>
                       <h3 style={{ marginBottom: 4, fontSize: 14 }}>This conversation's plan{sessionPlans.length > 1 ? 's' : ''}</h3>
                       <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 12 }}>Written in this session.</div>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))', gap: 12 }}>
                         {sessionPlans.map((plan) => <PlanCard key={plan.id} plan={plan} />)}
                       </div>
                     </div>
@@ -1098,7 +1098,7 @@ export default function ConversationViewer({
                     <div>
                       <h3 style={{ marginBottom: 4, fontSize: 14 }}>Other plans in this project</h3>
                       <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 12 }}>Not tied to this conversation, but in the same project.</div>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))', gap: 12 }}>
                         {projectPlans.map((plan) => <PlanCard key={plan.id} plan={plan} />)}
                       </div>
                     </div>
@@ -1109,7 +1109,7 @@ export default function ConversationViewer({
               {openPlan && (
                 <div
                   onClick={() => setOpenPlan(null)}
-                  style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', justifyContent: 'center', alignItems: 'flex-start', overflowY: 'auto', padding: '40px 20px' }}
+                  style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', justifyContent: 'center', alignItems: 'flex-start', overflowY: 'auto', padding: 'clamp(12px, 5vw, 40px) clamp(12px, 4vw, 20px)' }}
                 >
                   <div
                     onClick={(e) => e.stopPropagation()}
@@ -1157,7 +1157,7 @@ export default function ConversationViewer({
                 {relatedData.links.length > 0 && (
                   <div>
                     <h3 style={{ marginBottom: 12, fontSize: 14 }}>Linked Items</h3>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))', gap: 12 }}>
                       {relatedData.links.map((item) => (
                         <Card
                           key={`${item.sourceType}-${item.id}`}
@@ -1181,7 +1181,7 @@ export default function ConversationViewer({
                 {relatedData.projectPlans.length > 0 && (
                   <div>
                     <h3 style={{ marginBottom: 12, fontSize: 14 }}>Project Plans</h3>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))', gap: 12 }}>
                       {relatedData.projectPlans.map((plan) => (
                         <Card
                           key={plan.id}
@@ -1202,7 +1202,7 @@ export default function ConversationViewer({
                 {relatedData.siblingSessionsInProject.length > 0 && (
                   <div>
                     <h3 style={{ marginBottom: 12, fontSize: 14 }}>Other Sessions in Project</h3>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))', gap: 12 }}>
                       {relatedData.siblingSessionsInProject.map((sib) => (
                         <Card
                           key={sib.sessionId}
@@ -1444,7 +1444,7 @@ function MessageBlock({ message, highlight, query }: { message: Message; highlig
                 <SyntaxHighlighter
                   language={match[1]}
                   style={vscDarkPlus}
-                  customStyle={{ margin: '0.5rem 0', borderRadius: '6px', maxWidth: '100%', overflowX: 'auto' }}
+                  customStyle={{ margin: '0.5rem 0', borderRadius: '6px', maxWidth: '100%', overflowX: 'auto', WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain' }}
                 >
                   {String(children).replace(/\n$/, '')}
                 </SyntaxHighlighter>
@@ -1620,12 +1620,12 @@ function MessageBlock({ message, highlight, query }: { message: Message; highlig
                       ) : isEdit && (tc.input.path || tc.input.file_path) ? (
                          <div style={{ marginBottom: 8 }}>
                            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cr-ok-500)', marginBottom: 8 }}>File: {filePath}</div>
-                           <pre style={{ margin: 0, padding: 10, background: 'var(--cr-ink-0)', borderRadius: 6, fontSize: 12, overflowX: 'auto', border: '1px solid var(--cr-ok-line)' }}>
+                           <pre style={{ margin: 0, padding: 10, background: 'var(--cr-ink-0)', borderRadius: 6, fontSize: 12, overflowX: 'auto', WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain', border: '1px solid var(--cr-ok-line)' }}>
                              <code>{JSON.stringify(tc.input, null, 2)}</code>
                            </pre>
                          </div>
                       ) : (
-                        <pre style={{ margin: 0, padding: 10, background: 'var(--cr-ink-0)', borderRadius: 6, fontSize: 12, overflowX: 'auto' }}>
+                        <pre style={{ margin: 0, padding: 10, background: 'var(--cr-ink-0)', borderRadius: 6, fontSize: 12, overflowX: 'auto', WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain' }}>
                           <code>{JSON.stringify(tc.input, null, 2)}</code>
                         </pre>
                       )}
@@ -1633,7 +1633,7 @@ function MessageBlock({ message, highlight, query }: { message: Message; highlig
                       {tc.result && (
                         <>
                           <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginBottom: 6, marginTop: 14, textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.02em' }}>Result</div>
-                          <pre style={{ margin: 0, padding: 10, background: 'var(--cr-ink-0)', borderRadius: 6, fontSize: 12, overflowX: 'auto', opacity: 0.9 }}>
+                          <pre style={{ margin: 0, padding: 10, background: 'var(--cr-ink-0)', borderRadius: 6, fontSize: 12, overflowX: 'auto', WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain', opacity: 0.9 }}>
                             <code>{typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2)}</code>
                           </pre>
                         </>
@@ -1933,7 +1933,7 @@ function MetricsPanel({
             {tools.slice(0, 16).map(([name, n]) => (
               <div key={name} onClick={onOpenTools} title={`${name} — ${n} call(s). Open the tool calls in the transcript.`}
                 style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
-                <span style={{ width: 150, flexShrink: 0, fontSize: 12, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prettyToolName(name)}</span>
+                <span style={{ flex: '0 1 150px', minWidth: 0, fontSize: 12, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prettyToolName(name)}</span>
                 <div style={{ flex: 1, height: 14, background: 'var(--cr-ink-2)', borderRadius: 3, overflow: 'hidden' }}>
                   <div style={{ width: `${(n / maxTool) * 100}%`, height: '100%', background: toolKindColor(name), borderRadius: 3, minWidth: 3 }} />
                 </div>
@@ -1962,7 +1962,7 @@ function MetricsPanel({
             {toolsByTokens.slice(0, 12).map(([name, t]) => (
               <div key={name} onClick={onOpenTools} title={`${name} — ~${fmtN(t)} tokens of input+output across its calls.`}
                 style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
-                <span style={{ width: 150, flexShrink: 0, fontSize: 12, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prettyToolName(name)}</span>
+                <span style={{ flex: '0 1 150px', minWidth: 0, fontSize: 12, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prettyToolName(name)}</span>
                 <div style={{ flex: 1, height: 14, background: 'var(--cr-ink-2)', borderRadius: 3, overflow: 'hidden' }}>
                   <div style={{ width: `${(t / maxToolTokens) * 100}%`, height: '100%', background: toolKindColor(name), borderRadius: 3, minWidth: 3 }} />
                 </div>

@@ -167,7 +167,7 @@ export default function TeamView({ onOpenProject }: { onOpenProject?: (projectId
 const TEAM_CSS = `
 .team-tabs { display: flex; gap: 6px; margin-bottom: 16px; }
 .team { max-width: 1100px; margin: 0 auto; padding: 20px; }
-.team-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 16px; }
+.team-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 16px; }
 .team-head h1 { margin: 0 0 4px; }
 .team .muted { color: var(--text-muted, #888); font-size: 13px; margin: 0; }
 .team-range { display: flex; gap: 6px; }
@@ -178,7 +178,7 @@ const TEAM_CSS = `
 .team-shares { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; min-height: 28px; }
 .chip-x { background: none; border: none; cursor: pointer; font-size: 15px; line-height: 1; margin-left: 6px; opacity: 0.6; }
 .chip-x:hover { opacity: 1; }
-.team-add { display: flex; gap: 8px; max-width: 560px; }
+.team-add { display: flex; flex-wrap: wrap; gap: 8px; max-width: 560px; }
 .team-add > :first-child { flex: 1; }
 .team-member { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .team-member-name { font-weight: 600; display: flex; align-items: center; gap: 8px; flex: 1; }

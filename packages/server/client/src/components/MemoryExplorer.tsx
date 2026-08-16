@@ -304,7 +304,7 @@ export default function MemoryExplorer({ onSessionClick, toolFilter = 'all', pro
       style={{ flex: 1, display: 'flex', flexDirection: 'column', background: 'var(--cr-ink-0)', overflow: 'hidden' }}
     >
       {/* Header + overview */}
-      <div style={{ padding: '20px 32px 14px', borderBottom: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-1)' }}>
+      <div className="cr-pad-mobile" style={{ padding: '20px 32px 14px', borderBottom: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-1)' }}>
         <div style={{ maxWidth: 1100, margin: '0 auto', width: '100%' }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, marginBottom: 12, flexWrap: 'wrap' }}>
             <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600, color: 'var(--cr-fg-1)' }}>Memory</h2>
@@ -470,14 +470,14 @@ export function MemoryDetail({ item, onSessionClick, onOpenItem }: { item: Memor
   const safeContent = contentTooLarge ? displayContent!.slice(0, MAX_RENDER_CHARS) : displayContent;
 
   return (
-    <div style={{ padding: '36px 40px 100px', maxWidth: 900, margin: '0 auto' }}>
+    <div className="cr-pad-mobile" style={{ padding: '36px 40px 100px', maxWidth: 900, margin: '0 auto' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
         <SourceBadge source={item.source_type as any} />
         <MemoryTypeChip chunkType={item.chunkType} />
         <span className="mono" style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{item.id}</span>
       </div>
 
-      <h1 style={{ fontSize: 24, fontWeight: 600, color: 'var(--cr-fg-1)', marginBottom: 20, letterSpacing: '-0.015em' }}>
+      <h1 style={{ fontSize: 'clamp(19px, 5vw, 24px)', fontWeight: 600, color: 'var(--cr-fg-1)', marginBottom: 20, letterSpacing: '-0.015em' }}>
         {item.title || <span style={{ color: 'var(--cr-fg-3)', fontStyle: 'italic' }}>Untitled</span>}
       </h1>
 

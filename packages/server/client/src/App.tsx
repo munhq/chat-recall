@@ -817,6 +817,11 @@ function AppInner() {
             display: 'flex',
             gap: 12,
             alignItems: 'center',
+            // This banner is a direct child of .app, so the .app-row > *
+            // min-width:0 guard does not reach it. Without wrapping, the nowrap
+            // error span below forces the whole shell wider than the screen.
+            flexWrap: 'wrap',
+            minWidth: 0,
           }}
         >
           <strong style={{ letterSpacing: '0.04em' }}>SEMANTIC SEARCH UNAVAILABLE</strong>
@@ -831,6 +836,9 @@ function AppInner() {
                 color: 'var(--cr-fg-3)',
                 fontSize: 11,
                 marginLeft: 'auto',
+                // minWidth:0 lets the ellipsis do its job instead of the nowrap
+                // text setting a min-content floor for the whole banner.
+                minWidth: 0,
                 maxWidth: 480,
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',

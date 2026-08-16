@@ -145,8 +145,8 @@ function TaskComments({ taskId, who }: { taskId: string; who: (s: string | null)
 
 const TT_CSS = `
 .tt-err { background: var(--danger-bg, #fee); color: var(--danger, #c00); padding: 8px 12px; border-radius: 8px; margin-bottom: 12px; font-size: 13px; }
-.tt-new { display: flex; gap: 8px; margin-bottom: 16px; }
-.tt-new > :first-child { flex: 1; }
+.tt-new { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.tt-new > :first-child { flex: 1; min-width: 0; }
 .tt-sel, .tt-sel-sm { border: 1px solid var(--border, #e3e3e8); border-radius: 8px; padding: 6px 8px; background: var(--surface, #fff); font-size: 13px; }
 .tt-sel-sm { font-size: 11px; padding: 3px 6px; }
 .tt-board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
@@ -161,11 +161,14 @@ const TT_CSS = `
 .tt-empty { color: var(--text-muted, #aaa); font-size: 12px; text-align: center; padding: 8px; }
 .tt-comments { margin-top: 8px; border-top: 1px solid var(--border, #eee); padding-top: 8px; }
 .tt-comment { font-size: 12px; margin-bottom: 4px; }
-.tt-comment-add { display: flex; gap: 6px; margin-top: 6px; }
+.tt-comment-add { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .tt-comment-add > :first-child { flex: 1; }
 @media (prefers-color-scheme: dark) {
   .tt-col { background: #16161b; }
   .tt-sel, .tt-sel-sm { background: #1c1c22; border-color: #2c2c34; color: inherit; }
 }
-@media (max-width: 900px) { .tt-board { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 900px) { .tt-board { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* Below 620px two columns leave ~141px each, which cannot hold a task title,
+ * its chips and a comment count. One column is the only readable option. */
+@media (max-width: 620px) { .tt-board { grid-template-columns: minmax(0, 1fr); } }
 `;

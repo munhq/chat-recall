@@ -103,7 +103,7 @@ export default function CommandCenter({ setView, onOpenProject, onFocusProjects,
   // the product is broken. The moment data lands, the dashboard takes over.
   if (cloud && !loading && (status?.totalSessions ?? 0) === 0) {
     return (
-      <div className="cr-cmd" style={{ flex: 1, overflow: 'auto', padding: '28px 32px 64px' }}>
+      <div className="cr-cmd cr-pad-mobile" style={{ flex: 1, overflow: 'auto', padding: '28px 32px 64px' }}>
         <div style={{ maxWidth: 680, margin: '40px auto 0' }}>
           <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 10, letterSpacing: '0.32em', textTransform: 'uppercase', color: 'var(--cr-brand-500)', marginBottom: 8 }}>
             welcome to chat-recall
@@ -121,7 +121,7 @@ export default function CommandCenter({ setView, onOpenProject, onFocusProjects,
   }
 
   return (
-    <div className="cr-cmd" style={{ flex: 1, overflow: 'auto', padding: '28px 32px 64px' }}>
+    <div className="cr-cmd cr-pad-mobile" style={{ flex: 1, overflow: 'auto', padding: '28px 32px 64px' }}>
       {syncAlert && (
         <div role="alert" style={{
           marginBottom: 18, padding: '12px 16px', borderRadius: 'var(--cr-radius-md, 8px)',
@@ -149,7 +149,7 @@ export default function CommandCenter({ setView, onOpenProject, onFocusProjects,
         <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 10, letterSpacing: '0.32em', textTransform: 'uppercase', color: 'var(--cr-brand-500)', display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
           <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--cr-ok-500)', boxShadow: '0 0 8px var(--cr-ok-500)' }} /> command center
         </div>
-        <h1 style={{ fontFamily: 'var(--cr-font-display)', fontWeight: 700, fontSize: 32, margin: 0, letterSpacing: '-0.015em', lineHeight: 1.16, maxWidth: 620 }}>Everything you’re building, at a glance</h1>
+        <h1 style={{ fontFamily: 'var(--cr-font-display)', fontWeight: 700, fontSize: 'clamp(21px, 5.5vw, 32px)', margin: 0, letterSpacing: '-0.015em', lineHeight: 1.16, maxWidth: 620 }}>Everything you’re building, at a glance</h1>
         <div style={{ color: 'var(--cr-fg-2)', fontSize: 14, marginTop: 10, maxWidth: 560, lineHeight: 1.5 }}>How you build × what you build — with the next move on every signal.</div>
       </div>
 
@@ -216,7 +216,7 @@ export default function CommandCenter({ setView, onOpenProject, onFocusProjects,
             )}
           </Panel>
           <Panel title="Jump in" hint="">
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <div className="cr-stack-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
               {[['projects', 'Projects', 'folder'], ['search', 'Conversations', 'message'], ['memory', 'Memory', 'brain'], ['security', 'Security', 'check'], ['toolkit', 'Toolkit', 'terminal'], ['dashboard', 'Insights', 'chart']].map(([v, label, icon]) => (
                 <button key={v} onClick={() => setView(v)} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderRadius: 'var(--cr-radius-md)', border: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-1)', color: 'var(--cr-fg-1)', cursor: 'pointer', fontSize: 13 }}>
                   <Icon name={icon} size={15} /> {label}
@@ -244,7 +244,7 @@ function Metric({ label, value, suffix, tone = 'neutral', onClick }: { label: st
         boxShadow: toneColor ? `inset 0 2px 0 ${toneColor}` : undefined,
       }}
     >
-      <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 32, fontWeight: 700, color: toneColor || 'var(--cr-fg-1)', lineHeight: 1, letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums' }}>
+      <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 'clamp(24px, 6vw, 32px)', fontWeight: 700, color: toneColor || 'var(--cr-fg-1)', lineHeight: 1, letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums' }}>
         {value}<span style={{ fontSize: 14, color: 'var(--cr-fg-3)' }}>{suffix}</span>
       </div>
       <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--cr-fg-2)', marginTop: 12 }}>{label}</div>
@@ -255,7 +255,7 @@ function Metric({ label, value, suffix, tone = 'neutral', onClick }: { label: st
 function Panel({ title, hint, action, actionLabel = 'view all →', children }: { title: string; hint?: string; action?: (() => void) | null; actionLabel?: string; children: React.ReactNode }) {
   return (
     <Card style={{ padding: 16 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+      <div className="cr-wrap-mobile" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <span style={{ fontFamily: 'var(--cr-font-display)', fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--cr-fg-2)' }}>{title}{hint ? <span style={{ color: 'var(--cr-fg-3)', marginLeft: 8 }}>{hint}</span> : null}</span>
         {action ? <button onClick={action} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12 }}>{actionLabel}</button> : null}
       </div>

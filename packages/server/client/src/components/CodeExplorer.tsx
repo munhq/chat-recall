@@ -183,7 +183,7 @@ export default function CodeExplorer({ projectFilter, embedded, onSessionClick }
           {!embedded && <span style={{ color: 'var(--cr-fg-3)', fontSize: 12 }}>label:</span>}
           {!embedded && LABELS.map((l) => (
             <button key={l.value} onClick={() => setLabel(l.value)} title={`Mark project as ${l.label}`}
-              style={{ cursor: 'pointer', borderRadius: 999, padding: '3px 10px', fontSize: 11, border: '1px solid var(--cr-line-1)',
+              className="cr-pill" style={{ cursor: 'pointer', borderRadius: 999, padding: '3px 10px', fontSize: 11, border: '1px solid var(--cr-line-1)',
                 background: project?.label === l.value ? 'var(--cr-brand-500)' : 'transparent',
                 color: project?.label === l.value ? '#fff' : 'var(--cr-fg-2)' }}>{l.label}</button>
           ))}
@@ -307,7 +307,7 @@ function CouplingTable({ title, kind, rows, tone, hint, onItem }: { title: strin
       </div>
       <div style={{ color: 'var(--cr-fg-3)', fontSize: 11, marginBottom: 8 }}>{hint}</div>
       {rows.length === 0 ? <span style={{ color: 'var(--cr-fg-3)', fontSize: 12 }}>none</span> : (
-        <div style={{ maxHeight: 200, overflow: 'auto' }}>
+        <div className="cr-hscroll" style={{ maxHeight: 200, overflow: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
             <thead><tr style={{ color: 'var(--cr-fg-3)', textAlign: 'left' }}>
               <th style={{ fontWeight: 500 }}>file</th>
@@ -382,7 +382,7 @@ export function HotspotTable({ hotspots, onOpen }: { hotspots: CodeHotspot[]; on
           <span className="mono" style={{ fontSize: 13 }}>{h.file}</span>
           {h.aiAuthored && <Chip kind="brand" size="sm">AI</Chip>}
         </div>
-        <div style={{ height: 4, background: 'var(--cr-line-1)', borderRadius: 2, marginTop: 6, width: 220 }}>
+        <div style={{ height: 4, background: 'var(--cr-line-1)', borderRadius: 2, marginTop: 6, width: '100%', maxWidth: 220 }}>
           <div style={{ height: '100%', width: `${Math.round((h.score / max) * 100)}%`, background: 'var(--cr-warn-500)', borderRadius: 2 }} />
         </div>
         {h.suggestion && <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 4 }}>{h.suggestion}</div>}
@@ -762,11 +762,11 @@ function OverviewTab({ project, behavior }: { project: CodeProject; behavior: { 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
           {langs.slice(0, 13).map((x, i) => (
             <div key={x.l} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span className="mono" style={{ width: 110, fontSize: 12, color: 'var(--cr-fg-2)' }}>{x.l}</span>
+              <span className="mono" style={{ flex: '0 1 110px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: 'var(--cr-fg-2)' }}>{x.l}</span>
               <span style={{ flex: 1, height: 8, background: 'var(--cr-ink-2,#0d1117)', borderRadius: 4, overflow: 'hidden' }}>
                 <span style={{ display: 'block', height: '100%', width: `${Math.max(2, Math.round(((x.symbols || x.files) / maxLang) * 100))}%`, background: palette[i % palette.length] }} />
               </span>
-              <span style={{ width: 120, textAlign: 'right', fontSize: 11, color: 'var(--cr-fg-3)' }}>{x.symbols} sym · {x.files}f</span>
+              <span style={{ flex: '0 0 auto', textAlign: 'right', fontSize: 11, color: 'var(--cr-fg-3)', whiteSpace: 'nowrap' }}>{x.symbols} sym · {x.files}f</span>
             </div>
           ))}
         </div>

@@ -57,17 +57,21 @@ export default function DeviceApprovePage() {
 }
 
 const DEVICE_CSS = `
-.dv-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center;
+.dv-wrap { min-height: 100vh; min-height: 100dvh; display: flex; align-items: center;
+  justify-content: center; padding: 20px;
   background: #0b0e14; color: #e6e9ef; font-family: system-ui, -apple-system, sans-serif; }
-.dv-card { width: 380px; padding: 32px; background: #11151f; border: 1px solid #1e2534;
-  border-radius: 12px; text-align: center; }
+/* max-width, not width: a fixed 380px card overflows a 375px handset. */
+.dv-card { width: 100%; max-width: 380px; padding: clamp(20px, 6vw, 32px);
+  background: #11151f; border: 1px solid #1e2534;
+  border-radius: 12px; text-align: center; box-sizing: border-box; }
 .dv-brand { font-weight: 600; margin-bottom: 20px; color: #9aa4b8; text-align: left; }
 .dv-logo { color: #5b8cff; margin-right: 6px; }
 .dv-card h1 { font-size: 20px; margin: 0 0 12px; }
 .dv-card p { font-size: 14px; color: #9aa4b8; line-height: 1.5; }
-.dv-code { font-family: ui-monospace, monospace; font-size: 28px; letter-spacing: 0.2em;
+.dv-code { font-family: ui-monospace, monospace; font-size: clamp(21px, 6.5vw, 28px);
+  letter-spacing: 0.2em;
   background: #0b0e14; border: 1px solid #2a3346; border-radius: 8px; padding: 14px;
-  margin: 16px 0; }
+  margin: 16px 0; overflow-wrap: break-word; }
 .dv-warn { font-size: 12px; }
 .dv-error { background: #2a1215; border: 1px solid #6b2a31; color: #ff8f98;
   padding: 8px 12px; border-radius: 8px; font-size: 13px; margin: 12px 0; }

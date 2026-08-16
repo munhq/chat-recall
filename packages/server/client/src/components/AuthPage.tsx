@@ -72,10 +72,14 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
 }
 
 const AUTH_CSS = `
-.au-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center;
+.au-wrap { min-height: 100vh; min-height: 100dvh; display: flex; align-items: center;
+  justify-content: center; padding: 20px;
   background: #0b0e14; color: #e6e9ef; font-family: system-ui, -apple-system, sans-serif; }
-.au-card { width: 340px; padding: 32px; background: #11151f; border: 1px solid #1e2534;
-  border-radius: 12px; }
+/* max-width, not width: this is the signed-out landing for the whole app now,
+ * so it has to hold at 320px. */
+.au-card { width: 100%; max-width: 340px; padding: clamp(20px, 6vw, 32px);
+  background: #11151f; border: 1px solid #1e2534;
+  border-radius: 12px; box-sizing: border-box; }
 .au-brand { font-weight: 600; letter-spacing: 0.02em; margin-bottom: 20px; color: #9aa4b8; }
 .au-logo { color: #5b8cff; margin-right: 6px; }
 .au-card h1 { font-size: 20px; margin: 0 0 20px; }

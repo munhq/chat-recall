@@ -605,7 +605,9 @@ a:hover { text-decoration: underline; }
 /* ────────────────────── Conversation viewer extras ────────────────────── */
 .cr-viewer-tokens {}
 .cr-chip-tools { white-space: nowrap; height: 22px; }
-.cr-segmented-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; margin-bottom: 20px; }
+/* overscroll-behavior-x matters here: without it, swiping the tab strip past
+ * its last tab hands the gesture to the browser and navigates back. */
+.cr-segmented-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; overscroll-behavior-x: contain; margin-bottom: 20px; }
 .cr-segmented-scroll::-webkit-scrollbar { display: none; }
 
 /* ────────────────────── Conversation message content ──────────────────────
@@ -613,11 +615,11 @@ a:hover { text-decoration: underline; }
  * grow horizontally. Constrain code blocks to scroll within their own box and
  * let prose/inline-code break. Applies on every viewport, not just mobile. */
 .message { min-width: 0; }
-.message pre { max-width: 100%; overflow-x: auto; }
+.message pre { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
 .message pre code { white-space: pre; }
 .message :not(pre) > code { word-break: break-word; overflow-wrap: anywhere; }
 .message p, .message li, .message a { overflow-wrap: anywhere; }
-.message table { display: block; max-width: 100%; overflow-x: auto; }
+.message table { display: block; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
 .message img { max-width: 100%; height: auto; }
 
 /* ────────────────────── Reduced motion ────────────────────── */
@@ -716,8 +718,13 @@ a:hover { text-decoration: underline; }
   .cr-split { position: relative; }
   .cr-split-list { width: 100% !important; flex: 1 1 auto !important; border-right: none !important; }
   .cr-split-detail {
-    position: fixed; top: var(--cr-header-h); left: 0; right: 0; bottom: 0;
-    z-index: 30; overflow-y: auto; background: var(--cr-ink-0);
+    /* height from dvh rather than bottom:0. A fixed bottom:0 resolves against
+     * the LARGE visual viewport in iOS Safari, so the foot of the pane sits
+     * behind the URL bar; .app is sized in dvh, and these must agree. */
+    position: fixed; top: var(--cr-header-h); left: 0; right: 0;
+    height: calc(100dvh - var(--cr-header-h));
+    z-index: 30; overflow-y: auto; -webkit-overflow-scrolling: touch;
+    background: var(--cr-ink-0);
     transform: translateX(100%); transition: transform 220ms var(--cr-ease);
   }
   .cr-split[data-has-selection="true"] .cr-split-detail { transform: translateX(0); }
@@ -748,19 +755,61 @@ a:hover { text-decoration: underline; }
   /* Let dense flex header/toolbar rows wrap instead of crushing their children. */
   .cr-wrap-mobile { flex-wrap: wrap !important; }
   .cr-wrap-mobile > * { min-width: 0; }
+  /* Stat-card groups: flex-wrap alone leaves a ragged last row, so lay them
+   * out 2-up. See .cr-statwrap below for why this is display:contents on
+   * desktop. */
+  .cr-statwrap { display: grid !important; grid-template-columns: 1fr 1fr; gap: 10px; width: 100%; }
+  .cr-statwrap > * { min-width: 0 !important; }
   /* In a wrapped action row, the title claims the whole first line so the
    * action buttons drop below it instead of starving it to an ellipsis. */
   .cr-donext-title {
     flex: 1 0 100% !important; white-space: normal !important;
     overflow: visible !important; text-overflow: clip !important; margin-bottom: 2px;
   }
-  /* Generic guard: nothing inside the app may force horizontal scroll. */
+  /* Desktop gutters are set as inline styles all over the app, which no plain
+   * rule can override — but !important beats an inline declaration. Tag any
+   * scrolling page container with this and it stops spending 64-80px of a
+   * 375px screen on empty margin. Only the horizontal sides are touched, so
+   * each view keeps its own vertical rhythm. */
+  .cr-pad-mobile { padding-left: 14px !important; padding-right: 14px !important; }
+
+  /* Generic guard: nothing inside the app may force horizontal scroll.
+   * Tables are excluded on purpose — see .cr-tablescroll. */
   img, svg, canvas, video, table, pre { max-width: 100%; }
 
   h1 { font-size: 20px; }
   h2 { font-size: 18px; }
 
   .cr-conv-list, .conversation-column, .cr-sidebar > div { -webkit-overflow-scrolling: touch; }
+}
+
+/* ── Mobile-safe utilities, all viewports ───────────────────────────────── */
+
+/* Data tables must scroll, not crush. The generic `table { max-width: 100% }`
+ * guard in the mobile block is correct for prose but wrong for data grids: it
+ * forces columns below their min-content instead of letting the table scroll,
+ * so a 6-column table becomes a column of shredded 2-character words. Wrap
+ * data tables in this and they keep their natural width and scroll inside it. */
+.cr-tablescroll {
+  overflow-x: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain;
+}
+.cr-tablescroll > table { max-width: none; }
+
+/* Transparent on desktop — the children stay direct flex items of the row
+ * above, so nothing about the desktop layout changes — and a real grid
+ * container on mobile (see the mobile block). */
+.cr-statwrap { display: contents; }
+
+/* Any horizontal scroller: momentum on iOS, and never let an overscroll at the
+ * end of the strip turn into a browser back-navigation. */
+.cr-hscroll {
+  overflow-x: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain;
+}
+
+/* Row-label column that survives a sideways scroll in a wide data table. */
+.cr-sticky-col {
+  position: sticky; left: 0; z-index: 2;
+  background: var(--cr-ink-1);
 }
 
 @media (max-width: 480px) {
@@ -775,4 +824,15 @@ a:hover { text-decoration: underline; }
 @media (pointer: coarse) {
   .cr-sidebar-row, .cr-sidebar [role="button"], .cr-sidebar a,
   .cr-conv-row, .cr-split-back, .cr-split-list > div[role="button"] { min-height: 44px; }
+
+  /* The segmented controls, graph zoom buttons and in-table action buttons are
+   * 24-32px tall, which is a coin-flip to hit with a thumb. Grow the box, not
+   * the type, so the type scale is untouched. The !important on .cr-segmented
+   * is required: its height is an inline style. */
+  .cr-segmented { height: 44px !important; }
+  .cr-segmented button { min-height: 38px; }
+  .cr-graph-ctl button { min-height: 44px !important; min-width: 34px !important; }
+  .cr-tablescroll button { min-height: 38px; }
+  /* Filter/label pills sit at 3px vertical padding — about 19px tall. */
+  .cr-pill { min-height: 38px; padding-left: 14px !important; padding-right: 14px !important; }
 }

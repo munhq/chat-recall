@@ -159,11 +159,15 @@ export default function ForceGraph({
       return { k, x: m.x - (m.x - v.x) * (k / v.k), y: m.y - (m.y - v.y) * (k / v.k) };
     });
   };
-  const onDown = (e: React.MouseEvent) => {
+  // Pointer, not mouse, events: the same handlers then drive finger drag on a
+  // phone. Paired with `touch-action: pan-y` below, a horizontal drag pans the
+  // graph while a vertical swipe still scrolls the page.
+  const onDown = (e: React.PointerEvent) => {
     drag.current = { mx: e.clientX, my: e.clientY, vx: view.x, vy: view.y };
     setGrabbing(true);
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* not fatal */ }
   };
-  const onMove = (e: React.MouseEvent) => {
+  const onMove = (e: React.PointerEvent) => {
     if (!drag.current) return;
     const r = svgRef.current!.getBoundingClientRect();
     const dx = (e.clientX - drag.current.mx) * (W / r.width);
@@ -179,7 +183,7 @@ export default function ForceGraph({
 
   return (
     <div style={{ position: 'relative' }}>
-      <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 4, zIndex: 2 }}>
+      <div className="cr-graph-ctl" style={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 4, zIndex: 2 }}>
         <button style={btn} title="Zoom in" aria-label="Zoom in" onClick={() => setView((v) => ({ ...v, k: Math.min(9, v.k * 1.3) }))}>+</button>
         <button style={btn} title="Zoom out" aria-label="Zoom out" onClick={() => setView((v) => ({ ...v, k: Math.max(0.4, v.k / 1.3) }))}>−</button>
         <button style={{ ...btn, width: 'auto', padding: '0 8px' }} title="Reset view" onClick={() => setView({ k: 1, x: 0, y: 0 })}>reset</button>
@@ -189,8 +193,11 @@ export default function ForceGraph({
         viewBox={`0 0 ${W} ${H}`}
         width="100%"
         preserveAspectRatio="xMidYMid meet"
-        style={{ maxWidth: '100%', height: H, background: 'var(--cr-ink-1)', borderRadius: 8, cursor: grabbing ? 'grabbing' : 'grab', touchAction: 'none', userSelect: 'none' }}
-        onWheel={onWheel} onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onMouseLeave={onUp}
+        /* aspectRatio + height:auto, NOT a fixed height: with a fixed 520px box
+         * the viewBox scales to the narrow width and letterboxes ~283px of dead
+         * space on a phone. maxHeight keeps the desktop size unchanged. */
+        style={{ maxWidth: '100%', width: '100%', height: 'auto', aspectRatio: `${W} / ${H}`, maxHeight: H, background: 'var(--cr-ink-1)', borderRadius: 8, cursor: grabbing ? 'grabbing' : 'grab', touchAction: 'pan-y', userSelect: 'none' }}
+        onWheel={onWheel} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onPointerLeave={onUp}
       >
         <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>
           {edges.map((e, i) => {

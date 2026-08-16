@@ -136,29 +136,31 @@ export default function ProjectsSettingsCard() {
         Showing top {visibleProjects.length} of {data.all.filter(p => !p.project_id.startsWith('untracked:')).length} projects by activity.
       </div>
 
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, color: 'var(--cr-fg-1)' }}>
-        <thead>
-          <tr style={{ borderBottom: '1px solid var(--cr-line-1)' }}>
-            <Th>Name</Th>
-            <Th>project_id</Th>
-            <Th>Source</Th>
-            <Th align="right">Items</Th>
-            <Th>Workspace</Th>
-          </tr>
-        </thead>
-        <tbody>
-          {visibleProjects.map(p => (
-            <Row
-              key={p.project_id}
-              project={p}
-              nameOverride={nameOverride(edit, p.project_id)}
-              isWorkspaceOverride={isWorkspaceOverride(edit, p.project_id)}
-              onRename={(n) => rename(p.project_id, n)}
-              onToggleWs={() => toggleWs(p.project_id, deriveRoot(p))}
-            />
-          ))}
-        </tbody>
-      </table>
+      <div className="cr-tablescroll">
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, color: 'var(--cr-fg-1)' }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid var(--cr-line-1)' }}>
+              <Th>Name</Th>
+              <Th>project_id</Th>
+              <Th>Source</Th>
+              <Th align="right">Items</Th>
+              <Th>Workspace</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibleProjects.map(p => (
+              <Row
+                key={p.project_id}
+                project={p}
+                nameOverride={nameOverride(edit, p.project_id)}
+                isWorkspaceOverride={isWorkspaceOverride(edit, p.project_id)}
+                onRename={(n) => rename(p.project_id, n)}
+                onToggleWs={() => toggleWs(p.project_id, deriveRoot(p))}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
 
       <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid var(--cr-line-1)' }}>
         <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6, color: 'var(--cr-fg-1)' }}>
@@ -204,7 +206,8 @@ function Row({ project, nameOverride, isWorkspaceOverride, onRename, onToggleWs 
           }}
           style={{
             width: '100%',
-            minWidth: 140,
+            // No minWidth: it would pin this column's min-content and make the
+            // whole 5-column table unshrinkable. The table scrolls instead.
             background: 'transparent',
             border: '1px solid transparent',
             color: 'var(--cr-fg-1)',

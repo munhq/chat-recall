@@ -335,7 +335,10 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
         </div>
         <span style={{ flex: 1 }} />
         {!loading && (
-          <>
+          /* display:contents on desktop, so the five cards stay direct flex
+           * children and the layout is unchanged; a 2-up grid on mobile, where
+           * flex-wrap alone leaves a ragged last row. */
+          <div className="cr-statwrap">
             <Card
               interactive
               onClick={() => { setLens('action'); setSevFilter(f => f === 'critical' ? null : 'critical'); }}
@@ -379,7 +382,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
               <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Noise</div>
               <div style={{ fontSize: 22, fontWeight: 600, color: 'var(--cr-fg-3)' }}>{headline.counts.noise}</div>
             </Card>
-          </>
+          </div>
         )}
       </div>
 
@@ -682,6 +685,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
       {/* ── BY RULE ─────────────────────────────────────────────── */}
       {!loading && lens === 'rules' && (
         <Card style={{ padding: 0 }}>
+          <div className="cr-tablescroll">
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ background: 'var(--cr-ink-2)' }}>
@@ -712,12 +716,14 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
               })}
             </tbody>
           </table>
+          </div>
         </Card>
       )}
 
       {/* ── BY PROJECT ──────────────────────────────────────────── */}
       {!loading && lens === 'projects' && (
         <Card style={{ padding: 0 }}>
+          <div className="cr-tablescroll">
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ background: 'var(--cr-ink-2)' }}>
@@ -765,6 +771,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
               })}
             </tbody>
           </table>
+          </div>
         </Card>
       )}
 
@@ -921,6 +928,7 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
 
       {/* List */}
       <Card style={{ padding: 0 }}>
+        <div className="cr-tablescroll">
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead>
             <tr style={{ background: 'var(--cr-ink-2)' }}>
@@ -953,6 +961,7 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
             ))}
           </tbody>
         </table>
+        </div>
       </Card>
 
       {!editing && (

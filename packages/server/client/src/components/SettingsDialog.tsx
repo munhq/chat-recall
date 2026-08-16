@@ -164,6 +164,11 @@ export default function SettingsDialog({ open, onClose, variant = 'modal' }: Pro
   // when navigated to via the gear icon. The card body is identical; only the
   // wrapping container differs.
   const isPage = variant === 'page';
+  // One gutter value for the page variant. The sticky header below cancels this
+  // padding with an equal NEGATIVE margin so its rule runs edge to edge, so the
+  // two must never be written independently — a fixed -32px against a fluid
+  // padding pulls the header off the side of the screen on a phone.
+  const pageGutter = 'clamp(14px, 4vw, 32px)';
   const outer: React.CSSProperties = isPage
     ? { flex: 1, overflowY: 'auto', background: 'var(--cr-ink-0)' }
     : {
@@ -173,11 +178,11 @@ export default function SettingsDialog({ open, onClose, variant = 'modal' }: Pro
       };
   const inner: React.CSSProperties = isPage
     ? {
-        maxWidth: 880, margin: '32px auto', padding: '0 32px 64px',
+        maxWidth: 880, margin: '32px auto', padding: `0 ${pageGutter} 64px`,
         color: 'var(--cr-fg-1)',
       }
     : {
-        width: 'min(880px, 100%)', maxHeight: '92vh', overflowY: 'auto',
+        width: 'min(880px, 100%)', maxHeight: '92dvh', overflowY: 'auto',
         background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-1)',
         borderRadius: 'var(--cr-radius-lg)', padding: 24, color: 'var(--cr-fg-1)',
       };
@@ -193,8 +198,8 @@ export default function SettingsDialog({ open, onClose, variant = 'modal' }: Pro
           position: 'sticky', top: 0, zIndex: 5,
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           background: isPage ? 'var(--cr-ink-0)' : 'var(--cr-ink-1)',
-          margin: isPage ? '0 -32px 16px' : '-24px -24px 16px',
-          padding: isPage ? '12px 32px' : '16px 24px',
+          margin: isPage ? `0 calc(-1 * ${pageGutter}) 16px` : '-24px -24px 16px',
+          padding: isPage ? `12px ${pageGutter}` : '16px 24px',
           borderBottom: '1px solid var(--cr-line-1)',
         }}>
           <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>Settings</h2>

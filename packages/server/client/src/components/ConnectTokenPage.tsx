@@ -71,8 +71,8 @@ export default function ConnectTokenPage() {
 
   return (
     <div style={{
-      minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: 'var(--cr-ink-0)', color: 'var(--cr-fg-1)', padding: 24,
+      minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'var(--cr-ink-0)', color: 'var(--cr-fg-1)', padding: 'clamp(16px, 5vw, 24px)',
     }}>
       <div style={{ maxWidth: 640, width: '100%' }}>
         <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 8 }}>
@@ -104,6 +104,7 @@ export default function ConnectTokenPage() {
                 flex: 1, margin: 0, padding: '16px 18px', borderRadius: 10,
                 border: '1px solid var(--cr-line-2)', background: 'var(--cr-ink-1)',
                 fontSize: 16, lineHeight: 1.5, overflowX: 'auto', whiteSpace: 'pre',
+                WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain',
                 userSelect: 'all',
               }}>{token}</pre>
               <Button
