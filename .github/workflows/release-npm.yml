@@ -40,13 +40,21 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.14.0'
+          # 22.22.2 is the floor for current npm majors, not a taste. The first
+          # run of this workflow pinned 22.14.0 and died before doing anything:
+          # npm@latest had moved to 12.x, which requires
+          # ^22.22.2 || ^24.15.0 || >=26.0.0, so the install aborted EBADENGINE.
+          node-version: '22.22.2'
           registry-url: 'https://registry.npmjs.org'   # required: it writes the
                                                        # .npmrc that the OIDC
                                                        # exchange reads.
 
+      # Pinned to a MAJOR, never `latest`. OIDC needs >= 11.5.1 and nothing
+      # newer, so tracking latest buys no capability and hands a third party the
+      # power to break releases by raising their engine requirement — which is
+      # exactly what happened on the first attempt.
       - name: Use an npm that supports OIDC
-        run: npm install -g npm@latest && npm --version
+        run: npm install -g npm@^11.5.1 && npm --version
 
       - run: npm ci
       - run: npm run build
