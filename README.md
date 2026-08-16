@@ -2,12 +2,12 @@
 
 > Search, browse, and resume past AI coding sessions across Claude Code, Gemini CLI, and OpenCode — and let the agent search its own history via MCP.
 
-`chat-recall` is a **CLI** that indexes the transcripts your AI tools already write to disk, redacts secrets, and syncs them to a **chat-recall server**. The server runs **either locally with Postgres (Docker Compose) or as the hosted SaaS** — it gives you a web UI to browse everything and exposes it to Claude Code through **34 MCP tools** so the agent can recall its own past work without you copy-pasting context. There is no local store and no offline mode: the CLI always talks to a server.
+`chat-recall` is a **CLI** that indexes the transcripts your AI tools already write to disk, redacts secrets, and syncs them to a **chat-recall server**. The server runs **either locally with Postgres (Docker Compose) or as the hosted SaaS** — it gives you a web UI to browse everything and exposes it to Claude Code through **46 MCP tools** so the agent can recall its own past work without you copy-pasting context. There is no local store and no offline mode: the CLI always talks to a server.
 
 ## Four things it actually does
 
 1. **Cross-tool unified memory.** One index, one search, one UI for Claude Code (`~/.claude/projects/`), Gemini CLI (`~/.gemini/tmp/`), and OpenCode (`~/.local/share/opencode/`). Sessions, plans, tasks, CLAUDE.md, paste cache, command history, and agent diaries all share a single pluggable `MemorySource` interface.
-2. **The agent recalls itself.** 34 MCP tools so Claude Code can `recall_smart_resume`, `recall_similar_sessions`, `recall_files_touched`, `recall_subagent_search`, `recall_redundant_files`, etc., instead of you describing what happened last time. It can also write decisions back via `recall_decision_record` and stash small state via `recall_set` / `recall_get`.
+2. **The agent recalls itself.** 46 MCP tools so Claude Code can `recall_smart_resume`, `recall_similar_sessions`, `recall_files_touched`, `recall_subagent_search`, `recall_redundant_files`, etc., instead of you describing what happened last time. It can also write decisions back via `recall_decision_record` and stash small state via `recall_set` / `recall_get`.
 3. **Warns before redoing work.** A `UserPromptSubmit` hook fires on every prompt you type, runs a quick search for similar past sessions, and injects a brief "you've worked on this before in session X" notice into the agent's context. Pair with the bundled **codeindex** companion (see below) to also warn when the new code you're about to write looks like code that already exists.
 4. **Temporal knowledge graph.** Decisions and tool/library mentions become entity-relationship triples with `valid_from`/`valid_to` windows, so you (and the agent) can ask "what did we decide about X in March, and is it still true?".
 
@@ -45,7 +45,7 @@ compose) — the CLI itself has no UI. For dashboard development:
 
 ```bash
 npm run web:install                 # install web deps
-npm run web:dev                     # API on :5000, UI on :5173
+npm run web:dev                     # API on :5000, UI on :5174
 ```
 
 ### Self-host the server (docker compose)
@@ -139,7 +139,7 @@ The codeindex release artifacts are currently in a private repo, so `--with-code
 | **Paste** | `~/.claude/paste-cache/*.txt` | Large pasted blobs |
 | **Diary** | `~/.chat-recall/index/diary/<agent>/*.json` | What the agent told its future self via `recall_diary_write` |
 
-## MCP tools (34, plus 4 code-intelligence tools when the codeindex companion is installed)
+## MCP tools (46, plus 4 code-intelligence tools when the codeindex companion is installed)
 
 **Search & retrieve** — `recall_search`, `recall_memory_search`, `recall_recent`, `recall_show`, `recall_context`, `recall_summary`, `recall_smart_resume`, `recall_project_context`, `recall_weekly_digest`, `recall_analytics_summary`, `recall_wake_up`.
 
@@ -197,31 +197,33 @@ No telemetry. Your data lives in **your** server's Postgres — back that up how
 ## Architecture
 
 ```
-src/
-├── core/
-│   ├── backends/        ToolBackend per AI tool (claude, gemini, opencode, codex)
-│   ├── tool-backend.ts  Registry interface — single source of truth for tool identity
-│   ├── tool-paths.ts    Env-overridable default paths for each tool
-│   ├── generic-engine.ts  Shared turn extraction / edit scan / replay (canonical events)
-│   └── …                Indexing, storage, embeddings, summaries, KG, classifier
-├── parsers/             *-source.ts plugins per content type (sessions, plans, tasks, …)
-├── cli.ts               CLI
-└── mcp.ts               MCP server
+packages/
+├── engine/src/
+│   ├── core/
+│   │   ├── backends/        ToolBackend per AI tool (claude, gemini, opencode, codex)
+│   │   ├── tool-backend.ts  Registry interface — single source of truth for tool identity
+│   │   ├── tool-paths.ts    Env-overridable default paths for each tool
+│   │   ├── generic-engine.ts  Shared turn extraction / edit scan / replay (canonical events)
+│   │   └── …                Indexing, storage, embeddings, summaries, KG, classifier
+│   └── parsers/             *-source.ts plugins per content type (sessions, plans, tasks, …)
+├── cli/
+│   ├── src/cli.ts           CLI
+│   ├── src/mcp.ts           MCP server
+│   ├── auto-indexer/        chokidar-based watcher daemon (systemd-friendly)
+│   └── hooks/               Claude Code hooks (install via `chat-recall install-hooks`)
+└── server/
+    ├── src/                 Express API
+    ├── client/              React + Vite UI (also generates the static marketing pages)
+    └── cloud/migrations/    SQL migrations
 
-web/
-├── server/              Express API
-└── client/              React + Vite UI
-
-auto-indexer/            chokidar-based watcher daemon (systemd-friendly)
-hooks/                   Claude Code save hook (install via `chat-recall install-hooks`)
 docker/                  Dockerfiles + nginx
-e2e/                     Playwright tests
+e2e/                     Playwright tests (*.mobile.spec.ts run on phone viewports)
 ```
 
 Two extension points, both registry-driven:
 
 - **Adding a new content type** (e.g. another file format to index) — implement `MemorySource` (`discover` → `parse` → `extractLinks`) and register it in the `SourceRegistry`.
-- **Adding a new AI tool** (a fifth backend alongside Claude/Gemini/OpenCode/Codex) — implement `ToolBackend` (paths, ID handling, `readEvents`, `fileToolMap`, `extractEditDelta`) and register it in `src/core/backends/index.ts`. Walkthrough: [`docs/ADDING_A_TOOL.md`](docs/ADDING_A_TOOL.md). All paths are env-overridable via `CHAT_RECALL_{CLAUDE,GEMINI,CODEX}_HOME` / `CHAT_RECALL_OPENCODE_DB`.
+- **Adding a new AI tool** (a fifth backend alongside Claude/Gemini/OpenCode/Codex) — implement `ToolBackend` (paths, ID handling, `readEvents`, `fileToolMap`, `extractEditDelta`) and register it in `packages/engine/src/core/backends/index.ts`. Walkthrough: [`docs/ADDING_A_TOOL.md`](docs/ADDING_A_TOOL.md). All paths are env-overridable via `CHAT_RECALL_{CLAUDE,GEMINI,CODEX}_HOME` / `CHAT_RECALL_OPENCODE_DB`.
 
 ## Requirements
 
