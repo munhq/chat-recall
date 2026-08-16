@@ -9,6 +9,7 @@
  */
 
 import express from 'express';
+import { sanitizeQuery } from '@chat-recall/engine/core/query-sanitizer.js';
 import { MemoryService } from '../services/memory.js';
 import { createStore, classifyChunk } from '../imports.js';
 import type { SourceType } from '../imports.js';
@@ -45,13 +46,24 @@ router.post('/search', async (req, res) => {
     if (!query) {
       return res.status(400).json({ error: 'Query is required' });
     }
+    if (typeof query !== 'string') {
+      return res.status(400).json({ error: 'Query must be a string' });
+    }
+
+    // Server-side sanitisation — see the note in routes/search.ts. Memory hits
+    // are fed straight back into an assistant, so this is the boundary that
+    // matters, not the MCP client.
+    const safeQuery = sanitizeQuery(query).cleanQuery;
+    if (!safeQuery) {
+      return res.status(400).json({ error: 'Query is empty after sanitization' });
+    }
 
     // `semantic` opts into the vector tier, matching /api/search. Without it
     // this route could never reach pgvector — the flag was missing all the way
     // down, so unified memory search was FTS-only even with an embedder
     // configured. Default stays false: only an explicit search asks to embed.
     const results = await memoryService.search(
-      query,
+      safeQuery,
       topK,
       sourceTypes as SourceType[] | undefined,
       projectIdFilter ?? projectFilter,
