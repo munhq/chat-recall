@@ -2101,17 +2101,9 @@ export async function saveProjectsConfig(config: ProjectsConfig): Promise<{ ok: 
   return await res.json();
 }
 
-export async function getProjectDossier(projectId: string, opts: { sessions?: number; tasks?: number; plans?: number } = {}): Promise<{ project_id: string; markdown: string }> {
-  const qs = new URLSearchParams();
-  if (opts.sessions) qs.set('sessions', String(opts.sessions));
-  if (opts.tasks) qs.set('tasks', String(opts.tasks));
-  if (opts.plans) qs.set('plans', String(opts.plans));
-  const id = encodeURIComponent(projectId);
-  const url = `${API_BASE}/projects/${id}/dossier${qs.toString() ? `?${qs}` : ''}`;
-  const res = await fetchWithTimeout(url, {}, 60000);
-  if (!res.ok) throw new Error(`getProjectDossier failed: ${res.statusText}`);
-  return await res.json();
-}
+// GET /api/projects/:id/dossier has no client caller: the dossier is consumed
+// by the CLI (`chat-recall dossier`) and by MCP (recall_project_context), not
+// by this UI. The route stays; the unused fetch wrapper does not.
 
 // ── Account / billing / alerts (cloud) ───────────────────────────────────
 

@@ -2,7 +2,6 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import * as Sentry from '@sentry/browser';
 import App from './App';
-import LandingPage from './components/LandingPage';
 import AuthPage from './components/AuthPage';
 import DeviceApprovePage from './components/DeviceApprovePage';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -39,7 +38,15 @@ function render(node: React.ReactNode) {
 //                          approve card (the URL is preserved).
 //   ?view=connect        — the installer's token page: skip the marketing
 //                          landing, go straight to sign-in, then the app.
-//   logged out otherwise — public landing; "Sign in" renders the auth form.
+//   logged out otherwise — the sign-in form. The marketing landing is NOT a
+//                          React component any more: server.ts serves the
+//                          static landing.html at '/' to anyone without a
+//                          session cookie, and the SPA shell is only reached
+//                          with a cookie, a query, or a non-'/' path. So
+//                          anyone who gets this far asked for the app, and
+//                          rendering a second landing here would both fork the
+//                          design system and bounce them away from the thing
+//                          they clicked.
 //   logged in            — the app (a dead session 401s → handleUnauthorized
 //                          returns here).
 //
@@ -53,9 +60,6 @@ function render(node: React.ReactNode) {
 // The wait is covered by a neutral splash rather than a guess. Rendering the
 // landing first and swapping to the app would show every returning user a flash
 // of marketing copy for their own product.
-function isConnectVisit(): boolean {
-  try { return new URLSearchParams(window.location.search).get('view') === 'connect'; } catch { return false; }
-}
 const isDeviceVisit = window.location.pathname === '/device';
 
 /** Pre-auth splash. Deliberately not a spinner: at ~50ms a spinner is a flicker
@@ -75,11 +79,9 @@ if (isCloud()) {
   void isSignedIn().then((signedIn) => {
     if (signedIn) {
       render(isDeviceVisit ? <DeviceApprovePage /> : <App />);
-    } else if (isDeviceVisit || isConnectVisit()) {
+    } else {
       const after = () => render(isDeviceVisit ? <DeviceApprovePage /> : <App />);
       render(<AuthPage onSuccess={after} />);
-    } else {
-      render(<LandingPage onGetStarted={() => render(<AuthPage onSuccess={() => render(<App />)} />)} />);
     }
   });
 } else {
