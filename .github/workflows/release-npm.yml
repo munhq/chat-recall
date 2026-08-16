@@ -76,9 +76,21 @@ jobs:
         if: inputs.dry_run
         run: npm publish -w chat-recall --dry-run --access public
 
+      # --provenance attests that the tarball came from this commit and this
+      # workflow, which is the main reason to publish from CI at all. It requires
+      # a PUBLIC repo: npm cannot verify an attestation whose source nobody can
+      # read, so passing it from a private repo fails the publish outright.
+      #
+      # Decided at run time from the repository's own visibility rather than a
+      # hand-maintained flag, so making the repo public starts producing
+      # provenance with no edit here, and nobody has to remember this exists.
       - name: Publish
         if: '!inputs.dry_run'
-        run: npm publish -w chat-recall --access public --provenance
-        # --provenance attests that this tarball came from this commit and this
-        # workflow. It needs a PUBLIC repo; drop the flag while the repo is
-        # private or the publish fails.
+        run: |
+          if [ "${{ github.event.repository.private }}" = "false" ]; then
+            echo "public repo — publishing with provenance"
+            npm publish -w chat-recall --access public --provenance
+          else
+            echo "::warning::repo is private, publishing WITHOUT provenance — make it public to get attestations"
+            npm publish -w chat-recall --access public
+          fi
