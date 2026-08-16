@@ -13,7 +13,7 @@
  *
  *   IMPORT_PASSWORD='<new password>' DATABASE_URL='postgres://…' \
  *     node scripts/import-keycloak-users.mjs \
- *       --id 2491705a-…  --email adi@hotmun.com  --name adi
+ *       --id 2491705a-…  --email you@example.com  --name ada
  *
  * Idempotent: an existing user row with the same id is left untouched (the
  * script reports it and exits 0). Requires the better-auth tables to exist —
