@@ -68,14 +68,25 @@ export function sanitizeQuery(query: string): SanitizeResult {
     reason = 'truncated';
   }
 
-  // Check for injection patterns
-  for (const pattern of INJECTION_PATTERNS) {
-    if (pattern.test(clean)) {
-      // Strip the matching portion and everything after it
-      clean = clean.replace(pattern, ' ');
-      wasSanitized = true;
-      reason = reason ? `${reason}+injection_stripped` : 'injection_stripped';
+  // Check for injection patterns.
+  //
+  // Repeat to a fixed point. A single pass is defeated by a nested payload:
+  // removing the inner match from "ignignore all previousore all previous"
+  // splices the outer halves together and reconstitutes the very phrase that
+  // was just stripped. The loop is bounded so a pathological input cannot spin.
+  for (let round = 0; round < 5; round++) {
+    let changedThisRound = false;
+    for (const pattern of INJECTION_PATTERNS) {
+      // None of the patterns carry /g, so replace() removes one occurrence per
+      // pass; the surrounding loop is also what clears repeats.
+      if (pattern.test(clean)) {
+        clean = clean.replace(pattern, ' ');
+        changedThisRound = true;
+        wasSanitized = true;
+        reason = reason ? (reason.includes('injection_stripped') ? reason : `${reason}+injection_stripped`) : 'injection_stripped';
+      }
     }
+    if (!changedThisRound) break;
   }
 
   // Remove dangerous characters

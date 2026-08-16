@@ -1272,7 +1272,10 @@ const refs = listAvailableBackends().flatMap((b) => {
             .map((c) => ({
               text: redactSecrets(c.text, { force: true, count }),
               chunk_type: c.chunkType || '',
-              title: c.title || '',
+              // Chunk titles are derived from message text and so can carry a
+              // secret exactly like the body can. This was the one field on the
+              // upload path that shipped raw.
+              title: redactSecrets(c.title || '', { force: true, count }),
             }));
           await itemsBatch.add({
             id: item.id,

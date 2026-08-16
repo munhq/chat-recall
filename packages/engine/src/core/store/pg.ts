@@ -158,6 +158,19 @@ export class PgStore implements StorageDriver {
 
   private static COLS = 'id, source_type, title, project_path, project_id, content_preview, file_path, mtime, indexed_at, extra_json';
 
+  /**
+   * Escape LIKE/ILIKE metacharacters in a user-supplied filter.
+   *
+   * The value is already parameter-bound, so this is not an injection fix —
+   * it is a correctness one. Unescaped, a project filter of `%` matches every
+   * project and `_` matches any single character, so a filter silently returns
+   * rows the user did not ask for. Postgres treats backslash as the default
+   * LIKE escape, so escaping it plus % and _ is sufficient.
+   */
+  private static likeLiteral(s: string): string {
+    return s.replace(/[\\%_]/g, (c) => `\\${c}`);
+  }
+
   // Primary (not replica): getItem feeds write-path gatekeepers — needsUpdate
   // (re-index decision) and toolkit promote — where a stale row would cause
   // re-index churn or a wrong promote. Single-row fetch, so ~zero offload lost.
@@ -221,7 +234,7 @@ export class PgStore implements StorageDriver {
       if (f.includes(':') || /^p_/.test(f)) {
         params.push(f); where.push(`project_id=$${params.length}`);
       } else {
-        params.push(`%${f}%`); where.push(`(project_path ILIKE $${params.length} OR project_id ILIKE $${params.length})`);
+        params.push(`%${PgStore.likeLiteral(f)}%`); where.push(`(project_path ILIKE $${params.length} OR project_id ILIKE $${params.length})`);
       }
     }
     return this.qr(`SELECT id, mtime, project_path, project_id FROM memory_metadata WHERE ${where.join(' AND ')} ORDER BY mtime DESC`, params) as any;
@@ -247,7 +260,7 @@ export class PgStore implements StorageDriver {
       if (f.includes(':') || /^p_/.test(f)) {
         params.push(f); where.push(`project_id=$${params.length}`);
       } else {
-        params.push(`%${f}%`); where.push(`(project_path ILIKE $${params.length} OR project_id ILIKE $${params.length})`);
+        params.push(`%${PgStore.likeLiteral(f)}%`); where.push(`(project_path ILIKE $${params.length} OR project_id ILIKE $${params.length})`);
       }
     }
     else if (!opts.includeUntracked) {
@@ -752,7 +765,7 @@ export class PgStore implements StorageDriver {
     // not a resolved project_id — match it against project_path, case-insensitive.
     // Exact project_id match here meant a substring never matched and `-p`
     // silently returned nothing for every project.
-    if (projectIdFilter) { params.push(`%${projectIdFilter}%`); where += ` AND project_path ILIKE $${params.length}`; }
+    if (projectIdFilter) { params.push(`%${PgStore.likeLiteral(projectIdFilter)}%`); where += ` AND project_path ILIKE $${params.length}`; }
     params.push(topK * 5);
     params.push(Date.now());
     const nowParam = params.length;
@@ -812,7 +825,7 @@ export class PgStore implements StorageDriver {
           const tp: unknown[] = [this.t, tq];
           let tw = `tenant=$1 AND $2 <% text`;
           if (sourceTypes && sourceTypes.length > 0) { tp.push(sourceTypes); tw += ` AND source_type = ANY($${tp.length})`; }
-          if (projectIdFilter) { tp.push(`%${projectIdFilter}%`); tw += ` AND project_path ILIKE $${tp.length}`; }
+          if (projectIdFilter) { tp.push(`%${PgStore.likeLiteral(projectIdFilter)}%`); tw += ` AND project_path ILIKE $${tp.length}`; }
           tp.push(topK * 5);
           rows = await tenantTx(this.pool, this.t, async (client: any) => {
             // Bound the trigram scan: a typo whose trigrams are common ("keyclock"
@@ -849,11 +862,11 @@ export class PgStore implements StorageDriver {
     let namedRows: any[] = [];
     const q = query.trim();
     if (q && (!sourceTypes || sourceTypes.includes('session'))) {
-      const np: unknown[] = [this.t, `%${q}%`];
+      const np: unknown[] = [this.t, `%${PgStore.likeLiteral(q)}%`];
       // Match a user-assigned name OR the tool's native title (Claude ai-title,
       // OpenCode session.title). The display title prefers the user name.
       let nwhere = `sm.tenant=$1 AND (sm.user_title ILIKE $2 OR sm.tool_title ILIKE $2)`;
-      if (projectIdFilter) { np.push(`%${projectIdFilter}%`); nwhere += ` AND mm.project_path ILIKE $${np.length}`; }
+      if (projectIdFilter) { np.push(`%${PgStore.likeLiteral(projectIdFilter)}%`); nwhere += ` AND mm.project_path ILIKE $${np.length}`; }
       np.push(topK);
       try {
         namedRows = await this.qr(
@@ -882,7 +895,7 @@ export class PgStore implements StorageDriver {
     const params: unknown[] = [this.t, minImportance];
     let where = `tenant=$1 AND COALESCE(NULLIF(substring(chunk_type from 'imp([0-9])'), '')::int, 0) >= $2`;
     if (sourceTypes && sourceTypes.length > 0) { params.push(sourceTypes); where += ` AND source_type = ANY($${params.length})`; }
-    if (projectIdFilter) { params.push(`%${projectIdFilter}%`); where += ` AND project_path ILIKE $${params.length}`; }
+    if (projectIdFilter) { params.push(`%${PgStore.likeLiteral(projectIdFilter)}%`); where += ` AND project_path ILIKE $${params.length}`; }
     params.push(limit);
     const sql = `SELECT chunk_id, item_id, source_type, title, text, chunk_type, project_path, file_path, mtime,
                         COALESCE(NULLIF(substring(chunk_type from 'imp([0-9])'), '')::int, 0) AS imp
@@ -956,7 +969,7 @@ export class PgStore implements StorageDriver {
     const params: unknown[] = [this.t, tsq];
     let sql = `SELECT COUNT(DISTINCT item_id)::int AS n FROM memory_chunks WHERE tenant=$1 AND tsv @@ to_tsquery('english',$2)`;
     if (options.sourceTypes && options.sourceTypes.length > 0) { params.push(options.sourceTypes); sql += ` AND source_type = ANY($${params.length})`; }
-    if (options.projectFilter) { params.push(`%${options.projectFilter}%`); sql += ` AND project_path LIKE $${params.length}`; }
+    if (options.projectFilter) { params.push(`%${PgStore.likeLiteral(options.projectFilter)}%`); sql += ` AND project_path LIKE $${params.length}`; }
     try { return (await this.oneRo(sql, params))?.n ?? 0; } catch { return 0; }
   }
 

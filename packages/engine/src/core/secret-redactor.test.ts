@@ -156,3 +156,93 @@ describe('secret redactor — coverage widened 2026-07-02 (audit gaps)', () => {
     expect(r(`the access key ${tok} was pasted`)).toContain('[REDACTED:secret-context]');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Gaps closed 2026-08-16. Each case below leaked in cleartext before this pass:
+// the value shipped to the server inside synced chunk text.
+// ---------------------------------------------------------------------------
+describe('secret redactor — gaps closed 2026-08-16', () => {
+  const r = (s: string) => redactSecrets(s, { force: true });
+
+  test('sk-proj- OpenAI keys redact (the old sk-[A-Za-z0-9]{20,} could not match one)', () => {
+    const k = 'sk-proj-' + 'A'.repeat(20) + 'b3Xy_-1234';
+    expect(r(`OPENAI key ${k} here`)).not.toContain(k);
+  });
+
+  test('sk-svcacct- service-account keys redact', () => {
+    const k = 'sk-svcacct-' + 'Qq'.repeat(15);
+    expect(r(k)).not.toContain(k);
+  });
+
+  test('classic sk- keys still redact (no regression)', () => {
+    const k = 'sk-' + 'a1B2c3D4e5F6g7H8i9J0';
+    expect(r(k)).not.toContain(k);
+  });
+
+  test('non-DB URL credentials redact — https, ssh, ftp, smtp', () => {
+    for (const url of [
+      'https://admin:hunter2please@example.com/path',
+      'ssh://deploy:s3cr3tphrase@10.0.0.5',
+      'ftp://user:filepassword1@files.example.com',
+      'smtp://mailer:mailpass12345@smtp.example.com:587',
+    ]) {
+      const out = r(url);
+      expect(out).toContain('[REDACTED:url-password]');
+    }
+  });
+
+  test('postgres URL passwords still redact (no regression)', () => {
+    expect(r('postgres://cr:supersecretpw@db:5432/x')).toContain('[REDACTED:url-password]');
+  });
+
+  test('ENCRYPTED and PGP private key blocks redact', () => {
+    const enc = '-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIBmedium\n-----END ENCRYPTED PRIVATE KEY-----';
+    expect(r(enc)).toContain('[REDACTED:private-key]');
+    const pgp = '-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBF\n-----END PGP PRIVATE KEY BLOCK-----';
+    expect(r(pgp)).toContain('[REDACTED:private-key]');
+  });
+
+  test('plain RSA private key still redacts (no regression)', () => {
+    const pem = '-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----';
+    expect(r(pem)).toContain('[REDACTED:private-key]');
+  });
+
+  test('Authorization: Bearer / Basic headers redact', () => {
+    // Deliberately short + all-lowercase: below the contextual pass's 32-char
+    // mixed-case bar, so nothing else would have caught these.
+    expect(r('Authorization: Bearer abc123def456')).toContain('[REDACTED:auth-header]');
+    expect(r('authorization: basic dXNlcjpwYXNz')).toContain('[REDACTED:auth-header]');
+  });
+
+  test('.npmrc _authToken lines redact, and NPM_AUTH stays with env-secret', () => {
+    expect(r('//registry.npmjs.org/:_authToken=npmTokenValue12345')).toContain('[REDACTED:npmrc-auth]');
+    // The colon requirement keeps shell vars on the env-secret rule.
+    expect(r('NPM_AUTH=abcDEF123456789012345')).toContain('[REDACTED:env-secret]');
+  });
+
+  test('vendor token prefixes redact', () => {
+    const cases: Array<[string, string]> = [
+      ['glpat-' + 'x'.repeat(20), 'gitlab-pat'],
+      ['xapp-1-' + 'A1B2C3D4E5', 'slack-app-token'],
+      ['SG.' + 'a'.repeat(22) + '.' + 'b'.repeat(22), 'sendgrid-key'],
+      ['dop_v1_' + 'a'.repeat(64), 'digitalocean-pat'],
+      ['hf_' + 'k'.repeat(34), 'huggingface-token'],
+      ['shpat_' + 'a1'.repeat(16), 'shopify-token'],
+      ['dp.pt.' + 'z'.repeat(24), 'doppler-token'],
+    ];
+    for (const [tok, label] of cases) {
+      expect(r(`value ${tok} end`)).toContain(`[REDACTED:${label}]`);
+    }
+  });
+
+  test('Azure SAS signature parameter redacts', () => {
+    const url = 'https://acct.blob.core.windows.net/c/b?sv=2021&sig=abcDEF123%2Bxyz456789012345&se=x';
+    expect(r(url)).toContain('[REDACTED:azure-sas]');
+  });
+
+  test('ordinary prose and URLs are untouched', () => {
+    const clean = 'See https://example.com/docs for the sk- prefix convention.';
+    expect(r('Nothing secret here at all.')).toBe('Nothing secret here at all.');
+    expect(r(clean)).toContain('https://example.com/docs');
+  });
+});

@@ -146,10 +146,13 @@ function sentryOrigin(): string[] {
 
 // ── Security headers ─────────────────────────────────────────────────────────
 //
-// The browser session is a Bearer token in localStorage (inherited from the
-// Keycloak era, kept through the better-auth migration). That model has exactly
-// one load-bearing assumption: no script the app did not ship ever runs on this
-// origin. Today that holds — there is no dangerouslySetInnerHTML, no rehype-raw
+// The browser session is an httpOnly cookie (it was a Bearer token in
+// localStorage through the Keycloak era; 6c7f46e moved it). httpOnly means
+// script cannot read the session, so XSS no longer hands over a portable
+// credential — but it can still act as the user from this origin, so the
+// policy below is what keeps foreign script off it in the first place. The
+// assumption that has to hold is that no script the app did not ship ever runs
+// on this origin. Today it does — there is no dangerouslySetInnerHTML, no rehype-raw
 // and no .innerHTML anywhere in the client, so markdown from indexed sessions
 // renders through React's escaping. But "we audited it once" is not a control.
 // This is the layer that survives one mistake: with a real script-src, an
@@ -187,6 +190,11 @@ app.use(helmet({
       baseUri: ["'self'"],
       formAction: ["'self'"],
       upgradeInsecureRequests: [],
+      // Without a report sink, CSP_REPORT_ONLY only writes to each visitor's
+      // browser console — which is exactly the audience that cannot report it.
+      // /api/csp-report below logs violations so report-only mode is actually
+      // observable before a policy change is enforced.
+      reportUri: ['/api/csp-report'],
     },
   },
   // 1 year, subdomains included. NOT preloaded: the preload list is effectively
@@ -211,15 +219,34 @@ app.use(helmet({
 //     Origin, which is effectively "allow any site to make credentialed calls
 //     with the user's cookie". That is fine for local dev, where the API is
 //     same-origin behind the Vite proxy and no cookie is issued over http, and
-//     it is NOT fine on a public deployment. So a cloud deployment MUST set
-//     CORS_ORIGIN; the boot log below says so loudly rather than leaving it to
-//     be discovered.
+//     it is NOT fine on a public deployment. So when auth is on in production
+//     and CORS_ORIGIN is unset, cross-origin is DENIED rather than reflected.
 const corsOrigin = process.env.CORS_ORIGIN || undefined;
-if (!corsOrigin && process.env.AUTH_PROVIDER && process.env.AUTH_PROVIDER !== 'none') {
-  log.warn('CORS_ORIGIN is unset while auth is enabled: cross-origin sites can make credentialed calls. Set it to the app origin.');
+
+// Fail CLOSED, not dead. Reflecting an arbitrary Origin with credentials:true
+// lets any website make authenticated calls with a visitor's cookie, so the
+// unset case must not stay permissive — but refusing to boot would take the
+// deployment down over a variable no environment currently sets, and the fix
+// costs nothing: this server serves the SPA from its own origin, so the browser
+// never needs a CORS grant. Denying cross-origin is therefore both the secure
+// default and a no-op for real traffic. (The CLI is not a browser; CORS does
+// not apply to it.)
+//
+// Dev keeps reflection: the Vite dev server on :5174 calls the API on :5000,
+// which IS cross-origin, and no cookie is issued over http there.
+const authEnabled = !!process.env.AUTH_PROVIDER && process.env.AUTH_PROVIDER !== 'none';
+const isProd = process.env.NODE_ENV === 'production';
+let corsOriginSetting: string | boolean | undefined = corsOrigin;
+if (!corsOrigin && authEnabled && isProd) {
+  corsOriginSetting = false; // no Access-Control-Allow-Origin → same-origin only
+  log.warn(
+    'CORS_ORIGIN is unset while auth is enabled: refusing all cross-origin requests. '
+    + 'Same-origin traffic (the app served by this server) is unaffected. '
+    + 'Set CORS_ORIGIN only if a different origin must call this API.',
+  );
 }
 app.use(cors({
-  origin: corsOrigin, // undefined = reflect origin (local dev only); set in prod
+  origin: corsOriginSetting, // string = allowlist; false = deny; undefined = reflect (dev)
   credentials: true,
 }));
 // Gzip/deflate compression. Skips already-compressed responses (images,
@@ -281,6 +308,25 @@ app.use('/metrics', metricsRouter);
 // funnel's first touch happens before any credential exists, so it mounts
 // top-level like /metrics: outside /api auth, limiters, and entitlements.
 app.use('/', installRouter);
+
+// CSP violation sink, named by report-uri above. Unauthenticated by necessity
+// (the browser sends it with no credentials) and it stores nothing: it only
+// logs, so it cannot be used to write to the database. Browsers post
+// application/csp-report, which the global express.json() does not accept.
+app.post(
+  '/api/csp-report',
+  express.json({ type: ['application/csp-report', 'application/reports+json', 'application/json'], limit: '16kb' }),
+  (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const report = (body['csp-report'] ?? body) as Record<string, unknown>;
+    log.warn({
+      blockedUri: report['blocked-uri'] ?? report.blockedURL,
+      violatedDirective: report['violated-directive'] ?? report.effectiveDirective,
+      documentUri: report['document-uri'] ?? report.documentURL,
+    }, 'csp violation');
+    res.status(204).end();
+  },
+);
 
 // Embedded auth (AUTH_PROVIDER=better-auth): better-auth owns everything
 // under /api/auth/* — sign-in/up/out, get-session, and the RFC 8628 device

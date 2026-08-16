@@ -23,12 +23,48 @@ const TGZ_PATH = resolve(
   process.env.INSTALL_TGZ_PATH || '/app/install/chat-recall.tgz',
 );
 
-/** Public origin as the CLIENT reached us — honours the reverse proxy. */
-function publicOrigin(req: Request): string {
+/**
+ * A host we are willing to interpolate into a shell script: hostname or IP,
+ * optional port. No scheme, no path, no userinfo, and — the point — none of
+ * the characters that mean something to `sh`. `${origin}` lands inside a
+ * double-quoted assignment (TGZ_URL below), where `$(…)`, backticks and `"`
+ * are all still live, so this pattern is the boundary that stops a header from
+ * becoming code.
+ */
+const SAFE_HOST = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?::\d{1,5})?$/;
+
+export class UnsafeOriginError extends Error {}
+
+/**
+ * Public origin as the CLIENT reached us.
+ *
+ * PUBLIC_URL is operator-set and authoritative. Everything else comes from
+ * request headers, which are attacker-controlled: `X-Forwarded-Host: evil.tld`
+ * rewrites TGZ_URL, and anyone served that copy of the script installs the CLI
+ * from the attacker. That is a supply-chain redirect, so the header path is
+ * validated hard and the response is never cacheable (see the route).
+ */
+export function publicOrigin(req: Request): string {
   const env = process.env.PUBLIC_URL;
-  if (env) return env.replace(/\/+$/, '');
+  if (env) {
+    const trimmed = env.replace(/\/+$/, '');
+    let u: URL;
+    try { u = new URL(trimmed); } catch { throw new UnsafeOriginError(`PUBLIC_URL is not a valid URL: ${env}`); }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+      throw new UnsafeOriginError(`PUBLIC_URL must be http(s), got ${u.protocol}`);
+    }
+    if (!SAFE_HOST.test(u.host)) throw new UnsafeOriginError(`PUBLIC_URL host is not a bare host:port: ${u.host}`);
+    return `${u.protocol}//${u.host}`;
+  }
+
   const proto = (req.get('x-forwarded-proto') || req.protocol || 'https').split(',')[0].trim();
   const host = (req.get('x-forwarded-host') || req.get('host') || 'localhost').split(',')[0].trim();
+  if (proto !== 'http' && proto !== 'https') {
+    throw new UnsafeOriginError(`refusing to build an install script for protocol ${JSON.stringify(proto)}`);
+  }
+  if (!SAFE_HOST.test(host)) {
+    throw new UnsafeOriginError(`refusing to build an install script for host ${JSON.stringify(host)}`);
+  }
   return `${proto}://${host}`;
 }
 
@@ -121,7 +157,26 @@ echo "Done. Recall tools are registered in Claude Code and your history is synci
 }
 
 router.get('/install.sh', (req, res) => {
-  res.type('text/plain; charset=utf-8').send(installScript(publicOrigin(req)));
+  let origin: string;
+  try {
+    origin = publicOrigin(req);
+  } catch (e) {
+    // Fail closed. A wrong origin here is not a rendering bug — it is a script
+    // that installs software from somewhere the operator never chose.
+    res.status(400).type('text/plain; charset=utf-8').send(
+      `# chat-recall installer\n`
+      + `echo "This server cannot determine its own public URL safely." >&2\n`
+      + `echo "The operator should set PUBLIC_URL on the server." >&2\n`
+      + `exit 1\n`,
+    );
+    return;
+  }
+  // The body embeds a host taken from request headers when PUBLIC_URL is unset.
+  // A shared cache keyed without those headers could hand one visitor's
+  // poisoned script to the next visitor, so this response is never stored.
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Vary', 'X-Forwarded-Host, X-Forwarded-Proto, Host');
+  res.type('text/plain; charset=utf-8').send(installScript(origin));
 });
 
 router.get('/install/chat-recall.tgz', (_req, res) => {
