@@ -1,9 +1,9 @@
 {
   "name": "chat-recall",
   "version": "0.4.8",
-  "description": "Local-first memory for AI coding tools — indexes Claude Code / Gemini CLI / OpenCode / Codex sessions, exposes them over MCP, optionally syncs redacted history to a chat-recall server",
+  "description": "Local-first memory for AI coding tools \u2014 indexes Claude Code / Gemini CLI / OpenCode / Codex sessions, exposes them over MCP, optionally syncs redacted history to a chat-recall server",
   "type": "module",
-  "license": "MIT",
+  "license": "Elastic-2.0",
   "bin": {
     "chat-recall": "./dist/cli.js",
     "chat-recall-mcp": "./dist/mcp.js",

@@ -4,7 +4,7 @@
   "description": "chat-recall web API + dashboard + multi-tenant SaaS server (BSL)",
   "type": "module",
   "private": true,
-  "license": "BSL-1.1",
+  "license": "Elastic-2.0",
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx src/server.ts",
