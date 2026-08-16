@@ -1,10 +1,10 @@
 {
   "name": "@chat-recall/engine",
   "version": "0.4.8",
-  "description": "chat-recall engine — parsers, storage drivers, KG, classifier (shared library)",
+  "description": "chat-recall engine \u2014 parsers, storage drivers, KG, classifier (shared library)",
   "type": "module",
   "private": true,
-  "license": "MIT",
+  "license": "Elastic-2.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
