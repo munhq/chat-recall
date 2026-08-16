@@ -214,39 +214,38 @@ app.use(helmet({
 // with credentials. Two consequences, both load-bearing:
 //
 //  1. credentials:true is required or the browser discards the response.
-//  2. The spec forbids pairing credentials with a wildcard origin. When
-//     CORS_ORIGIN is unset, the `cors` package reflects the request's own
-//     Origin, which is effectively "allow any site to make credentialed calls
-//     with the user's cookie". That is fine for local dev, where the API is
-//     same-origin behind the Vite proxy and no cookie is issued over http, and
-//     it is NOT fine on a public deployment. So when auth is on in production
-//     and CORS_ORIGIN is unset, cross-origin is DENIED rather than reflected.
+//  2. The spec forbids pairing credentials with a wildcard origin, so the
+//     allowlist has to be an explicit origin.
+//
+// On the unset case, measured against cors@2.8.6 rather than assumed: its
+// middlewareWrapper treats a FALSY `origin` as "emit no CORS headers at all"
+// and calls next(). So `undefined` and `false` behave identically — neither
+// reflects. An earlier revision of this comment claimed the unset case
+// reflected the request Origin and was therefore a live vulnerability; that is
+// wrong for this version, and reflection would need `origin: true`, a function
+// or an array, none of which was ever configured.
+//
+// `false` is still set explicitly below, for two reasons that are about the
+// next reader rather than today's behaviour: it states the intent where
+// `undefined` merely happened to be safe, and it fails closed if someone later
+// changes the default. It is a no-op for real traffic — this server serves the
+// SPA from its own origin, so the browser needs no CORS grant, and the CLI is
+// not a browser.
 const corsOrigin = process.env.CORS_ORIGIN || undefined;
 
-// Fail CLOSED, not dead. Reflecting an arbitrary Origin with credentials:true
-// lets any website make authenticated calls with a visitor's cookie, so the
-// unset case must not stay permissive — but refusing to boot would take the
-// deployment down over a variable no environment currently sets, and the fix
-// costs nothing: this server serves the SPA from its own origin, so the browser
-// never needs a CORS grant. Denying cross-origin is therefore both the secure
-// default and a no-op for real traffic. (The CLI is not a browser; CORS does
-// not apply to it.)
-//
-// Dev keeps reflection: the Vite dev server on :5174 calls the API on :5000,
-// which IS cross-origin, and no cookie is issued over http there.
 const authEnabled = !!process.env.AUTH_PROVIDER && process.env.AUTH_PROVIDER !== 'none';
 const isProd = process.env.NODE_ENV === 'production';
 let corsOriginSetting: string | boolean | undefined = corsOrigin;
 if (!corsOrigin && authEnabled && isProd) {
   corsOriginSetting = false; // no Access-Control-Allow-Origin → same-origin only
   log.warn(
-    'CORS_ORIGIN is unset while auth is enabled: refusing all cross-origin requests. '
-    + 'Same-origin traffic (the app served by this server) is unaffected. '
-    + 'Set CORS_ORIGIN only if a different origin must call this API.',
+    'CORS_ORIGIN is unset while auth is enabled: no CORS headers are sent, so '
+    + 'cross-origin calls are refused. Same-origin traffic (the app this server '
+    + 'serves) is unaffected. Set CORS_ORIGIN only if another origin must call this API.',
   );
 }
 app.use(cors({
-  origin: corsOriginSetting, // string = allowlist; false = deny; undefined = reflect (dev)
+  origin: corsOriginSetting, // string = allowlist; falsy = emit no CORS headers
   credentials: true,
 }));
 // Gzip/deflate compression. Skips already-compressed responses (images,
@@ -319,10 +318,15 @@ app.post(
   (req, res) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
     const report = (body['csp-report'] ?? body) as Record<string, unknown>;
+    // Coerce and truncate. The route is unauthenticated by necessity, the
+    // fields are attacker-chosen, and pino will serialise whatever arrives —
+    // including a nested object. 512 chars is far more than a real URI needs
+    // and stops this being a cheap way to write bulk text into the log stream.
+    const field = (v: unknown): string => String(v ?? '').slice(0, 512);
     log.warn({
-      blockedUri: report['blocked-uri'] ?? report.blockedURL,
-      violatedDirective: report['violated-directive'] ?? report.effectiveDirective,
-      documentUri: report['document-uri'] ?? report.documentURL,
+      blockedUri: field(report['blocked-uri'] ?? report.blockedURL),
+      violatedDirective: field(report['violated-directive'] ?? report.effectiveDirective),
+      documentUri: field(report['document-uri'] ?? report.documentURL),
     }, 'csp violation');
     res.status(204).end();
   },

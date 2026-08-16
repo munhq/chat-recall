@@ -31,7 +31,7 @@ const INJECTION_PATTERNS = [
   /\bdo not\s+(?:follow|obey)\b/i,
   /\bDAN\s+mode\b/i,
   /\bjailbreak\b/i,
-  /\bsystem:\b/i,
+  /\bsystem:/i,
   /<\/?system[->]/i,
   /\[INST\]/i,
   /\[\/INST\]/i,
@@ -40,6 +40,15 @@ const INJECTION_PATTERNS = [
   /\bHuman:\s*$/i,
   /\bAssistant:\s*$/i,
 ];
+
+/**
+ * Global twins of the patterns above. `.test()` on a /g regex is stateful, so
+ * the source list stays non-global for any caller that wants a predicate, and
+ * only the stripper uses these.
+ */
+const INJECTION_PATTERNS_GLOBAL = INJECTION_PATTERNS.map(
+  (p) => new RegExp(p.source, p.flags.includes('g') ? p.flags : `${p.flags}g`),
+);
 
 // Characters/sequences to strip (potential FTS5/SQL injection).
 // Double quotes are intentionally allowed — they are FTS5 phrase
@@ -70,23 +79,36 @@ export function sanitizeQuery(query: string): SanitizeResult {
 
   // Check for injection patterns.
   //
-  // Repeat to a fixed point. A single pass is defeated by a nested payload:
-  // removing the inner match from "ignignore all previousore all previous"
-  // splices the outer halves together and reconstitutes the very phrase that
-  // was just stripped. The loop is bounded so a pathological input cannot spin.
-  for (let round = 0; round < 5; round++) {
-    let changedThisRound = false;
-    for (const pattern of INJECTION_PATTERNS) {
-      // None of the patterns carry /g, so replace() removes one occurrence per
-      // pass; the surrounding loop is also what clears repeats.
-      if (pattern.test(clean)) {
-        clean = clean.replace(pattern, ' ');
-        changedThisRound = true;
-        wasSanitized = true;
-        reason = reason ? (reason.includes('injection_stripped') ? reason : `${reason}+injection_stripped`) : 'injection_stripped';
+  // Two things are load-bearing here. The patterns are applied GLOBALLY, so a
+  // repeated payload is cleared in one pass — without /g, replace() removes a
+  // single occurrence per round, and six copies of the same phrase survived a
+  // five-round loop. And the rounds repeat to a fixed point, because a NESTED
+  // payload reconstitutes itself: removing the inner match from
+  // "ignignore all previousore all previous" splices the outer halves together
+  // and rebuilds the phrase that was just stripped. Bounded so a pathological
+  // input cannot spin.
+  const stripInjections = (text: string): { text: string; changed: boolean } => {
+    let out = text;
+    let changed = false;
+    for (let round = 0; round < 5; round++) {
+      let changedThisRound = false;
+      for (const pattern of INJECTION_PATTERNS_GLOBAL) {
+        const before = out;
+        out = out.replace(pattern, ' ');
+        if (out !== before) { changedThisRound = true; changed = true; }
       }
+      if (!changedThisRound) break;
     }
-    if (!changedThisRound) break;
+    return { text: out, changed };
+  };
+
+  {
+    const stripped = stripInjections(clean);
+    clean = stripped.text;
+    if (stripped.changed) {
+      wasSanitized = true;
+      reason = reason ? `${reason}+injection_stripped` : 'injection_stripped';
+    }
   }
 
   // Remove dangerous characters
@@ -108,7 +130,10 @@ export function sanitizeQuery(query: string): SanitizeResult {
       .split(/\s+/)
       .filter(w => w.length > 1)
       .slice(0, 10);
-    clean = safeWords.join(' ');
+    // Re-strip: rebuilding from "safe words" happily reassembles the exact
+    // phrase that was just removed, so `ignore all previous` used to survive
+    // sanitisation by being the WHOLE query rather than part of one.
+    clean = stripInjections(safeWords.join(' ')).text.replace(/\s+/g, ' ').trim();
     wasSanitized = true;
     reason = 'reconstructed_from_keywords';
   }
