@@ -1,0 +1,84 @@
+name: Bug report
+description: Something behaves differently from what it says it does
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: `chat-recall doctor` prints which AI tools were detected,
+        whether the hooks and skills are installed per profile, and whether the
+        server is reachable. Its output answers most of the questions below.
+
+        **Do not paste secrets.** Session transcripts and `.npmrc`/`.env` files
+        routinely contain API keys. Redact before pasting, and reference variable
+        names rather than values.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you ran, and what it did instead of what you expected.
+      placeholder: |
+        Ran: chat-recall search "auth refactor"
+        Expected: results from last week's sessions
+        Got: "0 results" though `chat-recall recent` lists those sessions
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The shortest sequence that shows it. "Every time" and "once, cannot repeat" are both useful — say which.
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `chat-recall doctor`
+      description: Paste it as-is. It reports versions, detected tools, per-profile hooks and skills, and server reachability.
+      render: shell
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: chat-recall version
+      description: "`chat-recall --version`, or the npm version you installed."
+      placeholder: "0.4.8"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: server
+    attributes:
+      label: Which server
+      options:
+        - Hosted (chatrecall.dev)
+        - Self-hosted (docker compose)
+        - Self-hosted (own Postgres)
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: OS and Node version
+      placeholder: "Ubuntu 24.04, Node 22.14"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: tools
+    attributes:
+      label: Which AI tools are involved
+      description: Leave blank if it is not tool-specific.
+      options:
+        - label: Claude Code
+        - label: Gemini CLI
+        - label: Codex
+        - label: OpenCode
+        - label: Antigravity

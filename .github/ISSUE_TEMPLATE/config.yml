@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/munhq/chat-recall/blob/main/SECURITY.md
+    about: Do not open a public issue. Report privately — see SECURITY.md.
+  - name: A leaked secret in your own sessions
+    url: https://chatrecall.dev/security
+    about: Not a bug in chat-recall. Rotate the credential first, then use recall_security_dismiss to mark it handled.
+  - name: Question or idea
+    url: https://github.com/munhq/chat-recall/discussions
+    about: For anything that is not yet a bug or a concrete request.
