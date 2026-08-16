@@ -25,6 +25,8 @@ import sharesRouter from './routes/shares.js';
 import toolkitRouter from './routes/toolkit.js';
 import secretsRouter from './routes/secrets.js';
 import { tenantAuth, validateAuthConfig, authProviderName } from './middleware/auth.js';
+// Only the NAMES — the ids and secrets never leave the server.
+import { enabledSocialProviders as socialProviderNames } from './auth/better-auth.js';
 import { apiLimiter, syncLimiter, rl } from './middleware/rate-limit.js';
 import { costMiddleware, startCostTelemetry } from './middleware/request-cost.js';
 import metricsRouter, { startBacklogRefresher, logMetricsExposureAtBoot } from './routes/metrics.js';
@@ -350,7 +352,11 @@ if (authProviderName() === 'better-auth') {
 // `authProvider` tells the CLI which login flow to run: 'better-auth' → the
 // server's own device flow; 'keycloak' → the realm device flow at
 // `oidcIssuer`; 'none' → tokenless/token login (no baked-in issuer anywhere).
-app.get('/api/capabilities', (_req, res) => res.json({ ...capabilities(), cli: cliRelease(), authProvider: authProviderName(), oidcIssuer: process.env.OIDC_ISSUER || null }));
+// `socialProviders` lists only the providers whose id AND secret are both set,
+// so the sign-in page renders a Google/GitHub button only when pressing it can
+// actually work. Advertising a button for an unconfigured provider sends the
+// user to an IdP error page they cannot act on.
+app.get('/api/capabilities', (_req, res) => res.json({ ...capabilities(), cli: cliRelease(), authProvider: authProviderName(), oidcIssuer: process.env.OIDC_ISSUER || null, socialProviders: socialProviderNames() }));
 
 // Self-authenticating surfaces, mounted BEFORE tenantAuth:
 //   /api/sync       — agent (device) token; resolves + scopes its own tenant.
