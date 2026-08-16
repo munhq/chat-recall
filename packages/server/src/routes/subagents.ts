@@ -7,6 +7,7 @@
  */
 
 import express from 'express';
+import { sanitizeQuery } from '@chat-recall/engine/core/query-sanitizer.js';
 import { createStore } from '../imports.js';
 import type { SourceType } from '../imports.js';
 
@@ -16,8 +17,11 @@ interface SubagentHit { sessionId: string; subagent: string; kind: string; lineH
 
 // GET /api/subagents/search?query=&session_id=&kind=&limit=
 router.get('/search', async (req, res) => {
-  const query = typeof req.query.query === 'string' ? req.query.query.trim() : '';
-  if (!query) return res.status(400).json({ error: 'query is required' });
+  const rawQuery = typeof req.query.query === 'string' ? req.query.query.trim() : '';
+  if (!rawQuery) return res.status(400).json({ error: 'query is required' });
+  // Server-side sanitisation — see routes/search.ts.
+  const query = sanitizeQuery(rawQuery).cleanQuery;
+  if (!query) return res.status(400).json({ error: 'query is empty after sanitization' });
   const sessionId = typeof req.query.session_id === 'string' ? req.query.session_id : undefined;
   const kindFilter = typeof req.query.kind === 'string' ? req.query.kind : undefined;
   const limit = req.query.limit ? parseInt(String(req.query.limit), 10) : 20;
