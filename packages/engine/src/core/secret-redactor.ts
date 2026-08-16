@@ -104,44 +104,69 @@ export const DEFAULT_REDACTION_RULES: RedactionRule[] = [
   { label: 'stripe-key',       pattern: /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}\b/g },
   // Anthropic.
   { label: 'anthropic-key',    pattern: /\bsk-ant-[a-zA-Z0-9_-]{40,}\b/g },
-  // OpenAI. The `[-_]` class is what admits the modern project-scoped keys:
-  // `sk-proj-…` has only four alphanumerics before a hyphen, so the old
-  // `sk-[A-Za-z0-9]{20,}` could never match one. Same for `sk-svcacct-`.
-  { label: 'openai-key',       pattern: /\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{20,}\b/g },
+  // OpenAI. Two shapes, deliberately kept apart. The classic key is
+  // `sk-` + base62 with NO hyphens; the modern scoped keys carry an explicit
+  // proj/svcacct/admin segment first. Allowing hyphens after a bare `sk-`
+  // (which is what admitted sk-proj- in the first place) also matches ordinary
+  // kebab-case text — `sk-fix-the-login-redirect-bug`, `.sk-button-primary`,
+  // `sk-2024-01-01-backup` — and this corpus is full of branch names and CSS
+  // classes. Requiring the segment keeps sk-proj- coverage without that.
+  { label: 'openai-key',       pattern: /\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}\b|\bsk-[A-Za-z0-9]{20,}\b/g },
   // Google API key (AIza…).
   { label: 'google-api-key',   pattern: /\bAIza[0-9A-Za-z_-]{35}\b/g },
   // Generic JWT — three base64url segments.
   { label: 'jwt',              pattern: /\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g },
-  // Private key blocks (PEM). Strips between BEGIN/END markers. The label part
-  // is a free word run rather than a fixed list, so ENCRYPTED PRIVATE KEY and
-  // SSH2 ENCRYPTED PRIVATE KEY are covered without another enumeration.
-  { label: 'private-key',      pattern: /-----BEGIN (?:[A-Z0-9 ]{0,32})PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END (?:[A-Z0-9 ]{0,32})PRIVATE KEY(?: BLOCK)?-----/g },
-  // PuTTY private keys are not PEM and carry the material on Private-Lines.
-  { label: 'putty-key',        pattern: /PuTTY-User-Key-File-\d[\s\S]*?Private-MAC:[ \t]*[A-Fa-f0-9]+/g },
+  // Private key blocks (PEM). The label is a free word run rather than a fixed
+  // list, so ENCRYPTED PRIVATE KEY and PGP PRIVATE KEY BLOCK are covered
+  // without another enumeration, and \1 forces END to name the same kind as
+  // BEGIN.
+  //
+  // The body is [^-], NOT [\s\S]*?. That is a performance boundary, not a
+  // style choice. An unanchored prefix with an unbounded lazy gap re-scans to
+  // end-of-input from every candidate start, so text carrying many BEGIN
+  // markers and no matching END costs O(n^2): 500KB of that measured 810ms
+  // here, and this runs synchronously on the server's event loop over
+  // tenant-supplied text (services/secret-rescan.ts). A PEM body is base64
+  // plus headers and contains no '-', so excluding it makes the scan stop at
+  // the next delimiter instead of at EOF — same matches, linear cost.
+  { label: 'private-key',      pattern: /-----BEGIN ([A-Z0-9 ]{0,32})PRIVATE KEY(?: BLOCK)?-----[^-]{0,10000}?-----END \1PRIVATE KEY(?: BLOCK)?-----/g },
+  // PuTTY keys are not PEM. Match the Private-Lines payload — the actual key
+  // material — rather than spanning the whole file, which would need the same
+  // unbounded gap the rule above just removed. Line-anchored and base64-only,
+  // so it cannot run away.
+  { label: 'putty-key',        pattern: /^Private-Lines:[ \t]*\d{1,4}[\r\n]+(?:[A-Za-z0-9+/=]{8,120}[\r\n]+){1,400}/gm },
   // npm tokens (uuid-shaped — overlap with our UUID filter; intentional).
   { label: 'npm-token',        pattern: /\bnpm_[A-Za-z0-9]{36}\b/g },
   // .npmrc auth lines: //registry.npmjs.org/:_authToken=VALUE (the key is not
   // ALL-CAPS, so the env-secret rule above never matched it). The leading `:`
   // is required — it is what makes this npmrc syntax rather than any shell var
   // ending in _AUTH, which env-secret already owns and labels better.
-  { label: 'npmrc-auth',       pattern: /(?<=:_(?:authToken|password|auth)[ \t]*=[ \t]*)\S{12,}/gi },
+  // [^\s"'`]+ so the closing quote is not swallowed, and a ${VAR} placeholder
+  // is left alone — redacting it destroys a config example and hides nothing.
+  { label: 'npmrc-auth',       pattern: /(?<=:_(?:authToken|password|auth)[ \t]*=[ \t]*)(?!\$\{)[^\s"'`]{12,}/gi },
   // HTTP Authorization headers. env-secret requires an ALL-CAPS name, and
   // `Authorization` is mixed case, so both Bearer and Basic walked straight
   // through — including short opaque tokens the contextual pass also misses
   // (it needs 32+ chars AND mixed-case-plus-digit).
-  { label: 'auth-header',      pattern: /(?<=\bauthorization[ \t]*:[ \t]*(?:bearer|basic|token)[ \t]+)\S{8,}/gi },
+  // Same two guards as npmrc-auth: stop at a quote, and skip the obvious
+  // placeholders that fill documentation (<YOUR_TOKEN>, ${TOKEN}, xxx…).
+  { label: 'auth-header',      pattern: /(?<=\bauthorization[ \t]*:[ \t]*(?:bearer|basic|token)[ \t]+)(?![<$])[^\s"'`<]{8,}/gi },
   // Vendor tokens with unambiguous prefixes. Each is a fixed literal, so a
   // false positive is essentially impossible and the cost of listing is low.
   { label: 'gitlab-pat',       pattern: /\bglpat-[A-Za-z0-9_-]{20,}\b/g },
-  { label: 'slack-app-token',  pattern: /\bxapp-\d-[A-Za-z0-9-]{10,}\b/g },
-  { label: 'sendgrid-key',     pattern: /\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b/g },
-  { label: 'mailgun-key',      pattern: /\bkey-[a-f0-9]{32}\b/g },
+  { label: 'slack-app-token',  pattern: /\bxapp-\d-[A-Z0-9]{8,}-\d{10,}-[a-f0-9]{32,}\b/g },
+  { label: 'sendgrid-key',     pattern: /\bSG\.[A-Za-z0-9_-]{20,24}\.[A-Za-z0-9_-]{40,50}\b/g },
+  // (?<![-\w]) so `cache-key-<md5>` is not read as a mailgun key.
+  { label: 'mailgun-key',      pattern: /(?<![-\w])key-[a-f0-9]{32}\b/g },
   { label: 'digitalocean-pat', pattern: /\bdop_v1_[a-f0-9]{64}\b/g },
   { label: 'huggingface-token',pattern: /\bhf_[A-Za-z0-9]{30,}\b/g },
   { label: 'shopify-token',    pattern: /\bshp(?:at|ca|pa|ss)_[a-fA-F0-9]{32}\b/g },
   { label: 'pypi-token',       pattern: /\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}\b/g },
-  { label: 'twilio-sid',       pattern: /\b(?:AC|SK)[a-f0-9]{32}\b/g },
-  { label: 'discord-bot-token',pattern: /\b[MNO][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}\b/g },
+  // No twilio-sid rule: AC…/SK… are Twilio SIDs, which are public account and
+  // key identifiers, not the auth token. Redacting them hid nothing and
+  // collided with 32-hex etags and MD5 sums.
+  // No discord-bot-token rule either: the shape (word.word.word) matched
+  // ordinary dotted symbols such as a.b.ApplicationContextProviderImpl.
   { label: 'telegram-bot-token',pattern: /\b\d{8,10}:AA[A-Za-z0-9_-]{32,}\b/g },
   { label: 'doppler-token',    pattern: /\bdp\.(?:pt|st|sa|ct)\.[A-Za-z0-9_-]{20,}\b/g },
   // Azure Storage SAS signature — the `sig=` parameter is the actual secret.

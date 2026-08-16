@@ -223,8 +223,10 @@ describe('secret redactor — gaps closed 2026-08-16', () => {
   test('vendor token prefixes redact', () => {
     const cases: Array<[string, string]> = [
       ['glpat-' + 'x'.repeat(20), 'gitlab-pat'],
-      ['xapp-1-' + 'A1B2C3D4E5', 'slack-app-token'],
-      ['SG.' + 'a'.repeat(22) + '.' + 'b'.repeat(22), 'sendgrid-key'],
+      // Realistic shapes: app-id, then the numeric issue stamp, then the
+      // 64-hex secret. Loose fixtures here hid that the rules were loose too.
+      ['xapp-1-A01B2C3D4E5-1234567890123-' + 'a1'.repeat(32), 'slack-app-token'],
+      ['SG.' + 'a'.repeat(22) + '.' + 'b'.repeat(43), 'sendgrid-key'],
       ['dop_v1_' + 'a'.repeat(64), 'digitalocean-pat'],
       ['hf_' + 'k'.repeat(34), 'huggingface-token'],
       ['shpat_' + 'a1'.repeat(16), 'shopify-token'],
@@ -244,5 +246,68 @@ describe('secret redactor — gaps closed 2026-08-16', () => {
     const clean = 'See https://example.com/docs for the sk- prefix convention.';
     expect(r('Nothing secret here at all.')).toBe('Nothing secret here at all.');
     expect(r(clean)).toContain('https://example.com/docs');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Follow-up to the 2026-08-16 pass. An adversarial review found the two block
+// rules re-scanned to end-of-input from every candidate start, which is O(n^2)
+// and reachable from tenant text through the default-on secret rescan, and
+// that several of the new vendor rules corrupted ordinary content.
+// ---------------------------------------------------------------------------
+describe('secret redactor — scan cost is linear in input size', () => {
+  const r = (s: string) => redactSecrets(s, { force: true });
+
+  // Bait: many BEGIN markers, no matching END, so nothing ever matches and a
+  // naive lazy gap walks to EOF from each one.
+  const pemBait = (kb: number) => '-----BEGIN A PRIVATE KEY-----\n'.repeat(Math.round((kb * 1024) / 30));
+  const ppkBait = (kb: number) => 'PuTTY-User-Key-File-2: ssh-rsa\n'.repeat(Math.round((kb * 1024) / 31));
+
+  test('quadrupling the input does not multiply the time by ~16', () => {
+    const time = (s: string) => { const t0 = Date.now(); r(s); return Date.now() - t0; };
+    const small = Math.max(time(pemBait(256)) + time(ppkBait(256)), 1);
+    const large = time(pemBait(1024)) + time(ppkBait(1024));
+    // Linear would be ~4x. Quadratic would be ~16x. Allow generous slack for a
+    // loaded CI box but still fail the old behaviour, which was ~16x.
+    expect(large / small).toBeLessThan(9);
+  });
+
+  test('4MB of bait — the rescan cap — stays well under a second', () => {
+    const t0 = Date.now();
+    r(pemBait(4096));
+    r(ppkBait(4096));
+    // Before the fix this pair took tens of seconds and blocked the event loop.
+    expect(Date.now() - t0).toBeLessThan(4000);
+  });
+});
+
+describe('secret redactor — ordinary content is not corrupted', () => {
+  const r = (s: string) => redactSecrets(s, { force: true });
+
+  test.each([
+    ['a kebab-case branch name', 'branch sk-fix-the-login-redirect-bug is ready'],
+    ['a CSS class', '.sk-button-primary-large-outline { color: red }'],
+    ['a dated filename', 'sk-2024-01-01-backup-database.sql'],
+    ['an md5 cache key', 'redis GET cache-key-d41d8cd98f00b204e9800998ecf8427e'],
+    ['a 32-hex etag', 'etag AC' + 'da39a3ee5e6b4b0d3255bfef95601890'],
+    ['a dotted java symbol', 'MyApplicationServicesModule.common.ApplicationContextProviderImpl'],
+    ['an npmrc env placeholder', '//registry.npmjs.org/:_authToken=${NPM_TOKEN}'],
+    ['a documented header placeholder', 'Authorization: Bearer <YOUR_API_TOKEN_HERE>'],
+  ])('leaves %s alone', (_label, text) => {
+    expect(r(text)).toBe(text);
+  });
+
+  test('but the real keys those rules exist for still redact', () => {
+    expect(r('sk-proj-' + 'A'.repeat(24) + 'b3Xy_-12')).toContain('[REDACTED');
+    expect(r('sk-' + 'a1B2c3D4e5F6g7H8i9J0')).toContain('[REDACTED');
+    expect(r('-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIBmed\n-----END ENCRYPTED PRIVATE KEY-----')).toContain('[REDACTED:private-key]');
+    expect(r('-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBF\n-----END PGP PRIVATE KEY BLOCK-----')).toContain('[REDACTED:private-key]');
+    const ppk = 'PuTTY-User-Key-File-2: ssh-rsa\nPrivate-Lines: 2\nAAAAB3NzaC1yc2EAAAADAQABAAABAQ==\nBBBBB3NzaC1yc2EAAAADAQABAAABAQ==\nPrivate-MAC: abc\n';
+    expect(r(ppk)).toContain('[REDACTED:putty-key]');
+  });
+
+  test('an END that names a different kind does not close a BEGIN', () => {
+    const mismatched = '-----BEGIN RSA PRIVATE KEY-----\nbody\n-----END EC PRIVATE KEY-----';
+    expect(r(mismatched)).toBe(mismatched);
   });
 });
