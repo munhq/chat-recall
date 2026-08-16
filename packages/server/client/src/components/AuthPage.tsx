@@ -1,5 +1,9 @@
-import { useState } from 'react';
-import { signInEmail, signUpEmail, requestPasswordReset, resetPassword } from '../services/auth';
+import { useState, useEffect } from 'react';
+import { signInEmail, signUpEmail, requestPasswordReset, resetPassword, socialProviders, signInSocial } from '../services/auth';
+
+/** Label and mark per provider. Only providers the SERVER reports are rendered,
+ *  so an entry here is inert until its credentials exist. */
+const PROVIDER_LABEL: Record<string, string> = { github: 'GitHub', google: 'Google' };
 
 /**
  * What better-auth left in the URL after its /reset-password/:token redirect.
@@ -46,11 +50,27 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
   );
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [providers, setProviders] = useState<string[]>([]);
   const signup = mode === 'signup';
   const forgot = mode === 'forgot';
   const resetting = mode === 'reset';
 
   const go = (m: Mode) => { setMode(m); setError(null); setNotice(null); };
+
+  // Ask once at mount. The email form renders immediately regardless, so a slow
+  // or failed capabilities call delays nothing — the buttons just appear late
+  // or not at all, which is the right failure direction.
+  useEffect(() => { void socialProviders().then(setProviders); }, []);
+
+  const social = async (provider: string) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    const r = await signInSocial(provider);
+    // On success the browser is already navigating to the IdP, so leaving busy
+    // set is deliberate: it stops a second click landing mid-redirect.
+    if (!r.ok) { setBusy(false); setError(r.error); }
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -105,6 +125,19 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
       <div className="au-card">
         <div className="au-brand"><span className="au-logo">◆</span> chat-recall</div>
         <h1>{heading}</h1>
+        {/* Social buttons only on the two modes where they mean anything.
+            During a reset the user already has an account and a token in hand;
+            offering a different sign-in route there is a way to lose the reset. */}
+        {(mode === 'signin' || signup) && providers.length > 0 && (
+          <>
+            {providers.map((p) => (
+              <button key={p} type="button" className="au-social" disabled={busy} onClick={() => social(p)}>
+                Continue with {PROVIDER_LABEL[p] || p}
+              </button>
+            ))}
+            <div className="au-or"><span>or</span></div>
+          </>
+        )}
         <form onSubmit={submit}>
           {signup && (
             <label>
@@ -171,6 +204,16 @@ const AUTH_CSS = `
   padding: 8px 12px; border-radius: 8px; font-size: 13px; margin-bottom: 14px; }
 .au-notice { background: #0f2019; border: 1px solid #235b41; color: #7fd6a4;
   padding: 8px 12px; border-radius: 8px; font-size: 13px; margin-bottom: 14px; }
+/* min-height 44px so it is a real touch target on a phone, matching the
+ * pointer:coarse sizing the marketing pages already use. */
+.au-social { width: 100%; min-height: 44px; padding: 11px 12px; margin-bottom: 10px;
+  background: #0b0e14; color: #e6e9ef; border: 1px solid #2a3346; border-radius: 8px;
+  font-size: 14px; font-weight: 500; cursor: pointer; }
+.au-social:hover:not(:disabled) { border-color: #3d4a63; }
+.au-social:disabled { opacity: 0.6; cursor: default; }
+.au-or { display: flex; align-items: center; gap: 10px; margin: 4px 0 16px;
+  color: #6b768c; font-size: 12px; }
+.au-or::before, .au-or::after { content: ""; flex: 1; height: 1px; background: #1e2534; }
 .au-submit { width: 100%; padding: 10px 12px; background: #5b8cff; color: #fff;
   border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
 .au-submit:disabled { opacity: 0.6; cursor: default; }

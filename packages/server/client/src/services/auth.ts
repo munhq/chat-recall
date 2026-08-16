@@ -146,6 +146,48 @@ export async function resetPassword(token: string, newPassword: string): Promise
   return { ok: false, error: await authError(res, 'could not reset the password') };
 }
 
+/**
+ * Which social providers the SERVER has credentials for.
+ *
+ * Asked rather than assumed: a provider whose id or secret is missing is not
+ * registered at all, so rendering its button would send the user to an IdP
+ * error page. /api/capabilities is public and already reports authProvider, so
+ * this costs no extra round trip beyond the one the shell makes anyway.
+ * Returns [] on any failure — the email form always works, so the safe
+ * direction is to show fewer options rather than broken ones.
+ */
+export async function socialProviders(): Promise<string[]> {
+  if (!CLOUD) return [];
+  try {
+    const res = await fetch(`${apiOrigin()}/api/capabilities`, { headers: { accept: 'application/json' } });
+    if (!res.ok) return [];
+    const body = (await res.json().catch(() => null)) as { socialProviders?: unknown } | null;
+    return Array.isArray(body?.socialProviders) ? body!.socialProviders.filter((p): p is string => typeof p === 'string') : [];
+  } catch { return []; }
+}
+
+/**
+ * Start a social sign-in. better-auth answers with a redirect URL rather than
+ * redirecting itself, so the browser navigation happens here.
+ *
+ * `callbackURL` is where the IdP round trip lands the user afterwards. It must
+ * be an app path, not the sign-in page, or a successful login bounces back to
+ * a form that no longer applies.
+ */
+export async function signInSocial(provider: string): Promise<AuthResult> {
+  const res = await fetch(authUrl('/sign-in/social'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ provider, callbackURL: '/app' }),
+  });
+  if (!res.ok) return { ok: false, error: await authError(res, `${provider} sign-in failed`) };
+  const body = (await res.json().catch(() => null)) as { url?: string; redirect?: boolean } | null;
+  if (!body?.url) return { ok: false, error: `${provider} did not return a redirect URL` };
+  window.location.assign(body.url);
+  return { ok: true };
+}
+
 /** Approve or deny a CLI device-login request (?user_code=… on /device).
  *  GET /device first: it binds the pending code to THIS session, which the
  *  approve/deny endpoints require. Both calls carry the session cookie. */
