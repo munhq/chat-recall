@@ -1086,7 +1086,7 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
 
         {/* Body. overflowX is explicit: the matrix grows one column group per
           * device, so on a phone it must scroll sideways rather than crush. */}
-        <div className="cr-hscroll" style={{ flex: 1, overflowY: 'auto', padding: '12px 18px' }}>
+        <div className="cr-hscroll" style={{ flex: 1, overflowY: 'auto', padding: '12px 18px', background: 'var(--cr-ink-1)' }}>
           {oneClickMsg && (
             <div
               data-testid="toolkit-sync-everything-msg"
@@ -1111,7 +1111,7 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
           )}
           {matrix && rows.length > 0 && (
             <table style={{ width: '100%', minWidth: 'max-content', borderCollapse: 'collapse', fontSize: 13 }}>
-              <thead style={{ position: 'sticky', top: 0, background: 'var(--cr-ink-1)', zIndex: 1 }}>
+              <thead style={{ position: 'sticky', top: 0, background: 'var(--cr-ink-1)', zIndex: 3 }}>
                 <tr>
                   {/* Sticky so the row label survives a sideways scroll — without
                     * it you scroll to a checkbox and can no longer see what it

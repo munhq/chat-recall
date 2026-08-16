@@ -532,10 +532,19 @@ if (existsSync(STATIC_DIR)) {
    * ~15KB file with inline CSS and no JavaScript, so serving it from origin is
    * cheap; serving the wrong one is not.
    */
+  // Query params that mean "this is an app route", NOT merely "there is a query
+  // string". `Object.keys(req.query).length > 0` was too broad: a marketing link
+  // carrying ?utm_source= / ?ref= / ?gclid= handed the SPA shell to a logged-out
+  // visitor, and since the shell's signed-out branch is now the sign-in form
+  // (main.tsx), every campaign link to the bare domain opened a login box
+  // instead of the landing page.
+  const APP_QUERY_KEYS = new Set(['view', 'device', 'session', 'project', 'tool', 'user_code']);
+
   app.get('/', (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Vary', 'Cookie');
-    const wantsApp = looksSignedIn(req) || Object.keys(req.query).length > 0;
+    const wantsApp = looksSignedIn(req)
+      || Object.keys(req.query).some((k) => APP_QUERY_KEYS.has(k));
     res.sendFile(wantsApp || !hasLanding ? SPA_SHELL : LANDING);
   });
 

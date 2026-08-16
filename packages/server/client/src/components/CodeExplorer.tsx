@@ -766,7 +766,7 @@ function OverviewTab({ project, behavior }: { project: CodeProject; behavior: { 
               <span style={{ flex: 1, height: 8, background: 'var(--cr-ink-2,#0d1117)', borderRadius: 4, overflow: 'hidden' }}>
                 <span style={{ display: 'block', height: '100%', width: `${Math.max(2, Math.round(((x.symbols || x.files) / maxLang) * 100))}%`, background: palette[i % palette.length] }} />
               </span>
-              <span style={{ flex: '0 0 auto', textAlign: 'right', fontSize: 11, color: 'var(--cr-fg-3)', whiteSpace: 'nowrap' }}>{x.symbols} sym · {x.files}f</span>
+              <span style={{ flex: '0 1 120px', minWidth: 0, textAlign: 'right', fontSize: 11, color: 'var(--cr-fg-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{x.symbols} sym · {x.files}f</span>
             </div>
           ))}
         </div>
