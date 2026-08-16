@@ -40,21 +40,29 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          # 22.22.2 is the floor for current npm majors, not a taste. The first
-          # run of this workflow pinned 22.14.0 and died before doing anything:
-          # npm@latest had moved to 12.x, which requires
-          # ^22.22.2 || ^24.15.0 || >=26.0.0, so the install aborted EBADENGINE.
-          node-version: '22.22.2'
+          # Node 24 BUNDLES npm 11.x, which is all trusted publishing needs
+          # (>= 11.5.1). Chosen so the workflow never upgrades npm in place.
+          #
+          # Two failed release runs came from trying: pinning node 22.14 with
+          # `npm i -g npm@latest` hit EBADENGINE when latest moved to 12.x, and
+          # pinning 22.22.2 then failed MODULE_NOT_FOUND because npm cannot
+          # reliably overwrite the npm that is currently executing it. Taking
+          # the bundled npm removes the whole class of problem.
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'   # required: it writes the
                                                        # .npmrc that the OIDC
                                                        # exchange reads.
 
-      # Pinned to a MAJOR, never `latest`. OIDC needs >= 11.5.1 and nothing
-      # newer, so tracking latest buys no capability and hands a third party the
-      # power to break releases by raising their engine requirement — which is
-      # exactly what happened on the first attempt.
-      - name: Use an npm that supports OIDC
-        run: npm install -g npm@^11.5.1 && npm --version
+      # Assert rather than install. If a future runner image ships an npm too
+      # old for OIDC, fail here with the reason instead of at the publish step
+      # with an authentication error that looks like a credentials problem.
+      - name: npm must support OIDC
+        run: |
+          V=$(npm --version); echo "npm $V, node $(node --version)"
+          node -e 'const [a,b,c]=process.argv[1].split(".").map(Number);
+            if (a>11 || (a===11 && (b>5 || (b===5 && c>=1)))) process.exit(0);
+            console.error(`::error::npm ${process.argv[1]} is too old for trusted publishing (need >= 11.5.1)`);
+            process.exit(1);' "$V"
 
       - run: npm ci
       - run: npm run build
