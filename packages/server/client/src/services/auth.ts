@@ -117,7 +117,12 @@ export async function signUpEmail(name: string, email: string, password: string)
  * reset form into an account-enumeration oracle for anyone with a word list.
  */
 export async function requestPasswordReset(email: string): Promise<AuthResult> {
-  const res = await fetch(authUrl('/forget-password'), {
+  // /request-password-reset, NOT /forget-password. better-auth 1.6.27 answers
+  // 404 on the older name — it survives only inside the rate limiter's path
+  // matcher, so hitting it returns 429 under load and 404 otherwise, which
+  // reads like a working endpoint right up until nobody gets an email.
+  // Verified against production: /request-password-reset → 200.
+  const res = await fetch(authUrl('/request-password-reset'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'content-type': 'application/json' },
