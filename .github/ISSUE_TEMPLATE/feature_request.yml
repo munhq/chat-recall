@@ -1,0 +1,53 @@
+name: Feature request
+description: Something it should do and does not
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Adding support for a **new AI coding tool** does not need this form —
+        see [`docs/ADDING_A_TOOL.md`](../blob/main/docs/ADDING_A_TOOL.md). A new
+        backend is one file and one line, and a pull request is faster than a
+        request.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you actually trying to do
+      description: >-
+        The situation, not the proposed solution. "I switch between Claude Code
+        and Codex on the same repo and lose the thread" tells us more than "add
+        a --merge flag", because there may be a better answer than the flag.
+    validations:
+      required: true
+
+  - type: textarea
+    id: today
+    attributes:
+      label: What do you do today instead
+      description: Whatever the workaround is, even if it is "re-explain it to the agent every time". This is the strongest signal about how much it costs you.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you think it should do
+      description: Optional. A rough shape is fine.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Roughly which part
+      options:
+        - CLI
+        - MCP tools (what the agent can call)
+        - Search and ranking
+        - Web UI
+        - Server / self-hosting
+        - A new AI tool backend
+        - Not sure
+    validations:
+      required: true
