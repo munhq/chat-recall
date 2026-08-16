@@ -1,33 +1,38 @@
 # chat-recall
 
-> Search, browse, and resume past AI coding sessions across Claude Code, Gemini CLI, and OpenCode — and let the agent search its own history via MCP.
+> One memory across every AI coding tool you use. Claude Code, Gemini CLI, Codex, OpenCode and Antigravity share a single searchable history — and the agent can search it itself.
 
-`chat-recall` is a **CLI** that indexes the transcripts your AI tools already write to disk, redacts secrets, and syncs them to a **chat-recall server**. The server runs **either locally with Postgres (Docker Compose) or as the hosted SaaS** — it gives you a web UI to browse everything and exposes it to Claude Code through **46 MCP tools** so the agent can recall its own past work without you copy-pasting context. There is no local store and no offline mode: the CLI always talks to a server.
+Your coding agents each keep their own transcripts, in their own format, in their own directory, and none of them can read another's. `chat-recall` indexes all of them into one place, redacts secrets on the way, and exposes the result to your agent through **50 MCP tools** so it can recall its own past work instead of you re-explaining it.
+
+That cross-tool part is the point. A single tool's built-in history stops at its own boundary; this does not.
+
+## Install
+
+```bash
+npx chat-recall init
+```
+
+That indexes the transcripts already on your disk, detects which AI tools you have, and registers the MCP server in `~/.mcp.json`. Then:
+
+```bash
+chat-recall search "that auth bug"      # search everything you have ever done
+chat-recall recent                      # what was I working on
+```
+
+By default this syncs to the hosted server at [chatrecall.dev](https://chatrecall.dev), free while the beta runs. To keep everything on your own machine instead, run the server yourself — see [Self-host](#self-host-the-server-docker-compose) below. Either way the CLI is the same binary and the same commands; only the server URL differs.
+
+No API keys are required. Postgres full-text search is the default backend; vector search and AI summaries are upgrades, not prerequisites.
 
 ## Four things it actually does
 
-1. **Cross-tool unified memory.** One index, one search, one UI for Claude Code (`~/.claude/projects/`), Gemini CLI (`~/.gemini/tmp/`), and OpenCode (`~/.local/share/opencode/`). Sessions, plans, tasks, CLAUDE.md, paste cache, command history, and agent diaries all share a single pluggable `MemorySource` interface.
-2. **The agent recalls itself.** 46 MCP tools so Claude Code can `recall_smart_resume`, `recall_similar_sessions`, `recall_files_touched`, `recall_subagent_search`, `recall_redundant_files`, etc., instead of you describing what happened last time. It can also write decisions back via `recall_decision_record` and stash small state via `recall_set` / `recall_get`.
-3. **Warns before redoing work.** A `UserPromptSubmit` hook fires on every prompt you type, runs a quick search for similar past sessions, and injects a brief "you've worked on this before in session X" notice into the agent's context. Pair with the bundled **codeindex** companion (see below) to also warn when the new code you're about to write looks like code that already exists.
-4. **Temporal knowledge graph.** Decisions and tool/library mentions become entity-relationship triples with `valid_from`/`valid_to` windows, so you (and the agent) can ask "what did we decide about X in March, and is it still true?".
+1. **Cross-tool unified memory.** One index, one search, one UI over Claude Code (`~/.claude/projects/`), Gemini CLI (`~/.gemini/tmp/`), Codex (`~/.codex/`), OpenCode (`~/.local/share/opencode/`) and Antigravity. Sessions, plans, tasks, CLAUDE.md files, paste cache, shell history and agent diaries all share one pluggable `MemorySource` interface.
+2. **The agent recalls itself.** 50 MCP tools, so Claude Code can `recall_smart_resume`, `recall_search` (with `like_session` to find similar work), `recall_edits_timeline`, `recall_subagent_search` and `recall_redundant_files` rather than asking you what happened last time. It writes back too, via `recall_decision_record`, `recall_kg_add` and `recall_set`.
+3. **Warns before you redo work.** A `UserPromptSubmit` hook searches for similar past sessions on every prompt and injects a short "you have done this before, in session X" note into the agent's context.
+4. **Temporal knowledge graph.** Decisions and tool mentions become entity-relationship triples with `valid_from`/`valid_to` windows, so you can ask what was decided in March and whether it still holds.
 
-## Quickstart
+## Add your own AI tool
 
-chat-recall is a **collector + server**. Stand up a server, point the collector at it, sync.
-
-**Self-host (Docker Compose — Postgres-backed server on `:8080`):**
-```bash
-git clone <repo-url> && cd chat-recall
-docker compose up -d                        # server + Postgres
-./install.sh                                # builds the monorepo, links the `chat-recall` collector
-chat-recall login http://localhost:8080     # (add --token <ct_…> if AUTH_PROVIDER isn't `none`)
-chat-recall sync                            # ship your sessions
-chat-recall search "auth bug"               # query the server
-```
-
-**Hosted SaaS:** skip Docker — `chat-recall login https://chat-recall.munhq.com`, then `sync`.
-
-No API keys required: the server's Postgres FTS is the default search backend; vector search and summaries are upgrades, not requirements. `chat-recall init` also registers the MCP server in `~/.mcp.json` automatically.
+A new backend is one file and one line — no changes to the engine. See [`docs/ADDING_A_TOOL.md`](docs/ADDING_A_TOOL.md). If a tool you use writes transcripts to disk, it can be indexed here, and a pull request is the fastest way to make that happen.
 
 ### Optional: vector search
 
@@ -139,11 +144,11 @@ The codeindex release artifacts are currently in a private repo, so `--with-code
 | **Paste** | `~/.claude/paste-cache/*.txt` | Large pasted blobs |
 | **Diary** | `~/.chat-recall/index/diary/<agent>/*.json` | What the agent told its future self via `recall_diary_write` |
 
-## MCP tools (46, plus 4 code-intelligence tools when the codeindex companion is installed)
+## MCP tools (50, including 4 code-intelligence tools that register when the codeindex companion is installed)
 
 **Search & retrieve** — `recall_search`, `recall_memory_search`, `recall_recent`, `recall_show`, `recall_context`, `recall_summary`, `recall_smart_resume`, `recall_project_context`, `recall_weekly_digest`, `recall_analytics_summary`, `recall_wake_up`.
 
-**Pattern detection** (the launch-headline tools) — `recall_similar_sessions` (vector cluster of past work matching a query), `recall_redundant_files` (warn when a new filename overlaps prior work), `recall_session_files` (what files did session X actually touch), `recall_files_touched` (which sessions edited `auth.rs`).
+**Pattern detection** — `recall_search` with `like_session: <id>` (find work similar to a given session), `recall_redundant_files` (warn when a new filename overlaps prior work), `recall_diff` with `files_only: true` (what files session X actually touched), `recall_edits_timeline` with `group_by: "session"` (which sessions edited `auth.rs`).
 
 **Subagents & filters** — `recall_subagent_search` (search inside hidden Explore/aside/compact transcripts), `recall_user_prompts` (only what the human typed, banner-stripped).
 
@@ -234,13 +239,14 @@ Two extension points, both registry-driven:
 
 ## License
 
-This repository is **dual-licensed by component**:
+[Elastic License 2.0](LICENSE) for the whole repository.
 
-- **`packages/cli` and `packages/engine` — [MIT](packages/cli/LICENSE).** The
-  collector CLI and the shared engine are permissively licensed.
-- **`packages/server` — [Business Source License 1.1](packages/server/LICENSE).**
-  The server is source-available (not OSI open source); see its `LICENSE` for the
-  additional-use grant and the change date after which it converts to an open
-  license.
+In plain terms: use it, modify it, run it for yourself or inside your company,
+free and without asking. The one thing you may not do is offer it to third
+parties as a hosted or managed service — that is the product. You also may not
+strip the licence-key checks or the copyright notices.
 
-See each package's `LICENSE` file for the authoritative terms.
+It is **source-available, not OSI open source**, and this README will not
+pretend otherwise. It replaced a split where the CLI and engine were MIT and the
+server was BSL 1.1, which answered "may I use this?" three different ways inside
+one repository.
