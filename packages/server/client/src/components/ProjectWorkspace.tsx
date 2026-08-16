@@ -132,7 +132,7 @@ function ProjectHeader({ projectName, code, onBack }: { projectName: string; cod
             <span style={{ color: 'var(--cr-fg-3)', fontSize: 11 }}>label:</span>
             {PROJECT_LABELS.map((l) => (
               <button key={l.value} onClick={() => setLabel(l.value)} disabled={labelBusy} title={l.hint}
-                style={{ cursor: labelBusy ? 'wait' : 'pointer', borderRadius: 999, padding: '3px 10px', fontSize: 11, border: '1px solid var(--cr-line-1)',
+                className="cr-pill" style={{ cursor: labelBusy ? 'wait' : 'pointer', borderRadius: 999, padding: '3px 10px', fontSize: 11, border: '1px solid var(--cr-line-1)',
                   background: current === l.value ? 'var(--cr-brand-500)' : 'transparent',
                   color: current === l.value ? '#fff' : 'var(--cr-fg-2)' }}>{l.label}</button>
             ))}
@@ -242,7 +242,7 @@ function MissionControl({ canonicalId, kgEntity, toolFilter, code, onJump, onOpe
   if (loading && !project) return <div style={{ padding: 30, color: 'var(--cr-fg-3)' }}>Loading project…</div>;
   const hasGraph = !!project?.map?.nodes?.length;
   return (
-    <div style={{ padding: '18px 24px 60px', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 22 }}>
+    <div className="cr-pad-mobile" style={{ padding: '18px 24px 60px', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 22 }}>
       {/* 1 — DO NEXT: one ranked stream (fixes + rules + tasks) */}
       <section><DoNext recs={recs} actions={actions} projectId={project?.projectId ?? canonicalId} hasCode={!!project} onReload={reload} /></section>
 
@@ -251,7 +251,9 @@ function MissionControl({ canonicalId, kgEntity, toolFilter, code, onJump, onOpe
           illustrates rather than carries the meaning. */}
       <section>
         <SectionTitle title="Understand" hint="what's load-bearing · what it's built with" />
-        <div style={{ display: 'grid', gridTemplateColumns: hasGraph ? 'repeat(auto-fit,minmax(380px,1fr))' : '1fr', gap: 16 }}>
+        {/* min(380px,100%) not 380px: this pane is 327px wide on a phone, and a
+          * bare 380px track cannot shrink, so it overflowed by 53px. */}
+        <div style={{ display: 'grid', gridTemplateColumns: hasGraph ? 'repeat(auto-fit,minmax(min(380px,100%),1fr))' : 'minmax(0,1fr)', gap: 16 }}>
           {hasGraph && (
             <Card style={{ padding: 12 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>

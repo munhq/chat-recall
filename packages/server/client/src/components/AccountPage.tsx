@@ -198,7 +198,7 @@ function labelFor(s: Entitlement['status']): string {
 const ACCT_CSS = `
 .acct { max-width: 720px; margin: 0 auto; padding: 32px 24px; color: var(--cr-fg-1,#e8eaed); width:100%; }
 .acct-head { display:flex; align-items:center; justify-content:space-between; margin-bottom: 24px; }
-.acct-head h1 { font-size: 26px; margin: 0; letter-spacing:-0.02em; }
+.acct-head h1 { font-size: clamp(20px, 5vw, 26px); margin: 0; letter-spacing:-0.02em; }
 .acct-card { background: var(--cr-ink-1,#12151a); border:1px solid var(--cr-line-1,#1e232b); border-radius: 14px; padding: 22px; margin-bottom: 18px; }
 .acct-card h2 { font-size: 16px; margin: 0 0 14px; }
 .acct-row { display:flex; justify-content:space-between; padding: 8px 0; border-bottom:1px solid var(--cr-line-1,#1e232b); font-size:14px; }

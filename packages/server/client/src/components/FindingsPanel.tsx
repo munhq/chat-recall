@@ -118,7 +118,7 @@ export default function FindingsPanel({
   );
 
   return (
-    <div style={{ padding: '20px 28px 40px' }}>
+    <div className="cr-pad-mobile" style={{ padding: '20px 28px 40px' }}>
       {/* Controls */}
       <div className="cr-wrap-mobile" style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', gap: 4 }}>

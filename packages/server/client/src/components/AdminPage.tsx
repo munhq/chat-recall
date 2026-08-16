@@ -118,10 +118,10 @@ export default function AdminPage({ onClose }: AdminPageProps) {
 
   return (
     <div className="cr-dashboard" style={{ flex: 1, overflowY: 'auto', background: 'var(--cr-ink-0)' }}>
-      <div style={{ maxWidth: 1280, margin: '0 auto', padding: '32px 40px 64px' }}>
+      <div className="cr-pad-mobile" style={{ maxWidth: 1280, margin: '0 auto', padding: '32px 40px 64px' }}>
         
         {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24 }}>
+        <div className="cr-wrap-mobile" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 24 }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <h2>Admin Console</h2>
@@ -175,7 +175,7 @@ export default function AdminPage({ onClose }: AdminPageProps) {
                 <p style={{ fontSize: 12, color: 'var(--cr-fg-3)', margin: '0 0 16px' }}>
                   Granular counts of active database rows per workspace tenant.
                 </p>
-                <div style={{ overflowX: 'auto' }}>
+                <div className="cr-hscroll">
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, textAlign: 'left' }}>
                     <thead>
                       <tr style={{ borderBottom: '1px solid var(--cr-line-2)', color: 'var(--cr-fg-3)', fontWeight: 600 }}>
@@ -215,7 +215,7 @@ export default function AdminPage({ onClose }: AdminPageProps) {
                   No indexed code projects found in the database. Run <code>chat-recall code index</code> to index a workspace.
                 </div>
               ) : (
-                <div style={{ overflowX: 'auto' }}>
+                <div className="cr-hscroll">
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, textAlign: 'left' }}>
                     <thead>
                       <tr style={{ borderBottom: '1px solid var(--cr-line-2)', color: 'var(--cr-fg-3)', fontWeight: 600 }}>

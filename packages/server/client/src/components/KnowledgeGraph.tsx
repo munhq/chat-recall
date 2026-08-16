@@ -58,7 +58,7 @@ export default function KnowledgeGraph({ entity, embedded }: { entity?: string |
   const pivot = (name: string) => { if (name) { setFocus(name); setInput(''); } };
 
   return (
-    <div style={{ flex: 1, overflow: 'auto', padding: embedded ? '4px 0 40px' : '24px 28px 56px' }}>
+    <div className={embedded ? undefined : 'cr-pad-mobile'} style={{ flex: 1, overflow: 'auto', padding: embedded ? '4px 0 40px' : '24px 28px 56px' }}>
       {!embedded && (
         <div style={{ marginBottom: 18 }}>
           <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}><Icon name="brain" size={20} /> Knowledge graph</h2>
@@ -114,7 +114,7 @@ function FocusedView({ name, facts, loading, onPivot }: { name: string; facts: K
   const out = facts.filter((f) => f.direction !== 'incoming');
   const inc = facts.filter((f) => f.direction === 'incoming');
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(320px,1fr))', gap: 14 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(min(320px,100%),1fr))', gap: 14 }}>
       <Card style={{ padding: 14 }}>
         <strong style={{ fontSize: 13 }}>{name} →</strong>
         <div style={{ color: 'var(--cr-fg-3)', fontSize: 11, marginBottom: 8 }}>outgoing facts</div>

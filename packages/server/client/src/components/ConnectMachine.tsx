@@ -53,6 +53,7 @@ function CopyBlock({ text }: { text: string }) {
         flex: 1, margin: 0, padding: '10px 12px', borderRadius: 'var(--cr-radius-md, 8px)',
         border: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-0)', color: 'var(--cr-fg-1)',
         fontSize: 12.5, lineHeight: 1.6, overflowX: 'auto', whiteSpace: 'pre',
+        WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain',
       }}>{text}</pre>
       <Button
         variant="secondary"

@@ -488,6 +488,10 @@ export function SegmentedControl({ options, value, onChange, size = 'md' }: Segm
   const h = size === 'sm' ? 28 : 32;
   return (
     <div
+      // cr-segmented lets the coarse-pointer rule in index.css grow this to a
+      // 44px touch target. The inline height below is why that rule needs
+      // !important.
+      className="cr-segmented"
       style={{
         display: 'inline-flex',
         padding: 3,
