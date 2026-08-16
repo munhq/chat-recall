@@ -184,39 +184,66 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
 }
 
 const AUTH_CSS = `
+/* Every colour, radius, font and focus ring comes from the design tokens in
+ * index.css (loaded globally by main.tsx), not from literals.
+ *
+ * This page used to hardcode a dark palette and a #5b8cff BLUE accent while the
+ * brand is #F5A97F — the same defect that got LandingPage.tsx deleted rather
+ * than fixed. Hardcoding also pinned the page to dark, so a visitor who chose
+ * the light theme met a dark sign-in form and then a light app. Tokens fix both
+ * at once: the light overrides under [data-theme="light"] apply here for free.
+ */
 .au-wrap { min-height: 100vh; min-height: 100dvh; display: flex; align-items: center;
   justify-content: center; padding: 20px;
-  background: #0b0e14; color: #e6e9ef; font-family: system-ui, -apple-system, sans-serif; }
+  background: var(--cr-ink-0); color: var(--cr-fg-1);
+  font-family: var(--cr-font-sans); }
 /* max-width, not width: this is the signed-out landing for the whole app now,
  * so it has to hold at 320px. */
 .au-card { width: 100%; max-width: 340px; padding: clamp(20px, 6vw, 32px);
-  background: #11151f; border: 1px solid #1e2534;
-  border-radius: 12px; box-sizing: border-box; }
-.au-brand { font-weight: 600; letter-spacing: 0.02em; margin-bottom: 20px; color: #9aa4b8; }
-.au-logo { color: #5b8cff; margin-right: 6px; }
-.au-card h1 { font-size: 20px; margin: 0 0 20px; }
-.au-card label { display: block; font-size: 13px; color: #9aa4b8; margin-bottom: 14px; }
+  background: var(--cr-ink-1); border: 1px solid var(--cr-ink-2);
+  border-radius: var(--cr-radius-lg); box-sizing: border-box; }
+.au-brand { font-family: var(--cr-font-display); font-weight: 600;
+  letter-spacing: 0.02em; margin-bottom: 20px; color: var(--cr-fg-2); }
+.au-logo { color: var(--cr-brand-500); margin-right: 6px; }
+.au-card h1 { font-family: var(--cr-font-display); font-size: 20px; margin: 0 0 20px; }
+.au-card label { display: block; font-size: 13px; color: var(--cr-fg-2); margin-bottom: 14px; }
 .au-card input { display: block; width: 100%; margin-top: 6px; padding: 10px 12px;
-  background: #0b0e14; color: #e6e9ef; border: 1px solid #2a3346; border-radius: 8px;
-  font-size: 14px; box-sizing: border-box; }
-.au-card input:focus { outline: none; border-color: #5b8cff; }
-.au-error { background: #2a1215; border: 1px solid #6b2a31; color: #ff8f98;
-  padding: 8px 12px; border-radius: 8px; font-size: 13px; margin-bottom: 14px; }
-.au-notice { background: #0f2019; border: 1px solid #235b41; color: #7fd6a4;
-  padding: 8px 12px; border-radius: 8px; font-size: 13px; margin-bottom: 14px; }
+  background: var(--cr-ink-0); color: var(--cr-fg-1); border: 1px solid var(--cr-ink-3);
+  border-radius: var(--cr-radius-md); font-size: 14px; box-sizing: border-box;
+  font-family: inherit; }
+.au-card input:focus { outline: none; border-color: var(--cr-brand-500);
+  box-shadow: var(--cr-focus-ring); }
+.au-error { background: rgba(220, 80, 90, 0.10); border: 1px solid rgba(220, 80, 90, 0.30);
+  color: #ff8f98; padding: 8px 12px; border-radius: var(--cr-radius-md);
+  font-size: 13px; margin-bottom: 14px; }
+.au-notice { background: var(--cr-brand-surf); border: 1px solid var(--cr-brand-line);
+  color: var(--cr-brand-500); padding: 8px 12px; border-radius: var(--cr-radius-md);
+  font-size: 13px; margin-bottom: 14px; }
 /* min-height 44px so it is a real touch target on a phone, matching the
  * pointer:coarse sizing the marketing pages already use. */
 .au-social { width: 100%; min-height: 44px; padding: 11px 12px; margin-bottom: 10px;
-  background: #0b0e14; color: #e6e9ef; border: 1px solid #2a3346; border-radius: 8px;
-  font-size: 14px; font-weight: 500; cursor: pointer; }
-.au-social:hover:not(:disabled) { border-color: #3d4a63; }
+  background: var(--cr-ink-0); color: var(--cr-fg-1); border: 1px solid var(--cr-ink-3);
+  border-radius: var(--cr-radius-md); font-size: 14px; font-weight: 500;
+  font-family: inherit; cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease; }
+.au-social:hover:not(:disabled) { border-color: var(--cr-brand-line);
+  background: var(--cr-brand-surf); }
+.au-social:focus-visible { outline: none; box-shadow: var(--cr-focus-ring); }
 .au-social:disabled { opacity: 0.6; cursor: default; }
 .au-or { display: flex; align-items: center; gap: 10px; margin: 4px 0 16px;
-  color: #6b768c; font-size: 12px; }
-.au-or::before, .au-or::after { content: ""; flex: 1; height: 1px; background: #1e2534; }
-.au-submit { width: 100%; padding: 10px 12px; background: #5b8cff; color: #fff;
-  border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  color: var(--cr-fg-3); font-size: 12px; }
+.au-or::before, .au-or::after { content: ""; flex: 1; height: 1px; background: var(--cr-ink-2); }
+.au-submit { width: 100%; min-height: 44px; padding: 11px 12px;
+  background: var(--cr-brand-500); color: var(--cr-ink-0); border: none;
+  border-radius: var(--cr-radius-md); font-size: 14px; font-weight: 600;
+  font-family: inherit; cursor: pointer; transition: background 120ms ease; }
+.au-submit:hover:not(:disabled) { background: var(--cr-brand-600); }
+.au-submit:focus-visible { outline: none; box-shadow: var(--cr-focus-ring); }
 .au-submit:disabled { opacity: 0.6; cursor: default; }
 .au-toggle { margin-top: 16px; width: 100%; background: none; border: none;
-  color: #9aa4b8; font-size: 13px; cursor: pointer; text-decoration: underline; }
+  color: var(--cr-fg-2); font-size: 13px; font-family: inherit; cursor: pointer;
+  text-decoration: underline; }
+.au-toggle:hover { color: var(--cr-fg-1); }
+.au-toggle:focus-visible { outline: none; box-shadow: var(--cr-focus-ring);
+  border-radius: var(--cr-radius-sm); }
 `;
