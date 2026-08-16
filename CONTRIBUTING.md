@@ -5,11 +5,27 @@
 A TypeScript monorepo (npm workspaces):
 
 - `packages/engine` — shared library: parsers, storage drivers, knowledge graph,
-  classifier, secret redactor, tool backends. **MIT.**
+  classifier, secret redactor, tool backends.
 - `packages/cli` — the collector CLI + MCP server (`chat-recall`,
-  `chat-recall-mcp`, `chat-recall-watch`). **MIT.**
-- `packages/server` — Express API + React dashboard + multi-tenant SaaS server.
-  **Business Source License 1.1** (source-available, not OSI open source).
+  `chat-recall-mcp`, `chat-recall-watch`).
+- `packages/server` — Express API + React dashboard + multi-tenant server.
+
+The whole repository is under the [Elastic License 2.0](LICENSE) —
+source-available, not OSI open source. It replaced a per-package split (MIT for
+the engine and CLI, BSL 1.1 for the server) that gave three different answers to
+"may I use this?" inside one repo.
+
+## Contributing terms (DCO)
+
+Contributions are accepted under the [Developer Certificate of
+Origin](https://developercertificate.org/). Sign each commit with `git commit
+-s`, which appends a `Signed-off-by:` line certifying you wrote the change and
+may submit it under this licence.
+
+A DCO rather than a CLA on purpose: a CLA asks contributors to assign rights,
+which is heavier than this project needs. The trade-off is that the licence
+cannot be changed later without asking every contributor, so it is stated here
+before the first outside contribution rather than retrofitted after.
 
 ## Before opening a PR
 
