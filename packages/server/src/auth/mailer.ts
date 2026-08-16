@@ -23,10 +23,13 @@
  * ── Configuration ──────────────────────────────────────────────────────────
  *   SMTP_HOST      required to enable sending; unset = log-only mode
  *   SMTP_PORT      default 587
- *   SMTP_SECURE    'true' for implicit TLS (port 465); default false → STARTTLS
+ *   SMTP_SECURE    'true' for implicit TLS; inferred for port 465 (see below)
  *   SMTP_USER      optional (an authenticated relay needs it; a local one may not)
  *   SMTP_PASS      optional, pairs with SMTP_USER
- *   MAIL_FROM      default 'chat-recall <noreply@chatrecall.dev>'
+ *   MAIL_FROM      sender; EMAIL_FROM is accepted as the fleet's spelling
+ *
+ * Outbound is AWS SES (email-smtp.eu-central-1.amazonaws.com); Stalwart is the
+ * mailbox server for inbound and never sends for the app.
  */
 
 export interface Mail {
@@ -42,7 +45,22 @@ export function mailerConfigured(): boolean {
 }
 
 function mailFrom(): string {
-  return process.env.MAIL_FROM || 'chat-recall <noreply@chatrecall.dev>';
+  // EMAIL_FROM is what every other chart in the fleet sets; accept both so the
+  // same values.yaml shape works here without a special case.
+  return process.env.MAIL_FROM || process.env.EMAIL_FROM || 'chat-recall <noreply@chatrecall.dev>';
+}
+
+/** Implicit TLS on 465, STARTTLS on 587.
+ *
+ *  Inferred from the port rather than read from SMTP_SECURE alone, because the
+ *  failure mode of getting it wrong is silent: nodemailer on 465 without
+ *  `secure` waits for a plaintext greeting that never comes and the send hangs
+ *  until timeout. The fleet's other charts set port 465, so this is the likely
+ *  misconfiguration, not a hypothetical one. */
+function smtpSecure(port: number): boolean {
+  if (process.env.SMTP_SECURE === 'true') return true;
+  if (process.env.SMTP_SECURE === 'false') return false;
+  return port === 465;
 }
 
 // nodemailer is imported lazily and the transport is cached: a self-host
@@ -56,10 +74,11 @@ async function transport(): Promise<any> {
       const nodemailer = await import('nodemailer');
       const user = process.env.SMTP_USER;
       const pass = process.env.SMTP_PASS;
+      const port = Number(process.env.SMTP_PORT) || 587;
       return nodemailer.createTransport({
         host: process.env.SMTP_HOST,
-        port: Number(process.env.SMTP_PORT) || 587,
-        secure: process.env.SMTP_SECURE === 'true',
+        port,
+        secure: smtpSecure(port),
         auth: user && pass ? { user, pass } : undefined,
       });
     })();
