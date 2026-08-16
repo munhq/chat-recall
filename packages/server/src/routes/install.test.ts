@@ -49,7 +49,7 @@ describe('GET /install.sh', () => {
     expect(res.type).toBe('text/plain');
     expect(res.text).toContain('#!/bin/sh');
     expect(res.text).toContain('https://chat-recall.example.com/install/chat-recall.tgz');
-    expect(res.text).toContain('chat-recall login https://chat-recall.example.com');
+    expect(res.text).toContain('chat-recall login "https://chat-recall.example.com"');
     // No bashisms that break `curl | sh` on dash: the shebang + set -eu only.
     expect(res.text).toContain('set -eu');
   });
@@ -60,7 +60,7 @@ describe('GET /install.sh', () => {
       .set('x-forwarded-proto', 'https')
       .set('x-forwarded-host', 'chat-recall.example.com');
     // Skip the dance when this machine already holds a working credential.
-    expect(res.text).toContain('chat-recall login https://chat-recall.example.com --check');
+    expect(res.text).toContain('chat-recall login "https://chat-recall.example.com" --check');
     // Fresh machine: point at the token page (?view=connect) with a RANDOM
     // device slug — the hostname must never leak into a URL...
     expect(res.text).toContain('https://chat-recall.example.com/?view=connect&device=$DEVICE');
@@ -70,7 +70,7 @@ describe('GET /install.sh', () => {
     expect(res.text).toContain('read TOKEN < /dev/tty');
     // ...connect with `init` (validates the token, registers the recall MCP in
     // Claude Code, and installs the background sync service in one step)...
-    expect(res.text).toContain('chat-recall init --server https://chat-recall.example.com --token "$TOKEN"');
+    expect(res.text).toContain('chat-recall init --server "https://chat-recall.example.com" --token "$TOKEN"');
     // ...with --skip-sync so the first full sync runs in the BACKGROUND (the
     // installed service, or the MCP's own sync) and never holds the terminal.
     expect(res.text).toContain('--skip-sync');
@@ -178,5 +178,30 @@ describe('GET /install.sh — response hardening', () => {
     expect(res.status).toBe(200);
     expect(res.headers['cache-control']).toContain('no-store');
     expect(res.headers['vary']).toMatch(/x-forwarded-host/i);
+  });
+});
+
+describe('GET /install.sh — the origin is shell-quoted, not just validated', () => {
+  test('the origin is quoted everywhere it is passed to a command', async () => {
+    const res = await request(app).get('/install.sh')
+      .set('x-forwarded-proto', 'https')
+      .set('x-forwarded-host', 'recall.example.com');
+    expect(res.status).toBe(200);
+    const O = 'https://recall.example.com';
+    // SAFE_HOST already excludes shell metacharacters, so this is defence in
+    // depth: widening that regex later (IPv6 literals need [ and ], both sh
+    // globs) must not on its own reintroduce command injection. Prose inside a
+    // quoted echo is not an executable position and is not checked here.
+    expect(res.text).toContain(`TGZ_URL="${O}/install/chat-recall.tgz"`);
+    expect(res.text).toContain(`chat-recall login "${O}" --check`);
+    expect(res.text).toContain(`chat-recall init --server "${O}" --token "$TOKEN"`);
+    // And nothing passes it as a bare argument.
+    expect(res.text).not.toMatch(new RegExp(`--server ${O.replace(/[.\/]/g, '\\$&')}(?!")`));
+  });
+
+  test('the refusal is uncacheable too, not just the success', async () => {
+    const res = await request(app).get('/install.sh').set('host', 'evil.com`id`');
+    expect(res.status).toBe(400);
+    expect(res.headers['cache-control']).toContain('no-store');
   });
 });

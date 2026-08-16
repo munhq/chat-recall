@@ -30,6 +30,12 @@ const TGZ_PATH = resolve(
  * double-quoted assignment (TGZ_URL below), where `$(…)`, backticks and `"`
  * are all still live, so this pattern is the boundary that stops a header from
  * becoming code.
+ *
+ * Every interpolation of `origin` in the script below is ALSO shell-quoted, so
+ * this regex is defence in depth rather than the only thing standing between a
+ * request header and `sh`. That matters because the next person to widen it —
+ * IPv6 literals need `[` and `]`, both sh glob characters — should not be able
+ * to re-open command injection by editing one character class.
  */
 const SAFE_HOST = /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?(?::\d{1,5})?$/;
 
@@ -109,7 +115,7 @@ echo ""
 # Already connected (e.g. re-running the installer to upgrade)? Skip the
 # token dance entirely. --check is report-only and never interactive; it also
 # auto-connects to no-auth self-host servers.
-if chat-recall login ${origin} --check >/dev/null 2>&1; then
+if chat-recall login "${origin}" --check >/dev/null 2>&1; then
   echo "Already connected to ${origin}."
   # Reuse the existing login; init still (re)registers the MCP and reinstalls/
   # restarts the background service, so re-running the installer to upgrade
@@ -133,7 +139,7 @@ else
 
   if [ ! -r /dev/tty ]; then
     echo "No terminal to read the token from (piped/CI run)." >&2
-    echo "Finish setup with:  chat-recall init --server ${origin} --token <your-token>" >&2
+    echo "Finish setup with:  chat-recall init --server '${origin}' --token <your-token>" >&2
     exit 1
   fi
   printf "Paste your token here: "
@@ -144,7 +150,7 @@ else
   # (~/.mcp.json), and installs the background sync service — the full one-line
   # setup. --skip-sync: the service (or the MCP's own sync) ships history in the
   # background so the installer never blocks on a first full sync.
-  chat-recall init --server ${origin} --token "\$TOKEN" --skip-sync || exit 1
+  chat-recall init --server "${origin}" --token "\$TOKEN" --skip-sync || exit 1
 fi
 
 echo ""
@@ -163,6 +169,8 @@ router.get('/install.sh', (req, res) => {
   } catch (e) {
     // Fail closed. A wrong origin here is not a rendering bug — it is a script
     // that installs software from somewhere the operator never chose.
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Vary', 'X-Forwarded-Host, X-Forwarded-Proto, Host');
     res.status(400).type('text/plain; charset=utf-8').send(
       `# chat-recall installer\n`
       + `echo "This server cannot determine its own public URL safely." >&2\n`
