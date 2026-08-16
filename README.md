@@ -61,7 +61,15 @@ the top of `docker-compose.yml` (set `ADMIN_KEY`, mint a device token, then
 `chat-recall login <url> --token <ct_…>` from each machine).
 
 The default compose already ships a `pgvector/pgvector` Postgres service, so a
-plain `docker compose up` is self-contained. Bring-your-own-Postgres is also
+plain `docker compose up` is self-contained.
+
+> **First run builds the server from source and takes several minutes.** The
+> compose file has `build:`, not `image:` — there is deliberately no published
+> server image to pull, so the first `docker compose up` compiles the TypeScript
+> monorepo inside the container. It looks stalled and is not. Later runs reuse
+> the layer cache and start in seconds.
+
+Bring-your-own-Postgres is also
 supported (it's how the hosted SaaS runs): point the server at an external
 database with `CHAT_RECALL_STORAGE=postgres` and `DATABASE_URL=postgres://…`
 (Postgres 16+; the `pgvector` extension is needed only for server-side semantic
