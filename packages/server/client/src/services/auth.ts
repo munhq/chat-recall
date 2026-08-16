@@ -108,6 +108,39 @@ export async function signUpEmail(name: string, email: string, password: string)
   return { ok: false, error: await authError(res, 'sign-up failed') };
 }
 
+/**
+ * Ask for a reset link.
+ *
+ * Resolves ok for ANY address, including one with no account. That is the
+ * server's contract ("If this email exists in our system, check your email"),
+ * and mirroring it here matters: a UI that said "no such user" would turn the
+ * reset form into an account-enumeration oracle for anyone with a word list.
+ */
+export async function requestPasswordReset(email: string): Promise<AuthResult> {
+  const res = await fetch(authUrl('/forget-password'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email, redirectTo: '/app?view=reset' }),
+  });
+  if (res.ok) return { ok: true };
+  return { ok: false, error: await authError(res, 'could not send the reset link') };
+}
+
+/** Set a new password using the token from the emailed link. The token is
+ *  single-use and expires after an hour, so a stale link fails here rather
+ *  than silently doing nothing. */
+export async function resetPassword(token: string, newPassword: string): Promise<AuthResult> {
+  const res = await fetch(authUrl('/reset-password'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token, newPassword }),
+  });
+  if (res.ok) { clearLegacyTokens(); return { ok: true }; }
+  return { ok: false, error: await authError(res, 'could not reset the password') };
+}
+
 /** Approve or deny a CLI device-login request (?user_code=… on /device).
  *  GET /device first: it binds the pending code to THIS session, which the
  *  approve/deny endpoints require. Both calls carry the session cookie. */
