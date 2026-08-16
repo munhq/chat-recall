@@ -107,6 +107,45 @@ export async function openPgPoolRo(): Promise<any> {
 const SCHEMA_LOCK_KEY = 8_246_113_001;
 /** How long to wait for another replica's bootstrap before applying anyway. */
 const SCHEMA_LOCK_WAIT_MS = 60_000;
+/** Attempts at the schema DDL before giving up. A lock conflict with live read
+ *  traffic is transient by nature, so a few jittered retries clear it; failing
+ *  after that still surfaces a real problem rather than hiding it. */
+const SCHEMA_MAX_ATTEMPTS = 5;
+
+
+/** Postgres SQLSTATEs worth another attempt: deadlock_detected and
+ *  lock_not_available (what `lock_timeout` raises). Both mean "someone else
+ *  held a conflicting lock", which is transient by definition. */
+const RETRYABLE_LOCK_CODES = new Set(['40P01', '55P03']);
+
+/**
+ * Apply the schema DDL, retrying a lock conflict.
+ *
+ * Split out of ensurePgSchema so the retry is testable without a database.
+ * `sleep` is injectable for the same reason — the tests must not actually wait
+ * out the backoff.
+ */
+export async function applySchemaWithRetry(
+  run: (sql: string) => Promise<unknown>,
+  sql: string,
+  opts: { maxAttempts?: number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<number> {
+  const maxAttempts = opts.maxAttempts ?? SCHEMA_MAX_ATTEMPTS;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((res) => setTimeout(res, ms)));
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await run(sql);
+      return attempt;
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      if (!code || !RETRYABLE_LOCK_CODES.has(code) || attempt >= maxAttempts) throw err;
+      // Jittered backoff. Without the jitter, two pods that deadlocked together
+      // wake together and deadlock again on the same schedule.
+      const backoff = Math.min(250 * 2 ** (attempt - 1), 4000) + Math.floor(Math.random() * 250);
+      await sleep(backoff);
+    }
+  }
+}
 
 export async function ensurePgSchema(databaseUrl?: string): Promise<void> {
   const url = databaseUrl || process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
@@ -146,7 +185,21 @@ export async function ensurePgSchema(databaseUrl?: string): Promise<void> {
           await new Promise((res) => setTimeout(res, 500));
         }
         try {
-          await client.query(PG_SCHEMA);
+          // Retry on a lock conflict. The advisory lock above serialises the
+          // APPLIERS, but it cannot serialise the rest of the cluster: during a
+          // rolling deploy the outgoing pods are still serving traffic, so an
+          // ordinary SELECT holds AccessShareLock on a table this DDL wants
+          // AccessExclusiveLock on. Observed in production as 40P01 between
+          // memory_chunks and session_metadata, which exited the pod and
+          // crash-looped it through every rollout.
+          //
+          // The window is wide because PG_SCHEMA is one multi-statement string,
+          // which Postgres runs as a single implicit transaction — every lock it
+          // takes is held until the last statement. Splitting it is not safe
+          // (the body contains $$-quoted blocks), and the DDL is idempotent, so
+          // retrying the whole thing is both correct and much simpler than
+          // making the window narrower.
+          await applySchemaWithRetry((sql) => client.query(sql), PG_SCHEMA);
         } finally {
           if (held) await client.query('SELECT pg_advisory_unlock($1)', [SCHEMA_LOCK_KEY]).catch(() => {});
         }
