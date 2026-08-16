@@ -10,6 +10,13 @@
 # from the server path. The bundled `db` service means self-host is still a
 # single `docker compose up` with no external database to provision.
 #
+# FIRST RUN BUILDS FROM SOURCE AND TAKES SEVERAL MINUTES. The `server` service
+# below has `build:`, not `image:` — there is no published server image to pull
+# (ghcr.io/munhq/chat-recall-cloud exists but is a private deployment artifact
+# for the maintainer's own cluster, not a distribution channel). So the first
+# `docker compose up` compiles the TypeScript monorepo inside the container. It
+# looks stalled and is not; later runs hit the layer cache and start in seconds.
+#
 # Quick start:
 #   1. echo "ADMIN_KEY=$(openssl rand -hex 24)"        >> .env
 #      echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)" >> .env
