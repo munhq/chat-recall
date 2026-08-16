@@ -32,6 +32,33 @@ import { sendMail, resetPasswordMail } from './mailer.js';
  *  that a link sitting in an inbox is not a standing credential. */
 const RESET_TOKEN_TTL_SECONDS = 60 * 60;
 
+/**
+ * Social providers, each enabled only when BOTH its id and secret are present.
+ *
+ * Same shape as the SMTP config: the chart mounts these keys optional and the
+ * ansible task creates them empty, so an unconfigured provider is the normal
+ * state of a fresh install. Passing a provider with an empty clientId makes
+ * better-auth advertise a button that fails at the IdP with an opaque error,
+ * which is worse than not offering it at all — hence the pair check rather
+ * than a truthy check on one variable.
+ */
+function socialProviders(): Record<string, { clientId: string; clientSecret: string }> {
+  const out: Record<string, { clientId: string; clientSecret: string }> = {};
+  const pairs = {
+    google: [process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET],
+    github: [process.env.GITHUB_CLIENT_ID, process.env.GITHUB_CLIENT_SECRET],
+  } as const;
+  for (const [name, [id, secret]] of Object.entries(pairs)) {
+    if (id && secret) out[name] = { clientId: id, clientSecret: secret };
+  }
+  return out;
+}
+
+/** Which social providers are live, for the client to render buttons for. */
+export function enabledSocialProviders(): string[] {
+  return Object.keys(socialProviders());
+}
+
 /** Client id the CLI presents on the device flow. Not a secret (a public
  *  client, like chat-recall-web was in Keycloak) — validateClient pins it so
  *  garbage client ids fail loudly instead of minting codes. */
@@ -84,6 +111,28 @@ function createAuth() {
         // a normal page load and never has to parse the token out of a path.
         const target = `${url}${url.includes('?') ? '&' : '?'}callbackURL=${encodeURIComponent('/app?view=reset')}`;
         await sendMail(resetPasswordMail(user.email, target, RESET_TOKEN_TTL_SECONDS / 60));
+      },
+    },
+    socialProviders: socialProviders(),
+    account: {
+      accountLinking: {
+        // Link a social sign-in to the EXISTING account with the same email
+        // instead of creating a second one. This is not cosmetic here: the
+        // identity contract ties teams.owner_sub, memberships.user_sub,
+        // agent_tokens.user_sub and author_sub to user.id, so a duplicate
+        // account splits ownership of synced data — half the history under one
+        // id, half under another, with no UI to merge them.
+        enabled: true,
+        // Both providers return a PRIMARY VERIFIED address (better-auth's
+        // github provider reads the verified list rather than the profile
+        // field), so matching on email is safe. Adding a provider that returns
+        // an unverified email to this list would let someone claim an account
+        // by setting that address at the IdP.
+        trustedProviders: ['google', 'github'],
+        // Left at the default (false) deliberately, and stated because the
+        // default is the security-relevant choice: true would link accounts
+        // whose emails do NOT match, which is account takeover by design.
+        allowDifferentEmails: false,
       },
     },
     session: {
