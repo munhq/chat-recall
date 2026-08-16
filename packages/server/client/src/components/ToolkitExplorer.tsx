@@ -1008,7 +1008,7 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
         style={inline ? {
           width: '100%', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden',
         } : {
-          width: 'min(1100px, 96vw)', maxHeight: '92vh',
+          width: 'min(1100px, 96vw)', maxHeight: '92dvh',
           background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-2)',
           borderRadius: 'var(--cr-radius-md)', display: 'flex', flexDirection: 'column',
           boxShadow: '0 24px 60px rgba(0,0,0,0.5)',
@@ -1084,8 +1084,9 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
           />
         </div>
 
-        {/* Body */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '12px 18px' }}>
+        {/* Body. overflowX is explicit: the matrix grows one column group per
+          * device, so on a phone it must scroll sideways rather than crush. */}
+        <div className="cr-hscroll" style={{ flex: 1, overflowY: 'auto', padding: '12px 18px' }}>
           {oneClickMsg && (
             <div
               data-testid="toolkit-sync-everything-msg"
@@ -1109,10 +1110,13 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
             </div>
           )}
           {matrix && rows.length > 0 && (
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <table style={{ width: '100%', minWidth: 'max-content', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead style={{ position: 'sticky', top: 0, background: 'var(--cr-ink-1)', zIndex: 1 }}>
                 <tr>
-                  <th rowSpan={2} style={{ ...thStyle('left'), borderBottom: '1px solid var(--cr-line-1)' }}>Name</th>
+                  {/* Sticky so the row label survives a sideways scroll — without
+                    * it you scroll to a checkbox and can no longer see what it
+                    * belongs to. */}
+                  <th rowSpan={2} className="cr-sticky-col" style={{ ...thStyle('left'), borderBottom: '1px solid var(--cr-line-1)' }}>Name</th>
                   {devices.map(d => {
                     // Offline column: everything you tick here queues fine but
                     // sits unapplied until that machine's agent runs again. Say
@@ -1147,7 +1151,7 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
               <tbody>
                 {rows.map(row => (
                   <tr key={row.name} style={{ borderTop: '1px solid var(--cr-line-1)' }}>
-                    <td style={tdStyle('left')}>
+                    <td className="cr-sticky-col" style={tdStyle('left')}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <code style={{ color: 'var(--cr-fg-1)' }}>{row.name}</code>
                         {row.incomplete && <Chip kind="warn" size="sm">{row.presentCount}/{row.supportedCount}</Chip>}
