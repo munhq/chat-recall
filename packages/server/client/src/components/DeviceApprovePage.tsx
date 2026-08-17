@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useDocumentScroll } from '../hooks/useDocumentScroll';
 import { deviceDecision } from '../services/auth';
 
 /**
@@ -8,6 +9,7 @@ import { deviceDecision } from '../services/auth';
  * finishes the login by itself — this page is done after one click.
  */
 export default function DeviceApprovePage() {
+  useDocumentScroll();
   const userCode = new URLSearchParams(window.location.search).get('user_code') || '';
   const [state, setState] = useState<'idle' | 'busy' | 'approved' | 'denied' | 'error'>(userCode ? 'idle' : 'error');
   const [error, setError] = useState<string | null>(userCode ? null : 'Missing user_code in the URL — copy the full link from the terminal.');

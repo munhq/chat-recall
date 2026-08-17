@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useDocumentScroll } from '../hooks/useDocumentScroll';
 import { signInEmail, signUpEmail, requestPasswordReset, resetPassword, socialProviders, signInSocial } from '../services/auth';
 
 /**
@@ -79,6 +80,8 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
   const resetting = mode === 'reset';
 
   const go = (m: Mode) => { setMode(m); setError(null); setNotice(null); };
+
+  useDocumentScroll();
 
   // Ask once at mount. The email form renders immediately regardless, so a slow
   // or failed capabilities call delays nothing — the buttons just appear late
