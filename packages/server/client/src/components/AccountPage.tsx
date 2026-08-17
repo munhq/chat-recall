@@ -8,7 +8,6 @@ import {
   type Entitlement, type PlanInfo,
 } from '../services/api';
 import { Button } from './primitives';
-import { isCloud, logout } from '../services/auth';
 
 /**
  * Cloud Account view: subscription status, connected devices (sync-token
@@ -189,23 +188,6 @@ export function SubscribeScreen() {
         )}
       </div>
 
-      {/* Signing out had NO control anywhere in the app: logout() was exported
-          and never called, so the only way out was deleting the cookie by hand.
-          It lives on Account because that is where people look, and because the
-          session is an httpOnly cookie the button is the only thing that can
-          end it — there is no local token to clear. */}
-      {isCloud() && (
-        <section className="acct-card">
-          <h2>Session</h2>
-          <p className="muted">
-            Signs this browser out. Your CLI keeps working — device tokens are
-            separate and are revoked from Connected machines above.
-          </p>
-          <div className="acct-actions">
-            <Button variant="ghost" onClick={() => logout()}>Sign out</Button>
-          </div>
-        </section>
-      )}
     </div>
   );
 }
