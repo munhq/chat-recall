@@ -29,13 +29,11 @@
       } catch (e) { /* storage blocked — keep dark default */ }
     </script>
     <title>chat-recall — one memory across every AI coding tool</title>
-    <!-- This document is the SPA shell: everything below #root is rendered by
-         JavaScript, so a crawler or an AI agent that fetches this URL sees only
-         what is in <head> plus the <noscript> below. That is not hypothetical —
-         an agent asked to "install this" from /app got the title and nothing
-         else, and had no way to learn the install command. Hence the
-         description, the structured data and the noscript: they are the only
-         content a non-executing fetcher can read. -->
+    <!-- SPA shell: everything below #root is rendered by JavaScript, so a
+         crawler or a non-executing agent sees only this head and the fallback
+         in the body. Those are therefore the only place the install command can
+         live for a reader that cannot run scripts. Keep both in step with
+         /llms.txt, which carries the longer version. -->
     <meta name="description" content="chat-recall indexes your Claude Code, Gemini CLI, Codex, OpenCode and Antigravity sessions into one searchable history and exposes it to your agent over MCP. Install with: npx chat-recall init" />
     <link rel="canonical" href="https://chatrecall.dev/app" />
     <meta property="og:type" content="website" />
@@ -43,10 +41,8 @@
     <meta property="og:description" content="One searchable history across Claude Code, Gemini CLI, Codex, OpenCode and Antigravity, exposed to your agent over MCP." />
     <meta property="og:url" content="https://chatrecall.dev/" />
     <meta name="twitter:card" content="summary" />
-    <!-- Machine-readable install instructions. schema.org/SoftwareApplication is
-         what search engines and assistants look for to answer "how do I install
-         this"; the free-form llms.txt at the site root carries the longer
-         agent runbook. -->
+    <!-- schema.org SoftwareApplication: what search engines and assistants read
+         to answer "how do I install this". -->
     <script type="application/ld+json">
     {
       "@context": "https://schema.org",
