@@ -195,7 +195,12 @@ function AppInner() {
     // SUPERSET of every real deployment's views, or deep links to a missing
     // entry get snapped to ?view=search before the server can answer
     // ('account' was absent → ?view=account never worked as a link).
-    if (!f) return new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'security', 'settings', 'account', 'connect', 'admin', 'team']);
+    // 'admin' is deliberately NOT in this pre-answer superset. Every other view
+    // failing open is harmless — the panel renders and fills in. Admin is the one
+    // that cannot: a deep link or bookmark to ?view=admin mounted the panel
+    // before isOperator resolved, so a non-operator got a request they could not
+    // satisfy. It is added below, once capabilities say who they are.
+    if (!f) return new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'security', 'settings', 'account', 'connect', 'team']);
     const out = new Set<ViewMode>();
     out.add('home');    // command center is always available
     out.add('connect'); // installer's token page — must never be capability-gated
