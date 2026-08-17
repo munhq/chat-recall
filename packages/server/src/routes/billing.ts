@@ -3,12 +3,17 @@
  *
  *   POST /api/billing/checkout   → create a Stripe Checkout Session (subscription
  *                                  mode) for the caller's tenant; returns { url }.
+ *                                  Body: { plan?: string, seats?: number }.
  *   POST /api/billing/webhook    → Stripe → us: verify signature, map subscription
  *                                  events onto the tenant's entitlement row.
+ *   GET  /api/billing/plans      → PUBLIC catalogue with live Stripe amounts.
  *
  * Design constraints:
- *   - Pricing is NEVER hardcoded. The line item is STRIPE_PRICE_ID (env). This
- *     file never sees an amount; Stripe owns the catalog.
+ *   - Pricing is NEVER hardcoded. Plan keys map to Stripe price ids via
+ *     BILLING_PLANS (see util/billing-plans.ts); amounts are read back from
+ *     Stripe. This file never sees an amount; Stripe owns the catalog.
+ *   - Seats are validated SERVER-SIDE against the tenant's real member count.
+ *     A client-supplied seat count is a discount request, not a fact.
  *   - The Stripe client is LAZY: constructed only when STRIPE_SECRET_KEY is set,
  *     so the server boots (and self-host runs) with Stripe entirely absent.
  *   - The webhook uses a RAW body (signature is over the exact bytes); the route
@@ -29,6 +34,7 @@ import type Stripe from 'stripe';
 import { createControlPlane, type EntitlementStatus } from '../imports.js';
 import { requireUser } from '../middleware/auth.js';
 import { billingEnabled, openBeta } from '../util/billing.js';
+import { planCatalogue, resolveLine, isPlanError, trialDays } from '../util/billing-plans.js';
 
 const router = express.Router();
 
@@ -203,9 +209,8 @@ router.post('/checkout', async (req, res) => {
   if (!billingEnabled()) {
     return res.status(501).json({ error: 'billing not enabled (STRIPE_SECRET_KEY unset)' });
   }
-  const priceId = process.env.STRIPE_PRICE_ID;
-  if (!priceId) {
-    return res.status(501).json({ error: 'billing misconfigured (STRIPE_PRICE_ID unset)' });
+  if (!planCatalogue().length) {
+    return res.status(501).json({ error: 'billing misconfigured (no BILLING_PLANS and no STRIPE_PRICE_ID)' });
   }
   const user = await requireUser(req, res);
   if (!user) return; // 401 already sent
@@ -217,20 +222,52 @@ router.post('/checkout', async (req, res) => {
     const tenant = await resolveBillingTenant(req, res, cp, user.sub);
     if (!tenant) return; // 4xx already sent
 
+    // Seats are validated against the REAL member count, not the client's word
+    // for it. listMembers can legitimately fail on a brand-new tenant, and a
+    // seat floor of 1 is the safe degradation — it never over-charges.
+    let memberCount = 1;
+    try {
+      const members = await (cp as unknown as { listMembers(t: string): Promise<unknown[]> }).listMembers(tenant);
+      if (Array.isArray(members) && members.length > 0) memberCount = members.length;
+    } catch { /* fall back to 1 — see above */ }
+
+    const line = resolveLine(
+      typeof req.body?.plan === 'string' ? req.body.plan : null,
+      req.body?.seats,
+      memberCount,
+    );
+    if (isPlanError(line)) {
+      // 409 for enterprise: the request is well-formed, the plan simply is not
+      // buyable here. The contact address goes back so the UI can link it.
+      if (line.code === 'contact_only') {
+        return res.status(409).json({ error: line.message, contact: line.contact, plan: req.body?.plan });
+      }
+      return res.status(400).json({ error: line.message, code: line.code });
+    }
+
     const stripe = await getStripe();
     if (!stripe) return res.status(501).json({ error: 'billing not enabled' });
 
     // Card-required free trial: the customer enters a card now, gets
     // TRIAL_DAYS free, then auto-converts to paid. No free tier, minimal abuse.
-    const trialDays = Number(process.env.STRIPE_TRIAL_DAYS) || 14;
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
-      line_items: [{ price: priceId, quantity: 1 }],
+      line_items: [{ price: line.plan.priceId as string, quantity: line.quantity }],
+      // Lets a coupon be redeemed at checkout. This is what makes launch promos
+      // and referral discounts possible WITHOUT building a referral system:
+      // codes are created in the Stripe dashboard and honoured here.
+      allow_promotion_codes: true,
       // client_reference_id ties the resulting subscription back to OUR tenant;
       // we also stamp it into the subscription metadata so later subscription.*
       // events (which lack client_reference_id) can resolve the tenant.
       client_reference_id: tenant,
-      subscription_data: { metadata: { tenant }, trial_period_days: trialDays },
+      subscription_data: {
+        // plan + seats recorded on the subscription so a later webhook (and any
+        // support question) can tell WHICH plan was bought — the events
+        // themselves carry only the price id.
+        metadata: { tenant, plan: line.plan.key, seats: String(line.quantity) },
+        trial_period_days: trialDays(),
+      },
       success_url: process.env.STRIPE_SUCCESS_URL || 'https://chat-recall.hotmun.com/?view=account&checkout=success',
       cancel_url: process.env.STRIPE_CANCEL_URL || 'https://chat-recall.hotmun.com/?view=account&checkout=cancel',
     });
@@ -355,16 +392,16 @@ router.post('/portal', async (req, res) => {
  */
 router.get('/plan', async (_req, res) => {
   const priceId = process.env.STRIPE_PRICE_ID;
-  const trialDays = Number(process.env.STRIPE_TRIAL_DAYS) || 14;
-  if (!billingEnabled() || !priceId) return res.json({ configured: false, trialDays, openBeta: openBeta() });
+  const days = trialDays();
+  if (!billingEnabled() || !priceId) return res.json({ configured: false, trialDays: days, openBeta: openBeta() });
   try {
     const stripe = await getStripe();
-    if (!stripe) return res.json({ configured: false, trialDays, openBeta: openBeta() });
+    if (!stripe) return res.json({ configured: false, trialDays: days, openBeta: openBeta() });
     const price = await stripe.prices.retrieve(priceId, { expand: ['product'] });
     const product = price.product as Stripe.Product | undefined;
     res.json({
       configured: true,
-      trialDays,
+      trialDays: days,
       openBeta: openBeta(),
       amount: price.unit_amount,
       currency: price.currency,
@@ -373,7 +410,71 @@ router.get('/plan', async (_req, res) => {
     });
   } catch (err) {
     // Don't leak Stripe errors to a public endpoint; degrade to unconfigured.
-    res.json({ configured: false, trialDays, openBeta: openBeta(), error: (err as Error).message });
+    res.json({ configured: false, trialDays: days, openBeta: openBeta(), error: (err as Error).message });
+  }
+});
+
+/**
+ * GET /api/billing/plans — PUBLIC. The whole catalogue, each self-serve plan
+ * carrying its LIVE Stripe amount, so a pricing page never hardcodes a number
+ * and a dashboard price edit needs no deploy.
+ *
+ * Contact-only plans (Enterprise) are returned with `selfServe: false` and their
+ * contact address instead of an amount, so the UI renders "Talk to us" rather
+ * than a buy button it cannot honour.
+ *
+ * Degrades to `configured: false` rather than erroring: the marketing page must
+ * still render when Stripe is absent, which is the normal state on self-host.
+ */
+router.get('/plans', async (_req, res) => {
+  const days = trialDays();
+  const catalogue = planCatalogue();
+  const base = { trialDays: days, openBeta: openBeta(), billingEnabled: billingEnabled() };
+
+  if (!billingEnabled() || !catalogue.length) {
+    return res.json({ ...base, configured: false, plans: [] });
+  }
+  try {
+    const stripe = await getStripe();
+    if (!stripe) return res.json({ ...base, configured: false, plans: [] });
+
+    // One retrieve per priced plan. A catalogue is a handful of entries, and
+    // Stripe is the source of truth for the amount, so this is deliberate.
+    const plans = await Promise.all(
+      catalogue.map(async (p) => {
+        if (!p.priceId) {
+          return {
+            key: p.key, label: p.label, selfServe: false,
+            contact: p.contact ?? null, seats: p.seats,
+          };
+        }
+        try {
+          const price = await stripe.prices.retrieve(p.priceId, { expand: ['product'] });
+          const product = price.product as Stripe.Product | undefined;
+          return {
+            key: p.key,
+            label: p.label,
+            selfServe: true,
+            seats: p.seats,
+            minSeats: p.minSeats ?? null,
+            maxSeats: p.maxSeats ?? null,
+            amount: price.unit_amount,
+            currency: price.currency,
+            interval: price.recurring?.interval ?? null,
+            intervalCount: price.recurring?.interval_count ?? null,
+            productName:
+              product && typeof product === 'object' && 'name' in product ? product.name : null,
+          };
+        } catch {
+          // A stale price id must not blank the entire pricing page — drop that
+          // one entry and keep serving the rest.
+          return null;
+        }
+      }),
+    );
+    res.json({ ...base, configured: true, plans: plans.filter(Boolean) });
+  } catch (err) {
+    res.json({ ...base, configured: false, plans: [], error: (err as Error).message });
   }
 });
 
