@@ -9,6 +9,7 @@
  * No navigation, no forms — the user is mid-command in a terminal.
  */
 import React, { useEffect, useRef, useState } from 'react';
+import { useDocumentScroll } from '../hooks/useDocumentScroll';
 import { Button } from './primitives';
 import { getMe, createTeam, mintDeviceToken, getSyncStatus } from '../services/api';
 
@@ -23,6 +24,7 @@ function deviceFromUrl(): string {
 }
 
 export default function ConnectTokenPage() {
+  useDocumentScroll();
   const [state, setState] = useState<'working' | 'done' | 'error'>('working');
   const [token, setToken] = useState('');
   const [deviceId, setDeviceId] = useState('');
