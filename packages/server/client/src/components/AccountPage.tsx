@@ -8,6 +8,7 @@ import {
   type Entitlement, type PlanInfo,
 } from '../services/api';
 import { Button } from './primitives';
+import { isCloud, logout } from '../services/auth';
 
 /**
  * Cloud Account view: subscription status, connected devices (sync-token
@@ -32,7 +33,16 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
       <style>{ACCT_CSS}</style>
       <div className="acct-head">
         <h1>Account</h1>
-        <Button variant="ghost" onClick={onClose}>← Back</Button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {/* Sign-out lives here as well as in the sidebar chip, because this
+              view renders WITHOUT the sidebar (App.tsx renders AccountPage in a
+              bare app-row). Without this, the page a user opens looking for
+              account controls is the one page where leaving is impossible. */}
+          {isCloud() && (
+            <Button variant="ghost" onClick={() => logout()} data-testid="account-signout">Sign out</Button>
+          )}
+          <Button variant="ghost" onClick={onClose}>← Back</Button>
+        </div>
       </div>
       {err && <div className="acct-err">{err}</div>}
 
