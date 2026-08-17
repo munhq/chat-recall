@@ -24,7 +24,7 @@
 
 import express from 'express';
 import { createControlPlane } from '../imports.js';
-import { requireUser } from '../middleware/auth.js';
+import { isOperatorRequest, requireUser } from '../middleware/auth.js';
 import { loadMemberships, createTeamFor } from '../util/memberships.js';
 import { sensitiveLimiter } from '../middleware/rate-limit.js';
 
@@ -47,7 +47,11 @@ function adminOk(req: express.Request, res: express.Response): boolean {
 router.get('/me', async (req, res) => {
   const user = await requireUser(req, res);
   if (!user) return;
-  res.json({ user, teams: await loadMemberships(user.sub) });
+  // `isOperator` so the client can HIDE the admin console rather than render it
+  // and let the server refuse. Computed here, never trusted from the client:
+  // every admin route still calls requireAdmin(), so flipping this in devtools
+  // reveals an empty panel and nothing else.
+  res.json({ user, isOperator: await isOperatorRequest(req), teams: await loadMemberships(user.sub) });
 });
 
 router.post('/teams', async (req, res) => {
