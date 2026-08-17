@@ -5,16 +5,20 @@
 # actually runs.
 #
 # ── Where each platform runs, and why ────────────────────────────────────────
-# Linux runs on `hotmun-arc` (self-hosted ARC in the k3s cluster), so it costs
-# no billed minutes and stays on EVERY push — the always-on signal.
+# All three platforms run on GitHub-hosted runners. This repository is public,
+# and GitHub gives public repositories unlimited free minutes on standard
+# runners — Linux, macOS and Windows alike. Nothing here is billed.
 #
-# macOS and Windows have no self-hosted capacity (the ARC scale set is a single
-# Linux/amd64 pool on Linux nodes), so they are the only GitHub-hosted jobs left,
-# billing at ×10 and ×2 with each job rounded up to a full minute. Measured over
-# 30 days they cost ~1044 billed minutes — 780 of it macOS — for ~15s of real
-# work per run, because they fired on every push to main.
+# Linux previously ran on `hotmun-arc`, the self-hosted ARC pool in the k3s
+# cluster, to avoid billed minutes. That stopped working the moment the
+# repository went public: GitHub withholds an organisation's self-hosted
+# runners from public repositories, so every run queued for ever. Do not put it
+# back — allowing it would let a fork's pull request execute code inside the
+# production cluster.
 #
-# They now run only when someone is about to ship or explicitly asks:
+# macOS and Windows stay gated to the paths below rather than every push. They
+# are free now, but each adds minutes of wall-clock to a push for ~15s of real
+# work, and Linux already catches almost everything:
 #   * workflow_dispatch — on demand, before you hand the tarball to anyone;
 #   * a `v*` tag        — the release gate, once releases are tagged;
 #   * the daily cron    — early warning that main still installs everywhere.
@@ -52,8 +56,8 @@ jobs:
         runner: >-
           ${{ fromJSON(
                 (github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v'))
-                && '["hotmun-arc","macos-latest","windows-latest"]'
-                || '["hotmun-arc"]'
+                && '["ubuntu-latest","macos-latest","windows-latest"]'
+                || '["ubuntu-latest"]'
               ) }}
     runs-on: ${{ matrix.runner }}
     steps:
