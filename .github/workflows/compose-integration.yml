@@ -18,7 +18,8 @@ on:
 
 jobs:
   compose-e2e:
-    runs-on: munhq-arc
+    # GitHub-hosted: self-hosted runners are unavailable to public repos.
+    runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
       ADMIN_KEY: ci-admin-0123456789abcdef0123
