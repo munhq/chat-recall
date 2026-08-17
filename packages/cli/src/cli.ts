@@ -15,8 +15,27 @@ import { getDataDir, getIdentityFilePath, getHooksDir } from '@chat-recall/engin
 import { claudeBackend } from '@chat-recall/engine/core/backends/claude.js';
 import { claudeHomeDirs } from '@chat-recall/engine/core/tool-paths.js';
 import { resolveProjectId } from '@chat-recall/engine/core/project-resolver.js';
+import { tierAll, type ScoreTier } from '@chat-recall/engine/core/score-tier.js';
 import { loadAllCredentials, type Credentials } from './sync-client.js';
 import { printUpdateNotice, updateNotice } from './update-notice.js';
+
+/**
+ * Colour a relevance tier for the terminal.
+ *
+ * Why not a percentage: FTS ranks and vector distances normalise into ranges
+ * orders of magnitude apart, so the old `score * 100` printed "2/100" for the
+ * single best match in the set. Every user reads that as a broken search. The
+ * tier says what the number actually supports — how this result compares with
+ * the best one in the same batch — and nothing it does not.
+ */
+function matchLabel(tier: ScoreTier | undefined): string {
+  switch (tier) {
+    case 'strong': return chalk.green('strong');
+    case 'good': return chalk.yellow('good');
+    case 'weak': return chalk.dim('weak');
+    default: return chalk.dim('unranked');
+  }
+}
 
 // Load .env configuration. quiet: dotenv 17 writes its banner to STDOUT, which
 // corrupts every machine-readable command (`chat-recall search … | jq` parsed
@@ -581,6 +600,11 @@ program
       console.log(`${chalk.bold('Results for:')} "${query}"`);
       console.log();
 
+      // Relative tiers, not an absolute percentage. See core/score-tier.ts: BM25
+      // ranks and vector distances land in completely different numeric ranges,
+      // so `score * 100` printed 2/100 for a strong hit and read as "broken".
+      const tiers = tierAll(results);
+
       for (let i = 0; i < results.length; i++) {
         const result = results[i];
 
@@ -590,11 +614,9 @@ program
         let title = (result.firstPrompt || '').replace(/\n/g, ' ').trim();
         if (title.length > 80) title = title.slice(0, 80) + '...';
 
-        const scorePct = Math.round(result.score * 100);
-
         console.log(`${chalk.bold.cyan(`#${i + 1}`)} ${title}`);
         if (projectPath) console.log(`   ${chalk.dim('Project:')} ${projectPath}`);
-        console.log(`   ${chalk.dim('Score:')} ${scorePct}/100`);
+        console.log(`   ${chalk.dim('Match:')} ${matchLabel(tiers[i])}`);
 
         if (result.summary) {
           let summary = result.summary.replace(/\n/g, ' ').trim();
@@ -778,9 +800,11 @@ memory
       console.log(`${chalk.bold('Memory search:')} "${query}"`);
       console.log();
 
+      // Same relative tiering as `search` — see core/score-tier.ts.
+      const tiers = tierAll(results);
+
       for (let i = 0; i < results.length; i++) {
         const r = results[i];
-        const scorePct = Math.round(r.score * 100);
 
         const typeColor = ({
           session: chalk.blue,
@@ -806,7 +830,7 @@ memory
         }
 
         const typeSuffix = r.chunkType ? `  ${chalk.dim('Type:')} ${r.chunkType}` : '';
-        console.log(`   ${chalk.dim('Score:')} ${scorePct}/100${typeSuffix}`);
+        console.log(`   ${chalk.dim('Match:')} ${matchLabel(tiers[i])}${typeSuffix}`);
 
         let preview = (r.text || '').replace(/\n/g, ' ').trim();
         if (preview.length > 150) preview = preview.slice(0, 147) + '...';
