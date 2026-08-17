@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import UserMenu from './UserMenu';
 import { IconButton, Input, Logo, Button, Avatar } from './primitives';
 import { getSyncStatus } from '../services/api';
 
@@ -191,21 +192,7 @@ export default function TopBar({ view, setView, enabledViews, query, setQuery, s
             style={view === 'settings' ? { color: 'var(--cr-brand-500)' } : undefined}
           />
         )}
-        {(!enabledViews || enabledViews.has('account')) ? (
-          <button
-            className="cr-topbar-avatar"
-            title="Account"
-            onClick={() => setView('account')}
-            aria-label="Account"
-            style={{ marginLeft: 4, background: 'none', border: 'none', cursor: 'pointer', padding: 0, borderRadius: '50%', outline: view === 'account' ? '2px solid var(--cr-brand-500)' : 'none' }}
-          >
-            <Avatar name="User" size={28} />
-          </button>
-        ) : (
-          <div className="cr-topbar-avatar" style={{ marginLeft: 4 }}>
-            <Avatar name="User" size={28} />
-          </div>
-        )}
+        <UserMenu onAccount={() => setView('account')} />
       </div>
     </header>
   );

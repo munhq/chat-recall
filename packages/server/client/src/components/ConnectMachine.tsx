@@ -162,11 +162,11 @@ export default function ConnectMachine({ compact, onFirstData }: { compact?: boo
 
       <div style={{ marginTop: 12 }}>
         <div style={{ fontSize: 13, color: 'var(--cr-fg-2)' }}>
-          Run this on the machine with your sessions — it installs the CLI (Node 18+, served by this
-          server, always version-matched), opens your token page, and syncs the moment you paste the
-          token back into the terminal:
+          Run this on the machine with your sessions. It installs the CLI from npm (Node 18+),
+          detects which AI tools you have, registers the MCP server, installs the recall skills,
+          and syncs once you approve the login in your browser:
         </div>
-        <CopyBlock text={`curl -fsSL ${origin}/install.sh | sh`} />
+        <CopyBlock text={`npx chat-recall init --server ${origin}`} />
         <div style={{ fontSize: 13, color: 'var(--cr-fg-2)', marginTop: 10 }}>
           Already have the CLI installed? <code>chat-recall login {origin}</code> connects without reinstalling.
         </div>
