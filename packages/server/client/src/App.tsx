@@ -169,6 +169,9 @@ function AppInner() {
   // views (activity, toolkit, settings, projects). Defaults to everything-on
   // until /api/capabilities answers, so local mode renders unchanged.
   const [capabilities, setCapabilities] = useState<ServerCapabilities | null>(null);
+  // Whether to OFFER the admin console at all. Defaults false so the entry
+  // never flashes for the ~everyone who is not an operator.
+  const [isOperator, setIsOperator] = useState(false);
   useEffect(() => { void getCapabilities().then(setCapabilities); }, []);
   // Cloud multi-team: the server needs `x-team` to resolve a >1-team user to a
   // tenant (else every data route 400s). Pick the first membership once so the
@@ -183,7 +186,8 @@ function AppInner() {
       const slugs = me.teams.map((t) => t.team_slug);
       const cur = getActiveTeam();
       if (!cur || !slugs.includes(cur)) setActiveTeam(me.teams[0]?.team_slug ?? null);
-    }).catch(() => {});
+      setIsOperator(me.isOperator === true);
+    }).catch(() => { setIsOperator(false); });
   }, [capabilities]);
   const enabledViews = useMemo<Set<ViewMode>>(() => {
     const f = capabilities?.features;
@@ -195,7 +199,12 @@ function AppInner() {
     const out = new Set<ViewMode>();
     out.add('home');    // command center is always available
     out.add('connect'); // installer's token page — must never be capability-gated
-    out.add('admin');   // admin console is always available (auth checked via key)
+    // Operators only. It used to be added unconditionally, on the reasoning
+    // that the server checks a key anyway — but in cloud mode requireAdmin()
+    // never reads x-admin-key, so a non-operator got a panel, a 403, and a
+    // prompt for a key that would have been ignored. Showing a door that
+    // cannot open is worse than showing no door.
+    if (isOperator) out.add('admin');
     if (f.codeIntel || f.conversations) out.add('projects');  // the project workspace spine
     if (f.conversations) out.add('search');
     if (f.memory) out.add('memory');

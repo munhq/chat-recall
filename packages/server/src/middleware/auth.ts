@@ -199,6 +199,25 @@ export const ADMIN_ROLE = 'chat-recall-admin';
  *
  * Returns true when allowed; otherwise sends 401/403 and returns false.
  */
+/**
+ * Is this request an operator, without sending a response?
+ *
+ * requireAdmin() answers the same question but writes a 401/403 as a side
+ * effect, so it cannot be used to DECIDE something — only to guard a route.
+ * The UI needs the answer in order to hide the admin console, which is the
+ * difference between a product that has no admin panel for you and one that
+ * shows you a panel and then refuses you.
+ */
+export async function isOperatorRequest(req: Request): Promise<boolean> {
+  if (isUserProvider()) {
+    if (process.env.AUTH_DEV_USER === '1' && req.get('x-dev-admin') === '1') return true;
+    const user = await verifyUser(req);
+    return !!user?.roles.includes(ADMIN_ROLE);
+  }
+  const key = process.env.ADMIN_KEY;
+  return !!key && (req.get('x-admin-key') || '') === key;
+}
+
 export async function requireAdmin(req: Request, res: Response): Promise<boolean> {
   if (isUserProvider()) {
     if (process.env.AUTH_DEV_USER === '1' && req.get('x-dev-admin') === '1') return true;
