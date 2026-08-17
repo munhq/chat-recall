@@ -85,6 +85,35 @@ export default function AdminPage({ onClose }: AdminPageProps) {
     setMetrics(null);
   };
 
+  // The server accepted the session and refused the ACCOUNT, so there is no key
+  // to type — requireAdmin() only consults x-admin-key on the self-host path.
+  // This state was already being computed and never rendered, which is why a
+  // signed-in non-operator was shown a credential prompt that could not work.
+  if (needsOperatorAccount && !loading) {
+    return (
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--cr-ink-0)', padding: 20 }}>
+        <Card style={{ maxWidth: 440, width: '100%', padding: 28 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+            <span style={{ color: 'var(--cr-fg-3)', background: 'var(--cr-ink-2)', display: 'inline-flex', padding: 8, borderRadius: '50%' }}>
+              <Icon name="shield" size={24} />
+            </span>
+            <h3 style={{ margin: 0 }}>Not available on this account</h3>
+          </div>
+          <p style={{ fontSize: 13, color: 'var(--cr-fg-2)', lineHeight: 1.5, marginBottom: 20 }}>
+            This panel is for platform operators. You are signed in correctly —
+            this account just is not one. Nothing is wrong with your session, and
+            there is no key or setting on your side that changes it.
+          </p>
+          {onClose && (
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+              <Button variant="secondary" onClick={onClose}>Back</Button>
+            </div>
+          )}
+        </Card>
+      </div>
+    );
+  }
+
   if (!isAuthed && !loading) {
     return (
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--cr-ink-0)', padding: 20 }}>
