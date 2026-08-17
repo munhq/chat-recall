@@ -55,25 +55,23 @@ npm run web:dev                     # API on :5000, UI on :5174
 
 ### Self-host the server (docker compose)
 
-Two containers — the server plus a bundled **Postgres** (the compose is
-Postgres-only; data bind-mounts to `${PG_DATA_DIR}`). See the quick start at
-the top of `docker-compose.yml` (set `ADMIN_KEY`, mint a device token, then
-`chat-recall login <url> --token <ct_…>` from each machine).
+Everything on your own machine, no account, nothing sent anywhere:
 
-The default compose already ships a `pgvector/pgvector` Postgres service, so a
-plain `docker compose up` is self-contained.
+```bash
+git clone https://github.com/munhq/chat-recall && cd chat-recall
+echo "ADMIN_KEY=$(openssl rand -hex 24)"         >> .env
+echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)" >> .env
+docker compose up -d --build          # FIRST RUN BUILDS FROM SOURCE (minutes)
+```
 
-> **First run builds the server from source and takes several minutes.** The
-> compose file has `build:`, not `image:` — there is deliberately no published
-> server image to pull, so the first `docker compose up` compiles the TypeScript
-> monorepo inside the container. It looks stalled and is not. Later runs reuse
-> the layer cache and start in seconds.
+Then mint a device token and connect a machine — the full sequence, with
+troubleshooting, is in **[docs/SELF_HOSTING.md](docs/SELF_HOSTING.md)**.
 
-Bring-your-own-Postgres is also
-supported (it's how the hosted SaaS runs): point the server at an external
-database with `CHAT_RECALL_STORAGE=postgres` and `DATABASE_URL=postgres://…`
-(Postgres 16+; the `pgvector` extension is needed only for server-side semantic
-vectors — everything degrades to FTS without it).
+Two containers: the server plus a bundled `pgvector/pgvector` Postgres, so a
+plain `docker compose up` is self-contained. Bring-your-own-Postgres is
+supported too (it is how the hosted service runs): set `DATABASE_URL` to an
+external Postgres 16+. The `pgvector` extension is needed only for semantic
+search — everything degrades to full-text without it.
 
 ### Keep the index live (+ optional server sync)
 
@@ -117,7 +115,7 @@ chat-recall install-hooks --uninstall     # remove all of ours, leave third-part
 
 ## Companion: codeindex (auto-detected)
 
-There's a separate MCP server called **codeindex** (Zig binary, ~56 MB) by [@munhq](https://github.com/munhq/codeindex) that gives the agent code-level lookup. The two compose:
+There's a separate MCP server called **codeindex** (Zig binary, ~56 MB) by [munhq](https://github.com/munhq/codeindex) that gives the agent code-level lookup. The two compose:
 
 - **chat-recall** = session memory. *What have I worked on? What did we decide?*
 - **codeindex** = code memory. *Where is this symbol? Who calls it? What breaks if I change it?*
@@ -135,7 +133,7 @@ chat-recall companions status          # show what was detected
 chat-recall companions uninstall       # remove the binary + MCP registration
 ```
 
-The codeindex release artifacts are currently in a private repo, so `--with-codeindex` only works if you have access to it. The install is optional — chat-recall works entirely without codeindex; you just don't get the code-level tools.
+codeindex is open source (MIT) at [github.com/munhq/codeindex](https://github.com/munhq/codeindex). The install is optional — chat-recall works entirely without it; you just don't get the code-level tools.
 
 ## What gets indexed
 
