@@ -51,6 +51,8 @@ const NAV_ITEMS: Array<{ id: NavId; label: string; icon: string }> = [
 // Tool source list comes from the central tools module — adding a tool
 // there automatically appears here. See services/tools.ts.
 
+import SidebarUser from './SidebarUser';
+
 export default function Sidebar({
   tree, totalCount, selected, onSelect,
   toolFilter, setToolFilter,
@@ -212,6 +214,10 @@ export default function Sidebar({
           ))}
         </div>
       </div>
+
+      {/* Pinned below the scroll area: the sidebar is a flex column and the
+          div above is flex:1, so this stays on screen at any list length. */}
+      <SidebarUser onAccount={setView ? () => setView('account') : undefined} />
     </aside>
   );
 }
