@@ -2108,6 +2108,10 @@ export async function saveProjectsConfig(config: ProjectsConfig): Promise<{ ok: 
 // ── Account / billing / alerts (cloud) ───────────────────────────────────
 
 export interface MeInfo {
+  /** Platform operator (ADMIN_EMAILS on cloud). Used to HIDE the admin
+   *  console rather than render it and let the server refuse — never a
+   *  security boundary, since every admin route still calls requireAdmin(). */
+  isOperator?: boolean;
   user: { sub: string; email: string | null };
   teams: Array<{ team_slug: string; name?: string; role?: string }>;
 }

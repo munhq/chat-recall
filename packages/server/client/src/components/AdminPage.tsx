@@ -35,6 +35,7 @@ function relTime(ms?: number): string {
 export default function AdminPage({ onClose }: AdminPageProps) {
   const [adminKeyInput, setAdminKeyInput] = useState(() => localStorage.getItem('cr-admin-key') || '');
   const [isAuthed, setIsAuthed] = useState(false);
+  const [needsOperatorAccount, setNeedsOperatorAccount] = useState(false);
   const [metrics, setMetrics] = useState<AdminMetricsResponse | null>(null);
   const [projects, setProjects] = useState<CodeProject[]>([]);
   const [loading, setLoading] = useState(true);
@@ -56,6 +57,12 @@ export default function AdminPage({ onClose }: AdminPageProps) {
       setError(err.message || 'Authentication or query failed.');
       if (err.message?.includes('401') || err.message?.includes('403') || err.message?.includes('key')) {
         setIsAuthed(false);
+        // A 403 naming the operator role means the SERVER already accepted the
+        // session and rejected the account. requireAdmin() only consults
+        // x-admin-key on the self-host path (AUTH_PROVIDER=none); in cloud mode
+        // the header is never read, so prompting for a key here offers a remedy
+        // that cannot work — the correct key would be refused just the same.
+        setNeedsOperatorAccount(err.message?.includes('operator role') || err.message?.includes('403'));
       }
     } finally {
       setLoading(false);
