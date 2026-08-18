@@ -2,6 +2,43 @@
 
 All notable changes are tracked here, newest first. Versioning follows [SemVer](https://semver.org).
 
+## [0.5.0] — 2026-08-18
+
+### Self-hosted team features now require a licence key
+
+Solo self-hosting stays free and unlimited, forever — indexing, sync, search, the
+MCP server, the knowledge graph, secret scanning and diaries are all included.
+
+Collaboration is licensed: inviting a second member, shared project history, the
+team task board and per-member activity need a licence key on a self-hosted
+server. Email hello@munhq.com. Licences are offline Ed25519-signed keys with an
+optional seat count — no licence server, so air-gapped installs work and an
+outage at our end can never disable a running install.
+
+Existing self-hosted deployments are unaffected until they upgrade. The licence
+itself has not changed and remains Elastic License 2.0.
+
+### CLI
+
+- `chat-recall init` now connects to https://chatrecall.dev when no `--server` is
+  given. Previously it printed "Not logged in. Pass --server" and connected
+  nowhere, so the documented one-command install did not install anything.
+  Sign-in is an OAuth device flow you must approve in a browser; nothing is read,
+  indexed or uploaded before that, and declining no longer aborts the rest of
+  init. `--server` still overrides, and self-hosting is signposted inline.
+- `search` and `memory search` report a relative match tier — strong / good /
+  weak — instead of a percentage. The old display printed `Score: 2/100` for the
+  single best hit in a set, because FTS ranks and vector distances normalise into
+  ranges orders of magnitude apart. The fix already existed in
+  `core/score-tier.ts` and had never been wired up.
+
+### Fixed
+
+- Password reset was broken for every user on the hosted service. `sendResetPassword`
+  appended `callbackURL` to a URL better-auth had already put one on, so every
+  emailed link carried two, and the endpoint rejected the pair as an array. Reset
+  links rendered raw JSON instead of a password form.
+
 ## [0.2.0] — 2026-04-27 (launch)
 
 ### MCP tools — 27 → 35
