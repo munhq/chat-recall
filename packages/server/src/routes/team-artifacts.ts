@@ -27,7 +27,7 @@ import express from 'express';
 import { createControlPlane } from '../imports.js';
 import { requireUser } from '../middleware/auth.js';
 import { loadMemberships, createTeamFor } from '../util/memberships.js';
-import { entitledOr402 } from '../util/billing.js';
+import { entitledOr402, teamFeatureOr402 } from '../util/billing.js';
 
 const router = express.Router();
 
@@ -82,6 +82,10 @@ router.post('/:teamId/invite', async (req, res) => {
     }
     // Inviting teammates is paid value (grows the team) — gate on entitlement.
     if (!(await entitledOr402(res, req.params.teamId))) return;
+    // And on the TEAM LICENCE for self-host. This is the single chokepoint for a
+    // second member, so gating it gates collaboration itself; a solo self-hoster
+    // never reaches this route.
+    if (!teamFeatureOr402(res)) return;
     const r = await cp.createInvite(req.params.teamId, 'member', req.body?.emailHint || null, user.sub);
     res.json({ inviteToken: r.invite, expiresAt: new Date(r.expiresAt).toISOString() });
   } finally { await cp.close(); }
