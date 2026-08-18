@@ -59,6 +59,37 @@ export function enabledSocialProviders(): string[] {
   return Object.keys(socialProviders());
 }
 
+/** Where the reset link lands in the SPA after better-auth consumes the token. */
+export const RESET_CALLBACK_PATH = '/app?view=reset';
+
+/**
+ * Build the password-reset link that goes in the email.
+ *
+ * better-auth hands us `url` against its own basePath —
+ * `/api/auth/reset-password/<token>?callbackURL=…` — and that GET consumes the
+ * token and redirects the browser to the callback, so the SPA gets a normal page
+ * load and never parses a token out of a path.
+ *
+ * We must SET callbackURL, never APPEND it. better-auth ALWAYS emits its own
+ * `?callbackURL=`, blank when the caller passed no redirectTo, so appending
+ * produced two of them:
+ *
+ *   …/reset-password/TOK?callbackURL=&callbackURL=%2Fapp%3Fview%3Dreset
+ *
+ * The endpoint parses that as an array and answers VALIDATION_ERROR
+ * ("[query.callbackURL] Invalid input: expected string, received array"), so the
+ * emailed link rendered raw JSON instead of a password form — for every user,
+ * unconditionally. Setting the parameter on a parsed URL makes a duplicate
+ * impossible rather than merely absent today.
+ *
+ * Exported solely so this is covered by a test; nothing else should call it.
+ */
+export function resetLinkFor(url: string): string {
+  const u = new URL(url);
+  u.searchParams.set('callbackURL', RESET_CALLBACK_PATH);
+  return u.toString();
+}
+
 /** Client id the CLI presents on the device flow. Not a secret (a public
  *  client, like chat-recall-web was in Keycloak) — validateClient pins it so
  *  garbage client ids fail loudly instead of minting codes. */
@@ -105,24 +136,9 @@ function createAuth() {
       // account whose password is forgotten is unrecoverable — there is no
       // other credential path and no admin UI to fix it by hand.
       sendResetPassword: async ({ user, url }) => {
-        // better-auth builds `url` against its own basePath
-        // (/api/auth/reset-password/<token>?callbackURL=…). That GET consumes
-        // the token and redirects the browser to the callback, so the SPA gets
-        // a normal page load and never has to parse the token out of a path.
-        //
-        // SET callbackURL, never APPEND it. better-auth ALWAYS emits its own
-        // `?callbackURL=` — empty when the caller passed no redirectTo — so the
-        // previous `url + '&callbackURL=…'` produced TWO of them. The endpoint
-        // then parses an array and answers
-        //   {"code":"VALIDATION_ERROR","message":"[query.callbackURL] Invalid
-        //    input: expected string, received array"}
-        // which means every reset link ever emailed was dead on arrival, and the
-        // recovery path this block exists to guarantee did not work for anyone.
-        // Rebuilding the query instead of concatenating makes a duplicate
-        // impossible rather than merely absent today.
-        const u = new URL(url);
-        u.searchParams.set('callbackURL', '/app?view=reset');
-        await sendMail(resetPasswordMail(user.email, u.toString(), RESET_TOKEN_TTL_SECONDS / 60));
+        await sendMail(
+          resetPasswordMail(user.email, resetLinkFor(url), RESET_TOKEN_TTL_SECONDS / 60),
+        );
       },
     },
     socialProviders: socialProviders(),
