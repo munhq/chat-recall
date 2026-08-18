@@ -172,6 +172,16 @@ const pkgVersion: string = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf-8')
 ).version;
 
+/**
+ * Where `init` connects when the user names no server.
+ *
+ * Not a silent upload: runLogin drives a device flow the user must approve in a
+ * browser, so this only decides which sign-in page they see. Self-hosting stays
+ * a first-class path — see SELF_HOST_DOCS — and `--server` overrides this.
+ */
+const DEFAULT_SERVER = 'https://chatrecall.dev';
+const SELF_HOST_DOCS = 'https://github.com/munhq/chat-recall/blob/main/docs/SELF_HOSTING.md';
+
 const program = new Command();
 
 program
@@ -229,7 +239,25 @@ program
         await runLogin(options.server, { token: options.token });
         target = firstTarget();
       } else if (!target) {
-        console.log(`   ${chalk.yellow('Not logged in.')} Pass ${chalk.bold('--server <url>')} to connect, or run ${chalk.bold('chat-recall login <server-url>')} now.`);
+        // Default to the hosted service. Before this, `npx chat-recall init`
+        // with no flags connected to nothing and printed an instruction, so the
+        // documented one-command install did not actually install anything.
+        //
+        // Defaulting is safe because LOGIN IS THE CONSENT GATE: runLogin starts
+        // an RFC 8628 device flow the user has to approve in a browser, and
+        // nothing is read, indexed or uploaded until they do. Declining leaves
+        // the machine exactly as it was.
+        console.log(`   Connecting to ${chalk.bold(DEFAULT_SERVER)} — sign in to approve this machine.`);
+        console.log(`   ${chalk.dim(`Prefer your own server? ${chalk.bold('--server <url>')}. Self-hosting is free: ${SELF_HOST_DOCS}`)}`);
+        try {
+          await runLogin(DEFAULT_SERVER, { token: options.token });
+          target = firstTarget();
+        } catch (e) {
+          // A declined or failed sign-in must not fail the whole init: MCP
+          // wiring and skill installation below are still useful locally.
+          console.log(`   ${chalk.yellow('Not connected.')} ${e instanceof Error ? e.message : e}`);
+          console.log(`   ${chalk.dim(`Run ${chalk.bold('chat-recall login <server-url>')} when ready, or self-host: ${SELF_HOST_DOCS}`)}`);
+        }
       }
       if (target) {
         console.log(`   ${chalk.green('Connected')} → ${target.base}`);
