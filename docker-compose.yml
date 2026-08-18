@@ -106,9 +106,19 @@ services:
       STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
       STRIPE_PRICE_ID: ${STRIPE_PRICE_ID:-}
       STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
-      STRIPE_TRIAL_DAYS: ${STRIPE_TRIAL_DAYS:-14}
+      # 7 to match the server default (util/billing-plans.ts). A card-required
+      # trial converts on intent, not elapsed time.
+      STRIPE_TRIAL_DAYS: ${STRIPE_TRIAL_DAYS:-7}
       STRIPE_SUCCESS_URL: ${STRIPE_SUCCESS_URL:-}
       STRIPE_CANCEL_URL: ${STRIPE_CANCEL_URL:-}
+      # Plan catalogue: plan key -> Stripe price id + seat rules, as JSON. Without
+      # it the server falls back to the single STRIPE_PRICE_ID above, which can
+      # sell exactly one plan at one seat. See util/billing-plans.ts.
+      BILLING_PLANS: ${BILLING_PLANS:-}
+      # Set to 1/true to entitle every tenant regardless of subscription. This is
+      # how the hosted deployment runs its open beta; leave empty locally or
+      # billing cannot be tested at all.
+      OPEN_BETA: ${OPEN_BETA:-}
       NODE_ENV: production
     restart: unless-stopped
     healthcheck:
