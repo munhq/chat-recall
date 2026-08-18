@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { generateKeyPairSync, sign } from 'node:crypto';
-import { verifyLicense, hasFeature, _resetLicenseForTests } from './license.js';
+import { verifyLicense, hasFeature, licensedSeats, seatCheck, _resetLicenseForTests } from './license.js';
 
 const b64url = (b: Buffer | string) =>
   Buffer.from(b).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -113,5 +113,73 @@ describe('hasFeature', () => {
     process.env.CHAT_RECALL_LICENSE_PUBKEY = pub;
     process.env.CHAT_RECALL_LICENSE = mint(priv, { holder: 'A', features: ['team'], iat: now() });
     expect(hasFeature('team')).toBe(true);
+  });
+});
+
+describe('seats', () => {
+  const saved = process.env.CHAT_RECALL_LICENSE;
+  const savedPub = process.env.CHAT_RECALL_LICENSE_PUBKEY;
+  function license(payload: Record<string, unknown>) {
+    const { pub, priv } = keypair();
+    process.env.CHAT_RECALL_LICENSE_PUBKEY = pub;
+    process.env.CHAT_RECALL_LICENSE = mint(priv, { holder: 'A', features: ['team'], iat: now(), ...payload });
+    _resetLicenseForTests();
+  }
+  beforeEach(() => _resetLicenseForTests());
+  afterEach(() => {
+    if (saved === undefined) delete process.env.CHAT_RECALL_LICENSE; else process.env.CHAT_RECALL_LICENSE = saved;
+    if (savedPub === undefined) delete process.env.CHAT_RECALL_LICENSE_PUBKEY; else process.env.CHAT_RECALL_LICENSE_PUBKEY = savedPub;
+    _resetLicenseForTests();
+  });
+
+  it('reads the seat count off a licence', () => {
+    license({ seats: 25 });
+    expect(licensedSeats()).toBe(25);
+  });
+
+  it('treats an absent seat count as a site licence', () => {
+    license({});
+    expect(licensedSeats()).toBeNull();
+    expect(seatCheck(10_000)).toEqual({ ok: true });
+  });
+
+  it('allows a member below the ceiling', () => {
+    license({ seats: 5 });
+    expect(seatCheck(4)).toEqual({ ok: true });
+  });
+
+  it('refuses at the ceiling and reports the numbers', () => {
+    license({ seats: 5 });
+    // 5 members already means all 5 seats are used; the 6th needs more seats.
+    expect(seatCheck(5)).toEqual({ ok: false, used: 5, seats: 5 });
+  });
+
+  it('refuses above the ceiling, which a shrunken licence can cause', () => {
+    license({ seats: 2 });
+    expect(seatCheck(9)).toEqual({ ok: false, used: 9, seats: 2 });
+  });
+
+  it('floors a fractional seat count rather than treating it as unlimited', () => {
+    // Fail-closed: 2.5 grants 2, not infinity. The opposite rounding would turn
+    // a mis-minted licence into a site licence.
+    license({ seats: 2.5 });
+    expect(licensedSeats()).toBe(2);
+  });
+
+  it.each([0, -3, 'many', null])('treats a nonsensical seat value (%s) as unlimited', (bad) => {
+    // Deliberately generous. A signed licence can only carry a bad value if WE
+    // mis-minted it, and locking a paying customer out over our own typo is
+    // worse than granting seats we did not mean to.
+    license({ seats: bad });
+    expect(licensedSeats()).toBeNull();
+  });
+
+  it('never limits seats when there is no licence at all', () => {
+    // Unlicensed self-host is blocked by hasFeature() upstream, so seatCheck
+    // must not be the thing that reports a limit here.
+    delete process.env.CHAT_RECALL_LICENSE;
+    _resetLicenseForTests();
+    expect(licensedSeats()).toBeNull();
+    expect(seatCheck(99)).toEqual({ ok: true });
   });
 });
