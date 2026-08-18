@@ -27,7 +27,8 @@ import express from 'express';
 import { createControlPlane } from '../imports.js';
 import { requireUser } from '../middleware/auth.js';
 import { loadMemberships, createTeamFor } from '../util/memberships.js';
-import { entitledOr402, teamFeatureOr402 } from '../util/billing.js';
+import { entitledOr402, collaborationOr402 } from '../util/billing.js';
+import { seatCheck } from '../util/license.js';
 
 const router = express.Router();
 
@@ -85,7 +86,18 @@ router.post('/:teamId/invite', async (req, res) => {
     // And on the TEAM LICENCE for self-host. This is the single chokepoint for a
     // second member, so gating it gates collaboration itself; a solo self-hoster
     // never reaches this route.
-    if (!teamFeatureOr402(res)) return;
+    if (!(await collaborationOr402(res, req.params.teamId))) return;
+    // Seat ceiling. Checked here because this is the only path that grows a
+    // team, so it is the only place the count can change.
+    const members = await cp.listMembers(req.params.teamId);
+    const seat = seatCheck(Array.isArray(members) ? members.length : 0);
+    if (!seat.ok) {
+      return res.status(402).json({
+        error: `licence covers ${seat.seats} seat(s), all in use`,
+        used: seat.used, seats: seat.seats,
+        hint: 'Add seats: https://chatrecall.dev/pricing',
+      });
+    }
     const r = await cp.createInvite(req.params.teamId, 'member', req.body?.emailHint || null, user.sub);
     res.json({ inviteToken: r.invite, expiresAt: new Date(r.expiresAt).toISOString() });
   } finally { await cp.close(); }

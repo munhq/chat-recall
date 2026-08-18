@@ -70,6 +70,42 @@ interface StripeLikeEvent {
   data: { object: Record<string, unknown> };
 }
 
+/**
+ * Which plan the customer actually bought.
+ *
+ * Read from the subscription metadata /checkout stamps (metadata.plan = the
+ * catalogue key), else the line item's price id, else the legacy env var.
+ *
+ * This was process.env.STRIPE_PRICE_ID unconditionally, which recorded the same
+ * value for every customer — and with a BILLING_PLANS catalogue that var is
+ * usually unset, so it recorded null. The entitlement therefore could not tell a
+ * Solo subscriber from a Team one, and the invite gate (which only checks
+ * status) let a Solo subscriber add teammates for free.
+ */
+function planOf(o: Record<string, unknown>): string | null {
+  const md = (o.metadata ?? null) as Record<string, unknown> | null;
+  if (md && typeof md.plan === 'string' && md.plan) return md.plan;
+  const items = ((o.items as Record<string, unknown> | undefined)?.data ?? []) as Array<Record<string, unknown>>;
+  const price = items[0]?.price as Record<string, unknown> | undefined;
+  if (price && typeof price.id === 'string') return price.id;
+  return process.env.STRIPE_PRICE_ID ?? null;
+}
+
+/**
+ * Whether a recorded plan grants COLLABORATION on the hosted service.
+ *
+ * Team keys match by prefix so a new team price needs no code change. A null or
+ * unrecognised plan is NOT team — fail closed, since the alternative gives team
+ * away for the price of Solo.
+ */
+export function planGrantsTeam(plan: string | null | undefined): boolean {
+  if (!plan) return false;
+  const p = plan.toLowerCase();
+  if (p.startsWith('team') || p.startsWith('enterprise')) return true;
+  const match = planCatalogue().find((c) => c.priceId === plan);
+  return !!match && match.seats === 'per_seat';
+}
+
 /** Map Stripe's subscription `status` string onto our EntitlementStatus.
  *  Anything we don't recognize collapses to 'none' (fail-closed: not entitled). */
 function mapSubStatus(s: unknown): EntitlementStatus {
@@ -136,7 +172,7 @@ export async function applyStripeEvent(
       // with subscription.updated carrying the precise status/period.
       const patch = {
         status: 'active' as EntitlementStatus,
-        plan: process.env.STRIPE_PRICE_ID ?? null,
+        plan: planOf(o),
         currentPeriodEnd: periodEndMs(o),
         stripeCustomerId: asStr(o.customer),
         stripeSubscriptionId: asStr(o.subscription),
@@ -148,7 +184,7 @@ export async function applyStripeEvent(
       const status = mapSubStatus(o.status);
       await cp.setEntitlement(tenant, {
         status,
-        plan: process.env.STRIPE_PRICE_ID ?? null,
+        plan: planOf(o),
         currentPeriodEnd: periodEndMs(o),
         stripeCustomerId: asStr(o.customer),
         stripeSubscriptionId: asStr(o.id),
