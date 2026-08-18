@@ -34,7 +34,7 @@ import adminRouter from './routes/admin.js';
 import clientEventsRouter from './routes/client-events.js';
 import vaultRouter from './routes/vault.js';
 import accountRouter from './routes/account.js';
-import { requireEntitlement } from './util/billing.js';
+import { requireEntitlement, requireTeamFeature } from './util/billing.js';
 import projectsRouter from './routes/projects.js';
 import kgRouter from './routes/kg.js';
 import kvRouter from './routes/kv.js';
@@ -407,6 +407,9 @@ app.use('/api/account', accountRouter);
 // /api/status, /api/account, /api/billing, /api/teams stay reachable so a user
 // can see state, subscribe, and configure without already being paid.
 const paid = requireEntitlement;
+// Collaboration gate. Distinct from `paid` because isEntitled() is always true
+// on self-host by design, which left the team surface free at any company size.
+const team = requireTeamFeature;
 
 // Routes. Per-tenant class limiters (token bucket + concurrency) sit after the
 // per-IP apiLimiter and tenantAuth: 'read-heavy' for FTS/vector/analytics and
@@ -422,12 +425,12 @@ app.use('/api/memory', paid, rl('read-heavy'), memoryRouter);
 app.use('/api/analytics', paid, rl('read-heavy'), analyticsRouter);
 // Team activity view (per-member × per-project). RLS-scoped to the requesting
 // member's visibility, so it only ever shows own + team-shared work.
-app.use('/api/activity', paid, rl('read-heavy'), activityRouter);
+app.use('/api/activity', paid, team, rl('read-heavy'), activityRouter);
 // Collaborative team tasks (server-authoritative board). Team-visible within
 // the tenant; write-light covers the POST/PATCH.
-app.use('/api/tasks', paid, rl('write-light'), tasksRouter);
+app.use('/api/tasks', paid, team, rl('write-light'), tasksRouter);
 // Per-project sharing, data-plane (device-token capable, for the CLI).
-app.use('/api/shares', paid, rl('write-light'), sharesRouter);
+app.use('/api/shares', paid, team, rl('write-light'), sharesRouter);
 app.use('/api/secrets', paid, rl('read-light'), secretsRouter);
 
 // Store-backed in both modes: the edits timeline reads synced compute_cache
