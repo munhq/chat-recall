@@ -16,6 +16,7 @@
  */
 import type { Request, Response, NextFunction } from 'express';
 import { queryExpansionEnabled } from '../services/query-expander.js';
+import { hasFeature, licensedSeats, licenseState } from './license.js';
 
 export function isServerMode(): boolean {
   return (process.env.CHAT_RECALL_SERVER_MODE || 'local').toLowerCase() === 'server';
@@ -71,6 +72,17 @@ export interface Capabilities {
     /** Code intelligence (codeindex merge): the Code dashboard + findings/hotspots/actions. */
     codeIntel: boolean;
   };
+  /**
+   * Self-host licence state, so the UI can explain why `features.teams` is off
+   * instead of silently hiding it. null on cloud, where a subscription decides.
+   * Deliberately carries no key material and no holder name.
+   */
+  license: {
+    team: boolean;
+    /** Licensed seats, null for unlimited. */
+    seats: number | null;
+    state: 'valid' | 'absent' | 'malformed' | 'bad_signature' | 'expired';
+  } | null;
 }
 
 export function capabilities(): Capabilities {
@@ -105,12 +117,15 @@ export function capabilities(): Capabilities {
       // writes the local fs, so it stays local-only.
       toolkit: true,
       settings: !server,
-      // Edition hint only: "the teams feature exists in this build". This is
-      // PRE-AUTH (capabilities() runs before any tenant is resolved), so it
-      // CANNOT reflect whether a given tenant has paid. Per-tenant enforcement
-      // lives in requireEntitlement / entitledOr402 (util/billing.ts), applied
-      // to the paid write paths (team publish + invite).
-      teams: ed === 'cloud',
+      // "The teams feature is available in this deployment." Still PRE-AUTH, so
+      // it cannot reflect whether a given TENANT has paid — per-tenant
+      // enforcement stays in requireEntitlement / entitledOr402 (util/billing.ts)
+      // on the paid write paths.
+      //
+      // It does reflect the DEPLOYMENT's team licence, which it must: this flag
+      // is what App.tsx uses to render the Team surface at all, so a self-hoster
+      // who bought a licence would otherwise pay and still see nothing.
+      teams: ed === 'cloud' || hasFeature('team'),
       // Cloud-only account/billing surface (subscription, secret-alert webhook,
       // device tokens). Self-host has no billing, so no account view.
       account: ed === 'cloud',
@@ -119,6 +134,14 @@ export function capabilities(): Capabilities {
       // hosted SaaS and self-host alike. Opt-out via CHAT_RECALL_FEATURE_CODE=0.
       codeIntel: (process.env.CHAT_RECALL_FEATURE_CODE ?? '1') !== '0',
     },
+    // Why teams is off, so a self-host UI can say "available with a licence"
+    // rather than hiding the feature and leaving the operator guessing whether
+    // it exists. Never includes the key itself or the holder.
+    license: ed === 'cloud' ? null : (() => {
+      const st = licenseState();
+      return { team: hasFeature('team'), seats: licensedSeats(),
+               state: st.valid ? 'valid' as const : st.reason };
+    })(),
   };
 }
 
