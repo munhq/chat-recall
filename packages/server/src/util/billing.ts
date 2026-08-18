@@ -147,22 +147,6 @@ export function requireTeamFeature(req: Request, res: Response, next: NextFuncti
   });
 }
 
-/**
- * Inline TEAM gate for routes that resolve their tenant from a path param before
- * tenantAuth runs — same shape as entitledOr402. Returns true to proceed; on
- * false it has already sent the 402.
- */
-export function teamFeatureOr402(res: Response): boolean {
-  if (billingEnabled()) return true;
-  if (hasFeature('team')) return true;
-  const s = licenseState();
-  res.status(402).json({
-    error: 'team features require a licence',
-    reason: s.valid ? 'licence does not include the team feature' : s.reason,
-    hint: 'Solo self-hosting is free and unlimited. Collaboration needs a licence: https://chatrecall.dev/pricing',
-  });
-  return false;
-}
 
 /**
  * Inline COLLABORATION gate, covering both editions:
@@ -196,7 +180,17 @@ export async function collaborationOr402(res: Response, tenant: string): Promise
       await cp.close();
     }
   }
-  return teamFeatureOr402(res);
+  // Self-host: a team licence key. Inlined rather than delegated — the helper
+  // this called was a second copy of the same decision and drifted, ending up
+  // without the openBeta() check the rest of this function has.
+  if (hasFeature('team')) return true;
+  const st = licenseState();
+  res.status(402).json({
+    error: 'team features require a licence',
+    reason: st.valid ? 'licence does not include the team feature' : st.reason,
+    hint: 'Solo self-hosting is free and unlimited. Collaboration needs a licence: https://chatrecall.dev/pricing',
+  });
+  return false;
 }
 
 /**
