@@ -19,6 +19,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { createControlPlane } from '../imports.js';
 import { TenantTtlCache } from './tenant-cache.js';
 import { hasFeature, licenseState } from './license.js';
+import { planGrantsTeam } from '../routes/billing.js';
 
 /**
  * 30s in-process TTL cache on the control-plane entitlement lookup, keyed by
@@ -160,6 +161,35 @@ export function teamFeatureOr402(res: Response): boolean {
     hint: 'Solo self-hosting is free and unlimited. Collaboration needs a licence: https://chatrecall.dev/pricing',
   });
   return false;
+}
+
+/**
+ * Inline COLLABORATION gate, covering both editions:
+ *   - cloud     → the entitlement's recorded plan must be a team tier. A Solo
+ *                 subscriber is entitled (isEntitled true) but NOT team, which is
+ *                 the leak this closes: the invite gate previously checked only
+ *                 status, so Solo bought Team.
+ *   - self-host → a team licence key.
+ *
+ * Returns true to proceed; on false it has already sent the 402.
+ */
+export async function collaborationOr402(res: Response, tenant: string): Promise<boolean> {
+  if (billingEnabled()) {
+    const cp = await createControlPlane();
+    try {
+      const ent = await cp.getEntitlement(tenant);
+      if (planGrantsTeam(ent?.plan)) return true;
+      res.status(402).json({
+        error: 'the Team plan is required to invite teammates',
+        plan: ent?.plan ?? null,
+        checkoutHint: 'POST /api/billing/checkout with {"plan":"team-monthly","seats":N}',
+      });
+      return false;
+    } finally {
+      await cp.close();
+    }
+  }
+  return teamFeatureOr402(res);
 }
 
 /**

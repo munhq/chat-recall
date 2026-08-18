@@ -56,6 +56,14 @@ export interface LicensePayload {
   exp?: number;
   /** Free-text note from the issuer (order reference, contract id). */
   note?: string;
+  /**
+   * Licensed seats — distinct members allowed in one tenant. Absent = unlimited,
+   * which is what a site licence looks like. Enforced at the invite chokepoint
+   * rather than on every request: seats change only when someone is invited, and
+   * counting members on each read would add a query to the hot path for a value
+   * that almost never moves.
+   */
+  seats?: number;
 }
 
 export type LicenseState =
@@ -150,4 +158,34 @@ export function _resetLicenseForTests(): void {
 export function hasFeature(f: LicenseFeature): boolean {
   const s = licenseState();
   return s.valid && s.payload.features.includes(f);
+}
+
+/**
+ * Licensed seat count, or null for unlimited / unlicensed.
+ *
+ * A fractional value is FLOORED (2.5 -> 2) rather than rejected, so a mis-mint
+ * cannot round up into a site licence. Zero, negative and non-numeric values
+ * resolve to unlimited instead — deliberately generous, because a signed licence
+ * can only carry a bad value if we issued it wrong, and locking a paying
+ * customer out over our own typo is the worse failure.
+ */
+export function licensedSeats(): number | null {
+  const s = licenseState();
+  if (!s.valid) return null;
+  const n = s.payload.seats;
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+}
+
+/**
+ * Whether one more member may be added to a tenant that currently has
+ * `currentMembers`.
+ *
+ * Returns an object rather than a boolean so the caller can report the numbers
+ * — "4 of 4 seats used" is actionable where "false" is not.
+ */
+export function seatCheck(currentMembers: number): { ok: true } | { ok: false; used: number; seats: number } {
+  const seats = licensedSeats();
+  if (seats === null) return { ok: true };            // unlimited or unlicensed
+  if (currentMembers < seats) return { ok: true };
+  return { ok: false, used: currentMembers, seats };
 }
