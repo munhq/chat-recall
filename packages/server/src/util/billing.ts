@@ -18,6 +18,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import { createControlPlane } from '../imports.js';
 import { TenantTtlCache } from './tenant-cache.js';
+import { hasFeature, licenseState } from './license.js';
 
 /**
  * 30s in-process TTL cache on the control-plane entitlement lookup, keyed by
@@ -115,6 +116,50 @@ export function requireEntitlement(req: Request, res: Response, next: NextFuncti
       });
     })
     .catch(next);
+}
+
+/**
+ * Express middleware: the TEAM (collaboration) gate.
+ *
+ * Three states, in order:
+ *   - cloud (billingEnabled)  → the subscription already decides; pass through
+ *     to requireEntitlement, which is mounted alongside on these routes.
+ *   - self-host + team licence → pass.
+ *   - self-host, no licence    → 402 with how to get one.
+ *
+ * Why this is separate from requireEntitlement: isEntitled() returns true for
+ * every self-host request by design (self-host is the free tier), which made the
+ * collaboration surface free at any company size. Solo self-hosting stays free
+ * and complete; only the features that need colleagues are licensed.
+ */
+export function requireTeamFeature(req: Request, res: Response, next: NextFunction): void {
+  if (billingEnabled()) return next();          // cloud: subscription governs
+  if (hasFeature('team')) return next();        // self-host with a team licence
+
+  const s = licenseState();
+  res.status(402).json({
+    error: 'team features require a licence',
+    reason: s.valid ? 'licence does not include the team feature' : s.reason,
+    detail: 'detail' in s ? s.detail : undefined,
+    hint: 'Solo self-hosting is free and unlimited. Collaboration (shared project history, the team task board, per-member activity, the team toolkit) needs a licence: https://chatrecall.dev/pricing',
+  });
+}
+
+/**
+ * Inline TEAM gate for routes that resolve their tenant from a path param before
+ * tenantAuth runs — same shape as entitledOr402. Returns true to proceed; on
+ * false it has already sent the 402.
+ */
+export function teamFeatureOr402(res: Response): boolean {
+  if (billingEnabled()) return true;
+  if (hasFeature('team')) return true;
+  const s = licenseState();
+  res.status(402).json({
+    error: 'team features require a licence',
+    reason: s.valid ? 'licence does not include the team feature' : s.reason,
+    hint: 'Solo self-hosting is free and unlimited. Collaboration needs a licence: https://chatrecall.dev/pricing',
+  });
+  return false;
 }
 
 /**
