@@ -115,6 +115,14 @@ services:
       # it the server falls back to the single STRIPE_PRICE_ID above, which can
       # sell exactly one plan at one seat. See util/billing-plans.ts.
       BILLING_PLANS: ${BILLING_PLANS:-}
+      # Team licence key, from hello@munhq.com. Solo self-hosting needs nothing;
+      # collaboration (shared project history, the team board, per-member activity)
+      # checks this. Offline: an Ed25519 signature verified locally, so no licence
+      # server is contacted and an air-gapped install works.
+      CHAT_RECALL_LICENSE: ${CHAT_RECALL_LICENSE:-}
+      # Only for a fork issuing its own keys for internal use, which ELv2 permits.
+      # Leave unset to verify against the shipped issuer key.
+      CHAT_RECALL_LICENSE_PUBKEY: ${CHAT_RECALL_LICENSE_PUBKEY:-}
       # Set to 1/true to entitle every tenant regardless of subscription. This is
       # how the hosted deployment runs its open beta; leave empty locally or
       # billing cannot be tested at all.
