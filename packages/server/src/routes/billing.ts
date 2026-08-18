@@ -122,10 +122,28 @@ function mapSubStatus(s: unknown): EntitlementStatus {
   }
 }
 
-/** Stripe gives period end in SECONDS; we store epoch MILLIS everywhere. */
+/**
+ * Stripe gives period end in SECONDS; we store epoch MILLIS everywhere.
+ *
+ * Stripe MOVED this field. `current_period_end` no longer exists on the
+ * subscription object — it lives on each subscription ITEM (items.data[i]) —
+ * so reading only the top level recorded null for every subscription. That
+ * matters because isEntitled() treats a null period as "no expiry known, still
+ * valid", so a lapsed subscription whose status write was missed would stay
+ * entitled indefinitely.
+ *
+ * Order: top level first (older API versions and any object that still carries
+ * it), then the first item, then trial_end — during a trial the item period and
+ * trial_end coincide, and trial_end is the one guaranteed to be present.
+ */
 function periodEndMs(o: Record<string, unknown>): number | null {
-  const sec = o.current_period_end;
-  return typeof sec === 'number' ? sec * 1000 : null;
+  const top = o.current_period_end;
+  if (typeof top === 'number') return top * 1000;
+  const items = ((o.items as Record<string, unknown> | undefined)?.data ?? []) as Array<Record<string, unknown>>;
+  const fromItem = items[0]?.current_period_end;
+  if (typeof fromItem === 'number') return fromItem * 1000;
+  const trial = o.trial_end;
+  return typeof trial === 'number' ? trial * 1000 : null;
 }
 
 /** The tenant we're billing is carried as `client_reference_id` on the checkout
@@ -166,20 +184,28 @@ export async function applyStripeEvent(
 
   switch (event.type) {
     case 'checkout.session.completed': {
-      // On the completed checkout the session object carries customer + the
-      // subscription id, but not yet a subscription status — a completed
-      // subscription checkout is, by definition, active. Stripe will follow up
-      // with subscription.updated carrying the precise status/period.
-      const patch = {
-        status: 'active' as EntitlementStatus,
-        plan: planOf(o),
-        currentPeriodEnd: periodEndMs(o),
+      // IDS ONLY — no status, no plan, no period.
+      //
+      // Both this and customer.subscription.created fire for one purchase and the
+      // later write wins, so anything this event guesses can erase what the
+      // subscription event knows. It guessed badly: it hardcoded status 'active',
+      // which overwrote the accurate 'trialing' and told a trialing customer they
+      // were paying; and a session carries no items[] and no trial_end, so its
+      // period was always null and erased the real one.
+      //
+      // Observed ordering (stripe listen, repeatedly): subscription.created
+      // arrives FIRST, then this. Even were it reversed, the subscription event
+      // follows within milliseconds and carries status, plan and period together.
+      // So this event contributes only the two ids, and ordering stops mattering.
+      // A read-before-write was tried instead and returned null in the webhook
+      // context, silently reintroducing the clobber — hence no read at all.
+      await cp.setEntitlement(tenant, {
         stripeCustomerId: asStr(o.customer),
         stripeSubscriptionId: asStr(o.subscription),
-      };
-      await cp.setEntitlement(tenant, patch);
-      return { tenant, status: patch.status };
+      });
+      return { tenant, status: 'active' as EntitlementStatus };
     }
+    case 'customer.subscription.created':
     case 'customer.subscription.updated': {
       const status = mapSubStatus(o.status);
       await cp.setEntitlement(tenant, {
@@ -297,6 +323,11 @@ router.post('/checkout', async (req, res) => {
       // we also stamp it into the subscription metadata so later subscription.*
       // events (which lack client_reference_id) can resolve the tenant.
       client_reference_id: tenant,
+      // Session-level metadata as well as subscription_data.metadata below:
+      // checkout.session.completed carries the SESSION object, whose metadata is
+      // separate from the subscription's. Without this, planOf() sees nothing on
+      // the first event and the entitlement records a null plan.
+      metadata: { tenant, plan: line.plan.key, seats: String(line.quantity) },
       subscription_data: {
         // plan + seats recorded on the subscription so a later webhook (and any
         // support question) can tell WHICH plan was bought — the events

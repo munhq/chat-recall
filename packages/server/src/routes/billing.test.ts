@@ -110,7 +110,7 @@ describe('billingEnabled / isEntitled gate', () => {
 });
 
 describe('applyStripeEvent webhook mapping', () => {
-  test('checkout.session.completed → active for the client_reference_id tenant', async () => {
+  test('checkout.session.completed → records ids only, never status/plan/period', async () => {
     const calls: Array<{ tenant: string; e: Record<string, unknown> }> = [];
     const fakeCp = {
       async setEntitlement(tenant: string, e: Record<string, unknown>) { calls.push({ tenant, e }); },
@@ -129,9 +129,18 @@ describe('applyStripeEvent webhook mapping', () => {
     expect(result).toEqual({ tenant: 'team-acme', status: 'active' });
     expect(calls).toHaveLength(1);
     expect(calls[0].tenant).toBe('team-acme');
-    expect(calls[0].e.status).toBe('active');
     expect(calls[0].e.stripeCustomerId).toBe('cus_42');
     expect(calls[0].e.stripeSubscriptionId).toBe('sub_42');
+
+    // ANTI-CLOBBER: this event must write IDS ONLY. It fires alongside
+    // customer.subscription.created for one purchase and the later write wins, so
+    // a status/plan/period written here erases what the subscription event knows.
+    // Observed live: it hardcoded 'active' over the accurate 'trialing', and a
+    // session has no items[]/trial_end so its period was null and erased the real
+    // one. Asserting absence is the only way to keep that from coming back.
+    expect(calls[0].e.status).toBeUndefined();
+    expect(calls[0].e.plan).toBeUndefined();
+    expect(calls[0].e.currentPeriodEnd).toBeUndefined();
   });
 
   test('customer.subscription.updated → maps Stripe status + resolves tenant from metadata', async () => {
