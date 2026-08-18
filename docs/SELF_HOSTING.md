@@ -111,6 +111,32 @@ Then open **http://localhost:8080** for the dashboard.
 Inside an AI assistant, ask it to call `recall_status`. If it can, the MCP
 wiring is correct and the agent can now search its own history.
 
+## Team features (licence key)
+
+Solo self-hosting is free and unlimited, forever. Collaboration is licensed:
+inviting a second member, shared project history, the team task board and
+per-member activity.
+
+Email hello@munhq.com for a key, then add it to `.env`:
+
+```bash
+echo "CHAT_RECALL_LICENSE=CR1...." >> .env
+docker compose up -d
+```
+
+The key is verified offline — an Ed25519 signature checked locally against a key
+compiled into the server. No licence server is contacted, so an air-gapped
+deployment works and an outage on our side can never disable your install.
+
+Check it applied:
+
+```bash
+curl -s localhost:8080/api/capabilities | grep -o '"license":{[^}]*}'
+```
+
+`"team":true` means it is active. A key carries an optional seat count; without
+one it is a site licence with no member limit.
+
 ## Optional: semantic search
 
 Full-text search needs nothing. For vector search, point the server at any
