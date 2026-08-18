@@ -8,6 +8,8 @@
  * hatch) so no Keycloak is needed; isolated CHAT_RECALL_DATA_DIR.
  */
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
+import { generateKeyPairSync, sign } from 'node:crypto';
+import { _resetLicenseForTests } from '../util/license.js';
 import express from 'express';
 import request from 'supertest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -16,6 +18,8 @@ import { join } from 'node:path';
 
 let dataDir: string;
 let prevDataDir: string | undefined;
+let prevLicense: string | undefined;
+let prevPubkey: string | undefined;
 let prevDevUser: string | undefined;
 
 beforeAll(() => {
@@ -24,6 +28,20 @@ beforeAll(() => {
   dataDir = mkdtempSync(join(tmpdir(), 'cr-team-test-'));
   process.env.CHAT_RECALL_DATA_DIR = dataDir;
   process.env.AUTH_DEV_USER = '1';
+  // Inviting a second member needs a team licence (util/license.ts). This suite
+  // exercises multi-member behaviour, so it mints its own key against a test
+  // issuer rather than shipping a real one.
+  prevLicense = process.env.CHAT_RECALL_LICENSE;
+  prevPubkey = process.env.CHAT_RECALL_LICENSE_PUBKEY;
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const b64url = (b: Buffer | string) =>
+    Buffer.from(b).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const seg = b64url(JSON.stringify({
+    holder: 'test suite', features: ['team'], iat: Math.floor(Date.now() / 1000),
+  }));
+  process.env.CHAT_RECALL_LICENSE_PUBKEY = publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
+  process.env.CHAT_RECALL_LICENSE = `CR1.${seg}.${b64url(sign(null, Buffer.from(seg, 'utf8'), privateKey))}`;
+  _resetLicenseForTests();
 });
 
 afterAll(() => {
@@ -31,6 +49,11 @@ afterAll(() => {
   else process.env.CHAT_RECALL_DATA_DIR = prevDataDir;
   if (prevDevUser === undefined) delete process.env.AUTH_DEV_USER;
   else process.env.AUTH_DEV_USER = prevDevUser;
+  if (prevLicense === undefined) delete process.env.CHAT_RECALL_LICENSE;
+  else process.env.CHAT_RECALL_LICENSE = prevLicense;
+  if (prevPubkey === undefined) delete process.env.CHAT_RECALL_LICENSE_PUBKEY;
+  else process.env.CHAT_RECALL_LICENSE_PUBKEY = prevPubkey;
+  _resetLicenseForTests();
   rmSync(dataDir, { recursive: true, force: true });
 });
 
