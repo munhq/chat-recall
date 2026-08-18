@@ -37,7 +37,7 @@
     "docker:logs": "docker compose logs -f"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   },
   "overrides": {
     "@types/express": "^4.17.21"

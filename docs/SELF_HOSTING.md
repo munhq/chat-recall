@@ -19,7 +19,7 @@ needs an embedder — see [Optional: semantic search](#optional-semantic-search)
 ## Requirements
 
 - Docker with the Compose v2 plugin (`docker compose version`)
-- Node 18 or newer, on each machine whose sessions you want indexed
+- Node 22 or newer, on each machine whose sessions you want indexed
 - ~2GB disk for the image build, plus whatever your history needs
 
 ## 1. Get the source
