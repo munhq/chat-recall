@@ -81,3 +81,6 @@ docker-compose.local.yml
 # Generated per-repo task files (masked previews + leak/finding locations — not for VCS)
 SECURITY_TASKS.md
 CODE_TASKS.md
+
+# Local-only working files. Never published.
+.local/
