@@ -150,25 +150,50 @@ export interface TeamInstallRow {
   installedAt: number;
 }
 
+/**
+ * A server older than the ledger endpoints answers 404. Treat that as "no ledger
+ * here" rather than an error: the CLI updates itself FROM the server, but an npm
+ * install can reach a server that has not rolled yet, and `team pull` must still
+ * write files on a machine whose server is a version behind. Losing the ledger
+ * costs an unchanged-file rewrite, never correctness — the merge compares the
+ * bytes on disk before writing.
+ */
+function isMissingEndpoint(err: unknown): boolean {
+  return err instanceof TeamHttpError && err.status === 404;
+}
+
 /** Rows this device recorded — all of them, or just one artifact's. */
 export async function teamInstallsList(artifactId?: string): Promise<TeamInstallRow[]> {
   const ctx = context();
   const qs = artifactId ? `?artifactId=${encodeURIComponent(artifactId)}` : '';
-  const r = await http<{ installs: TeamInstallRow[] }>(ctx, 'GET', `/api/ledgers/team-installs${qs}`);
-  return r.installs ?? [];
+  try {
+    const r = await http<{ installs: TeamInstallRow[] }>(ctx, 'GET', `/api/ledgers/team-installs${qs}`);
+    return r.installs ?? [];
+  } catch (err) {
+    if (isMissingEndpoint(err)) return [];
+    throw err;
+  }
 }
 
 /** Record what this device just wrote. Batched — one call per merge, not per file. */
 export async function teamInstallsRecord(installs: TeamInstallRow[]): Promise<void> {
   if (!installs.length) return;
   const ctx = context();
-  await http(ctx, 'POST', '/api/ledgers/team-installs', { installs });
+  try {
+    await http(ctx, 'POST', '/api/ledgers/team-installs', { installs });
+  } catch (err) {
+    if (!isMissingEndpoint(err)) throw err;
+  }
 }
 
 /** Forget an artifact on this device (after its files are deleted). */
 export async function teamInstallsForget(artifactId: string, tool?: string): Promise<void> {
   const ctx = context();
-  await http(ctx, 'DELETE', '/api/ledgers/team-installs', { artifactId, tool });
+  try {
+    await http(ctx, 'DELETE', '/api/ledgers/team-installs', { artifactId, tool });
+  } catch (err) {
+    if (!isMissingEndpoint(err)) throw err;
+  }
 }
 
 export async function teamList(): Promise<TeamArtifactMeta[]> {
