@@ -102,16 +102,30 @@ const uploadKey = (sessionId: string, tool: string): string => `${sessionId}\u00
 
 /** The whole ledger for this device, as key → source sha. One round trip. */
 async function loadUploadLedger(ctx: Ctx): Promise<Map<string, string>> {
-  const r = await api<{ uploads: VaultUploadRow[] }>(ctx, 'GET', '/api/ledgers/vault-uploads');
   const m = new Map<string, string>();
-  for (const u of r.uploads ?? []) m.set(uploadKey(u.sessionId, u.tool), u.sourceSha256);
+  try {
+    const r = await api<{ uploads: VaultUploadRow[] }>(ctx, 'GET', '/api/ledgers/vault-uploads');
+    for (const u of r.uploads ?? []) m.set(uploadKey(u.sessionId, u.tool), u.sourceSha256);
+  } catch (err) {
+    // A server older than the ledger endpoints answers 404. An empty ledger is
+    // SAFE — every session re-encrypts and re-uploads, which is wasteful but
+    // never wrong — whereas throwing would make `vault sync` unusable against a
+    // server one version behind.
+    if (!(err instanceof VaultHttpError && err.status === 404)) throw err;
+  }
   return m;
 }
 
 /** Record one upload. Written per session, not batched at the end: a crash
  *  mid-sync must not discard everything already encrypted and PUT. */
 async function recordUpload(ctx: Ctx, row: Omit<VaultUploadRow, 'uploadedAt'>): Promise<void> {
-  await api(ctx, 'POST', '/api/ledgers/vault-uploads', { uploads: [row] });
+  try {
+    await api(ctx, 'POST', '/api/ledgers/vault-uploads', { uploads: [row] });
+  } catch (err) {
+    // Same reasoning as loadUploadLedger: the blob is already uploaded and
+    // committed. Failing here would discard a successful upload over bookkeeping.
+    if (!(err instanceof VaultHttpError && err.status === 404)) throw err;
+  }
 }
 
 // ── Public API ──────────────────────────────────────────────────────
