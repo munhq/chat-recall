@@ -20,7 +20,7 @@ const DISMISS_KEY = 'cr-trialbanner-dismissed-at-days';
 
 export default function TrialBanner({ onSubscribe }: { onSubscribe: () => void }) {
   const [ent, setEnt] = useState<
-    { onTrial: boolean; daysLeft: number | null; status: string } | null
+    { onTrial: boolean; daysLeft: number | null; status: string; entitled: boolean } | null
   >(null);
 
   useEffect(() => {
@@ -31,6 +31,8 @@ export default function TrialBanner({ onSubscribe }: { onSubscribe: () => void }
           onTrial: !!e.onTrial,
           daysLeft: e.trialDaysLeft ?? null,
           status: e.status,
+          // Read the server's answer; never recompute it here.
+          entitled: e.entitled !== false,
         });
       })
       .catch(() => {});
@@ -38,10 +40,12 @@ export default function TrialBanner({ onSubscribe }: { onSubscribe: () => void }
 
   if (!ent) return null;
 
-  // A lapsed tenant (trial over, or a cancelled subscription) is read-only. That
-  // needs saying plainly wherever they are, not only on the Account page.
-  const lapsed = !ent.onTrial && (ent.status === 'canceled' || ent.status === 'none');
-  if (!ent.onTrial && !lapsed) return null;   // paying: nothing to say
+  // Lapsed is "the server will not let this tenant write", whatever the status
+  // string says. An expired trial still reads status='trialing', so deriving this
+  // from the status would tell someone already read-only that their trial "ends
+  // today".
+  const lapsed = !ent.entitled;
+  if (!lapsed && !ent.onTrial) return null;   // paying and current: nothing to say
 
   const days = ent.daysLeft ?? 0;
   const urgent = lapsed || days <= 2;
