@@ -109,8 +109,12 @@ services:
       # 7 to match the server default (util/billing-plans.ts). A card-required
       # trial converts on intent, not elapsed time.
       STRIPE_TRIAL_DAYS: ${STRIPE_TRIAL_DAYS:-7}
+      # Leave the three STRIPE_*_URL unset and the server derives the return
+      # URLs from PUBLIC_URL (below), so they can never name a host the product
+      # has moved off. Set them only to send the browser to a different front end.
       STRIPE_SUCCESS_URL: ${STRIPE_SUCCESS_URL:-}
       STRIPE_CANCEL_URL: ${STRIPE_CANCEL_URL:-}
+      STRIPE_PORTAL_RETURN_URL: ${STRIPE_PORTAL_RETURN_URL:-}
       # Plan catalogue: plan key -> Stripe price id + seat rules, as JSON. Without
       # it the server falls back to the single STRIPE_PRICE_ID above, which can
       # sell exactly one plan at one seat. See util/billing-plans.ts.

@@ -11,7 +11,7 @@ sessions, search past work, recall decisions, and read project intelligence.
 ## Install
 
 ```
-/plugin marketplace add hotmun/chat-recall
+/plugin marketplace add munhq/chat-recall
 /plugin install chat-recall
 ```
 
