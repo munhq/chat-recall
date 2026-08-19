@@ -30,14 +30,43 @@
  *   STRIPE_CANCEL_URL      — redirect if the user backs out.
  */
 import express from 'express';
+import type { Request } from 'express';
 import type Stripe from 'stripe';
 import { createControlPlane, type EntitlementStatus } from '../imports.js';
 import { requireUser } from '../middleware/auth.js';
 import { billingEnabled, isEntitled } from '../util/billing.js';
 import { ensureTrial, isNoCardTrial, trialDaysLeft, trialLengthDays } from '../util/trial.js';
 import { planCatalogue, resolveLine, isPlanError, trialDays } from '../util/billing-plans.js';
+import { publicOrigin, UnsafeOriginError } from './install.js';
 
 const router = express.Router();
+
+/**
+ * Where Stripe sends the browser back to after checkout or the customer portal.
+ *
+ * The STRIPE_*_URL variables stay authoritative, so an operator can point the
+ * return at a different front end. When none is set we derive the origin the
+ * client actually reached us on (PUBLIC_URL, else hard-validated forwarded
+ * headers — see publicOrigin). A baked-in host is never correct here: the one
+ * that used to sit in this file outlived the domain it named and kept sending
+ * paying self-hosters to a 404.
+ */
+function accountReturnUrl(req: Request, override: string | undefined, params: string): string {
+  if (override) return override;
+  let origin: string;
+  try {
+    origin = publicOrigin(req);
+  } catch (err) {
+    if (err instanceof UnsafeOriginError) {
+      throw new Error(
+        `cannot derive a Stripe return URL: ${err.message}. `
+        + 'Set PUBLIC_URL, or set STRIPE_SUCCESS_URL / STRIPE_CANCEL_URL / STRIPE_PORTAL_RETURN_URL explicitly.',
+      );
+    }
+    throw err;
+  }
+  return `${origin}/?view=account${params ? `&${params}` : ''}`;
+}
 
 // ── Lazy Stripe client ──────────────────────────────────────────────────
 // Constructed on first use, only when STRIPE_SECRET_KEY is set. Cached so we
@@ -387,8 +416,8 @@ router.post('/checkout', async (req, res) => {
         // Exactly one of trial_end / trial_period_days, or neither. See above.
         ...trialArg,
       },
-      success_url: process.env.STRIPE_SUCCESS_URL || 'https://chat-recall.hotmun.com/?view=account&checkout=success',
-      cancel_url: process.env.STRIPE_CANCEL_URL || 'https://chat-recall.hotmun.com/?view=account&checkout=cancel',
+      success_url: accountReturnUrl(req, process.env.STRIPE_SUCCESS_URL, 'checkout=success'),
+      cancel_url: accountReturnUrl(req, process.env.STRIPE_CANCEL_URL, 'checkout=cancel'),
     });
 
     if (!session.url) {
@@ -506,7 +535,7 @@ router.post('/portal', async (req, res) => {
     if (!stripe) return res.status(501).json({ error: 'billing not enabled' });
     const session = await stripe.billingPortal.sessions.create({
       customer: ent.stripeCustomerId,
-      return_url: process.env.STRIPE_PORTAL_RETURN_URL || 'https://chat-recall.hotmun.com/?view=account',
+      return_url: accountReturnUrl(req, process.env.STRIPE_PORTAL_RETURN_URL, ''),
     });
     res.json({ url: session.url });
   } catch (err) {
