@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import ConnectMachine from './ConnectMachine';
 import SyncRules from './SyncRules';
 import FleetHealth from './FleetHealth';
+import PlanPicker from './PlanPicker';
 import {
   getEntitlement, startCheckout, openBillingPortal, getAlertConfig, setAlertConfig,
   testAlertWebhook, getMe, createTeam, getPlan,
@@ -62,9 +63,7 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
               No card needed for the trial. When it ends, search and export keep working and new
               syncs pause — your history is kept.
             </p>
-            <div className="acct-actions">
-              <StartTrialButton onError={setErr} />
-            </div>
+            <PlanPicker onError={setErr} />
           </>
         ) : !ent.billingEnabled ? (
           <p className="muted">Billing isn't enabled on this deployment — all features are available.</p>
@@ -78,11 +77,13 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
               <div className="acct-row"><span>{ent.status === 'trialing' ? 'Trial ends' : 'Renews'}</span>
                 <span>{new Date(ent.currentPeriodEnd).toLocaleDateString()}</span></div>
             )}
-            <div className="acct-actions">
-              {ent.hasSubscription
-                ? <Button variant="secondary" disabled={busy} onClick={manage}>Manage subscription</Button>
-                : <StartTrialButton onError={setErr} />}
-            </div>
+            {ent.hasSubscription ? (
+              <div className="acct-actions">
+                <Button variant="secondary" disabled={busy} onClick={manage}>Manage subscription</Button>
+              </div>
+            ) : (
+              <PlanPicker onError={setErr} />
+            )}
           </>
         )}
       </section>
@@ -163,14 +164,24 @@ function AlertsCard({ onError }: { onError: (s: string) => void }) {
   );
 }
 
-/** Full-screen gate shown when the tenant isn't entitled (lapsed/never subscribed
- *  or brand-new with no workspace). Paid mode: the only way past it is the trial.
- *  Open beta: it's a welcome screen — create the workspace, no card, no checkout. */
+/** Full-screen gate shown when the tenant isn't entitled. It serves two very
+ *  different visitors and must not confuse them:
+ *
+ *    - BRAND NEW, no workspace  → create one; that provisions the no-card trial.
+ *    - LAPSED, workspace exists → their trial is spent, so the only way forward is
+ *      to subscribe. Showing them "create your workspace" was a dead end: the
+ *      bootstrap no-ops when a team already exists, reloads, and lands back here
+ *      with no route to payment — precisely the person most likely to pay. */
 export function SubscribeScreen() {
   const [plan, setPlan] = useState<PlanInfo | null>(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
+  // null = still deciding which of the two visitors this is.
+  const [hasWorkspace, setHasWorkspace] = useState<boolean | null>(null);
   useEffect(() => { getPlan().then(setPlan).catch(() => {}); }, []);
+  useEffect(() => {
+    getMe().then((me) => setHasWorkspace(me.teams.length > 0)).catch(() => setHasWorkspace(false));
+  }, []);
   const trialDays = plan?.trialDays ?? 14;
 
   // First-run bootstrap: the same workspace creation StartTrialButton does, minus
@@ -191,7 +202,17 @@ export function SubscribeScreen() {
       <style>{ACCT_CSS}</style>
       <div className="sub-box">
         <div className="sub-logo">◆ chat-recall</div>
-        {plan && plan.freeTrialDays ? (
+        {hasWorkspace === null ? (
+          <p className="muted">Loading…</p>
+        ) : hasWorkspace ? (
+          <>
+            <h1>Your trial has ended</h1>
+            <p className="muted">Your history is kept — nothing was deleted. Search and export stay
+              available; new syncs resume as soon as you subscribe.</p>
+            {err && <div className="acct-err">{err}</div>}
+            <PlanPicker onError={setErr} />
+          </>
+        ) : plan && plan.freeTrialDays ? (
           <>
             <h1>Start your {plan.freeTrialDays}-day trial</h1>
             <p className="muted">No card needed. Create your workspace, connect your machine, and your
