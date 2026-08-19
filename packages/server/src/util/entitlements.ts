@@ -26,6 +26,7 @@
  * never decide it.
  */
 import { hasFeature, licenseState, licensedSeats, seatCheck, type LicenseFeature } from './license.js';
+import { activatedEntitlement } from './licence-activation.js';
 import { billingEnabled } from './billing.js';
 
 /**
@@ -49,7 +50,7 @@ export type Feature = FreeFeature | LicenseFeature;
 
 /** Every licensable feature, for iteration. Derived from one list. */
 const LICENSABLE: readonly LicenseFeature[] =
-  ['sync', 'alerts', 'findings', 'team', 'toolkit', 'sso', 'audit'];
+  ['sync', 'alerts', 'findings', 'insights', 'team', 'toolkit', 'sso', 'audit'];
 
 /** Free everywhere, in every edition, licensed or not. */
 export const FREE_FEATURES: readonly Feature[] = ['memory', 'scan'];
@@ -61,10 +62,17 @@ export const FREE_FEATURES: readonly Feature[] = ['memory', 'scan'];
  * Keys are matched by PREFIX so a new price (team-quarterly, solo-2027) needs no
  * entry — the same rule planGrantsTeam already used, kept deliberately.
  */
-const PLAN_FEATURES: Array<{ prefix: string; features: readonly Feature[] }> = [
-  { prefix: 'enterprise', features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'team', 'toolkit', 'sso', 'audit'] },
-  { prefix: 'team',       features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'team', 'toolkit'] },
-  { prefix: 'solo',       features: ['memory', 'scan', 'sync', 'alerts', 'findings'] },
+const PLAN_FEATURES: Array<{ prefix: string; features: readonly Feature[]; purchasable?: boolean }> = [
+  { prefix: 'enterprise', features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights', 'team', 'toolkit', 'sso', 'audit'] },
+  { prefix: 'team',       features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights', 'team', 'toolkit'] },
+  { prefix: 'solo',       features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights'] },
+  // The no-card trial. Same grant as Solo, so the trial actually demonstrates the
+  // product — a trial limited to the free tier sells nothing. It does NOT begin with
+  // 'team', so planGrantsTeam() stays false and collaboration remains paid.
+  // purchasable:false — a trial is granted, never bought, so featureRequired() must
+  // not offer it as the tier to upgrade to. Without this it became the cheapest
+  // match and told users to "buy the trial plan".
+  { prefix: 'trial',      features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights'], purchasable: false },
 ];
 
 /**
@@ -88,12 +96,29 @@ export function planFeatures(plan: string | null | undefined): Set<Feature> {
  */
 export function licenceFeatures(): Set<Feature> {
   const out = new Set<Feature>(FREE_FEATURES);
+
+  // TWO paths, deliberately, and a feature from either counts.
+  //
+  //   offline key  — CHAT_RECALL_LICENSE, a signed grant. Works air-gapped, cannot
+  //                  be revoked. Kept for customers who require it.
+  //   activation   — CHAT_RECALL_LICENSE_SERIAL exchanged for a short-lived
+  //                  entitlement. Revocable, countable, billable monthly.
+  //
+  // Union rather than precedence: a customer migrating from one to the other must
+  // never lose access mid-flight because both were briefly present.
   const st = licenseState();
-  if (!st.valid) return out;
-  // The licence payload's feature list is authoritative for what it adds. Read
-  // through hasFeature so signature/expiry checks are not duplicated here.
-  for (const f of LICENSABLE) {
-    if (hasFeature(f)) out.add(f);
+  if (st.valid) {
+    // Read through hasFeature so signature/expiry checks are not duplicated here.
+    for (const f of LICENSABLE) {
+      if (hasFeature(f)) out.add(f);
+    }
+  }
+
+  const online = activatedEntitlement();
+  if (online) {
+    for (const f of online.features) {
+      if ((LICENSABLE as readonly string[]).includes(f)) out.add(f as Feature);
+    }
   }
   return out;
 }
@@ -113,9 +138,20 @@ export function licenceFeatures(): Set<Feature> {
  */
 export function identityLimit(): number | null {
   if (billingEnabled()) return null;         // cloud: the subscription decides
-  const seats = licensedSeats();
-  if (seats !== null) return seats;          // licence says so
-  return licenseState().valid ? null : 1;    // valid+no seats = site licence; else 1
+
+  const offlineSeats = licensedSeats();
+  const online = activatedEntitlement();
+  const onlineSeats = typeof online?.seats === 'number' && online.seats > 0
+    ? Math.floor(online.seats) : null;
+
+  // The most generous of the two, for the same reason licenceFeatures() unions:
+  // a customer holding both must not be penalised for it.
+  if (offlineSeats !== null || onlineSeats !== null) {
+    return Math.max(offlineSeats ?? 0, onlineSeats ?? 0);
+  }
+  // No seat count anywhere. A valid grant with no seats is a site licence; nothing
+  // at all is the free tier, which is ONE person.
+  return (licenseState().valid || online) ? null : 1;
 }
 
 /**
@@ -167,7 +203,9 @@ export function featureRequired(feature: Feature): {
   // anything Enterprise includes — i.e. it would tell someone who needs Team to buy
   // Enterprise. The CHEAPEST tier that grants the feature is the honest answer, and
   // that is the last matching entry.
-  const tier = [...PLAN_FEATURES].reverse().find((e) => e.features.includes(feature));
+  const tier = [...PLAN_FEATURES].reverse()
+    .filter((e) => e.purchasable !== false)
+    .find((e) => e.features.includes(feature));
   const requires = billingEnabled() ? (tier ? tier.prefix : 'solo') : 'a licence';
   return {
     error: `this feature requires ${billingEnabled() ? `the ${requires} plan` : requires}`,

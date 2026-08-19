@@ -69,8 +69,11 @@ describe('billingEnabled / isEntitled gate', () => {
     try {
       const ent = await cp.getEntitlement('cloud-newcomer');
       expect(ent?.status).toBe('trialing');
-      // A trial must NOT carry a team plan — collaboration stays paid.
-      expect(ent?.plan).toBeNull();
+      // 'trial' maps to the Solo feature set, so the trial shows the product. It
+      // must NOT grant collaboration.
+      expect(ent?.plan).toBe('trial');
+      const { planGrantsTeam } = await import('./billing.js');
+      expect(planGrantsTeam(ent?.plan)).toBe(false);
       expect(ent?.stripeSubscriptionId).toBeNull();
       const daysOut = Math.round(((ent!.currentPeriodEnd as number) - Date.now()) / 86_400_000);
       expect(daysOut).toBe(14);

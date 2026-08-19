@@ -110,8 +110,9 @@ describe('ensureTrial', () => {
     const got = await ensureTrial(cp, 'fresh', now);
     expect(got?.status).toBe('trialing');
     expect(got?.currentPeriodEnd).toBe(now + 14 * DAY);
-    // A null plan is what keeps collaboration paid during a trial.
-    expect(got?.plan).toBeNull();
+    // 'trial', not null: a null plan resolves to the FREE set, which would make the
+    // trial demonstrate none of the product. It must still not grant collaboration.
+    expect(got?.plan).toBe('trial');
     expect(cp.writes).toBe(1);
   });
 
