@@ -57,24 +57,84 @@ describe('team licence gate (self-host, unlicensed)', () => {
     slug = r.body.slug;
   });
 
-  test('a SECOND person cannot create their own workspace on a free deployment', async () => {
-    // The hole this closes: invites were gated, but self-registration was not, so
-    // any number of people could each create their own tenant on one free box and
-    // never touch the invite path. The gate counted seats only where it was never
-    // reached.
-    const r = await request(app).post('/api/teams').set('x-dev-user', 'bob').send({ name: 'Bob Co' });
-    expect(r.status).toBe(402);
-    expect(r.body.limit).toBe(1);
-    expect(r.body.error).toMatch(/licensed for 1 person/i);
-    expect(r.body.hint).toMatch(/free and unlimited for one person/i);
+  test('AUTH_PROVIDER is the multi-user gate: better-auth refuses to start unlicensed', async () => {
+    // Multi-user needs distinct identities, identities need real auth, so the
+    // provider is the boundary. This replaced a ceiling that counted rows in the
+    // user table — which never fired on AUTH_PROVIDER=none, the exact configuration
+    // the free tier ships with.
+    const { validateAuthConfig } = await import('../middleware/auth.js');
+    const prevProvider = process.env.AUTH_PROVIDER;
+    const prevSecret = process.env.BETTER_AUTH_SECRET;
+    try {
+      process.env.AUTH_PROVIDER = 'better-auth';
+      process.env.BETTER_AUTH_SECRET = 'x';   // so we fail on the licence, not the secret
+      expect(() => validateAuthConfig()).toThrow(/licence including 'team'/);
+
+      process.env.AUTH_PROVIDER = 'keycloak';
+      expect(() => validateAuthConfig()).toThrow(/licence including 'sso'/);
+
+      // The free configurations must start cleanly.
+      process.env.AUTH_PROVIDER = 'none';
+      expect(() => validateAuthConfig()).not.toThrow();
+      process.env.AUTH_PROVIDER = 'static-token';
+      expect(() => validateAuthConfig()).not.toThrow();
+    } finally {
+      if (prevProvider === undefined) delete process.env.AUTH_PROVIDER;
+      else process.env.AUTH_PROVIDER = prevProvider;
+      if (prevSecret === undefined) delete process.env.BETTER_AUTH_SECRET;
+      else process.env.BETTER_AUTH_SECRET = prevSecret;
+    }
   });
 
-  test('the FIRST person may still create a second workspace of their own', async () => {
-    // One person with two workspaces is still one person; charging for the second
-    // would be indefensible.
-    const r = await asUser(request(app).post('/api/teams')).send({ name: 'Solo Co Two' });
-    expect(r.status).toBe(200);
-    expect(r.body.role).toBe('owner');
+  test('CLOUD edition is exempt — the SaaS runs better-auth for every tenant', async () => {
+    const { validateAuthConfig } = await import('../middleware/auth.js');
+    const prev = { p: process.env.AUTH_PROVIDER, s: process.env.BETTER_AUTH_SECRET, e: process.env.CHAT_RECALL_EDITION };
+    try {
+      process.env.AUTH_PROVIDER = 'better-auth';
+      process.env.BETTER_AUTH_SECRET = 'x';
+      process.env.CHAT_RECALL_EDITION = 'cloud';
+      expect(() => validateAuthConfig()).not.toThrow();
+    } finally {
+      for (const [k, v] of [['AUTH_PROVIDER', prev.p], ['BETTER_AUTH_SECRET', prev.s], ['CHAT_RECALL_EDITION', prev.e]] as const) {
+        if (v === undefined) delete process.env[k]; else process.env[k] = v;
+      }
+    }
+  });
+
+  test('a LICENCE unlocks better-auth on self-host — the point of option 1', async () => {
+    // The former edition check refused better-auth off-cloud unconditionally, so a
+    // paying self-hoster had no way to run per-person accounts at all. A signed
+    // licence naming 'team' now permits it.
+    const { validateAuthConfig } = await import('../middleware/auth.js');
+    const { _resetLicenseForTests } = await import('../util/license.js');
+    const { generateKeyPairSync, sign } = await import('node:crypto');
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const b64url = (b: Buffer | string) =>
+      Buffer.from(b).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    const seg = b64url(JSON.stringify({
+      holder: 'ACME', features: ['team'], iat: Math.floor(Date.now() / 1000),
+    }));
+    const key = `CR1.${seg}.${b64url(sign(null, Buffer.from(seg, 'utf8'), privateKey))}`;
+
+    const prev = {
+      p: process.env.AUTH_PROVIDER, s: process.env.BETTER_AUTH_SECRET,
+      l: process.env.CHAT_RECALL_LICENSE, k: process.env.CHAT_RECALL_LICENSE_PUBKEY,
+    };
+    try {
+      process.env.AUTH_PROVIDER = 'better-auth';
+      process.env.BETTER_AUTH_SECRET = 'x';
+      process.env.CHAT_RECALL_LICENSE_PUBKEY =
+        publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
+      process.env.CHAT_RECALL_LICENSE = key;
+      _resetLicenseForTests();
+      expect(() => validateAuthConfig()).not.toThrow();
+    } finally {
+      for (const [k, v] of [['AUTH_PROVIDER', prev.p], ['BETTER_AUTH_SECRET', prev.s],
+                            ['CHAT_RECALL_LICENSE', prev.l], ['CHAT_RECALL_LICENSE_PUBKEY', prev.k]] as const) {
+        if (v === undefined) delete process.env[k]; else process.env[k] = v;
+      }
+      _resetLicenseForTests();
+    }
   });
 
   test('inviting a second member is refused with 402 and a buying hint', async () => {

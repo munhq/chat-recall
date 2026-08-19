@@ -25,6 +25,7 @@
  */
 import type { Request, Response, NextFunction } from 'express';
 import { runWithTenant, runWithAuthor, createControlPlane } from '../imports.js';
+import { allows } from '../util/entitlements.js';
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -92,21 +93,56 @@ export function validateAuthConfig(): void {
         `never be set with NODE_ENV=production. Refusing to start.`,
     );
   }
+  // THE AUTH PROVIDER *IS* THE MULTI-USER GATE.
+  //
+  // Multi-user requires distinct identities; distinct identities require real auth.
+  // So the provider is the honest boundary, and it is one boot-time check rather
+  // than a per-signup hook counting rows in the user table — a ceiling over that
+  // table never fired on AUTH_PROVIDER=none, which is exactly what the free tier
+  // ships with.
+  //
+  //   none          one implicit user, bound to localhost or a VPN   FREE
+  //   static-token  one shared token, still one identity             FREE
+  //   better-auth   real per-person accounts                         licence: team
+  //   keycloak      an external IdP                                  licence: sso
+  //
+  // This SUBSUMES the former CHAT_RECALL_EDITION=cloud restriction on better-auth.
+  // That check existed to stop a default install "drifting into the paid product
+  // shape by accident" — and a signed licence is precisely the non-accidental case,
+  // so it supersedes the accident guard. Keeping both would have been two checks
+  // deciding one thing, which is the failure mode this codebase keeps repeating.
+  //
+  // Five people CAN still share an AUTH_PROVIDER=none deployment and get one
+  // undifferentiated history. That is unpreventable on hardware we do not control,
+  // and it is not the Team product: no attribution, no isolation, no board. Those
+  // need identities, which is what this gate prices.
+  //
+  // Checked at boot because it is a configuration decision, not a runtime state — an
+  // operator who set a provider wants it, and learning at the first login is worse.
+  const isCloudEdition = (process.env.CHAT_RECALL_EDITION || 'selfhost').toLowerCase() === 'cloud';
+  if (!isCloudEdition) {
+    const needs: Partial<Record<Provider, 'team' | 'sso'>> = {
+      'better-auth': 'team',
+      keycloak: 'sso',
+    };
+    const feature = needs[provider()];
+    if (feature && !allows(null, feature)) {
+      throw new Error(
+        `AUTH_PROVIDER='${provider()}' provides per-person accounts, which needs a ` +
+          `licence including '${feature}'. Refusing to start rather than run an ` +
+          `unlicensed feature.\n\n` +
+          `Single-user self-hosting is free: set AUTH_PROVIDER=none (bind to ` +
+          `localhost or your VPN) or static-token.\n` +
+          `For multiple people: https://chatrecall.dev/pricing`,
+      );
+    }
+  }
+
   // SEC-05 — better-auth without its secret would throw on the first login
   // attempt instead of at boot; crash with a clear message now.
   if (provider() === 'better-auth' && !process.env.BETTER_AUTH_SECRET) {
     throw new Error(
       `AUTH_PROVIDER=better-auth requires BETTER_AUTH_SECRET. Refusing to start.`,
-    );
-  }
-  // The embedded multi-user provider is a CLOUD-edition surface: self-host
-  // stays single-user (none) or static-token. This is a product boundary,
-  // not a security one — it keeps the default install from drifting into
-  // hosting the paid product shape by accident.
-  if (provider() === 'better-auth' && (process.env.CHAT_RECALL_EDITION || 'selfhost').toLowerCase() !== 'cloud') {
-    throw new Error(
-      `AUTH_PROVIDER=better-auth requires CHAT_RECALL_EDITION=cloud. ` +
-        `Self-host deployments use AUTH_PROVIDER=none or static-token.`,
     );
   }
 }

@@ -67,6 +67,14 @@ export interface Entitlement {
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
 }
+/** One appended audit record. `payload` is already redacted by the writer. */
+export interface AuditEntry {
+  id: number;
+  ts: number;
+  operation: string;
+  payload: unknown;
+}
+
 export interface Membership { team_slug: string; name: string; role: 'owner' | 'member' }
 export interface TeamMember { user_sub: string; email: string | null; role: string; created_at: number }
 
@@ -141,6 +149,18 @@ export interface ControlPlane {
    */
   setEntitlement(tenant: string, e: Partial<Omit<Entitlement, 'tenant'>>): Promise<void>;
 
+  // ── Audit log (Enterprise) ──
+  /**
+   * Read the write-ahead audit log, newest first. Keyset-paginated on `before`
+   * (exclusive upper bound on id) rather than an offset: the log is append-only and
+   * grows while it is being paged, so OFFSET would skip or repeat rows.
+   *
+   * Read-only on purpose — an audit trail its subject can edit is not one.
+   */
+  readAuditLog(opts: {
+    tenant: string; limit: number; before?: number | null; operation?: string | null;
+  }): Promise<AuditEntry[]>;
+
   // ── Tenant settings ──
   getTenantSetting(tenant: string, key: string): Promise<string | null>;
   setTenantSetting(tenant: string, key: string, value: string): Promise<void>;
@@ -165,6 +185,11 @@ export interface ProjectShare {
   projectId: string;
   scope: ShareScope;
   sharedAt: number;
+}
+
+/** Parse a JSON column, tolerating a driver that already parsed it. */
+function safeJson(v: string): unknown {
+  try { return JSON.parse(v); } catch { return v; }
 }
 
 /** Deterministic artifact id: same (team,type,tool,name) ⇒ same id, so
@@ -432,6 +457,30 @@ class SqliteControlPlane implements ControlPlane {
       next.tenant, next.plan, next.status, next.currentPeriodEnd,
       next.stripeCustomerId, next.stripeSubscriptionId, Date.now(),
     );
+  }
+
+  async readAuditLog(opts: {
+    tenant: string; limit: number; before?: number | null; operation?: string | null;
+  }): Promise<AuditEntry[]> {
+    // The sqlite driver exists for unit tests, where wal_log may never have been
+    // created. An absent table is "no audit history", not an error.
+    try {
+      const where = ['tenant = ?'];
+      const params: unknown[] = [opts.tenant];
+      if (opts.before) { where.push('id < ?'); params.push(opts.before); }
+      if (opts.operation) { where.push('operation = ?'); params.push(opts.operation); }
+      params.push(opts.limit);
+      const rows = this.db.prepare(
+        `SELECT id, ts, operation, payload FROM wal_log
+          WHERE ${where.join(' AND ')} ORDER BY id DESC LIMIT ?`,
+      ).all(...params) as Array<{ id: number; ts: number; operation: string; payload: string }>;
+      return rows.map((r) => ({
+        id: Number(r.id), ts: Number(r.ts), operation: r.operation,
+        payload: safeJson(r.payload),
+      }));
+    } catch {
+      return [];
+    }
   }
 
   async getTenantSetting(tenant: string, key: string): Promise<string | null> {
@@ -742,6 +791,25 @@ class PgControlPlane implements ControlPlane {
         next.stripeCustomerId, next.stripeSubscriptionId, Date.now(),
       ],
     );
+  }
+
+  async readAuditLog(opts: {
+    tenant: string; limit: number; before?: number | null; operation?: string | null;
+  }): Promise<AuditEntry[]> {
+    const where = ['tenant = $1'];
+    const params: unknown[] = [opts.tenant];
+    if (opts.before) { params.push(opts.before); where.push(`id < $${params.length}`); }
+    if (opts.operation) { params.push(opts.operation); where.push(`operation = $${params.length}`); }
+    params.push(opts.limit);
+    const rows = await this.q(
+      `SELECT id, ts, operation, payload FROM wal_log
+        WHERE ${where.join(' AND ')} ORDER BY id DESC LIMIT $${params.length}`,
+      params,
+    );
+    return rows.map((r: any) => ({
+      id: Number(r.id), ts: Number(r.ts), operation: r.operation,
+      payload: typeof r.payload === 'string' ? safeJson(r.payload) : r.payload,
+    }));
   }
 
   async getTenantSetting(tenant: string, key: string): Promise<string | null> {

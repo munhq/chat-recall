@@ -50,7 +50,7 @@ if (flag('--seats') !== undefined && !(seats > 0)) {
 // here rather than accepted blindly: a typo'd feature in a SIGNED key is worse
 // than a usage error, because it verifies, grants nothing, and looks like a bug in
 // the product rather than in the key.
-const LICENSABLE = ['sync', 'alerts', 'findings', 'team', 'toolkit', 'sso', 'audit'];
+const LICENSABLE = ['sync', 'alerts', 'findings', 'insights', 'team', 'toolkit', 'sso', 'audit'];
 const featuresArg = flag('--features');
 const features = featuresArg
   ? featuresArg.split(',').map((f) => f.trim()).filter(Boolean)

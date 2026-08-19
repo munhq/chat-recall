@@ -56,6 +56,25 @@ describe('cloud: plan → features', () => {
     expect([...planFeatures(null)].sort()).toEqual(['memory', 'scan']);
   });
 
+  test("the TRIAL grants the Solo set — it must demonstrate the product", () => {
+    // Regression: the trial was created with plan=null, which resolves to the free
+    // set, so a 14-day trial showed none of what it exists to sell.
+    const f = featuresFor('trial');
+    for (const x of ['sync', 'alerts', 'findings', 'insights'] as const) {
+      expect(f.has(x), `trial should grant ${x}`).toBe(true);
+    }
+    // ...but never collaboration.
+    expect(f.has('team')).toBe(false);
+    expect(f.has('toolkit')).toBe(false);
+  });
+
+  test('featureRequired never tells anyone to buy the TRIAL', () => {
+    // 'trial' is granted, not sold; offering it as an upgrade tier is nonsense.
+    for (const x of ['sync', 'alerts', 'findings', 'insights'] as const) {
+      expect(featureRequired(x).requires).toBe('solo');
+    }
+  });
+
   test('an UNKNOWN plan grants nothing beyond free', () => {
     expect([...planFeatures('mystery-tier')].sort()).toEqual(['memory', 'scan']);
   });
