@@ -131,3 +131,27 @@ export function resetPasswordMail(to: string, url: string, expiresInMinutes: num
   ].join('\n');
   return { to, subject: 'Reset your chat-recall password', text };
 }
+
+/** The self-host licence email. The serial is the deliverable, so it leads. */
+export function licenceSerialMail(to: string, serial: string, interval: 'month' | 'year'): Mail {
+  const text = [
+    'Your chat-recall self-host licence is ready.',
+    '',
+    `  ${serial}`,
+    '',
+    'Set it on your server and restart:',
+    '',
+    `  CHAT_RECALL_LICENSE_SERIAL=${serial}`,
+    '',
+    'That unlocks code findings, analytics, secret monitoring and multi-machine sync',
+    'on your own infrastructure. The server checks the licence periodically and keeps',
+    'working for up to two weeks if it cannot reach us, so a network problem on either',
+    'side never stops your install.',
+    '',
+    `Billed ${interval === 'year' ? 'annually' : 'monthly'}. Cancel any time from the`,
+    'billing portal; your data is yours and stays on your hardware either way.',
+    '',
+    'Questions: hello@munhq.com',
+  ].join('\n');
+  return { to, subject: 'Your chat-recall self-host licence', text };
+}

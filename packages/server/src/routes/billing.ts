@@ -136,6 +136,14 @@ export function planGrantsTeam(plan: string | null | undefined): boolean {
   return !!match && match.seats === 'per_seat';
 }
 
+/** The address to send a licence to. Stripe puts it on the subscription's metadata
+ *  when checkout stamps it; otherwise fall back to nothing rather than guessing. */
+function subscriberEmail(o: Record<string, unknown>): string | null {
+  const md = (o.metadata ?? null) as Record<string, unknown> | null;
+  const e = md?.email;
+  return typeof e === 'string' && e.includes('@') ? e : null;
+}
+
 /** Map Stripe's subscription `status` string onto our EntitlementStatus.
  *  Anything we don't recognize collapses to 'none' (fail-closed: not entitled). */
 function mapSubStatus(s: unknown): EntitlementStatus {
@@ -259,13 +267,48 @@ export async function applyStripeEvent(
     case 'customer.subscription.created':
     case 'customer.subscription.updated': {
       const status = mapSubStatus(o.status);
+      const plan = planOf(o);
       await cp.setEntitlement(tenant, {
         status,
-        plan: planOf(o),
+        plan,
         currentPeriodEnd: periodEndMs(o),
         stripeCustomerId: asStr(o.customer),
         stripeSubscriptionId: asStr(o.id),
       });
+
+      // A SELF-HOST purchase is delivered as a licence serial, not as access to our
+      // servers, so it needs an artefact the customer can paste into their own
+      // deployment. Issued here because this is the event that knows the plan.
+      //
+      // Idempotent on the subscription id: this event fires more than once per
+      // purchase, and a second serial for one subscription would be two licences
+      // sold once. Failures are logged and swallowed — the webhook must still ack, or
+      // Stripe retries forever and the entitlement write above is repeated for
+      // nothing.
+      if (plan && plan.toLowerCase().startsWith('selfhost') && (status === 'active' || status === 'trialing')) {
+        try {
+          const { issueSerialForSubscription } = await import('./licence.js');
+          const subId = asStr(o.id);
+          if (subId) {
+            const { serial, created } = await issueSerialForSubscription({
+              subscriptionId: subId,
+              customerId: asStr(o.customer),
+              email: subscriberEmail(o),
+              seats: Number((o.metadata as Record<string, unknown> | undefined)?.seats) || null,
+            });
+            if (created) {
+              const to = subscriberEmail(o);
+              if (to) {
+                const { sendMail, licenceSerialMail } = await import('../auth/mailer.js');
+                const interval = plan.toLowerCase().includes('year') ? 'year' : 'month';
+                await sendMail(licenceSerialMail(to, serial, interval));
+              }
+            }
+          }
+        } catch (e) {
+          console.error('[billing] self-host serial issuance failed:', (e as Error).message);
+        }
+      }
       return { tenant, status };
     }
     case 'customer.subscription.deleted': {
@@ -412,7 +455,11 @@ router.post('/checkout', async (req, res) => {
         // plan + seats recorded on the subscription so a later webhook (and any
         // support question) can tell WHICH plan was bought — the events
         // themselves carry only the price id.
-        metadata: { tenant, plan: line.plan.key, seats: String(line.quantity) },
+        // `email` is stamped so the self-host licence serial has somewhere to go: the
+        // subscription event is what knows the plan, and it carries no address of its
+        // own. Without this a self-host purchase succeeds and the customer receives
+        // nothing.
+        metadata: { tenant, plan: line.plan.key, seats: String(line.quantity), email: user.email ?? '' },
         // Exactly one of trial_end / trial_period_days, or neither. See above.
         ...trialArg,
       },
