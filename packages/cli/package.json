@@ -40,10 +40,8 @@
     "dotenv": "^17.2.3",
     "zod": "^3.22.0"
   },
-  "optionalDependencies": {
-    "better-sqlite3": "12.9.0"
-  },
   "devDependencies": {
-    "@chat-recall/engine": "*"
+    "@chat-recall/engine": "*",
+    "better-sqlite3": "12.9.0"
   }
 }

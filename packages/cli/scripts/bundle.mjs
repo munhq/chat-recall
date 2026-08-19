@@ -3,8 +3,14 @@
  * Bundle the CLI + MCP into self-contained dist entrypoints so the published
  * package needs no workspace siblings. `@chat-recall/engine` (and the CLI's own
  * source) are inlined; every npm dependency stays external and is installed
- * normally from package.json. Native modules (better-sqlite3, @lancedb/lancedb,
- * pg) must stay external — they can't be bundled.
+ * normally from package.json. Native modules (@lancedb/lancedb, pg) must stay
+ * external — they can't be bundled.
+ *
+ * better-sqlite3 is NOT in this list any more: OpenCode's database is read with
+ * Node's built-in `node:sqlite`, so the shipped package has no native SQLite
+ * dependency at all. It survives only as a devDependency, for the test-only
+ * sqlite StorageDriver. If it reappears in a bundle, the guard below fails the
+ * build — which is the point.
  */
 import { build } from 'esbuild';
 import { readFileSync } from 'node:fs';
@@ -21,7 +27,7 @@ const enginePkg = JSON.parse(readFileSync(new URL('../../engine/package.json', h
 // externalized-but-uninstalled engine dep crashes a fresh install at boot
 // (this exact bug shipped: `import 'pino'` stayed external → every
 // `npm i -g chat-recall` broke with ERR_MODULE_NOT_FOUND).
-const NATIVE_ENGINE_DEPS = ['better-sqlite3', '@lancedb/lancedb', 'pg'];
+const NATIVE_ENGINE_DEPS = ['@lancedb/lancedb', 'pg'];
 const external = [
   ...Object.keys(cliPkg.dependencies || {}),
   ...Object.keys(cliPkg.optionalDependencies || {}),
@@ -74,6 +80,11 @@ const isOptional = new Set(Object.keys(cliPkg.optionalDependencies || {}));
 //     collector dep or builtin, full stop. (The `from`-statement check is the
 //     one that was missing when a top-level `import 'pino'` shipped and broke
 //     every fresh `npm i -g chat-recall`.)
+//     NOTE: optionalDependencies are in `allowed` below, so a BOOT-time import
+//     of one passes this check while `--omit=optional` would still crash at
+//     runtime. That hid a static better-sqlite3 import for a long time. There
+//     are no optional deps left in the CLI package, so the hole is currently
+//     empty — do not add one back without splitting them out of `allowed`.
 //   import('x') — LAZY. Also allowed for the engine's native/server deps
 //     (pg, lancedb): those code paths never execute on a collector machine,
 //     and keeping them dynamic is exactly what makes the package native-free.

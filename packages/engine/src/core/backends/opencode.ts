@@ -10,39 +10,23 @@
  * IDs are prefixed: 'opencode_<session-id>'.
  */
 
-import { createRequire } from 'node:module';
+import type { DatabaseSync } from 'node:sqlite';
+import { openSqliteReadonly, openSqliteReadonlyOrThrow } from '../sqlite-reader.js';
 import { existsSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { opencodeDbPath, opencodeDbPaths } from '../tool-paths.js';
 
-const require = createRequire(import.meta.url);
-
-// Lazy + optional: OpenCode keeps its sessions in its own SQLite DB, so
-// reading them needs better-sqlite3. The thin collector ships without it by
-// default (optionalDependency); load on first use and degrade gracefully
-// (skip OpenCode) if it isn't installed, instead of crashing on boot.
+// OpenCode keeps its sessions in its own SQLite file, so indexing it means
+// reading that file. That read is the ONLY reason this project touches SQLite
+// at all — every one of chat-recall's own stores is Postgres.
 //
-// better-sqlite3 uses `export =` (CommonJS), so the module value is the
-// constructor itself — `typeof import(...)` is that callable type. The
-// instance type is the nested `.Database` interface.
-type BetterSqlite3Ctor = typeof import('better-sqlite3');
-type BetterSqlite3Db = import('better-sqlite3').Database;
-let _Database: BetterSqlite3Ctor | null | undefined;
-function loadBetterSqlite3(): BetterSqlite3Ctor | null {
-  // `undefined` = never tried; `null` = tried and absent. Cache both so the
-  // require() (and its potential failure) happens at most once per process.
-  if (_Database === undefined) {
-    try { _Database = require('better-sqlite3') as BetterSqlite3Ctor; }
-    catch {
-      _Database = null;
-      process.stderr.write(
-        '[chat-recall] better-sqlite3 not installed — OpenCode sessions will be skipped.\n',
-      );
-    }
-  }
-  return _Database;
-}
+// It uses Node's built-in `node:sqlite` (22.5+, stable on the 24 we ship), not
+// better-sqlite3. The old driver was a native optionalDependency, so this file
+// carried a lazy loader that degraded to "OpenCode sessions will be skipped"
+// whenever the module failed to build or was omitted — a whole tool silently
+// missing because of a C++ toolchain. The runtime provides the reader now, so
+// availability is just "does the file exist".
 
 import type {
   ToolBackend,
@@ -107,15 +91,12 @@ export class OpencodeBackend implements ToolBackend {
   /** Agent/subagent definitions — markdown with frontmatter. */
   agentsDir(): string { return join(this.configRoot(), 'agents'); }
 
-  // Available only when both the DB exists AND better-sqlite3 can be loaded —
-  // without the driver we cannot read it, so OpenCode is effectively absent.
   /** Every configured OpenCode database, primary first. Unlike the other tools
    *  OpenCode stores sessions in a FILE, so a second profile means a second db
    *  (`~/.local/share/opencode-work/opencode.db`) rather than a second dir. */
   dbPaths(): string[] { return opencodeDbPaths(); }
 
   isAvailable(): boolean {
-    if (loadBetterSqlite3() === null) return false;
     return this.dbPaths().some((p) => existsSync(p));
   }
 
@@ -530,10 +511,8 @@ export class OpencodeBackend implements ToolBackend {
     // OpenCode's mutable SQLite file (vacuum/compaction/deletion).
     const dbPath = this.dbPath();
     if (!existsSync(dbPath)) return null;
-    const DB = loadBetterSqlite3();
-    if (!DB) return null;
     const realId = this.toRawId(id);
-    const db = new DB(dbPath, { readonly: true });
+    const db = openSqliteReadonlyOrThrow(dbPath);
     try {
       const session = db.prepare(`SELECT * FROM session WHERE id = ?`).get(realId);
       if (!session) return null;
@@ -559,9 +538,6 @@ export const opencodeBackend = new OpencodeBackend();
 
 // ── Local helpers ────────────────────────────────────────────────────
 
-function openReadonly(path: string): BetterSqlite3Db | null {
-  const DB = loadBetterSqlite3();
-  if (!DB) return null;
-  try { return new DB(path, { readonly: true, fileMustExist: true }); }
-  catch { return null; }
+function openReadonly(path: string): DatabaseSync | null {
+  return openSqliteReadonly(path);
 }
