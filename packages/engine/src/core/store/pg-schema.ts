@@ -353,6 +353,41 @@ CREATE TABLE IF NOT EXISTS entitlements (
   updated_at             BIGINT
 );
 
+-- SELF-HOST LICENCES. A serial is what the customer receives; it carries no grant
+-- of its own, so issuing one needs no signing key online. The instance exchanges it
+-- for a short-lived signed entitlement (routes/licence.ts), which is what makes a
+-- self-host licence revocable and billable monthly — an offline key is neither.
+--
+-- Keyed on the serial. stripe_subscription_id is the authority on whether it is
+-- still paid: activation checks the live subscription rather than trusting a status
+-- column that a failed webhook could leave stale.
+CREATE TABLE IF NOT EXISTS licences (
+  serial                 TEXT PRIMARY KEY,
+  email                  TEXT,
+  holder                 TEXT,
+  features               TEXT NOT NULL DEFAULT '',
+  seats                  INTEGER,
+  stripe_customer_id     TEXT,
+  stripe_subscription_id TEXT,
+  status                 TEXT NOT NULL DEFAULT 'active',
+  created_at             BIGINT NOT NULL,
+  updated_at             BIGINT NOT NULL,
+  last_activated_at      BIGINT,
+  activation_count       INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_licences_subscription ON licences(stripe_subscription_id);
+CREATE INDEX IF NOT EXISTS idx_licences_email ON licences(email);
+
+-- Which instances have activated a licence. Counting them is the whole point of
+-- going online: an offline key cannot tell you it is installed on forty servers.
+CREATE TABLE IF NOT EXISTS licence_instances (
+  serial        TEXT NOT NULL,
+  instance_id   TEXT NOT NULL,
+  first_seen_at BIGINT NOT NULL,
+  last_seen_at  BIGINT NOT NULL,
+  PRIMARY KEY (serial, instance_id)
+);
+
 -- Per-tenant product settings (key/value, controlled from the dashboard).
 CREATE TABLE IF NOT EXISTS tenant_settings (
   tenant       TEXT NOT NULL,
