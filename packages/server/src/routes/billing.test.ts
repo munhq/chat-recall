@@ -47,7 +47,7 @@ afterAll(() => {
 beforeEach(() => {
   // Default each test to self-host (no Stripe) unless it opts into cloud.
   setEnv('STRIPE_SECRET_KEY', undefined);
-  setEnv('OPEN_BETA', undefined);
+  setEnv('FREE_TRIAL_DAYS', '14');
   // Entitlement lookups are TTL-cached (30s) in-process — reset between tests.
   clearEntitlementCache();
 });
@@ -58,10 +58,42 @@ describe('billingEnabled / isEntitled gate', () => {
     expect(await isEntitled('anyone')).toBe(true);
   });
 
-  test('cloud: unknown tenant is NOT entitled (fail-closed)', async () => {
+  test('cloud: an unknown tenant is GRANTED the no-card trial and is entitled', async () => {
     setEnv('STRIPE_SECRET_KEY', 'sk_test_x');
     expect(billingEnabled()).toBe(true);
-    expect(await isEntitled('cloud-no-sub')).toBe(false);
+    // The trial is the entry path: first contact provisions a dated entitlement
+    // instead of refusing. Access is still decided by a row, not by a flag.
+    expect(await isEntitled('cloud-newcomer')).toBe(true);
+
+    const cp = await createControlPlane();
+    try {
+      const ent = await cp.getEntitlement('cloud-newcomer');
+      expect(ent?.status).toBe('trialing');
+      // A trial must NOT carry a team plan — collaboration stays paid.
+      expect(ent?.plan).toBeNull();
+      expect(ent?.stripeSubscriptionId).toBeNull();
+      const daysOut = Math.round(((ent!.currentPeriodEnd as number) - Date.now()) / 86_400_000);
+      expect(daysOut).toBe(14);
+    } finally { await cp.close(); }
+  });
+
+  test('cloud: a LAPSED trial is not entitled, and is never re-granted', async () => {
+    setEnv('STRIPE_SECRET_KEY', 'sk_test_x');
+    const cp = await createControlPlane();
+    try {
+      // An expired trial: the row exists, so it is the record that a trial was
+      // already given. Re-granting here would renew the trial forever.
+      await cp.setEntitlement('cloud-expired', {
+        status: 'trialing', plan: null, currentPeriodEnd: Date.now() - 1000,
+      });
+    } finally { await cp.close(); }
+    expect(await isEntitled('cloud-expired')).toBe(false);
+
+    const cp2 = await createControlPlane();
+    try {
+      const ent = await cp2.getEntitlement('cloud-expired');
+      expect(ent!.currentPeriodEnd as number).toBeLessThan(Date.now());   // untouched
+    } finally { await cp2.close(); }
   });
 
   test('cloud: canceled subscription is NOT entitled', async () => {
@@ -91,12 +123,17 @@ describe('billingEnabled / isEntitled gate', () => {
     expect(await isEntitled('cloud-lapsed')).toBe(false);
   });
 
-  test('OPEN_BETA on cloud: everyone entitled, no subscription needed', async () => {
+  test('cloud: no env flag can bypass the gate', async () => {
     setEnv('STRIPE_SECRET_KEY', 'sk_test_x');
+    // OPEN_BETA used to short-circuit isEntitled() to true, which meant the paid
+    // path never ran in production and its defects stayed invisible until GA.
+    // Setting it must now do nothing at all.
     setEnv('OPEN_BETA', '1');
-    // Billing stays configured underneath — only the gate opens.
-    expect(billingEnabled()).toBe(true);
-    expect(await isEntitled('total-stranger')).toBe(true);
+    const cp = await createControlPlane();
+    try {
+      await cp.setEntitlement('cloud-cancelled-in-beta', { status: 'canceled' });
+    } finally { await cp.close(); }
+    expect(await isEntitled('cloud-cancelled-in-beta')).toBe(false);
   });
 
   test('cloud: trialing with null period IS entitled', async () => {
@@ -258,16 +295,18 @@ describe('GET /api/billing/plan (public)', () => {
     expect(res.status).toBe(200);
     expect(res.body.configured).toBe(false);
     expect(res.body.trialDays).toBe(14);
-    expect(res.body.openBeta).toBe(false);
+    expect(res.body.openBeta).toBeUndefined();   // the beta flag is gone
   });
 
-  test('OPEN_BETA=1 → plan advertises the beta so the landing page renders beta copy', async () => {
-    setEnv('OPEN_BETA', '1');
+  test('the public plan advertises the no-card trial length', async () => {
+    setEnv('FREE_TRIAL_DAYS', '21');
     const app = express();
     app.use('/api/billing', billingRouter);
     const res = await request(app).get('/api/billing/plan');
     expect(res.status).toBe(200);
-    expect(res.body.openBeta).toBe(true);
+    // The landing page renders this number, so it must follow config and never
+    // be hardcoded in the copy.
+    expect(res.body.freeTrialDays).toBe(21);
   });
 });
 

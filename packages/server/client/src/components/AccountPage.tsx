@@ -48,11 +48,24 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
 
       <section className="acct-card">
         <h2>Subscription</h2>
-        {!ent ? <p className="muted">Loading…</p> : ent.openBeta ? (
-          <p className="muted">
-            <strong>Open beta</strong> — everything is free while the beta runs. Pro pricing comes
-            later, and you'll get notice before anything is ever charged.
-          </p>
+        {!ent ? <p className="muted">Loading…</p> : ent.onTrial ? (
+          <>
+            <div className="acct-row">
+              <span>Trial</span>
+              <span>
+                {(ent.trialDaysLeft ?? 0) <= 0
+                  ? 'ends today'
+                  : `${ent.trialDaysLeft} day${ent.trialDaysLeft === 1 ? '' : 's'} left`}
+              </span>
+            </div>
+            <p className="muted">
+              No card needed for the trial. When it ends, search and export keep working and new
+              syncs pause — your history is kept.
+            </p>
+            <div className="acct-actions">
+              <StartTrialButton onError={setErr} />
+            </div>
+          </>
         ) : !ent.billingEnabled ? (
           <p className="muted">Billing isn't enabled on this deployment — all features are available.</p>
         ) : (
@@ -160,8 +173,9 @@ export function SubscribeScreen() {
   useEffect(() => { getPlan().then(setPlan).catch(() => {}); }, []);
   const trialDays = plan?.trialDays ?? 14;
 
-  // Beta first-run: same workspace bootstrap StartTrialButton does, minus Stripe.
-  async function joinBeta() {
+  // First-run bootstrap: the same workspace creation StartTrialButton does, minus
+  // Stripe. Creating the team is what provisions the no-card trial server-side.
+  async function createWorkspace() {
     setBusy(true); setErr('');
     try {
       const me = await getMe();
@@ -177,13 +191,14 @@ export function SubscribeScreen() {
       <style>{ACCT_CSS}</style>
       <div className="sub-box">
         <div className="sub-logo">◆ chat-recall</div>
-        {plan?.openBeta ? (
+        {plan && plan.freeTrialDays ? (
           <>
-            <h1>Welcome to the open beta</h1>
-            <p className="muted">Everything is free while the beta runs — no card, no trial clock. Create your
-              workspace, connect your machine, and your AI-session history becomes searchable.</p>
+            <h1>Start your {plan.freeTrialDays}-day trial</h1>
+            <p className="muted">No card needed. Create your workspace, connect your machine, and your
+              AI-session history becomes searchable. When the trial ends, search and export keep
+              working and new syncs pause — nothing is deleted.</p>
             {err && <div className="acct-err">{err}</div>}
-            <Button variant="primary" disabled={busy} onClick={joinBeta}>
+            <Button variant="primary" disabled={busy} onClick={createWorkspace}>
               {busy ? 'Setting up…' : 'Create your workspace →'}
             </Button>
           </>
