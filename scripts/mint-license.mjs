@@ -10,9 +10,19 @@
  *   node scripts/mint-license.mjs "ACME GmbH" --seats 25 --months 12 # annual
  *   node scripts/mint-license.mjs "ACME GmbH"                        # unlimited
  *   node scripts/mint-license.mjs "ACME GmbH" --note "INV-42"
+ *   node scripts/mint-license.mjs "ACME Agency" --features team,findings,alerts \
+ *     --seats 200 --months 12 --note "OEM-2026-001"                  # an OEM deal
  *
  * Omitting --seats issues a SITE licence (unlimited members). Do that
  * deliberately, not by forgetting the flag.
+ *
+ * Omitting --features issues 'team' only, which is what every key minted before
+ * the feature set widened carried. Name features explicitly for anything else.
+ *
+ * A KEY DOES NOT GRANT THE RIGHT TO RESELL. ELv2's hosting ban is absolute and
+ * unbuyable: a partner running chat-recall as a service for THEIR customers needs
+ * a signed commercial agreement granting that exception. The key only turns
+ * features on. Never send one without the agreement.
  *
  * The customer sets the printed key as CHAT_RECALL_LICENSE on their server.
  */
@@ -36,6 +46,23 @@ if (flag('--seats') !== undefined && !(seats > 0)) {
   process.exit(1);
 }
 
+// Must match LicenseFeature in packages/server/src/util/license.ts. Validated
+// here rather than accepted blindly: a typo'd feature in a SIGNED key is worse
+// than a usage error, because it verifies, grants nothing, and looks like a bug in
+// the product rather than in the key.
+const LICENSABLE = ['sync', 'alerts', 'findings', 'team', 'toolkit', 'sso', 'audit'];
+const featuresArg = flag('--features');
+const features = featuresArg
+  ? featuresArg.split(',').map((f) => f.trim()).filter(Boolean)
+  : ['team'];
+const unknown = features.filter((f) => !LICENSABLE.includes(f));
+if (unknown.length) {
+  console.error(`unknown feature(s): ${unknown.join(', ')}`);
+  console.error(`licensable: ${LICENSABLE.join(', ')}`);
+  console.error("note: 'memory' and 'scan' are always free and cannot be licensed.");
+  process.exit(1);
+}
+
 const keyPath = process.env.CHAT_RECALL_ISSUER_KEY || join(homedir(), '.chat-recall-issuer-key.pem');
 let priv;
 try {
@@ -46,7 +73,7 @@ try {
 }
 
 const iat = Math.floor(Date.now() / 1000);
-const payload = { holder, features: ['team'], iat };
+const payload = { holder, features, iat };
 if (months > 0) payload.exp = iat + months * 30 * 24 * 3600;
 if (seats > 0) payload.seats = seats;
 if (note) payload.note = note;

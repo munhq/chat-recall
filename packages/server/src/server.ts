@@ -34,7 +34,7 @@ import adminRouter from './routes/admin.js';
 import clientEventsRouter from './routes/client-events.js';
 import vaultRouter from './routes/vault.js';
 import accountRouter from './routes/account.js';
-import { requireEntitlement, requireTeamFeature, billingEnabled } from './util/billing.js';
+import { requireEntitlement, requireFeature, billingEnabled } from './util/billing.js';
 import projectsRouter from './routes/projects.js';
 import kgRouter from './routes/kg.js';
 import kvRouter from './routes/kv.js';
@@ -408,9 +408,16 @@ app.use('/api/account', accountRouter);
 // /api/status, /api/account, /api/billing, /api/teams stay reachable so a user
 // can see state, subscribe, and configure without already being paid.
 const paid = requireEntitlement;
-// Collaboration gate. Distinct from `paid` because isEntitled() is always true
-// on self-host by design, which left the team surface free at any company size.
-const team = requireTeamFeature;
+// Collaboration gate. Distinct from `paid` because isEntitled() answers "may this
+// tenant use the paid surface at all", not "which tier did they buy".
+//
+// This was requireTeamFeature, which opened with `if (billingEnabled()) return
+// next()` on the reasoning that the subscription governs — but the only thing
+// mounted beside it is `paid`, which any TRIALING or SOLO tenant passes. So these
+// three mounts were guarded by "has a subscription" and never looked at the plan.
+// requireFeature asks the one resolver instead (plan on cloud, licence on
+// self-host), so the two editions cannot drift apart again.
+const team = requireFeature('team');
 
 // Routes. Per-tenant class limiters (token bucket + concurrency) sit after the
 // per-IP apiLimiter and tenantAuth: 'read-heavy' for FTS/vector/analytics and
