@@ -12,6 +12,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import {
   planFeatures, licenceFeatures, featuresFor, allows,
+  ssoAllowed,
   identityLimit, identityCheck, featureRequired, FREE_FEATURES,
 } from './entitlements.js';
 
@@ -161,5 +162,31 @@ describe('featureRequired — the canonical refusal', () => {
     expect(r.requires).toBe('a licence');
     expect(r.upgradeUrl).toMatch(/^https?:\/\//);
     expect(r.feature).toBe('team');
+  });
+});
+
+describe('ssoAllowed — the gate that was missing', () => {
+  const L = { hosted: false, licensed: true };
+  const U = { hosted: false, licensed: false };
+
+  test('built-in auth needs no licence, ever', () => {
+    for (const p of ['better-auth', 'none', 'static-token']) {
+      expect(ssoAllowed(p, U)).toBe(true);
+    }
+  });
+
+  test('an unlicensed self-hoster cannot bring their own IdP', () => {
+    // The hole: 'sso' was sold and advertised while nothing checked it.
+    expect(ssoAllowed('keycloak', U)).toBe(false);
+  });
+
+  test('a licensed self-hoster can', () => {
+    expect(ssoAllowed('keycloak', L)).toBe(true);
+  });
+
+  test('the hosted service is never gated by a self-host licence', () => {
+    // Our own AUTH_PROVIDER choice is not a customer entitlement — gating it
+    // would stop the SaaS booting.
+    expect(ssoAllowed('keycloak', { hosted: true, licensed: false })).toBe(true);
   });
 });

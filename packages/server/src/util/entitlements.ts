@@ -99,6 +99,29 @@ export function planFeatures(plan: string | null | undefined): Set<Feature> {
  *
  * Self-host has no per-tenant billing, so this is deployment-wide by design.
  */
+/**
+ * May this deployment use an external identity provider?
+ *
+ * Pure so it can be tested: the gate itself runs at boot in server.ts, where a
+ * wrong answer means either a locked-out operator or a feature given away. It was
+ * given away — 'sso' sat in the plan map and on the pricing page with nothing
+ * checking it, which is why this is a function with a test rather than an inline
+ * condition.
+ *
+ * @param provider  the configured AUTH_PROVIDER
+ * @param hosted    billingEnabled() — the hosted service, where the operator's own
+ *                  IdP choice is not a customer entitlement
+ * @param licensed  whether the deployment's licence grants 'sso'
+ */
+export function ssoAllowed(
+  provider: string,
+  opts: { hosted: boolean; licensed: boolean },
+): boolean {
+  if (provider !== 'keycloak') return true;   // built-in auth is always included
+  if (opts.hosted) return true;               // our own deployment, not a grant
+  return opts.licensed;
+}
+
 export function licenceFeatures(): Set<Feature> {
   const out = new Set<Feature>(FREE_FEATURES);
 
