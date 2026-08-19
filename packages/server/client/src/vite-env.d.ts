@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 
 interface ImportMetaEnv {
-  /** Cloud API origin, e.g. https://chat-recall.munhq.com/api. Unset = local mode (vite proxy '/api'). */
+  /** Cloud API origin, e.g. https://chatrecall.dev/api. Unset = local mode (vite proxy '/api'). */
   readonly VITE_API_BASE?: string;
   /** Set (any value) = cloud build: embedded better-auth login on. */
   readonly VITE_CLOUD?: string;
