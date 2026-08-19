@@ -73,6 +73,11 @@ const PLAN_FEATURES: Array<{ prefix: string; features: readonly Feature[]; purch
   // not offer it as the tier to upgrade to. Without this it became the cheapest
   // match and told users to "buy the trial plan".
   { prefix: 'trial',      features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights'], purchasable: false },
+  // The SELF-HOST licence. Same grant as Solo, bought as a subscription, delivered
+  // as a licence key rather than as access to our servers. Listed last so the
+  // cheapest-tier scan in featureRequired() still names 'solo' for a cloud user —
+  // telling a SaaS customer to go self-host would be a strange upgrade prompt.
+  { prefix: 'selfhost',   features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights'], purchasable: false },
 ];
 
 /**
