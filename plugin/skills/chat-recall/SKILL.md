@@ -8,8 +8,9 @@ description: >-
   project/me", or otherwise references earlier work that is not in the current
   context. Also the entry point for the surfaces no focused skill owns: leaked
   secrets ("did I paste an API key"), the shared task board and team activity
-  ("what are my open tasks", "what is my team working on"), and index health
-  ("is chat-recall working", "re-index my sessions"). This is the hub: it routes
+  ("what are my open tasks", "what is my team working on"), the ranked findings
+  views ("what should I fix next", "what should I tell Claude about this repo"),
+  and index health ("is chat-recall working", "re-index my sessions"). This is the hub: it routes
   to the focused chat-recall skills and lists every recall_* tool. Reach for it
   whenever the answer lives in PAST work rather than the files in front of you.
 ---
@@ -32,6 +33,11 @@ and apply the test in `chat-recall-memory` before calling one:
 `recall_diary_write`, `recall_set`, `recall_task_create`, `recall_task_update`,
 `recall_security_dismiss`, `recall_rename_session`, `recall_regenerate_summary`,
 `recall_reclassify`, `recall_index`, `recall_code_index`.
+
+`recall_improvements` is a read UNLESS you pass `create_tasks: true`, which opens
+one task per returned item on the shared team board. Pass it only when the user
+asked for the work to be tracked — the board is visible to teammates and the API
+has no delete. `recall_claude_suggestions` never writes.
 
 ## Route to the right skill
 
@@ -56,6 +62,7 @@ tool is registered and never named here, so adding a tool means placing it.
 **Resume / cold start** — `recall_smart_resume` (structured resume bundle; needs a session id), `recall_recent` (list recent sessions), `recall_wake_up` (identity + high-signal facts), `recall_context` (structured dump of one session), `recall_show` (raw slice — returns 10 messages unless you raise `max_messages`), `recall_summary` (AI summary + outcome).
 **Search** — `recall_search` (sessions; `include_outcome`, `like_session`), `recall_memory_search` (every memory type), `recall_memory_item` (read ONE item found by search, or browse a source type), `recall_user_prompts` (what the user actually typed), `recall_subagent_search` (inside subagent transcripts, whose work never reaches the main conversation), `recall_redundant_files` (before writing a new file, check you have not written one like it already).
 **Project** — `recall_project_context` (rich dump), `recall_weekly_digest`, `recall_analytics_summary`, `recall_outcome_summary` (how many recent sessions actually shipped), `recall_code_findings` / `recall_code_actions` / `recall_code_projects` / `recall_code_index` / `recall_recommendations`.
+**Findings, ranked** — `recall_claude_suggestions` (every finding that becomes an agent-instruction change — the CLAUDE.md rules and skill installs — merged across account scope and every indexed project) and `recall_improvements` (everything else, most urgent first; `create_tasks: true` opens one team task per item). They split the same engines, so an item never appears in both. Neither needs the codeindex binary: without it you still get the account-level half.
 **What changed** — `recall_edits_timeline` (cross-tool edits), `recall_diff` (per-session diffs), `recall_commits` (did it actually land), `recall_markers` (where a session went sideways).
 **Durable memory / KG** — `recall_kg_query` / `recall_kg_add` / `recall_kg_invalidate` / `recall_kg_timeline` / `recall_kg_stats`, `recall_decision_record`, `recall_diary_write` / `recall_diary_read`, `recall_set` / `recall_get`.
 **Team** — `recall_tasks` (the shared task board), `recall_task_create`, `recall_task_update` (status, assignee, comment; task ids look like `t_…`), `recall_team_activity` (per-teammate × per-project rollup), `recall_shares` (which projects are shared — private by default, nothing is visible to teammates until shared).

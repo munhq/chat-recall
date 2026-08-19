@@ -23,6 +23,8 @@ import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const skillsDir = join(here, '..', 'skills');
+/** The marketplace-published copy. See the plugin-parity block at the bottom. */
+const pluginSkillsDir = join(here, '..', '..', '..', 'plugin', 'skills');
 
 const defined = [...new Set(
   [...readFileSync(join(here, 'mcp.ts'), 'utf-8').matchAll(/name: '(recall_[a-z_]+)'/g)].map((m) => m[1]),
@@ -94,6 +96,10 @@ describe('write tools are flagged as writes', () => {
     'recall_kg_add', 'recall_kg_invalidate', 'recall_decision_record',
     'recall_diary_write', 'recall_set', 'recall_task_create', 'recall_task_update',
     'recall_security_dismiss', 'recall_rename_session', 'recall_index',
+    // Conditional: a read until `create_tasks: true`, which opens cards on the
+    // shared board. Listed here because the hub must still warn about it — an
+    // agent reading only the catalog would otherwise fire it unprompted.
+    'recall_improvements',
   ];
 
   test('the hub does not describe every tool as safe to call proactively', () => {
@@ -103,5 +109,45 @@ describe('write tools are flagged as writes', () => {
   test('the hub names each write tool in its writes warning', () => {
     const warning = hub.text.slice(hub.text.indexOf('Reads are safe'), hub.text.indexOf('## Route'));
     expect(WRITES.filter((w) => !warning.includes(w))).toEqual([]);
+  });
+});
+
+/**
+ * `plugin/skills/` is a SECOND copy of these six files — it is what
+ * `/plugin marketplace add munhq/chat-recall` publishes. Nothing synced it and
+ * nothing tested it, so the copy the marketplace ships could drift silently
+ * from the copy `chat-recall install-hooks` writes.
+ *
+ * It did. Two tools were added, the catalog above was updated, this file passed
+ * because it only globs `packages/cli/skills`, and plugin users got skills that
+ * never named the new tools.
+ *
+ * The two directories are byte-identical by design, so assert exactly that: any
+ * edit has to land in both, or this fails and says which file was forgotten.
+ */
+describe('plugin skill parity', () => {
+  const pluginSkills = readdirSync(pluginSkillsDir, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && existsSync(join(pluginSkillsDir, e.name, 'SKILL.md')))
+    .map((e) => e.name)
+    .sort();
+
+  test('the plugin ships the same set of skills as the CLI', () => {
+    expect(pluginSkills).toEqual(skills.map((s) => s.name).sort());
+  });
+
+  test.each(skills.map((s) => s.name))('%s is byte-identical in plugin/skills', (name) => {
+    const pluginFile = join(pluginSkillsDir, name, 'SKILL.md');
+    expect(existsSync(pluginFile), `plugin/skills/${name}/SKILL.md is missing`).toBe(true);
+    expect(
+      readFileSync(pluginFile, 'utf-8'),
+      `plugin/skills/${name}/SKILL.md drifted from packages/cli/skills/${name}/SKILL.md — copy it across`,
+    ).toBe(skills.find((s) => s.name === name)!.text);
+  });
+
+  test('the plugin catalog therefore names every registered tool too', () => {
+    const pluginText = pluginSkills
+      .map((n) => readFileSync(join(pluginSkillsDir, n, 'SKILL.md'), 'utf-8'))
+      .join('\n');
+    expect(defined.filter((t) => !pluginText.includes(t))).toEqual([]);
   });
 });

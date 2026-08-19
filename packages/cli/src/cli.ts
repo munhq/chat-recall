@@ -180,6 +180,42 @@ const pkgVersion: string = JSON.parse(
  * a first-class path — see SELF_HOST_DOCS — and `--server` overrides this.
  */
 const DEFAULT_SERVER = 'https://chatrecall.dev';
+
+/**
+ * Tools written into every AI tool's `alwaysAllow`, and printed by `init`.
+ *
+ * Module scope on purpose: the MCP registration and the setup-complete banner
+ * must name the SAME set. The banner used to be a hand-typed literal and drifted
+ * to naming ten tools that do not exist. `mcp-tool-registry.test.ts` asserts this
+ * array equals the tools mcp.ts actually registers.
+ */
+const DEFAULT_ALLOW = [
+  'recall_search', 'recall_show', 'recall_index', 'recall_status',
+  // Must stay in step with the tools actually registered in mcp.ts.
+  // This list had drifted badly: it named 11 tools that do not exist
+  // (recall_plans, recall_help, recall_outcome, recall_files_touched, …
+  // — some absorbed into other tools, some never built) while omitting 18
+  // that do. Entries for missing tools are inert, but they hide the real
+  // gap, which is a tool that DOES exist prompting on every call.
+  'recall_recent', 'recall_context', 'recall_summary',
+  'recall_memory_search', 'recall_memory_item', 'recall_reclassify',
+  'recall_tasks', 'recall_task_create', 'recall_task_update',
+  'recall_smart_resume', 'recall_project_context', 'recall_weekly_digest',
+  'recall_kg_query', 'recall_kg_add', 'recall_kg_invalidate',
+  'recall_kg_timeline', 'recall_kg_stats',
+  'recall_diary_write', 'recall_diary_read',
+  'recall_diff', 'recall_commits', 'recall_markers', 'recall_heal_audit',
+  'recall_edits_timeline', 'recall_subagent_search', 'recall_redundant_files',
+  'recall_user_prompts', 'recall_decision_record', 'recall_analytics_summary',
+  'recall_outcome_summary', 'recall_regenerate_summary', 'recall_shares',
+  'recall_wake_up', 'recall_set', 'recall_get', 'recall_rename_session',
+  'recall_team_activity', 'recall_recommendations',
+  'recall_security_summary', 'recall_security_session',
+  'recall_security_dismiss', 'recall_security_rules',
+  'recall_code_index', 'recall_code_projects', 'recall_code_findings',
+  'recall_code_actions',
+  'recall_claude_suggestions', 'recall_improvements',
+];
 const SELF_HOST_DOCS = 'https://github.com/munhq/chat-recall/blob/main/docs/SELF_HOSTING.md';
 
 const program = new Command();
@@ -290,32 +326,6 @@ program
         const launch: { command: string; args?: string[] } = mcpBinOnPath
           ? { command: 'chat-recall-mcp' }
           : { command: 'node', args: [join(projectRoot, 'dist', 'mcp.js')] };
-        const DEFAULT_ALLOW = [
-          'recall_search', 'recall_show', 'recall_index', 'recall_status',
-          // Must stay in step with the tools actually registered in mcp.ts.
-          // This list had drifted badly: it named 11 tools that do not exist
-          // (recall_plans, recall_help, recall_outcome, recall_files_touched, …
-          // — some absorbed into other tools, some never built) while omitting 18
-          // that do. Entries for missing tools are inert, but they hide the real
-          // gap, which is a tool that DOES exist prompting on every call.
-          'recall_recent', 'recall_context', 'recall_summary',
-          'recall_memory_search', 'recall_memory_item', 'recall_reclassify',
-          'recall_tasks', 'recall_task_create', 'recall_task_update',
-          'recall_smart_resume', 'recall_project_context', 'recall_weekly_digest',
-          'recall_kg_query', 'recall_kg_add', 'recall_kg_invalidate',
-          'recall_kg_timeline', 'recall_kg_stats',
-          'recall_diary_write', 'recall_diary_read',
-          'recall_diff', 'recall_commits', 'recall_markers', 'recall_heal_audit',
-          'recall_edits_timeline', 'recall_subagent_search', 'recall_redundant_files',
-          'recall_user_prompts', 'recall_decision_record', 'recall_analytics_summary',
-          'recall_outcome_summary', 'recall_regenerate_summary', 'recall_shares',
-          'recall_wake_up', 'recall_set', 'recall_get', 'recall_rename_session',
-          'recall_team_activity', 'recall_recommendations',
-          'recall_security_summary', 'recall_security_session',
-          'recall_security_dismiss', 'recall_security_rules',
-          'recall_code_index', 'recall_code_projects', 'recall_code_findings',
-          'recall_code_actions',
-        ];
         // Cap the MCP server's V8 heap via the spawner: it's a long-lived
         // per-session process, and v8.setFlagsFromString can't change the
         // limit after startup (verified) — NODE_OPTIONS is the only knob
@@ -463,17 +473,16 @@ program
       // Done
       console.log(chalk.green.bold('Setup complete!'));
       console.log();
-      console.log('chat-recall MCP tools (42): recall_search, recall_recent, recall_context,');
-      console.log('  recall_summary, recall_show, recall_suggest_resume, recall_smart_resume,');
-      console.log('  recall_project_context, recall_project_dossier, recall_weekly_digest,');
-      console.log('  recall_status, recall_index, recall_memory_search, recall_memory_status,');
-      console.log('  recall_plans, recall_plan_show, recall_tasks, recall_diff, recall_commits,');
-      console.log('  recall_outcome, recall_markers, recall_edits_timeline, recall_help,');
-      console.log('  recall_kg_query/add/invalidate/timeline/stats,');
-      console.log('  recall_diary_write/read, recall_subagent_search, recall_files_touched,');
-      console.log('  recall_user_prompts, recall_decision_record, recall_set/get/kv_list,');
-      console.log('  recall_analytics_summary, recall_wake_up, recall_similar_sessions,');
-      console.log('  recall_session_files, recall_redundant_files');
+      // Printed from DEFAULT_ALLOW, never from a hand-typed list. The literal
+      // that used to sit here claimed 42 tools and named ten that do not exist
+      // (recall_help, recall_plans, recall_files_touched, recall_similar_sessions,
+      // recall_suggest_resume, …) while omitting the ones that do — the last
+      // thing a new user reads on install. DEFAULT_ALLOW is asserted equal to the
+      // registered tool set in mcp-tool-registry.test.ts, so this cannot drift.
+      console.log(`chat-recall MCP tools (${DEFAULT_ALLOW.length}):`);
+      for (let i = 0; i < DEFAULT_ALLOW.length; i += 3) {
+        console.log('  ' + DEFAULT_ALLOW.slice(i, i + 3).join(', '));
+      }
       // List codeindex's tools too if it's available — detected above.
       if (!skipCodeindex) {
         const { checkCodeindexStatus } = await import('@chat-recall/engine/core/companions.js');
@@ -2119,7 +2128,7 @@ team
       return;
     }
     const { mergePullResult } = await import('@chat-recall/engine/core/team-merge.js');
-    const m = mergePullResult({ pulled: r.pulled, removed: r.removed });
+    const m = await mergePullResult({ pulled: r.pulled, removed: r.removed });
     console.log();
     if (m.written.length)  console.log(chalk.green(`✓ Wrote ${m.written.length} file${m.written.length === 1 ? '' : 's'}`));
     if (m.skipped.length)  console.log(chalk.dim(`  Skipped ${m.skipped.length} (unchanged or no target tool)`));

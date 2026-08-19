@@ -14,6 +14,7 @@
  * so a user's own skill of the same name is never clobbered.
  */
 import { readdirSync, existsSync, mkdirSync, rmSync, cpSync, writeFileSync, readFileSync, statSync, realpathSync } from 'fs';
+import { createHash } from 'crypto';
 import { join, basename } from 'path';
 import { claudeHomeDirs } from '@chat-recall/engine/core/tool-paths.js';
 import { claudeBackend } from '@chat-recall/engine/core/backends/claude.js';
@@ -36,6 +37,56 @@ function version(): string {
   try {
     return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf-8')).version || '0.0.0';
   } catch { return '0.0.0'; }
+}
+
+/**
+ * Content hash of every bundled skill file.
+ *
+ * The refresh gate used to compare the PACKAGE VERSION. That silently stranded
+ * every skill edit that shipped without a version bump: bundled content changed,
+ * `version()` did not, the installed marker matched, `skillsNeedRefresh()`
+ * returned false, and the new text reached nobody. Editing a skill is far more
+ * frequent than cutting a release, so the gate has to key on what actually
+ * changed.
+ *
+ * Hashes path + bytes of every file under each skill dir, not just SKILL.md, so
+ * a skill that grows a reference file is still covered. Sorted, so the digest is
+ * stable across filesystem ordering.
+ */
+function skillsFingerprint(): string {
+  const src = skillsSourceDir();
+  const h = createHash('sha256');
+  for (const name of bundledSkillNames()) {
+    for (const rel of filesUnder(join(src, name)).sort()) {
+      h.update(name + '/' + rel);
+      h.update(readFileSync(join(src, name, rel)));
+    }
+  }
+  return h.digest('hex').slice(0, 12);
+}
+
+/** Every file under `dir`, as paths relative to it. */
+function filesUnder(dir: string, prefix = ''): string[] {
+  const out: string[] = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === MARKER) continue; // the marker is our own output, never input
+    const rel = prefix ? `${prefix}/${e.name}` : e.name;
+    if (e.isDirectory()) out.push(...filesUnder(join(dir, e.name), rel));
+    else out.push(rel);
+  }
+  return out;
+}
+
+/**
+ * What gets written into the marker, and what the gate compares.
+ *
+ * `<version> <content-hash>`: the version stays readable for `doctor` and bug
+ * reports, the hash is what decides a refresh. A marker written by an older
+ * release holds a bare version, which cannot equal this, so every existing
+ * install refreshes once — which is the fix landing.
+ */
+function skillStamp(): string {
+  return `${version()} ${skillsFingerprint()}`;
 }
 
 /** The skill directory names we ship (any dir under skills/ containing SKILL.md). */
@@ -129,6 +180,7 @@ export function installSkills(opts: { onlyAvailable?: boolean } = {}): InstallRe
   const src = skillsSourceDir();
   const names = bundledSkillNames();
   const v = version();
+  const stamp = skillStamp();
   const perTarget: InstallResult['perTarget'] = [];
 
   for (const t of skillTargets()) {
@@ -142,7 +194,7 @@ export function installSkills(opts: { onlyAvailable?: boolean } = {}): InstallRe
       mkdirSync(t.dir, { recursive: true });
       rmSync(dest, { recursive: true, force: true });
       cpSync(join(src, name), dest, { recursive: true });
-      writeFileSync(join(dest, MARKER), `${v}\n`);
+      writeFileSync(join(dest, MARKER), `${stamp}\n`);
       installed.push(name);
     }
     perTarget.push({ ...t, installed, skippedUserOwned });
@@ -177,7 +229,7 @@ export function uninstallSkills(): UninstallResult {
  *  version. The MCP boot uses this to refresh only when needed (cheap: stat a
  *  marker per skill), so it doesn't churn the disk on every tool launch. */
 export function skillsNeedRefresh(): boolean {
-  const cur = version();
+  const cur = skillStamp();
   const names = bundledSkillNames();
   if (names.length === 0) return false;
   for (const t of skillTargets()) {
@@ -194,7 +246,7 @@ export function skillsNeedRefresh(): boolean {
 /** For `doctor`: which tools have the current skill version installed. */
 export function skillStatus(): Array<{ id: string; label: string; available: boolean; installed: number; version: string | null }> {
   const names = bundledSkillNames();
-  const cur = version();
+  const cur = skillStamp();
   return skillTargets().map((t) => {
     let installed = 0; let ver: string | null = null;
     for (const name of names) {
