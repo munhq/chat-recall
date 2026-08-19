@@ -82,9 +82,9 @@ export default function TopBar({ view, setView, enabledViews, query, setQuery, s
         data-testid="open-mobile-menu"
       />
 
-      {/* Brand — clickable, goes home (Overview). The build stamp is
-          developer debug, not user-facing; it's a tooltip on the BETA
-          tag now instead of a visible chip. */}
+      {/* Brand — clickable, goes home (Overview). The build stamp is developer
+          debug, not user-facing, so it rides as a tooltip on the brand text
+          rather than as a visible chip. */}
       <div
         className="cr-topbar-brand"
         style={{
@@ -100,26 +100,12 @@ export default function TopBar({ view, setView, enabledViews, query, setQuery, s
         title="Back to Overview"
       >
         <span className="cr-topbar-brand-logo"><Logo size={26} /></span>
-        <span className="cr-topbar-brand-text" style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--cr-fg-1)' }}>
-          Chat Recall
-        </span>
         <span
-          className="cr-topbar-brand-tag"
-          title={`Beta — build ${typeof __BUILD_STAMP__ !== 'undefined' ? __BUILD_STAMP__ : 'dev'}`}
-          style={{
-            padding: '2px 6px',
-            fontSize: 10,
-            fontWeight: 500,
-            letterSpacing: '0.04em',
-            color: 'var(--cr-fg-3)',
-            background: 'var(--cr-ink-2)',
-            border: '1px solid var(--cr-line-1)',
-            borderRadius: 4,
-            textTransform: 'uppercase',
-            cursor: 'help',
-          }}
+          className="cr-topbar-brand-text"
+          title={`build ${typeof __BUILD_STAMP__ !== 'undefined' ? __BUILD_STAMP__ : 'dev'}`}
+          style={{ fontSize: 15, fontWeight: 600, letterSpacing: '-0.02em', color: 'var(--cr-fg-1)' }}
         >
-          Beta
+          Chat Recall
         </span>
       </div>
 
