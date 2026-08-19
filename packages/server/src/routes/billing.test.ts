@@ -110,7 +110,7 @@ describe('billingEnabled / isEntitled gate', () => {
 });
 
 describe('applyStripeEvent webhook mapping', () => {
-  test('checkout.session.completed → records ids only, never status/plan/period', async () => {
+  test('checkout.session.completed with no stamped plan → ids only, never status/plan/period', async () => {
     const calls: Array<{ tenant: string; e: Record<string, unknown> }> = [];
     const fakeCp = {
       async setEntitlement(tenant: string, e: Record<string, unknown>) { calls.push({ tenant, e }); },
@@ -132,15 +132,68 @@ describe('applyStripeEvent webhook mapping', () => {
     expect(calls[0].e.stripeCustomerId).toBe('cus_42');
     expect(calls[0].e.stripeSubscriptionId).toBe('sub_42');
 
-    // ANTI-CLOBBER: this event must write IDS ONLY. It fires alongside
-    // customer.subscription.created for one purchase and the later write wins, so
-    // a status/plan/period written here erases what the subscription event knows.
-    // Observed live: it hardcoded 'active' over the accurate 'trialing', and a
-    // session has no items[]/trial_end so its period was null and erased the real
-    // one. Asserting absence is the only way to keep that from coming back.
+    // ANTI-CLOBBER: it fires alongside customer.subscription.created for one
+    // purchase and the later write wins, so a status/period written here erases
+    // what the subscription event knows. Observed live: it hardcoded 'active'
+    // over the accurate 'trialing', and a session has no items[]/trial_end so its
+    // period was null and erased the real one. Asserting absence keeps that out.
     expect(calls[0].e.status).toBeUndefined();
-    expect(calls[0].e.plan).toBeUndefined();
     expect(calls[0].e.currentPeriodEnd).toBeUndefined();
+
+    // Plan stays absent when the session does not state one. A session has no
+    // items[], so deriving it here would fall through to the STRIPE_PRICE_ID env
+    // default and overwrite a correct plan with a stale global value.
+    expect(calls[0].e.plan).toBeUndefined();
+  });
+
+  test('checkout.session.completed WITH a stamped plan → records the plan', async () => {
+    // customer.subscription.created is the only other event that carries a plan,
+    // so an endpoint not subscribed to it leaves the entitlement at plan=NULL —
+    // and a NULL plan is not team, which denies collaboration to a paying Team
+    // customer. /checkout stamps metadata.plan onto the session precisely so this
+    // event can record it, making the plan independent of the event subscription.
+    const calls: Array<{ tenant: string; e: Record<string, unknown> }> = [];
+    const fakeCp = {
+      async setEntitlement(tenant: string, e: Record<string, unknown>) { calls.push({ tenant, e }); },
+    };
+    const event = {
+      type: 'checkout.session.completed',
+      data: {
+        object: {
+          client_reference_id: 'team-acme',
+          customer: 'cus_42',
+          subscription: 'sub_42',
+          metadata: { tenant: 'team-acme', plan: 'team-monthly', seats: '3' },
+        },
+      },
+    };
+    await applyStripeEvent(event, fakeCp);
+    expect(calls[0].e.plan).toBe('team-monthly');
+    // Still no status/period from this event — the plan is the sole exception.
+    expect(calls[0].e.status).toBeUndefined();
+    expect(calls[0].e.currentPeriodEnd).toBeUndefined();
+  });
+
+  test('a stamped plan survives a later ids-only session event', async () => {
+    // The two events for one purchase land in either order. Replaying them
+    // against a real control plane proves the merge keeps the plan either way —
+    // this is what a fake setEntitlement cannot show.
+    setEnv('STRIPE_SECRET_KEY', 'sk_test_x');
+    const cp = await createControlPlane();
+    try {
+      await applyStripeEvent({
+        type: 'customer.subscription.created',
+        data: { object: { id: 'sub_m', status: 'trialing', customer: 'cus_m',
+                          metadata: { tenant: 'merge-acme', plan: 'team-monthly' } } },
+      }, cp);
+      await applyStripeEvent({
+        type: 'checkout.session.completed',
+        data: { object: { client_reference_id: 'merge-acme', customer: 'cus_m', subscription: 'sub_m' } },
+      }, cp);
+      const ent = await cp.getEntitlement('merge-acme');
+      expect(ent?.plan).toBe('team-monthly');   // not erased by the ids-only write
+      expect(ent?.status).toBe('trialing');     // nor is the accurate status
+    } finally { await cp.close(); }
   });
 
   test('customer.subscription.updated → maps Stripe status + resolves tenant from metadata', async () => {

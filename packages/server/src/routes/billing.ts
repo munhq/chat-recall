@@ -184,7 +184,8 @@ export async function applyStripeEvent(
 
   switch (event.type) {
     case 'checkout.session.completed': {
-      // IDS ONLY — no status, no plan, no period.
+      // IDS ONLY — no status, no period. PLUS the plan, when the session states
+      // it outright (see the stamped-metadata note below).
       //
       // Both this and customer.subscription.created fire for one purchase and the
       // later write wins, so anything this event guesses can erase what the
@@ -199,7 +200,27 @@ export async function applyStripeEvent(
       // So this event contributes only the two ids, and ordering stops mattering.
       // A read-before-write was tried instead and returned null in the webhook
       // context, silently reintroducing the clobber — hence no read at all.
+      //
+      // The plan is the exception, and it must be written here. It is not a
+      // guess: /checkout stamps metadata.plan onto the SESSION for exactly this
+      // reason, so the value is the catalogue key the customer chose.
+      //
+      // Recording it here is what makes the plan independent of the webhook
+      // endpoint's event subscription. customer.subscription.created is the only
+      // other event that carries a plan, so if an endpoint is not subscribed to
+      // it, the entitlement keeps plan=NULL — and a NULL plan is not team, which
+      // denies collaboration to a paying Team customer. Writing it from both
+      // events is harmless (same value); writing it from neither is an outage.
+      //
+      // Read metadata.plan DIRECTLY, not via planOf(): a session carries no
+      // items[], so planOf() would fall through to process.env.STRIPE_PRICE_ID
+      // and could overwrite a correct plan with a stale global default.
+      const stamped = (o.metadata ?? null) as Record<string, unknown> | null;
+      const plan = stamped && typeof stamped.plan === 'string' && stamped.plan
+        ? stamped.plan
+        : undefined;   // undefined, so mergeEntitlement preserves what is there
       await cp.setEntitlement(tenant, {
+        ...(plan === undefined ? {} : { plan }),
         stripeCustomerId: asStr(o.customer),
         stripeSubscriptionId: asStr(o.subscription),
       });
