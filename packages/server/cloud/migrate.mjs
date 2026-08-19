@@ -2,11 +2,21 @@
 // Connects as a role with createrole (the CNPG `chat_recall` owner in the
 // cluster, or a superuser locally).
 //
-// Run-once semantics via a `schema_migrations` ledger: 0001–0003 are written
-// against the LEGACY column shapes (tenant_slug, timestamptz) and would fail
-// if re-applied after 0004 renames those columns — so each file applies
-// exactly once. The engine's own bootstrap (pg-schema.ts, run by the server
-// on boot) stays idempotent and handles everything additive.
+// THE SCHEMA IS NOT OWNED HERE. engine/src/core/store/pg-schema.ts creates every
+// table, enables and FORCEs RLS, and installs every policy — idempotently, on
+// every server boot. A fresh database gets its whole structure from there, which
+// is why this directory needs only two files: a legacy-v1 upgrade and the one-off
+// data repairs.
+//
+// Both are IDEMPOTENT, so the `schema_migrations` ledger is a courtesy (it skips
+// work already done) rather than a correctness requirement. That matters: the
+// ledger being the only guard is precisely what made two earlier no-op
+// migrations permanent — see 0002's header.
+//
+// Databases migrated before the consolidation carry the old 0001–0008 filenames
+// in the ledger. Those rows are left alone: the new files are idempotent, so
+// re-running them there is a no-op, and rewriting history to match a renamed file
+// would be worse than a stale row.
 import pg from 'pg';
 import { readFileSync } from 'fs';
 
@@ -21,17 +31,8 @@ await c.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
 )`);
 
 const FILES = [
-  './migrations/0001_init.sql',
-  './migrations/0002_messages.sql',
-  './migrations/0003_teams.sql',
-  './migrations/0004_unified_server.sql',
-  './migrations/0005_kg_junk_cleanup.sql',
-  './migrations/0006_orphan_session_metadata.sql',
-  './migrations/0007_project_id_org_rename.sql',
-  // 0007 above was a silent no-op (RLS — see 0008's header). 0008 redoes both its
-  // work and 0006's, with RLS handled. 0007 is kept in the ledger rather than
-  // deleted so the sequence stays append-only and the history stays honest.
-  './migrations/0008_rls_aware_data_fixes.sql',
+  './migrations/0001_legacy_v1_upgrade.sql',
+  './migrations/0002_data_repairs.sql',
 ];
 
 // REPORT ROWS AFFECTED. A data migration against a tenant-scoped table is
