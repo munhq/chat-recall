@@ -11,7 +11,8 @@
  * - project: id, worktree, name
  */
 
-import { createRequire } from 'node:module';
+import type { DatabaseSync } from 'node:sqlite';
+import { openSqliteReadonlyOrThrow } from '../core/sqlite-reader.js';
 import { existsSync } from 'fs';
 
 import type {
@@ -23,22 +24,11 @@ import type {
 import { opencodeBackend as OPENCODE } from '../core/backends/opencode.js';
 import { isSourceEnabled } from '../core/settings.js';
 
-const require = createRequire(import.meta.url);
-
-// Lazy + optional: indexing OpenCode requires reading its SQLite DB via
-// better-sqlite3, which the thin collector ships without by default
-// (optionalDependency). Load on first use and degrade gracefully — yielding
-// nothing — when it isn't installed, instead of crashing on boot/import.
-type BetterSqlite3Ctor = typeof import('better-sqlite3');
-type BetterSqlite3Db = import('better-sqlite3').Database;
-let _Database: BetterSqlite3Ctor | null | undefined;
-function loadBetterSqlite3(): BetterSqlite3Ctor | null {
-  if (_Database === undefined) {
-    try { _Database = require('better-sqlite3') as BetterSqlite3Ctor; }
-    catch { _Database = null; }
-  }
-  return _Database;
-}
+// OpenCode stores its sessions in its own SQLite file, so indexing it means
+// reading that file — the only SQLite this project touches. Read with Node's
+// built-in `node:sqlite` (22.5+, stable on the 24 we ship). It used to be
+// better-sqlite3, a native optionalDependency, which meant this source silently
+// yielded nothing whenever that module failed to build.
 
 const MAX_CHUNK_CHARS = 2000;
 
@@ -54,12 +44,9 @@ export class OpenCodeSource implements MemorySource {
   async *discover(): AsyncGenerator<MemoryItem> {
     if (!isSourceEnabled('opencode', 'sessions')) return;
     if (!existsSync(this.dbPath)) return;
-    const DB = loadBetterSqlite3();
-    if (!DB) return;
-
-    let db: BetterSqlite3Db;
+    let db: DatabaseSync;
     try {
-      db = new DB(this.dbPath, { readonly: true });
+      db = openSqliteReadonlyOrThrow(this.dbPath);
     } catch {
       return;
     }
@@ -186,11 +173,9 @@ export class OpenCodeSource implements MemorySource {
 
   async parse(item: MemoryItem): Promise<MemoryChunk[]> {
     if (!existsSync(this.dbPath)) return [];
-    const DB = loadBetterSqlite3();
-    if (!DB) return [];
 
     const sessionId = item.id.replace('opencode_', '');
-    const db = new DB(this.dbPath, { readonly: true });
+    const db = openSqliteReadonlyOrThrow(this.dbPath);
     const chunks: MemoryChunk[] = [];
 
     try {

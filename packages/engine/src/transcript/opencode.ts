@@ -2,6 +2,7 @@
  * OpenCode transcript parser — SQLite-backed sessions + child sessions.
  * Ported verbatim from services/parser.ts.
  */
+import { openSqliteReadonlyOrThrow } from '../core/sqlite-reader.js';
 import type { TranscriptMessage as Message, Subagent, ToolCall } from './types.js';
 import { createLogger } from '../core/logger.js';
 
@@ -17,7 +18,6 @@ const log = createLogger('transcript-opencode');
  * collapsible sub-agent panels uniformly.
  */
 export async function parseOpenCodeSubagents(parentSessionId: string): Promise<Subagent[]> {
-  const Database = (await import('better-sqlite3')).default;
   const { existsSync } = await import('fs');
   const { opencodeBackend } = await import('../core/backends/opencode.js');
 
@@ -25,7 +25,7 @@ export async function parseOpenCodeSubagents(parentSessionId: string): Promise<S
   if (!existsSync(dbPath)) return [];
 
   const realParent = parentSessionId.replace('opencode_', '');
-  const db = new Database(dbPath, { readonly: true });
+  const db = openSqliteReadonlyOrThrow(dbPath);
   try {
     const children = db.prepare(`
       SELECT id, title, time_created
@@ -72,7 +72,6 @@ export async function parseOpenCodeSubagents(parentSessionId: string): Promise<S
  * Parse an OpenCode session from SQLite.
  */
 export async function parseOpenCodeTranscript(sessionId: string): Promise<Message[]> {
-  const Database = (await import('better-sqlite3')).default;
   const { existsSync } = await import('fs');
   const { opencodeBackend } = await import('../core/backends/opencode.js');
 
@@ -80,7 +79,7 @@ export async function parseOpenCodeTranscript(sessionId: string): Promise<Messag
   if (!existsSync(dbPath)) return [];
 
   const realId = sessionId.replace('opencode_', '');
-  const db = new Database(dbPath, { readonly: true });
+  const db = openSqliteReadonlyOrThrow(dbPath);
   const messages: Message[] = [];
 
   try {

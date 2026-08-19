@@ -132,6 +132,45 @@ export async function teamJoin(inviteToken: string): Promise<{ id: string; name:
   return r.team;
 }
 
+// ── Per-device install ledger (server-side) ─────────────────────────────────
+// Was a better-sqlite3 file at ~/.chat-recall/team-installs.db — the only local
+// database this feature owned, and half the reason the CLI needed a native
+// module at boot. It lives in Postgres now, device-scoped.
+//
+// It records (artifactId, tool, type, name, sha256) and DELIBERATELY NOT the
+// install path: the path is recomputed locally by installPathFor(), so no
+// absolute filesystem path leaves the machine. See routes/ledgers.ts.
+
+export interface TeamInstallRow {
+  artifactId: string;
+  tool: string;
+  artifactType: TeamArtifactType;
+  artifactName: string;
+  sha256: string;
+  installedAt: number;
+}
+
+/** Rows this device recorded — all of them, or just one artifact's. */
+export async function teamInstallsList(artifactId?: string): Promise<TeamInstallRow[]> {
+  const ctx = context();
+  const qs = artifactId ? `?artifactId=${encodeURIComponent(artifactId)}` : '';
+  const r = await http<{ installs: TeamInstallRow[] }>(ctx, 'GET', `/api/ledgers/team-installs${qs}`);
+  return r.installs ?? [];
+}
+
+/** Record what this device just wrote. Batched — one call per merge, not per file. */
+export async function teamInstallsRecord(installs: TeamInstallRow[]): Promise<void> {
+  if (!installs.length) return;
+  const ctx = context();
+  await http(ctx, 'POST', '/api/ledgers/team-installs', { installs });
+}
+
+/** Forget an artifact on this device (after its files are deleted). */
+export async function teamInstallsForget(artifactId: string, tool?: string): Promise<void> {
+  const ctx = context();
+  await http(ctx, 'DELETE', '/api/ledgers/team-installs', { artifactId, tool });
+}
+
 export async function teamList(): Promise<TeamArtifactMeta[]> {
   const ctx = context({ requireTeam: true });
   const r = await http<{ artifacts: TeamArtifactMeta[] }>(ctx, 'GET', `/api/team/${ctx.teamId}/list`);

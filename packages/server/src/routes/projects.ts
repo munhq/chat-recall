@@ -10,7 +10,6 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, statSync } from 'fs';
 import { dirname } from 'path';
-import Database from 'better-sqlite3';
 import { Router } from 'express';
 
 import {
@@ -23,7 +22,7 @@ import {
   resolveWorkspaceId,
   type ProjectsConfig,
 } from '../imports.js';
-import { getCacheDbPath } from '@chat-recall/engine/core/paths.js';
+import { openPgPool, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
 import { requireLocalMode } from '../util/mode.js';
 
 const router = Router();
@@ -85,7 +84,7 @@ router.get('/', async (_req, res) => {
  * grouping immediately.
  * --------------------------------------------------------------------- */
 
-router.put('/', requireLocalMode, (req, res) => {
+router.put('/', requireLocalMode, async (req, res) => {
   try {
     const body = req.body as { config?: ProjectsConfig };
     if (!body || typeof body !== 'object' || !body.config) {
@@ -101,7 +100,7 @@ router.put('/', requireLocalMode, (req, res) => {
     writeFileSync(path, JSON.stringify(cfg, null, 2));
 
     resetProjectResolverCache();
-    const changed = runBackfill();
+    const changed = await runBackfill(req.tenant ?? 'default');
 
     res.json({ ok: true, changed_rows: changed });
   } catch (err) {
@@ -459,35 +458,41 @@ function validateConfig(cfg: ProjectsConfig): void {
  * Mini backfill — same logic as scripts/backfill-project-id.ts but
  * called in-process so the PUT response can report how many rows
  * actually changed. Idempotent.
+ *
+ * Runs against POSTGRES. It used to open `getCacheDbPath()` — a legacy local
+ * better-sqlite3 `cache.db` — and re-point project ids there. That file is not
+ * the data: the server is Postgres-only in BOTH modes (local docker-compose and
+ * hosted), so on any modern install it either did not exist or held nothing,
+ * and the endpoint reported rows it had not changed. `project_id` is already a
+ * column in pg-schema, so the old ALTER TABLE is gone too.
+ *
+ * Still local-mode only (see the guard on PUT /), because the projects config
+ * it backfills from is a local file.
  */
-function runBackfill(): number {
-  const db = new Database(getCacheDbPath());
-  try {
-    try { db.exec(`ALTER TABLE memory_metadata ADD COLUMN project_id TEXT NOT NULL DEFAULT '';`); } catch { /* exists */ }
-
-    const rows = db.prepare(
-      `SELECT project_path, project_id
+async function runBackfill(tenant: string): Promise<number> {
+  const pool = await openPgPool();
+  const distinct = await tenantQuery(
+    pool, tenant,
+    `SELECT project_path, project_id
        FROM memory_metadata
-       WHERE project_path <> ''
-       GROUP BY project_path`,
-    ).all() as Array<{ project_path: string; project_id: string }>;
+      WHERE tenant = $1 AND project_path <> ''
+      GROUP BY project_path, project_id`,
+    [tenant],
+  );
 
-    const update = db.prepare(`UPDATE memory_metadata SET project_id = ? WHERE project_path = ?`);
-    let changed = 0;
-    const txn = db.transaction(() => {
-      for (const r of rows) {
-        const resolved = resolveProjectId(r.project_path);
-        const newId = resolved.source === 'ignored' || !resolved.id ? '' : resolved.id;
-        if (newId === r.project_id) continue;
-        const result = update.run(newId, r.project_path);
-        changed += result.changes;
-      }
-    });
-    txn();
-    return changed;
-  } finally {
-    db.close();
+  let changed = 0;
+  for (const r of distinct.rows as Array<{ project_path: string; project_id: string }>) {
+    const resolved = resolveProjectId(r.project_path);
+    const newId = resolved.source === 'ignored' || !resolved.id ? '' : resolved.id;
+    if (newId === r.project_id) continue;
+    const upd = await tenantQuery(
+      pool, tenant,
+      `UPDATE memory_metadata SET project_id = $2 WHERE tenant = $1 AND project_path = $3`,
+      [tenant, newId, r.project_path],
+    );
+    changed += upd.rowCount ?? 0;
   }
+  return changed;
 }
 
 function numParam(q: unknown, def: number): number {

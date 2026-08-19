@@ -1,18 +1,20 @@
 /**
- * Laziness guard for the OpenCode backend's optional better-sqlite3 dependency.
+ * Import-safety guard for the OpenCode backend.
  *
- * The thin collector ships WITHOUT better-sqlite3 (it's an optionalDependency,
- * needed only to read OpenCode's own SQLite session DB). Importing the backend
- * — which happens transitively via `backends/index.js` at collector boot — must
- * therefore NOT eagerly load the native module, and must NOT open any DB as an
- * import side-effect. These tests pin that contract.
+ * OpenCode keeps its sessions in its own SQLite file, and reading that file is
+ * the only SQLite this project touches. It is read with Node's built-in
+ * `node:sqlite`, so there is no native module and no optional dependency to be
+ * missing — but the import-time contract still matters: `backends/index.js` is
+ * loaded at collector boot, so importing this backend must never throw and must
+ * never open a database as a side effect.
  *
- * Note: better-sqlite3 IS installed in this test environment, so we cannot
- * simulate its absence here without mangling the module loader. Instead we
- * assert the two things that actually matter for boot safety:
- *   1) importing the module never throws and has no DB-opening side effect, and
- *   2) the lazy path still works (reads real fixtures) when the module IS present
- *      — proving lazy loading didn't change behavior for the installed case.
+ * (This file used to guard a lazy `require('better-sqlite3')` that degraded to
+ * "OpenCode sessions will be skipped" when the native module failed to build.
+ * The degraded path is gone; the import-safety assertions are what survive, and
+ * they are the ones that actually protect boot.)
+ *
+ * better-sqlite3 is still used HERE to *write* the fixture database — it is a
+ * devDependency now, and writing fixtures is not something the product does.
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -25,7 +27,7 @@ function tmp(prefix: string): string {
   return mkdtempSync(join(tmpdir(), `chat-recall-${prefix}-`));
 }
 
-describe('OpenCode backend lazy better-sqlite3', () => {
+describe('OpenCode backend import safety', () => {
   let home: string | undefined;
   let saved: string | undefined;
 
@@ -51,10 +53,10 @@ describe('OpenCode backend lazy better-sqlite3', () => {
     expect(mod.opencodeBackend.readEvents('opencode_nope')).toEqual([]);
   });
 
-  it('lazily loads better-sqlite3 and reads a real DB when present', async () => {
-    // Build a minimal OpenCode-shaped DB so the lazy require() path is actually
-    // exercised end-to-end — proving deferred loading preserves behavior when
-    // the optional dependency IS installed.
+  it('reads a real DB when one is present', async () => {
+    // Build a minimal OpenCode-shaped DB and read it back through the backend,
+    // end to end — the node:sqlite reader must handle a real file, not just
+    // report "unavailable" everywhere.
     home = tmp('opencode-lazy');
     const dbPath = join(home, 'opencode.db');
     const db = new Database(dbPath);
