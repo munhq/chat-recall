@@ -2358,9 +2358,47 @@ export async function getPlan(): Promise<PlanInfo> {
   return await res.json();
 }
 
-/** Start a Stripe Checkout (card-required trial) → returns the hosted URL. */
-export async function startCheckout(): Promise<string> {
-  const res = await fetchWithTimeout(`${API_BASE}/billing/checkout`, { method: 'POST' });
+/** One entry of the plan catalogue, priced live by Stripe (never hardcoded). */
+export interface CataloguePlan {
+  key: string;
+  label: string;
+  selfServe: boolean;
+  seats: 'fixed' | 'per_seat';
+  minSeats?: number | null;
+  maxSeats?: number | null;
+  amount?: number | null;
+  currency?: string;
+  interval?: 'month' | 'year' | null;
+  intervalCount?: number | null;
+  productName?: string | null;
+  contact?: string | null;
+}
+export interface PlanCatalogue {
+  configured: boolean;
+  billingEnabled: boolean;
+  trialDays: number;
+  freeTrialDays?: number;
+  plans: CataloguePlan[];
+}
+
+/** The whole catalogue with live Stripe amounts. PUBLIC — no auth needed. */
+export async function getPlans(): Promise<PlanCatalogue> {
+  const res = await fetchWithTimeout(`${API_BASE}/billing/plans`, {}, 15000);
+  if (!res.ok) return { configured: false, billingEnabled: false, trialDays: 14, plans: [] };
+  return await res.json();
+}
+
+/** Start a Stripe Checkout for a specific plan → returns the hosted URL.
+ *
+ *  `plan` must be sent: with no body the server falls back to the FIRST self-serve
+ *  plan in the catalogue, which silently sold Solo monthly to anyone who clicked
+ *  a button meaning something else. */
+export async function startCheckout(opts?: { plan?: string; seats?: number }): Promise<string> {
+  const res = await fetchWithTimeout(`${API_BASE}/billing/checkout`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ plan: opts?.plan, seats: opts?.seats }),
+  });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error || `checkout failed: ${res.statusText}`);
   return body.url as string;
