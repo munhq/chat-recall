@@ -67,6 +67,27 @@ export interface Entitlement {
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
 }
+/**
+ * A self-host licence. The SERIAL is what the customer holds; it carries no grant,
+ * so issuing one needs no signing key. The grant is assembled at activation.
+ *
+ * Not tenant-scoped: a self-hosted customer has no tenant on our side. That is why
+ * these rows live in the control plane and carry no `tenant` column.
+ */
+export interface Licence {
+  serial: string;
+  email: string | null;
+  holder: string | null;
+  /** Comma-separated feature names, as issued. */
+  features: string;
+  seats: number | null;
+  stripeCustomerId: string | null;
+  stripeSubscriptionId: string | null;
+  status: 'active' | 'revoked';
+  createdAt: number;
+  updatedAt: number;
+}
+
 /** One appended audit record. `payload` is already redacted by the writer. */
 export interface AuditEntry {
   id: number;
@@ -149,6 +170,18 @@ export interface ControlPlane {
    */
   setEntitlement(tenant: string, e: Partial<Omit<Entitlement, 'tenant'>>): Promise<void>;
 
+  // ── Self-host licences ──
+  /** By serial, or null. */
+  findLicence(serial: string): Promise<Licence | null>;
+  /** By Stripe subscription — the idempotency key when a webhook fires twice. */
+  findLicenceBySubscription(subscriptionId: string): Promise<Licence | null>;
+  upsertLicence(l: Omit<Licence, 'createdAt' | 'updatedAt'>): Promise<void>;
+  /** Note that an instance activated. Counting installs is the point of going
+   *  online — an offline key cannot tell you it runs on forty servers. */
+  recordLicenceInstance(serial: string, instanceId: string): Promise<void>;
+  /** How many distinct instances have ever activated this serial. */
+  countLicenceInstances(serial: string): Promise<number>;
+
   // ── Audit log (Enterprise) ──
   /**
    * Read the write-ahead audit log, newest first. Keyset-paginated on `before`
@@ -185,6 +218,22 @@ export interface ProjectShare {
   projectId: string;
   scope: ShareScope;
   sharedAt: number;
+}
+
+/** Shared row -> Licence mapping; column names match in both backends. */
+function rowToLicence(r: any): Licence {
+  return {
+    serial: String(r.serial),
+    email: r.email ?? null,
+    holder: r.holder ?? null,
+    features: String(r.features ?? ''),
+    seats: r.seats == null ? null : Number(r.seats),
+    stripeCustomerId: r.stripe_customer_id ?? null,
+    stripeSubscriptionId: r.stripe_subscription_id ?? null,
+    status: r.status === 'revoked' ? 'revoked' : 'active',
+    createdAt: Number(r.created_at ?? 0),
+    updatedAt: Number(r.updated_at ?? 0),
+  };
 }
 
 /** Parse a JSON column, tolerating a driver that already parsed it. */
@@ -457,6 +506,54 @@ class SqliteControlPlane implements ControlPlane {
       next.tenant, next.plan, next.status, next.currentPeriodEnd,
       next.stripeCustomerId, next.stripeSubscriptionId, Date.now(),
     );
+  }
+
+  async findLicence(serial: string): Promise<Licence | null> {
+    try {
+      const r = this.db.prepare(`SELECT * FROM licences WHERE serial = ?`).get(serial) as any;
+      return r ? rowToLicence(r) : null;
+    } catch { return null; }
+  }
+
+  async findLicenceBySubscription(subscriptionId: string): Promise<Licence | null> {
+    try {
+      const r = this.db.prepare(`SELECT * FROM licences WHERE stripe_subscription_id = ?`).get(subscriptionId) as any;
+      return r ? rowToLicence(r) : null;
+    } catch { return null; }
+  }
+
+  async upsertLicence(l: Omit<Licence, 'createdAt' | 'updatedAt'>): Promise<void> {
+    const now = Date.now();
+    this.db.prepare(
+      `INSERT INTO licences (serial, email, holder, features, seats, stripe_customer_id,
+                             stripe_subscription_id, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (serial) DO UPDATE SET
+         email=excluded.email, holder=excluded.holder, features=excluded.features,
+         seats=excluded.seats, stripe_customer_id=excluded.stripe_customer_id,
+         stripe_subscription_id=excluded.stripe_subscription_id,
+         status=excluded.status, updated_at=excluded.updated_at`,
+    ).run(l.serial, l.email, l.holder, l.features, l.seats, l.stripeCustomerId,
+          l.stripeSubscriptionId, l.status, now, now);
+  }
+
+  async recordLicenceInstance(serial: string, instanceId: string): Promise<void> {
+    const now = Date.now();
+    this.db.prepare(
+      `INSERT INTO licence_instances (serial, instance_id, first_seen_at, last_seen_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT (serial, instance_id) DO UPDATE SET last_seen_at=excluded.last_seen_at`,
+    ).run(serial, instanceId, now, now);
+    this.db.prepare(
+      `UPDATE licences SET last_activated_at = ?, activation_count = activation_count + 1 WHERE serial = ?`,
+    ).run(now, serial);
+  }
+
+  async countLicenceInstances(serial: string): Promise<number> {
+    try {
+      const r = this.db.prepare(`SELECT count(*) AS n FROM licence_instances WHERE serial = ?`).get(serial) as { n: number };
+      return Number(r?.n ?? 0);
+    } catch { return 0; }
   }
 
   async readAuditLog(opts: {
@@ -791,6 +888,51 @@ class PgControlPlane implements ControlPlane {
         next.stripeCustomerId, next.stripeSubscriptionId, Date.now(),
       ],
     );
+  }
+
+  async findLicence(serial: string): Promise<Licence | null> {
+    const r = (await this.q(`SELECT * FROM licences WHERE serial = $1`, [serial]))[0];
+    return r ? rowToLicence(r) : null;
+  }
+
+  async findLicenceBySubscription(subscriptionId: string): Promise<Licence | null> {
+    const r = (await this.q(`SELECT * FROM licences WHERE stripe_subscription_id = $1`, [subscriptionId]))[0];
+    return r ? rowToLicence(r) : null;
+  }
+
+  async upsertLicence(l: Omit<Licence, 'createdAt' | 'updatedAt'>): Promise<void> {
+    const now = Date.now();
+    await this.q(
+      `INSERT INTO licences (serial, email, holder, features, seats, stripe_customer_id,
+                             stripe_subscription_id, status, created_at, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$9)
+       ON CONFLICT (serial) DO UPDATE SET
+         email=excluded.email, holder=excluded.holder, features=excluded.features,
+         seats=excluded.seats, stripe_customer_id=excluded.stripe_customer_id,
+         stripe_subscription_id=excluded.stripe_subscription_id,
+         status=excluded.status, updated_at=excluded.updated_at`,
+      [l.serial, l.email, l.holder, l.features, l.seats, l.stripeCustomerId,
+       l.stripeSubscriptionId, l.status, now],
+    );
+  }
+
+  async recordLicenceInstance(serial: string, instanceId: string): Promise<void> {
+    const now = Date.now();
+    await this.q(
+      `INSERT INTO licence_instances (serial, instance_id, first_seen_at, last_seen_at)
+       VALUES ($1,$2,$3,$3)
+       ON CONFLICT (serial, instance_id) DO UPDATE SET last_seen_at=excluded.last_seen_at`,
+      [serial, instanceId, now],
+    );
+    await this.q(
+      `UPDATE licences SET last_activated_at=$1, activation_count=activation_count+1 WHERE serial=$2`,
+      [now, serial],
+    );
+  }
+
+  async countLicenceInstances(serial: string): Promise<number> {
+    const r = (await this.q(`SELECT count(*)::int AS n FROM licence_instances WHERE serial = $1`, [serial]))[0];
+    return Number(r?.n ?? 0);
   }
 
   async readAuditLog(opts: {
