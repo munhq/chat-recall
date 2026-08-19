@@ -46,6 +46,7 @@ import subagentsRouter from './routes/subagents.js';
 import codeRouter from './routes/code.js';
 import recommendationsRouter from './routes/recommendations.js';
 import auditRouter from './routes/audit.js';
+import licenceRouter from './routes/licence.js';
 import syncRouter from './routes/sync.js';
 import teamsRouter from './routes/teams.js';
 import teamArtifactsRouter from './routes/team-artifacts.js';
@@ -359,6 +360,10 @@ if (authProviderName() === 'better-auth') {
 // so the sign-in page renders a Google/GitHub button only when pressing it can
 // actually work. Advertising a button for an unconfigured provider sends the
 // user to an IdP error page they cannot act on.
+// Self-host licence activation. PUBLIC and pre-auth by necessity: the caller is a
+// self-hosted server with no account here, and the serial is the credential. Mounted
+// beside /api/capabilities, before tenantAuth.
+app.use('/api/licence', licenceRouter);
 app.get('/api/capabilities', (_req, res) => res.json({ ...capabilities(), cli: cliRelease(), authProvider: authProviderName(), oidcIssuer: process.env.OIDC_ISSUER || null, socialProviders: socialProviderNames() }));
 
 // Self-authenticating surfaces, mounted BEFORE tenantAuth:
@@ -782,6 +787,36 @@ const httpServer = app.listen(PORT, HOST, () => {
     setInterval(() => { void trialSweep(); }, TRIAL_SWEEP_MS).unref();
     setTimeout(() => { void trialSweep(); }, 45_000).unref();
     log.info('trial reminder sweep enabled');
+  }
+
+  // Licence activation refresh, for a SELF-HOSTED deployment holding a serial. Runs
+  // hourly and refreshes only when the current token is past the halfway point of its
+  // life, so a single failed call costs nothing and we do not hammer the service.
+  //
+  // Deliberately NOT gated on billingEnabled(): this is the path a self-hoster uses,
+  // and they have no Stripe key. It no-ops when no serial is configured.
+  if (isServerMode() && runWorkers) {
+    const ACT_SWEEP_MS = 60 * 60 * 1000;
+    let actInFlight = false;
+    const actSweep = async (): Promise<void> => {
+      if (actInFlight) return;
+      actInFlight = true;
+      try {
+        const { refreshDue, refreshEntitlement, serial } = await import('./util/licence-activation.js');
+        if (!serial() || !refreshDue()) return;
+        const r = await refreshEntitlement();
+        if (r.ok) log.info('licence entitlement refreshed');
+        else log.warn({ reason: r.reason }, 'licence refresh did not succeed; cached token still in force');
+      } catch (err) {
+        log.error({ err }, 'licence refresh sweep failed');
+      } finally {
+        actInFlight = false;
+      }
+    };
+    setInterval(() => { void actSweep(); }, ACT_SWEEP_MS).unref();
+    // Early first run: a fresh install with a serial should activate at once.
+    setTimeout(() => { void actSweep(); }, 10_000).unref();
+    log.info('licence activation refresh enabled');
   }
 
   // Vector backfill: embed chunks that are in FTS but missing from
