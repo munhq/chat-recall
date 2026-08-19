@@ -134,7 +134,10 @@ export function requireEntitlement(req: Request, res: Response, next: NextFuncti
  * and complete; only the features that need colleagues are licensed.
  */
 export function requireTeamFeature(req: Request, res: Response, next: NextFunction): void {
-  if (openBeta()) return next();               // beta: free for everyone, team included
+  // NO openBeta() BYPASS, deliberately. The beta frees the SOLO surface —
+  // isEntitled() honours it — not collaboration. Team is paid in every state: a
+  // Team-tier plan on cloud, a licence key on self-host. A beta that gives away
+  // the paid tier cannot end without taking it back from the earliest adopters.
   if (billingEnabled()) return next();          // cloud: subscription governs
   if (hasFeature('team')) return next();        // self-host with a team licence
 
@@ -159,12 +162,6 @@ export function requireTeamFeature(req: Request, res: Response, next: NextFuncti
  * Returns true to proceed; on false it has already sent the 402.
  */
 export async function collaborationOr402(res: Response, tenant: string): Promise<boolean> {
-  // OPEN BETA MEANS FREE FOR EVERYONE, collaboration included. isEntitled()
-  // already honours it, but this gate is a separate check and did not — so the
-  // moment a Stripe key reached the hosted deployment, beta users could see the
-  // Team surface and got 402 on invite. Latent until billingEnabled() flipped,
-  // which is exactly the kind of bug that ships on a Friday.
-  if (openBeta()) return true;
   if (billingEnabled()) {
     const cp = await createControlPlane();
     try {
