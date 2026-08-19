@@ -4,9 +4,11 @@ description: >-
   Get the state of a project from chat-recall. Use when the user asks "what's
   been happening in <project>", "catch me up on this repo", "what's the state of
   X", about time/cost/activity across a project, or about code findings and
-  recommended fixes. Also owns the shared task board and the team view — "what
-  are my open tasks", "create a task for…", "what is my team working on", "which
-  projects are shared". Aggregates sessions, plans, tasks, commits, cost,
+  recommended fixes. Owns the ranked findings views — "what should I fix next",
+  "what should I work on", "what should I tell Claude about this repo", "turn
+  these findings into tasks". Also owns the shared task board and the team view —
+  "what are my open tasks", "create a task for…", "what is my team working on",
+  "which projects are shared". Aggregates sessions, plans, tasks, commits, cost,
   knowledge graph, and code-intelligence for one project.
 ---
 
@@ -43,6 +45,18 @@ diary conclusions, and cost. Accepts a path, a name substring, or a project id
 - If a repo isn't indexed yet, `mcp__chat-recall__recall_code_index` (path) runs
   the analyzer and syncs findings.
 
+## Findings, ranked (no codeindex binary required)
+
+- `mcp__chat-recall__recall_claude_suggestions` — every finding that turns into
+  an agent-instruction change: the CLAUDE.md rules and skill installs, merged
+  across account scope and every indexed project. Reach for it on "what should I
+  tell Claude about this repo".
+- `mcp__chat-recall__recall_improvements` — everything else, ranked most urgent
+  first. `create_tasks: true` opens one task per item on the shared board; it is
+  off by default, so the tool reads unless the user asks it to write.
+- The two partition the same engines — an item is in one list or the other,
+  never both — so acting on both cannot duplicate work.
+
 ## Tasks and team (shared, not personal notes)
 
 - `mcp__chat-recall__recall_tasks` — the shared task board: status, assignee,
@@ -66,10 +80,14 @@ asks, not to tidy up on their behalf.
 1. "Catch me up on <project>" → `recall_project_context`.
 2. "How productive / how much did X cost" → `recall_weekly_digest` (per week) or
    `recall_analytics_summary` (cross-project totals).
-3. "What should I fix in <project>" → `recall_code_actions` for the ranked plan,
-   `recall_code_findings` for the raw findings, `recall_recommendations` when the
-   user wants reasoning over how sessions actually went, not just code shape.
+3. "What should I fix in <project>" → `recall_improvements` for the ranked plan
+   across every source at once, or `recall_code_actions` / `recall_code_findings`
+   for the code-only view, and `recall_recommendations` when the user wants
+   reasoning over how sessions actually went, not just code shape.
    Index first with `recall_code_index` if the repo is not indexed yet.
+   "What should I tell Claude about this" → `recall_claude_suggestions`.
+   Add `create_tasks: true` to `recall_improvements` ONLY when the user asks for
+   the work to be tracked — it writes to the shared board.
 4. "What are my/our open tasks" → `recall_tasks`; "what is the team doing" →
    `recall_team_activity`.
 5. Ground answers in what you found (session ids, finding ids); don't invent status.

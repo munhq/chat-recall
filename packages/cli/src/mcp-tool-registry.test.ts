@@ -57,6 +57,19 @@ describe('MCP tool registry consistency', () => {
     expect(defined.filter((t) => !allowListed.includes(t))).toEqual([]);
   });
 
+  test('the setup-complete banner is derived, not hand-typed', () => {
+    // `init` ends by printing the tool list — the last thing a new user reads.
+    // It was a hardcoded literal claiming 42 tools, naming ten that do not
+    // exist (recall_help, recall_plans, recall_files_touched,
+    // recall_similar_sessions, recall_suggest_resume, recall_memory_status,
+    // recall_plan_show, recall_outcome, recall_session_files, recall_kv_list)
+    // while omitting the ones that do. It now prints DEFAULT_ALLOW, which the
+    // tests above pin to the real registry. Assert no literal crept back.
+    const banner = cliSrc.slice(cliSrc.indexOf('Setup complete!'));
+    const hardcoded = [...banner.matchAll(/console\.log\('[^']*(recall_[a-z_]+)[^']*'\)/g)];
+    expect(hardcoded.map((m) => m[1])).toEqual([]);
+  });
+
   test('the registry is non-trivial (guards against a broken regex passing vacuously)', () => {
     expect(defined.length).toBeGreaterThan(40);
     expect(allowListed.length).toBe(defined.length);
