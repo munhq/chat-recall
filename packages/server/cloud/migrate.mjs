@@ -30,10 +30,11 @@ await c.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
   applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 )`);
 
-const FILES = [
-  './migrations/0001_legacy_v1_upgrade.sql',
-  './migrations/0002_data_repairs.sql',
-];
+// EMPTY on purpose — see migrations/README.md. The bootstrap owns the schema, and
+// the one-off repairs that used to live here have all been applied and removed.
+// Add a file here only for something the bootstrap cannot express, and delete it
+// again once it has run everywhere.
+const FILES = [];
 
 // REPORT ROWS AFFECTED. A data migration against a tenant-scoped table is
 // silently a NO-OP unless it handles RLS: `tenant_isolation` compares tenant to

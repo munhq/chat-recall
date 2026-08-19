@@ -7,7 +7,7 @@
   },
   "homepage": "https://github.com/munhq/chat-recall",
   "repository": "https://github.com/munhq/chat-recall",
-  "license": "MIT",
+  "license": "Elastic-2.0",
   "keywords": [
     "memory",
     "recall",

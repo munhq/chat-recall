@@ -119,7 +119,7 @@ export interface ProjectInfo {
 }
 
 // Local mode proxies '/api' to the local server (vite proxy). Cloud mode sets
-// VITE_API_BASE to the cloud API origin (e.g. https://chat-recall.munhq.com/api)
+// VITE_API_BASE to the cloud API origin (e.g. https://chatrecall.dev/api)
 // and every request carries the Keycloak Bearer.
 const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 

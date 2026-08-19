@@ -171,13 +171,13 @@ When the codeindex companion is installed, the agent *also* gets 16 code-level t
 Search runs **on the server**. Two backends, Postgres FTS is the default:
 
 - **Postgres FTS** — zero extra setup. Keyword search with ranking. Always available.
-- **Vector (pgvector)** — opt-in. 768-dim embeddings via Ollama (`nomic-embed-text`) or Gemini (`text-embedding-004`).
+- **Vector (pgvector)** — opt-in, and needs an embedder: Ollama, any OpenAI-compatible embeddings endpoint, or a Gemini API key. The vector width follows the model you point it at, so pick one embedder and keep it — changing it means a full re-index.
 
 The CLI ships redacted chunks to the server, which indexes them. If no embedder is configured, every search tool transparently falls back to FTS.
 
 ## Cost tracking
 
-Cost in USD is computed from token usage when at least one model in the session has a known public price (currently Opus 4.6, Sonnet 4.5/4.6, Haiku 4.5). For models we don't have prices for (Gemini, Ollama, custom), the dashboard shows `—` instead of fabricating a number. The summary surfaces a `sessionsWithoutPricing` counter so you know how representative the totals are.
+Cost in USD is computed from token usage when at least one model in the session has a rate the server knows. For every other model — anything local, anything self-hosted, anything newer than the rate table — the dashboard shows `—` instead of fabricating a number. The summary surfaces a `sessionsWithoutPricing` counter, so you can see how much of the total the figure actually covers.
 
 ## Wake-up context
 
@@ -238,10 +238,21 @@ Two extension points, both registry-driven:
 
 ## Requirements
 
-- Node.js 18+
-- Optional: Ollama (local, free) for vector search & local summaries
-- Optional: Gemini or Anthropic API key for hosted embeddings/summaries
-- Sessions in `~/.claude/`, `~/.gemini/`, or `~/.local/share/opencode/` (standard tool locations)
+- Node.js 22 or later. The Docker image and CI run 24.
+- Sessions written by a supported tool, in its standard location: `~/.claude/`,
+  `~/.codex/`, `~/.local/share/opencode/`, `~/.gemini/`.
+
+That is the whole list. No API key is needed to install, index or search.
+
+Two features are opt-in, and each one needs a back end that you choose:
+
+| Feature | Back ends you can point it at |
+|---|---|
+| Vector search | Ollama (local, free), any OpenAI-compatible embeddings endpoint, or `GEMINI_API_KEY` |
+| AI summaries | Ollama, a CLI you are already logged in to (`SUMMARY_CLI_CMD`), an OpenAI-compatible endpoint, or `ANTHROPIC_API_KEY` |
+
+Without either back end, search falls back to Postgres FTS and sessions carry no
+generated summary. Everything else works the same.
 
 ## License
 
