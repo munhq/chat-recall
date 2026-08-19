@@ -19,7 +19,6 @@
 
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'fs';
 import { dirname, join } from 'path';
-import Database from 'better-sqlite3';
 
 import { loadSettings, saveSettings } from './settings.js';
 import { getDataDir } from './paths.js';
@@ -82,33 +81,37 @@ async function api<T>(ctx: Ctx, method: string, path: string, body?: unknown): P
 
 // ── Local upload-state ledger (similar to team-merge.ts) ─────────────
 
-interface LedgerRow {
-  session_id: string;
+/**
+ * Upload ledger — which sessions THIS DEVICE already encrypted and shipped.
+ *
+ * Was a better-sqlite3 file at ~/.chat-recall/vault-uploads.db; it lives in
+ * Postgres now, device-scoped (routes/ledgers.ts). Only `source_sha256` was
+ * ever read, so that is all the server keeps — the old table also wrote
+ * `source_path` and `source_mtime_ms`, which nothing consumed and which would
+ * have shipped local paths off the machine for no benefit.
+ */
+interface VaultUploadRow {
+  sessionId: string;
   tool: string;
-  source_path: string;
-  source_mtime_ms: number;
-  source_sha256: string;
-  cipher_sha256: string;
-  uploaded_at: number;
+  sourceSha256: string;
+  cipherSha256: string;
+  uploadedAt: number;
 }
 
-function ledgerDb(): Database.Database {
-  const path = join(getDataDir(), 'vault-uploads.db');
-  mkdirSync(dirname(path), { recursive: true });
-  const db = new Database(path);
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS vault_uploads (
-      session_id      TEXT NOT NULL,
-      tool            TEXT NOT NULL,
-      source_path     TEXT NOT NULL,
-      source_mtime_ms INTEGER NOT NULL,
-      source_sha256   TEXT NOT NULL,
-      cipher_sha256   TEXT NOT NULL,
-      uploaded_at     INTEGER NOT NULL,
-      PRIMARY KEY (session_id, tool)
-    );
-  `);
-  return db;
+const uploadKey = (sessionId: string, tool: string): string => `${sessionId}\u0000${tool}`;
+
+/** The whole ledger for this device, as key → source sha. One round trip. */
+async function loadUploadLedger(ctx: Ctx): Promise<Map<string, string>> {
+  const r = await api<{ uploads: VaultUploadRow[] }>(ctx, 'GET', '/api/ledgers/vault-uploads');
+  const m = new Map<string, string>();
+  for (const u of r.uploads ?? []) m.set(uploadKey(u.sessionId, u.tool), u.sourceSha256);
+  return m;
+}
+
+/** Record one upload. Written per session, not batched at the end: a crash
+ *  mid-sync must not discard everything already encrypted and PUT. */
+async function recordUpload(ctx: Ctx, row: Omit<VaultUploadRow, 'uploadedAt'>): Promise<void> {
+  await api(ctx, 'POST', '/api/ledgers/vault-uploads', { uploads: [row] });
 }
 
 // ── Public API ──────────────────────────────────────────────────────
@@ -251,19 +254,7 @@ export async function vaultSync(passphrase: string): Promise<VaultSyncReport> {
 
   const denyProjects = new Set(v.excludeProjects ?? []);
   const report: VaultSyncReport = { uploaded: [], skipped: [], failures: [] };
-  const db = ledgerDb();
-  const findRow = db.prepare<[string, string], LedgerRow>(
-    `SELECT * FROM vault_uploads WHERE session_id = ? AND tool = ?`,
-  );
-  const upsertRow = db.prepare(
-    `INSERT INTO vault_uploads
-       (session_id, tool, source_path, source_mtime_ms, source_sha256, cipher_sha256, uploaded_at)
-       VALUES (@session_id, @tool, @source_path, @source_mtime_ms, @source_sha256, @cipher_sha256, @uploaded_at)
-     ON CONFLICT (session_id, tool) DO UPDATE
-       SET source_path=excluded.source_path, source_mtime_ms=excluded.source_mtime_ms,
-           source_sha256=excluded.source_sha256, cipher_sha256=excluded.cipher_sha256,
-           uploaded_at=excluded.uploaded_at`,
-  );
+  const uploaded = await loadUploadLedger(ctx);
 
   for (const src of walkVaultSources()) {
     if (src.projectPath && denyProjects.has(src.projectPath)) {
@@ -273,8 +264,8 @@ export async function vaultSync(passphrase: string): Promise<VaultSyncReport> {
     try {
       const plaintext = readFileSync(src.path);
       const sourceSha = sha256Hex(plaintext);
-      const prior = findRow.get(src.sessionId, src.tool);
-      if (prior && prior.source_sha256 === sourceSha) {
+      const priorSha = uploaded.get(uploadKey(src.sessionId, src.tool));
+      if (priorSha === sourceSha) {
         report.skipped.push({ sessionId: src.sessionId, tool: src.tool, reason: 'unchanged' });
         continue;
       }
@@ -315,10 +306,9 @@ export async function vaultSync(passphrase: string): Promise<VaultSyncReport> {
         mtimeSourceMs: src.mtimeMs,
       });
 
-      upsertRow.run({
-        session_id: src.sessionId, tool: src.tool, source_path: src.path,
-        source_mtime_ms: src.mtimeMs, source_sha256: sourceSha,
-        cipher_sha256: cipherSha, uploaded_at: Date.now(),
+      await recordUpload(ctx, {
+        sessionId: src.sessionId, tool: src.tool,
+        sourceSha256: sourceSha, cipherSha256: cipherSha,
       });
       report.uploaded.push({ sessionId: src.sessionId, tool: src.tool, bytes: cipherBuf.length });
     } catch (err) {
@@ -331,7 +321,6 @@ export async function vaultSync(passphrase: string): Promise<VaultSyncReport> {
   s.team = { ...s.team, vault: { ...s.team.vault, lastSyncAt: Date.now() } };
   saveSettings(s);
 
-  db.close();
   return report;
 }
 

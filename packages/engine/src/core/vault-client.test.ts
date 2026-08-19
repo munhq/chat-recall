@@ -40,6 +40,9 @@ let serverState: {
   pendingDownloads: Map<string, string>;  // token → blob id
 };
 
+/** Stub of the server-side vault upload ledger. */
+const uploadLedger = new Map<string, { sessionId: string; tool: string; sourceSha256: string; cipherSha256: string; uploadedAt: number }>();
+
 const ORIG_ENV: Record<string, string | undefined> = {};
 function setEnv(k: string, v: string | undefined): void {
   if (!(k in ORIG_ENV)) ORIG_ENV[k] = process.env[k];
@@ -54,6 +57,19 @@ beforeAll(async () => {
   app.use(express.raw({ type: 'application/octet-stream', limit: '2mb' }));
 
   serverState = { blobs: [], pendingUploads: new Map(), pendingDownloads: new Map() };
+
+  // Per-device upload ledger — mirrors routes/ledgers.ts. It used to be a local
+  // better-sqlite3 file, so wiping the data dir cleared it; it is server-side
+  // now, and each test wants a FRESH device, hence the reset in beforeEach.
+  app.get('/api/ledgers/vault-uploads', (_req, res) => {
+    res.json({ uploads: [...uploadLedger.values()] });
+  });
+  app.post('/api/ledgers/vault-uploads', (req, res) => {
+    for (const u of req.body?.uploads ?? []) {
+      uploadLedger.set(`${u.sessionId}\u0000${u.tool}`, { ...u, uploadedAt: Date.now() });
+    }
+    res.json({ ok: true, recorded: (req.body?.uploads ?? []).length });
+  });
 
   app.post('/api/team/:teamId/blobs/presign-upload', (req, res) => {
     const token = createHash('sha256').update(String(Math.random())).digest('hex').slice(0, 24);
@@ -152,6 +168,8 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
+  uploadLedger.clear();
+
   tmp = mkdtempSync(join(tmpdir(), 'cr-vault-client-'));
   setEnv('CHAT_RECALL_DATA_DIR',    join(tmp, 'data'));
   setEnv('CHAT_RECALL_CLAUDE_HOME', join(tmp, 'claude'));

@@ -31,7 +31,9 @@
     "zod": "^3.22.0"
   },
   "optionalDependencies": {
-    "@lancedb/lancedb": "^0.13.0",
+    "@lancedb/lancedb": "^0.13.0"
+  },
+  "devDependencies": {
     "better-sqlite3": "12.9.0"
   }
 }

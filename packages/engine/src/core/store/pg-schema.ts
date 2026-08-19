@@ -91,6 +91,47 @@ CREATE TABLE IF NOT EXISTS sync_intents (
 );
 CREATE INDEX IF NOT EXISTS idx_sync_intents_pending ON sync_intents (tenant, status, created_at);
 
+-- ── Per-device idempotency ledgers ──────────────────────────────────────────
+-- Both were better-sqlite3 files under ~/.chat-recall (team-installs.db,
+-- vault-uploads.db). They were the ONLY reason the shipped CLI needed a native
+-- module at boot, and they contradicted the product model: the server is the
+-- only datastore. Device-scoped, not tenant-wide — "which artifacts did THIS
+-- machine write" and "which sessions did THIS machine upload" are facts about
+-- one device, and a second machine must not skip work a first one did.
+--
+-- NEITHER TABLE STORES A LOCAL FILESYSTEM PATH, deliberately. The SQLite
+-- versions did (team_installs.path, vault_uploads.source_path), and lifting
+-- those verbatim would have started shipping absolute paths off the machine for
+-- the first time. Both are avoidable: the install path is recomputed locally by
+-- installPathFor(type, name, tool) — which is why type/name are stored, and both
+-- are already server-side in team_artifacts — and vault_uploads.source_path was
+-- written but never read. Do not add a path column back.
+CREATE TABLE IF NOT EXISTS team_installs (
+  tenant        TEXT NOT NULL DEFAULT 'default',
+  device_id     TEXT NOT NULL,
+  artifact_id   TEXT NOT NULL,
+  tool          TEXT NOT NULL,
+  artifact_type TEXT NOT NULL,
+  artifact_name TEXT NOT NULL,
+  sha256        TEXT NOT NULL,
+  installed_at  BIGINT NOT NULL,
+  PRIMARY KEY (tenant, device_id, artifact_id, tool)
+);
+CREATE INDEX IF NOT EXISTS idx_team_installs_artifact ON team_installs(tenant, device_id, artifact_id);
+
+-- source_sha256 is the whole point: unchanged source => no re-encrypt, no
+-- re-upload. It is a hash of content the vault already holds, not new egress.
+CREATE TABLE IF NOT EXISTS vault_uploads (
+  tenant        TEXT NOT NULL DEFAULT 'default',
+  device_id     TEXT NOT NULL,
+  session_id    TEXT NOT NULL,
+  tool          TEXT NOT NULL,
+  source_sha256 TEXT NOT NULL,
+  cipher_sha256 TEXT NOT NULL,
+  uploaded_at   BIGINT NOT NULL,
+  PRIMARY KEY (tenant, device_id, session_id, tool)
+);
+
 CREATE TABLE IF NOT EXISTS memory_chunks (
   tenant       TEXT NOT NULL DEFAULT 'default',
   chunk_id     TEXT NOT NULL,
@@ -645,7 +686,8 @@ BEGIN
     'summary_errors','summary_leases','compute_cache','session_outcome_cache','kg_entities','kg_triples',
     'wal_log','diary_entries','sync_intents','raw_sessions',
     'code_projects','code_findings','code_hotspots','code_actions',
-    'client_events','team_tasks','team_task_comments'
+    'client_events','team_tasks','team_task_comments',
+    'team_installs','vault_uploads'
   ] LOOP
     -- IDEMPOTENT: only configure a table that isn't already locked down. The
     -- ALTER/DROP/CREATE POLICY statements each take an ACCESS EXCLUSIVE lock on

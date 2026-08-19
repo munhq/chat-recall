@@ -17,6 +17,7 @@
  * the actual provenance so the UI can filter and badge correctly.
  */
 
+import { openSqliteReadonlyOrThrow } from '../core/sqlite-reader.js';
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join, basename, dirname } from 'path';
@@ -110,11 +111,10 @@ function discoverProjectDirs(claudeDir?: string): string[] {
   const ocDb = OPENCODE.dbPath();
   if (existsSync(ocDb)) {
     try {
-      // Lazy require so missing better-sqlite3 doesn't break Claude-only setups.
-      // (Already a dep — opencode-source uses it — so this is safe.)
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const Database = require('better-sqlite3');
-      const db = new Database(ocDb, { readonly: true, fileMustExist: true });
+      // Node's built-in reader — no native module, so a Claude-only setup can
+      // never be broken by an OpenCode dependency failing to build.
+      // `readOnly` also refuses to create a missing file (the old fileMustExist).
+      const db = openSqliteReadonlyOrThrow(ocDb);
       try {
         const rows = db.prepare('SELECT DISTINCT worktree FROM project WHERE worktree IS NOT NULL').all() as Array<{ worktree: string }>;
         for (const r of rows) if (r.worktree) addProject(r.worktree);
