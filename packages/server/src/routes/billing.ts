@@ -33,7 +33,8 @@ import express from 'express';
 import type Stripe from 'stripe';
 import { createControlPlane, type EntitlementStatus } from '../imports.js';
 import { requireUser } from '../middleware/auth.js';
-import { billingEnabled, openBeta } from '../util/billing.js';
+import { billingEnabled } from '../util/billing.js';
+import { ensureTrial, isNoCardTrial, trialDaysLeft, trialLengthDays } from '../util/trial.js';
 import { planCatalogue, resolveLine, isPlanError, trialDays } from '../util/billing-plans.js';
 
 const router = express.Router();
@@ -424,15 +425,22 @@ router.get('/', async (req, res) => {
   try {
     const tenant = await resolveBillingTenant(req, res, cp, user.sub);
     if (!tenant) return;
-    const ent = await cp.getEntitlement(tenant);
+    // ensureTrial, not getEntitlement: the Account page is often the first
+    // authenticated call a new tenant makes, and it must report the trial it is
+    // actually on rather than "none" until some other route provisions it.
+    const ent = await ensureTrial(cp, tenant);
+    const onTrial = isNoCardTrial(ent);
     res.json({
       billingEnabled: billingEnabled(),
-      openBeta: openBeta(),
       tenant,
       status: ent?.status ?? 'none',
       plan: ent?.plan ?? null,
       currentPeriodEnd: ent?.currentPeriodEnd ?? null,
       hasSubscription: !!ent?.stripeCustomerId,
+      // The trial surface the client renders its banner and gate from.
+      onTrial,
+      trialDaysLeft: onTrial ? trialDaysLeft(ent) : null,
+      trialLengthDays: trialLengthDays(),
     });
   } catch (err) {
     res.status(500).json({ error: 'entitlement lookup failed', detail: (err as Error).message });
@@ -481,16 +489,16 @@ router.post('/portal', async (req, res) => {
 router.get('/plan', async (_req, res) => {
   const priceId = process.env.STRIPE_PRICE_ID;
   const days = trialDays();
-  if (!billingEnabled() || !priceId) return res.json({ configured: false, trialDays: days, openBeta: openBeta() });
+  if (!billingEnabled() || !priceId) return res.json({ configured: false, trialDays: days, freeTrialDays: trialLengthDays() });
   try {
     const stripe = await getStripe();
-    if (!stripe) return res.json({ configured: false, trialDays: days, openBeta: openBeta() });
+    if (!stripe) return res.json({ configured: false, trialDays: days, freeTrialDays: trialLengthDays() });
     const price = await stripe.prices.retrieve(priceId, { expand: ['product'] });
     const product = price.product as Stripe.Product | undefined;
     res.json({
       configured: true,
       trialDays: days,
-      openBeta: openBeta(),
+      freeTrialDays: trialLengthDays(),
       amount: price.unit_amount,
       currency: price.currency,
       interval: price.recurring?.interval ?? null,
@@ -498,7 +506,7 @@ router.get('/plan', async (_req, res) => {
     });
   } catch (err) {
     // Don't leak Stripe errors to a public endpoint; degrade to unconfigured.
-    res.json({ configured: false, trialDays: days, openBeta: openBeta(), error: (err as Error).message });
+    res.json({ configured: false, trialDays: days, freeTrialDays: trialLengthDays(), error: (err as Error).message });
   }
 });
 
@@ -517,7 +525,7 @@ router.get('/plan', async (_req, res) => {
 router.get('/plans', async (_req, res) => {
   const days = trialDays();
   const catalogue = planCatalogue();
-  const base = { trialDays: days, openBeta: openBeta(), billingEnabled: billingEnabled() };
+  const base = { trialDays: days, freeTrialDays: trialLengthDays(), billingEnabled: billingEnabled() };
 
   if (!billingEnabled() || !catalogue.length) {
     return res.json({ ...base, configured: false, plans: [] });

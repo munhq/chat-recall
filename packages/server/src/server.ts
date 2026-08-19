@@ -34,7 +34,7 @@ import adminRouter from './routes/admin.js';
 import clientEventsRouter from './routes/client-events.js';
 import vaultRouter from './routes/vault.js';
 import accountRouter from './routes/account.js';
-import { requireEntitlement, requireTeamFeature } from './util/billing.js';
+import { requireEntitlement, requireTeamFeature, billingEnabled } from './util/billing.js';
 import projectsRouter from './routes/projects.js';
 import kgRouter from './routes/kg.js';
 import kvRouter from './routes/kv.js';
@@ -56,6 +56,7 @@ import { capabilities, isServerMode } from './util/mode.js';
 import { cliRelease } from './util/cli-release.js';
 import { generateMissingSummariesAllTenants, serverSummaryConfig } from './services/summary-worker.js';
 import { sweepSyntheticRetention } from './services/retention.js';
+import { sweepTrialReminders } from './services/trial-reminders.js';
 import { embedMissingVectors, serverEmbedderConfigured } from './services/vector-backfill-worker.js';
 import { createLogger, setLogContextProvider } from '@chat-recall/engine/core/logger.js';
 import { closePgPools } from '@chat-recall/engine/core/store/pg-pool.js';
@@ -721,6 +722,29 @@ const httpServer = app.listen(PORT, HOST, () => {
     setInterval(() => { void retentionSweep(); }, RETENTION_SWEEP_MS).unref();
     setTimeout(() => { void retentionSweep(); }, 30_000).unref();
     log.info('synthetic-tenant retention sweep enabled');
+  }
+
+  // Trial reminders: warn a trialing tenant at 7 / 2 / 0 days left, once each.
+  // Hourly is ample for day-wide windows, and the per-stage "already sent" flag
+  // lives in tenant settings so restarts and extra replicas cannot re-send.
+  // Gated on billing being configured: self-host has no trials to remind about.
+  if (isServerMode() && runWorkers && billingEnabled()) {
+    const TRIAL_SWEEP_MS = 60 * 60 * 1000;
+    let trialInFlight = false;
+    const trialSweep = async (): Promise<void> => {
+      if (trialInFlight) return;
+      trialInFlight = true;
+      try {
+        await sweepTrialReminders();
+      } catch (err) {
+        log.error({ err }, 'trial reminder sweep failed');
+      } finally {
+        trialInFlight = false;
+      }
+    };
+    setInterval(() => { void trialSweep(); }, TRIAL_SWEEP_MS).unref();
+    setTimeout(() => { void trialSweep(); }, 45_000).unref();
+    log.info('trial reminder sweep enabled');
   }
 
   // Vector backfill: embed chunks that are in FTS but missing from
