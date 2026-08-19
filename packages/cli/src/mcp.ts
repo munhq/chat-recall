@@ -36,6 +36,12 @@ import { statusEmoji } from '@chat-recall/engine/core/outcome-display.js';
 import { sanitizeQuery } from '@chat-recall/engine/core/query-sanitizer.js';
 import { getWAL } from '@chat-recall/engine/core/write-ahead-log.js';
 import { reportClientEvent } from './client-events.js';
+import {
+  INSTRUCTION_KINDS, SEVERITIES, sevRank, taskBody,
+  partitionRecs, actionToImprovement, recToImprovement, isOpenAction,
+  rankImprovements, rankInstructions,
+  type EngineRec, type EngineAction, type Improvement,
+} from './recommendation-merge.js';
 
 // Load .env configuration.
 //
@@ -205,6 +211,23 @@ async function remoteGetQS<T>(path: string, params: Record<string, string | numb
  * machine yet) or 404 (unknown session). Returns the status so the caller can
  * render a friendly message instead of a stack trace.
  */
+/**
+ * Which code-indexed projects to fan out over: the one named, else every
+ * project on the server. Returns [] when nothing is indexed — the normal state
+ * on a fresh install — so callers fall back to account scope rather than error.
+ *
+ * I/O, so it lives here rather than in ./recommendation-merge.ts, which is pure.
+ */
+async function codeProjectIds(project?: string): Promise<string[]> {
+  if (project) return [project];
+  try {
+    const { projects } = await remoteGet<{ projects: Array<{ projectId: string }> }>('/api/code/projects');
+    return (projects ?? []).map((p) => p.projectId);
+  } catch {
+    return [];
+  }
+}
+
 async function remoteGetSoft<T>(path: string, params: Record<string, string | number | boolean | undefined | null> = {}): Promise<{ status: number; data: T | null; message?: string }> {
   const cred = requireRemote();
   const qs = new URLSearchParams();
@@ -489,6 +512,34 @@ const RecallRecommendationsSchema = z.object({
     .describe('account = recommendations from YOUR chat-recall data (leaked secrets + session behaviour). project = behavior × code recommendations for one code-indexed project (requires `project`).'),
   project: z.string().optional().describe('Project id (from recall_code_projects). Required when scope is "project".'),
 });
+
+// ── Aggregated views over the recommendation engines ────────────────────────
+// Neither tool computes anything of its own. They fan out over the SAME
+// endpoints recall_recommendations and recall_code_actions already use, then
+// merge the results into the one question each tool answers. Adding a new
+// recommendation kind in engine/core/code/recommendations.ts surfaces here for
+// free; there is no second copy of the ranking to keep in step.
+
+const RecallClaudeSuggestionsSchema = z.object({
+  project: z.string().optional()
+    .describe('Limit to one code-indexed project id. Omit to merge account-level suggestions with every project you have indexed.'),
+  include_projects: z.boolean().optional().default(true)
+    .describe('Fan out over code-indexed projects as well as account scope. Set false for account-only, which needs no code index.'),
+  kind: z.enum(INSTRUCTION_KINDS).optional()
+    .describe('rule = a CLAUDE.md line to add; skill = a skill to install. Omit for both.'),
+});
+
+const RecallImprovementsSchema = z.object({
+  project: z.string().optional().describe('Limit to one code-indexed project id.'),
+  min_severity: z.enum(SEVERITIES).optional().default('low')
+    .describe('Drop anything below this severity. Code actions carry a numeric pri and are mapped onto the same scale.'),
+  limit: z.number().optional().default(30).describe('Maximum improvements to return, after ranking.'),
+  create_tasks: z.boolean().optional().default(false)
+    .describe('Create one team task per returned improvement on the shared board. Off by default: this tool is a read by default, and writes only when you ask.'),
+  assignee: z.string().optional().describe('create_tasks only: teammate user id (sub) to assign every created task to.'),
+});
+
+
 
 // ── New tools (user-prompts, decision-record) ──
 
@@ -1167,6 +1218,57 @@ or when you learn something important that should persist.`,
           properties: {
             scope: { type: 'string', enum: ['account', 'project'], default: 'account', description: 'account = your chat-recall data; project = one code-indexed project' },
             project: { type: 'string', description: 'Project id (from recall_code_projects). Required when scope is "project".' },
+          },
+        },
+      },
+      // ── Aggregated views over the recommendation engines ──
+      // Registered UNGATED, unlike the recall_code_* family: they read findings
+      // the SERVER already holds, so a machine without the codeindex binary can
+      // still see them. Both degrade to account scope when no project is indexed.
+      {
+        name: 'recall_claude_suggestions',
+        description: `Every finding that turns into an agent-instruction change, in one list — the
+"what should I tell Claude about this?" view.
+
+Merges the CLAUDE.md rules and skill installs from BOTH recommendation engines:
+account scope (leaked secrets the scanner found + how your sessions actually
+went) and every code-indexed project (code findings × session behaviour). Each
+item carries the rationale, the evidence behind it, and the exact rule text to
+paste.
+
+This is the read side. To apply one, use the apply rail the recommendation
+already names (recall_recommendations documents it) — this tool never edits a
+CLAUDE.md itself.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Limit to one code-indexed project id (from recall_code_projects)' },
+            include_projects: { type: 'boolean', default: true, description: 'Also fan out over code-indexed projects. false = account scope only.' },
+            kind: { type: 'string', enum: [...INSTRUCTION_KINDS], description: 'rule = a CLAUDE.md line; skill = a skill to install. Omit for both.' },
+          },
+        },
+      },
+      {
+        name: 'recall_improvements',
+        description: `Every improvement worth doing, ranked highest-priority first — the "what should
+I fix next, across everything" view.
+
+Merges the ranked code actions (recall_code_actions) with the non-instruction
+recommendations from account and project scope (focused reviews, project labels,
+POC resets). Code actions carry a numeric \`pri\` and recommendations carry a
+severity; both are mapped onto one scale so a single ordered list is honest.
+
+Set \`create_tasks: true\` to open one task per improvement on the shared team
+board (recall_tasks). It is off by default — this reads unless you ask it to
+write.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Limit to one code-indexed project id' },
+            min_severity: { type: 'string', enum: [...SEVERITIES], default: 'low', description: 'Drop anything below this severity' },
+            limit: { type: 'number', default: 30, description: 'Maximum improvements to return, after ranking' },
+            create_tasks: { type: 'boolean', default: false, description: 'Create one team task per returned improvement' },
+            assignee: { type: 'string', description: 'create_tasks only: teammate user id (sub) to assign each task to' },
           },
         },
       },
@@ -2848,6 +2950,135 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
+
+      // ── Aggregated views over the recommendation engines ──
+      // Both cases FAN OUT over the endpoints the single-scope tools already
+      // call, then hand the results to ./recommendation-merge.ts. No ranking
+      // and no rule text is computed here: this layer is I/O plus rendering.
+      case 'recall_claude_suggestions': {
+        const params = RecallClaudeSuggestionsSchema.parse(args);
+        requireRemote();
+
+        const rows: Array<{ scope: string; rec: EngineRec }> = [];
+        // Account scope is unconditional: it needs no code index, so this tool
+        // still answers on a machine that has never run codeindex.
+        const acct = await remoteGet<{ recommendations: EngineRec[] }>('/api/recommendations');
+        for (const rec of partitionRecs(acct.recommendations ?? []).instruction) {
+          rows.push({ scope: 'account', rec });
+        }
+
+        if (params.include_projects) {
+          for (const pid of await codeProjectIds(params.project)) {
+            // One unreadable project must not sink the whole answer.
+            try {
+              const r = await remoteGetQS<{ recommendations: EngineRec[] }>('/api/code/recommendations', { project: pid });
+              for (const rec of partitionRecs(r.recommendations ?? []).instruction) rows.push({ scope: pid, rec });
+            } catch { /* skip this project; the others still answer */ }
+          }
+        }
+
+        const picked = rankInstructions(params.kind ? rows.filter((x) => x.rec.kind === params.kind) : rows);
+        if (!picked.length) {
+          return { content: [{ type: 'text', text: 'No agent-instruction suggestions — no leaked secrets, healthy session outcomes, and nothing in the indexed code that warrants a new rule.' }] };
+        }
+
+        const lines = [
+          `# Claude suggestions (${picked.length})`, '',
+          'Each item is a change to your agent instructions, most severe first.', '',
+        ];
+        for (const { scope, rec } of picked) {
+          lines.push(`## [${rec.severity}] ${rec.title}`);
+          lines.push(`*${rec.kind} · scope: ${scope}*`);
+          lines.push(rec.rationale);
+          if (rec.evidence?.length) lines.push(`Evidence: ${rec.evidence.join('; ')}`);
+          if (rec.action?.type === 'append_claude_md') {
+            const target = scope === 'account' ? 'global ~/.claude/CLAUDE.md' : `${scope} CLAUDE.md`;
+            lines.push(`Apply → append to ${target}:`);
+            lines.push('```\n' + String((rec.action.payload as { text?: string }).text ?? '') + '\n```');
+          } else {
+            lines.push(`Apply → ${rec.action?.type} ${JSON.stringify(rec.action?.payload ?? {})}`);
+          }
+          lines.push('');
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_improvements': {
+        const params = RecallImprovementsSchema.parse(args);
+        requireRemote();
+        const items: Improvement[] = [];
+
+        // 1. Ranked code actions — already priority-ordered by the collector.
+        try {
+          const { actions } = await remoteGetQS<{ actions: EngineAction[] }>(
+            '/api/code/actions', { project: params.project, limit: 200 });
+          for (const a of (actions ?? []).filter(isOpenAction)) items.push(actionToImprovement(a));
+        } catch { /* no code index on this server yet — recommendations still answer */ }
+
+        // 2. The non-instruction half of the recommendations: reviews, labels,
+        //    resets. partitionRecs is what keeps this tool and
+        //    recall_claude_suggestions from ever returning the same item twice.
+        try {
+          const acct = await remoteGet<{ recommendations: EngineRec[] }>('/api/recommendations');
+          for (const rec of partitionRecs(acct.recommendations ?? []).improvement) {
+            items.push(recToImprovement(rec, 'account'));
+          }
+        } catch { /* account recs unavailable */ }
+        for (const pid of await codeProjectIds(params.project)) {
+          try {
+            const r = await remoteGetQS<{ recommendations: EngineRec[] }>('/api/code/recommendations', { project: pid });
+            for (const rec of partitionRecs(r.recommendations ?? []).improvement) {
+              items.push(recToImprovement(rec, pid));
+            }
+          } catch { /* skip unreadable project */ }
+        }
+
+        const ranked = rankImprovements(items, { minSeverity: params.min_severity, limit: params.limit });
+        if (!ranked.length) {
+          return { content: [{ type: 'text', text: `No improvements at severity ${params.min_severity} or above. Run recall_code_index in a repo to get code-level findings.` }] };
+        }
+
+        // Writes happen only on request, and only after the list is settled, so
+        // a task is never opened for an item the caller did not see returned.
+        const created: string[] = [];
+        const failed: string[] = [];
+        if (params.create_tasks) {
+          for (const i of ranked) {
+            try {
+              const { task } = await remotePost<{ task: { id: string } }>('/api/tasks', {
+                title: i.title.slice(0, 500),
+                description: taskBody(i),
+                projectId: i.project,
+                assigneeSub: params.assignee ?? null,
+              });
+              created.push(task.id);
+            } catch (e) {
+              failed.push(`${i.title}: ${e instanceof Error ? e.message : 'failed'}`);
+            }
+          }
+        }
+
+        const lines = [`# Improvements (${ranked.length}) — highest priority first`, ''];
+        if (params.create_tasks) {
+          lines.push(`Created ${created.length} of ${ranked.length} task(s) on the shared board. List them with recall_tasks.`);
+          if (failed.length) {
+            lines.push('', 'Failed to create:');
+            for (const f of failed) lines.push(`- ${f}`);
+            lines.push('', 'The team board is licence-gated on self-host, so a 402/403 here means collaboration is not enabled.');
+          }
+          lines.push('');
+        }
+        for (const [n, i] of ranked.entries()) {
+          lines.push(`## ${n + 1}. [${i.severity}] ${i.title}`);
+          lines.push(`*${i.source}${i.project ? ` · ${i.project}` : ''}*`);
+          lines.push(i.detail);
+          if (i.where.length) lines.push(`Where: ${i.where.slice(0, 6).join('; ')}`);
+          if (i.agentPrompt) lines.push('Agent prompt:\n```\n' + i.agentPrompt + '\n```');
+          lines.push('');
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
 
       // ── Edits timeline (chronological tool_use list across recent sessions) ──
       case 'recall_edits_timeline': {

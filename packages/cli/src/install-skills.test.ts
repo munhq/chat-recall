@@ -149,6 +149,52 @@ describe('installing into every profile', () => {
     expect(skillsNeedRefresh()).toBe(true);
   });
 
+  test('an EDITED skill refreshes without a version bump — the stranding bug', async () => {
+    // The gate compared the package version. A skill edit shipped between
+    // releases left bundled content changed, `version()` unchanged, the
+    // installed marker matching, and the new text reaching nobody. Measured on
+    // a real machine (2026-08-19): two tools were added to the catalog, every
+    // marker read 0.5.0, the bundled skills read 0.5.0, and skillsNeedRefresh()
+    // said false. Editing a skill is far more common than cutting a release, so
+    // the gate keys on content.
+    claudeHome('.claude');
+    const { installSkills, skillsNeedRefresh, skillsSourceDir, bundledSkillNames } = await mods();
+
+    installSkills();
+    expect(skillsNeedRefresh()).toBe(false);
+
+    // Edit a bundled skill in place. The package version does NOT move.
+    const target = join(skillsSourceDir(), bundledSkillNames()[0], 'SKILL.md');
+    const original = readFileSync(target, 'utf-8');
+    try {
+      writeFileSync(target, original + '\n<!-- edited between releases -->\n');
+      expect(skillsNeedRefresh()).toBe(true);
+
+      // …and the refresh actually delivers the new bytes.
+      installSkills();
+      expect(skillsNeedRefresh()).toBe(false);
+      const delivered = readFileSync(
+        join(home, '.claude', 'skills', bundledSkillNames()[0], 'SKILL.md'), 'utf-8');
+      expect(delivered).toContain('edited between releases');
+    } finally {
+      writeFileSync(target, original);
+    }
+  });
+
+  test('a marker from an older release refreshes once', async () => {
+    // Existing installs hold a bare version string. It can never equal the
+    // `<version> <hash>` stamp, so they self-heal on the next MCP start rather
+    // than staying stranded on whatever text they were installed with.
+    claudeHome('.claude');
+    const { installSkills, skillsNeedRefresh, bundledSkillNames } = await mods();
+    installSkills();
+    expect(skillsNeedRefresh()).toBe(false);
+
+    const marker = join(home, '.claude', 'skills', bundledSkillNames()[0], '.chat-recall-managed');
+    writeFileSync(marker, '0.5.0\n'); // the pre-fix format
+    expect(skillsNeedRefresh()).toBe(true);
+  });
+
   test('uninstall reaches every profile', async () => {
     claudeHome('.claude');
     claudeHome('.claude-work');
