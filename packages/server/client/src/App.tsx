@@ -190,6 +190,10 @@ function AppInner() {
       setIsOperator(me.isOperator === true);
     }).catch(() => { setIsOperator(false); });
   }, [capabilities]);
+  // The TENANT's features, as opposed to the DEPLOYMENT's capabilities. null while
+  // unknown, which must mean "don't hide anything yet" — hiding on an unanswered
+  // request would flicker tabs away from a paying user on every load.
+  const [tenantFeatures, setTenantFeatures] = useState<Set<string> | null>(null);
   const enabledViews = useMemo<Set<ViewMode>>(() => {
     const f = capabilities?.features;
     // Optimistic default while /api/capabilities is in flight — it must be a
@@ -218,7 +222,16 @@ function AppInner() {
     if (f.security) out.add('security');
     if (f.settings) out.add('settings');
     if (f.account) out.add('account');
-    if (f.teams) out.add('team');   // per-project team activity + sharing
+    // Deployment capability AND tenant entitlement. /api/capabilities is pre-auth,
+    // so f.teams only says the build supports teams — it cannot know whether THIS
+    // account bought them. Without the second half the Team tab rendered for
+    // everyone and then 402'd, which is the "door that cannot open" this same
+    // function refuses to show for the admin view.
+    //
+    // A null tenantFeatures means the answer has not arrived: show the tab rather
+    // than flicker it away from someone who has paid. The server refuses either
+    // way, so being optimistic here costs nothing.
+    if (f.teams && (tenantFeatures === null || tenantFeatures.has('team'))) out.add('team');
     return out;
   }, [capabilities]);
 
@@ -231,6 +244,7 @@ function AppInner() {
     if (!isCloud()) return;
     getEntitlement()
       .then((e) => {
+        if (Array.isArray(e.features)) setTenantFeatures(new Set(e.features));
         if (!e.billingEnabled) return setGate('ok');   // self-host: never gated
         // A trial is 'trialing', so a trialing tenant renders the app and sees
         // the countdown banner rather than the full-screen gate. Only a lapsed
