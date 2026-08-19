@@ -2122,6 +2122,9 @@ export interface Entitlement {
   plan: string | null;
   currentPeriodEnd: number | null;
   hasSubscription: boolean;
+  /** Authoritative "may this tenant use the paid surface?" — the same answer the
+   *  server gate gives. Never re-derive this from status/dates on the client. */
+  entitled?: boolean;
   /** On the no-card trial (a trial with no Stripe subscription behind it). */
   onTrial?: boolean;
   /** Whole days remaining on that trial; null when not on one. */

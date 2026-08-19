@@ -48,7 +48,7 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
 
       <section className="acct-card">
         <h2>Subscription</h2>
-        {!ent ? <p className="muted">Loading…</p> : ent.onTrial ? (
+        {!ent ? <p className="muted">Loading…</p> : ent.onTrial && ent.entitled !== false ? (
           <>
             <div className="acct-row">
               <span>Trial</span>
