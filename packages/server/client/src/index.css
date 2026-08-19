@@ -544,11 +544,6 @@ a:hover { text-decoration: underline; }
 }
 .cr-topbar-brand:hover { background: var(--cr-ink-2); }
 .cr-topbar-brand-text { font-weight: 700; font-size: 14px; color: var(--cr-fg-1); }
-.cr-topbar-brand-tag {
-  font-size: 10px; font-weight: 600; color: var(--cr-fg-3);
-  background: var(--cr-ink-2); border: 1px solid var(--cr-line-1);
-  padding: 1px 5px; border-radius: 3px; text-transform: uppercase; letter-spacing: 0.06em;
-}
 .cr-topbar-search {
   flex: 1; max-width: 420px; margin: 0 auto;
   display: flex; align-items: center; gap: 0;
@@ -661,7 +656,7 @@ a:hover { text-decoration: underline; }
   /* keep fixed footers/lists clear of the home indicator */
   .cr-conv-footer { padding-bottom: max(10px, env(safe-area-inset-bottom)) !important; }
   .conversation-column > div:first-child { padding-bottom: max(96px, calc(96px + env(safe-area-inset-bottom))) !important; }
-  .cr-topbar-brand-text, .cr-topbar-brand-tag { display: none !important; }
+  .cr-topbar-brand-text { display: none !important; }
   .cr-topbar-search { flex: 1 !important; margin: 0 !important; max-width: none !important; }
   .cr-topbar-search-btn { display: none !important; }
   .cr-topbar-actions .cr-topbar-action-refresh,
