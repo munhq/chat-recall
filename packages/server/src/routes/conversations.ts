@@ -1728,10 +1728,11 @@ router.get('/:id/raw', async (req, res) => {
     if (id.startsWith('opencode_')) {
       const { opencodeBackend } = await import('../imports.js');
       const ocId = opencodeBackend.toRawId(id);
-      const Database = (await import('better-sqlite3')).default;
+      const { openSqliteReadonlyOrThrow } = await import('@chat-recall/engine/core/sqlite-reader.js');
       const path = opencodeBackend.dbPath();
       try {
-        const db = new Database(path, { readonly: true, fileMustExist: true });
+        // Throws on a missing file rather than creating an empty one.
+        const db = openSqliteReadonlyOrThrow(path);
         try {
           const session = db.prepare('SELECT * FROM session WHERE id = ?').get(ocId) as any;
           if (!session) return res.status(404).json({ error: 'Session not found' });

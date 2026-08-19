@@ -6,11 +6,18 @@
  * for every tool the user has installed (cross-tool artifacts) or just
  * the matching tool (tool-specific artifacts).
  *
- * Tracking — we maintain a small SQLite-backed install ledger keyed by
- * `(artifactId, tool)` so we can:
+ * Tracking — a per-device install ledger keyed by `(artifactId, tool)` lets us:
  *   1. Skip a write when the bytes already match (sha256 compare)
  *   2. Remove the right files when the server reports an artifact in
- *      the `removed` list (we know exactly which paths we wrote)
+ *      the `removed` list
+ *
+ * The ledger lives SERVER-SIDE (Postgres, device-scoped — see
+ * routes/ledgers.ts). It was a better-sqlite3 file at
+ * ~/.chat-recall/team-installs.db, which contradicted "the server is the only
+ * datastore" and was one of two reasons the CLI loaded a native module at boot.
+ * It stores no filesystem path: on revocation the path is recomputed with
+ * installPathFor() from the (type, name, tool) the ledger carries, so nothing
+ * about this machine's layout leaves it.
  *
  * Privacy: we never write to a project that's in `privacy.projectDenylist`.
  * `pinnedTo` from the server is honored as a project-scope hint — the
@@ -21,41 +28,14 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, statSync } from 'fs';
 import { dirname, join } from 'path';
 import { createHash } from 'crypto';
-import Database from 'better-sqlite3';
+import { getDataDir } from './paths.js';
 
 import type { TeamArtifactBody, TeamArtifactType, TeamArtifactTool } from './team-client.js';
+import { teamInstallsList, teamInstallsRecord, teamInstallsForget, type TeamInstallRow } from './team-client.js';
 import { claudeBackend } from './backends/claude.js';
 import { geminiBackend } from './backends/gemini.js';
 import { opencodeBackend } from './backends/opencode.js';
 import { codexBackend } from './backends/codex.js';
-import { getDataDir } from './paths.js';
-
-interface InstallRow {
-  artifact_id: string;
-  tool: string;
-  path: string;
-  sha256: string;
-  installed_at: number;
-}
-
-/** Open the local install ledger. Idempotent — creates table on first call. */
-function ledgerDb(): Database.Database {
-  const path = join(getDataDir(), 'team-installs.db');
-  mkdirSync(dirname(path), { recursive: true });
-  const db = new Database(path);
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS team_installs (
-      artifact_id  TEXT NOT NULL,
-      tool         TEXT NOT NULL,
-      path         TEXT NOT NULL,
-      sha256       TEXT NOT NULL,
-      installed_at INTEGER NOT NULL,
-      PRIMARY KEY (artifact_id, tool, path)
-    );
-    CREATE INDEX IF NOT EXISTS idx_installs_artifact ON team_installs(artifact_id);
-  `);
-  return db;
-}
 
 /**
  * Compute the install path for an artifact under a given target tool.
@@ -158,25 +138,14 @@ export interface MergeReport {
  * Always idempotent — re-running with the same input produces the same
  * end state and reports the same `skipped: 'unchanged'` rows.
  */
-export function mergePullResult(opts: {
+export async function mergePullResult(opts: {
   pulled: TeamArtifactBody[];
   removed: string[];
-}): MergeReport {
+}): Promise<MergeReport> {
   const report: MergeReport = { written: [], skipped: [], removed: [], failures: [] };
-  const db = ledgerDb();
-
-  const upsert = db.prepare(
-    `INSERT INTO team_installs (artifact_id, tool, path, sha256, installed_at)
-       VALUES (@artifact_id, @tool, @path, @sha256, @installed_at)
-     ON CONFLICT (artifact_id, tool, path) DO UPDATE
-       SET sha256 = excluded.sha256, installed_at = excluded.installed_at`,
-  );
-  const findByArtifact = db.prepare<[string], InstallRow>(
-    `SELECT artifact_id, tool, path, sha256, installed_at FROM team_installs WHERE artifact_id = ?`,
-  );
-  const deleteRow = db.prepare<[string, string, string]>(
-    `DELETE FROM team_installs WHERE artifact_id = ? AND tool = ? AND path = ?`,
-  );
+  // One round trip for the whole merge, not one per file: the ledger is read
+  // once up front and written once at the end.
+  const pending: TeamInstallRow[] = [];
 
   // Writes
   for (const a of opts.pulled) {
@@ -193,18 +162,18 @@ export function mergePullResult(opts: {
       if (!path) continue;
 
       try {
-        // Already current? Trust the ledger first; fall back to disk hash
-        // for robustness against hand edits.
+        // Already current? Compare the bytes on disk — authoritative, and it
+        // also catches a hand edit the ledger cannot know about.
         const existing = readFileIfExists(path);
         if (existing && createHash('sha256').update(existing).digest('hex') === sha) {
           report.skipped.push({ artifactId: a.id, path, reason: 'unchanged' });
-          upsert.run({ artifact_id: a.id, tool, path, sha256: sha, installed_at: Date.now() });
+          pending.push({ artifactId: a.id, tool, artifactType: a.type, artifactName: a.name, sha256: sha, installedAt: Date.now() });
           continue;
         }
 
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, body);
-        upsert.run({ artifact_id: a.id, tool, path, sha256: sha, installed_at: Date.now() });
+        pending.push({ artifactId: a.id, tool, artifactType: a.type, artifactName: a.name, sha256: sha, installedAt: Date.now() });
         report.written.push({ artifactId: a.id, path });
       } catch (err) {
         report.failures.push({ artifactId: a.id, path, error: (err as Error).message });
@@ -212,21 +181,38 @@ export function mergePullResult(opts: {
     }
   }
 
-  // Revocations
+  // Revocations. The ledger carries (type, name, tool) rather than a path, so
+  // the path this machine wrote is recomputed here instead of being stored.
   for (const id of opts.removed) {
-    const rows = findByArtifact.all(id);
+    let rows: TeamInstallRow[] = [];
+    try {
+      rows = await teamInstallsList(id);
+    } catch (err) {
+      report.failures.push({ artifactId: id, path: '(ledger unavailable)', error: (err as Error).message });
+      continue;
+    }
     for (const row of rows) {
+      const path = installPathFor({ type: row.artifactType, name: row.artifactName }, row.tool as 'claude' | 'agy' | 'gemini' | 'opencode' | 'codex');
+      if (!path) continue;
       try {
-        if (existsSync(row.path)) rmSync(row.path, { force: true });
-        deleteRow.run(row.artifact_id, row.tool, row.path);
-        report.removed.push({ artifactId: id, path: row.path });
+        if (existsSync(path)) rmSync(path, { force: true });
+        await teamInstallsForget(id, row.tool);
+        report.removed.push({ artifactId: id, path });
       } catch (err) {
-        report.failures.push({ artifactId: id, path: row.path, error: (err as Error).message });
+        report.failures.push({ artifactId: id, path, error: (err as Error).message });
       }
     }
   }
 
-  db.close();
+  // Record last: a crash mid-merge leaves the ledger behind reality, which
+  // re-writes files that already match — wasteful but correct. The reverse
+  // (ledger ahead) would silently skip a file that was never written.
+  try {
+    await teamInstallsRecord(pending);
+  } catch (err) {
+    report.failures.push({ artifactId: '(ledger)', path: '(record)', error: (err as Error).message });
+  }
+
   return report;
 }
 
