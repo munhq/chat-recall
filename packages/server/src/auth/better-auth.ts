@@ -22,11 +22,10 @@
  * database as the control plane. They carry no tenant column, so the RLS loop
  * in pg-schema.ts never touches them.
  */
-import { betterAuth, APIError } from 'better-auth';
+import { betterAuth } from 'better-auth';
 import { bearer, deviceAuthorization } from 'better-auth/plugins';
 import pg from 'pg';
 import { sendMail, resetPasswordMail } from './mailer.js';
-import { identityLimit } from '../util/entitlements.js';
 
 /** How long a reset link stays valid. One hour: long enough to survive a slow
  *  mail relay and a user who reads mail on a different device, short enough
@@ -115,16 +114,6 @@ function createAuth() {
     connectionString: process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL,
     max: Number(process.env.AUTH_PG_POOL_MAX) || 5,
   });
-/**
- * Existing identities on this deployment. Counted straight from better-auth's own
- * `user` table rather than from memberships: a user row can authenticate and hold
- * a session before it ever joins a team, so memberships would undercount and let
- * the ceiling be walked past.
- */
-async function countUsers(pool: pg.Pool): Promise<number> {
-  const r = await pool.query('SELECT count(*)::int AS n FROM "user"');
-  return r.rows[0]?.n ?? 0;
-}
 
   return betterAuth({
     baseURL: baseURL(),
@@ -151,37 +140,6 @@ async function countUsers(pool: pg.Pool): Promise<number> {
         await sendMail(
           resetPasswordMail(user.email, resetLinkFor(url), RESET_TOKEN_TTL_SECONDS / 60),
         );
-      },
-    },
-    // IDENTITY CEILING, at the point an identity is CREATED.
-    //
-    // The team-creation gate catches a second person a step later, but signup is
-    // the honest chokepoint: without this, a free deployment accumulates accounts
-    // that can authenticate, appear in the user table, and hold sessions — they
-    // simply cannot make a workspace. Refusing here keeps the deployment's user
-    // list equal to what it is licensed for.
-    //
-    // Counted in EXISTING user rows, so the first signup always succeeds. On cloud
-    // identityLimit() is null and this never fires: seats there are the
-    // subscription's quantity, settled at checkout.
-    databaseHooks: {
-      user: {
-        create: {
-          before: async (user: { email?: string }) => {
-            const limit = identityLimit();
-            if (limit === null) return { data: user };
-            const existing = await countUsers(pool);
-            if (existing >= limit) {
-              // better-auth surfaces a thrown APIError as the response; anything
-              // else would 500 and read as a broken server rather than a licence
-              // boundary.
-              throw new APIError('FORBIDDEN', {
-                message: `this deployment is licensed for ${limit} ${limit === 1 ? 'person' : 'people'} (${existing} in use). More people need a licence: https://chatrecall.dev/pricing`,
-              });
-            }
-            return { data: user };
-          },
-        },
       },
     },
     socialProviders: socialProviders(),
