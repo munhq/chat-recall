@@ -27,6 +27,7 @@ import { createControlPlane } from '../imports.js';
 import { isOperatorRequest, requireUser } from '../middleware/auth.js';
 import { loadMemberships, createTeamFor } from '../util/memberships.js';
 import { sensitiveLimiter } from '../middleware/rate-limit.js';
+import { identityLimit, featureRequired } from '../util/entitlements.js';
 
 const router = express.Router();
 
@@ -59,6 +60,37 @@ router.post('/teams', async (req, res) => {
   if (!user) return;
   const name = (req.body?.name || '').trim();
   if (!name) return res.status(400).json({ error: 'name required' });
+
+  // IDENTITY CEILING. Free self-host is one person. Invites were already gated,
+  // but nothing stopped a second person REGISTERING and creating their own team —
+  // so any number of people could share one free deployment, each with their own
+  // tenant, and the invite gate beside it was decorative.
+  //
+  // Counted in distinct identities across the deployment, not teams: one person
+  // with two workspaces is still one person, and charging them for the second
+  // would be indefensible. On cloud identityLimit() is null and this never fires;
+  // the subscription's seat quantity governs there.
+  const limit = identityLimit();
+  if (limit !== null) {
+    const cp = await createControlPlane();
+    try {
+      const holders = new Set<string>();
+      for (const t of await cp.listTenants()) {
+        for (const m of await cp.listMembers(t)) holders.add(m.user_sub);
+      }
+      // An existing identity may always create another workspace of their own.
+      if (!holders.has(user.sub) && holders.size >= limit) {
+        return res.status(402).json({
+          ...featureRequired('team'),
+          error: `this deployment is licensed for ${limit} ${limit === 1 ? 'person' : 'people'}`,
+          used: holders.size,
+          limit,
+          hint: 'Solo self-hosting is free and unlimited for one person. More people need a licence.',
+        });
+      }
+    } finally { await cp.close(); }
+  }
+
   const t = await createTeamFor(user.sub, user.email, name);
   res.json({ slug: t.slug, name: t.name, role: 'owner' });
 });

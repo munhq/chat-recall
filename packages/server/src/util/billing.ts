@@ -21,6 +21,7 @@ import { TenantTtlCache } from './tenant-cache.js';
 import { hasFeature, licenseState } from './license.js';
 import { planGrantsTeam } from '../routes/billing.js';
 import { ensureTrial } from './trial.js';
+import { allows, featureRequired, featuresFor, type Feature } from './entitlements.js';
 
 /**
  * 30s in-process TTL cache on the control-plane entitlement lookup, keyed by
@@ -32,8 +33,71 @@ import { ensureTrial } from './trial.js';
  */
 const entitlementCache = new TenantTtlCache<boolean>(30_000);
 
+/**
+ * The tenant's recorded PLAN, cached like the entitlement above and for the same
+ * reason: the feature gate runs on every request to a gated route, and the plan
+ * changes only when a webhook lands.
+ */
+const planCache = new TenantTtlCache<string | null>(30_000);
+
 export function clearEntitlementCache(): void {
   entitlementCache.clear();
+  planCache.clear();
+}
+
+/** The tenant's recorded plan, or null. Empty on self-host, where the licence —
+ *  not a plan — decides, and the resolver ignores this value entirely. */
+export async function tenantPlan(tenant: string): Promise<string | null> {
+  if (!billingEnabled()) return null;
+  const cached = planCache.get(tenant);
+  if (cached !== undefined) return cached;
+  const cp = await createControlPlane();
+  try {
+    const e = await cp.getEntitlement(tenant);
+    const plan = e?.plan ?? null;
+    planCache.set(tenant, plan);
+    return plan;
+  } finally {
+    await cp.close();
+  }
+}
+
+/**
+ * Express middleware: require one FEATURE. Mount after tenantAuth.
+ *
+ * This replaces requireTeamFeature, which began with
+ *
+ *   if (billingEnabled()) return next();   // "the subscription governs"
+ *
+ * and so was a PASS-THROUGH on cloud. The only check mounted beside it was
+ * requireEntitlement, which any trialing or Solo tenant passes — so
+ * /api/activity, /api/tasks and /api/shares were guarded by "has a subscription"
+ * rather than "has Team". The plan was never consulted. This asks the one
+ * resolver, which reads the plan on cloud and the licence on self-host, so both
+ * editions cannot disagree.
+ *
+ * Refusals carry featureRequired()'s payload: the same actionable shape the
+ * dashboard, the CLI and an MCP-driven agent all relay.
+ */
+export function requireFeature(feature: Feature) {
+  return function featureGate(req: Request, res: Response, next: NextFunction): void {
+    const tenant = req.tenant;
+    if (!tenant) {
+      res.status(401).json({ error: 'no tenant resolved (auth middleware missing?)' });
+      return;
+    }
+    tenantPlan(tenant)
+      .then((plan) => {
+        if (allows(plan, feature)) return next();
+        res.status(402).json(featureRequired(feature));
+      })
+      .catch(next);
+  };
+}
+
+/** The tenant's resolved feature list, for the client to hide what it cannot use. */
+export async function tenantFeatures(tenant: string): Promise<Feature[]> {
+  return [...featuresFor(await tenantPlan(tenant))];
 }
 
 /**
@@ -135,35 +199,7 @@ export function requireEntitlement(req: Request, res: Response, next: NextFuncti
     .catch(next);
 }
 
-/**
- * Express middleware: the TEAM (collaboration) gate.
- *
- * Three states, in order:
- *   - cloud (billingEnabled)  → the subscription already decides; pass through
- *     to requireEntitlement, which is mounted alongside on these routes.
- *   - self-host + team licence → pass.
- *   - self-host, no licence    → 402 with how to get one.
- *
- * Why this is separate from requireEntitlement: isEntitled() returns true for
- * every self-host request by design (self-host is the free tier), which made the
- * collaboration surface free at any company size. Solo self-hosting stays free
- * and complete; only the features that need colleagues are licensed.
- */
-export function requireTeamFeature(req: Request, res: Response, next: NextFunction): void {
-  // Collaboration is paid in EVERY state: a Team-tier plan on cloud, a licence
-  // key on self-host. The no-card trial does not include it either — a trial
-  // carries a null plan, and a null plan is not a team plan.
-  if (billingEnabled()) return next();          // cloud: subscription governs
-  if (hasFeature('team')) return next();        // self-host with a team licence
 
-  const s = licenseState();
-  res.status(402).json({
-    error: 'team features require a licence',
-    reason: s.valid ? 'licence does not include the team feature' : s.reason,
-    detail: 'detail' in s ? s.detail : undefined,
-    hint: 'Solo self-hosting is free and unlimited. Collaboration (shared project history, the team task board, per-member activity, the team toolkit) needs a licence: https://chatrecall.dev/pricing',
-  });
-}
 
 
 /**
@@ -177,30 +213,15 @@ export function requireTeamFeature(req: Request, res: Response, next: NextFuncti
  * Returns true to proceed; on false it has already sent the 402.
  */
 export async function collaborationOr402(res: Response, tenant: string): Promise<boolean> {
-  if (billingEnabled()) {
-    const cp = await createControlPlane();
-    try {
-      const ent = await cp.getEntitlement(tenant);
-      if (planGrantsTeam(ent?.plan)) return true;
-      res.status(402).json({
-        error: 'the Team plan is required to invite teammates',
-        plan: ent?.plan ?? null,
-        checkoutHint: 'POST /api/billing/checkout with {"plan":"team-monthly","seats":N}',
-      });
-      return false;
-    } finally {
-      await cp.close();
-    }
-  }
-  // Self-host: a team licence key. Inlined rather than delegated — the helper
-  // this called was a second copy of the same decision, and the duplication is
-  // what let the two drift apart.
-  if (hasFeature('team')) return true;
-  const st = licenseState();
+  const plan = await tenantPlan(tenant);
+  if (allows(plan, 'team')) return true;
+  // One refusal shape for every edition. This used to branch — plan check on
+  // cloud, licence check inlined for self-host — which is how the cloud branch
+  // gained the plan check while three route mounts did not.
   res.status(402).json({
-    error: 'team features require a licence',
-    reason: st.valid ? 'licence does not include the team feature' : st.reason,
-    hint: 'Solo self-hosting is free and unlimited. Collaboration needs a licence: https://chatrecall.dev/pricing',
+    ...featureRequired('team'),
+    plan: plan ?? null,
+    hint: 'Solo self-hosting is free and unlimited. Collaboration needs the Team plan or a licence.',
   });
   return false;
 }

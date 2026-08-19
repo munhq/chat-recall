@@ -57,6 +57,26 @@ describe('team licence gate (self-host, unlicensed)', () => {
     slug = r.body.slug;
   });
 
+  test('a SECOND person cannot create their own workspace on a free deployment', async () => {
+    // The hole this closes: invites were gated, but self-registration was not, so
+    // any number of people could each create their own tenant on one free box and
+    // never touch the invite path. The gate counted seats only where it was never
+    // reached.
+    const r = await request(app).post('/api/teams').set('x-dev-user', 'bob').send({ name: 'Bob Co' });
+    expect(r.status).toBe(402);
+    expect(r.body.limit).toBe(1);
+    expect(r.body.error).toMatch(/licensed for 1 person/i);
+    expect(r.body.hint).toMatch(/free and unlimited for one person/i);
+  });
+
+  test('the FIRST person may still create a second workspace of their own', async () => {
+    // One person with two workspaces is still one person; charging for the second
+    // would be indefensible.
+    const r = await asUser(request(app).post('/api/teams')).send({ name: 'Solo Co Two' });
+    expect(r.status).toBe(200);
+    expect(r.body.role).toBe('owner');
+  });
+
   test('inviting a second member is refused with 402 and a buying hint', async () => {
     // Owner of a real team, so the 403 ownership check passes and the licence
     // gate is what answers.
@@ -68,14 +88,53 @@ describe('team licence gate (self-host, unlicensed)', () => {
     expect(r.body.inviteToken).toBeUndefined();
   });
 
-  test('requireTeamFeature itself refuses, which is what guards /api/tasks, /api/shares and /api/activity', async () => {
+  test('the mount gate refuses unlicensed — this is what guards /api/tasks, /api/shares, /api/activity', async () => {
     // Those three carry the gate at their mount in server.ts rather than inside
     // the router, so the middleware is the honest unit to assert here.
-    const { requireTeamFeature } = await import('../util/billing.js');
+    const { requireFeature } = await import('../util/billing.js');
     const probe = express();
-    probe.use('/gated', requireTeamFeature, (_req, res) => res.json({ reached: true }));
+    probe.use((req, _res, nx) => { (req as any).tenant = 'solo-co'; nx(); });
+    probe.use('/gated', requireFeature('team'), (_req, res) => res.json({ reached: true }));
     const r = await request(probe).get('/gated');
     expect(r.status).toBe(402);
     expect(r.body.reached).toBeUndefined();
+    expect(r.body.feature).toBe('team');
+    expect(r.body.upgradeUrl).toMatch(/^https?:\/\//);
+  });
+
+  test('CLOUD: a TRIALING tenant with no plan is refused team — the leak this closes', async () => {
+    // The regression that shipped: requireTeamFeature opened with
+    // `if (billingEnabled()) return next()`, so on cloud it passed everything and
+    // the only real check was requireEntitlement — which a trial passes. A trialing
+    // tenant therefore reached the team board, shares and per-member activity.
+    const { requireFeature, clearEntitlementCache } = await import('../util/billing.js');
+    const { createControlPlane } = await import('../imports.js');
+    process.env.STRIPE_SECRET_KEY = 'sk_test_x';       // cloud
+    clearEntitlementCache();
+    const cp = await createControlPlane();
+    try {
+      await cp.setEntitlement('trial-co', { status: 'trialing', plan: null, currentPeriodEnd: Date.now() + 86_400_000 });
+    } finally { await cp.close(); }
+
+    const probe = express();
+    probe.use((req, _res, nx) => { (req as any).tenant = 'trial-co'; nx(); });
+    probe.use('/gated', requireFeature('team'), (_req, res) => res.json({ reached: true }));
+    const r = await request(probe).get('/gated');
+    expect(r.status).toBe(402);
+    expect(r.body.reached).toBeUndefined();
+
+    // And a real Team plan is admitted, so the gate is not simply closed.
+    clearEntitlementCache();
+    const cp2 = await createControlPlane();
+    try {
+      await cp2.setEntitlement('team-co', { status: 'active', plan: 'team-monthly', currentPeriodEnd: Date.now() + 86_400_000 });
+    } finally { await cp2.close(); }
+    const probe2 = express();
+    probe2.use((req, _res, nx) => { (req as any).tenant = 'team-co'; nx(); });
+    probe2.use('/gated', requireFeature('team'), (_req, res) => res.json({ reached: true }));
+    expect((await request(probe2).get('/gated')).body.reached).toBe(true);
+
+    delete process.env.STRIPE_SECRET_KEY;
+    clearEntitlementCache();
   });
 });
