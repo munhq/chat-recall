@@ -34,7 +34,7 @@ import type { Request } from 'express';
 import type Stripe from 'stripe';
 import { createControlPlane, type EntitlementStatus } from '../imports.js';
 import { requireUser } from '../middleware/auth.js';
-import { billingEnabled, isEntitled } from '../util/billing.js';
+import { billingEnabled, isEntitled, tenantFeatures } from '../util/billing.js';
 import { ensureTrial, isNoCardTrial, trialDaysLeft, trialLengthDays } from '../util/trial.js';
 import { planCatalogue, resolveLine, isPlanError, trialDays } from '../util/billing-plans.js';
 import { publicOrigin, UnsafeOriginError } from './install.js';
@@ -502,6 +502,13 @@ router.get('/', async (req, res) => {
       // status='trialing', so a client deriving it would say "ends today" to
       // someone already read-only.
       entitled: await isEntitled(tenant),
+      // The tenant's resolved capabilities. /api/capabilities is PRE-AUTH and
+      // therefore deployment-wide — it answers "does this build have teams", not
+      // "may you use them". That is why the Team tab rendered for every account
+      // regardless of plan: a door that cannot open, which this codebase already
+      // calls worse than no door where it gates the admin view. The client
+      // intersects these with the deployment's capabilities.
+      features: await tenantFeatures(tenant),
       // The trial surface the client renders its banner and gate from.
       onTrial,
       trialDaysLeft: onTrial ? trialDaysLeft(ent) : null,
