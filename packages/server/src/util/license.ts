@@ -43,8 +43,22 @@
  */
 import { createPublicKey, verify as edVerify } from 'node:crypto';
 
-/** A licensable capability. Kept as a union so a typo cannot silently grant. */
-export type LicenseFeature = 'team';
+/**
+ * A licensable capability. Kept as a union so a typo cannot silently grant.
+ *
+ * These are the features a LICENCE can add. The always-free ones ('memory',
+ * 'scan') are deliberately absent: they are never licensed, so a key naming them
+ * would imply they could be withheld. See util/entitlements.ts, which composes
+ * this set with the free base and with the cloud plan map.
+ */
+export type LicenseFeature =
+  | 'sync'      // multi-machine sync + server-side retention
+  | 'alerts'    // continuous secret monitoring: rules, dismissals, alerting
+  | 'findings'  // code intelligence: findings, hotspots, action plan, task export
+  | 'team'      // collaboration: shared history, board, per-member activity
+  | 'toolkit'   // distributing skills / MCP config across machines and teammates
+  | 'sso'       // single sign-on (OIDC / Keycloak)
+  | 'audit';    // audit log export
 
 export interface LicensePayload {
   /** Who the key was issued to. Shown in the admin UI; not verified. */
