@@ -22,6 +22,7 @@ import AccountPage, { SubscribeScreen } from './components/AccountPage';
 import TeamView from './components/TeamView';
 import ConnectTokenPage from './components/ConnectTokenPage';
 import SecuritySummaryBanner from './components/SecuritySummaryBanner';
+import TrialBanner from './components/TrialBanner';
 import AdminPage from './components/AdminPage';
 import ProjectsDashboard from './components/ProjectsDashboard';
 import { SidebarExtrasProvider, useSidebarExtras } from './context/sidebar-extras';
@@ -230,9 +231,10 @@ function AppInner() {
     if (!isCloud()) return;
     getEntitlement()
       .then((e) => {
-        // Open beta: billing may be fully configured underneath, but nobody
-        // is gated and nobody sees checkout.
-        if (!e.billingEnabled || e.openBeta) return setGate('ok');
+        if (!e.billingEnabled) return setGate('ok');   // self-host: never gated
+        // A trial is 'trialing', so a trialing tenant renders the app and sees
+        // the countdown banner rather than the full-screen gate. Only a lapsed
+        // or never-started tenant meets the gate.
         setGate(e.status === 'active' || e.status === 'trialing' ? 'ok' : 'subscribe');
       })
       // "no team yet" → first-run onboarding via the Subscribe screen. Any other
@@ -812,6 +814,10 @@ function AppInner() {
         mobileSidebarOpen={mobileSidebarOpen}
         onRefresh={handleRefreshAll}
       />
+
+      {view !== 'settings' && view !== 'account' && (
+        <TrialBanner onSubscribe={() => setView('account')} />
+      )}
 
       {enabledViews.has('security') && view !== 'settings' && view !== 'account' && (
         <SecuritySummaryBanner onReview={() => setView('security')} />

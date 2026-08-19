@@ -20,6 +20,7 @@ import { createControlPlane } from '../imports.js';
 import { TenantTtlCache } from './tenant-cache.js';
 import { hasFeature, licenseState } from './license.js';
 import { planGrantsTeam } from '../routes/billing.js';
+import { ensureTrial } from './trial.js';
 
 /**
  * 30s in-process TTL cache on the control-plane entitlement lookup, keyed by
@@ -46,30 +47,23 @@ export function billingEnabled(): boolean {
 }
 
 /**
- * Open beta: everything is free for everyone, even with Stripe fully
- * configured underneath. One env flag (OPEN_BETA=1) so GA is a config change,
- * not a deploy — unset it and the subscription gate snaps back on. Surfaced
- * to the client via /api/billing and /api/billing/plan so the UI renders
- * beta copy instead of trial/checkout CTAs.
- */
-export function openBeta(): boolean {
-  return /^(1|true|yes)$/i.test(process.env.OPEN_BETA || '');
-}
-
-/**
  * Whether a tenant may use the paid surface right now.
  *
  *   - billing disabled → always true (self-host free tier).
- *   - open beta        → always true (cloud, pre-GA: free for everyone).
- *   - billing enabled  → true iff the tenant has a recorded subscription that
- *     is active|trialing AND not lapsed (currentPeriodEnd null = no expiry
- *     known yet, treated as still valid; otherwise must be in the future).
+ *   - billing enabled  → true iff the tenant's entitlement is active|trialing
+ *     AND not lapsed (currentPeriodEnd null = no expiry known yet, treated as
+ *     still valid; otherwise it must be in the future).
  *
- * Fail-closed on cloud: an absent row, an unknown status, or a past period all
- * resolve to NOT entitled.
+ * A tenant with no entitlement history is granted the no-card trial here (see
+ * util/trial.ts) and is entitled for its duration. There is no flag that skips
+ * this check: access is always the answer of a real entitlement row, which is
+ * what keeps this path exercised in production instead of only after GA.
+ *
+ * Fail-closed on cloud: an unknown status or a past period resolves to NOT
+ * entitled.
  */
 export async function isEntitled(tenant: string): Promise<boolean> {
-  if (!billingEnabled() || openBeta()) return true;
+  if (!billingEnabled()) return true;
 
   // Served from the 30s TTL cache when warm — one control-plane query per
   // tenant per window instead of one per paid request.
@@ -79,7 +73,7 @@ export async function isEntitled(tenant: string): Promise<boolean> {
   const cp = await createControlPlane();
   let entitled = false;
   try {
-    const e = await cp.getEntitlement(tenant);
+    const e = await ensureTrial(cp, tenant);
     const statusOk = !!e && (e.status === 'active' || e.status === 'trialing');
     // null period = open-ended (e.g. a trial Stripe hasn't dated yet); any
     // recorded period must not be in the past.
@@ -93,12 +87,32 @@ export async function isEntitled(tenant: string): Promise<boolean> {
 }
 
 /**
- * Express middleware: 402 Payment Required when the request's tenant isn't
- * entitled. Mount AFTER tenantAuth so `req.tenant` is resolved. On self-host
- * this is a transparent pass-through (isEntitled → true).
+ * Safe methods, for the lapsed-tenant degradation below. GET and HEAD read;
+ * everything else changes state. OPTIONS is included so CORS preflight is never
+ * the thing that fails.
+ */
+function isReadRequest(req: Request): boolean {
+  return req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS';
+}
+
+/**
+ * Express middleware: the entitlement gate. Mount AFTER tenantAuth so
+ * `req.tenant` is resolved. On self-host this is a transparent pass-through
+ * (isEntitled → true).
+ *
+ * A LAPSED tenant is DEGRADED, NOT LOCKED OUT: reads pass, writes get 402.
+ *
+ * The data behind this gate is the user's own conversation history, indexed from
+ * their own machine — so locking them out of reading it buys no leverage (the CLI
+ * can re-index it in one command) while guaranteeing the worst possible story
+ * about us. Degrading instead applies the same pressure on the surfaces that cost
+ * us money to run, keeps the door open for someone who pays late, and leaves them
+ * able to export what is already theirs.
+ *
+ * Writes stop, which is what pauses sync: the CLI pushes with POST.
  *
  * The 402 body carries a `checkoutHint` so the client can route the user to
- * start a subscription instead of just surfacing a dead error.
+ * checkout instead of surfacing a dead error.
  */
 export function requireEntitlement(req: Request, res: Response, next: NextFunction): void {
   const tenant = req.tenant;
@@ -111,8 +125,10 @@ export function requireEntitlement(req: Request, res: Response, next: NextFuncti
   isEntitled(tenant)
     .then((ok) => {
       if (ok) return next();
+      if (isReadRequest(req)) return next();   // lapsed: read-only, see above
       res.status(402).json({
         error: 'subscription required',
+        detail: 'Your access is read-only until you subscribe. Your history is kept.',
         checkoutHint: 'POST /api/billing/checkout to start a subscription',
       });
     })
@@ -134,10 +150,9 @@ export function requireEntitlement(req: Request, res: Response, next: NextFuncti
  * and complete; only the features that need colleagues are licensed.
  */
 export function requireTeamFeature(req: Request, res: Response, next: NextFunction): void {
-  // NO openBeta() BYPASS, deliberately. The beta frees the SOLO surface —
-  // isEntitled() honours it — not collaboration. Team is paid in every state: a
-  // Team-tier plan on cloud, a licence key on self-host. A beta that gives away
-  // the paid tier cannot end without taking it back from the earliest adopters.
+  // Collaboration is paid in EVERY state: a Team-tier plan on cloud, a licence
+  // key on self-host. The no-card trial does not include it either — a trial
+  // carries a null plan, and a null plan is not a team plan.
   if (billingEnabled()) return next();          // cloud: subscription governs
   if (hasFeature('team')) return next();        // self-host with a team licence
 
@@ -178,8 +193,8 @@ export async function collaborationOr402(res: Response, tenant: string): Promise
     }
   }
   // Self-host: a team licence key. Inlined rather than delegated — the helper
-  // this called was a second copy of the same decision and drifted, ending up
-  // without the openBeta() check the rest of this function has.
+  // this called was a second copy of the same decision, and the duplication is
+  // what let the two drift apart.
   if (hasFeature('team')) return true;
   const st = licenseState();
   res.status(402).json({

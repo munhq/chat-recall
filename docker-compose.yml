@@ -123,10 +123,13 @@ services:
       # Only for a fork issuing its own keys for internal use, which ELv2 permits.
       # Leave unset to verify against the shipped issuer key.
       CHAT_RECALL_LICENSE_PUBKEY: ${CHAT_RECALL_LICENSE_PUBKEY:-}
-      # Set to 1/true to entitle every tenant regardless of subscription. This is
-      # how the hosted deployment runs its open beta; leave empty locally or
-      # billing cannot be tested at all.
-      OPEN_BETA: ${OPEN_BETA:-}
+      # Length of the no-card trial a new tenant gets, in days (default 14). Every
+      # tenant with no entitlement history is granted one on first contact; when it
+      # lapses the tenant becomes read-only (search and export keep working, new
+      # syncs stop) and nothing is deleted. Only relevant when billing is on.
+      FREE_TRIAL_DAYS: ${FREE_TRIAL_DAYS:-}
+      # Where the trial reminder emails send people to subscribe.
+      TRIAL_UPGRADE_URL: ${TRIAL_UPGRADE_URL:-}
       NODE_ENV: production
     restart: unless-stopped
     healthcheck:

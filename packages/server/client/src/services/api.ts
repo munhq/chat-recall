@@ -2117,19 +2117,23 @@ export interface MeInfo {
 }
 export interface Entitlement {
   billingEnabled: boolean;
-  /** Cloud pre-GA: everything free, no checkout — UI renders beta copy. */
-  openBeta?: boolean;
   tenant: string;
   status: 'active' | 'trialing' | 'past_due' | 'canceled' | 'none';
   plan: string | null;
   currentPeriodEnd: number | null;
   hasSubscription: boolean;
+  /** On the no-card trial (a trial with no Stripe subscription behind it). */
+  onTrial?: boolean;
+  /** Whole days remaining on that trial; null when not on one. */
+  trialDaysLeft?: number | null;
+  /** Configured trial length, for copy that states it. */
+  trialLengthDays?: number;
 }
 export interface PlanInfo {
   configured: boolean;
   trialDays: number;
-  /** Cloud pre-GA: free for everyone — landing renders beta copy, no card talk. */
-  openBeta?: boolean;
+  /** Length of the no-card trial a new tenant gets, in days. */
+  freeTrialDays?: number;
   amount?: number | null;
   currency?: string;
   interval?: string | null;

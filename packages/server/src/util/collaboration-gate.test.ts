@@ -1,10 +1,10 @@
 /**
  * The paid collaboration gate — who may invite a teammate.
  *
- * This exists because the gate cannot be observed in production: openBeta() is
- * on, so collaborationOr402 returns true before it ever looks at a plan. A live
- * smoke test therefore proves the BETA path and says nothing about the paid one,
- * which is the branch that decides whether a Solo subscriber gets Team for free.
+ * This is the branch that decides whether a Solo subscriber gets Team for free,
+ * and a live smoke test cannot cover it: most tenants are on a trial or on Solo,
+ * so the refusal path is the common case and the ALLOW path needs a real Team
+ * subscription to observe. The matrix here covers both without buying one.
  *
  * planGrantsTeam is the whole decision, so the matrix below is the contract.
  */
