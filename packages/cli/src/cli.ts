@@ -1331,7 +1331,7 @@ companions
 
 companions
   .command('install')
-  .description('Install codeindex (downloads from hotmun/codeindex GitHub release)')
+  .description('Install codeindex (downloads from munhq/codeindex GitHub release)')
   .option('--force', 'Re-download even if already installed')
   .action(async (opts: { force?: boolean }) => {
     const { installCodeindex, registerCodeindexMcp, CODEINDEX_BIN_PATH } = await import('@chat-recall/engine/core/companions.js');
@@ -1355,7 +1355,7 @@ companions
       console.error(chalk.red(`codeindex install failed: ${msg}`));
       if (msg.includes('404')) {
         console.error(chalk.dim('  The codeindex release is currently private. Either authenticate `gh`'));
-        console.error(chalk.dim('  to hotmun/codeindex, or build from source: https://github.com/munhq/codeindex'));
+        console.error(chalk.dim('  to munhq/codeindex, or build from source: https://github.com/munhq/codeindex'));
       } else {
         console.error(chalk.dim('  This does not block chat-recall — it just disables code-level lookup.'));
       }

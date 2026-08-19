@@ -23,7 +23,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
 
-const CODEINDEX_REPO = 'hotmun/codeindex';
+const CODEINDEX_REPO = 'munhq/codeindex';
 const CODEINDEX_VERSION = 'v0.1.0';
 
 /** Where we install the binary. Aligns with codeindex's own install.sh. */

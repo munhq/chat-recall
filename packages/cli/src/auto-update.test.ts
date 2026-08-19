@@ -14,7 +14,7 @@ describe('auto-update default', () => {
 
   test('a cloud device updates when the server advertises a newer CLI', () => {
     const plan = planAutoUpdate(
-      'https://chat-recall.hotmun.com',
+      'https://chatrecall.dev',
       { edition: 'cloud', cli: { version: '0.3.3', sha256: 'a'.repeat(64) } },
       '0.3.2',
       undefined,
