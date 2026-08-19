@@ -332,8 +332,37 @@ router.post('/checkout', async (req, res) => {
     const stripe = await getStripe();
     if (!stripe) return res.status(501).json({ error: 'billing not enabled' });
 
-    // Card-required free trial: the customer enters a card now, gets
-    // TRIAL_DAYS free, then auto-converts to paid. No free tier, minimal abuse.
+    // TOTAL free time is capped at ONE trial, never stacked.
+    //
+    // The tenant is already on a no-card trial by the time it reaches checkout, so
+    // adding trial_period_days here would hand out a SECOND free window — 14 days
+    // free, then another 7 with a card on file, 21 before the first charge. The
+    // free period a customer was promised is the one they are already on, so the
+    // subscription inherits its END rather than starting a new clock.
+    //
+    // Cases:
+    //   - live no-card trial  → trial_end = that trial's end (total stays 14 days)
+    //   - <48h left, or lapsed, or a returning subscriber → no trial; Stripe
+    //     charges at once. Stripe rejects a trial_end under 48 hours out, and
+    //     someone at the end of their trial has had the free window already.
+    //   - no entitlement row at all → the classic card-required trial, which is
+    //     still inside the cap.
+    const cpTrial = await createControlPlane();
+    let trialArg: { trial_end?: number; trial_period_days?: number } = {};
+    try {
+      const cur = await cpTrial.getEntitlement(tenant);
+      const MIN_TRIAL_MS = 48 * 60 * 60 * 1000;
+      if (!cur) {
+        trialArg = { trial_period_days: trialDays() };
+      } else if (isNoCardTrial(cur) && cur.currentPeriodEnd != null
+                 && cur.currentPeriodEnd - Date.now() > MIN_TRIAL_MS) {
+        trialArg = { trial_end: Math.floor(cur.currentPeriodEnd / 1000) };
+      }
+      // else: no trial at all — charge now.
+    } finally {
+      await cpTrial.close();
+    }
+
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       line_items: [{ price: line.plan.priceId as string, quantity: line.quantity }],
@@ -355,7 +384,8 @@ router.post('/checkout', async (req, res) => {
         // support question) can tell WHICH plan was bought — the events
         // themselves carry only the price id.
         metadata: { tenant, plan: line.plan.key, seats: String(line.quantity) },
-        trial_period_days: trialDays(),
+        // Exactly one of trial_end / trial_period_days, or neither. See above.
+        ...trialArg,
       },
       success_url: process.env.STRIPE_SUCCESS_URL || 'https://chat-recall.munhq.com/?view=account&checkout=success',
       cancel_url: process.env.STRIPE_CANCEL_URL || 'https://chat-recall.munhq.com/?view=account&checkout=cancel',
