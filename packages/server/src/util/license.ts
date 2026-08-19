@@ -55,6 +55,7 @@ export type LicenseFeature =
   | 'sync'      // multi-machine sync + server-side retention
   | 'alerts'    // continuous secret monitoring: rules, dismissals, alerting
   | 'findings'  // code intelligence: findings, hotspots, action plan, task export
+  | 'insights'  // analytics across the whole history: cost, tokens, time, trends
   | 'team'      // collaboration: shared history, board, per-member activity
   | 'toolkit'   // distributing skills / MCP config across machines and teammates
   | 'sso'       // single sign-on (OIDC / Keycloak)

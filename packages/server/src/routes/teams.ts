@@ -27,7 +27,8 @@ import { createControlPlane } from '../imports.js';
 import { isOperatorRequest, requireUser } from '../middleware/auth.js';
 import { loadMemberships, createTeamFor } from '../util/memberships.js';
 import { sensitiveLimiter } from '../middleware/rate-limit.js';
-import { identityLimit, featureRequired } from '../util/entitlements.js';
+import { featureRequired, allows } from '../util/entitlements.js';
+import { tenantPlan } from '../util/billing.js';
 
 const router = express.Router();
 
@@ -61,36 +62,6 @@ router.post('/teams', async (req, res) => {
   const name = (req.body?.name || '').trim();
   if (!name) return res.status(400).json({ error: 'name required' });
 
-  // IDENTITY CEILING. Free self-host is one person. Invites were already gated,
-  // but nothing stopped a second person REGISTERING and creating their own team —
-  // so any number of people could share one free deployment, each with their own
-  // tenant, and the invite gate beside it was decorative.
-  //
-  // Counted in distinct identities across the deployment, not teams: one person
-  // with two workspaces is still one person, and charging them for the second
-  // would be indefensible. On cloud identityLimit() is null and this never fires;
-  // the subscription's seat quantity governs there.
-  const limit = identityLimit();
-  if (limit !== null) {
-    const cp = await createControlPlane();
-    try {
-      const holders = new Set<string>();
-      for (const t of await cp.listTenants()) {
-        for (const m of await cp.listMembers(t)) holders.add(m.user_sub);
-      }
-      // An existing identity may always create another workspace of their own.
-      if (!holders.has(user.sub) && holders.size >= limit) {
-        return res.status(402).json({
-          ...featureRequired('team'),
-          error: `this deployment is licensed for ${limit} ${limit === 1 ? 'person' : 'people'}`,
-          used: holders.size,
-          limit,
-          hint: 'Solo self-hosting is free and unlimited for one person. More people need a licence.',
-        });
-      }
-    } finally { await cp.close(); }
-  }
-
   const t = await createTeamFor(user.sub, user.email, name);
   res.json({ slug: t.slug, name: t.name, role: 'owner' });
 });
@@ -114,6 +85,43 @@ router.post('/teams/:slug/tokens', sensitiveLimiter, async (req, res) => {
       return res.status(403).json({ error: 'not a member' });
     }
     const deviceId = (req.body?.device_id || 'default').slice(0, 64);
+
+    // MACHINE CEILING — a boundary marker, not enforcement.
+    //
+    // /api/sync itself is deliberately NOT gated: a solo self-hoster pushing their
+    // laptop to their own VM is the whole free story, and gating the route would
+    // delete the free tier.
+    //
+    // Nor can this stop account sharing. One device token works from any number of
+    // machines concurrently, so five people can share a single token and pass any
+    // count we impose. That is unpreventable on hardware we do not control, and it
+    // is a licence violation rather than a bug — the same legal-not-technical
+    // boundary the anti-circumvention clause rests on.
+    //
+    // What the ceiling does is make crossing the line a CONSCIOUS act. TWO is the
+    // number because the complaint it must not provoke is "I have a laptop and a
+    // desktop" — that is exactly two, and the VM being self-hosted onto is a server,
+    // not a client, so it needs no token. Three would start covering a team-shaped
+    // pattern, which is precisely what should hit the wall.
+    //
+    // Re-minting an existing device id is a rotation, not a new machine. Revoked
+    // tokens do not count, so retiring a machine frees its slot.
+    const FREE_DEVICES = 2;
+    if (!allows(await tenantPlan(req.params.slug), 'sync')) {
+      const existing = (await cp.listAgentTokens(req.params.slug))
+        .filter((t) => !t.revoked)
+        .map((t) => t.deviceId);
+      if (!existing.includes(deviceId) && existing.length >= FREE_DEVICES) {
+        return res.status(402).json({
+          ...featureRequired('sync'),
+          error: `syncing more than ${FREE_DEVICES} machines needs a paid plan or a licence`,
+          devices: existing.length,
+          limit: FREE_DEVICES,
+          hint: `${FREE_DEVICES} machines are free. Revoke a device token to move machines, or upgrade to sync more.`,
+        });
+      }
+    }
+
     const token = await cp.mintAgentToken(req.params.slug, deviceId, user.sub);
     res.json({ token, tenant_slug: req.params.slug, device_id: deviceId, note: 'shown once' });
   } finally { await cp.close(); }

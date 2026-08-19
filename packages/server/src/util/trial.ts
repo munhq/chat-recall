@@ -18,9 +18,11 @@
  *
  *   - A tenant with no entitlement history gets one trial, dated from first
  *     contact. FREE_TRIAL_DAYS (default 14) sets the length.
- *   - The trial's plan is null. A null plan is not a team plan, so a trial gets
- *     the Solo surface and collaboration stays paid — the same rule that applies
- *     to a Solo subscriber.
+ *   - The trial's plan is 'trial', which maps to the SOLO feature set. It was null
+ *     at first, and that was a mistake: a null plan resolves to the free set, so the
+ *     trial demonstrated none of the product it exists to sell. 'trial' does not
+ *     begin with 'team', so collaboration stays paid — the same rule that applies to
+ *     a Solo subscriber.
  *   - The row's EXISTENCE is the record that a trial was already given. A lapsed
  *     or cancelled tenant therefore never receives a second one, without needing
  *     a separate "has_trialed" column.
@@ -88,8 +90,11 @@ export async function ensureTrial(
 
   await cp.setEntitlement(tenant, {
     status: 'trialing',
-    // null, NOT a team key: a trial must not carry collaboration.
-    plan: null,
+    // 'trial', NOT null. A null plan resolves to the FREE feature set, so a trial
+    // granted nothing beyond memory and the scan verdict — it demonstrated none of
+    // the product it exists to sell. 'trial' maps to the Solo set in PLAN_FEATURES,
+    // and it deliberately does not begin with 'team', so collaboration stays paid.
+    plan: 'trial',
     currentPeriodEnd: now + trialLengthDays() * DAY_MS,
   });
   return cp.getEntitlement(tenant);

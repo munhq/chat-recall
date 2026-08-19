@@ -28,8 +28,50 @@ import {
   dismissalToTaskStatus, taskStatusToDismissal, isSecretTaskStatus, type SecretTaskStatus,
 } from '@chat-recall/engine/core/secret-task-status.js';
 import { validateRedactionRule } from '@chat-recall/engine/core/secret-redactor.js';
+import { requireFeature } from '../util/billing.js';
 
 const router = express.Router();
+
+/**
+ * The FREE / PAID line inside this router.
+ *
+ * FREE — the verdict, and everything that keeps secrets from leaking:
+ *   /summary /by-rule /by-project /distinct /sessions /session/:id   the findings
+ *   /rules   (GET, POST, DELETE, /test)                              the rule pack
+ *
+ * The findings are free because that is the only surface delivering value on day
+ * one, before any history has accumulated, and the scan runs in the CLI at no cost
+ * to us.
+ *
+ * THE RULES ARE FREE FOR A DIFFERENT AND STRONGER REASON: they are the redaction
+ * pack. The collector pulls it at sync time to decide what to MASK before anything
+ * leaves the machine, and authoring a rule is how a user protects a credential
+ * format we do not ship a detector for. Gating either half does not withhold a
+ * feature — it makes a free user's secrets arrive unredacted. Charging someone to
+ * avoid leaking their own credentials is indefensible, and it would be quoted back
+ * at us. Do not move /rules behind the gate.
+ *
+ * PAID ('alerts') — being WATCHED over time, none of which protects anything by
+ * itself:
+ *   /trend       history of findings over time
+ *   /dismiss /undismiss   dismissal tracking (noise management)
+ *   /rescan      server-side re-scan (costs our compute)
+ *   /tasks       SECURITY_TASKS.md export and tracking
+ *
+ * Gated here rather than at the mount because a mount-level gate hid the findings
+ * from the free tier entirely — telling someone they have leaked secrets and then
+ * charging to see which is a hostage, not a business model.
+ */
+const MONITORING_PATHS = ['/trend', '/dismiss', '/undismiss', '/rescan', '/tasks'];
+
+router.use((req, res, next) => {
+  const monitoring = MONITORING_PATHS.some(
+    (p) => req.path === p || req.path.startsWith(`${p}/`),
+  );
+  if (!monitoring) return next();
+  return requireFeature('alerts')(req, res, next);
+});
+
 
 /* ── SECURITY_TASKS.md generation ─────────────────────────────────
  *

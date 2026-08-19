@@ -36,6 +36,7 @@ import vaultRouter from './routes/vault.js';
 import accountRouter from './routes/account.js';
 import { requireEntitlement, requireFeature, billingEnabled } from './util/billing.js';
 import projectsRouter from './routes/projects.js';
+import ledgersRouter from './routes/ledgers.js';
 import kgRouter from './routes/kg.js';
 import kvRouter from './routes/kv.js';
 import diaryRouter from './routes/diary.js';
@@ -44,6 +45,7 @@ import filesRouter from './routes/files.js';
 import subagentsRouter from './routes/subagents.js';
 import codeRouter from './routes/code.js';
 import recommendationsRouter from './routes/recommendations.js';
+import auditRouter from './routes/audit.js';
 import syncRouter from './routes/sync.js';
 import teamsRouter from './routes/teams.js';
 import teamArtifactsRouter from './routes/team-artifacts.js';
@@ -392,6 +394,9 @@ app.use('/api', attachTenantToContext);
 app.use('/api/teams/security-config', securityConfigRouter);
 app.use('/api/sync-config', syncConfigRouter);
 app.use('/api/client-events', clientEventsRouter);
+// Per-device idempotency ledgers (team installs, vault uploads). Mounted after
+// tenantAuth so req.tenant and the device identity are both resolved.
+app.use('/api/ledgers', ledgersRouter);
 
 // Vault key parameters (salt + keyId fingerprint). Ungated like /api/account:
 // a device must be able to fetch these to set the vault up at all, and they are
@@ -418,6 +423,18 @@ const paid = requireEntitlement;
 // requireFeature asks the one resolver instead (plan on cloud, licence on
 // self-host), so the two editions cannot drift apart again.
 const team = requireFeature('team');
+// The rest of the paid packaging. Each is the feature name from
+// util/entitlements.ts, resolved per tenant from the plan on cloud and the licence
+// on self-host — so what a tier includes is edited in ONE map, not at these mounts.
+//
+// Always-free surfaces carry no gate at all and must not gain one: memory (search,
+// conversations, memory, projects, edits) and the secret-scan VERDICT. Monitoring
+// the scan — rules, dismissals, alerting, history — is 'alerts', which is why
+// /api/secrets is gated while the finding counts a user sees are not.
+const findings = requireFeature('findings');
+const alerts = requireFeature('alerts');
+const toolkit = requireFeature('toolkit');
+const insights = requireFeature('insights');
 
 // Routes. Per-tenant class limiters (token bucket + concurrency) sit after the
 // per-IP apiLimiter and tenantAuth: 'read-heavy' for FTS/vector/analytics and
@@ -430,7 +447,7 @@ app.use('/api/status', rl('read-light'), statusRouter);
 // Mounted after tenantAuth like the other tenant-scoped reads.
 app.use('/api/health', rl('read-light'), fleetHealthRouter);
 app.use('/api/memory', paid, rl('read-heavy'), memoryRouter);
-app.use('/api/analytics', paid, rl('read-heavy'), analyticsRouter);
+app.use('/api/analytics', paid, insights, rl('read-heavy'), analyticsRouter);
 // Team activity view (per-member × per-project). RLS-scoped to the requesting
 // member's visibility, so it only ever shows own + team-shared work.
 app.use('/api/activity', paid, team, rl('read-heavy'), activityRouter);
@@ -439,6 +456,13 @@ app.use('/api/activity', paid, team, rl('read-heavy'), activityRouter);
 app.use('/api/tasks', paid, team, rl('write-light'), tasksRouter);
 // Per-project sharing, data-plane (device-token capable, for the CLI).
 app.use('/api/shares', paid, team, rl('write-light'), sharesRouter);
+// NOT alerts-gated at the mount. The scan VERDICT is free — counts, the finding
+// list, which sessions carry them — because that is the one surface that pays out
+// before any memory has accumulated, and it runs locally at no cost to us. The
+// MONITORING half is gated inside the router: rules, dismissals, re-scans, trend
+// history and task export. Gating the whole mount would have meant the free tier
+// could not see its own findings in the dashboard at all, which is stricter than
+// what was agreed.
 app.use('/api/secrets', paid, rl('read-light'), secretsRouter);
 
 // Store-backed in both modes: the edits timeline reads synced compute_cache
@@ -464,10 +488,12 @@ app.use('/api/subagents', paid, rl('read-light'), subagentsRouter);
 // CLI `code index` POSTs collector output to /index; the dashboard reads it
 // back. read-light for the GETs; the POST/PATCH are light DB writes. The
 // collector runs on the user's machine, never here.
-app.use('/api/code', paid, rl('read-light'), codeRouter);
+app.use('/api/code', paid, findings, rl('read-light'), codeRouter);
 // Account-level recommendations (security + behaviour) — the actionable
 // approach applied to chat-recall's own data.
-app.use('/api/recommendations', paid, rl('read-light'), recommendationsRouter);
+// The recommendation engine reasons over the code findings, so it belongs with
+// them rather than behind a gate of its own.
+app.use('/api/recommendations', paid, findings, rl('read-light'), recommendationsRouter);
 
 // Toolkit READS (status/browse/item/matrix) come from the synced store, so the
 // router is available in BOTH modes — the Toolkit tab must render on the hosted
@@ -475,7 +501,11 @@ app.use('/api/recommendations', paid, rl('read-light'), recommendationsRouter);
 // The fs-mutating routes inside (promote/sync-all/delete) self-guard with
 // requireLocalMode; cross-tool copy on a remote server goes via the local CLI
 // agent draining /api/sync-intents.
-app.use('/api/toolkit', paid, rl('read-light'), toolkitRouter);
+app.use('/api/toolkit', paid, toolkit, rl('read-light'), toolkitRouter);
+// Audit log export. The router gates itself on 'audit' for every route, since the
+// whole surface IS the licensed feature — 'audit' was on the pricing page with
+// nothing behind it until this existed.
+app.use('/api/audit', paid, rl('read-light'), auditRouter);
 
 // Settings editing genuinely mutates the local fs, so it stays local-only.
 // (Projects config PUT is guarded inside the projects router.)
