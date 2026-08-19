@@ -28,14 +28,32 @@ const FILES = [
   './migrations/0005_kg_junk_cleanup.sql',
   './migrations/0006_orphan_session_metadata.sql',
   './migrations/0007_project_id_org_rename.sql',
+  // 0007 above was a silent no-op (RLS — see 0008's header). 0008 redoes both its
+  // work and 0006's, with RLS handled. 0007 is kept in the ledger rather than
+  // deleted so the sequence stays append-only and the history stays honest.
+  './migrations/0008_rls_aware_data_fixes.sql',
 ];
 
+// REPORT ROWS AFFECTED. A data migration against a tenant-scoped table is
+// silently a NO-OP unless it handles RLS: `tenant_isolation` compares tenant to
+// current_setting('app.tenant', true), a migration sets no tenant context, and
+// `tenant = NULL` is NULL — so every row fails the check, zero rows match, and
+// nothing errors. 0006 and 0007 were both lost this way and marked applied,
+// which the ledger then makes permanent. Printing the counts is what turns that
+// from invisible into obvious in the initContainer log. See 0008's header.
 for (const f of FILES) {
   const done = await c.query('SELECT 1 FROM schema_migrations WHERE name = $1', [f]);
   if (done.rowCount > 0) { console.log(`skipped ${f} (already applied)`); continue; }
-  await c.query(readFileSync(new URL(f, import.meta.url), 'utf8'));
+  const res = await c.query(readFileSync(new URL(f, import.meta.url), 'utf8'));
+  // A multi-statement query returns one Result per statement.
+  const results = Array.isArray(res) ? res : [res];
+  const touched = results.reduce((n, r) => n + (r?.rowCount ?? 0), 0);
+  const changed = results
+    .filter((r) => r?.rowCount)
+    .map((r) => `${r.command ?? '?'} ${r.rowCount}`)
+    .join(', ');
   await c.query('INSERT INTO schema_migrations (name) VALUES ($1)', [f]);
-  console.log(`applied ${f}`);
+  console.log(`applied ${f} — ${touched} row(s) affected${changed ? ` [${changed}]` : ''}`);
 }
 
 // NOTE: the server connects as the table-owning role (chat_recall in the
