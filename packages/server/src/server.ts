@@ -35,6 +35,7 @@ import clientEventsRouter from './routes/client-events.js';
 import vaultRouter from './routes/vault.js';
 import accountRouter from './routes/account.js';
 import { requireEntitlement, requireFeature, billingEnabled } from './util/billing.js';
+import { licenceFeatures, ssoAllowed } from './util/entitlements.js';
 import projectsRouter from './routes/projects.js';
 import ledgersRouter from './routes/ledgers.js';
 import kgRouter from './routes/kg.js';
@@ -337,6 +338,25 @@ app.post(
     res.status(204).end();
   },
 );
+
+// SSO is a LICENSED feature, and this is the only place it can be enforced.
+//
+// It was in the plan map and on the pricing page while nothing checked it: an
+// unlicensed self-hoster could point AUTH_PROVIDER at their own Keycloak realm
+// and get the feature for free. Every other paid feature has a route to guard;
+// this one is a boot-time configuration choice, so the gate has to be here.
+//
+// Self-host only. billingEnabled() means a Stripe key is configured, i.e. the
+// hosted service, where the operator's own choice of identity provider is not a
+// customer entitlement. The free tier keeps better-auth and 'none' — nobody is
+// locked out of their own server, they just cannot bring an external IdP.
+if (!ssoAllowed(authProviderName(), { hosted: billingEnabled(), licensed: licenceFeatures().has('sso') })) {
+  log.error(
+    'AUTH_PROVIDER=keycloak requires an SSO licence. Set CHAT_RECALL_LICENSE or '
+    + 'CHAT_RECALL_LICENSE_SERIAL, or use AUTH_PROVIDER=better-auth (included, no licence).',
+  );
+  process.exit(1);
+}
 
 // Embedded auth (AUTH_PROVIDER=better-auth): better-auth owns everything
 // under /api/auth/* — sign-in/up/out, get-session, and the RFC 8628 device
