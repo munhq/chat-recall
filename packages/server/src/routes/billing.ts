@@ -33,7 +33,7 @@ import express from 'express';
 import type Stripe from 'stripe';
 import { createControlPlane, type EntitlementStatus } from '../imports.js';
 import { requireUser } from '../middleware/auth.js';
-import { billingEnabled } from '../util/billing.js';
+import { billingEnabled, isEntitled } from '../util/billing.js';
 import { ensureTrial, isNoCardTrial, trialDaysLeft, trialLengthDays } from '../util/trial.js';
 import { planCatalogue, resolveLine, isPlanError, trialDays } from '../util/billing-plans.js';
 
@@ -437,6 +437,12 @@ router.get('/', async (req, res) => {
       plan: ent?.plan ?? null,
       currentPeriodEnd: ent?.currentPeriodEnd ?? null,
       hasSubscription: !!ent?.stripeCustomerId,
+      // AUTHORITATIVE. The client must not re-derive "may I use this?" from
+      // status and dates: that is the same decision the gate makes, and a second
+      // copy of it drifts. A trial whose period has passed still reads
+      // status='trialing', so a client deriving it would say "ends today" to
+      // someone already read-only.
+      entitled: await isEntitled(tenant),
       // The trial surface the client renders its banner and gate from.
       onTrial,
       trialDaysLeft: onTrial ? trialDaysLeft(ent) : null,

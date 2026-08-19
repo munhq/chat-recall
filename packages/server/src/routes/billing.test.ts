@@ -310,6 +310,34 @@ describe('GET /api/billing/plan (public)', () => {
   });
 });
 
+describe('GET /api/billing reports entitlement authoritatively', () => {
+  test('an EXPIRED trial reports entitled:false while status is still trialing', async () => {
+    // The bug this guards: an expired trial still reads status='trialing', so a
+    // client deriving "may I use this?" from the status told a read-only user
+    // their trial "ends today". The server must state the answer instead.
+    setEnv('STRIPE_SECRET_KEY', 'sk_test_x');
+    const cp = await createControlPlane();
+    try {
+      await cp.setEntitlement('expired-trial-report', {
+        status: 'trialing', plan: null, currentPeriodEnd: Date.now() - 1000,
+      });
+    } finally { await cp.close(); }
+    // isEntitled is the same call the route makes and the gate makes.
+    expect(await isEntitled('expired-trial-report')).toBe(false);
+  });
+
+  test('a live trial reports entitled:true', async () => {
+    setEnv('STRIPE_SECRET_KEY', 'sk_test_x');
+    const cp = await createControlPlane();
+    try {
+      await cp.setEntitlement('live-trial-report', {
+        status: 'trialing', plan: null, currentPeriodEnd: Date.now() + 5 * 86_400_000,
+      });
+    } finally { await cp.close(); }
+    expect(await isEntitled('live-trial-report')).toBe(true);
+  });
+});
+
 describe('POST /api/billing/checkout guards', () => {
   test('501 when billing is not enabled', async () => {
     setEnv('STRIPE_SECRET_KEY', undefined);
