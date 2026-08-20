@@ -156,7 +156,7 @@ export function licenceSerialMail(to: string, serial: string, interval: 'month' 
     `Billed ${interval === 'year' ? 'annually' : 'monthly'}. Cancel any time from the`,
     'billing portal; your data is yours and stays on your hardware either way.',
     '',
-    'Questions: hello@munhq.com',
+    'Questions: contact@chatrecall.dev',
   ].join('\n');
   return { to, subject: 'Your chat-recall self-host licence', text };
 }

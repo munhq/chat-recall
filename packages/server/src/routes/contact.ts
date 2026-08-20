@@ -22,7 +22,7 @@ const log = createLogger('contact');
 const router = express.Router();
 
 /** Where enquiries go. Overridable so a self-hoster can point it at themselves. */
-const TO = process.env.CONTACT_TO || 'hello@munhq.com';
+const TO = process.env.CONTACT_TO || 'contact@chatrecall.dev';
 
 const clip = (v: unknown, n: number): string => (typeof v === 'string' ? v.trim().slice(0, n) : '');
 
