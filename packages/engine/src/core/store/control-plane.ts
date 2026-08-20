@@ -66,6 +66,16 @@ export interface Entitlement {
   currentPeriodEnd: number | null;
   stripeCustomerId: string | null;
   stripeSubscriptionId: string | null;
+  /**
+   * Seats the subscription is billed for. Null when nothing has recorded one —
+   * a trial, or a subscription predating this column.
+   *
+   * It exists because checkout was the ONLY place seats were ever checked: the
+   * count was validated against real members when buying and then forgotten, so
+   * a team could buy two seats and invite twenty. Persisting the quantity is
+   * what lets the invite path enforce it.
+   */
+  seats: number | null;
 }
 /**
  * A self-host licence. The SERIAL is what the customer holds; it carries no grant,
@@ -305,6 +315,7 @@ class SqliteControlPlane implements ControlPlane {
         current_period_end     INTEGER,
         stripe_customer_id     TEXT,
         stripe_subscription_id TEXT,
+        seats                  INTEGER,
         updated_at             INTEGER
       );
       CREATE TABLE IF NOT EXISTS cp_tenant_settings (
@@ -482,7 +493,7 @@ class SqliteControlPlane implements ControlPlane {
 
   async getEntitlement(tenant: string): Promise<Entitlement | null> {
     const r = this.db.prepare(
-      `SELECT tenant, plan, status, current_period_end, stripe_customer_id, stripe_subscription_id
+      `SELECT tenant, plan, status, current_period_end, stripe_customer_id, stripe_subscription_id, seats
        FROM cp_entitlements WHERE tenant = ?`,
     ).get(tenant) as Record<string, unknown> | undefined;
     return r ? rowToEntitlement(r) : null;
@@ -496,15 +507,15 @@ class SqliteControlPlane implements ControlPlane {
     const next = mergeEntitlement(tenant, prev, e);
     this.db.prepare(
       `INSERT INTO cp_entitlements
-         (tenant, plan, status, current_period_end, stripe_customer_id, stripe_subscription_id, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+         (tenant, plan, status, current_period_end, stripe_customer_id, stripe_subscription_id, seats, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (tenant) DO UPDATE SET
          plan=excluded.plan, status=excluded.status, current_period_end=excluded.current_period_end,
          stripe_customer_id=excluded.stripe_customer_id, stripe_subscription_id=excluded.stripe_subscription_id,
-         updated_at=excluded.updated_at`,
+         seats=excluded.seats, updated_at=excluded.updated_at`,
     ).run(
       next.tenant, next.plan, next.status, next.currentPeriodEnd,
-      next.stripeCustomerId, next.stripeSubscriptionId, Date.now(),
+      next.stripeCustomerId, next.stripeSubscriptionId, next.seats, Date.now(),
     );
   }
 
@@ -655,6 +666,7 @@ function rowToEntitlement(r: Record<string, unknown>): Entitlement {
     currentPeriodEnd: r.current_period_end == null ? null : Number(r.current_period_end),
     stripeCustomerId: (r.stripe_customer_id as string | null) ?? null,
     stripeSubscriptionId: (r.stripe_subscription_id as string | null) ?? null,
+    seats: r.seats == null ? null : Number(r.seats),
   };
 }
 
@@ -667,13 +679,14 @@ function mergeEntitlement(
 ): Entitlement {
   const base: Entitlement = prev ?? {
     tenant, plan: null, status: 'none', currentPeriodEnd: null,
-    stripeCustomerId: null, stripeSubscriptionId: null,
+    stripeCustomerId: null, stripeSubscriptionId: null, seats: null,
   };
   return {
     tenant,
     plan: patch.plan !== undefined ? patch.plan : base.plan,
     status: patch.status !== undefined ? coerceStatus(patch.status) : base.status,
     currentPeriodEnd: patch.currentPeriodEnd !== undefined ? patch.currentPeriodEnd : base.currentPeriodEnd,
+    seats: patch.seats !== undefined ? patch.seats : base.seats,
     stripeCustomerId: patch.stripeCustomerId !== undefined ? patch.stripeCustomerId : base.stripeCustomerId,
     stripeSubscriptionId: patch.stripeSubscriptionId !== undefined ? patch.stripeSubscriptionId : base.stripeSubscriptionId,
   };
@@ -865,7 +878,7 @@ class PgControlPlane implements ControlPlane {
 
   async getEntitlement(tenant: string): Promise<Entitlement | null> {
     const r = (await this.q(
-      `SELECT tenant, plan, status, current_period_end, stripe_customer_id, stripe_subscription_id
+      `SELECT tenant, plan, status, current_period_end, stripe_customer_id, stripe_subscription_id, seats
        FROM entitlements WHERE tenant = $1`,
       [tenant],
     ))[0] as Record<string, unknown> | undefined;
@@ -877,15 +890,15 @@ class PgControlPlane implements ControlPlane {
     const next = mergeEntitlement(tenant, prev, e);
     await this.q(
       `INSERT INTO entitlements
-         (tenant, plan, status, current_period_end, stripe_customer_id, stripe_subscription_id, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+         (tenant, plan, status, current_period_end, stripe_customer_id, stripe_subscription_id, seats, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT (tenant) DO UPDATE SET
          plan=excluded.plan, status=excluded.status, current_period_end=excluded.current_period_end,
          stripe_customer_id=excluded.stripe_customer_id, stripe_subscription_id=excluded.stripe_subscription_id,
-         updated_at=excluded.updated_at`,
+         seats=excluded.seats, updated_at=excluded.updated_at`,
       [
         next.tenant, next.plan, next.status, next.currentPeriodEnd,
-        next.stripeCustomerId, next.stripeSubscriptionId, Date.now(),
+        next.stripeCustomerId, next.stripeSubscriptionId, next.seats, Date.now(),
       ],
     );
   }
