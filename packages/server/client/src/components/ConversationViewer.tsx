@@ -42,7 +42,13 @@ interface ConversationViewerProps {
   /** True total on the server (may exceed messages.length when paginated). */
   totalMessages?: number;
   hasMoreMessages?: boolean;
+  /** Load ONE more page. */
   onLoadMoreMessages?: () => void;
+  /** Page to the END of the session. Whole-session views need this: with a
+   *  single page loaded, the last message on screen is not the last message
+   *  of the session, and every count derived from it covers the window only. */
+  onLoadAllMessages?: () => void;
+  loadingMoreMessages?: boolean;
   /** Incremented by the parent on EVERY selection — even re-selecting the
    *  same session. Forces a refetch so a long-lived tab can never serve
    *  hours-old in-memory messages for a session whose data has changed. */
@@ -164,6 +170,8 @@ export default function ConversationViewer({
   totalMessages,
   hasMoreMessages,
   onLoadMoreMessages,
+  onLoadAllMessages,
+  loadingMoreMessages,
   messages,
   subagents = [],
   loading,
@@ -439,6 +447,18 @@ export default function ConversationViewer({
     if (filter === 'edits') return messages.filter(m => isEdit(m));
     return messages;
   }, [messages, filter]);
+
+  // A paginated load holds a WINDOW of the session, not the session. Every
+  // count on screen, and the last message rendered, describe that window —
+  // so say so. Presenting `Showing 25 of 1148` for a 500-message window reads
+  // as "this session has 25 user messages" when the real answer is unknown
+  // until the rest is loaded.
+  //
+  // `messagesLoaded` counts what survived the client-side command-noise filter,
+  // so `remainingMessages` is a close estimate rather than an exact figure.
+  const sessionTotal = Math.max(totalMessages ?? 0, messages.length);
+  const isWindowed = !!hasMoreMessages && messages.length < sessionTotal;
+  const remainingMessages = Math.max(sessionTotal - messages.length, 0);
 
   // ── Early return ──
 
@@ -883,6 +903,11 @@ export default function ConversationViewer({
             meta={sessionMeta}
             outcome={outcomeData}
             messages={messages}
+            windowed={isWindowed}
+            loadedCount={messages.length}
+            sessionTotal={sessionTotal}
+            onLoadAll={onLoadAllMessages ?? onLoadMoreMessages}
+            loadingMore={!!loadingMoreMessages}
             loading={metaLoading}
             onOpenTab={handleViewChange}
             onOpenTools={() => { setFilter('tools'); handleViewChange('full'); }}
@@ -913,15 +938,24 @@ export default function ConversationViewer({
                   Filter conversation
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>
-                  Showing {filteredMessages.length} of {Math.max(totalMessages ?? 0, messages.length)} messages
-                  {hasMoreMessages && onLoadMoreMessages && (
+                  {isWindowed ? (
+                    <>
+                      Showing {filteredMessages.length} of {messages.length} loaded
+                      <span style={{ color: 'var(--cr-warn-500)' }}> · {sessionTotal} in session</span>
+                    </>
+                  ) : (
+                    <>Showing {filteredMessages.length} of {sessionTotal} messages</>
+                  )}
+                  {isWindowed && (onLoadAllMessages || onLoadMoreMessages) && (
                     <button
-                      onClick={onLoadMoreMessages}
+                      onClick={onLoadAllMessages ?? onLoadMoreMessages}
+                      disabled={!!loadingMoreMessages}
                       style={{ marginLeft: 8, fontSize: 11, padding: '1px 8px', borderRadius: 4,
                                border: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-2)',
-                               color: 'var(--cr-fg-2)', cursor: 'pointer' }}
+                               color: 'var(--cr-fg-2)', cursor: loadingMoreMessages ? 'default' : 'pointer',
+                               opacity: loadingMoreMessages ? 0.6 : 1 }}
                     >
-                      load {Math.max((totalMessages ?? 0) - messages.length, 0)} more
+                      {loadingMoreMessages ? 'loading…' : `load remaining ${remainingMessages}`}
                     </button>
                   )}
                   {subagents.length > 0 && (
@@ -994,6 +1028,41 @@ export default function ConversationViewer({
                 <MessageBlock key={`${msg.line}-${idx}`} message={msg} highlight={scrollToLine != null && msg.line === scrollToLine} query={query} />
               ))}
 
+            {/* The window ends here, the session does not. Without this the
+                transcript looks finished and the last message on screen reads
+                as the last thing that happened. */}
+            {!loading && isWindowed && filteredMessages.length > 0 && (
+              <div
+                style={{
+                  marginTop: 16,
+                  padding: '14px 16px',
+                  border: '1px dashed var(--cr-warn-line)',
+                  borderRadius: 'var(--cr-radius-md)',
+                  background: 'var(--cr-ink-1)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                  flexWrap: 'wrap',
+                }}
+              >
+                <div style={{ fontSize: 12, color: 'var(--cr-fg-2)' }}>
+                  <strong style={{ color: 'var(--cr-warn-500)' }}>This is not the end of the session.</strong>{' '}
+                  {messages.length} of {sessionTotal} messages are loaded — about {remainingMessages} more follow.
+                </div>
+                {(onLoadAllMessages || onLoadMoreMessages) && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={!!loadingMoreMessages}
+                    onClick={onLoadAllMessages ?? onLoadMoreMessages}
+                  >
+                    {loadingMoreMessages ? 'Loading…' : 'Load the rest'}
+                  </Button>
+                )}
+              </div>
+            )}
+
             {!loading && subagents.length > 0 && (
               <div
                 style={{
@@ -1060,6 +1129,34 @@ export default function ConversationViewer({
 
         {viewMode === 'trace' && (
           <div style={{ padding: '4px 2px' }}>
+            {/* The trace walks the loaded messages, so a window makes it stop
+                mid-session. Name that before the user reads the last row as
+                the end of the work. */}
+            {isWindowed && (
+              <div
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
+                  marginBottom: 14, padding: '10px 14px', borderRadius: 'var(--cr-radius-md)',
+                  border: '1px dashed var(--cr-line-1)', background: 'var(--cr-ink-1)',
+                  fontSize: 12, color: 'var(--cr-fg-2)',
+                }}
+              >
+                <span>
+                  <strong style={{ color: 'var(--cr-warn-500)' }}>Partial trace.</strong>{' '}
+                  {messages.length} of {sessionTotal} messages loaded — the trace ends where the window does.
+                </span>
+                {(onLoadAllMessages || onLoadMoreMessages) && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={!!loadingMoreMessages}
+                    onClick={onLoadAllMessages ?? onLoadMoreMessages}
+                  >
+                    {loadingMoreMessages ? 'Loading…' : 'Load the rest'}
+                  </Button>
+                )}
+              </div>
+            )}
             <SessionTrace messages={messages} subagents={subagents} />
           </div>
         )}
@@ -1719,11 +1816,20 @@ function prettyToolName(raw: string): string {
  * outcome + security scan, each deep-linking to the tab with the detail.
  */
 function MetricsPanel({
-  meta, outcome, messages, loading, onOpenTab, onOpenTools, onOpenPrompt,
+  meta, outcome, messages, windowed, loadedCount, sessionTotal, onLoadAll, loadingMore,
+  loading, onOpenTab, onOpenTools, onOpenPrompt,
 }: {
   meta: SessionMetadataResponse | null;
   outcome: SessionOutcomeResponse | null;
   messages: Message[];
+  /** True when `messages` is a page of the session rather than all of it. The
+   *  tool counts and prompt jumps below are derived from `messages`, so they
+   *  describe the loaded window and must be labelled as such. */
+  windowed?: boolean;
+  loadedCount?: number;
+  sessionTotal?: number;
+  onLoadAll?: () => void;
+  loadingMore?: boolean;
   loading: boolean;
   onOpenTab: (m: ViewMode) => void;
   onOpenTools: () => void;
@@ -1808,6 +1914,32 @@ function MetricsPanel({
 
   return (
     <div data-testid="conversation-metrics" style={{ display: 'flex', flexDirection: 'column', gap: 26 }}>
+      {/* Transcript-derived numbers below (tool activity, tokens by tool, the
+          session arc jumps) count only the messages that are loaded. Say which
+          figures are partial instead of letting a window pass for a session. */}
+      {windowed && (
+        <div
+          data-testid="metrics-window-notice"
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
+            padding: '10px 14px', borderRadius: 'var(--cr-radius-md)',
+            border: '1px dashed var(--cr-line-1)', background: 'var(--cr-ink-1)',
+            fontSize: 12, color: 'var(--cr-fg-2)',
+          }}
+        >
+          <span>
+            <strong style={{ color: 'var(--cr-warn-500)' }}>Partial.</strong>{' '}
+            Tool activity and token-by-tool cover the {loadedCount ?? 0} messages loaded, not all {sessionTotal ?? 0}.
+            Cost, tokens and duration come from the server and are complete.
+          </span>
+          {onLoadAll && (
+            <Button variant="secondary" size="sm" disabled={loadingMore} onClick={onLoadAll}>
+              {loadingMore ? 'Loading…' : 'Load the rest'}
+            </Button>
+          )}
+        </div>
+      )}
+
       {/* Outcome headline — the one-line answer to "how did it end". */}
       {outcome?.status && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>

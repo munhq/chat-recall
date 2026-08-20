@@ -468,6 +468,13 @@ export interface ConversationPage {
   subagents: Subagent[];
   total: number;
   offset: number;
+  /**
+   * The server-side offset to ask for next: `offset + the rows the server
+   * returned`, NOT `messages.length`. The command-noise filter below drops rows
+   * AFTER the fetch, so a caller that pages by array length requests an offset
+   * the server has already served and the same messages arrive twice.
+   */
+  nextOffset: number;
   hasMore: boolean;
 }
 
@@ -480,9 +487,15 @@ export async function getConversation(sessionId: string): Promise<Message[]> {
 
 export async function getConversationWithSubagents(
   sessionId: string,
-): Promise<{ messages: Message[]; subagents: Subagent[]; total?: number; hasMore?: boolean }> {
+): Promise<{ messages: Message[]; subagents: Subagent[]; total?: number; hasMore?: boolean; nextOffset: number }> {
   const page = await getConversationPage(sessionId, 0, CONVERSATION_PAGE_SIZE);
-  return { messages: page.messages, subagents: page.subagents, total: page.total, hasMore: page.hasMore };
+  return {
+    messages: page.messages,
+    subagents: page.subagents,
+    total: page.total,
+    hasMore: page.hasMore,
+    nextOffset: page.nextOffset,
+  };
 }
 
 /**
@@ -518,14 +531,52 @@ export async function getConversationPage(
   const res = await fetchWithTimeout(`${API_BASE}/conversations/${sessionId}?${params}`, {}, 30000);
   if (!res.ok) throw new Error(`Failed to get conversation: ${res.statusText}`);
   const data = await res.json();
-  const messages = (data.messages ?? []).filter((m: Message) => !isCommandNoise(m));
+  const raw: Message[] = data.messages ?? [];
+  const messages = raw.filter((m: Message) => !isCommandNoise(m));
+  const servedFrom = data.offset ?? offset;
   return {
     messages,
     subagents: data.subagents ?? [],
     total: data.total ?? (messages.length),
-    offset: data.offset ?? offset,
+    offset: servedFrom,
+    // Count the RAW rows, so filtering never shifts the next request.
+    nextOffset: servedFrom + raw.length,
     hasMore: !!data.hasMore,
   };
+}
+
+/** Safety bound for a walk to the end of a session: 40 pages = 20 000 messages. */
+export const MAX_CONVERSATION_PAGES = 40;
+
+/**
+ * Page from `fromOffset` to the end of the session, handing each page to
+ * `onPage` as it lands so the caller renders progressively instead of freezing
+ * until the last page.
+ *
+ * `hasMore` in the result is true only if the page bound stopped the walk — the
+ * caller must keep its own "load more" control alive in that case.
+ */
+export async function loadRestOfConversation(
+  sessionId: string,
+  fromOffset: number,
+  onPage: (page: ConversationPage) => void,
+): Promise<{ nextOffset: number; hasMore: boolean; total: number; pagesLoaded: number }> {
+  let offset = fromOffset;
+  let hasMore = true;
+  let total = 0;
+  let pagesLoaded = 0;
+  while (hasMore && pagesLoaded < MAX_CONVERSATION_PAGES) {
+    const page = await getConversationPage(sessionId, offset);
+    onPage(page);
+    total = page.total;
+    hasMore = page.hasMore;
+    pagesLoaded++;
+    // The server returned no rows. Stop rather than request the same offset
+    // for ever — a stalled walk is a hung tab.
+    if (page.nextOffset <= offset) { hasMore = false; break; }
+    offset = page.nextOffset;
+  }
+  return { nextOffset: offset, hasMore, total, pagesLoaded };
 }
 
 
