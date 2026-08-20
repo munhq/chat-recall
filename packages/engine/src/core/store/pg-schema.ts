@@ -236,10 +236,6 @@ CREATE TABLE IF NOT EXISTS session_metadata (
 -- deliberately omits this column so a name survives every re-sync.
 ALTER TABLE session_metadata ADD COLUMN IF NOT EXISTS user_title TEXT;
 
--- Seats billed for. Added after the fact: entitlements predates it, so a live
--- database gets the column here rather than from the CREATE above, which does
--- nothing to a table that already exists.
-ALTER TABLE entitlements ADD COLUMN IF NOT EXISTS seats INTEGER;
 -- Native title assigned by the originating tool (Claude ai-title, OpenCode
 -- session.title, …), synced from the collector. Written only by setToolTitle.
 ALTER TABLE session_metadata ADD COLUMN IF NOT EXISTS tool_title TEXT;
@@ -361,6 +357,11 @@ CREATE TABLE IF NOT EXISTS entitlements (
   seats                  INTEGER,
   updated_at             BIGINT
 );
+-- Seats billed for. A live database predates the column, so it arrives here
+-- rather than from the CREATE above, which does nothing to a table that already
+-- exists. This ALTER must stay BELOW that CREATE: above it, a FRESH database has
+-- no entitlements table yet and boot dies on 42P01 before it is ever made.
+ALTER TABLE entitlements ADD COLUMN IF NOT EXISTS seats INTEGER;
 
 -- SELF-HOST LICENCES. A serial is what the customer receives; it carries no grant
 -- of its own, so issuing one needs no signing key online. The instance exchanges it
