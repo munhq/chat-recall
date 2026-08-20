@@ -38,6 +38,7 @@ import { requireEntitlement, requireFeature, billingEnabled } from './util/billi
 import { licenceFeatures, ssoAllowed } from './util/entitlements.js';
 import projectsRouter from './routes/projects.js';
 import ledgersRouter from './routes/ledgers.js';
+import contactRouter from './routes/contact.js';
 import kgRouter from './routes/kg.js';
 import kvRouter from './routes/kv.js';
 import diaryRouter from './routes/diary.js';
@@ -383,6 +384,10 @@ if (authProviderName() === 'better-auth') {
 // Self-host licence activation. PUBLIC and pre-auth by necessity: the caller is a
 // self-hosted server with no account here, and the serial is the credential. Mounted
 // beside /api/capabilities, before tenantAuth.
+// Enterprise/reseller enquiries. PUBLIC and pre-auth for the same reason as
+// /api/licence: the sender has no account here yet. Rate limited as 'sensitive'
+// because it is anonymous and it sends mail.
+app.use('/api/contact', rl('sensitive'), contactRouter);
 app.use('/api/licence', licenceRouter);
 app.get('/api/capabilities', (_req, res) => res.json({ ...capabilities(), cli: cliRelease(), authProvider: authProviderName(), oidcIssuer: process.env.OIDC_ISSUER || null, socialProviders: socialProviderNames() }));
 
