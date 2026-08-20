@@ -34,6 +34,8 @@
  * login rather than silently rendering the local no-auth app).
  */
 
+import { checkoutReturnPath } from '../utils/checkout';
+
 const CLOUD = !!(import.meta.env.VITE_CLOUD || import.meta.env.VITE_OIDC_ISSUER);
 // Both are pre-cookie storage keys. Nothing writes them any more; they are
 // cleared on sight so a token minted before the cutover cannot sit in a browser
@@ -174,12 +176,24 @@ export async function socialProviders(): Promise<string[]> {
  * be an app path, not the sign-in page, or a successful login bounces back to
  * a form that no longer applies.
  */
+/**
+ * Where the IdP round trip should land.
+ *
+ * '/app' unless the visitor arrived mid-purchase: a completed Stripe Checkout
+ * carries a session_id that exists nowhere else and is the only route back to a
+ * self-host licence serial, so signing in must not discard it. Anything else is
+ * ignored — this builds the path, it never echoes arbitrary input.
+ */
+function postSignInPath(): string {
+  return checkoutReturnPath() ?? '/app';
+}
+
 export async function signInSocial(provider: string): Promise<AuthResult> {
   const res = await fetch(authUrl('/sign-in/social'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ provider, callbackURL: '/app' }),
+    body: JSON.stringify({ provider, callbackURL: postSignInPath() }),
   });
   if (!res.ok) return { ok: false, error: await authError(res, `${provider} sign-in failed`) };
   const body = (await res.json().catch(() => null)) as { url?: string; redirect?: boolean } | null;
@@ -218,7 +232,15 @@ export function handleUnauthorized(): void {
   if (!CLOUD || leaving) return;
   leaving = true;
   clearLegacyTokens();
-  window.location.assign('/');
+  // Carry a completed Stripe Checkout through the sign-in bounce.
+  //
+  // The session_id in the purchase redirect is the ONLY way back to a self-host
+  // buyer's licence serial, and it exists nowhere else. Dropping it on a 401 —
+  // which is likely, since checkout returns before the session settles — left a
+  // paying customer with no route to the thing they bought. It is not a
+  // credential for anything but its own purchase, so preserving it grants
+  // nothing extra.
+  window.location.assign(checkoutReturnPath() ?? '/');
 }
 
 export function logout(): void {
