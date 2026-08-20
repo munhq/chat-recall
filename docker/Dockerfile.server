@@ -41,16 +41,12 @@ ARG VITE_API_BASE
 # Public key, baked into the client bundle; Vite reads it from the env.
 ARG VITE_GLITCHTIP_DSN
 ENV VITE_GLITCHTIP_DSN=$VITE_GLITCHTIP_DSN
-# Legal text is NOT in this repository. CI unpacks it from a private secret into
-# client/.legal (gitignored), which the COPY above then carries into the build
-# context. Present → /terms/ and /privacy/ are generated and linked; absent → no
-# legal pages at all, which is the correct result for a self-host build that must
-# not serve the operator's terms. REQUIRE_LEGAL=1 (set only by the cloud image)
-# turns "absent" into a build failure, so the hosted site cannot ship without them.
-ARG REQUIRE_LEGAL=""
-RUN LEGAL_DIR="$([ -d .legal ] && echo /client/.legal || true)" \
-    REQUIRE_LEGAL="$REQUIRE_LEGAL" \
-    npm run build
+# Builds the DASHBOARD only. The marketing site, the legal pages and the seller
+# identity are the operator's, not the product's: they live in a private repo
+# whose workflow layers them onto this image for chatrecall.dev. A self-host
+# build therefore serves the app and never the hosted service's prices,
+# "Buy a licence" button, or a sitemap advertising someone else's domain.
+RUN npm run build
 
 # ── Stage 2: compile the TypeScript workspaces ────────────────────────────────
 FROM node:24-bookworm-slim AS build
