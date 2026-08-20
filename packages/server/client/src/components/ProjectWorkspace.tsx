@@ -458,6 +458,8 @@ function ConversationsLens({ projectId, toolFilter, conv }: { projectId: string;
             totalMessages={conv.total}
             hasMoreMessages={conv.hasMore}
             onLoadMoreMessages={conv.loadMore}
+            onLoadAllMessages={conv.loadAll}
+            loadingMoreMessages={conv.loadingMore}
             sessionId={conv.sessionId}
             messages={conv.messages}
             subagents={conv.subagents}
