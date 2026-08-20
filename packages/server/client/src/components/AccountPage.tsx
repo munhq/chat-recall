@@ -362,8 +362,14 @@ const ACCT_CSS = `
    it also made justify-content inert, so a wrapped card sat left of a centred
    row. 4 x 210 + 3 x 12 gap = 876, so four tiers fit inside 900 and a single
    card stays card-sized. */
-.sub-box .cr-planpicker-grid { grid-template-columns: repeat(auto-fit, minmax(175px, 210px));
-  justify-content: center; }
+/* Flex, not grid. Grid tracks cannot centre a PARTIAL last row: justify-content
+   centres the track group while a lone fourth card still occupies track 1, so it
+   sat 222px left of centre under a centred row. */
+.sub-box .cr-planpicker-grid { display: flex; flex-wrap: wrap; justify-content: center; }
+.sub-box .cr-planpicker-card { flex: 0 1 210px; }
+/* Centred only on this host, whose box is centred; on the Account card the same
+   block stays flush with the grid above it. */
+.sub-box .cr-planpicker-seathint { margin-inline: auto; }
 .sub-logo { color: var(--cr-brand-500,#5b8def); font-weight:700; margin-bottom: 20px; }
 .sub-box h1 { font-size: 28px; letter-spacing:-0.02em; margin: 0 0 14px; }
 `;

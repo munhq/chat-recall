@@ -273,7 +273,7 @@ const CSS = `
 /* Inherits alignment: this renders both on the left-aligned Account card and on
    the centred paywall, and a hardcoded left value stranded it against 500px of empty
    space on the latter. */
-.cr-planpicker-seathint { margin: 14px auto 0; font-size: 11.5px; line-height: 1.5;
+.cr-planpicker-seathint { margin: 14px 0 0; font-size: 11.5px; line-height: 1.5;
   color: var(--cr-fg-3); text-align: inherit; max-width: 62ch; }
 .cr-planpicker-seatblock { display: flex; flex-direction: column; gap: 8px; }
 .cr-planpicker-stepper { display: inline-flex; align-items: stretch;
