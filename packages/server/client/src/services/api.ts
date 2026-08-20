@@ -165,10 +165,28 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
     // client cannot see the credential, so the response IS the signal.
     // handleUnauthorized() is idempotent and guards its own redirect loop.
     if (res.status === 401 && isCloud()) handleUnauthorized();
-    // 402 from any value route = subscription required. Broadcast once so the
-    // app shell can drop the user onto the Subscribe screen instead of each
-    // caller surfacing a dead error.
-    if (res.status === 402) window.dispatchEvent(new CustomEvent('cr:payment-required'));
+    // A 402 means one of two very different things, and treating them alike
+    // locked out people who had paid or were mid-trial.
+    //
+    //   featureRequired()      → this ONE capability needs a higher plan. Carries
+    //                            `feature`. A trialing tenant touching a Team-only
+    //                            route gets this, and it says nothing about their
+    //                            entitlement.
+    //   'subscription required'→ the tenant has no live entitlement at all.
+    //
+    // Only the second is grounds for the full-screen gate. Broadcasting on both
+    // meant a single refused endpoint replaced the whole app with a paywall
+    // headed "Your trial has ended" — for someone whose trial ran for another
+    // fortnight. On a body we cannot parse we stay silent: the caller still sees
+    // its own error, and the server keeps enforcing payment on every request, so
+    // the cost of not gating is nothing while the cost of gating wrongly is a
+    // locked-out customer.
+    if (res.status === 402) {
+      void res.clone().json().then((body) => {
+        const featureLevel = body && typeof body === 'object' && 'feature' in body;
+        if (!featureLevel) window.dispatchEvent(new CustomEvent('cr:payment-required'));
+      }).catch(() => { /* unparseable 402 — see above */ });
+    }
     return res;
   } finally {
     clearTimeout(timer);

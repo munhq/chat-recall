@@ -4,7 +4,7 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
-## [0.5.1] — 2026-08-20
+## [0.5.2] — 2026-08-20
 
 ### Changed
 

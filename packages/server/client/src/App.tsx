@@ -256,7 +256,20 @@ function AppInner() {
       .catch((err) => setGate(/no team/i.test(String(err?.message || err)) ? 'subscribe' : 'ok'));
   }, []);
   useEffect(() => {
-    const onPay = () => setGate('subscribe');
+    // Verify before locking the shell, rather than trusting the refusal that
+    // raised the event. api.ts already filters feature-level 402s out, but this
+    // is the decision that replaces the entire app with a paywall, so it asks
+    // the authoritative endpoint first. A tenant who is trialing or active keeps
+    // the app; anything else, or an unreachable check, falls through to the gate
+    // exactly as before.
+    const onPay = () => {
+      getEntitlement()
+        .then((e) => {
+          if (e.status === 'active' || e.status === 'trialing') return;
+          setGate('subscribe');
+        })
+        .catch(() => setGate('subscribe'));
+    };
     window.addEventListener('cr:payment-required', onPay);
     return () => window.removeEventListener('cr:payment-required', onPay);
   }, []);

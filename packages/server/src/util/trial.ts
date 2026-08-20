@@ -86,7 +86,24 @@ export async function ensureTrial(
   const existing = await cp.getEntitlement(tenant);
   // Any row at all means this tenant has already had its trial. Do NOT re-grant
   // on a lapsed or cancelled row, or the trial would renew itself forever.
-  if (existing) return existing;
+  //
+  // One exception, and only one: a LIVE trial whose plan is null. Trials were
+  // first written with plan=null, which resolves to the free set — so those
+  // tenants spent their trial on memory+scan, and the first call needing sync
+  // or findings answered 402. Writing plan='trial' below fixed new rows and did
+  // nothing for existing ones, because of the early return directly above.
+  //
+  // This repairs the plan and NOTHING else: no new end date, no status change,
+  // so it cannot extend or re-grant a trial. It is scoped to status==='trialing'
+  // with a null plan, which a lapsed or cancelled row can never match.
+  if (existing) {
+    const live = existing.currentPeriodEnd == null || existing.currentPeriodEnd > now;
+    if (existing.status === 'trialing' && existing.plan == null && live) {
+      await cp.setEntitlement(tenant, { plan: 'trial' });
+      return cp.getEntitlement(tenant);
+    }
+    return existing;
+  }
 
   await cp.setEntitlement(tenant, {
     status: 'trialing',
