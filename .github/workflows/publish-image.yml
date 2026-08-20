@@ -37,7 +37,11 @@ jobs:
       contents: read
       packages: write        # publishes this repository's OWN package, which
                              # auto-links on first push — no manual grant needed.
-      id-token: write        # provenance attestation, same reason npm gets one
+      id-token: write        # mint the OIDC token the attestation is signed with
+      attestations: write    # and write the attestation itself. Without THIS one
+                             # the image still publishes and only the provenance
+                             # step fails, which reads as a red build over an
+                             # artifact that shipped.
     steps:
       - uses: actions/checkout@v4
 
