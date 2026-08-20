@@ -97,7 +97,9 @@ test.describe('Subagent panel', () => {
     // sibling spans; innerText puts a newline between them. So we assert each
     // separately rather than requiring them on the same logical line.
     const body = await page.evaluate(() => document.body.innerText);
-    expect(body).toMatch(/Showing \d+ of \d+ messages/);
+    // Two legitimate forms: the whole session is loaded ("of N messages"), or
+    // only a page is ("of N loaded · M in session").
+    expect(body).toMatch(/Showing \d+ of \d+ (messages|loaded)/);
     expect(body).toMatch(/\+\d+ in \d+ subagent/);
     expect(body).toMatch(/SUBAGENT CONVERSATIONS \(\d+\)/);
   });

@@ -326,6 +326,9 @@ function AppInner() {
   const [messages, setMessages] = useState<any[]>([]);
   const [conversationTotal, setConversationTotal] = useState(0);
   const [conversationHasMore, setConversationHasMore] = useState(false);
+  /** Server rows consumed so far. Never `messages.length` — see ConversationPage.nextOffset. */
+  const [conversationOffset, setConversationOffset] = useState(0);
+  const [conversationLoadingMore, setConversationLoadingMore] = useState(false);
   const [subagents, setSubagents] = useState<Subagent[]>([]);
   const [conversationLoading, setConversationLoading] = useState(false);
 
@@ -569,6 +572,8 @@ function AppInner() {
       setSelectedResult(null);
       setMessages([]);
       setSubagents([]);
+      setConversationOffset(0);
+      setConversationHasMore(false);
       setSelectedMemoryItem(null);
       getMemoryItem(mem.sourceType, mem.itemId)
         .then(setSelectedMemoryItem)
@@ -590,6 +595,8 @@ function AppInner() {
     } catch { /* URL state is best-effort */ }
     setMessages([]);
     setSubagents([]);
+    setConversationOffset(0);
+    setConversationHasMore(false);
     // Find session info
     const info = recentSessions.find((s) => s.sessionId === sessionId) || null;
     setSelectedSessionInfo(info);
@@ -623,6 +630,8 @@ function AppInner() {
     setSelectedResult(null);
     setMessages([]);
     setSubagents([]);
+    setConversationOffset(0);
+    setConversationHasMore(false);
     setSelectedMemoryItem(null);
     getMemoryItem(sourceType, id)
       .then(setSelectedMemoryItem)
@@ -692,27 +701,53 @@ function AppInner() {
 
 
   const handleLoadMoreMessages = useCallback(async () => {
-    if (!selectedSessionId || !conversationHasMore) return;
+    if (!selectedSessionId || !conversationHasMore || conversationLoadingMore) return;
+    setConversationLoadingMore(true);
     try {
       const { getConversationPage } = await import('./services/api');
-      const page = await getConversationPage(selectedSessionId, messages.length);
+      const page = await getConversationPage(selectedSessionId, conversationOffset);
       setMessages((prev) => [...prev, ...page.messages]);
       setConversationTotal(page.total);
       setConversationHasMore(page.hasMore);
+      setConversationOffset(page.nextOffset);
     } catch (err) {
       console.error('load more messages failed:', err);
+    } finally {
+      setConversationLoadingMore(false);
     }
-  }, [selectedSessionId, conversationHasMore, messages.length]);
+  }, [selectedSessionId, conversationHasMore, conversationLoadingMore, conversationOffset]);
+
+  /** Walk to the END of the session, appending each page as it lands. This is
+   *  what every whole-session view needs: with one page loaded, the transcript
+   *  stops mid-session and the last message shown is not the last message. */
+  const handleLoadAllMessages = useCallback(async () => {
+    if (!selectedSessionId || !conversationHasMore || conversationLoadingMore) return;
+    setConversationLoadingMore(true);
+    try {
+      const { loadRestOfConversation } = await import('./services/api');
+      const r = await loadRestOfConversation(selectedSessionId, conversationOffset, (page) => {
+        setMessages((prev) => [...prev, ...page.messages]);
+        setConversationTotal(page.total);
+      });
+      setConversationHasMore(r.hasMore);
+      setConversationOffset(r.nextOffset);
+    } catch (err) {
+      console.error('load all messages failed:', err);
+    } finally {
+      setConversationLoadingMore(false);
+    }
+  }, [selectedSessionId, conversationHasMore, conversationLoadingMore, conversationOffset]);
 
   const handleLoadFull = useCallback(async () => {
     if (!selectedSessionId) return;
     setConversationLoading(true);
     try {
-      const { messages: msgs, subagents: subs, total, hasMore } = await getConversationWithSubagents(selectedSessionId);
+      const { messages: msgs, subagents: subs, total, hasMore, nextOffset } = await getConversationWithSubagents(selectedSessionId);
       setMessages(msgs);
       setSubagents(subs);
       setConversationTotal(total ?? msgs.length);
       setConversationHasMore(!!hasMore);
+      setConversationOffset(nextOffset);
     } catch (err) {
       console.error('Failed to load conversation:', err);
     } finally {
@@ -727,6 +762,8 @@ function AppInner() {
     setSelectedSessionInfo(null);
     setMessages([]);
     setSubagents([]);
+    setConversationOffset(0);
+    setConversationHasMore(false);
   }, []);
 
   // Tracks the *intent* of how the user reached the conversation
@@ -972,6 +1009,8 @@ function AppInner() {
                   totalMessages={conversationTotal}
                   hasMoreMessages={conversationHasMore}
                   onLoadMoreMessages={handleLoadMoreMessages}
+                  onLoadAllMessages={handleLoadAllMessages}
+                  loadingMoreMessages={conversationLoadingMore}
                   sessionId={selectedSessionId}
                   messages={messages}
                   subagents={subagents}
