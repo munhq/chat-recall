@@ -10,7 +10,8 @@
  */
 import { describe, test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { planFeatures, FREE_FEATURES, SELFHOST_FREE_FEATURES, type Feature } from './entitlements.js';
 
 const GENERATOR = resolve(
@@ -84,4 +85,39 @@ describe('pricing page ↔ entitlement resolver parity', () => {
       expect(bullets.length, `${plan} bullet count`).toBe(5);
     }
   });
+});
+
+/**
+ * The advertised TOOL COUNT, which has now drifted twice.
+ *
+ * The marketing pages, llms.txt and the README each state a number, and the
+ * registry that decides it lives in packages/cli/src/mcp.ts. llms.txt is the
+ * worst place for it to be wrong: it exists specifically so AI crawlers quote it
+ * verbatim, so a stale number is repeated as fact by the assistants this product
+ * is discovered through.
+ */
+describe('advertised MCP tool count ↔ the registry', () => {
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+  const registered = new Set(
+    [...readFileSync(resolve(repoRoot, 'packages/cli/src/mcp.ts'), 'utf-8')
+      .matchAll(/name: '(recall_[a-z_]+)'/g)].map((m) => m[1]),
+  ).size;
+
+  const claims = (file: string): number[] =>
+    [...readFileSync(resolve(repoRoot, file), 'utf-8').matchAll(/(\d+)\s+(?:MCP\s+)?tools\b/g)]
+      .map((m) => Number(m[1]))
+      // '4 tools' in the README is the codeindex companion set, not ours.
+      .filter((n) => n > 10);
+
+  test('the registry is non-trivial (guards a broken regex)', () => {
+    expect(registered).toBeGreaterThan(40);
+  });
+
+  for (const f of ['packages/server/client/scripts/build-marketing.mjs', 'README.md']) {
+    test(`${f} states the real count everywhere it states one`, () => {
+      const found = claims(f);
+      expect(found.length).toBeGreaterThan(0);
+      for (const n of found) expect(n).toBe(registered);
+    });
+  }
 });
