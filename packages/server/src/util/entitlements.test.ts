@@ -114,14 +114,39 @@ describe('cloud: plan → features', () => {
 describe('self-host: licence → features', () => {
   beforeEach(selfhost);
 
-  test('unlicensed grants ONLY the free base', () => {
-    expect([...licenceFeatures()].sort()).toEqual(['memory', 'scan']);
+  test('unlicensed self-host is FREE and FULL — the whole Solo set', () => {
+    // Deliberately more than FREE_FEATURES. One person on their own hardware
+    // pays nothing: charging them taxes the people who drive adoption while
+    // earning almost nothing. See SELFHOST_FREE_FEATURES.
+    expect([...licenceFeatures()].sort())
+      .toEqual(['alerts', 'findings', 'insights', 'memory', 'scan', 'sync']);
+  });
+
+  test('but collaboration is NOT free — that is where the money is', () => {
+    for (const f of ['team', 'toolkit', 'sso', 'audit'] as const) {
+      expect(licenceFeatures().has(f)).toBe(false);
+    }
     expect(allows('team-monthly', 'team')).toBe(false);   // plan is ignored off-cloud
+  });
+
+  test('the boundary is PEOPLE, not machines', () => {
+    // No device cap exists anywhere by design — sync from as many machines as
+    // you like. A SECOND identity is what means "a company", and that is capped.
+    expect(identityLimit()).toBe(1);
   });
 
   test('the cloud plan is irrelevant on self-host', () => {
     // A self-hoster cannot grant themselves features by naming a plan.
     expect(allows('enterprise', 'sso')).toBe(false);
+  });
+
+  test('widening self-host did NOT widen the cloud free tier', () => {
+    // planFeatures() must stay fail-closed: a cloud tenant whose plan failed to
+    // record gets FREE_FEATURES, never the paid set. This is the regression that
+    // would hand the product away to every NULL-plan row.
+    cloud();
+    expect([...planFeatures(null)].sort()).toEqual([...FREE_FEATURES].sort());
+    expect(planFeatures(null).has('sync')).toBe(false);
   });
 });
 

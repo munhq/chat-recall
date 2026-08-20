@@ -11,7 +11,7 @@
 import { describe, test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { planFeatures, FREE_FEATURES, type Feature } from './entitlements.js';
+import { planFeatures, FREE_FEATURES, SELFHOST_FREE_FEATURES, type Feature } from './entitlements.js';
 
 const GENERATOR = resolve(
   import.meta.dirname, '../../client/scripts/build-marketing.mjs',
@@ -41,8 +41,20 @@ describe('pricing page ↔ entitlement resolver parity', () => {
     expect(Object.keys(tiers).sort()).toEqual(['enterprise', 'free', 'solo', 'team']);
   });
 
-  test('the free tier advertises exactly what needs no plan', () => {
-    expect(tiers.free.sort()).toEqual([...FREE_FEATURES].sort());
+  test('the free card advertises exactly what a self-hoster gets for nothing', () => {
+    // That card is titled "Self-hosted, free", so it must match the SELF-HOST
+    // free set — not FREE_FEATURES, which is the CLOUD floor for a tenant whose
+    // plan is absent or unrecognised. The two are deliberately different now:
+    // running your own server is free and full, while a cloud row with no plan
+    // fails closed to memory+scan.
+    expect(tiers.free.sort()).toEqual([...SELFHOST_FREE_FEATURES].sort());
+  });
+
+  test('the cloud floor stays fail-closed, and is NOT what the free card shows', () => {
+    // Guards the regression that widening self-host could have caused: handing
+    // the paid tier to every cloud tenant whose plan failed to record.
+    expect([...FREE_FEATURES].sort()).toEqual(['memory', 'scan']);
+    expect([...planFeatures(null)].sort()).toEqual([...FREE_FEATURES].sort());
   });
 
   for (const plan of ['solo', 'team', 'enterprise'] as const) {
