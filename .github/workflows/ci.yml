@@ -5,7 +5,14 @@
 # because they need infra a fork can't reach.
 name: CI
 
+# This file described itself as "the check a pull request must pass" while
+# triggering on workflow_dispatch alone — so nothing ran on a PR, and nothing ran
+# on a merge either. A gate that only fires when someone remembers to click it is
+# not a gate; every claim in the comment above was aspirational.
 on:
+  pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 # Cancel superseded runs on the same ref so a busy PR doesn't queue up.
@@ -27,9 +34,10 @@ jobs:
           node-version: '24'
           cache: npm
 
-      # `npm ci` needs an in-sync lockfile. Native optional deps
-      # (better-sqlite3) build here because ubuntu-latest has a toolchain; if
-      # one can't build it's skipped (optionalDependencies), never fatal.
+      # `npm ci` needs an in-sync lockfile. better-sqlite3 compiles here
+      # (ubuntu-latest has a toolchain); it is a devDependency of engine/cli and
+      # a dependency of server, not something the shipped CLI bundle needs — the
+      # bundler's native-free guard enforces that separately.
       - name: Install
         run: npm ci
 

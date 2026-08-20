@@ -21,8 +21,8 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'] },
     },
     // Mobile. The app shipped with no mobile viewport under test at all, which
-    // is how the landing page reached production 156px wider than a 375px
-    // screen. These two projects run the specs tagged @mobile.
+    // is how a page reached production 156px wider than a 375px screen. These
+    // two projects run the *.mobile.spec.ts files.
     {
       name: 'mobile-safari',
       use: { ...devices['iPhone 13'] },
