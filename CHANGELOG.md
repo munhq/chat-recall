@@ -4,53 +4,24 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
-### Two ranked views over the findings you already had
+## [0.5.1] — 2026-08-20
 
-`recall_claude_suggestions` and `recall_improvements` answer the two questions the
-recommendation engines could already answer, but only one scope at a time.
+### Changed
 
-- `recall_claude_suggestions` — every finding that becomes an agent-instruction
-  change: the CLAUDE.md rules and skill installs, merged across account scope and
-  every code-indexed project, most severe first, each with the exact text to add.
-- `recall_improvements` — everything else, ranked most urgent first across code
-  actions and recommendations at once. Pass `create_tasks: true` to open one task
-  per item on the shared team board; it is off by default, so the tool reads
-  unless you ask it to write.
-
-Neither computes a recommendation. Both call the endpoints `recall_recommendations`
-and `recall_code_actions` already use, then merge — so a new recommendation kind
-added to the engine surfaces in them without a second copy of the ranking. They
-partition on kind, so an item is in one list or the other and never both.
-
-Unlike the `recall_code_*` family, both register without the codeindex binary:
-they read findings the server already holds, and degrade to account scope when no
-repo is indexed.
-
-### Fixed
-
-- The three Stripe return URLs fell back to a hostname the product moved off,
-  which now answers 404. They derive from `PUBLIC_URL` (else the validated
-  forwarded headers) when `STRIPE_*_URL` are unset, so they follow the domain
-  instead of outliving it. Self-hosters who bought a licence were redirected to a
-  dead host after checkout; the hosted service was unaffected, because its Helm
-  chart sets all three explicitly.
-- `plugin/.claude-plugin/plugin.json` advertised `MIT` after the repository was
-  relicensed to Elastic License 2.0, and named the pre-rename `munhq` org in the
-  author field and the marketplace install command.
-- Edited skills reached nobody. The MCP server refreshes the bundled skills into
-  every local AI tool on start, but the gate compared the PACKAGE VERSION — so a
-  skill edited between releases left the bundled content changed, `version()`
-  unchanged, the installed marker matching, and the new text undelivered.
-  Measured here: markers and bundle both read `0.5.0` while the catalog had
-  changed. The gate now keys on a content hash of every bundled skill file, so
-  any edit ships on the next MCP start. Markers written by an older release hold
-  a bare version, which cannot match the new `<version> <hash>` stamp, so every
-  existing install self-heals once.
-- `plugin/skills/` is a second copy of the six shipped skills and nothing kept it
-  in step with `packages/cli/skills/`, so the marketplace copy could drift from
-  the installed one. They are now asserted byte-identical in CI.
-- Documented Node floor was 18; the enforced floor has been 22 since `539a62a`,
-  and the image and CI run 24.
+- The client build no longer generates marketing pages. It produced them
+  unconditionally, so a self-hosted server served a hosted service's pricing and
+  a sitemap pointing at a domain that was not its own. A self-host build now
+  produces the dashboard alone.
+- `.env.example` matches `docker-compose.yml`. It omitted `POSTGRES_PASSWORD` —
+  the one variable compose refuses to start without — while declaring six it
+  never reads and a `DATABASE_URL` with the wrong user and host.
+- CI runs on pull requests and pushes to main. It described itself as the pull
+  request gate while triggering on `workflow_dispatch` alone, so it ran on
+  neither.
+- The dashboard has mobile coverage again: five views at six phone widths, each
+  asserting no horizontal overflow and naming the element responsible.
+- The server package description and a comment in `mode.ts` still said BSL after
+  the move to Elastic License 2.0.
 
 ## [0.5.0] — 2026-08-18
 
