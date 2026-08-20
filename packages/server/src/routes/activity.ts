@@ -1,5 +1,5 @@
 /**
- * /api/activity — the team activity view (Phase 2, docs/TEAM_COLLAB_PLAN.md).
+ * /api/activity — the team activity view.
  *
  * "What did each teammate do, per project." A per-(member × project) rollup of
  * session activity. Mounted AFTER tenantAuth, so req.tenant is the team and the

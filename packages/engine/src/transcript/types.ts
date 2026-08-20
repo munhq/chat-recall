@@ -2,7 +2,7 @@
  * THE canonical transcript shape. Every surface — local dashboard, self-host,
  * SaaS, MCP, sync — renders conversations from this and nothing else.
  *
- * Rules (docs/ARCHITECTURE_RESET.md):
+ * Rules:
  *   R1  only engine/transcript/ parses transcript files for rendering
  *   R2  the indexer materializes this into content_cache at index time
  *   R3  sync forwards it verbatim (trimmed, never re-parsed elsewhere)
