@@ -19,7 +19,7 @@
  *   [{"key":"solo-monthly","label":"Solo","priceId":"price_...","seats":"fixed"},
  *    {"key":"solo-yearly", "label":"Solo (yearly)","priceId":"price_...","seats":"fixed"},
  *    {"key":"team-monthly","label":"Team","priceId":"price_...","seats":"per_seat","minSeats":2,"maxSeats":50},
- *    {"key":"enterprise",  "label":"Enterprise","contact":"sales@munhq.com"}]
+ *    {"key":"enterprise",  "label":"Enterprise","contact":"contact@chatrecall.dev"}]
  *
  * A plan with `contact` and no `priceId` is deliberately NOT self-serve: the
  * checkout route refuses it and hands back the address. Enterprise deals are

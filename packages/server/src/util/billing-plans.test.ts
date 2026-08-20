@@ -12,7 +12,7 @@ const CATALOGUE = JSON.stringify([
   { key: 'solo-monthly', label: 'Solo', priceId: 'price_solo_m', seats: 'fixed' },
   { key: 'solo-yearly', label: 'Solo (yearly)', priceId: 'price_solo_y', seats: 'fixed' },
   { key: 'team-monthly', label: 'Team', priceId: 'price_team_m', seats: 'per_seat', minSeats: 2, maxSeats: 50 },
-  { key: 'enterprise', label: 'Enterprise', contact: 'sales@munhq.com' },
+  { key: 'enterprise', label: 'Enterprise', contact: 'contact@chatrecall.dev' },
 ]);
 
 let saved: Record<string, string | undefined>;
@@ -148,7 +148,7 @@ describe('resolveLine — plan kinds', () => {
     const r = resolveLine('enterprise', 1, 1);
     expect(isPlanError(r)).toBe(true);
     if (isPlanError(r) && r.code === 'contact_only') {
-      expect(r.contact).toBe('sales@munhq.com');
+      expect(r.contact).toBe('contact@chatrecall.dev');
     } else {
       throw new Error('expected contact_only');
     }

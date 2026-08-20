@@ -32,7 +32,7 @@ MCP server, the knowledge graph, secret scanning and diaries are all included.
 
 Collaboration is licensed: inviting a second member, shared project history, the
 team task board and per-member activity need a licence key on a self-hosted
-server. Email hello@munhq.com. Licences are offline Ed25519-signed keys with an
+server. Email contact@chatrecall.dev. Licences are offline Ed25519-signed keys with an
 optional seat count — no licence server, so air-gapped installs work and an
 outage at our end can never disable a running install.
 
