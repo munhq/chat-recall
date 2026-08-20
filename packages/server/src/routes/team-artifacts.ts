@@ -27,7 +27,8 @@ import express from 'express';
 import { createControlPlane } from '../imports.js';
 import { requireUser } from '../middleware/auth.js';
 import { loadMemberships, createTeamFor } from '../util/memberships.js';
-import { entitledOr402, collaborationOr402 } from '../util/billing.js';
+import { entitledOr402, collaborationOr402, billingEnabled } from '../util/billing.js';
+import { planMinSeats } from '../util/billing-plans.js';
 import { seatCheck } from '../util/license.js';
 
 const router = express.Router();
@@ -90,13 +91,38 @@ router.post('/:teamId/invite', async (req, res) => {
     // Seat ceiling. Checked here because this is the only path that grows a
     // team, so it is the only place the count can change.
     const members = await cp.listMembers(req.params.teamId);
-    const seat = seatCheck(Array.isArray(members) ? members.length : 0);
+    const used = Array.isArray(members) ? members.length : 0;
+
+    // Self-host: the licence carries the seat count.
+    const seat = seatCheck(used);
     if (!seat.ok) {
       return res.status(402).json({
         error: `licence covers ${seat.seats} seat(s), all in use`,
         used: seat.used, seats: seat.seats,
         hint: 'Add seats: https://chatrecall.dev/pricing',
       });
+    }
+
+    // Cloud: the SUBSCRIPTION carries it, and until now nothing read it here.
+    // seatCheck returns unlimited on cloud by design (identityLimit() is null
+    // when billing is on), so this route grew a team without limit: a tenant
+    // could buy two seats and invite twenty, and only checkout would ever have
+    // known. Nothing detected it because the count was validated at purchase and
+    // then never stored.
+    //
+    // An unrecorded seat count (a subscription from before the column, or a
+    // webhook not yet seen) falls back to the plan's own minimum rather than
+    // blocking an owner out of their team over our missing data.
+    if (billingEnabled()) {
+      const ent = await cp.getEntitlement(req.params.teamId);
+      const bought = ent?.seats ?? planMinSeats(ent?.plan ?? null);
+      if (bought != null && used >= bought) {
+        return res.status(402).json({
+          error: `your plan covers ${bought} seat(s), all in use`,
+          used, seats: bought,
+          hint: 'Add a seat from the billing portal, then invite again.',
+        });
+      }
     }
     const r = await cp.createInvite(req.params.teamId, 'member', req.body?.emailHint || null, user.sub);
     res.json({ inviteToken: r.invite, expiresAt: new Date(r.expiresAt).toISOString() });

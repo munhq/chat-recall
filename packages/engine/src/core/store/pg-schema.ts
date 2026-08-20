@@ -235,6 +235,11 @@ CREATE TABLE IF NOT EXISTS session_metadata (
 -- ONLY by setUserTitle; the sync/summary upsert (caches.ts PgMetadataCache.set)
 -- deliberately omits this column so a name survives every re-sync.
 ALTER TABLE session_metadata ADD COLUMN IF NOT EXISTS user_title TEXT;
+
+-- Seats billed for. Added after the fact: entitlements predates it, so a live
+-- database gets the column here rather than from the CREATE above, which does
+-- nothing to a table that already exists.
+ALTER TABLE entitlements ADD COLUMN IF NOT EXISTS seats INTEGER;
 -- Native title assigned by the originating tool (Claude ai-title, OpenCode
 -- session.title, …), synced from the collector. Written only by setToolTitle.
 ALTER TABLE session_metadata ADD COLUMN IF NOT EXISTS tool_title TEXT;
@@ -350,6 +355,10 @@ CREATE TABLE IF NOT EXISTS entitlements (
   current_period_end     BIGINT,
   stripe_customer_id     TEXT,
   stripe_subscription_id TEXT,
+  -- Seats the subscription bills for. Checkout validated the count and then
+  -- forgot it, so nothing could enforce it when a team grew; this is what the
+  -- invite path reads. Null = never recorded (a trial, or a pre-column row).
+  seats                  INTEGER,
   updated_at             BIGINT
 );
 

@@ -174,6 +174,25 @@ function mapSubStatus(s: unknown): EntitlementStatus {
  * it), then the first item, then trial_end — during a trial the item period and
  * trial_end coincide, and trial_end is the one guaranteed to be present.
  */
+/**
+ * Seats the subscription bills for.
+ *
+ * Checkout validated the requested count against real members and then threw it
+ * away, so nothing downstream could tell a two-seat team from a twenty-person
+ * one. Reading it here is what lets the invite path enforce what was bought.
+ *
+ * Quantity lives on the subscription ITEM, like current_period_end does; the
+ * metadata copy is the fallback, because that is what self-host licences are
+ * already issued from.
+ */
+function seatsOf(o: Record<string, unknown>): number | null {
+  const items = ((o.items as Record<string, unknown> | undefined)?.data ?? []) as Array<Record<string, unknown>>;
+  const q = items[0]?.quantity;
+  if (typeof q === 'number' && Number.isFinite(q) && q > 0) return Math.floor(q);
+  const meta = Number((o.metadata as Record<string, unknown> | undefined)?.seats);
+  return Number.isFinite(meta) && meta > 0 ? Math.floor(meta) : null;
+}
+
 function periodEndMs(o: Record<string, unknown>): number | null {
   const top = o.current_period_end;
   if (typeof top === 'number') return top * 1000;
@@ -272,6 +291,7 @@ export async function applyStripeEvent(
         status,
         plan,
         currentPeriodEnd: periodEndMs(o),
+        seats: seatsOf(o),
         stripeCustomerId: asStr(o.customer),
         stripeSubscriptionId: asStr(o.id),
       });

@@ -58,12 +58,20 @@ export function isNoCardTrial(ent: Entitlement | null | undefined): boolean {
  * date (a Stripe trial Stripe has not dated yet), which callers must treat as
  * "no deadline known" rather than as expired.
  *
- * Rounded UP so a trial with six hours left reads as "1 day left" and not as
- * "0 days left" to a user who still has access.
+ * Rounded DOWN, except on the final day. See the note in the body.
  */
 export function trialDaysLeft(ent: Entitlement | null | undefined, now = Date.now()): number | null {
   if (!ent || ent.currentPeriodEnd == null) return null;
-  return Math.max(0, Math.ceil((ent.currentPeriodEnd - now) / DAY_MS));
+  const ms = ent.currentPeriodEnd - now;
+  if (ms <= 0) return 0;
+  // FLOOR, not ceil. Ceil rounded 13.05 days up to "14 days left" on a 14-day
+  // trial that started yesterday, so the banner read exactly as it had on day
+  // zero and the trial looked stopped. Floor states the days you can still
+  // count on.
+  //
+  // The last day is the exception: flooring alone shows "0 days left" for the
+  // final 24 hours, while access is still live. Anything under a day reports 1.
+  return Math.max(1, Math.floor(ms / DAY_MS));
 }
 
 /**

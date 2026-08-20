@@ -45,6 +45,7 @@ describe('control-plane entitlements', () => {
       plan: 'price_123',
       status: 'active',
       currentPeriodEnd: 9_999_999_999_000,
+      seats: null,
       stripeCustomerId: 'cus_1',
       stripeSubscriptionId: 'sub_1',
     });
@@ -68,6 +69,7 @@ describe('control-plane entitlements', () => {
       plan: null,
       status: 'trialing',
       currentPeriodEnd: null,
+      seats: null,
       stripeCustomerId: null,
       stripeSubscriptionId: null,
     });

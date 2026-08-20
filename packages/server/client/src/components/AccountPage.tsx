@@ -11,6 +11,9 @@ import {
 import { Button } from './primitives';
 import { isCloud, logout } from '../services/auth';
 
+/** Days remaining at which the plan picker stops waiting to be asked. */
+const TRIAL_NUDGE_DAYS = 3;
+
 /**
  * Cloud Account view: subscription status, connected devices (sync-token
  * minting + revocation), and the secret-alert webhook. Distinct from the
@@ -18,10 +21,23 @@ import { isCloud, logout } from '../services/auth';
  */
 export default function AccountPage({ onClose }: { onClose: () => void }) {
   const [ent, setEnt] = useState<Entitlement | null>(null);
+  // Opened by hand, or automatically once the trial is close enough that
+  // choosing a plan is the useful thing to show rather than an interruption.
+  const [showPlans, setShowPlans] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
-  useEffect(() => { getEntitlement().then(setEnt).catch((e) => setErr(String(e.message || e))); }, []);
+  useEffect(() => {
+    getEntitlement()
+      .then((e) => {
+        setEnt(e);
+        // Open the picker unasked only when the trial is nearly over, which is
+        // when choosing a plan stops being an interruption and becomes the
+        // thing the page is for.
+        if (e.onTrial && e.trialDaysLeft != null && e.trialDaysLeft <= TRIAL_NUDGE_DAYS) setShowPlans(true);
+      })
+      .catch((e) => setErr(String(e.message || e)));
+  }, []);
 
   async function manage() {
     setBusy(true); setErr('');
@@ -59,11 +75,33 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
                   : `${ent.trialDaysLeft} day${ent.trialDaysLeft === 1 ? '' : 's'} left`}
               </span>
             </div>
+            {/* The actual date. "13 days left" is a number to do arithmetic on;
+                a date is something to plan around, and this branch never showed
+                one even though the other branch does. */}
+            {ent.currentPeriodEnd && (
+              <div className="acct-row">
+                <span>Ends</span>
+                <span>{new Date(ent.currentPeriodEnd).toLocaleDateString()}</span>
+              </div>
+            )}
             <p className="muted">
               No card needed for the trial. When it ends, search and export keep working and new
               syncs pause — your history is kept.
             </p>
-            <PlanPicker onError={setErr} />
+            {/* The picker is not open by default while the trial is healthy.
+                Three priced cards with seat spinners under "14 days left" asks
+                for a purchase decision on day one, which is the one thing a
+                trial exists to postpone. It opens on request, and opens itself
+                once the end is near enough to be the point. */}
+            {showPlans ? (
+              <PlanPicker onError={setErr} />
+            ) : (
+              <div className="acct-actions">
+                <Button variant="secondary" onClick={() => setShowPlans(true)} data-testid="see-plans">
+                  See plans
+                </Button>
+              </div>
+            )}
           </>
         ) : !ent.billingEnabled ? (
           <p className="muted">Billing isn't enabled on this deployment — all features are available.</p>

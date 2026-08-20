@@ -118,6 +118,21 @@ function numOrUndef(v: unknown): number | undefined {
 
 /** Look a plan up by key. `undefined` key ⇒ the first self-serve plan, which
  *  preserves "POST /checkout with no body" from before the catalogue existed. */
+/**
+ * The seat floor a plan is sold at, or null when the plan is unknown.
+ *
+ * Used as the fallback when an entitlement carries no recorded seat count — a
+ * subscription bought before seats were stored, or one whose webhook has not
+ * arrived. Falling back to the plan minimum keeps the invite gate honest without
+ * locking an owner out of their own team over data we failed to record.
+ */
+export function planMinSeats(planKey: string | null): number | null {
+  const p = findPlan(planKey);
+  if (!p) return null;
+  if (p.seats === 'fixed') return 1;
+  return Math.max(1, p.minSeats ?? 1);
+}
+
 export function findPlan(key?: string | null): PlanDef | null {
   const all = planCatalogue();
   if (!all.length) return null;
