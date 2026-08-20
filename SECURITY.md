@@ -20,11 +20,14 @@ embedded/offline datastore — the collector keeps only local bookkeeping.
   upstream `--resume` truncation can't destroy history), `credentials.json`
   (mode 0600), and per-agent diaries. Also `~/.mcp.json` when registering the
   MCP server. No search index is stored locally.
-- **Network**: the collector **always** talks to the server(s) you `login` to
-  (a local `http://localhost` Postgres stack, or a remote server you point it
-  at). It phones home to **no** default server — `chat-recall login <url>` is
-  always explicit. Optional: code-intelligence + auto-update fetches from the
-  same server origin you logged into.
+- **Network**: the collector talks only to the server(s) it is logged in to.
+  `chat-recall init` defaults that server to the hosted service at
+  `https://chatrecall.dev`; `chat-recall init --server <url>` or
+  `chat-recall login <url>` points it at your own instead, and until it is
+  logged in to something it sends nothing. There is no side channel: no
+  telemetry, no analytics endpoint, no reporting to any origin other than the
+  server you chose. Code-intelligence and auto-update fetch from that same
+  origin.
 - **Redaction is unconditional**: every string that leaves the machine is run
   through the secret redactor first (`packages/engine/src/core/secret-redactor.ts`),
   regardless of any setting. It is in-process regex with no external dependency,
@@ -61,7 +64,7 @@ embedded/offline datastore — the collector keeps only local bookkeeping.
 ## Reporting a vulnerability
 
 Open a GitHub Security Advisory:
-<https://github.com/darkkraft/chat-recall/security/advisories/new>
+<https://github.com/munhq/chat-recall/security/advisories/new>
 
 Or, if you can't use that, open a public issue clearly tagged `security:` and
 we'll move it private. Do **not** disclose exploit details in a public issue

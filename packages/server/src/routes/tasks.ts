@@ -1,5 +1,5 @@
 /**
- * /api/tasks — collaborative team tasks (Phase 3, docs/TEAM_COLLAB_PLAN.md).
+ * /api/tasks — collaborative team tasks.
  *
  * Server-authoritative task board. Mounted AFTER tenantAuth, so req.tenant is
  * the team and every row is RLS-walled to it. Tasks are team-visible within the
