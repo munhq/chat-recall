@@ -1467,9 +1467,90 @@ export interface ToolkitMatrix {
   pendingIntents?: any[];
 }
 
+/**
+ * One capability needs a higher plan. The SERVER already answers this precisely
+ * — `{error, feature, requires, upgradeUrl}` — so a caller can offer the upgrade
+ * instead of reporting a failure.
+ *
+ * It exists because the alternative was shipped and was worse: the toolkit view
+ * threw `Failed to load toolkit matrix: ${res.statusText}`, and `statusText` is
+ * empty over HTTP/2, so a trialing user got a colon and nothing. A plan boundary
+ * read as a broken product, mid-trial, which is the worst possible moment.
+ */
+export class FeatureGateError extends Error {
+  readonly feature: string;
+  readonly requires: string | null;
+  readonly upgradeUrl: string | null;
+  constructor(body: { error?: string; feature?: string; requires?: string; upgradeUrl?: string }) {
+    super(body.error || 'this feature requires a higher plan');
+    this.name = 'FeatureGateError';
+    this.feature = body.feature || 'unknown';
+    this.requires = body.requires || null;
+    this.upgradeUrl = body.upgradeUrl || null;
+  }
+}
+
+/**
+ * Turn a non-OK response into the most specific error available: a
+ * FeatureGateError for a feature-level 402, otherwise a message that carries the
+ * server's own text.
+ *
+ * Never build a message from `res.statusText` alone — HTTP/2 has no status text,
+ * so it is the empty string on every deployed response.
+ */
+export async function throwForResponse(res: Response, what: string): Promise<never> {
+  let body: any = null;
+  try { body = await res.clone().json(); } catch { /* not JSON — fall through */ }
+  if (res.status === 402 && body && typeof body === 'object' && 'feature' in body) {
+    throw new FeatureGateError(body);
+  }
+  const detail = (body && typeof body === 'object' && (body.error || body.message))
+    || res.statusText
+    || `HTTP ${res.status}`;
+  throw new Error(`${what}: ${detail}`);
+}
+
+/** What the post-checkout screen needs to hand a self-host buyer their licence. */
+export interface LicenceDelivery {
+  serial?: string;
+  seats?: number | null;
+  email?: string | null;
+  features?: string[];
+  /** The webhook has not landed yet — wait and ask again, do not report a fault. */
+  pending?: boolean;
+}
+
+/**
+ * Exchange a Stripe Checkout Session id for the licence serial it bought.
+ *
+ * The session id comes from the purchase redirect and is the only credential
+ * involved, which is why this needs no account: the buyer of a self-hosted
+ * licence has none with us.
+ */
+export async function getLicenceForSession(sessionId: string): Promise<LicenceDelivery> {
+  const res = await fetchWithTimeout(
+    `${API_BASE}/licence/for-session?session_id=${encodeURIComponent(sessionId)}`, {}, 20_000,
+  );
+  if (res.status === 202) return { pending: true };
+  if (!res.ok) await throwForResponse(res, 'Could not look up this purchase');
+  return await res.json();
+}
+
+/** Re-send the serial to the address already on the subscription — never to one
+ *  the caller supplies, which would be an enumeration oracle. */
+export async function resendLicenceSerial(sessionId: string): Promise<{ sent: boolean; email: string }> {
+  const res = await fetchWithTimeout(`${API_BASE}/licence/resend`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId }),
+  }, 20_000);
+  if (!res.ok) await throwForResponse(res, 'Could not send the email');
+  return await res.json();
+}
+
 export async function getToolkitMatrix(): Promise<ToolkitMatrix> {
   const res = await fetchWithTimeout(`${API_BASE}/toolkit/matrix`, {}, 30_000);
-  if (!res.ok) throw new Error(`Failed to load toolkit matrix: ${res.statusText}`);
+  if (!res.ok) await throwForResponse(res, 'Failed to load toolkit matrix');
   return await res.json();
 }
 
