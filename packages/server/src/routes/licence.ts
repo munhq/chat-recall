@@ -39,7 +39,16 @@ const router = express.Router();
 
 /** Features a self-host licence grants. Mirrors the 'selfhost' entry in the plan
  *  map — the Solo set, on the customer's own infrastructure. */
-const SELFHOST_FEATURES = ['sync', 'alerts', 'findings', 'insights'] as const;
+// COLLABORATION, not the Solo set. Running chat-recall for yourself is free —
+// see SELFHOST_FREE_FEATURES in util/entitlements.ts — so a licence that granted
+// sync/findings/insights would now be selling something already given away. What
+// a licence buys is a SECOND PERSON: shared history, the team board, per-member
+// activity and toolkit distribution. identityLimit() caps unlicensed self-host at
+// one identity, so this is the boundary that actually needs paying for.
+//
+// Safe to narrow: every feature dropped from this list is now free, so an
+// already-activated instance loses nothing.
+const SELFHOST_FEATURES = ['team', 'toolkit'] as const;
 
 /**
  * The activation signing key, from CHAT_RECALL_ACTIVATION_KEY.
