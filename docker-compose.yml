@@ -10,17 +10,24 @@
 # from the server path. The bundled `db` service means self-host is still a
 # single `docker compose up` with no external database to provision.
 #
-# FIRST RUN BUILDS FROM SOURCE AND TAKES SEVERAL MINUTES. The `server` service
-# below has `build:`, not `image:` — there is no published server image to pull
-# (ghcr.io/munhq/chat-recall-cloud exists but is a private deployment artifact
-# for the maintainer's own cluster, not a distribution channel). So the first
-# `docker compose up` compiles the TypeScript monorepo inside the container. It
-# looks stalled and is not; later runs hit the layer cache and start in seconds.
+# STARTS IN SECONDS: `server` pulls ghcr.io/munhq/chat-recall, a PUBLIC image
+# built from this repository by its own CI, containing the dashboard, the API and
+# the packed CLI — and no marketing pages, prices or legal text, so your server
+# advertises nothing but itself.
+#
+# It also keeps `build:`, so `docker compose up -d --build` compiles from source
+# instead. Use that to run local changes, or on an architecture the published
+# image does not cover. A source build takes several minutes on the first run —
+# it looks stalled and is not.
+#
+# (The separate ghcr.io/munhq/chat-recall-cloud is the hosted service's private
+# artifact: this same image with chatrecall.dev's storefront layered on. It is
+# not a distribution channel and you do not want it.)
 #
 # Quick start:
 #   1. echo "ADMIN_KEY=$(openssl rand -hex 24)"        >> .env
 #      echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)" >> .env
-#   2. docker compose up -d --build
+#   2. docker compose up -d
 #   3. Mint a device token for your machine(s):
 #        curl -XPOST localhost:8080/api/tenants -H "x-admin-key: $ADMIN_KEY" \
 #             -H 'content-type: application/json' -d '{"slug":"me","display_name":"Me"}'
@@ -56,6 +63,12 @@ services:
     restart: unless-stopped
 
   server:
+    # Both on purpose. `docker compose up -d` pulls the published image; adding
+    # --build compiles this checkout instead and tags the result the same, so the
+    # fast path and the from-source path stay one service rather than two files.
+    # CHAT_RECALL_IMAGE pins a version: :latest tracks releases, :main tracks the
+    # development branch, :vX.Y.Z pins exactly.
+    image: ${CHAT_RECALL_IMAGE:-ghcr.io/munhq/chat-recall:latest}
     build:
       context: .
       dockerfile: docker/Dockerfile.server
@@ -119,7 +132,7 @@ services:
       # it the server falls back to the single STRIPE_PRICE_ID above, which can
       # sell exactly one plan at one seat. See util/billing-plans.ts.
       BILLING_PLANS: ${BILLING_PLANS:-}
-      # Team licence key, from hello@munhq.com. Solo self-hosting needs nothing;
+      # Team licence key, from contact@chatrecall.dev. Solo self-hosting needs nothing;
       # collaboration (shared project history, the team board, per-member activity)
       # checks this. Offline: an Ed25519 signature verified locally, so no licence
       # server is contacted and an air-gapped install works.

@@ -1,0 +1,99 @@
+name: Publish the self-host image
+
+# Builds the PRODUCT image and publishes it publicly: dashboard, API and the
+# packed CLI. No marketing pages, no prices, no legal text — a self-hosted server
+# must advertise nothing but itself.
+#
+# It is also the base the hosted service builds on. chatrecall.dev's image is
+# this artifact plus one layer carrying its storefront, so what runs in
+# production is provably what is published here rather than a second compilation
+# that could differ.
+#
+# Release-driven, deliberately. A tag is the only thing that publishes an image,
+# so the version on npm, the tag in git and the image in the registry are one
+# release built from one commit — rather than a registry that also carries every
+# merge and a production tracking whichever merge landed last.
+#
+# The cost is that a product fix reaches the hosted service when you cut a
+# release, not when you merge. That is the intended trade: what runs in
+# production is a version you named.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: publish-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/chat-recall
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write        # publishes this repository's OWN package, which
+                             # auto-links on first push — no manual grant needed.
+      id-token: write        # provenance attestation, same reason npm gets one
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # A release publishes :vX.Y.Z, :vX.Y and moves :latest — which is what
+      # compose defaults to, so a self-hoster tracks releases without pinning.
+      - name: Work out the tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern=v{{version}}
+            type=semver,pattern=v{{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile.server
+          push: true
+          # No VITE_CLOUD: this build is the self-host dashboard. The hosted
+          # service sets it in its own image, on top of this one.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Attest provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      # A published image nobody can pull is not published. The package is
+      # created private by default on its very first push; this makes it public
+      # once, and is a no-op every run after.
+      - name: Make the package public
+        continue-on-error: true
+        run: |
+          gh api --method PATCH \
+            "/orgs/${{ github.repository_owner }}/packages/container/chat-recall/visibility" \
+            -f visibility=public && echo "package is public" \
+            || echo "could not set visibility automatically — set it once by hand in package settings"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
