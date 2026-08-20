@@ -9,6 +9,7 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Card, Chip, Input, ToolBadge, Button, SegmentedControl, Icon, pressableProps } from './primitives';
+import { formatMoney } from '../utils/money';
 import { useSidebarExtrasRegister } from '../context/sidebar-extras';
 import { TOOL_IDS, VALID_TOOL_FILTERS, type ToolId } from '../services/tools';
 import { sourceToolOnDevice, deviceHasArtifact, noSourceMessage } from '../services/toolkit-sync-plan';
@@ -21,6 +22,8 @@ import {
   enqueueSyncIntent,
   listSyncIntents,
   DEVICE_OFFLINE_MS,
+  FeatureGateError,
+  getPlans,
   type ToolkitType,
   type ToolkitStatus,
   type MemoryMetadataRow,
@@ -184,6 +187,9 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
   // actionable view; Library browses individual artifacts.
   const [view, setView] = useState<'coverage' | 'library'>('coverage');
 
+  // Set by SyncMatrix when the server refuses this surface on plan grounds, so
+  // the caption above it can stand down.
+  const [coverageGated, setCoverageGated] = useState(false);
   const refreshAfterMutation = () => {
     getToolkitStatus().then(setStatus).catch(() => {});
     browseToolkit(activeTab, { limit: 1000 }).then(setItems).catch(() => {});
@@ -239,10 +245,16 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
       {/* COVERAGE: the tool×primitive what's-where matrix, front and centre */}
       {view === 'coverage' && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, padding: '12px 24px 16px' }}>
-          <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 8 }}>
-            Which tool has which skill / MCP / command / agent. A gap = not synced there. Click a cell to queue a copy, or ⚡ Sync everything.
-          </div>
-          <SyncMatrix inline onClose={() => {}} onMutated={refreshAfterMutation} />
+          {/* Suppressed when the plan withholds this surface: the instructions
+              describe controls the gate has removed, and telling someone to
+              press a button that is not on the page is worse than silence. */}
+          {!coverageGated && (
+            <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 8 }}>
+              Which tool has which skill / MCP / command / agent. A gap = not synced there. Click a cell to queue a copy, or ⚡ Sync everything.
+            </div>
+          )}
+          <SyncMatrix inline onClose={() => {}} onMutated={refreshAfterMutation}
+                      onGated={setCoverageGated} />
         </div>
       )}
 
@@ -785,7 +797,228 @@ const SYNC_TYPE_TABS: Array<{ id: SyncType; label: string }> = [
 /** DELETE is only implemented server-side for skills, MCPs, and instructions. */
 const REMOVABLE_TYPES = new Set<SyncType>(['skill', 'mcp', 'instructions']);
 
-function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMutated: () => void; inline?: boolean }) {
+/**
+ * The plan boundary, sold rather than reported.
+ *
+ * Three rules drove this layout.
+ *
+ * 1. Show the artifact, not adjectives. A developer decides from the thing
+ *    itself, so the right half IS a sync matrix — real artifact names, real tool
+ *    badges, real present/absent cells — inert and dimmed. Prose describing a
+ *    grid is worth less than a grid.
+ * 2. One number, in tabular figures. The price comes from the catalogue rather
+ *    than this file, so it can never disagree with the charge.
+ * 3. Say what they keep. Someone who just hit a wall assumes the worst; the
+ *    reassurance line is doing more work than the pitch.
+ *
+ * It replaced a bordered box of paragraphs, which read as an error notice — the
+ * exact impression a plan boundary must not give.
+ */
+const GATE_DEMO: Array<{ name: string; kind: string; have: boolean[] }> = [
+  { name: 'code-review',  kind: 'skill',   have: [true,  true,  false] },
+  { name: 'chat-recall',  kind: 'mcp',     have: [true,  false, false] },
+  { name: 'ship-it',      kind: 'command', have: [true,  true,  true ] },
+  { name: 'debugger',     kind: 'agent',   have: [false, true,  false] },
+];
+const GATE_DEMO_TOOLS = ['claude', 'codex', 'opencode'];
+
+function GateMatrixPreview() {
+  return (
+    <div
+      aria-hidden="true"
+      className="cr-gate-grid"
+      style={{
+        // Inert by construction: no handlers, no focus stops, hidden from
+        // screen readers. It is an illustration, and must not read as a control.
+        pointerEvents: 'none',
+        userSelect: 'none',
+        display: 'grid',
+        // auto, not a fixed 30px: a ToolBadge is a labelled pill, and pinning the
+        // column narrower than its label overlapped every header into the next.
+        // Three auto columns need ~314px, more than this panel gets on a phone,
+        // so the container query below drops the third tool rather than letting
+        // the grid clip or scroll.
+        gridTemplateColumns: `minmax(84px, 1fr) repeat(${GATE_DEMO_TOOLS.length}, auto)`,
+        gap: '7px 12px',
+        alignItems: 'center',
+        padding: '14px 16px',
+        borderRadius: 'var(--cr-radius-lg)',
+        background: 'var(--cr-ink-0)',
+        border: '1px solid var(--cr-line-1)',
+        // No hardcoded shadow: the two themes need opposite values and a literal
+        // rgba() cannot follow the theme. The border and the inset ground do the
+        // separating in both.
+
+      }}
+    >
+      <span />
+      {GATE_DEMO_TOOLS.map((t, i) => (
+        <span key={t} className={i === 2 ? 'cr-gate-col3' : undefined}
+              style={{ display: 'flex', justifyContent: 'center' }}>
+          <ToolBadge tool={t} size="sm" />
+        </span>
+      ))}
+      {GATE_DEMO.map((row, i) => (
+        <React.Fragment key={row.name}>
+          <span
+            style={{
+              display: 'flex', alignItems: 'baseline', gap: 6, minWidth: 0,
+              opacity: 0, animation: `cr-gate-row 420ms ease-out ${120 + i * 70}ms forwards`,
+            }}
+          >
+            <span style={{ fontSize: 12, color: 'var(--cr-fg-2)', overflow: 'hidden',
+                           textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.name}</span>
+            <span style={{ fontSize: 9.5, color: 'var(--cr-fg-3)', letterSpacing: '0.04em' }}>{row.kind}</span>
+          </span>
+          {row.have.map((present, j) => (
+            <span
+              key={j}
+              className={j === 2 ? 'cr-gate-col3' : undefined}
+              style={{
+                justifySelf: 'center', width: 16, height: 16,
+                borderRadius: 'var(--cr-radius-xs)',
+                background: present ? 'var(--cr-ok-surf)' : 'transparent',
+                border: `1px solid ${present ? 'var(--cr-ok-line)' : 'var(--cr-line-2)'}`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                opacity: 0, animation: `cr-gate-row 420ms ease-out ${120 + i * 70}ms forwards`,
+              }}
+            >
+              {present && (
+                <svg viewBox="0 0 16 16" width={11} height={11} aria-hidden="true">
+                  <path d="M3.5 8.5 L6.5 11.5 L12.5 4.5" fill="none" stroke="var(--cr-ok-500)"
+                        strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              )}
+            </span>
+          ))}
+        </React.Fragment>
+      ))}
+      {/* The empty cells ARE the pitch: three gaps a click would fill. */}
+      <style>{`
+        @keyframes cr-gate-row { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+        @media (prefers-reduced-motion: reduce) {
+          @keyframes cr-gate-row { from { opacity: 1; } to { opacity: 1; } }
+        }
+        /* Measured against the PANEL, not the viewport: this illustration sits in
+           a column whose width does not track the window. Two tools still show a
+           gap, which is the whole point of the picture. */
+        @container cr-gate (max-width: 330px) {
+          .cr-gate-grid { grid-template-columns: minmax(72px, 1fr) auto auto !important; }
+          .cr-gate-col3 { display: none !important; }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+function ToolkitUpgradePanel({ gate, onClose }: { gate: FeatureGateError; onClose?: () => void }) {
+  const plan = gate.requires
+    ? gate.requires.charAt(0).toUpperCase() + gate.requires.slice(1)
+    : 'a higher';
+  // The price is never written here — it comes from the catalogue, which reads it
+  // back from Stripe. If the fetch fails the CTA simply carries no number.
+  const [from, setFrom] = useState<{ amount: number; currency: string; perSeat: boolean } | null>(null);
+  useEffect(() => {
+    let live = true;
+    getPlans()
+      .then((c) => {
+        if (!live || !c.configured) return;
+        const want = (gate.requires || '').toLowerCase();
+        const hit = c.plans
+          .filter((p) => p.selfServe && p.interval === 'month' && p.key.toLowerCase().startsWith(want))
+          .sort((a, b) => (a.amount ?? 0) - (b.amount ?? 0))[0];
+        if (hit?.amount != null) {
+          setFrom({ amount: hit.amount, currency: hit.currency || 'usd', perSeat: hit.seats === 'per_seat' });
+        }
+      })
+      .catch(() => { /* no number is better than a wrong number */ });
+    return () => { live = false; };
+  }, [gate.requires]);
+
+  return (
+    <section
+      data-testid="toolkit-upgrade-panel"
+      style={{
+        display: 'grid',
+        // Asymmetric on purpose: the pitch reads first, the artifact anchors the
+        // right. Collapses to one column before the matrix would cramp.
+        gridTemplateColumns: 'minmax(0, 1.15fr) minmax(0, 0.85fr)',
+        gap: 28,
+        alignItems: 'center',
+        maxWidth: 860,
+        padding: '26px 28px',
+        borderRadius: 'var(--cr-radius-lg)',
+        background: 'var(--cr-ink-1)',
+        border: '1px solid var(--cr-line-1)',
+        containerType: 'inline-size',
+        containerName: 'cr-gate',
+      }}
+      className="cr-gate"
+    >
+      <div style={{ minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <Chip kind="brand" size="sm">{plan} plan</Chip>
+        </div>
+        <h2
+          style={{
+            margin: '0 0 10px',
+            fontSize: 22,
+            lineHeight: 1.2,
+            letterSpacing: '-0.02em',
+            fontWeight: 600,
+            color: 'var(--cr-fg-1)',
+            textWrap: 'balance',
+          }}
+        >
+          Install a tool once. Have it everywhere.
+        </h2>
+        <p style={{ margin: '0 0 18px', fontSize: 13.5, lineHeight: 1.6, color: 'var(--cr-fg-2)', maxWidth: '46ch' }}>
+          Toolkit lines up every skill, MCP, command and agent across your AI tools
+          and machines, then fills the gaps — so a skill you wrote for one tool
+          reaches the rest without you copying files by hand.
+        </p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+          {/* Always an action. The server normally sends upgradeUrl, but a 402
+              without it must not leave a pitch with nothing to click — the
+              in-app account view can always sell. */}
+          <Button
+            variant="primary"
+            onClick={() => {
+              if (gate.upgradeUrl) window.location.href = gate.upgradeUrl;
+              else window.location.assign('/?view=account');
+            }}
+          >
+            {from
+              ? `Get ${plan} — ${formatMoney(from.amount, from.currency)}${from.perSeat ? ' / seat' : ''} / month`
+              : `See ${plan} pricing`}
+          </Button>
+          {onClose && <Button variant="ghost" onClick={onClose}>Not now</Button>}
+        </div>
+        <p style={{ margin: '16px 0 0', fontSize: 12, lineHeight: 1.55, color: 'var(--cr-fg-3)', maxWidth: '46ch' }}>
+          Your history, search, memory and secret scanning keep working exactly as
+          they do now. Nothing is paused and nothing is deleted.
+        </p>
+        {/* The server's own sentence, verbatim: if packaging changes, the copy
+            above may lag and this never does. */}
+        {/* No opacity here: light --cr-fg-3 is already tuned to clear AA at this
+            size, and dimming it further measured 3.98:1. */}
+        <p style={{ margin: '10px 0 0', fontSize: 11, color: 'var(--cr-fg-3)' }}>{gate.message}</p>
+      </div>
+      <GateMatrixPreview />
+      <style>{`
+        @media (max-width: 720px) {
+          .cr-gate { grid-template-columns: minmax(0, 1fr) !important; gap: 22px !important; padding: 20px !important; }
+        }
+      `}</style>
+    </section>
+  );
+}
+
+function SyncMatrix({ onClose, onMutated, inline, onGated }: {
+  onClose: () => void; onMutated: () => void; inline?: boolean;
+  /** Reports the plan gate upward, so the surrounding copy can stand down. */
+  onGated?: (gated: boolean) => void;
+}) {
   const [matrix, setMatrix] = useState<ToolkitMatrix | null>(null);
   const [activeType, setActiveType] = useState<SyncType>('skill');
   const [search, setSearch] = useState('');
@@ -795,6 +1028,9 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [errors, setErrors] = useState<{ key: string; error: string }[]>([]);
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  /** Set when the plan — not the server — is what stopped us. A boundary is not
+   *  an error, and rendering it as one told trialing users the app was broken. */
+  const [gate, setGate] = useState<FeatureGateError | null>(null);
   const [oneClickMsg, setOneClickMsg] = useState<string | null>(null);
 
   const reload = useCallback(async () => {
@@ -802,6 +1038,8 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
       const m = await getToolkitMatrix();
       setMatrix(m);
       setLoadErr(null);
+      setGate(null);
+      onGated?.(false);
       if (m && Array.isArray(m.pendingIntents)) {
         setPending((prev) => {
           const next = new Map(prev);
@@ -820,9 +1058,12 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
         });
       }
     } catch (e) {
+      if (e instanceof FeatureGateError) { setGate(e); setLoadErr(null); onGated?.(true); return; }
+      setGate(null);
+      onGated?.(false);
       setLoadErr(e instanceof Error ? e.message : 'failed to load matrix');
     }
-  }, []);
+  }, [onGated]);
   useEffect(() => { reload(); }, [reload]);
 
   const togglePending = useCallback((type: SyncType, name: string, deviceId: string, tool: SyncTool, currentlyPresent: boolean) => {
@@ -995,6 +1236,24 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
     return () => { document.body.style.overflow = prev; };
   }, [inline]);
 
+  // The plan does not permit this surface: show the offer INSTEAD of the tool.
+  // Every control below would 402, and a keyboard user should not tab through
+  // eight of them to reach the only thing that works.
+  if (gate) {
+    return (
+      <div
+        data-testid="toolkit-sync-matrix"
+        style={inline
+          ? { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, padding: '18px 18px 24px', overflowY: 'auto' }
+          : { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex',
+              alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }}
+        onClick={inline ? undefined : (e) => { if (e.target === e.currentTarget) onClose(); }}
+      >
+        <ToolkitUpgradePanel gate={gate} onClose={inline ? undefined : onClose} />
+      </div>
+    );
+  }
+
   return (
     <div
       data-testid="toolkit-sync-matrix"
@@ -1101,7 +1360,7 @@ function SyncMatrix({ onClose, onMutated, inline }: { onClose: () => void; onMut
             </div>
           )}
           {loadErr && <div style={{ color: 'var(--cr-err-500)', fontSize: 13 }}>{loadErr}</div>}
-          {!matrix && !loadErr && (
+          {!matrix && !loadErr && !gate && (
             <div style={{ color: 'var(--cr-fg-3)', fontSize: 13, padding: 30, textAlign: 'center' }}>Loading matrix…</div>
           )}
           {matrix && rows.length === 0 && (
