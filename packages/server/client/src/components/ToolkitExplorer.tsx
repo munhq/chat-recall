@@ -899,12 +899,19 @@ function GateMatrixPreview() {
         @media (prefers-reduced-motion: reduce) {
           @keyframes cr-gate-row { from { opacity: 1; } to { opacity: 1; } }
         }
-        /* Measured against the PANEL, not the viewport: this illustration sits in
-           a column whose width does not track the window. Two tools still show a
-           gap, which is the whole point of the picture. */
+        /* Measured against the grid's own column, not the viewport and not the
+           panel. Three tool columns need ~314px and two need ~219px, so each
+           threshold is the width at which the next layout stops fitting. Two
+           tools still show a gap, which is the whole point of the picture. */
         @container cr-gate (max-width: 330px) {
           .cr-gate-grid { grid-template-columns: minmax(72px, 1fr) auto auto !important; }
           .cr-gate-col3 { display: none !important; }
+        }
+        /* Very narrow: the name column yields rather than let the badges spill,
+           and 'code-review' still fits at 12px. */
+        @container cr-gate (max-width: 235px) {
+          .cr-gate-grid { grid-template-columns: minmax(48px, 1fr) auto auto !important;
+                          column-gap: 8px !important; }
         }
       `}</style>
     </div>
@@ -950,8 +957,6 @@ function ToolkitUpgradePanel({ gate, onClose }: { gate: FeatureGateError; onClos
         borderRadius: 'var(--cr-radius-lg)',
         background: 'var(--cr-ink-1)',
         border: '1px solid var(--cr-line-1)',
-        containerType: 'inline-size',
-        containerName: 'cr-gate',
       }}
       className="cr-gate"
     >
@@ -1004,7 +1009,12 @@ function ToolkitUpgradePanel({ gate, onClose }: { gate: FeatureGateError; onClos
             size, and dimming it further measured 3.98:1. */}
         <p style={{ margin: '10px 0 0', fontSize: 11, color: 'var(--cr-fg-3)' }}>{gate.message}</p>
       </div>
-      <GateMatrixPreview />
+      {/* The container the query measures is the grid's OWN column, not the
+          panel: the panel is roughly 2.4x wider than this, so a threshold on it
+          fires far too late and the grid spills out of the card. */}
+      <div style={{ containerType: 'inline-size', containerName: 'cr-gate', minWidth: 0 }}>
+        <GateMatrixPreview />
+      </div>
       <style>{`
         @media (max-width: 720px) {
           .cr-gate { grid-template-columns: minmax(0, 1fr) !important; gap: 22px !important; padding: 20px !important; }
