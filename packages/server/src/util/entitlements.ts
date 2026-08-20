@@ -94,8 +94,34 @@ export function planFeatures(plan: string | null | undefined): Set<Feature> {
 }
 
 /**
+ * What one person running their own server gets, free, forever.
+ *
+ * This is the Solo set, NOT the FREE set, and the difference is the whole
+ * adoption argument. Charging a self-hoster for sync, findings, alerts and
+ * insights taxes exactly the people who evaluate the product, write about it and
+ * bring teams to it — while earning almost nothing, because a single-seat
+ * self-host licence is too small to matter as revenue and too large to be
+ * frictionless. They also supply their own hardware, Postgres, backups and
+ * operations, so charging them the SAME price as the fully-hosted Solo plan is a
+ * worse deal for more work.
+ *
+ * What is protected instead:
+ *   - COLLABORATION ('team', 'toolkit') — a second identity means a company, and
+ *     a company has budget. identityLimit() already caps unlicensed self-host at
+ *     one person, so this boundary is people, not machines.
+ *   - 'sso' and 'audit' — enterprise procurement features.
+ *   - Reselling — Elastic License 2.0 forbids offering this as a hosted service,
+ *     which is the actual moat. A $15 licence was never the thing stopping a
+ *     competitor.
+ *
+ * The hosted SaaS is unaffected: it bills per plan and never reads this.
+ */
+export const SELFHOST_FREE_FEATURES: readonly Feature[] =
+  ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights'];
+
+/**
  * What this DEPLOYMENT's licence grants, for self-host. The free tier is the
- * FREE set; a valid licence adds whatever it names.
+ * self-host free set above; a valid licence adds whatever it names.
  *
  * Self-host has no per-tenant billing, so this is deployment-wide by design.
  */
@@ -123,7 +149,11 @@ export function ssoAllowed(
 }
 
 export function licenceFeatures(): Set<Feature> {
-  const out = new Set<Feature>(FREE_FEATURES);
+  // Self-host only. planFeatures() still starts an unknown CLOUD plan at
+  // FREE_FEATURES — widening that would hand the paid tier to every tenant whose
+  // plan failed to record, which is the exact bug the fail-closed default exists
+  // to prevent.
+  const out = new Set<Feature>(SELFHOST_FREE_FEATURES);
 
   // TWO paths, deliberately, and a feature from either counts.
   //
