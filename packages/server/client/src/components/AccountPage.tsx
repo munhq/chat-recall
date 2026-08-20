@@ -172,12 +172,36 @@ function AlertsCard({ onError }: { onError: (s: string) => void }) {
  *      to subscribe. Showing them "create your workspace" was a dead end: the
  *      bootstrap no-ops when a team already exists, reloads, and lands back here
  *      with no route to payment — precisely the person most likely to pay. */
+/**
+ * Why this screen is in front of you, in its own words.
+ *
+ * `ent` is null while the lookup is in flight or if it failed; the wording then
+ * stays neutral rather than inventing a reason.
+ */
+function gateReason(ent: { status?: string; hasSubscription?: boolean } | null): {
+  title: string; detail: string;
+} {
+  const kept = 'Your history is kept — nothing was deleted. Search and export stay available; new syncs resume as soon as you subscribe.';
+  if (ent?.status === 'trialing') return { title: 'Your trial has ended', detail: kept };
+  if (ent?.status === 'past_due') return {
+    title: 'Your last payment did not go through',
+    detail: 'Your history is kept. Update your payment method to resume syncing.',
+  };
+  if (ent?.status === 'canceled' || ent?.hasSubscription) return {
+    title: 'Your subscription has ended', detail: kept,
+  };
+  return { title: 'Choose a plan', detail: kept };
+}
+
 export function SubscribeScreen() {
   const [plan, setPlan] = useState<PlanInfo | null>(null);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   // null = still deciding which of the two visitors this is.
   const [hasWorkspace, setHasWorkspace] = useState<boolean | null>(null);
+  // Drives the heading, so the screen states the real reason instead of one.
+  const [ent, setEnt] = useState<{ status?: string; hasSubscription?: boolean } | null>(null);
+  useEffect(() => { getEntitlement().then(setEnt).catch(() => setEnt(null)); }, []);
   useEffect(() => { getPlan().then(setPlan).catch(() => {}); }, []);
   useEffect(() => {
     getMe().then((me) => setHasWorkspace(me.teams.length > 0)).catch(() => setHasWorkspace(false));
@@ -206,11 +230,21 @@ export function SubscribeScreen() {
           <p className="muted">Loading…</p>
         ) : hasWorkspace ? (
           <>
-            <h1>Your trial has ended</h1>
-            <p className="muted">Your history is kept — nothing was deleted. Search and export stay
-              available; new syncs resume as soon as you subscribe.</p>
+            {/* Say what actually happened. This was hardcoded to "Your trial has
+                ended" for every visitor with a workspace, so a lapsed subscriber
+                was told about a trial, and — while a feature-level 402 could
+                still reach this screen — so was someone whose trial had a
+                fortnight left. A gate that misreports why it is there is one
+                nobody can act on. */}
+            <h1>{gateReason(ent).title}</h1>
+            <p className="muted">{gateReason(ent).detail}</p>
             {err && <div className="acct-err">{err}</div>}
             <PlanPicker onError={setErr} />
+            {/* Never a dead end. Without this the only exits were paying or
+                closing the tab — no way to sign out, or into another account. */}
+            <div style={{ marginTop: 18 }}>
+              <Button variant="ghost" onClick={() => logout()} data-testid="gate-signout">Sign out</Button>
+            </div>
           </>
         ) : plan && plan.freeTrialDays ? (
           <>

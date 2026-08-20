@@ -149,3 +149,65 @@ describe('ensureTrial', () => {
     expect(cp.writes).toBe(1);
   });
 });
+
+/**
+ * The repair path. Trials written before plan='trial' carry plan=null, which
+ * resolves to the FREE set — so the tenant's first call needing sync or findings
+ * answered 402, and the client turned that into a full-screen "your trial has
+ * ended" for a trial with a fortnight left. ensureTrial returned early on any
+ * existing row, so those tenants could never recover on their own.
+ */
+describe('ensureTrial repairs a live trial written without a plan', () => {
+  function cpWith(row: Entitlement | null) {
+    const store: { row: Entitlement | null } = { row };
+    return {
+      store,
+      getEntitlement: async () => store.row,
+      setEntitlement: async (_t: string, e: Partial<Omit<Entitlement, 'tenant'>>) => {
+        store.row = { ...(store.row as Entitlement), ...e };
+      },
+    };
+  }
+  const base = (over: Partial<Entitlement>): Entitlement => ({
+    tenant: 't', plan: null, status: 'trialing', currentPeriodEnd: Date.now() + 86_400_000,
+    stripeCustomerId: null, stripeSubscriptionId: null, ...over,
+  });
+
+  test('a trialing row with a null plan gains plan=trial', async () => {
+    const cp = cpWith(base({ plan: null, status: 'trialing' }));
+    const out = await ensureTrial(cp as never, 't');
+    expect(out?.plan).toBe('trial');
+    expect(out?.status).toBe('trialing');
+  });
+
+  test('it repairs the plan ONLY — no new end date, so a trial cannot renew', async () => {
+    const end = Date.now() + 3600_000;
+    const cp = cpWith(base({ plan: null, status: 'trialing', currentPeriodEnd: end }));
+    const out = await ensureTrial(cp as never, 't');
+    expect(out?.currentPeriodEnd).toBe(end);
+  });
+
+  test('an EXPIRED trial is not repaired — the row stays the record', async () => {
+    // Repairing it would change nothing a user can see (the period has passed,
+    // so isEntitled is false either way) but it would write on a read path and
+    // blur the rule that an existing row is never touched.
+    const cp = cpWith(base({ plan: null, status: 'trialing', currentPeriodEnd: Date.now() - 1000 }));
+    const out = await ensureTrial(cp as never, 't');
+    expect(out?.plan).toBeNull();
+  });
+
+  test('a lapsed row is left alone — repair must not resurrect it', async () => {
+    for (const status of ['canceled', 'past_due', 'none'] as const) {
+      const cp = cpWith(base({ plan: null, status }));
+      const out = await ensureTrial(cp as never, 't');
+      expect(out?.plan, `${status} must not be repaired`).toBeNull();
+      expect(out?.status).toBe(status);
+    }
+  });
+
+  test('a row that already has a plan is untouched', async () => {
+    const cp = cpWith(base({ plan: 'solo-monthly', status: 'active' }));
+    const out = await ensureTrial(cp as never, 't');
+    expect(out?.plan).toBe('solo-monthly');
+  });
+});
