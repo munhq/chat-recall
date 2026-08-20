@@ -57,7 +57,7 @@ const log = createLogger('conversations');
 const router = express.Router();
 
 // Per-project team visibility is enforced in the DB (RLS `author_visibility`
-// policy, docs/TEAM_COLLAB_PLAN.md) — a fetch of an unshared session's rows
+// policy) — a fetch of an unshared session's rows
 // simply returns nothing under the request's `app.viewer`, so these handlers
 // 404 naturally with no per-route guard to forget. See pg-schema.ts.
 

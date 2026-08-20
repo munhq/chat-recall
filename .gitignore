@@ -67,6 +67,12 @@ session_*.txt
 # Operator-only runbook (prod infra access) — never publish
 CLAUDE.local.md
 
+# Agent instructions for this working copy. Untracked on purpose: it is a
+# 27KB internal brief, it duplicates the README for every human reader, and it
+# named private inference infrastructure. Contributors read README.md and
+# CONTRIBUTING.md; agents read this file locally.
+CLAUDE.md
+
 # Operator-only deploy script (private cluster blueprint) — never publish
 scripts/deploy-local.sh
 
@@ -84,3 +90,8 @@ CODE_TASKS.md
 
 # Local-only working files. Never published.
 .local/
+
+# Legal text (terms, privacy, seller name) materialized into the build context
+# by CI from a private secret. Operator-specific, never committed — see
+# docs/SELF_HOSTING.md and .github/workflows/build-chat-recall-cloud.yml.
+packages/server/client/.legal/

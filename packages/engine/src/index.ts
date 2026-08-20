@@ -245,8 +245,8 @@ export { CodexSessionSource } from './parsers/codex-session-source.js';
 export { runWithTenant, currentTenant, runWithAuthor, currentAuthor, currentViewer } from './core/store/tenant-context.js';
 export type { AuthorContext } from './core/store/tenant-context.js';
 
-// Canonical transcript parser — THE one way conversations are parsed
-// (docs/ARCHITECTURE_RESET.md). Everything renders from this shape.
+// Canonical transcript parser — THE one way conversations are parsed.
+// Everything renders from this shape.
 export {
   parseTranscript,
   trimTranscriptForSync,

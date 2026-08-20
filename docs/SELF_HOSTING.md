@@ -117,7 +117,9 @@ Solo self-hosting is free and unlimited, forever. Collaboration is licensed:
 inviting a second member, shared project history, the team task board and
 per-member activity.
 
-Email hello@munhq.com for a key, then add it to `.env`:
+Buy a licence from the account page of any chat-recall server you can reach
+(`/app?view=account`) — it is self-serve, no email thread. Then add the key to
+`.env`:
 
 ```bash
 echo "CHAT_RECALL_LICENSE=CR1...." >> .env

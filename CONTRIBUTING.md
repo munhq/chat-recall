@@ -41,10 +41,9 @@ before the first outside contribution rather than retrofitted after.
 ## Local dev
 
 ```bash
-git clone https://github.com/darkkraft/chat-recall.git
+git clone https://github.com/munhq/chat-recall.git
 cd chat-recall
-npm install          # optional native deps (better-sqlite3) build here; skipped
-                     # gracefully if you have no C++ toolchain
+npm install          # pure JS; the shipped CLI has no native dependency
 npm run build        # tsc -b + CLI bundles
 npx vitest run       # unit suite
 ```

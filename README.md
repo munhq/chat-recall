@@ -75,15 +75,20 @@ search — everything degrades to full-text without it.
 
 ### Keep the index live (+ optional server sync)
 
+You do not need a daemon. Claude Code spawns the MCP server, and that process
+syncs every 3 minutes on its own — the binary is the daemon. For a headless box
+with no assistant running, opt in to a background service:
+
 ```bash
-chat-recall watch                    # foreground daemon: watches all 4 tools, summaries, precompute
-chat-recall watch --install-service  # Linux: install + start a systemd user service
+chat-recall watch                    # foreground daemon: watches every tool, summaries, precompute
+chat-recall watch --install-service  # systemd user unit (Linux) · launchd (macOS) · Scheduled Task (Windows)
 ```
 
-When you're logged in to a chat-recall server (`chat-recall login <url>`), the
-daemon also pushes redacted conversations incrementally after each indexing
-batch — secrets are always masked client-side before anything leaves the
-machine. `chat-recall sync` does the same push once, on demand.
+`init` does not install it, on purpose. Both paths push through the same
+`syncIncremental()` under the same cross-platform index lock, so one writer
+touches the ledger at a time — see [docs/SYNC.md](docs/SYNC.md) before changing
+any of it. Secrets are masked client-side before anything leaves the machine.
+`chat-recall sync` does the same push once, on demand.
 
 ## Hook it up to Claude Code
 
@@ -102,16 +107,20 @@ machine. `chat-recall sync` does the same push once, on demand.
 Then install the hooks (one command sets up auto-save, pre-compact backup, and the resume-hint that warns when you're about to redo work):
 
 ```bash
-chat-recall install-hooks                # registers Stop + PreCompact + UserPromptSubmit
-chat-recall install-hooks --no-resume-hint  # skip the resume warning if you don't want it
+chat-recall install-hooks                 # registers all five events, in every Claude profile
+chat-recall install-hooks --no-resume-hint  # skip the resume warning
+chat-recall install-hooks --no-wakeup       # skip the session-start wake-up bundle
+chat-recall install-hooks --no-escalate     # skip the session-end escalation
 chat-recall install-hooks --uninstall     # remove all of ours, leave third-party hooks alone
 ```
 
 | Hook | When it fires | What it does |
 |---|---|---|
+| `SessionStart` | New session (`startup` / `clear`) | Injects the project-scoped wake-up bundle |
+| `UserPromptSubmit` | When you type a prompt | Searches past sessions; if a similar one exists, injects "you've worked on this before" into the agent's context |
 | `Stop` | After every assistant turn | Auto-saves topics, decisions, and tools to `~/.chat-recall/memory/` |
 | `PreCompact` | Before Claude Code compacts context | Emergency save so nothing is lost to compaction |
-| `UserPromptSubmit` | When you type a prompt | Searches past sessions; if a similar one exists, injects "you've worked on this before" into the agent's context |
+| `SessionEnd` | When the session closes | Escalates the session's learnings in the background, so nothing is delayed |
 
 ## Companion: codeindex (auto-detected)
 
@@ -197,7 +206,10 @@ The **CLI** keeps almost nothing locally — just what it needs to reach the ser
 |------|------|
 | `~/.chat-recall/credentials.json` | Server target(s) + device token (mode 0600) |
 | `~/.chat-recall/sync-ledger.json` | Per-server sync watermark (what's already shipped) |
-| `~/.chat-recall/hooks/` | Installed save hook (after `install-hooks`) |
+| `~/.chat-recall/hooks/` | Installed hooks (after `install-hooks`) |
+| `~/.chat-recall/index/diary/` | Agent diaries written by `recall_diary_write` |
+| `~/.chat-recall/shadow/` | Gzipped copy of the fullest-seen transcript per session, so an upstream `--resume` truncation cannot destroy history |
+| `~/.chat-recall/cache.db` | Local outcome/metadata cache for the local dashboard. Not an index, and not used in server mode |
 
 All indexed content — chunks, FTS, vectors, knowledge graph, secret findings, diary — lives **on the server** (Postgres for self-host and SaaS). Reset it by wiping the server's Postgres data, not anything under `~/.chat-recall`.
 
@@ -213,7 +225,7 @@ No telemetry. Your data lives in **your** server's Postgres — back that up how
 packages/
 ├── engine/src/
 │   ├── core/
-│   │   ├── backends/        ToolBackend per AI tool (claude, gemini, opencode, codex)
+│   │   ├── backends/        ToolBackend per AI tool (claude, gemini, opencode, codex, agy)
 │   │   ├── tool-backend.ts  Registry interface — single source of truth for tool identity
 │   │   ├── tool-paths.ts    Env-overridable default paths for each tool
 │   │   ├── generic-engine.ts  Shared turn extraction / edit scan / replay (canonical events)
@@ -227,7 +239,7 @@ packages/
 └── server/
     ├── src/                 Express API
     ├── client/              React + Vite UI (also generates the static marketing pages)
-    └── cloud/migrations/    SQL migrations
+    └── cloud/migrations/    Empty by design — pg-schema.ts owns the schema
 
 docker/                  Dockerfiles + nginx
 e2e/                     Playwright tests (*.mobile.spec.ts run on phone viewports)
@@ -236,7 +248,7 @@ e2e/                     Playwright tests (*.mobile.spec.ts run on phone viewpor
 Two extension points, both registry-driven:
 
 - **Adding a new content type** (e.g. another file format to index) — implement `MemorySource` (`discover` → `parse` → `extractLinks`) and register it in the `SourceRegistry`.
-- **Adding a new AI tool** (a fifth backend alongside Claude/Gemini/OpenCode/Codex) — implement `ToolBackend` (paths, ID handling, `readEvents`, `fileToolMap`, `extractEditDelta`) and register it in `packages/engine/src/core/backends/index.ts`. Walkthrough: [`docs/ADDING_A_TOOL.md`](docs/ADDING_A_TOOL.md). All paths are env-overridable via `CHAT_RECALL_{CLAUDE,GEMINI,CODEX}_HOME` / `CHAT_RECALL_OPENCODE_DB`.
+- **Adding a new AI tool** (a sixth backend alongside Claude/Gemini/OpenCode/Codex/Antigravity) — implement `ToolBackend` (paths, ID handling, `readEvents`, `fileToolMap`, `extractEditDelta`) and register it in `packages/engine/src/core/backends/index.ts`. Walkthrough: [`docs/ADDING_A_TOOL.md`](docs/ADDING_A_TOOL.md). All paths are env-overridable via `CHAT_RECALL_{CLAUDE,GEMINI,CODEX,AGY}_HOME` / `CHAT_RECALL_OPENCODE_DB`.
 
 ## Requirements
 

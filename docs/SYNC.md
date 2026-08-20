@@ -19,14 +19,21 @@ There is exactly **one** background sync path and it must stay that way:
   on every OS, so this is the cross-platform, **zero-install** writer — "the
   binary IS the daemon."
 
-### DO NOT add a second writer.
+### DO NOT add a second UNLOCKED writer.
 The standalone **`chat-recall-watch` systemd/launchd/schtasks service**
-(`auto-indexer/indexer.ts`) was a SECOND mechanism that also called
-`syncIncremental()`. Two uncoordinated writers raced the lock-free ledger and
-clobbered each other (oscillating coverage, 100% CPU re-scan loop). It is
-**retired** — `chat-recall init` no longer installs it. If you reintroduce a
-file-watcher, it MUST go through `syncIncremental()` (which now holds the lock);
-never write the ledger from an unlocked path.
+(`auto-indexer/indexer.ts`) still ships, and `chat-recall watch
+--install-service` installs it for a headless box with no assistant running.
+It is safe now for one reason only: it reaches the ledger through
+`syncIncremental()`, under the same index lock. Before that lock existed the two
+writers raced the lock-free ledger and clobbered each other — oscillating
+coverage and a 100% CPU re-scan loop.
+
+What changed is the DEFAULT, not the daemon: `chat-recall init` no longer
+installs the service, because the MCP process already ticks every 3 minutes on
+every OS. The daemon is opt-in.
+
+If you add another file-watcher, it MUST go through `syncIncremental()`. Never
+write the ledger from an unlocked path.
 
 Any new caller that writes the sync ledger MUST hold the index lock.
 
