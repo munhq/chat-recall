@@ -211,3 +211,35 @@ describe('ensureTrial repairs a live trial written without a plan', () => {
     expect(out?.plan).toBe('solo-monthly');
   });
 });
+
+/**
+ * The countdown reported more days than remained. On a 14-day trial started
+ * yesterday it said "14 days left" with 13.05 to run, so the banner looked
+ * identical on day one and day two and the trial appeared not to have started.
+ */
+describe('trialDaysLeft rounds down, except on the last day', () => {
+  const at = (msLeft: number) =>
+    trialDaysLeft({ currentPeriodEnd: 1_000_000_000 + msLeft } as never, 1_000_000_000);
+
+  test('13.05 days left reads as 13, not 14', () => {
+    expect(at(13.05 * DAY)).toBe(13);
+  });
+
+  test('a full 14 days reads as 14', () => {
+    expect(at(14 * DAY)).toBe(14);
+  });
+
+  test('the final day never reads as 0 while access is live', () => {
+    expect(at(6 * 3600_000)).toBe(1);      // six hours
+    expect(at(60_000)).toBe(1);            // one minute
+  });
+
+  test('expired is 0', () => {
+    expect(at(0)).toBe(0);
+    expect(at(-DAY)).toBe(0);
+  });
+
+  test('no end date means no deadline known, not expired', () => {
+    expect(trialDaysLeft({ currentPeriodEnd: null } as never)).toBeNull();
+  });
+});
