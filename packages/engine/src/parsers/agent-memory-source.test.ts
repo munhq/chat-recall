@@ -45,7 +45,7 @@ description: How to reach the staging k8s cluster via SSH
 originSessionId: 9648da50-6c75-4f09-893c-66368e3629c4
 ---
 # Staging Cluster Access
-The kubeconfig times out. Use SSH to the k3s server node.`);
+The cluster config times out. Use SSH to the server node instead.`);
     writeFileSync(join(memDir, 'feedback_read_code.md'),
       `---
 name: feedback_read_code
