@@ -1,7 +1,7 @@
 # Adding a new AI tool to chat-recall
 
-chat-recall supports four AI coding tools today: Claude Code, Gemini CLI,
-OpenCode, and Codex. Adding a fifth one is contained — all the per-tool
+chat-recall supports five AI coding tools today: Claude Code, Gemini CLI,
+OpenCode, Codex and Antigravity. Adding a sixth one is contained — all the per-tool
 knowledge lives behind a single `ToolBackend` interface, and most of the
 heavy lifting (turn extraction, file-edit scanning, diff replay) runs
 through a generic engine that operates on canonical events.

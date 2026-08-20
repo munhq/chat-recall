@@ -90,8 +90,7 @@ export interface StorageDriver {
    * Per-(author, project) session-activity rollup for the team view (Phase 2).
    * RLS-scoped to what the current viewer may see (own + shared), so a member's
    * team activity naturally shows their own work plus teammates' work on
-   * projects shared into the team — never a private project. See
-   * docs/TEAM_COLLAB_PLAN.md.
+   * projects shared into the team — never a private project.
    */
   teamActivity(opts?: { projectId?: string; author?: string; sinceMs?: number; limit?: number }):
     Promise<Array<{ authorSub: string | null; projectId: string; sessions: number; lastMtime: number }>>;

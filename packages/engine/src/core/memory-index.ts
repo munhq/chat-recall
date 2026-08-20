@@ -8,7 +8,7 @@
  * deliberately as a head-start for a possible future local mode, NOT because
  * it's active. If you're tracing how sessions get chunked/indexed in
  * production, this is the WRONG file — see `server/src/services/session-chunks.ts`
- * (chunksFromTurns) + the pg StorageDriver. See docs/memory-quality-fixes.md (C8).
+ * (chunksFromTurns) + the pg StorageDriver.
  *
  * ── original doc ──
  * LanceDB vector index for unified memory chunks. Stores all memory types in a
