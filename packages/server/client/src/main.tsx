@@ -8,7 +8,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import { isCloud, isSignedIn, clearLegacyTokens } from './services/auth';
 import './index.css';
 
-// Crash reporting → shared hotmun-frontend GlitchTip project. The `app` tag
+// Crash reporting → the operator's shared frontend GlitchTip project. The `app` tag
 // marks these as chat-recall (tier project stays per-app filterable). The DSN
 // is a public key, baked at build (Vite inlines VITE_GLITCHTIP_DSN); no-ops
 // when unset. Default integrations capture window.onerror + unhandledrejection.

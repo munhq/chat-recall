@@ -37,7 +37,7 @@ COPY --from=enginebuild /app/packages/engine/dist ./node_modules/@chat-recall/en
 # landing + embedded better-auth login (services/auth.ts).
 ARG VITE_CLOUD
 ARG VITE_API_BASE
-# GlitchTip DSN for browser crash reporting (shared hotmun-frontend project).
+# GlitchTip DSN for browser crash reporting (the operator's shared frontend project).
 # Public key, baked into the client bundle; Vite reads it from the env.
 ARG VITE_GLITCHTIP_DSN
 ENV VITE_GLITCHTIP_DSN=$VITE_GLITCHTIP_DSN
