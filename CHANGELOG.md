@@ -4,6 +4,55 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.4] — 2026-08-20
+
+### Fixed
+
+- A Team-only feature refused on a Solo or trial plan showed
+  "Failed to load toolkit matrix:" — a colon and nothing at all, because HTTP/2
+  carries no status text and the client built its message from `res.statusText`.
+  The server already answered with the feature, the plan it needs and an upgrade
+  link; the client discarded it. A plan boundary read as a broken product.
+- The Toolkit upgrade notice rendered inside the live sync toolbar, leaving eight
+  controls mounted and enabled that could only ever be refused — walked by the
+  keyboard before the one working button, and pushing the notice 636px down the
+  page on a phone. The caption above it still described clicking cells and a
+  "Sync everything" button that was no longer there.
+- Every per-seat pricing tier shared ONE seat counter, so choosing seats on Team
+  silently changed Self-hosted team, and checkout could be sent a count below the
+  clicked tier's own minimum. Switching between Monthly and Yearly also discarded
+  the choice.
+- The pricing page showed a unit price and no total. It now computes it live —
+  "2 x $25" becomes "$50 / month" — and the yearly saving is derived per tier
+  instead of a hardcoded "2 months free" that a price change would have made
+  false.
+- A self-host licence serial reached the buyer by email only, sent from a webhook
+  that swallows its own failures. A bounced or misfiled message left a paying
+  customer with nothing and no way to help themselves. The purchase now returns
+  with the serial on screen, with the activation steps, and can re-send the email
+  to the address on the subscription.
+- Someone who had just paid for a self-host licence could be shown "Your
+  subscription has ended": the entitlement that lifts the paywall is written by
+  the same webhook that issues the serial, so during that window the paywall
+  replaced the very screen they had returned for. A completed checkout now
+  outranks the paywall. A 401 or a sign-in bounce also discarded the checkout id,
+  which was the only route back to the serial.
+- The subscription paywall centred itself in a fixed, non-scrolling box, so below
+  about 900px of viewport height its heading was cut off above the top edge and
+  its sign-out button sat past the bottom with no scrollbar — the one exit that
+  screen provides was unreachable on a laptop.
+- The conversation viewer presented a 500-message page as though it were the
+  whole session: it printed "Showing 500 of 1148 messages", ended the transcript
+  mid-session with no sign that 648 more followed, and derived tool counts and
+  the session trace from that window without saying so.
+- Paging a conversation advanced by the length of the client's array, which is
+  shorter than the rows the server sent because command-noise rows are dropped
+  after the fetch — so later pages repeated messages already on screen.
+- A fresh Postgres database could not boot the server: `ALTER TABLE entitlements
+  ADD COLUMN seats` ran about 110 lines above the `CREATE TABLE` that makes the
+  table. Existing databases were unaffected, which is why only new self-host
+  installs and the compose-integration job failed.
+
 ## [0.5.3] — 2026-08-20
 
 ### Fixed
