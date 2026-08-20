@@ -3,6 +3,7 @@ import ConnectMachine from './ConnectMachine';
 import SyncRules from './SyncRules';
 import FleetHealth from './FleetHealth';
 import PlanPicker from './PlanPicker';
+import LicenceDeliveryPanel from './LicenceDelivery';
 import {
   getEntitlement, startCheckout, openBillingPortal, getAlertConfig, setAlertConfig,
   testAlertWebhook, getMe, createTeam, getPlan,
@@ -10,6 +11,7 @@ import {
 } from '../services/api';
 import { Button } from './primitives';
 import { isCloud, logout } from '../services/auth';
+import { completedCheckoutSessionId } from '../utils/checkout';
 
 /** Days remaining at which the plan picker stops waiting to be asked. */
 const TRIAL_NUDGE_DAYS = 3;
@@ -26,6 +28,10 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
   const [showPlans, setShowPlans] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  // Stripe substitutes {CHECKOUT_SESSION_ID} into the success URL, so its
+  // presence means "someone just finished paying". Read once: the panel below
+  // exchanges it for the licence serial a self-host buyer came here for.
+  const [checkoutSession] = useState<string | null>(() => completedCheckoutSessionId());
 
   useEffect(() => {
     getEntitlement()
@@ -62,6 +68,11 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
         </div>
       </div>
       {err && <div className="acct-err">{err}</div>}
+
+      {/* Above the subscription card on purpose: someone who has just paid for a
+          self-hosted licence is here for the serial and nothing else. It renders
+          nothing for a hosted-plan purchase. */}
+      {checkoutSession && <LicenceDeliveryPanel sessionId={checkoutSession} />}
 
       <section className="acct-card">
         <h2>Subscription</h2>
@@ -330,8 +341,29 @@ const ACCT_CSS = `
 .badge-active, .badge-trialing { background: var(--cr-ok-surf,#10241a); color: var(--cr-ok-500,#4ade80); }
 .badge-past_due { background: var(--cr-err-surf,#2a1416); color: var(--cr-err-500,#f87171); }
 .badge-canceled, .badge-none { background: var(--cr-ink-2,#171b21); color: var(--cr-fg-3,#6b7280); }
-.sub-screen { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background: var(--cr-ink-0,#0b0d10); padding:24px; z-index: 1000; }
-.sub-box { max-width: 460px; text-align:center; }
+/* Scrolls, and starts from the top once it no longer fits.
+   align-items:center on a fixed, non-scrolling box centres overflow OUT of the
+   viewport in both directions: below ~900px of height the heading was cut off
+   above the top edge and the sign-out button sat past the bottom with no
+   scrollbar (body carries overflow:hidden), so the one exit this screen
+   deliberately provides became unreachable. */
+.sub-screen { position:fixed; inset:0; display:flex; align-items:flex-start; justify-content:center;
+  overflow-y:auto; overscroll-behavior:contain;
+  background: var(--cr-ink-0,#0b0d10); padding:24px; z-index: 1000; }
+/* Wide enough for a three-tier catalogue on one row. At 460px the third tier
+   wrapped to its own line, and the bottom-aligned CTAs then left a 150px void
+   inside the short cards. */
+.sub-box { width:100%; max-width: 900px; margin:auto; text-align:center; }
+/* The picker's own grid handles the columns; this just stops a single yearly
+   card from stretching to the full width and making the layout jump between
+   the Monthly and Yearly tabs. */
+/* A capped track, not 1fr. A 1fr track fills the row whatever the count, which
+   stretched two yearly cards to 444px and made the width jump on a tab switch;
+   it also made justify-content inert, so a wrapped card sat left of a centred
+   row. 4 x 210 + 3 x 12 gap = 876, so four tiers fit inside 900 and a single
+   card stays card-sized. */
+.sub-box .cr-planpicker-grid { grid-template-columns: repeat(auto-fit, minmax(175px, 210px));
+  justify-content: center; }
 .sub-logo { color: var(--cr-brand-500,#5b8def); font-weight:700; margin-bottom: 20px; }
 .sub-box h1 { font-size: 28px; letter-spacing:-0.02em; margin: 0 0 14px; }
 `;
