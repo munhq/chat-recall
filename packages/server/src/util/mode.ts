@@ -10,7 +10,7 @@
  *                      that touches the local filesystem is disabled.
  *
  * EDITION (CHAT_RECALL_EDITION): selfhost (default) | cloud. Gates the
- * paid surface (teams UI, alerting later); the BSL license rides along in
+ * paid surface (teams UI, alerting later); the Elastic License 2.0 rides along in
  * either case. Capabilities are reported to the client so it can hide
  * unsupported tabs instead of rendering dead panels.
  */

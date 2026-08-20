@@ -19,7 +19,7 @@ chat-recall search "that auth bug"      # search everything you have ever done
 chat-recall recent                      # what was I working on
 ```
 
-By default this syncs to the hosted server at [chatrecall.dev](https://chatrecall.dev), free while the beta runs. To keep everything on your own machine instead, run the server yourself — see [Self-host](#self-host-the-server-docker-compose) below. Either way the CLI is the same binary and the same commands; only the server URL differs.
+By default this syncs to the hosted server at [chatrecall.dev](https://chatrecall.dev), which starts with a 14-day trial that needs no card and is a paid subscription after that — see [pricing](https://chatrecall.dev/pricing/). To keep everything on your own machine instead, run the server yourself: that is **free for one person, forever**, with every feature and no licence key, and a licence only buys collaboration — a second member, shared history, the team board. See [Self-host](#self-host-the-server-docker-compose) below. Either way the CLI is the same binary and the same commands; only the server URL differs.
 
 No API keys are required. Postgres full-text search is the default backend; vector search and AI summaries are upgrades, not prerequisites.
 
@@ -238,11 +238,11 @@ packages/
 │   └── hooks/               Claude Code hooks (install via `chat-recall install-hooks`)
 └── server/
     ├── src/                 Express API
-    ├── client/              React + Vite UI (also generates the static marketing pages)
+    ├── client/              React + Vite UI — the dashboard
     └── cloud/migrations/    Empty by design — pg-schema.ts owns the schema
 
-docker/                  Dockerfiles + nginx
-e2e/                     Playwright tests (*.mobile.spec.ts run on phone viewports)
+docker/                  Dockerfile + entrypoint for the server image
+e2e/                     Playwright tests for the dashboard
 ```
 
 Two extension points, both registry-driven:
