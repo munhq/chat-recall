@@ -1,100 +1,63 @@
 /**
- * The pricing page and the gate must describe the same product.
+ * What this file can still prove, now that the pricing page lives elsewhere.
  *
- * build-marketing.mjs is a static generator that cannot import this TypeScript
- * resolver, so it keeps its own TIERS map. That is a second copy of one truth —
- * the exact shape that produced four drifted price literals (the structured data
- * still advertised Solo at $10 after it rose to $15) and two divergent team gates.
- * Since the duplication cannot be removed, it is asserted instead: this test reads
- * the generator and fails if either side changes alone.
+ * The marketing generator moved to the private operator repo, because a
+ * self-hoster building this repo must not end up serving chatrecall.dev's
+ * storefront. It took the TIERS map with it, so the page↔gate comparison cannot
+ * run here any more: half of it is not in this checkout.
+ *
+ * That comparison still exists and still blocks a bad deploy — it runs in
+ * munhq/chat-recall-site as `check-parity.mjs`, before the image is built, with
+ * both halves present. It reads PLAN_FEATURES and SELFHOST_FREE_FEATURES out of
+ * entitlements.ts below, so changing packaging here without changing the page
+ * there fails the deploy rather than shipping a wrong price. Do not weaken the
+ * shapes it parses (`PLAN_FEATURES` entries, the two exported arrays) without
+ * updating that script.
+ *
+ * What remains here is everything provable from the product alone.
  */
 import { describe, test, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { planFeatures, FREE_FEATURES, SELFHOST_FREE_FEATURES, type Feature } from './entitlements.js';
+import { planFeatures, FREE_FEATURES, SELFHOST_FREE_FEATURES } from './entitlements.js';
 
-const GENERATOR = resolve(
-  import.meta.dirname, '../../client/scripts/build-marketing.mjs',
-);
-
-/** The TIERS map as the generator declares it, read out of the source. */
-function tiersFromGenerator(): Record<string, Feature[]> {
-  const src = readFileSync(GENERATOR, 'utf8');
-  const out: Record<string, Feature[]> = {};
-  // Each tier declares `features: ['a', 'b', …]` inside its own block.
-  const blocks = src.matchAll(/^\s{2}(free|solo|team|enterprise):\s*\{([\s\S]*?)^\s{2}\},/gm);
-  for (const b of blocks) {
-    const feats = /features:\s*\[([^\]]*)\]/.exec(b[2]);
-    expect(feats, `tier ${b[1]} declares no features`).toBeTruthy();
-    out[b[1]] = feats![1]
-      .split(',')
-      .map((f) => f.trim().replace(/^['"]|['"]$/g, ''))
-      .filter(Boolean) as Feature[];
-  }
-  return out;
-}
-
-describe('pricing page ↔ entitlement resolver parity', () => {
-  const tiers = tiersFromGenerator();
-
-  test('the generator declares all four tiers', () => {
-    expect(Object.keys(tiers).sort()).toEqual(['enterprise', 'free', 'solo', 'team']);
-  });
-
-  test('the free card advertises exactly what a self-hoster gets for nothing', () => {
-    // That card is titled "Self-hosted, free", so it must match the SELF-HOST
-    // free set — not FREE_FEATURES, which is the CLOUD floor for a tenant whose
-    // plan is absent or unrecognised. The two are deliberately different now:
-    // running your own server is free and full, while a cloud row with no plan
-    // fails closed to memory+scan.
-    expect(tiers.free.sort()).toEqual([...SELFHOST_FREE_FEATURES].sort());
-  });
-
-  test('the cloud floor stays fail-closed, and is NOT what the free card shows', () => {
+describe('entitlement resolver — the floor and the self-host grant', () => {
+  test('the cloud floor stays fail-closed', () => {
     // Guards the regression that widening self-host could have caused: handing
     // the paid tier to every cloud tenant whose plan failed to record.
     expect([...FREE_FEATURES].sort()).toEqual(['memory', 'scan']);
     expect([...planFeatures(null)].sort()).toEqual([...FREE_FEATURES].sort());
+    expect([...planFeatures('nonsense-plan')].sort()).toEqual([...FREE_FEATURES].sort());
   });
 
-  for (const plan of ['solo', 'team', 'enterprise'] as const) {
-    test(`${plan}: the page advertises exactly what the gate grants`, () => {
-      // planFeatures is what requireFeature() actually consults, so this compares
-      // the marketing claim against the enforcement, not against another claim.
-      const granted = [...planFeatures(`${plan}-monthly`)].sort();
-      expect(tiers[plan].sort()).toEqual(granted);
-    });
-  }
+  test('a self-hoster gets the Solo set for nothing, not the cloud floor', () => {
+    // The whole adoption argument: running your own server is free and full.
+    expect([...SELFHOST_FREE_FEATURES].sort())
+      .toEqual([...planFeatures('solo-monthly')].sort());
+    expect([...SELFHOST_FREE_FEATURES].sort()).not.toEqual([...FREE_FEATURES].sort());
+  });
 
-  test('every tier is a superset of the one below — no feature is lost by upgrading', () => {
-    const order = ['free', 'solo', 'team', 'enterprise'] as const;
+  test('every paid tier is a superset of the one below', () => {
+    const order = ['solo-monthly', 'team-monthly', 'enterprise-monthly'];
     for (let i = 1; i < order.length; i++) {
-      const lower = new Set(tiers[order[i - 1]]);
+      const lower = planFeatures(order[i - 1]);
+      const upper = planFeatures(order[i]);
       for (const f of lower) {
-        expect(tiers[order[i]], `${order[i]} is missing ${f} from ${order[i - 1]}`).toContain(f);
+        expect([...upper], `${order[i]} is missing ${f} from ${order[i - 1]}`).toContain(f);
       }
-    }
-  });
-
-  test('each paid tier lists exactly five bullets, so the cards stay level', () => {
-    const src = readFileSync(GENERATOR, 'utf8');
-    for (const plan of ['solo', 'team', 'enterprise']) {
-      const block = new RegExp(`^\\s{2}${plan}:\\s*\\{([\\s\\S]*?)^\\s{2}\\},`, 'm').exec(src);
-      const bullets = block![1].match(/^\s{6}'/gm) ?? [];
-      expect(bullets.length, `${plan} bullet count`).toBe(5);
     }
   });
 });
 
 /**
- * The advertised TOOL COUNT, which has now drifted twice.
+ * The advertised TOOL COUNT, which has drifted twice.
  *
- * The marketing pages, llms.txt and the README each state a number, and the
- * registry that decides it lives in packages/cli/src/mcp.ts. llms.txt is the
- * worst place for it to be wrong: it exists specifically so AI crawlers quote it
- * verbatim, so a stale number is repeated as fact by the assistants this product
- * is discovered through.
+ * The registry that decides it lives in packages/cli/src/mcp.ts. The README
+ * states a number and is checked here. The marketing pages and llms.txt also
+ * state one; those are checked by the site repo's parity script, since that is
+ * where they now live — and llms.txt is the worst place to be wrong, because it
+ * exists so AI crawlers quote it verbatim.
  */
 describe('advertised MCP tool count ↔ the registry', () => {
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
@@ -103,21 +66,17 @@ describe('advertised MCP tool count ↔ the registry', () => {
       .matchAll(/name: '(recall_[a-z_]+)'/g)].map((m) => m[1]),
   ).size;
 
-  const claims = (file: string): number[] =>
-    [...readFileSync(resolve(repoRoot, file), 'utf-8').matchAll(/(\d+)\s+(?:MCP\s+)?tools\b/g)]
-      .map((m) => Number(m[1]))
-      // '4 tools' in the README is the codeindex companion set, not ours.
-      .filter((n) => n > 10);
-
   test('the registry is non-trivial (guards a broken regex)', () => {
     expect(registered).toBeGreaterThan(40);
   });
 
-  for (const f of ['packages/server/client/scripts/build-marketing.mjs', 'README.md']) {
-    test(`${f} states the real count everywhere it states one`, () => {
-      const found = claims(f);
-      expect(found.length).toBeGreaterThan(0);
-      for (const n of found) expect(n).toBe(registered);
-    });
-  }
+  test('README.md states the real count everywhere it states one', () => {
+    const found = [...readFileSync(resolve(repoRoot, 'README.md'), 'utf-8')
+      .matchAll(/(\d+)\s+(?:MCP\s+)?tools\b/g)]
+      .map((m) => Number(m[1]))
+      // '4 tools' in the README is the codeindex companion set, not ours.
+      .filter((n) => n > 10);
+    expect(found.length).toBeGreaterThan(0);
+    for (const n of found) expect(n).toBe(registered);
+  });
 });

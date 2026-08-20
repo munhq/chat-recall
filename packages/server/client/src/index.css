@@ -6,12 +6,17 @@
  * `node scripts/sync-fonts.mjs`; licence in public/fonts/OFL.txt. */
 @import './fonts.css';
 
-/* TOKENS:START — everything between these markers is lifted verbatim into the
- * static marketing pages by scripts/build-marketing.mjs. That is why the block
- * is pure custom properties with no rules: the marketing site and the app must
- * be the same colours and the same type, and the only way to guarantee that is
- * to have one definition rather than two that agree today. Keep declarations
- * only; put anything that needs a selector below TOKENS:END. */
+/* TOKENS:START — everything between these markers is read verbatim by an
+ * EXTERNAL consumer: the marketing generator in munhq/chat-recall-site lifts
+ * this block into chatrecall.dev's static pages. That is why the block is pure
+ * custom properties with no rules: the site and the app must be the same colours
+ * and the same type, and the only way to guarantee that is one definition rather
+ * than two that agree today.
+ *
+ * The markers are therefore an API, not a comment. Renaming or removing them,
+ * or putting a rule inside them, breaks that build — in another repository,
+ * where this checkout's tests cannot see it. Keep declarations only; put
+ * anything that needs a selector below TOKENS:END. */
 /* ────────────────────── Dark (default) ────────────────────── */
 :root {
   /* Typography — intelligence-console direction (distinctive, not system slop):

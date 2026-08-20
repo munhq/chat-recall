@@ -90,8 +90,3 @@ CODE_TASKS.md
 
 # Local-only working files. Never published.
 .local/
-
-# Legal text (terms, privacy, seller name) materialized into the build context
-# by CI from a private secret. Operator-specific, never committed — see
-# docs/SELF_HOSTING.md and .github/workflows/build-chat-recall-cloud.yml.
-packages/server/client/.legal/

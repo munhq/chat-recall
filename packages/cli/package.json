@@ -43,5 +43,6 @@
   "devDependencies": {
     "@chat-recall/engine": "*",
     "better-sqlite3": "12.9.0"
-  }
+  },
+  "mcpName": "io.github.munhq/chat-recall"
 }
