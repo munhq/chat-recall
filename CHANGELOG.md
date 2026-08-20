@@ -4,6 +4,24 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.3] — 2026-08-20
+
+### Fixed
+
+- A signed-in user with no workspace was refused every API call with "no team
+  yet", so the dashboard loaded empty and the client turned that message into the
+  subscribe screen — which created the workspace as a side effect. The workspace
+  is now provisioned on first request.
+- Seats were validated when a subscription was bought and never again, and the
+  count was not stored, so a cloud team could invite past what it paid for. The
+  quantity is persisted and the invite path enforces it.
+- The trial countdown rounded up: 13.05 days remaining displayed as "14 days
+  left", so the banner looked identical on day one and day two.
+- The account page offered three priced plans with seat spinners directly under
+  the trial countdown. The picker now waits to be asked and opens itself when the
+  trial is nearly over. The panel shows the trial's end date.
+
+
 ## [0.5.2] — 2026-08-20
 
 ### Changed
