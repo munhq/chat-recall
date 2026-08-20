@@ -9,8 +9,8 @@
 # and GitHub gives public repositories unlimited free minutes on standard
 # runners — Linux, macOS and Windows alike. Nothing here is billed.
 #
-# Linux previously ran on `munhq-arc`, the self-hosted ARC pool in the k3s
-# cluster, to avoid billed minutes. That stopped working the moment the
+# Linux previously ran on a self-hosted ARC pool, to avoid billed minutes.
+# That stopped working the moment the
 # repository went public: GitHub withholds an organisation's self-hosted
 # runners from public repositories, so every run queued for ever. Do not put it
 # back — allowing it would let a fork's pull request execute code inside the
