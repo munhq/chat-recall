@@ -181,6 +181,131 @@ router.post('/activate', express.json({ limit: '4kb' }), async (req, res) => {
   }
 });
 
+/**
+ * GET /api/licence/for-session?session_id=cs_…
+ *
+ * Hand the buyer their serial on the screen they land on after paying.
+ *
+ * Until this existed, email was the ONLY delivery channel, and the webhook that
+ * sends it deliberately swallows failures so Stripe stops retrying — so a bounced
+ * or misfiled mail left a customer who had paid with nothing, an issued serial in
+ * the database, and no self-service way to reach it. If Stripe held no email at
+ * all, no mail was ever sent and nobody was told.
+ *
+ * The Checkout Session id is the credential: Stripe puts it in the redirect and
+ * nowhere else, so holding it is proof of this purchase. It is single-purpose
+ * (only ever resolves its own subscription), unguessable, and useless once the
+ * serial is in hand — which is why this route needs no account, exactly like
+ * /activate.
+ */
+/**
+ * A Stripe Checkout Session id, as it arrives in a success redirect. Named once:
+ * both routes below use it as the credential, and two copies of an
+ * authorisation-shaped check is two places for it to drift.
+ */
+const CHECKOUT_SESSION_ID = /^cs_[A-Za-z0-9_]{10,200}$/;
+
+router.get('/for-session', async (req, res) => {
+  const sessionId = typeof req.query.session_id === 'string' ? req.query.session_id.trim() : '';
+  // Shape-check before spending a Stripe call, and refuse anything that is not
+  // plausibly a Checkout Session id.
+  if (!CHECKOUT_SESSION_ID.test(sessionId)) {
+    return res.status(400).json({ error: 'a checkout session id is required' });
+  }
+  if (!process.env.STRIPE_SECRET_KEY) {
+    return res.status(503).json({ error: 'billing is not configured on this server' });
+  }
+
+  const cp = await createControlPlane();
+  try {
+    const { default: Stripe } = await import('stripe');
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    const subId = typeof session.subscription === 'string'
+      ? session.subscription
+      : session.subscription?.id;
+    if (!subId) {
+      // A real session that bought no subscription — a hosted plan, or one still
+      // completing. Not an error, and not a licence.
+      return res.status(404).json({ error: 'no licence for this purchase' });
+    }
+
+    const lic = await cp.findLicenceBySubscription(subId);
+    if (!lic) {
+      // The webhook may not have landed yet. 202 rather than 404 so the client
+      // knows to wait and retry instead of telling the customer it went wrong.
+      return res.status(202).json({ pending: true });
+    }
+
+    res.json({
+      serial: lic.serial,
+      seats: lic.seats ?? null,
+      // Their own address, echoed so they know WHERE the copy was sent — the
+      // commonest cause of a missing serial is a different email at checkout.
+      email: lic.email ?? null,
+      features: lic.features
+        ? lic.features.split(',').map((f: string) => f.trim()).filter(Boolean)
+        : [...SELFHOST_FEATURES],
+    });
+  } catch (e) {
+    log.error({ err: (e as Error).message }, 'licence lookup by session failed');
+    res.status(502).json({ error: 'could not look up this purchase' });
+  } finally {
+    await cp.close();
+  }
+});
+
+/**
+ * POST /api/licence/resend — send the serial to the address on the subscription.
+ *
+ * Keyed on the Checkout Session id, never on an email the caller supplies: an
+ * email-keyed resend is an enumeration oracle and a way to mail someone else's
+ * serial to yourself. This can only ever re-send to the address Stripe already
+ * has, which is the buyer's own.
+ */
+router.post('/resend', express.json({ limit: '2kb' }), async (req, res) => {
+  const sessionId = typeof req.body?.session_id === 'string' ? req.body.session_id.trim() : '';
+  if (!CHECKOUT_SESSION_ID.test(sessionId)) {
+    return res.status(400).json({ error: 'a checkout session id is required' });
+  }
+  if (!process.env.STRIPE_SECRET_KEY) {
+    return res.status(503).json({ error: 'billing is not configured on this server' });
+  }
+
+  const cp = await createControlPlane();
+  try {
+    const { default: Stripe } = await import('stripe');
+    const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+    const session = await stripe.checkout.sessions.retrieve(sessionId);
+    const subId = typeof session.subscription === 'string'
+      ? session.subscription
+      : session.subscription?.id;
+    if (!subId) return res.status(404).json({ error: 'no licence for this purchase' });
+
+    const lic = await cp.findLicenceBySubscription(subId);
+    if (!lic) return res.status(202).json({ pending: true });
+
+    const to = lic.email
+      || session.customer_details?.email
+      || (typeof session.customer_email === 'string' ? session.customer_email : null);
+    if (!to) {
+      return res.status(409).json({ error: 'this purchase has no email address on file' });
+    }
+
+    const { sendMail, licenceSerialMail } = await import('../auth/mailer.js');
+    const interval = /year|annual/i.test(String(session.metadata?.plan || '')) ? 'year' : 'month';
+    await sendMail(licenceSerialMail(to, lic.serial, interval));
+    res.json({ sent: true, email: to });
+  } catch (e) {
+    // Unlike the webhook, this failure is NOT swallowed: someone is waiting on
+    // the answer, so tell them it did not send.
+    log.error({ err: (e as Error).message }, 'licence resend failed');
+    res.status(502).json({ error: 'could not send the email' });
+  } finally {
+    await cp.close();
+  }
+});
+
 /** Whether a Stripe subscription is currently paid-for. Absent Stripe (self-hosted
  *  licence service, or tests) means "do not block" — the serial already vouched. */
 async function subscriptionIsPaid(subscriptionId: string): Promise<boolean> {

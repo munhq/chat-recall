@@ -483,7 +483,16 @@ router.post('/checkout', async (req, res) => {
         // Exactly one of trial_end / trial_period_days, or neither. See above.
         ...trialArg,
       },
-      success_url: accountReturnUrl(req, process.env.STRIPE_SUCCESS_URL, 'checkout=success'),
+      // {CHECKOUT_SESSION_ID} is substituted by Stripe on the redirect. The buyer
+      // of a self-host licence needs it: it is the only credential that proves
+      // they made THIS purchase, and it is what the return screen exchanges for
+      // their licence serial. Without it the serial existed only in an email,
+      // and a bounced email meant paid-and-got-nothing with no self-service
+      // recovery. Harmless for the hosted plans, which ignore it.
+      success_url: accountReturnUrl(
+        req, process.env.STRIPE_SUCCESS_URL,
+        'checkout=success&session_id={CHECKOUT_SESSION_ID}',
+      ),
       cancel_url: accountReturnUrl(req, process.env.STRIPE_CANCEL_URL, 'checkout=cancel'),
     });
 

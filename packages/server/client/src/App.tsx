@@ -27,6 +27,7 @@ import AdminPage from './components/AdminPage';
 import ProjectsDashboard from './components/ProjectsDashboard';
 import { SidebarExtrasProvider, useSidebarExtras } from './context/sidebar-extras';
 import { isCloud } from './services/auth';
+import { completedCheckoutSessionId } from './utils/checkout';
 import {
   getStatus,
   getRecentSessionsPage,
@@ -240,6 +241,18 @@ function AppInner() {
   // (Stripe not configured) or on self-host. A late 402 from any data call
   // (lapsed mid-session) flips us back to 'subscribe'.
   const [gate, setGate] = useState<'loading' | 'ok' | 'subscribe'>(isCloud() ? 'loading' : 'ok');
+  // True while the URL still carries a completed Stripe Checkout redirect. Read
+  // once from the initial URL so a later state change cannot revoke it.
+  const [justPaid] = useState<boolean>(() => {
+    try {
+      // Scoped to the account view on purpose. The licence panel renders nowhere
+      // else, so this is the only place the override buys anything — and left
+      // unscoped, any ?checkout=success URL waved a lapsed tenant past the
+      // paywall into the rest of the shell.
+      if (new URLSearchParams(window.location.search).get('view') !== 'account') return false;
+      return !!completedCheckoutSessionId();
+    } catch { return false; }
+  });
   useEffect(() => {
     if (!isCloud()) return;
     getEntitlement()
@@ -853,7 +866,16 @@ function AppInner() {
   if (gate === 'loading') {
     return <div className="app" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100dvh', color: 'var(--cr-fg-3)' }}>Loading…</div>;
   }
-  if (gate === 'subscribe') return <SubscribeScreen />;
+  // Never meet someone who has JUST paid with "your subscription has ended".
+  //
+  // The entitlement that lifts this gate is written by the same Stripe webhook
+  // that issues a self-host licence serial, and the buyer is redirected back
+  // here the instant checkout completes — often before either has landed. The
+  // paywall would then replace the whole shell, hiding the licence panel that is
+  // the only reason they returned, and a reload loses the session_id for good.
+  //
+  // A checkout=success redirect is proof of payment on its own, so it wins.
+  if (gate === 'subscribe' && !justPaid) return <SubscribeScreen />;
 
   // The installer's token page renders chrome-free: the user is mid-command in
   // a terminal — no sidebar, no tabs, just the token. (Auto-creates the
