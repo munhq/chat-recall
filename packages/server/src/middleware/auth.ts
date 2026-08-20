@@ -26,6 +26,10 @@
 import type { Request, Response, NextFunction } from 'express';
 import { runWithTenant, runWithAuthor, createControlPlane } from '../imports.js';
 import { allows } from '../util/entitlements.js';
+import { createTeamFor } from '../util/memberships.js';
+import { createLogger } from '@chat-recall/engine/core/logger.js';
+
+const log = createLogger('auth');
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -440,8 +444,41 @@ async function resolveTenantForUser(
     }
     if (memberships.length === 1) return { tenant: memberships[0].team_slug, userId: user.sub, authorSub: user.sub, authorDevice: null };
     if (memberships.length === 0) {
-      res.status(403).json({ error: 'no team yet — create one via POST /api/teams' });
-      return null;
+      // Provision the personal workspace instead of refusing.
+      //
+      // Refusing meant every call a freshly signed-in user made answered 403
+      // "no team yet" — a burst of them per page load — and the dashboard sat
+      // empty until something else happened to create the team. Worse, the
+      // client reads that message and shows the SUBSCRIBE screen, so a new user's
+      // first impression of a product they have not been charged for is a
+      // paywall, and the workspace only appeared because that screen creates one
+      // as a side effect.
+      //
+      // Three code paths already auto-created it (the subscribe screen, the
+      // connect-token page, checkout's retry), which is the tell: it was never a
+      // decision the user should make, only one they had to stumble into. Doing
+      // it here does it once, in the place that already knows the request has a
+      // verified user and no tenant.
+      //
+      // Same lazy-on-read shape as ensureTrial, and safe for the same reason:
+      // createTeam is keyed on the owner, so two concurrent first requests
+      // converge on one workspace rather than making two.
+      const base = (user.email?.split('@')[0] ?? '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+      try {
+        const created = await createTeamFor(user.sub, user.email, base || 'workspace');
+        log.info({ tenant: created.slug, sub: user.sub }, 'provisioned workspace on first request');
+        return { tenant: created.slug, userId: user.sub, authorSub: user.sub, authorDevice: null };
+      } catch (err) {
+        // Losing a create race is normal, not an error: re-read and use whatever
+        // won. Only a genuinely team-less user falls through to the refusal.
+        const retry = await cp.listMemberships(user.sub);
+        if (retry.length >= 1) {
+          return { tenant: retry[0].team_slug, userId: user.sub, authorSub: user.sub, authorDevice: null };
+        }
+        log.error({ err, sub: user.sub }, 'could not provision a workspace');
+        res.status(403).json({ error: 'no team yet — create one via POST /api/teams' });
+        return null;
+      }
     }
     res.status(400).json({
       error: 'multiple teams — pass the x-team header',
