@@ -57,6 +57,7 @@ import syncConfigRouter from './routes/sync-config.js';
 import fleetHealthRouter from './routes/fleet-health.js';
 import billingRouter from './routes/billing.js';
 import installRouter from './routes/install.js';
+import dataControlsRouter from './routes/data-controls.js';
 import { capabilities, isServerMode } from './util/mode.js';
 import { cliRelease } from './util/cli-release.js';
 import { generateMissingSummariesAllTenants, serverSummaryConfig } from './services/summary-worker.js';
@@ -503,6 +504,11 @@ app.use('/api/secrets', paid, rl('read-light'), secretsRouter);
 // Store-backed in both modes: the edits timeline reads synced compute_cache
 // diff rows, the projects tree reads memory_metadata project_ids.
 app.use('/api/edits', paid, rl('read-heavy'), editsRouter);
+// The user's own export and delete controls. `paid` still applies, and its
+// lapsed-tenant rule is exactly right here: export is a GET so it keeps working
+// after a subscription ends — taking your history with you must never require
+// paying again — while the deletes are POSTs and stop, like every other write.
+app.use('/api/data', paid, rl('write-light'), dataControlsRouter);
 app.use('/api/projects', paid, rl('read-light'), projectsRouter);
 
 // Recall surfaces for the thin-collector MCP: knowledge graph + key-value.
