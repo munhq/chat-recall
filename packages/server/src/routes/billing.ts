@@ -39,7 +39,7 @@ import {
   tenantStoredBytes,
 } from '../util/billing.js';
 import { ensureTrial, isNoCardTrial, trialDaysLeft, trialLengthDays } from '../util/trial.js';
-import { planCatalogue, resolveLine, isPlanError, trialDays } from '../util/billing-plans.js';
+import { planCatalogue, resolveLine, isPlanError, trialDays, resolvePlanKey } from '../util/billing-plans.js';
 import type { PlanLimits } from '../util/entitlements.js';
 import { publicOrigin, UnsafeOriginError } from './install.js';
 
@@ -134,9 +134,12 @@ function planOf(o: Record<string, unknown>): string | null {
  */
 export function planGrantsTeam(plan: string | null | undefined): boolean {
   if (!plan) return false;
-  const p = plan.toLowerCase();
+  // resolvePlanKey() replaces the price-id lookup this function used to carry
+  // alone, so team-by-price-id and features-by-price-id now share one rule.
+  const key = resolvePlanKey(plan) ?? plan;
+  const p = key.toLowerCase();
   if (p.startsWith('team') || p.startsWith('enterprise')) return true;
-  const match = planCatalogue().find((c) => c.priceId === plan);
+  const match = planCatalogue().find((c) => c.key === key || c.priceId === plan);
   return !!match && match.seats === 'per_seat';
 }
 
