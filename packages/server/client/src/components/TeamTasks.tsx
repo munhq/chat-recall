@@ -590,6 +590,19 @@ const TT_CSS = `
   border-radius: var(--cr-radius-md); margin-bottom: 12px; font-size: 13px; }
 
 .tt-new { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+/* The new-task input takes the row; the selects keep their intrinsic width. */
+.tt-new > :first-child { flex: 1; min-width: 0; }
+
+/* Every <select> and the comment button on this board. These rules were lost
+   when the auto-file checkbox they sat next to was replaced by AutoPanel, so the
+   status and assignee pickers rendered as unstyled browser controls — light grey
+   boxes inside a dark board, with no focus ring on any of them. */
+.tt-sel, .tt-sel-sm { border: 1px solid var(--cr-line-1); border-radius: var(--cr-radius-sm);
+  padding: 6px 8px; background: var(--cr-ink-2); color: var(--cr-fg-1); font-size: 13px;
+  font-family: inherit; }
+.tt-sel-sm { font-size: 11px; padding: 2px 5px; }
+.tt-sel:focus-visible, .tt-sel-sm:focus-visible, .tt-cmt:focus-visible {
+  outline: 2px solid var(--cr-brand-500); outline-offset: 1px; }
 .tt-auto-wrap { border: 1px solid var(--cr-line-1); border-radius: var(--cr-radius-lg);
   background: var(--cr-ink-1); margin-bottom: 16px; overflow: hidden; }
 .tt-auto-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 11px 13px; }
