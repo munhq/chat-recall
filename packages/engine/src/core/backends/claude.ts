@@ -44,6 +44,16 @@ import {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/**
+ * Remove system-reminder blocks and return what the person actually typed.
+ *
+ * The harness appends these to genuine prompts, so a contains-check that
+ * discards the whole record loses the prompt as well as the reminder.
+ */
+function stripReminders(text: string): string {
+  return text.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '').trim();
+}
+
 export class ClaudeBackend implements ToolBackend {
   readonly id = 'claude' as const;
   readonly idPrefix = '';
@@ -326,6 +336,18 @@ export class ClaudeBackend implements ToolBackend {
         const tsIso = typeof obj.timestamp === 'string' ? obj.timestamp : undefined;
         const ts = tsIso ? Date.parse(tsIso) || mtime : mtime;
 
+        if (obj.type === 'queue-operation') {
+          // 'enqueue' holds the text the person typed; 'remove' is the dequeue
+          // half and carries the same string, so only 'enqueue' is read.
+          if (obj.operation === 'enqueue' && typeof obj.content === 'string') {
+            const queued = stripReminders(obj.content);
+            if (queued && !queued.startsWith('<task-notification')) {
+              events.push({ kind: 'user', ts, tsIso, line: lineNum, text: queued });
+            }
+          }
+          continue;
+        }
+
         if (obj.type === 'user') {
           const msg = obj.message as Record<string, unknown> | undefined;
           const content = msg?.content;
@@ -355,9 +377,10 @@ export class ClaudeBackend implements ToolBackend {
               }
             }
           }
-          if (text && !text.includes('<system-reminder>')) {
-            events.push({ kind: 'user', ts, tsIso, line: lineNum, text });
-          }
+          // A reminder is APPENDED to a real prompt: strip the block, keep the
+          // words. Dropping the whole record threw the prompt away with it.
+          const spoken = stripReminders(text);
+          if (spoken) events.push({ kind: 'user', ts, tsIso, line: lineNum, text: spoken });
           for (const tr of toolResults) {
             events.push({
               kind: 'tool_result', ts, tsIso, line: lineNum,
