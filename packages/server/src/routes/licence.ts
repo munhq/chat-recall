@@ -39,6 +39,10 @@ const router = express.Router();
 
 /** Features a self-host licence grants. Mirrors the 'selfhost' entry in the plan
  *  map — the Solo set, on the customer's own infrastructure. */
+// COLLABORATION plus the two single-player features the free self-host tier
+// withholds ('toolkit', 'tasks'), so a licence — including a ONE-seat licence —
+// unlocks real capability rather than a grant with nobody to share it with.
+//
 // COLLABORATION, not the Solo set. Running chat-recall for yourself is free —
 // see SELFHOST_FREE_FEATURES in util/entitlements.ts — so a licence that granted
 // sync/findings/insights would now be selling something already given away. What
@@ -48,7 +52,7 @@ const router = express.Router();
 //
 // Safe to narrow: every feature dropped from this list is now free, so an
 // already-activated instance loses nothing.
-const SELFHOST_FEATURES = ['team', 'toolkit'] as const;
+const SELFHOST_FEATURES = ['team', 'toolkit', 'tasks'] as const;
 
 /**
  * The activation signing key, from CHAT_RECALL_ACTIVATION_KEY.
