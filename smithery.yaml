@@ -1,0 +1,52 @@
+# Smithery — https://smithery.ai
+#
+# Smithery installs an MCP server on a user's behalf, so this file describes how
+# to START it and what it needs, not what it does. The tool descriptions in
+# packages/cli/src/mcp.ts carry the "what".
+#
+# stdio, not a hosted deployment, and that is not a limitation to work around: the
+# CLI reads transcripts off the user's own disk and redacts credentials there
+# before anything is uploaded. A remotely hosted copy could do neither, which
+# would remove the property the security model rests on.
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      chatRecallServer:
+        type: string
+        title: Server URL
+        description: >-
+          Where to sync. Leave empty for the hosted service at
+          https://chatrecall.dev, or point it at your own instance —
+          self-hosting is free for one person.
+        default: ""
+      profile:
+        type: string
+        title: Tool profile
+        description: >-
+          "lean" registers the 25 tools people reach for most; "full" registers
+          all 52. Lean is the default because tool choice degrades as the list
+          grows. Every tool still works when called by name under either.
+        enum: [lean, full]
+        default: lean
+    required: []
+  # A function rather than a static command, so an empty Server URL means "use
+  # the default" instead of exporting an empty variable that overrides it.
+  commandFunction: |-
+    (config) => ({
+      command: 'npx',
+      args: ['-y', 'chat-recall-mcp'],
+      env: Object.assign(
+        {},
+        config.chatRecallServer ? { CHAT_RECALL_SERVER: config.chatRecallServer } : {},
+        config.profile ? { CHAT_RECALL_MCP_PROFILE: config.profile } : {}
+      ),
+    })
+
+# Read before the first call. The MCP is read-only over an index the CLI builds;
+# it cannot index anything until `chat-recall init` has run and the user has
+# approved the device login in a browser. Until then every server-backed tool
+# answers with the login instruction rather than failing obscurely.
+build:
+  dockerfile: null
