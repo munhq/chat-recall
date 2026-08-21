@@ -51,6 +51,7 @@ export class SqliteStore implements StorageDriver {
   async getTeamTask(): Promise<null> { return null; }
   async updateTeamTask(): Promise<null> { return null; }
   async addTeamTaskComment(): Promise<null> { return null; }
+  async teamTasksByFindingIds(): Promise<never[]> { return []; }
 
   // ── links ──
   async addLink(...a: Args<'addLink'>) { return this.inner.addLink(...a); }
