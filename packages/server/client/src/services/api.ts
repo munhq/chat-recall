@@ -2566,9 +2566,29 @@ export interface TeamTask {
 }
 
 export interface AutoTasksPolicy { enabled: boolean; maxPri: 0 | 1 }
-export async function getAutoTasksPolicy(): Promise<AutoTasksPolicy> {
+/** The run state behind the switch: what it did last, and what is waiting. */
+export interface AutoTasksStatus extends AutoTasksPolicy {
+  lastRun: { at: number; created: number; closed: number } | null;
+  eligible: number;
+  filed: number;
+  byProject: Array<{ projectId: string; critical: number; high: number; eligible: number }>;
+}
+export async function getAutoTasksPolicy(): Promise<AutoTasksStatus> {
   const res = await fetchWithTimeout(`${API_BASE}/tasks/policy`);
-  if (!res.ok) throw new Error('Failed to load auto-tasks policy');
+  if (!res.ok) throw new Error(res.status === 402
+    ? 'The task board needs a plan that includes tasks.'
+    : `Failed to load the auto-file setting (HTTP ${res.status})`);
+  const j = await res.json();
+  return { lastRun: null, eligible: 0, filed: 0, byProject: [], ...j };
+}
+/** Run the policy now instead of waiting for the next code index. */
+export async function runAutoTasksNow(): Promise<{ created: number; closed: number }> {
+  const res = await fetchWithTimeout(`${API_BASE}/tasks/policy/run`, { method: 'POST' });
+  if (!res.ok) {
+    let msg = `Run failed (HTTP ${res.status})`;
+    try { const j = await res.json(); if (j?.error) msg = j.error; } catch { /* keep the status */ }
+    throw new Error(msg);
+  }
   return res.json();
 }
 export async function setAutoTasksPolicy(p: AutoTasksPolicy): Promise<AutoTasksPolicy> {

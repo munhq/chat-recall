@@ -19,7 +19,7 @@ import { tenantFeatures } from '../util/billing.js';
 import { featureRequired } from '../util/entitlements.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { createControlPlane } from '../imports.js';
-import { parsePolicy, AUTO_TASKS_KEY } from '../services/auto-tasks.js';
+import { parsePolicy, autoTasksStatus, runAutoTasks, AUTO_TASKS_KEY } from '../services/auto-tasks.js';
 
 const log = createLogger('tasks');
 const router = express.Router();
@@ -53,14 +53,48 @@ function actor(req: express.Request): string { return (req.authorSub || req.user
  * OPT-IN, stored per tenant, read by services/auto-tasks.ts after every code
  * index. Behind this router's 'tasks' mount, so the free plan cannot set it.
  *
- *   GET /api/tasks/policy          → { enabled, maxPri }
- *   PUT /api/tasks/policy {enabled, maxPri?}
+ *   GET  /api/tasks/policy      → { enabled, maxPri, lastRun, eligible, filed, byProject }
+ *   PUT  /api/tasks/policy {enabled, maxPri?}
+ *   POST /api/tasks/policy/run  → run it NOW, returns { created, closed }
+ *
+ * GET returns the RUN STATE, not only the setting. The switch used to report
+ * nothing back, so turning it on and turning it on-but-broken looked identical:
+ * cards only ever appear on the next `chat-recall code index`, and nothing said
+ * so. Now the panel can state what is waiting, per project, and what the last
+ * run did.
  */
 router.get('/policy', async (req, res) => {
-  const cp = await createControlPlane();
   try {
-    res.json(parsePolicy(await cp.getTenantSetting(req.tenant as string, AUTO_TASKS_KEY)));
+    const st = await autoTasksStatus(req.tenant as string);
+    res.json({ ...st.policy, lastRun: st.lastRun, eligible: st.eligible, filed: st.filed, byProject: st.byProject });
+  } catch (e) {
+    log.error({ err: e }, 'auto-tasks status failed');
+    // Degrade to the bare setting rather than 500: the switch must stay usable
+    // even when the findings tables cannot be read.
+    const cp = await createControlPlane();
+    try {
+      const policy = parsePolicy(await cp.getTenantSetting(req.tenant as string, AUTO_TASKS_KEY));
+      res.json({ ...policy, lastRun: null, eligible: 0, filed: 0, byProject: [] });
+    } finally { await cp.close(); }
+  }
+});
+
+/**
+ * Run the policy now. This is the "Run now" button: without it, the only
+ * producer is a code-index sync, so a person who just enabled the policy has no
+ * way to see it work and no way to tell a working switch from a dead one.
+ * Bypasses the 10-minute debounce; still refuses when the policy is off.
+ */
+router.post('/policy/run', async (req, res) => {
+  const cp = await createControlPlane();
+  let enabled = false;
+  try {
+    enabled = parsePolicy(await cp.getTenantSetting(req.tenant as string, AUTO_TASKS_KEY)).enabled;
   } finally { await cp.close(); }
+  if (!enabled) return res.status(409).json({ error: 'auto-filing is off — turn it on first' });
+  const r = await runAutoTasks(req.tenant as string, { force: true });
+  if (!r) return res.status(500).json({ error: 'the run did not complete — see server logs' });
+  res.json(r);
 });
 
 router.put('/policy', async (req, res) => {
