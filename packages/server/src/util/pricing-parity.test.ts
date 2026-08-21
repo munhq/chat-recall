@@ -31,11 +31,29 @@ describe('entitlement resolver — the floor and the self-host grant', () => {
     expect([...planFeatures('nonsense-plan')].sort()).toEqual([...FREE_FEATURES].sort());
   });
 
-  test('a self-hoster gets the Solo set for nothing, not the cloud floor', () => {
-    // The whole adoption argument: running your own server is free and full.
-    expect([...SELFHOST_FREE_FEATURES].sort())
-      .toEqual([...planFeatures('solo-monthly')].sort());
+  test('a self-hoster gets nearly the Solo set for nothing, not the cloud floor', () => {
+    // The adoption argument: running your own server is free and covers the whole
+    // memory product — index, search, sync, findings, alerts, analytics.
+    const solo = new Set(planFeatures('solo-monthly'));
+    for (const f of SELFHOST_FREE_FEATURES) {
+      expect([...solo], `free self-host grants ${f}, which Solo must also have`).toContain(f);
+    }
+    // ...and it is emphatically more than the cloud floor.
     expect([...SELFHOST_FREE_FEATURES].sort()).not.toEqual([...FREE_FEATURES].sort());
+  });
+
+  test('free self-host withholds exactly the two single-player extras, and nothing else', () => {
+    // A DELIBERATE divergence, not drift. 'toolkit' and 'tasks' are single-player
+    // and could be free here on capability grounds, but the door opens one way:
+    // adding to a free tier later is a gift, removing is the rug-pull story. They
+    // are also what a one-seat self-host licence unlocks, which is what stops that
+    // licence being a payment for nothing.
+    //
+    // If this list ever grows beyond those two, the divergence has stopped being a
+    // decision and started being drift — which is what this test exists to catch.
+    const solo = new Set(planFeatures('solo-monthly'));
+    const withheld = [...solo].filter((f) => !SELFHOST_FREE_FEATURES.includes(f)).sort();
+    expect(withheld).toEqual(['tasks', 'toolkit']);
   });
 
   test('every paid tier is a superset of the one below', () => {

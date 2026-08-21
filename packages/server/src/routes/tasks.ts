@@ -15,12 +15,34 @@
  */
 import express from 'express';
 import { createStore } from '../imports.js';
+import { tenantFeatures } from '../util/billing.js';
+import { featureRequired } from '../util/entitlements.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 
 const log = createLogger('tasks');
 const router = express.Router();
 
 const STATUSES = new Set(['todo', 'in_progress', 'blocked', 'done']);
+
+/**
+ * Assigning work to SOMEONE ELSE is the collaboration boundary — the mount is
+ * only 'tasks', so a Solo tenant reaches this router and must be stopped here
+ * rather than at the door.
+ *
+ * Assigning to yourself is not collaboration and stays free of the gate: a
+ * one-person board where you cannot put your own name on a card would be a
+ * strange thing to ship.
+ */
+async function refuseForeignAssignee(
+  req: express.Request, res: express.Response, assignee: unknown,
+): Promise<boolean> {
+  if (typeof assignee !== 'string' || !assignee) return false;
+  if (assignee === actor(req)) return false;           // your own name: always fine
+  const features = await tenantFeatures(req.tenant as string);
+  if (features.includes('team')) return false;
+  res.status(402).json(featureRequired('team'));
+  return true;
+}
 /** The actor for created_by / comment author: the real user sub, else the userId. */
 function actor(req: express.Request): string { return (req.authorSub || req.userId || 'unknown') as string; }
 
@@ -45,6 +67,7 @@ router.get('/', async (req, res) => {
 router.post('/', async (req, res) => {
   const title = (req.body?.title || '').trim();
   if (!title) return res.status(400).json({ error: 'title required' });
+  if (await refuseForeignAssignee(req, res, req.body?.assigneeSub)) return;
   const store = await createStore();
   try {
     const task = await store.createTeamTask({
@@ -79,7 +102,12 @@ router.patch('/:id', async (req, res) => {
     if (!STATUSES.has(req.body.status)) return res.status(400).json({ error: `status must be one of ${[...STATUSES].join(', ')}` });
     patch.status = req.body.status;
   }
-  if (req.body?.assigneeSub !== undefined) patch.assigneeSub = req.body.assigneeSub;
+  if (req.body?.assigneeSub !== undefined) {
+    // Re-checked on update, not just on create: otherwise a Solo tenant creates
+    // an unassigned card and then PATCHes a teammate onto it.
+    if (await refuseForeignAssignee(req, res, req.body.assigneeSub)) return;
+    patch.assigneeSub = req.body.assigneeSub;
+  }
   if (req.body?.due !== undefined) patch.due = typeof req.body.due === 'number' ? req.body.due : null;
   if (Array.isArray(req.body?.blocks)) patch.blocks = req.body.blocks.map(String);
   if (Array.isArray(req.body?.blockedBy)) patch.blockedBy = req.body.blockedBy.map(String);

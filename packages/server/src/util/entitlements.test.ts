@@ -61,12 +61,15 @@ describe('cloud: plan → features', () => {
     // Regression: the trial was created with plan=null, which resolves to the free
     // set, so a 14-day trial showed none of what it exists to sell.
     const f = featuresFor('trial');
-    for (const x of ['sync', 'alerts', 'findings', 'insights'] as const) {
+    for (const x of ['sync', 'alerts', 'findings', 'insights', 'tasks', 'toolkit'] as const) {
       expect(f.has(x), `trial should grant ${x}`).toBe(true);
     }
-    // ...but never collaboration.
+    // ...but never COLLABORATION, which is the one thing needing a second person.
+    // 'toolkit' and 'tasks' left this list deliberately: neither does. Toolkit
+    // distributes your own config across your own machines, and a one-person
+    // board has nobody to assign to. Gating them here refused two features to a
+    // paying Solo customer, who discovered it only after paying.
     expect(f.has('team')).toBe(false);
-    expect(f.has('toolkit')).toBe(false);
   });
 
   test('featureRequired never tells anyone to buy the TRIAL', () => {
@@ -80,12 +83,19 @@ describe('cloud: plan → features', () => {
     expect([...planFeatures('mystery-tier')].sort()).toEqual(['memory', 'scan']);
   });
 
-  test('Solo does NOT get team or toolkit', () => {
+  test('Solo gets the single-player set, but never collaboration', () => {
     expect(allows('solo-monthly', 'findings')).toBe(true);
     expect(allows('solo-monthly', 'alerts')).toBe(true);
     expect(allows('solo-monthly', 'sync')).toBe(true);
+    // Single-player by nature, so Solo has them: own config across own machines,
+    // and a board for your own work.
+    expect(allows('solo-monthly', 'toolkit')).toBe(true);
+    expect(allows('solo-monthly', 'tasks')).toBe(true);
+    // The line that must not move: assigning work to another person, shared
+    // history and per-member activity all need a second identity.
     expect(allows('solo-monthly', 'team')).toBe(false);
-    expect(allows('solo-monthly', 'toolkit')).toBe(false);
+    expect(allows('solo-monthly', 'sso')).toBe(false);
+    expect(allows('solo-monthly', 'audit')).toBe(false);
   });
 
   test('Team gets collaboration but NOT enterprise features', () => {

@@ -56,7 +56,8 @@ export type LicenseFeature =
   | 'alerts'    // continuous secret monitoring: rules, dismissals, alerting
   | 'findings'  // code intelligence: findings, hotspots, action plan, task export
   | 'insights'  // analytics across the whole history: cost, tokens, time, trends
-  | 'team'      // collaboration: shared history, board, per-member activity
+  | 'tasks'     // the task board for your OWN work: create, track, close
+  | 'team'      // collaboration: shared history, ASSIGNING work, per-member activity
   | 'toolkit'   // distributing skills / MCP config across machines and teammates
   | 'sso'       // single sign-on (OIDC / Keycloak)
   | 'audit';    // audit log export
