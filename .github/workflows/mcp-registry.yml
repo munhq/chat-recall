@@ -1,0 +1,42 @@
+# Publish server.json to the official MCP registry with GitHub Actions OIDC.
+#
+# Why OIDC and not a person: the registry proves ownership of the
+# io.github.munhq/* namespace through GitHub. A user's OAuth token cannot carry
+# that proof here — munhq restricts third-party OAuth apps, so the registry's
+# app never sees the org membership, public or not, and every interactive
+# `mcp-publisher login github` ends in a 403 that names only the user's own
+# namespace. A workflow in this repo IS the org speaking for itself: the OIDC
+# token GitHub mints for this run proves repo+owner, no app policy involved.
+#
+# Runs on version tags (the release checklist says re-publish on every bump so
+# the listing never points at a tarball that does not exist) and on manual
+# dispatch for the first publish and for fixes to server.json alone.
+name: mcp-registry
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # load-bearing: this is the OIDC proof
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz \
+            | tar -xz mcp-publisher
+
+      - name: Login (GitHub Actions OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      # From the repo root, where server.json lives. The manifest's versions
+      # must match the npm release — release-npm.yml guards that pairing.
+      - name: Publish
+        run: ./mcp-publisher publish
