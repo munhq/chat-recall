@@ -315,7 +315,9 @@ export class PgStore implements StorageDriver {
       id: r.id, projectId: r.project_id, title: r.title, description: r.description,
       status: r.status, assigneeSub: r.assignee_sub ?? null, createdBy: r.created_by,
       blocks: arr(r.blocks), blockedBy: arr(r.blocked_by),
-      linkedSessionId: r.linked_session_id ?? null, due: r.due != null ? Number(r.due) : null,
+      linkedSessionId: r.linked_session_id ?? null,
+      linkedFindingId: r.linked_finding_id ?? null,
+      due: r.due != null ? Number(r.due) : null,
       createdAt: Number(r.created_at) || 0, updatedAt: Number(r.updated_at) || 0,
     };
   }
@@ -324,9 +326,9 @@ export class PgStore implements StorageDriver {
     const id = 't_' + randomBytes(9).toString('hex');
     const now = Date.now();
     await this.q(
-      `INSERT INTO team_tasks (tenant,id,project_id,title,description,status,assignee_sub,created_by,blocks,blocked_by,linked_session_id,due,created_at,updated_at)
-       VALUES ($1,$2,$3,$4,$5,'todo',$6,$7,'[]','[]',$8,$9,$10,$10)`,
-      [this.t, id, input.projectId || '', input.title, input.description || '', input.assigneeSub ?? null, input.createdBy, input.linkedSessionId ?? null, input.due ?? null, now],
+      `INSERT INTO team_tasks (tenant,id,project_id,title,description,status,assignee_sub,created_by,blocks,blocked_by,linked_session_id,linked_finding_id,due,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,'todo',$6,$7,'[]','[]',$8,$9,$10,$11,$11)`,
+      [this.t, id, input.projectId || '', input.title, input.description || '', input.assigneeSub ?? null, input.createdBy, input.linkedSessionId ?? null, input.linkedFindingId ?? null, input.due ?? null, now],
     );
     return (await this.getTeamTask(id))!.task;
   }
@@ -359,10 +361,19 @@ export class PgStore implements StorageDriver {
     if (patch.blocks !== undefined) add('blocks', JSON.stringify(patch.blocks));
     if (patch.blockedBy !== undefined) add('blocked_by', JSON.stringify(patch.blockedBy));
     if (patch.linkedSessionId !== undefined) add('linked_session_id', patch.linkedSessionId);
+    if (patch.linkedFindingId !== undefined) add('linked_finding_id', patch.linkedFindingId);
     if (sets.length === 0) return (await this.getTeamTask(id))?.task ?? null;
     params.push(Date.now()); sets.push(`updated_at=$${params.length}`);
     const r = await this.q(`UPDATE team_tasks SET ${sets.join(', ')} WHERE tenant=$1 AND id=$2 RETURNING *`, params);
     return r[0] ? this.rowToTeamTask(r[0]) : null;
+  }
+
+  async teamTasksByFindingIds(ids?: string[]): Promise<TeamTask[]> {
+    if (ids && ids.length === 0) return [];
+    const rows = ids
+      ? await this.qr(`SELECT * FROM team_tasks WHERE tenant=$1 AND linked_finding_id = ANY($2)`, [this.t, ids])
+      : await this.qr(`SELECT * FROM team_tasks WHERE tenant=$1 AND linked_finding_id IS NOT NULL`, [this.t]);
+    return rows.map((r) => this.rowToTeamTask(r));
   }
 
   async addTeamTaskComment(taskId: string, authorSub: string, body: string): Promise<TeamTaskComment | null> {
