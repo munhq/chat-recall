@@ -115,13 +115,7 @@ router.post('/:teamId/invite', async (req, res) => {
     // blocking an owner out of their team over our missing data.
     if (billingEnabled()) {
       const ent = await cp.getEntitlement(req.params.teamId);
-      // A TRIAL has no subscription and therefore no bought seats; without a
-      // cap here, granting the trial 'team' would mean unlimited invites for
-      // free. Five is enough to feel like a team and not enough to run one.
-      const TRIAL_SEATS = 5;
-      const bought = ent?.seats
-        ?? planMinSeats(ent?.plan ?? null)
-        ?? (ent?.status === 'trialing' ? TRIAL_SEATS : null);
+      const bought = ent?.seats ?? planMinSeats(ent?.plan ?? null);
       if (bought != null && used >= bought) {
         return res.status(402).json({
           error: `your plan covers ${bought} seat(s), all in use`,
