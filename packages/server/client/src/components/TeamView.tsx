@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  FeatureGateError,
   getMe, getTeamActivity, listMyShares, addShare, removeShare, setActiveTeam, getActiveTeam,
   type TeamActivityResponse, type ProjectShare,
 } from '../services/api';
@@ -22,6 +23,7 @@ export default function TeamView({ onOpenProject }: { onOpenProject?: (projectId
   const [newProject, setNewProject] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [gated, setGated] = useState<FeatureGateError | null>(null);
 
   // Resolve the caller's team (first membership) once.
   useEffect(() => {
@@ -40,7 +42,13 @@ export default function TeamView({ onOpenProject }: { onOpenProject?: (projectId
     try {
       const [a, s] = await Promise.all([getTeamActivity({ sinceDays: days }), listMyShares()]);
       setAct(a); setShares(s);
-    } catch (e: any) { setErr(String(e.message || e)); }
+    } catch (e: any) {
+      // A 402 here is the PLAN boundary, not a failure: the deep link outlives
+      // the tab gating (bookmarks, cached bundles), so this view must state the
+      // offer itself rather than print a raw error at someone mid-trial.
+      if (e instanceof FeatureGateError) { setGated(e); return; }
+      setErr(String(e.message || e));
+    }
   }
   useEffect(() => { if (teamSlug) void refresh(sinceDays); }, [teamSlug, sinceDays]);
 
@@ -101,6 +109,13 @@ export default function TeamView({ onOpenProject }: { onOpenProject?: (projectId
         <Button variant={tab === 'tasks' ? 'primary' : 'ghost'} onClick={() => setTab('tasks')}>Tasks</Button>
       </div>
 
+      {gated && (
+        <div className="team-err" role="status" style={{ borderColor: 'var(--cr-brand-line)', background: 'var(--cr-brand-surf)', color: 'var(--cr-fg-1)' }}>
+          Team features — shared history, per-member activity, assigning work — need the{' '}
+          {gated.requires ?? 'Team'} plan.{' '}
+          <a href={gated.upgradeUrl ?? '/pricing/'}>See plans</a>
+        </div>
+      )}
       {err && <div className="team-err">{err}</div>}
 
       {tab === 'tasks' && <TeamTasks members={act?.members ?? []} mySub={mySub} />}
