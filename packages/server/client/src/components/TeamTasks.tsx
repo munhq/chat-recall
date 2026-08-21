@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   listTasks, createTask, updateTask, getTask, addTaskComment, getSessionOutcome,
-  getAutoTasksPolicy, setAutoTasksPolicy,
+  getAutoTasksPolicy, setAutoTasksPolicy, runAutoTasksNow,
   type TeamTask, type TeamTaskStatus, type TeamTaskComment, type SessionOutcomeResponse,
-  type AutoTasksPolicy,
+  type AutoTasksStatus,
 } from '../services/api';
 import { Button, Chip, Icon, Input } from './primitives';
 
@@ -13,6 +13,20 @@ const COLUMNS: Array<{ status: TeamTaskStatus; label: string }> = [
   { status: 'blocked', label: 'Blocked' },
   { status: 'done', label: 'Done' },
 ];
+
+/**
+ * Auto-filed cards carry their severity as a `[critical] `/`[high] ` title
+ * prefix (services/auto-tasks.ts writes it, and the finding id — not the title —
+ * is the dedup key, so the prefix is display data). Rendering it as a chip beats
+ * leaving a bracket in a sentence, and ranking on it puts the criticals at the
+ * top of the column where a board is actually read.
+ */
+const SEV_RANK: Record<string, number> = { critical: 0, high: 1 };
+function splitSeverity(title: string): { sev: string | null; text: string } {
+  const m = /^\[(critical|high)\]\s*/i.exec(title);
+  if (!m) return { sev: null, text: title };
+  return { sev: m[1].toLowerCase(), text: title.slice(m[0].length) };
+}
 
 type Member = { sub: string; email: string | null; role: string };
 
@@ -44,8 +58,18 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
   const [dragId, setDragId] = useState<string | null>(null);
   // Auto-file policy: urgent code findings open their own cards. Opt-in — the
   // board has no delete, so nothing writes to it without this switch.
-  const [autoPolicy, setAutoPolicy] = useState<AutoTasksPolicy | null>(null);
+  const [auto, setAuto] = useState<AutoTasksStatus | null>(null);
+  // A failure to LOAD the policy used to hide the control entirely, which is how
+  // "where is the auto-file setting?" became a question with no answer on screen.
+  // Now the reason is shown where the control would be.
+  const [autoErr, setAutoErr] = useState('');
+  const [autoOpen, setAutoOpen] = useState(false);
+  const [autoBusy, setAutoBusy] = useState(false);
+  const [autoNote, setAutoNote] = useState('');
   const [overCol, setOverCol] = useState<TeamTaskStatus | null>(null);
+  /** Board filter. The board groups by STATUS; criticals arrive per project, so
+   *  without this a busy tenant reads four columns of mixed repositories. */
+  const [projFilter, setProjFilter] = useState('');
 
   const emailBySub = useMemo(() => {
     const m: Record<string, string> = {};
@@ -55,22 +79,11 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
   const who = (sub: string | null) => (sub ? (emailBySub[sub] || (sub === mySub ? 'me' : sub.slice(0, 8))) : 'unassigned');
   /** Initials for the avatar chip: a board scans by shape, not by reading emails. */
   const initials = (sub: string | null) => {
-    if (!sub) return '—';
+    if (!sub) return '-';
     const name = emailBySub[sub] || sub;
     const local = name.split('@')[0] || name;
     const parts = local.split(/[._-]+/).filter(Boolean);
     return ((parts[0]?.[0] ?? '') + (parts[1]?.[0] ?? '')).toUpperCase() || local.slice(0, 2).toUpperCase();
-  };
-
-  useEffect(() => {
-    getAutoTasksPolicy().then(setAutoPolicy).catch(() => { /* endpoint gated or old server */ });
-  }, []);
-  const toggleAuto = async () => {
-    if (!autoPolicy) return;
-    const next = { ...autoPolicy, enabled: !autoPolicy.enabled };
-    setAutoPolicy(next);
-    try { await setAutoTasksPolicy(next); }
-    catch { setAutoPolicy(autoPolicy); setErr('Could not save the auto-file setting.'); }
   };
 
   const refresh = useCallback(async () => {
@@ -78,6 +91,40 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
     try { setTasks(await listTasks()); } catch (e: any) { setErr(String(e.message || e)); }
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
+
+  const loadAuto = useCallback(async () => {
+    try { setAuto(await getAutoTasksPolicy()); setAutoErr(''); }
+    catch (e: any) { setAuto(null); setAutoErr(String(e?.message || e)); }
+  }, []);
+  useEffect(() => { void loadAuto(); }, [loadAuto]);
+
+  /** Save a policy change, then re-read the state so the panel reports the
+   *  server's answer rather than the optimistic guess. */
+  const saveAuto = async (next: { enabled: boolean; maxPri: 0 | 1 }) => {
+    if (!auto) return;
+    const before = auto;
+    setAuto({ ...auto, ...next });
+    setAutoNote('');
+    setAutoBusy(true);
+    try { await setAutoTasksPolicy(next); await loadAuto(); }
+    catch { setAuto(before); setAutoErr('Could not save the auto-file setting.'); }
+    finally { setAutoBusy(false); }
+  };
+
+  /** The button that makes the switch observable: file the waiting findings now
+   *  instead of waiting for the next `chat-recall code index`. */
+  const runNow = async () => {
+    setAutoBusy(true);
+    setAutoNote('');
+    try {
+      const r = await runAutoTasksNow();
+      setAutoNote(r.created || r.closed
+        ? `Filed ${r.created}, closed ${r.closed}.`
+        : 'It ran. Nothing qualified, so no cards were filed.');
+      await Promise.all([refresh(), loadAuto()]);
+    } catch (e: any) { setAutoErr(String(e?.message || e)); }
+    finally { setAutoBusy(false); }
+  };
 
   async function doCreate() {
     if (!title.trim()) return;
@@ -112,7 +159,18 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
     finally { setBusy(false); }
   }
 
-  const byStatus = (s: TeamTaskStatus) => tasks.filter((t) => t.status === s);
+  const visible = useMemo(
+    () => (projFilter ? tasks.filter((t) => (t.projectId || '') === projFilter) : tasks),
+    [tasks, projFilter],
+  );
+  const byStatus = (s: TeamTaskStatus) => visible
+    .filter((t) => t.status === s)
+    .slice()
+    .sort((a, b) => {
+      const ra = SEV_RANK[splitSeverity(a.title).sev ?? ''] ?? 2;
+      const rb = SEV_RANK[splitSeverity(b.title).sev ?? ''] ?? 2;
+      return ra - rb;
+    });
 
   return (
     <div className="tt">
@@ -131,13 +189,14 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
           </select>
         )}
         <Button variant="primary" onClick={doCreate} disabled={busy || !title.trim()}>Add</Button>
-        {autoPolicy && (
-          <label className="tt-auto" title="After each code index, critical and high findings open cards here, deduplicated, and close themselves when fixed.">
-            <input type="checkbox" checked={autoPolicy.enabled} onChange={toggleAuto} />
-            Auto-file critical &amp; high findings
-          </label>
-        )}
       </div>
+
+      <AutoPanel
+        auto={auto} err={autoErr} note={autoNote} busy={autoBusy}
+        open={autoOpen} onOpen={() => setAutoOpen((o) => !o)}
+        onSave={saveAuto} onRun={runNow}
+        projFilter={projFilter} onProject={setProjFilter}
+      />
 
       <div className="tt-board">
         {COLUMNS.map((col) => {
@@ -169,7 +228,19 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
                   onDragStart={(e) => { setDragId(t.id); e.dataTransfer.setData('text/plain', t.id); }}
                   onDragEnd={() => setDragId(null)}
                 >
-                  <div className="tt-title">{t.title}</div>
+                  <div className="tt-title">
+                    {(() => {
+                      const { sev, text } = splitSeverity(t.title);
+                      return (
+                        <>
+                          {sev && (
+                            <span className={`tt-sev tt-sev-${sev}`}>{sev}</span>
+                          )}
+                          {sev ? text : t.title}
+                        </>
+                      );
+                    })()}
+                  </div>
 
                   {/* The differentiator: did the session attached to this card
                       actually ship anything? */}
@@ -228,6 +299,174 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
         })}
       </div>
     </div>
+  );
+}
+
+/**
+ * Automation — the switch, what it will do, and what it already did.
+ *
+ * This replaced a bare checkbox, and the reason is worth writing down: the
+ * checkbox set a tenant POLICY, while the only thing that ever files a card is a
+ * `chat-recall code index` sync. So ticking it produced no visible change, ever,
+ * and a person who ticked it could not tell it apart from a dead control. Three
+ * things fix that, and none of them is a wizard:
+ *
+ *   1. Say what is waiting, per project, BEFORE anything is pressed.
+ *   2. Give the action its own button ("Run now"), so the effect is immediate.
+ *   3. Report the last run, including a run that filed nothing.
+ *
+ * A wizard would be the wrong shape here: there are two settings, and a
+ * multi-step flow to collect two settings is ceremony, not clarity. What was
+ * missing was feedback, not steps.
+ */
+function AutoPanel({
+  auto, err, note, busy, open, onOpen, onSave, onRun, projFilter, onProject,
+}: {
+  auto: AutoTasksStatus | null;
+  err: string;
+  note: string;
+  busy: boolean;
+  open: boolean;
+  onOpen: () => void;
+  onSave: (p: { enabled: boolean; maxPri: 0 | 1 }) => void | Promise<void>;
+  onRun: () => void | Promise<void>;
+  projFilter: string;
+  onProject: (p: string) => void;
+}) {
+  // LOADING: a skeleton in the panel's own shape, so the bar does not pop in
+  // after the board has already painted. Not a spinner.
+  if (!auto && !err) {
+    return (
+      <div className="tt-auto-wrap" aria-busy="true">
+        <div className="tt-auto-bar">
+          <span className="tt-skel tt-skel-switch" />
+          <span className="tt-skel tt-skel-line" />
+        </div>
+      </div>
+    );
+  }
+  // ERROR: the control is never hidden. The reason takes its place, because a
+  // vanished control is the thing nobody can debug from the screen.
+  if (!auto) {
+    return (
+      <div className="tt-auto-wrap tt-auto-dead" role="status">
+        <Icon name="settings" size={13} />
+        <span>Auto-filing is unavailable. {err}</span>
+      </div>
+    );
+  }
+
+  const ago = (ms: number) => {
+    const m = Math.round((Date.now() - ms) / 60000);
+    if (m < 1) return 'just now';
+    if (m < 60) return `${m} min ago`;
+    const h = Math.round(m / 60);
+    return h < 24 ? `${h} h ago` : `${Math.round(h / 24)} d ago`;
+  };
+
+  /** The one sentence that answers "is anything happening?". */
+  const headline = !auto.enabled
+    ? 'Off. Findings stay in the ranked view.'
+    : auto.eligible > 0
+      ? `${auto.eligible} finding${auto.eligible === 1 ? '' : 's'} ready to file`
+      : auto.filed > 0 ? 'All caught up' : 'On. Nothing to file yet.';
+
+  const sub = [
+    auto.filed > 0 ? `${auto.filed} filed` : '',
+    auto.lastRun ? `last run ${ago(auto.lastRun.at)}` : 'never run',
+  ].filter(Boolean).join(', ');
+
+  return (
+    <section className="tt-auto-wrap">
+      <div className="tt-auto-bar">
+        <label
+          className="tt-switch"
+          title="After each code index, critical and high findings open their own cards here. At most 10 per run, deduplicated, and each card closes itself when a re-index stops reporting its finding. Nothing is ever deleted."
+        >
+          <input
+            type="checkbox" checked={auto.enabled} disabled={busy}
+            onChange={() => onSave({ enabled: !auto.enabled, maxPri: auto.maxPri })}
+          />
+          <span className="tt-switch-track" aria-hidden="true"><span className="tt-switch-dot" /></span>
+          <span className="tt-switch-label">Auto-file findings</span>
+        </label>
+
+        <span className="tt-auto-head">
+          <b>{headline}</b>
+          <span className="tt-auto-sub">{sub}</span>
+        </span>
+
+        <span className="tt-auto-actions">
+          {auto.enabled && (
+            <Button size="sm" onClick={onRun} disabled={busy}>
+              {busy ? 'Filing' : 'Run now'}
+            </Button>
+          )}
+          <button className="tt-link" onClick={onOpen} aria-expanded={open}>
+            {open ? 'Less' : 'Settings'}
+          </button>
+        </span>
+      </div>
+
+      {note && <div className="tt-auto-note" role="status">{note}</div>}
+      {err && <div className="tt-auto-note tt-auto-err" role="alert">{err}</div>}
+
+      {open && (
+        <div className="tt-auto-body">
+          <div className="tt-auto-set">
+            <span className="tt-auto-lede">File findings at or above</span>
+            {([[0, 'Critical'], [1, 'Critical and high']] as Array<[0 | 1, string]>).map(([v, label]) => (
+              <label key={v} className="tt-radio">
+                <input
+                  type="radio" name="tt-maxpri" checked={auto.maxPri === v} disabled={busy || !auto.enabled}
+                  onChange={() => onSave({ enabled: auto.enabled, maxPri: v })}
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+
+          {auto.byProject.length === 0 ? (
+            /* EMPTY: says how to populate it, per the interactive-states rule. */
+            <div className="tt-auto-empty">
+              No critical or high findings yet. Run <code>chat-recall code index</code> in
+              a repository and they show up here.
+            </div>
+          ) : (
+            <div className="tt-ptiles">
+              {auto.byProject.map((r) => {
+                const on = projFilter === r.projectId;
+                return (
+                  <button
+                    key={r.projectId}
+                    className={`tt-ptile${on ? ' tt-ptile-on' : ''}`}
+                    onClick={() => onProject(on ? '' : r.projectId)}
+                    title={on ? 'Show every project' : `Show only ${r.projectId}`}
+                  >
+                    <span className="tt-ptile-name">{r.projectId}</span>
+                    <span className="tt-ptile-nums">
+                      <b className={r.critical ? 'tt-pcrit' : 'tt-pzero'}>{r.critical}</b> critical
+                      <i />
+                      <b className={r.high ? '' : 'tt-pzero'}>{r.high}</b> high
+                    </span>
+                    <span className="tt-ptile-foot">
+                      {r.eligible > 0 ? `${r.eligible} waiting to file` : on ? 'Filtering the board' : 'All filed'}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {projFilter && (
+        <div className="tt-auto-note">
+          Showing <b>{projFilter}</b> only.{' '}
+          <button className="tt-link" onClick={() => onProject('')}>Show every project</button>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -320,15 +559,87 @@ const TT_CSS = `
   border-radius: var(--cr-radius-md); margin-bottom: 12px; font-size: 13px; }
 
 .tt-new { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
-.tt-auto { display: inline-flex; gap: 6px; align-items: center; font-size: 12.5px;
-  color: var(--cr-fg-3); cursor: pointer; user-select: none; white-space: nowrap; }
-.tt-auto input { accent-color: var(--cr-brand-500); }
-.tt-new > :first-child { flex: 1; min-width: 0; }
-.tt-sel, .tt-sel-sm { border: 1px solid var(--cr-line-1); border-radius: var(--cr-radius-sm);
-  padding: 6px 8px; background: var(--cr-ink-2); color: var(--cr-fg-1); font-size: 13px; }
-.tt-sel-sm { font-size: 11px; padding: 2px 5px; }
-.tt-sel:focus-visible, .tt-sel-sm:focus-visible, .tt-cmt:focus-visible {
-  outline: 2px solid var(--cr-brand-500); outline-offset: 1px; }
+.tt-auto-wrap { border: 1px solid var(--cr-line-1); border-radius: var(--cr-radius-lg);
+  background: var(--cr-ink-1); margin-bottom: 16px; overflow: hidden; }
+.tt-auto-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; padding: 11px 13px; }
+.tt-auto-dead { display: flex; align-items: center; gap: 8px; padding: 11px 13px;
+  font-size: 12.5px; color: var(--cr-fg-3); }
+
+/* The state sentence carries the weight, so it gets real contrast. It used to be
+   grey micro-copy doing the panel's most important job. */
+.tt-auto-head { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.tt-auto-head b { font-size: 12.5px; font-weight: 600; color: var(--cr-fg-1); }
+.tt-auto-sub { font-size: 11px; color: var(--cr-fg-3); font-variant-numeric: tabular-nums; }
+.tt-auto-actions { margin-left: auto; display: inline-flex; gap: 10px; align-items: center; }
+
+.tt-link { background: none; border: 0; padding: 2px 3px; cursor: pointer; color: var(--cr-fg-3);
+  font-size: 12px; font-family: inherit; border-radius: var(--cr-radius-xs); }
+.tt-link:hover { color: var(--cr-fg-1); }
+.tt-link:active { transform: translateY(1px); }
+.tt-link:focus-visible { outline: 2px solid var(--cr-brand-500); outline-offset: 1px; }
+
+/* A switch, not a 13px tick: this control has a state worth reading from across
+   the board, and a checkbox that small reads as decoration. */
+.tt-switch { display: inline-flex; align-items: center; gap: 9px; cursor: pointer;
+  user-select: none; font-size: 13px; color: var(--cr-fg-1); flex: none; }
+.tt-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.tt-switch-track { width: 34px; height: 19px; border-radius: 999px; flex: none;
+  background: var(--cr-ink-3); border: 1px solid var(--cr-line-1); position: relative;
+  transition: background var(--cr-dur-fast), border-color var(--cr-dur-fast); }
+.tt-switch-dot { position: absolute; top: 2px; left: 2px; width: 13px; height: 13px;
+  border-radius: 999px; background: var(--cr-fg-3);
+  transition: transform var(--cr-dur-fast), background var(--cr-dur-fast); }
+.tt-switch input:checked + .tt-switch-track { background: var(--cr-brand-surf);
+  border-color: var(--cr-brand-line); }
+.tt-switch input:checked + .tt-switch-track .tt-switch-dot {
+  transform: translateX(15px); background: var(--cr-brand-500); }
+.tt-switch input:focus-visible + .tt-switch-track { outline: 2px solid var(--cr-brand-500);
+  outline-offset: 2px; }
+.tt-switch input:disabled + .tt-switch-track { opacity: 0.55; }
+.tt-switch-label { font-weight: 500; }
+
+/* Skeleton in the panel's own shape. */
+.tt-skel { display: block; border-radius: var(--cr-radius-sm); background: var(--cr-ink-3);
+  opacity: 0.55; animation: tt-pulse 1.4s ease-in-out infinite; }
+.tt-skel-switch { width: 34px; height: 19px; border-radius: 999px; flex: none; }
+.tt-skel-line { width: 190px; height: 11px; }
+@keyframes tt-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.7; } }
+
+.tt-auto-note { padding: 8px 13px; font-size: 12px; color: var(--cr-fg-2);
+  border-top: 1px solid var(--cr-line-1); background: var(--cr-ink-0); }
+.tt-auto-note b { color: var(--cr-fg-1); font-weight: 600; }
+.tt-auto-err { color: var(--cr-err-500); }
+
+.tt-auto-body { border-top: 1px solid var(--cr-line-1); padding: 13px;
+  display: flex; flex-direction: column; gap: 12px; background: var(--cr-ink-0); }
+.tt-auto-set { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 12.5px; }
+.tt-auto-lede { color: var(--cr-fg-3); }
+.tt-radio { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; color: var(--cr-fg-2); }
+.tt-radio input { accent-color: var(--cr-brand-500); }
+.tt-auto-empty { font-size: 12.5px; color: var(--cr-fg-3); line-height: 1.55; }
+.tt-auto-empty code { background: var(--cr-ink-2); padding: 1px 5px;
+  border-radius: var(--cr-radius-xs); font-size: 11.5px; }
+
+/* Findings per project as tiles, not a hairline-per-row table: a repo is a thing
+   you click, and a border under every row is the laziest layout there is. */
+.tt-ptiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.tt-ptile { display: flex; flex-direction: column; gap: 4px; text-align: left; cursor: pointer;
+  padding: 9px 11px; border: 1px solid var(--cr-line-1); border-radius: var(--cr-radius-md);
+  background: var(--cr-ink-1); font-family: inherit;
+  transition: border-color var(--cr-dur-fast), background var(--cr-dur-fast); }
+.tt-ptile:hover { border-color: var(--cr-line-2); }
+.tt-ptile:active { transform: translateY(1px); }
+.tt-ptile:focus-visible { outline: 2px solid var(--cr-brand-500); outline-offset: 1px; }
+.tt-ptile-on { border-color: var(--cr-brand-line); background: var(--cr-brand-surf); }
+.tt-ptile-name { font-size: 12.5px; font-weight: 600; color: var(--cr-fg-1); overflow-wrap: anywhere; }
+.tt-ptile-nums { font-size: 11.5px; color: var(--cr-fg-3); display: flex; align-items: baseline; gap: 5px;
+  font-variant-numeric: tabular-nums; }
+.tt-ptile-nums b { font-size: 15px; font-weight: 600; color: var(--cr-fg-1); }
+.tt-ptile-nums i { width: 1px; height: 10px; background: var(--cr-line-1); margin: 0 3px; }
+.tt-ptile-foot { font-size: 10.5px; color: var(--cr-fg-3); }
+.tt-pcrit { color: var(--cr-err-500) !important; }
+.tt-pzero { color: var(--cr-fg-3) !important; }
+@media (max-width: 620px) { .tt-auto-actions { margin-left: 0; } }
 
 .tt-board { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px;
   align-items: start; }
@@ -350,6 +661,14 @@ const TT_CSS = `
 .tt-dragging { opacity: 0.45; transform: rotate(-1deg); }
 .tt-title { font-size: 13px; font-weight: 500; color: var(--cr-fg-1); line-height: 1.4;
   margin-bottom: 8px; text-wrap: pretty; }
+/* Severity reads as a chip, not as a bracket inside the sentence. */
+.tt-sev { display: inline-block; margin-right: 6px; padding: 1px 5px; border-radius: var(--cr-radius-xs);
+  font-size: 9.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  vertical-align: 1px; }
+.tt-sev-critical { background: var(--cr-err-surf); color: var(--cr-err-500);
+  border: 1px solid var(--cr-err-line); }
+.tt-sev-high { background: var(--cr-warn-surf, var(--cr-ink-3)); color: var(--cr-warn-500, var(--cr-fg-2));
+  border: 1px solid var(--cr-warn-line, var(--cr-line-2)); }
 
 .tt-outcome { display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
   margin-bottom: 8px; padding: 5px 7px; border-radius: var(--cr-radius-sm);
@@ -386,8 +705,10 @@ const TT_CSS = `
 .tt-comment-add > :first-child { flex: 1; min-width: 0; }
 
 @media (prefers-reduced-motion: reduce) {
-  .tt-card, .tt-col { transition: none; }
+  .tt-card, .tt-col, .tt-switch-track, .tt-switch-dot, .tt-ptile { transition: none; }
   .tt-dragging { transform: none; }
+  .tt-skel { animation: none; }
+  .tt-link:active, .tt-ptile:active { transform: none; }
 }
 @media (max-width: 900px) { .tt-board { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 /* Below 620px two columns leave ~141px each, which cannot hold a title, its

@@ -32,6 +32,11 @@ export const AUTO_TASKS_KEY = 'auto_tasks';
 /** Two runs per tenant closer together than this are one run. */
 const MIN_INTERVAL_MS = 10 * 60 * 1000;
 const LAST_RUN_KEY = 'auto_tasks_last_run';
+/** The outcome of the most recent run, so the UI can state what the policy
+ *  actually DID instead of only what it is set to. A switch with no readback is
+ *  indistinguishable from a switch that does nothing — which is exactly how this
+ *  looked to the first person who ticked it. */
+const LAST_RESULT_KEY = 'auto_tasks_last_result';
 /** One run never files more than this many new cards — a first index of a
  *  messy repo must not bury the board. The rest surface on later runs. */
 const MAX_NEW_CARDS_PER_RUN = 10;
@@ -60,16 +65,19 @@ export function parsePolicy(raw: string | null): AutoTasksPolicy {
  * Materialize + close, for one tenant. Fire-and-forget from ingest paths:
  * errors are logged, never thrown — a board hiccup must not fail a sync.
  */
-export async function runAutoTasks(tenant: string): Promise<{ created: number; closed: number } | null> {
+export async function runAutoTasks(
+  tenant: string,
+  opts: { force?: boolean } = {},
+): Promise<{ created: number; closed: number } | null> {
   try {
-    return await run(tenant);
+    return await run(tenant, opts.force === true);
   } catch (err) {
     log.warn({ tenant, err: err instanceof Error ? err.message : String(err) }, 'auto-tasks run failed');
     return null;
   }
 }
 
-async function run(tenant: string): Promise<{ created: number; closed: number } | null> {
+async function run(tenant: string, force = false): Promise<{ created: number; closed: number } | null> {
   const cp = await createControlPlane();
   let policy: AutoTasksPolicy;
   try {
@@ -80,8 +88,10 @@ async function run(tenant: string): Promise<{ created: number; closed: number } 
     if (billingEnabled() && !allows(await effectivePlan(tenant), 'tasks')) return null;
     // Debounce. Best-effort (two pods can race past it) — createTeamTask dedup
     // below is what actually prevents duplicates; this only bounds the cost.
+    // `force` is the "Run now" button: a person who just turned the policy on
+    // must not be told to wait ten minutes to see whether it works.
     const last = Number(await cp.getTenantSetting(tenant, LAST_RUN_KEY));
-    if (Number.isFinite(last) && Date.now() - last < MIN_INTERVAL_MS) return null;
+    if (!force && Number.isFinite(last) && Date.now() - last < MIN_INTERVAL_MS) return null;
     await cp.setTenantSetting(tenant, LAST_RUN_KEY, String(Date.now()));
   } finally {
     await cp.close();
@@ -131,9 +141,81 @@ async function run(tenant: string): Promise<{ created: number; closed: number } 
       }
 
       if (created || closed) log.info({ tenant, created, closed }, 'auto-tasks run');
+      // Recorded even when both counts are zero: "it ran and found nothing" and
+      // "it never ran" are different answers to "is anything happening?", and
+      // the UI can only tell them apart if the zero is written down.
+      const cp2 = await createControlPlane();
+      try {
+        await cp2.setTenantSetting(tenant, LAST_RESULT_KEY,
+          JSON.stringify({ at: Date.now(), created, closed }));
+      } finally { await cp2.close(); }
       return { created, closed };
     } finally {
       await store.close();
     }
   }));
+}
+
+/** What the last run did, if there has been one. */
+export interface AutoTasksLastRun { at: number; created: number; closed: number }
+
+/**
+ * The state a person needs to trust the switch: what it is set to, what it did
+ * last time, and how much work is waiting for it right now — broken down by
+ * project, because "12 findings" is a number and "8 in chat-recall, 4 in munbot"
+ * is an answer.
+ *
+ * `eligible` counts findings that WOULD file under the current maxPri and have
+ * no card yet, so the panel can promise a specific number before you press
+ * anything. `filed` is how many already became cards.
+ */
+export async function autoTasksStatus(tenant: string): Promise<{
+  policy: AutoTasksPolicy;
+  lastRun: AutoTasksLastRun | null;
+  eligible: number;
+  filed: number;
+  byProject: Array<{ projectId: string; critical: number; high: number; eligible: number }>;
+}> {
+  const cp = await createControlPlane();
+  let policy: AutoTasksPolicy;
+  let lastRun: AutoTasksLastRun | null = null;
+  try {
+    policy = parsePolicy(await cp.getTenantSetting(tenant, AUTO_TASKS_KEY));
+    try {
+      const raw = await cp.getTenantSetting(tenant, LAST_RESULT_KEY);
+      const o = JSON.parse(raw ?? '');
+      if (o && Number.isFinite(o.at)) {
+        lastRun = { at: Number(o.at), created: Number(o.created) || 0, closed: Number(o.closed) || 0 };
+      }
+    } catch { /* never recorded, or unreadable — same answer: no last run */ }
+  } finally {
+    await cp.close();
+  }
+
+  return runWithTenant(tenant, async () => {
+    const store = await createStore();
+    try {
+      const open = await store.listCodeActions(undefined, { status: 'suggested', limit: 500 });
+      const existing = await store.teamTasksByFindingIds();
+      const carded = new Set(existing.map((t) => t.linkedFindingId).filter(Boolean) as string[]);
+
+      const rows = new Map<string, { projectId: string; critical: number; high: number; eligible: number }>();
+      let eligible = 0;
+      let filed = 0;
+      for (const a of open) {
+        if (a.pri > 1) continue;                       // below the floor either way
+        const key = a.projectId || 'unknown';
+        const row = rows.get(key) ?? { projectId: key, critical: 0, high: 0, eligible: 0 };
+        if (a.pri === 0) row.critical++; else row.high++;
+        if (carded.has(a.id)) { filed++; }
+        else if (a.pri <= policy.maxPri) { row.eligible++; eligible++; }
+        rows.set(key, row);
+      }
+      const byProject = [...rows.values()]
+        .sort((x, y) => (y.critical - x.critical) || (y.high - x.high) || x.projectId.localeCompare(y.projectId));
+      return { policy, lastRun, eligible, filed, byProject };
+    } finally {
+      await store.close();
+    }
+  });
 }
