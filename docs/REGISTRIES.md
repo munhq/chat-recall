@@ -14,25 +14,22 @@ credentials has to run. The auth steps cannot be automated, and they are marked.
 `server.json` at the repo root is the manifest, and it validates against
 `https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json`.
 
-The namespace is `io.github.munhq/chat-recall`, which means the registry proves
-ownership through GitHub: you must be able to authenticate as someone with access
-to the `munhq` org.
+The namespace is `io.github.munhq/chat-recall`, and the registry proves
+ownership through GitHub. **Publishing is automated:** the `mcp-registry`
+workflow authenticates with GitHub Actions OIDC — the workflow run itself is
+the proof that the org speaks — and publishes on every `v*` tag, plus on
+manual dispatch.
 
-```bash
-# once
-curl -fsSL https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz \
-  | tar -xz -C ~/.local/bin mcp-publisher
+Do NOT publish interactively from a machine. `mcp-publisher login github`
+cannot work for this namespace: munhq restricts third-party OAuth apps, so the
+registry's app never sees the org membership in a user token (public
+membership included) and every attempt 403s naming only the user's personal
+namespace. That dead end is why the workflow exists.
 
-# NEEDS A HUMAN: opens a browser for the GitHub device flow
-mcp-publisher login github
-
-# from the repo root, where server.json lives
-mcp-publisher publish
-```
-
-Re-publish on every release. `server.json`'s `version` and its package `version`
-must match the npm version actually published, or the listing points at a tarball
-that does not exist — the release checklist below covers it.
+`server.json`'s `version` and its package `version` must match the npm version
+actually published, or the listing points at a tarball that does not exist —
+the release checklist below covers it. The workflow treats "duplicate version"
+as success, so a re-dispatch on an unchanged manifest stays green.
 
 ## 2. Smithery
 
@@ -96,6 +93,6 @@ Ranked by what it costs against what it returns, having done all of it:
 On every version bump:
 
 - [ ] `server.json` `version` and `packages[0].version` match the npm release
-- [ ] `mcp-publisher publish` re-run
+- [ ] the `mcp-registry` workflow ran green for the tag (it fires on `v*` automatically)
 - [ ] the tool count on chatrecall.dev still matches the registry — enforced by
       `check-parity.mjs` in the site repo, which blocks the deploy on drift
