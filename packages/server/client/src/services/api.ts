@@ -439,6 +439,10 @@ export interface RecentSessionsPage {
   offset: number;
   limit: number;
   hasMore: boolean;
+  /** Free-tier window applied by the server; absent = unwindowed (paid). */
+  windowDays?: number | null;
+  /** Sessions the window locked away, given the caller's own filters. */
+  lockedOlder?: number | null;
 }
 
 /**
@@ -489,6 +493,8 @@ export async function getRecentSessionsPage(opts: {
     offset: data.offset ?? offset,
     limit: data.limit ?? limit,
     hasMore: data.hasMore ?? false,
+    windowDays: typeof data.window_days === 'number' ? data.window_days : null,
+    lockedOlder: typeof data.locked_older === 'number' ? data.locked_older : null,
   };
 }
 
@@ -2383,8 +2389,10 @@ export interface Entitlement {
     syncBytesPerMonth: number | null;
     syncStorageBytes: number | null;
   } | null;
-  /** Metered tenants only — what the meters have counted. */
-  usage?: { monthBytes: number; totalBytes: number; month: string } | null;
+  /** Metered tenants only. monthBytes = this month's sync traffic (the quota);
+   *  storedBytes = what is actually stored (the cap) — measured, not summed
+   *  traffic, so re-synced sessions do not inflate it. */
+  usage?: { monthBytes: number; storedBytes: number; month: string } | null;
 }
 export interface PlanInfo {
   configured: boolean;

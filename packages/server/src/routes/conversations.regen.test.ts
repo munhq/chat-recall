@@ -120,8 +120,14 @@ describe('POST /:id/regenerate-summary — free-tier gate', () => {
   });
 
   test('an entitled tenant passes the gate (fails later on the missing session, never 402)', async () => {
+    // Full-run interference guard: other suites in the same worker share the
+    // process-wide 30s entitlement caches; a stale 'not entitled' answer for
+    // this tenant turns the pass-through into a 402.
+    process.env.STRIPE_SECRET_KEY = 'sk_test_x';
+    const { clearEntitlementCache } = await import('../util/billing.js');
+    clearEntitlementCache();
     const res = await request(appFor('regenpaid'))
       .post('/api/conversations/no-such-session/regenerate-summary');
     expect(res.status).not.toBe(402);
-  });
+  }, 30_000);   // past the gate the handler probes providers — slow under a full parallel run
 });

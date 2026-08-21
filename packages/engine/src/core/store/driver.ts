@@ -162,6 +162,7 @@ export interface StorageDriver {
   countItemChunks: AsyncMethod<MemoryStore['countItemChunks']>;
   getFTSCount: AsyncMethod<MemoryStore['getFTSCount']>;
   countDistinctItemsMatching: AsyncMethod<MemoryStore['countDistinctItemsMatching']>;
+  approxStoredBytes: AsyncMethod<MemoryStore['approxStoredBytes']>;
 
   // ── tombstones / purge ──
   addTombstone: AsyncMethod<MemoryStore['addTombstone']>;

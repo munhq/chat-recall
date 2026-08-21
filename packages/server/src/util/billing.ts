@@ -16,13 +16,13 @@
  * subscription (its status), never any amount.
  */
 import type { Request, Response, NextFunction } from 'express';
-import { createControlPlane } from '../imports.js';
+import { createControlPlane, createStore, runWithTenant } from '../imports.js';
 import { TenantTtlCache } from './tenant-cache.js';
 import { hasFeature, licenseState } from './license.js';
 import { planGrantsTeam } from '../routes/billing.js';
 import { ensureTrial } from './trial.js';
 import {
-  allows, featureRequired, featuresFor, limitsFor, limitReached,
+  allows, featureRequired, featuresFor, freeLimits, limitReached,
   FULL_LIMITS, type Feature, type PlanLimits,
 } from './entitlements.js';
 
@@ -46,6 +46,7 @@ const planCache = new TenantTtlCache<string | null>(30_000);
 export function clearEntitlementCache(): void {
   entitlementCache.clear();
   planCache.clear();
+  confirmationCache.clear();
 }
 
 /** The tenant's recorded plan, or null. Empty on self-host, where the licence —
@@ -85,12 +86,45 @@ export async function effectivePlan(tenant: string): Promise<string | null> {
 }
 
 /**
- * The tenant's quantitative limits (window, quotas, meters). Self-host is never
- * metered — it runs on the operator's own hardware.
+ * The tenant's quantitative limits (window, quotas, meters).
+ *
+ * Keyed on ENTITLEMENT, not on parsing the plan string: a live entitlement is
+ * proof of payment (or a granted trial), and meters exist only for the free
+ * floor. Resolving limits through plan-name prefixes metered real payers —
+ * a subscription created in the Stripe dashboard or via a payment link records
+ * plan as a raw price id (or null), no prefix matches, and the paying customer
+ * got a 7-day window and a 402 at 50 MB. Features may fail closed on an
+ * unrecorded plan; TAKING SOMEONE'S MONEY WHILE METERING THEM may not.
+ *
+ * Self-host is never metered — it runs on the operator's own hardware.
  */
 export async function tenantLimits(tenant: string): Promise<PlanLimits> {
   if (!billingEnabled()) return FULL_LIMITS;
-  return limitsFor(await effectivePlan(tenant));
+  return (await isEntitled(tenant)) ? FULL_LIMITS : freeLimits();
+}
+
+/**
+ * The free-tier read window, resolved once per request. `floorMs` is set only
+ * when a window applies; routes clamp their queries to it. One helper rather
+ * than the same four lines in every route: the copies were already five when
+ * this was extracted, and a route that windows results but forgets the
+ * response keys shows truncated data with no locked-history offer.
+ */
+export async function searchWindow(tenant: string): Promise<{ days: number | null; floorMs?: number }> {
+  const { searchWindowDays } = await tenantLimits(tenant);
+  return typeof searchWindowDays === 'number'
+    ? { days: searchWindowDays, floorMs: Date.now() - searchWindowDays * 86_400_000 }
+    : { days: null };
+}
+
+/** The windowed-response envelope: spread into the JSON only when a window is
+ *  active, so the paid response shape stays byte-identical. */
+export function windowMeta(
+  w: { days: number | null; floorMs?: number },
+  lockedOlder?: number | null,
+): Record<string, number> {
+  if (w.floorMs === undefined || w.days === null) return {};
+  return { window_days: w.days, ...(lockedOlder != null ? { locked_older: lockedOlder } : { locked_older: 0 }) };
 }
 
 /**
@@ -196,20 +230,29 @@ export async function isEntitled(tenant: string): Promise<boolean> {
  * than telling a paying customer whose subscription lapsed to go and check their
  * inbox.
  */
+const confirmationCache = new TenantTtlCache<boolean>(30_000);
+
 async function needsEmailConfirmation(tenant: string): Promise<boolean> {
+  // Cached like isEntitled, because this runs on the REFUSED path — abandoned
+  // unverified signups whose CLI retries are exactly the tenants who must not
+  // generate a control-plane query per attempt.
+  const cached = confirmationCache.get(tenant);
+  if (cached !== undefined) return cached;
+  let needs = false;
   try {
     const cp = await createControlPlane();
     try {
       // An existing entitlement row means the trial was granted at some point,
       // so confirmation is not what is missing — they lapsed.
-      if (await cp.getEntitlement(tenant)) return false;
-      return !(await cp.hasVerifiedMember(tenant));
+      needs = !(await cp.getEntitlement(tenant)) && !(await cp.hasVerifiedMember(tenant));
     } finally {
       await cp.close();
     }
   } catch {
-    return false;
+    needs = false;
   }
+  confirmationCache.set(tenant, needs);
+  return needs;
 }
 
 /**
@@ -309,7 +352,10 @@ export async function syncAdmission(tenant: string, incomingBytes: number): Prom
       },
     };
   }
-  const limits = limitsFor(entitled ? await tenantPlan(tenant) : 'free');
+  // tenantLimits, not a re-derivation: exactly one place says "lapsed means
+  // free", or a future grace-period change makes the meters disagree with
+  // every other gate. The entitlement lookups behind it are TTL-cached.
+  const limits = await tenantLimits(tenant);
   if (limits.syncBytesPerMonth === null && limits.syncStorageBytes === null) {
     return { ok: true, limits };
   }
@@ -317,8 +363,15 @@ export async function syncAdmission(tenant: string, incomingBytes: number): Prom
   const cp = await createControlPlane();
   try {
     const u = await cp.getSyncUsage(tenant, month);
-    if (limits.syncStorageBytes !== null && u.totalBytes + incomingBytes > limits.syncStorageBytes) {
-      return { ok: false, status: 402, body: limitReached('sync_storage', u.totalBytes, limits.syncStorageBytes) };
+    // The two meters measure DIFFERENT things, on purpose. The monthly QUOTA
+    // meters ingest TRAFFIC (the processing we pay for), so it counts every
+    // accepted batch. The STORAGE cap meters what is actually stored — the CLI
+    // legitimately re-ships a session whenever it grows, and billing traffic
+    // as storage made a 3 MB session synced twenty times read as 60 MB,
+    // permanently. Measuring reality also makes deletes self-correcting.
+    const storedBytes = await tenantStoredBytes(tenant);
+    if (limits.syncStorageBytes !== null && storedBytes + incomingBytes > limits.syncStorageBytes) {
+      return { ok: false, status: 402, body: limitReached('sync_storage', storedBytes, limits.syncStorageBytes) };
     }
     if (limits.syncBytesPerMonth !== null && u.monthBytes + incomingBytes > limits.syncBytesPerMonth) {
       return { ok: false, status: 402, body: limitReached('sync_quota', u.monthBytes, limits.syncBytesPerMonth, nextMonthStartMs()) };
@@ -329,6 +382,36 @@ export async function syncAdmission(tenant: string, incomingBytes: number): Prom
   return { ok: true, limits };
 }
 
+/** 10-minute cache on the stored-bytes measurement: the sums scan the
+ *  tenant's rows, and the meter does not need per-batch precision. */
+const storedBytesCache = new TenantTtlCache<number>(600_000);
+
+/** Bytes this tenant actually stores (chunks + rendered conversations),
+ *  measured, cached. Fails open to 0 — a broken measurement must refuse
+ *  nobody. */
+export async function tenantStoredBytes(tenant: string): Promise<number> {
+  const cached = storedBytesCache.get(tenant);
+  if (cached !== undefined) return cached;
+  let bytes = 0;
+  try {
+    // runWithTenant: the admission path runs BEFORE the route's own tenant
+    // scoping, and an unscoped store would measure the wrong tenant.
+    bytes = await runWithTenant(tenant, async () => {
+      const store = await createStore();
+      try { return Number(await store.approxStoredBytes()) || 0; }
+      finally { await store.close(); }
+    });
+  } catch { bytes = 0; }
+  storedBytesCache.set(tenant, bytes);
+  return bytes;
+}
+
+/** Delete-all just removed (nearly) everything — reflect that immediately
+ *  instead of refusing syncs for up to one cache TTL on an empty account. */
+export function noteStorageWiped(tenant: string): void {
+  storedBytesCache.set(tenant, 0);
+}
+
 /**
  * Record an ACCEPTED batch's bytes. Called after a successful ingest, not
  * before — a batch the server failed to write must not consume quota. Recorded
@@ -337,7 +420,9 @@ export async function syncAdmission(tenant: string, incomingBytes: number): Prom
  * storage cap, which is the correct outcome, not a loophole).
  */
 export async function recordSyncUsage(tenant: string, bytes: number): Promise<void> {
-  if (!billingEnabled() || !Number.isFinite(bytes) || bytes <= 0) return;
+  // bytes < 0, not <= 0: a ZERO write is the presence marker (see
+  // recordSyncPresence) — the upsert creates the row without touching quota.
+  if (!billingEnabled() || !Number.isFinite(bytes) || bytes < 0) return;
   const cp = await createControlPlane();
   try {
     await cp.addSyncUsage(tenant, currentUsageMonth(), bytes);
@@ -355,13 +440,11 @@ export async function recordSyncUsage(tenant: string, bytes: number): Promise<vo
  * ("your data is kept") the cap's refusal message makes.
  */
 export async function recordSyncPresence(tenant: string): Promise<void> {
-  if (!billingEnabled()) return;
-  const cp = await createControlPlane();
-  try {
-    await cp.addSyncUsage(tenant, currentUsageMonth(), 0);
-  } finally {
-    await cp.close();
-  }
+  // One writer, two names: this is recordSyncUsage's zero-byte case, kept as
+  // its own export so call sites say what they mean. Two bodies drifted once
+  // reviewed as a risk — a retry added to one and not the other would stop
+  // presence rows, and the retention sweep purges whoever stops marking.
+  return recordSyncUsage(tenant, 0);
 }
 
 /** 'YYYY-MM', UTC — the usage meter's bucket key. */

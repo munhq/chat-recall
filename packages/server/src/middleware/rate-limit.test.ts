@@ -82,16 +82,24 @@ async function run(mw: (req: Request, res: Response, next: NextFunction) => Prom
 
 describe('plan multiplier on tenant budgets', () => {
   test('free tenant gets the scaled budget (burst 10 × 0.2 = 2)', async () => {
-    const { rl } = await loadRl();
+    const { rl, awaitRateMultiplier } = await loadRl();
     billing.mults.set('free-t', 0.2);
     const mw = rl('read-heavy');
+    // Stale-while-revalidate: the very first request fails OPEN to the full
+    // budget while the multiplier resolves in the background — the limiter
+    // must never block a request on a control-plane round trip. Prime it.
     const first = await run(mw, fakeReq('free-t'));
     expect(first.nexted).toBe(true);
-    expect(first.headers['RateLimit-Limit']).toBe('2');
+    expect(first.headers['RateLimit-Limit']).toBe('10');   // fail-open window
+    await awaitRateMultiplier('free-t');
+    const second = await run(mw, fakeReq('free-t'));
+    expect(second.headers['RateLimit-Limit']).toBe('2');
+    // The clamp leaves 1 token after the second call (fill = min(2, remaining)),
+    // so one more passes and the next is refused — the scaled budget holds.
     expect((await run(mw, fakeReq('free-t'))).nexted).toBe(true);
-    const third = await run(mw, fakeReq('free-t'));
-    expect(third.nexted).toBe(false);
-    expect(third.status).toBe(429);
+    const fourth = await run(mw, fakeReq('free-t'));
+    expect(fourth.nexted).toBe(false);
+    expect(fourth.status).toBe(429);
   });
 
   test('entitled tenant keeps the full budget', async () => {
@@ -126,17 +134,22 @@ describe('plan multiplier on tenant budgets', () => {
     for (let i = 0; i < 3; i++) await run(mw, fakeReq('down-t'));   // 7 of 10 left
     billing.mults.set('down-t', 0.2);          // plan change lands…
     clearRateMultiplierCache();                // …and the TTL expires
-    // Same bucket, budget re-derived at read time: fill clamps to the new
-    // capacity of 2, so exactly 2 more pass.
+    // First post-expiry request fails open (SWR) and re-resolves in the
+    // background; once landed, the SAME bucket clamps to the new capacity.
+    await run(mw, fakeReq('down-t'));
+    const { awaitRateMultiplier } = await loadRl();
+    await awaitRateMultiplier('down-t');
     expect((await run(mw, fakeReq('down-t'))).nexted).toBe(true);
     expect((await run(mw, fakeReq('down-t'))).nexted).toBe(true);
     expect((await run(mw, fakeReq('down-t'))).status).toBe(429);
   });
 
   test('report-only mode logs the scaled decision but never blocks', async () => {
-    const { rl } = await loadRl({ RATE_LIMIT_ENFORCE: undefined });
+    const { rl, awaitRateMultiplier } = await loadRl({ RATE_LIMIT_ENFORCE: undefined });
     billing.mults.set('free-ro', 0.2);
     const mw = rl('read-heavy');
+    await run(mw, fakeReq('free-ro'));         // prime the SWR cache
+    await awaitRateMultiplier('free-ro');
     for (let i = 0; i < 5; i++) {
       const r = await run(mw, fakeReq('free-ro'));
       expect(r.nexted).toBe(true);            // over budget from the 3rd on, still passes

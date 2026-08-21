@@ -6,14 +6,21 @@ import express from 'express';
 import { SearchService } from '../services/search.js';
 import { sanitizeQuery } from '@chat-recall/engine/core/query-sanitizer.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
-import { tenantLimits } from '../util/billing.js';
+import { tenantLimits, searchWindow, windowMeta } from '../util/billing.js';
 import { createStore } from '../imports.js';
 import type { SourceType } from '../imports.js';
+import { TenantTtlCache } from '../util/tenant-cache.js';
 
 const log = createLogger('search');
 
 const router = express.Router();
 const searchService = new SearchService();
+
+/** 60s cache on the locked-older count, keyed tenant|query|filters. The client
+ *  debounces typing at 300 ms, so a free tenant composing a query would
+ *  otherwise pay an unbounded COUNT aggregate per keystroke burst — for a
+ *  banner number that does not change within a minute. */
+const lockedOlderCache = new TenantTtlCache<number>(60_000);
 
 /**
  * How many matching SESSIONS sit behind the free tier's search window —
@@ -23,20 +30,29 @@ const searchService = new SearchService();
  * Best-effort — a failed count must never fail the search.
  */
 export async function countLockedOlder(
+  tenant: string,
   query: string,
   windowFloorMs: number,
   projectFilter?: string,
   // undefined = count across all source types (unified memory search).
   sourceTypes?: SourceType[],
 ): Promise<number> {
+  // The key carries the tenant: two tenants asking the same query must never
+  // share a count. The floor is bucketed to the hour so the rolling
+  // Date.now() cannot make every call a cache miss.
+  const key = `${tenant}|${query}|${projectFilter ?? ''}|${(sourceTypes ?? []).join(',')}|${Math.floor(windowFloorMs / 3_600_000)}`;
+  const cached = lockedOlderCache.get(key);
+  if (cached !== undefined) return cached;
   try {
     const store = await createStore();
     try {
-      return await store.countDistinctItemsMatching(query, {
+      const n = await store.countDistinctItemsMatching(query, {
         sourceTypes,
         projectFilter,
         beforeMs: windowFloorMs,
       });
+      lockedOlderCache.set(key, n);
+      return n;
     } finally {
       await store.close();
     }
@@ -71,18 +87,20 @@ router.post('/', async (req, res) => {
     }
     const safeQuery = sanitized.cleanQuery;
 
-    // `semantic` is set only by an explicit search (Enter / Search button); the
-    // debounced type-ahead leaves it false → FTS only, no embed. See SearchService.
-    const wantSemantic = semantic === true;
-
     // Free-tier search window: a lapsed tenant searches only the last
     // `searchWindowDays` days; older data stays stored and locked. null (paid,
     // trialing, self-host) leaves the query untouched — byte-for-byte today's
     // behavior.
-    const { searchWindowDays } = await tenantLimits(req.tenant || 'default');
-    const windowFloorMs = typeof searchWindowDays === 'number'
-      ? Date.now() - searchWindowDays * 86_400_000
-      : undefined;
+    const limits = await tenantLimits(req.tenant || 'default');
+    const win = await searchWindow(req.tenant || 'default');
+    const windowFloorMs = win.floorMs;
+
+    // `semantic` is set only by an explicit search (Enter / Search button); the
+    // debounced type-ahead leaves it false → FTS only, no embed. ALSO forced
+    // off when the tenant's limits say no embeddings: a free tenant's chunks
+    // are never embedded, so a semantic pass would bill the embedding gateway
+    // for a query that can match nothing.
+    const wantSemantic = semantic === true && limits.embeddings;
 
     // Session + memory search run in parallel — they're independent, so there's
     // no reason to pay their latencies back-to-back (was sequential awaits).
@@ -94,7 +112,7 @@ router.post('/', async (req, res) => {
         ? searchService.searchUnified(safeQuery, topK, sourceTypes, projectFilter, wantSemantic, windowFloorMs).catch(() => undefined)
         : Promise.resolve(undefined),
       windowFloorMs !== undefined
-        ? countLockedOlder(safeQuery, windowFloorMs, projectFilter, ['session'])
+        ? countLockedOlder(req.tenant || 'default', safeQuery, windowFloorMs, projectFilter, ['session'])
         : Promise.resolve(undefined),
     ]);
     const memoryCount = memoryResults?.length ?? 0;
@@ -108,9 +126,7 @@ router.post('/', async (req, res) => {
       memoryResults,
       memoryCount,
       // Only when windowed — the paid response shape is unchanged.
-      ...(windowFloorMs !== undefined
-        ? { window_days: searchWindowDays, locked_older: lockedOlder ?? 0 }
-        : {}),
+      ...windowMeta(win, lockedOlder),
     });
   } catch (error) {
     log.error({ err: error }, 'search error');

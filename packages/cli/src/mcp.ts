@@ -643,7 +643,7 @@ const server = new Server(
 /**
  * The tools an agent sees by default.
  *
- * 54 tools is a lot to put in front of a model. Tool choice degrades as the list
+ * 53 tools is a lot to put in front of a model. Tool choice degrades as the list
  * grows — some clients truncate it, and all of them get worse at picking when a
  * dozen names could plausibly match a request. The routing hints in these
  * descriptions help, but they cannot undo the size.

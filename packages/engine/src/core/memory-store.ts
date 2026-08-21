@@ -1693,6 +1693,22 @@ export class MemoryStore {
     }
   }
 
+  /** Test twin of PgStore.approxStoredBytes — the free tier's storage meter
+   *  measures what is actually stored, and the unit suite exercises the same
+   *  path through this driver. */
+  approxStoredBytes(): number {
+    let total = 0;
+    try {
+      const c = this.db.prepare(`SELECT COALESCE(SUM(length(text)),0) AS b FROM memory_chunks_fts`).get() as { b: number };
+      total += Number(c?.b ?? 0);
+    } catch { /* empty */ }
+    try {
+      const c = this.db.prepare(`SELECT COALESCE(SUM(length(content_json)),0) AS b FROM content_cache`).get() as { b: number };
+      total += Number(c?.b ?? 0);
+    } catch { /* empty */ }
+    return total;
+  }
+
   /**
    * Count distinct items (e.g. sessions) whose chunks match an FTS5 query.
    *
