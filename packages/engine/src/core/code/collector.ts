@@ -49,7 +49,17 @@ const ANALYSES = [
   // count-only analyzers (folded into project stats, no per-item detail emitted):
   'crossref', 'type_drift', 'db_schema', 'migration_parity', 'manifest_compliance',
 ] as const;
-const GENERATED = ['generated/', '.pb.go', '.gen.', '_pb2.py', '/gen/', '.g.dart', '/node_modules/', '/vendor/', '.lock'];
+// Code you did not write and cannot fix: generated output, vendored trees, and
+// build artefacts. The list grew after a real board filled with cards about
+// three.js bundles ("inflate copy-pasted 4× (899 lines each)") and Go ABI
+// bindings (events.gen.go) — nobody refactors a minified bundle, and the fix for
+// generated code is a change to its generator.
+const GENERATED = [
+  'generated/', '__generated__/', '.pb.go', '.gen.', '_pb2.py', '/gen/', '.g.dart',
+  '/node_modules/', '/vendor/', '/third_party/', '/site-packages/', '.lock',
+  '/dist/', '/build/', '/out/', '/target/', '/.next/', '/coverage/',
+  '.min.js', '.min.css', '.bundle.js', '-bundle.js', '.map',
+];
 const CF_RE = /\b(if|for|while|switch|case|catch|elif|when|loop|&&|\|\||\?)\b|\?/g;
 const DEPTH = 2;
 
@@ -524,6 +534,19 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
     });
   }
 
+  // ── Vendored + generated code leaves the findings list ──────────────────
+  // One choke point instead of a guard at eighteen push sites. It runs BEFORE
+  // the health score, deliberately: a score dragged down by a checked-in
+  // minified bundle measures the bundle, not the codebase.
+  {
+    const before = findings.length;
+    const own = findings.filter((f) => !f.file || !isGenerated(f.file));
+    if (own.length !== before) {
+      findings.splice(0, before, ...own);
+      log(`dropped ${before - own.length} finding(s) in vendored/generated files`);
+    }
+  }
+
   // ── Hotspots: churn × complexity, generated excluded ────────────────────
   const godSet = new Set((coup?.god_modules ?? []).map((m: any) => rel(m.file)));
   const cloneSet = new Set<string>();
@@ -597,10 +620,15 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
       hits.slice(0, 4).map((h) => ({ file: h.file, line: h.line })),
       securityPrompt(rule, sev, hits[0].file, hits[0].line));
   }
-  // 2. copy-paste clones
+  // 2. copy-paste clones. Vendored/generated copies are dropped BEFORE the group
+  //    is judged: a bundle duplicated four times is not a refactor, and it used
+  //    to be the loudest thing on the board.
   for (const g of clones?.groups ?? []) {
     if ((g.count ?? 0) >= 3 || (g.lines ?? 0) >= 12) {
-      const fns = (g.functions ?? []).filter((x: any) => x && typeof x === 'object');
+      const fns = (g.functions ?? [])
+        .filter((x: any) => x && typeof x === 'object')
+        .filter((x: any) => !isGenerated(rel(x.file)));
+      if (fns.length < 2) continue;          // nothing left that anyone can fix
       const names = [...new Set(fns.map((x: any) => x.name))] as string[];
       const locs = fns.map((x: any) => rel(x.file)).slice(0, 5);
       pushAction((g.lines ?? 0) * (g.count ?? 0) >= 150 ? 1 : 2, 'duplication',
@@ -612,6 +640,8 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
   // 3. reinvented utilities — but a symbol NAME colliding across files is not
   //    reinvention. Skip generic names (error/collect/Args…) and type-only kinds
   //    (type_alias/interface/enum), where same-name-different-thing is the norm.
+  // (These carry no file paths from the analyzer, so they cannot be filtered by
+  //  path here; the name/kind guards below are what keep them honest.)
   for (const c of (dup?.clusters ?? []).slice(0, 12)) {
     const nm = String(c.name ?? '');
     const kind = String(c.kind ?? '').toLowerCase();
@@ -624,13 +654,15 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
   // 4. god modules
   for (const m of (coup?.god_modules ?? []).slice(0, 5)) {
     const file = rel(m.file);
+    if (isGenerated(file)) continue;
     pushAction(2, 'modularity', `God module ${file} (fan-in ${m.fan_in}, fan-out ${m.fan_out})`,
       'Split into cohesive sub-modules; introduce interfaces to cut fan-out.', [{ file }],
       couplingPrompt(file, m.fan_in ?? 0, m.fan_out ?? 0, Math.round((m.instability ?? 0) * 100) / 100));
   }
   // 5. cycles
   for (const c of (cyc?.cycles ?? []).slice(0, 5)) {
-    const chain = (c.files ?? []).map(rel);
+    const chain = (c.files ?? []).map(rel).filter((f: string) => !isGenerated(f));
+    if (chain.length < 2) continue;
     pushAction(2, 'architecture', `Circular dependency (${chain.length} files)`,
       'Break the cycle: extract the shared type/interface into a separate module.',
       chain.slice(0, 4).map((f: string) => ({ file: f })), cyclePrompt(chain.slice(0, 6)));
