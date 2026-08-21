@@ -151,6 +151,34 @@ export async function isEntitled(tenant: string): Promise<boolean> {
 }
 
 /**
+ * Is this tenant un-entitled because nobody has confirmed an email address?
+ *
+ * Only ever consulted on the refusal path, so the extra control-plane round trip
+ * costs nothing in the common case. Distinguishes "confirm your address" from
+ * "subscribe", which are the two ways to arrive here and have nothing in common
+ * from the user's side.
+ *
+ * Fails to FALSE on any error: a wrong "subscribe" message is a smaller harm
+ * than telling a paying customer whose subscription lapsed to go and check their
+ * inbox.
+ */
+async function needsEmailConfirmation(tenant: string): Promise<boolean> {
+  try {
+    const cp = await createControlPlane();
+    try {
+      // An existing entitlement row means the trial was granted at some point,
+      // so confirmation is not what is missing — they lapsed.
+      if (await cp.getEntitlement(tenant)) return false;
+      return !(await cp.hasVerifiedMember(tenant));
+    } finally {
+      await cp.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Safe methods, for the lapsed-tenant degradation below. GET and HEAD read;
  * everything else changes state. OPTIONS is included so CORS preflight is never
  * the thing that fails.
@@ -187,9 +215,22 @@ export function requireEntitlement(req: Request, res: Response, next: NextFuncti
     return;
   }
   isEntitled(tenant)
-    .then((ok) => {
+    .then(async (ok) => {
       if (ok) return next();
       if (isReadRequest(req)) return next();   // lapsed: read-only, see above
+      // Two very different reasons to be un-entitled, and telling them apart is
+      // the difference between an actionable message and a wrong one. A tenant
+      // that never got a trial because nobody confirmed an address must not be
+      // told to subscribe — the fix is a link in their inbox, and saying
+      // "subscription required" sends them to a checkout they do not need.
+      if (await needsEmailConfirmation(tenant)) {
+        res.status(402).json({
+          error: 'email confirmation required',
+          detail: 'Confirm your email address to start your trial. Nothing is counting down until you do.',
+          resendHint: 'POST /api/auth/send-verification-email to get another link',
+        });
+        return;
+      }
       res.status(402).json({
         error: 'subscription required',
         detail: 'Your access is read-only until you subscribe. Your history is kept.',

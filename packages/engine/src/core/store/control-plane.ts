@@ -147,6 +147,21 @@ export interface ControlPlane {
   listMembers(teamSlug: string): Promise<TeamMember[]>;
 
   /**
+   * Does this team have at least one member whose email address is confirmed?
+   *
+   * Gates the no-card trial. Sign-up and sign-in stay open to an unconfirmed
+   * address — better-auth's own requireEmailVerification would block the FIRST
+   * login, so one flaky SMTP send locks a new user out of an account they just
+   * created. What an unconfirmed address must not do is spend money: the trial
+   * is what grants ingest, embeddings and summaries, so it waits for a confirmed
+   * address instead.
+   *
+   * Social sign-ins arrive verified from the provider, so they are unaffected.
+   * Self-host has no auth provider to ask, and returns true.
+   */
+  hasVerifiedMember(teamSlug: string): Promise<boolean>;
+
+  /**
    * Remove a tenant and everything keyed to it: control-plane rows (tokens,
    * team, memberships, invites, artifacts) AND the tenant's data rows in the
    * tenant-scoped stores. Admin-only surface — used to purge test tenants.
@@ -446,6 +461,9 @@ class SqliteControlPlane implements ControlPlane {
   async listTenants(): Promise<string[]> {
     return (this.db.prepare(`SELECT tenant FROM cp_tenants ORDER BY tenant`).all() as { tenant: string }[]).map(r => r.tenant);
   }
+
+  /** Self-host / tests: no better-auth tables, so nothing to verify against. */
+  async hasVerifiedMember(_teamSlug: string): Promise<boolean> { return true; }
 
   async publishArtifact(teamSlug: string, a: { type: string; tool: string; name: string; bodyB64: string; pinnedTo?: string | null; authorSub: string }): Promise<ArtifactMeta> {
     const id = artifactId(teamSlug, a.type, a.tool, a.name);
@@ -821,6 +839,26 @@ class PgControlPlane implements ControlPlane {
       `SELECT user_sub, email, role, created_at FROM memberships WHERE team_slug = $1 ORDER BY role DESC, created_at`,
       [teamSlug],
     ) as Promise<TeamMember[]>;
+  }
+
+  async hasVerifiedMember(teamSlug: string): Promise<boolean> {
+    // "user" is better-auth's table and needs the quotes: both the name and the
+    // emailVerified column are case-sensitive in Postgres.
+    //
+    // A MISSING table means auth is not better-auth on this deployment, which is
+    // not the same as "nobody is verified" — failing closed there would deny
+    // every trial on an otherwise working install. So an error resolves to true
+    // and the gate simply does not apply.
+    try {
+      const rows = await this.q(
+        `SELECT 1 FROM memberships m JOIN "user" u ON u.id = m.user_sub
+          WHERE m.team_slug = $1 AND u."emailVerified" = true LIMIT 1`,
+        [teamSlug],
+      );
+      return rows.length > 0;
+    } catch {
+      return true;
+    }
   }
 
   async listTenants(): Promise<string[]> {
