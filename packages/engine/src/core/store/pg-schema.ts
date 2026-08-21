@@ -710,11 +710,18 @@ CREATE TABLE IF NOT EXISTS team_tasks (
   blocks            TEXT NOT NULL DEFAULT '[]',
   blocked_by        TEXT NOT NULL DEFAULT '[]',
   linked_session_id TEXT,
+  -- The finding/code-action this card was materialized FROM (auto-tasks).
+  -- Deterministic per finding, so re-indexing upserts instead of duplicating,
+  -- and a resolved finding can close its own card.
+  linked_finding_id TEXT,
   due               BIGINT,
   created_at        BIGINT NOT NULL,
   updated_at        BIGINT NOT NULL,
   PRIMARY KEY (tenant, id)
 );
+-- Live databases predate the column; must stay BELOW the CREATE (fresh boot).
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS linked_finding_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_team_tasks_finding ON team_tasks(tenant, linked_finding_id);
 CREATE INDEX IF NOT EXISTS idx_team_tasks_proj ON team_tasks(tenant, project_id, status);
 CREATE INDEX IF NOT EXISTS idx_team_tasks_assignee ON team_tasks(tenant, assignee_sub, status);
 

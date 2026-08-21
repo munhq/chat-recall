@@ -3697,6 +3697,13 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
           project_filter: params.project_filter, max_facts: params.max_facts, max_kg_facts: params.max_kg_facts,
         });
 
+        const ot = (wake as { openTasks?: { total: number; auto: number } }).openTasks;
+        if (ot && ot.total > 0) {
+          lines.push('## Task board');
+          lines.push(`  ${ot.total} open task(s)${ot.auto ? ` — ${ot.auto} auto-filed from code findings` : ''}. List them with recall_tasks; when you start one, set it in_progress and pass your session id as linked_session_id.`);
+          lines.push('');
+        }
+
         if (wake.highFacts.length > 0) {
           lines.push('## High-importance facts');
           for (const c of wake.highFacts) lines.push(`  [${c.type}] ${c.text}`);
