@@ -14,14 +14,18 @@
  *   - CODE ACTIONS ONLY. They are the one findings source with stable ids
  *     (dedup and auto-close are impossible without identity). Live secrets
  *     already page through the alert webhook — a second card would double-alert.
- *   - Priority floor, not everything: pri 0 ≈ critical, pri 1 ≈ high. The rest
- *     stay in the ranked view (recall_improvements) for a human to promote.
+ *   - A priority FLOOR the tenant picks: critical, high, medium or low (pri 0-3,
+ *     see severityOfPri). Anything below it stays in the ranked view for a human
+ *     to promote. Worth knowing when picking: this collector only emits pri 0 for
+ *     critical SECURITY findings, so a 'critical' floor files nothing on a repo
+ *     whose worst problem is structural.
  *   - Gated on the 'tasks' feature via the caller (the routes that invoke this
  *     are behind requireFeature('tasks') mounts or check the plan themselves);
  *     the run also re-checks, because a policy left on by a lapsed tenant must
  *     not keep writing to a board their plan no longer includes.
  */
 import { createStore, createControlPlane, runWithTenant, runWithAuthor, runUnrestricted } from '../imports.js';
+import { severityOfPri, PRI_SEVERITY } from '@chat-recall/engine/types/code-intel.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { allows } from '../util/entitlements.js';
 import { effectivePlan, billingEnabled } from '../util/billing.js';
@@ -43,8 +47,16 @@ const MAX_NEW_CARDS_PER_RUN = 10;
 
 export interface AutoTasksPolicy {
   enabled: boolean;
-  /** Highest pri value that materializes: 0 = critical only, 1 = critical+high. */
-  maxPri: 0 | 1;
+  /** Highest pri that materializes. 0 critical, 1 high, 2 medium, 3 low —
+   *  inclusive, so 2 files critical + high + medium. */
+  maxPri: 0 | 1 | 2 | 3;
+}
+
+/** Clamp anything into the pri range the policy understands. */
+function asMaxPri(v: unknown): 0 | 1 | 2 | 3 {
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n) || n < 0) return 1;
+  return Math.min(n, PRI_SEVERITY.length - 1) as 0 | 1 | 2 | 3;
 }
 
 export function parsePolicy(raw: string | null): AutoTasksPolicy {
@@ -54,7 +66,7 @@ export function parsePolicy(raw: string | null): AutoTasksPolicy {
     const o = JSON.parse(raw ?? '');
     return {
       enabled: o?.enabled === true,
-      maxPri: o?.maxPri === 0 ? 0 : 1,
+      maxPri: o?.maxPri === undefined ? 1 : asMaxPri(o.maxPri),
     };
   } catch {
     return { enabled: false, maxPri: 1 };
@@ -127,7 +139,7 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
         if (byFinding.has(a.id)) continue;           // card exists, any status
         if (created >= MAX_NEW_CARDS_PER_RUN) break;
         await store.createTeamTask({
-          title: `[${a.pri === 0 ? 'critical' : 'high'}] ${a.title}`.slice(0, 500),
+          title: `[${severityOfPri(a.pri)}] ${a.title}`.slice(0, 500),
           description: [
             a.fix,
             a.loc?.length ? `Where: ${a.loc.slice(0, 6).map((l) => l.line ? `${l.file}:${l.line}` : l.file).join('; ')}` : '',
@@ -190,7 +202,7 @@ export async function autoTasksStatus(tenant: string): Promise<{
   lastRun: AutoTasksLastRun | null;
   eligible: number;
   filed: number;
-  byProject: Array<{ projectId: string; critical: number; high: number; eligible: number }>;
+  byProject: Array<{ projectId: string; counts: Record<string, number>; eligible: number }>;
 }> {
   const cp = await createControlPlane();
   let policy: AutoTasksPolicy;
@@ -215,20 +227,25 @@ export async function autoTasksStatus(tenant: string): Promise<{
       const existing = await store.teamTasksByFindingIds();
       const carded = new Set(existing.map((t) => t.linkedFindingId).filter(Boolean) as string[]);
 
-      const rows = new Map<string, { projectId: string; critical: number; high: number; eligible: number }>();
+      // Every severity is counted, not just the two above the old floor: the
+      // panel has to show what a LOWER floor would pick up, or choosing one is
+      // guesswork.
+      const rows = new Map<string, { projectId: string; counts: Record<string, number>; eligible: number }>();
       let eligible = 0;
       let filed = 0;
       for (const a of open) {
-        if (a.pri > 1) continue;                       // below the floor either way
         const key = a.projectId || 'unknown';
-        const row = rows.get(key) ?? { projectId: key, critical: 0, high: 0, eligible: 0 };
-        if (a.pri === 0) row.critical++; else row.high++;
-        if (carded.has(a.id)) { filed++; }
+        const row = rows.get(key) ?? { projectId: key, counts: {}, eligible: 0 };
+        const sev = severityOfPri(a.pri);
+        row.counts[sev] = (row.counts[sev] ?? 0) + 1;
+        if (carded.has(a.id)) { if (a.pri <= policy.maxPri) filed++; }
         else if (a.pri <= policy.maxPri) { row.eligible++; eligible++; }
         rows.set(key, row);
       }
+      const weight = (c: Record<string, number>) =>
+        PRI_SEVERITY.reduce((n, s, i) => n + (c[s] ?? 0) * (PRI_SEVERITY.length - i) * 1000, 0);
       const byProject = [...rows.values()]
-        .sort((x, y) => (y.critical - x.critical) || (y.high - x.high) || x.projectId.localeCompare(y.projectId));
+        .sort((x, y) => weight(y.counts) - weight(x.counts) || x.projectId.localeCompare(y.projectId));
       return { policy, lastRun, eligible, filed, byProject };
     } finally {
       await store.close();

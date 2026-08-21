@@ -2565,13 +2565,15 @@ export interface TeamTask {
   due: number | null; createdAt: number; updatedAt: number;
 }
 
-export interface AutoTasksPolicy { enabled: boolean; maxPri: 0 | 1 }
+/** maxPri is a FLOOR and inclusive: 0 critical, 1 high, 2 medium, 3 low. */
+export interface AutoTasksPolicy { enabled: boolean; maxPri: 0 | 1 | 2 | 3 }
+export const SEVERITY_BY_PRI = ['critical', 'high', 'medium', 'low'] as const;
 /** The run state behind the switch: what it did last, and what is waiting. */
 export interface AutoTasksStatus extends AutoTasksPolicy {
   lastRun: { at: number; created: number; closed: number } | null;
   eligible: number;
   filed: number;
-  byProject: Array<{ projectId: string; critical: number; high: number; eligible: number }>;
+  byProject: Array<{ projectId: string; counts: Record<string, number>; eligible: number }>;
 }
 export async function getAutoTasksPolicy(): Promise<AutoTasksStatus> {
   const res = await fetchWithTimeout(`${API_BASE}/tasks/policy`);
