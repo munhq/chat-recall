@@ -38,5 +38,18 @@ jobs:
 
       # From the repo root, where server.json lives. The manifest's versions
       # must match the npm release — release-npm.yml guards that pairing.
+      #
+      # "duplicate version" is SUCCESS, not failure: the registry refuses a
+      # second copy of a version it already holds, and a re-dispatch on an
+      # unchanged server.json must not paint the run red.
       - name: Publish
-        run: ./mcp-publisher publish
+        run: |
+          set +e
+          OUT=$(./mcp-publisher publish 2>&1)
+          CODE=$?
+          echo "$OUT"
+          if [ $CODE -ne 0 ] && echo "$OUT" | grep -q "duplicate version"; then
+            echo "already published — nothing to do"
+            exit 0
+          fi
+          exit $CODE
