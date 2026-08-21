@@ -31,19 +31,26 @@ actually published, or the listing points at a tarball that does not exist —
 the release checklist below covers it. The workflow treats "duplicate version"
 as success, so a re-dispatch on an unchanged manifest stays green.
 
-## 2. Smithery
+## 2. Smithery — LIVE at @darkkraft/chat-recall
 
-`smithery.yaml` at the repo root describes how to start the server and what it
-takes. Smithery reads it from the public repo, so no upload is involved.
+Published 2026-08-21 through their HTTP API (the repo-connect UI flow was never
+needed): `PUT /servers/{ns}%2Fchat-recall` created the entry, then
+`PUT /servers/{ns}%2Fchat-recall/releases` with a multipart body — `payload`
+`{"type":"stdio","runtime":"node","configSchema":{…}}` plus a `bundle` MCPB
+file. The bundle is THIN on purpose: a manifest whose `mcp_config` runs
+`npx -y --package=chat-recall chat-recall-mcp`, so it vendors no native deps
+and resolves the current npm version on every launch — no re-publish needed
+per release. Auth is a workspace API key (Bearer).
 
-**NEEDS A HUMAN:** sign in at <https://smithery.ai> with GitHub, then add the
-`munhq/chat-recall` repository. It picks up `smithery.yaml` from `main`.
+It is `stdio` deliberately, and the published release confirms `deploymentUrl:
+null` — Smithery hosts nothing. It must stay that way: the CLI reads
+transcripts from the user's own disk and redacts credentials there, before
+anything is uploaded. A remote copy could do neither, which would throw away
+the property the whole security model rests on (and ELv2 forbids third-party
+hosting besides).
 
-It is declared as `stdio` deliberately. Smithery can host a server remotely, and
-this one must not be hosted: the CLI reads transcripts from the user's own disk
-and redacts credentials there, before anything is uploaded. A remote copy could
-do neither, which would throw away the property the whole security model rests
-on.
+`smithery.yaml` at the repo root stays: it documents the same stdio contract
+and serves the repo-connect flow if it is ever used.
 
 ## 3. Glama
 
