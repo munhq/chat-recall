@@ -17,7 +17,7 @@
  * ── The rules ──────────────────────────────────────────────────────────────
  *
  *   - A tenant with no entitlement history gets one trial, dated from first
- *     contact. FREE_TRIAL_DAYS (default 14) sets the length.
+ *     contact. FREE_TRIAL_DAYS (default 7) sets the length.
  *   - The trial's plan is 'trial', which maps to the SOLO feature set. It was null
  *     at first, and that was a mistake: a null plan resolves to the free set, so the
  *     trial demonstrated none of the product it exists to sell. 'trial' does not
@@ -34,14 +34,21 @@ import type { ControlPlane, Entitlement } from '../imports.js';
 
 const DAY_MS = 86_400_000;
 
-/** Trial length in days. FREE_TRIAL_DAYS, default 14.
+/** Trial length in days. FREE_TRIAL_DAYS, default 7.
  *
- *  14 rather than 7 because the product's value accrues as sessions accumulate:
- *  a week is not long enough for a user's own history to become the reason they
- *  stay. Read live from env so the length is a config change, not a deploy. */
+ *  7, and the default matters: the pricing page, the pricing FAQ, llms.txt and
+ *  the published TERMS all state seven days. A default of 14 meant a deployment
+ *  that simply did not set the variable granted twice what the terms promise,
+ *  which is the one drift here with a legal edge rather than a cosmetic one.
+ *
+ *  The argument for 14 was that value accrues as sessions accumulate. The free
+ *  tier answers that better than a longer trial does: when the trial ends the
+ *  account keeps syncing and keeps its recent history, so the accumulation
+ *  continues without a countdown. Read live from env so the length stays a
+ *  config change, not a deploy. */
 export function trialLengthDays(): number {
   const n = Number(process.env.FREE_TRIAL_DAYS);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 14;
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 7;
 }
 
 /**
