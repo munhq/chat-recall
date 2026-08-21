@@ -2496,6 +2496,45 @@ export async function addTaskComment(id: string, body: string): Promise<TeamTask
   return (await res.json()).comment;
 }
 
+// ── The user's own data controls ───────────────────────────────────────────
+//
+// Export is a plain link rather than a fetch: the response is a streamed NDJSON
+// download, and pulling megabytes into memory to hand them straight back to a
+// blob is worse than letting the browser do what it already does well.
+
+/** Where to point a download link. Export stays available when a tenant lapses
+ *  (it is a GET), because taking your own history with you must never require
+ *  paying again. */
+export function dataExportUrl(project?: string): string {
+  const qs = project ? `?project=${encodeURIComponent(project)}` : '';
+  return `${API_BASE}/data/export${qs}`;
+}
+
+/** Delete every session under one project. Tombstoned, so a later sync will not
+ *  restore it. */
+export async function deleteProjectData(project: string): Promise<{ deleted: number }> {
+  const res = await fetchWithTimeout(`${API_BASE}/data/delete`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ project }),
+  }, 120_000);
+  if (!res.ok) await throwForResponse(res, 'Could not delete that project');
+  return await res.json();
+}
+
+/** Delete everything. `confirm` must be the exact phrase the server requires —
+ *  the UI must not pre-fill it, or the guard is decoration. */
+export async function deleteAllData(confirm: string): Promise<{ deleted: number }> {
+  const res = await fetchWithTimeout(`${API_BASE}/data/delete-all`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ confirm }),
+  }, 300_000);
+  if (!res.ok) await throwForResponse(res, 'Could not delete your data');
+  return await res.json();
+}
+
+/** The phrase /api/data/delete-all demands. Shown to the user to type. */
+export const DELETE_ALL_PHRASE = 'delete everything';
+
 /** Current subscription/entitlement for the caller's tenant. Throws with the
  *  server's error message (e.g. "no team yet …") so the gate can branch on it. */
 export async function getEntitlement(): Promise<Entitlement> {
