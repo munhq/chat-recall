@@ -83,21 +83,31 @@ router.post('/delete', express.json({ limit: '4kb' }), async (req, res) => {
 
   const store = await createStore();
   try {
-    let deleted = 0;
-    // Re-read page 0 each time: a purge removes the row from the listing, so the
-    // remainder slides up to the same offset. The guard is there because a purge
-    // that ever failed to remove its metadata row would otherwise spin.
-    let guard = 500;
-    for (;;) {
-      if (guard-- <= 0) break;
-      const page = await store.listItems('session', 200, 0);
-      const mine = page.filter((r) => r.project_id === project);
-      if (!mine.length) break;
-      for (const row of mine) {
-        await store.purgeSession(row.id);
-        await store.addTombstone(row.id);   // or the next sync restores it
-        deleted++;
+    // COLLECT the whole matching set first, then delete it.
+    //
+    // The previous shape re-read page 0 and stopped as soon as that page held no
+    // row for the project. listItems is paged and ordered by mtime DESC, so page
+    // 0 is only the 200 NEWEST sessions: a tenant with more than 200 sessions
+    // whose project was not among them got `200 {deleted: 0}` — a delete that
+    // reported success and removed nothing, on the one endpoint where that is
+    // least acceptable. Walking every page before touching anything also keeps
+    // the read stable, instead of mutating the list being iterated.
+    const PAGE = 200;
+    const doomed: string[] = [];
+    for (let offset = 0; ; offset += PAGE) {
+      const page = await store.listItems('session', PAGE, offset);
+      if (!page.length) break;
+      for (const row of page) {
+        if (row.project_id === project) doomed.push(row.id);
       }
+      if (page.length < PAGE) break;
+    }
+
+    let deleted = 0;
+    for (const id of doomed) {
+      await store.purgeSession(id);
+      await store.addTombstone(id);   // or the next sync restores it
+      deleted++;
     }
     log.warn({ project, deleted }, 'user deleted a project');
     res.json({ deleted, project });
