@@ -130,3 +130,39 @@ describe('queued prompts reach the search index', () => {
     expect(parsed.firstPrompt).toBe('the opening ask, long enough to survive the length floor');
   });
 });
+
+/**
+ * The dedupe must not eat real repetition.
+ *
+ * parseSessionFile runs for EVERY tool's transcript (see sync-client.ts: "for
+ * other tools the fields it can't read stay at their zero defaults"), so a
+ * session-wide dedupe on prompt text would silently delete repeated turns in
+ * Gemini, OpenCode, Codex and Antigravity sessions as well as Claude's. People
+ * repeat themselves constantly: "continue", "yes", "go on".
+ */
+describe('repetition is not duplication', () => {
+  test('two identical typed prompts are both kept', async () => {
+    const file = writeSession([
+      userRec('continue where we left off please'),
+      userRec('and now the second, different prompt entirely'),
+      userRec('continue where we left off please'),
+    ]);
+    const { parseSessionFile } = await import('../../parsers/session.js');
+    const parsed = await parseSessionFile(file);
+    expect(parsed.userMessages.map((m) => m.text)).toEqual([
+      'continue where we left off please',
+      'and now the second, different prompt entirely',
+      'continue where we left off please',
+    ]);
+  });
+
+  test('a queued record that repeats a typed prompt is stored once', async () => {
+    const file = writeSession([
+      userRec('please run the migration and report back'),
+      enqueue('please run the migration and report back'),
+    ]);
+    const { parseSessionFile } = await import('../../parsers/session.js');
+    const parsed = await parseSessionFile(file);
+    expect(parsed.userMessages).toHaveLength(1);
+  });
+});
