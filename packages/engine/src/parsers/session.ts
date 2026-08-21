@@ -343,8 +343,9 @@ export async function parseSessionFile(
     : [sessionPath];
 
   let userCount = 0;
-  /** Text of every prompt already recorded, so a prompt that appears both as a
-   *  queued record and as a user record is stored once. */
+  /** Text of every prompt already recorded. Used ONLY to stop a QUEUED record
+   *  from double-counting a prompt that also landed as a user record — never to
+   *  collapse two genuine user turns. */
   const seenPrompts = new Set<string>();
   /**
    * Record one typed prompt.
@@ -356,7 +357,7 @@ export async function parseSessionFile(
    * 61 in one measured session, and they are the interruptions and corrections,
    * the highest-signal turns in the conversation.
    */
-  const recordPrompt = (raw: string, line: number): void => {
+  const recordPrompt = (raw: string, line: number, dedupe = false): void => {
     if (userCount >= maxMessages) return;
     // A system reminder is APPENDED to a real prompt, so drop the block and keep
     // the words. Discarding the whole record loses the prompt with it.
@@ -364,7 +365,10 @@ export async function parseSessionFile(
     if (!withoutReminders.trim() || withoutReminders.trim().length <= 10) return;
     const cleanedText = stripInjectedBanners(withoutReminders).trim();
     if (cleanedText.length < 10) return;
-    if (seenPrompts.has(cleanedText)) return;
+    // Deduplicate the QUEUED path only. Repeating yourself is normal ("continue",
+    // "yes", "go on"), and this parser runs for every tool's transcript, so an
+    // unconditional dedupe would quietly delete real repeated turns everywhere.
+    if (dedupe && seenPrompts.has(cleanedText)) return;
     seenPrompts.add(cleanedText);
     content.userMessages.push({ text: cleanedText, lineNumber: line, contentType: 'user' });
     userCount++;
@@ -467,7 +471,7 @@ export async function parseSessionFile(
       } else if (msgType === 'queue-operation') {
         // 'enqueue' carries the text; 'remove' is the dequeue half and repeats it.
         if (obj.operation === 'enqueue' && typeof obj.content === 'string') {
-          recordPrompt(obj.content, lineNum);
+          recordPrompt(obj.content, lineNum, true);
         }
       } else if (msgType === 'assistant') {
         const msg = obj.message as Record<string, unknown>;
