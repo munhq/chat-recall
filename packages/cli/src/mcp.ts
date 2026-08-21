@@ -6,6 +6,7 @@
  */
 
 import { config } from 'dotenv';
+import { buildHttpError, stalenessBanner, type SyncState } from './mcp-diagnostics.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -136,16 +137,6 @@ function remoteCredentials(): { base: string; token: string } | null {
  * hint. Deliberately does NOT echo the raw response body — server error pages
  * / stack traces are noise (and a potential info leak) in a tool result.
  */
-function httpError(path: string, status: number): Error {
-  const hint =
-    status === 401 || status === 403 ? 'auth failed — re-run `chat-recall login <server-url>`' :
-    status === 404 ? 'not found — the id may be wrong, or the server is older than this CLI' :
-    status === 429 ? 'rate limited — retry in a moment' :
-    status >= 500 ? 'server error — check the chat-recall server logs' :
-    'request rejected';
-  return new Error(`server ${path}: HTTP ${status} (${hint})`);
-}
-
 async function remotePost<T>(path: string, body: unknown): Promise<T> {
   const cred = remoteCredentials();
   if (!cred) throw new Error('scope "server" needs a login — run `chat-recall login <server-url>` first.');
@@ -154,7 +145,7 @@ async function remotePost<T>(path: string, body: unknown): Promise<T> {
     headers: { 'content-type': 'application/json', authorization: `Bearer ${cred.token}` },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw httpError(path, res.status);
+  if (!res.ok) throw await buildHttpError(path, res);
   return res.json() as Promise<T>;
 }
 
@@ -164,7 +155,7 @@ async function remoteGet<T>(path: string): Promise<T> {
   const res = await fetch(cred.base + path, {
     headers: { authorization: `Bearer ${cred.token}` },
   });
-  if (!res.ok) throw httpError(path, res.status);
+  if (!res.ok) throw await buildHttpError(path, res);
   return res.json() as Promise<T>;
 }
 
@@ -176,7 +167,7 @@ async function remotePatch<T>(path: string, body: unknown): Promise<T> {
     headers: { 'content-type': 'application/json', authorization: `Bearer ${cred.token}` },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw httpError(path, res.status);
+  if (!res.ok) throw await buildHttpError(path, res);
   return res.json() as Promise<T>;
 }
 
@@ -246,7 +237,7 @@ async function remoteGetSoft<T>(path: string, params: Record<string, string | nu
     }
     return { status: res.status, data: null, message };
   }
-  if (!res.ok) throw httpError(path, res.status);
+  if (!res.ok) throw await buildHttpError(path, res);
   return { status: res.status, data: (await res.json()) as T };
 }
 
@@ -1528,8 +1519,81 @@ Complements recall_memory_search: search finds candidates, this reads the specif
   };
 });
 
-// Handle tool calls
+/**
+ * Entitlement state, for the staleness warning below. Cached per process.
+ *
+ * A lapsed tenant keeps READ access — searches still answer, and they answer from
+ * a history that stopped growing the day the subscription ended. An agent has no
+ * way to know that, so it reports "you never worked on that" about work done last
+ * week. Silently wrong is the worst failure a memory product can have, and it is
+ * the same defect as a paginated transcript claiming to be a whole session.
+ *
+ * One request per TTL, only when logged in, and every failure resolves to "no
+ * warning" — an unreachable billing endpoint must never decorate every answer
+ * with a scare it cannot substantiate.
+ */
+let syncStateCache: { at: number; state: SyncState | null } | null = null;
+const SYNC_STATE_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * The tenant's entitlement, cached per process. One request per TTL, only when
+ * logged in, and every failure resolves to null so the banner stays silent
+ * rather than guessing.
+ */
+async function syncState(): Promise<SyncState | null> {
+  if (syncStateCache && Date.now() - syncStateCache.at < SYNC_STATE_TTL_MS) return syncStateCache.state;
+  let state: SyncState | null = null;
+  try {
+    const cred = remoteCredentials();
+    if (cred) {
+      const res = await fetch(cred.base + '/api/billing', {
+        headers: { authorization: `Bearer ${cred.token}` },
+      });
+      if (res.ok) {
+        const b = await res.json() as Record<string, unknown>;
+        if (typeof b.entitled === 'boolean') {
+          state = {
+            entitled: b.entitled,
+            status: typeof b.status === 'string' ? b.status : 'unknown',
+            periodEnd: typeof b.currentPeriodEnd === 'number' ? b.currentPeriodEnd : null,
+          };
+        }
+      }
+    }
+  } catch { /* leave null — no warning rather than a wrong one */ }
+  syncStateCache = { at: Date.now(), state };
+  return state;
+}
+
+// Handle tool calls.
+//
+// The wrapper exists so the staleness warning has ONE insertion point instead of
+// 133. Every successful read passes through here, and a write cannot: a write
+// against a lapsed tenant is refused with a 402 upstream and never reaches this
+// return path — so decorating everything that succeeds is exactly right.
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  const result = await dispatchTool(request);
+  try {
+    const banner = stalenessBanner(await syncState());
+    if (!banner) return result;
+    const content = result.content;
+    if (!Array.isArray(content) || !content.length) return result;
+    // Prepended, not appended: an agent that truncates a long result must still
+    // see it, and it changes how the whole answer should be read.
+    return { ...result, content: [{ type: 'text', text: banner }, ...content] };
+  } catch {
+    return result;   // never let the warning break a working answer
+  }
+});
+
+/** What every tool handler returns. The index signature keeps it assignable to
+ *  the SDK's own result union, which allows extra fields. */
+interface ToolResult {
+  content: Array<{ type: string; text?: string; [k: string]: unknown }>;
+  [k: string]: unknown;
+}
+
+async function dispatchTool(request: { params: { name: string; arguments?: unknown } }): Promise<ToolResult> {
   const { name, arguments: args } = request.params;
 
   try {
@@ -3847,7 +3911,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     reportClientEvent('tool_error', { tool: name, message: msg });
     return { content: [{ type: 'text', text: `Error: ${msg}` }] };
   }
-});
+}
 
 /**
  * Background freshness loop — the architecture's writer. The binary IS the
