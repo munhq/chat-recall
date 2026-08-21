@@ -21,6 +21,9 @@ const state = {
 };
 let seq = 0;
 
+/** The ambient author sub, read through the real ALS the service uses. */
+let currentAuthorSub: () => string | null = () => null;
+
 vi.mock('../imports.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   createControlPlane: async () => ({
@@ -29,8 +32,11 @@ vi.mock('../imports.js', async (importOriginal) => ({
     close: async () => {},
   }),
   createStore: async () => ({
-    listCodeActions: async () => state.actions,
-    teamTasksByFindingIds: async () => state.tasks,
+    // Behaves like RLS author_visibility: a viewer that owns nothing sees
+    // nothing. currentAuthor().sub is 'auto-tasks' inside runWithAuthor and null
+    // under runUnrestricted, which is exactly the distinction that broke prod.
+    listCodeActions: async () => (currentAuthorSub() ? [] : state.actions),
+    teamTasksByFindingIds: async () => (currentAuthorSub() ? [] : state.tasks),
     createTeamTask: async (input: { title: string; linkedFindingId?: string | null }) => {
       state.created.push(input.linkedFindingId as string);
       const t = { id: `t_${++seq}`, title: input.title, status: 'todo', createdBy: 'auto-tasks', linkedFindingId: input.linkedFindingId ?? null };
@@ -44,6 +50,8 @@ vi.mock('../imports.js', async (importOriginal) => ({
 }));
 
 import { runAutoTasks, autoTasksStatus, AUTO_TASKS_KEY } from './auto-tasks.js';
+import { currentAuthor } from '@chat-recall/engine/core/store/tenant-context.js';
+currentAuthorSub = () => currentAuthor().sub;
 
 const action = (id: string, pri: number) => ({
   id, pri, title: `fix ${id}`, fix: 'do it', loc: [] as never[], agentPrompt: '', projectId: 'p1', status: 'suggested',
@@ -165,5 +173,32 @@ describe('auto-tasks', () => {
     await runAutoTasks('t-lapsed');
     expect(state.created).toEqual([]);
     delete process.env.STRIPE_SECRET_KEY;
+  });
+});
+
+/**
+ * The reads must not run as the 'auto-tasks' author.
+ *
+ * Passing that string as the author makes it the RLS viewer, and a viewer that
+ * owns no rows sees only NULL-author ones. On the hosted service that meant the
+ * service read ZERO findings and filed nothing, ever, while self-host looked
+ * fine because every row there is NULL-author. The fake store above models that
+ * rule, so this test fails if the reads move back inside runWithAuthor.
+ */
+describe('reads are unrestricted, writes are authored', () => {
+  test('files cards even though the auto-tasks author owns nothing', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [action('c1', 0), action('h1', 1)];
+    const r = await runAutoTasks('t1');
+    expect(r).toEqual({ created: 2, closed: 0 });
+    expect(state.created).toEqual(['c1', 'h1']);
+  });
+
+  test('the close sweep also sees the tenant, not just its own rows', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 0 }));
+    state.actions = [];                    // the finding is gone
+    state.tasks = [{ id: 't_x', title: 'stale', status: 'todo', createdBy: 'auto-tasks', linkedFindingId: 'gone' }];
+    const r = await runAutoTasks('t1');
+    expect(r?.closed).toBe(1);
   });
 });

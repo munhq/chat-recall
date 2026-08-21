@@ -21,7 +21,7 @@
  *     the run also re-checks, because a policy left on by a lapsed tenant must
  *     not keep writing to a board their plan no longer includes.
  */
-import { createStore, createControlPlane, runWithTenant, runWithAuthor } from '../imports.js';
+import { createStore, createControlPlane, runWithTenant, runWithAuthor, runUnrestricted } from '../imports.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { allows } from '../util/entitlements.js';
 import { effectivePlan, billingEnabled } from '../util/billing.js';
@@ -97,17 +97,32 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
     await cp.close();
   }
 
-  return runWithTenant(tenant, () => runWithAuthor({ sub: 'auto-tasks', device: null }, async () => {
+  return runWithTenant(tenant, async () => {
     const store = await createStore();
     try {
-      const open = await store.listCodeActions(undefined, { status: 'suggested', limit: 500 });
+      // The READS run UNRESTRICTED, and that is load-bearing.
+      //
+      // 'auto-tasks' is not a real user. Passed as the author it becomes the RLS
+      // viewer, and currentViewer()'s contract is explicit: a string viewer sees
+      // "own + shared + legacy(NULL-author)" rows only. This service owns
+      // nothing, so on the hosted service the read returned ZERO findings and
+      // the whole feature filed nothing, ever -- while self-host looked perfect,
+      // because there every row is NULL-author and matches.
+      //
+      // Reproduced on prod: the panel said "4 findings ready to file" (read as
+      // the signed-in user) and Run now said "nothing qualified" (read as
+      // auto-tasks) in the same session, against the same table.
+      const { open, existing } = await runUnrestricted(async () => ({
+        open: await store.listCodeActions(undefined, { status: 'suggested', limit: 500 }),
+        existing: await store.teamTasksByFindingIds(),
+      }));
       const urgent = open.filter((a) => a.pri <= policy.maxPri);
-
-      // One lookup for the whole dedup set AND the close sweep.
-      const existing = await store.teamTasksByFindingIds();
       const byFinding = new Map(existing.map((t) => [t.linkedFindingId as string, t]));
 
       let created = 0;
+      let closed = 0;
+      // WRITES keep the author stamp, so a card records who filed it.
+      await runWithAuthor({ sub: 'auto-tasks', device: null }, async () => {
       for (const a of urgent) {
         if (byFinding.has(a.id)) continue;           // card exists, any status
         if (created >= MAX_NEW_CARDS_PER_RUN) break;
@@ -130,7 +145,6 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
       // dismissed) has served its purpose. Only cards this service created
       // (createdBy check) and only open ones — a human's manual state wins.
       const stillOpen = new Set(open.map((a) => a.id));
-      let closed = 0;
       for (const t of existing) {
         if (t.createdBy !== 'auto-tasks' || t.status === 'done') continue;
         if (t.linkedFindingId && !stillOpen.has(t.linkedFindingId)) {
@@ -139,6 +153,8 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
           closed++;
         }
       }
+
+      });
 
       if (created || closed) log.info({ tenant, created, closed }, 'auto-tasks run');
       // Recorded even when both counts are zero: "it ran and found nothing" and
@@ -153,7 +169,7 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
     } finally {
       await store.close();
     }
-  }));
+  });
 }
 
 /** What the last run did, if there has been one. */
