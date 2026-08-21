@@ -43,7 +43,7 @@ vi.mock('../imports.js', async (importOriginal) => ({
   }),
 }));
 
-import { runAutoTasks, AUTO_TASKS_KEY } from './auto-tasks.js';
+import { runAutoTasks, autoTasksStatus, AUTO_TASKS_KEY } from './auto-tasks.js';
 
 const action = (id: string, pri: number) => ({
   id, pri, title: `fix ${id}`, fix: 'do it', loc: [] as never[], agentPrompt: '', projectId: 'p1', status: 'suggested',
@@ -104,6 +104,54 @@ describe('auto-tasks', () => {
     state.actions.push(action('a2', 0));
     expect(await runAutoTasks('t1')).toBeNull();
     expect(state.created).toEqual(['a1']);
+  });
+
+  test('force bypasses the debounce — the "Run now" button', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [action('a1', 0)];
+    await runAutoTasks('t1');
+    state.actions.push(action('a2', 0));
+    const r = await runAutoTasks('t1', { force: true });
+    expect(r?.created).toBe(1);
+    expect(state.created).toEqual(['a1', 'a2']);
+  });
+
+  test('records the last run even when it files nothing', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 0 }));
+    state.actions = [];                      // nothing qualifies
+    const r = await runAutoTasks('t1');
+    expect(r).toEqual({ created: 0, closed: 0 });
+    // "ran and found nothing" must be distinguishable from "never ran", or the
+    // UI cannot answer "is anything happening?".
+    const st = await autoTasksStatus('t1');
+    expect(st.lastRun?.created).toBe(0);
+    expect(st.lastRun?.at).toBeGreaterThan(0);
+  });
+
+  test('status counts eligible/filed and breaks findings down per project', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 0 }));
+    state.actions = [
+      { ...action('c1', 0), projectId: 'chat-recall' },
+      { ...action('c2', 0), projectId: 'chat-recall' },
+      { ...action('h1', 1), projectId: 'chat-recall' },
+      { ...action('c3', 0), projectId: 'munbot' },
+      { ...action('low', 3), projectId: 'munbot' },     // below the floor entirely
+    ];
+    state.tasks = [{ id: 't_a', title: 'has a card', status: 'todo', createdBy: 'auto-tasks', linkedFindingId: 'c1' }];
+    const st = await autoTasksStatus('t1');
+    expect(st.filed).toBe(1);
+    // maxPri 0 → only criticals are eligible; c1 already has a card.
+    expect(st.eligible).toBe(2);
+    expect(st.byProject).toEqual([
+      { projectId: 'chat-recall', critical: 2, high: 1, eligible: 1 },
+      { projectId: 'munbot', critical: 1, high: 0, eligible: 1 },
+    ]);
+  });
+
+  test('status reports no last run before anything has run', async () => {
+    const st = await autoTasksStatus('t-fresh');
+    expect(st.lastRun).toBeNull();
+    expect(st.policy.enabled).toBe(false);
   });
 
   test('a LAPSED tenant\'s stale policy writes nothing', async () => {
