@@ -54,6 +54,7 @@ function actor(req: express.Request): string { return (req.authorSub || req.user
  * index. Behind this router's 'tasks' mount, so the free plan cannot set it.
  *
  *   GET  /api/tasks/policy      → { enabled, maxPri, lastRun, eligible, filed, byProject }
+ *                                 maxPri: 0 critical, 1 high, 2 medium, 3 low
  *   PUT  /api/tasks/policy {enabled, maxPri?}
  *   POST /api/tasks/policy/run  → run it NOW, returns { created, closed }
  *
@@ -99,7 +100,10 @@ router.post('/policy/run', async (req, res) => {
 
 router.put('/policy', async (req, res) => {
   const enabled = req.body?.enabled === true;
-  const maxPri = req.body?.maxPri === 0 ? 0 : 1;
+  // 0 critical … 3 low, inclusive. Clamped rather than rejected: an out-of-range
+  // number from an old client should degrade, not 400.
+  const n = Math.floor(Number(req.body?.maxPri));
+  const maxPri = Number.isFinite(n) ? Math.min(Math.max(n, 0), 3) : 1;
   const cp = await createControlPlane();
   try {
     await cp.setTenantSetting(req.tenant as string, AUTO_TASKS_KEY, JSON.stringify({ enabled, maxPri }));
