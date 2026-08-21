@@ -11,7 +11,7 @@
  */
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import {
-  planFeatures, licenceFeatures, featuresFor, allows,
+  planFeatures, licenceFeatures, featuresFor, allows, limitsFor,
   ssoAllowed,
   identityLimit, identityCheck, featureRequired, FREE_FEATURES,
 } from './entitlements.js';
@@ -223,5 +223,47 @@ describe('ssoAllowed — the gate that was missing', () => {
     // Our own AUTH_PROVIDER choice is not a customer entitlement — gating it
     // would stop the SaaS booting.
     expect(ssoAllowed('keycloak', { hosted: true, licensed: false })).toBe(true);
+  });
+});
+
+/**
+ * A PAYING tenant whose plan was recorded as a raw Stripe price id.
+ *
+ * planOf() (routes/billing.ts) records metadata.plan when checkout stamped it,
+ * and otherwise the subscription's price id — which is what a dashboard-created
+ * subscription or a customer-portal plan change leaves behind. Every gate here
+ * matched by PREFIX, so 'price_1Abc…' matched nothing and the fail-closed
+ * default handed a paying customer the free tier's features AND meters.
+ */
+describe('a plan recorded as a raw Stripe price id', () => {
+  const PLANS = JSON.stringify([
+    { key: 'solo-monthly', label: 'Solo', priceId: 'price_solo_123', seats: 'fixed' },
+    { key: 'team-monthly', label: 'Team', priceId: 'price_team_456', seats: 'per_seat', minSeats: 1 },
+  ]);
+  let prev: string | undefined;
+  beforeEach(() => { prev = process.env.BILLING_PLANS; process.env.BILLING_PLANS = PLANS; });
+  afterEach(() => { if (prev === undefined) delete process.env.BILLING_PLANS; else process.env.BILLING_PLANS = prev; });
+
+  test('grants the features of the plan it was actually bought as', () => {
+    const f = planFeatures('price_solo_123');
+    expect(f.has('sync')).toBe(true);
+    expect(f.has('findings')).toBe(true);
+    expect(f.has('team')).toBe(false);      // Solo, so still no collaboration
+  });
+
+  test('is UNMETERED — the bug billed a paying tenant at free-tier limits', () => {
+    const l = limitsFor('price_solo_123');
+    expect(l.searchWindowDays).toBeNull();
+    expect(l.syncBytesPerMonth).toBeNull();
+    expect(l.rateMultiplier).toBe(1);
+  });
+
+  test('a team price id grants team', () => {
+    expect(planFeatures('price_team_456').has('team')).toBe(true);
+  });
+
+  test('an unknown price id still fails closed', () => {
+    expect(limitsFor('price_not_ours').searchWindowDays).toBe(7);
+    expect(planFeatures('price_not_ours').has('sync')).toBe(false);
   });
 });
