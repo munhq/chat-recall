@@ -32,9 +32,11 @@
 import express from 'express';
 import type { Request } from 'express';
 import type Stripe from 'stripe';
-import { createControlPlane, type EntitlementStatus } from '../imports.js';
+import { createControlPlane, type EntitlementStatus, type ControlPlane } from '../imports.js';
 import { requireUser } from '../middleware/auth.js';
-import { billingEnabled, isEntitled, tenantFeatures } from '../util/billing.js';
+import {
+  billingEnabled, isEntitled, tenantFeatures, effectivePlan, tenantLimits, currentUsageMonth,
+} from '../util/billing.js';
 import { ensureTrial, isNoCardTrial, trialDaysLeft, trialLengthDays } from '../util/trial.js';
 import { planCatalogue, resolveLine, isPlanError, trialDays } from '../util/billing-plans.js';
 import { publicOrigin, UnsafeOriginError } from './install.js';
@@ -589,6 +591,14 @@ router.get('/', async (req, res) => {
       onTrial,
       trialDaysLeft: onTrial ? trialDaysLeft(ent) : null,
       trialLengthDays: trialLengthDays(),
+      // The RESOLVED plan and its meters — 'free' once the entitlement lapses.
+      // `plan` above stays the RECORDED row (the billing history); this is what
+      // the tenant is actually on, and it is what the client renders. Usage is
+      // included only when a meter applies: a paid tenant's page has no meter to
+      // draw, so there is nothing to fetch.
+      effectivePlan: await effectivePlan(tenant),
+      limits: await tenantLimits(tenant),
+      usage: await meteredUsage(cp, tenant),
     });
   } catch (err) {
     res.status(500).json({ error: 'entitlement lookup failed', detail: (err as Error).message });
@@ -596,6 +606,21 @@ router.get('/', async (req, res) => {
     await cp.close();
   }
 });
+
+/**
+ * The sync meter, for the status payload above — null for unmetered tenants so
+ * the client renders no meter rather than a full-looking empty one.
+ */
+async function meteredUsage(
+  cp: Pick<ControlPlane, 'getSyncUsage'>,
+  tenant: string,
+): Promise<{ monthBytes: number; totalBytes: number; month: string } | null> {
+  const limits = await tenantLimits(tenant);
+  if (limits.syncBytesPerMonth === null && limits.syncStorageBytes === null) return null;
+  const month = currentUsageMonth();
+  const u = await cp.getSyncUsage(tenant, month);
+  return { ...u, month };
+}
 
 /**
  * POST /api/billing/portal — open the Stripe Billing Portal so a subscriber can

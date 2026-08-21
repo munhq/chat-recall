@@ -72,8 +72,48 @@ import { CLASSES, ENFORCE, STORE_KIND, type RlClass, type ClassConfig } from './
 import { MemoryStore, PgStore, NoopStore, type RateLimitStore } from './rate-limit-store.js';
 import { openPgPool } from '@chat-recall/engine/core/store/pg-pool.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
+import { tenantLimits } from '../util/billing.js';
+import { TenantTtlCache } from '../util/tenant-cache.js';
 
 const log = createLogger('rate-limit');
+
+/**
+ * Plan multiplier on tenant-keyed budgets (PlanLimits.rateMultiplier: 1 for
+ * entitled/self-host, 0.2 for the free tier). Cached 30s like billing's own
+ * entitlement caches, so the limiter adds no control-plane query per request
+ * beyond what those caches already pay.
+ *
+ * The multiplier scales the BUDGET passed to the store, never the bucket key:
+ * both stores clamp fill to the capacity of the CURRENT call, so a plan change
+ * applies to the existing bucket within one TTL instead of orphaning its fill
+ * state under a new key.
+ */
+const multiplierCache = new TenantTtlCache<number>(30_000);
+
+/** For tests. */
+export function clearRateMultiplierCache(): void {
+  multiplierCache.clear();
+}
+
+async function tenantMultiplier(tenant: string): Promise<number> {
+  const cached = multiplierCache.get(tenant);
+  if (cached !== undefined) return cached;
+  let mult = 1;
+  try {
+    const m = (await tenantLimits(tenant)).rateMultiplier;
+    if (Number.isFinite(m) && m > 0) mult = m;
+  } catch (err) {
+    // Fail OPEN to the full budget — an entitlement hiccup must never become a
+    // 429 storm. Caching the fallback bounds the warn to once per tenant per TTL.
+    log.warn({ tenant, err: err instanceof Error ? err.message : String(err) },
+      'rate multiplier resolve failed — using full budget');
+  }
+  multiplierCache.set(tenant, mult);
+  return mult;
+}
+
+/** A free tenant always keeps at least 1 concurrency slot. */
+const scaleConcurrency = (cap: number, mult: number): number => Math.max(1, Math.floor(cap * mult));
 
 let _store: RateLimitStore | null = null;
 function store(): RateLimitStore {
@@ -89,6 +129,8 @@ function store(): RateLimitStore {
 class Semaphore {
   private active = 0;
   constructor(private max: number) {}
+  /** A plan change must apply to a live semaphore, not wait for it to idle out. */
+  setMax(max: number): void { this.max = max; }
   tryAcquire(): boolean { if (this.active < this.max) { this.active++; return true; } return false; }
   release(): void { if (this.active > 0) this.active--; }
   get idle(): boolean { return this.active === 0; }
@@ -126,13 +168,19 @@ function shed(res: Response, className: RlClass, id: string, kind: string, retry
  * fn (idempotent) and whether it succeeded. When report-only, never actually
  * blocks: it still tracks slots it could take, but a miss just logs.
  */
-function acquireConcurrency(className: RlClass, id: string, cfg: ClassConfig): { ok: boolean; release: () => void } {
+function acquireConcurrency(className: RlClass, id: string, cfg: ClassConfig, multiplier = 1): { ok: boolean; release: () => void } {
   if (!cfg.concurrency) return { ok: true, release: () => {} };
+  // The global cap is class-wide load protection, not a tenant budget — only
+  // the per-tenant cap scales with the plan multiplier.
   let g = globalSem.get(className);
   if (!g) { g = new Semaphore(cfg.concurrency); globalSem.set(className, g); }
   const tKey = `${className}:${id}`;
   let t = tenantSem.get(tKey);
-  if (!t && cfg.concurrencyPerTenant) { t = new Semaphore(cfg.concurrencyPerTenant); tenantSem.set(tKey, t); }
+  if (cfg.concurrencyPerTenant) {
+    const capT = scaleConcurrency(cfg.concurrencyPerTenant, multiplier);
+    if (!t) { t = new Semaphore(capT); tenantSem.set(tKey, t); }
+    else t.setMax(capT);
+  }
 
   const gotG = g.tryAcquire();
   const gotT = t ? t.tryAcquire() : true;
@@ -161,13 +209,20 @@ export function rl(className: RlClass, opts: { cost?: (req: Request) => number }
       const id = identityOf(req, cfg);
       const cost = Math.max(1, Math.floor(opts.cost ? opts.cost(req) : 1));
 
+      // Plan multiplier applies only to tenant-keyed budgets — the per-IP
+      // classes are anti-abuse ceilings, not entitlements.
+      const tenant = cfg.identity === 'tenant' ? (req as any).tenant as string | undefined : undefined;
+      const mult = tenant ? await tenantMultiplier(tenant) : 1;
+      const capacity = cfg.capacity * mult;
+      const refillPerSec = cfg.refillPerSec * mult;
+
       // Concurrency gate (heavy classes). Release on response completion.
-      const conc = acquireConcurrency(className, id, cfg);
+      const conc = acquireConcurrency(className, id, cfg, mult);
       if (conc.ok) { res.on('finish', conc.release); res.on('close', conc.release); }
       if (!conc.ok && shed(res, className, id, 'concurrency', 1000)) return;
 
-      const r = await store().consume(`${className}:${id}`, cost, cfg.capacity, cfg.refillPerSec);
-      setHeaders(res, cfg.capacity, r.remaining, cfg.refillPerSec);
+      const r = await store().consume(`${className}:${id}`, cost, capacity, refillPerSec);
+      setHeaders(res, capacity, r.remaining, refillPerSec);
       if (!r.allowed && shed(res, className, id, 'rate', r.retryAfterMs)) { conc.release(); return; }
       next();
     } catch {
@@ -186,12 +241,14 @@ export async function ingestGate(tenant: string, rowCount: number): Promise<{ ok
   const cfg = CLASSES.ingest;
   const id = `t:${tenant || 'default'}`;
   try {
-    const conc = acquireConcurrency('ingest', id, cfg);
+    // Free tier: 0.2× tokens, and concurrencyPerTenant floors at 1 slot.
+    const mult = await tenantMultiplier(tenant || 'default');
+    const conc = acquireConcurrency('ingest', id, cfg, mult);
     if (!conc.ok) {
       log.warn({ decision: ENFORCE ? 'BLOCK' : 'report-only would-shed', id, rowCount }, 'ingest/concurrency');
       return { ok: ENFORCE ? false : true, release: conc.release, retryAfterMs: 2000 };
     }
-    const r = await store().consume(`ingest:${id}`, Math.max(1, rowCount), cfg.capacity, cfg.refillPerSec);
+    const r = await store().consume(`ingest:${id}`, Math.max(1, rowCount), cfg.capacity * mult, cfg.refillPerSec * mult);
     if (!r.allowed) {
       log.warn({ decision: ENFORCE ? 'BLOCK' : 'report-only would-shed', id, rowCount, retryAfterMs: r.retryAfterMs }, 'ingest/rate');
       if (ENFORCE) { conc.release(); return { ok: false, release: () => {}, retryAfterMs: r.retryAfterMs }; }

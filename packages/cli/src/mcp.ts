@@ -432,6 +432,12 @@ const RecallTaskUpdateSchema = z.object({
   assignee: z.string().optional().describe('Reassign to this user id (sub); empty string unassigns'),
   title: z.string().optional(),
   comment: z.string().optional().describe('Add a comment to the task'),
+  linked_session_id: z.string().nullable().optional()
+    .describe('Session id to attach to the task (null detaches). Pass YOUR OWN current session id when you start working on the task.'),
+});
+const RecallTaskCommentSchema = z.object({
+  task_id: z.string().describe('Task id (t_…) from recall_tasks'),
+  body: z.string().describe('The comment text'),
 });
 
 // ── Knowledge Graph Schemas ──────────────────────────────────────
@@ -637,7 +643,7 @@ const server = new Server(
 /**
  * The tools an agent sees by default.
  *
- * 52 tools is a lot to put in front of a model. Tool choice degrades as the list
+ * 54 tools is a lot to put in front of a model. Tool choice degrades as the list
  * grows — some clients truncate it, and all of them get worse at picking when a
  * dozen names could plausibly match a request. The routing hints in these
  * descriptions help, but they cannot undo the size.
@@ -1060,7 +1066,11 @@ project / status.`,
       {
         name: 'recall_task_create',
         description: `Create a collaborative team task. Optionally assign it to a teammate and
-attach it to a project. Returns the new task id.`,
+attach it to a project. Returns the new task id.
+
+When you then START working on a task, use recall_task_update to set status
+'in_progress' and link your current session (linked_session_id) — that is what
+lets the board verify the work actually shipped.`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -1074,8 +1084,15 @@ attach it to a project. Returns the new task id.`,
       },
       {
         name: 'recall_task_update',
-        description: `Update a team task: change status, reassign, rename, and/or add a comment.
-Pass the task id (t_…) from recall_tasks.`,
+        description: `Update a team task: change status, reassign, rename, link a session, and/or
+add a comment. Pass the task id (t_…) from recall_tasks.
+
+WORKFLOW — do this whenever the user asks you to work on a task from the board:
+1. When you start, set status 'in_progress' AND pass your own current session id
+   as linked_session_id (the session id you know from your own context; this MCP
+   server cannot see it). The board uses that link to show whether the linked
+   session actually shipped — files, diff stats, commits.
+2. When you finish, set status 'done'.`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -1084,8 +1101,23 @@ Pass the task id (t_…) from recall_tasks.`,
             assignee: { type: 'string', description: 'Reassign to this user id (sub)' },
             title: { type: 'string' },
             comment: { type: 'string', description: 'Add a comment' },
+            linked_session_id: { type: 'string', description: 'Session id to attach — pass YOUR OWN current session id when you start working on this task, so the board can check whether the work shipped. Null detaches.' },
           },
           required: ['id'],
+        },
+      },
+      {
+        name: 'recall_task_comment',
+        description: `Leave a progress note on a team task — a comment visible to everyone on the
+board. Use it to record what you did, what is blocked, or why a status changed,
+without editing the task itself. Pass the task id (t_…) from recall_tasks.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            task_id: { type: 'string', description: 'Task id (t_…) from recall_tasks' },
+            body: { type: 'string', description: 'The comment text' },
+          },
+          required: ['task_id', 'body'],
         },
       },
       // ── Knowledge Graph Tools ──────────────────────────────────
@@ -2816,11 +2848,20 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         if (params.status) patch.status = params.status;
         if (params.assignee !== undefined) patch.assigneeSub = params.assignee || null;
         if (params.title) patch.title = params.title;
+        if (params.linked_session_id !== undefined) patch.linkedSessionId = params.linked_session_id;
         let did = false;
         if (Object.keys(patch).length > 0) { await remotePatch(`/api/tasks/${encodeURIComponent(params.id)}`, patch); did = true; }
         if (params.comment) { await remotePost(`/api/tasks/${encodeURIComponent(params.id)}/comments`, { body: params.comment }); did = true; }
-        if (!did) return { content: [{ type: 'text', text: 'Nothing to update — pass status, assignee, title, and/or comment.' }] };
+        if (!did) return { content: [{ type: 'text', text: 'Nothing to update — pass status, assignee, title, linked_session_id, and/or comment.' }] };
         return { content: [{ type: 'text', text: `Updated task ${params.id}.` }] };
+      }
+
+      case 'recall_task_comment': {
+        const params = RecallTaskCommentSchema.parse(args);
+        requireRemote();
+        const { comment } = await remotePost<{ comment: { id: string; taskId: string } }>(
+          `/api/tasks/${encodeURIComponent(params.task_id)}/comments`, { body: params.body });
+        return { content: [{ type: 'text', text: `Commented on task ${comment.taskId} (comment ${comment.id}).` }] };
       }
 
       // ── Knowledge Graph Handlers ─────────────────────────────────
@@ -3963,6 +4004,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         ];
         const groups: Array<[string, string[]]> = [
           ['Aggregate views', ['recall_weekly_digest', 'recall_analytics_summary', 'recall_team_activity', 'recall_outcome_summary']],
+          ['Task board', ['recall_task_comment']],
           ['Knowledge graph', ['recall_kg_timeline', 'recall_kg_stats', 'recall_kg_invalidate']],
           ['Session detail', ['recall_markers', 'recall_subagent_search', 'recall_memory_item', 'recall_rename_session', 'recall_regenerate_summary']],
           ['Code intelligence', ['recall_code_index', 'recall_code_projects', 'recall_code_findings', 'recall_code_actions']],

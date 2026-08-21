@@ -234,7 +234,10 @@ function AppInner() {
     if (f.codeIntel || f.conversations) out.add('projects');  // the project workspace spine
     if (f.conversations) out.add('search');
     if (f.memory) out.add('memory');
-    if (f.toolkit) out.add('toolkit');
+    // Deployment capability AND tenant entitlement — the free plan does not
+    // include the toolkit, and this tab was the one paid surface still gated on
+    // the deployment alone, so a free tenant got a door that 402s.
+    if (f.toolkit && (tenantFeatures === null || tenantFeatures.has('toolkit'))) out.add('toolkit');
     // Gated on the TENANT's plan, not just the deployment, for the same reason
     // the Team tab is: showing a door that 402s is worse than showing no door.
     // Optimistic while the entitlement is in flight — the server refuses either
@@ -255,6 +258,14 @@ function AppInner() {
     if (f.teams && (tenantFeatures === null || tenantFeatures.has('team'))) out.add('team');
     return out;
   }, [capabilities, isOperator, tenantFeatures]);
+
+  // Analytics & Insights is a paid surface too — same optimistic-while-unknown
+  // rule as the tabs above. It is a sub-tab of Home rather than a view, so it
+  // needs its own gate; without one a free tenant kept a door that 402s.
+  const insightsAllowed = tenantFeatures === null || tenantFeatures.has('insights');
+  useEffect(() => {
+    if (!insightsAllowed && homeSubTab === 'insights') setHomeSubTab('dashboard');
+  }, [insightsAllowed, homeSubTab]);
 
   // Entitlement gate (cloud only). 'loading' until we know; 'subscribe' shows the
   // full-screen trial gate; 'ok' renders the app. No gate when billing is off
@@ -278,33 +289,50 @@ function AppInner() {
     getEntitlement()
       .then((e) => {
         if (Array.isArray(e.features)) setTenantFeatures(new Set(e.features));
-        if (!e.billingEnabled) return setGate('ok');   // self-host: never gated
-        // A trial is 'trialing', so a trialing tenant renders the app and sees
-        // the countdown banner rather than the full-screen gate. Only a lapsed
-        // or never-started tenant meets the gate.
-        setGate(e.status === 'active' || e.status === 'trialing' ? 'ok' : 'subscribe');
+        // FREE IS THE FLOOR. A tenant whose entitlement resolved — active,
+        // trialing, lapsed, canceled — renders the app: the server serves a
+        // lapsed tenant the free plan (windowed search, metered sync) rather
+        // than refusing, so a full-screen paywall here would lock people out of
+        // data the server would happily return. The tenant's feature list
+        // (above) hides the paid tabs, and TrialBanner states the free plan as
+        // an offer. Only a visitor with NO workspace yet meets the gate — that
+        // is first-run onboarding, handled in the catch below.
+        setGate('ok');
       })
       // "no team yet" → first-run onboarding via the Subscribe screen. Any other
-      // error → don't lock the user out; the server's 402 still enforces payment.
+      // error → don't lock the user out; the server keeps enforcing its gates.
       .catch((err) => setGate(/no team/i.test(String(err?.message || err)) ? 'subscribe' : 'ok'));
   }, []);
   useEffect(() => {
     // Verify before locking the shell, rather than trusting the refusal that
-    // raised the event. api.ts already filters feature-level 402s out, but this
-    // is the decision that replaces the entire app with a paywall, so it asks
-    // the authoritative endpoint first. A tenant who is trialing or active keeps
-    // the app; anything else, or an unreachable check, falls through to the gate
-    // exactly as before.
+    // raised the event. api.ts already filters feature-level and limit-level
+    // 402s out, but this is the decision that replaces the entire app with a
+    // paywall, so it asks the authoritative endpoint first. Any tenant whose
+    // entitlement RESOLVES keeps the app — a lapsed tenant is on the free plan,
+    // not locked out — so the gate falls only for a visitor with no workspace.
     const onPay = () => {
       getEntitlement()
         .then((e) => {
-          if (e.status === 'active' || e.status === 'trialing') return;
-          setGate('subscribe');
+          if (Array.isArray(e.features)) setTenantFeatures(new Set(e.features));
         })
-        .catch(() => setGate('subscribe'));
+        .catch((err) => {
+          if (/no team/i.test(String(err?.message || err))) setGate('subscribe');
+        });
     };
     window.addEventListener('cr:payment-required', onPay);
     return () => window.removeEventListener('cr:payment-required', onPay);
+  }, []);
+  // A write refused for a missing email confirmation. Its own surface: the fix
+  // is a link in an inbox, and before this it fell into the paywall path —
+  // which no longer renders for resolvable tenants — and vanished silently.
+  const [confirmEmailNotice, setConfirmEmailNotice] = useState<string | null>(null);
+  useEffect(() => {
+    const onConfirm = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      setConfirmEmailNotice(typeof detail === 'string' && detail ? detail : 'Confirm your email address to start your trial.');
+    };
+    window.addEventListener('cr:confirm-email', onConfirm);
+    return () => window.removeEventListener('cr:confirm-email', onConfirm);
   }, []);
   // If the current view got disabled by a late capabilities answer, fall
   // back to Conversations instead of rendering a dead panel.
@@ -356,6 +384,11 @@ function AppInner() {
   const [recentLoadingFirstPage, setRecentLoadingFirstPage] = useState(true);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [memoryResults, setMemoryResults] = useState<MemoryHit[]>([]);
+  // Free-plan window metadata from the LAST search response: how many trailing
+  // days the server searched, and how many matches sit outside that window
+  // (stored and locked). Null while no windowed answer has arrived — the
+  // results list then says nothing about a window.
+  const [searchWindow, setSearchWindow] = useState<{ days: number; lockedOlder: number | null } | null>(null);
   const [messages, setMessages] = useState<any[]>([]);
   const [conversationTotal, setConversationTotal] = useState(0);
   const [conversationHasMore, setConversationHasMore] = useState(false);
@@ -551,6 +584,7 @@ function AppInner() {
       if (!q.trim()) {
         setSearchResults([]);
         setMemoryResults([]);
+        setSearchWindow(null);
         return;
       }
       if (looksLikeSessionId(q)) { openById(q); return; }
@@ -559,9 +593,10 @@ function AppInner() {
       // search view renders — so it looked like the search box did nothing.
       setView('search');
       try {
-        const { sessions: hits, memory } = await searchSessions(q, 50, projectFilter || undefined, explicit);
+        const { sessions: hits, memory, windowDays, lockedOlder } = await searchSessions(q, 50, projectFilter || undefined, explicit);
         setSearchResults(hits);
         setMemoryResults(memory);
+        setSearchWindow(windowDays != null ? { days: windowDays, lockedOlder } : null);
       } catch (err) {
         console.error('Search failed:', err);
       }
@@ -577,6 +612,7 @@ function AppInner() {
       } else {
         setSearchResults([]);
         setMemoryResults([]);
+        setSearchWindow(null);
       }
     }, 300);
     return () => clearTimeout(timer);
@@ -922,13 +958,45 @@ function AppInner() {
       />
 
       {view !== 'settings' && view !== 'account' && (
-        <TrialBanner onSubscribe={() => setView('account')} />
+        <TrialBanner onSubscribe={() => setView('account')} windowDays={searchWindow?.days} />
       )}
 
       {enabledViews.has('security') && view !== 'settings' && view !== 'account' && (
         <SecuritySummaryBanner onReview={() => setView('security')} />
       )}
 
+      {confirmEmailNotice && (
+        <div
+          role="status"
+          data-testid="confirm-email-banner"
+          style={{
+            background: 'var(--cr-warn-surf)',
+            color: 'var(--cr-warn-500)',
+            borderBottom: '1px solid var(--cr-warn-line)',
+            padding: '6px 14px',
+            fontSize: 12,
+            lineHeight: 1.4,
+            display: 'flex',
+            gap: 12,
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            minWidth: 0,
+          }}
+        >
+          <strong style={{ letterSpacing: '0.04em' }}>CONFIRM YOUR EMAIL</strong>
+          <span style={{ color: 'var(--cr-fg-2)' }}>{confirmEmailNotice}</span>
+          <button
+            onClick={() => setConfirmEmailNotice(null)}
+            style={{
+              marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer',
+              color: 'var(--cr-fg-3)', fontSize: 12,
+            }}
+            aria-label="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
       {indexHealth && indexHealth.vectorOk === false && (
         <div
           role="status"
@@ -1040,6 +1108,9 @@ function AppInner() {
                 total={recentTotal}
                 onLoadMore={loadMoreRecent}
                 loading={recentLoadingFirstPage && !query.trim()}
+                windowDays={query.trim() ? searchWindow?.days ?? null : null}
+                lockedOlder={query.trim() ? searchWindow?.lockedOlder ?? null : null}
+                onUnlock={() => setView('account')}
               />
               {selectedMemoryItem ? (
                 <div style={{ overflowY: 'auto', height: '100%', flex: 1 }}>
@@ -1143,7 +1214,7 @@ function AppInner() {
                   onChange={(v) => setHomeSubTab(v as 'dashboard' | 'insights')}
                   options={[
                     { value: 'dashboard', label: 'Command Center' },
-                    { value: 'insights', label: 'Analytics & Insights' }
+                    ...(insightsAllowed ? [{ value: 'insights', label: 'Analytics & Insights' }] : []),
                   ]}
                 />
               </div>
@@ -1152,7 +1223,7 @@ function AppInner() {
                   <CommandCenter
                     setView={(v) => {
                       if (v === 'dashboard') {
-                        setHomeSubTab('insights');
+                        if (insightsAllowed) setHomeSubTab('insights');
                       } else {
                         setView(v as ViewMode);
                       }

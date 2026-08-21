@@ -56,10 +56,22 @@ describe('trialReminderMail', () => {
     expect(trialReminderMail('a@b.test', 'final', 2).text).toMatch(/nothing is deleted/i);
   });
 
-  test('the ended notice states that access is read-only, not closed', () => {
+  test('the ended notice states the free-plan truth, not read-only', () => {
     const text = trialReminderMail('a@b.test', 'ended', 0).text;
-    expect(text).toMatch(/read-only/i);
-    expect(text).toMatch(/export/i);
+    // The old promise ("read-only after trial") is no longer the product: a
+    // lapsed tenant lands on the FREE plan — windowed search, metered sync.
+    expect(text).not.toMatch(/read-only/i);
+    expect(text).toMatch(/free plan/i);
+    expect(text).toMatch(/7 days/);            // the enforced search window
+    expect(text).toMatch(/monthly quota/i);    // sync continues, metered
+    expect(text).toMatch(/unlocks/i);          // the full history is the offer
+  });
+
+  test('the final notice describes the same free-plan landing', () => {
+    const text = trialReminderMail('a@b.test', 'final', 2).text;
+    expect(text).not.toMatch(/read-only/i);
+    expect(text).toMatch(/free plan/i);
+    expect(text).toMatch(/monthly quota/i);
   });
 
   test('singular day, not "1 days"', () => {

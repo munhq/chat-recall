@@ -21,7 +21,10 @@ import { TenantTtlCache } from './tenant-cache.js';
 import { hasFeature, licenseState } from './license.js';
 import { planGrantsTeam } from '../routes/billing.js';
 import { ensureTrial } from './trial.js';
-import { allows, featureRequired, featuresFor, type Feature } from './entitlements.js';
+import {
+  allows, featureRequired, featuresFor, limitsFor, limitReached,
+  FULL_LIMITS, type Feature, type PlanLimits,
+} from './entitlements.js';
 
 /**
  * 30s in-process TTL cache on the control-plane entitlement lookup, keyed by
@@ -63,6 +66,34 @@ export async function tenantPlan(tenant: string): Promise<string | null> {
 }
 
 /**
+ * The plan the FEATURE RESOLVER must see — the recorded plan while the
+ * entitlement is live, 'free' once it is not.
+ *
+ * This is the single change that makes the free tier real everywhere at once:
+ * requireFeature, tenantFeatures (what the UI hides), collaborationOr402 and the
+ * limits below all resolve through here, so a lapsed Solo tenant loses insights,
+ * tasks and toolkit the moment the entitlement lapses — previously the feature
+ * gates read the RECORDED plan and never looked at status, so a lapsed 'trial'
+ * row still granted the whole Solo set to reads.
+ *
+ * Self-host returns null untouched: the resolver ignores the plan there and
+ * reads the licence instead.
+ */
+export async function effectivePlan(tenant: string): Promise<string | null> {
+  if (!billingEnabled()) return null;
+  return (await isEntitled(tenant)) ? tenantPlan(tenant) : 'free';
+}
+
+/**
+ * The tenant's quantitative limits (window, quotas, meters). Self-host is never
+ * metered — it runs on the operator's own hardware.
+ */
+export async function tenantLimits(tenant: string): Promise<PlanLimits> {
+  if (!billingEnabled()) return FULL_LIMITS;
+  return limitsFor(await effectivePlan(tenant));
+}
+
+/**
  * Express middleware: require one FEATURE. Mount after tenantAuth.
  *
  * This replaces requireTeamFeature, which began with
@@ -86,7 +117,7 @@ export function requireFeature(feature: Feature) {
       res.status(401).json({ error: 'no tenant resolved (auth middleware missing?)' });
       return;
     }
-    tenantPlan(tenant)
+    effectivePlan(tenant)
       .then((plan) => {
         if (allows(plan, feature)) return next();
         res.status(402).json(featureRequired(feature));
@@ -95,9 +126,12 @@ export function requireFeature(feature: Feature) {
   };
 }
 
-/** The tenant's resolved feature list, for the client to hide what it cannot use. */
+/** The tenant's resolved feature list, for the client to hide what it cannot use.
+ *  Resolves through effectivePlan, so a lapsed tenant's UI shows the free tier —
+ *  the server gates would refuse anyway, but a door that 402s is worse than no
+ *  door. */
 export async function tenantFeatures(tenant: string): Promise<Feature[]> {
-  return [...featuresFor(await tenantPlan(tenant))];
+  return [...featuresFor(await effectivePlan(tenant))];
 }
 
 /**
@@ -192,19 +226,26 @@ function isReadRequest(req: Request): boolean {
  * `req.tenant` is resolved. On self-host this is a transparent pass-through
  * (isEntitled → true).
  *
- * A LAPSED tenant is DEGRADED, NOT LOCKED OUT: reads pass, writes get 402.
+ * A LAPSED tenant lands on the FREE TIER, not on read-only. This middleware
+ * therefore refuses almost nothing itself any more: for a lapsed tenant it
+ * passes the request through and the decision moves to the layers that know
+ * what "free" means —
+ *
+ *   - requireFeature, which resolves through effectivePlan and so answers
+ *     'free' for a lapsed tenant (insights, tasks, toolkit, team → 402 with
+ *     the upgrade offer),
+ *   - the search/list window (routes clamp to tenantLimits().searchWindowDays),
+ *   - the sync meters (syncAdmission below).
  *
  * The data behind this gate is the user's own conversation history, indexed from
- * their own machine — so locking them out of reading it buys no leverage (the CLI
- * can re-index it in one command) while guaranteeing the worst possible story
- * about us. Degrading instead applies the same pressure on the surfaces that cost
- * us money to run, keeps the door open for someone who pays late, and leaves them
- * able to export what is already theirs.
+ * their own machine — so locking them out buys no leverage while guaranteeing
+ * the worst possible story about us. The free tier keeps the daily habit (sync,
+ * recent search) alive and prices the accumulated history instead.
  *
- * Writes stop, which is what pauses sync: the CLI pushes with POST.
- *
- * The 402 body carries a `checkoutHint` so the client can route the user to
- * checkout instead of surfacing a dead error.
+ * The ONE refusal left here: a tenant that never confirmed an email address gets
+ * 402 on writes. That is the anti-abuse gate — an unconfirmed address must not
+ * spend money — and the message tells them to check their inbox, not to
+ * subscribe, because that is the actual fix.
  */
 export function requireEntitlement(req: Request, res: Response, next: NextFunction): void {
   const tenant = req.tenant;
@@ -217,12 +258,7 @@ export function requireEntitlement(req: Request, res: Response, next: NextFuncti
   isEntitled(tenant)
     .then(async (ok) => {
       if (ok) return next();
-      if (isReadRequest(req)) return next();   // lapsed: read-only, see above
-      // Two very different reasons to be un-entitled, and telling them apart is
-      // the difference between an actionable message and a wrong one. A tenant
-      // that never got a trial because nobody confirmed an address must not be
-      // told to subscribe — the fix is a link in their inbox, and saying
-      // "subscription required" sends them to a checkout they do not need.
+      if (isReadRequest(req)) return next();   // free tier reads; routes window them
       if (await needsEmailConfirmation(tenant)) {
         res.status(402).json({
           error: 'email confirmation required',
@@ -231,13 +267,111 @@ export function requireEntitlement(req: Request, res: Response, next: NextFuncti
         });
         return;
       }
-      res.status(402).json({
-        error: 'subscription required',
-        detail: 'Your access is read-only until you subscribe. Your history is kept.',
-        checkoutHint: 'POST /api/billing/checkout to start a subscription',
-      });
+      // Lapsed → free tier. Writes to the free surfaces (kg, diary, kv) are part
+      // of the tier; writes to paid surfaces are refused by their feature gates
+      // with a payload that names the plan to buy — a better answer than a
+      // blanket "subscription required" that can't say what for.
+      next();
     })
     .catch(next);
+}
+
+/**
+ * Admission decision for one ingest batch — THE enforcement point for the
+ * free tier's sync meters, called by /api/sync with the batch's byte size.
+ *
+ * Sync was previously not entitlement-checked at all: the route authenticates
+ * its own device token and never consulted billing, so a lapsed tenant's CLI
+ * could push forever and the "syncs pause" promise was enforced nowhere. This
+ * closes that — free is metered (monthly quota + total cap), paid and trialing
+ * are unmetered, and a tenant whose address was never confirmed is refused
+ * outright (the trial gate's reasoning: an unconfirmed address must not spend
+ * money, and ingest is the thing that spends).
+ *
+ * Refusals are 402 with the canonical limitReached()/confirmation payloads, so
+ * the CLI can print the same actionable sentence the dashboard shows.
+ */
+export type SyncAdmission =
+  | { ok: true; limits: PlanLimits }
+  | { ok: false; status: number; body: Record<string, unknown> };
+
+export async function syncAdmission(tenant: string, incomingBytes: number): Promise<SyncAdmission> {
+  if (!billingEnabled()) return { ok: true, limits: FULL_LIMITS };
+  const entitled = await isEntitled(tenant);   // lazily grants the trial on first contact
+  if (!entitled && (await needsEmailConfirmation(tenant))) {
+    return {
+      ok: false,
+      status: 402,
+      body: {
+        error: 'email confirmation required',
+        detail: 'Confirm your email address to start your trial before syncing.',
+        resendHint: 'POST /api/auth/send-verification-email to get another link',
+      },
+    };
+  }
+  const limits = limitsFor(entitled ? await tenantPlan(tenant) : 'free');
+  if (limits.syncBytesPerMonth === null && limits.syncStorageBytes === null) {
+    return { ok: true, limits };
+  }
+  const month = currentUsageMonth();
+  const cp = await createControlPlane();
+  try {
+    const u = await cp.getSyncUsage(tenant, month);
+    if (limits.syncStorageBytes !== null && u.totalBytes + incomingBytes > limits.syncStorageBytes) {
+      return { ok: false, status: 402, body: limitReached('sync_storage', u.totalBytes, limits.syncStorageBytes) };
+    }
+    if (limits.syncBytesPerMonth !== null && u.monthBytes + incomingBytes > limits.syncBytesPerMonth) {
+      return { ok: false, status: 402, body: limitReached('sync_quota', u.monthBytes, limits.syncBytesPerMonth, nextMonthStartMs()) };
+    }
+  } finally {
+    await cp.close();
+  }
+  return { ok: true, limits };
+}
+
+/**
+ * Record an ACCEPTED batch's bytes. Called after a successful ingest, not
+ * before — a batch the server failed to write must not consume quota. Recorded
+ * for every cloud tenant, paid included: the running total is what makes a
+ * later downgrade honest (a heavy user who drops to free is already over the
+ * storage cap, which is the correct outcome, not a loophole).
+ */
+export async function recordSyncUsage(tenant: string, bytes: number): Promise<void> {
+  if (!billingEnabled() || !Number.isFinite(bytes) || bytes <= 0) return;
+  const cp = await createControlPlane();
+  try {
+    await cp.addSyncUsage(tenant, currentUsageMonth(), bytes);
+  } finally {
+    await cp.close();
+  }
+}
+
+/**
+ * Mark that a tenant TRIED to sync this month, without consuming quota. A
+ * zero-byte upsert leaves the row in place, and row existence — not bytes — is
+ * what the retention sweep reads as presence. Without this, a tenant over the
+ * storage cap (every batch refused, so no accepted bytes are ever recorded)
+ * looks absent and gets purged despite syncing daily — the exact promise
+ * ("your data is kept") the cap's refusal message makes.
+ */
+export async function recordSyncPresence(tenant: string): Promise<void> {
+  if (!billingEnabled()) return;
+  const cp = await createControlPlane();
+  try {
+    await cp.addSyncUsage(tenant, currentUsageMonth(), 0);
+  } finally {
+    await cp.close();
+  }
+}
+
+/** 'YYYY-MM', UTC — the usage meter's bucket key. */
+export function currentUsageMonth(now = new Date()): string {
+  return now.toISOString().slice(0, 7);
+}
+
+/** When the monthly meter turns over: the first instant of next month, UTC. */
+export function nextMonthStartMs(now = new Date()): number {
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
 }
 
 
@@ -254,7 +388,7 @@ export function requireEntitlement(req: Request, res: Response, next: NextFuncti
  * Returns true to proceed; on false it has already sent the 402.
  */
 export async function collaborationOr402(res: Response, tenant: string): Promise<boolean> {
-  const plan = await tenantPlan(tenant);
+  const plan = await effectivePlan(tenant);
   if (allows(plan, 'team')) return true;
   // One refusal shape for every edition. This used to branch — plan check on
   // cloud, licence check inlined for self-host — which is how the cloud branch

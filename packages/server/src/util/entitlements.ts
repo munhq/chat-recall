@@ -73,6 +73,13 @@ const PLAN_FEATURES: Array<{ prefix: string; features: readonly Feature[]; purch
   // not offer it as the tier to upgrade to. Without this it became the cheapest
   // match and told users to "buy the trial plan".
   { prefix: 'trial',      features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights', 'tasks', 'toolkit'], purchasable: false },
+  // The FREE TIER — what a lapsed no-card trial resolves to (see effectivePlan in
+  // util/billing.ts). Never bought, never granted by a webhook: it is the floor a
+  // cloud tenant lands on when their entitlement stops being live. It keeps 'sync'
+  // — the daily habit — but sync is METERED (limitsFor below), and search is
+  // WINDOWED. Everything older stays stored and locked: the locked history is the
+  // upgrade offer, so this plan deliberately does not include the analysis tiers.
+  { prefix: 'free',       features: ['memory', 'scan', 'sync'], purchasable: false },
   // The SELF-HOST licence. Same grant as Solo, bought as a subscription, delivered
   // as a licence key rather than as access to our servers. Listed last so the
   // cheapest-tier scan in featureRequired() still names 'solo' for a cloud user —
@@ -258,6 +265,103 @@ export function identityCheck(current: number): { ok: true } | { ok: false; used
     return r.ok ? { ok: true } : { ok: false, used: r.used, limit: r.seats };
   }
   return current < limit ? { ok: true } : { ok: false, used: current, limit };
+}
+
+/**
+ * Quantitative limits, the second axis next to the boolean feature set.
+ *
+ * Features answer "may this tenant use X at all"; limits answer "how much".
+ * They exist for the free tier, whose whole design is metered rather than
+ * withheld: sync keeps working (quota), search keeps working (window), and the
+ * two costs that are actually metered upstream — summaries and embeddings —
+ * are simply off. Embeddings being off is an INTERNAL cost control: vectors are
+ * never a stated feature anywhere user-facing, so nothing here may leak into
+ * pricing copy.
+ *
+ * Numbers are read live from env so a limit change is a config edit, not a
+ * deploy — the same rule as FREE_TRIAL_DAYS.
+ */
+export interface PlanLimits {
+  /** Days of history the search/list surfaces reach back. null = unlimited. */
+  searchWindowDays: number | null;
+  /** Sync payload bytes accepted per calendar month. null = unmetered. */
+  syncBytesPerMonth: number | null;
+  /** Total synced bytes before sync pauses (data is kept). null = uncapped. */
+  syncStorageBytes: number | null;
+  /** Whether this tenant's sessions receive AI summaries. */
+  summaries: boolean;
+  /** Whether this tenant's chunks are embedded. Internal cost control only. */
+  embeddings: boolean;
+  /** Multiplier on the per-tenant rate-limit budgets (middleware/rate-limit). */
+  rateMultiplier: number;
+}
+
+const MB = 1024 * 1024;
+const envNum = (name: string, dflt: number): number => {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v > 0 ? v : dflt;
+};
+
+export const FULL_LIMITS: PlanLimits = Object.freeze({
+  searchWindowDays: null,
+  syncBytesPerMonth: null,
+  syncStorageBytes: null,
+  summaries: true,
+  embeddings: true,
+  rateMultiplier: 1,
+});
+
+/** The free tier's meters. 7-day window; 50 MB/month; 300 MB total — exactly six
+ *  months of locked history at full quota, so the cap and the quota describe one
+ *  lifecycle instead of two unrelated numbers. */
+export function freeLimits(): PlanLimits {
+  return {
+    searchWindowDays: envNum('FREE_SEARCH_WINDOW_DAYS', 7),
+    syncBytesPerMonth: envNum('FREE_SYNC_MB_PER_MONTH', 50) * MB,
+    syncStorageBytes: envNum('FREE_STORAGE_MB', 300) * MB,
+    summaries: false,
+    embeddings: false,
+    rateMultiplier: 0.2,
+  };
+}
+
+/**
+ * Limits for a RESOLVED plan (pass effectivePlan's answer, not the raw row).
+ *
+ * Fail-closed like planFeatures: an unknown or absent plan gets the free tier's
+ * meters, not unlimited — the alternative hands unmetered ingest to a row whose
+ * plan failed to record. Self-host never reaches this (util/billing.ts returns
+ * FULL_LIMITS before asking); a paid or trialing plan is unmetered.
+ */
+export function limitsFor(plan: string | null | undefined): PlanLimits {
+  if (!plan) return freeLimits();
+  const p = plan.toLowerCase();
+  if (p.startsWith('free')) return freeLimits();
+  const hit = PLAN_FEATURES.find((e) => p.startsWith(e.prefix));
+  return hit && hit.prefix !== 'free' ? FULL_LIMITS : freeLimits();
+}
+
+/**
+ * The canonical LIMIT refusal, sibling of featureRequired() below and shaped the
+ * same way on purpose: one payload the dashboard, the CLI and an MCP-driven agent
+ * all relay verbatim. `used`/`limit` are bytes; `resetsAt` is when the monthly
+ * meter turns over (absent for the total-storage cap, which does not reset).
+ */
+export function limitReached(kind: 'sync_quota' | 'sync_storage', used: number, limit: number, resetsAt?: number): {
+  error: string; kind: string; used: number; limit: number; resetsAt?: number; requires: string; upgradeUrl: string;
+} {
+  const msg = kind === 'sync_quota'
+    ? 'monthly sync quota reached — sync resumes next month, or upgrade for unmetered sync'
+    : 'storage cap reached — sync is paused; your data is kept. Upgrade for unmetered sync, or delete data you no longer need';
+  return {
+    error: msg,
+    kind,
+    used,
+    limit,
+    ...(resetsAt !== undefined ? { resetsAt } : {}),
+    requires: 'solo',
+    upgradeUrl: process.env.TRIAL_UPGRADE_URL || 'https://chatrecall.dev/pricing',
+  };
 }
 
 /**

@@ -14,7 +14,11 @@
  */
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
-const ORIG = { days: process.env.LAPSED_RETENTION_DAYS, apply: process.env.LAPSED_RETENTION_APPLY };
+const ORIG = {
+  days: process.env.LAPSED_RETENTION_DAYS,
+  apply: process.env.LAPSED_RETENTION_APPLY,
+  stripe: process.env.STRIPE_SECRET_KEY,
+};
 
 /** Entitlement rows the fake control plane will filter, mirroring the real SQL. */
 const NOW = 1_800_000_000_000;
@@ -35,8 +39,15 @@ const rows = [
 
 const purged: string[] = [];
 
+/** Tenants with a sync-usage ROW in the checked months — "still present".
+ *  Row existence, not bytes: a refused batch (over the storage cap) records a
+ *  zero-byte presence row, and the free tier's promise is that a lapsed tenant
+ *  who still syncs — or still TRIES to — keeps their history. */
+const activeSyncers = new Set<string>();
+
 vi.mock('../imports.js', () => ({
   createControlPlane: async () => ({
+    hasSyncActivity: async (tenant: string, _months: string[]) => activeSyncers.has(tenant),
     // Mirrors the real query: the three terminal statuses, a dated period, past
     // the cutoff. If the production SQL and this ever disagree, the divergence
     // is the bug this file is meant to surface.
@@ -60,8 +71,16 @@ vi.mock('@chat-recall/engine/core/store/tenant-context.js', () => ({
   runWithTenant: async (_t: string, fn: () => Promise<unknown>) => fn(),
 }));
 
-beforeEach(() => { purged.length = 0; });
+beforeEach(() => {
+  purged.length = 0;
+  activeSyncers.clear();
+  // Billing on by default in these tests: the cloud path is what the rest of the
+  // file is about. The self-host case turns it off explicitly.
+  process.env.STRIPE_SECRET_KEY = 'sk_test_forthesetests';
+});
 afterEach(() => {
+  if (ORIG.stripe === undefined) delete process.env.STRIPE_SECRET_KEY;
+  else process.env.STRIPE_SECRET_KEY = ORIG.stripe;
   if (ORIG.days === undefined) delete process.env.LAPSED_RETENTION_DAYS;
   else process.env.LAPSED_RETENTION_DAYS = ORIG.days;
   if (ORIG.apply === undefined) delete process.env.LAPSED_RETENTION_APPLY;
@@ -113,6 +132,22 @@ describe('lapsed retention', () => {
     expect(picked.sort()).toEqual(['cancelled-long', 'expired-trial', 'unpaid-long']);
   });
 
+  test('a lapsed tenant who STILL SYNCS is never purged — they are on the free plan', async () => {
+    // 'expired-trial' lapsed 40 days ago but keeps pushing batches: the free
+    // tier keeps their history by promise, so only truly absent tenants remain
+    // sweepable. Presence is a usage ROW, so this also covers the tenant whose
+    // every batch is REFUSED by the storage cap — refused batches record a
+    // zero-byte presence row, and "sync is paused; your data is kept" must not
+    // be falsified by this very cron.
+    activeSyncers.add('expired-trial');
+    process.env.LAPSED_RETENTION_DAYS = '30';
+    process.env.LAPSED_RETENTION_APPLY = '1';
+    const r = await sweep();
+    const picked = r.tenants.map((t) => t.tenant);
+    expect(picked).not.toContain('expired-trial');
+    expect(picked.sort()).toEqual(['cancelled-long', 'unpaid-long']);
+  });
+
   test('applied, it purges — and only then', async () => {
     process.env.LAPSED_RETENTION_DAYS = '30';
     process.env.LAPSED_RETENTION_APPLY = '1';
@@ -128,6 +163,26 @@ describe('lapsed retention', () => {
     const r = await sweep();
     // At 60 days only the 90-day-old cancellation qualifies.
     expect(r.tenants.map((t) => t.tenant)).toEqual(['cancelled-long']);
+  });
+
+  test('does nothing on a SELF-HOSTED install, however hard it is armed', async () => {
+    // "Lapsed" is a billing state, and self-host has no billing: isEntitled()
+    // returns true for everyone there, so nobody's access has ended.
+    //
+    // The path this closes is real. A self-hoster running with auth enabled who
+    // opens the account page has ensureTrial() write a `trialing` row with a
+    // 7-day period — harmless, the gate ignores it. Thirty-seven days later that
+    // row matches listLapsedTenants() exactly, and an operator who set the env
+    // var would have their own server delete their own history on their own
+    // hardware. Both switches are set here on purpose: the guard must not depend
+    // on someone forgetting to configure it.
+    delete process.env.STRIPE_SECRET_KEY;
+    process.env.LAPSED_RETENTION_DAYS = '30';
+    process.env.LAPSED_RETENTION_APPLY = '1';
+    const r = await sweep();
+    expect(r.cutoff).toBeNull();
+    expect(r.tenants).toEqual([]);
+    expect(purged).toEqual([]);
   });
 
   test('respects the per-tenant batch cap so one huge tenant cannot hold the sweep', async () => {

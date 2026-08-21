@@ -3,6 +3,7 @@ import ConnectMachine from './ConnectMachine';
 import SyncRules from './SyncRules';
 import FleetHealth from './FleetHealth';
 import PlanPicker from './PlanPicker';
+import { formatMB } from '../utils/bytes';
 import LicenceDeliveryPanel from './LicenceDelivery';
 import DataControls from './DataControls';
 import {
@@ -114,8 +115,9 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
               </div>
             )}
             <p className="muted">
-              No card needed for the trial. When it ends, search and export keep working and new
-              syncs pause — your history is kept.
+              No card needed for the trial. When it ends you land on the free plan: sync keeps
+              working (metered) and search covers your last 7 days. Your older history stays
+              stored and unlocks when you upgrade — nothing is deleted.
             </p>
             {/* The picker is not open by default while the trial is healthy.
                 Three priced cards with seat spinners under "14 days left" asks
@@ -134,6 +136,42 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
           </>
         ) : !ent.billingEnabled ? (
           <p className="muted">Billing isn't enabled on this deployment — all features are available.</p>
+        ) : ent.entitled === false ? (
+          <>
+            {/* The FREE plan — the floor a lapsed tenant lands on, never bought.
+                Stated as what it is (a working plan with a window and a meter)
+                plus what upgrading buys back — not as an expired-status badge,
+                which read as "broken" to the person deciding whether to pay. */}
+            <div className="acct-row">
+              <span>Plan</span>
+              <span className="badge badge-free" data-testid="free-plan-badge">Free</span>
+            </div>
+            <p className="muted">
+              Sync keeps working (metered) and search covers your last{' '}
+              {ent.limits?.searchWindowDays ?? 7} days. Your older history is stored and
+              locked — it unlocks instantly when you upgrade. Nothing was deleted.
+            </p>
+            {/* The meters, from the same payload the server enforces with — the
+                page must never show a fuller or emptier meter than the gate acts
+                on. Rendered only when the server sent usage (metered tenants). */}
+            {ent.usage && ent.limits && (
+              <div className="acct-row" data-testid="free-usage-meter">
+                <span>Sync this month</span>
+                <span>
+                  {formatMB(ent.usage.monthBytes)}
+                  {ent.limits.syncBytesPerMonth != null && ` of ${formatMB(ent.limits.syncBytesPerMonth)}`}
+                  {ent.limits.syncStorageBytes != null &&
+                    ` · stored ${formatMB(ent.usage.totalBytes)} of ${formatMB(ent.limits.syncStorageBytes)}`}
+                </span>
+              </div>
+            )}
+            {ent.hasSubscription && (
+              <div className="acct-actions">
+                <Button variant="secondary" disabled={busy} onClick={manage}>Manage subscription</Button>
+              </div>
+            )}
+            <PlanPicker onError={setErr} />
+          </>
         ) : (
           <>
             <div className="acct-row">
@@ -252,7 +290,7 @@ function AlertsCard({ onError }: { onError: (s: string) => void }) {
 function gateReason(ent: { status?: string; hasSubscription?: boolean } | null): {
   title: string; detail: string;
 } {
-  const kept = 'Your history is kept — nothing was deleted. Search and export stay available; new syncs resume as soon as you subscribe.';
+  const kept = 'You are on the free plan: sync keeps working (metered) and search covers your last 7 days. Your full history is stored and locked — it unlocks instantly when you subscribe.';
   if (ent?.status === 'trialing') return { title: 'Your trial has ended', detail: kept };
   if (ent?.status === 'past_due') return {
     title: 'Your last payment did not go through',
@@ -321,8 +359,8 @@ export function SubscribeScreen() {
           <>
             <h1>Start your {plan.freeTrialDays}-day trial</h1>
             <p className="muted">No card needed. Create your workspace, connect your machine, and your
-              AI-session history becomes searchable. When the trial ends, search and export keep
-              working and new syncs pause — nothing is deleted.</p>
+              AI-session history becomes searchable. When the trial ends you land on the free
+              plan — sync keeps working and search covers your recent history. Nothing is deleted.</p>
             {err && <div className="acct-err">{err}</div>}
             <Button variant="primary" disabled={busy} onClick={createWorkspace}>
               {busy ? 'Setting up…' : 'Create your workspace →'}
@@ -363,6 +401,7 @@ const ACCT_CSS = `
 .badge-active, .badge-trialing { background: var(--cr-ok-surf,#10241a); color: var(--cr-ok-500,#4ade80); }
 .badge-past_due { background: var(--cr-err-surf,#2a1416); color: var(--cr-err-500,#f87171); }
 .badge-canceled, .badge-none { background: var(--cr-ink-2,#171b21); color: var(--cr-fg-3,#6b7280); }
+.badge-free { background: var(--cr-brand-surf); border:1px solid var(--cr-brand-line); color: var(--cr-brand-500); }
 /* Scrolls, and starts from the top once it no longer fits.
    align-items:center on a fixed, non-scrolling box centres overflow OUT of the
    viewport in both directions: below ~900px of height the heading was cut off

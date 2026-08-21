@@ -16,6 +16,7 @@ import express from 'express';
 import { createStore } from '../imports.js';
 import type { SyncIntentInput } from '../imports.js';
 import { ALL_SYNC_TYPES } from '@chat-recall/engine/core/toolkit-sync.js';
+import { requireFeature } from '../util/billing.js';
 
 const router = express.Router();
 
@@ -35,7 +36,14 @@ function deviceIdFromUserId(userId?: string): string | null {
 // POST /api/sync-intents — enqueue. Body:
 //   { kind: 'sync_all' }
 //   { kind: 'copy', artifactType, name, fromTool, toTool, deviceId? }
-router.post('/', express.json(), async (req, res) => {
+//
+// ENQUEUE is 'toolkit': both kinds execute the cross-tool toolkit sync, which
+// the free plan excludes. The gate sits on this route, not the mount — the
+// drain (/pending) and ack below must keep working for a lapsed tenant whose
+// CLI still holds intents enqueued while they were entitled. Before this gate,
+// the only thing stopping a lapsed tenant was requireEntitlement's blanket
+// write-402, which the free tier removed.
+router.post('/', requireFeature('toolkit'), express.json(), async (req, res) => {
   const b = req.body ?? {};
   const kind = b.kind;
   if (kind !== 'copy' && kind !== 'sync_all') {
