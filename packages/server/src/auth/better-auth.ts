@@ -25,7 +25,7 @@
 import { betterAuth } from 'better-auth';
 import { bearer, deviceAuthorization } from 'better-auth/plugins';
 import pg from 'pg';
-import { sendMail, resetPasswordMail } from './mailer.js';
+import { sendMail, resetPasswordMail, verifyEmailMail } from './mailer.js';
 
 /** How long a reset link stays valid. One hour: long enough to survive a slow
  *  mail relay and a user who reads mail on a different device, short enough
@@ -124,13 +124,29 @@ function createAuth() {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
+    // Send the confirmation mail, and let an UNCONFIRMED user still sign in.
+    //
+    // The gate is on the trial, not the login (see util/trial.ts ensureTrial):
+    // requireEmailVerification below would block the first login, so one flaky
+    // SMTP send locks a new user out of an account they just created. Withholding
+    // the trial instead costs an unconfirmed visitor nothing visible while
+    // withholding the only thing that spends money — ingest, embeddings and
+    // summaries — which is what stops a bot signup being expensive.
+    emailVerification: {
+      sendOnSignUp: true,
+      autoSignInAfterVerification: true,
+      sendVerificationEmail: async ({ user, url }) => {
+        await sendMail(verifyEmailMail(user.email, url));
+      },
+    },
     emailAndPassword: {
       enabled: true,
-      // Email verification stays off even now that mail works. Verification
-      // gates the FIRST login, so a transient SMTP failure locks a new user out
-      // of an account they just created; a reset failure only delays a recovery
-      // the user can retry. Turn this on once the send path has a track record
-      // (the exact invisiprompt bug this line exists to not repeat).
+      // Still false, and deliberately. Verification gates the FIRST login, so a
+      // transient SMTP failure would lock a new user out of an account they just
+      // created (the exact invisiprompt bug this line exists to not repeat). The
+      // confirmation is enforced where it actually matters instead — the trial
+      // grant in util/trial.ts — so an unconfirmed address can sign in and see
+      // the product but cannot cost us ingest.
       requireEmailVerification: false,
       resetPasswordTokenExpiresIn: RESET_TOKEN_TTL_SECONDS,
       // Without this, better-auth's /forget-password answers 400 and every
