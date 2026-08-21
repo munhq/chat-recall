@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   listTasks, createTask, updateTask, getTask, addTaskComment, getSessionOutcome,
+  getAutoTasksPolicy, setAutoTasksPolicy,
   type TeamTask, type TeamTaskStatus, type TeamTaskComment, type SessionOutcomeResponse,
+  type AutoTasksPolicy,
 } from '../services/api';
 import { Button, Chip, Icon, Input } from './primitives';
 
@@ -40,6 +42,9 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [dragId, setDragId] = useState<string | null>(null);
+  // Auto-file policy: urgent code findings open their own cards. Opt-in — the
+  // board has no delete, so nothing writes to it without this switch.
+  const [autoPolicy, setAutoPolicy] = useState<AutoTasksPolicy | null>(null);
   const [overCol, setOverCol] = useState<TeamTaskStatus | null>(null);
 
   const emailBySub = useMemo(() => {
@@ -55,6 +60,17 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
     const local = name.split('@')[0] || name;
     const parts = local.split(/[._-]+/).filter(Boolean);
     return ((parts[0]?.[0] ?? '') + (parts[1]?.[0] ?? '')).toUpperCase() || local.slice(0, 2).toUpperCase();
+  };
+
+  useEffect(() => {
+    getAutoTasksPolicy().then(setAutoPolicy).catch(() => { /* endpoint gated or old server */ });
+  }, []);
+  const toggleAuto = async () => {
+    if (!autoPolicy) return;
+    const next = { ...autoPolicy, enabled: !autoPolicy.enabled };
+    setAutoPolicy(next);
+    try { await setAutoTasksPolicy(next); }
+    catch { setAutoPolicy(autoPolicy); setErr('Could not save the auto-file setting.'); }
   };
 
   const refresh = useCallback(async () => {
@@ -115,6 +131,12 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
           </select>
         )}
         <Button variant="primary" onClick={doCreate} disabled={busy || !title.trim()}>Add</Button>
+        {autoPolicy && (
+          <label className="tt-auto" title="After each code index, critical and high findings open cards here, deduplicated, and close themselves when fixed.">
+            <input type="checkbox" checked={autoPolicy.enabled} onChange={toggleAuto} />
+            Auto-file critical &amp; high findings
+          </label>
+        )}
       </div>
 
       <div className="tt-board">
@@ -154,6 +176,7 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
                   {t.linkedSessionId && <SessionOutcome sessionId={t.linkedSessionId} />}
 
                   <div className="tt-meta">
+                    {t.linkedFindingId && <Chip kind="brand" size="sm">auto</Chip>}
                     {t.projectId && <Chip kind="neutral" size="sm">{t.projectId}</Chip>}
                     {t.blockedBy.length > 0 && (
                       <Chip kind="warn" size="sm">blocked by {t.blockedBy.length}</Chip>
@@ -296,7 +319,10 @@ const TT_CSS = `
   border: 1px solid var(--cr-err-line); padding: 8px 12px;
   border-radius: var(--cr-radius-md); margin-bottom: 12px; font-size: 13px; }
 
-.tt-new { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.tt-new { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; align-items: center; }
+.tt-auto { display: inline-flex; gap: 6px; align-items: center; font-size: 12.5px;
+  color: var(--cr-fg-3); cursor: pointer; user-select: none; white-space: nowrap; }
+.tt-auto input { accent-color: var(--cr-brand-500); }
 .tt-new > :first-child { flex: 1; min-width: 0; }
 .tt-sel, .tt-sel-sm { border: 1px solid var(--cr-line-1); border-radius: var(--cr-radius-sm);
   padding: 6px 8px; background: var(--cr-ink-2); color: var(--cr-fg-1); font-size: 13px; }

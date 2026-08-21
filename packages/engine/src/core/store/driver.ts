@@ -36,6 +36,8 @@ export interface TeamTask {
   blocks: string[];
   blockedBy: string[];
   linkedSessionId: string | null;
+  /** The finding/code-action this card was auto-materialized from, or null. */
+  linkedFindingId: string | null;
   due: number | null;
   createdAt: number;
   updatedAt: number;
@@ -49,6 +51,7 @@ export interface CreateTeamTaskInput {
   assigneeSub?: string | null;
   due?: number | null;
   linkedSessionId?: string | null;
+  linkedFindingId?: string | null;
 }
 export interface UpdateTeamTaskPatch {
   title?: string;
@@ -59,6 +62,7 @@ export interface UpdateTeamTaskPatch {
   blocks?: string[];
   blockedBy?: string[];
   linkedSessionId?: string | null;
+  linkedFindingId?: string | null;
 }
 
 /**
@@ -105,6 +109,9 @@ export interface StorageDriver {
   getTeamTask(id: string): Promise<{ task: TeamTask; comments: TeamTaskComment[] } | null>;
   updateTeamTask(id: string, patch: UpdateTeamTaskPatch): Promise<TeamTask | null>;
   addTeamTaskComment(taskId: string, authorSub: string, body: string): Promise<TeamTaskComment | null>;
+  /** Cards materialized from findings — the auto-task dedup + auto-close set.
+   *  Empty `ids` returns every finding-linked card (for the close sweep). */
+  teamTasksByFindingIds(ids?: string[]): Promise<TeamTask[]>;
 
   // ── links ──
   addLink: AsyncMethod<MemoryStore['addLink']>;

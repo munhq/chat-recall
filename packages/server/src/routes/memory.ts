@@ -380,7 +380,15 @@ router.get('/wake-up', async (req, res) => {
     } finally {
       await graph.close();
     }
-    res.json({ highFacts, kg });
+    // Open tasks ride along so a fresh session knows its backlog without
+    // asking. Best-effort: the sqlite test driver has no board and returns [].
+    let openTasks: { total: number; auto: number } | undefined;
+    try {
+      const tasks = await store.listTeamTasks({});
+      const open = tasks.filter((t) => t.status !== 'done');
+      openTasks = { total: open.length, auto: open.filter((t) => t.linkedFindingId).length };
+    } catch { /* board unavailable — wake-up still answers */ }
+    res.json({ openTasks, highFacts, kg });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'wake-up failed' });
   } finally {

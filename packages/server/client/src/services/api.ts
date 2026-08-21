@@ -2560,7 +2560,23 @@ export interface TeamTask {
   id: string; projectId: string; title: string; description: string;
   status: TeamTaskStatus; assigneeSub: string | null; createdBy: string;
   blocks: string[]; blockedBy: string[]; linkedSessionId: string | null;
+  /** Set when the card was auto-filed from a code finding. */
+  linkedFindingId?: string | null;
   due: number | null; createdAt: number; updatedAt: number;
+}
+
+export interface AutoTasksPolicy { enabled: boolean; maxPri: 0 | 1 }
+export async function getAutoTasksPolicy(): Promise<AutoTasksPolicy> {
+  const res = await fetchWithTimeout(`${API_BASE}/tasks/policy`);
+  if (!res.ok) throw new Error('Failed to load auto-tasks policy');
+  return res.json();
+}
+export async function setAutoTasksPolicy(p: AutoTasksPolicy): Promise<AutoTasksPolicy> {
+  const res = await fetchWithTimeout(`${API_BASE}/tasks/policy`, {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(p),
+  });
+  if (!res.ok) throw new Error('Failed to save auto-tasks policy');
+  return res.json();
 }
 export interface TeamTaskComment { id: string; taskId: string; authorSub: string; body: string; createdAt: number; }
 

@@ -18,6 +18,8 @@ import { createStore } from '../imports.js';
 import { tenantFeatures } from '../util/billing.js';
 import { featureRequired } from '../util/entitlements.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
+import { createControlPlane } from '../imports.js';
+import { parsePolicy, AUTO_TASKS_KEY } from '../services/auto-tasks.js';
 
 const log = createLogger('tasks');
 const router = express.Router();
@@ -45,6 +47,31 @@ async function refuseForeignAssignee(
 }
 /** The actor for created_by / comment author: the real user sub, else the userId. */
 function actor(req: express.Request): string { return (req.authorSub || req.userId || 'unknown') as string; }
+
+/**
+ * The auto-tasks policy: whether urgent code findings file their own cards.
+ * OPT-IN, stored per tenant, read by services/auto-tasks.ts after every code
+ * index. Behind this router's 'tasks' mount, so the free plan cannot set it.
+ *
+ *   GET /api/tasks/policy          → { enabled, maxPri }
+ *   PUT /api/tasks/policy {enabled, maxPri?}
+ */
+router.get('/policy', async (req, res) => {
+  const cp = await createControlPlane();
+  try {
+    res.json(parsePolicy(await cp.getTenantSetting(req.tenant as string, AUTO_TASKS_KEY)));
+  } finally { await cp.close(); }
+});
+
+router.put('/policy', async (req, res) => {
+  const enabled = req.body?.enabled === true;
+  const maxPri = req.body?.maxPri === 0 ? 0 : 1;
+  const cp = await createControlPlane();
+  try {
+    await cp.setTenantSetting(req.tenant as string, AUTO_TASKS_KEY, JSON.stringify({ enabled, maxPri }));
+    res.json({ enabled, maxPri });
+  } finally { await cp.close(); }
+});
 
 router.get('/', async (req, res) => {
   const store = await createStore();

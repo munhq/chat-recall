@@ -124,10 +124,18 @@ describe('POST /:id/regenerate-summary — free-tier gate', () => {
     // process-wide 30s entitlement caches; a stale 'not entitled' answer for
     // this tenant turns the pass-through into a 402.
     process.env.STRIPE_SECRET_KEY = 'sk_test_x';
+    // No provider: the developer's .env leaks SUMMARY_PROVIDER into the test
+    // process, and past the gate the handler would probe a REAL upstream with
+    // retries — minutes under a loaded parallel run. The gate decision is the
+    // only thing under test; a fast 4xx/5xx after it proves the pass-through.
+    const savedProvider = process.env.SUMMARY_PROVIDER;
+    delete process.env.SUMMARY_PROVIDER;
     const { clearEntitlementCache } = await import('../util/billing.js');
     clearEntitlementCache();
     const res = await request(appFor('regenpaid'))
       .post('/api/conversations/no-such-session/regenerate-summary');
     expect(res.status).not.toBe(402);
-  }, 30_000);   // past the gate the handler probes providers — slow under a full parallel run
+    if (savedProvider === undefined) delete process.env.SUMMARY_PROVIDER;
+    else process.env.SUMMARY_PROVIDER = savedProvider;
+  }, 30_000);
 });

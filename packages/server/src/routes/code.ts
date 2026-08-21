@@ -13,6 +13,7 @@
 import express from 'express';
 import { gunzipSync } from 'zlib';
 import { createStore, buildRecommendations, cachedRecentEdits, detectTool } from '../imports.js';
+import { runAutoTasks } from '../services/auto-tasks.js';
 import { behaviorSignal } from '../util/behavior-signal.js';
 import { enqueueTasksFile } from '../util/tasks-file-intent.js';
 import type {
@@ -51,6 +52,9 @@ router.post('/index', async (req, res) => {
     const h = await store.replaceCodeHotspots(project.projectId, hotspots);
     const a = await store.upsertCodeActions(project.projectId, actions);
     res.json({ ok: true, projectId: project.projectId, findings: f, hotspots: h, actions: a });
+    // Fire-and-forget: with the tenant's policy on, urgent actions file their
+    // own cards and resolved ones close theirs. Never blocks or fails ingest.
+    if (req.tenant) void runAutoTasks(req.tenant);
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'code index ingest failed' });
   } finally {
