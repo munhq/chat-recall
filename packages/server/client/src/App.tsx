@@ -20,6 +20,7 @@ import { SegmentedControl, Card } from './components/primitives';
 import SettingsPage from './components/SettingsPage';
 import AccountPage, { SubscribeScreen } from './components/AccountPage';
 import TeamView from './components/TeamView';
+import TeamTasks from './components/TeamTasks';
 import ConnectTokenPage from './components/ConnectTokenPage';
 import SecuritySummaryBanner from './components/SecuritySummaryBanner';
 import TrialBanner from './components/TrialBanner';
@@ -49,7 +50,7 @@ import {
   type ProjectTreeApiNode,
 } from './services/api';
 
-type ViewMode = 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'security' | 'settings' | 'account' | 'connect' | 'admin' | 'team';
+type ViewMode = 'home' | 'projects' | 'search' | 'memory' | 'tasks' | 'toolkit' | 'security' | 'settings' | 'account' | 'connect' | 'admin' | 'team';
 
 /**
  * Recursive tree node used by the project sidebar. One node renders as
@@ -135,7 +136,7 @@ function findProjectPath(tree: ProjectTreeNode[], projectId: string | null): str
 
 
 /** Views that may be addressed via the ?view= deep link. */
-const URL_VIEWS = new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'security', 'account', 'settings', 'connect', 'team']);
+const URL_VIEWS = new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'tasks', 'toolkit', 'security', 'account', 'settings', 'connect', 'team']);
 
 /**
  * Initial view from the URL. Reading it during state init (not in an effect)
@@ -195,6 +196,20 @@ function AppInner() {
   // unknown, which must mean "don't hide anything yet" — hiding on an unanswered
   // request would flicker tabs away from a paying user on every load.
   const [tenantFeatures, setTenantFeatures] = useState<Set<string> | null>(null);
+  // Who am I, and who can I assign to? The board needs both. Members come from
+  // the team endpoint, which a Solo tenant cannot call — so it stays empty there
+  // and the assignee list correctly offers nobody.
+  const [mySub, setMySub] = useState<string | null>(null);
+  /** Empty on Solo, and correctly so: /api/activity is team-gated, and with no
+   *  teammates the assignee list should offer nobody. The Team view supplies a
+   *  real list when it renders the same board. */
+  const taskMembers: Array<{ sub: string; email: string | null; role: string }> = [];
+  useEffect(() => {
+    if (!isCloud()) return;
+    void getMe()
+      .then((m) => { setMySub(m?.user?.sub ?? null); })
+      .catch(() => { /* the board still works unassigned */ });
+  }, []);
   const enabledViews = useMemo<Set<ViewMode>>(() => {
     const f = capabilities?.features;
     // Optimistic default while /api/capabilities is in flight — it must be a
@@ -206,7 +221,7 @@ function AppInner() {
     // that cannot: a deep link or bookmark to ?view=admin mounted the panel
     // before isOperator resolved, so a non-operator got a request they could not
     // satisfy. It is added below, once capabilities say who they are.
-    if (!f) return new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'toolkit', 'security', 'settings', 'account', 'connect', 'team']);
+    if (!f) return new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'tasks', 'toolkit', 'security', 'settings', 'account', 'connect', 'team']);
     const out = new Set<ViewMode>();
     out.add('home');    // command center is always available
     out.add('connect'); // installer's token page — must never be capability-gated
@@ -220,6 +235,11 @@ function AppInner() {
     if (f.conversations) out.add('search');
     if (f.memory) out.add('memory');
     if (f.toolkit) out.add('toolkit');
+    // Gated on the TENANT's plan, not just the deployment, for the same reason
+    // the Team tab is: showing a door that 402s is worse than showing no door.
+    // Optimistic while the entitlement is in flight — the server refuses either
+    // way, so a flicker costs more than a moment of hope.
+    if (tenantFeatures === null || tenantFeatures.has('tasks')) out.add('tasks');
     if (f.security) out.add('security');
     if (f.settings) out.add('settings');
     if (f.account) out.add('account');
@@ -234,7 +254,7 @@ function AppInner() {
     // way, so being optimistic here costs nothing.
     if (f.teams && (tenantFeatures === null || tenantFeatures.has('team'))) out.add('team');
     return out;
-  }, [capabilities]);
+  }, [capabilities, isOperator, tenantFeatures]);
 
   // Entitlement gate (cloud only). 'loading' until we know; 'subscribe' shows the
   // full-screen trial gate; 'ok' renders the app. No gate when billing is off
@@ -1068,6 +1088,15 @@ function AppInner() {
               </div>
             </div>
           )}
+          {view === 'tasks' && (
+            <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '18px 24px 28px' }}>
+              {/* members is empty for a Solo tenant, which is correct: with no
+                  teammates the assignee list offers only "Unassigned", and
+                  assigning to someone else is what needs a team plan anyway. */}
+              <TeamTasks members={taskMembers} mySub={mySub} />
+            </div>
+          )}
+
           {view === 'toolkit' && (
             <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
               <ToolkitExplorer toolFilter={toolFilter} />

@@ -27,7 +27,7 @@ interface SidebarProps {
   setToolFilter: (t: string) => void;
   extraSections?: SidebarSection[];
   view?: string;
-  setView?: (v: 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'security' | 'settings' | 'account' | 'admin' | 'team') => void;
+  setView?: (v: 'home' | 'projects' | 'search' | 'memory' | 'tasks' | 'toolkit' | 'security' | 'settings' | 'account' | 'admin' | 'team') => void;
   /** Views this deployment supports (/api/capabilities). Absent = all. */
   enabledViews?: Set<string>;
 }
@@ -37,12 +37,16 @@ interface SidebarProps {
 // Every destination is visible; nothing hides behind a "More" overflow.
 // Order = the daily loop: the spine (Overview → Conversations → Projects)
 // first, then the intelligence surfaces, then Security & Deployment last.
-type NavId = 'home' | 'search' | 'projects' | 'memory' | 'toolkit' | 'security' | 'team';
+type NavId = 'home' | 'search' | 'projects' | 'memory' | 'tasks' | 'toolkit' | 'security' | 'team';
 const NAV_ITEMS: Array<{ id: NavId; label: string; icon: string }> = [
   { id: 'home', label: 'Overview', icon: 'home' },
   { id: 'search', label: 'Conversations', icon: 'message' },
   { id: 'projects', label: 'Projects', icon: 'folder' },
   { id: 'memory', label: 'Memory Hub', icon: 'brain' },
+  // Not under Team: the board works for one person (your own cards), and only
+  // ASSIGNING to someone else needs a team. Buried inside the team-gated view it
+  // was invisible to every Solo customer who now pays for it.
+  { id: 'tasks', label: 'Tasks', icon: 'check' },
   { id: 'team', label: 'Team', icon: 'grid' },
   { id: 'toolkit', label: 'Toolkit', icon: 'terminal' },
   { id: 'security', label: 'Security', icon: 'shield' },
