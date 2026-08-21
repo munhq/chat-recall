@@ -50,7 +50,7 @@ export type Feature = FreeFeature | LicenseFeature;
 
 /** Every licensable feature, for iteration. Derived from one list. */
 const LICENSABLE: readonly LicenseFeature[] =
-  ['sync', 'alerts', 'findings', 'insights', 'team', 'toolkit', 'sso', 'audit'];
+  ['sync', 'alerts', 'findings', 'insights', 'tasks', 'team', 'toolkit', 'sso', 'audit'];
 
 /** Free everywhere, in every edition, licensed or not. */
 export const FREE_FEATURES: readonly Feature[] = ['memory', 'scan'];
@@ -63,21 +63,21 @@ export const FREE_FEATURES: readonly Feature[] = ['memory', 'scan'];
  * entry — the same rule planGrantsTeam already used, kept deliberately.
  */
 const PLAN_FEATURES: Array<{ prefix: string; features: readonly Feature[]; purchasable?: boolean }> = [
-  { prefix: 'enterprise', features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights', 'team', 'toolkit', 'sso', 'audit'] },
-  { prefix: 'team',       features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights', 'team', 'toolkit'] },
-  { prefix: 'solo',       features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights'] },
+  { prefix: 'enterprise', features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights', 'tasks', 'team', 'toolkit', 'sso', 'audit'] },
+  { prefix: 'team',       features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights', 'tasks', 'team', 'toolkit'] },
+  { prefix: 'solo',       features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights', 'tasks', 'toolkit'] },
   // The no-card trial. Same grant as Solo, so the trial actually demonstrates the
   // product — a trial limited to the free tier sells nothing. It does NOT begin with
   // 'team', so planGrantsTeam() stays false and collaboration remains paid.
   // purchasable:false — a trial is granted, never bought, so featureRequired() must
   // not offer it as the tier to upgrade to. Without this it became the cheapest
   // match and told users to "buy the trial plan".
-  { prefix: 'trial',      features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights'], purchasable: false },
+  { prefix: 'trial',      features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights', 'tasks', 'toolkit'], purchasable: false },
   // The SELF-HOST licence. Same grant as Solo, bought as a subscription, delivered
   // as a licence key rather than as access to our servers. Listed last so the
   // cheapest-tier scan in featureRequired() still names 'solo' for a cloud user —
   // telling a SaaS customer to go self-host would be a strange upgrade prompt.
-  { prefix: 'selfhost',   features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights'], purchasable: false },
+  { prefix: 'selfhost',   features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights', 'tasks', 'toolkit'], purchasable: false },
 ];
 
 /**
@@ -106,9 +106,22 @@ export function planFeatures(plan: string | null | undefined): Set<Feature> {
  * worse deal for more work.
  *
  * What is protected instead:
- *   - COLLABORATION ('team', 'toolkit') — a second identity means a company, and
- *     a company has budget. identityLimit() already caps unlicensed self-host at
- *     one person, so this boundary is people, not machines.
+ *   - COLLABORATION ('team') — a second identity means a company, and a company
+ *     has budget. identityLimit() already caps unlicensed self-host at one
+ *     person, so this boundary is people, not machines.
+ *
+ *   - 'toolkit' and 'tasks' — in the hosted SOLO set, deliberately NOT in the free
+ *     self-host set below. On capability grounds both are single-player and could
+ *     sit here; the reason to withhold them is commercial, and it turns on the
+ *     fact that this door only opens one way. Adding a feature to a free tier
+ *     later is a gift nobody objects to. Taking one away is the open-core
+ *     rug-pull story. So they stay out until there is a reason to move them,
+ *     which keeps that option alive. A free self-hoster having less than a PAYING
+ *     cloud customer needs no defence.
+ *
+ *     This is also what makes a ONE-seat self-host licence honest: without these
+ *     two it granted 'team' to a deployment capped at one identity — nobody to
+ *     collaborate with, nothing gained, money taken.
  *   - 'sso' and 'audit' — enterprise procurement features.
  *   - Reselling — Elastic License 2.0 forbids offering this as a hosted service,
  *     which is the actual moat. A $15 licence was never the thing stopping a

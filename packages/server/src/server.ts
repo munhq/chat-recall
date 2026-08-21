@@ -465,6 +465,11 @@ const findings = requireFeature('findings');
 const alerts = requireFeature('alerts');
 const toolkit = requireFeature('toolkit');
 const insights = requireFeature('insights');
+// The task board for your OWN work. Separate from 'team' because it needs no
+// second person: it was mounted behind the collaboration gate, so a paying Solo
+// customer was refused a board they had every reason to expect. Assignment to
+// someone else is still 'team', enforced inside the router.
+const tasks = requireFeature('tasks');
 
 // Routes. Per-tenant class limiters (token bucket + concurrency) sit after the
 // per-IP apiLimiter and tenantAuth: 'read-heavy' for FTS/vector/analytics and
@@ -483,7 +488,7 @@ app.use('/api/analytics', paid, insights, rl('read-heavy'), analyticsRouter);
 app.use('/api/activity', paid, team, rl('read-heavy'), activityRouter);
 // Collaborative team tasks (server-authoritative board). Team-visible within
 // the tenant; write-light covers the POST/PATCH.
-app.use('/api/tasks', paid, team, rl('write-light'), tasksRouter);
+app.use('/api/tasks', paid, tasks, rl('write-light'), tasksRouter);
 // Per-project sharing, data-plane (device-token capable, for the CLI).
 app.use('/api/shares', paid, team, rl('write-light'), sharesRouter);
 // NOT alerts-gated at the mount. The scan VERDICT is free — counts, the finding

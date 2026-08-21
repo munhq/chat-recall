@@ -27,7 +27,12 @@ import { Button } from './primitives';
  */
 export default function PlanPicker({ onError }: { onError: (s: string) => void }) {
   const [plans, setPlans] = useState<CataloguePlan[] | null>(null);
-  const [interval, setInterval] = useState<'month' | 'year'>('month');
+  // Annual by default, monthly one click away. Deliberate for a MEMORY product:
+  // it is nearly worthless in month one and hard to give up by month twelve, so a
+  // monthly subscriber churns before the thing has had a chance to prove itself.
+  // The yearly tab also carries the saving, so the cheaper option is the one on
+  // screen first.
+  const [interval, setInterval] = useState<'month' | 'year'>('year');
   // Keyed by tier FAMILY, not by plan key: Team monthly and Team yearly are two
   // keys for one decision, so keying on the key threw the seat count away every
   // time the interval toggled. Still per-tier, so Team and Self-hosted team stay
