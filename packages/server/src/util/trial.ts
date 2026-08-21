@@ -87,7 +87,7 @@ export function trialDaysLeft(ent: Entitlement | null | undefined, now = Date.no
  * so two racing grants converge on one row rather than duplicating it.
  */
 export async function ensureTrial(
-  cp: Pick<ControlPlane, 'getEntitlement' | 'setEntitlement'>,
+  cp: Pick<ControlPlane, 'getEntitlement' | 'setEntitlement'> & Partial<Pick<ControlPlane, 'hasVerifiedMember'>>,
   tenant: string,
   now = Date.now(),
 ): Promise<Entitlement | null> {
@@ -112,6 +112,22 @@ export async function ensureTrial(
     }
     return existing;
   }
+
+  // No trial until an address is confirmed. This is the anti-abuse gate, and it
+  // sits HERE rather than on sign-in: better-auth's requireEmailVerification
+  // blocks the first login, so a single flaky SMTP send locks a new user out of
+  // an account they just made. Blocking the trial instead costs an unconfirmed
+  // visitor nothing they can see — they can sign in and look around — while
+  // withholding the only thing that spends money: ingest, embeddings, summaries.
+  //
+  // Only ever gates a NEW grant. An existing trial is returned above untouched,
+  // so this can never revoke one already running.
+  //
+  // hasVerifiedMember is optional on the passed shape, and absent means "do not
+  // gate": the test doubles and the self-host control plane have no auth tables
+  // to ask, and denying every trial there would be a worse failure than the
+  // abuse this prevents.
+  if (cp.hasVerifiedMember && !(await cp.hasVerifiedMember(tenant))) return null;
 
   await cp.setEntitlement(tenant, {
     status: 'trialing',

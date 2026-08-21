@@ -132,6 +132,27 @@ export function resetPasswordMail(to: string, url: string, expiresInMinutes: num
   return { to, subject: 'Reset your chat-recall password', text };
 }
 
+/**
+ * The address-confirmation message.
+ *
+ * It leads with what confirming unlocks rather than with the word "verify",
+ * because the trial does not start until this link is opened — so this mail is
+ * the first step of the product, not an administrative chore.
+ */
+export function verifyEmailMail(to: string, url: string): Mail {
+  const text = [
+    'Confirm this address to start your chat-recall trial.',
+    '',
+    url,
+    '',
+    'Your trial begins when you open that link, so nothing is counting down',
+    'until you do. You can sign in and look around before confirming.',
+    '',
+    'If you did not create a chat-recall account, ignore this message.',
+  ].join('\n');
+  return { to, subject: 'Confirm your email to start your chat-recall trial', text };
+}
+
 /** The self-host licence email. The serial is the deliverable, so it leads. */
 export function licenceSerialMail(to: string, serial: string, interval: 'month' | 'year'): Mail {
   const text = [
