@@ -209,6 +209,29 @@ export interface ControlPlane {
    */
   setEntitlement(tenant: string, e: Partial<Omit<Entitlement, 'tenant'>>): Promise<void>;
 
+  // ── Sync usage metering (free-tier quotas) ──
+  /**
+   * Add `bytes` to the tenant's counter for `month` ('YYYY-MM'). Atomic upsert:
+   * two API pods ingesting for the same tenant must not lose increments.
+   */
+  addSyncUsage(tenant: string, month: string, bytes: number): Promise<void>;
+  /** Bytes recorded for `month`, plus the all-time total (the storage cap). */
+  getSyncUsage(tenant: string, month: string): Promise<{ monthBytes: number; totalBytes: number }>;
+  /**
+   * Does a usage row EXIST for any of `months`? Existence, not bytes: a refused
+   * batch records a zero-byte presence row, and this is what tells "still here,
+   * refused by a meter" apart from "left" — the retention sweep's question.
+   */
+  hasSyncActivity(tenant: string, months: string[]): Promise<boolean>;
+  /**
+   * Zero the tenant's counters — except `keepMonth` when given. Called when the
+   * tenant wipes their data (data-controls delete-all): the STORAGE total must
+   * restart with the data, but the current month's QUOTA consumption must
+   * survive, or delete-all + re-sync becomes an infinite-quota loop.
+   * Partial deletes deliberately do NOT credit the counter.
+   */
+  resetSyncUsage(tenant: string, keepMonth?: string): Promise<void>;
+
   // ── Self-host licences ──
   /** By serial, or null. */
   findLicence(serial: string): Promise<Licence | null>;
@@ -353,6 +376,12 @@ class SqliteControlPlane implements ControlPlane {
         value      TEXT NOT NULL,
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (tenant, key)
+      );
+      CREATE TABLE IF NOT EXISTS sync_usage (
+        tenant TEXT NOT NULL,
+        month  TEXT NOT NULL,
+        bytes  INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (tenant, month)
       );
       CREATE TABLE IF NOT EXISTS team_project_shares (
         team_slug  TEXT NOT NULL,
@@ -560,6 +589,39 @@ class SqliteControlPlane implements ControlPlane {
     );
   }
 
+  async addSyncUsage(tenant: string, month: string, bytes: number): Promise<void> {
+    this.db.prepare(
+      `INSERT INTO sync_usage (tenant, month, bytes) VALUES (?, ?, ?)
+       ON CONFLICT (tenant, month) DO UPDATE SET bytes = bytes + excluded.bytes`,
+    ).run(tenant, month, Math.max(0, Math.floor(bytes)));
+  }
+
+  async getSyncUsage(tenant: string, month: string): Promise<{ monthBytes: number; totalBytes: number }> {
+    const r = this.db.prepare(
+      `SELECT COALESCE(SUM(CASE WHEN month = ? THEN bytes ELSE 0 END), 0) AS month_bytes,
+              COALESCE(SUM(bytes), 0) AS total_bytes
+         FROM sync_usage WHERE tenant = ?`,
+    ).get(month, tenant) as { month_bytes: number; total_bytes: number };
+    return { monthBytes: Number(r?.month_bytes ?? 0), totalBytes: Number(r?.total_bytes ?? 0) };
+  }
+
+  async hasSyncActivity(tenant: string, months: string[]): Promise<boolean> {
+    if (!months.length) return false;
+    const q = months.map(() => '?').join(',');
+    const r = this.db.prepare(
+      `SELECT 1 FROM sync_usage WHERE tenant = ? AND month IN (${q}) LIMIT 1`,
+    ).get(tenant, ...months);
+    return !!r;
+  }
+
+  async resetSyncUsage(tenant: string, keepMonth?: string): Promise<void> {
+    if (keepMonth) {
+      this.db.prepare(`DELETE FROM sync_usage WHERE tenant = ? AND month <> ?`).run(tenant, keepMonth);
+    } else {
+      this.db.prepare(`DELETE FROM sync_usage WHERE tenant = ?`).run(tenant);
+    }
+  }
+
   async findLicence(serial: string): Promise<Licence | null> {
     try {
       const r = this.db.prepare(`SELECT * FROM licences WHERE serial = ?`).get(serial) as any;
@@ -669,6 +731,7 @@ class SqliteControlPlane implements ControlPlane {
     this.db.prepare(`DELETE FROM cp_invites          WHERE team_slug = ?`).run(tenant);
     this.db.prepare(`DELETE FROM cp_team_artifacts   WHERE team_slug = ?`).run(tenant);
     this.db.prepare(`DELETE FROM cp_entitlements     WHERE tenant = ?`).run(tenant);
+    this.db.prepare(`DELETE FROM sync_usage           WHERE tenant = ?`).run(tenant);
     this.db.prepare(`DELETE FROM cp_tenant_settings  WHERE tenant = ?`).run(tenant);
     this.db.prepare(`DELETE FROM team_project_shares WHERE team_slug = ?`).run(tenant);
     this.db.prepare(`DELETE FROM cp_teams            WHERE slug = ?`).run(tenant);
@@ -977,6 +1040,43 @@ class PgControlPlane implements ControlPlane {
     );
   }
 
+  async addSyncUsage(tenant: string, month: string, bytes: number): Promise<void> {
+    await this.q(
+      `INSERT INTO sync_usage (tenant, month, bytes) VALUES ($1, $2, $3)
+       ON CONFLICT (tenant, month) DO UPDATE SET bytes = sync_usage.bytes + excluded.bytes`,
+      [tenant, month, Math.max(0, Math.floor(bytes))],
+    );
+  }
+
+  async getSyncUsage(tenant: string, month: string): Promise<{ monthBytes: number; totalBytes: number }> {
+    const r = (await this.q(
+      `SELECT COALESCE(SUM(CASE WHEN month = $1 THEN bytes ELSE 0 END), 0) AS month_bytes,
+              COALESCE(SUM(bytes), 0) AS total_bytes
+         FROM sync_usage WHERE tenant = $2`,
+      [month, tenant],
+    ))[0] as { month_bytes: string | number; total_bytes: string | number } | undefined;
+    return { monthBytes: Number(r?.month_bytes ?? 0), totalBytes: Number(r?.total_bytes ?? 0) };
+  }
+
+  async hasSyncActivity(tenant: string, months: string[]): Promise<boolean> {
+    if (!months.length) return false;
+    const params: unknown[] = [tenant, ...months];
+    const q = months.map((_, i) => `$${i + 2}`).join(',');
+    const r = await this.q(
+      `SELECT 1 FROM sync_usage WHERE tenant = $1 AND month IN (${q}) LIMIT 1`,
+      params,
+    );
+    return r.length > 0;
+  }
+
+  async resetSyncUsage(tenant: string, keepMonth?: string): Promise<void> {
+    if (keepMonth) {
+      await this.q(`DELETE FROM sync_usage WHERE tenant = $1 AND month <> $2`, [tenant, keepMonth]);
+    } else {
+      await this.q(`DELETE FROM sync_usage WHERE tenant = $1`, [tenant]);
+    }
+  }
+
   async findLicence(serial: string): Promise<Licence | null> {
     const r = (await this.q(`SELECT * FROM licences WHERE serial = $1`, [serial]))[0];
     return r ? rowToLicence(r) : null;
@@ -1099,6 +1199,7 @@ class PgControlPlane implements ControlPlane {
     await this.q(`DELETE FROM team_artifacts   WHERE team_slug = $1`, [tenant]);
     await this.q(`DELETE FROM team_project_shares WHERE team_slug = $1`, [tenant]);
     await this.q(`DELETE FROM entitlements     WHERE tenant = $1`, [tenant]);
+    await this.q(`DELETE FROM sync_usage       WHERE tenant = $1`, [tenant]);
     await this.q(`DELETE FROM tenant_settings  WHERE tenant = $1`, [tenant]);
     await this.q(`DELETE FROM teams            WHERE slug = $1`, [tenant]);
     await this.q(`DELETE FROM tenants          WHERE tenant = $1`, [tenant]);

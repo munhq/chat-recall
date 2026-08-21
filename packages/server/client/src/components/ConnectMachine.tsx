@@ -14,8 +14,9 @@ import { Card, Button, Chip } from './primitives';
 import {
   getMe, createTeam, mintDeviceToken, listDevices, revokeDevice, getSyncStatus,
   getCapabilities, deviceHealth,
-  type DeviceInfo, type DeviceHealth,
+  type DeviceInfo, type DeviceHealth, type SyncLimitPayload,
 } from '../services/api';
+import { formatMB } from '../utils/bytes';
 
 /** Relative "last seen", short enough to sit in a row. */
 function ago(ms: number | null | undefined): string {
@@ -75,6 +76,21 @@ export default function ConnectMachine({ compact, onFirstData }: { compact?: boo
   const [synced, setSynced] = useState<number | null>(null);
   // The CLI release this server serves — the yardstick for "outdated".
   const [serverCli, setServerCli] = useState<string | null>(null);
+  // The free plan's sync meters. api.ts recognises a 402 whose body carries
+  // `kind: sync_quota|sync_storage` (the server's limitReached payload) and
+  // broadcasts it as cr:sync-limit; this card is the sync surface, so it is
+  // where the numbers render — used/limit in MB, the reset date when the meter
+  // is monthly, and the upgrade as the action. An offer, not an error: the
+  // data is kept, only the meter is full (same pattern as the feature gates).
+  const [syncLimit, setSyncLimit] = useState<SyncLimitPayload | null>(null);
+  useEffect(() => {
+    const onLimit = (e: Event) => {
+      const detail = (e as CustomEvent<SyncLimitPayload>).detail;
+      if (detail) setSyncLimit(detail);
+    };
+    window.addEventListener('cr:sync-limit', onLimit);
+    return () => window.removeEventListener('cr:sync-limit', onLimit);
+  }, []);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -180,6 +196,51 @@ export default function ConnectMachine({ compact, onFirstData }: { compact?: boo
             ? <>✓ First data arrived — {synced} session(s) synced. You're live.</>
             : <><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: 'var(--cr-warn-500, #fbbf24)', marginRight: 8 }} />Waiting for the first sync…</>}
         </div>
+
+        {syncLimit && (
+          <div
+            data-testid="sync-limit-notice"
+            style={{
+              marginTop: 10, padding: '10px 12px', borderRadius: 'var(--cr-radius-md, 8px)',
+              fontSize: 13, lineHeight: 1.55,
+              border: '1px solid var(--cr-brand-line)',
+              background: 'var(--cr-brand-surf)',
+              color: 'var(--cr-fg-1)',
+              display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap',
+            }}
+          >
+            <span style={{ flex: '1 1 260px', minWidth: 0 }}>
+              {syncLimit.kind === 'sync_quota' ? (
+                <>
+                  <strong>Monthly sync quota reached</strong> — {formatMB(syncLimit.used)} of{' '}
+                  {formatMB(syncLimit.limit)} used this month.
+                  {syncLimit.resetsAt
+                    ? <> Sync resumes on {new Date(syncLimit.resetsAt).toLocaleDateString()}, or upgrade for unmetered sync.</>
+                    : <> Upgrade for unmetered sync.</>}
+                </>
+              ) : (
+                <>
+                  <strong>Storage cap reached</strong> — {formatMB(syncLimit.used)} of{' '}
+                  {formatMB(syncLimit.limit)} stored. Sync is paused and your data is kept.
+                  Upgrade for unmetered sync, or delete data you no longer need.
+                </>
+              )}
+            </span>
+            {/* Always an action (same rule as the toolkit gate): the server
+                normally sends upgradeUrl, but a payload without one must not
+                leave an offer with nothing to click. */}
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => {
+                if (syncLimit.upgradeUrl) window.location.href = syncLimit.upgradeUrl;
+                else window.location.assign('/?view=account');
+              }}
+            >
+              See plans
+            </Button>
+          </div>
+        )}
 
         {/* Raw device tokens are only for machines where nobody can approve a
             browser prompt (CI, bots). Everyone else never needs to see this. */}

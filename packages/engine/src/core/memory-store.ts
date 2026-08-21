@@ -1010,14 +1010,20 @@ export class MemoryStore {
       .all() as Array<{ id: string; file_path: string }>;
   }
 
-  listItems(sourceType: SourceType, limit = 100, offset = 0): MemoryMetadataRow[] {
+  /** `sinceMs` is the recency floor (mtime >= sinceMs) the free tier's list
+   *  window applies; undefined = unwindowed (paid/self-host, unchanged). */
+  listItems(sourceType: SourceType, limit = 100, offset = 0, sinceMs?: number): MemoryMetadataRow[] {
+    const since = sinceMs && Number.isFinite(sinceMs) ? sinceMs : undefined;
     const stmt = this.db.prepare(`
       SELECT * FROM memory_metadata
-      WHERE source_type = ?
+      WHERE source_type = ?${since !== undefined ? ' AND mtime >= ?' : ''}
       ORDER BY mtime DESC
       LIMIT ? OFFSET ?
     `);
-    return stmt.all(sourceType, limit, offset) as MemoryMetadataRow[];
+    const params: (string | number)[] = since !== undefined
+      ? [sourceType, since, limit, offset]
+      : [sourceType, limit, offset];
+    return stmt.all(...params) as MemoryMetadataRow[];
   }
 
   /**
@@ -1490,9 +1496,12 @@ export class MemoryStore {
       sourceTypes?: SourceType[];
       /** Logical project identifier (project_id) — exact match. */
       projectIdFilter?: string;
+      /** Recency floor (epoch ms): only chunks with mtime >= sinceMs match.
+       *  The free tier's search window; undefined = no floor. */
+      sinceMs?: number;
     } = {}
   ): MemorySearchResult[] {
-    const { topK = 20, sourceTypes, projectIdFilter } = options;
+    const { topK = 20, sourceTypes, projectIdFilter, sinceMs } = options;
 
     // Escape FTS5 special characters and build query
     const ftsQuery = this.buildFTSQuery(query);
@@ -1522,6 +1531,11 @@ export class MemoryStore {
       // ASCII in SQLite); exact project_id match made `-p` always return nothing.
       sql += ` AND project_path LIKE ?`;
       params.push(`%${projectIdFilter}%`);
+    }
+
+    if (sinceMs && Number.isFinite(sinceMs)) {
+      sql += ` AND mtime >= ?`;
+      params.push(sinceMs);
     }
 
     sql += ` ORDER BY rank LIMIT ?`;
@@ -1689,7 +1703,14 @@ export class MemoryStore {
    */
   countDistinctItemsMatching(
     query: string,
-    options: { sourceTypes?: SourceType[]; projectFilter?: string } = {}
+    options: {
+      sourceTypes?: SourceType[];
+      projectFilter?: string;
+      /** Count only items whose chunks are OLDER than this (mtime < beforeMs).
+       *  The free tier's `locked_older` counter — how many matches sit behind
+       *  the search window. */
+      beforeMs?: number;
+    } = {}
   ): number {
     const ftsQuery = this.buildFTSQuery(query);
     if (!ftsQuery) return 0;
@@ -1710,6 +1731,11 @@ export class MemoryStore {
     if (options.projectFilter) {
       sql += ` AND project_path LIKE ?`;
       params.push(`%${options.projectFilter}%`);
+    }
+
+    if (options.beforeMs && Number.isFinite(options.beforeMs)) {
+      sql += ` AND mtime < ?`;
+      params.push(options.beforeMs);
     }
 
     try {

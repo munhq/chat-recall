@@ -14,6 +14,7 @@
 import { runWithTenant } from '@chat-recall/engine/core/store/tenant-context.js';
 import { createStore, createControlPlane } from '../imports.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
+import { billingEnabled } from '../util/billing.js';
 
 const log = createLogger('retention');
 
@@ -130,6 +131,19 @@ export interface LapsedSweepResult {
 export async function sweepLapsedRetention(
   opts: { batchPerTenant?: number; maxTenants?: number; now?: number } = {},
 ): Promise<LapsedSweepResult> {
+  // NEVER on a self-hosted install. "Lapsed" is a billing state, and where there
+  // is no billing there is no such state: isEntitled() returns true for everyone,
+  // so nobody there owes anything and nobody's access has ended.
+  //
+  // This is not a theoretical guard. A self-hoster running with auth enabled who
+  // opens the account page has ensureTrial() write a `trialing` row with a 7-day
+  // period — harmless, because the gate ignores it. Thirty-seven days later that
+  // row matches listLapsedTenants() exactly, and an operator who set
+  // LAPSED_RETENTION_DAYS would have their own server delete their own history
+  // on their own hardware. The env var alone made that only accidentally
+  // impossible; this makes it structurally impossible.
+  if (!billingEnabled()) return { cutoff: null, dryRun: true, tenants: [] };
+
   const days = lapsedRetentionDays();
   if (days <= 0) return { cutoff: null, dryRun: true, tenants: [] };
 
@@ -142,6 +156,36 @@ export async function sweepLapsedRetention(
   let candidates: Array<{ tenant: string; lapsedAt: number; status: string }>;
   try {
     candidates = await cp.listLapsedTenants(cutoff, opts.maxTenants ?? 25);
+    // The free tier redefines "lapsed". A lapsed entitlement is no longer
+    // someone who left — it is the FREE PLAN, whose promise is "your history is
+    // kept and unlocks on upgrade". Deleting it would be that promise broken by
+    // a cron. So a candidate is only sweepable when they have ALSO stopped
+    // syncing: any metered bytes this month or last means the tenant is present,
+    // and present tenants are never purged regardless of billing status.
+    const nowD = new Date(now);
+    const thisMonth = nowD.toISOString().slice(0, 7);
+    const lastMonth = new Date(Date.UTC(nowD.getUTCFullYear(), nowD.getUTCMonth() - 1, 1))
+      .toISOString().slice(0, 7);
+    const still: typeof candidates = [];
+    // Optional on the passed shape: a control plane without the meter cannot
+    // prove presence, and the sweep already fails safe elsewhere (report-only
+    // by default). Fakes and older planes simply skip the presence check.
+    //
+    // Presence is ROW EXISTENCE, not bytes: a tenant over the storage cap has
+    // every batch refused, so no accepted bytes are ever recorded — but each
+    // refused batch leaves a zero-byte presence row (recordSyncPresence). Bytes
+    // would call that tenant absent and purge history the cap's own refusal
+    // message promises is kept.
+    const canMeter = typeof cp.hasSyncActivity === 'function';
+    for (const c of candidates) {
+      if (!canMeter) { still.push(c); continue; }
+      if (await cp.hasSyncActivity(c.tenant, [thisMonth, lastMonth])) {
+        log.info({ tenant: c.tenant, status: c.status }, 'lapsed retention: skipped — tenant still syncs (free tier)');
+        continue;
+      }
+      still.push(c);
+    }
+    candidates = still;
   } finally {
     await cp.close();
   }

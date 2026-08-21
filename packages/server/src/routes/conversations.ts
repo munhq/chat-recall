@@ -46,6 +46,8 @@ import {
   type CachedEnvelope,
 } from '../services/summary-worker.js';
 import { matchesPrefix } from '../util/paths.js';
+import { tenantLimits } from '../util/billing.js';
+import { featureRequired } from '../util/entitlements.js';
 import { buildETag, maybeSendNotModified } from '../util/cacheable.js';
 import { TenantTtlCache } from '../util/tenant-cache.js';
 import { requireLocalMode, isServerMode } from '../util/mode.js';
@@ -220,9 +222,19 @@ router.get('/recent', async (req, res) => {
     const toolFilter = req.query.tool as string | undefined;
     const sinceHoursRaw = req.query.since_hours as string | undefined;
     const sinceHours = sinceHoursRaw ? Number(sinceHoursRaw) : undefined;
-    const sinceMs = sinceHours && Number.isFinite(sinceHours) && sinceHours > 0
+    const callerSinceMs = sinceHours && Number.isFinite(sinceHours) && sinceHours > 0
       ? Date.now() - sinceHours * 3600 * 1000
       : undefined;
+    // Free-tier list window: the feed reaches back only `searchWindowDays`
+    // days. A caller's own narrower since_hours survives (max of the two
+    // floors); null (paid, trialing, self-host) leaves the query untouched.
+    const { searchWindowDays } = await tenantLimits(req.tenant || 'default');
+    const windowFloorMs = typeof searchWindowDays === 'number'
+      ? Date.now() - searchWindowDays * 86_400_000
+      : undefined;
+    const sinceMs = windowFloorMs !== undefined
+      ? Math.max(callerSinceMs ?? 0, windowFloorMs)
+      : callerSinceMs;
     // Untracked sessions (PR-bot worktrees, /tmp scratch, empty project_id)
     // are hidden from the unfiltered feed by default. Explicit
     // `project=untracked:all` or `?include_untracked=1` opts back in.
@@ -235,10 +247,23 @@ router.get('/recent', async (req, res) => {
     const store = await createStore();
     let totalAfterFilter: number;
     let pageEntries: SessionIndexEntry[];
+    let lockedOlder: number | undefined;
     try {
       const { rows, total } = await store.querySessionIndex({
         limit, offset, projectIdFilter, toolFilter, sinceMs, includeUntracked,
       });
+
+      // Windowed: how many sessions the window locked away, given the caller's
+      // own filters — the unfloored total minus the floored one. Only the
+      // COUNT of the second query is used (limit 1 keeps the row fetch moot),
+      // and it only runs on the free path. If the caller's own since_hours is
+      // narrower than the window, both totals match and this is 0.
+      if (windowFloorMs !== undefined) {
+        const { total: unfloored } = await store.querySessionIndex({
+          limit: 1, offset: 0, projectIdFilter, toolFilter, sinceMs: callerSinceMs, includeUntracked,
+        });
+        lockedOlder = Math.max(unfloored - total, 0);
+      }
 
       // Empty index → fallback to filesystem walk so we don't return
       // an empty list during the first run before indexing completes.
@@ -294,6 +319,10 @@ router.get('/recent', async (req, res) => {
       offset,
       limit,
       hasMore: offset + sessions.length < totalAfterFilter,
+      // Only when windowed — the paid response shape is unchanged.
+      ...(windowFloorMs !== undefined
+        ? { window_days: searchWindowDays, locked_older: lockedOlder ?? 0 }
+        : {}),
     });
   } catch (error) {
     log.error({ err: error }, 'recent sessions error');
@@ -311,14 +340,24 @@ router.get('/recent', async (req, res) => {
 // tenant. Mounted BEFORE the /:id routes so the literal path wins.
 router.get('/outcome-summary', async (req, res) => {
   try {
-    const days = Math.max(1, Math.min(parseInt(req.query.days as string) || 7, 90));
+    const askedDays = Math.max(1, Math.min(parseInt(req.query.days as string) || 7, 90));
+    // Free-tier window: the rollup reaches back at most `searchWindowDays`
+    // days. A narrower ask survives; null (paid, self-host) is untouched.
+    const { searchWindowDays } = await tenantLimits(req.tenant || 'default');
+    const days = typeof searchWindowDays === 'number'
+      ? Math.min(askedDays, searchWindowDays)
+      : askedDays;
     const key = `days:${days}`;
     const hit = outcomeSummaryCache.get(key);
     if (hit) return res.json(hit);
     const oc = await createOutcomeCache();
     try {
       const rows = await oc.summarizeByDay(Date.now() - days * 86_400_000);
-      const body = { days, rows };
+      const body = {
+        days,
+        rows,
+        ...(typeof searchWindowDays === 'number' ? { window_days: searchWindowDays } : {}),
+      };
       outcomeSummaryCache.set(key, body);
       res.json(body);
     } finally {
@@ -1373,6 +1412,15 @@ export async function generateSummaryWithRetry(
 router.post('/:id/regenerate-summary', async (req, res) => {
   const { id } = req.params;
   try {
+    // Free tenants receive no AI summaries anywhere: the background sweep skips
+    // them (summary-worker), so an on-demand path that still generated would be
+    // the loophole. 'insights' is the AI-analysis tier the free plan lacks —
+    // featureRequired names the cheapest plan that restores it. Self-host is
+    // never gated: tenantLimits() returns FULL_LIMITS with billing off.
+    if (!(await tenantLimits(req.tenant || 'default')).summaries) {
+      return res.status(402).json(featureRequired('insights'));
+    }
+
     let content: Awaited<ReturnType<typeof parseSessionFile>> | SessionContent;
     let summary: string;
     let summarySource: string;

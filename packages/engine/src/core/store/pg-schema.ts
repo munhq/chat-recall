@@ -363,6 +363,19 @@ CREATE TABLE IF NOT EXISTS entitlements (
 -- no entitlements table yet and boot dies on 42P01 before it is ever made.
 ALTER TABLE entitlements ADD COLUMN IF NOT EXISTS seats INTEGER;
 
+-- Sync usage, per tenant per calendar month ('YYYY-MM'). The free tier meters
+-- ingest by BYTES (a monthly quota plus a total cap), and a counter that can be
+-- incremented atomically is the only shape that survives two API pods taking
+-- batches for the same tenant at once — tenant_settings is read-modify-write and
+-- would lose increments. Not RLS-walled for the same reason entitlements isn't:
+-- the ingest path checks it before any tenant GUC is established.
+CREATE TABLE IF NOT EXISTS sync_usage (
+  tenant TEXT NOT NULL,
+  month  TEXT NOT NULL,
+  bytes  BIGINT NOT NULL DEFAULT 0,
+  PRIMARY KEY (tenant, month)
+);
+
 -- SELF-HOST LICENCES. A serial is what the customer receives; it carries no grant
 -- of its own, so issuing one needs no signing key online. The instance exchanges it
 -- for a short-lived signed entitlement (routes/licence.ts), which is what makes a

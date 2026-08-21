@@ -573,6 +573,10 @@ export class PgVectorStore implements VectorStore {
     // Filters live INSIDE the shortlist so we don't spend candidates on rows
     // that'd be filtered out after rescoring.
     if ((options as any).projectIdFilter) { params.push(`%${(options as any).projectIdFilter}%`); candWhere += ` AND project_path ILIKE $${params.length}`; }
+    // Free-tier search window: same mtime floor searchFTS applies, so the
+    // semantic tier can't resurface what the keyword tier locked away.
+    const vSince = (options as any).sinceMs;
+    if (vSince && Number.isFinite(vSince)) { params.push(vSince); candWhere += ` AND mtime >= $${params.length}`; }
     // Shortlist size: generous over-fetch (binary loses precision) but bounded.
     // Tune via VECTOR_RESCORE_CANDIDATES; recover exact ranking in phase 2.
     const candN = Math.max(Number(process.env.VECTOR_RESCORE_CANDIDATES) || 0, 500, topK * 40);

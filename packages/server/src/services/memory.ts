@@ -78,11 +78,14 @@ export class MemoryService extends SearchCore {
     topK = 10,
     sourceTypes?: SourceType[],
     projectIdFilter?: string,
-    wantSemantic = false
+    wantSemantic = false,
+    // Recency floor (epoch ms) — the free tier's search window. undefined =
+    // unwindowed; the route resolves it from tenantLimits().
+    sinceMs?: number
   ): Promise<MemorySearchResult[]> {
     const semantic = await this.useSemantic(wantSemantic);
     return await (await this.index()).search(await this.expandIfKeyword(query), {
-      topK, sourceTypes, projectIdFilter, semantic,
+      topK, sourceTypes, projectIdFilter, semantic, sinceMs,
     });
   }
 
@@ -138,9 +141,9 @@ export class MemoryService extends SearchCore {
     return (await this.st()).getItem(id, sourceType);
   }
 
-  async listItems(sourceType: SourceType, limit = 100, offset = 0): Promise<MemoryMetadataRow[]> {
+  async listItems(sourceType: SourceType, limit = 100, offset = 0, sinceMs?: number): Promise<MemoryMetadataRow[]> {
 
-    return (await this.st()).listItems(sourceType, limit, offset);
+    return (await this.st()).listItems(sourceType, limit, offset, sinceMs);
   }
 
   async getLinks(sourceType: SourceType, itemId: string): Promise<MemoryLinkRow[]> {
