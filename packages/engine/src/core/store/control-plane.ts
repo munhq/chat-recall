@@ -162,6 +162,20 @@ export interface ControlPlane {
   hasVerifiedMember(teamSlug: string): Promise<boolean>;
 
   /**
+   * Tenants whose access lapsed before `before` and are therefore eligible for
+   * data deletion.
+   *
+   * Eligible means status 'trialing', 'canceled' or 'unpaid' with a period end
+   * already past — the expired trial that never converted, and the subscription
+   * that ended. 'past_due' is deliberately EXCLUDED: that is Stripe still
+   * retrying a card, which can run for weeks, and a card that merely expired is
+   * not a decision to leave. Deleting there would destroy the history of someone
+   * who fully intends to keep paying, and it is the one deletion that cannot be
+   * undone.
+   */
+  listLapsedTenants(before: number, limit?: number): Promise<Array<{ tenant: string; lapsedAt: number; status: string }>>;
+
+  /**
    * Remove a tenant and everything keyed to it: control-plane rows (tokens,
    * team, memberships, invites, artifacts) AND the tenant's data rows in the
    * tenant-scoped stores. Admin-only surface — used to purge test tenants.
@@ -464,6 +478,15 @@ class SqliteControlPlane implements ControlPlane {
 
   /** Self-host / tests: no better-auth tables, so nothing to verify against. */
   async hasVerifiedMember(_teamSlug: string): Promise<boolean> { return true; }
+
+  async listLapsedTenants(before: number, limit = 100): Promise<Array<{ tenant: string; lapsedAt: number; status: string }>> {
+    return this.db.prepare(
+      `SELECT tenant, current_period_end AS lapsedAt, status FROM cp_entitlements
+        WHERE status IN ('trialing','canceled','unpaid')
+          AND current_period_end IS NOT NULL AND current_period_end < ?
+        ORDER BY current_period_end LIMIT ?`,
+    ).all(before, limit) as Array<{ tenant: string; lapsedAt: number; status: string }>;
+  }
 
   async publishArtifact(teamSlug: string, a: { type: string; tool: string; name: string; bodyB64: string; pinnedTo?: string | null; authorSub: string }): Promise<ArtifactMeta> {
     const id = artifactId(teamSlug, a.type, a.tool, a.name);
@@ -859,6 +882,19 @@ class PgControlPlane implements ControlPlane {
     } catch {
       return true;
     }
+  }
+
+  async listLapsedTenants(before: number, limit = 100): Promise<Array<{ tenant: string; lapsedAt: number; status: string }>> {
+    const rows = await this.q(
+      `SELECT tenant, current_period_end, status FROM entitlements
+        WHERE status IN ('trialing','canceled','unpaid')
+          AND current_period_end IS NOT NULL AND current_period_end < $1
+        ORDER BY current_period_end LIMIT $2`,
+      [before, limit],
+    );
+    return rows.map((r: any) => ({
+      tenant: r.tenant, lapsedAt: Number(r.current_period_end) || 0, status: r.status,
+    }));
   }
 
   async listTenants(): Promise<string[]> {
