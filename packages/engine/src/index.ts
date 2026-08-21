@@ -242,7 +242,7 @@ export type {
 export { CodexSessionSource } from './parsers/codex-session-source.js';
 
 // Ambient tenant + author context (server auth middleware → store factories)
-export { runWithTenant, currentTenant, runWithAuthor, currentAuthor, currentViewer } from './core/store/tenant-context.js';
+export { runWithTenant, currentTenant, runWithAuthor, runUnrestricted, currentAuthor, currentViewer } from './core/store/tenant-context.js';
 export type { AuthorContext } from './core/store/tenant-context.js';
 
 // Canonical transcript parser — THE one way conversations are parsed.
