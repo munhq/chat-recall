@@ -109,7 +109,10 @@ describe('sync-ledger (JSON watermark)', () => {
   test('syncMode: skip / append / full branches', async () => {
     const { syncMode, markSynced, getSyncedRows, _resetLedgerCacheForTests } = await import('./sync-ledger.js');
     const SRV = 'https://mode.example';
-    const V = (await import('@chat-recall/engine/core/extractor-version.js')).EXTRACTOR_VERSION;
+    // The version that APPLIES to these ids, not the base constant. markSynced
+    // stamps extractorVersionForId(), so a per-tool bump (claude has one) makes
+    // the base constant the wrong yardstick and every mode assertion below slides.
+    const V = (await import('@chat-recall/engine/core/extractor-version.js')).extractorVersionForId('s1');
     const AO = true; // append-only backend
     // Append is ON by default now (the server enforces an offset-continuity
     // guard). CHAT_RECALL_TAIL_APPEND=0 is the emergency off-switch.
