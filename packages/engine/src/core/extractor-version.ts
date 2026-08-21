@@ -45,6 +45,10 @@
  *            which discarded a whole prompt when a reminder was appended to it.
  *            Claude-only: backends/claude.ts and the Claude-gated
  *            parsers/session.ts. Gemini/OpenCode/Codex/agy data is untouched.
+ *   codex +1 — read prompts from response_item/message with role='user'. They
+ *            were read only from event_msg/user_message, which current rollouts
+ *            do not write, so EVERY Codex session extracted zero user turns:
+ *            no prompts, no markers, no first prompt. Re-ships codex sessions.
  */
 const BASE_EXTRACTOR_VERSION = 2;
 
@@ -52,6 +56,7 @@ const BASE_EXTRACTOR_VERSION = 2;
 const TOOL_EXTRACTOR_BUMP: Record<string, number> = {
   agy: 2,
   claude: 1,
+  codex: 1,
 };
 
 /** The tool a prefixed id belongs to (mirrors the ToolBackend prefixes). Works
