@@ -31,6 +31,7 @@ read except these, which change stored memory or state — treat each as an edit
 and apply the test in `chat-recall-memory` before calling one:
 `recall_kg_add`, `recall_kg_invalidate`, `recall_decision_record`,
 `recall_diary_write`, `recall_set`, `recall_task_create`, `recall_task_update`,
+`recall_task_comment`,
 `recall_security_dismiss`, `recall_rename_session`, `recall_regenerate_summary`,
 `recall_reclassify`, `recall_index`, `recall_code_index`.
 
@@ -65,9 +66,9 @@ tool is registered and never named here, so adding a tool means placing it.
 **Findings, ranked** — `recall_claude_suggestions` (every finding that becomes an agent-instruction change — the CLAUDE.md rules and skill installs — merged across account scope and every indexed project) and `recall_improvements` (everything else, most urgent first; `create_tasks: true` opens one team task per item). They split the same engines, so an item never appears in both. Neither needs the codeindex binary: without it you still get the account-level half.
 **What changed** — `recall_edits_timeline` (cross-tool edits), `recall_diff` (per-session diffs), `recall_commits` (did it actually land), `recall_markers` (where a session went sideways).
 **Durable memory / KG** — `recall_kg_query` / `recall_kg_add` / `recall_kg_invalidate` / `recall_kg_timeline` / `recall_kg_stats`, `recall_decision_record`, `recall_diary_write` / `recall_diary_read`, `recall_set` / `recall_get`.
-**Team** — `recall_tasks` (the shared task board), `recall_task_create`, `recall_task_update` (status, assignee, comment; task ids look like `t_…`), `recall_team_activity` (per-teammate × per-project rollup), `recall_shares` (which projects are shared — private by default, nothing is visible to teammates until shared).
+**Team** — `recall_tasks` (the shared task board), `recall_task_create`, `recall_task_update` (status, assignee, linked session; task ids look like `t_…`; when you start work on a task, set it `in_progress` and pass your session id as `linked_session_id` so the board can verify the work shipped), `recall_task_comment` (leave a progress note on a card), `recall_team_activity` (per-teammate × per-project rollup), `recall_shares` (which projects are shared — private by default, nothing is visible to teammates until shared).
 **Security** — `recall_security_summary` (leaked secrets that still need action — start here for "did I paste a key somewhere"), `recall_security_session` (findings for one session), `recall_security_dismiss` (mark rotated / false positive — do this only when the user confirms which), `recall_security_rules` (tenant detection rules; also tests a regex).
-**Health / maintenance** — `recall_status` (is the index alive, what is synced), `recall_index` (sync now), `recall_heal_audit` (sessions whose rendered text is thinner than the raw archive, i.e. truncated upstream), `recall_regenerate_summary` (stored summary is stale or wrong), `recall_reclassify` (re-run the classifier over old chunks), `recall_rename_session`.
+**Health / maintenance** — `recall_status` (is the index alive, what is synced), `recall_index` (sync now), `recall_help` (names the tools the lean profile leaves unlisted — they all still work by name), `recall_heal_audit` (sessions whose rendered text is thinner than the raw archive, i.e. truncated upstream), `recall_regenerate_summary` (stored summary is stale or wrong), `recall_reclassify` (re-run the classifier over old chunks), `recall_rename_session`.
 
 ## If you're unsure where to start
 

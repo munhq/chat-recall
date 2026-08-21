@@ -10,7 +10,7 @@
  *   GET    /api/tasks?project=&assignee=&status=   → list
  *   POST   /api/tasks {title, description?, projectId?, assigneeSub?, due?, linkedSessionId?}
  *   GET    /api/tasks/:id                          → { task, comments }
- *   PATCH  /api/tasks/:id {status?, assigneeSub?, title?, description?, due?, blocks?, blockedBy?}
+ *   PATCH  /api/tasks/:id {status?, assigneeSub?, title?, description?, due?, blocks?, blockedBy?, linkedSessionId?}
  *   POST   /api/tasks/:id/comments {body}
  */
 import express from 'express';
@@ -109,6 +109,12 @@ router.patch('/:id', async (req, res) => {
     patch.assigneeSub = req.body.assigneeSub;
   }
   if (req.body?.due !== undefined) patch.due = typeof req.body.due === 'number' ? req.body.due : null;
+  // Same validation as the POST path: a string links, anything else clears.
+  // This is what lets an agent attach the session that did the work to a card
+  // that existed before the work started — the shipped badge needs the link.
+  if (req.body?.linkedSessionId !== undefined) {
+    patch.linkedSessionId = typeof req.body.linkedSessionId === 'string' ? req.body.linkedSessionId : null;
+  }
   if (Array.isArray(req.body?.blocks)) patch.blocks = req.body.blocks.map(String);
   if (Array.isArray(req.body?.blockedBy)) patch.blockedBy = req.body.blockedBy.map(String);
   const store = await createStore();

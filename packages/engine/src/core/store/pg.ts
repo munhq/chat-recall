@@ -190,7 +190,12 @@ export class PgStore implements StorageDriver {
     return false;
   }
 
-  async listItems(sourceType: SourceType, limit = 100, offset = 0): Promise<MemoryMetadataRow[]> {
+  async listItems(sourceType: SourceType, limit = 100, offset = 0, sinceMs?: number): Promise<MemoryMetadataRow[]> {
+    // `sinceMs` is the free tier's list window (mtime >= floor); undefined keeps
+    // the unwindowed query byte-identical for paid/self-host callers.
+    if (sinceMs && Number.isFinite(sinceMs)) {
+      return this.qr(`SELECT ${PgStore.COLS} FROM memory_metadata WHERE tenant=$1 AND source_type=$2 AND mtime>=$3 ORDER BY mtime DESC LIMIT $4 OFFSET $5`, [this.t, sourceType, sinceMs, limit, offset]);
+    }
     return this.qr(`SELECT ${PgStore.COLS} FROM memory_metadata WHERE tenant=$1 AND source_type=$2 ORDER BY mtime DESC LIMIT $3 OFFSET $4`, [this.t, sourceType, limit, offset]);
   }
 
@@ -353,6 +358,7 @@ export class PgStore implements StorageDriver {
     if (patch.due !== undefined) add('due', patch.due);
     if (patch.blocks !== undefined) add('blocks', JSON.stringify(patch.blocks));
     if (patch.blockedBy !== undefined) add('blocked_by', JSON.stringify(patch.blockedBy));
+    if (patch.linkedSessionId !== undefined) add('linked_session_id', patch.linkedSessionId);
     if (sets.length === 0) return (await this.getTeamTask(id))?.task ?? null;
     params.push(Date.now()); sets.push(`updated_at=$${params.length}`);
     const r = await this.q(`UPDATE team_tasks SET ${sets.join(', ')} WHERE tenant=$1 AND id=$2 RETURNING *`, params);
@@ -751,7 +757,10 @@ export class PgStore implements StorageDriver {
   async clearFTS(): Promise<void> { await this.q(`DELETE FROM memory_chunks WHERE tenant=$1`, [this.t]); }
 
   async searchFTS(query: string, options: Args<'searchFTS'>[1] = {}): Promise<MemorySearchResult[]> {
-    const { topK = 20, sourceTypes, projectIdFilter } = options;
+    const { topK = 20, sourceTypes, projectIdFilter, sinceMs } = options;
+    // Free-tier search window: a floor on chunk mtime. undefined = unwindowed —
+    // the paid/self-host query stays byte-identical.
+    const windowFloor = sinceMs && Number.isFinite(sinceMs) ? sinceMs : undefined;
     const orTsq = orPrefixTsQuery(query);
     if (!orTsq) return [];
     // R7: precision-first — for short queries try requiring ALL terms (AND);
@@ -766,6 +775,7 @@ export class PgStore implements StorageDriver {
     // Exact project_id match here meant a substring never matched and `-p`
     // silently returned nothing for every project.
     if (projectIdFilter) { params.push(`%${PgStore.likeLiteral(projectIdFilter)}%`); where += ` AND project_path ILIKE $${params.length}`; }
+    if (windowFloor !== undefined) { params.push(windowFloor); where += ` AND mtime >= $${params.length}`; }
     params.push(topK * 5);
     params.push(Date.now());
     const nowParam = params.length;
@@ -826,6 +836,7 @@ export class PgStore implements StorageDriver {
           let tw = `tenant=$1 AND $2 <% text`;
           if (sourceTypes && sourceTypes.length > 0) { tp.push(sourceTypes); tw += ` AND source_type = ANY($${tp.length})`; }
           if (projectIdFilter) { tp.push(`%${PgStore.likeLiteral(projectIdFilter)}%`); tw += ` AND project_path ILIKE $${tp.length}`; }
+          if (windowFloor !== undefined) { tp.push(windowFloor); tw += ` AND mtime >= $${tp.length}`; }
           tp.push(topK * 5);
           rows = await tenantTx(this.pool, this.t, async (client: any) => {
             // Bound the trigram scan: a typo whose trigrams are common ("keyclock"
@@ -867,6 +878,7 @@ export class PgStore implements StorageDriver {
       // OpenCode session.title). The display title prefers the user name.
       let nwhere = `sm.tenant=$1 AND (sm.user_title ILIKE $2 OR sm.tool_title ILIKE $2)`;
       if (projectIdFilter) { np.push(`%${PgStore.likeLiteral(projectIdFilter)}%`); nwhere += ` AND mm.project_path ILIKE $${np.length}`; }
+      if (windowFloor !== undefined) { np.push(windowFloor); nwhere += ` AND mm.mtime >= $${np.length}`; }
       np.push(topK);
       try {
         namedRows = await this.qr(
@@ -970,6 +982,9 @@ export class PgStore implements StorageDriver {
     let sql = `SELECT COUNT(DISTINCT item_id)::int AS n FROM memory_chunks WHERE tenant=$1 AND tsv @@ to_tsquery('english',$2)`;
     if (options.sourceTypes && options.sourceTypes.length > 0) { params.push(options.sourceTypes); sql += ` AND source_type = ANY($${params.length})`; }
     if (options.projectFilter) { params.push(`%${PgStore.likeLiteral(options.projectFilter)}%`); sql += ` AND project_path LIKE $${params.length}`; }
+    // `beforeMs` counts matches OLDER than the free tier's window — the
+    // `locked_older` figure the upgrade banner shows.
+    if (options.beforeMs && Number.isFinite(options.beforeMs)) { params.push(options.beforeMs); sql += ` AND mtime < $${params.length}`; }
     try { return (await this.oneRo(sql, params))?.n ?? 0; } catch { return 0; }
   }
 

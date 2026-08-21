@@ -126,6 +126,70 @@ describe('generateMissingSummaries', () => {
   });
 });
 
+describe('generateMissingSummaries — free-tenant skip (billing enabled)', () => {
+  // Cloud mode: a lapsed entitlement resolves to the FREE plan, whose limits
+  // carry summaries:false — the sweep must return before touching the store,
+  // so the injected summarizer is never called. An entitled tenant on the same
+  // sweep options still generates. On self-host (no STRIPE_SECRET_KEY, the
+  // other tests in this file) the gate is a no-op via FULL_LIMITS.
+  const savedKey = process.env.STRIPE_SECRET_KEY;
+
+  beforeAll(async () => {
+    process.env.STRIPE_SECRET_KEY = 'sk_test_x';
+    const { clearEntitlementCache } = await import('../util/billing.js');
+    clearEntitlementCache();
+    const { createControlPlane } = await import('../imports.js');
+    const cp = await createControlPlane();
+    try {
+      // Lapsed = free. The row's existence stops ensureTrial re-granting a trial.
+      await cp.setEntitlement('freeloser', {
+        status: 'active', plan: 'solo', currentPeriodEnd: Date.now() - 1000,
+      });
+      await cp.setEntitlement('payer', {
+        status: 'active', plan: 'solo', currentPeriodEnd: Date.now() + 86_400_000,
+      });
+    } finally { await cp.close(); }
+  });
+
+  afterAll(async () => {
+    if (savedKey === undefined) delete process.env.STRIPE_SECRET_KEY;
+    else process.env.STRIPE_SECRET_KEY = savedKey;
+    const { clearEntitlementCache } = await import('../util/billing.js');
+    clearEntitlementCache();
+  });
+
+  test('a free (lapsed) tenant is skipped without any summarizer call', async () => {
+    const { generateMissingSummaries } = await import('./summary-worker.js');
+    await seedSession('sess-free-tenant', 'Free tenant session');
+
+    let calls = 0;
+    const result = await generateMissingSummaries({
+      tenant: 'freeloser',
+      summarize: async () => { calls++; return 'MUST NOT HAPPEN'; },
+    });
+
+    expect(result).toEqual({ generated: 0, failed: 0, skipped: 0 });
+    expect(calls).toBe(0);
+    expect(await cachedSummary('sess-free-tenant')).toBeFalsy();
+  });
+
+  test('an entitled tenant on the same sweep still generates', async () => {
+    const { generateMissingSummaries } = await import('./summary-worker.js');
+    const id = 'sess-paid-tenant';
+    await seedSession(id, 'Paid tenant session');
+
+    let calls = 0;
+    const result = await generateMissingSummaries({
+      tenant: 'payer',
+      summarize: async () => { calls++; return 'PAID SUMMARY'; },
+    });
+
+    expect(result.generated).toBeGreaterThanOrEqual(1);
+    expect(calls).toBeGreaterThanOrEqual(1);
+    expect(await cachedSummary(id)).toBe('PAID SUMMARY');
+  });
+});
+
 describe('serverSummaryConfig', () => {
   test('returns null when no provider is configured', async () => {
     const { serverSummaryConfig } = await import('./summary-worker.js');

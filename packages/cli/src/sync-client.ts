@@ -737,6 +737,21 @@ const refs = listAvailableBackends().flatMap((b) => {
         if (res.status === 401 || res.status === 403) {
           throw new Error(`server rejected this machine's device token (HTTP ${res.status} — revoked?). Reconnect with: chat-recall login ${base}`);
         }
+        // 402 is a standing plan condition, not a glitch: a meter (monthly
+        // quota / storage cap) or a missing email confirmation. The server's
+        // payload carries the one actionable sentence — print IT, not the raw
+        // HTTP line, and never retry: the answer is the same until the meter
+        // resets or the human acts.
+        if (res.status === 402) {
+          let detail = text;
+          try {
+            const body = JSON.parse(text) as { error?: string; upgradeUrl?: string; resetsAt?: number };
+            detail = body.error ?? text;
+            if (body.resetsAt) detail += ` (resets ${new Date(body.resetsAt).toISOString().slice(0, 10)})`;
+            if (body.upgradeUrl) detail += ` — ${body.upgradeUrl}`;
+          } catch { /* non-JSON 402 — print as-is */ }
+          throw new Error(`sync paused by the server: ${detail}`);
+        }
         if (!retryable) throw new Error(`sync failed: HTTP ${res.status} ${text}`);
         if (attempt >= RETRY_DELAYS_MS.length) throw new Error(`sync failed after ${attempt + 1} attempts: HTTP ${res.status} ${text}`);
         // 429: obey Retry-After (seconds) when the server sends it; else fall

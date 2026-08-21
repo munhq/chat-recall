@@ -1,10 +1,16 @@
 /**
- * The lapsed-tenant degradation: reads pass, writes get 402.
+ * The lapsed-tenant degradation: lapsed lands on the FREE TIER, not read-only.
  *
- * This is the behaviour that replaces locking a lapsed tenant out entirely. It
- * has to be asserted rather than assumed, because both failure directions are
- * silent and bad: too strict and a former customer cannot reach their own
- * history; too loose and an unpaid tenant keeps syncing forever.
+ * requireEntitlement passes a lapsed tenant THROUGH — the refusals moved to the
+ * layers that know what "free" means: requireFeature (which resolves the plan
+ * to 'free'), the search window, and the sync meters (syncAdmission). What this
+ * middleware still owns is the anti-abuse edge: a tenant that never confirmed
+ * an email address may not write.
+ *
+ * Both failure directions stay silent and bad: too strict and a former
+ * customer cannot reach their own history; too loose and an unverified signup
+ * spends money. "Unpaid tenant syncs forever" is now syncAdmission's test, not
+ * this file's.
  */
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -62,22 +68,22 @@ describe('requireEntitlement degradation', () => {
     expect(res.body.ok).toBe('read');
   });
 
-  test('a LAPSED tenant may NOT write, and is told access is read-only', async () => {
+  test('a LAPSED tenant passes through — the free tier owns the refusals now', async () => {
+    // The write reaches the handler: whether it is allowed is decided by the
+    // feature gate on the mount (a lapsed plan resolves to 'free') and by the
+    // sync meters — not by a blanket write-402 here, which would also refuse
+    // the kg/diary/kv writes the free tier includes.
     await seed('lapsed-write', { status: 'trialing', currentPeriodEnd: Date.now() - 1000 });
     const res = await request(appFor('lapsed-write')).post('/thing');
-    expect(res.status).toBe(402);
-    // The message must say the history is kept: a bare "payment required" on a
-    // sync failure reads as data loss.
-    expect(res.body.detail).toMatch(/read-only/i);
-    expect(res.body.detail).toMatch(/kept/i);
-    expect(res.body.checkoutHint).toBeTruthy();
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe('write');
   });
 
-  test('a CANCELLED subscriber keeps read access too', async () => {
+  test('a CANCELLED subscriber lands on the same free tier', async () => {
     // Same principle as a lapsed trial: they may come back, and the data is theirs.
     await seed('churned', { status: 'canceled' });
     expect((await request(appFor('churned')).get('/thing')).status).toBe(200);
-    expect((await request(appFor('churned')).post('/thing')).status).toBe(402);
+    expect((await request(appFor('churned')).post('/thing')).status).toBe(200);
   });
 
   test('an ENTITLED tenant may do both', async () => {

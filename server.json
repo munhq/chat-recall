@@ -25,7 +25,7 @@
         },
         {
           "name": "CHAT_RECALL_MCP_PROFILE",
-          "description": "Which tools to register: \"lean\" (default, 25 tools \u2014 tool choice degrades as the list grows) or \"full\" (all 52). Every tool works when called by name either way.",
+          "description": "Which tools to register: \"lean\" (default, 25 tools \u2014 tool choice degrades as the list grows) or \"full\" (all 54). Every tool works when called by name either way.",
           "isRequired": false,
           "isSecret": false,
           "format": "string",

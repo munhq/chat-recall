@@ -15,7 +15,7 @@
  *
  *   7 days left → the halfway nudge
  *   2 days left → the deadline is real
- *   0 days left → the trial has ended; access is read-only
+ *   0 days left → the trial has ended; the account is on the free plan
  *
  * Each stage is sent at most once per tenant. The record of having sent it is a
  * tenant setting (`trial_reminder_<stage>`), so a restart, a redeploy or a second
@@ -38,6 +38,7 @@ import { createControlPlane } from '../imports.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { sendMail } from '../auth/mailer.js';
 import { isNoCardTrial, trialDaysLeft, trialLengthDays } from '../util/trial.js';
+import { freeLimits } from '../util/entitlements.js';
 
 const log = createLogger('trial-reminders');
 
@@ -66,11 +67,14 @@ const UPGRADE_URL = process.env.TRIAL_UPGRADE_URL || 'https://chatrecall.dev/pri
  * The reminder copy.
  *
  * States what happens at the end in every message, because the thing that makes
- * a deadline email tolerable is that it does not threaten: the history is kept
- * and access becomes read-only, so nobody has to act out of fear of losing work.
+ * a deadline email tolerable is that it does not threaten: the history is kept,
+ * and the account lands on the free plan rather than going dark — nobody has to
+ * act out of fear of losing work. The window is read from freeLimits() so the
+ * email never promises a number the server does not enforce.
  */
 export function trialReminderMail(to: string, stage: ReminderStage, daysLeft: number) {
   const keep = 'Your history is kept either way — nothing is deleted.';
+  const windowDays = freeLimits().searchWindowDays ?? 7;
   if (stage === 'ended') {
     return {
       to,
@@ -78,9 +82,9 @@ export function trialReminderMail(to: string, stage: ReminderStage, daysLeft: nu
       text: [
         'Your chat-recall trial has ended.',
         '',
-        'Your account is now READ-ONLY: you can still search and read everything',
-        'you indexed, and you can still export it. New syncs are paused until you',
-        'subscribe.',
+        `Your account is now on the FREE plan: your last ${windowDays} days stay`,
+        'searchable, and sync keeps working within a monthly quota. Your full',
+        'history is kept and unlocks the moment you upgrade.',
         '',
         keep,
         '',
@@ -95,8 +99,9 @@ export function trialReminderMail(to: string, stage: ReminderStage, daysLeft: nu
       text: [
         `Your chat-recall trial ends in ${daysLeft} day${daysLeft === 1 ? '' : 's'}.`,
         '',
-        'When it ends, your account becomes read-only: search and export keep',
-        'working, new syncs pause.',
+        `When it ends you move to the free plan: your last ${windowDays} days stay`,
+        'searchable, sync keeps working within a monthly quota, and your full',
+        'history unlocks when you upgrade.',
         '',
         keep,
         '',

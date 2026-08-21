@@ -184,6 +184,24 @@ async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutM
     if (res.status === 402) {
       void res.clone().json().then((body) => {
         const featureLevel = body && typeof body === 'object' && 'feature' in body;
+        // A LIMIT-level 402 (free-tier sync meters) is a third kind: the tenant
+        // is fine, one meter is full. It must not raise the paywall — it raises
+        // the quota notice on the sync surface instead.
+        const limit = parseSyncLimit(body);
+        if (limit) { window.dispatchEvent(new CustomEvent('cr:sync-limit', { detail: limit })); return; }
+        // A FOURTH kind: the write was refused because no email address is
+        // confirmed yet. The fix is a link in an inbox, not a checkout — so it
+        // gets its own event and never falls through to the paywall path, where
+        // it used to vanish silently once the paywall stopped rendering for
+        // resolvable tenants.
+        const err = body && typeof body === 'object' ? String((body as { error?: unknown }).error ?? '') : '';
+        if (/email confirmation/i.test(err)) {
+          const detail = (body as { detail?: unknown }).detail;
+          window.dispatchEvent(new CustomEvent('cr:confirm-email', {
+            detail: typeof detail === 'string' && detail ? detail : 'Confirm your email address to start your trial.',
+          }));
+          return;
+        }
         if (!featureLevel) window.dispatchEvent(new CustomEvent('cr:payment-required'));
       }).catch(() => { /* unparseable 402 — see above */ });
     }
@@ -359,6 +377,13 @@ export interface MemoryHit {
 export interface SearchResponse {
   sessions: SearchResult[];
   memory: MemoryHit[];
+  /** Free plan: the server searched only this many trailing days. Null when the
+   *  plan is unwindowed (or the server predates windowing). */
+  windowDays: number | null;
+  /** Free plan: matching results OUTSIDE the window — stored and locked, they
+   *  unlock on upgrade. Null when unknown (the count is only attached when it is
+   *  cheap to compute), 0 when everything matched inside the window. */
+  lockedOlder: number | null;
 }
 
 export async function searchSessions(
@@ -395,6 +420,10 @@ export async function searchSessions(
   return {
     sessions: data.results || [],
     memory: data.memoryResults || [],
+    // Free-plan window metadata. Defensive on purpose: a server that predates
+    // windowing sends neither field, and that must read as "unwindowed".
+    windowDays: typeof data.window_days === 'number' ? data.window_days : null,
+    lockedOlder: typeof data.locked_older === 'number' ? data.locked_older : null,
   };
 }
 
@@ -1491,9 +1520,66 @@ export class FeatureGateError extends Error {
 }
 
 /**
+ * The free tier's METER refusal, sibling of FeatureGateError. The server answers
+ * a full sync meter with 402 { error, kind, used, limit, resetsAt?, requires,
+ * upgradeUrl } (util/entitlements.ts limitReached). It is not an entitlement
+ * problem — the tenant is fine, one meter is full — so it must never raise the
+ * paywall; it renders as a quota notice with the numbers and the offer.
+ */
+export interface SyncLimitPayload {
+  error: string;
+  kind: 'sync_quota' | 'sync_storage';
+  /** Bytes consumed against the meter. */
+  used: number;
+  /** The meter's size, in bytes. */
+  limit: number;
+  /** When the monthly meter turns over (ms). Absent for the storage cap. */
+  resetsAt?: number;
+  requires?: string;
+  upgradeUrl?: string;
+}
+
+/** Recognise a limit-level 402 body. Null for anything else — including a
+ *  feature-level 402, which carries `feature` and never `kind`. */
+export function parseSyncLimit(body: unknown): SyncLimitPayload | null {
+  if (!body || typeof body !== 'object') return null;
+  const b = body as Record<string, unknown>;
+  if (b.kind !== 'sync_quota' && b.kind !== 'sync_storage') return null;
+  if (typeof b.used !== 'number' || typeof b.limit !== 'number') return null;
+  return {
+    error: typeof b.error === 'string' ? b.error : 'sync limit reached',
+    kind: b.kind,
+    used: b.used,
+    limit: b.limit,
+    resetsAt: typeof b.resetsAt === 'number' ? b.resetsAt : undefined,
+    requires: typeof b.requires === 'string' ? b.requires : undefined,
+    upgradeUrl: typeof b.upgradeUrl === 'string' ? b.upgradeUrl : undefined,
+  };
+}
+
+/** A sync meter is full. Carries the numbers so a caller renders an offer with
+ *  used/limit and the reset date instead of relaying an opaque failure. */
+export class SyncLimitError extends Error {
+  readonly kind: SyncLimitPayload['kind'];
+  readonly used: number;
+  readonly limit: number;
+  readonly resetsAt: number | null;
+  readonly upgradeUrl: string | null;
+  constructor(p: SyncLimitPayload) {
+    super(p.error || 'sync limit reached');
+    this.name = 'SyncLimitError';
+    this.kind = p.kind;
+    this.used = p.used;
+    this.limit = p.limit;
+    this.resetsAt = p.resetsAt ?? null;
+    this.upgradeUrl = p.upgradeUrl ?? null;
+  }
+}
+
+/**
  * Turn a non-OK response into the most specific error available: a
- * FeatureGateError for a feature-level 402, otherwise a message that carries the
- * server's own text.
+ * FeatureGateError for a feature-level 402, a SyncLimitError for a full free-tier
+ * meter, otherwise a message that carries the server's own text.
  *
  * Never build a message from `res.statusText` alone — HTTP/2 has no status text,
  * so it is the empty string on every deployed response.
@@ -1503,6 +1589,10 @@ export async function throwForResponse(res: Response, what: string): Promise<nev
   try { body = await res.clone().json(); } catch { /* not JSON — fall through */ }
   if (res.status === 402 && body && typeof body === 'object' && 'feature' in body) {
     throw new FeatureGateError(body);
+  }
+  if (res.status === 402) {
+    const limit = parseSyncLimit(body);
+    if (limit) throw new SyncLimitError(limit);
   }
   const detail = (body && typeof body === 'object' && (body.error || body.message))
     || res.statusText
@@ -2284,6 +2374,17 @@ export interface Entitlement {
   trialDaysLeft?: number | null;
   /** Configured trial length, for copy that states it. */
   trialLengthDays?: number;
+  /** The plan actually in force — 'free' once the entitlement lapses. `plan`
+   *  above stays the recorded billing row. */
+  effectivePlan?: string | null;
+  /** The plan's meters. null values mean unmetered. */
+  limits?: {
+    searchWindowDays: number | null;
+    syncBytesPerMonth: number | null;
+    syncStorageBytes: number | null;
+  } | null;
+  /** Metered tenants only — what the meters have counted. */
+  usage?: { monthBytes: number; totalBytes: number; month: string } | null;
 }
 export interface PlanInfo {
   configured: boolean;
