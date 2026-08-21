@@ -4,7 +4,9 @@ import SyncRules from './SyncRules';
 import FleetHealth from './FleetHealth';
 import PlanPicker from './PlanPicker';
 import LicenceDeliveryPanel from './LicenceDelivery';
+import DataControls from './DataControls';
 import {
+  getProjectTree,
   getEntitlement, startCheckout, openBillingPortal, getAlertConfig, setAlertConfig,
   testAlertWebhook, getMe, createTeam, getPlan,
   type Entitlement, type PlanInfo,
@@ -32,6 +34,22 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
   // presence means "someone just finished paying". Read once: the panel below
   // exchanges it for the licence serial a self-host buyer came here for.
   const [checkoutSession] = useState<string | null>(() => completedCheckoutSessionId());
+  const [dataProjects, setDataProjects] = useState<string[]>([]);
+  useEffect(() => {
+    void getProjectTree()
+      .then((t) => {
+        const out: string[] = [];
+        const walk = (ns: Array<{ id: string; count: number; children?: any[] }>) => {
+          for (const n of ns) {
+            if (n.count > 0) out.push(n.id);
+            if (n.children?.length) walk(n.children);
+          }
+        };
+        walk((t as any)?.nodes ?? t ?? []);
+        setDataProjects([...new Set(out)].sort());
+      })
+      .catch(() => { /* no list ⇒ the per-project control stays hidden */ });
+  }, []);
 
   useEffect(() => {
     getEntitlement()
@@ -152,6 +170,10 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
       </section>
 
       <AlertsCard onError={setErr} />
+
+      {/* Last on the page: everything above manages the account, this ends it.
+          Export sits above the deletes inside the panel for the same reason. */}
+      <DataControls projects={dataProjects} />
     </div>
   );
 }
