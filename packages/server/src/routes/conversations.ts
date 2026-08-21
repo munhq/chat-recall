@@ -46,7 +46,7 @@ import {
   type CachedEnvelope,
 } from '../services/summary-worker.js';
 import { matchesPrefix } from '../util/paths.js';
-import { tenantLimits } from '../util/billing.js';
+import { tenantLimits, searchWindow, windowMeta } from '../util/billing.js';
 import { featureRequired } from '../util/entitlements.js';
 import { buildETag, maybeSendNotModified } from '../util/cacheable.js';
 import { TenantTtlCache } from '../util/tenant-cache.js';
@@ -228,10 +228,8 @@ router.get('/recent', async (req, res) => {
     // Free-tier list window: the feed reaches back only `searchWindowDays`
     // days. A caller's own narrower since_hours survives (max of the two
     // floors); null (paid, trialing, self-host) leaves the query untouched.
-    const { searchWindowDays } = await tenantLimits(req.tenant || 'default');
-    const windowFloorMs = typeof searchWindowDays === 'number'
-      ? Date.now() - searchWindowDays * 86_400_000
-      : undefined;
+    const win = await searchWindow(req.tenant || 'default');
+    const windowFloorMs = win.floorMs;
     const sinceMs = windowFloorMs !== undefined
       ? Math.max(callerSinceMs ?? 0, windowFloorMs)
       : callerSinceMs;
@@ -249,20 +247,23 @@ router.get('/recent', async (req, res) => {
     let pageEntries: SessionIndexEntry[];
     let lockedOlder: number | undefined;
     try {
-      const { rows, total } = await store.querySessionIndex({
-        limit, offset, projectIdFilter, toolFilter, sinceMs, includeUntracked,
-      });
-
-      // Windowed: how many sessions the window locked away, given the caller's
-      // own filters — the unfloored total minus the floored one. Only the
-      // COUNT of the second query is used (limit 1 keeps the row fetch moot),
-      // and it only runs on the free path. If the caller's own since_hours is
-      // narrower than the window, both totals match and this is 0.
-      if (windowFloorMs !== undefined) {
-        const { total: unfloored } = await store.querySessionIndex({
-          limit: 1, offset: 0, projectIdFilter, toolFilter, sinceMs: callerSinceMs, includeUntracked,
-        });
-        lockedOlder = Math.max(unfloored - total, 0);
+      // The windowed page and the unfloored count are independent — pay their
+      // latencies together, not back-to-back. The count runs only on the free
+      // path; its ROWS are moot (limit 1), only `total` is read. If the
+      // caller's own since_hours is narrower than the window, both totals
+      // match and locked_older is 0.
+      const [{ rows, total }, unflooredResult] = await Promise.all([
+        store.querySessionIndex({
+          limit, offset, projectIdFilter, toolFilter, sinceMs, includeUntracked,
+        }),
+        windowFloorMs !== undefined
+          ? store.querySessionIndex({
+              limit: 1, offset: 0, projectIdFilter, toolFilter, sinceMs: callerSinceMs, includeUntracked,
+            })
+          : Promise.resolve(undefined),
+      ]);
+      if (unflooredResult) {
+        lockedOlder = Math.max(unflooredResult.total - total, 0);
       }
 
       // Empty index → fallback to filesystem walk so we don't return
@@ -320,9 +321,7 @@ router.get('/recent', async (req, res) => {
       limit,
       hasMore: offset + sessions.length < totalAfterFilter,
       // Only when windowed — the paid response shape is unchanged.
-      ...(windowFloorMs !== undefined
-        ? { window_days: searchWindowDays, locked_older: lockedOlder ?? 0 }
-        : {}),
+      ...windowMeta(win, lockedOlder),
     });
   } catch (error) {
     log.error({ err: error }, 'recent sessions error');
@@ -343,10 +342,8 @@ router.get('/outcome-summary', async (req, res) => {
     const askedDays = Math.max(1, Math.min(parseInt(req.query.days as string) || 7, 90));
     // Free-tier window: the rollup reaches back at most `searchWindowDays`
     // days. A narrower ask survives; null (paid, self-host) is untouched.
-    const { searchWindowDays } = await tenantLimits(req.tenant || 'default');
-    const days = typeof searchWindowDays === 'number'
-      ? Math.min(askedDays, searchWindowDays)
-      : askedDays;
+    const win = await searchWindow(req.tenant || 'default');
+    const days = win.days !== null ? Math.min(askedDays, win.days) : askedDays;
     const key = `days:${days}`;
     const hit = outcomeSummaryCache.get(key);
     if (hit) return res.json(hit);
@@ -356,7 +353,7 @@ router.get('/outcome-summary', async (req, res) => {
       const body = {
         days,
         rows,
-        ...(typeof searchWindowDays === 'number' ? { window_days: searchWindowDays } : {}),
+        ...(win.days !== null ? { window_days: win.days } : {}),
       };
       outcomeSummaryCache.set(key, body);
       res.json(body);

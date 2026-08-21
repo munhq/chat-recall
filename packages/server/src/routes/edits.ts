@@ -26,6 +26,7 @@ function repoLabel(projectId: string | undefined, projectPath: string): { key: s
   return { key: pid || projectPath || '(unknown)', name: base || pid || '(unknown)' };
 }
 import { isServerMode } from '../util/mode.js';
+import { searchWindow, windowMeta } from '../util/billing.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { TenantTtlCache } from '../util/tenant-cache.js';
 
@@ -102,7 +103,12 @@ router.get('/timeline', async (req, res) => {
       ? (toolsParam.split(',').map(t => t.trim().toLowerCase()).filter(t => (validTools as readonly string[]).includes(t)) as AiTool[])
       : undefined;
 
-    const sinceMs = Date.now() - sinceHours * 3600 * 1000;
+    // Free-tier window: the timeline is a LIST surface, and an unclamped
+    // since_hours walked straight past the "stored and locked" boundary the
+    // search window enforces. A caller's own narrower ask survives (max of
+    // the two floors); paid/self-host is untouched.
+    const win = await searchWindow(req.tenant || 'default');
+    const sinceMs = Math.max(Date.now() - sinceHours * 3600 * 1000, win.floorMs ?? 0);
     const all = await getCachedTimeline({ sinceMs, pattern, projectFilter, tools });
     const filtered = includeReads ? all : all.filter(e => e.op !== 'read');
     const trimmed = filtered.slice(0, limit);
@@ -157,6 +163,7 @@ router.get('/timeline', async (req, res) => {
       byProject,
       byRepo,
       edits: enriched,
+      ...windowMeta(win),
     });
   } catch (error) {
     log.error({ err: error }, 'edits timeline error');
@@ -216,7 +223,9 @@ router.get('/summary', async (req, res) => {
     const toolsParam = (req.query.tools as string | undefined)?.trim();
     const tools = toolsParam ? (toolsParam.split(',').map(t => t.trim().toLowerCase()).filter(t => (validTools as readonly string[]).includes(t))) : undefined;
 
-    const sinceMs = Date.now() - sinceHours * 3600 * 1000;
+    // Same list-surface window as /timeline above.
+    const win = await searchWindow(req.tenant || 'default');
+    const sinceMs = Math.max(Date.now() - sinceHours * 3600 * 1000, win.floorMs ?? 0);
     const cacheKey = `${Math.floor(sinceMs / 60_000)}|${projectFilter || ''}|${(tools || []).slice().sort().join(',')}`;
     const cached = summaryCache.get(cacheKey);
     if (cached) return res.json(cached);

@@ -1,18 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { Card, MetricCard, Icon, Button, Input, Chip } from './primitives';
 import { getAdminMetrics, getCodeProjects, type AdminMetricsResponse, type CodeProject } from '../services/api';
+import { formatBytes } from '../utils/bytes';
 
 interface AdminPageProps {
   onClose?: () => void;
 }
 
-function fmtBytes(n?: number): string {
-  if (n == null || isNaN(n) || n === 0) return '—';
-  if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GB`;
-  if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`;
-  if (n >= 1e3) return `${(n / 1e3).toFixed(1)} KB`;
-  return `${n} B`;
-}
+
 
 function fmtTokens(n?: number): string {
   if (n == null || isNaN(n) || n === 0) return '—';
@@ -288,7 +283,7 @@ export default function AdminPage({ onClose }: AdminPageProps) {
                               {h.totalLines != null ? (
                                 <>
                                   <div style={{ fontWeight: 500 }}>{h.totalLines.toLocaleString()} lines</div>
-                                  <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>{fmtBytes(h.totalBytes)}</div>
+                                  <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>{formatBytes(h.totalBytes)}</div>
                                 </>
                               ) : (
                                 <span style={{ color: 'var(--cr-fg-3)' }}>—</span>

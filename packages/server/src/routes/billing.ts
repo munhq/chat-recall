@@ -36,9 +36,11 @@ import { createControlPlane, type EntitlementStatus, type ControlPlane } from '.
 import { requireUser } from '../middleware/auth.js';
 import {
   billingEnabled, isEntitled, tenantFeatures, effectivePlan, tenantLimits, currentUsageMonth,
+  tenantStoredBytes,
 } from '../util/billing.js';
 import { ensureTrial, isNoCardTrial, trialDaysLeft, trialLengthDays } from '../util/trial.js';
 import { planCatalogue, resolveLine, isPlanError, trialDays } from '../util/billing-plans.js';
+import type { PlanLimits } from '../util/entitlements.js';
 import { publicOrigin, UnsafeOriginError } from './install.js';
 
 const router = express.Router();
@@ -567,6 +569,17 @@ router.get('/', async (req, res) => {
     // actually on rather than "none" until some other route provisions it.
     const ent = await ensureTrial(cp, tenant);
     const onTrial = isNoCardTrial(ent);
+    // Resolve the derived answers ONCE and in parallel. This endpoint backs the
+    // app gate and the banner on every mount; three serial resolutions that
+    // each re-derive the others (tenantLimits consults the same entitlement as
+    // effectivePlan, meteredUsage consulted tenantLimits again) tripled the
+    // control-plane round trips for one payload.
+    const [entitled, features, effPlan, limits] = await Promise.all([
+      isEntitled(tenant),
+      tenantFeatures(tenant),
+      effectivePlan(tenant),
+      tenantLimits(tenant),
+    ]);
     res.json({
       billingEnabled: billingEnabled(),
       tenant,
@@ -579,14 +592,14 @@ router.get('/', async (req, res) => {
       // copy of it drifts. A trial whose period has passed still reads
       // status='trialing', so a client deriving it would say "ends today" to
       // someone already read-only.
-      entitled: await isEntitled(tenant),
+      entitled,
       // The tenant's resolved capabilities. /api/capabilities is PRE-AUTH and
       // therefore deployment-wide — it answers "does this build have teams", not
       // "may you use them". That is why the Team tab rendered for every account
       // regardless of plan: a door that cannot open, which this codebase already
       // calls worse than no door where it gates the admin view. The client
       // intersects these with the deployment's capabilities.
-      features: await tenantFeatures(tenant),
+      features,
       // The trial surface the client renders its banner and gate from.
       onTrial,
       trialDaysLeft: onTrial ? trialDaysLeft(ent) : null,
@@ -596,9 +609,9 @@ router.get('/', async (req, res) => {
       // the tenant is actually on, and it is what the client renders. Usage is
       // included only when a meter applies: a paid tenant's page has no meter to
       // draw, so there is nothing to fetch.
-      effectivePlan: await effectivePlan(tenant),
-      limits: await tenantLimits(tenant),
-      usage: await meteredUsage(cp, tenant),
+      effectivePlan: effPlan,
+      limits,
+      usage: await meteredUsage(cp, tenant, limits),
     });
   } catch (err) {
     res.status(500).json({ error: 'entitlement lookup failed', detail: (err as Error).message });
@@ -614,12 +627,18 @@ router.get('/', async (req, res) => {
 async function meteredUsage(
   cp: Pick<ControlPlane, 'getSyncUsage'>,
   tenant: string,
-): Promise<{ monthBytes: number; totalBytes: number; month: string } | null> {
-  const limits = await tenantLimits(tenant);
+  limits: PlanLimits,
+): Promise<{ monthBytes: number; storedBytes: number; month: string } | null> {
   if (limits.syncBytesPerMonth === null && limits.syncStorageBytes === null) return null;
   const month = currentUsageMonth();
-  const u = await cp.getSyncUsage(tenant, month);
-  return { ...u, month };
+  // monthBytes = the traffic quota's meter; storedBytes = what is actually
+  // stored — the SAME numbers syncAdmission enforces with, so the page can
+  // never show a fuller or emptier meter than the gate acts on.
+  const [u, storedBytes] = await Promise.all([
+    cp.getSyncUsage(tenant, month),
+    tenantStoredBytes(tenant),
+  ]);
+  return { monthBytes: u.monthBytes, storedBytes, month };
 }
 
 /**

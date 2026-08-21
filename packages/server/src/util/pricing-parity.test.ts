@@ -94,13 +94,18 @@ describe('advertised MCP tool count ↔ the registry', () => {
     expect(registered).toBeGreaterThan(40);
   });
 
-  test('README.md states the real count everywhere it states one', () => {
-    const found = [...readFileSync(resolve(repoRoot, 'README.md'), 'utf-8')
-      .matchAll(/(\d+)\s+(?:MCP\s+)?tools\b/g)]
-      .map((m) => Number(m[1]))
-      // '4 tools' in the README is the codeindex companion set, not ours.
-      .filter((n) => n > 10);
-    expect(found.length).toBeGreaterThan(0);
-    for (const n of found) expect(n).toBe(registered);
-  });
+  // Every file that states a count, not just the README: the registry
+  // manifests are the surfaces agents read to decide whether to install, and
+  // they shipped an off-by-one on day one because only the README was pinned.
+  test.each(['README.md', 'server.json', 'smithery.yaml', 'docs/REGISTRIES.md'])(
+    '%s states the real count everywhere it states one', (file) => {
+      const found = [...readFileSync(resolve(repoRoot, file), 'utf-8')
+        .matchAll(/(\d+)\s+(?:MCP\s+)?tools\b/g)]
+        .map((m) => Number(m[1]))
+        // Small numbers are other counts (the codeindex companion set of 4,
+        // the lean profile's 25) — only the headline capability count is pinned.
+        .filter((n) => n > 30);
+      expect(found.length).toBeGreaterThan(0);
+      for (const n of found) expect(n).toBe(registered);
+    });
 });

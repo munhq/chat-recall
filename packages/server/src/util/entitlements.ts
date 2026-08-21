@@ -337,8 +337,8 @@ export function limitsFor(plan: string | null | undefined): PlanLimits {
   if (!plan) return freeLimits();
   const p = plan.toLowerCase();
   if (p.startsWith('free')) return freeLimits();
-  const hit = PLAN_FEATURES.find((e) => p.startsWith(e.prefix));
-  return hit && hit.prefix !== 'free' ? FULL_LIMITS : freeLimits();
+  // Any OTHER known plan is unmetered; unknown plans fail closed to the meters.
+  return PLAN_FEATURES.some((e) => p.startsWith(e.prefix)) ? FULL_LIMITS : freeLimits();
 }
 
 /**
