@@ -634,10 +634,51 @@ const server = new Server(
   }
 );
 
+/**
+ * The tools an agent sees by default.
+ *
+ * 52 tools is a lot to put in front of a model. Tool choice degrades as the list
+ * grows — some clients truncate it, and all of them get worse at picking when a
+ * dozen names could plausibly match a request. The routing hints in these
+ * descriptions help, but they cannot undo the size.
+ *
+ * So the default is LEAN: the tools that answer the questions people actually
+ * ask — resume, search, read a session, see what changed, remember a fact. The
+ * rest are administrative, aggregate or niche, and stay one env var away:
+ *
+ *   CHAT_RECALL_MCP_PROFILE=full   every tool, as before
+ *   CHAT_RECALL_MCP_PROFILE=lean   the default
+ *
+ * Nothing is removed. Every handler still works if a client calls it by name
+ * from a cached list, which is why this filters the LISTING and not the switch.
+ * An unlisted tool that still answers is strictly better than a 404 for someone
+ * whose client cached yesterday's list.
+ */
+const LEAN_TOOLS = new Set([
+  // Resume and cold start — the reason most people reach for this at all.
+  'recall_smart_resume', 'recall_wake_up', 'recall_recent',
+  // Find things.
+  'recall_search', 'recall_memory_search', 'recall_user_prompts',
+  // Read one session.
+  'recall_context', 'recall_summary', 'recall_show',
+  // What changed.
+  'recall_edits_timeline', 'recall_diff', 'recall_commits',
+  // Project state and tasks.
+  'recall_project_context', 'recall_tasks', 'recall_task_create', 'recall_task_update',
+  // Durable memory.
+  'recall_kg_query', 'recall_kg_add', 'recall_decision_record',
+  'recall_diary_write', 'recall_diary_read',
+  // Health, and the one that pays out on day one.
+  'recall_status', 'recall_index', 'recall_security_summary',
+]);
+
+function toolProfile(): 'lean' | 'full' {
+  return (process.env.CHAT_RECALL_MCP_PROFILE || '').toLowerCase() === 'full' ? 'full' : 'lean';
+}
+
 // List available tools
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
+  const all: Array<{ name: string; description: string; inputSchema: unknown }> = [
       {
         name: 'recall_search',
         description: `Search for relevant past sessions to resume.
@@ -1515,8 +1556,27 @@ Complements recall_memory_search: search finds candidates, this reads the specif
         description: 'Re-run the memory classifier over already-indexed chunks so classifier improvements reach old data. Idempotent — only rewrites tags that actually changed.',
         inputSchema: { type: 'object', properties: {} },
       },
-    ],
-  };
+  ];
+
+  if (toolProfile() === 'full') return { tools: all };
+
+  // Lean: the everyday set, plus a signpost so neither the user nor the agent
+  // has to guess that more exists. Without this line the omission looks like a
+  // missing feature rather than a choice.
+  const lean = all.filter((t) => LEAN_TOOLS.has(t.name));
+  const hidden = all.length - lean.length;
+  if (hidden > 0) {
+    lean.push({
+      name: 'recall_help',
+      description:
+        `List the ${hidden} additional chat-recall tools that are not registered in this `
+        + 'profile (analytics, knowledge-graph navigation, code intelligence, sharing, '
+        + 'security triage, maintenance). They all still WORK if called by name. Set '
+        + 'CHAT_RECALL_MCP_PROFILE=full to register every tool up front.',
+      inputSchema: { type: 'object', properties: {} },
+    });
+  }
+  return { tools: lean };
 });
 
 /**
@@ -3889,6 +3949,31 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         const r = await remotePost<{ message?: string; scanned?: number; updated?: number; error?: string }>('/api/memory/reclassify', {});
         if (r.error) return { content: [{ type: 'text', text: `Reclassify unavailable: ${r.error}` }] };
         return { content: [{ type: 'text', text: `${r.message ?? 'Reclassify complete'} — scanned ${r.scanned ?? 0}, updated ${r.updated ?? 0}.` }] };
+      }
+
+      case 'recall_help': {
+        // Advertised only in the lean profile, and it must answer honestly: the
+        // unlisted tools are not disabled, just not put in front of the model.
+        const lines = [
+          '# chat-recall tools not registered in this profile',
+          '',
+          'They all still work — call them by name. To register every tool up front,',
+          'set CHAT_RECALL_MCP_PROFILE=full and restart the MCP server.',
+          '',
+        ];
+        const groups: Array<[string, string[]]> = [
+          ['Aggregate views', ['recall_weekly_digest', 'recall_analytics_summary', 'recall_team_activity', 'recall_outcome_summary']],
+          ['Knowledge graph', ['recall_kg_timeline', 'recall_kg_stats', 'recall_kg_invalidate']],
+          ['Session detail', ['recall_markers', 'recall_subagent_search', 'recall_memory_item', 'recall_rename_session', 'recall_regenerate_summary']],
+          ['Code intelligence', ['recall_code_index', 'recall_code_projects', 'recall_code_findings', 'recall_code_actions']],
+          ['Recommendations', ['recall_recommendations', 'recall_improvements', 'recall_claude_suggestions', 'recall_redundant_files']],
+          ['Security triage', ['recall_security_session', 'recall_security_dismiss', 'recall_security_rules']],
+          ['State + maintenance', ['recall_set', 'recall_get', 'recall_shares', 'recall_reclassify', 'recall_heal_audit']],
+        ];
+        for (const [label, names] of groups) {
+          lines.push(`## ${label}`, names.map((n) => `- ${n}`).join('\n'), '');
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
       default:
