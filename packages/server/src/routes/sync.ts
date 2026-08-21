@@ -287,8 +287,15 @@ router.post('/', async (req, res) => {
   // lapsed tenant's CLI could push forever — "syncs pause" was enforced nowhere.
   // syncAdmission answers with the canonical 402 payloads (quota, storage cap,
   // unconfirmed email) so the CLI relays the same sentence the dashboard shows.
-  // The byte size is the serialized batch: what we store is what we meter.
-  const batchBytes = Buffer.byteLength(JSON.stringify(req.body ?? {}));
+  // Wire size, not a re-serialization: stringifying a 20 MB parsed batch just
+  // to measure it blocks the event loop for the whole copy, per request, on
+  // the hottest path in the product. Content-Length is the bytes the client
+  // actually sent; the stringify stays only as the fallback for the rare
+  // caller that streams without the header.
+  const declaredBytes = Number(req.get('content-length'));
+  const batchBytes = Number.isFinite(declaredBytes) && declaredBytes > 0
+    ? declaredBytes
+    : Buffer.byteLength(JSON.stringify(req.body ?? {}));
   const admission = await syncAdmission(agent.tenant, batchBytes);
   if (!admission.ok) {
     // Release the concurrency slot ingestGate just acquired: this return runs

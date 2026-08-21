@@ -95,21 +95,40 @@ export function clearRateMultiplierCache(): void {
   multiplierCache.clear();
 }
 
+/** In-flight resolutions, so a burst on a cold cache spawns ONE lookup. */
+const multiplierPending = new Map<string, Promise<void>>();
+
 async function tenantMultiplier(tenant: string): Promise<number> {
   const cached = multiplierCache.get(tenant);
   if (cached !== undefined) return cached;
-  let mult = 1;
-  try {
-    const m = (await tenantLimits(tenant)).rateMultiplier;
-    if (Number.isFinite(m) && m > 0) mult = m;
-  } catch (err) {
-    // Fail OPEN to the full budget — an entitlement hiccup must never become a
-    // 429 storm. Caching the fallback bounds the warn to once per tenant per TTL.
-    log.warn({ tenant, err: err instanceof Error ? err.message : String(err) },
-      'rate multiplier resolve failed — using full budget');
+  // STALE-WHILE-REVALIDATE, never block: the limiter sits in front of every
+  // request, and tenantLimits ultimately reaches the control plane (and can
+  // even provision a trial row via ensureTrial). A rate limiter that blocks
+  // each tenant's first request per TTL on a Postgres round trip — or worse,
+  // inherits a slow control plane — protects nothing. Resolve in the
+  // background; until it lands, the full budget applies (fail open).
+  if (!multiplierPending.has(tenant)) {
+    const p = (async () => {
+      let mult = 1;
+      try {
+        const m = (await tenantLimits(tenant)).rateMultiplier;
+        if (Number.isFinite(m) && m > 0) mult = m;
+      } catch (err) {
+        // Fail OPEN to the full budget — an entitlement hiccup must never become
+        // a 429 storm. Caching the fallback bounds the warn to once per TTL.
+        log.warn({ tenant, err: err instanceof Error ? err.message : String(err) },
+          'rate multiplier resolve failed — using full budget');
+      }
+      multiplierCache.set(tenant, mult);
+    })().finally(() => multiplierPending.delete(tenant));
+    multiplierPending.set(tenant, p);
   }
-  multiplierCache.set(tenant, mult);
-  return mult;
+  return 1;
+}
+
+/** Test seam: wait for a pending multiplier resolution to land. */
+export async function awaitRateMultiplier(tenant: string): Promise<void> {
+  await multiplierPending.get(tenant);
 }
 
 /** A free tenant always keeps at least 1 concurrency slot. */
@@ -248,7 +267,14 @@ export async function ingestGate(tenant: string, rowCount: number): Promise<{ ok
       log.warn({ decision: ENFORCE ? 'BLOCK' : 'report-only would-shed', id, rowCount }, 'ingest/concurrency');
       return { ok: ENFORCE ? false : true, release: conc.release, retryAfterMs: 2000 };
     }
-    const r = await store().consume(`ingest:${id}`, Math.max(1, rowCount), cfg.capacity * mult, cfg.refillPerSec * mult);
+    // Cost is clamped to the SCALED capacity: a bucket can never satisfy a
+    // cost above its capacity, so an unclamped giant batch under a small
+    // multiplier would 429 forever with a retryAfter that never comes true —
+    // and the CLI would loop on rate-limit errors instead of ever reaching
+    // the meters' actionable 402. Charging at most one full bucket keeps the
+    // limiter a limiter.
+    const cap = cfg.capacity * mult;
+    const r = await store().consume(`ingest:${id}`, Math.min(Math.max(1, rowCount), Math.max(1, Math.floor(cap))), cap, cfg.refillPerSec * mult);
     if (!r.allowed) {
       log.warn({ decision: ENFORCE ? 'BLOCK' : 'report-only would-shed', id, rowCount, retryAfterMs: r.retryAfterMs }, 'ingest/rate');
       if (ENFORCE) { conc.release(); return { ok: false, release: () => {}, retryAfterMs: r.retryAfterMs }; }

@@ -21,6 +21,8 @@ const state = {
   ent: null as Record<string, unknown> | null,
   verified: true,
   usage: { monthBytes: 0, totalBytes: 0 },
+  /** What approxStoredBytes measures — the STORAGE meter reads reality now. */
+  storedBytes: 0,
   adds: [] as Array<{ tenant: string; month: string; bytes: number }>,
 };
 
@@ -36,6 +38,10 @@ vi.mock('../imports.js', async (importOriginal) => ({
     addSyncUsage: async (tenant: string, month: string, bytes: number) => {
       state.adds.push({ tenant, month, bytes });
     },
+    close: async () => {},
+  }),
+  createStore: async () => ({
+    approxStoredBytes: async () => state.storedBytes,
     close: async () => {},
   }),
 }));
@@ -60,6 +66,7 @@ beforeEach(() => {
   state.ent = null;
   state.verified = true;
   state.usage = { monthBytes: 0, totalBytes: 0 };
+  state.storedBytes = 0;
   state.adds = [];
   clearEntitlementCache();
 });
@@ -141,6 +148,18 @@ describe('effectivePlan — the one switch every gate resolves through', () => {
     expect(await effectivePlan(tenant())).toBe('free');
   });
 
+  test('ENTITLED with an unrecorded/unknown plan is NEVER metered', async () => {
+    // Payment-link and dashboard subscriptions record a raw price id (or null)
+    // as the plan. Meters key on entitlement, not on plan-string parsing —
+    // taking someone's money while metering them is the one failure this
+    // block exists to prevent.
+    state.ent = { status: 'active', plan: 'price_1AbCdEfGhIjKl', currentPeriodEnd: Date.now() + 20 * DAY };
+    expect(await tenantLimits(tenant())).toEqual(FULL_LIMITS);
+    clearEntitlementCache();
+    state.ent = { status: 'active', plan: null, currentPeriodEnd: Date.now() + 20 * DAY };
+    expect(await tenantLimits(tenant())).toEqual(FULL_LIMITS);
+  });
+
   test('self-host (billing off) → null plan, FULL limits', async () => {
     delete process.env.STRIPE_SECRET_KEY;
     const t = tenant();
@@ -202,7 +221,10 @@ describe('syncAdmission — the gate /api/sync never had', () => {
 
   test('free tenant over the STORAGE cap: 402 sync_storage, no reset date — the cap does not turn over', async () => {
     state.ent = { status: 'canceled', plan: 'solo-monthly', currentPeriodEnd: Date.now() - DAY };
-    state.usage = { monthBytes: 1 * MB, totalBytes: 299.5 * MB };
+    // The cap reads MEASURED storage, not summed traffic: a re-shipped session
+    // must not count twice, and a wiped account must read as empty.
+    state.storedBytes = 299.5 * MB;
+    state.usage = { monthBytes: 1 * MB, totalBytes: 999 * MB };   // traffic total is NOT the cap
     const a = await syncAdmission(tenant(), 1 * MB);
     expect(a.ok).toBe(false);
     if (!a.ok) {
@@ -225,10 +247,13 @@ describe('recordSyncUsage', () => {
     expect(state.adds).toEqual([]);
   });
 
-  test('zero and garbage byte counts are ignored', async () => {
+  test('a ZERO write records presence; garbage is ignored', async () => {
+    // Zero is the presence marker refused batches leave for the retention
+    // sweep — it must reach the meter table (bytes += 0 creates the row).
     await recordSyncUsage('t-rec', 0);
     await recordSyncUsage('t-rec', NaN);
-    expect(state.adds).toEqual([]);
+    await recordSyncUsage('t-rec', -5);
+    expect(state.adds).toEqual([{ tenant: 't-rec', month: currentUsageMonth(), bytes: 0 }]);
   });
 });
 

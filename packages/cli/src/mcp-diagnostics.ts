@@ -47,7 +47,10 @@ export async function buildHttpError(path: string, res: Response): Promise<Error
     if (str('upgradeUrl')) parts.push(`Upgrade: ${str('upgradeUrl')}`);
     if (str('checkoutHint')) parts.push(str('checkoutHint'));
     if (str('resendHint')) parts.push(str('resendHint'));
-    parts.push('Nothing has been deleted, and reads still work.');
+    // "Reads still work" was the OLD lapse contract (blanket read-only). The
+    // free tier replaced it: feature-level 402s refuse READS of paid tools too,
+    // so promising reads on the error a failed read raised gaslights the agent.
+    parts.push('Nothing has been deleted. The free plan keeps sync and recent-history search working.');
     return new Error(`server ${path}: ${parts.join(' ')}`);
   }
 
@@ -84,11 +87,15 @@ export function stalenessBanner(state: SyncState | null): string | null {
     : state.status === 'past_due'
       ? 'a payment has not gone through'
       : 'the subscription has lapsed';
+  // The free tier keeps sync running under a monthly quota and windows search
+  // to recent history — "sync is paused" was the OLD lapse contract and is no
+  // longer true. What IS true, and what the agent must know: search reaches
+  // only the recent window, so older work exists but will not come back.
   return [
-    `⚠ SYNC IS PAUSED — ${reason}.`,
-    since ? `Nothing has been indexed since ${since}${days !== null ? ` (${days} days ago)` : ''}.` : '',
-    'Everything below is from BEFORE that date, so recent sessions are missing.',
-    'Do not tell the user their work does not exist; say the history is incomplete.',
-    'Reads and export still work, and nothing has been deleted.',
+    `⚠ FREE PLAN — ${reason}.`,
+    'Search and lists cover only the recent window (default 7 days); older history is stored but locked.',
+    since ? `The plan lapsed ${since}${days !== null ? ` (${days} days ago)` : ''}.` : '',
+    'Do not tell the user their older work does not exist; say it is locked behind the free plan and unlocks on upgrade.',
+    'Sync continues under a monthly quota, export always works, and nothing has been deleted.',
   ].filter(Boolean).join(' ');
 }

@@ -3,7 +3,7 @@ import ConnectMachine from './ConnectMachine';
 import SyncRules from './SyncRules';
 import FleetHealth from './FleetHealth';
 import PlanPicker from './PlanPicker';
-import { formatMB } from '../utils/bytes';
+import { formatMB, DEFAULT_FREE_WINDOW_DAYS } from '../utils/bytes';
 import LicenceDeliveryPanel from './LicenceDelivery';
 import DataControls from './DataControls';
 import {
@@ -116,8 +116,9 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
             )}
             <p className="muted">
               No card needed for the trial. When it ends you land on the free plan: sync keeps
-              working (metered) and search covers your last 7 days. Your older history stays
-              stored and unlocks when you upgrade — nothing is deleted.
+              working (metered) and search covers your last{' '}
+              {ent.limits?.searchWindowDays ?? DEFAULT_FREE_WINDOW_DAYS} days. Your older history
+              stays stored and unlocks when you upgrade — nothing is deleted.
             </p>
             {/* The picker is not open by default while the trial is healthy.
                 Three priced cards with seat spinners under "14 days left" asks
@@ -148,7 +149,7 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
             </div>
             <p className="muted">
               Sync keeps working (metered) and search covers your last{' '}
-              {ent.limits?.searchWindowDays ?? 7} days. Your older history is stored and
+              {ent.limits?.searchWindowDays ?? DEFAULT_FREE_WINDOW_DAYS} days. Your older history is stored and
               locked — it unlocks instantly when you upgrade. Nothing was deleted.
             </p>
             {/* The meters, from the same payload the server enforces with — the
@@ -161,7 +162,7 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
                   {formatMB(ent.usage.monthBytes)}
                   {ent.limits.syncBytesPerMonth != null && ` of ${formatMB(ent.limits.syncBytesPerMonth)}`}
                   {ent.limits.syncStorageBytes != null &&
-                    ` · stored ${formatMB(ent.usage.totalBytes)} of ${formatMB(ent.limits.syncStorageBytes)}`}
+                    ` · stored ${formatMB(ent.usage.storedBytes)} of ${formatMB(ent.limits.syncStorageBytes)}`}
                 </span>
               </div>
             )}
@@ -290,7 +291,7 @@ function AlertsCard({ onError }: { onError: (s: string) => void }) {
 function gateReason(ent: { status?: string; hasSubscription?: boolean } | null): {
   title: string; detail: string;
 } {
-  const kept = 'You are on the free plan: sync keeps working (metered) and search covers your last 7 days. Your full history is stored and locked — it unlocks instantly when you subscribe.';
+  const kept = `You are on the free plan: sync keeps working (metered) and search covers your recent history. Your full history is stored and locked — it unlocks instantly when you subscribe.`;
   if (ent?.status === 'trialing') return { title: 'Your trial has ended', detail: kept };
   if (ent?.status === 'past_due') return {
     title: 'Your last payment did not go through',

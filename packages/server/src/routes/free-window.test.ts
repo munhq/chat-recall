@@ -34,6 +34,12 @@ vi.mock('../util/billing.js', async (importOriginal) => {
       embeddings: true,
       rateMultiplier: 1,
     }),
+    // The routes moved to the shared searchWindow() helper; the real one calls
+    // the real tenantLimits internally (module-internal reference, unmockable
+    // from here), so it must be shimmed to read the same test state.
+    searchWindow: async () => (typeof limitsState.searchWindowDays === 'number'
+      ? { days: limitsState.searchWindowDays, floorMs: Date.now() - limitsState.searchWindowDays * 86_400_000 }
+      : { days: null }),
   };
 });
 

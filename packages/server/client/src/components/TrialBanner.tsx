@@ -33,7 +33,7 @@ const FREE_DISMISS_KEY = 'cr-freebanner-dismissed-day';
 /** The free plan's default search window. The server is authoritative (search
  *  responses carry `window_days`); this only covers copy rendered before any
  *  search has answered. Matches FREE_SEARCH_WINDOW_DAYS' default. */
-const DEFAULT_FREE_WINDOW_DAYS = 7;
+import { DEFAULT_FREE_WINDOW_DAYS } from '../utils/bytes';
 
 export default function TrialBanner({
   onSubscribe,
@@ -47,7 +47,7 @@ export default function TrialBanner({
   const [ent, setEnt] = useState<
     { onTrial: boolean; daysLeft: number | null; status: string; entitled: boolean } | null
   >(null);
-  const [dismissNonce, setDismissNonce] = useState(0);
+  const [freeDismissed, setFreeDismissed] = useState(false);
 
   useEffect(() => {
     getEntitlement()
@@ -76,16 +76,34 @@ export default function TrialBanner({
   const days = ent.daysLeft ?? 0;
   const winDays = windowDays ?? DEFAULT_FREE_WINDOW_DAYS;
 
+  // status 'none' = the tenant has NO entitlement row: their address was never
+  // confirmed, so no trial was granted and every sync is refused. Promising
+  // "syncing continues" here contradicts what the server actually does — the
+  // needed banner is "confirm your email", not the free-plan offer.
+  if (onFree && ent.status === 'none') {
+    return (
+      <div className="cr-trialbanner urgent" role="status" data-testid="confirm-email-nudge">
+        <style>{CSS}</style>
+        <span className="cr-trialbanner-dot" />
+        <span className="cr-trialbanner-text">
+          <strong>Confirm your email</strong> — your trial starts (and syncing begins) once you
+          click the link we sent. Nothing is counting down until you do.
+        </span>
+      </div>
+    );
+  }
+
   if (onFree) {
-    const today = new Date().toISOString().slice(0, 10);
-    let hidden = false;
-    try { hidden = localStorage.getItem(FREE_DISMISS_KEY) === today; } catch { /* no storage */ }
+    // LOCAL day, not UTC: "it returns tomorrow" must mean the user's tomorrow.
+    // en-CA formats as YYYY-MM-DD, which makes a stable storage key.
+    const today = new Date().toLocaleDateString('en-CA');
+    let hidden = freeDismissed;
+    try { hidden = hidden || localStorage.getItem(FREE_DISMISS_KEY) === today; } catch { /* no storage */ }
     if (hidden) return null;
     const dismiss = () => {
       try { localStorage.setItem(FREE_DISMISS_KEY, today); } catch { /* no storage */ }
-      setDismissNonce((n) => n + 1);
+      setFreeDismissed(true);
     };
-    void dismissNonce; // re-render trigger for the dismiss above
     return (
       <div className="cr-trialbanner free" role="status" data-testid="free-plan-banner">
         <style>{CSS}</style>

@@ -975,6 +975,23 @@ export class PgStore implements StorageDriver {
   async getFTSCount(): Promise<number> {
     return (await this.oneRo(`SELECT COUNT(*)::int AS count FROM memory_chunks WHERE tenant=$1`, [this.t])).count;
   }
+  /** Approximate bytes this tenant actually STORES (chunk text + previews +
+   *  the rendered conversation cache). This is the free tier's storage meter:
+   *  measuring reality, not accumulating traffic, is what keeps a re-shipped
+   *  session from counting twice and a wiped account from staying "full".
+   *  Callers cache it — the sums scan the tenant's rows. */
+  async approxStoredBytes(): Promise<number> {
+    const chunks = (await this.oneRo(
+      `SELECT COALESCE(SUM(length(text)),0)::bigint AS b FROM memory_chunks WHERE tenant=$1`, [this.t],
+    ))?.b ?? 0;
+    let cache = 0;
+    try {
+      cache = (await this.oneRo(
+        `SELECT COALESCE(SUM(length(content_json)),0)::bigint AS b FROM content_cache WHERE tenant=$1`, [this.t],
+      ))?.b ?? 0;
+    } catch { /* table shape differs on old deployments — chunks alone still meter */ }
+    return Number(chunks) + Number(cache);
+  }
   async countDistinctItemsMatching(query: string, options: Args<'countDistinctItemsMatching'>[1] = {}): Promise<number> {
     const tsq = orPrefixTsQuery(query);
     if (!tsq) return 0;
