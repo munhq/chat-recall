@@ -4,6 +4,47 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.5] — 2026-08-21
+
+### Fixed
+
+- Prompts typed WHILE A TOOL WAS RUNNING were never indexed. Claude Code stores
+  such a prompt as `{type:'queue-operation', operation:'enqueue'}` and never as a
+  `user` record, and both readers only knew about `user`. Measured on one real
+  session: 12 of 61 prompts, 20% — and not a random fifth, because a prompt typed
+  mid-tool is an interruption or a correction. The calm approvals were kept and
+  the course changes were dropped. Existing sessions re-ship on the next sync.
+- A system reminder appended to a prompt discarded the WHOLE prompt. The block is
+  now stripped and the words are kept.
+- Every Codex session extracted ZERO user turns. Prompts were read only from
+  `event_msg`/`user_message`, which current rollouts do not write; they write
+  `response_item`/`message` with `role='user'`. Six real rollouts went from
+  0 user turns each to 7, 3, 1, 4, 1 and 2. Codex sessions re-ship on next sync.
+- Auto-filed task cards were closed and re-filed on every re-index. The finding
+  id hashed the title, and titles carry counts ("copy-pasted 29×"), so one edit
+  minted a new identity for the same problem. Observed in production: 10 cards
+  filed and closed six minutes apart. Counts no longer feed the identity.
+- Auto-filing never filed anything on the hosted service. The run read the
+  findings table as the author `auto-tasks`, which owns no rows, so RLS returned
+  an empty set and every run honestly reported "nothing qualified". Reads now run
+  unrestricted; writes keep the author stamp.
+- A tenant whose plan was recorded as a raw Stripe price id (a subscription made
+  in the dashboard, or a plan change through the customer portal) was treated as
+  unknown and dropped to the free tier's features and meters while paying.
+- Vendored and generated files are no longer tasks. The exclusion existed and was
+  applied to hotspots only, so minified bundles and generated bindings became
+  "copy-pasted" cards. Build output, minified bundles and vendored trees now join
+  the list.
+
+### Added
+
+- The auto-file severity floor is selectable: critical, high, medium or low, each
+  showing how many findings it would file. It was a two-way switch that could not
+  reach medium or low — 253 of 257 findings on a real tenant.
+- The task board states what auto-filing did: what is waiting, per project, what
+  the last run filed and closed, and a "Run now" button. Previously the switch
+  set a policy and nothing visible ever happened.
+
 ## [0.5.4] — 2026-08-20
 
 ### Fixed
