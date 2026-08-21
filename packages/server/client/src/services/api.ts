@@ -2515,7 +2515,7 @@ export async function getTeamActivity(opts: { project?: string; member?: string;
   if (opts.sinceDays && opts.sinceDays > 0) qs.set('since', String(Date.now() - opts.sinceDays * 86400000));
   const suffix = qs.toString() ? `?${qs}` : '';
   const res = await fetchWithTimeout(`${API_BASE}/activity${suffix}`);
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `getTeamActivity failed: ${res.statusText}`);
+  if (!res.ok) await throwForResponse(res, 'Could not load team activity');
   return await res.json();
 }
 
@@ -2526,14 +2526,14 @@ export async function getTeamActivity(opts: { project?: string; member?: string;
 /** Every share in the team (all members) — the "who shares what" overview. */
 export async function listTeamShares(): Promise<ProjectShare[]> {
   const res = await fetchWithTimeout(`${API_BASE}/shares/all`);
-  if (!res.ok) throw new Error(`listTeamShares failed: ${res.statusText}`);
+  if (!res.ok) await throwForResponse(res, 'Could not load the team\u2019s shares');
   return (await res.json()).shares ?? [];
 }
 
 /** Just the caller's own shares (what YOU expose to the team). */
 export async function listMyShares(): Promise<ProjectShare[]> {
   const res = await fetchWithTimeout(`${API_BASE}/shares`);
-  if (!res.ok) throw new Error(`listMyShares failed: ${res.statusText}`);
+  if (!res.ok) await throwForResponse(res, 'Could not load your shares');
   return (await res.json()).shares ?? [];
 }
 

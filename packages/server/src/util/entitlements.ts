@@ -66,13 +66,15 @@ const PLAN_FEATURES: Array<{ prefix: string; features: readonly Feature[]; purch
   { prefix: 'enterprise', features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights', 'tasks', 'team', 'toolkit', 'sso', 'audit'] },
   { prefix: 'team',       features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights', 'tasks', 'team', 'toolkit'] },
   { prefix: 'solo',       features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights', 'tasks', 'toolkit'] },
-  // The no-card trial. Same grant as Solo, so the trial actually demonstrates the
-  // product — a trial limited to the free tier sells nothing. It does NOT begin with
-  // 'team', so planGrantsTeam() stays false and collaboration remains paid.
-  // purchasable:false — a trial is granted, never bought, so featureRequired() must
-  // not offer it as the tier to upgrade to. Without this it became the cheapest
-  // match and told users to "buy the trial plan".
-  { prefix: 'trial',      features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights', 'tasks', 'toolkit'], purchasable: false },
+  // The no-card trial grants the FULL product, team included: a trial is the
+  // demo, and a demo that hides collaboration sells Solo to people who came
+  // for Team. The clean states are: trialing = everything works; lapsed = the
+  // free floor (team disappears); paid = exactly what the plan names. Invites
+  // during a trial are capped in routes/team-artifacts.ts (no subscription =
+  // no bought seats), so "try Team" cannot become "run a company on re-trials".
+  // purchasable:false — a trial is granted, never bought, so featureRequired()
+  // must not offer it as the tier to upgrade to.
+  { prefix: 'trial',      features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights', 'tasks', 'team', 'toolkit'], purchasable: false },
   // The FREE TIER — what a lapsed no-card trial resolves to (see effectivePlan in
   // util/billing.ts). Never bought, never granted by a webhook: it is the floor a
   // cloud tenant lands on when their entitlement stops being live. It keeps 'sync'

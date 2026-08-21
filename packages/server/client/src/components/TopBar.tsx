@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import UserMenu from './UserMenu';
 import { IconButton, Input, Logo, Button, Avatar } from './primitives';
 import { getSyncStatus } from '../services/api';
+import { getEntitlement } from '../services/api';
 
 type NavView = 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'security' | 'settings' | 'account' | 'connect' | 'admin';
 
@@ -140,6 +141,7 @@ export default function TopBar({ view, setView, enabledViews, query, setQuery, s
 
       {/* Right actions — status first (freshness at a glance), then controls. */}
       <div className="cr-topbar-actions" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <PlanChip onOpenAccount={() => setView('account')} enabledViews={enabledViews} />
         <SyncStatusChip refreshSignal={chipRefresh} />
         <IconButton
           icon="refresh"
@@ -225,5 +227,56 @@ export function SyncStatusChip({ refreshSignal }: { refreshSignal?: number }) {
       }} />
       {word}
     </span>
+  );
+}
+
+
+/**
+ * Which plan am I on — answered in the chrome, not buried in Account. The
+ * trial banner is dismissible and the Account page is a click away, so
+ * "what am I actually on right now?" had no persistent answer; that read as
+ * confusing the moment the feature set changed under someone.
+ */
+function PlanChip({ onOpenAccount, enabledViews }: { onOpenAccount: () => void; enabledViews?: Set<string> }) {
+  const [label, setLabel] = React.useState<string | null>(null);
+  const [tone, setTone] = React.useState<'trial' | 'free' | 'paid'>('paid');
+  React.useEffect(() => {
+    getEntitlement()
+      .then((e) => {
+        if (!e.billingEnabled) return;                      // self-host: no plans to state
+        if (e.onTrial && e.entitled !== false) {
+          setTone('trial');
+          setLabel(e.trialDaysLeft != null ? `Trial · ${e.trialDaysLeft}d` : 'Trial');
+        } else if (e.entitled === false) {
+          setTone('free');
+          setLabel('Free');
+        } else {
+          setTone('paid');
+          const p = (e.effectivePlan || e.plan || '').toLowerCase();
+          setLabel(p.startsWith('enterprise') ? 'Enterprise' : p.startsWith('team') ? 'Team' : 'Solo');
+        }
+      })
+      .catch(() => { /* unknown state: show nothing rather than a guess */ });
+  }, []);
+  if (!label) return null;
+  const toneStyle: React.CSSProperties = tone === 'free'
+    ? { borderColor: 'var(--cr-line-2)', color: 'var(--cr-fg-2)', background: 'var(--cr-ink-1)' }
+    : { borderColor: 'var(--cr-brand-line)', color: 'var(--cr-brand-500)', background: 'var(--cr-brand-surf)' };
+  const clickable = !enabledViews || enabledViews.has('account');
+  return (
+    <button
+      type="button"
+      data-testid="plan-chip"
+      onClick={clickable ? onOpenAccount : undefined}
+      title={clickable ? 'Your plan — open Account' : 'Your plan'}
+      style={{
+        ...toneStyle,
+        border: '1px solid', borderRadius: 999, padding: '3px 10px',
+        font: '600 11px/1.4 var(--cr-font-mono, monospace)', letterSpacing: '0.04em',
+        cursor: clickable ? 'pointer' : 'default', whiteSpace: 'nowrap',
+      }}
+    >
+      {label}
+    </button>
   );
 }
