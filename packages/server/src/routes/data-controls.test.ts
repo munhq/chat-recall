@@ -104,6 +104,39 @@ describe('POST /api/data/delete', () => {
   });
 });
 
+describe('POST /api/data/delete — beyond the first page', () => {
+  /**
+   * The regression this pins: the handler read page 0 (200 rows, mtime DESC) and
+   * stopped when that page held no row for the project. A tenant with more than
+   * 200 sessions whose project sat outside the newest 200 got `200 {deleted: 0}`
+   * — a delete that reported success and removed nothing.
+   */
+  test('deletes a project whose sessions are all past the first page', async () => {
+    state.rows = [
+      ...Array.from({ length: 250 }, (_, i) => ({ id: `new${i}`, project_id: 'busy' })),
+      { id: 'old1', project_id: 'archived' },
+      { id: 'old2', project_id: 'archived' },
+    ];
+    const res = await request(await app()).post('/api/data/delete').send({ project: 'archived' });
+    expect(res.status).toBe(200);
+    expect(res.body.deleted).toBe(2);
+    expect(state.purged.sort()).toEqual(['old1', 'old2']);
+    expect(state.tombstoned.sort()).toEqual(['old1', 'old2']);
+    // And nothing else was touched.
+    expect(state.rows).toHaveLength(250);
+  });
+
+  test('deletes every match when they straddle a page boundary', async () => {
+    state.rows = Array.from({ length: 500 }, (_, i) => ({
+      id: `s${i}`, project_id: i % 3 === 0 ? 'target' : 'other',
+    }));
+    const res = await request(await app()).post('/api/data/delete').send({ project: 'target' });
+    expect(res.status).toBe(200);
+    expect(res.body.deleted).toBe(167);          // 0,3,6,… < 500
+    expect(state.rows.every((r) => r.project_id === 'other')).toBe(true);
+  });
+});
+
 describe('GET /api/data/export', () => {
   test('streams one JSON object per line, as a download', async () => {
     const res = await request(await app()).get('/api/data/export');
