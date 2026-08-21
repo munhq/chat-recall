@@ -45,8 +45,10 @@ afterEach(() => {
 });
 
 describe('trialLengthDays', () => {
-  test('defaults to 14', () => {
-    expect(trialLengthDays()).toBe(14);
+  test('defaults to 7 — the number the terms and the pricing page promise', () => {
+    // The default is load-bearing, not cosmetic: a deployment that does not set
+    // FREE_TRIAL_DAYS must grant what legal/terms.md states, and it states 7.
+    expect(trialLengthDays()).toBe(7);
   });
 
   test('honours FREE_TRIAL_DAYS', () => {
@@ -59,7 +61,7 @@ describe('trialLengthDays', () => {
     // would lock out every new tenant the moment they arrive.
     for (const bad of ['0', '-5', 'abc', '']) {
       process.env.FREE_TRIAL_DAYS = bad;
-      expect(trialLengthDays()).toBe(14);
+      expect(trialLengthDays()).toBe(7);
     }
   });
 });
@@ -109,7 +111,7 @@ describe('ensureTrial', () => {
     const now = 1_000_000_000_000;
     const got = await ensureTrial(cp, 'fresh', now);
     expect(got?.status).toBe('trialing');
-    expect(got?.currentPeriodEnd).toBe(now + 14 * DAY);
+    expect(got?.currentPeriodEnd).toBe(now + 7 * DAY);
     // 'trial', not null: a null plan resolves to the FREE set, which would make the
     // trial demonstrate none of the product. It must still not grant collaboration.
     expect(got?.plan).toBe('trial');
@@ -145,7 +147,7 @@ describe('ensureTrial', () => {
     const now = Date.now();
     await ensureTrial(cp, 'once', now);
     const again = await ensureTrial(cp, 'once', now + 10 * DAY);
-    expect(again?.currentPeriodEnd).toBe(now + 14 * DAY);   // the ORIGINAL end
+    expect(again?.currentPeriodEnd).toBe(now + 7 * DAY);   // the ORIGINAL end
     expect(cp.writes).toBe(1);
   });
 });
