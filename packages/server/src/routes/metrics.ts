@@ -115,6 +115,27 @@ const flatPriceUsd = Number(process.env.BILLING_PRICE_USD) || 0;
 // ── DB collectors (shared by `/` and `/backlog`) ─────────────────────────────
 
 /**
+ * How long a monitoring read may wait for a lock before giving up.
+ *
+ * These reads touch several tables inside one transaction, and the migrate init
+ * container runs `ALTER TABLE … ADD COLUMN IF NOT EXISTS` on every pod start —
+ * which the autoscaler triggers routinely. Without a bound that is a lock cycle:
+ * production logged `deadlock detected` here, and the victim Postgres picks
+ * could just as well be the migration, which crashloops a pod. Monitoring is
+ * the side that must yield, so it fails fast and the caller serves the last
+ * snapshot instead.
+ */
+const METRICS_LOCK_TIMEOUT_MS = Math.max(100, Number(process.env.METRICS_LOCK_TIMEOUT_MS) || 2000);
+
+/** A lock wait, a deadlock, or a cancelled statement — expected under DDL, and
+ *  never worth an error line or a failed scrape. */
+export function isLockContention(e: unknown): boolean {
+  const code = (e as { code?: string })?.code;
+  //          deadlock_detected | lock_not_available | query_canceled
+  return code === '40P01' || code === '55P03' || code === '57014';
+}
+
+/**
  * Capacity + security counts. The data tables are RLS-scoped by the
  * `app.tenant` GUC, so a plain server-wide COUNT returns 0 on the cloud. We sum
  * per tenant INSIDE each tenant's RLS context AND filter on `tenant=$1` — the
@@ -123,14 +144,24 @@ const flatPriceUsd = Number(process.env.BILLING_PRICE_USD) || 0;
 async function collectCapacity(pool: any, slugs: string[]) {
   let sessions = 0, chunks = 0, raw = 0, findings = 0, verified = 0;
   for (const t of slugs) {
-    const r = (await tenantQuery(pool, t, `
-      SELECT
-        (SELECT count(*) FROM memory_metadata WHERE tenant=$1 AND source_type='session') AS sessions,
-        (SELECT count(*) FROM memory_chunks   WHERE tenant=$1) AS chunks,
-        (SELECT count(*) FROM raw_sessions    WHERE tenant=$1) AS raw,
-        (SELECT count(*) FROM secret_findings WHERE tenant=$1) AS findings,
-        (SELECT count(*) FROM secret_findings WHERE tenant=$1 AND verified=1) AS verified
-    `, [t])).rows[0];
+    let r: Record<string, unknown> | undefined;
+    try {
+      r = (await tenantQuery(pool, t, `
+        SELECT
+          (SELECT count(*) FROM memory_metadata WHERE tenant=$1 AND source_type='session') AS sessions,
+          (SELECT count(*) FROM memory_chunks   WHERE tenant=$1) AS chunks,
+          (SELECT count(*) FROM raw_sessions    WHERE tenant=$1) AS raw,
+          (SELECT count(*) FROM secret_findings WHERE tenant=$1) AS findings,
+          (SELECT count(*) FROM secret_findings WHERE tenant=$1 AND verified=1) AS verified
+      `, [t], { lockTimeoutMs: METRICS_LOCK_TIMEOUT_MS })).rows[0];
+    } catch (e) {
+      // One unreadable tenant must not void the whole scrape: a slightly low
+      // total beats no metrics at all, and DDL only blocks for seconds.
+      if (!isLockContention(e)) throw e;
+      log.warn({ tenant: t }, 'capacity: skipped a tenant waiting on a lock');
+      continue;
+    }
+    if (!r) continue;
     sessions += Number(r.sessions); chunks += Number(r.chunks); raw += Number(r.raw);
     findings += Number(r.findings); verified += Number(r.verified);
   }
@@ -146,7 +177,9 @@ async function collectBacklog(pool: any, slugs: string[]) {
   const minTurns = Math.max(0, Number(process.env.SUMMARY_MIN_TURNS) || 4);
   let pendingVectors = 0, pendingSummaries = 0, pendingRealSummaries = 0;
   for (const t of slugs) {
-    const r = (await tenantQuery(pool, t, `
+    let r: Record<string, unknown> | undefined;
+    try {
+      r = (await tenantQuery(pool, t, `
       SELECT
         (SELECT count(*) FROM memory_chunks c
            LEFT JOIN memory_vectors v ON v.chunk_id = c.chunk_id AND v.tenant = c.tenant
@@ -160,7 +193,16 @@ async function collectBacklog(pool: any, slugs: string[]) {
                             AND m.extra_json LIKE '{%'
                             AND COALESCE(NULLIF(m.extra_json::jsonb ->> 'messageCount', '')::int, 999) > $2)
         ) AS pending_real_summaries
-    `, [t, minTurns])).rows[0];
+      `, [t, minTurns], { lockTimeoutMs: METRICS_LOCK_TIMEOUT_MS })).rows[0];
+    } catch (e) {
+      // Same rule as collectCapacity: skip the tenant, keep the scrape. The
+      // backlog feeds KEDA, and a slightly low number scales correctly while a
+      // thrown error leaves the scalers on a stale snapshot.
+      if (!isLockContention(e)) throw e;
+      log.warn({ tenant: t }, 'backlog: skipped a tenant waiting on a lock');
+      continue;
+    }
+    if (!r) continue;
     pendingVectors += Number(r.pending_vectors);
     pendingSummaries += Number(r.pending_summaries);
     pendingRealSummaries += Number(r.pending_real_summaries);
@@ -318,7 +360,12 @@ router.get('/', async (req, res) => {
     // Surface a scrapeable down-signal instead of a 500 so Prometheus can alert
     // on chatrecall_up==0 rather than a missing target.
     gUp.set(0);
-    log.error({ err: e instanceof Error ? e.message : String(e) }, 'metrics query failed');
+    // Lock contention is expected while a migration runs and is not a fault:
+    // warn, and let the scrape return what was already set. Anything else stays
+    // an error, because a broken metrics endpoint blinds the scalers.
+    const msg = e instanceof Error ? e.message : String(e);
+    if (isLockContention(e)) log.warn({ err: msg }, 'metrics scrape yielded to a lock');
+    else log.error({ err: msg }, 'metrics query failed');
   }
 
   res.set('Content-Type', registry.contentType);

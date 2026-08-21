@@ -235,7 +235,27 @@ export function pgTenant(t?: string): string {
  * a session-level SET would leak the tenant across the shared pool's next
  * checkout. Self-host pins tenant='default' and the policy passes trivially.
  */
-export async function tenantQuery(pool: any, tenant: string, sql: string, params: unknown[] = []): Promise<any> {
+export async function tenantQuery(
+  pool: any, tenant: string, sql: string, params: unknown[] = [],
+  opts: {
+    /**
+     * `SET LOCAL lock_timeout` for this transaction, in ms.
+     *
+     * For a caller that would rather FAIL than wait behind a lock — monitoring
+     * reads, above all. A tenant-scoped read touching several tables holds
+     * ACCESS SHARE on each one for the length of the transaction, and the
+     * migrate init container runs `ALTER TABLE … ADD COLUMN IF NOT EXISTS` on
+     * every pod start (so on every autoscaler event). That is a lock cycle, and
+     * Postgres resolves it by killing one side: production logged `deadlock
+     * detected` on the metrics scrape, and the victim could just as easily have
+     * been the migration — a failed migration crashloops a pod.
+     *
+     * With a timeout the reader gives up quickly and its caller serves the last
+     * snapshot, so monitoring can never be the reason a schema change fails.
+     */
+    lockTimeoutMs?: number;
+  } = {},
+): Promise<any> {
   const c = await pool.connect();
   // A connection-level error (server closing the backend, pooler reset, FATAL
   // termination) is emitted as an 'error' event on the client — with NO listener
@@ -247,6 +267,11 @@ export async function tenantQuery(pool: any, tenant: string, sql: string, params
   try {
     await c.query('BEGIN');
     await setScopeGucs(c, tenant);
+    if (opts.lockTimeoutMs && Number.isFinite(opts.lockTimeoutMs)) {
+      // A literal, not a bound parameter: SET does not accept placeholders. The
+      // value is an integer we produced, never caller text.
+      await c.query(`SET LOCAL lock_timeout = ${Math.max(1, Math.floor(opts.lockTimeoutMs))}`);
+    }
     const r = await c.query(sql, params);
     await c.query('COMMIT');
     return r;
