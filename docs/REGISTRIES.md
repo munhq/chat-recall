@@ -81,7 +81,7 @@ Ranked by what it costs against what it returns, having done all of it:
    agent picks a tool from its description, so a vague one is an uninstalled
    feature. Ours carry explicit routing hints ("Reach for this FIRST when the
    user says continue…"), which is why they work.
-2. **A lean default tool list.** 54 tools makes an agent worse at choosing. The
+2. **A lean default tool list.** 53 tools makes an agent worse at choosing. The
    default registers 25. That is a selection decision, and it affects usage more
    than any listing.
 3. **The registries above.** Real distribution, one afternoon, done once.

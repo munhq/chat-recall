@@ -79,9 +79,15 @@ describe('entitlement resolver — the floor and the self-host grant', () => {
  */
 describe('advertised MCP tool count ↔ the registry', () => {
   const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+  // recall_help is excluded ON PURPOSE, matching the storefront's
+  // check-parity.mjs: it is a DIRECTORY of the other tools, not a capability,
+  // and the two checkers counting it differently made the README and the
+  // pricing site disagree by exactly one forever. The number a page quotes is
+  // what the product can DO.
   const registered = new Set(
     [...readFileSync(resolve(repoRoot, 'packages/cli/src/mcp.ts'), 'utf-8')
-      .matchAll(/name: '(recall_[a-z_]+)'/g)].map((m) => m[1]),
+      .matchAll(/name: '(recall_[a-z_]+)'/g)].map((m) => m[1])
+      .filter((n) => n !== 'recall_help'),
   ).size;
 
   test('the registry is non-trivial (guards a broken regex)', () => {
