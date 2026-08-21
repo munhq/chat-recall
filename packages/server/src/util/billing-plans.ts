@@ -111,6 +111,29 @@ function legacyCatalogue(): PlanDef[] {
   return [{ key: 'default', label: 'Subscription', priceId, seats: 'fixed' }];
 }
 
+/**
+ * Resolve a RECORDED plan string to its catalogue key.
+ *
+ * `planOf()` in routes/billing.ts records `metadata.plan` when checkout stamped
+ * it, and otherwise falls back to the subscription's raw Stripe PRICE ID — which
+ * is what happens for a subscription created in the Stripe dashboard, or a plan
+ * change made through the customer portal, neither of which re-stamps metadata.
+ *
+ * Everything downstream matched the plan by PREFIX ('team…', 'solo…'), so a
+ * plan recorded as `price_1Abc…` matched nothing and a PAYING tenant fell
+ * through to the free tier's features and meters. planGrantsTeam() already
+ * carried its own price-id lookup; planFeatures() and limitsFor() did not. One
+ * resolver, used by all three, so the three can never disagree again.
+ *
+ * Unknown strings are returned unchanged: the caller's fail-closed default still
+ * applies, which is correct for a plan we genuinely cannot identify.
+ */
+export function resolvePlanKey(plan: string | null | undefined): string | null {
+  if (!plan) return null;
+  const hit = planCatalogue().find((c) => c.priceId && c.priceId === plan);
+  return hit ? hit.key : plan;
+}
+
 function numOrUndef(v: unknown): number | undefined {
   const n = Number(v);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;

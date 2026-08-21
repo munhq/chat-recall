@@ -28,6 +28,7 @@
 import { hasFeature, licenseState, licensedSeats, seatCheck, type LicenseFeature } from './license.js';
 import { activatedEntitlement } from './licence-activation.js';
 import { billingEnabled } from './billing.js';
+import { resolvePlanKey } from './billing-plans.js';
 
 /**
  * The always-free capabilities. Never licensable, never gated, in any edition —
@@ -96,7 +97,10 @@ const PLAN_FEATURES: Array<{ prefix: string; features: readonly Feature[]; purch
  */
 export function planFeatures(plan: string | null | undefined): Set<Feature> {
   if (!plan) return new Set(FREE_FEATURES);
-  const p = plan.toLowerCase();
+  // A raw Stripe price id resolves to its catalogue key first — see
+  // resolvePlanKey(). Without this a paying tenant reads as unknown, and
+  // "unknown fails closed" then bills them for features they cannot use.
+  const p = (resolvePlanKey(plan) ?? plan).toLowerCase();
   const hit = PLAN_FEATURES.find((e) => p.startsWith(e.prefix));
   return new Set(hit ? hit.features : FREE_FEATURES);
 }
@@ -336,7 +340,7 @@ export function freeLimits(): PlanLimits {
  */
 export function limitsFor(plan: string | null | undefined): PlanLimits {
   if (!plan) return freeLimits();
-  const p = plan.toLowerCase();
+  const p = (resolvePlanKey(plan) ?? plan).toLowerCase();
   if (p.startsWith('free')) return freeLimits();
   // Any OTHER known plan is unmetered; unknown plans fail closed to the meters.
   return PLAN_FEATURES.some((e) => p.startsWith(e.prefix)) ? FULL_LIMITS : freeLimits();
