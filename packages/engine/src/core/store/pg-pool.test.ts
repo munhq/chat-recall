@@ -1,5 +1,5 @@
-import { describe, test, expect, vi } from 'vitest';
-import { applySchemaWithRetry } from './pg-pool.js';
+import { describe, test, expect, vi, afterAll } from 'vitest';
+import { applySchemaWithRetry, tenantQuery, openPgPool, closePgPools } from './pg-pool.js';
 
 /**
  * The schema bootstrap runs on every pod at boot. During a rolling deploy the
@@ -85,5 +85,37 @@ describe('applySchemaWithRetry', () => {
     }
     // Identical backoff on every run would mean the jitter is not applied.
     expect(seen.size).toBeGreaterThan(1);
+  });
+});
+
+
+/**
+ * `tenantQuery`'s lock budget — the other half of applySchemaWithRetry above.
+ *
+ * That helper makes the DDL side retry when a reader holds the table. This makes
+ * the READER side give up, which is what production needed: the metrics scrape
+ * holds ACCESS SHARE across five tables in one transaction while the migrate
+ * init container ALTERs them on every pod start, and `deadlock detected` landed
+ * on the scrape. Postgres picks the victim, so without a bound the migration can
+ * be the one that dies — and a failed migration crashloops the pod.
+ */
+const PG_URL = process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
+afterAll(async () => { if (PG_URL) await closePgPools(); });
+
+(PG_URL ? describe : describe.skip)('tenantQuery lock budget', () => {
+  test('lockTimeoutMs is applied inside the transaction, and only there', async () => {
+    const pool = await openPgPool(PG_URL);
+    const inside = await tenantQuery(pool, 'lock-budget-test', 'SHOW lock_timeout', [], { lockTimeoutMs: 250 });
+    expect(inside.rows[0].lock_timeout).toBe('250ms');
+    // SET LOCAL, so the next checkout of the same pooled connection is clean —
+    // a session-level SET would silently apply the budget to real traffic.
+    const after = await tenantQuery(pool, 'lock-budget-test', 'SHOW lock_timeout');
+    expect(after.rows[0].lock_timeout).not.toBe('250ms');
+  });
+
+  test('a plain call sets no budget at all', async () => {
+    const pool = await openPgPool(PG_URL);
+    const r = await tenantQuery(pool, 'lock-budget-test', 'SHOW lock_timeout');
+    expect(r.rows[0].lock_timeout).toBe('0');   // server default: wait forever
   });
 });
