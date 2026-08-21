@@ -13,7 +13,7 @@ describe('toolOfId — works for item ids (plans/tasks), not just sessions', () 
     // items re-ship on the first run after the bump.
     const seed = EXTRACTOR_VERSION;
     expect(seed < extractorVersionForId('agy_plan_x')).toBe(true);   // agy re-ships
-    expect(seed < extractorVersionForId('claude-plan')).toBe(false); // claude skips
+    expect(seed < extractorVersionForId('claude-plan')).toBe(true);  // claude re-ships too now
     expect(seed < extractorVersionForId('gemini_plan_x')).toBe(false);
   });
 });
@@ -22,21 +22,21 @@ describe('per-tool extractor version', () => {
   test('a tool-specific bump does NOT raise other tools (no blanket resync)', () => {
     const claude = extractorVersionForTool('claude');
     const agy = extractorVersionForTool('agy');
-    expect(claude).toBe(EXTRACTOR_VERSION);            // base — unchanged
+    expect(claude).toBe(EXTRACTOR_VERSION + 1);        // queued-prompt fix
     expect(extractorVersionForTool('gemini')).toBe(EXTRACTOR_VERSION);
     expect(extractorVersionForTool('opencode')).toBe(EXTRACTOR_VERSION);
-    expect(agy).toBe(EXTRACTOR_VERSION + 2);           // only agy bumped
+    expect(agy).toBe(EXTRACTOR_VERSION + 2);           // agy read the full log
   });
 
   test('derives the tool from the prefixed session id', () => {
     expect(extractorVersionForId('agy_abc')).toBe(EXTRACTOR_VERSION + 2);
     expect(extractorVersionForId('gemini_abc')).toBe(EXTRACTOR_VERSION);
-    expect(extractorVersionForId('f8268be2-uuid')).toBe(EXTRACTOR_VERSION); // claude, no prefix
+    expect(extractorVersionForId('f8268be2-uuid')).toBe(EXTRACTOR_VERSION + 1); // claude, no prefix
   });
 
   test('a v=BASE ledger row re-ships ONLY for the bumped tool', () => {
-    const rowV = EXTRACTOR_VERSION; // what every session recorded before the agy bump
-    expect(rowV < extractorVersionForTool('claude')).toBe(false); // skip
+    const rowV = EXTRACTOR_VERSION; // what every session recorded before the bumps
+    expect(rowV < extractorVersionForTool('claude')).toBe(true);   // re-ship
     expect(rowV < extractorVersionForTool('agy')).toBe(true);     // re-ship
   });
 });
