@@ -36,12 +36,22 @@
  *            `transcript.jsonl`. The plain file is only the last exchange, so
  *            most turns AND edits were dropped; the full log is the complete
  *            record. Re-ships agy sessions with their full conversation + edits.
+ *   claude +1 — read `queue-operation` records as prompts. A prompt typed WHILE
+ *            A TOOL RUNS is stored as {type:'queue-operation',
+ *            operation:'enqueue'}, never as a type:'user' record, so both the
+ *            event reader and the chunk parser dropped it: 12 of 61 prompts in
+ *            one measured session, and precisely the interruptions and
+ *            corrections. The same bump also covers the system-reminder gate,
+ *            which discarded a whole prompt when a reminder was appended to it.
+ *            Claude-only: backends/claude.ts and the Claude-gated
+ *            parsers/session.ts. Gemini/OpenCode/Codex/agy data is untouched.
  */
 const BASE_EXTRACTOR_VERSION = 2;
 
 /** Per-tool bumps ON TOP of the base. Key by AiTool id (the id prefix's tool). */
 const TOOL_EXTRACTOR_BUMP: Record<string, number> = {
   agy: 2,
+  claude: 1,
 };
 
 /** The tool a prefixed id belongs to (mirrors the ToolBackend prefixes). Works
