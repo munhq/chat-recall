@@ -41,6 +41,7 @@ import {
 } from '../imports.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { isServerMode } from '../util/mode.js';
+import { tenantLimits } from '../util/billing.js';
 
 const log = createLogger('summary-worker');
 
@@ -274,6 +275,17 @@ export async function generateMissingSummaries(
   opts: GenerateMissingOptions = {},
 ): Promise<GenerateMissingResult> {
   const limit = Math.max(1, opts.limit ?? 25);
+  const tenant = opts.tenant || process.env.CHAT_RECALL_TENANT || 'default';
+
+  // Free tenants never receive AI summaries — the summary is one of the two
+  // metered upstream costs (the hosted gateway bills per call). Checked BEFORE
+  // any claim, so a skipped tenant burns no lease and no LLM budget. On
+  // self-host tenantLimits() is FULL_LIMITS, so this is a no-op there. One
+  // debug line per sweep per tenant, never per session.
+  if (!(await tenantLimits(tenant)).summaries) {
+    log.debug({ tenant }, 'summary sweep: plan has no summaries — tenant skipped');
+    return { generated: 0, failed: 0, skipped: 0 };
+  }
 
   // Resolve the default summarizer once. If no provider is configured and the
   // caller didn't inject one, there's nothing to do.
@@ -289,7 +301,6 @@ export async function generateMissingSummaries(
 
   const concurrency = Math.max(1, opts.concurrency ?? 1);
   const timeoutMs = Math.max(1000, opts.timeoutMs ?? 120000);
-  const tenant = opts.tenant || process.env.CHAT_RECALL_TENANT || 'default';
   let generated = 0;
   let failed = 0;
   const skipped = 0;

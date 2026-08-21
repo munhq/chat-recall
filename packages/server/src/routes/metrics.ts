@@ -24,6 +24,7 @@ import { openPgPool, openPgPoolRo, tenantQuery } from '@chat-recall/engine/core/
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { latestPoolStats, queryCostSummary } from '../middleware/request-cost.js';
 import { edition } from '../util/mode.js';
+import { billingEnabled } from '../util/billing.js';
 import {
   registry,
   gUp, gSessions, gChunks, gRawSessions, gSecretFindings, gSecretFindingsVerified, gTenants,
@@ -227,6 +228,27 @@ interface BacklogSnapshot { pendingVectors: number; pendingSummaries: number; pe
 let backlogCache: BacklogSnapshot = { pendingVectors: 0, pendingSummaries: 0, pendingRealSummaries: 0, tenants: 0, at: 0 };
 let backlogRefreshing = false;
 
+/**
+ * Tenants whose pending work the workers will actually drain. The summary and
+ * vector-backfill workers skip non-entitled (free) tenants, so counting their
+ * backlog would make KEDA scale OVMS up for work nobody processes. Entitled =
+ * a live `entitlements` row (active|trialing, period unexpired). With billing
+ * off (self-host) the workers skip nobody, so every tenant counts — unchanged.
+ */
+async function backlogTenants(pool: any): Promise<string[]> {
+  if (!billingEnabled()) {
+    return (await pool.query('SELECT tenant FROM tenants')).rows.map((r: any) => r.tenant);
+  }
+  return (await pool.query(
+    `SELECT t.tenant FROM tenants t
+      WHERE EXISTS (SELECT 1 FROM entitlements e
+                     WHERE e.tenant = t.tenant
+                       AND e.status IN ('active','trialing')
+                       AND (e.current_period_end IS NULL OR e.current_period_end > $1))`,
+    [Date.now()],
+  )).rows.map((r: any) => r.tenant);
+}
+
 async function refreshBacklog(): Promise<void> {
   if (backlogRefreshing) return;
   backlogRefreshing = true;
@@ -238,7 +260,7 @@ async function refreshBacklog(): Promise<void> {
     // bounded count every BACKLOG_REFRESH_MS is cheap on the primary; a read
     // that reliably dies on the replica offloads nothing.
     const pool = await openPgPool();
-    const slugs: string[] = (await pool.query('SELECT tenant FROM tenants')).rows.map((r: any) => r.tenant);
+    const slugs: string[] = await backlogTenants(pool);
     const b = await collectBacklog(pool, slugs);
     backlogCache = { ...b, tenants: slugs.length, at: Date.now() };
   } catch (e) {

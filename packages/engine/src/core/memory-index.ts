@@ -393,9 +393,12 @@ export class MemoryIndex {
       // embed + vector-search + RRF-fuse; falsy = FTS only. Set true by the server
       // only for an explicit search. See store/vector.ts search(). Ignored here.
       semantic?: boolean;
+      // Recency floor (epoch ms): only chunks with mtime >= sinceMs match. The
+      // free tier's search window — undefined means no floor (paid/self-host).
+      sinceMs?: number;
     } = {}
   ): Promise<MemorySearchResult[]> {
-    const { topK = 20, sourceTypes, projectIdFilter } = options;
+    const { topK = 20, sourceTypes, projectIdFilter, sinceMs } = options;
 
     // ── Hybrid search ──────────────────────────────────────────────────
     // Always run FTS5 first. Reasons:
@@ -411,7 +414,7 @@ export class MemoryIndex {
     const ftsStore = await createStore();
     let ftsResults: MemorySearchResult[] = [];
     try {
-      ftsResults = await ftsStore.searchFTS(query, { topK, sourceTypes, projectIdFilter });
+      ftsResults = await ftsStore.searchFTS(query, { topK, sourceTypes, projectIdFilter, sinceMs });
     } finally {
       await ftsStore.close();
     }
@@ -451,6 +454,9 @@ export class MemoryIndex {
       if (safeProjectId) {
         filters.push(`project_id = "${safeProjectId}"`);
       }
+      if (sinceMs && Number.isFinite(sinceMs)) {
+        filters.push(`mtime >= ${Math.floor(sinceMs)}`);
+      }
       if (filters.length > 0 && searchQuery.where) {
         searchQuery = searchQuery.where(filters.join(' AND '));
       }
@@ -486,13 +492,13 @@ export class MemoryIndex {
           this.lastLanceError = msg2;
           log.error({ err: err2 }, 'Lance retry failed; falling back to FTS5');
           const store = await createStore();
-          const fts = await store.searchFTS(query, { topK, sourceTypes, projectIdFilter });
+          const fts = await store.searchFTS(query, { topK, sourceTypes, projectIdFilter, sinceMs });
           await store.close();
           return fts;
         }
       } else {
         const store = await createStore();
-        const fts = await store.searchFTS(query, { topK, sourceTypes, projectIdFilter });
+        const fts = await store.searchFTS(query, { topK, sourceTypes, projectIdFilter, sinceMs });
         await store.close();
         return fts;
       }

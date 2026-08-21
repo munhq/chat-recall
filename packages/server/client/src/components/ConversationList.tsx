@@ -44,6 +44,15 @@ interface ConversationListProps {
   /** Optional: pass true while the initial page is loading so we can
    *  render shimmer skeletons instead of an empty list. */
   loading?: boolean;
+  /** Free plan: the server searched only this many trailing days. Null/absent
+   *  when the search was unwindowed — nothing is said then. */
+  windowDays?: number | null;
+  /** Free plan: matching results OUTSIDE the window (stored and locked).
+   *  Null when the server did not attach the count; 0 when everything matched
+   *  inside the window. */
+  lockedOlder?: number | null;
+  /** Where the "unlock" offer goes (the account/plans view). */
+  onUnlock?: () => void;
 }
 
 export default function ConversationList({
@@ -57,6 +66,9 @@ export default function ConversationList({
   total,
   onLoadMore,
   loading,
+  windowDays,
+  lockedOlder,
+  onUnlock,
 }: ConversationListProps) {
   // Search results carry a relevance `score`; recent listings don't.
   const isSearch = results.some((r) => (r as any).score !== undefined);
@@ -224,6 +236,56 @@ export default function ConversationList({
             ))}
           </React.Fragment>
         ))}
+
+        {/* Free-plan window note — a quiet line under the results, never a
+            modal or a toast. The search covered only the last N days; matches
+            outside the window are stored and locked, and the count (when the
+            server attached it) is the offer: what you would see on upgrade.
+            States a fact of THIS result set, so it renders inside the list the
+            fact is about. Guarded on the prop alone, not on isSearch: the prop
+            only arrives while a query is active, and an EMPTY windowed result
+            set is exactly when "N older results are stored and locked" matters
+            most — isSearch is false then (no rows to carry scores). */}
+        {windowDays != null && (
+          <div
+            data-testid="search-window-note"
+            style={{
+              padding: '12px 18px 16px',
+              fontSize: 11.5,
+              lineHeight: 1.55,
+              color: 'var(--cr-fg-3)',
+              borderTop: '1px solid var(--cr-line-1)',
+              marginTop: 8,
+            }}
+          >
+            Searched your last {windowDays} day{windowDays === 1 ? '' : 's'}.{' '}
+            {lockedOlder != null && lockedOlder > 0
+              ? `${lockedOlder} older result${lockedOlder === 1 ? ' is' : 's are'} stored and locked.`
+              : lockedOlder === 0
+                ? ''
+                : 'Older history is stored and locked.'}
+            {onUnlock && (lockedOlder == null || lockedOlder > 0) && (
+              <>
+                {' '}
+                <button
+                  type="button"
+                  onClick={onUnlock}
+                  data-testid="search-window-unlock"
+                  style={{
+                    background: 'none',
+                    border: 0,
+                    padding: 0,
+                    font: 'inherit',
+                    color: 'var(--cr-brand-500)',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Unlock your full history →
+                </button>
+              </>
+            )}
+          </div>
+        )}
 
         {/* Pagination sentinel — fires onLoadMore when scrolled near the
             bottom. Invisible when collapsed; the footer below is the

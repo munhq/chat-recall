@@ -16,6 +16,7 @@
 import { createControlPlane, createVectorStore, getEmbedder } from '../imports.js';
 import type { EmbedderProvider } from '../imports.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
+import { tenantLimits } from '../util/billing.js';
 
 const log = createLogger('vector-backfill-worker');
 
@@ -58,6 +59,15 @@ export async function embedMissingVectors(opts: BackfillOptions = {}): Promise<B
   let rewindowed = 0;
   for (const tenant of tenants) {
     try {
+      // Free tenants' chunks are never embedded — embedding is the other metered
+      // upstream cost, and an internal cost control rather than a user-facing
+      // feature (see PlanLimits.embeddings). On self-host tenantLimits() is
+      // FULL_LIMITS, so this is a no-op there. One debug line per sweep per
+      // tenant, never per chunk.
+      if (!(await tenantLimits(tenant)).embeddings) {
+        log.debug({ tenant }, 'vector backfill: plan has no embeddings — tenant skipped');
+        continue;
+      }
       // createVectorStore is async and init()s the store internally — await it
       // (don't call init() again). embedMissing lives on the pg vector store.
       const vs = await createVectorStore(embedder, { tenant }) as unknown as {

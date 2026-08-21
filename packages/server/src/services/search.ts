@@ -61,7 +61,10 @@ export class SearchService extends SearchCore {
     projectIdFilter?: string,
     // Only an explicit search (Enter / Search button) asks for the semantic
     // tier; the debounced type-ahead leaves this false → FTS only, no embed.
-    wantSemantic = false
+    wantSemantic = false,
+    // Recency floor (epoch ms) — the free tier's search window. undefined =
+    // unwindowed; the route resolves it from tenantLimits().
+    sinceMs?: number
   ): Promise<SearchResult[]> {
     const idx = await this.index();
     const semantic = await this.useSemantic(wantSemantic);
@@ -70,6 +73,7 @@ export class SearchService extends SearchCore {
       sourceTypes: ['session'],
       projectIdFilter,
       semantic,
+      sinceMs,
     });
 
     // Enrich with metadata from cache (summaries, dates). Pre-fetch all cached
@@ -104,11 +108,12 @@ export class SearchService extends SearchCore {
     topK = 10,
     sourceTypes?: SourceType[],
     projectIdFilter?: string,
-    wantSemantic = false
+    wantSemantic = false,
+    sinceMs?: number
   ): Promise<MemorySearchResult[]> {
     const idx = await this.index();
     const semantic = await this.useSemantic(wantSemantic);
-    return await idx.search(await this.expandIfKeyword(query), { topK, sourceTypes, projectIdFilter, semantic });
+    return await idx.search(await this.expandIfKeyword(query), { topK, sourceTypes, projectIdFilter, semantic, sinceMs });
   }
 
   async getStatus() {

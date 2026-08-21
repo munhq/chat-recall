@@ -18,17 +18,33 @@ import { join } from 'node:path';
 let tmpDir: string;
 let app: Express;
 const origDataDir = process.env.CHAT_RECALL_DATA_DIR;
+const origStripe = process.env.STRIPE_SECRET_KEY;
+const TENANT = 'intents-test';
 beforeAll(async () => {
   tmpDir = mkdtempSync(join(tmpdir(), 'sync-intents-'));
   process.env.CHAT_RECALL_DATA_DIR = tmpDir;
+  // ENQUEUE is toolkit-gated (the free plan excludes it), so the harness runs
+  // as a cloud tenant on a live Team plan: billing on, an entitlement row in
+  // the hermetic control plane, and req.tenant pinned like tenantAuth would.
+  process.env.STRIPE_SECRET_KEY = 'sk_test_sync_intents';
+  const { createControlPlane } = await import('../imports.js');
+  const cp = await createControlPlane();
+  try {
+    await cp.setEntitlement(TENANT, { plan: 'team-monthly', status: 'active', currentPeriodEnd: Date.now() + 86_400_000 });
+  } finally { await cp.close(); }
+  const { clearEntitlementCache } = await import('../util/billing.js');
+  clearEntitlementCache();
   const syncIntentsRouter = (await import('./sync-intents.js')).default;
   app = express();
+  app.use((req, _res, next) => { (req as express.Request).tenant = TENANT; next(); });
   app.use(express.json());
   app.use('/api/sync-intents', syncIntentsRouter);
 });
 afterAll(() => {
   if (origDataDir === undefined) delete process.env.CHAT_RECALL_DATA_DIR;
   else process.env.CHAT_RECALL_DATA_DIR = origDataDir;
+  if (origStripe === undefined) delete process.env.STRIPE_SECRET_KEY;
+  else process.env.STRIPE_SECRET_KEY = origStripe;
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -45,6 +61,31 @@ describe('POST /api/sync-intents (validation)', () => {
     const res = await request(app).post('/api/sync-intents')
       .send({ kind: 'copy', artifactType: 'skill', name: 'x', fromTool: 'claude', toTool: 'claude' });
     expect(res.status).toBe(400);
+  });
+
+  test('a FREE tenant may not enqueue, but may still drain — the lapse contract', async () => {
+    // Enqueue executes the cross-tool toolkit sync, which the free plan
+    // excludes; before the gate, the only stop was requireEntitlement's blanket
+    // write-402, which the free tier removed. Draining stays open so a CLI can
+    // finish intents enqueued while the tenant was entitled.
+    const { createControlPlane } = await import('../imports.js');
+    const { clearEntitlementCache } = await import('../util/billing.js');
+    const cp = await createControlPlane();
+    try {
+      await cp.setEntitlement(TENANT, { currentPeriodEnd: 1000 });   // lapse it
+    } finally { await cp.close(); }
+    clearEntitlementCache();
+    const refused = await request(app).post('/api/sync-intents').send({ kind: 'sync_all' });
+    expect(refused.status).toBe(402);
+    expect(refused.body.feature).toBe('toolkit');
+    const drain = await request(app).get('/api/sync-intents/pending');
+    expect(drain.status).toBe(200);
+    // Restore the live plan for the tests that follow.
+    const cp2 = await createControlPlane();
+    try {
+      await cp2.setEntitlement(TENANT, { currentPeriodEnd: Date.now() + 86_400_000 });
+    } finally { await cp2.close(); }
+    clearEntitlementCache();
   });
 
   test('copy ACCEPTS the instructions (Rules/MD) artifact type', async () => {

@@ -58,6 +58,7 @@ export interface UpdateTeamTaskPatch {
   due?: number | null;
   blocks?: string[];
   blockedBy?: string[];
+  linkedSessionId?: string | null;
 }
 
 /**

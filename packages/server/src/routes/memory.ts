@@ -15,6 +15,8 @@ import { createStore, classifyChunk } from '../imports.js';
 import type { SourceType } from '../imports.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { TenantTtlCache } from '../util/tenant-cache.js';
+import { tenantLimits } from '../util/billing.js';
+import { countLockedOlder } from './search.js';
 
 const log = createLogger('memory');
 
@@ -58,19 +60,41 @@ router.post('/search', async (req, res) => {
       return res.status(400).json({ error: 'Query is empty after sanitization' });
     }
 
+    // Free-tier search window: a lapsed tenant searches only the last
+    // `searchWindowDays` days. null (paid, trialing, self-host) leaves the
+    // query untouched. See routes/search.ts for the same clamp.
+    const { searchWindowDays } = await tenantLimits(req.tenant || 'default');
+    const windowFloorMs = typeof searchWindowDays === 'number'
+      ? Date.now() - searchWindowDays * 86_400_000
+      : undefined;
+
     // `semantic` opts into the vector tier, matching /api/search. Without it
     // this route could never reach pgvector — the flag was missing all the way
     // down, so unified memory search was FTS-only even with an embedder
     // configured. Default stays false: only an explicit search asks to embed.
-    const results = await memoryService.search(
-      safeQuery,
-      topK,
-      sourceTypes as SourceType[] | undefined,
-      projectIdFilter ?? projectFilter,
-      semantic === true || semantic === 'true'
-    );
+    const [results, lockedOlder] = await Promise.all([
+      memoryService.search(
+        safeQuery,
+        topK,
+        sourceTypes as SourceType[] | undefined,
+        projectIdFilter ?? projectFilter,
+        semantic === true || semantic === 'true',
+        windowFloorMs
+      ),
+      windowFloorMs !== undefined
+        ? countLockedOlder(safeQuery, windowFloorMs, projectIdFilter ?? projectFilter, sourceTypes as SourceType[] | undefined)
+        : Promise.resolve(undefined),
+    ]);
 
-    res.json({ query, results, count: results.length });
+    res.json({
+      query,
+      results,
+      count: results.length,
+      // Only when windowed — the paid response shape is unchanged.
+      ...(windowFloorMs !== undefined
+        ? { window_days: searchWindowDays, locked_older: lockedOlder ?? 0 }
+        : {}),
+    });
   } catch (error) {
     log.error({ err: error }, 'memory search error');
     res.status(500).json({
@@ -212,9 +236,22 @@ router.get('/browse/:sourceType', async (req, res) => {
     const limit = Math.min(Math.max(parseInt(req.query.limit as string || '50', 10) || 50, 1), 500);
     const offset = Math.max(parseInt(req.query.offset as string || '0', 10) || 0, 0);
 
-    const items = await memoryService.listItems(sourceType, limit, offset);
+    // Free-tier list window: browse reaches back only `searchWindowDays` days.
+    // No cheap total exists here (listItems is page-only), so the response
+    // carries `window_days` for the banner but no locked_older count.
+    const { searchWindowDays } = await tenantLimits(req.tenant || 'default');
+    const windowFloorMs = typeof searchWindowDays === 'number'
+      ? Date.now() - searchWindowDays * 86_400_000
+      : undefined;
 
-    res.json({ items, count: items.length, sourceType });
+    const items = await memoryService.listItems(sourceType, limit, offset, windowFloorMs);
+
+    res.json({
+      items,
+      count: items.length,
+      sourceType,
+      ...(windowFloorMs !== undefined ? { window_days: searchWindowDays } : {}),
+    });
   } catch (error) {
     log.error({ err: error }, 'memory browse error');
     res.status(500).json({

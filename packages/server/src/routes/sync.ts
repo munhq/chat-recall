@@ -44,6 +44,7 @@ import {
 } from '../imports.js';
 import type { SourceType } from '../imports.js';
 import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js';
+import { syncAdmission, recordSyncUsage, recordSyncPresence } from '../util/billing.js';
 import { notifyVerifiedSecrets, type VerifiedHit } from '../services/notify.js';
 import { ingestGate } from '../middleware/rate-limit.js';
 import { chunksFromTurns, subagentChunks, type EnvSubagent } from '../services/session-chunks.js';
@@ -279,6 +280,27 @@ router.post('/', async (req, res) => {
   if (!gate.ok) {
     res.setHeader('Retry-After', String(Math.max(1, Math.ceil(gate.retryAfterMs / 1000))));
     return res.status(429).json({ error: 'ingest rate limit — retry shortly', retry_after_ms: gate.retryAfterMs });
+  }
+
+  // Entitlement + free-tier meters. This route authenticates its own device
+  // token and never passed through requireEntitlement, so before this check a
+  // lapsed tenant's CLI could push forever — "syncs pause" was enforced nowhere.
+  // syncAdmission answers with the canonical 402 payloads (quota, storage cap,
+  // unconfirmed email) so the CLI relays the same sentence the dashboard shows.
+  // The byte size is the serialized batch: what we store is what we meter.
+  const batchBytes = Buffer.byteLength(JSON.stringify(req.body ?? {}));
+  const admission = await syncAdmission(agent.tenant, batchBytes);
+  if (!admission.ok) {
+    // Release the concurrency slot ingestGate just acquired: this return runs
+    // BEFORE the try/finally below, so without it four refused batches from one
+    // over-quota tenant exhaust the global ingest semaphore for good.
+    gate.release();
+    // A refused batch still counts as PRESENCE: the retention sweep must be
+    // able to tell a free tenant whose syncs are refused (over cap — data is
+    // promised kept) from one who left. A zero-byte row marks the month
+    // without consuming quota.
+    try { await recordSyncPresence(agent.tenant); } catch { /* best effort */ }
+    return res.status(admission.status).json(admission.body);
   }
 
   try {
@@ -774,6 +796,10 @@ router.post('/', async (req, res) => {
     }));
 
     const { cliRelease } = await import('../util/cli-release.js');
+    // Meter AFTER the write: a batch the server failed to store consumes no
+    // quota. Never let the meter fail the sync that already succeeded.
+    try { await recordSyncUsage(agent.tenant, batchBytes); }
+    catch (err) { log.warn(`sync usage record failed for ${agent.tenant}: ${err instanceof Error ? err.message : String(err)}`); }
     res.json({ ok: true, ...result, tenant: agent.tenant, ack_at: new Date().toISOString(), cli: cliRelease() });
   } catch (e) {
     log.error({ err: e }, 'sync ingest error');
