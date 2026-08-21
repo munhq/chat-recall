@@ -136,6 +136,35 @@ describe('auto-tasks', () => {
     expect(st.lastRun?.at).toBeGreaterThan(0);
   });
 
+  test('a MEDIUM floor files the pri-2 findings a high floor left behind', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 2 }));
+    state.actions = [action('c', 0), action('h', 1), action('m', 2), action('l', 3)];
+    const r = await runAutoTasks('t1');
+    expect(r?.created).toBe(3);                       // critical + high + medium
+    expect(state.created).toEqual(['c', 'h', 'm']);
+  });
+
+  test('a CRITICAL floor on a repo with no criticals files nothing', async () => {
+    // Exactly the shape of the real tenant: pri 1 and 2 only, no pri 0 anywhere.
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 0 }));
+    state.actions = [action('h', 1), action('m', 2)];
+    const r = await runAutoTasks('t1');
+    expect(r?.created).toBe(0);
+  });
+
+  test('an out-of-range floor is clamped, not obeyed', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 99 }));
+    state.actions = [action('l', 3)];
+    expect((await runAutoTasks('t1'))?.created).toBe(1);   // clamped to 3 = low
+  });
+
+  test('the card title carries the canonical severity name', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 3 }));
+    state.actions = [action('m', 2)];
+    await runAutoTasks('t1');
+    expect(state.tasks.find((t) => t.linkedFindingId === 'm')?.title).toMatch(/^\[medium\]/);
+  });
+
   test('status counts eligible/filed and breaks findings down per project', async () => {
     state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 0 }));
     state.actions = [
@@ -143,7 +172,7 @@ describe('auto-tasks', () => {
       { ...action('c2', 0), projectId: 'chat-recall' },
       { ...action('h1', 1), projectId: 'chat-recall' },
       { ...action('c3', 0), projectId: 'munbot' },
-      { ...action('low', 3), projectId: 'munbot' },     // below the floor entirely
+      { ...action('low', 3), projectId: 'munbot' },     // counted, but below the floor
     ];
     state.tasks = [{ id: 't_a', title: 'has a card', status: 'todo', createdBy: 'auto-tasks', linkedFindingId: 'c1' }];
     const st = await autoTasksStatus('t1');
@@ -151,8 +180,8 @@ describe('auto-tasks', () => {
     // maxPri 0 → only criticals are eligible; c1 already has a card.
     expect(st.eligible).toBe(2);
     expect(st.byProject).toEqual([
-      { projectId: 'chat-recall', critical: 2, high: 1, eligible: 1 },
-      { projectId: 'munbot', critical: 1, high: 0, eligible: 1 },
+      { projectId: 'chat-recall', counts: { critical: 2, high: 1 }, eligible: 1 },
+      { projectId: 'munbot', counts: { critical: 1, low: 1 }, eligible: 1 },
     ]);
   });
 

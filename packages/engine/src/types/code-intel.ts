@@ -221,6 +221,28 @@ export interface CodeActionRow extends Required<Omit<CodeActionInput, never>> {
   updatedAt: number;
 }
 
+// ── Priority ↔ severity, in ONE place ───────────────────────────────────────
+/**
+ * The canonical reading of a code action's numeric `pri`.
+ *
+ * It was read two different ways: the task board called pri 1 "high" while the
+ * CLI's priToSeverity() called the same row "medium", so one finding wore two
+ * severities depending on which screen you were looking at. This is the single
+ * definition; both sides now import it.
+ *
+ * Note what the COLLECTOR actually emits: pri 0 only for critical security
+ * findings, pri 1 for high security and heavy duplication, pri 2 for everything
+ * structural. pri 3 exists so a policy can say "file everything" without
+ * pretending the collector ranks that finely.
+ */
+export const PRI_SEVERITY = ['critical', 'high', 'medium', 'low'] as const;
+export type PriSeverity = (typeof PRI_SEVERITY)[number];
+
+export function severityOfPri(pri: number): PriSeverity {
+  if (!Number.isFinite(pri) || pri <= 0) return 'critical';
+  return PRI_SEVERITY[Math.min(Math.floor(pri), PRI_SEVERITY.length - 1)];
+}
+
 // ── Deterministic ids ───────────────────────────────────────────────────────
 // Stable across re-index so findings/hotspots/actions upsert in place rather
 // than duplicate. Shared by the collector (builds rows) and the store (writes).

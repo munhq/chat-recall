@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   listTasks, createTask, updateTask, getTask, addTaskComment, getSessionOutcome,
-  getAutoTasksPolicy, setAutoTasksPolicy, runAutoTasksNow,
+  getAutoTasksPolicy, setAutoTasksPolicy, runAutoTasksNow, SEVERITY_BY_PRI,
   type TeamTask, type TeamTaskStatus, type TeamTaskComment, type SessionOutcomeResponse,
   type AutoTasksStatus,
 } from '../services/api';
@@ -21,9 +21,9 @@ const COLUMNS: Array<{ status: TeamTaskStatus; label: string }> = [
  * leaving a bracket in a sentence, and ranking on it puts the criticals at the
  * top of the column where a board is actually read.
  */
-const SEV_RANK: Record<string, number> = { critical: 0, high: 1 };
+const SEV_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 function splitSeverity(title: string): { sev: string | null; text: string } {
-  const m = /^\[(critical|high)\]\s*/i.exec(title);
+  const m = /^\[(critical|high|medium|low)\]\s*/i.exec(title);
   if (!m) return { sev: null, text: title };
   return { sev: m[1].toLowerCase(), text: title.slice(m[0].length) };
 }
@@ -100,7 +100,7 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
 
   /** Save a policy change, then re-read the state so the panel reports the
    *  server's answer rather than the optimistic guess. */
-  const saveAuto = async (next: { enabled: boolean; maxPri: 0 | 1 }) => {
+  const saveAuto = async (next: { enabled: boolean; maxPri: 0 | 1 | 2 | 3 }) => {
     if (!auto) return;
     const before = auto;
     setAuto({ ...auto, ...next });
@@ -328,7 +328,7 @@ function AutoPanel({
   busy: boolean;
   open: boolean;
   onOpen: () => void;
-  onSave: (p: { enabled: boolean; maxPri: 0 | 1 }) => void | Promise<void>;
+  onSave: (p: { enabled: boolean; maxPri: 0 | 1 | 2 | 3 }) => void | Promise<void>;
   onRun: () => void | Promise<void>;
   projFilter: string;
   onProject: (p: string) => void;
@@ -355,6 +355,17 @@ function AutoPanel({
       </div>
     );
   }
+
+  /** How many open findings sit at `sev` or above, across every project. */
+  const total = (sev: string): number => {
+    const floor = SEVERITY_BY_PRI.indexOf(sev as (typeof SEVERITY_BY_PRI)[number]);
+    if (floor < 0) return 0;
+    let n = 0;
+    for (const r of auto.byProject) {
+      for (let p = 0; p <= floor; p++) n += r.counts[SEVERITY_BY_PRI[p]] ?? 0;
+    }
+    return n;
+  };
 
   const ago = (ms: number) => {
     const m = Math.round((Date.now() - ms) / 60000);
@@ -415,16 +426,33 @@ function AutoPanel({
         <div className="tt-auto-body">
           <div className="tt-auto-set">
             <span className="tt-auto-lede">File findings at or above</span>
-            {([[0, 'Critical'], [1, 'Critical and high']] as Array<[0 | 1, string]>).map(([v, label]) => (
-              <label key={v} className="tt-radio">
-                <input
-                  type="radio" name="tt-maxpri" checked={auto.maxPri === v} disabled={busy || !auto.enabled}
-                  onChange={() => onSave({ enabled: auto.enabled, maxPri: v })}
-                />
-                {label}
-              </label>
-            ))}
+            <span className="tt-sevpick" role="group" aria-label="Severity floor">
+              {SEVERITY_BY_PRI.map((label, pri) => {
+                const n = total(label);
+                const on = auto.maxPri === pri;
+                return (
+                  <button
+                    key={label}
+                    className={`tt-sevopt${on ? ' tt-sevopt-on' : ''}`}
+                    disabled={busy || !auto.enabled}
+                    aria-pressed={on}
+                    onClick={() => onSave({ enabled: auto.enabled, maxPri: pri as 0 | 1 | 2 | 3 })}
+                  >
+                    {label}
+                    {/* What this choice would actually pick up. Choosing a floor
+                        blind is how you end up selecting one that files nothing. */}
+                    <i className="tt-sevopt-n">{n}</i>
+                  </button>
+                );
+              })}
+            </span>
           </div>
+          {total(SEVERITY_BY_PRI[auto.maxPri]) === 0 && auto.enabled && (
+            <div className="tt-auto-empty">
+              Nothing sits at <b>{SEVERITY_BY_PRI[auto.maxPri]}</b> or above, so this floor
+              files nothing. The counts above show what a lower floor would pick up.
+            </div>
+          )}
 
           {auto.byProject.length === 0 ? (
             /* EMPTY: says how to populate it, per the interactive-states rule. */
@@ -445,9 +473,12 @@ function AutoPanel({
                   >
                     <span className="tt-ptile-name">{r.projectId}</span>
                     <span className="tt-ptile-nums">
-                      <b className={r.critical ? 'tt-pcrit' : 'tt-pzero'}>{r.critical}</b> critical
-                      <i />
-                      <b className={r.high ? '' : 'tt-pzero'}>{r.high}</b> high
+                      {SEVERITY_BY_PRI.filter((sv) => (r.counts[sv] ?? 0) > 0).map((sv, i) => (
+                        <span key={sv} className="tt-ptile-n">
+                          {i > 0 && <i />}
+                          <b className={sv === 'critical' ? 'tt-pcrit' : undefined}>{r.counts[sv]}</b> {sv}
+                        </span>
+                      ))}
                     </span>
                     <span className="tt-ptile-foot">
                       {r.eligible > 0 ? `${r.eligible} waiting to file` : on ? 'Filtering the board' : 'All filed'}
@@ -614,15 +645,28 @@ const TT_CSS = `
   display: flex; flex-direction: column; gap: 12px; background: var(--cr-ink-0); }
 .tt-auto-set { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; font-size: 12.5px; }
 .tt-auto-lede { color: var(--cr-fg-3); }
-.tt-radio { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; color: var(--cr-fg-2); }
-.tt-radio input { accent-color: var(--cr-brand-500); }
+/* A segmented picker beats four radios here: the choice is ordinal, and each
+   option carries the count it would file, so picking one is not a guess. */
+.tt-sevpick { display: inline-flex; border: 1px solid var(--cr-line-1);
+  border-radius: var(--cr-radius-sm); overflow: hidden; }
+.tt-sevopt { display: inline-flex; align-items: baseline; gap: 5px; cursor: pointer;
+  padding: 5px 10px; background: var(--cr-ink-1); border: 0; font-family: inherit;
+  font-size: 12px; color: var(--cr-fg-3); border-right: 1px solid var(--cr-line-1);
+  text-transform: capitalize; }
+.tt-sevopt:last-child { border-right: 0; }
+.tt-sevopt:hover:not(:disabled) { color: var(--cr-fg-1); background: var(--cr-ink-2); }
+.tt-sevopt:disabled { opacity: 0.5; cursor: default; }
+.tt-sevopt-on { background: var(--cr-brand-surf); color: var(--cr-fg-1); font-weight: 600; }
+.tt-sevopt-n { font-style: normal; font-size: 10.5px; opacity: 0.75;
+  font-variant-numeric: tabular-nums; }
+.tt-ptile-n { display: inline-flex; align-items: baseline; gap: 4px; }
 .tt-auto-empty { font-size: 12.5px; color: var(--cr-fg-3); line-height: 1.55; }
 .tt-auto-empty code { background: var(--cr-ink-2); padding: 1px 5px;
   border-radius: var(--cr-radius-xs); font-size: 11.5px; }
 
 /* Findings per project as tiles, not a hairline-per-row table: a repo is a thing
    you click, and a border under every row is the laziest layout there is. */
-.tt-ptiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.tt-ptiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; }
 .tt-ptile { display: flex; flex-direction: column; gap: 4px; text-align: left; cursor: pointer;
   padding: 9px 11px; border: 1px solid var(--cr-line-1); border-radius: var(--cr-radius-md);
   background: var(--cr-ink-1); font-family: inherit;
@@ -632,8 +676,8 @@ const TT_CSS = `
 .tt-ptile:focus-visible { outline: 2px solid var(--cr-brand-500); outline-offset: 1px; }
 .tt-ptile-on { border-color: var(--cr-brand-line); background: var(--cr-brand-surf); }
 .tt-ptile-name { font-size: 12.5px; font-weight: 600; color: var(--cr-fg-1); overflow-wrap: anywhere; }
-.tt-ptile-nums { font-size: 11.5px; color: var(--cr-fg-3); display: flex; align-items: baseline; gap: 5px;
-  font-variant-numeric: tabular-nums; }
+.tt-ptile-nums { font-size: 11.5px; color: var(--cr-fg-3); display: flex; align-items: baseline;
+  gap: 5px; flex-wrap: wrap; font-variant-numeric: tabular-nums; }
 .tt-ptile-nums b { font-size: 15px; font-weight: 600; color: var(--cr-fg-1); }
 .tt-ptile-nums i { width: 1px; height: 10px; background: var(--cr-line-1); margin: 0 3px; }
 .tt-ptile-foot { font-size: 10.5px; color: var(--cr-fg-3); }
@@ -669,6 +713,8 @@ const TT_CSS = `
   border: 1px solid var(--cr-err-line); }
 .tt-sev-high { background: var(--cr-warn-surf, var(--cr-ink-3)); color: var(--cr-warn-500, var(--cr-fg-2));
   border: 1px solid var(--cr-warn-line, var(--cr-line-2)); }
+.tt-sev-medium, .tt-sev-low { background: var(--cr-ink-3); color: var(--cr-fg-3);
+  border: 1px solid var(--cr-line-1); }
 
 .tt-outcome { display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
   margin-bottom: 8px; padding: 5px 7px; border-radius: var(--cr-radius-sm);
