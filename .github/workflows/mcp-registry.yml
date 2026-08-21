@@ -36,6 +36,25 @@ jobs:
       - name: Login (GitHub Actions OIDC)
         run: ./mcp-publisher login github-oidc
 
+      # The registry VALIDATES that the npm version in server.json already
+      # exists, and this workflow and release-npm both fire on the same tag with
+      # no ordering between them. v0.5.5 lost that race: the registry answered
+      # 400 "version '0.5.5' was not found (status: 404)" while npm was still
+      # publishing. Wait for npm to serve the version instead of racing it.
+      - name: Wait for the npm version to be visible
+        run: |
+          VERSION=$(node -p "require('./server.json').version")
+          echo "waiting for chat-recall@$VERSION on npm"
+          for i in $(seq 1 30); do
+            if npm view "chat-recall@$VERSION" version >/dev/null 2>&1; then
+              echo "npm has $VERSION"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "npm never served $VERSION after 5 minutes" >&2
+          exit 1
+
       # From the repo root, where server.json lives. The manifest's versions
       # must match the npm release — release-npm.yml guards that pairing.
       #
