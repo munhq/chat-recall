@@ -240,10 +240,27 @@ export function codeHotspotId(projectId: string, file: string): string {
   return 'ch_' + shortHash([projectId, file].join('|'));
 }
 
+/**
+ * Titles carry COUNTS, and counts move. The collector writes things like
+ * "slice copy-pasted 29× (13 lines each)", so one edit turns 29 into 30 and the
+ * hash below changes — a new id for the same problem at the same place.
+ *
+ * That is not cosmetic. The task board links a card to a finding id, and closes
+ * the card when the id stops being reported. So a shifting count silently closed
+ * a card nobody had fixed and filed a near-identical replacement. Observed in
+ * prod: 10 cards filed at 17:32 and closed at 17:38, same findings, new numbers.
+ *
+ * Digits collapse to '#' for identity only. The stored title keeps its real
+ * numbers — this is what the row is KEYED by, not what anyone reads.
+ */
+function identityTitle(title: string): string {
+  return title.replace(/\d+/g, '#');
+}
+
 export function codeActionId(
   projectId: string,
   a: { category: string; title: string; loc: CodeActionLoc[] },
 ): string {
   const primary = a.loc[0] ? `${a.loc[0].file}:${a.loc[0].line ?? ''}` : '';
-  return 'ca_' + shortHash([projectId, a.category, a.title, primary].join('|'));
+  return 'ca_' + shortHash([projectId, a.category, identityTitle(a.title), primary].join('|'));
 }
