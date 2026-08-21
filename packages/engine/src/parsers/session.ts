@@ -343,6 +343,33 @@ export async function parseSessionFile(
     : [sessionPath];
 
   let userCount = 0;
+  /** Text of every prompt already recorded, so a prompt that appears both as a
+   *  queued record and as a user record is stored once. */
+  const seenPrompts = new Set<string>();
+  /**
+   * Record one typed prompt.
+   *
+   * Shared by the `user` records and the `queue-operation` records, because a
+   * prompt typed WHILE A TOOL RUNS is stored by Claude Code as
+   * `{type:'queue-operation', operation:'enqueue', content}` and never as a
+   * `user` record. Reading only `user` records dropped every such prompt — 12 of
+   * 61 in one measured session, and they are the interruptions and corrections,
+   * the highest-signal turns in the conversation.
+   */
+  const recordPrompt = (raw: string, line: number): void => {
+    if (userCount >= maxMessages) return;
+    // A system reminder is APPENDED to a real prompt, so drop the block and keep
+    // the words. Discarding the whole record loses the prompt with it.
+    const withoutReminders = raw.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '');
+    if (!withoutReminders.trim() || withoutReminders.trim().length <= 10) return;
+    const cleanedText = stripInjectedBanners(withoutReminders).trim();
+    if (cleanedText.length < 10) return;
+    if (seenPrompts.has(cleanedText)) return;
+    seenPrompts.add(cleanedText);
+    content.userMessages.push({ text: cleanedText, lineNumber: line, contentType: 'user' });
+    userCount++;
+    if (!content.firstPrompt) content.firstPrompt = cleanedText.slice(0, 1000);
+  };
   let assistantCount = 0;
   let toolCount = 0;
   let lineNum = 0;
@@ -436,23 +463,11 @@ export async function parseSessionFile(
           }
         }
         
-        // Skip system reminders, sidechain-injected task prompts, and very short messages
-        if (text && !text.includes('<system-reminder>') && text.trim().length > 10) {
-          // Strip status banners (MCP health, context-low, transient API errors)
-          // so they don't leak into summaries, search, or previews.
-          const cleanedText = stripInjectedBanners(text).trim();
-          if (cleanedText.length < 10) continue;
-
-          content.userMessages.push({
-            text: cleanedText,
-            lineNumber: lineNum,
-            contentType: 'user',
-          });
-          userCount++;
-
-          if (!content.firstPrompt) {
-            content.firstPrompt = cleanedText.slice(0, 1000);
-          }
+        if (text) recordPrompt(text, lineNum);
+      } else if (msgType === 'queue-operation') {
+        // 'enqueue' carries the text; 'remove' is the dequeue half and repeats it.
+        if (obj.operation === 'enqueue' && typeof obj.content === 'string') {
+          recordPrompt(obj.content, lineNum);
         }
       } else if (msgType === 'assistant') {
         const msg = obj.message as Record<string, unknown>;
