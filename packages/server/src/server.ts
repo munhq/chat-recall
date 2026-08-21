@@ -60,7 +60,7 @@ import installRouter from './routes/install.js';
 import { capabilities, isServerMode } from './util/mode.js';
 import { cliRelease } from './util/cli-release.js';
 import { generateMissingSummariesAllTenants, serverSummaryConfig } from './services/summary-worker.js';
-import { sweepSyntheticRetention } from './services/retention.js';
+import { sweepSyntheticRetention, sweepLapsedRetention, lapsedRetentionDays } from './services/retention.js';
 import { sweepTrialReminders } from './services/trial-reminders.js';
 import { embedMissingVectors, serverEmbedderConfigured } from './services/vector-backfill-worker.js';
 import { createLogger, setLogContextProvider } from '@chat-recall/engine/core/logger.js';
@@ -785,6 +785,11 @@ const httpServer = app.listen(PORT, HOST, () => {
       retentionInFlight = true;
       try {
         await sweepSyntheticRetention();
+        // Off unless LAPSED_RETENTION_DAYS is set, and report-only unless
+        // LAPSED_RETENTION_APPLY=1 as well. Two switches because this one
+        // deletes paying-customers-who-stopped-paying data, and a deploy must
+        // never be the thing that starts that.
+        if (lapsedRetentionDays() > 0) await sweepLapsedRetention();
       } catch (err) {
         log.error({ err }, 'synthetic retention sweep failed');
       } finally {
