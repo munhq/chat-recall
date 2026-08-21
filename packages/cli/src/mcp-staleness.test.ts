@@ -31,13 +31,13 @@ describe('stalenessBanner', () => {
   test('warns, dates it, and tells the agent what NOT to conclude', () => {
     const lapsed = Date.now() - 14 * DAY;
     const b = stalenessBanner({ entitled: false, status: 'canceled', periodEnd: lapsed })!;
-    expect(b).toContain('SYNC IS PAUSED');
+    expect(b).toContain('FREE PLAN');
     expect(b).toContain('subscription has lapsed');
     expect(b).toContain(new Date(lapsed).toISOString().slice(0, 10));
     expect(b).toContain('14 days ago');
-    expect(b).toContain('recent sessions are missing');
+    expect(b).toContain('older history is stored but locked');
     // The instruction that stops the actual harm.
-    expect(b).toMatch(/do not tell the user their work does not exist/i);
+    expect(b).toMatch(/do not tell the user their older work does not exist/i);
     // And the reassurance, so the agent does not escalate a billing state into
     // a data-loss story.
     expect(b).toContain('nothing has been deleted');
@@ -52,7 +52,7 @@ describe('stalenessBanner', () => {
 
   test('copes with no recorded period end', () => {
     const b = stalenessBanner({ entitled: false, status: 'canceled', periodEnd: null })!;
-    expect(b).toContain('SYNC IS PAUSED');
+    expect(b).toContain('FREE PLAN');
     expect(b).not.toContain('undefined');
     expect(b).not.toContain('NaN');
   });

@@ -104,6 +104,8 @@ export class SqliteStore implements StorageDriver {
   async topImportantChunks(...a: Args<'topImportantChunks'>) { return this.inner.topImportantChunks(...a); }
   async countItemChunks(...a: Args<'countItemChunks'>) { return this.inner.countItemChunks(...a); }
   async getFTSCount(...a: Args<'getFTSCount'>) { return this.inner.getFTSCount(...a); }
+
+  async approxStoredBytes(...a: Args<'approxStoredBytes'>) { return this.inner.approxStoredBytes(...a); }
   async countDistinctItemsMatching(...a: Args<'countDistinctItemsMatching'>) { return this.inner.countDistinctItemsMatching(...a); }
 
   // ── tombstones / purge ──

@@ -298,6 +298,23 @@ function AppInner() {
         // an offer. Only a visitor with NO workspace yet meets the gate — that
         // is first-run onboarding, handled in the catch below.
         setGate('ok');
+        // A full meter is only ever 402'd to the CLI's device-token calls, so
+        // the browser would never see the limitReached payload — derive it from
+        // the same numbers the gate enforces with and raise the notice locally.
+        if (e.usage && e.limits) {
+          const overQuota = e.limits.syncBytesPerMonth != null && e.usage.monthBytes >= e.limits.syncBytesPerMonth;
+          const overCap = e.limits.syncStorageBytes != null && e.usage.storedBytes >= e.limits.syncStorageBytes;
+          if (overQuota || overCap) {
+            window.dispatchEvent(new CustomEvent('cr:sync-limit', {
+              detail: {
+                kind: overCap ? 'sync_storage' : 'sync_quota',
+                used: overCap ? e.usage.storedBytes : e.usage.monthBytes,
+                limit: overCap ? e.limits.syncStorageBytes : e.limits.syncBytesPerMonth,
+                error: '',
+              },
+            }));
+          }
+        }
       })
       // "no team yet" → first-run onboarding via the Subscribe screen. Any other
       // error → don't lock the user out; the server keeps enforcing its gates.
@@ -375,6 +392,7 @@ function AppInner() {
   const [recentSessions, setRecentSessions] = useState<SessionInfo[]>([]);
   // Pagination state — drives the "load more" trigger in ConversationList.
   const [recentTotal, setRecentTotal] = useState(0);
+  const [recentWindow, setRecentWindow] = useState<{ days: number; lockedOlder: number } | null>(null);
   const [recentHasMore, setRecentHasMore] = useState(false);
   const [recentLoadingMore, setRecentLoadingMore] = useState(false);
   // Distinct from `recentLoadingMore`: true while the FIRST page (or a
@@ -507,6 +525,12 @@ function AppInner() {
         setRecentSessions(page.sessions);
         setRecentTotal(page.total);
         setRecentHasMore(page.hasMore);
+        // The feed is windowed server-side for free tenants. Without carrying
+        // that into the list, the truncation reads as data loss — the user
+        // scrolls, hits the end after N days, and nothing says why.
+        setRecentWindow(typeof page.windowDays === 'number'
+          ? { days: page.windowDays, lockedOlder: page.lockedOlder ?? 0 }
+          : null);
         setSearchResults([]);
         setMemoryResults([]);
         setRecentLoadingFirstPage(false);
@@ -1108,8 +1132,8 @@ function AppInner() {
                 total={recentTotal}
                 onLoadMore={loadMoreRecent}
                 loading={recentLoadingFirstPage && !query.trim()}
-                windowDays={query.trim() ? searchWindow?.days ?? null : null}
-                lockedOlder={query.trim() ? searchWindow?.lockedOlder ?? null : null}
+                windowDays={query.trim() ? searchWindow?.days ?? null : recentWindow?.days ?? null}
+                lockedOlder={query.trim() ? searchWindow?.lockedOlder ?? null : recentWindow?.lockedOlder ?? null}
                 onUnlock={() => setView('account')}
               />
               {selectedMemoryItem ? (

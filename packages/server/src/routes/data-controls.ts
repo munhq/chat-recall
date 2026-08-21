@@ -24,8 +24,8 @@
  * removed — without that, "delete" means "delete until the daemon notices".
  */
 import express from 'express';
-import { createStore, createControlPlane } from '../imports.js';
-import { currentUsageMonth } from '../util/billing.js';
+import { createStore } from '../imports.js';
+import { noteStorageWiped } from '../util/billing.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 
 const log = createLogger('data-controls');
@@ -138,15 +138,12 @@ router.post('/delete-all', express.json({ limit: '4kb' }), async (req, res) => {
         deleted++;
       }
     }
-    // The storage meter restarts with the data: "storage used" must not keep a
-    // tenant over the free-tier cap after they wiped everything the cap counted.
-    // The CURRENT month's row survives — it is the quota meter, and zeroing it
-    // would make delete-all + re-sync an infinite monthly quota. Partial
-    // deletes deliberately do not credit the meter (see resetSyncUsage).
-    if (req.tenant) {
-      const cp = await createControlPlane();
-      try { await cp.resetSyncUsage(req.tenant, currentUsageMonth()); } finally { await cp.close(); }
-    }
+    // The STORAGE meter measures reality, so the wipe corrects it by itself —
+    // this only busts the 10-minute cache, or an empty account keeps being
+    // refused for bytes that no longer exist until the TTL rolls. The monthly
+    // QUOTA is deliberately untouched: it meters traffic, and wipe + re-sync
+    // must not be an infinite month.
+    if (req.tenant) noteStorageWiped(req.tenant);
     log.warn({ deleted }, 'user deleted ALL their data');
     res.json({ deleted });
   } catch (e) {

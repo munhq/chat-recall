@@ -14,7 +14,7 @@
 import { runWithTenant } from '@chat-recall/engine/core/store/tenant-context.js';
 import { createStore, createControlPlane } from '../imports.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
-import { billingEnabled } from '../util/billing.js';
+import { billingEnabled, currentUsageMonth } from '../util/billing.js';
 
 const log = createLogger('retention');
 
@@ -162,11 +162,12 @@ export async function sweepLapsedRetention(
     // a cron. So a candidate is only sweepable when they have ALSO stopped
     // syncing: any metered bytes this month or last means the tenant is present,
     // and present tenants are never purged regardless of billing status.
+    // currentUsageMonth is THE bucket key — the same function that writes the
+    // rows. An inlined copy here would query keys nothing writes the moment
+    // the key format changes, and every free tenant would read as absent.
     const nowD = new Date(now);
-    const thisMonth = nowD.toISOString().slice(0, 7);
-    const lastMonth = new Date(Date.UTC(nowD.getUTCFullYear(), nowD.getUTCMonth() - 1, 1))
-      .toISOString().slice(0, 7);
-    const still: typeof candidates = [];
+    const thisMonth = currentUsageMonth(nowD);
+    const lastMonth = currentUsageMonth(new Date(Date.UTC(nowD.getUTCFullYear(), nowD.getUTCMonth() - 1, 1)));
     // Optional on the passed shape: a control plane without the meter cannot
     // prove presence, and the sweep already fails safe elsewhere (report-only
     // by default). Fakes and older planes simply skip the presence check.
@@ -175,17 +176,18 @@ export async function sweepLapsedRetention(
     // every batch refused, so no accepted bytes are ever recorded — but each
     // refused batch leaves a zero-byte presence row (recordSyncPresence). Bytes
     // would call that tenant absent and purge history the cap's own refusal
-    // message promises is kept.
-    const canMeter = typeof cp.hasSyncActivity === 'function';
-    for (const c of candidates) {
-      if (!canMeter) { still.push(c); continue; }
-      if (await cp.hasSyncActivity(c.tenant, [thisMonth, lastMonth])) {
+    // message promises is kept. Checked in parallel: the list is bounded by
+    // maxTenants, and N serialized round trips were pure added wall-clock.
+    if (typeof cp.hasSyncActivity === 'function') {
+      const present = await Promise.all(
+        candidates.map((c) => cp.hasSyncActivity(c.tenant, [thisMonth, lastMonth])),
+      );
+      candidates = candidates.filter((c, i) => {
+        if (!present[i]) return true;
         log.info({ tenant: c.tenant, status: c.status }, 'lapsed retention: skipped — tenant still syncs (free tier)');
-        continue;
-      }
-      still.push(c);
+        return false;
+      });
     }
-    candidates = still;
   } finally {
     await cp.close();
   }
