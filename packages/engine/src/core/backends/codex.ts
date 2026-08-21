@@ -256,7 +256,8 @@ export class CodexBackend implements ToolBackend {
   /**
    * Stream a Codex JSONL rollout into canonical events. Codex separates:
    *   - event_msg + payload.type='user_message'        → user
-   *   - response_item + payload.type='message'         → assistant_text
+   *   - response_item + payload.type='message'         → user OR assistant_text,
+ *                                                       by payload.role
    *   - response_item + payload.type='function_call'   → tool_use
    *   - response_item + payload.type='function_call_output' → tool_result
    *
@@ -322,6 +323,17 @@ export class CodexBackend implements ToolBackend {
 
       if (obj.type === 'event_msg' && payload.type === 'user_message') {
         const text = String(payload.message || '').trim();
+        if (text && !isCodexInjectedWrapper(text)) {
+          events.push({ kind: 'user', ts, tsIso, line: lineNum, text });
+        }
+      } else if (obj.type === 'response_item' && payload.type === 'message' && payload.role === 'user') {
+        // The OTHER place a prompt lives, and the only one in current rollouts.
+        // Prompts were read exclusively from event_msg/user_message above, while
+        // this branch handled role='assistant' only — so every Codex session
+        // extracted ZERO user turns. Measured on six real rollouts: 7 user
+        // records in one file, 0 events out. No prompts meant no markers, no
+        // first prompt, and nothing for recall_user_prompts to find.
+        const text = flattenContent(payload.content).trim();
         if (text && !isCodexInjectedWrapper(text)) {
           events.push({ kind: 'user', ts, tsIso, line: lineNum, text });
         }
