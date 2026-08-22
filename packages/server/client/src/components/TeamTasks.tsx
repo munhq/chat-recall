@@ -7,12 +7,30 @@ import {
 } from '../services/api';
 import { Button, Chip, Icon, Input } from './primitives';
 
+/**
+ * Who may move a card where.
+ *
+ * `done` is not a column a person drops into. A card asserts a problem exists in
+ * the code, so "done" asserts the code changed — the agent that did the work
+ * sets it through the MCP and attaches its session, and the board can then show
+ * the files, lines and commits behind the claim. Dragging proves nothing, and
+ * this board already carries dozens of "done" cards nobody ever worked.
+ *
+ * What a person CAN do is disagree: reject the card. That is a real verdict, it
+ * dismisses the underlying finding, and the auto-filer stops re-filing it.
+ *
+ * `blocked` is gone. Nothing in the product ever set it — not the filer, not the
+ * MCP, not one card on any board — so it was a column that could only ever be
+ * empty. Rows written before this still load; the type keeps the value.
+ */
 const COLUMNS: Array<{ status: TeamTaskStatus; label: string }> = [
   { status: 'todo', label: 'To do' },
   { status: 'in_progress', label: 'In progress' },
-  { status: 'blocked', label: 'Blocked' },
   { status: 'done', label: 'Done' },
+  { status: 'rejected', label: 'Rejected' },
 ];
+/** Columns a human may drag INTO, and pick in the per-card select. */
+const HUMAN_STATUSES: readonly TeamTaskStatus[] = ['todo', 'in_progress', 'rejected'];
 
 /**
  * Auto-filed cards carry their severity as a `[critical] `/`[high] ` title
@@ -211,8 +229,16 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
                 e.preventDefault();
                 setOverCol(null);
                 const id = dragId || e.dataTransfer.getData('text/plain');
-                if (id) void move(id, col.status);
                 setDragId(null);
+                if (!id) return;
+                if (col.status === 'done') {
+                  // Say why, instead of a silent no-op or a 409 from the server.
+                  setErr('A task is marked done by the work, not by hand. The agent that fixes it '
+                    + 'closes it and attaches its session, or it closes itself when a re-index stops '
+                    + 'reporting the finding. If it should not be worked at all, reject it.');
+                  return;
+                }
+                void move(id, col.status);
               }}
             >
               <header className="tt-col-head">
@@ -263,12 +289,19 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
                     <span className="tt-avatar" title={who(t.assigneeSub)}>{initials(t.assigneeSub)}</span>
                     {/* Keyboard and touch route: a board that ONLY moves by drag
                         is unusable on a phone and unreachable by keyboard. */}
-                    <select
-                      className="tt-sel-sm" value={t.status} aria-label={`Status of ${t.title}`}
-                      onChange={(e) => void move(t.id, e.target.value as TeamTaskStatus)}
-                    >
-                      {COLUMNS.map((c) => <option key={c.status} value={c.status}>{c.label}</option>)}
-                    </select>
+                    {t.status === 'done' ? (
+                      <span className="tt-donetag" title={t.linkedSessionId
+                        ? 'Closed by the session linked to this card'
+                        : 'Closed automatically: a re-index stopped reporting the finding'}>done</span>
+                    ) : (
+                      <select
+                        className="tt-sel-sm" value={t.status} aria-label={`Status of ${t.title}`}
+                        onChange={(e) => void move(t.id, e.target.value as TeamTaskStatus)}
+                      >
+                        {COLUMNS.filter((c) => HUMAN_STATUSES.includes(c.status))
+                          .map((c) => <option key={c.status} value={c.status}>{c.label}</option>)}
+                      </select>
+                    )}
                     {members.length > 0 && (
                       <select
                         className="tt-sel-sm" value={t.assigneeSub || ''} disabled={busy}
@@ -291,7 +324,10 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
 
               {items.length === 0 && (
                 <div className="tt-empty">
-                  {col.status === 'done' ? 'Nothing finished yet.' : 'Drop a card here.'}
+                  {col.status === 'done' ? 'Nothing finished yet.'
+                    : col.status === 'rejected' ? 'Reject a card to stop it coming back.'
+                    : col.status === 'in_progress' ? 'An agent claims a card here.'
+                    : 'Drop a card here.'}
                 </div>
               )}
             </section>
@@ -750,6 +786,8 @@ const TT_CSS = `
   display: inline-flex; align-items: center; justify-content: center;
   background: var(--cr-ink-3); color: var(--cr-fg-2); font-size: 9.5px; font-weight: 600;
   letter-spacing: 0.02em; }
+.tt-donetag { font-size: 11px; color: var(--cr-ok-500); border: 1px solid var(--cr-line-1);
+  padding: 2px 7px; border-radius: var(--cr-radius-xs); background: var(--cr-ink-1); }
 .tt-cmt { background: none; border: 0; cursor: pointer; color: var(--cr-fg-3);
   margin-left: auto; display: inline-flex; padding: 2px; border-radius: var(--cr-radius-xs); }
 .tt-cmt:hover { color: var(--cr-fg-1); }

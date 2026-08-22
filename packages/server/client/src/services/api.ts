@@ -2555,7 +2555,9 @@ export async function removeShare(projectId: string): Promise<void> {
 
 // ── Collaborative team tasks (Phase 3) ───────────────────────────────────
 
-export type TeamTaskStatus = 'todo' | 'in_progress' | 'blocked' | 'done';
+/** `rejected` is the human verdict; `done` is the machine's and needs a linked
+ *  session behind it. `blocked` is legacy — nothing ever wrote it. */
+export type TeamTaskStatus = 'todo' | 'in_progress' | 'blocked' | 'done' | 'rejected';
 export interface TeamTask {
   id: string; projectId: string; title: string; description: string;
   status: TeamTaskStatus; assigneeSub: string | null; createdBy: string;
