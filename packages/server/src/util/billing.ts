@@ -479,7 +479,7 @@ export async function collaborationOr402(res: Response, tenant: string): Promise
   res.status(402).json({
     ...featureRequired('team'),
     plan: plan ?? null,
-    hint: 'Solo self-hosting is free and unlimited. Collaboration needs the Team plan or a licence.',
+    hint: 'Solo self-hosting is free and unlimited, task board and Toolkit included. Only collaboration needs the Team plan or a licence.',
   });
   return false;
 }

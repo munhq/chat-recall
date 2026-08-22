@@ -2580,7 +2580,7 @@ export interface AutoTasksStatus extends AutoTasksPolicy {
 export async function getAutoTasksPolicy(): Promise<AutoTasksStatus> {
   const res = await fetchWithTimeout(`${API_BASE}/tasks/policy`);
   if (!res.ok) throw new Error(res.status === 402
-    ? 'The task board needs a plan that includes tasks.'
+    ? 'The task board needs a plan that includes tasks. It is free on self-hosted servers.'
     : `Failed to load the auto-file setting (HTTP ${res.status})`);
   const j = await res.json();
   return { lastRun: null, eligible: 0, filed: 0, byProject: [], ...j };

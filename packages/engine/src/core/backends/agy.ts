@@ -39,6 +39,7 @@ import {
   liveScanEditsFromEvents,
   replayFromEvents,
 } from '../generic-engine.js';
+import { flatString } from '../flat-string.js';
 
 const PREFIX = 'agy_';
 
@@ -140,7 +141,7 @@ export class AgyBackend implements ToolBackend {
             const content = obj.content;
             const match = content.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/);
             const rawText = match ? match[1].trim() : content.trim();
-            firstPrompt = rawText.slice(0, 200);
+            firstPrompt = flatString(rawText.slice(0, 200));
             break;
           }
         }

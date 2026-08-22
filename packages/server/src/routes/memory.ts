@@ -390,10 +390,22 @@ router.get('/wake-up', async (req, res) => {
       // session in chat-recall was told about munbot's backlog. Substring, not
       // equality: the filter is a loose name ("chat-recall") while a project id
       // is fully qualified ("git:github.com/munhq/chat-recall").
+      //
+      // A card with NO project stays visible under any filter. It is not some
+      // other repo's card either, and dropping it hid exactly the cards a person
+      // files by hand — `''.includes('chat-recall')` is false, so the previous
+      // version silently swallowed every unscoped card the moment a filter was
+      // supplied.
       const inScope = projectFilter
-        ? tasks.filter((t) => (t.projectId || '').toLowerCase().includes(projectFilter.toLowerCase()))
+        ? tasks.filter((t) => {
+          const pid = (t.projectId || '').toLowerCase();
+          return pid === '' || pid.includes(projectFilter.toLowerCase());
+        })
         : tasks;
-      const open = inScope.filter((t) => t.status !== 'done');
+      // "Open" must mean the same thing here as it does in recall_tasks, or one
+      // session sees two different backlog numbers in one payload. Rejected is
+      // closed: the user has already said no.
+      const open = inScope.filter((t) => t.status !== 'done' && t.status !== 'rejected');
       openTasks = {
         total: open.length,
         auto: open.filter((t) => t.linkedFindingId).length,

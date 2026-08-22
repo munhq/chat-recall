@@ -275,9 +275,6 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
                   <div className="tt-meta">
                     {t.linkedFindingId && <Chip kind="brand" size="sm">auto</Chip>}
                     {t.projectId && <Chip kind="neutral" size="sm">{t.projectId}</Chip>}
-                    {t.blockedBy.length > 0 && (
-                      <Chip kind="warn" size="sm">blocked by {t.blockedBy.length}</Chip>
-                    )}
                     {t.due != null && (
                       <span className={`tt-due${t.due < Date.now() ? ' tt-overdue' : ''}`}>
                         {new Date(t.due).toLocaleDateString()}
