@@ -1847,6 +1847,16 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
           `FTS5 chunks: ${status.totalChunks}`,
           `Raw archives: ${sync.rawArchived}`,
         ];
+        // "You are running an old CLI" had exactly one channel: a stderr line on
+        // CLI invocations. But `init` no longer installs the watch daemon, so a
+        // normal user runs the MCP server and nothing else — never sees that
+        // line, never self-updates (the updater lives in the daemon), and
+        // silently keeps a months-old collector. Say it where they actually are.
+        {
+          const { updateNotice } = await import('./update-notice.js');
+          const notice = updateNotice();
+          if (notice) lines.push('', `⚠ ${notice}`);
+        }
         if (sync.newestSessionAgeMs !== null) {
           const mins = Math.round(sync.newestSessionAgeMs / 60000);
           lines.push(`Freshness: newest synced session ${mins} min ago`);
@@ -4129,6 +4139,21 @@ function startBackgroundSync(): void {
   // watch daemon's 15-min heartbeat.
   setInterval(() => { void tick('changed'); }, SYNC_TICK_MS).unref();
   setTimeout(() => { void tick('full'); }, 15_000).unref();
+
+  // Keep the update probe warm and SAY it once per process. updateNotice()
+  // reads a cached file, so without something refreshing it an MCP-only user's
+  // cache is written by nobody and the warning never fires. The refresh itself
+  // is throttled to 6h inside refreshUpdateCheck().
+  const updateTick = async (): Promise<void> => {
+    try {
+      const { refreshUpdateCheck, updateNotice } = await import('./update-notice.js');
+      await refreshUpdateCheck();
+      const notice = updateNotice();
+      if (notice) console.error(`[mcp] ${notice}`);
+    } catch { /* never block or fail the server over a version check */ }
+  };
+  setTimeout(() => { void updateTick(); }, 20_000).unref();
+  setInterval(() => { void updateTick(); }, 6 * 60 * 60 * 1000).unref();
 }
 
 // ── Crash guards ────────────────────────────────────────────────────────
