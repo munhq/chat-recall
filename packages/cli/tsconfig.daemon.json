@@ -1,0 +1,24 @@
+{
+  // TYPE-CHECK THE DAEMON.
+  //
+  // packages/cli/tsconfig.json includes only "src/**/*", so auto-indexer/ — the
+  // entire watch daemon, the thing that runs on every user's machine all day —
+  // was never type-checked. esbuild bundles it without checking types, so an
+  // undefined identifier compiled cleanly and became a ReferenceError at
+  // runtime, inside a tick that only fires 90 seconds after start. Exactly that
+  // happened while adding the workspace filter: `homedir()` with no import,
+  // `tsc -b` green.
+  //
+  // Separate file rather than widening the include, because rootDir must stay
+  // ./src for the emitted layout the bin paths depend on. noEmit: this checks,
+  // it does not build — bundle.mjs still produces dist/watch.js.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "types": ["node"]
+  },
+  "references": [{ "path": "../engine" }],
+  "include": ["auto-indexer/**/*", "src/**/*"],
+  "exclude": ["node_modules", "dist", "src/**/*.test.ts"]
+}
