@@ -36,6 +36,10 @@ describe('codeindex prebuilt matrix', () => {
     ['arm64', 'linux', 'codeindex-aarch64-linux'],
     ['x64', 'darwin', 'codeindex-x86_64-macos'],
     ['arm64', 'darwin', 'codeindex-aarch64-macos'],
+    // Windows landed in v0.3.1. Its assets carry .exe; the others do not, and
+    // getting that wrong is a 404 at install time on someone else's machine.
+    ['x64', 'win32', 'codeindex-x86_64-windows.exe'],
+    ['arm64', 'win32', 'codeindex-aarch64-windows.exe'],
   ])('%s/%s resolves to %s and is accepted', (arch, platform, artifact) => {
     const r = as(arch, platform);
     expect(r.artifact).toBe(artifact);
@@ -53,13 +57,13 @@ describe('codeindex prebuilt matrix', () => {
     expect(as('arm64', 'darwin').artifact).not.toContain('darwin');
   });
 
-  test('Windows is refused honestly, and says how to proceed', () => {
-    // There genuinely is no Windows artifact in the release matrix. Refusing
-    // with a reason beats a 404 the user has to interpret.
+  test('Windows is supported as of v0.3.1, and its asset keeps the .exe', () => {
+    // It used to be refused because codeindex would not compile for Windows.
+    // It does now, so the refusal has to go — a stale allow-list is how macOS
+    // stayed dark for a whole release cycle.
     const r = as('x64', 'win32');
-    expect(r.reason).toMatch(/No prebuilt binary/);
-    expect(r.reason).toMatch(/build from source/i);
-    expect(r.artifact).toBe('codeindex-x86_64-windows');
+    expect(r.reason).toBeUndefined();
+    expect(r.artifact).toBe('codeindex-x86_64-windows.exe');
   });
 
   test('an unknown architecture is refused rather than guessed at', () => {
