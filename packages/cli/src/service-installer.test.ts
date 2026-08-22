@@ -47,3 +47,39 @@ describe('service-installer renders', () => {
     expect(plist).toContain('<string>com.example.foo</string>');
   });
 });
+
+describe('the Windows Scheduled Task command', () => {
+  const NODE = 'C:\\Program Files\\nodejs\\node.exe';
+  const WATCH = 'C:\\Users\\First Last\\AppData\\Roaming\\npm\\node_modules\\chat-recall\\dist\\watch.js';
+  const LOG = 'C:\\Users\\First Last\\.chat-recall\\watch.log';
+
+  test('redirects stdout and stderr to the log the CLI advertises', () => {
+    // systemd gets StandardOutput=append: and launchd gets StandardOutPath;
+    // the Scheduled Task had NO redirection, so every diagnostic was discarded
+    // while the CLI told the user to read a file that was never created. A
+    // crash-looping collector with no log cannot be diagnosed at all.
+    const cmd = renderWindowsTaskCommand(WATCH, NODE, 'chat-recall-watch', LOG);
+    expect(cmd).toContain('>>');
+    expect(cmd).toContain('2>&1');
+    expect(cmd).toContain(LOG);
+  });
+
+  test('paths with spaces stay quoted — Program Files and First Last', () => {
+    // Both of these are the DEFAULT on Windows, not edge cases.
+    const cmd = renderWindowsTaskCommand(WATCH, NODE, 'chat-recall-watch', LOG);
+    expect(cmd).toContain(`\\"${NODE}\\"`);
+    expect(cmd).toContain(`\\"${WATCH}\\"`);
+    expect(cmd).toContain(`\\"${LOG}\\"`);
+  });
+
+  test('the heap cap survives the wrapper', () => {
+    const cmd = renderWindowsTaskCommand(WATCH, NODE, 'chat-recall-watch', LOG);
+    expect(cmd).toContain('--max-old-space-size=1536');
+  });
+
+  test('without a log file it stays a bare invocation, not a broken redirect', () => {
+    const cmd = renderWindowsTaskCommand(WATCH, NODE);
+    expect(cmd).not.toContain('>>');
+    expect(cmd).toContain('--max-old-space-size=1536');
+  });
+});

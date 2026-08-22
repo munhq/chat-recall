@@ -25,7 +25,7 @@ import { execSync } from 'node:child_process';
 import { resolveOnPath, isOnPath } from './which.js';
 
 const CODEINDEX_REPO = 'munhq/codeindex';
-const CODEINDEX_VERSION = 'v0.1.0';
+const CODEINDEX_VERSION = 'v0.2.0';
 
 /** Where we install the binary. Aligns with codeindex's own install.sh. */
 export const CODEINDEX_INSTALL_DIR = join(homedir(), '.local', 'bin');
@@ -57,14 +57,24 @@ export function detectPlatform(): { artifact?: string; reason?: string } {
   const arch = process.arch;
   const platform = process.platform;
   const archMap: Record<string, string> = { x64: 'x86_64', arm64: 'aarch64' };
-  const platformMap: Record<string, string> = { linux: 'linux', darwin: 'darwin', win32: 'windows' };
+  // 'macos', not 'darwin' — that is what the release artifacts are called.
+  // The old value built the name codeindex-aarch64-darwin, which does not
+  // exist, so even a widened prebuilt list would have 404'd on every Mac.
+  const platformMap: Record<string, string> = { linux: 'linux', darwin: 'macos', win32: 'windows' };
   const a = archMap[arch];
   const p = platformMap[platform];
   if (!a || !p) {
     return { reason: `Unsupported platform: ${arch}-${platform}` };
   }
-  // Per the v0.1.0 release: only x86_64-linux is prebuilt today.
-  const prebuiltCombos = new Set(['x86_64-linux']);
+  // What v0.2.0 actually publishes. This said x86_64-linux only, pinned to a
+  // comment about v0.1.0, long after the release matrix grew — so every Mac,
+  // Intel and Apple Silicon alike, was told to install Zig and build from
+  // source, and got NO code intelligence at all: no findings, no hotspots, no
+  // actions, no security scan. On the largest developer platform this product
+  // has. Keep this in step with .github/workflows/release.yml in munhq/codeindex.
+  const prebuiltCombos = new Set([
+    'x86_64-linux', 'aarch64-linux', 'x86_64-macos', 'aarch64-macos',
+  ]);
   const artifact = `codeindex-${a}-${p}`;
   if (!prebuiltCombos.has(`${a}-${p}`)) {
     return {

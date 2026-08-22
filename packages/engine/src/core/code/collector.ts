@@ -203,21 +203,44 @@ export function isSecretRule(rule: string): boolean {
  * real repo like `.../mytmp`). Call on the trailing-slash-stripped path.
  */
 export function isJunkWorkspacePath(ws: string): boolean {
-  return /(^|\/)(scratchpad|\.cache|node_modules|\.git|tmp)(\/|$)|claude-1000/i.test(ws);
+  // Separator-agnostic: the boundary used to be '/' only, so on Windows
+  // C:\Users\x\AppData\Local\Temp\scratchpad matched nothing and the daemon
+  // code-indexed exactly the temp junk this exists to refuse.
+  const norm = ws.replace(/\\/g, '/');
+  return /(^|\/)(scratchpad|\.cache|node_modules|\.git|tmp)(\/|$)|claude-1000/i.test(norm);
 }
 
 
 export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
-  const ws = opts.workspace.replace(/\/+$/, '');
+  // Strip a trailing separator of EITHER kind: '/' only left 'C:\repo\' intact,
+  // and every prefix comparison below then failed on Windows.
+  const ws = opts.workspace.replace(/[/\\]+$/, '');
   const log = opts.log ?? (() => {});
   if (isJunkWorkspacePath(ws)) {
     throw new Error(`refusing to code-index a temp/scratchpad/cache path: ${ws}`);
   }
   const bin = opts.binPath ?? (await resolveCodeindexBin(opts.autoInstall ?? true));
   const projectId = resolveProjectId(ws).id || `path:${ws}`;
-  const wsPrefix = ws + '/';
+  // WORKSPACE-RELATIVE PATHS, ON EITHER SEPARATOR.
+  //
+  // This was `ws + '/'` compared with startsWith, so on Windows the prefix
+  // 'C:\repo/' matched no real path and rel() silently became the identity
+  // function. Three things broke at once, all silently:
+  //   - readFileSync(join(ws, rel)) got an absolute path joined onto ws and
+  //     threw, so complexity fell back to 1 for every file;
+  //   - tracked.has(file) compared an absolute Windows path against `git
+  //     ls-files` output, which is always forward-slash and relative, so EVERY
+  //     secret finding was dropped;
+  //   - the stored finding paths were absolute, leaking the developer's home
+  //     directory to the server.
+  //
+  // Compare normalised, and emit forward-slash relatives so a path means the
+  // same thing to the server whichever machine produced it.
+  const wsNorm = ws.replace(/\\/g, '/');
+  const wsPrefix = wsNorm + '/';
   const rel = (p: string) => {
-    let r = p.startsWith(wsPrefix) ? p.slice(wsPrefix.length) : p;
+    const n = p.replace(/\\/g, '/');
+    let r = n.startsWith(wsPrefix) ? n.slice(wsPrefix.length) : n;
     if (r.startsWith('./')) r = r.slice(2);
     return r;
   };

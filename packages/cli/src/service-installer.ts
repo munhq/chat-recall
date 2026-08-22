@@ -154,7 +154,15 @@ export function renderLaunchdPlist(watchJs: string, node: string, logFile: strin
 
 function installWindowsTask(watchJs: string, node: string, logFile: string): ServicePaths {
   const taskName = 'chat-recall-watch';
-  const tr = `\\"${node}\\" --max-old-space-size=1536 \\"${watchJs}\\"`;
+  // REDIRECT THE LOG. systemd gets StandardOutput=append: and launchd gets
+  // StandardOutPath, but the Scheduled Task had no redirection at all — so
+  // every diagnostic the daemon printed was discarded, while the CLI went on
+  // telling the user to read ~/.chat-recall/watch.log, a file that was never
+  // created. A crash-looping collector with no log is undiagnosable.
+  //
+  // schtasks /tr cannot express redirection itself, so wrap in cmd /c. The
+  // whole thing is one /tr argument, hence the escaped quotes.
+  const tr = `cmd /c \\"\\"${node}\\" --max-old-space-size=1536 \\"${watchJs}\\" >> \\"${logFile}\\" 2>&1\\"`;
   try {
     execSync(`schtasks /create /tn "${taskName}" /tr "${tr}" /sc onlogon /rl LIMITED /f`, { stdio: 'inherit' });
     // Start now too (best-effort — starts next logon if /run unsupported).
@@ -166,8 +174,10 @@ function installWindowsTask(watchJs: string, node: string, logFile: string): Ser
 }
 
 /** Render the schtasks /create command (pure — no exec). */
-export function renderWindowsTaskCommand(watchJs: string, node: string, taskName = 'chat-recall-watch'): string {
-  const tr = `\\"${node}\\" --max-old-space-size=1536 \\"${watchJs}\\"`;
+export function renderWindowsTaskCommand(watchJs: string, node: string, taskName = 'chat-recall-watch', logFile?: string): string {
+  const tr = logFile
+    ? `cmd /c \\"\\"${node}\\" --max-old-space-size=1536 \\"${watchJs}\\" >> \\"${logFile}\\" 2>&1\\"`
+    : `\\"${node}\\" --max-old-space-size=1536 \\"${watchJs}\\"`;
   return `schtasks /create /tn "${taskName}" /tr "${tr}" /sc onlogon /rl LIMITED /f`;
 }
 
