@@ -17,7 +17,7 @@
  * What remains here is everything provable from the product alone.
  */
 import { describe, test, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { planFeatures, FREE_FEATURES, SELFHOST_FREE_FEATURES } from './entitlements.js';
@@ -105,9 +105,17 @@ describe('advertised MCP tool count ↔ the registry', () => {
   // was the only accurate one and nothing noticed. It is documentation an agent
   // reads every session; a wrong number there is a wrong number in the model's
   // head.
+  //
+  // CLAUDE.md is OPTIONAL: .gitignore excludes it, so it exists on a developer's
+  // machine and never in CI. Checked when present, skipped when not — which is
+  // the right way round, because the drift happened locally and CI could never
+  // have seen it either way. Reading it unconditionally is what broke this
+  // build the first time.
   test.each(['README.md', 'server.json', 'smithery.yaml', 'docs/REGISTRIES.md', 'CLAUDE.md'])(
     '%s states the real count everywhere it states one', (file) => {
-      const found = [...readFileSync(resolve(repoRoot, file), 'utf-8')
+      const path = resolve(repoRoot, file);
+      if (!existsSync(path)) return;      // untracked local file — nothing to check
+      const found = [...readFileSync(path, 'utf-8')
         .matchAll(/(\d+)\s+(?:MCP\s+)?tools\b/g)]
         .map((m) => Number(m[1]))
         // Small numbers are other counts (the codeindex companion set of 4,
