@@ -12,6 +12,29 @@ Your coding agents each keep their own transcripts, in their own format, in thei
 
 That cross-tool part is the point. A single tool's built-in history stops at its own boundary; this does not.
 
+## See it work
+
+Every screen below is a real MCP call against a real server — the exact tool and
+arguments are shown above each response. Nothing is mocked, replayed or re-timed.
+
+**One memory, every tool.** Here **OpenCode** is asked about a **Claude Code**
+session: a different tool, a different transcript format, one index.
+
+![recall_smart_resume called from OpenCode with a Claude Code session id, returning that session's request, plan and completed work](docs/media/7-cross-claude.png)
+
+**Your assistant asks what you were doing, and picks the work back up.**
+
+![recall_smart_resume returning the pending work, touched files and token budget of a past session](docs/media/1-resume.png)
+
+**Every file a session touched, and by how much.**
+
+![recall_diff listing 28 files with per-file additions and deletions for one session](docs/media/4-diff.png)
+
+**Or just ask in plain English** — no tool names, no session ids. The agent picks
+the call itself:
+
+![Claude Code answering a question about a past session by calling chat-recall itself](docs/media/A-claude-code.gif)
+
 ## Install
 
 ```bash
