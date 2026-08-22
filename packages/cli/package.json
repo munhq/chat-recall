@@ -28,9 +28,10 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -b && node scripts/bundle.mjs && node scripts/postbuild.mjs",
+    "build": "tsc -b && tsc -p tsconfig.daemon.json && node scripts/bundle.mjs && node scripts/postbuild.mjs",
     "build:types": "tsc -b",
-    "auto-indexer": "tsx auto-indexer/indexer.ts"
+    "auto-indexer": "tsx auto-indexer/indexer.ts",
+    "typecheck:daemon": "tsc -p tsconfig.daemon.json"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
