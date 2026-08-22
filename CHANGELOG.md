@@ -4,6 +4,47 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.6] — 2026-08-22
+
+### Added
+
+- `init` now registers the MCP server in EVERY AI tool it detects, not just
+  Claude Code: `~/.codex/config.toml`, `~/.gemini/settings.json`,
+  `~/.config/opencode/opencode.json` and `~/.cursor/mcp.json` alongside
+  `~/.mcp.json`. It detected five tools and configured one, so a Codex user
+  installed cross-tool memory and found no recall tools inside Codex — the
+  promise failed at the only step the user cannot see. Each client is written in
+  its own format; the Codex TOML is spliced, so hand-written tables and comments
+  survive. `doctor` prints one line per tool, and re-running repairs a stale
+  entry instead of duplicating it.
+- Every tool now carries MCP annotations (`readOnlyHint`, `destructiveHint`,
+  `idempotentHint`, `title`). Without them a host cannot tell `recall_search`
+  from `recall_kg_invalidate`, so all 53 tools looked like potential writers and
+  every call needed a prompt. 14 tools declare that they write; 5 that they
+  overwrite.
+- A root `.claude-plugin/marketplace.json`, so
+  `/plugin marketplace add munhq/chat-recall` works. The plugin payload — six
+  skills plus the bundled MCP server — already existed with no manifest to
+  install it from.
+- `CHAT_RECALL_SERVER` + `CHAT_RECALL_TOKEN` authenticate with no credentials
+  file, and `Dockerfile.mcp` builds the MCP server as a container. A sandbox
+  cannot run `chat-recall login`, so both directory registries that build and
+  run a server got "run chat-recall login first" from every tool call.
+
+### Changed
+
+- A lapsed trial is now DORMANT rather than a windowed free plan: new sessions
+  stop syncing, and everything already synced stays fully searchable. The
+  previous shape cut the wrong axis — a seven-day search window demonstrates
+  only what `claude --continue` already does for free, and it bit the heaviest
+  users first. Pausing ingest strands nothing: the transcripts live on the
+  user's own disk, so `chat-recall sync --full` restores the gap on subscribing.
+  The meters moved to the no-card trial, the only unpaid plan that still
+  ingests.
+- Trial reminder emails are keyed 3 / 1 / 0 days remaining. At 7 / 2 / 0 — the
+  thresholds for a 14-day trial — the halfway nudge fired on signup day, because
+  the trial has been 7 days in production.
+
 ## [0.5.5] — 2026-08-21
 
 ### Fixed
