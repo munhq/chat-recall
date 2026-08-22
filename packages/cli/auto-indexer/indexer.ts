@@ -32,7 +32,8 @@
  */
 
 import chokidar from 'chokidar';
-import { dirname, basename, join } from 'path';
+import { dirname, basename, join, resolve, sep } from 'path';
+import { homedir } from 'os';
 
 import { claudeBackend, geminiBackend, opencodeBackend, codexBackend } from '@chat-recall/engine/core/backends/index.js';
 import { getDiaryDir } from '@chat-recall/engine/core/paths.js';
@@ -619,15 +620,52 @@ function discoverWorkspaces(): string[] {
   } catch { /* settings unreadable — no extra exclusions, personal-dir default still applies */ }
   const isExcluded = (p: string) => excluded.some((x) => p.includes(x));
 
-  return [...newest.entries()]
+  const candidates = [...newest.entries()]
     .filter(([p]) => !isExcluded(p))
     // Personal folders (Pictures/Music/Documents/…) are skipped by default —
     // opt a specific path back in via sync.includeProjects.
     .filter(([p]) => !isPersonalPath(p, includeProjects))
     .filter(([p]) => { try { return existsSync(p); } catch { return false; } })
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, CODE_INDEX_MAX)
-    .map(([p]) => p);
+    .filter(([p]) => isCodeWorkspace(p))
+    .sort((a, b) => b[1] - a[1]);
+
+  // Drop a directory that merely CONTAINS another candidate. A session whose
+  // cwd was ~/code/personal made that whole tree a candidate, so codeindex was
+  // handed the parent of twenty repos and spent 78 seconds on it before giving
+  // up — every 180 minutes, forever.
+  const roots = candidates.map(([p]) => p);
+  const notAnAncestor = ([p]: [string, number]) =>
+    !roots.some((other) => other !== p && other.startsWith(p.endsWith(sep) ? p : p + sep));
+
+  return candidates.filter(notAnAncestor).slice(0, CODE_INDEX_MAX).map(([p]) => p);
+}
+
+/**
+ * Is this directory actually a repository we can index?
+ *
+ * The log was full of `code intelligence: indexing /` and `indexing /tmp` and
+ * `indexing /home/adi/code/personal`, each costing a process spawn and up to
+ * 78 seconds before codeindex refused it — and each retried on the next sweep,
+ * forever, because nothing here filtered on anything but existsSync.
+ *
+ * A marker file at the path itself is the test. Not a walk upward: the point is
+ * to reject the PARENT of a repo, and a parent inherits nothing.
+ */
+const WORKSPACE_MARKERS = [
+  '.git', 'package.json', 'go.mod', 'Cargo.toml', 'pyproject.toml', 'setup.py',
+  'pom.xml', 'build.gradle', 'composer.json', 'Gemfile', 'mix.exs', 'deno.json',
+];
+
+function isCodeWorkspace(p: string): boolean {
+  // Filesystem roots and home directories are never a workspace; codeindex
+  // refuses them anyway, but only after we have paid for the spawn.
+  try {
+    const resolved = resolve(p);
+    if (resolved === sep || resolved === homedir() || dirname(resolved) === resolved) return false;
+  } catch { return false; }
+  return WORKSPACE_MARKERS.some((m) => {
+    try { return existsSync(join(p, m)); } catch { return false; }
+  });
 }
 
 async function codeIndexTick(): Promise<void> {
