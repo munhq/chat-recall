@@ -75,3 +75,70 @@ describe('MCP tool registry consistency', () => {
     expect(allowListed.length).toBe(defined.length);
   });
 });
+
+/**
+ * Annotations are how a host learns that 40 of these tools only read. Without
+ * them every call looks like it could mutate the user's memory, so the client
+ * asks before each one — and Glama's "Behavioral Transparency" dimension, 20%
+ * of its tool-quality score, has nothing to read.
+ */
+describe('MCP tool annotations', () => {
+  const setNames = (name: string) => {
+    const start = mcpSrc.indexOf(`const ${name} = new Set<string>([`);
+    expect(start, `${name} not found`).toBeGreaterThan(-1);
+    return matchAll(mcpSrc.slice(start, mcpSrc.indexOf(']);', start)), /'(recall_[a-z_]+)'/g);
+  };
+  const writes = setNames('WRITE_TOOLS');
+  const destructive = setNames('DESTRUCTIVE_TOOLS');
+  const idempotent = setNames('IDEMPOTENT_TOOLS');
+
+  test('both ListTools return paths annotate — lean and full', () => {
+    expect(mcpSrc).toContain('return { tools: all.map(annotate) }');
+    expect(mcpSrc).toContain('return { tools: lean.map(annotate) }');
+  });
+
+  test('no annotation set names a tool that does not exist', () => {
+    expect(writes.filter((t) => !defined.includes(t))).toEqual([]);
+    expect(destructive.filter((t) => !defined.includes(t))).toEqual([]);
+    expect(idempotent.filter((t) => !defined.includes(t))).toEqual([]);
+  });
+
+  test('destructive and idempotent only qualify tools that write', () => {
+    expect(destructive.filter((t) => !writes.includes(t))).toEqual([]);
+    expect(idempotent.filter((t) => !writes.includes(t))).toEqual([]);
+  });
+
+  test('the obvious writers are declared — a missed one is a false read-only claim', () => {
+    for (const t of ['recall_index', 'recall_kg_add', 'recall_diary_write', 'recall_set',
+      'recall_task_create', 'recall_decision_record']) {
+      expect(writes, `${t} mutates state and must not be marked read-only`).toContain(t);
+    }
+  });
+
+  test('search and show are never marked as writers', () => {
+    for (const t of ['recall_search', 'recall_show', 'recall_recent', 'recall_smart_resume']) {
+      expect(writes).not.toContain(t);
+    }
+  });
+});
+
+/**
+ * The published tool count must match the registry, by the SAME rule the site
+ * uses. `chat-recall-site/check-parity.mjs` counts `recall_*` definitions and
+ * excludes `recall_help`, because that tool is a directory of the others rather
+ * than a capability. Two repos quoting one number need one rule, so this test
+ * mirrors it — otherwise fixing the docs here breaks the deploy gate there.
+ */
+const ADVERTISED = defined.filter((t) => t !== 'recall_help').length;
+
+describe('published tool count', () => {
+  const repoRoot = join(here, '..', '..', '..');
+  for (const rel of ['README.md', 'CLAUDE.md', 'docs/REGISTRIES.md']) {
+    test(`${rel} states the advertised count`, () => {
+      const text = readFileSync(join(repoRoot, rel), 'utf-8');
+      const claims = [...text.matchAll(/(\d+)\s+(?:MCP\s+)?tools/g)].map((m) => Number(m[1]));
+      const wrong = claims.filter((n) => n > 40 && n !== ADVERTISED);
+      expect(wrong, `${rel} claims ${wrong.join(', ')} but ${ADVERTISED} are advertised`).toEqual([]);
+    });
+  }
+});
