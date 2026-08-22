@@ -76,6 +76,7 @@ import { extractorVersionForTool, extractorVersionForId, toolOfId, EXTRACTOR_VER
 import { SYNC_FIELDS } from '@chat-recall/engine/core/sync-fields.js';
 import { acquireIndexLock } from '@chat-recall/engine/core/index-lock.js';
 import { fetchWithTimeout } from './http.js';
+import { withSessionReadCache } from '@chat-recall/engine/core/live-session-scan.js';
 import '@chat-recall/engine/core/backends/index.js'; // register the tool backends
 
 // Lives under the data dir so CHAT_RECALL_DATA_DIR isolates credentials the
@@ -1928,6 +1929,10 @@ function collectDerived(
   const compute: Array<{ kind: string; mtime: number; data: unknown }> = [];
   let fullOutcome: ReturnType<typeof computeOutcome> | null = null;
 
+  // One read of this transcript instead of four. replay, computeOutcome (twice
+  // internally) and extractTurns each re-read the whole file; the scope holds
+  // exactly one session's text and drops it on the way out.
+  return withSessionReadCache(() => {
   for (const kind of COMPUTE_KINDS) {
     let data: unknown = null;
     try {
@@ -1985,6 +1990,7 @@ function collectDerived(
     compute,
     outcome_row: outcomeRow ? redactDeep({ ...outcomeRow, sessionId: undefined }, count) : null,
   };
+  });
 }
 
 /**

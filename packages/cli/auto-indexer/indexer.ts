@@ -54,6 +54,8 @@ import { runCollectorMigration } from '../src/collector-migrate.js';
 declare const __CLI_VERSION__: string;
 const CLI_VERSION = typeof __CLI_VERSION__ === 'string' ? __CLI_VERSION__ : '0.0.0';
 import { existsSync, readFileSync } from 'fs';
+import { flushLedger } from '../src/sync-ledger.js';
+import { readCollectorHealth, writeCollectorHealth, collectorHealthPath, type TargetHealth } from '@chat-recall/engine/core/collector-health.js';
 
 const DEBOUNCE_MS = 5000;  // coalesce a burst of file events into one flush
 
@@ -133,9 +135,12 @@ async function shipToServer(trigger: string): Promise<void> {
           + `${result.kgEntities} KG entities, ${result.kgTriples} KG triples`,
       );
     }
+    // A completed walk is the only thing that counts as "the collector works".
+    for (const server of syncTargetUrls()) noteSyncOutcome(server, true);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[${ts()}] Sync failed (${trigger}, will retry next flush): ${msg.slice(0, 200)}`);
+    for (const server of syncTargetUrls()) noteSyncOutcome(server, false, msg);
   } finally {
     syncInFlight = false;
   }
@@ -454,6 +459,61 @@ if (BOOT_CODE) {
   console.log(`[${ts()}] running bundle ${BOOT_CODE.path} (${BOOT_CODE.size} bytes)`);
 }
 
+// ── Collector health ─────────────────────────────────────────────────
+//
+// The daemon crash-looped for eight days without telling anyone: systemd
+// restarted it silently, the aborts went to a log nobody tails, and the only
+// symptom a user could see was a lag number in the web app they happened to
+// notice. This file is how the CLI, `doctor` and the MCP find out — a collector
+// that cannot ship has to say so where the user already looks.
+const PROC_START = Date.now();
+const targetHealth: Record<string, TargetHealth> = {};
+
+/** Recent process starts, so a crash loop is visible as a count. */
+function recentStarts(): number[] {
+  const prior = readCollectorHealth() as unknown as { starts?: number[] } | null;
+  const cutoff = Date.now() - 3_600_000;
+  return [...(prior?.starts ?? []), PROC_START]
+    .filter((t) => typeof t === 'number' && t > cutoff)
+    .filter((t, i, a) => a.indexOf(t) === i)
+    .sort((a, b) => a - b)
+    .slice(-20);
+}
+
+function publishHealth(): void {
+  const starts = recentStarts();
+  writeCollectorHealth(Object.assign({
+    v: 1 as const,
+    updatedAt: Date.now(),
+    startedAt: PROC_START,
+    restartsLastHour: starts.length,
+    targets: targetHealth,
+  }, { starts }));
+}
+
+/** The servers this machine syncs to, for health reporting. Best-effort. */
+function syncTargetUrls(): string[] {
+  try { return loadAllCredentials().map((c) => c.serverUrl); } catch { return []; }
+}
+
+/** Record one target's sync outcome for the health file. */
+function noteSyncOutcome(server: string, ok: boolean, err?: string): void {
+  const t = targetHealth[server] ?? { lastOkAt: null, failures: 0 };
+  if (ok) { t.lastOkAt = Date.now(); t.failures = 0; delete t.lastError; }
+  else { t.failures += 1; t.lastError = (err ?? 'unknown error').slice(0, 160); }
+  targetHealth[server] = t;
+  publishHealth();
+}
+
+publishHealth();
+{
+  const n = recentStarts().length;
+  if (n >= 3) {
+    console.error(`[${ts()}] WARNING: this collector has restarted ${n} times in the last hour.`
+      + ` Sync is probably falling behind. Health: ${collectorHealthPath()}`);
+  }
+}
+
 // Liveness heartbeat for the journal.
 setInterval(() => {
   // Before reporting liveness, make sure we are still the current code. Restarts
@@ -461,6 +521,9 @@ setInterval(() => {
   // interrupted pass re-ships rather than skipping.
   if (checkSelfRestart({ boot: BOOT_CODE, log: (m) => console.log(`[${ts()}] ${m}`) })) return;
   console.log(`[${ts()}] Heartbeat - ${pendingFileCount} pending file event(s), sync ${syncInFlight ? 'in-flight' : 'idle'}`);
+  // Refresh updatedAt, so "has not reported in 30 minutes" means the daemon is
+  // gone or wedged, rather than merely idle.
+  publishHealth();
 }, 60000);
 
 // Cross-tool sync intents (Model B): poll the server(s) for queued intents the
@@ -659,6 +722,9 @@ if (CODE_INDEX_ON) setTimeout(() => { void collectorMigrationOnce(); }, 150_000)
 // server-side), so shutdown is just: close watchers, flush, exit.
 function shutdown(signal: string): void {
   console.log(`[${ts()}] Received ${signal}, shutting down...`);
+  // Coalesced ledger acks must reach disk before we go, or the next start
+  // re-ships everything acked since the last flush.
+  try { flushLedger(); } catch (e) { console.error(`[${ts()}] ledger flush on shutdown failed: ${String(e)}`); }
   for (const watcher of Object.values(watchers)) {
     void watcher.close();
   }

@@ -39,6 +39,7 @@ import { sanitizeQuery } from '@chat-recall/engine/core/query-sanitizer.js';
 import { getWAL } from '@chat-recall/engine/core/write-ahead-log.js';
 import { reportClientEvent } from './client-events.js';
 import { isOnPath } from '@chat-recall/engine/core/which.js';
+import { readCollectorHealth, judgeHealth } from '@chat-recall/engine/core/collector-health.js';
 import {
   INSTRUCTION_KINDS, SEVERITIES, sevRank, taskBody,
   partitionRecs, actionToImprovement, recToImprovement, isOpenAction,
@@ -1772,8 +1773,22 @@ async function syncState(): Promise<SyncState | null> {
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const result = await dispatchTool(request);
   try {
-    const banner = stalenessBanner(await syncState());
-    if (!banner) return result;
+    // Two independent warnings share this one insertion point.
+    //
+    // The entitlement banner says "your plan limits what you can see". The
+    // health banner says "your collector stopped shipping" — a different and
+    // more urgent failure, and the one that went unreported for eight days
+    // while the daemon aborted 4,851 times. An agent that knows the history is
+    // stale can tell the user; an agent that does not will answer confidently
+    // from data that stopped growing.
+    const health = judgeHealth(readCollectorHealth());
+    const banners = [
+      health.ok ? null : `⚠ ${health.summary} Recent work may be missing from these answers.`
+        + ` Tell the user, and suggest \`chat-recall doctor\`.`,
+      stalenessBanner(await syncState()),
+    ].filter(Boolean) as string[];
+    if (banners.length === 0) return result;
+    const banner = banners.join('\n\n');
     const content = result.content;
     if (!Array.isArray(content) || !content.length) return result;
     // Prepended, not appended: an agent that truncates a long result must still

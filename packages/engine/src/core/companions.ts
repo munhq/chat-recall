@@ -22,6 +22,7 @@ import { existsSync, mkdirSync, statSync, chmodSync, unlinkSync, renameSync, cre
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
+import { resolveOnPath, isOnPath } from './which.js';
 
 const CODEINDEX_REPO = 'munhq/codeindex';
 const CODEINDEX_VERSION = 'v0.1.0';
@@ -83,12 +84,13 @@ export function checkCodeindexStatus(): CodeindexStatus {
     unsupportedReason: platform.reason,
   };
   // Look in $PATH first, then in our default install dir.
-  let foundPath: string | null = null;
-  try {
-    const out = execSync('command -v codeindex', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
-    if (out) foundPath = out;
-  } catch { /* not on PATH */ }
-  if (!foundPath && existsSync(CODEINDEX_BIN_PATH)) foundPath = CODEINDEX_BIN_PATH;
+  // resolveOnPath, not `command -v`: that is not a Windows command, so the
+  // probe threw and every Windows user was told codeindex was not installed.
+  let foundPath: string | null = resolveOnPath(CODEINDEX_BIN_NAME);
+  if (!foundPath) {
+    // Our own install dir, trying the platform's executable suffixes.
+    foundPath = resolveOnPath(CODEINDEX_BIN_PATH);
+  }
 
   if (foundPath) {
     status.installed = true;
@@ -111,12 +113,12 @@ export function checkCodeindexStatus(): CodeindexStatus {
  */
 async function downloadArtifact(artifact: string, dest: string): Promise<void> {
   // Prefer gh because it gives consistent UX, retries, and rate-limit handling.
-  const hasGh = (() => {
-    try { execSync('command -v gh', { stdio: 'ignore' }); return true; } catch { return false; }
-  })();
+  const hasGh = isOnPath('gh');
 
   if (hasGh) {
-    execSync(`gh release download ${CODEINDEX_VERSION} --repo ${CODEINDEX_REPO} -p ${artifact} -O ${dest}`, {
+    // dest is quoted: it sits under the user's home, and "C:\\Users\\First Last"
+    // or "/Users/First Last" would otherwise split into two arguments.
+    execSync(`gh release download ${CODEINDEX_VERSION} --repo ${CODEINDEX_REPO} -p ${artifact} -O "${dest}"`, {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 60_000,
     });

@@ -92,12 +92,100 @@ function load(): Ledger {
   return cache;
 }
 
-function persist(data: Ledger): void {
+function persistNow(data: Ledger): void {
   const path = ledgerPath();
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp`;
   writeFileSync(tmp, JSON.stringify(data));
   renameSync(tmp, path);
+  pendingWrite = false;
+}
+
+/**
+ * Coalesced write. The ledger is ONE file holding every target's rows, so a
+ * write costs the whole thing — 11.2 MB and 88,765 rows on this developer's
+ * machine — and it used to happen on every ack: per 25-session batch, per
+ * append, per empty tail, per unchanged skip, per null verdict, per 200-row
+ * field chunk. A walk of 15,718 sessions therefore wrote hundreds of megabytes
+ * and spent ~150 ms of JSON.stringify per write. Measured: 4-5 MB/s of physical
+ * writes sustained, around 400 GB a day, two thirds of it this file.
+ *
+ * Batching is safe because of what the ledger MEANS. A row records "the server
+ * acked this"; losing a recent row makes the next tick re-ship a session, which
+ * is the already-documented safe outcome of a crash mid-write. Losing the file
+ * would be bad, and that is unchanged: the write is still tmp+rename, so it is
+ * still atomic, and flushLedger() forces it out at the end of every walk and on
+ * exit. What we give up is durability of the last few seconds of acks. What we
+ * get back is two thirds of the daemon's disk traffic.
+ */
+const LEDGER_FLUSH_MS = 2000;
+let pendingWrite = false;
+let flushTimer: NodeJS.Timeout | null = null;
+
+function persist(data: Ledger): void {
+  pendingWrite = true;
+  if (flushTimer) return;
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    if (pendingWrite) { try { persistNow(data); } catch { /* retried on the next ack */ } }
+  }, LEDGER_FLUSH_MS);
+  // Never hold the process open for a ledger write; flushLedger() covers exit.
+  flushTimer.unref?.();
+}
+
+/**
+ * Drop rows for servers this machine no longer syncs to.
+ *
+ * Nothing ever removed a target key. `removeCredentials` rewrites
+ * credentials.json and leaves the ledger alone, so every server the user ever
+ * pointed at keeps its full row set forever — on this developer's machine four
+ * dead targets (an old hostname, two localhost ports, a stale LAN address) held
+ * 61,331 of 88,765 rows, about 7.6 MB, re-serialized on every single write.
+ *
+ * Orphans are RENAMED into a sidecar, never deleted. A user who logs out of a
+ * server and back in a week later would otherwise re-ship their whole history;
+ * keeping the rows makes that free, and the sidecar is a plain JSON file they
+ * can inspect or remove.
+ *
+ * Returns the number of targets moved out.
+ */
+export function pruneLedgerTargets(configuredServers: string[]): number {
+  const data = load();
+  const keep = new Set(configuredServers);
+  const orphans: Ledger = {};
+  for (const server of Object.keys(data)) {
+    if (!keep.has(server)) { orphans[server] = data[server]; delete data[server]; }
+  }
+  const names = Object.keys(orphans);
+  if (names.length === 0) return 0;
+
+  const path = ledgerPath();
+  const side = `${path}.orphans.json`;
+  try {
+    // Merge with any previous sidecar so a second prune cannot lose the first.
+    let prior: Ledger = {};
+    try { prior = JSON.parse(readFileSync(side, 'utf-8')) as Ledger; } catch { /* none yet */ }
+    writeFileSync(side, JSON.stringify({ ...prior, ...orphans }));
+  } catch {
+    // Could not park them — put them back rather than drop rows on the floor.
+    for (const n of names) data[n] = orphans[n];
+    return 0;
+  }
+  const rows = names.reduce((n, s) => n + Object.keys(orphans[s]).length, 0);
+  console.error(`[sync] ledger: parked ${rows} row(s) for ${names.length} server(s) no longer configured `
+    + `(${names.join(', ')}) in ${side}`);
+  persistNow(data);
+  return names.length;
+}
+
+/**
+ * Write any coalesced ledger changes out now. Call at the end of a sync walk and
+ * before exit — anywhere the next thing that happens might be a crash.
+ */
+export function flushLedger(): void {
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+  if (!pendingWrite || !cache) return;
+  persistNow(cache);
 }
 
 // ── Item-extractor versions (per server, per tool) ───────────────────────
@@ -360,6 +448,11 @@ export function forceFieldRescan(fieldName: string, server?: string): void {
 
 /** Test-only: drop the in-memory caches so a fresh file read happens next call. */
 export function _resetLedgerCacheForTests(): void {
+  // Flush BEFORE dropping the cache. Coalesced writes live only in memory until
+  // the timer fires, so discarding the cache would throw away acks that the
+  // caller believes are recorded — the exact bug the "persists across a fresh
+  // file read" test exists to catch.
+  flushLedger();
   cache = null;
   reconcileCache = null;
 }

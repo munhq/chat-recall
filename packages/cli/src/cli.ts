@@ -18,6 +18,7 @@ import { resolveProjectId } from '@chat-recall/engine/core/project-resolver.js';
 import { tierAll, type ScoreTier } from '@chat-recall/engine/core/score-tier.js';
 import { loadAllCredentials, type Credentials } from './sync-client.js';
 import { printUpdateNotice, updateNotice } from './update-notice.js';
+import { isOnPath } from '@chat-recall/engine/core/which.js';
 
 /**
  * Colour a relevance tier for the terminal.
@@ -255,7 +256,7 @@ program
 
       for (const cli of clis) {
         try {
-          execSync(`which ${cli.cmd}`, { stdio: 'pipe' });
+          if (!isOnPath(cli.cmd)) throw new Error('not on PATH');
           cli.available = true;
         } catch { /* not found */ }
       }
@@ -311,7 +312,7 @@ program
         // an un-installed dev tree. Re-running `init` REPAIRS a stale entry
         // (e.g. an old `node <checkout>/dist/mcp.js`) instead of skipping it.
         let mcpBinOnPath = false;
-        try { execSync('command -v chat-recall-mcp', { stdio: 'ignore' }); mcpBinOnPath = true; } catch { /* not installed */ }
+        mcpBinOnPath = isOnPath('chat-recall-mcp');
         const launch: { command: string; args?: string[] } = mcpBinOnPath
           ? { command: 'chat-recall-mcp' }
           : { command: 'node', args: [join(projectRoot, 'dist', 'mcp.js')] };
@@ -2516,6 +2517,29 @@ program
       return;
     }
 
+    // WINDOWS: refuse rather than install something that cannot run.
+    //
+    // The hooks are POSIX shell scripts. Claude Code on Windows runs a hook
+    // command through cmd.exe, which cannot execute a .sh — so installing here
+    // registered five hook events (Stop, PreCompact, UserPromptSubmit,
+    // SessionEnd, SessionStart) that errored on EVERY interaction, forever,
+    // while `doctor` cheerfully reported them installed and healthy. A broken
+    // hook on every turn is worse than no hook at all, and a wrong green check
+    // is worse than both.
+    if (process.platform === 'win32') {
+      console.log(chalk.yellow('Hooks are not installed on Windows.'));
+      console.log(chalk.dim('  They are POSIX shell scripts, and Claude Code runs hook commands through'));
+      console.log(chalk.dim('  cmd.exe, which cannot execute them. Registering them would put an error on'));
+      console.log(chalk.dim('  every turn instead of saving anything.'));
+      console.log(chalk.dim(''));
+      console.log(chalk.dim('  Everything else works: indexing, sync, search and the MCP server are'));
+      console.log(chalk.dim('  unaffected. Hooks only add automatic fact-saving and the wake-up bundle,'));
+      console.log(chalk.dim('  and you can get the same context by calling recall_wake_up from the agent.'));
+      console.log(chalk.dim(''));
+      console.log(chalk.dim('  Under WSL, run this from inside the WSL shell and it installs normally.'));
+      return;
+    }
+
     // Install: copy scripts and merge entries idempotently.
     mkdirSync(hooksDir, { recursive: true });
     copyFileSync(sourceSaveHook, installedSaveHook);
@@ -2540,7 +2564,9 @@ program
     }
 
     const stopEntry = { matcher: '', hooks: [{ type: 'command', command: installedSaveHook }] };
-    const precompactEntry = { matcher: '', hooks: [{ type: 'command', command: `${installedSaveHook} --precompact` }] };
+    // Quoted: the path contains the user's home directory, and a space in it
+    // ("C:/Users/First Last", "/Users/First Last") would split the command.
+    const precompactEntry = { matcher: '', hooks: [{ type: 'command', command: `"${installedSaveHook}" --precompact` }] };
     const resumeEntry = { matcher: '', hooks: [{ type: 'command', command: installedResumeHook }] };
     // The escalate script detaches its own background work and exits
     // immediately, so session end is never delayed by network writes.
