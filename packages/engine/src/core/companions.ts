@@ -22,10 +22,43 @@ import { existsSync, mkdirSync, statSync, chmodSync, unlinkSync, renameSync, cre
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { resolveOnPath, isOnPath } from './which.js';
 
 const CODEINDEX_REPO = 'munhq/codeindex';
 const CODEINDEX_VERSION = 'v0.2.0';
+
+/**
+ * sha256 of every published asset, pinned here rather than fetched.
+ *
+ * WHY PINNED AND NOT FETCHED. This downloads a ~53 MB executable and makes it
+ * runnable on a developer's machine. A checksum served from the same host as
+ * the binary proves nothing — whoever can swap one can swap the other. These
+ * were computed from the real assets and recorded in source, so they are
+ * verified once at review time and then again on every install, and a mirror,
+ * a proxy or a re-uploaded release serving different bytes gets refused.
+ *
+ * detector-install.ts already worked this way for gitleaks and trufflehog;
+ * codeindex was the one binary we fetched and executed unverified.
+ *
+ * WHEN BUMPING CODEINDEX_VERSION: download each asset, `sha256sum` it, and
+ * replace these. A stale hash fails closed — an install error, never a silent
+ * downgrade to unverified.
+ *
+ * Keyed by `${arch}-${platform}` exactly as detectPlatform() builds it.
+ */
+const CODEINDEX_SHA256: Record<string, string> = {
+  'x86_64-linux': 'b43a1de6e7b838ed769c0ee41a5ba3b8ab5c5afbcac8a1d63ccee3a55cbd3739',
+  'aarch64-linux': '3bfe847b4874be6a704c75fc041fe0fd719432df05621159dd7d4e7fabe82759',
+  'x86_64-macos': 'bf0b20f18f4b3af009415f72d6ef0272452a9a4b3d47fc159d68fcf71deb1c02',
+  'aarch64-macos': '39a4c9fd204fcca02c46eb628acadd77e80fb59769a8361d5e1279f7493684bd',
+};
+
+/** The expected digest for an artifact name, or null when we have none. */
+export function expectedCodeindexSha256(artifact: string): string | null {
+  // `codeindex-x86_64-linux` -> `x86_64-linux`
+  return CODEINDEX_SHA256[artifact.replace(/^codeindex-/, '')] ?? null;
+}
 
 /** Where we install the binary. Aligns with codeindex's own install.sh. */
 export const CODEINDEX_INSTALL_DIR = join(homedir(), '.local', 'bin');
@@ -181,6 +214,31 @@ export async function installCodeindex(opts: { force?: boolean } = {}): Promise<
   const tmpPath = `${CODEINDEX_BIN_PATH}.partial`;
   try {
     await downloadArtifact(status.artifactName!, tmpPath);
+
+    // VERIFY BEFORE IT CAN RUN. The order matters: hash first, chmod second,
+    // rename last, so bytes we have not vouched for are never executable and
+    // never occupy the real path.
+    //
+    // Only DOWNLOADS are checked. A binary already on PATH, or one the user
+    // built from source, is theirs — we did not fetch it and it is not ours to
+    // second-guess. Refusing those would break every contributor running a
+    // local build.
+    const expected = expectedCodeindexSha256(status.artifactName!);
+    if (!expected) {
+      throw new Error(
+        `No pinned checksum for ${status.artifactName} — refusing to install an unverified binary. `
+        + `Add its sha256 to CODEINDEX_SHA256 in companions.ts.`,
+      );
+    }
+    const actual = createHash('sha256').update(readFileSync(tmpPath)).digest('hex');
+    if (actual !== expected) {
+      throw new Error(
+        `Checksum mismatch for ${status.artifactName}.\n`
+        + `  expected ${expected}\n  actual   ${actual}\n`
+        + `Refusing to install. The release may have been re-uploaded, or something is serving different bytes.`,
+      );
+    }
+
     chmodSync(tmpPath, 0o755);
     // Atomic rename so a crashed download never leaves a half-baked binary.
     // Synchronous — must complete before checkCodeindexStatus() runs.
