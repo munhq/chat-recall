@@ -602,10 +602,24 @@ function secretsPath(): string {
 }
 
 /** Parse the 0600 secrets.env into an env-name → value map. */
+// mtime-keyed, like the settings cache. loadSecrets is called once per
+// loadSettings, which a sync walk does ~314,000 times, so this was a file read
+// and a line-parse per call for a file only a human edits.
+let _secretsCache: { mtimeMs: number; size: number; value: Record<string, string> } | null = null;
+
+/** Test-only: drop the secrets cache. */
+export function _resetSecretsCacheForTests(): void { _secretsCache = null; }
+
 function loadSecrets(): Record<string, string> {
   const out: Record<string, string> = {};
   const p = secretsPath();
   if (!existsSync(p)) return out;
+  let mtimeMs = -1, size = -1;
+  try { const st = statSync(p); mtimeMs = st.mtimeMs; size = st.size; } catch { /* fall through */ }
+  if (_secretsCache && _secretsCache.mtimeMs === mtimeMs && _secretsCache.size === size) {
+    // A shallow copy: callers must not be able to mutate the cached secrets.
+    return { ..._secretsCache.value };
+  }
   try {
     for (const line of readFileSync(p, 'utf-8').split('\n')) {
       const t = line.trim();
@@ -618,10 +632,12 @@ function loadSecrets(): Record<string, string> {
       if (k) out[k] = v;
     }
   } catch { /* unreadable → empty */ }
+  if (mtimeMs >= 0) _secretsCache = { mtimeMs, size, value: { ...out } };
   return out;
 }
 
 function writeSecrets(secrets: Record<string, string>): void {
+  _secretsCache = null;   // the file is about to change under the cache
   const p = secretsPath();
   mkdirSync(dirname(p), { recursive: true });
   const body = '# chat-recall secrets — NOT committed/synced. Mode 0600.\n' +
@@ -634,9 +650,50 @@ function writeSecrets(secrets: Record<string, string>): void {
 }
 
 /** Load settings from disk. Returns auto-detected defaults if the file doesn't exist or is unreadable. */
+/**
+ * mtime-keyed cache, the same shape as _sourceSettingsCache above.
+ *
+ * loadSettings was uncached, and a sync walk calls it about 314,000 times —
+ * every claudeProjectDirs() -> applyDecisions() -> homeDecision() chain reads
+ * it, and that chain runs several times per session across 15,700 sessions.
+ * Each call was two file reads and two JSON parses (settings.json plus
+ * secrets.env), for a file that changes when a human edits it.
+ *
+ * Keyed on mtime AND size, so an edit within the same millisecond that changes
+ * length is still picked up. The env-var overlay is re-applied on every hit
+ * rather than cached, because process.env can change under us and a stale
+ * credential is worse than a stale preference.
+ */
+/** Hydrate secret fields from process.env > secrets.env > legacy settings.json. */
+function applySecretOverlay(result: AppSettings): AppSettings {
+  const secrets = loadSecrets();
+  for (const { block, field, env } of SECRET_FIELDS) {
+    const blk = result[block] as unknown as Record<string, unknown>;
+    const value = process.env[env] || secrets[env] || (blk[field] as string | undefined);
+    if (value) blk[field] = value;
+  }
+  return result;
+}
+
+let _settingsCache: { mtimeMs: number; size: number; value: AppSettings } | null = null;
+
+/** Test-only: drop the settings cache. */
+export function _resetSettingsCacheForTests(): void { _settingsCache = null; }
+
 export function loadSettings(): AppSettings {
   const path = settingsPath();
   if (!existsSync(path)) return freshDefaults();
+
+  let mtimeMs = -1, size = -1;
+  try { const st = statSync(path); mtimeMs = st.mtimeMs; size = st.size; } catch { /* fall through */ }
+  if (_settingsCache && _settingsCache.mtimeMs === mtimeMs && _settingsCache.size === size) {
+    // Structured-clone the cached value: callers mutate what they get back
+    // (mergeSync/mergeTeam results are plain objects), and handing out the
+    // cached instance would let one caller's edit leak into every later read.
+    const cached = structuredClone(_settingsCache.value);
+    return applySecretOverlay(cached);
+  }
+
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf-8')) as Partial<AppSettings>;
     // Merge with defaults so older files (v1 — embedding+summary only) and
@@ -652,14 +709,10 @@ export function loadSettings(): AppSettings {
       sync:      mergeSync(base.sync,       parsed.sync),
       team:      mergeTeam(base.team,       parsed.team),
     };
-    // Hydrate secret fields from process.env > secrets.env > legacy settings.json.
-    const secrets = loadSecrets();
-    for (const { block, field, env } of SECRET_FIELDS) {
-      const blk = result[block] as unknown as Record<string, unknown>;
-      const value = process.env[env] || secrets[env] || (blk[field] as string | undefined);
-      if (value) blk[field] = value;
-    }
-    return result;
+    // Cache the parsed-and-merged form BEFORE the secret overlay, so secrets
+    // are never held in the cache and always come from the live environment.
+    if (mtimeMs >= 0) _settingsCache = { mtimeMs, size, value: structuredClone(result) };
+    return applySecretOverlay(result);
   } catch {
     // Corrupt file — fall back to defaults rather than crash.
     return freshDefaults();
@@ -672,6 +725,7 @@ export function loadSettings(): AppSettings {
  * backed up, shared, or synced without leaking credentials.
  */
 export function saveSettings(settings: AppSettings): void {
+  _settingsCache = null;   // the file is about to change under the cache
   // 1. Merge incoming keys into existing secrets.env (preserve unrelated ones).
   const secrets = loadSecrets();
   const stripped: AppSettings = {
