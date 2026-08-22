@@ -31,16 +31,21 @@ describe('stalenessBanner', () => {
   test('warns, dates it, and tells the agent what NOT to conclude', () => {
     const lapsed = Date.now() - 14 * DAY;
     const b = stalenessBanner({ entitled: false, status: 'canceled', periodEnd: lapsed })!;
-    expect(b).toContain('FREE PLAN');
+    expect(b).toContain('SYNCING IS OFF');
     expect(b).toContain('subscription has lapsed');
     expect(b).toContain(new Date(lapsed).toISOString().slice(0, 10));
     expect(b).toContain('14 days ago');
-    expect(b).toContain('older history is stored but locked');
+    // Reads are COMPLETE on a dormant account — the window this used to warn
+    // about was removed on 2026-08-22, and telling an agent history is locked
+    // now makes it invent a limit that does not exist.
+    expect(b).toContain('WHOLE synced history');
+    // The word "locked" survives only inside the instruction NOT to say it.
+    expect(b).not.toMatch(/history is locked|stored but locked|recent window|last 7 days/i);
     // The instruction that stops the actual harm.
-    expect(b).toMatch(/do not tell the user their older work does not exist/i);
-    // And the reassurance, so the agent does not escalate a billing state into
-    // a data-loss story.
-    expect(b).toContain('nothing has been deleted');
+    expect(b).toMatch(/do not tell the user their history is gone/i);
+    // What is genuinely absent, and the one command that fixes it.
+    expect(b).toMatch(/since the lapse/i);
+    expect(b).toContain('sync --full');
   });
 
   test('names the right reason for each status', () => {
@@ -52,7 +57,7 @@ describe('stalenessBanner', () => {
 
   test('copes with no recorded period end', () => {
     const b = stalenessBanner({ entitled: false, status: 'canceled', periodEnd: null })!;
-    expect(b).toContain('FREE PLAN');
+    expect(b).toContain('SYNCING IS OFF');
     expect(b).not.toContain('undefined');
     expect(b).not.toContain('NaN');
   });
