@@ -29,7 +29,16 @@ const CODEINDEX_VERSION = 'v0.2.0';
 
 /** Where we install the binary. Aligns with codeindex's own install.sh. */
 export const CODEINDEX_INSTALL_DIR = join(homedir(), '.local', 'bin');
-export const CODEINDEX_BIN_NAME = 'codeindex';
+/**
+ * Executability on Windows is the FILE EXTENSION, not a mode bit — spawn() of
+ * an extensionless path is ENOENT there. detector-install.ts already does this
+ * (exeSuffix); this file did not, so a Windows codeindex could never be
+ * resolved even once a build exists. There is no Windows build today (the
+ * cross-compile fails on POSIX signal and stdin APIs in codeindex itself), so
+ * this is groundwork rather than a live fix — but it is the half that belongs
+ * in this repo, and leaving it wrong guarantees a second bug report later.
+ */
+export const CODEINDEX_BIN_NAME = process.platform === 'win32' ? 'codeindex.exe' : 'codeindex';
 export const CODEINDEX_BIN_PATH = join(CODEINDEX_INSTALL_DIR, CODEINDEX_BIN_NAME);
 
 export interface CodeindexStatus {
