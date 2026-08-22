@@ -1,5 +1,11 @@
 # chat-recall
 
+[![npm](https://img.shields.io/npm/v/chat-recall?logo=npm&color=cb3837)](https://www.npmjs.com/package/chat-recall)
+[![npm downloads](https://img.shields.io/npm/dm/chat-recall?color=cb3837&label=downloads)](https://www.npmjs.com/package/chat-recall)
+[![MCP registry](https://img.shields.io/badge/MCP%20registry-io.github.munhq%2Fchat--recall-1f6feb)](https://registry.modelcontextprotocol.io/v0/servers?search=chat-recall)
+[![Smithery](https://img.shields.io/badge/Smithery-darkkraft%2Fchat--recall-7c3aed)](https://smithery.ai/server/darkkraft/chat-recall)
+[![Glama](https://img.shields.io/badge/Glama-munhq%2Fchat--recall-4f46e5)](https://glama.ai/mcp/servers/munhq/chat-recall)
+
 > One memory across every AI coding tool you use. Claude Code, Gemini CLI, Codex, OpenCode and Antigravity share a single searchable history — and the agent can search it itself.
 
 Your coding agents each keep their own transcripts, in their own format, in their own directory, and none of them can read another's. `chat-recall` indexes all of them into one place, redacts secrets on the way, and exposes the result to your agent through **53 MCP tools** so it can recall its own past work instead of you re-explaining it.
@@ -12,14 +18,31 @@ That cross-tool part is the point. A single tool's built-in history stops at its
 npx chat-recall init
 ```
 
-That indexes the transcripts already on your disk, detects which AI tools you have, and registers the MCP server in `~/.mcp.json`. Then:
+That indexes the transcripts already on your disk, detects which AI tools you have, and registers the MCP server **in each of their configs**:
+
+| Tool | File it writes |
+|---|---|
+| Claude Code | `~/.mcp.json` |
+| Codex | `~/.codex/config.toml` |
+| Gemini CLI | `~/.gemini/settings.json` |
+| OpenCode | `~/.config/opencode/opencode.json` |
+| Cursor | `~/.cursor/mcp.json` |
+
+It only touches a config whose tool is on this machine, it never overwrites an entry you curated by hand, and `chat-recall doctor` prints one line per tool so a missing registration is visible. Inside Claude Code you can install the skills and the MCP server together instead:
+
+```
+/plugin marketplace add munhq/chat-recall
+/plugin install chat-recall@chat-recall
+```
+
+Then:
 
 ```bash
 chat-recall search "that auth bug"      # search everything you have ever done
 chat-recall recent                      # what was I working on
 ```
 
-By default this syncs to the hosted server at [chatrecall.dev](https://chatrecall.dev), which starts with a 14-day trial that needs no card and is a paid subscription after that — see [pricing](https://chatrecall.dev/pricing/). To keep everything on your own machine instead, run the server yourself: that is **free for one person, forever**, with every feature and no licence key — the task board and Toolkit included — and a licence only buys collaboration: a second member, shared history, assigning work. See [Self-host](#self-host-the-server-docker-compose) below. Either way the CLI is the same binary and the same commands; only the server URL differs.
+By default this syncs to the hosted server at [chatrecall.dev](https://chatrecall.dev), which starts with a 7-day trial that needs no card and is a paid subscription after that — see [pricing](https://chatrecall.dev/pricing/). To keep everything on your own machine instead, run the server yourself: that is **free for one person, forever**, with every feature and no licence key — the task board and Toolkit included — and a licence only buys collaboration: a second member, shared history, assigning work. See [Self-host](#self-host-the-server-docker-compose) below. Either way the CLI is the same binary and the same commands; only the server URL differs.
 
 No API keys are required. Postgres full-text search is the default backend; vector search and AI summaries are upgrades, not prerequisites.
 
