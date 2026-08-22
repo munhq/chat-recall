@@ -132,9 +132,10 @@ services:
       # it the server falls back to the single STRIPE_PRICE_ID above, which can
       # sell exactly one plan at one seat. See util/billing-plans.ts.
       BILLING_PLANS: ${BILLING_PLANS:-}
-      # Team licence key, from contact@chatrecall.dev. Solo self-hosting needs nothing;
-      # collaboration (shared project history, the team board, per-member activity)
-      # checks this. Offline: an Ed25519 signature verified locally, so no licence
+      # Team licence key, from contact@chatrecall.dev. Solo self-hosting needs nothing
+      # at all — the whole single-user product, task board and Toolkit included;
+      # collaboration (a second member, shared project history, assigning work,
+      # per-member activity) checks this. Offline: an Ed25519 signature verified locally, so no licence
       # server is contacted and an air-gapped install works.
       CHAT_RECALL_LICENSE: ${CHAT_RECALL_LICENSE:-}
       # Only for a fork issuing its own keys for internal use, which ELv2 permits.

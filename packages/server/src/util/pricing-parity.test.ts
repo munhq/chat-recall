@@ -42,18 +42,20 @@ describe('entitlement resolver — the floor and the self-host grant', () => {
     expect([...SELFHOST_FREE_FEATURES].sort()).not.toEqual([...FREE_FEATURES].sort());
   });
 
-  test('free self-host withholds exactly the two single-player extras, and nothing else', () => {
-    // A DELIBERATE divergence, not drift. 'toolkit' and 'tasks' are single-player
-    // and could be free here on capability grounds, but the door opens one way:
-    // adding to a free tier later is a gift, removing is the rug-pull story. They
-    // are also what a one-seat self-host licence unlocks, which is what stops that
-    // licence being a payment for nothing.
+  test('free self-host withholds NOTHING that Solo has — every single-player feature is free', () => {
+    // Until 2026-08-22 this withheld 'tasks' and 'toolkit'. Both are
+    // single-player, so the gate contradicted the rule the pricing page states:
+    // you pay when a second person is involved. It also protected nothing —
+    // multi-user needs a real auth provider, which middleware/auth.ts refuses to
+    // start without a licence.
     //
-    // If this list ever grows beyond those two, the divergence has stopped being a
-    // decision and started being drift — which is what this test exists to catch.
+    // The assertion is now the strong one: free self-host IS the Solo set. If a
+    // feature ever appears here, someone has taken something away from a free
+    // tier, which is the one direction this door does not open — say so in the
+    // changelog and in the pricing copy before changing this line.
     const solo = new Set(planFeatures('solo-monthly'));
     const withheld = [...solo].filter((f) => !SELFHOST_FREE_FEATURES.includes(f)).sort();
-    expect(withheld).toEqual(['tasks', 'toolkit']);
+    expect(withheld).toEqual([]);
   });
 
   test('every paid tier is a superset of the one below', () => {

@@ -143,6 +143,15 @@ export interface ControlPlane {
   listMemberships(userSub: string): Promise<Membership[]>;
   roleOf(userSub: string, teamSlug: string): Promise<'owner' | 'member' | null>;
   createInvite(teamSlug: string, role: 'owner' | 'member', emailHint: string | null, createdBy: string): Promise<{ invite: string; expiresAt: number }>;
+  /**
+   * Resolve an invite WITHOUT consuming it, so the caller can check the target
+   * tenant's entitlement before adding a person to it. Redeeming is the moment
+   * a tenant gains a second member, and an invite outlives the entitlement that
+   * minted it — a lapsed licence or a cancelled subscription left every
+   * outstanding invite redeemable. Same validity rules as redeemInvite: unused
+   * and unexpired, or null.
+   */
+  peekInvite(rawInvite: string): Promise<{ team_slug: string; role: 'owner' | 'member' } | null>;
   redeemInvite(userSub: string, email: string | null, rawInvite: string): Promise<Membership | null>;
   listMembers(teamSlug: string): Promise<TeamMember[]>;
 
@@ -480,6 +489,13 @@ class SqliteControlPlane implements ControlPlane {
       `INSERT INTO cp_invites (token_hash, team_slug, role, email_hint, created_by, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
     ).run(sha256(token), teamSlug, role, emailHint, createdBy, expiresAt);
     return { invite: token, expiresAt };
+  }
+
+  async peekInvite(rawInvite: string): Promise<{ team_slug: string; role: 'owner' | 'member' } | null> {
+    const inv = this.db.prepare(
+      `SELECT team_slug, role FROM cp_invites WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?`,
+    ).get(sha256(rawInvite), Date.now()) as { team_slug: string; role: 'owner' | 'member' } | undefined;
+    return inv ?? null;
   }
 
   async redeemInvite(userSub: string, email: string | null, rawInvite: string): Promise<Membership | null> {
@@ -902,6 +918,14 @@ class PgControlPlane implements ControlPlane {
       [sha256(token), teamSlug, role, emailHint, createdBy, expiresAt],
     );
     return { invite: token, expiresAt };
+  }
+
+  async peekInvite(rawInvite: string): Promise<{ team_slug: string; role: 'owner' | 'member' } | null> {
+    const inv = (await this.q(
+      `SELECT team_slug, role FROM invites WHERE token_hash = $1 AND used_at IS NULL AND expires_at > $2`,
+      [sha256(rawInvite), Date.now()],
+    ))[0];
+    return inv ? { team_slug: inv.team_slug, role: inv.role } : null;
   }
 
   async redeemInvite(userSub: string, email: string | null, rawInvite: string): Promise<Membership | null> {

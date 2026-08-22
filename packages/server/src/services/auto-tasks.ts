@@ -156,9 +156,17 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
       // CLOSE sweep: a card whose finding is gone (fixed and re-indexed, or
       // dismissed) has served its purpose. Only cards this service created
       // (createdBy check) and only open ones — a human's manual state wins.
+      //
+      // 'rejected' MUST be excluded, not just 'done'. Rejecting a card dismisses
+      // its underlying action, which removes it from listCodeActions('suggested')
+      // above, which puts it outside stillOpen — so without this guard the very
+      // next run flips the card the user rejected to 'done' and comments that it
+      // closed itself. The machine would overwrite the human verdict, silently,
+      // and rejection is the ONE verdict that is the human's alone to give.
       const stillOpen = new Set(open.map((a) => a.id));
+      const CLOSED: ReadonlySet<string> = new Set(['done', 'rejected']);
       for (const t of existing) {
-        if (t.createdBy !== 'auto-tasks' || t.status === 'done') continue;
+        if (t.createdBy !== 'auto-tasks' || CLOSED.has(t.status)) continue;
         if (t.linkedFindingId && !stillOpen.has(t.linkedFindingId)) {
           await store.updateTeamTask(t.id, { status: 'done' });
           await store.addTeamTaskComment(t.id, 'auto-tasks', 'Closed automatically: the finding is no longer reported.');

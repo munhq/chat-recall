@@ -122,27 +122,34 @@ export function planFeatures(plan: string | null | undefined): Set<Feature> {
  *     has budget. identityLimit() already caps unlicensed self-host at one
  *     person, so this boundary is people, not machines.
  *
- *   - 'toolkit' and 'tasks' — in the hosted SOLO set, deliberately NOT in the free
- *     self-host set below. On capability grounds both are single-player and could
- *     sit here; the reason to withhold them is commercial, and it turns on the
- *     fact that this door only opens one way. Adding a feature to a free tier
- *     later is a gift nobody objects to. Taking one away is the open-core
- *     rug-pull story. So they stay out until there is a reason to move them,
- *     which keeps that option alive. A free self-hoster having less than a PAYING
- *     cloud customer needs no defence.
- *
- *     This is also what makes a ONE-seat self-host licence honest: without these
- *     two it granted 'team' to a deployment capped at one identity — nobody to
- *     collaborate with, nothing gained, money taken.
  *   - 'sso' and 'audit' — enterprise procurement features.
  *   - Reselling — Elastic License 2.0 forbids offering this as a hosted service,
  *     which is the actual moat. A $15 licence was never the thing stopping a
  *     competitor.
  *
- * The hosted SaaS is unaffected: it bills per plan and never reads this.
+ * 'toolkit' and 'tasks' USED TO BE WITHHELD HERE, on commercial grounds rather
+ * than capability grounds, and they were moved in on 2026-08-22. Three reasons:
+ *
+ *   1. Both are single-player. The rule this file states one paragraph above is
+ *      that the boundary is a second person; withholding a solo task board and
+ *      a solo config sync contradicted it, and the pricing page said as much in
+ *      the same breath ("neither needs anybody else").
+ *   2. The gate protected nothing. What actually stops multi-user use is the
+ *      boot-time AUTH_PROVIDER check in middleware/auth.ts: per-person accounts
+ *      require 'team' or 'sso' or the server refuses to start. A solo
+ *      self-hoster was never going to buy a licence for their own task list.
+ *   3. It cost adoption at the worst moment. Free self-host is the trial
+ *      surface. Showing someone 253 findings and refusing to let them tick one
+ *      off is a bad first hour with the product.
+ *
+ * The door still only opens one way, and this is the direction it opens.
+ *
+ * The hosted SaaS is unaffected: it bills per plan and never reads this. Cloud
+ * FREE still has neither, and that asymmetry is deliberate — on cloud we pay for
+ * the storage and the compute; self-host runs on the user's own hardware.
  */
 export const SELFHOST_FREE_FEATURES: readonly Feature[] =
-  ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights'];
+  ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights', 'tasks', 'toolkit'];
 
 /**
  * What this DEPLOYMENT's licence grants, for self-host. The free tier is the

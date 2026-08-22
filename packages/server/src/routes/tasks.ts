@@ -10,7 +10,7 @@
  *   GET    /api/tasks?project=&assignee=&status=   → list
  *   POST   /api/tasks {title, description?, projectId?, assigneeSub?, due?, linkedSessionId?}
  *   GET    /api/tasks/:id                          → { task, comments }
- *   PATCH  /api/tasks/:id {status?, assigneeSub?, title?, description?, due?, blocks?, blockedBy?, linkedSessionId?}
+ *   PATCH  /api/tasks/:id {status?, assigneeSub?, title?, description?, due?, linkedSessionId?}
  *   POST   /api/tasks/:id/comments {body}
  */
 import express from 'express';
@@ -24,7 +24,11 @@ import { parsePolicy, autoTasksStatus, runAutoTasks, AUTO_TASKS_KEY } from '../s
 const log = createLogger('tasks');
 const router = express.Router();
 
-const STATUSES = new Set(['todo', 'in_progress', 'blocked', 'done', 'rejected']);
+// What a caller may SET. 'blocked' is absent on purpose: nothing has ever
+// written it, and the board has no column for it since the reject work, so a
+// card set to 'blocked' would simply disappear from the UI. The DB constraint
+// still accepts it, because rows written before it was retired keep the value.
+const STATUSES = new Set(['todo', 'in_progress', 'done', 'rejected']);
 
 /**
  * Assigning work to SOMEONE ELSE is the collaboration boundary — the mount is
@@ -133,8 +137,19 @@ router.post('/', async (req, res) => {
   const title = (req.body?.title || '').trim();
   if (!title) return res.status(400).json({ error: 'title required' });
   if (await refuseForeignAssignee(req, res, req.body?.assigneeSub)) return;
+  const linkedFindingId = typeof req.body?.linkedFindingId === 'string' ? req.body.linkedFindingId : null;
   const store = await createStore();
   try {
+    // A card that names the finding it came from can close itself when the
+    // finding stops being reported, and can dismiss that finding when the user
+    // rejects it. Without the link a card is inert: recall_improvements opened
+    // one per ranked suggestion with no link at all, so none of them could ever
+    // auto-close, and every call re-created the same cards from scratch.
+    // Dedupe on the link for exactly that reason — one finding, one card.
+    if (linkedFindingId) {
+      const existing = await store.teamTasksByFindingIds([linkedFindingId]);
+      if (existing.length > 0) return res.json({ task: existing[0], deduped: true });
+    }
     const task = await store.createTeamTask({
       title: title.slice(0, 500),
       createdBy: actor(req),
@@ -143,6 +158,7 @@ router.post('/', async (req, res) => {
       assigneeSub: req.body?.assigneeSub ?? null,
       due: typeof req.body?.due === 'number' ? req.body.due : null,
       linkedSessionId: typeof req.body?.linkedSessionId === 'string' ? req.body.linkedSessionId : null,
+      linkedFindingId,
     });
     res.json({ task });
   } catch (e) { log.error({ err: e }, 'create task failed'); res.status(500).json({ error: e instanceof Error ? e.message : 'create failed' }); }
@@ -207,8 +223,12 @@ router.patch('/:id', async (req, res) => {
   if (req.body?.linkedSessionId !== undefined) {
     patch.linkedSessionId = typeof req.body.linkedSessionId === 'string' ? req.body.linkedSessionId : null;
   }
-  if (Array.isArray(req.body?.blocks)) patch.blocks = req.body.blocks.map(String);
-  if (Array.isArray(req.body?.blockedBy)) patch.blockedBy = req.body.blockedBy.map(String);
+  // blocks / blockedBy are NOT accepted. They were persisted and rendered as a
+  // "blocked by N" chip, and nothing in the product has ever written them — not
+  // the client (its updateTask signature has no such field), not the MCP, not
+  // the auto-filer. Both columns are permanently '[]', so the chip could never
+  // render. Accepting a write for a feature that does not exist invites a
+  // caller to depend on it. The columns stay in the schema for old rows.
   const store = await createStore();
   try {
     const task = await store.updateTeamTask(req.params.id, patch);
