@@ -56,7 +56,12 @@ const ANALYSES = [
 // generated code is a change to its generator.
 const GENERATED = [
   'generated/', '__generated__/', '.pb.go', '.gen.', '_pb2.py', '/gen/', '.g.dart',
-  '/node_modules/', '/vendor/', '/third_party/', '/site-packages/', '.lock',
+  '/node_modules/', '/vendor/', '/third_party/', '/site-packages/',
+  // Lockfiles. '.lock' alone catches yarn.lock, Cargo.lock, poetry.lock and
+  // composer.lock, and MISSES the two biggest ones in a JS repo —
+  // package-lock.json and pnpm-lock.yaml are named '-lock.<ext>'. Found by
+  // replacing this file's mirror test with one that calls the real predicate.
+  '.lock', '-lock.json', '-lock.yaml',
   '/dist/', '/build/', '/out/', '/target/', '/.next/', '/coverage/',
   '.min.js', '.min.css', '.bundle.js', '-bundle.js', '.map',
 ];
@@ -146,7 +151,10 @@ function parseJson<T>(map: Map<number, string>, id: number, fallback: T): T {
 
 // Prefix '/' so patterns like '/node_modules/' also match at the string
 // start ('node_modules/zod/…' slipped through the bare includes()).
-function isGenerated(rel: string): boolean { const r = '/' + rel; return GENERATED.some((g) => r.includes(g)); }
+export function isGenerated(rel: string): boolean { const r = '/' + rel; return GENERATED.some((g) => r.includes(g)); }
+
+/** The exclusion patterns, exported so a test asserts THIS list, not a copy. */
+export const GENERATED_PATTERNS: readonly string[] = GENERATED;
 
 /** Test/fixture files — flagged secrets there are fake by design, so the
  *  scanners' hits get downgraded to low instead of poisoning the score. */

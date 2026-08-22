@@ -446,6 +446,8 @@ const RecallTaskCreateSchema = z.object({
   description: z.string().optional(),
   project: z.string().optional().describe('project_id this task belongs to'),
   assignee: z.string().optional().describe("Teammate user id (sub) to assign; omit to leave unassigned"),
+  due: z.number().optional().describe('Due date, epoch milliseconds. Set one when the work is time-bound; omit otherwise.'),
+  linked_finding_id: z.string().optional().describe('The code finding this task comes from (ca_…) — lets the card auto-close and dedupe.'),
 });
 const RecallTaskUpdateSchema = z.object({
   id: z.string().describe('Task id (t_…)'),
@@ -1185,6 +1187,8 @@ lets the board verify the work actually shipped.`,
             description: { type: 'string' },
             project: { type: 'string', description: 'project_id this task belongs to' },
             assignee: { type: 'string', description: 'Teammate user id (sub) to assign' },
+            due: { type: 'number', description: 'Due date, epoch milliseconds. Set one when the work is time-bound; omit otherwise.' },
+            linked_finding_id: { type: 'string', description: 'The code finding this task comes from (ca_…). Setting it lets the card close itself when a re-index stops reporting the finding, and dedupes against an existing card for the same finding.' },
           },
           required: ['title'],
         },
@@ -3015,10 +3019,17 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
       case 'recall_task_create': {
         const params = RecallTaskCreateSchema.parse(args);
         requireRemote();
-        const { task } = await remotePost<{ task: { id: string; title: string } }>('/api/tasks', {
-          title: params.title, description: params.description, projectId: params.project, assigneeSub: params.assignee ?? null,
+        const { task, deduped } = await remotePost<{ task: { id: string; title: string }; deduped?: boolean }>('/api/tasks', {
+          title: params.title, description: params.description, projectId: params.project,
+          assigneeSub: params.assignee ?? null,
+          due: params.due, linkedFindingId: params.linked_finding_id,
         });
-        return { content: [{ type: 'text', text: `Created task \`${task.id}\`: ${task.title}` }] };
+        // Say when nothing was created. Filing a duplicate silently is how the
+        // board filled with repeats: recall_improvements re-created the same
+        // cards on every call because nothing linked them to their finding.
+        return { content: [{ type: 'text', text: deduped
+          ? `A task for that finding already exists: \`${task.id}\`: ${task.title}`
+          : `Created task \`${task.id}\`: ${task.title}` }] };
       }
 
       case 'recall_task_update': {

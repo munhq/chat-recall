@@ -20,6 +20,46 @@ import { countLockedOlder } from './search.js';
 
 const log = createLogger('memory');
 
+/**
+ * The wake-up's backlog count, scoped to the project the session is in.
+ *
+ * Exported and pure so it can be tested against the SHIPPED implementation. The
+ * sqlite driver used in tests has no team-task table (it returns []), which is
+ * why the first test for this re-implemented the rule locally — and then pinned
+ * the wrong answer for unscoped cards as if it were correct. Exporting the rule
+ * is the way to have both: a real store in production, a real assertion in CI.
+ *
+ * SUBSTRING, not equality: the filter is a loose name ("chat-recall") while a
+ * stored project id is fully qualified ("git:github.com/munhq/chat-recall").
+ *
+ * A card with NO project stays visible under any filter. `''.includes(x)` is
+ * false, so filtering on the raw id silently swallowed every hand-filed card the
+ * moment a filter was supplied — and a card with no project is not some other
+ * repo's card.
+ *
+ * "Open" must mean here what it means in recall_tasks, or one session sees two
+ * different backlog numbers in a single payload. Rejected is closed: the user
+ * has already said no.
+ */
+export function scopeOpenTasks(
+  tasks: Array<{ projectId?: string | null; status: string; linkedFindingId?: string | null }>,
+  projectFilter?: string,
+): { total: number; auto: number; scope?: string } {
+  const needle = projectFilter?.toLowerCase();
+  const inScope = needle
+    ? tasks.filter((t) => {
+      const pid = (t.projectId || '').toLowerCase();
+      return pid === '' || pid.includes(needle);
+    })
+    : tasks;
+  const open = inScope.filter((t) => t.status !== 'done' && t.status !== 'rejected');
+  return {
+    total: open.length,
+    auto: open.filter((t) => t.linkedFindingId).length,
+    ...(projectFilter ? { scope: projectFilter } : {}),
+  };
+}
+
 const router = express.Router();
 const memoryService = new MemoryService();
 
@@ -385,32 +425,7 @@ router.get('/wake-up', async (req, res) => {
     let openTasks: { total: number; auto: number; scope?: string } | undefined;
     try {
       const tasks = await store.listTeamTasks({});
-      // Respect the project filter, like the KG facts above already do. Without
-      // this a wake-up inside one repo counted the WHOLE tenant's board, so a
-      // session in chat-recall was told about munbot's backlog. Substring, not
-      // equality: the filter is a loose name ("chat-recall") while a project id
-      // is fully qualified ("git:github.com/munhq/chat-recall").
-      //
-      // A card with NO project stays visible under any filter. It is not some
-      // other repo's card either, and dropping it hid exactly the cards a person
-      // files by hand — `''.includes('chat-recall')` is false, so the previous
-      // version silently swallowed every unscoped card the moment a filter was
-      // supplied.
-      const inScope = projectFilter
-        ? tasks.filter((t) => {
-          const pid = (t.projectId || '').toLowerCase();
-          return pid === '' || pid.includes(projectFilter.toLowerCase());
-        })
-        : tasks;
-      // "Open" must mean the same thing here as it does in recall_tasks, or one
-      // session sees two different backlog numbers in one payload. Rejected is
-      // closed: the user has already said no.
-      const open = inScope.filter((t) => t.status !== 'done' && t.status !== 'rejected');
-      openTasks = {
-        total: open.length,
-        auto: open.filter((t) => t.linkedFindingId).length,
-        ...(projectFilter ? { scope: projectFilter } : {}),
-      };
+      openTasks = scopeOpenTasks(tasks, projectFilter);
     } catch { /* board unavailable — wake-up still answers */ }
     res.json({ openTasks, highFacts, kg });
   } catch (error) {
