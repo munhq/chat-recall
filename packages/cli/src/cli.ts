@@ -19,6 +19,7 @@ import { tierAll, type ScoreTier } from '@chat-recall/engine/core/score-tier.js'
 import { loadAllCredentials, type Credentials } from './sync-client.js';
 import { printUpdateNotice, updateNotice } from './update-notice.js';
 import { isOnPath } from '@chat-recall/engine/core/which.js';
+import { readCollectorHealth, judgeHealth, collectorHealthPath, STALE_AFTER_MS } from '@chat-recall/engine/core/collector-health.js';
 
 /**
  * Colour a relevance tier for the terminal.
@@ -1103,6 +1104,27 @@ program
       note(false, 'Server reachable', 'N/A (not logged in)');
     }
 
+    // Is the collector actually collecting? This is the row that was missing
+    // when the daemon aborted 4,851 times over eight days and nothing said so:
+    // every other check here was green while nothing had synced for weeks.
+    {
+      const h = readCollectorHealth();
+      if (!h) {
+        note(false, 'Collector reporting', `no health report at ${collectorHealthPath()} — the watch daemon may never have run (\`chat-recall watch --install-service\`)`);
+      } else {
+        const v = judgeHealth(h);
+        note(v.ok, 'Collector healthy', v.ok
+          ? `last reported ${Math.max(0, Math.round((Date.now() - h.updatedAt) / 1000))}s ago, ${Object.keys(h.targets).length} target(s)`
+          : v.reasons.join('; '));
+        for (const [url, t] of Object.entries(h.targets)) {
+          const okRecently = t.lastOkAt !== null && Date.now() - t.lastOkAt < STALE_AFTER_MS;
+          note(okRecently, `Synced to ${url}`, t.lastOkAt === null
+            ? `never — ${t.failures} consecutive failure(s)${t.lastError ? `: ${t.lastError}` : ''}`
+            : `${Math.round((Date.now() - t.lastOkAt) / 60000)}m ago${t.failures ? ` (${t.failures} failure(s) since)` : ''}`);
+        }
+      }
+    }
+
     // Credentials file perms — the token grants sync access, so it must be 0600.
     const credFile = join(getDataDir(), 'credentials.json');
     if (!existsSync(credFile)) {
@@ -1112,8 +1134,17 @@ program
         const mode = statSync(credFile).mode & 0o777;
         // 0o600 (owner-only) is the safe default saveCredentials sets. Group/
         // world-readable bits expose the bearer token to other local users.
-        const safe = (mode & 0o077) === 0;
-        note(safe, 'Credentials file', `${credFile} (mode ${mode.toString(8).padStart(3, '0')}${safe ? '' : ' — should be 600'})`);
+        //
+        // Windows has no POSIX mode: Node synthesises 0666 (or 0444 read-only),
+        // so `mode & 0o077` is never 0 and this printed a permanent red row that
+        // no user could ever clear. Access there is governed by the ACL the file
+        // inherits from the per-user profile directory, which chmod cannot
+        // express — so report the path and say the check does not apply.
+        const isWin = process.platform === 'win32';
+        const safe = isWin || (mode & 0o077) === 0;
+        note(safe, 'Credentials file', isWin
+          ? `${credFile} (Windows ACL — POSIX mode does not apply)`
+          : `${credFile} (mode ${mode.toString(8).padStart(3, '0')}${safe ? '' : ' — should be 600'})`);
       } catch (err) {
         note(false, 'Credentials file', `error: ${err}`);
       }
