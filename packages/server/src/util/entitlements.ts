@@ -75,13 +75,25 @@ const PLAN_FEATURES: Array<{ prefix: string; features: readonly Feature[]; purch
   // purchasable:false — a trial is granted, never bought, so featureRequired()
   // must not offer it as the tier to upgrade to.
   { prefix: 'trial',      features: ['memory', 'scan', 'sync', 'alerts', 'findings', 'insights', 'tasks', 'toolkit'], purchasable: false },
-  // The FREE TIER — what a lapsed no-card trial resolves to (see effectivePlan in
+  // DORMANT — what a lapsed no-card trial resolves to (see effectivePlan in
   // util/billing.ts). Never bought, never granted by a webhook: it is the floor a
-  // cloud tenant lands on when their entitlement stops being live. It keeps 'sync'
-  // — the daily habit — but sync is METERED (limitsFor below), and search is
-  // WINDOWED. Everything older stays stored and locked: the locked history is the
-  // upgrade offer, so this plan deliberately does not include the analysis tiers.
-  { prefix: 'free',       features: ['memory', 'scan', 'sync'], purchasable: false },
+  // cloud tenant lands on when their entitlement stops being live.
+  //
+  // It grants memory + scan and NOT sync. Between 2026-08-21 and 2026-08-22 it
+  // was the reverse — sync metered, search windowed to seven days — and that was
+  // the wrong axis to cut. This product's value IS history depth: a seven-day
+  // window demonstrates only what `claude --continue` already does for free, so
+  // the tier hid the one capability worth paying for and kept the one that costs
+  // us money. It also cut first for the heaviest users, who are the likeliest
+  // buyers: a working machine writes ~500 MB of transcript a month against a
+  // 50 MB quota.
+  //
+  // Pausing INGEST loses nobody anything, because the transcripts never lived
+  // here — they are on the user's disk, and `chat-recall sync --full` re-ships
+  // everything the day they subscribe. So dormant keeps the whole synced history
+  // searchable, keeps export working, and stops paying to ingest new data for an
+  // account that declined to pay.
+  { prefix: 'free',       features: ['memory', 'scan'], purchasable: false },
   // The SELF-HOST licence. Same grant as Solo, bought as a subscription, delivered
   // as a licence key rather than as access to our servers. Listed last so the
   // cheapest-tier scan in featureRequired() still names 'solo' for a cloud user —
@@ -323,17 +335,47 @@ export const FULL_LIMITS: PlanLimits = Object.freeze({
   rateMultiplier: 1,
 });
 
-/** The free tier's meters. 7-day window; 50 MB/month; 300 MB total — exactly six
- *  months of locked history at full quota, so the cap and the quota describe one
- *  lifecycle instead of two unrelated numbers. */
-export function freeLimits(): PlanLimits {
+/**
+ * The DORMANT tenant's limits: a lapsed trial, or any plan we cannot resolve.
+ *
+ * No window and no meters, because neither applies once 'sync' is withheld — the
+ * corpus is frozen, so there is nothing left to ration. What stays withheld is
+ * the pair that actually costs money per tenant: summaries and embeddings. The
+ * rate multiplier stays low, since a dormant tenant reads a corpus that cannot
+ * grow.
+ */
+export function dormantLimits(): PlanLimits {
   return {
-    searchWindowDays: envNum('FREE_SEARCH_WINDOW_DAYS', 7),
-    syncBytesPerMonth: envNum('FREE_SYNC_MB_PER_MONTH', 50) * MB,
-    syncStorageBytes: envNum('FREE_STORAGE_MB', 300) * MB,
+    searchWindowDays: null,
+    syncBytesPerMonth: null,
+    syncStorageBytes: null,
     summaries: false,
     embeddings: false,
     rateMultiplier: 0.2,
+  };
+}
+
+/** Kept for callers that predate the rename. Dormant IS the free tier now. */
+export const freeLimits = dormantLimits;
+
+/**
+ * The no-card trial's limits: everything unmetered except total ingest.
+ *
+ * The meters moved here when the free tier stopped syncing, because this is
+ * where unpaid ingest now lives: seven days, no card, no cap was an open door.
+ * The cap is deliberately far above a real user — a heavy machine writes about
+ * 500 MB of transcript a month, so a week is nearer 120 MB — and it exists to
+ * stop a scripted upload, not to shape behaviour. Sync PAUSES at the cap; what
+ * was already synced stays searchable.
+ */
+export function trialLimits(): PlanLimits {
+  return {
+    searchWindowDays: null,
+    syncBytesPerMonth: null,
+    syncStorageBytes: envNum('TRIAL_STORAGE_MB', 5120) * MB,
+    summaries: true,
+    embeddings: true,
+    rateMultiplier: 1,
   };
 }
 
@@ -346,11 +388,14 @@ export function freeLimits(): PlanLimits {
  * FULL_LIMITS before asking); a paid or trialing plan is unmetered.
  */
 export function limitsFor(plan: string | null | undefined): PlanLimits {
-  if (!plan) return freeLimits();
+  if (!plan) return dormantLimits();
   const p = (resolvePlanKey(plan) ?? plan).toLowerCase();
-  if (p.startsWith('free')) return freeLimits();
-  // Any OTHER known plan is unmetered; unknown plans fail closed to the meters.
-  return PLAN_FEATURES.some((e) => p.startsWith(e.prefix)) ? FULL_LIMITS : freeLimits();
+  if (p.startsWith('free')) return dormantLimits();
+  // The trial is the only unpaid plan that still ingests, so it is the only one
+  // that needs a ceiling.
+  if (p.startsWith('trial')) return trialLimits();
+  // Any OTHER known plan is unmetered; unknown plans fail closed to dormant.
+  return PLAN_FEATURES.some((e) => p.startsWith(e.prefix)) ? FULL_LIMITS : dormantLimits();
 }
 
 /**
@@ -382,6 +427,31 @@ export function limitReached(kind: 'sync_quota' | 'sync_storage', used: number, 
  * relays "this needs the Team plan" is a better upgrade prompt than a hidden
  * capability the model cannot mention.
  */
+/**
+ * The refusal a DORMANT tenant's CLI gets when it tries to push.
+ *
+ * Its own payload rather than featureRequired('sync'), because "this feature
+ * requires the solo plan" is true and useless at that moment: the person needs
+ * to know that reads still work, that nothing was lost, and what one command
+ * restores it. The CLI and the dashboard banner say the same three things.
+ */
+export function syncOffPayload(): {
+  error: string; kind: string; detail: string; feature: Feature; requires: string; upgradeUrl: string;
+} {
+  const { requires, upgradeUrl } = featureRequired('sync');
+  return {
+    error: 'syncing is off — the trial on this account has ended',
+    kind: 'sync_off',
+    detail:
+      'Everything already synced stays fully searchable, and export always works. '
+      + 'Your transcripts are on this machine, so nothing is stranded: subscribe, then run '
+      + '`chat-recall sync --full` to bring the server current.',
+    feature: 'sync',
+    requires,
+    upgradeUrl,
+  };
+}
+
 export function featureRequired(feature: Feature): {
   error: string; feature: Feature; requires: string; upgradeUrl: string;
 } {
