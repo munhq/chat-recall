@@ -172,7 +172,8 @@ export type ShadowStatus =
   | 'unchanged'        // current identical to shadow
   | 'grew'             // normal append — current is a superset of shadow
   | 'rewrite-merged'   // current LOST records the shadow had — merged to recover
-  | 'unavailable';     // couldn't export the current transcript
+  | 'unavailable'      // couldn't export the current transcript
+  | 'skipped';         // live file untouched since the last snapshot — NO container
 
 export interface ShadowMerge {
   status: ShadowStatus;
@@ -313,7 +314,28 @@ export function updateShadow(sessionId: string, exp: RawSessionExport | null): S
  * Dynamic import of the backend registry keeps this module free of a static
  * cycle (tool-backend → live-scan → … → transcript), matching raw.ts.
  */
-export async function snapshotShadow(sessionId: string): Promise<ShadowUpdate> {
+/**
+ * Live-file fingerprints from the last snapshot, per raw session id.
+ *
+ * The resume-guard polls once a minute per active session, and 15,455 of 23,156
+ * snapshots on this machine — 67% — concluded 'unchanged'. Each of those still
+ * read the whole live transcript, gunzipped and JSON.parsed the whole shadow,
+ * rebuilt the container and SHA-1'd every byte, only to discover nothing had
+ * moved. The srcHash fast path exists but sits AFTER all of that work.
+ *
+ * mtime+size is the cheap version of the same question. Process-lifetime only:
+ * a restart re-snapshots everything once, which is correct — we cannot know
+ * what happened while we were not running.
+ */
+const lastLiveFingerprint = new Map<string, string>();
+
+/** Test-only: forget the fingerprints so the next snapshot does real work. */
+export function _resetShadowFingerprintsForTests(): void { lastLiveFingerprint.clear(); }
+
+export async function snapshotShadow(
+  sessionId: string,
+  opts: { force?: boolean } = {},
+): Promise<ShadowUpdate> {
   // Side-effect import registers the four backends before we resolve one —
   // snapshotShadow must work regardless of whether the caller already loaded
   // them (e.g. a test, or an entry point that only imports the barrel).
@@ -321,9 +343,41 @@ export async function snapshotShadow(sessionId: string): Promise<ShadowUpdate> {
   const { getBackendForId, getBackend } = await import('../core/tool-backend.js');
   const backend = getBackendForId(sessionId) ?? getBackend('claude');
   const rawId = backend.toRawId(sessionId);
+
+  // Cheap pre-check: has the live file moved at all since we last looked?
+  // A stat instead of a read+gunzip+parse+hash of up to tens of megabytes.
+  // Only skips when a shadow already exists — a session we have never
+  // snapshotted must go through, whatever its mtime says.
+  const fp = liveFingerprint(backend, rawId);
+  if (!opts.force && fp && lastLiveFingerprint.get(rawId) === fp) {
+    return {
+      status: 'skipped',
+      sessionId,
+      tool: backend.id,
+      container: null,
+      recovered: 0,
+      path: shadowFileFor(backend.id, rawId),
+    };
+  }
+
   let exp: RawSessionExport | null = null;
   try { exp = backend.exportRawSession(rawId); } catch { exp = null; }
-  return updateShadow(rawId, exp);
+  const result = updateShadow(rawId, exp);
+  // Only remember the fingerprint once a shadow genuinely reflects this file.
+  if (fp && result.status !== 'unavailable') lastLiveFingerprint.set(rawId, fp);
+  return result;
+}
+
+/** `mtime:size` of a session's live file, or '' when it cannot be determined. */
+function liveFingerprint(backend: { findSession(id: string): { path: string } | null }, rawId: string): string {
+  try {
+    const loc = backend.findSession(rawId);
+    if (!loc?.path) return '';
+    const st = statSync(loc.path);
+    return `${st.mtimeMs}:${st.size}`;
+  } catch {
+    return '';
+  }
 }
 
 /**
