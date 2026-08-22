@@ -406,15 +406,29 @@ function defaultSync(): SyncSettings {
  * never walk your media/docs, and on macOS walking these trips the Photos /
  * Music / Documents permission prompts. Substring match on the project path.
  */
-export const PERSONAL_DIR_PATTERNS = [
-  '/Pictures/', '/Music/', '/Movies/', '/Videos/', '/Photos Library',
-  '/Documents/', '/Desktop/', '/Downloads/', '/Library/',
+// Written WITHOUT separators, and matched against a path normalised to '/'.
+// The previous form hard-coded '/Documents/' and friends, which matches nothing
+// on Windows, where the real path is C:\\Users\\me\\Documents\\taxes. That made this
+// guard — the one that keeps the code indexer out of a user's private folders —
+// silently inert on an entire platform, so Documents, Desktop and Downloads were
+// indexed and their findings uploaded. A privacy default must not depend on the
+// path separator.
+export const PERSONAL_DIR_NAMES = [
+  'Pictures', 'Music', 'Movies', 'Videos', 'Photos Library',
+  'Documents', 'Desktop', 'Downloads', 'Library',
 ];
+
+/** Back-compat: the POSIX-shaped list some callers still import. */
+export const PERSONAL_DIR_PATTERNS = PERSONAL_DIR_NAMES.map((n) => `/${n}/`);
 
 /** True if a path sits under a personal folder and is NOT explicitly opted in. */
 export function isPersonalPath(projectPath: string, includeProjects: string[] = []): boolean {
   if (includeProjects.some((inc) => inc && projectPath.includes(inc))) return false;
-  return PERSONAL_DIR_PATTERNS.some((pat) => projectPath.includes(pat));
+  // Normalise separators and append one, so a trailing segment ('.../Desktop')
+  // matches as well as an interior one ('.../Desktop/proj'). Case-insensitive:
+  // Windows and macOS both treat 'documents' and 'Documents' as one directory.
+  const norm = (projectPath.replace(/\\/g, '/') + '/').toLowerCase();
+  return PERSONAL_DIR_NAMES.some((n) => norm.includes(`/${n.toLowerCase()}/`));
 }
 
 function defaultTeam(): TeamSettings {
