@@ -26,9 +26,31 @@ describe('codeActionId', () => {
       .not.toBe(at('getCurrentFee copy-pasted 29× (13 lines each)'));
   });
 
-  test('the same title at a different place is a different finding', () => {
+  test('the same title in a different file is a different finding', () => {
     expect(at('slice copy-pasted 3×', 'src/a.ts')).not.toBe(at('slice copy-pasted 3×', 'src/b.ts'));
-    expect(at('slice copy-pasted 3×', 'src/a.ts', 12)).not.toBe(at('slice copy-pasted 3×', 'src/a.ts', 40));
+  });
+
+  test('a shifted line number is the SAME finding', () => {
+    // Every edit above a finding moves its line. That is not a new problem.
+    expect(at('slice copy-pasted 3×', 'src/a.ts', 12)).toBe(at('slice copy-pasted 3×', 'src/a.ts', 400));
+  });
+
+  test('the order the analyzer lists copies in does not change identity', () => {
+    // The production churn: same finding, copies enumerated in a different
+    // order between runs, loc[0] moves, id moves, card closed and re-filed.
+    const A = codeActionId(P, { category: 'duplication', title: 'inflate copy-pasted 4× (899 lines each)',
+      loc: [{ file: 'src/pack/kiri-main.js' }, { file: 'alt/pack/kiri-main.js' }] });
+    const B = codeActionId(P, { category: 'duplication', title: 'inflate copy-pasted 4× (899 lines each)',
+      loc: [{ file: 'alt/pack/kiri-main.js' }, { file: 'src/pack/kiri-main.js' }] });
+    expect(A).toBe(B);
+  });
+
+  test('one more copy of the same clone is still the same finding', () => {
+    const two = codeActionId(P, { category: 'duplication', title: 'x copy-pasted 2×',
+      loc: [{ file: 'a/x.ts' }, { file: 'b/x.ts' }] });
+    const three = codeActionId(P, { category: 'duplication', title: 'x copy-pasted 3×',
+      loc: [{ file: 'a/x.ts' }, { file: 'b/x.ts' }, { file: 'c/x.ts' }] });
+    expect(two).toBe(three);
   });
 
   test('category still separates two findings that share a title and a place', () => {
