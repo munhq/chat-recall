@@ -22,11 +22,6 @@ export function formatMB(bytes: number | null | undefined): string {
   return `${Number.isInteger(one) ? one.toFixed(0) : one.toFixed(1)} MB`;
 }
 
-/** The free plan's default search window. The server reads the live value from
- *  FREE_SEARCH_WINDOW_DAYS and sends it as ent.limits.searchWindowDays /
- *  window_days — always prefer those; this constant only covers the moment
- *  before any payload has answered. */
-export const DEFAULT_FREE_WINDOW_DAYS = 7;
 
 /**
  * General byte formatter (binary units, matching formatMB): the admin fleet

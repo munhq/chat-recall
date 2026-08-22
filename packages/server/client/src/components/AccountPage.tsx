@@ -3,7 +3,7 @@ import ConnectMachine from './ConnectMachine';
 import SyncRules from './SyncRules';
 import FleetHealth from './FleetHealth';
 import PlanPicker from './PlanPicker';
-import { formatMB, DEFAULT_FREE_WINDOW_DAYS } from '../utils/bytes';
+import { formatMB } from '../utils/bytes';
 import LicenceDeliveryPanel from './LicenceDelivery';
 import DataControls from './DataControls';
 import {
@@ -115,10 +115,8 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
               </div>
             )}
             <p className="muted">
-              No card needed for the trial. When it ends you land on the free plan: sync keeps
-              working (metered) and search covers your last{' '}
-              {ent.limits?.searchWindowDays ?? DEFAULT_FREE_WINDOW_DAYS} days. Your older history
-              stays stored and unlocks when you upgrade — nothing is deleted.
+              No card needed for the trial. When it ends, new sessions stop syncing — everything
+              already synced stays fully searchable, export keeps working, and nothing is deleted.
             </p>
             {/* The picker is not open by default while the trial is healthy.
                 Three priced cards with seat spinners under "14 days left" asks
@@ -139,18 +137,17 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
           <p className="muted">Billing isn't enabled on this deployment — all features are available.</p>
         ) : ent.entitled === false ? (
           <>
-            {/* The FREE plan — the floor a lapsed tenant lands on, never bought.
-                Stated as what it is (a working plan with a window and a meter)
-                plus what upgrading buys back — not as an expired-status badge,
+            {/* DORMANT — the floor a lapsed tenant lands on, never bought. Stated
+                as the one thing that changed, not as an expired-status badge,
                 which read as "broken" to the person deciding whether to pay. */}
             <div className="acct-row">
               <span>Plan</span>
-              <span className="badge badge-free" data-testid="free-plan-badge">Free</span>
+              <span className="badge badge-free" data-testid="free-plan-badge">Dormant</span>
             </div>
             <p className="muted">
-              Sync keeps working (metered) and search covers your last{' '}
-              {ent.limits?.searchWindowDays ?? DEFAULT_FREE_WINDOW_DAYS} days. Your older history is stored and
-              locked — it unlocks instantly when you upgrade. Nothing was deleted.
+              New sessions are not syncing. Everything already synced stays fully searchable and
+              export keeps working — nothing was deleted. Subscribe and one{' '}
+              <code>chat-recall sync --full</code> brings the server current.
             </p>
             {/* The meters, from the same payload the server enforces with — the
                 page must never show a fuller or emptier meter than the gate acts
