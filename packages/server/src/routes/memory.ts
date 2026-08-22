@@ -382,11 +382,23 @@ router.get('/wake-up', async (req, res) => {
     }
     // Open tasks ride along so a fresh session knows its backlog without
     // asking. Best-effort: the sqlite test driver has no board and returns [].
-    let openTasks: { total: number; auto: number } | undefined;
+    let openTasks: { total: number; auto: number; scope?: string } | undefined;
     try {
       const tasks = await store.listTeamTasks({});
-      const open = tasks.filter((t) => t.status !== 'done');
-      openTasks = { total: open.length, auto: open.filter((t) => t.linkedFindingId).length };
+      // Respect the project filter, like the KG facts above already do. Without
+      // this a wake-up inside one repo counted the WHOLE tenant's board, so a
+      // session in chat-recall was told about munbot's backlog. Substring, not
+      // equality: the filter is a loose name ("chat-recall") while a project id
+      // is fully qualified ("git:github.com/munhq/chat-recall").
+      const inScope = projectFilter
+        ? tasks.filter((t) => (t.projectId || '').toLowerCase().includes(projectFilter.toLowerCase()))
+        : tasks;
+      const open = inScope.filter((t) => t.status !== 'done');
+      openTasks = {
+        total: open.length,
+        auto: open.filter((t) => t.linkedFindingId).length,
+        ...(projectFilter ? { scope: projectFilter } : {}),
+      };
     } catch { /* board unavailable — wake-up still answers */ }
     res.json({ openTasks, highFacts, kg });
   } catch (error) {
