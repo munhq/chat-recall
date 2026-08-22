@@ -279,10 +279,29 @@ function identityTitle(title: string): string {
   return title.replace(/\d+/g, '#');
 }
 
+/**
+ * A stable location key: the lexicographically first DISTINCT file, and no line.
+ *
+ * `loc[0]` was the identity, and loc order comes from the analyzer, not from the
+ * problem. Two runs over unchanged code produced the same finding with its
+ * copies listed in a different order, so loc[0] moved and the id moved with it.
+ * Measured in production: two cards with byte-identical project, title and file
+ * list, filed two hours apart under different ids — the second one's hash is not
+ * even reproducible from the row as stored, because the order at hash time is
+ * gone. Sorting makes the key independent of it.
+ *
+ * The line number is dropped too: it is the most volatile part of a finding
+ * (every edit above it shifts it) and it identifies nothing that the file and
+ * the title do not already identify.
+ */
+function locationKey(loc: CodeActionLoc[]): string {
+  const files = [...new Set((loc ?? []).map((l) => l.file).filter(Boolean))].sort();
+  return files[0] ?? '';
+}
+
 export function codeActionId(
   projectId: string,
   a: { category: string; title: string; loc: CodeActionLoc[] },
 ): string {
-  const primary = a.loc[0] ? `${a.loc[0].file}:${a.loc[0].line ?? ''}` : '';
-  return 'ca_' + shortHash([projectId, a.category, identityTitle(a.title), primary].join('|'));
+  return 'ca_' + shortHash([projectId, a.category, identityTitle(a.title), locationKey(a.loc)].join('|'));
 }
