@@ -87,15 +87,17 @@ export function stalenessBanner(state: SyncState | null): string | null {
     : state.status === 'past_due'
       ? 'a payment has not gone through'
       : 'the subscription has lapsed';
-  // The free tier keeps sync running under a monthly quota and windows search
-  // to recent history — "sync is paused" was the OLD lapse contract and is no
-  // longer true. What IS true, and what the agent must know: search reaches
-  // only the recent window, so older work exists but will not come back.
+  // What the agent must get right about a dormant account: READS are complete.
+  // Two earlier versions of this text were wrong in opposite directions —
+  // "sync is paused, search is read-only", then "sync continues under a monthly
+  // quota, search covers the recent window". Since 2026-08-22 exactly one thing
+  // stops, and it is ingest.
   return [
-    `⚠ FREE PLAN — ${reason}.`,
-    'Search and lists cover only the recent window (default 7 days); older history is stored but locked.',
+    `⚠ SYNCING IS OFF — ${reason}.`,
+    'Search and lists cover the WHOLE synced history; nothing is windowed or locked.',
     since ? `The plan lapsed ${since}${days !== null ? ` (${days} days ago)` : ''}.` : '',
-    'Do not tell the user their older work does not exist; say it is locked behind the free plan and unlocks on upgrade.',
-    'Sync continues under a monthly quota, export always works, and nothing has been deleted.',
+    'What is missing is only work done SINCE the lapse, because new sessions stopped uploading.',
+    'Do not tell the user their history is gone or locked. Say new sessions are not syncing, and that '
+      + 'subscribing plus one `chat-recall sync --full` brings everything current. Export always works.',
   ].filter(Boolean).join(' ');
 }
