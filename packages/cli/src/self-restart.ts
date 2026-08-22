@@ -40,7 +40,8 @@
  */
 
 import { spawn } from 'child_process';
-import { statSync } from 'fs';
+import { readFileSync } from 'fs';
+import { createHash } from 'crypto';
 
 /** Non-zero so systemd's `Restart=on-failure` picks it up. EX_TEMPFAIL. */
 export const EXIT_CODE_CODE_CHANGED = 75;
@@ -48,27 +49,49 @@ export const EXIT_CODE_CODE_CHANGED = 75;
 export interface CodeFingerprint {
   path: string;
   size: number;
-  mtimeMs: number;
+  /**
+   * SHA-256 of the bundle bytes.
+   *
+   * mtime is deliberately NOT part of the identity. It was, and it made this
+   * guard fire on rebuilds that changed nothing: an `npm i -g` of the SAME
+   * version rewrites the file, so the mtime moves while every byte stays equal.
+   * The log read `changed on disk (731957 -> 731957 bytes)` 90 times in one
+   * day, and each line was a real process exit — 90 restarts that picked up no
+   * new code, on top of a daemon that was already crash-looping.
+   *
+   * The content hash answers the actual question. An identical rebuild is not a
+   * change, and a same-size edit still is.
+   */
+  hash: string;
 }
 
 /**
  * Identity of the bundle we are running. The build produces a single bundled
- * `watch.js` (engine included), so one stat answers "did my code change?" —
+ * `watch.js` (engine included), so one file answers "did my code change?" —
  * no need to walk node_modules.
+ *
+ * This reads the bundle (~750 KB) rather than stat-ing it. The caller is a
+ * 60-second liveness tick, so the cost is one hash per minute, and correctness
+ * here is worth far more than the microseconds: a false positive exits the
+ * process, and a false negative leaves a fixed daemon running broken code.
  */
 export function codeFingerprint(entry = process.argv[1]): CodeFingerprint | null {
   if (!entry) return null;
   try {
-    const st = statSync(entry);
-    return { path: entry, size: st.size, mtimeMs: st.mtimeMs };
+    const buf = readFileSync(entry);
+    return {
+      path: entry,
+      size: buf.byteLength,
+      hash: createHash('sha256').update(buf).digest('hex'),
+    };
   } catch {
-    return null;   // running from a pipe/eval — nothing to watch
+    return null;   // running from a pipe/eval, or a half-written bundle — nothing to act on
   }
 }
 
 export function sameFingerprint(a: CodeFingerprint | null, b: CodeFingerprint | null): boolean {
   if (!a || !b) return true;              // unknown ⇒ don't act
-  return a.path === b.path && a.size === b.size && a.mtimeMs === b.mtimeMs;
+  return a.path === b.path && a.size === b.size && a.hash === b.hash;
 }
 
 export type Supervisor = 'systemd' | 'launchd' | 'windows-task' | 'none';

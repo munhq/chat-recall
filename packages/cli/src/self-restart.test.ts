@@ -86,28 +86,43 @@ describe('change detection', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
-  test('a same-size rebuild is still caught, via mtime', () => {
+  test('a same-size rebuild is still caught, via the content hash', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cr-selfrestart-'));
     try {
       const f = join(dir, 'watch.js');
       writeFileSync(f, 'AAAA');
       const boot = codeFingerprint(f);
       writeFileSync(f, 'BBBB');                       // identical length
-      utimesSync(f, new Date(), new Date(Date.now() + 5000));
       expect(sameFingerprint(boot, codeFingerprint(f))).toBe(false);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  // THE REGRESSION. `npm i -g` of the same version rewrites the bundle byte for
+  // byte and moves its mtime. The old mtime-based fingerprint called that a code
+  // change and exited the process — 90 times in one day, on a daemon that was
+  // already crash-looping, each restart picking up nothing new.
+  test('an IDENTICAL rebuild is NOT a change, however far the mtime moves', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cr-selfrestart-'));
+    try {
+      const f = join(dir, 'watch.js');
+      writeFileSync(f, 'console.log("same bytes")');
+      const boot = codeFingerprint(f);
+      writeFileSync(f, 'console.log("same bytes")');   // reinstall: same content
+      utimesSync(f, new Date(), new Date(Date.now() + 5000));
+      expect(sameFingerprint(boot, codeFingerprint(f))).toBe(true);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   test('an unreadable entry is treated as "no change", never as a restart trigger', () => {
     expect(codeFingerprint('/does/not/exist')).toBeNull();
     expect(sameFingerprint(null, null)).toBe(true);
-    expect(sameFingerprint({ path: 'x', size: 1, mtimeMs: 1 }, null)).toBe(true);
+    expect(sameFingerprint({ path: 'x', size: 1, hash: 'a' }, null)).toBe(true);
   });
 });
 
 describe('checkSelfRestart', () => {
-  const boot = { path: '/x/watch.js', size: 100, mtimeMs: 1000 };
-  const changed = { path: '/x/watch.js', size: 200, mtimeMs: 2000 };
+  const boot = { path: '/x/watch.js', size: 100, hash: 'aaaa' };
+  const changed = { path: '/x/watch.js', size: 200, hash: 'bbbb' };
 
   test('exits non-zero under systemd', () => {
     const codes: number[] = [];
