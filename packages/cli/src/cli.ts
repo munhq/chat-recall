@@ -304,18 +304,6 @@ program
       // Step 4: Configure MCP server
       if (!options.skipMcp) {
         console.log(chalk.bold('4. Configuring MCP server...'));
-        const mcpJsonPath = join(homedir(), '.mcp.json');
-        let mcpConfig: Record<string, unknown> = {};
-
-        if (existsSync(mcpJsonPath)) {
-          try {
-            mcpConfig = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
-          } catch {
-            mcpConfig = {};
-          }
-        }
-
-        const mcpServers = (mcpConfig.mcpServers || {}) as Record<string, unknown>;
         const projectRoot = join(import.meta.dirname, '..');
 
         // Prefer the installed `chat-recall-mcp` bin (on PATH after `npm i -g`
@@ -332,20 +320,28 @@ program
         // limit after startup (verified) — NODE_OPTIONS is the only knob
         // that works when the AI tool owns the spawn.
         const MCP_ENV = { NODE_OPTIONS: '--max-old-space-size=1024' };
-        const existing = mcpServers['chat-recall'] as { command?: string; args?: string[]; alwaysAllow?: string[]; env?: Record<string, string> } | undefined;
-        const isCurrent = !!existing && existing.command === launch.command &&
-          JSON.stringify(existing.args ?? null) === JSON.stringify(launch.args ?? null) &&
-          existing.env?.NODE_OPTIONS === MCP_ENV.NODE_OPTIONS;
-        if (isCurrent) {
-          console.log(`   MCP server: ${chalk.green('already configured')} in ${mcpJsonPath}`);
-        } else {
-          const entry: Record<string, unknown> = { command: launch.command, alwaysAllow: existing?.alwaysAllow ?? DEFAULT_ALLOW, env: { ...existing?.env, ...MCP_ENV } };
-          if (launch.args) entry.args = launch.args;
-          mcpServers['chat-recall'] = entry;
-          mcpConfig.mcpServers = mcpServers;
-          writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 2));
-          console.log(`   MCP server: ${chalk.green(existing ? 'repaired' : 'configured')} (→ ${launch.command}) in ${mcpJsonPath}`);
+
+        // Every tool detected in step 1 gets the entry, not just Claude Code.
+        // The product claims one memory across five tools; a user who installs
+        // it from Codex must find the tools inside Codex, without hand-editing
+        // a TOML file they have never opened.
+        const { registerMcpEverywhere } = await import('@chat-recall/engine/core/mcp-clients.js');
+        const detectedClients = clis
+          .filter((c) => c.available)
+          .map((c) => c.cmd as 'gemini' | 'opencode' | 'codex')
+          .filter((c) => c === 'gemini' || c === 'opencode' || c === 'codex');
+        const results = registerMcpEverywhere(
+          { ...launch, env: MCP_ENV, alwaysAllow: DEFAULT_ALLOW },
+          { extraIds: detectedClients },
+        );
+        for (const r of results) {
+          const word = r.state === 'current' ? chalk.green('already configured')
+            : r.state === 'created' ? chalk.green('configured')
+            : r.state === 'repaired' ? chalk.green('repaired')
+            : chalk.yellow('left alone — file does not parse');
+          console.log(`   ${r.label}: ${word} → ${r.path}`);
         }
+        console.log(chalk.dim(`   Launch: ${launch.command}${launch.args ? ' ' + launch.args.join(' ') : ''}`));
       } else {
         console.log(chalk.bold('4. Skipping MCP configuration (--skip-mcp)'));
       }
@@ -1176,18 +1172,17 @@ program
       note(false, 'Skills', `check failed: ${err}`);
     }
 
-    // MCP server registration
-    const mcpJsonPath = join(homedir(), '.mcp.json');
-    if (!existsSync(mcpJsonPath)) {
-      note(false, 'MCP server registration', `no ${mcpJsonPath} — run \`chat-recall init\``);
-    } else {
-      try {
-        const cfg = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
-        const has = !!cfg.mcpServers?.['chat-recall'];
-        note(has, 'chat-recall MCP server', has ? `registered in ${mcpJsonPath}` : 'not registered — run `chat-recall init`');
-      } catch {
-        note(false, 'chat-recall MCP server', `${mcpJsonPath} unparseable`);
+    // MCP server registration — PER CLIENT. One line per AI tool, because
+    // "registered" in Claude Code told a Codex user nothing about Codex.
+    try {
+      const { inspectMcpClients } = await import('@chat-recall/engine/core/mcp-clients.js');
+      for (const c of inspectMcpClients()) {
+        if (!c.present && !c.registered) continue;  // tool not on this machine
+        note(c.registered, `MCP server — ${c.label}`,
+          c.registered ? `registered in ${c.path}` : `missing from ${c.path} — run \`chat-recall init\``);
       }
+    } catch (err) {
+      note(false, 'MCP server registration', `check failed: ${err}`);
     }
 
     // Codeindex companion

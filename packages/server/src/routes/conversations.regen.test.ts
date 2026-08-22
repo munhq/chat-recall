@@ -124,18 +124,33 @@ describe('POST /:id/regenerate-summary — free-tier gate', () => {
     // process-wide 30s entitlement caches; a stale 'not entitled' answer for
     // this tenant turns the pass-through into a 402.
     process.env.STRIPE_SECRET_KEY = 'sk_test_x';
-    // No provider: the developer's .env leaks SUMMARY_PROVIDER into the test
-    // process, and past the gate the handler would probe a REAL upstream with
-    // retries — minutes under a loaded parallel run. The gate decision is the
-    // only thing under test; a fast 4xx/5xx after it proves the pass-through.
-    const savedProvider = process.env.SUMMARY_PROVIDER;
-    delete process.env.SUMMARY_PROVIDER;
+    // The gate decision is the only thing under test, so what happens AFTER the
+    // gate must fail fast and deterministically. Deleting SUMMARY_PROVIDER was
+    // not enough: the developer's .env also supplies the base URLs, so the
+    // handler could still reach a REAL upstream and retry with backoff, blowing
+    // the 30s timeout. That made this test intermittently red in a full run —
+    // same code, one run green, the next not.
+    //
+    // Instead, choose a provider whose misconfiguration is a NON-TRANSIENT error
+    // (see the fail-fast case above): openai-compat with no base URL throws
+    // immediately and is never retried, so the handler always returns promptly
+    // and the assertion is about the gate, never about timing.
+    const savedEnv = {
+      SUMMARY_PROVIDER: process.env.SUMMARY_PROVIDER,
+      SUMMARY_BASE_URL: process.env.SUMMARY_BASE_URL,
+      OPENAI_COMPAT_BASE_URL: process.env.OPENAI_COMPAT_BASE_URL,
+    };
+    process.env.SUMMARY_PROVIDER = 'openai-compat';
+    delete process.env.SUMMARY_BASE_URL;
+    delete process.env.OPENAI_COMPAT_BASE_URL;
     const { clearEntitlementCache } = await import('../util/billing.js');
     clearEntitlementCache();
     const res = await request(appFor('regenpaid'))
       .post('/api/conversations/no-such-session/regenerate-summary');
     expect(res.status).not.toBe(402);
-    if (savedProvider === undefined) delete process.env.SUMMARY_PROVIDER;
-    else process.env.SUMMARY_PROVIDER = savedProvider;
+    for (const [k, v] of Object.entries(savedEnv)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
   }, 30_000);
 });
