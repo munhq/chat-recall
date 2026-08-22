@@ -105,9 +105,15 @@ export function judgeHealth(h: CollectorHealth | null, now: number = Date.now())
   const targets = Object.entries(h.targets ?? {});
   const stale = targets.filter(([, t]) => t.lastOkAt === null || now - t.lastOkAt > STALE_AFTER_MS);
   if (targets.length > 0 && stale.length === targets.length) {
-    const worst = stale
-      .map(([url, t]) => ({ url, t }))
-      .sort((a, b) => (a.t.lastOkAt ?? 0) - (b.t.lastOkAt ?? 0))[0];
+    // Prefer a target that carries an ERROR over the one that is merely oldest.
+    // "nothing has synced since never" is true and useless; "…(fetch failed)"
+    // is what a user can act on. Among equals, the longest-stale one wins.
+    const ranked = stale.map(([url, t]) => ({ url, t })).sort((a, b) => {
+      const err = Number(!!b.t.lastError) - Number(!!a.t.lastError);
+      if (err !== 0) return err;
+      return (a.t.lastOkAt ?? 0) - (b.t.lastOkAt ?? 0);
+    });
+    const worst = ranked[0];
     const when = worst.t.lastOkAt ? `${ago(now - worst.t.lastOkAt)} ago` : 'never';
     const why = worst.t.lastError ? ` (${worst.t.lastError})` : '';
     reasons.push(`nothing has synced since ${when}${why}`);
