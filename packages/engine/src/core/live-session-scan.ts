@@ -41,6 +41,7 @@ import {
 // under ESM because backends only USE the imports at function call time,
 // not at module-init time.
 import './backends/index.js';
+import { decodeProjectDirName } from './project-dir-name.js';
 
 export type AiTool = 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy';
 
@@ -100,7 +101,7 @@ export function findSessionFile(sessionId: string): {
           path: candidate,
           projectDir: entry.name,
           // Project path is encoded by replacing slashes with dashes.
-          projectPath: entry.name.replace(/-/g, '/').replace(/^\//, '/'),
+          projectPath: decodeProjectDirName(entry.name),
         };
       }
     }
@@ -153,7 +154,7 @@ export function findSessionFiles(sessionId: string): Array<{
       out.push({
         path: candidate,
         projectDir: entry.name,
-        projectPath: entry.name.replace(/-/g, '/').replace(/^\//, '/'),
+        projectPath: decodeProjectDirName(entry.name),
       });
     }
   }

@@ -34,6 +34,7 @@ import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
 import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
 import { isSourceEnabled } from '../core/settings.js';
 import { opencodeBackend as OPENCODE } from '../core/backends/opencode.js';
+import { decodeProjectDirName } from '../core/project-dir-name.js';
 
 const MAX_CHUNK_CHARS = 2000;
 
@@ -71,7 +72,7 @@ function discoverProjectDirs(claudeDir?: string): string[] {
       const entries = readdirSync(projectsDir, { withFileTypes: true });
       for (const entry of entries) {
         if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-        const projectPath = entry.name.replace(/^-/, '/').replace(/-/g, '/');
+        const projectPath = decodeProjectDirName(entry.name);
         addProject(projectPath);
       }
     } catch {}
