@@ -28,7 +28,7 @@ export type TaskKind = 'secret' | 'code' | 'team';
 export interface TaskEdit { kind: TaskKind; id: string; was: string; intent: string; }
 
 /** Collaborative-task statuses (mirrors the team_tasks CHECK constraint). */
-const TEAM_STATUSES = new Set(['todo', 'in_progress', 'blocked', 'done']);
+const TEAM_STATUSES = new Set(['todo', 'in_progress', 'done', 'rejected']);
 export function isTeamTaskStatus(v: string | undefined): boolean { return !!v && TEAM_STATUSES.has(v); }
 
 // Matches both `cr-secret id=…` (kind implied secret) and `cr-task kind=… id=…`.
@@ -49,10 +49,14 @@ function reconcile(kind: TaskKind, was: string, token: string | null, checked: b
   const done = kind === 'secret' ? 'rotated' : 'done'; // what a bare tick means (code/team → 'done')
   if (token && token !== was) return token;   // explicit status edit wins (all kinds)
   if (kind === 'team') {
-    // Team tasks have 4 states; the checkbox encodes ONLY done-ness, decoupled
-    // from in_progress/blocked. So a tick means done, an untick resets ONLY a
-    // done task (an unchecked in_progress/blocked task is normal, not a reset).
-    if (checked && was !== 'done') return 'done';
+    // A TICK CANNOT MEAN DONE ANY MORE. Done is earned by the work: the route
+    // refuses it without a linked session, so a tick here would send a 409 the
+    // user cannot act on from a markdown file. The honest mapping is to claim
+    // the card — that is what a person ticking a box in their repo means, and
+    // the agent that finishes it closes it with its session attached.
+    //
+    // An untick still resets a done card, because undoing a claim is safe.
+    if (checked && was === 'todo') return 'in_progress';
     if (!checked && was === 'done') return 'todo';
     return token ?? was;
   }
@@ -181,7 +185,8 @@ export function renderTeamTasksMd(tasks: TeamTaskLite[]): string {
     '# Team tasks',
     '',
     '<!-- Managed by chat-recall. Tick a box or edit the `status:` token, then run',
-    '     `chat-recall tasks push`. Statuses: todo · in_progress · blocked · done. -->',
+    '     `chat-recall tasks push`. Statuses: todo · in_progress · done · rejected.',
+    '     A tick claims a task; only the session that does the work can close it. -->',
     '',
   ];
   if (tasks.length === 0) lines.push('_No tasks assigned to you here._');
