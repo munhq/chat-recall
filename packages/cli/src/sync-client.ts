@@ -31,6 +31,7 @@
  * server owns them.
  */
 import { join, dirname, basename } from 'node:path';
+import { envCredentials } from '@chat-recall/engine/core/credentials-env.js';
 import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync, chmodSync, unlinkSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -70,7 +71,7 @@ import { extractEntities } from '@chat-recall/engine/core/entity-extractor.js';
 import { buildSourceRegistry } from '@chat-recall/engine/parsers/all-sources.js';
 import { getSyncedRows, markSynced, getLedgerData, persistLedgerData,
   fieldNeedsScan, markFieldCoverage, fieldNeedsFullPass, markFieldFullPassDone,
-  syncMode, markFullResync, loadItemVersions, saveItemVersions, type SyncedRow } from './sync-ledger.js';
+  syncMode, markFullResync, loadItemVersions, saveItemVersions, flushLedger, pruneLedgerTargets, type SyncedRow } from './sync-ledger.js';
 import { extractorVersionForTool, extractorVersionForId, toolOfId, EXTRACTOR_VERSION } from '@chat-recall/engine/core/extractor-version.js';
 import { SYNC_FIELDS } from '@chat-recall/engine/core/sync-fields.js';
 import { acquireIndexLock } from '@chat-recall/engine/core/index-lock.js';
@@ -108,6 +109,12 @@ export function saveCredentials(c: Credentials): void {
 }
 
 export function loadAllCredentials(): Credentials[] {
+  // A container, a CI job or a headless daemon has no credentials.json. When
+  // the environment carries an explicit token it IS the login — see
+  // credentials-env.ts for why the file is not consulted in that case.
+  const fromEnv = envCredentials();
+  if (fromEnv) return [{ serverUrl: fromEnv.serverUrl, token: fromEnv.token }];
+
   try {
     const parsed = JSON.parse(readFileSync(credPath(), 'utf-8'));
     // token may be '' for a no-auth local self-host server (AUTH_PROVIDER=none) —
@@ -367,6 +374,10 @@ function isLocalHost(serverUrl: string): boolean {
 export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number; prune?: boolean; useLedger?: boolean; walk?: 'full' | 'changed' } = {}): Promise<SyncResult> {
   const targets = loadAllCredentials();
   if (targets.length === 0) throw new Error('Not logged in — run `chat-recall login <server-url> --token <token>`');
+  // Once per walk: forget servers we no longer sync to, so their rows stop
+  // riding along in every write of this single-file ledger.
+  try { pruneLedgerTargets(targets.map((t) => t.serverUrl)); } catch { /* never block a sync on housekeeping */ }
+
   let agg: SyncResult | null = null;
   const errors: string[] = [];
   for (const cred of targets) {
@@ -382,6 +393,11 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
       errors.push(`${cred.serverUrl}: ${e instanceof Error ? e.message : e}`);
     }
   }
+  // Ledger writes are coalesced during the walk (see persist() in sync-ledger).
+  // This is the durability point: everything acked above reaches disk before we
+  // report success, so a crash after this cannot re-ship what the server has.
+  // In the finally, because a partial walk's acks are still worth keeping.
+  flushLedger();
   if (!agg) throw new Error(`sync failed for all targets:\n  ${errors.join('\n  ')}`);
   if (errors.length > 0) console.error(`[sync] ${errors.length} target(s) failed (others succeeded):\n  ${errors.join('\n  ')}`);
   return agg;
