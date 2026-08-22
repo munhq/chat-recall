@@ -49,12 +49,13 @@ import { drainSyncIntents } from '../src/intent-drain.js';
 import { loadAllCredentials } from '../src/sync-client.js';
 import { runAutoUpdate } from '../src/auto-update.js';
 import { codeFingerprint, checkSelfRestart } from '../src/self-restart.js';
+import { rotateLogIfLarge } from '../src/log-rotate.js';
 import { runCollectorMigration } from '../src/collector-migrate.js';
 
 // Injected by the bundler (scripts/bundle.mjs). Falls back for tsx/dev runs.
 declare const __CLI_VERSION__: string;
 const CLI_VERSION = typeof __CLI_VERSION__ === 'string' ? __CLI_VERSION__ : '0.0.0';
-import { existsSync, readFileSync, statSync, renameSync, unlinkSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
 import { flushLedger } from '../src/sync-ledger.js';
 import { readCollectorHealth, writeCollectorHealth, collectorHealthPath, type TargetHealth } from '@chat-recall/engine/core/collector-health.js';
 
@@ -467,26 +468,19 @@ if (BOOT_CODE) {
 // ── Log rotation ─────────────────────────────────────────────────────
 //
 // Only for the service managers whose redirection WE write: launchd's
-// StandardOutPath and the Windows Scheduled Task's `>>`. Under systemd the
-// output goes to the journal, which rotates itself.
+// StandardOutPath and the Windows Scheduled Task's `>>`. A systemd unit we
+// render sends output to the journal, which rotates itself — but units written
+// before that change still carry `StandardOutput=append:…/watch.log`, so this
+// runs there too.
 //
-// Rotate at startup rather than on a timer: whoever redirected our stdout holds
-// the fd, so renaming mid-run leaves them writing to the old inode until the
-// next restart. At startup that is exactly the behaviour we want — the same
-// contract logrotate has without copytruncate.
-function rotateLogIfLarge(): void {
-  const LOG_MAX_BYTES = 32 * 1024 * 1024;
-  try {
-    const logPath = join(getDataDir(), 'watch.log');
-    const st = statSync(logPath);
-    if (st.size < LOG_MAX_BYTES) return;
-    const prev = `${logPath}.1`;
-    try { unlinkSync(prev); } catch { /* no previous rotation */ }
-    renameSync(logPath, prev);
-    console.log(`[${ts()}] rotated watch.log at ${(st.size / 1048576).toFixed(0)}MB → watch.log.1`);
-  } catch { /* no log file, or not ours to rotate */ }
+// The rule (copy + truncate, never rename) and the incident that proved it live
+// in log-rotate.ts, with the test that pins them.
+{
+  const r = rotateLogIfLarge(join(getDataDir(), 'watch.log'));
+  if (r.rotated) {
+    console.log(`[${ts()}] rotated watch.log at ${(r.sizeBefore / 1048576).toFixed(0)}MB → watch.log.1 (copy+truncate; the path is preserved)`);
+  }
 }
-rotateLogIfLarge();
 
 // ── Collector health ─────────────────────────────────────────────────
 //
