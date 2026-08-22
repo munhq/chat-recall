@@ -217,7 +217,51 @@ export function resolveSessionContentGroups(sessionId: string): SessionContentGr
  * A single copy is returned verbatim (no merge pass), so the one-home case is
  * byte-for-byte what it always was.
  */
+/**
+ * Opt-in, single-entry, explicitly-scoped read cache.
+ *
+ * Deriving one session's data re-reads its transcript from disk four times:
+ * replaySessionAny, then computeOutcome (which reads twice internally — once
+ * for extractTurns and once for replay), then extractTurnsAny. For the 36.8 MB
+ * session on this developer's machine that is ~150 MB of reads per sync per
+ * target, for one conversation.
+ *
+ * The cache is NOT ambient. It holds exactly one session's text and only while
+ * a caller has opened a scope, because this file's history is an out-of-memory
+ * crash: a long-lived cache of transcript text is the same shape of bug as the
+ * sliced-string leak that took the daemon down. One entry, explicit lifetime,
+ * cleared in a finally — so the worst case is one transcript resident during
+ * the derive of that transcript, which was already true.
+ *
+ * The key includes mtime and byte length, so a file that changes mid-scope is
+ * re-read rather than served stale.
+ */
+let readScope: { key: string; value: { text: string; mtime: number } } | null = null;
+let readScopeDepth = 0;
+
+export function withSessionReadCache<T>(fn: () => T): T {
+  readScopeDepth++;
+  try {
+    return fn();
+  } finally {
+    if (--readScopeDepth === 0) readScope = null;
+  }
+}
+
 export function readSessionGroupText(group: SessionContentGroup): { text: string; mtime: number } {
+  let key = '';
+  if (readScopeDepth > 0) {
+    // Cheap identity: paths plus each file's mtime and size. Costs one stat per
+    // path, which we are about to do anyway, and catches an append mid-scope.
+    const parts: string[] = [];
+    for (const p of group.paths) {
+      try { const st = statSync(p); parts.push(`${p}:${st.mtimeMs}:${st.size}`); }
+      catch { parts.push(`${p}:missing`); }
+    }
+    key = parts.join('|');
+    if (readScope && readScope.key === key) return readScope.value;
+  }
+
   let text = '';
   let mtime = 0;
   for (const p of group.paths) {
@@ -226,7 +270,9 @@ export function readSessionGroupText(group: SessionContentGroup): { text: string
     try { mtime = Math.max(mtime, statSync(p).mtimeMs); } catch { /* ignore */ }
     text = text ? mergeLineText(text, raw).text : raw;
   }
-  return { text, mtime };
+  const out = { text, mtime };
+  if (readScopeDepth > 0 && key) readScope = { key, value: out };
+  return out;
 }
 
 export function resolveSessionContentPaths(sessionFile: string): string[] {

@@ -11,6 +11,9 @@
   },
   "description": "Local-first memory for AI coding tools \u2014 indexes Claude Code / Gemini CLI / OpenCode / Codex sessions, exposes them over MCP, optionally syncs redacted history to a chat-recall server",
   "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "license": "Elastic-2.0",
   "bin": {
     "chat-recall": "./dist/cli.js",
