@@ -10,16 +10,17 @@ import { reminderStage, trialReminderMail } from './trial-reminders.js';
 
 describe('reminderStage', () => {
   test('nothing is due early in the trial', () => {
-    expect(reminderStage(14)).toBeNull();
-    expect(reminderStage(8)).toBeNull();
+    // Re-keyed for the 7-day trial prod runs: at 7 days left the user has just
+    // signed up, and the old threshold fired the halfway nudge on day zero.
+    expect(reminderStage(7)).toBeNull();
+    expect(reminderStage(4)).toBeNull();
   });
 
-  test('the halfway nudge at 7 days left', () => {
-    expect(reminderStage(7)).toBe('half');
+  test('the halfway nudge at 3 days left', () => {
+    expect(reminderStage(3)).toBe('half');
   });
 
-  test('the final notice from 2 days left', () => {
-    expect(reminderStage(2)).toBe('final');
+  test('the final notice from 1 day left', () => {
     expect(reminderStage(1)).toBe('final');
   });
 
@@ -32,7 +33,7 @@ describe('reminderStage', () => {
     // Thresholds are <=, not ==, so a tenant first seen at 3 days left gets the
     // halfway message, and one first seen at 1 day gets the final one. An == test
     // would silently send nothing at all to a tenant the sweep stepped over.
-    expect(reminderStage(5)).toBe('half');
+    expect(reminderStage(2)).toBe('half');
     expect(reminderStage(1)).toBe('final');
   });
 
@@ -53,25 +54,29 @@ describe('trialReminderMail', () => {
       expect(mail.text).toMatch(/subscribe/i);
     }
     expect(trialReminderMail('a@b.test', 'ended', 0).text).toMatch(/nothing is deleted/i);
-    expect(trialReminderMail('a@b.test', 'final', 2).text).toMatch(/nothing is deleted/i);
+    expect(trialReminderMail('a@b.test', 'final', 1).text).toMatch(/nothing is deleted/i);
   });
 
-  test('the ended notice states the free-plan truth, not read-only', () => {
+  test('the ended notice states what stops and what does not', () => {
     const text = trialReminderMail('a@b.test', 'ended', 0).text;
-    // The old promise ("read-only after trial") is no longer the product: a
-    // lapsed tenant lands on the FREE plan — windowed search, metered sync.
+    // Two earlier versions of this copy were wrong in opposite directions:
+    // "read-only" (nothing was read-only) and "the free plan: your last 7 days
+    // stay searchable" (there is no window, and sync no longer continues).
     expect(text).not.toMatch(/read-only/i);
-    expect(text).toMatch(/free plan/i);
-    expect(text).toMatch(/7 days/);            // the enforced search window
-    expect(text).toMatch(/monthly quota/i);    // sync continues, metered
-    expect(text).toMatch(/unlocks/i);          // the full history is the offer
+    expect(text).not.toMatch(/free plan/i);
+    expect(text).not.toMatch(/\bdays\b.*searchable/i);
+    expect(text).toMatch(/stop syncing|no longer syncing/i);
+    expect(text).toMatch(/fully searchable/i);
+    expect(text).toMatch(/sync --full/);       // the one command that restores it
+    expect(text).toMatch(/export/i);
   });
 
-  test('the final notice describes the same free-plan landing', () => {
-    const text = trialReminderMail('a@b.test', 'final', 2).text;
+  test('the final notice describes the same landing', () => {
+    const text = trialReminderMail('a@b.test', 'final', 1).text;
     expect(text).not.toMatch(/read-only/i);
-    expect(text).toMatch(/free plan/i);
-    expect(text).toMatch(/monthly quota/i);
+    expect(text).not.toMatch(/free plan/i);
+    expect(text).toMatch(/syncing stops/i);
+    expect(text).toMatch(/fully searchable/i);
   });
 
   test('singular day, not "1 days"', () => {

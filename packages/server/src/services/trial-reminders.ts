@@ -13,9 +13,9 @@
  * that misses a window still sends the most urgent message rather than a stale
  * one:
  *
- *   7 days left → the halfway nudge
- *   2 days left → the deadline is real
- *   0 days left → the trial has ended; the account is on the free plan
+ *   3 days left → the halfway nudge
+ *   1 day left  → the deadline is real
+ *   0 days left → the trial has ended; syncing has stopped
  *
  * Each stage is sent at most once per tenant. The record of having sent it is a
  * tenant setting (`trial_reminder_<stage>`), so a restart, a redeploy or a second
@@ -38,11 +38,14 @@ import { createControlPlane } from '../imports.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { sendMail } from '../auth/mailer.js';
 import { isNoCardTrial, trialDaysLeft, trialLengthDays } from '../util/trial.js';
-import { freeLimits } from '../util/entitlements.js';
 
 const log = createLogger('trial-reminders');
 
-/** The three moments we write to a trialing user. */
+/** The three moments we write to a trialing user.
+ *
+ *  Keyed for a SEVEN-day trial: 3 days left, 1 day left, ended. The thresholds
+ *  were 7 / 2 / 0, written for a 14-day trial — on the 7-day trial prod actually
+ *  runs, the halfway nudge fired on day zero, alongside the welcome. */
 export type ReminderStage = 'half' | 'final' | 'ended';
 
 /**
@@ -56,8 +59,8 @@ export type ReminderStage = 'half' | 'final' | 'ended';
 export function reminderStage(daysLeft: number | null): ReminderStage | null {
   if (daysLeft == null) return null;
   if (daysLeft <= 0) return 'ended';
-  if (daysLeft <= 2) return 'final';
-  if (daysLeft <= 7) return 'half';
+  if (daysLeft <= 1) return 'final';
+  if (daysLeft <= 3) return 'half';
   return null;
 }
 
@@ -68,23 +71,31 @@ const UPGRADE_URL = process.env.TRIAL_UPGRADE_URL || 'https://chatrecall.dev/pri
  *
  * States what happens at the end in every message, because the thing that makes
  * a deadline email tolerable is that it does not threaten: the history is kept,
- * and the account lands on the free plan rather than going dark — nobody has to
- * act out of fear of losing work. The window is read from freeLimits() so the
- * email never promises a number the server does not enforce.
+ * search over it keeps working, and export is never withheld — nobody has to act
+ * out of fear of losing work. It names no numbers, so it cannot promise a limit
+ * the server does not enforce.
  */
 export function trialReminderMail(to: string, stage: ReminderStage, daysLeft: number) {
-  const keep = 'Your history is kept either way — nothing is deleted.';
-  const windowDays = freeLimits().searchWindowDays ?? 7;
+  const keep = 'Nothing is deleted, and export always works.';
+  // What actually happens at the end, in the words the CLI and the banner use.
+  // No search window is mentioned because none is applied: the whole synced
+  // history stays searchable and only new ingest stops.
+  const after = [
+    'What changes: new sessions stop syncing.',
+    'What does not: everything already synced stays fully searchable, and',
+    'export keeps working.',
+    '',
+    'Your transcripts live on your own disk, so nothing is stranded — one',
+    '`chat-recall sync --full` brings the server current the day you subscribe.',
+  ];
   if (stage === 'ended') {
     return {
       to,
-      subject: 'Your chat-recall trial has ended',
+      subject: 'Your chat-recall trial has ended — syncing has stopped',
       text: [
-        'Your chat-recall trial has ended.',
+        'Your chat-recall trial has ended, so new sessions are no longer syncing.',
         '',
-        `Your account is now on the FREE plan: your last ${windowDays} days stay`,
-        'searchable, and sync keeps working within a monthly quota. Your full',
-        'history is kept and unlocks the moment you upgrade.',
+        ...after,
         '',
         keep,
         '',
@@ -97,11 +108,10 @@ export function trialReminderMail(to: string, stage: ReminderStage, daysLeft: nu
       to,
       subject: `${daysLeft} day${daysLeft === 1 ? '' : 's'} left on your chat-recall trial`,
       text: [
-        `Your chat-recall trial ends in ${daysLeft} day${daysLeft === 1 ? '' : 's'}.`,
+        `Your chat-recall trial ends in ${daysLeft} day${daysLeft === 1 ? '' : 's'}, and`,
+        'syncing stops when it does.',
         '',
-        `When it ends you move to the free plan: your last ${windowDays} days stay`,
-        'searchable, sync keeps working within a monthly quota, and your full',
-        'history unlocks when you upgrade.',
+        ...after,
         '',
         keep,
         '',
