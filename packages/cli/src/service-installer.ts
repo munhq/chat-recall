@@ -112,9 +112,13 @@ export function renderSystemdUnit(watchJs: string, node: string, logFile: string
     // largest transcripts.
     `ExecStart=${node} --max-old-space-size=1536 ${watchJs}`,
     'Restart=on-failure', 'RestartSec=10', 'Nice=10',
-    // Keep the service's own stdout/stderr out of the journal noise but
-    // available for `chat-recall service status` without paging journald.
-    `StandardOutput=append:${logFile}`, `StandardError=append:${logFile}`, '',
+    // JOURNAL, not append:. The file version had no rotation and nothing to
+    // give it any: systemd holds the fd open, so the daemon cannot rename or
+    // truncate its own log without leaving systemd writing into a hole. It
+    // reached 45 MB on this developer's machine and would have grown forever.
+    // journald already rotates and applies disk limits. Read it with
+    //   journalctl --user -u chat-recall-watch -f
+    'StandardOutput=journal', 'StandardError=journal', '',
     '[Install]', 'WantedBy=default.target', '',
   ].join('\n');
 }
