@@ -24,16 +24,28 @@ describe('TEAM_TASKS.md render + parse round-trip', () => {
     expect(parseTeamTasksFile(renderTeamTasksMd(tasks))).toEqual([]);
   });
 
-  test('ticking a todo task → done', () => {
+  test('ticking a todo task CLAIMS it — a tick cannot mean done', () => {
+    // Done is earned by the work: the route refuses it without a linked
+    // session, so a tick here used to produce a 409 the user could not act on
+    // from a markdown file. Claiming is what a person ticking a box in their
+    // own repo actually means; the agent that finishes it closes it with its
+    // session attached.
     const md = renderTeamTasksMd(tasks).replace('- [ ] Wire the thing', '- [x] Wire the thing');
     const edits = parseTeamTasksFile(md);
-    expect(edits).toEqual([{ kind: 'team', id: 't_aaa', was: 'todo', intent: 'done' }]);
+    expect(edits).toEqual([{ kind: 'team', id: 't_aaa', was: 'todo', intent: 'in_progress' }]);
   });
 
   test('editing the status token → that status wins', () => {
-    const md = renderTeamTasksMd(tasks).replace('status: `in_progress`', 'status: `blocked`');
+    const md = renderTeamTasksMd(tasks).replace('status: `in_progress`', 'status: `rejected`');
     const edits = parseTeamTasksFile(md);
-    expect(edits).toEqual([{ kind: 'team', id: 't_bbb', was: 'in_progress', intent: 'blocked' }]);
+    expect(edits).toEqual([{ kind: 'team', id: 't_bbb', was: 'in_progress', intent: 'rejected' }]);
+  });
+
+  test("'blocked' is no longer a status anyone can set", () => {
+    // Nothing ever wrote it and the board has no column for it, so a card set
+    // to blocked simply vanished from the UI.
+    const md = renderTeamTasksMd(tasks).replace('status: `in_progress`', 'status: `blocked`');
+    expect(parseTeamTasksFile(md)).toEqual([]);
   });
 
   test('unticking a done task → todo', () => {

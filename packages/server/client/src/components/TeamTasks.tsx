@@ -29,6 +29,13 @@ const COLUMNS: Array<{ status: TeamTaskStatus; label: string }> = [
   { status: 'done', label: 'Done' },
   { status: 'rejected', label: 'Rejected' },
 ];
+/** Columns whose cards are finished business — collapsed until asked for. */
+const CLOSED_COLUMNS: readonly TeamTaskStatus[] = ['done', 'rejected'];
+
+/** Done cards with no session behind them: expired, not achieved. */
+const autoClosedCount = (items: Array<{ linkedSessionId?: string | null }>): number =>
+  items.filter((t) => !t.linkedSessionId).length;
+
 /** Columns a human may drag INTO, and pick in the per-card select. */
 const HUMAN_STATUSES: readonly TeamTaskStatus[] = ['todo', 'in_progress', 'rejected'];
 
@@ -85,6 +92,8 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
   const [autoBusy, setAutoBusy] = useState(false);
   const [autoNote, setAutoNote] = useState('');
   const [overCol, setOverCol] = useState<TeamTaskStatus | null>(null);
+  // Which closed columns the user has chosen to expand, this session.
+  const [openClosed, setOpenClosed] = useState<Set<TeamTaskStatus>>(new Set());
   /** Board filter. The board groups by STATUS; criticals arrive per project, so
    *  without this a busy tenant reads four columns of mixed repositories. */
   const [projFilter, setProjFilter] = useState('');
@@ -177,8 +186,21 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
     finally { setBusy(false); }
   }
 
+  // Same scoping rule as the wake-up (routes/memory.ts): SUBSTRING, not
+  // equality, because a filter is a loose name ("chat-recall") while a stored
+  // project id is fully qualified ("git:github.com/munhq/chat-recall"). With
+  // equality the board and the wake-up disagreed about which cards belong to a
+  // project — one product, two answers. Unscoped cards stay visible for the
+  // same reason they do there: a card with no project is not another repo's.
   const visible = useMemo(
-    () => (projFilter ? tasks.filter((t) => (t.projectId || '') === projFilter) : tasks),
+    () => {
+      if (!projFilter) return tasks;
+      const needle = projFilter.toLowerCase();
+      return tasks.filter((t) => {
+        const pid = (t.projectId || '').toLowerCase();
+        return pid === '' || pid.includes(needle);
+      });
+    },
     [tasks, projFilter],
   );
   const byStatus = (s: TeamTaskStatus) => visible
@@ -246,7 +268,27 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
                 <span className="tt-count">{items.length}</span>
               </header>
 
-              {items.map((t) => (
+              {/* CLOSED COLUMNS ARE COLLAPSED BY DEFAULT.
+                  93 of this board's 96 cards were 'done', every one of them
+                  closed because a re-index stopped reporting its finding and
+                  NONE of them worked by anybody — zero carried a linked
+                  session. That pile was the loudest thing on the board while
+                  the three cards that needed attention sat next to it. The
+                  count in the header is the useful part; the cards are history,
+                  one click away. Nothing is deleted. */}
+              {CLOSED_COLUMNS.includes(col.status) && !openClosed.has(col.status) ? (
+                items.length > 0 && (
+                  <button
+                    type="button"
+                    className="tt-showclosed"
+                    onClick={() => setOpenClosed((prev) => new Set(prev).add(col.status))}
+                  >
+                    Show {items.length} {col.label.toLowerCase()}
+                    {col.status === 'done' && autoClosedCount(items) > 0
+                      && ` · ${autoClosedCount(items)} closed by a re-index, not by work`}
+                  </button>
+                )
+              ) : items.map((t) => (
                 <article
                   key={t.id}
                   className={`tt-card${dragId === t.id ? ' tt-dragging' : ''}`}
@@ -271,6 +313,19 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
                   {/* The differentiator: did the session attached to this card
                       actually ship anything? */}
                   {t.linkedSessionId && <SessionOutcome sessionId={t.linkedSessionId} />}
+
+                  {/* The brief. The auto-filer writes the fix, the file
+                      locations and the agent prompt into `description`, and
+                      recall_tasks detail:true hands all of it to an agent — but
+                      a human looking at the board saw none of it, so the card
+                      read as a bare title with no way to judge or act on it.
+                      Collapsed by default: 90 cards of full briefs is a wall. */}
+                  {t.description && (
+                    <details className="tt-brief">
+                      <summary>Brief</summary>
+                      <pre className="tt-brief-body">{t.description}</pre>
+                    </details>
+                  )}
 
                   <div className="tt-meta">
                     {t.linkedFindingId && <Chip kind="brand" size="sm">auto</Chip>}
@@ -783,6 +838,24 @@ const TT_CSS = `
   display: inline-flex; align-items: center; justify-content: center;
   background: var(--cr-ink-3); color: var(--cr-fg-2); font-size: 9.5px; font-weight: 600;
   letter-spacing: 0.02em; }
+.tt-showclosed {
+  width: 100%; text-align: left; cursor: pointer;
+  font-size: 11px; color: var(--cr-fg-3);
+  background: none; border: 1px dashed var(--cr-line-1); border-radius: var(--cr-radius-xs);
+  padding: 8px; margin-top: 4px;
+}
+.tt-showclosed:hover { color: var(--cr-fg-1); border-style: solid; }
+.tt-brief > summary { font-size: 11px; color: var(--cr-fg-3); cursor: pointer; user-select: none; padding: 2px 0; }
+.tt-brief > summary:hover { color: var(--cr-fg-1); }
+.tt-brief-body {
+  font-size: 11px; line-height: 1.45; color: var(--cr-fg-2);
+  background: var(--cr-ink-1); border: 1px solid var(--cr-line-1); border-radius: var(--cr-radius-xs);
+  padding: 8px; margin: 6px 0 0;
+  /* The brief holds file:line lists and a fenced agent prompt. Wrap rather than
+     scroll horizontally, and cap the height so one long card cannot push the
+     rest of the column off screen. */
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow-y: auto;
+}
 .tt-donetag { font-size: 11px; color: var(--cr-ok-500); border: 1px solid var(--cr-line-1);
   padding: 2px 7px; border-radius: var(--cr-radius-xs); background: var(--cr-ink-1); }
 .tt-cmt { background: none; border: 0; cursor: pointer; color: var(--cr-fg-3);

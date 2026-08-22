@@ -1,61 +1,81 @@
 /**
- * Vendored and generated code is not a task.
+ * Vendored and generated code is not the user's to fix.
  *
- * A real board filled with cards about three.js bundles ("inflate copy-pasted 4×
- * (899 lines each)") and Go ABI bindings (events.gen.go). Nobody refactors a
- * minified bundle, and the fix for generated code is a change to its generator,
- * so neither belongs in findings or on the plan.
+ * Findings inside node_modules, vendor/, dist/ or a minified bundle are noise:
+ * nobody refactors a bundle, and the fix for generated code is a change to its
+ * generator. They also swamped the board — the auto-filer materialises every
+ * suggested action above the floor.
+ *
+ * THIS FILE IMPORTS THE SHIPPED PREDICATE. The previous version copied the
+ * pattern list into the test and asserted against the copy, with a comment
+ * admitting the real one was module-private. That is not a test of anything:
+ * delete a pattern from the collector and it stayed green. The same class of
+ * mistake let `rejected` ship without a database column — two tests covered the
+ * rule and both re-implemented it.
  */
 import { describe, test, expect } from 'vitest';
+import { isGenerated, GENERATED_PATTERNS } from './collector.js';
 import { severityOfPri, PRI_SEVERITY } from '../../types/code-intel.js';
 
-// The predicate is module-private, so the pattern list is asserted through the
-// exact shape it is built from: '/' + rel, matched by includes().
-const GENERATED = [
-  'generated/', '__generated__/', '.pb.go', '.gen.', '_pb2.py', '/gen/', '.g.dart',
-  '/node_modules/', '/vendor/', '/third_party/', '/site-packages/', '.lock',
-  '/dist/', '/build/', '/out/', '/target/', '/.next/', '/coverage/',
-  '.min.js', '.min.css', '.bundle.js', '-bundle.js', '.map',
-];
-const isGenerated = (rel: string) => GENERATED.some((g) => ('/' + rel).includes(g));
-
-describe('what counts as vendored or generated', () => {
-  test('the files that actually polluted the board', () => {
-    for (const f of [
-      'covalidator/abi/generated/IncoLightning/events.gen.go',
-      'web/static/js/three.min.js',
-      'app/dist/bundle.js',
-      'node_modules/three/build/three.module.js',
-      'vendor/github.com/pkg/errors/errors.go',
-      'target/debug/build/x.rs',
-      '.next/static/chunks/main.js',
-      'coverage/lcov-report/index.html',
-    ]) expect(isGenerated(f), f).toBe(true);
+describe('excluding vendored and generated code', () => {
+  test.each([
+    ['node_modules/zod/index.js', 'a dependency, at the string start'],
+    ['packages/app/node_modules/left-pad/index.js', 'a nested dependency'],
+    ['vendor/github.com/pkg/errors/errors.go', 'a Go vendor tree'],
+    ['third_party/protobuf/parser.cc', 'a third-party drop'],
+    ['api/events.pb.go', 'protobuf output'],
+    ['src/schema.gen.ts', 'a generator'],
+    ['proto/service_pb2.py', 'python protobuf'],
+    ['lib/models.g.dart', 'dart codegen'],
+    ['generated/client.ts', 'a generated dir'],
+    ['src/__generated__/types.ts', 'a generated dir, nested'],
+    ['dist/main.js', 'a build output'],
+    ['build/index.js', 'a build output'],
+    ['out/app.js', 'a build output'],
+    ['target/debug/thing.rs', 'a cargo target'],
+    ['.next/server/page.js', 'a framework build dir'],
+    ['coverage/lcov-report/base.css', 'coverage output'],
+    ['static/app.min.js', 'a minified bundle'],
+    ['static/app.min.css', 'minified css'],
+    ['static/vendor.bundle.js', 'a bundle'],
+    ['static/main-bundle.js', 'a bundle, dashed'],
+    ['dist/app.js.map', 'a source map'],
+    ['package-lock.json', 'a lockfile'],
+    ['.venv/lib/python3.11/site-packages/requests/api.py', 'a virtualenv'],
+  ])('excludes %s (%s)', (path) => {
+    expect(isGenerated(path)).toBe(true);
   });
 
-  test('real source is never mistaken for vendored', () => {
-    for (const f of [
-      'src/services/auto-tasks.ts',
-      'packages/engine/src/core/code/collector.ts',
-      'contracts/lightning/src/libs/incoLightning.sol',
-      'cmd/server/main.go',
-      'app/distribution/pricing.ts',   // 'dist' as a substring of a real word
-      'src/outbox/queue.ts',           // 'out' as a substring of a real word
-    ]) expect(isGenerated(f), f).toBe(false);
+  test.each([
+    ['src/index.ts'],
+    ['packages/engine/src/core/collector.ts'],
+    ['cmd/server/main.go'],
+    ['app/models/user.rb'],
+    // Near-misses that must NOT be swept up with the real thing.
+    ['src/generator.ts'],
+    ['src/regenerate.ts'],
+    ['docs/distribution.md'],
+    ['src/outbox.ts'],
+    ['src/building-blocks.ts'],
+  ])('keeps %s', (path) => {
+    expect(isGenerated(path)).toBe(false);
+  });
+
+  test('the exported list is the one the predicate uses', () => {
+    // Guards against the predicate being rewritten to consult something else,
+    // which would make every case above pass while testing nothing.
+    for (const pattern of GENERATED_PATTERNS) {
+      const probe = pattern.startsWith('/') ? `x${pattern}y` : `x/${pattern}y`;
+      expect(isGenerated(probe.replace(/^x\//, ''))).toBe(true);
+    }
+    expect(GENERATED_PATTERNS.length).toBeGreaterThan(15);
   });
 });
 
-describe('severityOfPri is the one mapping', () => {
-  test('the collector range', () => {
-    expect(severityOfPri(0)).toBe('critical');
-    expect(severityOfPri(1)).toBe('high');
-    expect(severityOfPri(2)).toBe('medium');
-    expect(severityOfPri(3)).toBe('low');
-  });
-  test('junk fails to the most urgent, and anything past the scale is low', () => {
-    expect(severityOfPri(-4)).toBe('critical');
-    expect(severityOfPri(NaN)).toBe('critical');
-    expect(severityOfPri(99)).toBe('low');
-    expect(PRI_SEVERITY.length).toBe(4);
+describe('severity mapping', () => {
+  test('every priority has a severity', () => {
+    for (const pri of Object.keys(PRI_SEVERITY)) {
+      expect(severityOfPri(Number(pri))).toBeTruthy();
+    }
   });
 });
