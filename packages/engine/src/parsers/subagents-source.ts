@@ -31,6 +31,7 @@ import { opencodeBackend as OPENCODE } from '../core/backends/opencode.js';
 import { codexBackend as CODEX } from '../core/backends/codex.js';
 import { isSourceEnabled } from '../core/settings.js';
 import { parseFrontmatter, parseScalarToml } from '../core/toolkit-format.js';
+import { decodeProjectDirName } from '../core/project-dir-name.js';
 
 const MAX_CHUNK_CHARS = 2000;
 
@@ -77,7 +78,7 @@ export class SubagentsSource implements MemorySource {
         try {
           for (const entry of readdirSync(projectsRoot, { withFileTypes: true })) {
             if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-            const projectPath = entry.name.replace(/^-/, '/').replace(/-/g, '/');
+            const projectPath = decodeProjectDirName(entry.name);
             const agentDir = join(projectPath, '.claude', 'agents');
             if (existsSync(agentDir)) roots.push({ path: agentDir, tool: 'claude', scope: 'project', projectPath, format: 'md' });
           }

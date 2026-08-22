@@ -23,6 +23,7 @@ import type {
 } from '../types/memory.js';
 import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
 import { isSourceEnabled } from '../core/settings.js';
+import { decodeProjectDirName } from '../core/project-dir-name.js';
 
 interface HookEntry {
   type?: string;
@@ -56,7 +57,7 @@ export class HooksSource implements MemorySource {
       try {
         for (const entry of readdirSync(projectsRoot, { withFileTypes: true })) {
           if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-          const projectPath = entry.name.replace(/^-/, '/').replace(/-/g, '/');
+          const projectPath = decodeProjectDirName(entry.name);
           const settingsPath = join(projectPath, '.claude', 'settings.json');
           if (existsSync(settingsPath)) {
             yield* this.fromSettings(settingsPath, 'project', projectPath);
