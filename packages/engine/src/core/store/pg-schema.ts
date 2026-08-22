@@ -704,7 +704,7 @@ CREATE TABLE IF NOT EXISTS team_tasks (
   project_id        TEXT NOT NULL DEFAULT '',
   title             TEXT NOT NULL,
   description       TEXT NOT NULL DEFAULT '',
-  status            TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo','in_progress','blocked','done')),
+  status            TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo','in_progress','blocked','done','rejected')),
   assignee_sub      TEXT,
   created_by        TEXT NOT NULL,
   blocks            TEXT NOT NULL DEFAULT '[]',
@@ -721,6 +721,17 @@ CREATE TABLE IF NOT EXISTS team_tasks (
 );
 -- Live databases predate the column; must stay BELOW the CREATE (fresh boot).
 ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS linked_finding_id TEXT;
+-- 'rejected' is the HUMAN verdict: done is earned by the work, so the only
+-- thing a person can say about a card they disagree with is no. It shipped in
+-- the route, the client and the board and never reached here, so every reject
+-- raised a constraint violation and rolled the card back. CREATE TABLE IF NOT
+-- EXISTS cannot widen a constraint on a live table, so re-state it explicitly.
+-- 'blocked' stays in the list: nothing writes it any more, but rows written
+-- before it was retired still hold it, and a constraint that rejects existing
+-- data fails on the next write to those rows.
+ALTER TABLE team_tasks DROP CONSTRAINT IF EXISTS team_tasks_status_check;
+ALTER TABLE team_tasks ADD CONSTRAINT team_tasks_status_check
+  CHECK (status IN ('todo','in_progress','blocked','done','rejected'));
 CREATE INDEX IF NOT EXISTS idx_team_tasks_finding ON team_tasks(tenant, linked_finding_id);
 CREATE INDEX IF NOT EXISTS idx_team_tasks_proj ON team_tasks(tenant, project_id, status);
 CREATE INDEX IF NOT EXISTS idx_team_tasks_assignee ON team_tasks(tenant, assignee_sub, status);

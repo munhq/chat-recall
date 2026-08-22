@@ -9,6 +9,7 @@
 
 import { createReadStream, existsSync, readFileSync } from 'fs';
 import { createInterface } from 'readline';
+import { flatString } from './flat-string.js';
 
 const BANNERS: RegExp[] = [
   /MCP issues detected\. ?Run \/mcp list for status\.?/g,
@@ -107,7 +108,9 @@ export function extractFirstUserPrompt(
       const cleaned = stripBanners(text);
       if (cleaned.length < 10) return;
 
-      finish(cleaned.slice(0, maxLength));
+      // flatString: the preview is cut from a message that can be megabytes,
+      // and a V8 slice would keep all of it alive inside every SessionRef.
+      finish(flatString(cleaned.slice(0, maxLength)));
     });
 
     rl.on('close', () => finish(''));
@@ -179,7 +182,7 @@ export function extractFirstUserPromptSync(
     const cleaned = stripBanners(text);
     if (cleaned.length < 10) continue;
 
-    return cleaned.slice(0, maxLength);
+    return flatString(cleaned.slice(0, maxLength));
   }
 
   return '';

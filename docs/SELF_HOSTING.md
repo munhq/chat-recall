@@ -113,9 +113,10 @@ wiring is correct and the agent can now search its own history.
 
 ## Team features (licence key)
 
-Solo self-hosting is free and unlimited, forever. Collaboration is licensed:
-inviting a second member, shared project history, the team task board and
-per-member activity.
+Solo self-hosting is free and unlimited, forever, and that includes everything
+one person uses alone — the task board and Toolkit among them. Collaboration is
+what a licence buys: inviting a second member, shared project history, assigning
+work to a teammate, and per-member activity.
 
 Buy a licence from the account page of any chat-recall server you can reach
 (`/app?view=account`) — it is self-serve, no email thread. Then add the key to

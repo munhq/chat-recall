@@ -46,6 +46,7 @@ import {
   replayFromEvents,
 } from '../generic-engine.js';
 import { readTailFromOffset } from './tail-read.js';
+import { flatString } from '../flat-string.js';
 
 const PREFIX = 'gemini_';
 
@@ -133,7 +134,7 @@ export class GeminiBackend implements ToolBackend {
           sessionId = readSessionId(fullPath, format);
           const messages = readGeminiMessages(fullPath, format);
           const firstUser = messages.find((m: { type?: string; text?: string; content?: unknown }) => m.type === 'user');
-          firstPrompt = (typeof firstUser?.text === 'string' ? firstUser.text : flatten(firstUser?.content)).slice(0, 200);
+          firstPrompt = flatString((typeof firstUser?.text === 'string' ? firstUser.text : flatten(firstUser?.content)).slice(0, 200));
           messageCount = messages.length;
         } else if (format === 'jsonl') {
           // Transcripts run into the hundreds of MB; parsing them whole here
@@ -151,7 +152,7 @@ export class GeminiBackend implements ToolBackend {
             let m: { type?: string; text?: string; content?: unknown };
             try { m = JSON.parse(s); } catch { continue; }
             if (m?.type !== 'user') continue;
-            firstPrompt = (typeof m.text === 'string' ? m.text : flatten(m.content)).slice(0, 200);
+            firstPrompt = flatString((typeof m.text === 'string' ? m.text : flatten(m.content)).slice(0, 200));
             break;
           }
         }

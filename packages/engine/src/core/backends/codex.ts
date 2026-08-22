@@ -42,6 +42,7 @@ import {
   replayFromEvents,
 } from '../generic-engine.js';
 import { readTailFromOffset } from './tail-read.js';
+import { flatString } from '../flat-string.js';
 
 const PREFIX = 'codex_';
 
@@ -134,7 +135,7 @@ export class CodexBackend implements ToolBackend {
           if (ev.type === 'event_msg' && ev.payload?.type === 'user_message') {
             messageCount++;
             if (!firstPrompt && ev.payload.message) {
-              firstPrompt = String(ev.payload.message).slice(0, 200);
+              firstPrompt = flatString(String(ev.payload.message).slice(0, 200));
             }
           } else if (ev.type === 'response_item' && ev.payload?.type === 'message') {
             messageCount++;

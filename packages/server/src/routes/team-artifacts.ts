@@ -68,6 +68,15 @@ router.post('/join', async (req, res) => {
   const inviteToken = req.body?.inviteToken || '';
   const cp = await createControlPlane();
   try {
+    // Redeeming an invite ADDS A SECOND PERSON to a tenant, which is the one
+    // thing a licence buys — so it is checked here, not only where the invite
+    // was minted. Minting is gated, but an invite outlives the entitlement that
+    // created it: a licence that lapses, or a Team subscription that is
+    // cancelled, left every outstanding invite still redeemable. The invite
+    // carries the tenant, so resolve it first and charge that tenant's plan.
+    const pending = await cp.peekInvite(inviteToken);
+    if (!pending) return res.status(400).json({ error: 'invalid or expired invite' });
+    if (!(await collaborationOr402(res, pending.team_slug))) return;
     const m = await cp.redeemInvite(user.sub, user.email, inviteToken);
     if (!m) return res.status(400).json({ error: 'invalid or expired invite' });
     res.json({ team: { id: m.team_slug, name: m.name } });

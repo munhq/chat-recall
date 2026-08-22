@@ -53,6 +53,7 @@ import {
   liveScanEditsFromEvents,
   replayFromEvents,
 } from '../generic-engine.js';
+import { flatString } from '../flat-string.js';
 
 const PREFIX = 'opencode_';
 
@@ -213,7 +214,7 @@ export class OpencodeBackend implements ToolBackend {
         if (firstUser) {
           try {
             const parsed = JSON.parse(firstUser.data);
-            firstPrompt = String(parsed?.text || '').slice(0, 200);
+            firstPrompt = flatString(String(parsed?.text || '').slice(0, 200));
           } catch { /* ignore */ }
         }
 

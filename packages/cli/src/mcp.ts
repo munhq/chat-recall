@@ -414,11 +414,21 @@ const RecallTeamActivitySchema = z.object({
   since_days: z.number().optional().describe('Only activity in the last N days'),
 });
 
-const TASK_STATUSES = ['todo', 'in_progress', 'blocked', 'done'] as const;
+// Two vocabularies, deliberately different.
+//
+// FILTER is every status a card can actually hold, so an agent can ask "what
+// was rejected?". SETTABLE is what an AGENT may write, and it is smaller by two:
+//   - 'rejected' is the user's verdict alone. An agent that disagrees with a
+//     card says so and lets the user reject it; it never rejects for them.
+//   - 'blocked' is retired. Nothing has ever written it, and the board has no
+//     column for it — an agent setting it would make the card vanish from the
+//     UI entirely, because byStatus() never queries that bucket.
+const TASK_STATUS_FILTER = ['todo', 'in_progress', 'done', 'rejected'] as const;
+const TASK_STATUS_SETTABLE = ['todo', 'in_progress', 'done'] as const;
 const RecallTasksSchema = z.object({
   mine: z.boolean().optional().describe('Only tasks assigned to me'),
   project: z.string().optional().describe('Filter to one project_id'),
-  status: z.enum(TASK_STATUSES).optional().describe('Filter by status'),
+  status: z.enum(TASK_STATUS_FILTER).optional().describe('Filter by status'),
   detail: z.boolean().optional()
     .describe('Return the full brief per task — the fix, the file locations and the agent prompt — plus how to claim and close one. Use this when you intend to DO the tasks, not just list them.'),
 });
@@ -430,7 +440,7 @@ const RecallTaskCreateSchema = z.object({
 });
 const RecallTaskUpdateSchema = z.object({
   id: z.string().describe('Task id (t_…)'),
-  status: z.enum(TASK_STATUSES).optional(),
+  status: z.enum(TASK_STATUS_SETTABLE).optional(),
   assignee: z.string().optional().describe('Reassign to this user id (sub); empty string unassigns'),
   title: z.string().optional(),
   comment: z.string().optional().describe('Add a comment to the task'),
@@ -1051,17 +1061,28 @@ or standup/status. Filter by project, by member, or by recency (since_days).`,
       },
       {
         name: 'recall_tasks',
-        description: `List collaborative team tasks (the shared task board).
+        description: `List the task board — and, with detail, the work itself.
 
-Team-visible tasks with status, assignee, and project. Use for "what's on the
-team's plate", "my tasks", or to find a task id to update. Filter by mine /
-project / status.`,
+Without \`detail\`: one line per card (title, id, assignee). Use for "what's on
+the team's plate", "my tasks", or to find a task id to update.
+
+With \`detail: true\`: the full brief per open card — the fix, the file
+locations and the agent prompt that the auto-filer already wrote — plus how to
+claim a card and how it gets closed. Use that whenever you intend to DO the
+work rather than report on it.
+
+Closing is earned: 'done' is refused without a linked session. Rejecting is the
+user's call, never yours.`,
         inputSchema: {
           type: 'object',
           properties: {
             mine: { type: 'boolean', description: 'Only tasks assigned to me' },
             project: { type: 'string', description: 'Filter to one project_id' },
-            status: { type: 'string', enum: [...TASK_STATUSES], description: 'Filter by status' },
+            status: { type: 'string', enum: [...TASK_STATUS_FILTER], description: 'Filter by status' },
+            detail: {
+              type: 'boolean',
+              description: 'Return the full brief per task — the fix, the file locations and the agent prompt — plus how to claim and close one. Use this when you intend to DO the tasks, not just list them.',
+            },
           },
         },
       },
@@ -1099,7 +1120,7 @@ WORKFLOW — do this whenever the user asks you to work on a task from the board
           type: 'object',
           properties: {
             id: { type: 'string', description: 'Task id (t_…)' },
-            status: { type: 'string', enum: [...TASK_STATUSES] },
+            status: { type: 'string', enum: [...TASK_STATUS_SETTABLE], description: "Set the card's state. There is no 'rejected' here on purpose: rejecting is the user's verdict, not yours." },
             assignee: { type: 'string', description: 'Reassign to this user id (sub)' },
             title: { type: 'string' },
             comment: { type: 'string', description: 'Add a comment' },
