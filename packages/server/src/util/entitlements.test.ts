@@ -124,16 +124,25 @@ describe('cloud: plan → features', () => {
 describe('self-host: licence → features', () => {
   beforeEach(selfhost);
 
-  test('unlicensed self-host is FREE and FULL — the whole Solo set', () => {
-    // Deliberately more than FREE_FEATURES. One person on their own hardware
-    // pays nothing: charging them taxes the people who drive adoption while
-    // earning almost nothing. See SELFHOST_FREE_FEATURES.
+  test('unlicensed self-host is FREE and FULL — the whole single-player product', () => {
+    // Deliberately more than FREE_FEATURES, and since 2026-08-22 that includes
+    // 'tasks' and 'toolkit': both are single-player, so withholding them
+    // contradicted the one rule this boundary has — you pay when a second
+    // person is involved. One person on their own hardware pays nothing.
     expect([...licenceFeatures()].sort())
-      .toEqual(['alerts', 'findings', 'insights', 'memory', 'scan', 'sync']);
+      .toEqual(['alerts', 'findings', 'insights', 'memory', 'scan', 'sync', 'tasks', 'toolkit']);
+  });
+
+  test('the single-player extras are free too — that is the point of the change', () => {
+    for (const f of ['tasks', 'toolkit'] as const) {
+      expect(licenceFeatures().has(f)).toBe(true);
+    }
   });
 
   test('but collaboration is NOT free — that is where the money is', () => {
-    for (const f of ['team', 'toolkit', 'sso', 'audit'] as const) {
+    // Narrowed with the same change: a licence now buys collaboration and the
+    // enterprise controls, and nothing a solo user already has.
+    for (const f of ['team', 'sso', 'audit'] as const) {
       expect(licenceFeatures().has(f)).toBe(false);
     }
     expect(allows('team-monthly', 'team')).toBe(false);   // plan is ignored off-cloud

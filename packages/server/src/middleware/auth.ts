@@ -142,6 +142,27 @@ export function validateAuthConfig(): void {
     }
   }
 
+  // static-token is on the free path because ONE shared token is one identity.
+  // But CHAT_RECALL_TOKENS is a token -> tenant MAP, so N entries pointing at N
+  // distinct tenants is N separate workspaces with separate histories — real
+  // multi-tenancy, unlicensed, and it slipped past the check above because
+  // 'static-token' is not in the `needs` table. Count the tenants, not the
+  // tokens: several tokens for the SAME tenant is still one identity (that is
+  // how you rotate a key, or give one person a second machine).
+  if (!isCloudEdition && provider() === 'static-token') {
+    const tenants = new Set(Object.values(staticTokens()));
+    if (tenants.size > 1 && !allows(null, 'team')) {
+      throw new Error(
+        `CHAT_RECALL_TOKENS maps tokens to ${tenants.size} different tenants, which is ` +
+          `multi-tenant operation and needs a licence including 'team'. Refusing to ` +
+          `start rather than run an unlicensed feature.\n\n` +
+          `For one person, point every token at the SAME tenant — several tokens for ` +
+          `one tenant is how you rotate a key or add a machine, and stays free.\n` +
+          `For multiple people: https://chatrecall.dev/pricing`,
+      );
+    }
+  }
+
   // SEC-05 — better-auth without its secret would throw on the first login
   // attempt instead of at boot; crash with a clear message now.
   if (provider() === 'better-auth' && !process.env.BETTER_AUTH_SECRET) {

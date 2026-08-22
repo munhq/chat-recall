@@ -52,7 +52,12 @@ const router = express.Router();
 //
 // Safe to narrow: every feature dropped from this list is now free, so an
 // already-activated instance loses nothing.
-const SELFHOST_FEATURES = ['team', 'toolkit', 'tasks'] as const;
+// A licence buys COLLABORATION, and now only that. 'toolkit' and 'tasks' moved
+// into SELFHOST_FREE_FEATURES on 2026-08-22, so granting them here would be
+// selling something the deployment already has. Narrowing is safe by the note
+// above: every feature dropped from this list is now free, so an
+// already-activated instance loses nothing.
+const SELFHOST_FEATURES = ['team'] as const;
 
 /**
  * The activation signing key, from CHAT_RECALL_ACTIVATION_KEY.

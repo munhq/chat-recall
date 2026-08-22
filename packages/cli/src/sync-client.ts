@@ -952,28 +952,50 @@ const refs = listAvailableBackends().flatMap((b) => {
   const scanSecrets = isSecretScannerAvailable() && upload.findings && process.env.CHAT_RECALL_SCAN_SECRETS !== '0';
   const verifySecretsScan = verifySecrets;
 
-  // ── Live KG accumulator. Triples are extracted on the spot from each
-  //    item's redacted text (no local knowledge-graph DB is read). Dedupe by
+  let skipped = 0, redactions = 0, walked = 0;
+
+  // ── Live KG accumulator. Triples are extracted on the spot from each item's
+  //    redacted text (no local knowledge-graph DB is read). Dedupe by
   //    subject|predicate|object|valid_from; entity types come from `is_a`
   //    triples seen in the same pass, defaulting to 'unknown' otherwise.
+  //
+  // TRIPLES SHIP IMMEDIATELY. They used to pile into an array that was drained
+  // only after the ENTIRE walk — on this developer's box that is 15,700
+  // sessions, so the array grew for the whole run and every row stayed live and
+  // reachable. A full Mark-Compact freed 0 MB at 1602 MB before the daemon
+  // aborted, which is the signature of retention, not of transient copies:
+  // nothing transient survives a mark-compact. Handing each triple to the
+  // batcher as it is produced bounds the resident set to one 4 MB window.
+  //
+  // Two small structures still span the walk, and both are bounded by DISTINCT
+  // entity count rather than by session count:
+  //   kgSeen        — dedup. Stores a 16-hex digest, because the old key
+  //                   repeated all three long strings in a fourth string.
+  //   kgEntityNames — the names to emit entities for at the end. This is the
+  //                   only reason the row array was ever kept; a Set of names
+  //                   it already references costs a pointer, not a row.
   const kgSeen = new Set<string>();
   const kgEntityType = new Map<string, string>();
-  const kgRows: Array<{ subject: string; predicate: string; object: string; valid_from: string | null; valid_to: string | null; confidence: number; source_session: string | null }> = [];
-  const accumulateKg = (triples: ReturnType<typeof extractEntities>, sourceSession: string | null): void => {
+  const kgEntityNames = new Set<string>();
+  const kgKey = (subject: string, predicate: string, object: string, validFrom: string): string =>
+    createHash('sha1').update(`${subject}|${predicate}|${object}|${validFrom}`).digest('hex').slice(0, 16);
+  const accumulateKg = async (triples: ReturnType<typeof extractEntities>, sourceSession: string | null): Promise<void> => {
     for (const t of triples) {
-      const key = `${t.subject}|${t.predicate}|${t.object}|${t.validFrom ?? ''}`;
+      const key = kgKey(t.subject, t.predicate, t.object, t.validFrom ?? '');
       if (kgSeen.has(key)) continue;
       kgSeen.add(key);
       if (t.predicate === 'is_a' && !kgEntityType.has(t.subject)) kgEntityType.set(t.subject, t.object);
-      kgRows.push({
+      kgEntityNames.add(t.subject);
+      kgEntityNames.add(t.object);
+      const count = { redactions: 0 };
+      await kgTripleBatch.add(redactDeep({
         subject: t.subject, predicate: t.predicate, object: t.object,
         valid_from: t.validFrom ?? null, valid_to: null,
         confidence: t.confidence ?? 1.0, source_session: sourceSession,
-      });
+      }, count));
+      redactions += count.redactions;
     }
   };
-
-  let skipped = 0, redactions = 0, walked = 0;
   let scanMs = 0, scanned = 0; // secret-scan metrics
 
   const slice = refs.slice(0, opts.limit ?? refs.length);
@@ -1204,7 +1226,7 @@ const refs = listAvailableBackends().flatMap((b) => {
     // Knowledge graph: extract triples live from the redacted conversation
     // text (no local KG DB is read). Accumulated + deduped, flushed at the end.
     if (upload.sessionMeta) {
-      accumulateKg(extractEntities(built.kgText, { projectPath: built.projectPath, sourceType: 'session', sessionId: ref.prefixedId, validFrom: ref.mtime ? new Date(ref.mtime).toISOString().slice(0, 10) : undefined }), ref.prefixedId);
+      await accumulateKg(extractEntities(built.kgText, { projectPath: built.projectPath, sourceType: 'session', sessionId: ref.prefixedId, validFrom: ref.mtime ? new Date(ref.mtime).toISOString().slice(0, 10) : undefined }), ref.prefixedId);
     }
 
     // Derived data — the CLI has the FS/git/transcript, the server doesn't.
@@ -1305,7 +1327,7 @@ const refs = listAvailableBackends().flatMap((b) => {
           });
           // KG: extract triples live from this item's redacted chunk text.
           if (upload.sessionMeta && redactedChunks.length > 0) {
-            accumulateKg(
+            await accumulateKg(
               extractEntities(redactedChunks.map((c) => c.text).join('\n'), { projectPath: item.projectPath || '', sourceType: item.sourceType, validFrom: item.mtime ? new Date(Number(item.mtime)).toISOString().slice(0, 10) : undefined }),
               null,
             );
@@ -1336,16 +1358,12 @@ const refs = listAvailableBackends().flatMap((b) => {
   //    also the incremental-correct set: no manual-fact replay, no local KG
   //    DB). Entities are derived from the triple subjects/objects, typed from
   //    any `is_a` triple seen in the same pass.
-  if (upload.sessionMeta && kgRows.length > 0) {
-    const entityNames = new Set<string>();
-    for (const t of kgRows) {
-      const count = { redactions: 0 };
-      await kgTripleBatch.add(redactDeep(t, count));
-      redactions += count.redactions;
-      entityNames.add(t.subject);
-      entityNames.add(t.object);
-    }
-    for (const name of entityNames) {
+  // Triples already shipped inside accumulateKg (see above). Entities cannot:
+  // a name's type comes from an `is_a` triple that may appear in any later
+  // session, so the type is only known once the walk is over. The names are
+  // held as a Set, bounded by distinct entities rather than by session count.
+  if (upload.sessionMeta && kgEntityNames.size > 0) {
+    for (const name of kgEntityNames) {
       const count = { redactions: 0 };
       await kgEntityBatch.add(redactDeep({ name, type: kgEntityType.get(name) ?? 'unknown', properties: {} }, count));
       redactions += count.redactions;
