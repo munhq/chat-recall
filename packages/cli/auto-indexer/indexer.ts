@@ -194,6 +194,81 @@ async function onResumeSignal(path: string): Promise<void> {
 
 // ── File watchers ───────────────────────────────────────────────────
 
+/**
+ * Watch strategy: native events by default, polling only where it is needed.
+ *
+ * Every watcher below used to hard-code `usePolling: true`. chokidar implements
+ * polling as one `fs.watchFile` per path, i.e. a `stat()` per file per interval
+ * on the libuv threadpool. Measured on this developer's machine: ~2,900 stat()
+ * per second, forever, with nobody typing — 251 million a day. On macOS it is
+ * worse than wasteful: chokidar ships fsevents as an optional native dep and
+ * installs it on every Mac, and `usePolling` explicitly disables it, so we paid
+ * thousands of syscalls a second to avoid a kernel event stream that was already
+ * there. Thousands of timer wakeups per second also keep the CPU out of deep
+ * C-states, which is battery on a laptop.
+ *
+ * Native watching (inotify / FSEvents / ReadDirectoryChangesW) costs nothing at
+ * idle on all three platforms. The one real reason to poll is a filesystem that
+ * does not deliver events — a network mount (NFS, SMB), a VM shared folder, or
+ * a container bind mount. That is a property of the user's setup, not of the
+ * platform, so it is a setting rather than a guess.
+ *
+ * CHAT_RECALL_WATCH_POLL=1 forces polling back on. We also fall back to it
+ * automatically when inotify runs out of watches, which is the one failure mode
+ * Linux has here: the default fs.inotify.max_user_watches is 8192 and this
+ * machine has 13,774 session files, so a large corpus CAN legitimately exhaust
+ * it. That surfaces as ENOSPC on the watcher's error event, and the answer is
+ * to reopen that watcher in polling mode rather than to poll everything always.
+ */
+const FORCE_POLL = process.env.CHAT_RECALL_WATCH_POLL === '1';
+
+interface WatchTuning {
+  /** Poll interval when polling is in force. Ignored for native watching. */
+  interval: number;
+  ignored?: (p: string) => boolean;
+  ignoreInitial?: boolean;
+}
+
+/**
+ * Poll options for one watcher, or nothing at all when native watching is on.
+ * Spread into a chokidar option object: `...POLL(5000),`.
+ */
+const POLL = (interval: number): { usePolling?: true; interval?: number } =>
+  (FORCE_POLL ? { usePolling: true, interval } : {});
+
+const watchOpts = (t: WatchTuning, poll = FORCE_POLL): chokidar.WatchOptions => ({
+  persistent: true,
+  ignoreInitial: t.ignoreInitial ?? true,
+  ...(t.ignored ? { ignored: t.ignored } : {}),
+  ...(poll ? { usePolling: true, interval: t.interval } : {}),
+});
+
+/**
+ * Open a watcher, and reopen it in polling mode if the OS cannot watch natively.
+ *
+ * ENOSPC from inotify means "no watch descriptors left", not "disk full". It is
+ * the one case where polling is genuinely the right answer, and it is also the
+ * case a user cannot diagnose from the outside — so say it in the log.
+ */
+function watchWithFallback(name: string, pattern: string | string[], t: WatchTuning): chokidar.FSWatcher {
+  let w = chokidar.watch(pattern, watchOpts(t));
+  let swapped = false;
+  w.on('error', (err: unknown) => {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (swapped || FORCE_POLL || (code !== 'ENOSPC' && code !== 'EMFILE')) {
+      console.error(`[${ts()}] ${name} watcher error: ${String(err)}`);
+      return;
+    }
+    swapped = true;
+    console.log(`[${ts()}] ${name} watcher: native watching hit ${code} — falling back to polling every ${t.interval}ms.`
+      + ` Raise fs.inotify.max_user_watches to get native events back.`);
+    void w.close().catch(() => {});
+    w = chokidar.watch(pattern, watchOpts(t, true));
+  });
+  return w;
+}
+
+
 // 1. Session files.
 // NO awaitWriteFinish: Claude Code appends to a session JSONL every few
 // seconds while the user is chatting. With stabilityThreshold > 0, the
@@ -203,13 +278,9 @@ async function onResumeSignal(path: string): Promise<void> {
 //
 // `ignored` is a function (not a /\/\./ regex) so it ignores ONLY true
 // dotfiles (basename starting with `.`), not the entire ~/.claude tree.
-const sessionWatcher = chokidar.watch(`${CLAUDE_DIR}/**/*.jsonl`, {
+const sessionWatcher = watchWithFallback('sessions', `${CLAUDE_DIR}/**/*.jsonl`, {
   ignored: (p: string) => /agent-/.test(p) || /^\./.test(basename(p)),
-  persistent: true,
-  ignoreInitial: true,
-  usePolling: true,
   interval: 5000,
-  binaryInterval: 5000,
 });
 
 // 2. Plans.
@@ -217,8 +288,7 @@ const plansWatcher = chokidar.watch(`${PLANS_DIR}/*.md`, {
   persistent: true,
   ignoreInitial: true,
   awaitWriteFinish: { stabilityThreshold: 1000, pollInterval: 100 },
-  usePolling: true,
-  interval: 10000,
+  ...POLL(10000),
 });
 
 // 3. Tasks.
@@ -226,8 +296,7 @@ const tasksWatcher = chokidar.watch(`${TASKS_DIR}/**/*.json`, {
   persistent: true,
   ignoreInitial: true,
   awaitWriteFinish: { stabilityThreshold: 1000, pollInterval: 100 },
-  usePolling: true,
-  interval: 10000,
+  ...POLL(10000),
 });
 
 // 4. History.
@@ -235,8 +304,7 @@ const historyWatcher = chokidar.watch(HISTORY_PATH, {
   persistent: true,
   ignoreInitial: true,
   awaitWriteFinish: { stabilityThreshold: 2000, pollInterval: 500 },
-  usePolling: true,
-  interval: 30000,  // check less frequently
+  ...POLL(30000),  // check less frequently
 });
 
 // 5. Diary entries.
@@ -253,8 +321,7 @@ const codexWatcher = chokidar.watch(`${CODEX_SESSIONS_DIR}/**/rollout-*.jsonl`, 
   // Codex rolls every event into its own JSONL line — wait for ~2s of
   // write quiescence so we don't ship mid-write.
   awaitWriteFinish: { stabilityThreshold: 2000, pollInterval: 200 },
-  usePolling: true,
-  interval: 5000,
+  ...POLL(5000),
 });
 
 // 7. Gemini sessions — one JSON file per session in
@@ -264,8 +331,7 @@ const geminiWatcher = chokidar.watch(`${GEMINI_TMP_DIR}/**/session-*.json`, {
   persistent: true,
   ignoreInitial: true,
   awaitWriteFinish: { stabilityThreshold: 1500, pollInterval: 200 },
-  usePolling: true,
-  interval: 5000,
+  ...POLL(5000),
 });
 
 // 8. OpenCode SQLite — watch the db + WAL only. SQLite in WAL mode writes new
@@ -287,8 +353,7 @@ const opencodeWatcher = chokidar.watch(
     persistent: true,
     ignoreInitial: true,
     awaitWriteFinish: { stabilityThreshold: 2500, pollInterval: 500 },
-    usePolling: true,
-    interval: 10000,
+    ...POLL(10000),
   },
 );
 
@@ -299,8 +364,7 @@ const agentMemoryWatcher = chokidar.watch(`${CLAUDE_DIR}/*/memory/*.md`, {
   persistent: true,
   ignoreInitial: true,
   awaitWriteFinish: { stabilityThreshold: 1000, pollInterval: 100 },
-  usePolling: true,
-  interval: 10000,
+  ...POLL(10000),
 });
 
 // 10. Cleanup marker — a change means Claude Code trimmed/deleted transcripts;
@@ -309,8 +373,7 @@ const cleanupWatcher = chokidar.watch(LAST_CLEANUP_PATH, {
   persistent: true,
   ignoreInitial: true,
   awaitWriteFinish: { stabilityThreshold: 1000, pollInterval: 200 },
-  usePolling: true,
-  interval: 30000,
+  ...POLL(30000),
 });
 
 // Wire up all watchers. Every add/change just arms the debounced ship —
@@ -333,12 +396,10 @@ const watchers: Record<string, chokidar.FSWatcher> = {
 // debounced ship: it must snapshot the shadow immediately, before the resume
 // rewrite lands. Fast poll for the same reason. `ignoreInitial: false` also
 // snapshots whatever resume was last recorded when the daemon starts.
-const resumeWatcher = chokidar.watch(CURRENT_RESUME_PATH, {
-  persistent: true,
-  ignoreInitial: false,
-  usePolling: true,
+const resumeWatcher = chokidar.watch(CURRENT_RESUME_PATH, watchOpts({
   interval: 1000,
-});
+  ignoreInitial: false,
+}));
 resumeWatcher
   .on('add', (p) => { void onResumeSignal(p); })
   .on('change', (p) => { void onResumeSignal(p); })
