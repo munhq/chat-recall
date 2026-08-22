@@ -99,7 +99,13 @@ describe('advertised MCP tool count ↔ the registry', () => {
   // Every file that states a count, not just the README: the registry
   // manifests are the surfaces agents read to decide whether to install, and
   // they shipped an off-by-one on day one because only the README was pinned.
-  test.each(['README.md', 'server.json', 'smithery.yaml', 'docs/REGISTRIES.md'])(
+  //
+  // CLAUDE.md is here because it drifted the other way — it said 54 while the
+  // manifests still said 53, so the file that TELLS AN AGENT how this repo works
+  // was the only accurate one and nothing noticed. It is documentation an agent
+  // reads every session; a wrong number there is a wrong number in the model's
+  // head.
+  test.each(['README.md', 'server.json', 'smithery.yaml', 'docs/REGISTRIES.md', 'CLAUDE.md'])(
     '%s states the real count everywhere it states one', (file) => {
       const found = [...readFileSync(resolve(repoRoot, file), 'utf-8')
         .matchAll(/(\d+)\s+(?:MCP\s+)?tools\b/g)]
