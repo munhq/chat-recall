@@ -21,17 +21,20 @@ const SRC = resolve(dirname(fileURLToPath(import.meta.url)), 'companions.ts');
 
 describe('codeindex download integrity', () => {
   test.each([
-    ['codeindex-x86_64-linux', 'b43a1de6e7b838ed769c0ee41a5ba3b8ab5c5afbcac8a1d63ccee3a55cbd3739'],
-    ['codeindex-aarch64-linux', '3bfe847b4874be6a704c75fc041fe0fd719432df05621159dd7d4e7fabe82759'],
-    ['codeindex-x86_64-macos', 'bf0b20f18f4b3af009415f72d6ef0272452a9a4b3d47fc159d68fcf71deb1c02'],
-    ['codeindex-aarch64-macos', '39a4c9fd204fcca02c46eb628acadd77e80fb59769a8361d5e1279f7493684bd'],
+    ['codeindex-x86_64-linux', '4378f12e7c80fa8bb53e41c02db4b95955f2f878369abfb28b5edd94b4adbb85'],
+    ['codeindex-aarch64-linux', '5a1d6c9c2592a3721547c42cd9b6b11f460e903bfc46407ae27d5879e7259587'],
+    ['codeindex-x86_64-macos', '6ad2a2b40faa4ec72ac35fee84f35ea7c848cddc4f6382b4cafedb644f30389f'],
+    ['codeindex-aarch64-macos', 'f366d00918f79a4a0acc09c6091d97c6c378c79edbdbe3cb22e4014ea57f08d2'],
+    ['codeindex-x86_64-windows.exe', 'a96fc8c8949bb399a44cc0615b12e458460a529c69f01e8829cc39a20f45ab29'],
+    ['codeindex-aarch64-windows.exe', '42620d56272cd9ba9d785569d8d754d6b4a3e80f36f28db3e0c483fd600ed117'],
   ])('%s has its published sha256 pinned', (artifact, sha) => {
-    // These were computed from the actual v0.2.0 release assets. If a bump
-    // changes them, recompute — do not relax the check.
+    // Computed from the actual v0.3.1 assets and cross-checked against the
+    // release's own SHA256SUMS. If a bump changes them, recompute — do not
+    // relax the check.
     expect(expectedCodeindexSha256(artifact)).toBe(sha);
   });
 
-  test('EVERY artifact the platform detector can produce has a pin, except Windows', () => {
+  test('EVERY artifact the platform detector can produce has a pin', () => {
     // The failure this prevents: adding a platform to the prebuilt list and
     // forgetting its hash, which would install it unverified.
     const realArch = process.arch;
@@ -39,6 +42,7 @@ describe('codeindex download integrity', () => {
     try {
       for (const [arch, platform] of [
         ['x64', 'linux'], ['arm64', 'linux'], ['x64', 'darwin'], ['arm64', 'darwin'],
+        ['x64', 'win32'], ['arm64', 'win32'],
       ] as const) {
         Object.defineProperty(process, 'arch', { value: arch, configurable: true });
         Object.defineProperty(process, 'platform', { value: platform, configurable: true });
@@ -53,7 +57,7 @@ describe('codeindex download integrity', () => {
   });
 
   test('an artifact we do not publish has no pin, so installing it is refused', () => {
-    expect(expectedCodeindexSha256('codeindex-x86_64-windows')).toBeNull();
+    expect(expectedCodeindexSha256('codeindex-riscv64-linux')).toBeNull();
     expect(expectedCodeindexSha256('codeindex-totally-made-up')).toBeNull();
   });
 
