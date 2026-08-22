@@ -462,6 +462,50 @@ function maskSecret(s: string): string {
  * unlike the optional gitleaks/trufflehog binaries which most users won't have.
  * The collector ships these to the server's `secret_findings`.
  */
+/**
+ * Compiled global-flag copies of rule patterns, keyed by source+flags.
+ *
+ * scanTextForFindings built `new RegExp(...)` for EVERY rule on EVERY call —
+ * 35 builtin rules plus the 74 the server ships, so ~109 compiles per scan,
+ * per session, per sync target, for patterns that never change. Compilation is
+ * the expensive part of a regex; matching a compiled one is not.
+ *
+ * Reusing a RegExp means reusing its lastIndex, so every caller resets it
+ * before use. Safe here because a scan loop is synchronous — nothing else can
+ * interleave between exec calls.
+ */
+const globalRegexCache = new Map<string, RegExp>();
+
+function globalRegexFor(pattern: RegExp): RegExp {
+  const flags = pattern.flags.includes('g') ? pattern.flags : pattern.flags + 'g';
+  const key = pattern.source + '\u0000' + flags;
+  let re = globalRegexCache.get(key);
+  if (!re) { re = new RegExp(pattern.source, flags); globalRegexCache.set(key, re); }
+  return re;
+}
+
+/**
+ * 1-based line number for a character offset, in O(log n) after one O(n) pass.
+ *
+ * The previous form was `text.slice(0, index).split('\n').length` evaluated per
+ * match: it copied the entire prefix and allocated an array of every line
+ * before it, every time. On a 5 MB session with a few hundred hits that is
+ * gigabytes of copying to produce a handful of integers.
+ */
+function makeLineResolver(text: string): (index: number) => number {
+  const starts: number[] = [];
+  for (let i = text.indexOf('\n'); i !== -1; i = text.indexOf('\n', i + 1)) starts.push(i);
+  return (index: number): number => {
+    // Count newlines strictly before `index` — binary search the boundary.
+    let lo = 0, hi = starts.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (starts[mid] < index) lo = mid + 1; else hi = mid;
+    }
+    return lo + 1;
+  };
+}
+
 export function scanTextForFindings(text: string, opts: { rules?: RedactionRule[] } = {}): RedactorFinding[] {
   if (!text) return [];
   // activeRules(), not settingsView().rules: a rule served by the server must
@@ -479,22 +523,27 @@ export function scanTextForFindings(text: string, opts: { rules?: RedactionRule[
   // detectors agree" signal the dashboard sorts on. Keyed by exact span, so a
   // genuinely different (merely overlapping) match still reports.
   const seenSpans = new Set<string>();
+  // One newline index for the whole scan, instead of slicing and splitting the
+  // entire prefix once PER MATCH. That was O(text) per match — quadratic on a
+  // transcript with many hits, and this runs over the full session text for
+  // every rule.
+  const lineAt = makeLineResolver(text);
   for (const r of rules) {
-    const re = new RegExp(r.pattern.source, r.pattern.flags.includes('g') ? r.pattern.flags : r.pattern.flags + 'g');
+    const re = globalRegexFor(r.pattern);
+    re.lastIndex = 0;   // shared instance: never inherit a previous scan's cursor
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) {
       const span = `${m.index}:${m[0].length}`;
       if (!seenSpans.has(span)) {
         seenSpans.add(span);
-        const line = text.slice(0, m.index).split('\n').length; // 1-based, handles multi-line patterns
-        findings.push({ rule: r.label, line, preview: maskSecret(m[0]) });
+        findings.push({ rule: r.label, line: lineAt(m.index), preview: maskSecret(m[0]) });
       }
       if (re.lastIndex === m.index) re.lastIndex++; // guard zero-width (lookbehind matches)
     }
   }
   // Contextual bare-secret findings (same detector the redactor uses).
   for (const { start, end } of findContextualSecrets(text)) {
-    const line = text.slice(0, start).split('\n').length;
+    const line = lineAt(start);
     findings.push({ rule: 'secret-context', line, preview: maskSecret(text.slice(start, end)) });
   }
   return findings;

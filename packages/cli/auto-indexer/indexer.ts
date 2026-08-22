@@ -36,7 +36,7 @@ import { dirname, basename, join, resolve, sep } from 'path';
 import { homedir } from 'os';
 
 import { claudeBackend, geminiBackend, opencodeBackend, codexBackend } from '@chat-recall/engine/core/backends/index.js';
-import { getDiaryDir } from '@chat-recall/engine/core/paths.js';
+import { getDiaryDir, getDataDir } from '@chat-recall/engine/core/paths.js';
 import { loadSettings, isPersonalPath } from '@chat-recall/engine/core/settings.js';
 
 // The only "work" import: the HTTP collector that ships sessions to the
@@ -54,7 +54,7 @@ import { runCollectorMigration } from '../src/collector-migrate.js';
 // Injected by the bundler (scripts/bundle.mjs). Falls back for tsx/dev runs.
 declare const __CLI_VERSION__: string;
 const CLI_VERSION = typeof __CLI_VERSION__ === 'string' ? __CLI_VERSION__ : '0.0.0';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, statSync, renameSync, unlinkSync } from 'fs';
 import { flushLedger } from '../src/sync-ledger.js';
 import { readCollectorHealth, writeCollectorHealth, collectorHealthPath, type TargetHealth } from '@chat-recall/engine/core/collector-health.js';
 
@@ -192,6 +192,10 @@ async function onResumeSignal(path: string): Promise<void> {
     lastResumeAt.set(id, now);
     const { snapshotShadow } = await import('@chat-recall/engine/transcript/index.js');
     const r = await snapshotShadow(id);
+    // 'skipped' means the live file has not moved since the last snapshot, so
+    // nothing was read. Not worth a log line every minute per active session —
+    // it was two thirds of this log's resume-guard noise.
+    if (r.status === 'skipped') return;
     console.log(`[${ts()}] [resume-guard] shadow ${r.status} for ${id.slice(0, 8)}…` + (r.recovered > 0 ? ` (recovered ${r.recovered} record(s))` : ''));
   } catch (e) {
     console.error(`[${ts()}] [resume-guard] ${e instanceof Error ? e.message : e}`);
@@ -460,6 +464,30 @@ if (BOOT_CODE) {
   console.log(`[${ts()}] running bundle ${BOOT_CODE.path} (${BOOT_CODE.size} bytes)`);
 }
 
+// ── Log rotation ─────────────────────────────────────────────────────
+//
+// Only for the service managers whose redirection WE write: launchd's
+// StandardOutPath and the Windows Scheduled Task's `>>`. Under systemd the
+// output goes to the journal, which rotates itself.
+//
+// Rotate at startup rather than on a timer: whoever redirected our stdout holds
+// the fd, so renaming mid-run leaves them writing to the old inode until the
+// next restart. At startup that is exactly the behaviour we want — the same
+// contract logrotate has without copytruncate.
+function rotateLogIfLarge(): void {
+  const LOG_MAX_BYTES = 32 * 1024 * 1024;
+  try {
+    const logPath = join(getDataDir(), 'watch.log');
+    const st = statSync(logPath);
+    if (st.size < LOG_MAX_BYTES) return;
+    const prev = `${logPath}.1`;
+    try { unlinkSync(prev); } catch { /* no previous rotation */ }
+    renameSync(logPath, prev);
+    console.log(`[${ts()}] rotated watch.log at ${(st.size / 1048576).toFixed(0)}MB → watch.log.1`);
+  } catch { /* no log file, or not ours to rotate */ }
+}
+rotateLogIfLarge();
+
 // ── Collector health ─────────────────────────────────────────────────
 //
 // The daemon crash-looped for eight days without telling anyone: systemd
@@ -544,10 +572,11 @@ let intentDrainStartedAt = 0;
 let intentDrainGeneration = 0;
 const DRAIN_STALL_MS = 5 * 60_000;
 
-async function drainIntentsTick(): Promise<void> {
+/** @returns true when this tick actually applied something. */
+async function drainIntentsTick(): Promise<boolean> {
   if (intentDrainInFlight) {
     const stuckMs = Date.now() - intentDrainStartedAt;
-    if (stuckMs < DRAIN_STALL_MS) return;
+    if (stuckMs < DRAIN_STALL_MS) return false;
     console.error(`[${ts()}] sync-intents: previous drain has been running ${Math.round(stuckMs / 1000)}s — abandoning it and starting a fresh tick`);
   }
   intentDrainInFlight = true;
@@ -564,14 +593,39 @@ async function drainIntentsTick(): Promise<void> {
       // seconds, instead of waiting for the 15-min heartbeat.
       if (r.done > 0) await shipToServer('intent-applied');
     }
+    return r.processed > 0;
   } catch (err) {
     console.error(`[${ts()}] sync-intents drain failed: ${err instanceof Error ? err.message : err}`);
+    return false;
   } finally {
     if (gen === intentDrainGeneration) intentDrainInFlight = false;
   }
 }
-setInterval(() => { void drainIntentsTick(); }, 15_000).unref();
-setTimeout(() => { void drainIntentsTick(); }, 5_000);
+// ADAPTIVE POLL. A fixed 15s tick is 5,760 requests a day PER TARGET for a
+// queue that is almost always empty — and undici's idle keep-alive is 4s, so at
+// that cadence nearly every one is a fresh TCP + TLS handshake. On a laptop
+// that is a radio wake and a negotiation, thousands of times a day, to learn
+// "nothing pending".
+//
+// Back off while idle, snap back the instant there is work: a user who clicks
+// something in the UI still sees it applied within seconds, because any tick
+// that finds work resets the interval to the floor.
+const INTENT_POLL_MIN_MS = 15_000;
+const INTENT_POLL_MAX_MS = 5 * 60_000;
+let intentPollMs = INTENT_POLL_MIN_MS;
+let intentTimer: NodeJS.Timeout | null = null;
+
+function scheduleIntentPoll(ms: number): void {
+  if (intentTimer) clearTimeout(intentTimer);
+  intentTimer = setTimeout(async () => {
+    const found = await drainIntentsTick();
+    // Found work → poll eagerly again. Found nothing → double, up to the cap.
+    intentPollMs = found ? INTENT_POLL_MIN_MS : Math.min(intentPollMs * 2, INTENT_POLL_MAX_MS);
+    scheduleIntentPoll(intentPollMs);
+  }, ms);
+  intentTimer.unref?.();
+}
+scheduleIntentPoll(5_000);
 
 // Automatic code intelligence (codeindex merge). The daemon DISCOVERS the
 // workspaces you actually work in — distinct project paths across ALL tool
