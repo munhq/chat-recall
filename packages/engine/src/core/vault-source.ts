@@ -26,6 +26,7 @@ import { geminiBackend } from './backends/gemini.js';
 import { codexBackend } from './backends/codex.js';
 import { agyBackend } from './backends/agy.js';
 import { loadSettings } from './settings.js';
+import { decodeProjectDirName } from './project-dir-name.js';
 
 export type VaultTool = 'claude' | 'gemini' | 'codex' | 'opencode' | 'cursor' | 'agy';
 
@@ -77,7 +78,7 @@ function* walkClaude(): Generator<VaultSourceFile> {
   for (const proj of projectDirs) {
     if (proj.startsWith('.')) continue;
     // Claude encodes the project path into the dir name as `-home-user-...`.
-    const projectPath = '/' + proj.replace(/^-/, '').replace(/-/g, '/');
+    const projectPath = decodeProjectDirName(proj);
     const projDir = join(root, proj);
     let entries: string[] = [];
     try { entries = readdirSync(projDir); } catch { continue; }
