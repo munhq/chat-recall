@@ -33,6 +33,32 @@ fi
 CHAT_RECALL_BIN="${CHAT_RECALL_BIN:-$(command -v chat-recall || true)}"
 if [[ -z "$CHAT_RECALL_BIN" ]] || [[ ! -x "$CHAT_RECALL_BIN" ]]; then exit 0; fi
 
+# Run a command under a time limit, on any platform.
+#
+# `timeout` is GNU coreutils and macOS does not ship it. Both hooks that used it
+# swallowed the failure with `|| true`, so on every Mac the command never ran at
+# all — silently, while `chat-recall doctor` reported the hook installed and
+# healthy. Homebrew's coreutils installs it as `gtimeout`, so prefer whichever
+# exists and fall back to a plain shell watchdog when neither does.
+run_limited() {
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$secs" "$@"
+  else
+    # Watchdog: run in the background, kill it if it outlives the budget.
+    "$@" &
+    local cmd_pid=$!
+    ( sleep "$secs"; kill -TERM "$cmd_pid" 2>/dev/null || true ) &
+    local watch_pid=$!
+    wait "$cmd_pid" 2>/dev/null
+    local rc=$?
+    kill -TERM "$watch_pid" 2>/dev/null || true
+    return $rc
+  fi
+}
+
 TIMEOUT="${CHAT_RECALL_ESCALATE_TIMEOUT:-60}"
 DELAY="${CHAT_RECALL_ESCALATE_DELAY:-20}"
 
@@ -42,9 +68,9 @@ DELAY="${CHAT_RECALL_ESCALATE_DELAY:-20}"
   sleep "$DELAY"
   cd "$CWD" 2>/dev/null || true
   if [[ -n "$SESSION_ID" ]]; then
-    timeout "$TIMEOUT" "$CHAT_RECALL_BIN" escalate "$SESSION_ID" >/dev/null 2>&1 || true
+    run_limited "$TIMEOUT" "$CHAT_RECALL_BIN" escalate "$SESSION_ID" >/dev/null 2>&1 || true
   else
-    timeout "$TIMEOUT" "$CHAT_RECALL_BIN" escalate --latest >/dev/null 2>&1 || true
+    run_limited "$TIMEOUT" "$CHAT_RECALL_BIN" escalate --latest >/dev/null 2>&1 || true
   fi
 ) </dev/null >/dev/null 2>&1 &
 
