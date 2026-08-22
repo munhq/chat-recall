@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 // published bundle, which broke every fresh `npm i -g chat-recall`.
 import { formatContext } from '@chat-recall/engine/core/context.js';
 import { getIdentityFilePath, getDataDir } from '@chat-recall/engine/core/paths.js';
+import { envCredentials } from '@chat-recall/engine/core/credentials-env.js';
 import { liveScanModifiedFiles } from '@chat-recall/engine/core/live-session-scan.js';
 // Side-effect import: registers the four ToolBackend implementations so
 // getBackendForId(...) works everywhere downstream.
@@ -37,6 +38,7 @@ import { statusEmoji } from '@chat-recall/engine/core/outcome-display.js';
 import { sanitizeQuery } from '@chat-recall/engine/core/query-sanitizer.js';
 import { getWAL } from '@chat-recall/engine/core/write-ahead-log.js';
 import { reportClientEvent } from './client-events.js';
+import { isOnPath } from '@chat-recall/engine/core/which.js';
 import {
   INSTRUCTION_KINDS, SEVERITIES, sevRank, taskBody,
   partitionRecs, actionToImprovement, recToImprovement, isOpenAction,
@@ -68,7 +70,7 @@ let _codeindexAvailable: boolean | null = null;
 function codeindexAvailable(): boolean {
   if (_codeindexAvailable !== null) return _codeindexAvailable;
   try {
-    _execSync('command -v codeindex', { stdio: 'ignore' });
+    if (!isOnPath('codeindex')) throw new Error('codeindex not on PATH');
     _codeindexAvailable = true;
   } catch {
     _codeindexAvailable = false;
@@ -97,6 +99,12 @@ function withCodeindexHint(body: string, kind: 'files' | 'session'): string {
 // faster, and always present.
 
 function remoteCredentials(): { base: string; token: string } | null {
+  // A container has no credentials file and cannot run a login, so an explicit
+  // CHAT_RECALL_TOKEN outranks the disk. This is what lets Glama and the Docker
+  // MCP catalog run this server at all.
+  const fromEnv = envCredentials();
+  if (fromEnv) return { base: fromEnv.serverUrl, token: fromEnv.token };
+
   try {
     const raw = readFileSync(join(getDataDir(), 'credentials.json'), 'utf-8');
     const parsed = JSON.parse(raw) as {

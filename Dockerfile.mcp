@@ -1,0 +1,48 @@
+# The MCP server, containerised.
+#
+# Two directories build an image of chat-recall, and they are not the same
+# thing. `docker-compose.yml` builds the SERVER — Postgres, the API, the web UI
+# — which is what a self-hoster runs. This file builds only the MCP server: the
+# thin stdio client that an AI tool spawns and that reads everything over the
+# API. It exists because two registries ask for exactly this:
+#
+#   - Glama grades a server only after a "Glama release", and a release is a
+#     Dockerfile they build and run in their sandbox.
+#   - The Docker MCP catalog lists a local server when the source repository
+#     carries a Dockerfile.
+#
+# Neither sandbox can run `chat-recall login`, so credentials come from the
+# environment (see packages/engine/src/core/credentials-env.ts):
+#
+#   docker build -f Dockerfile.mcp -t chat-recall-mcp .
+#   docker run -i --rm \
+#     -e CHAT_RECALL_SERVER=https://chatrecall.dev \
+#     -e CHAT_RECALL_TOKEN=<device token from `chat-recall token`> \
+#     chat-recall-mcp
+#
+# The image ships NO transcripts and mounts no home directory. Everything the
+# tools answer with comes from the server the token belongs to, so the container
+# holds no user data at rest. `recall_index` and `recall_code_index` are the two
+# tools that need local files; mount a repository read-only if you want them:
+#   -v "$PWD:/work:ro" -w /work
+FROM node:24-alpine
+
+# Install from the published package rather than building the workspace: the
+# registries rebuild this image on their own schedule, and pinning to what npm
+# actually serves means the image can never advertise a version that no user can
+# install. --omit=dev because the MCP server needs no build toolchain at runtime.
+ARG CHAT_RECALL_VERSION=latest
+RUN npm install -g --omit=dev "chat-recall@${CHAT_RECALL_VERSION}" \
+  && npm cache clean --force
+
+# The MCP server is long-lived and per-session, and V8's default heap is larger
+# than this process ever needs. Same cap `init` writes into every client config.
+ENV NODE_OPTIONS=--max-old-space-size=1024
+
+# Run as the image's unprivileged user. A server whose whole job is to read the
+# user's history has no business holding root in a sandbox.
+USER node
+
+# stdio transport: no port, no HTTP listener. `docker run -i` is required — the
+# protocol is a conversation on stdin and stdout.
+ENTRYPOINT ["chat-recall-mcp"]
