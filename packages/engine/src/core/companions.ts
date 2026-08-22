@@ -26,7 +26,7 @@ import { createHash } from 'node:crypto';
 import { resolveOnPath, isOnPath } from './which.js';
 
 const CODEINDEX_REPO = 'munhq/codeindex';
-const CODEINDEX_VERSION = 'v0.2.0';
+const CODEINDEX_VERSION = 'v0.3.1';
 
 /**
  * sha256 of every published asset, pinned here rather than fetched.
@@ -48,16 +48,19 @@ const CODEINDEX_VERSION = 'v0.2.0';
  * Keyed by `${arch}-${platform}` exactly as detectPlatform() builds it.
  */
 const CODEINDEX_SHA256: Record<string, string> = {
-  'x86_64-linux': 'b43a1de6e7b838ed769c0ee41a5ba3b8ab5c5afbcac8a1d63ccee3a55cbd3739',
-  'aarch64-linux': '3bfe847b4874be6a704c75fc041fe0fd719432df05621159dd7d4e7fabe82759',
-  'x86_64-macos': 'bf0b20f18f4b3af009415f72d6ef0272452a9a4b3d47fc159d68fcf71deb1c02',
-  'aarch64-macos': '39a4c9fd204fcca02c46eb628acadd77e80fb59769a8361d5e1279f7493684bd',
+  'x86_64-linux': '4378f12e7c80fa8bb53e41c02db4b95955f2f878369abfb28b5edd94b4adbb85',
+  'aarch64-linux': '5a1d6c9c2592a3721547c42cd9b6b11f460e903bfc46407ae27d5879e7259587',
+  'x86_64-macos': '6ad2a2b40faa4ec72ac35fee84f35ea7c848cddc4f6382b4cafedb644f30389f',
+  'aarch64-macos': 'f366d00918f79a4a0acc09c6091d97c6c378c79edbdbe3cb22e4014ea57f08d2',
+  'x86_64-windows': 'a96fc8c8949bb399a44cc0615b12e458460a529c69f01e8829cc39a20f45ab29',
+  'aarch64-windows': '42620d56272cd9ba9d785569d8d754d6b4a3e80f36f28db3e0c483fd600ed117',
 };
 
 /** The expected digest for an artifact name, or null when we have none. */
 export function expectedCodeindexSha256(artifact: string): string | null {
   // `codeindex-x86_64-linux` -> `x86_64-linux`
-  return CODEINDEX_SHA256[artifact.replace(/^codeindex-/, '')] ?? null;
+  // `codeindex-x86_64-windows.exe` -> `x86_64-windows`
+  return CODEINDEX_SHA256[artifact.replace(/^codeindex-/, '').replace(/\.exe$/, '')] ?? null;
 }
 
 /** Where we install the binary. Aligns with codeindex's own install.sh. */
@@ -108,16 +111,20 @@ export function detectPlatform(): { artifact?: string; reason?: string } {
   if (!a || !p) {
     return { reason: `Unsupported platform: ${arch}-${platform}` };
   }
-  // What v0.2.0 actually publishes. This said x86_64-linux only, pinned to a
-  // comment about v0.1.0, long after the release matrix grew — so every Mac,
-  // Intel and Apple Silicon alike, was told to install Zig and build from
-  // source, and got NO code intelligence at all: no findings, no hotspots, no
-  // actions, no security scan. On the largest developer platform this product
-  // has. Keep this in step with .github/workflows/release.yml in munhq/codeindex.
+  // What v0.3.1 actually publishes: all six targets, Windows included.
+  //
+  // This once said x86_64-linux only, pinned to a comment about a v0.1.0
+  // release that no longer existed — so the one platform it allowed 404'd and
+  // every other was refused outright. Nobody could auto-install codeindex on
+  // any machine. Keep this in step with .github/workflows/release.yml in
+  // munhq/codeindex, and re-pin CODEINDEX_SHA256 whenever the version moves.
   const prebuiltCombos = new Set([
     'x86_64-linux', 'aarch64-linux', 'x86_64-macos', 'aarch64-macos',
+    'x86_64-windows', 'aarch64-windows',
   ]);
-  const artifact = `codeindex-${a}-${p}`;
+  // Windows assets carry the .exe suffix in the release; the others do not.
+  // Getting this wrong is a 404 at install time on someone else's machine.
+  const artifact = `codeindex-${a}-${p}${p === 'windows' ? '.exe' : ''}`;
   if (!prebuiltCombos.has(`${a}-${p}`)) {
     return {
       artifact,
