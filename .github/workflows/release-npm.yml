@@ -28,7 +28,9 @@ on:
         default: true
 
 permissions:
-  contents: read
+  contents: write        # create the GitHub Release object (see the last step).
+                         # `read` was enough while this workflow only pushed to
+                         # npm, and the tag then produced no Release at all.
   id-token: write        # mint the OIDC token npm verifies. Without this the
                          # publish fails as if the credentials were wrong.
 
@@ -110,3 +112,36 @@ jobs:
             echo "::warning::repo is private, publishing WITHOUT provenance — make it public to get attestations"
             npm publish -w chat-recall --access public
           fi
+
+      # A tag is not a release. Publishing to npm left the repo's Releases page
+      # showing the PREVIOUS version, and everything that reads releases rather
+      # than tags — Glama's maintenance grade says "no stable releases found",
+      # dependency tooling, anyone browsing the repo — saw nothing ship.
+      #
+      # The body is this version's CHANGELOG section, extracted rather than
+      # retyped: release notes that restate the changelog by hand disagree with
+      # it within two releases. A missing section is not fatal — the release
+      # still gets cut, with a pointer — because blocking a published npm
+      # version on prose would leave npm and GitHub disagreeing about what
+      # exists, which is worse.
+      - name: Cut the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          node -e '
+            const fs = require("fs");
+            const ver = process.argv[1];
+            const md = fs.readFileSync("CHANGELOG.md", "utf8");
+            // From this version heading to the next version heading.
+            const re = new RegExp(`^## \\[${ver.replace(/\./g, "\\.")}\\][^\\n]*\\n([\\s\\S]*?)(?=^## \\[|\\Z)`, "m");
+            const m = re.exec(md);
+            fs.writeFileSync("RELEASE_NOTES.md", m
+              ? m[1].trim() + "\n"
+              : `See CHANGELOG.md for ${ver}.\n`);
+          ' "$VER"
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file RELEASE_NOTES.md \
+            --verify-tag
