@@ -773,3 +773,20 @@ function shutdown(signal: string): void {
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
+
+// WINDOWS HAS NO SIGTERM. `process.kill(pid,'SIGTERM')` and `schtasks /End`
+// both map to TerminateProcess, so the handler above never ran: watchers stayed
+// open, the debounce timer was never cleared, and an in-flight sync died
+// mid-HTTP with its coalesced ledger acks still only in memory — which on the
+// next start re-ships everything since the last flush.
+//
+// Ctrl+Break and console close DO raise events Node surfaces, and 'beforeExit'
+// covers an ordinary run-to-completion. None of these fire on a hard kill;
+// nothing can. What they do cover is every shutdown Windows lets us observe.
+if (process.platform === 'win32') {
+  process.on('SIGBREAK', () => shutdown('SIGBREAK'));
+  process.on('SIGHUP', () => shutdown('SIGHUP'));
+}
+// Last line of defence on every platform: flush the ledger even if we are
+// leaving for a reason nobody handled.
+process.on('exit', () => { try { flushLedger(); } catch { /* leaving anyway */ } });

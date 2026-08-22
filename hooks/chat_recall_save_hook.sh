@@ -109,7 +109,7 @@ extract_facts() {
   "tool_uses": $tools,
   "first_topic": "$(echo "$first_topic" | jq -Rs '.' 2>/dev/null || echo "\"$first_topic\"")",
   "decisions": "$(echo "$decisions" | jq -Rs '.' 2>/dev/null || echo "\"\"")",
-  "saved_at": "$(date -Iseconds)"
+  "saved_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 EOF
 }
@@ -176,7 +176,12 @@ do_save() {
     fi
     
     # Track this save
-    echo "{\"session_id\": \"$SESSION_ID\", \"saved_at\": \"$(date -Iseconds)\", \"precompact\": $precompact}" > "${STATE_FILE}"
+    # `date -Iseconds` is GNU-only: BSD date (macOS) rejects -I and prints an
+    # empty string, so this field was blank on every Mac. -u +format works on
+    # both. saved_at_epoch is written alongside it because reading the ISO value
+    # BACK needed `date -d`, which BSD also lacks — storing the number means
+    # nothing has to parse a date at all.
+    echo "{\"session_id\": \"$SESSION_ID\", \"saved_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"saved_at_epoch\": $(date +%s), \"precompact\": $precompact}" > "${STATE_FILE}"
     
     if [[ "$precompact" == "true" ]]; then
         log "[PRECOMPACT] Emergency save for $SESSION_ID"
@@ -193,17 +198,18 @@ should_save() {
         return 0
     fi
     
-    # Check last save time
-    local last_save
-    last_save=$(jq -r '.saved_at // empty' "${STATE_FILE}" 2>/dev/null || echo "")
-    
-    if [[ -z "$last_save" ]]; then
+    # Read the epoch we stored. The old code kept only an ISO string and parsed
+    # it with `date -d`, which does not exist on BSD date — so on macOS this
+    # always resolved to 0, the throttle never engaged, and the hook re-scanned
+    # the entire transcript on EVERY Stop event.
+    local last_save_epoch
+    last_save_epoch=$(jq -r '.saved_at_epoch // empty' "${STATE_FILE}" 2>/dev/null || echo "")
+
+    if [[ -z "$last_save_epoch" ]]; then
+        # A state file written before saved_at_epoch existed. Treat it as due
+        # rather than trying to parse its timestamp portably.
         return 0
     fi
-    
-    # Don't save more than once per 30 seconds
-    local last_save_epoch
-    last_save_epoch=$(date -d "$last_save" +%s 2>/dev/null || echo 0)
     local now_epoch
     now_epoch=$(date +%s)
     
