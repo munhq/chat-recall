@@ -24,7 +24,7 @@ import { parsePolicy, autoTasksStatus, runAutoTasks, AUTO_TASKS_KEY } from '../s
 const log = createLogger('tasks');
 const router = express.Router();
 
-const STATUSES = new Set(['todo', 'in_progress', 'blocked', 'done']);
+const STATUSES = new Set(['todo', 'in_progress', 'blocked', 'done', 'rejected']);
 
 /**
  * Assigning work to SOMEONE ELSE is the collaboration boundary — the mount is
@@ -165,6 +165,33 @@ router.patch('/:id', async (req, res) => {
   if (typeof req.body?.description === 'string') patch.description = req.body.description.slice(0, 20000);
   if (typeof req.body?.status === 'string') {
     if (!STATUSES.has(req.body.status)) return res.status(400).json({ error: `status must be one of ${[...STATUSES].join(', ')}` });
+    // DONE MUST BE EARNED.
+    //
+    // A card says a problem exists in the code. Moving it to done asserts that
+    // the code changed, so it needs something that can be checked: a session to
+    // attach it to. The agent that does the work passes its own session id and
+    // the board can then show the files, lines and commits behind the claim.
+    // A person dragging a card across a column proves nothing, and the board
+    // already carries 93 "done" cards that nobody ever worked.
+    //
+    // If you disagree with a card, REJECT it — that is the human verdict, and it
+    // stops the finding coming back (below).
+    if (req.body.status === 'done') {
+      const existing = await (async () => {
+        const store = await createStore();
+        try { return await store.getTeamTask(req.params.id); } finally { await store.close(); }
+      })();
+      const willHaveSession = req.body?.linkedSessionId ?? existing?.task.linkedSessionId ?? null;
+      if (!willHaveSession) {
+        return res.status(409).json({
+          error: 'a task is marked done by the work, not by hand',
+          detail: 'Attach the session that did the work (linkedSessionId) and set done from there, '
+            + 'or reject the task if it should not be worked at all. Auto-filed cards also close '
+            + 'themselves once a re-index stops reporting their finding.',
+          reject: `PATCH /api/tasks/${req.params.id} {"status":"rejected"}`,
+        });
+      }
+    }
     patch.status = req.body.status;
   }
   if (req.body?.assigneeSub !== undefined) {
@@ -185,6 +212,21 @@ router.patch('/:id', async (req, res) => {
   const store = await createStore();
   try {
     const task = await store.updateTeamTask(req.params.id, patch);
+
+    // A rejection has to reach the FINDING, not just the card. The auto-filer
+    // materialises every 'suggested' action above the floor, so a card rejected
+    // here and nowhere else is simply filed again on the next code index — the
+    // user says "no" and the board says it anyway. Dismissing the action is what
+    // makes "no" stick: listCodeActions({status:'suggested'}) stops returning it.
+    if (patch.status === 'rejected' && task?.linkedFindingId) {
+      try {
+        await store.setCodeActionStatus(task.linkedFindingId, 'dismissed');
+      } catch (e) {
+        // The card is already rejected; failing to dismiss the finding means it
+        // may re-file, which is worth a log and not worth failing the request.
+        log.warn({ err: e, id: task.linkedFindingId }, 'rejected card: could not dismiss the finding');
+      }
+    }
     if (!task) return res.status(404).json({ error: 'not found' });
     res.json({ task });
   } catch (e) { log.error({ err: e }, 'update task failed'); res.status(500).json({ error: e instanceof Error ? e.message : 'update failed' }); }

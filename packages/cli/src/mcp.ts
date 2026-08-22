@@ -2856,7 +2856,8 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
             + `_Call again with \`detail: true\` for the full brief (fix, locations, agent prompt) so you can start work._` }] };
         }
 
-        const open = tasks.filter((t) => t.status !== 'done');
+        const open = tasks.filter((t) => t.status !== 'done' && t.status !== 'rejected');
+        const claimed = open.filter((t) => t.status === 'in_progress');
         const blocks = open.map((t, i) => {
           const head = `## ${i + 1}. ${t.title}\n\n`
             + `- id: \`${t.id}\`  ·  status: ${t.status}`
@@ -2871,17 +2872,24 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
           '### Working these tasks',
           '',
           '1. Claim one before you touch code: `recall_task_update` with `id`, `status: "in_progress"`',
-          '   and `linked_session_id` set to YOUR current session id. The link is what lets the board',
-          '   show whether the work actually shipped (files, lines, commits) instead of taking your word.',
+          '   and `linked_session_id` set to YOUR current session id.',
           '2. Do the work. Each brief above carries the fix and, where the task came from a code finding,',
           '   an agent prompt written for exactly this.',
-          '3. Close it with `recall_task_update` `status: "done"`, and a `comment` saying what you changed.',
+          '3. Close it with `recall_task_update` `status: "done"` and a `comment` saying what you changed.',
           '',
-          'Auto-filed cards also close themselves once a re-index stops reporting their finding, so a real',
-          'fix ends the task either way. Marking one done without changing anything will simply re-file.',
+          'The session link is not bookkeeping: **done is refused without it**. A card asserts a problem',
+          'exists in the code, so closing one asserts the code changed, and the board shows the files,',
+          'lines and commits from your session as the evidence. A person cannot mark these done by hand.',
+          '',
+          'If a task is wrong — not a real problem, or not worth doing — do NOT close it. Tell the user;',
+          'rejecting is their call, and it dismisses the finding so it stops being re-filed.',
+          '',
+          'Auto-filed cards also close themselves once a re-index no longer reports their finding, so a',
+          'real fix ends the task either way.',
         ].join('\n');
         const header = `# Tasks ready to work (${open.length}${tasks.length !== open.length ? ` of ${tasks.length}` : ''})`
-          + `${params.project ? ` · ${params.project}` : ''}`;
+          + `${params.project ? ` · ${params.project}` : ''}`
+          + `${claimed.length ? `\n\n_${claimed.length} already in progress — check the session link before starting one of those._` : ''}`;
         return { content: [{ type: 'text', text: `${header}\n\n${blocks.join('\n\n')}\n\n${howTo}` }] };
       }
 
@@ -3761,6 +3769,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
           lines.push('  Offer to work them: `recall_tasks` with `detail: true`'
             + `${scope ? ` and \`project\`` : ''} returns each task's fix, file locations and agent prompt.`);
           lines.push('  Claim one before editing: `recall_task_update` with `status: "in_progress"` and your session id as `linked_session_id`.');
+          lines.push('  You close them, not the user: `done` is refused without a linked session, because the board shows the diff behind it.');
           lines.push('');
         }
 

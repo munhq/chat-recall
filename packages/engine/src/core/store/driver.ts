@@ -24,7 +24,14 @@ type AsyncMethod<M> = M extends (...args: infer A) => infer R
   : never;
 
 // ── Collaborative tasks (Phase 3) ────────────────────────────────────────
-export type TeamTaskStatus = 'todo' | 'in_progress' | 'blocked' | 'done';
+/**
+ * `rejected` is the human verdict: not a real problem, stop showing it. `done`
+ * is the machine's: the work happened and can be checked. A person can reject a
+ * card; a person cannot declare one done, because "done" here claims a code
+ * change exists. `blocked` stays only so rows written before this still load —
+ * nothing writes it.
+ */
+export type TeamTaskStatus = 'todo' | 'in_progress' | 'blocked' | 'done' | 'rejected';
 export interface TeamTask {
   id: string;
   projectId: string;
