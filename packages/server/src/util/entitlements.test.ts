@@ -13,8 +13,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import {
   planFeatures, licenceFeatures, featuresFor, allows, limitsFor,
   ssoAllowed,
-  identityLimit, identityCheck, featureRequired, FREE_FEATURES,
-} from './entitlements.js';
+  identityLimit, identityCheck, featureRequired, FREE_FEATURES, dormantLimits,} from './entitlements.js';
 
 const saved: Record<string, string | undefined> = {};
 function setEnv(k: string, v: string | undefined): void {
@@ -272,7 +271,9 @@ describe('a plan recorded as a raw Stripe price id', () => {
   });
 
   test('an unknown price id still fails closed', () => {
-    expect(limitsFor('price_not_ours').searchWindowDays).toBe(7);
+    // Fail-closed is the FEATURE, not a byte meter: dormancy carries no meters
+    // since 2026-08-22, so withholding 'sync' is what stops unpaid ingest.
     expect(planFeatures('price_not_ours').has('sync')).toBe(false);
+    expect(limitsFor('price_not_ours')).toEqual(dormantLimits());
   });
 });

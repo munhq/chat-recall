@@ -22,7 +22,7 @@ import { hasFeature, licenseState } from './license.js';
 import { planGrantsTeam } from '../routes/billing.js';
 import { ensureTrial } from './trial.js';
 import {
-  allows, featureRequired, featuresFor, freeLimits, limitReached,
+  allows, featureRequired, featuresFor, dormantLimits, trialLimits, limitReached, syncOffPayload,
   FULL_LIMITS, type Feature, type PlanLimits,
 } from './entitlements.js';
 
@@ -100,7 +100,14 @@ export async function effectivePlan(tenant: string): Promise<string | null> {
  */
 export async function tenantLimits(tenant: string): Promise<PlanLimits> {
   if (!billingEnabled()) return FULL_LIMITS;
-  return (await isEntitled(tenant)) ? FULL_LIMITS : freeLimits();
+  if (!(await isEntitled(tenant))) return dormantLimits();
+  // One exception to "entitled means unmetered": OUR no-card trial, which is the
+  // only plan that ingests without a card. It is safe to key on the plan string
+  // here — and only here — because `plan: 'trial'` is written by ensureTrial and
+  // by nothing else. A Stripe CARD trial records its real plan (solo, team), so
+  // it stays unmetered, which is the point: that customer gave us a card.
+  const plan = (await tenantPlan(tenant))?.toLowerCase() ?? '';
+  return plan.startsWith('trial') ? trialLimits() : FULL_LIMITS;
 }
 
 /**
@@ -352,8 +359,17 @@ export async function syncAdmission(tenant: string, incomingBytes: number): Prom
       },
     };
   }
-  // tenantLimits, not a re-derivation: exactly one place says "lapsed means
-  // free", or a future grace-period change makes the meters disagree with
+  // DORMANT tenants do not ingest. This is a plan gate, not a meter: since
+  // 2026-08-22 a lapsed trial keeps reading its whole history and stops adding
+  // to it, so the meters that used to be the only brake are null here and would
+  // have admitted the batch. Reads are untouched — the refusal is on this path
+  // only, which is ingest.
+  const plan = await effectivePlan(tenant);
+  if (!allows(plan, 'sync')) {
+    return { ok: false, status: 402, body: syncOffPayload() };
+  }
+  // tenantLimits, not a re-derivation: exactly one place says what a plan
+  // meters, or a future grace-period change makes the meters disagree with
   // every other gate. The entitlement lookups behind it are TTL-cached.
   const limits = await tenantLimits(tenant);
   if (limits.syncBytesPerMonth === null && limits.syncStorageBytes === null) {

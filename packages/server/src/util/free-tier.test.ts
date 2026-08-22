@@ -1,18 +1,22 @@
 /**
- * The free tier — the floor a cloud tenant lands on when their entitlement
- * stops being live.
+ * DORMANCY — the floor a cloud tenant lands on when their entitlement stops
+ * being live.
+ *
+ * Rewritten on 2026-08-22, when the free tier stopped syncing. It used to keep
+ * ingest and window search to seven days; both directions are now reversed,
+ * because history depth is the product and ingest is the cost.
  *
  * The contract under test, end to end:
- *   1. 'free' is a real plan in the packaging map: memory + scan + sync, nothing
- *      else — and it is never offered as the tier to upgrade to.
- *   2. limitsFor() meters free and FAILS CLOSED: an unknown or absent plan gets
- *      the meters, not unlimited ingest.
- *   3. effectivePlan() is the one switch: live entitlement → recorded plan,
- *      anything else → 'free'. Every gate resolves through it, so a lapsed Solo
- *      loses insights/tasks/toolkit the moment the period ends.
- *   4. syncAdmission() closes the hole where /api/sync never consulted billing:
- *      unverified tenants are refused, free tenants are metered (monthly quota
- *      + total cap), entitled tenants are untouched, self-host is untouched.
+ *   1. 'free' grants memory + scan and NOT sync: reads over the whole synced
+ *      corpus, no new ingest. It is never offered as the tier to upgrade to.
+ *   2. No plan windows search any more — not free, not trial, not paid.
+ *   3. The meters moved to the TRIAL, the only unpaid plan that still ingests.
+ *   4. Unknown or absent plans FAIL CLOSED to dormancy, so an unrecorded plan
+ *      cannot mean unmetered ingest.
+ *   5. effectivePlan() is the one switch: live entitlement → recorded plan,
+ *      anything else → 'free'.
+ *   6. syncAdmission() refuses a dormant tenant with the sync_off payload, and
+ *      still refuses an unverified one; entitled and self-host are untouched.
  */
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
@@ -47,7 +51,7 @@ vi.mock('../imports.js', async (importOriginal) => ({
 }));
 
 import {
-  planFeatures, limitsFor, freeLimits, FULL_LIMITS, featureRequired, limitReached,
+  planFeatures, limitsFor, dormantLimits, trialLimits, FULL_LIMITS, featureRequired, limitReached,
 } from './entitlements.js';
 import {
   effectivePlan, tenantLimits, syncAdmission, recordSyncUsage,
@@ -73,23 +77,26 @@ beforeEach(() => {
 afterEach(() => {
   if (ORIG_STRIPE === undefined) delete process.env.STRIPE_SECRET_KEY;
   else process.env.STRIPE_SECRET_KEY = ORIG_STRIPE;
-  delete process.env.FREE_SEARCH_WINDOW_DAYS;
+  delete process.env.TRIAL_STORAGE_MB;
   clearEntitlementCache();
 });
 
 // ── 1. Packaging ─────────────────────────────────────────────────────────────
 describe("the 'free' plan in the packaging map", () => {
-  test('grants memory, scan and sync — and nothing analysed or shared', () => {
+  test('grants memory and scan — and NOT sync', () => {
     const f = planFeatures('free');
-    for (const has of ['memory', 'scan', 'sync']) expect(f.has(has as never)).toBe(true);
-    for (const not of ['insights', 'findings', 'alerts', 'tasks', 'toolkit', 'team', 'sso', 'audit']) {
+    for (const has of ['memory', 'scan']) expect(f.has(has as never)).toBe(true);
+    // 'sync' left this set on 2026-08-22: a lapsed account reads its history and
+    // stops adding to it. Ingest is what costs us money, and the transcripts are
+    // on the user's disk either way.
+    for (const not of ['sync', 'insights', 'findings', 'alerts', 'tasks', 'toolkit', 'team', 'sso', 'audit']) {
       expect(f.has(not as never)).toBe(false);
     }
   });
 
   test('is never named as the tier to buy', () => {
-    // 'sync' is in the free set, but the cheapest PURCHASABLE tier that grants
-    // it is solo — telling a user to "buy the free plan" is the trial bug again.
+    // The cheapest PURCHASABLE tier that grants sync is solo — telling a user to
+    // "buy the free plan" is the trial bug again.
     expect(featureRequired('sync').requires).toBe('solo');
     expect(featureRequired('insights').requires).toBe('solo');
     expect(featureRequired('team').requires).toBe('team');
@@ -98,29 +105,49 @@ describe("the 'free' plan in the packaging map", () => {
 
 // ── 2. Limits ────────────────────────────────────────────────────────────────
 describe('limitsFor', () => {
-  test('meters the free plan', () => {
+  test('dormancy has no window and no meters — nothing left to ration', () => {
     const l = limitsFor('free');
-    expect(l.searchWindowDays).toBe(7);
-    expect(l.syncBytesPerMonth).toBe(50 * MB);
-    expect(l.syncStorageBytes).toBe(300 * MB);
+    expect(l.searchWindowDays).toBeNull();
+    expect(l.syncBytesPerMonth).toBeNull();
+    expect(l.syncStorageBytes).toBeNull();
+    // The two things that actually cost money per tenant stay withheld.
     expect(l.summaries).toBe(false);
     expect(l.embeddings).toBe(false);
     expect(l.rateMultiplier).toBe(0.2);
   });
 
-  test.each(['solo-monthly', 'team-yearly', 'trial', 'enterprise', 'selfhost'])(
+  test.each(['solo-monthly', 'team-yearly', 'enterprise', 'selfhost'])(
     'leaves %s unmetered', (plan) => {
       expect(limitsFor(plan)).toEqual(FULL_LIMITS);
     });
 
+  test('meters the TRIAL on total ingest only — the one unpaid plan that syncs', () => {
+    const l = limitsFor('trial');
+    expect(l.syncStorageBytes).toBe(5120 * MB);
+    expect(l.syncBytesPerMonth).toBeNull();
+    expect(l.searchWindowDays).toBeNull();
+    // A trial has to demonstrate the product, so it is embedded and summarised.
+    expect(l.summaries).toBe(true);
+    expect(l.embeddings).toBe(true);
+  });
+
+  test('the trial cap is an env knob, not a deploy', () => {
+    process.env.TRIAL_STORAGE_MB = '64';
+    expect(trialLimits().syncStorageBytes).toBe(64 * MB);
+  });
+
   test.each([null, undefined, '', 'platinum-unlimited'])(
-    'fails CLOSED on %s — an unrecorded plan must not mean unmetered ingest', (plan) => {
-      expect(limitsFor(plan as string | null).syncBytesPerMonth).toBe(50 * MB);
+    'fails CLOSED on %s — an unrecorded plan must not mean ingest', (plan) => {
+      // The brake is the FEATURE now, not a byte meter: dormancy has no meters,
+      // so a fail-closed that only checked bytes would admit everything.
+      expect(planFeatures(plan as string | null).has('sync')).toBe(false);
+      expect(limitsFor(plan as string | null)).toEqual(dormantLimits());
     });
 
-  test('window is an env knob, not a deploy', () => {
-    process.env.FREE_SEARCH_WINDOW_DAYS = '14';
-    expect(freeLimits().searchWindowDays).toBe(14);
+  test('NO plan windows search — the window was removed on 2026-08-22', () => {
+    for (const plan of ['free', 'trial', 'solo-monthly', 'team-yearly', 'enterprise', 'selfhost', null]) {
+      expect(limitsFor(plan).searchWindowDays, `${plan} must not window search`).toBeNull();
+    }
   });
 });
 
@@ -140,7 +167,9 @@ describe('effectivePlan — the one switch every gate resolves through', () => {
     state.ent = { status: 'trialing', plan: 'trial', currentPeriodEnd: Date.now() - DAY };
     const t = tenant();
     expect(await effectivePlan(t)).toBe('free');
-    expect((await tenantLimits(t)).searchWindowDays).toBe(7);
+    // The downgrade takes away ingest, not history.
+    expect(planFeatures(await effectivePlan(t)).has('sync')).toBe(false);
+    expect((await tenantLimits(t)).searchWindowDays).toBeNull();
   });
 
   test("cancelled Solo → 'free' — a lapsed paid plan keeps nothing paid", async () => {
@@ -200,27 +229,30 @@ describe('syncAdmission — the gate /api/sync never had', () => {
     expect(state.ent?.status).toBe('trialing');
   });
 
-  test('free tenant inside both meters: admitted', async () => {
+  test('DORMANT tenant: refused with sync_off, whatever the meters say', async () => {
     state.ent = { status: 'trialing', plan: 'trial', currentPeriodEnd: Date.now() - DAY };
-    state.usage = { monthBytes: 10 * MB, totalBytes: 100 * MB };
-    const a = await syncAdmission(tenant(), 1 * MB);
-    expect(a.ok).toBe(true);
-  });
-
-  test('free tenant over the MONTH quota: 402 sync_quota with a reset date', async () => {
-    state.ent = { status: 'trialing', plan: 'trial', currentPeriodEnd: Date.now() - DAY };
-    state.usage = { monthBytes: 49.5 * MB, totalBytes: 100 * MB };
+    state.usage = { monthBytes: 0, totalBytes: 0 };   // wide open, and still refused
     const a = await syncAdmission(tenant(), 1 * MB);
     expect(a.ok).toBe(false);
     if (!a.ok) {
       expect(a.status).toBe(402);
-      expect(a.body.kind).toBe('sync_quota');
-      expect(typeof a.body.resetsAt).toBe('number');
+      expect(a.body.kind).toBe('sync_off');
+      // The refusal has to say what still works, or it reads as breakage.
+      expect(String(a.body.detail)).toMatch(/searchable/i);
+      expect(String(a.body.detail)).toMatch(/sync --full/);
     }
   });
 
-  test('free tenant over the STORAGE cap: 402 sync_storage, no reset date — the cap does not turn over', async () => {
+  test('a lapsed PAID plan is dormant too — not metered, refused', async () => {
     state.ent = { status: 'canceled', plan: 'solo-monthly', currentPeriodEnd: Date.now() - DAY };
+    const a = await syncAdmission(tenant(), 1 * MB);
+    expect(a.ok).toBe(false);
+    if (!a.ok) expect(a.body.kind).toBe('sync_off');
+  });
+
+  test('TRIAL over the storage cap: 402 sync_storage, no reset date — the cap does not turn over', async () => {
+    state.ent = { status: 'trialing', plan: 'trial', currentPeriodEnd: Date.now() + 3 * DAY };
+    process.env.TRIAL_STORAGE_MB = '300';
     // The cap reads MEASURED storage, not summed traffic: a re-shipped session
     // must not count twice, and a wiped account must read as empty.
     state.storedBytes = 299.5 * MB;
@@ -231,6 +263,13 @@ describe('syncAdmission — the gate /api/sync never had', () => {
       expect(a.body.kind).toBe('sync_storage');
       expect(a.body.resetsAt).toBeUndefined();
     }
+  });
+
+  test('TRIAL inside the cap: admitted', async () => {
+    state.ent = { status: 'trialing', plan: 'trial', currentPeriodEnd: Date.now() + 3 * DAY };
+    state.storedBytes = 10 * MB;
+    const a = await syncAdmission(tenant(), 1 * MB);
+    expect(a.ok).toBe(true);
   });
 });
 
