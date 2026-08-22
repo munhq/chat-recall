@@ -419,6 +419,8 @@ const RecallTasksSchema = z.object({
   mine: z.boolean().optional().describe('Only tasks assigned to me'),
   project: z.string().optional().describe('Filter to one project_id'),
   status: z.enum(TASK_STATUSES).optional().describe('Filter by status'),
+  detail: z.boolean().optional()
+    .describe('Return the full brief per task — the fix, the file locations and the agent prompt — plus how to claim and close one. Use this when you intend to DO the tasks, not just list them.'),
 });
 const RecallTaskCreateSchema = z.object({
   title: z.string().describe('Task title'),
@@ -2834,12 +2836,53 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         if (params.mine) qs.assignee = '@me';
         if (params.project) qs.project = params.project;
         if (params.status) qs.status = params.status;
-        type Task = { id: string; title: string; status: string; assigneeSub: string | null; projectId: string; updatedAt: number };
+        type Task = {
+          id: string; title: string; status: string; assigneeSub: string | null; projectId: string;
+          updatedAt: number; description?: string; linkedSessionId?: string | null; linkedFindingId?: string | null;
+        };
         const { tasks } = await remoteGetQS<{ tasks: Task[] }>('/api/tasks', qs);
         if (!tasks || tasks.length === 0) return { content: [{ type: 'text', text: 'No team tasks match.' }] };
-        const lines = tasks.map((t) =>
-          `- [${t.status}] ${t.title}  \`${t.id}\`${t.projectId ? ` · ${t.projectId}` : ''}${t.assigneeSub ? ` · @${t.assigneeSub.slice(0, 8)}` : ' · unassigned'}`);
-        return { content: [{ type: 'text', text: `# Team tasks (${tasks.length})\n\n${lines.join('\n')}` }] };
+
+        // The list used to be one line per card: title, id, assignee. The row
+        // already carries the fix, the file locations and the agent prompt (the
+        // auto-filer writes them into `description`), and all of it was thrown
+        // away — so an agent could see that work existed and could not start it
+        // without fetching every card one at a time. `detail` renders the brief.
+        if (!params.detail) {
+          const lines = tasks.map((t) =>
+            `- [${t.status}] ${t.title}  \`${t.id}\`${t.projectId ? ` · ${t.projectId}` : ''}${t.assigneeSub ? ` · @${t.assigneeSub.slice(0, 8)}` : ' · unassigned'}`);
+          return { content: [{ type: 'text', text:
+            `# Team tasks (${tasks.length})\n\n${lines.join('\n')}\n\n`
+            + `_Call again with \`detail: true\` for the full brief (fix, locations, agent prompt) so you can start work._` }] };
+        }
+
+        const open = tasks.filter((t) => t.status !== 'done');
+        const blocks = open.map((t, i) => {
+          const head = `## ${i + 1}. ${t.title}\n\n`
+            + `- id: \`${t.id}\`  ·  status: ${t.status}`
+            + `${t.projectId ? `  ·  project: ${t.projectId}` : ''}`
+            + `${t.linkedSessionId ? `  ·  already claimed by session ${t.linkedSessionId.slice(0, 8)}` : ''}`;
+          const body = (t.description || '').trim();
+          return body ? `${head}\n\n${body}` : head;
+        });
+        const howTo = [
+          '---',
+          '',
+          '### Working these tasks',
+          '',
+          '1. Claim one before you touch code: `recall_task_update` with `id`, `status: "in_progress"`',
+          '   and `linked_session_id` set to YOUR current session id. The link is what lets the board',
+          '   show whether the work actually shipped (files, lines, commits) instead of taking your word.',
+          '2. Do the work. Each brief above carries the fix and, where the task came from a code finding,',
+          '   an agent prompt written for exactly this.',
+          '3. Close it with `recall_task_update` `status: "done"`, and a `comment` saying what you changed.',
+          '',
+          'Auto-filed cards also close themselves once a re-index stops reporting their finding, so a real',
+          'fix ends the task either way. Marking one done without changing anything will simply re-file.',
+        ].join('\n');
+        const header = `# Tasks ready to work (${open.length}${tasks.length !== open.length ? ` of ${tasks.length}` : ''})`
+          + `${params.project ? ` · ${params.project}` : ''}`;
+        return { content: [{ type: 'text', text: `${header}\n\n${blocks.join('\n\n')}\n\n${howTo}` }] };
       }
 
       case 'recall_task_create': {
@@ -3709,8 +3752,15 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
 
         const ot = (wake as { openTasks?: { total: number; auto: number } }).openTasks;
         if (ot && ot.total > 0) {
+          const scope = (ot as { scope?: string }).scope;
           lines.push('## Task board');
-          lines.push(`  ${ot.total} open task(s)${ot.auto ? ` — ${ot.auto} auto-filed from code findings` : ''}. List them with recall_tasks; when you start one, set it in_progress and pass your session id as linked_session_id.`);
+          lines.push(`  ${ot.total} open task(s)${scope ? ` in \`${scope}\`` : ''}${ot.auto ? ` — ${ot.auto} auto-filed from code findings` : ''}.`);
+          // The point of saying this at wake-up is that the agent can act on it
+          // in one call. `detail: true` returns the fix, the locations and the
+          // agent prompt per task, so there is nothing left to fetch.
+          lines.push('  Offer to work them: `recall_tasks` with `detail: true`'
+            + `${scope ? ` and \`project\`` : ''} returns each task's fix, file locations and agent prompt.`);
+          lines.push('  Claim one before editing: `recall_task_update` with `status: "in_progress"` and your session id as `linked_session_id`.');
           lines.push('');
         }
 
