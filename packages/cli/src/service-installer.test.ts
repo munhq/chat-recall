@@ -9,8 +9,14 @@ describe('service-installer renders', () => {
   test('systemd unit interpolates ExecStart + log paths (no literal ${...})', () => {
     const unit = renderSystemdUnit(watchJs, node, logFile);
     expect(unit).toContain(`ExecStart=${node} --max-old-space-size=1536 ${watchJs}`);
-    expect(unit).toContain(`StandardOutput=append:${logFile}`);
-    expect(unit).toContain(`StandardError=append:${logFile}`);
+    // JOURNAL, not append:. A file redirected by systemd cannot be rotated by
+    // anyone — systemd holds the fd, so the daemon renaming or truncating it
+    // leaves systemd writing into a hole. It reached 45 MB on the maintainer's
+    // machine with nothing able to trim it. journald rotates and applies disk
+    // limits already; read it with `journalctl --user -u chat-recall-watch`.
+    expect(unit).toContain('StandardOutput=journal');
+    expect(unit).toContain('StandardError=journal');
+    expect(unit).not.toContain('append:');
     expect(unit).toContain('Restart=on-failure');
     expect(unit).toContain('WantedBy=default.target');
     // The bug we fixed: no un-interpolated template vars should leak.

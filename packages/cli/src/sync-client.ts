@@ -616,6 +616,30 @@ export function batchScanExternal(
   return { findings, scanned, slices, scanMs };
 }
 
+/**
+ * Server API version check, cached per target for an hour.
+ *
+ * Only SUCCESS is cached. A server that is down, or too old, is re-checked on
+ * the next tick — caching a failure would turn a thirty-second outage into an
+ * hour of refusing to sync.
+ */
+const CAPS_TTL_MS = 60 * 60_000;
+const capsOk = new Map<string, number>();   // serverUrl -> epoch ms verified
+
+export function _resetCapsCacheForTests(): void { capsOk.clear(); }
+
+async function verifyServerApi(serverUrl: string, minApi: number): Promise<boolean> {
+  const base = serverUrl.replace(/\/$/, '');
+  const seen = capsOk.get(base);
+  if (seen !== undefined && Date.now() - seen < CAPS_TTL_MS) return true;
+  const caps = await fetchWithTimeout(`${base}/api/capabilities`).then((r) => r.json()) as { apiVersion?: number };
+  if ((caps.apiVersion ?? 0) < minApi) {
+    throw new Error(`server too old: apiVersion ${caps.apiVersion ?? 'none'} < required ${minApi} — update the server image before syncing`);
+  }
+  capsOk.set(base, Date.now());
+  return true;
+}
+
 async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number; prune?: boolean; useLedger?: boolean; walk?: 'full' | 'changed' } = {}): Promise<SyncResult> {
   const sync = loadSettings().sync;
   // Exclusions = local settings ∪ server-side tenant config (dashboard-edited).
@@ -653,14 +677,17 @@ async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; clearte
   // server ignores payload fields it doesn't know — which looks like
   // success and produces gutted data (lived experience, June 2026).
 const MIN_SERVER_API = 2;
-try {
-  const caps = await fetchWithTimeout(`${cred.serverUrl.replace(/\/$/, '')}/api/capabilities`).then((r) => r.json()) as { apiVersion?: number };
-  if ((caps.apiVersion ?? 0) < MIN_SERVER_API) {
-    throw new Error(`server too old: apiVersion ${caps.apiVersion ?? 'none'} < required ${MIN_SERVER_API} — update the server image before syncing`);
-  }
-} catch (e) {
-  if (e instanceof Error && e.message.startsWith('server too old')) throw e;
-  throw new Error(`cannot verify server version (${e instanceof Error ? e.message : e}) — refusing to sync blind`);
+{
+  // Cached for an hour per target. This ran on EVERY sync — every file-change
+  // debounce, every heartbeat, per target — to re-learn a number that changes
+  // only when the server is redeployed. The check itself stays: refusing to
+  // sync blind is the point, and an old server silently ignoring payload fields
+  // is how gutted data shipped in June 2026. Only the frequency changes.
+  //
+  // A FAILURE IS NEVER CACHED. An unreachable server must be retried on the
+  // next tick, not written off for an hour.
+  const ok = await verifyServerApi(cred.serverUrl, MIN_SERVER_API);
+  if (!ok) throw new Error(`cannot verify server version — refusing to sync blind`);
 }
 
 // Fetch tenant-specific secret-scan configuration from the server. Rules are
