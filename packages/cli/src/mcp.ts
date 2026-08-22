@@ -694,6 +694,81 @@ function toolProfile(): 'lean' | 'full' {
   return (process.env.CHAT_RECALL_MCP_PROFILE || '').toLowerCase() === 'full' ? 'full' : 'lean';
 }
 
+/**
+ * The tools that CHANGE something. Everything absent from this set only reads,
+ * which is what `readOnlyHint` then tells the client.
+ *
+ * Without annotations a host cannot tell `recall_search` from
+ * `recall_kg_invalidate`, so it must treat 50 read tools as if each one could
+ * mutate the user's memory — every call needs a prompt, and the product feels
+ * broken on day one. Keep this list honest: a read tool wrongly marked
+ * read-only is a lie the host acts on.
+ */
+const WRITE_TOOLS = new Set<string>([
+  'recall_index',              // indexes and ships new rows
+  'recall_code_index',         // runs the analyzer, then syncs findings
+  'recall_kg_add',
+  'recall_kg_invalidate',
+  'recall_diary_write',
+  'recall_decision_record',
+  'recall_set',
+  'recall_task_create',
+  'recall_task_update',
+  'recall_task_comment',
+  'recall_security_dismiss',
+  'recall_reclassify',         // rewrites classifier tags on indexed chunks
+  'recall_regenerate_summary', // overwrites a stored summary
+  'recall_rename_session',     // overwrites the session name
+]);
+
+/** Writes that OVERWRITE or retire earlier state, rather than only adding to it. */
+const DESTRUCTIVE_TOOLS = new Set<string>([
+  'recall_kg_invalidate',
+  'recall_reclassify',
+  'recall_regenerate_summary',
+  'recall_rename_session',
+  'recall_security_dismiss',
+]);
+
+/** Writes where calling twice with the same input leaves the same state. */
+const IDEMPOTENT_TOOLS = new Set<string>([
+  'recall_set',
+  'recall_kg_invalidate',
+  'recall_rename_session',
+  'recall_security_dismiss',
+  'recall_reclassify',
+  'recall_task_update',
+]);
+
+/**
+ * A display title, derived from the tool name instead of hand-typed. A table of
+ * 54 titles rots the moment someone renames a tool; this cannot disagree.
+ */
+function toolTitle(name: string): string {
+  const words = name.replace(/^recall_/, '').replace(/_/g, ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+type ToolDef = { name: string; description: string; inputSchema: unknown };
+
+/**
+ * Attach MCP tool annotations. `openWorldHint` is true for every tool: they all
+ * reach the chat-recall server, so none of them is a closed local computation.
+ */
+function annotate(t: ToolDef): ToolDef & { annotations: Record<string, unknown> } {
+  const writes = WRITE_TOOLS.has(t.name);
+  return {
+    ...t,
+    annotations: {
+      title: toolTitle(t.name),
+      readOnlyHint: !writes,
+      destructiveHint: DESTRUCTIVE_TOOLS.has(t.name),
+      idempotentHint: writes ? IDEMPOTENT_TOOLS.has(t.name) : true,
+      openWorldHint: true,
+    },
+  };
+}
+
 // List available tools
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   const all: Array<{ name: string; description: string; inputSchema: unknown }> = [
@@ -1613,7 +1688,7 @@ Complements recall_memory_search: search finds candidates, this reads the specif
       },
   ];
 
-  if (toolProfile() === 'full') return { tools: all };
+  if (toolProfile() === 'full') return { tools: all.map(annotate) };
 
   // Lean: the everyday set, plus a signpost so neither the user nor the agent
   // has to guess that more exists. Without this line the omission looks like a
@@ -1631,7 +1706,7 @@ Complements recall_memory_search: search finds candidates, this reads the specif
       inputSchema: { type: 'object', properties: {} },
     });
   }
-  return { tools: lean };
+  return { tools: lean.map(annotate) };
 });
 
 /**
