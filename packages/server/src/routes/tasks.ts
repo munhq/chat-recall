@@ -123,11 +123,27 @@ router.get('/', async (req, res) => {
     // tasks" without knowing its own user id.
     let assignee = typeof req.query.assignee === 'string' && req.query.assignee ? req.query.assignee : undefined;
     if (assignee === '@me') assignee = actor(req);
-    const tasks = await store.listTeamTasks({
-      projectId: typeof req.query.project === 'string' && req.query.project ? req.query.project : undefined,
-      assigneeSub: assignee,
-      status,
-    });
+    // Project scoping is a SUBSTRING match, applied here rather than in the
+    // store's exact-equality filter.
+    //
+    // A caller passes a loose name — an agent knows it is "in chat-recall", not
+    // "git:github.com/munhq/chat-recall" — while the stored id is fully
+    // qualified. With exact equality `recall_tasks project:"chat-recall"`
+    // returned nothing at all, on a board that had the cards, which is how the
+    // whole MCP handover looked broken end to end. The wake-up
+    // (routes/memory.ts scopeOpenTasks) and the board already matched this way;
+    // this was the third copy of the rule and the only one still wrong.
+    //
+    // Unscoped cards stay visible for the same reason they do there: a card
+    // with no project is not some other project's card.
+    const project = typeof req.query.project === 'string' && req.query.project ? req.query.project.toLowerCase() : undefined;
+    const all = await store.listTeamTasks({ assigneeSub: assignee, status });
+    const tasks = project
+      ? all.filter((t) => {
+        const pid = (t.projectId || '').toLowerCase();
+        return pid === '' || pid.includes(project);
+      })
+      : all;
     res.json({ tasks });
   } catch (e) { log.error({ err: e }, 'list tasks failed'); res.status(500).json({ error: e instanceof Error ? e.message : 'list failed' }); }
   finally { await store.close(); }

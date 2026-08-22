@@ -124,30 +124,36 @@ describe('POST /:id/regenerate-summary — free-tier gate', () => {
     // process-wide 30s entitlement caches; a stale 'not entitled' answer for
     // this tenant turns the pass-through into a 402.
     process.env.STRIPE_SECRET_KEY = 'sk_test_x';
-    // The gate decision is the only thing under test, so what happens AFTER the
-    // gate must fail fast and deterministically. Deleting SUMMARY_PROVIDER was
-    // not enough: the developer's .env also supplies the base URLs, so the
-    // handler could still reach a REAL upstream and retry with backoff, blowing
-    // the 30s timeout. That made this test intermittently red in a full run —
-    // same code, one run green, the next not.
+    // The gate decision is the only thing under test, so everything AFTER the
+    // gate must return immediately — no store, no filesystem, no network.
     //
-    // Instead, choose a provider whose misconfiguration is a NON-TRANSIENT error
-    // (see the fail-fast case above): openai-compat with no base URL throws
-    // immediately and is never retried, so the handler always returns promptly
-    // and the assertion is about the gate, never about timing.
+    // This test was intermittently red: it passed alone and timed out at 30s in
+    // a full parallel run, because past the gate the handler did real work
+    // whose duration depended on how loaded the machine was. Deleting
+    // SUMMARY_PROVIDER was not enough; the developer's .env also supplies the
+    // base URLs, so it could still reach a real upstream and retry with backoff.
+    //
+    // Server mode with NO provider configured hits `if (!config) return 501`
+    // as the first statement after the gate. 501 is not 402, which is exactly
+    // and only what this test claims.
     const savedEnv = {
       SUMMARY_PROVIDER: process.env.SUMMARY_PROVIDER,
       SUMMARY_BASE_URL: process.env.SUMMARY_BASE_URL,
+      SUMMARY_MODEL: process.env.SUMMARY_MODEL,
       OPENAI_COMPAT_BASE_URL: process.env.OPENAI_COMPAT_BASE_URL,
+      CHAT_RECALL_SERVER_MODE: process.env.CHAT_RECALL_SERVER_MODE,
     };
-    process.env.SUMMARY_PROVIDER = 'openai-compat';
-    delete process.env.SUMMARY_BASE_URL;
-    delete process.env.OPENAI_COMPAT_BASE_URL;
+    for (const k of Object.keys(savedEnv)) delete process.env[k];
+    process.env.CHAT_RECALL_SERVER_MODE = 'server';
+
     const { clearEntitlementCache } = await import('../util/billing.js');
     clearEntitlementCache();
     const res = await request(appFor('regenpaid'))
       .post('/api/conversations/no-such-session/regenerate-summary');
     expect(res.status).not.toBe(402);
+    // And specifically the fast path, so a future change that reintroduces real
+    // work after the gate fails here loudly instead of going flaky again.
+    expect(res.status).toBe(501);
     for (const [k, v] of Object.entries(savedEnv)) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
