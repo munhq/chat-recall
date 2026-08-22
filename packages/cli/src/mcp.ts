@@ -597,7 +597,14 @@ const RecallWakeUpSchema = z.object({
   identity: z.string().optional()
     .describe('Optional override for the identity blurb. Defaults to <data dir>/identity.txt or "AI coding assistant"'),
   project_filter: z.string().optional()
-    .describe('Scope facts and KG entities to a project (substring match against project_path / entity name). Without this, facts are global and bleed across unrelated projects.'),
+    .describe('Scope facts, KG entities and the task count to a project (substring match against project_path / entity name). Without this, facts are global and bleed across unrelated projects.'),
+  // Alias. Its sibling tools (recall_tasks, recall_project_context) all take
+  // `project`, and passing that here used to be silently ignored: no error, and
+  // a WHOLE-TENANT answer that looks exactly like a scoped one. That is the
+  // failure this tool exists to prevent — being told about another project's
+  // backlog — so accepting both names is worth more than naming purity.
+  project: z.string().optional()
+    .describe('Alias for project_filter.'),
 });
 
 // ── KV (third memory primitive) ────────────────────────────────────────────
@@ -1507,7 +1514,8 @@ the start of a session to "remember who you are and what's true right now".`,
             max_facts: { type: 'number', default: 10 },
             max_kg_facts: { type: 'number', default: 15 },
             identity: { type: 'string' },
-            project_filter: { type: 'string', description: 'Scope facts and KG entities to a project (substring match). Without it, facts are global.' },
+            project_filter: { type: 'string', description: 'Scope facts, KG entities and the task count to a project (substring match). Without it, facts are global.' },
+            project: { type: 'string', description: 'Alias for project_filter — the name every sibling tool uses.' },
           },
         },
       },
@@ -3853,7 +3861,8 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
 
       // ── Wake-up context ────────────────────────────────────────
       case 'recall_wake_up': {
-        const params = RecallWakeUpSchema.parse(args);
+        const parsedWake = RecallWakeUpSchema.parse(args);
+        const params = { ...parsedWake, project_filter: parsedWake.project_filter ?? parsedWake.project };
 
         // Identity: param > file > default. The file lets users seed a stable
         // self-description that survives across sessions ("I'm Adi's coding agent…").
