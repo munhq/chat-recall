@@ -11,13 +11,11 @@ import { Button } from './primitives';
  * this costs nothing to deliver and cannot land in spam. Email covers the user
  * who has drifted away; this covers the one still working.
  *
- * A LAPSED tenant is not read-only and not broken: they landed on the free plan
- * (the floor, not a purchase). Sync continues (metered) and search covers the
- * last few days; everything older is stored and locked, and unlocks instantly
- * on upgrade. The banner states that as an OFFER — the locked history IS the
- * upgrade argument — never as an error, which is what the old "your access is
- * read-only" line was: wrong twice (nothing is read-only; syncs are not paused)
- * at the exact moment someone decides whether to pay.
+ * A LAPSED tenant is not read-only and not broken: INGEST stops, reads do not.
+ * Their whole synced history stays searchable and export always works, so the
+ * banner states one change and one remedy. It never says "read-only", and it no
+ * longer says "search covers your last N days" — that window was removed on
+ * 2026-08-22, because a memory product that forgets is not a demo of anything.
  *
  * Dismissal:
  *  - Trial countdown: per remaining-days value — dismissing at 7 days hides it
@@ -30,18 +28,14 @@ import { Button } from './primitives';
 const DISMISS_KEY = 'cr-trialbanner-dismissed-at-days';
 const FREE_DISMISS_KEY = 'cr-freebanner-dismissed-day';
 
-/** The free plan's default search window. The server is authoritative (search
- *  responses carry `window_days`); this only covers copy rendered before any
- *  search has answered. Matches FREE_SEARCH_WINDOW_DAYS' default. */
-import { DEFAULT_FREE_WINDOW_DAYS } from '../utils/bytes';
 
 export default function TrialBanner({
   onSubscribe,
   windowDays,
 }: {
   onSubscribe: () => void;
-  /** The window the server actually applied (from the latest search response).
-   *  Undefined until a search has answered — the default then stands in. */
+  /** Was the free plan's applied search window. Accepted and ignored since the
+   *  window was removed on 2026-08-22; kept so call sites need no edit. */
   windowDays?: number | null;
 }) {
   const [ent, setEnt] = useState<
@@ -74,7 +68,6 @@ export default function TrialBanner({
   if (!onFree && !ent.onTrial) return null;   // paying and current: nothing to say
 
   const days = ent.daysLeft ?? 0;
-  const winDays = windowDays ?? DEFAULT_FREE_WINDOW_DAYS;
 
   // status 'none' = the tenant has NO entitlement row: their address was never
   // confirmed, so no trial was granted and every sync is refused. Promising
@@ -109,10 +102,10 @@ export default function TrialBanner({
         <style>{CSS}</style>
         <span className="cr-trialbanner-dot" />
         <span className="cr-trialbanner-text">
-          <strong>Free plan</strong> — syncing continues and search covers your last{' '}
-          {winDays} day{winDays === 1 ? '' : 's'}.{' '}
+          <strong>Syncing is off</strong> — your trial has ended, so new sessions stop arriving.{' '}
           <span className="muted">
-            Your older history is stored and locked — it unlocks instantly when you upgrade.
+            Everything already synced stays fully searchable, and export always works. Subscribe
+            and one <code>chat-recall sync --full</code> brings you current.
           </span>
         </span>
         <Button variant="primary" size="sm" onClick={onSubscribe}>Upgrade</Button>
@@ -140,15 +133,15 @@ export default function TrialBanner({
       <span className="cr-trialbanner-text">
         {days <= 0 ? (
           <>
-            <strong>Your trial ends today.</strong> After that you land on the free plan: sync
-            continues and search covers your last {winDays} days. Nothing is deleted.
+            <strong>Your trial ends today.</strong> After that new sessions stop syncing.
+            Everything already synced stays searchable, and nothing is deleted.
           </>
         ) : (
           <>
             <strong>{days} day{days === 1 ? '' : 's'} left</strong> on your trial.{' '}
             <span className="muted">
-              When it ends you land on the free plan: sync continues and search covers your last{' '}
-              {winDays} days. Older history stays stored and unlocks on upgrade.
+              When it ends, new sessions stop syncing. Everything already synced stays fully
+              searchable, and export always works.
             </span>
           </>
         )}

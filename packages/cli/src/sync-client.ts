@@ -762,10 +762,13 @@ const refs = listAvailableBackends().flatMap((b) => {
         if (res.status === 402) {
           let detail = text;
           try {
-            const body = JSON.parse(text) as { error?: string; upgradeUrl?: string; resetsAt?: number };
+            const body = JSON.parse(text) as { error?: string; detail?: string; upgradeUrl?: string; resetsAt?: number };
             detail = body.error ?? text;
+            // `detail` carries the part that stops this reading as breakage —
+            // what still works, and the one command that restores the rest.
+            if (body.detail) detail += `\n  ${body.detail}`;
             if (body.resetsAt) detail += ` (resets ${new Date(body.resetsAt).toISOString().slice(0, 10)})`;
-            if (body.upgradeUrl) detail += ` — ${body.upgradeUrl}`;
+            if (body.upgradeUrl) detail += `\n  ${body.upgradeUrl}`;
           } catch { /* non-JSON 402 — print as-is */ }
           throw new Error(`sync paused by the server: ${detail}`);
         }
