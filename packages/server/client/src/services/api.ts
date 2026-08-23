@@ -763,6 +763,8 @@ export interface FleetDeviceTelemetry {
   oversizedWorstMb: number;
   rssPeakMb: number | null;
   lastScanMs: number | null;
+  /** Recent walk scan times, oldest first — the trend beside the value. */
+  recentScanMs?: number[];
 }
 
 export interface FleetDeviceHealth {
@@ -784,6 +786,36 @@ export interface FleetTelemetrySummary {
   scanMsP95: number | null;
   rssPeakMbMax: number | null;
   versions: Array<{ version: string; devices: number }>;
+}
+
+/** One reported collector event. `data` holds its measurements. */
+export interface CollectorEvent {
+  ts: number;
+  kind: string;
+  tool: string;
+  cli_version: string;
+  os: string;
+  device_id: string;
+  message: string;
+  data?: Record<string, number | string | boolean>;
+}
+
+/**
+ * Recent collector events for this tenant.
+ *
+ * Deliberately unfiltered server-side beyond `kind`: the volume is small (one
+ * page of events) and filtering in the browser keeps the filter row instant
+ * rather than a round trip per keystroke.
+ */
+export async function getCollectorEvents(
+  opts: { limit?: number; kind?: string } = {},
+): Promise<{ events: CollectorEvent[] }> {
+  const q = new URLSearchParams();
+  if (opts.limit) q.set('limit', String(opts.limit));
+  if (opts.kind) q.set('kind', opts.kind);
+  const res = await fetchWithTimeout(`${API_BASE}/client-events/?${q.toString()}`, {}, 15000);
+  if (!res.ok) throw new Error(`Failed to load collector events: ${res.statusText}`);
+  return await res.json();
 }
 
 /** Read the org's security/telemetry configuration. */

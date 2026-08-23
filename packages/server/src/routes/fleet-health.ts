@@ -153,6 +153,9 @@ async function collectorTelemetryByDevice(tenant: string): Promise<Map<string, D
       oversizedWorstMb: Number(r.oversized_worst_mb) || 0,
       rssPeakMb: r.rss_peak_mb == null ? null : Number(r.rss_peak_mb),
       lastScanMs: r.last_scan_ms == null ? null : Number(r.last_scan_ms),
+      recentScanMs: Array.isArray(r.recent_scan_ms)
+        ? (r.recent_scan_ms as unknown[]).map(Number).filter((n) => Number.isFinite(n)).reverse()
+        : [],
     });
   }
 
@@ -173,7 +176,7 @@ async function collectorTelemetryByDevice(tenant: string): Promise<Map<string, D
     const id = String(r.device_id);
     const entry = out.get(id) ?? {
       breakerTrips: 0, failuresByClass: {}, oversizedSessions: 0,
-      oversizedWorstMb: 0, rssPeakMb: null, lastScanMs: null,
+      oversizedWorstMb: 0, rssPeakMb: null, lastScanMs: null, recentScanMs: [],
     };
     entry.failuresByClass[String(r.error_class)] = Number(r.n) || 0;
     out.set(id, entry);
@@ -269,6 +272,15 @@ export interface DeviceTelemetry {
   rssPeakMb: number | null;
   /** Most recent walk's scan time, ms. */
   lastScanMs: number | null;
+  /**
+   * The last few walks' scan times, OLDEST FIRST, for a trend.
+   *
+   * A single current value cannot answer the question a reader actually has —
+   * "is this getting worse?" — and p50/p95 across the fleet cannot answer it for
+   * ONE machine. Twelve points is the stat-tile sparkline length; ordered for
+   * drawing so the UI does no reversing.
+   */
+  recentScanMs: number[];
 }
 
 export interface DeviceHealth {
