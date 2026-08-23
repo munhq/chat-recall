@@ -4,6 +4,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import TopBar from './components/TopBar';
+import SystemHealth from './components/SystemHealth';
 import Sidebar from './components/Sidebar';
 import ConversationList from './components/ConversationList';
 import ConversationViewer from './components/ConversationViewer';
@@ -50,7 +51,7 @@ import {
   type ProjectTreeApiNode,
 } from './services/api';
 
-type ViewMode = 'home' | 'projects' | 'search' | 'memory' | 'tasks' | 'toolkit' | 'security' | 'settings' | 'account' | 'connect' | 'admin' | 'team';
+type ViewMode = 'home' | 'projects' | 'search' | 'memory' | 'tasks' | 'toolkit' | 'security' | 'health' | 'settings' | 'account' | 'connect' | 'admin' | 'team';
 
 /**
  * Recursive tree node used by the project sidebar. One node renders as
@@ -221,10 +222,14 @@ function AppInner() {
     // that cannot: a deep link or bookmark to ?view=admin mounted the panel
     // before isOperator resolved, so a non-operator got a request they could not
     // satisfy. It is added below, once capabilities say who they are.
-    if (!f) return new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'tasks', 'toolkit', 'security', 'settings', 'account', 'connect', 'team']);
+    if (!f) return new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'tasks', 'toolkit', 'security', 'health', 'settings', 'account', 'connect', 'team']);
     const out = new Set<ViewMode>();
     out.add('home');    // command center is always available
     out.add('connect'); // installer's token page — must never be capability-gated
+    // System health is never gated. "Is my collector working?" is the question
+    // a broken deployment asks, and gating it behind a feature flag would hide
+    // the diagnosis exactly when it is needed.
+    out.add('health');
     // Operators only. It used to be added unconditionally, on the reasoning
     // that the server checks a key anyway — but in cloud mode requireAdmin()
     // never reads x-admin-key, so a non-operator got a panel, a 403, and a
@@ -1224,6 +1229,7 @@ function AppInner() {
               />
             )
           )}
+          {view === 'health' && <SystemHealth />}
           {view === 'security' && (
             <SecurityExplorer
               onSessionClick={(sid) => handleMemorySessionClick(sid, { initialTab: 'security' })}

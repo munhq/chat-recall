@@ -100,7 +100,7 @@ router.get('/', async (req, res) => {
   try {
     const pool = await openPgPool();
     const sql =
-      `SELECT ts, kind, tool, cli_version, os, device_id, message
+      `SELECT ts, kind, tool, cli_version, os, device_id, message, data
          FROM client_events WHERE tenant=$1 ${kind ? 'AND kind=$2' : ''}
         ORDER BY ts DESC LIMIT ${limit}`;
     const r = await tenantQuery(pool, tenant, sql, kind ? [tenant, kind] : [tenant]);
