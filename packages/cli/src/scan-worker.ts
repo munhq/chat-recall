@@ -36,8 +36,39 @@ import {
 /** One file of a session transcript. Mirrors RawContainer.files. */
 export interface ScanFile { name: string; text: string }
 
+/**
+ * Derive a session's compute rows — diff, outcome, commits, markers.
+ *
+ * The heaviest per-session work in the walk and, until now, entirely on the main
+ * thread: `replaySessionAny`, `computeOutcome` and `extractTurnsAny` each read
+ * the whole transcript and shell out to git. Measured on the maintainer's tail
+ * of sessions needing a rebuild: ~5 seconds each, against 78ms for the scan.
+ *
+ * It takes only an id — the worker reads the transcript itself, so nothing large
+ * crosses the boundary on the way in, and `withSessionReadCache` inside means it
+ * reads once rather than four times.
+ */
+export interface DerivedTask {
+  id: number;
+  task: 'derived';
+  prefixedId: string;
+  toolId: string;
+  mtime: number;
+  maxRowBytes: number;
+  pack?: { version: string; rules: ServerRuleSpec[] };
+  packVersion: string;
+}
+
+export interface DerivedResult {
+  id: number;
+  rows: { session_id: string; mtime: number; compute: Array<{ kind: string; mtime: number; data: unknown }>; outcome_row: unknown | null } | null;
+  redactions: number;
+  error?: string;
+}
+
 export interface ScanTask {
   id: number;
+  task?: 'scan';
   files: ScanFile[];
   /** Container fields needed to rebuild it for gzip, minus the file text. */
   container: { v: 1; tool: string; mtime: number; srcHash?: string };
@@ -97,10 +128,37 @@ function runTask(task: ScanTask): ScanResult {
   return { id: task.id, findings, redactions: count.redactions, rawB64, rawSize };
 }
 
-parentPort?.on('message', (task: ScanTask) => {
+async function runDerived(task: DerivedTask): Promise<DerivedResult> {
+  if (task.pack && task.packVersion !== installedPackVersion) {
+    installServerRulePack(task.pack);
+    installedPackVersion = task.packVersion;
+  }
+  // Imported lazily and INSIDE the worker: these pull the replay/outcome/turns
+  // machinery and the backend registry, which the scan path never needs.
+  const { collectDerivedRows } = await import('./derived.js');
+  const count = { redactions: 0 };
+  const rows = collectDerivedRows(
+    { prefixedId: task.prefixedId, toolId: task.toolId, mtime: task.mtime },
+    task.mtime, count, task.maxRowBytes,
+  );
+  return { id: task.id, rows, redactions: count.redactions };
+}
+
+parentPort?.on('message', async (task: ScanTask | DerivedTask) => {
+  if ((task as DerivedTask).task === 'derived') {
+    try {
+      parentPort?.postMessage(await runDerived(task as DerivedTask));
+    } catch (err) {
+      parentPort?.postMessage({
+        id: task.id, rows: null, redactions: 0,
+        error: err instanceof Error ? err.message : String(err),
+      } satisfies DerivedResult);
+    }
+    return;
+  }
   let result: ScanResult;
   try {
-    result = runTask(task);
+    result = runTask(task as ScanTask);
   } catch (err) {
     // Never let a worker die on one bad session: report and stay available. The
     // caller falls back to computing this session on the main thread.
