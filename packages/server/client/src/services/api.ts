@@ -777,9 +777,42 @@ export interface FleetDeviceHealth {
   telemetry?: FleetDeviceTelemetry;
 }
 
+/** Fleet-wide collector shape. Null when no device has reported telemetry. */
+export interface FleetTelemetrySummary {
+  walks: number;
+  scanMsP50: number | null;
+  scanMsP95: number | null;
+  rssPeakMbMax: number | null;
+  versions: Array<{ version: string; devices: number }>;
+}
+
+/** Read the org's security/telemetry configuration. */
+export async function getSecurityConfig(): Promise<{ verifySecrets: boolean; telemetry: boolean }> {
+  const res = await fetchWithTimeout(`${API_BASE}/teams/security-config/`);
+  if (!res.ok) throw new Error(`Failed to load security config: ${res.statusText}`);
+  return await res.json();
+}
+
+/**
+ * Turn org-wide collector telemetry on or off.
+ *
+ * `verifySecrets` is sent unchanged because the endpoint owns both; omitting
+ * `collectTelemetry` leaves it untouched, which is what stops a verifySecrets
+ * change from silently re-enabling telemetry.
+ */
+export async function setCollectTelemetry(on: boolean, verifySecrets: boolean): Promise<void> {
+  const res = await fetchWithTimeout(`${API_BASE}/teams/security-config/`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ verifySecrets, collectTelemetry: on }),
+  });
+  if (!res.ok) throw new Error(`Failed to update telemetry setting: ${res.statusText}`);
+}
+
 export async function getFleetHealth(): Promise<{
   devices: FleetDeviceHealth[];
   summary: { devices: number; healthy: number; needsAttention: number; pendingFolders: number; unattributedSessions: number };
+  fleetTelemetry?: FleetTelemetrySummary | null;
 }> {
   const res = await fetchWithTimeout(`${API_BASE}/health/fleet`, {}, 15000);
   if (!res.ok) throw new Error(`Failed to load device health: ${res.statusText}`);

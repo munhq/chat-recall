@@ -13,7 +13,10 @@
  */
 import React, { useEffect, useState } from 'react';
 import { Card, Chip } from './primitives';
-import { getFleetHealth, type FleetDeviceHealth } from '../services/api';
+import {
+  getFleetHealth, getSecurityConfig, setCollectTelemetry,
+  type FleetDeviceHealth, type FleetTelemetrySummary,
+} from '../services/api';
 
 /** ms as something a human reads without doing arithmetic. */
 function dur(ms: number): string {
@@ -36,14 +39,26 @@ function ago(ts: number | null): string {
 export default function FleetHealth() {
   const [devices, setDevices] = useState<FleetDeviceHealth[]>([]);
   const [summary, setSummary] = useState<{ devices: number; healthy: number; needsAttention: number; pendingFolders: number; unattributedSessions: number } | null>(null);
+  const [fleet, setFleet] = useState<FleetTelemetrySummary | null>(null);
+  // The org-wide telemetry switch. Null while unknown — a toggle that renders
+  // before its state is loaded invites a click that flips the wrong way.
+  const [collect, setCollect] = useState<{ on: boolean; verifySecrets: boolean } | null>(null);
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading');
   const [err, setErr] = useState('');
 
   useEffect(() => {
     let on = true;
     getFleetHealth()
-      .then((r) => { if (!on) return; setDevices(r.devices); setSummary(r.summary); setState('ready'); })
+      .then((r) => {
+        if (!on) return;
+        setDevices(r.devices); setSummary(r.summary); setFleet(r.fleetTelemetry ?? null); setState('ready');
+      })
       .catch((e) => { if (!on) return; setErr(String(e.message || e)); setState('error'); });
+    // Separate and non-blocking: the panel's job is health, and a security-config
+    // failure must not stop it rendering.
+    getSecurityConfig()
+      .then((c) => { if (on) setCollect({ on: c.telemetry, verifySecrets: c.verifySecrets }); })
+      .catch(() => { /* older server, or no permission — the toggle stays hidden */ });
     return () => { on = false; };
   }, []);
 
@@ -137,6 +152,61 @@ export default function FleetHealth() {
           );
         })}
       </div>
+
+      {/* Fleet-wide shape, for the question a per-device card cannot answer:
+          how long a sync takes for a real machine, and how much memory it costs.
+          Omitted entirely when nothing has reported — zeros would read as
+          measured values of zero. */}
+      {fleet && fleet.walks > 0 && (
+        <div style={{
+          marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--cr-line-1)',
+          color: 'var(--cr-fg-3)', fontSize: 11.5, display: 'flex', gap: 12, flexWrap: 'wrap',
+          fontFamily: 'var(--cr-font-mono)',
+        }}>
+          <span>{fleet.walks.toLocaleString()} walks (7d)</span>
+          {fleet.scanMsP50 != null && <span>scan p50 {dur(fleet.scanMsP50)}</span>}
+          {fleet.scanMsP95 != null && <span>p95 {dur(fleet.scanMsP95)}</span>}
+          {fleet.rssPeakMbMax != null && <span>peak {fleet.rssPeakMbMax}MB</span>}
+          {fleet.versions.length > 1 && (
+            <span>{fleet.versions.length} CLI versions in use</span>
+          )}
+        </div>
+      )}
+
+      {/* THE CONSENT CONTROL. Telemetry is collected by default from paying
+          tenants, so refusing it must not require editing a file on every
+          machine. This is the ORG's answer and a veto: a device's own
+          privacy.telemetry=false still wins, and neither side can force a yes.
+          Stated in full, because a switch whose effect is unclear is not
+          consent. */}
+      {collect && (
+        <div style={{
+          marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--cr-line-1)',
+          display: 'flex', gap: 10, alignItems: 'flex-start',
+        }}>
+          <input
+            id="collect-telemetry"
+            type="checkbox"
+            checked={collect.on}
+            onChange={async (e) => {
+              const next = e.target.checked;
+              setCollect({ ...collect, on: next });          // optimistic
+              try { await setCollectTelemetry(next, collect.verifySecrets); }
+              catch { setCollect({ ...collect, on: !next }); } // put it back on failure
+            }}
+            style={{ marginTop: 2, flexShrink: 0 }}
+          />
+          <label htmlFor="collect-telemetry" style={{ fontSize: 12, color: 'var(--cr-fg-2)', lineHeight: 1.5 }}>
+            Let collectors report their own health to this server
+            <span style={{ display: 'block', color: 'var(--cr-fg-3)', fontSize: 11.5 }}>
+              Walk timings, session counts, failure classes, CLI version and peak memory —
+              never transcript content, file paths, project names or session ids.
+              It is what makes the warnings above possible. Any machine can also
+              refuse locally with <code>CHAT_RECALL_TELEMETRY=0</code>.
+            </span>
+          </label>
+        </div>
+      )}
 
       {summary && summary.unattributedSessions > 0 && (
         <div style={{ color: 'var(--cr-fg-3)', fontSize: 11.5, marginTop: 10 }}>
