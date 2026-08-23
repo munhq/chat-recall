@@ -78,6 +78,7 @@ import { acquireIndexLock } from '@chat-recall/engine/core/index-lock.js';
 import { fetchWithTimeout } from './http.js';
 import { gzipSync } from 'zlib';
 import { scanPool } from './scan-pool.js';
+import { isPrivateHost, transportRisk, assertTransportSafe } from './transport-safety.js';
 
 /**
  * The server rule pack as it arrived, kept for the scan workers.
@@ -104,6 +105,10 @@ export interface Credentials { serverUrl: string; token: string; }
  * form still readable.
  */
 export function saveCredentials(c: Credentials): void {
+  // REFUSE AT THE DOOR. Every login path funnels through here, so this is the
+  // one place that can stop a cleartext target being persisted at all — better
+  // than warning at sync time, by which point the user believes they are set up.
+  assertTransportSafe(c.serverUrl);
   mkdirSync(dirname(credPath()), { recursive: true });
   const targets = loadAllCredentials().filter((t) => t.serverUrl !== c.serverUrl);
   // Newest login FIRST: single-target consumers (loadCredentials → targets[0],
@@ -377,16 +382,14 @@ const MAX_DERIVED_ROW_BYTES = 2 * 1024 * 1024;
  * is no shared-tenant or rate-limiter to be polite to, so they get a higher
  * in-flight cap and zero inter-batch sleep. Remote/SaaS hosts stay gentler.
  */
-function isLocalHost(serverUrl: string): boolean {
-  let host = '';
-  try { host = new URL(serverUrl).hostname.toLowerCase(); } catch { return false; }
-  if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') return true;
-  if (host.endsWith('.local') || host.endsWith('.lan')) return true;
-  if (/^10\./.test(host)) return true;                              // 10.0.0.0/8
-  if (/^192\.168\./.test(host)) return true;                        // 192.168.0.0/16
-  if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true;         // 172.16.0.0/12
-  return false;
-}
+/**
+ * "You own this box", for upload pacing.
+ *
+ * One definition, shared with the transport gate — these were two copies of the
+ * same private-address list, and the moment they disagree either politeness or
+ * SECURITY is wrong. transport-safety.ts owns the list.
+ */
+const isLocalHost = isPrivateHost;
 
 export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number; prune?: boolean; useLedger?: boolean; walk?: 'full' | 'changed' } = {}): Promise<SyncResult> {
   const targets = loadAllCredentials();
@@ -710,6 +713,12 @@ async function syncToTarget(cred: Credentials, opts: SyncToTargetOpts = {}): Pro
 }
 
 async function syncToTargetInScope(cred: Credentials, opts: SyncToTargetOpts = {}): Promise<SyncResult> {
+  // Checked again here, not only at login: credentials.json is a plain file a
+  // user can edit, an env var can supply a target that never saw the login gate
+  // (see credentials-env.ts), and a target saved by an older version predates
+  // the check entirely. The upload path is the last place to say no.
+  const risk = transportRisk(cred.serverUrl);
+  if (risk) throw new Error(risk);
   const sync = loadSettings().sync;
   // Exclusions = local settings ∪ server-side tenant config (dashboard-edited).
   const serverCfg = await fetchTenantSyncConfig(cred);
