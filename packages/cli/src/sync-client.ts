@@ -121,7 +121,7 @@ function classifyError(msg: string): string {
 let walkProgressForUpload: { done: number; total: number; complete: boolean } | null = null;
 
 let lastServerPackSpec: { version: string; rules: Array<{ name: string; regex: string; flags?: string; redact?: boolean; source?: 'tenant' | 'pack' }> } | null = null;
-import { reportWalkProgress } from '@chat-recall/engine/core/collector-health.js';
+import { reportWalkProgress, readCollectorHealth, updateCollectorHealth } from '@chat-recall/engine/core/collector-health.js';
 import { withSessionReadCache , withSessionScanScope } from '@chat-recall/engine/core/live-session-scan.js';
 import '@chat-recall/engine/core/backends/index.js'; // register the tool backends
 
@@ -747,6 +747,17 @@ export function _resetCapsCacheForTests(): void {
   capsOk.clear(); advertisedIngestConc.clear(); advertisedGzipBody.clear();
 }
 
+/**
+ * Learn the tenant-scoped ingest allowance from an authenticated response.
+ *
+ * `verifyServerApi` sets the same map from /api/capabilities, which is pre-auth
+ * and therefore can only report the CLASS ceiling. This overrides it with the
+ * number that actually applies to this tenant.
+ */
+export function setServerIngestConcurrency(serverUrl: string, n: number): void {
+  advertisedIngestConc.set(serverUrl.replace(/\/$/, ''), n);
+}
+
 /** Does this server accept `Content-Encoding: gzip` on a request body? */
 export function serverAcceptsGzipBody(serverUrl: string): boolean {
   return advertisedGzipBody.has(serverUrl.replace(/\/$/, ''));
@@ -986,10 +997,29 @@ const refs = listAvailableBackends().flatMap((b) => {
           const body = await res.json().catch(() => ({})) as {
             cli?: { version: string; sha256: string } | null;
             telemetry?: boolean;
+            limits?: { ingestConcurrencyPerTenant?: number };
           };
           // The server owns the plan answer; the user's opt-out is checked
           // separately and wins over it.
-          if (typeof body.telemetry === 'boolean') setTelemetryEligible(base, body.telemetry);
+          if (typeof body.telemetry === 'boolean') {
+            setTelemetryEligible(base, body.telemetry);
+            // Persisted so `doctor` — a separate process that never syncs — can
+            // tell the user the truth about what leaves their machine.
+            try {
+              const prior = readCollectorHealth()?.telemetryEligible ?? {};
+              updateCollectorHealth({
+                telemetryEligible: { ...prior, [base]: { allowed: body.telemetry, at: Date.now() } },
+              });
+            } catch { /* cosmetic — never fail a sync over it */ }
+          }
+          // The AUTHENTICATED per-tenant allowance beats the pre-auth class
+          // ceiling from /api/capabilities: only this response knows the plan,
+          // and the gate scales the ceiling down per tenant. Learning it here is
+          // what stops a free tenant asking for 6 slots it will never get.
+          const adv = body.limits?.ingestConcurrencyPerTenant;
+          if (typeof adv === 'number' && Number.isFinite(adv) && adv >= 1) {
+            setServerIngestConcurrency(base, Math.floor(adv));
+          }
           if (body.cli && body.cli.version) {
             const { planAutoUpdate, runAutoUpdate } = await import('./auto-update.js');
             const authHeaders: Record<string, string> = cred.token ? { authorization: `Bearer ${cred.token}` } : {};
