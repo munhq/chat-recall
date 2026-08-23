@@ -47,6 +47,7 @@ import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js'
 import { isEntitled, syncAdmission, recordSyncUsage, recordSyncPresence } from '../util/billing.js';
 import { notifyVerifiedSecrets, type VerifiedHit } from '../services/notify.js';
 import { ingestGate } from '../middleware/rate-limit.js';
+import { tenantIngestConcurrency } from '../middleware/rate-limit.js';
 import { chunksFromTurns, subagentChunks, type EnvSubagent } from '../services/session-chunks.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 
@@ -838,9 +839,17 @@ router.post('/', async (req, res) => {
     // this cannot override.
     let telemetry = false;
     try { telemetry = await isEntitled(agent.tenant); } catch { telemetry = false; }
+    // THE TENANT'S OWN ingest allowance, not the class ceiling.
+    // /api/capabilities is pre-auth so it cannot know the plan, and the ceiling
+    // it advertises is scaled down per tenant by the gate. A free tenant told
+    // "6" asks for 6 and has 5 shed — the exact 429 storm the advertisement
+    // exists to prevent. This response is authenticated, so it can be right.
+    let ingestConcurrency: number | undefined;
+    try { ingestConcurrency = await tenantIngestConcurrency(agent.tenant); } catch { /* client keeps its default */ }
     res.json({
       ok: true, ...result, tenant: agent.tenant, ack_at: new Date().toISOString(),
       cli: cliRelease(), telemetry,
+      ...(ingestConcurrency ? { limits: { ingestConcurrencyPerTenant: ingestConcurrency } } : {}),
     });
   } catch (e) {
     log.error({ err: e }, 'sync ingest error');

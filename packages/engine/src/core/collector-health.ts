@@ -63,6 +63,17 @@ export interface CollectorHealth {
   targets: Record<string, TargetHealth>;
   /** Progress of the walk in flight, when one is. */
   progress?: WalkProgress;
+  /**
+   * Which servers have confirmed this tenant's plan includes telemetry, keyed by
+   * server URL, with when it was last confirmed.
+   *
+   * Persisted because eligibility is learned from an authenticated sync response
+   * and held in the syncing process's memory — so `chat-recall doctor`, a
+   * separate short-lived process that never syncs, could only ever report "no
+   * server accepts it". That was a confident false statement to a user about
+   * their own privacy, which is worse than saying nothing.
+   */
+  telemetryEligible?: Record<string, { allowed: boolean; at: number }>;
 }
 
 /**
