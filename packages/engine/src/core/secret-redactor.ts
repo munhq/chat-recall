@@ -37,6 +37,38 @@ export interface RedactionRule {
   label: string;
   /** regex matching the secret pattern */
   pattern: RegExp;
+  /**
+   * Capture group holding the secret, when the pattern CONSUMES its context
+   * instead of asserting it with a lookbehind.
+   *
+   * WHY THIS EXISTS. A pattern that opens with `(?<=…)` has no literal for V8 to
+   * scan for, so irregexp attempts the lookbehind at EVERY offset of the
+   * subject. On the collector that is the whole session text, for every session
+   * in the walk. A perf profile of the wedged daemon put 98.94% of its samples
+   * in one such rule, inside `RegExpPrototypeExec`.
+   *
+   * Consuming the context instead gives the engine a literal prefix to skip to,
+   * and the group carries the part we mask. The group MUST be the trailing part
+   * of the match — only zero-width assertions may sit between it and the end —
+   * because the prefix is reconstructed as everything before it.
+   */
+  secret?: number;
+  /**
+   * Extra test the MATCHED SECRET must pass, in JS rather than in the regex.
+   *
+   * Shape checks written as stacked lookaheads (`(?=[A-Za-z0-9/+]*[a-z])` …)
+   * each re-scan the run they guard, so three of them cost three extra passes
+   * per candidate position. The same test in JS is one pass over 40 characters.
+   */
+  where?: (secret: string) => boolean;
+}
+
+/** The secret a match carries: the capture group when declared, else the whole match. */
+function secretOf(rule: RedactionRule, m: RegExpExecArray | RegExpMatchArray): string | null {
+  const raw = rule.secret != null ? m[rule.secret] : m[0];
+  if (raw == null) return null;
+  if (rule.where && !rule.where(raw)) return null;
+  return raw;
 }
 
 /**
@@ -69,7 +101,9 @@ export const DEFAULT_REDACTION_RULES: RedactionRule[] = [
   // NPM_AUTH, SENTRY_DSN, SESSION/COOKIE secrets and BEARER vars all leaked
   // past the original KEY/SECRET/TOKEN/PASSWORD-only list. Values under 12
   // chars don't redact, so flag-ish vars (BYPASS=true) stay readable.
-  { label: 'env-secret',       pattern: /(?<=\b[A-Z][A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|PASS|PWD|CREDENTIAL|AUTH|DSN|SESSION|COOKIE|BEARER|SIGNATURE)S?["']?[ \t]{0,3}[:=][ \t]{0,3}["']?)[A-Za-z0-9/+_.~=:@-]{12,}/g },
+  // Context CONSUMED, secret in group 1 — see RedactionRule.secret. As a
+  // lookbehind this was the second most expensive rule in the collector.
+  { label: 'env-secret',       secret: 1, pattern: /\b[A-Z][A-Z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|PASS|PWD|CREDENTIAL|AUTH|DSN|SESSION|COOKIE|BEARER|SIGNATURE)S?["']?[ \t]{0,3}[:=][ \t]{0,3}["']?([A-Za-z0-9/+_.~=:@-]{12,})/g },
   // Credentials embedded in a connection URL: scheme://user:PASSWORD@host.
   // Redacts only the password segment (keeps scheme/user/host for context).
   //
@@ -78,7 +112,7 @@ export const DEFAULT_REDACTION_RULES: RedactionRule[] = [
   // userinfo URL walked through in cleartext — and a `jdbc:postgresql://…`
   // prefix broke the \b anchor for the one family it did cover. Any scheme
   // followed by userinfo is a credential, so match the shape, not a list.
-  { label: 'url-password',     pattern: /(?<=\b[a-zA-Z][a-zA-Z0-9+.-]{1,31}:\/\/[^:@\s/]{1,64}:)[^@\s/]{1,256}(?=@)/g },
+  { label: 'url-password',     secret: 1, pattern: /\b[a-zA-Z][a-zA-Z0-9+.-]{1,31}:\/\/[^:@\s/]{1,64}:([^@\s/]{1,256})(?=@)/g },
   // Bare AWS secret-access-key VALUE: EXACTLY 40 base64 chars, word-bounded,
   // containing upper+lower+digit. This is the gitleaks heuristic — the mixed-case
   // requirement excludes 40-char lowercase-hex git SHAs, and the exact-40 bound
@@ -87,7 +121,12 @@ export const DEFAULT_REDACTION_RULES: RedactionRule[] = [
   // table or quoted in analysis) — the residual leak path the env-secret and
   // contextual rules both miss. Placed AFTER env-secret/url-password so the
   // keyed/URL forms keep their more-specific labels.
-  { label: 'aws-secret-key',   pattern: /(?<![A-Za-z0-9/+])(?=[A-Za-z0-9/+]{40}(?![A-Za-z0-9/+]))(?=[A-Za-z0-9/+]*[a-z])(?=[A-Za-z0-9/+]*[A-Z])(?=[A-Za-z0-9/+]*[0-9])[A-Za-z0-9/+]{40}/g },
+  // The three stacked lookaheads each re-scanned the same 40 characters, which
+  // made this the MOST expensive rule of all 106 the collector runs (13.1% of a
+  // 29.5 MB scan). The mixed-case-plus-digit test is now one JS pass.
+  { label: 'aws-secret-key',   secret: 1,
+    pattern: /(?<![A-Za-z0-9/+])([A-Za-z0-9/+]{40})(?![A-Za-z0-9/+])/g,
+    where: (v) => /[a-z]/.test(v) && /[A-Z]/.test(v) && /[0-9]/.test(v) },
   // GitHub personal access tokens.
   { label: 'github-pat',       pattern: /\bghp_[A-Za-z0-9]{36}\b/g },
   // GitHub fine-grained PATs.
@@ -143,14 +182,15 @@ export const DEFAULT_REDACTION_RULES: RedactionRule[] = [
   // ending in _AUTH, which env-secret already owns and labels better.
   // [^\s"'`]+ so the closing quote is not swallowed, and a ${VAR} placeholder
   // is left alone — redacting it destroys a config example and hides nothing.
-  { label: 'npmrc-auth',       pattern: /(?<=:_(?:authToken|password|auth)[ \t]*=[ \t]*)(?!\$\{)[^\s"'`]{12,}/gi },
+  // The rule the perf profile caught the wedged daemon inside: 98.94% of samples.
+  { label: 'npmrc-auth',       secret: 1, pattern: /:_(?:authToken|password|auth)[ \t]*=[ \t]*(?!\$\{)([^\s"'`]{12,})/gi },
   // HTTP Authorization headers. env-secret requires an ALL-CAPS name, and
   // `Authorization` is mixed case, so both Bearer and Basic walked straight
   // through — including short opaque tokens the contextual pass also misses
   // (it needs 32+ chars AND mixed-case-plus-digit).
   // Same two guards as npmrc-auth: stop at a quote, and skip the obvious
   // placeholders that fill documentation (<YOUR_TOKEN>, ${TOKEN}, xxx…).
-  { label: 'auth-header',      pattern: /(?<=\bauthorization[ \t]*:[ \t]*(?:bearer|basic|token)[ \t]+)(?![<$])[^\s"'`<]{8,}/gi },
+  { label: 'auth-header',      secret: 1, pattern: /\bauthorization[ \t]*:[ \t]*(?:bearer|basic|token)[ \t]+(?![<$])([^\s"'`<]{8,})/gi },
   // Vendor tokens with unambiguous prefixes. Each is a fixed literal, so a
   // false positive is essentially impossible and the cost of listing is low.
   { label: 'gitlab-pat',       pattern: /\bglpat-[A-Za-z0-9_-]{20,}\b/g },
@@ -170,7 +210,7 @@ export const DEFAULT_REDACTION_RULES: RedactionRule[] = [
   { label: 'telegram-bot-token',pattern: /\b\d{8,10}:AA[A-Za-z0-9_-]{32,}\b/g },
   { label: 'doppler-token',    pattern: /\bdp\.(?:pt|st|sa|ct)\.[A-Za-z0-9_-]{20,}\b/g },
   // Azure Storage SAS signature — the `sig=` parameter is the actual secret.
-  { label: 'azure-sas',        pattern: /(?<=[?&]sig=)[A-Za-z0-9%/+=]{20,}/g },
+  { label: 'azure-sas',        secret: 1, pattern: /[?&]sig=([A-Za-z0-9%/+=]{20,})/g },
 ];
 
 // ---------------------------------------------------------------------------
@@ -424,9 +464,21 @@ export function redactSecrets(text: string, opts: { rules?: RedactionRule[]; cou
   const rules = opts.rules || activeRules();
   let out = text;
   for (const r of rules) {
-    out = out.replace(r.pattern, () => {
+    out = out.replace(r.pattern, (...args) => {
+      const whole = args[0] as string;
+      // Groups arrive positionally; the trailing args are offset, string and
+      // (when the pattern has named groups) the groups object.
+      const m = args.slice(0, args.length) as unknown as RegExpMatchArray;
+      const secret = secretOf(r, m);
+      // `where` rejected it, or the group did not participate: leave the text
+      // alone. A rule that consumes context must never eat the context on a
+      // near-miss — that would delete `AWS_SECRET_KEY=` and keep the value.
+      if (secret == null) return whole;
       if (opts.count) opts.count.redactions++;
-      return `[REDACTED:${r.label}]`;
+      // Keep everything the pattern consumed BEFORE the secret. The group is
+      // the trailing part of the match (RedactionRule.secret documents that),
+      // so the prefix is exactly what precedes it.
+      return whole.slice(0, whole.length - secret.length) + `[REDACTED:${r.label}]`;
     });
   }
   // Second pass: bare secret values near a context word (not caught by the
@@ -533,10 +585,20 @@ export function scanTextForFindings(text: string, opts: { rules?: RedactionRule[
     re.lastIndex = 0;   // shared instance: never inherit a previous scan's cursor
     let m: RegExpExecArray | null;
     while ((m = re.exec(text)) !== null) {
-      const span = `${m.index}:${m[0].length}`;
+      const secret = secretOf(r, m);
+      if (secret == null) {
+        // `where` said no. Advance past this candidate rather than re-testing it.
+        if (re.lastIndex === m.index) re.lastIndex++;
+        continue;
+      }
+      // Span of the SECRET, not of the consumed context. Keeping it on the
+      // secret is what lets the same leak found by two rules dedupe, now that
+      // some rules swallow their prefix and others do not.
+      const at = m.index + (m[0].length - secret.length);
+      const span = `${at}:${secret.length}`;
       if (!seenSpans.has(span)) {
         seenSpans.add(span);
-        findings.push({ rule: r.label, line: lineAt(m.index), preview: maskSecret(m[0]) });
+        findings.push({ rule: r.label, line: lineAt(at), preview: maskSecret(secret) });
       }
       if (re.lastIndex === m.index) re.lastIndex++; // guard zero-width (lookbehind matches)
     }
