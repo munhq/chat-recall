@@ -48,6 +48,8 @@ import { fetchWithTimeout } from '../src/http.js';
 import { drainSyncIntents } from '../src/intent-drain.js';
 import { loadAllCredentials } from '../src/sync-client.js';
 import { runAutoUpdate } from '../src/auto-update.js';
+import { orderByStaleness, noteIndexed, pruneCursor } from '../src/code-index-cursor.js';
+import { TickQueue, TICK_PRIORITY } from '../src/tick-queue.js';
 import { codeFingerprint, checkSelfRestart } from '../src/self-restart.js';
 import { rotateLogIfLarge } from '../src/log-rotate.js';
 import { runCollectorMigration } from '../src/collector-migrate.js';
@@ -101,6 +103,19 @@ const LAST_CLEANUP_PATH = join(claudeBackend.homeDir(), '.last-cleanup');
 // sync client is watermark/ledger-based internally, so it figures out
 // exactly which sessions changed — we don't track per-file deltas here.
 let debounceTimer: NodeJS.Timeout | null = null;
+// ── One background task at a time ───────────────────────────────────────
+//
+// Three independent in-flight flags (sync, intent drain, code intelligence) each
+// stopped their own tick overlapping ITSELF and knew nothing about the others,
+// so a code-intelligence sweep could run alongside a full sync walk. All three
+// are heavy, and measured with a sweep and a walk overlapping the main thread
+// sat at 80–95% with RSS more than doubled. They also could not express the
+// obvious priority: shipping to the server matters more than refreshing code
+// intelligence, so if both are due the sweep should wait.
+const ticks = new TickQueue({
+  onError: (kind, err) => console.error(`[${ts()}] ${kind} tick failed: ${err instanceof Error ? err.message : err}`),
+});
+
 let syncInFlight = false;
 let pendingFileCount = 0;
 
@@ -160,7 +175,7 @@ function scheduleSync(): void {
   debounceTimer = setTimeout(() => {
     debounceTimer = null;
     pendingFileCount = 0;
-    void shipToServer('file-change');
+    ticks.request('sync', TICK_PRIORITY.sync, () => shipToServer('file-change'));
   }, DEBOUNCE_MS);
 }
 
@@ -452,8 +467,8 @@ console.log(`  Ready for changes...`);
 // Slow heartbeat: a quiet machine still converges even when no file
 // events fire (e.g. sessions written while the daemon was down). Also
 // kick one initial ship shortly after startup to drain any backlog.
-setInterval(() => { void shipToServer('heartbeat'); }, 15 * 60 * 1000).unref();
-setTimeout(() => { void shipToServer('startup'); }, 20_000);
+setInterval(() => { ticks.request('sync', TICK_PRIORITY.sync, () => shipToServer('heartbeat')); }, 15 * 60 * 1000).unref();
+setTimeout(() => { ticks.request('sync', TICK_PRIORITY.sync, () => shipToServer('startup')); }, 20_000);
 
 // The bundle we booted with. A daemon keeps whatever code Node already parsed,
 // so replacing dist/watch.js changes nothing until the process restarts — which
@@ -553,7 +568,18 @@ async function shadowPruneTick(): Promise<void> {
         // other still needs its shadow for the one that is behind.
         return acked.every((m) => {
           const row = m.get(prefixed);
-          return !!row && (row.acked === true || (row.o ?? 0) > 0);
+          if (!row) return false;
+          // A DELIVERY RECEIPT, not merely "the walk looked at this".
+          //
+          // The ledger writes a bare {m} row in several places that ship
+          // NOTHING — a null build, an unchanged-content skip, an empty append
+          // tail — so the row's existence proves only that the walk reached the
+          // session. Two fields are written exclusively after the server acked a
+          // batch containing it:
+          //   o > 0  the byte cursor the server confirmed (append-only path)
+          //   h      the content hash stamped by the convBatch ack (FULL path)
+          // Anything else counts as not-yet-shipped, which keeps the shadow.
+          return (row.o ?? 0) > 0 || typeof row.h === 'string';
         });
       },
     });
@@ -568,8 +594,8 @@ async function shadowPruneTick(): Promise<void> {
   }
 }
 // First pass a few minutes in, so startup work finishes first.
-setTimeout(() => { void shadowPruneTick(); }, 5 * 60_000);
-setInterval(() => { void shadowPruneTick(); }, SHADOW_PRUNE_MS).unref();
+setTimeout(() => { ticks.request('housekeeping', TICK_PRIORITY.housekeeping, shadowPruneTick); }, 5 * 60_000);
+setInterval(() => { ticks.request('housekeeping', TICK_PRIORITY.housekeeping, shadowPruneTick); }, SHADOW_PRUNE_MS).unref();
 
 /** The servers this machine syncs to, for health reporting. Best-effort. */
 function syncTargetUrls(): string[] {
@@ -642,6 +668,9 @@ async function drainIntentsTick(): Promise<boolean> {
       // Applying an intent wrote files into toolkit dirs the chokidar watcher
       // does NOT watch — push them up now so the UI reflects the change in
       // seconds, instead of waiting for the 15-min heartbeat.
+      // Inline, NOT ticks.request(): we are already inside a queued task, and
+      // asking the serial queue to run another task from within one would wait
+      // for a slot this task is itself holding.
       if (r.done > 0) await shipToServer('intent-applied');
     }
     return r.processed > 0;
@@ -668,11 +697,16 @@ let intentTimer: NodeJS.Timeout | null = null;
 
 function scheduleIntentPoll(ms: number): void {
   if (intentTimer) clearTimeout(intentTimer);
-  intentTimer = setTimeout(async () => {
-    const found = await drainIntentsTick();
-    // Found work → poll eagerly again. Found nothing → double, up to the cap.
-    intentPollMs = found ? INTENT_POLL_MIN_MS : Math.min(intentPollMs * 2, INTENT_POLL_MAX_MS);
-    scheduleIntentPoll(intentPollMs);
+  intentTimer = setTimeout(() => {
+    // Through the queue like everything else, so a drain never overlaps a sync
+    // walk or a code sweep. The adaptive backoff is preserved: the poll is
+    // rescheduled from inside the task, once it has actually run.
+    ticks.request('intents', TICK_PRIORITY.intents, async () => {
+      const found = await drainIntentsTick();
+      // Found work → poll eagerly again. Found nothing → double, up to the cap.
+      intentPollMs = found ? INTENT_POLL_MIN_MS : Math.min(intentPollMs * 2, INTENT_POLL_MAX_MS);
+      scheduleIntentPoll(intentPollMs);
+    });
   }, ms);
   intentTimer.unref?.();
 }
@@ -779,8 +813,17 @@ async function codeIndexTick(): Promise<void> {
   try {
     const creds = loadAllCredentials();
     if (creds.length === 0) return;
-    const workspaces = discoverWorkspaces();
-    if (workspaces.length === 0) return;
+    const discovered = discoverWorkspaces();
+    if (discovered.length === 0) return;
+    // LEAST-RECENTLY-INDEXED FIRST. discoverWorkspaces() sorts by recency, which
+    // is right for a first run and wrong for every run after it: the busiest repo
+    // is always first, so during the crash-loop (median uptime ~105s) the same
+    // one or two were re-indexed on every restart and the tail of the list was
+    // never reached — 8,919 `indexing` lines against 382 completions. The cursor
+    // records COMPLETIONS only, so a workspace that fails is retried rather than
+    // silently marked done.
+    pruneCursor(discovered);
+    const workspaces = orderByStaleness(discovered);
     const { collectCode, resolveCodeindexBin } = await import('@chat-recall/engine/core/code/collector.js');
     let bin: string;
     try { bin = await resolveCodeindexBin(true); }   // resolve/install codeindex once per pass
@@ -803,6 +846,9 @@ async function codeIndexTick(): Promise<void> {
         const headers: Record<string, string> = { 'content-type': 'application/json', ...(cred.token ? { authorization: `Bearer ${cred.token}` } : {}) };
         try { await fetchWithTimeout(`${base}/api/code/index`, { method: 'POST', headers, body: JSON.stringify(result) }, 60_000); } catch { /* retry next tick */ }
       }
+      // Completed: this workspace goes to the back of the queue so the next
+      // sweep — or the next restart — moves on to one that has waited longer.
+      noteIndexed(ws);
       ok++;
     }
     if (ok > 0) console.log(`[${ts()}] code intelligence: indexed ${ok}/${workspaces.length} workspace(s)`);
@@ -811,8 +857,8 @@ async function codeIndexTick(): Promise<void> {
   }
 }
 if (CODE_INDEX_ON) {
-  setInterval(() => { void codeIndexTick(); }, CODE_INDEX_MS).unref();
-  setTimeout(() => { void codeIndexTick(); }, 90_000);   // first pass shortly after startup
+  setInterval(() => { ticks.request('codeIndex', TICK_PRIORITY.codeIndex, codeIndexTick); }, CODE_INDEX_MS).unref();
+  setTimeout(() => { ticks.request('codeIndex', TICK_PRIORITY.codeIndex, codeIndexTick); }, 90_000);   // first pass shortly after startup
   console.log(`  Code intelligence: AUTO — discovers your repos & indexes them (every ${CODE_INDEX_MS / 60000}m · ${CODE_INDEX_WINDOW_DAYS}d window · max ${CODE_INDEX_MAX})`);
 }
 
