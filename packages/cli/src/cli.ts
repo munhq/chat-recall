@@ -20,6 +20,7 @@ import { loadAllCredentials, type Credentials } from './sync-client.js';
 import { printUpdateNotice, updateNotice } from './update-notice.js';
 import { isOnPath } from '@chat-recall/engine/core/which.js';
 import { readCollectorHealth, judgeHealth, progressLine, collectorHealthPath, STALE_AFTER_MS } from '@chat-recall/engine/core/collector-health.js';
+import { userConsents, serverAllowsTelemetry } from './telemetry-consent.js';
 
 /**
  * Colour a relevance tier for the terminal.
@@ -1121,6 +1122,20 @@ program
         // something is broken while a first sync is still running.
         const walking = progressLine(h);
         if (walking) note(true, 'Sync in progress', walking);
+        // TELEMETRY IS VISIBLE OR IT IS NOT CONSENSUAL. A user must be able to
+        // ask what leaves their machine and get a straight answer, including
+        // exactly how to turn it off.
+        {
+          const consent = userConsents();
+          const targets = (() => { try { return loadAllCredentials().map((t) => t.serverUrl); } catch { return []; } })();
+          const sending = targets.filter((u) => serverAllowsTelemetry(u));
+          note(true, 'Collector telemetry', !consent
+            ? 'off — you opted out (privacy.telemetry=false or CHAT_RECALL_TELEMETRY=0)'
+            : sending.length === 0
+              ? 'on, but no server accepts it (a paid plan is required) — nothing is sent'
+              : `on → ${sending.join(', ')} · walk timings, counts and error classes only, `
+                + 'never paths or content · turn off with CHAT_RECALL_TELEMETRY=0');
+        }
         for (const [url, t] of Object.entries(h.targets)) {
           const okRecently = t.lastOkAt !== null && Date.now() - t.lastOkAt < STALE_AFTER_MS;
           note(okRecently, `Synced to ${url}`, t.lastOkAt === null
