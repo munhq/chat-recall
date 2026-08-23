@@ -42,6 +42,10 @@ await build({
     // installed users get live indexing + continuous sync without a repo
     // checkout and tsx.
     { in: 'auto-indexer/indexer.ts', out: 'watch' },
+    // The scan worker is its OWN entry because worker_threads needs a real file
+    // to spawn. It sits beside the other bundles so `new URL('./scan-worker.js',
+    // import.meta.url)` resolves from whichever one is running.
+    { in: 'src/scan-worker.ts', out: 'scan-worker' },
   ],
   outdir: 'dist',
   bundle: true,
@@ -57,7 +61,7 @@ await build({
   logLevel: 'info',
 });
 
-console.log(`bundled cli.js + mcp.js + watch.js (externals: ${external.length})`);
+console.log(`bundled cli.js + mcp.js + watch.js + scan-worker.js (externals: ${external.length})`);
 
 // ── Native-free guard ────────────────────────────────────────────────────
 // The collector must install with zero compilation: a user running
@@ -96,7 +100,7 @@ const lazyRe = /\bimport\(\s*['"]([^'"\s.][^'"\s]*)['"]\s*\)/g;
 const lazyAllowed = new Set([...allowed, ...NATIVE_ENGINE_DEPS]);
 const toPkg = (spec) => (spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0]);
 const offenders = new Set();
-for (const out of ['cli.js', 'mcp.js', 'watch.js']) {
+for (const out of ['cli.js', 'mcp.js', 'watch.js', 'scan-worker.js']) {
   const code = readFileSync(new URL(`../dist/${out}`, here), 'utf-8');
   for (const re of bootRes) {
     for (const m of code.matchAll(re)) {
