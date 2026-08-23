@@ -13,6 +13,7 @@
  */
 import React, { useEffect, useState } from 'react';
 import { Card, Chip } from './primitives';
+import Sparkline from './Sparkline';
 import {
   getFleetHealth, getSecurityConfig, setCollectTelemetry,
   type FleetDeviceHealth, type FleetTelemetrySummary,
@@ -145,6 +146,12 @@ export default function FleetHealth() {
                     fontFamily: 'var(--cr-font-mono)', display: 'flex', gap: 10, flexWrap: 'wrap',
                   }}>
                     {parts.map((x) => <span key={x}>{x}</span>)}
+                    {/* The trend, beside the value it belongs to — a stat tile,
+                        not a chart. It answers the question the number alone
+                        cannot: is this machine getting slower? */}
+                    {t.recentScanMs && t.recentScanMs.length >= 2 && (
+                      <Sparkline values={t.recentScanMs} format={dur} label="scan time, recent walks" />
+                    )}
                   </div>
                 );
               })()}
