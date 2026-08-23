@@ -27,7 +27,7 @@ import { Worker } from 'node:worker_threads';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { cpus } from 'node:os';
-import type { ScanTask, ScanResult } from './scan-worker.js';
+import type { ScanTask, ScanResult, DerivedTask, DerivedResult } from './scan-worker.js';
 
 /** Per-worker heap ceiling. One session's text plus its gzip, with headroom. */
 const WORKER_HEAP_MB = Number(process.env.CHAT_RECALL_SCAN_WORKER_HEAP_MB) || 768;
@@ -67,13 +67,13 @@ function workerScript(): string | null {
 
 interface Slot {
   worker: Worker;
-  /** Resolver for the task in flight, if any. */
-  pending: ((r: ScanResult) => void) | null;
+  /** Resolver for the task in flight, if any. Either task kind. */
+  pending: ((r: ScanResult | DerivedResult) => void) | null;
 }
 
 export class ScanPool {
   private slots: Slot[] = [];
-  private queue: Array<{ task: ScanTask; resolve: (r: ScanResult) => void }> = [];
+  private queue: Array<{ task: ScanTask | DerivedTask; resolve: (r: ScanResult | DerivedResult) => void }> = [];
   private nextId = 1;
   private started = false;
   private disabled = false;
@@ -96,6 +96,13 @@ export class ScanPool {
       try {
         const worker = new Worker(script, {
           resourceLimits: { maxOldGenerationSizeMb: WORKER_HEAP_MB },
+          // DO NOT INHERIT THE PARENT'S NODE FLAGS. By default a Worker copies
+          // process.execArgv, so any flag on the parent is re-applied to a file
+          // it does not describe — `--input-type=module` made every worker exit
+          // with "can only be used with string input", and the pool degraded to
+          // the inline path SILENTLY. Anything the worker needs is set here
+          // (resourceLimits), so an empty list is both correct and insulating.
+          execArgv: [],
         });
         const slot: Slot = { worker, pending: null };
         worker.on('message', (r: ScanResult) => {
@@ -111,7 +118,9 @@ export class ScanPool {
           slot.pending = null;
           this.slots = this.slots.filter((s) => s !== slot);
           if (this.slots.length === 0) this.disabled = true;
-          resolve?.({ id: -1, findings: [], redactions: 0, error: `scan worker died: ${err}` });
+          // Shaped to satisfy both result types: the caller only reads `error`
+          // on this path and falls back inline either way.
+          resolve?.({ id: -1, findings: [], redactions: 0, rows: null, error: `scan worker died: ${err}` } as ScanResult & DerivedResult);
           this.pump();
         };
         worker.on('error', die);
@@ -168,11 +177,25 @@ export class ScanPool {
    * pool optional.
    */
   async run(task: Omit<ScanTask, 'id'>): Promise<ScanResult | null> {
+    return this.dispatch({ ...task, id: 0 } as ScanTask) as Promise<ScanResult | null>;
+  }
+
+  /**
+   * Derive a session's compute rows on a worker.
+   *
+   * Same pool, same lifecycle, same null-means-inline contract as `run` — two
+   * pools would mean two sets of workers competing for the same cores.
+   */
+  async runDerived(task: Omit<DerivedTask, 'id' | 'task'>): Promise<DerivedResult | null> {
+    return this.dispatch({ ...task, task: 'derived', id: 0 } as DerivedTask) as Promise<DerivedResult | null>;
+  }
+
+  private async dispatch(task: ScanTask | DerivedTask): Promise<ScanResult | DerivedResult | null> {
     this.start();
     if (this.disabled) return null;
-    const id = this.nextId++;
-    const result = await new Promise<ScanResult>((resolve) => {
-      this.queue.push({ task: { ...task, id }, resolve });
+    task.id = this.nextId++;
+    const result = await new Promise<ScanResult | DerivedResult>((resolve) => {
+      this.queue.push({ task, resolve });
       this.pump();
     });
     if (result.error) return null;    // fall back inline for this session
