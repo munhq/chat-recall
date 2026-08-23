@@ -192,6 +192,22 @@ export interface PrivacySettings {
   redactPasteCache: boolean;
   /** Hash absolute paths in indexed chunk text (sha256[:12]). */
   redactFilePaths: boolean;
+  /**
+   * Report OPERATIONAL telemetry about the collector to your server.
+   *
+   * Default on (an opt-OUT), and scoped to facts about the collector itself:
+   * walk duration, sessions considered, bytes uploaded, failure and 429 counts,
+   * breaker trips, RSS peak, CLI version, OS, and error classes. It is what makes
+   * "is a customer's sync healthy?" answerable without asking them.
+   *
+   * It NEVER includes transcript content, prompts, file paths, project or repo
+   * names, or session ids — those are not gated by this flag, they are simply not
+   * collected (see telemetry-consent.ts, which enforces that structurally).
+   *
+   * Set false, or CHAT_RECALL_TELEMETRY=0, to send nothing. The setting wins over
+   * any server response: a server cannot talk a client into reporting.
+   */
+  telemetry?: boolean;
 }
 
 /**
