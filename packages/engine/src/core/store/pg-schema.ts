@@ -637,8 +637,20 @@ CREATE TABLE IF NOT EXISTS client_events (
   cli_version TEXT NOT NULL DEFAULT '',
   os          TEXT NOT NULL DEFAULT '',
   device_id   TEXT NOT NULL DEFAULT '',
-  message     TEXT NOT NULL DEFAULT ''
+  message     TEXT NOT NULL DEFAULT '',
+  -- Numeric/enum measurements for the event: walk duration, sessions
+  -- considered, bytes uploaded, 429 counts, RSS peak, error class. The table
+  -- began as failure-only (kind + a redacted message), so the collector's
+  -- operational numbers had nowhere to land and the ingest route silently
+  -- dropped every one of them. JSONB rather than a column per metric: the set
+  -- grows, and a migration per new measurement is how measuring stops happening.
+  --
+  -- NEVER a path, project, session id, prompt or content — the collector refuses
+  -- to send those structurally (see cli/telemetry-consent.ts).
+  data        JSONB NOT NULL DEFAULT '{}'
 );
+-- Live databases predate the column; must stay BELOW the CREATE (fresh boot).
+ALTER TABLE client_events ADD COLUMN IF NOT EXISTS data JSONB NOT NULL DEFAULT '{}';
 CREATE INDEX IF NOT EXISTS idx_client_events_tenant_ts ON client_events(tenant, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_client_events_tenant_kind ON client_events(tenant, kind);
 
