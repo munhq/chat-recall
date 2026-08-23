@@ -87,10 +87,20 @@ export const CLASSES: Record<RlClass, ClassConfig> = {
  * happens to have. A free tenant's slots are scaled down at request time
  * (scaleConcurrency, floor 1), so this is the ceiling, not a promise.
  */
-export function advertisedLimits(): { ingestConcurrencyPerTenant: number; enforced: boolean } {
+export function advertisedLimits(): {
+  ingestConcurrencyPerTenant: number;
+  enforced: boolean;
+  acceptsGzipBody: boolean;
+} {
   return {
     ingestConcurrencyPerTenant: CLASSES.ingest.concurrencyPerTenant ?? 1,
     enforced: ENFORCE,
+    // body-parser inflates a gzipped request body transparently (its `inflate`
+    // option defaults on), and its size limit applies to the DECOMPRESSED body,
+    // so the 32 MB ceiling on /api/sync is unchanged. Advertised rather than
+    // assumed so the collector never compresses toward a deployment behind
+    // something that would not pass the encoding through.
+    acceptsGzipBody: true,
   };
 }
 
