@@ -248,7 +248,21 @@ export interface ShadowUpdate {
  * throwing — the caller falls back to the live disk file, exactly as before
  * the shadow existed. It must never make a sync worse than no shadow at all.
  */
-export function updateShadow(sessionId: string, exp: RawSessionExport | null): ShadowUpdate {
+export function updateShadow(
+  sessionId: string,
+  exp: RawSessionExport | null,
+  /**
+   * Container already built from `exp` by the caller.
+   *
+   * The sync path must hash the container BEFORE deciding whether to touch the
+   * shadow at all (a content match against the ledger short-circuits the whole
+   * session), so it builds one — and this function then built a second, identical
+   * one from the same export. On a 47 MB transcript that is a wasted copy of
+   * every byte, per session, per walk. Passing it in removes the duplicate; the
+   * parameter is optional so every other caller is unchanged.
+   */
+  prebuilt?: RawContainer,
+): ShadowUpdate {
   // The backend was already resolved by the caller (it has the export); we only
   // need the tool + raw id, both on the export. Fall back to a claude-shaped id.
   const tool: AiTool = exp?.tool ?? 'claude';
@@ -264,7 +278,7 @@ export function updateShadow(sessionId: string, exp: RawSessionExport | null): S
   }
 
   let current: RawContainer;
-  try { current = buildRawContainer(exp); }
+  try { current = prebuilt ?? buildRawContainer(exp); }
   catch { return { status: 'unavailable', sessionId, tool, container: prior, recovered: 0, path }; }
 
   const curHash = containerSrcHash(current);
