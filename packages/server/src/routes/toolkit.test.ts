@@ -37,12 +37,15 @@ describe('GET /api/toolkit/status', () => {
     }
   });
 
-  test('every count entry exposes claude/gemini/opencode/codex keys', async () => {
+  test('every count entry exposes a key for every supported tool', async () => {
     const res = await request(app).get('/api/toolkit/status');
     for (const t of Object.values(res.body.counts) as Record<string, number>[]) {
       expect(t).toHaveProperty('claude');
       expect(t).toHaveProperty('gemini');
       expect(t).toHaveProperty('opencode');
+      expect(t).toHaveProperty('codex');
+      expect(t).toHaveProperty('agy');
+      expect(t).toHaveProperty('cursor');
     }
   });
 });
@@ -97,11 +100,12 @@ describe('GET /api/toolkit/matrix', () => {
     for (const t of ['skill', 'mcp', 'command', 'agent']) {
       expect(res.body).toHaveProperty(t);
     }
-    // supportedTargets includes the cross-tool types, each with 4 tools.
-    expect(res.body.supportedTargets.skill).toEqual(
-      expect.arrayContaining(['claude', 'gemini', 'opencode', 'codex']));
-    expect(res.body.supportedTargets.command).toEqual(
-      expect.arrayContaining(['claude', 'gemini', 'opencode', 'codex']));
+    // supportedTargets covers every tool, not just the original four. This
+    // used to assert only four, so the server's copy of the table could (and
+    // did) silently lose `agy` without failing.
+    const ALL = ['claude', 'gemini', 'opencode', 'codex', 'agy', 'cursor'];
+    expect(res.body.supportedTargets.skill).toEqual(expect.arrayContaining(ALL));
+    expect(res.body.supportedTargets.command).toEqual(expect.arrayContaining(ALL));
   });
 });
 

@@ -39,6 +39,7 @@ function defaultSourceSettings(): SourceSettings {
       agy:      { sessions: true, plans: true },
       opencode: { sessions: true, plans: true, todos: true, skills: true },
       codex:    { sessions: true, plugins: true, skills: true },
+      cursor:   { sessions: true, skills: true, agents: true, commands: true },
       common:   { mcps: true, agentMd: true },
     },
   };
@@ -704,6 +705,7 @@ function SourcesCard({ value, onChange }: { value: SourceSettings; onChange: (v:
       {groupRow('OpenCode',     'opencode', ['sessions','plans','todos','skills'])}
       {groupRow('Codex',        'codex',    ['sessions','plugins','skills'])}
       {groupRow('Antigravity',  'agy',      ['sessions','plans'])}
+      {groupRow('Cursor',       'cursor',   ['sessions','skills','agents','commands'])}
       {groupRow('Cross-tool',   'common',   ['mcps','agentMd'])}
 
       <Disclosure open={pathsOpen} onToggle={setPathsOpen} label="Path overrides (advanced)">
@@ -718,6 +720,12 @@ function SourcesCard({ value, onChange }: { value: SourceSettings; onChange: (v:
             onChange={(v) => onChange({ ...value, codexHome: v || undefined })} />
           <TextField label="OpenCode DB"   value={value.opencodeDbPath ?? ''} placeholder="~/.local/share/opencode/opencode.db"
             onChange={(v) => onChange({ ...value, opencodeDbPath: v || undefined })} />
+          <TextField label="Cursor home"   value={value.cursorHome ?? ''}     placeholder="~/.cursor"
+            help="The cursor-agent CLI store."
+            onChange={(v) => onChange({ ...value, cursorHome: v || undefined })} />
+          <TextField label="Cursor IDE home" value={value.cursorIdeHome ?? ''} placeholder="~/.config/Cursor"
+            help="The desktop app's user-data dir. Note the capital C — ~/.config/cursor is the CLI's auth dir."
+            onChange={(v) => onChange({ ...value, cursorIdeHome: v || undefined })} />
           <TextField label="Extra Claude homes (comma-separated)"
             value={(value.extraClaudeHomes ?? []).join(', ')}
             placeholder="~/.claude-work, ~/.claude-personal"
@@ -793,7 +801,7 @@ function SyncCard({
   const setUpload = (k: keyof SyncSettings['upload'], on: boolean) => {
     onChange({ ...value, upload: { ...value.upload, [k]: on } });
   };
-  const tools: Array<'claude' | 'gemini' | 'opencode' | 'codex' | 'agy'> = ['claude','gemini','opencode','codex','agy'];
+  const tools: Array<'claude' | 'gemini' | 'opencode' | 'codex' | 'agy' | 'cursor'> = ['claude','gemini','opencode','codex','agy','cursor'];
 
   return (
     <Card title="Sync to remote"

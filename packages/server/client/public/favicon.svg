@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="chat-recall">
+  <!-- The brand mark is the amber rounded square beside the wordmark in the nav.
+       A wordmark is unreadable at 16px, so the tile carries the identity and the
+       glyph carries the meaning: two transcript lines of unequal length, which is
+       what a session looks like in the product.
+
+       Two bars, not three. Three 3px bars in a 32-unit box become 1.5px bars at
+       16px, land off the pixel grid and smear into one block. These are 4 units
+       tall at y=8 and y=18, so at 16px they are 2px at y=4 and y=9 — integers,
+       and legible. Same reason the widths are 16 and 12: they halve to 8 and 6.
+
+       SVG favicons honour prefers-color-scheme, so the tile takes the deep amber
+       on a light tab strip and the light amber on a dark one. Both values are the
+       brand-500 the app and site already use. -->
+  <style>
+    .tile { fill: #A8491D }
+    .mark { fill: #FFFFFF }
+    @media (prefers-color-scheme: dark) {
+      .tile { fill: #F5A97F }
+      .mark { fill: #1A0E06 }
+    }
+  </style>
+  <rect class="tile" width="32" height="32" rx="7"/>
+  <g class="mark">
+    <rect x="8" y="8"  width="16" height="4" rx="2"/>
+    <rect x="8" y="18" width="12" height="4" rx="2"/>
+  </g>
+</svg>

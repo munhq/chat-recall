@@ -39,6 +39,15 @@ test('GET /api/analytics?tool=opencode returns the opencode slice', async ({ req
   expect(tools).toEqual(['opencode']);
 });
 
+test('GET /api/analytics?tool=cursor returns the cursor slice', async ({ request }) => {
+  const cur = await (await request.get(`${BASE}/api/analytics?tool=cursor`)).json();
+  if (cur.summary.totalSessions === 0) {
+    test.skip(true, 'no cursor sessions to validate against');
+  }
+  const tools = (cur.sessionsByTool || []).map((x: { tool: string }) => x.tool);
+  expect(tools).toEqual(['cursor']);
+});
+
 test('GET /api/analytics?tool=invalid is treated as unfiltered', async ({ request }) => {
   const full = await (await request.get(`${BASE}/api/analytics`)).json();
   const bogus = await (await request.get(`${BASE}/api/analytics?tool=notarealtool`)).json();

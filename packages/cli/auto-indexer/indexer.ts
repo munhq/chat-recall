@@ -35,7 +35,7 @@ import chokidar from 'chokidar';
 import { dirname, basename, join, resolve, sep } from 'path';
 import { homedir } from 'os';
 
-import { claudeBackend, geminiBackend, opencodeBackend, codexBackend } from '@chat-recall/engine/core/backends/index.js';
+import { claudeBackend, listAvailableBackends } from '@chat-recall/engine/core/backends/index.js';
 import { getDiaryDir, getDataDir } from '@chat-recall/engine/core/paths.js';
 import { loadSettings, isPersonalPath } from '@chat-recall/engine/core/settings.js';
 
@@ -733,10 +733,9 @@ let codeIndexInFlight = false;
 function discoverWorkspaces(): string[] {
   const sinceMs = Date.now() - CODE_INDEX_WINDOW_DAYS * 86_400_000;
   const newest = new Map<string, number>();
-  for (const b of [claudeBackend, geminiBackend, opencodeBackend, codexBackend]) {
-    let avail = false;
-    try { avail = b.isAvailable(); } catch { /* backend not installed */ }
-    if (!avail) continue;
+  // Registry-driven, not a hardcoded array: the old list had silently gone
+  // stale and omitted Antigravity, so its workspaces were never code-indexed.
+  for (const b of listAvailableBackends()) {
     let refs: Array<{ projectPath: string; mtime: number }> = [];
     try { refs = b.listSessions({ sinceMs }); } catch { /* unreadable */ }
     for (const r of refs) {

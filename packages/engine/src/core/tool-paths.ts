@@ -112,6 +112,29 @@ export function agyHomeDir(): string {
     || join(homedir(), '.gemini', 'antigravity-cli');
 }
 
+/** Cursor root (`~/.cursor` by default), shared by the CLI and the IDE agent. */
+export function cursorHomeDir(): string {
+  return process.env.CHAT_RECALL_CURSOR_HOME
+    || sources().cursorHome
+    || join(homedir(), '.cursor');
+}
+
+/**
+ * Cursor IDE user-data root (`~/.config/Cursor` by default).
+ *
+ * Note the capital C. `~/.config/cursor` (lowercase) is the CLI's auth
+ * directory and holds no chats; `~/.config/Cursor` is the desktop app.
+ * Both exist on Linux, which is exactly why this is a named resolver
+ * rather than an inline join.
+ */
+export function cursorIdeHomeDir(): string {
+  return process.env.CHAT_RECALL_CURSOR_IDE_HOME
+    || sources().cursorIdeHome
+    || (process.platform === 'darwin'
+      ? join(homedir(), 'Library', 'Application Support', 'Cursor')
+      : join(homedir(), '.config', 'Cursor'));
+}
+
 /**
  * Sibling homes for a tool: `<base>` plus every `<base>-*` next to it.
  *
@@ -208,6 +231,36 @@ export function codexSessionDirs(opts: RootsOpts = {}): string[] {
 export function agyBrainDirs(opts: RootsOpts = {}): string[] {
   const overridden = !!(process.env.CHAT_RECALL_AGY_HOME || sources().agyHome);
   return applyExclusions(siblingHomes(agyHomeDir(), overridden, 'brain'), opts.includeExcluded);
+}
+
+/** Every Cursor `chats/` root (the CLI agent store). */
+export function cursorChatDirs(opts: RootsOpts = {}): string[] {
+  const overridden = !!(process.env.CHAT_RECALL_CURSOR_HOME || sources().cursorHome);
+  return applyExclusions(siblingHomes(cursorHomeDir(), overridden, 'chats'), opts.includeExcluded);
+}
+
+/** Every Cursor IDE `User/workspaceStorage/` root. */
+export function cursorIdeWorkspaceDirs(opts: RootsOpts = {}): string[] {
+  const overridden = !!(process.env.CHAT_RECALL_CURSOR_IDE_HOME || sources().cursorIdeHome);
+  return applyExclusions(
+    siblingHomes(cursorIdeHomeDir(), overridden, join('User', 'workspaceStorage')),
+    opts.includeExcluded,
+  );
+}
+
+/** Every Cursor IDE `User/globalStorage/state.vscdb` — where 3.0+ keeps chat content. */
+export function cursorIdeGlobalDbs(opts: RootsOpts = {}): string[] {
+  const overridden = !!(process.env.CHAT_RECALL_CURSOR_IDE_HOME || sources().cursorIdeHome);
+  const roots = applyExclusions(
+    siblingHomes(cursorIdeHomeDir(), overridden, join('User', 'globalStorage')),
+    opts.includeExcluded,
+  );
+  const dbs: string[] = [];
+  for (const r of roots) {
+    const p = join(r, 'state.vscdb');
+    if (existsSync(p) && !dbs.includes(p)) dbs.push(p);
+  }
+  return dbs;
 }
 
 /**

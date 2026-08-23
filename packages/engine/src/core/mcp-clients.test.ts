@@ -37,7 +37,7 @@ afterEach(() => {
 
 /** Make the machine look like every tool is installed. */
 function makeAllPresent() {
-  for (const d of ['.codex', '.gemini', '.cursor', join('.config', 'opencode')]) {
+  for (const d of ['.codex', '.gemini', join('.gemini', 'antigravity-cli'), '.cursor', join('.config', 'opencode')]) {
     mkdirSync(join(home, d), { recursive: true });
   }
 }
@@ -48,7 +48,7 @@ describe('registerMcpEverywhere', () => {
   test('writes every present client, each in its own format', () => {
     makeAllPresent();
     const results = registerMcpEverywhere(SPEC, { home });
-    expect(results.map((r) => r.id).sort()).toEqual(['claude', 'codex', 'cursor', 'gemini', 'opencode']);
+    expect(results.map((r) => r.id).sort()).toEqual(['agy', 'claude', 'codex', 'cursor', 'gemini', 'opencode']);
     expect(results.every((r) => r.state === 'created')).toBe(true);
 
     // Claude Code and Cursor: plain mcpServers
@@ -61,6 +61,10 @@ describe('registerMcpEverywhere', () => {
 
     // Gemini CLI: same shape, different file
     expect(readJson(join(home, '.gemini', 'settings.json')).mcpServers['chat-recall'].command)
+      .toBe('chat-recall-mcp');
+
+    // Antigravity: same shape again, under the Gemini config dir it shares
+    expect(readJson(join(home, '.gemini', 'config', 'mcp_config.json')).mcpServers['chat-recall'].command)
       .toBe('chat-recall-mcp');
 
     // OpenCode: argv ARRAY under `mcp`, plus type/enabled or it never spawns

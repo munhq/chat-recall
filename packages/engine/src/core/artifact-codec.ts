@@ -24,6 +24,7 @@ import { homedir } from 'os';
 import { claudeBackend as CLAUDE } from './backends/claude.js';
 import { geminiBackend as GEMINI } from './backends/gemini.js';
 import { opencodeBackend as OPENCODE } from './backends/opencode.js';
+import { cursorHomeDir } from './tool-paths.js';
 import { codexBackend as CODEX } from './backends/codex.js';
 // agy (Antigravity) inherits Gemini CLI's on-disk layout — same commands,
 // agents, skills directories under the Gemini home.
@@ -35,7 +36,7 @@ import {
   stringifyScalarToml,
 } from './toolkit-format.js';
 
-export type ToolId = 'claude' | 'agy' | 'gemini' | 'opencode' | 'codex';
+export type ToolId = 'claude' | 'agy' | 'gemini' | 'opencode' | 'codex' | 'cursor';
 export type CodecType = 'command' | 'agent' | 'instructions';
 export type Encoding = 'md' | 'toml';
 
@@ -102,6 +103,7 @@ function commandPath(tool: ToolId, name: string): string {
     case 'gemini':   return join(GEMINI.commandsDir(), `${name}.toml`);
     case 'opencode': return join(OPENCODE.commandsDir(), `${name}.md`);
     case 'codex':    return join(CODEX.promptsDir(), `${name}.md`);
+    case 'cursor':   return join(cursorHomeDir(), 'commands', `${name}.md`);
   }
 }
 
@@ -112,6 +114,7 @@ function agentPath(tool: ToolId, name: string): string {
     case 'gemini':   return join(GEMINI.agentsDir(), `${name}.md`);
     case 'opencode': return join(OPENCODE.agentsDir(), `${name}.md`);
     case 'codex':    return join(CODEX.agentsDir(), `${name}.toml`);
+    case 'cursor':   return join(cursorHomeDir(), 'agents', `${name}.md`);
   }
 }
 
@@ -122,7 +125,9 @@ export function instructionsFilename(tool: ToolId): string {
     case 'agy':
     case 'gemini': return 'GEMINI.md';
     case 'opencode':
-    case 'codex':  return 'AGENTS.md';
+    case 'codex':
+    // Cursor reads AGENTS.md too (alongside .cursor/rules and CLAUDE.md).
+    case 'cursor': return 'AGENTS.md';
   }
 }
 
@@ -140,6 +145,10 @@ function instructionsPath(tool: ToolId, projectPath?: string): string {
     case 'gemini':   return join(GEMINI.homeDir(), file);
     case 'codex':    return join(CODEX.homeDir(), file);
     case 'opencode': return join(homedir(), '.config', 'opencode', file);
+    // Cursor has no single user-scope instructions FILE — user-level guidance
+    // is User Rules plus ~/.cursor/rules/*.mdc. AGENTS.md at the home root is
+    // the closest equivalent and is what a mirror can actually write.
+    case 'cursor':   return join(cursorHomeDir(), file);
   }
 }
 

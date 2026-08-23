@@ -12,7 +12,7 @@
  * CLI is kept for legacy sessions but demoted.
  */
 
-export type ToolId = 'claude' | 'agy' | 'gemini' | 'opencode' | 'codex';
+export type ToolId = 'claude' | 'agy' | 'gemini' | 'opencode' | 'codex' | 'cursor';
 
 export interface ToolDef {
   id: ToolId;
@@ -32,6 +32,7 @@ export const TOOLS: ToolDef[] = [
   { id: 'gemini',   label: 'Gemini',       color: 'var(--cr-tool-gemini)',   surf: 'var(--cr-tool-gemini-surf)',   icon: 'zap' },
   { id: 'opencode', label: 'OpenCode',     color: 'var(--cr-tool-opencode)', surf: 'var(--cr-tool-opencode-surf)', icon: 'zap' },
   { id: 'codex',    label: 'Codex',        color: 'var(--cr-tool-codex)',    surf: 'var(--cr-tool-codex-surf)',    icon: 'zap' },
+  { id: 'cursor',   label: 'Cursor',       color: 'var(--cr-tool-cursor)',   surf: 'var(--cr-tool-cursor-surf)',   icon: 'zap' },
 ];
 
 /** Tool id → definition, for O(1) lookups in row renderers. */
