@@ -1127,14 +1127,21 @@ program
         // exactly how to turn it off.
         {
           const consent = userConsents();
-          const targets = (() => { try { return loadAllCredentials().map((t) => t.serverUrl); } catch { return []; } })();
-          const sending = targets.filter((u) => serverAllowsTelemetry(u));
+          // From the PERSISTED record, not this process's memory: doctor never
+          // syncs, so its in-memory eligibility map is always empty and the old
+          // version of this line told every user "no server accepts it" —
+          // confidently, and wrongly.
+          const confirmed = h.telemetryEligible ?? {};
+          const sending = Object.entries(confirmed).filter(([, v]) => v.allowed).map(([u]) => u);
+          const refused = Object.entries(confirmed).filter(([, v]) => !v.allowed).map(([u]) => u);
           note(true, 'Collector telemetry', !consent
             ? 'off — you opted out (privacy.telemetry=false or CHAT_RECALL_TELEMETRY=0)'
-            : sending.length === 0
-              ? 'on, but no server accepts it (a paid plan is required) — nothing is sent'
-              : `on → ${sending.join(', ')} · walk timings, counts and error classes only, `
-                + 'never paths or content · turn off with CHAT_RECALL_TELEMETRY=0');
+            : sending.length > 0
+              ? `on → ${sending.join(', ')} · walk timings, counts and error classes only, `
+                + 'never paths or content · turn off with CHAT_RECALL_TELEMETRY=0'
+              : refused.length > 0
+                ? `on, but ${refused.join(', ')} does not accept it (it needs a paid plan) — nothing is sent`
+                : 'on, but no server has answered yet — nothing is sent until one confirms');
         }
         for (const [url, t] of Object.entries(h.targets)) {
           const okRecently = t.lastOkAt !== null && Date.now() - t.lastOkAt < STALE_AFTER_MS;
