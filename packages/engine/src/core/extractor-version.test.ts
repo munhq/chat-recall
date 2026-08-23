@@ -6,6 +6,7 @@ describe('toolOfId — works for item ids (plans/tasks), not just sessions', () 
     expect(toolOfId('agy_plan_c4d7feab_implementation_plan')).toBe('agy');
     expect(toolOfId('gemini_plan_sess_investigation')).toBe('gemini');
     expect(toolOfId('opencode_plan_x')).toBe('opencode');
+    expect(toolOfId('cursor_plan_x')).toBe('cursor');
     expect(toolOfId('auth-rework')).toBe('claude'); // bare claude plan name
   });
   test('an agy item is version-stale against a base-seeded ledger, others are not', () => {
@@ -25,6 +26,7 @@ describe('per-tool extractor version', () => {
     expect(claude).toBe(EXTRACTOR_VERSION + 1);        // queued-prompt fix
     expect(extractorVersionForTool('gemini')).toBe(EXTRACTOR_VERSION);
     expect(extractorVersionForTool('opencode')).toBe(EXTRACTOR_VERSION);
+    expect(extractorVersionForTool('cursor')).toBe(EXTRACTOR_VERSION);
     expect(agy).toBe(EXTRACTOR_VERSION + 2);           // agy read the full log
   });
 

@@ -28,7 +28,7 @@ import { dirname, join } from 'path';
 /** The MCP server name we register under, in every client. */
 export const MCP_SERVER_NAME = 'chat-recall';
 
-export type McpClientId = 'claude' | 'codex' | 'gemini' | 'opencode' | 'cursor';
+export type McpClientId = 'claude' | 'codex' | 'gemini' | 'opencode' | 'cursor' | 'agy';
 
 /** What to launch. `args` is omitted for a bin on PATH. */
 export interface McpLaunchSpec {
@@ -273,6 +273,24 @@ export const MCP_CLIENTS: readonly McpClientTarget[] = [
     },
     register(spec, home) {
       return registerOpencodeJson(this.configPath(home), spec);
+    },
+  },
+  {
+    // Antigravity keeps its MCP config under the Gemini config dir, NOT in a
+    // dir of its own — the same sharing it does for skills.
+    id: 'agy',
+    label: 'Antigravity',
+    bin: 'agy',
+    configPath: (home) => join(home, '.gemini', 'config', 'mcp_config.json'),
+    isPresent(home) {
+      // Keyed on Antigravity's OWN home, not on the config dir. The config
+      // lives under ~/.gemini, which Gemini CLI creates on its own — probing
+      // that would claim Antigravity is installed on every Gemini machine.
+      return existsSync(join(home, '.gemini', 'antigravity-cli'))
+        || existsSync(this.configPath(home));
+    },
+    register(spec, home) {
+      return registerMcpServersJson(this, this.configPath(home), spec);
     },
   },
   {

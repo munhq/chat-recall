@@ -150,6 +150,8 @@ function makeTermHighlighter(query: string | undefined) {
  *   codex    → codex resume <id>            (codex_)
  *   opencode → opencode -s <id>             (opencode_;  -s/--session "id to continue")
  *   agy      → agy --conversation <id>      (agy_;  Antigravity "resume conversation by ID")
+ *   cursor   → cursor-agent --resume <id>   (cursor_; the CLI surface only —
+ *              an IDE composer id is not resumable from a terminal)
  *   gemini   → (none) — `gemini --resume` takes an index/"latest", not a UUID.
  */
 export function resumeCommandFor(tool: string | undefined, sessionId: string): string | null {
@@ -160,6 +162,7 @@ export function resumeCommandFor(tool: string | undefined, sessionId: string): s
     case 'codex': return `codex resume ${raw('codex_')}`;
     case 'opencode': return `opencode -s ${raw('opencode_')}`;
     case 'agy': return `agy --conversation ${raw('agy_')}`;
+    case 'cursor': return `cursor-agent --resume ${raw('cursor_')}`;
     default: return null;
   }
 }

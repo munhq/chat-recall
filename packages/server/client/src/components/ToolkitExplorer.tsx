@@ -483,11 +483,11 @@ function ToolkitDetail({ item, kind, allRows }: { item: MemoryMetadataRow; kind:
 /** Per-primitive: which AI tools natively expose this surface today.
  *  agy (Antigravity) inherits Gemini CLI's formats — same on-disk shape. */
 const TOOL_SUPPORT: Record<ToolkitType, ReadonlySet<ToolId>> = {
-  skill:   new Set<ToolId>(['claude', 'agy', 'gemini', 'opencode', 'codex']),
-  mcp:     new Set<ToolId>(['claude', 'agy', 'gemini', 'opencode', 'codex']),
+  skill:   new Set<ToolId>(['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor']),
+  mcp:     new Set<ToolId>(['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor']),
   plugin:  new Set<ToolId>(['claude', 'agy', 'gemini', 'codex']),
-  command: new Set<ToolId>(['claude', 'agy', 'gemini', 'opencode', 'codex']),
-  agent:   new Set<ToolId>(['claude', 'agy', 'gemini', 'opencode', 'codex']),
+  command: new Set<ToolId>(['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor']),
+  agent:   new Set<ToolId>(['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor']),
   // Hooks remain Claude-specific (settings.json event handlers).
   hook:    new Set<ToolId>(['claude']),
 };
@@ -778,9 +778,9 @@ function EmptyListState({
 // show presence and accept clicks to queue add/remove. Apply runs all
 // queued mutations in parallel and refreshes the matrix.
 
-const ALL_TOOLS_ORDERED: SyncTool[] = ['claude', 'agy', 'gemini', 'opencode', 'codex'];
+const ALL_TOOLS_ORDERED: SyncTool[] = ['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor'];
 const TOOL_LABEL: Record<SyncTool, string> = {
-  claude: 'Claude', agy: 'Antigravity', gemini: 'Gemini', opencode: 'OpenCode', codex: 'Codex',
+  claude: 'Claude', agy: 'Antigravity', gemini: 'Gemini', opencode: 'OpenCode', codex: 'Codex', cursor: 'Cursor',
 };
 
 type CellAction = 'add' | 'remove';

@@ -296,8 +296,8 @@ const RecallEditsTimelineSchema = z.object({
     .describe('Filter by project name (matched against the encoded project directory name)'),
   include_reads: z.boolean().optional().default(false)
     .describe('Include read-type tool calls in addition to write/edit ones'),
-  tools: z.array(z.enum(['claude', 'gemini', 'opencode', 'codex'])).optional()
-    .describe('Restrict to a subset of AI tools. Default: all four (claude+gemini+opencode+codex).'),
+  tools: z.array(z.enum(['claude', 'gemini', 'opencode', 'codex', 'agy', 'cursor'])).optional()
+    .describe('Restrict to a subset of AI tools. Default: every tool this machine has.'),
   group_by_repo: z.boolean().optional().default(false)
     .describe('Group output by detected git repo root instead of returning a flat list. Useful when a single session touched multiple repos.'),
   view: z.enum(['timeline', 'summary']).optional().default('timeline')
@@ -923,8 +923,8 @@ aggregate per session instead — "which sessions edited auth.rs in the last mon
             include_reads:  { type: 'boolean', default: false, description: 'Include Read tool_uses too' },
             tools:          {
               type: 'array',
-              items: { type: 'string', enum: ['claude', 'gemini', 'opencode', 'codex'] },
-              description: 'Restrict to specific AI tools. Default: all four.',
+              items: { type: 'string', enum: ['claude', 'gemini', 'opencode', 'codex', 'agy', 'cursor'] },
+              description: 'Restrict to specific AI tools. Default: every tool this machine has.',
             },
             group_by_repo:  { type: 'boolean', default: false, description: 'Group results by detected git repo root.' },
             view:           { type: 'string', enum: ['timeline', 'summary'], default: 'timeline', description: 'timeline = chronological edit rows; summary = aggregated rollup over the same window' },
@@ -2594,7 +2594,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         const enc = encodeURIComponent(sid);
 
         // Server-backed resume dossier, composed from the synced endpoints.
-        // Works for ANY tool's session id (claude/gemini/opencode/codex) — the
+        // Works for ANY tool's session id (claude/gemini/opencode/codex/agy/cursor) — the
         // server resolves the id the same way for all of them.
         //
         // Telemetry + summary come from /metadata; the structured outcome

@@ -15,11 +15,11 @@ import { getSyncConfig, saveSyncConfig, getSyncSources, type ReportedSource } fr
 /** Display names for the tool a source belongs to. */
 const TOOL_LABELS: Record<string, string> = {
   claude: 'Claude Code', gemini: 'Gemini CLI', codex: 'Codex',
-  agy: 'Antigravity', opencode: 'OpenCode',
+  agy: 'Antigravity', opencode: 'OpenCode', cursor: 'Cursor',
 };
 
 const TOOLS: Array<[string, string]> = [
-  ['claude', 'Claude Code'], ['gemini', 'Gemini CLI'], ['opencode', 'OpenCode'], ['codex', 'Codex'], ['agy', 'Antigravity'],
+  ['claude', 'Claude Code'], ['gemini', 'Gemini CLI'], ['opencode', 'OpenCode'], ['codex', 'Codex'], ['agy', 'Antigravity'], ['cursor', 'Cursor'],
 ];
 
 export default function SyncRules() {

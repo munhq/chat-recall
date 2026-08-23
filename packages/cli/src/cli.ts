@@ -3,6 +3,7 @@
  * CLI for chat-recall.
  */
 
+import type { McpClientId } from '@chat-recall/engine/core/mcp-clients.js';
 import { config } from 'dotenv';
 import { Command } from 'commander';
 import chalk from 'chalk';
@@ -254,6 +255,7 @@ program
         { name: 'OpenCode', cmd: 'opencode', available: false },
         { name: 'Codex', cmd: 'codex', available: false },
         { name: 'Antigravity CLI', cmd: 'agy', available: false },
+        { name: 'Cursor', cmd: 'cursor-agent', available: false },
       ];
 
       for (const cli of clis) {
@@ -329,10 +331,18 @@ program
         // it from Codex must find the tools inside Codex, without hand-editing
         // a TOML file they have never opened.
         const { registerMcpEverywhere } = await import('@chat-recall/engine/core/mcp-clients.js');
+        // Map the DETECTED cli binary onto its MCP client id. The old version
+        // hardcoded three ids and dropped everything else, so a machine with
+        // Antigravity or Cursor installed never got the server registered
+        // there — silently, because the filter just returned a shorter list.
+        const MCP_CLIENT_FOR_BIN: Record<string, McpClientId> = {
+          gemini: 'gemini', opencode: 'opencode', codex: 'codex',
+          agy: 'agy', 'cursor-agent': 'cursor',
+        };
         const detectedClients = clis
           .filter((c) => c.available)
-          .map((c) => c.cmd as 'gemini' | 'opencode' | 'codex')
-          .filter((c) => c === 'gemini' || c === 'opencode' || c === 'codex');
+          .map((c) => MCP_CLIENT_FOR_BIN[c.cmd])
+          .filter((c): c is McpClientId => c !== undefined);
         const results = registerMcpEverywhere(
           { ...launch, env: MCP_ENV, alwaysAllow: DEFAULT_ALLOW },
           { extraIds: detectedClients },
@@ -2197,7 +2207,7 @@ team
 team
   .command('publish <type> <name> <file>')
   .description('Publish a local file as an artifact (skill|command|agent|mcp|plan|plugin|instructions|hook)')
-  .option('--tool <tool>', 'Target tool: claude|gemini|opencode|codex|cross_tool', 'cross_tool')
+  .option('--tool <tool>', 'Target tool: claude|gemini|opencode|codex|agy|cursor|cross_tool', 'cross_tool')
   .option('--pinned-to <glob>', 'Limit which projects pull this artifact')
   .action(async (type: string, name: string, file: string, opts: { tool: string; pinnedTo?: string }) => runTeam('team publish', async () => {
     const validTypes = ['skill','command','agent','mcp','plan','plugin','instructions','hook'] as const;
@@ -2205,7 +2215,7 @@ team
       console.error(chalk.red(`Invalid type: ${type}. Must be one of: ${validTypes.join(', ')}`));
       process.exit(1);
     }
-    const validTools = ['claude','gemini','opencode','codex','cross_tool'] as const;
+    const validTools = ['claude','gemini','opencode','codex','agy','cursor','cross_tool'] as const;
     if (!(validTools as readonly string[]).includes(opts.tool)) {
       console.error(chalk.red(`Invalid tool: ${opts.tool}. Must be one of: ${validTools.join(', ')}`));
       process.exit(1);
@@ -3141,9 +3151,9 @@ exclude
 
 exclude
   .command('tool <tool>')
-  .description('Exclude an AI tool entirely (claude | gemini | codex | opencode | agy)')
+  .description('Exclude an AI tool entirely (claude | gemini | codex | opencode | agy | cursor)')
   .action(async (tool: string) => {
-    const valid = ['claude', 'gemini', 'codex', 'opencode', 'agy'];
+    const valid = ['claude', 'gemini', 'codex', 'opencode', 'agy', 'cursor'];
     if (!valid.includes(tool)) {
       console.error(chalk.red(`Unknown tool '${tool}'.`) + chalk.dim(` Use one of: ${valid.join(' | ')}`));
       process.exit(1);

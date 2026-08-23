@@ -88,6 +88,8 @@
 
   --cr-tool-agy: #E879B5;
   --cr-tool-agy-surf: rgba(232, 121, 181, 0.10);
+  --cr-tool-cursor: #F0A868;
+  --cr-tool-cursor-surf: rgba(240, 168, 104, 0.10);
 
   /* Radii */
   --cr-radius-xs: 4px;
@@ -180,6 +182,9 @@
 
   --cr-tool-agy: #C026B8;
   --cr-tool-agy-surf: rgba(192, 38, 184, 0.08);
+
+  --cr-tool-cursor: #B45309;
+  --cr-tool-cursor-surf: rgba(180, 83, 9, 0.08);
 }
 /* TOKENS:END */
 

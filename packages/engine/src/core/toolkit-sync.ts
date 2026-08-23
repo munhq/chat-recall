@@ -21,6 +21,7 @@ import { homedir } from 'os';
 import { claudeBackend as CLAUDE } from './backends/claude.js';
 import { geminiBackend as GEMINI } from './backends/gemini.js';
 import { opencodeBackend as OPENCODE } from './backends/opencode.js';
+import { cursorHomeDir } from './tool-paths.js';
 import { codexBackend as CODEX } from './backends/codex.js';
 import { agyBackend as AGY } from './backends/agy.js';
 import {
@@ -65,20 +66,26 @@ export const NAME_FIELD: Record<SyncType, string> = {
   skill: 'skillName', mcp: 'mcpName', command: 'commandName', agent: 'agentName', instructions: 'filename',
 };
 
-const SUPPORTED_TARGETS: Record<SyncType, TargetTool[]> = {
-  skill:   ['claude', 'agy', 'gemini', 'opencode', 'codex'],
-  mcp:     ['claude', 'opencode', 'agy', 'gemini', 'codex'],
-  command: ['claude', 'agy', 'gemini', 'opencode', 'codex'],
-  agent:   ['claude', 'agy', 'gemini', 'opencode', 'codex'],
-  instructions: ['claude', 'agy', 'gemini', 'opencode', 'codex'],
+/**
+ * Which tools can receive each artifact type.
+ *
+ * EXPORTED because the server route and the web UI each used to keep their own
+ * copy of this table, and the three drifted. They now import this one.
+ */
+export const SUPPORTED_TARGETS: Record<SyncType, TargetTool[]> = {
+  skill:   ['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor'],
+  mcp:     ['claude', 'opencode', 'agy', 'gemini', 'codex', 'cursor'],
+  command: ['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor'],
+  agent:   ['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor'],
+  instructions: ['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor'],
 };
 
-const SOURCE_PRECEDENCE: Record<SyncType, TargetTool[]> = {
-  skill:   ['claude', 'codex', 'opencode', 'agy', 'gemini'],
-  mcp:     ['claude', 'codex', 'agy', 'gemini', 'opencode'],
-  command: ['claude', 'opencode', 'codex', 'agy', 'gemini'],
-  agent:   ['claude', 'opencode', 'agy', 'gemini', 'codex'],
-  instructions: ['claude', 'codex', 'opencode', 'agy', 'gemini'],
+export const SOURCE_PRECEDENCE: Record<SyncType, TargetTool[]> = {
+  skill:   ['claude', 'codex', 'opencode', 'agy', 'gemini', 'cursor'],
+  mcp:     ['claude', 'codex', 'agy', 'gemini', 'opencode', 'cursor'],
+  command: ['claude', 'opencode', 'codex', 'agy', 'gemini', 'cursor'],
+  agent:   ['claude', 'opencode', 'agy', 'gemini', 'codex', 'cursor'],
+  instructions: ['claude', 'codex', 'opencode', 'agy', 'gemini', 'cursor'],
 };
 
 export function supportedTargetsFor(type: SyncType): TargetTool[] { return SUPPORTED_TARGETS[type]; }
@@ -138,6 +145,7 @@ export function skillsDirFor(tool: TargetTool): string {
     case 'gemini':   return GEMINI.skillsDir();
     case 'opencode': return OPENCODE.skillsDir();
     case 'codex':    return CODEX.skillsDir();  // user skills, NOT .system
+    case 'cursor':   return join(cursorHomeDir(), 'skills');
   }
 }
 
@@ -168,6 +176,8 @@ export function readMcpEntry(tool: string, name: string): any | null {
     tries.push({ path: join(home, '.gemini', 'settings.json'), key: 'mcpServers' });
   } else if (tool === 'agy') {
     tries.push({ path: join(home, '.gemini', 'config', 'mcp_config.json'), key: 'mcpServers' });
+  } else if (tool === 'cursor') {
+    tries.push({ path: join(cursorHomeDir(), 'mcp.json'), key: 'mcpServers' });
   } else if (tool === 'opencode') {
     tries.push({ path: join(home, '.config', 'opencode', 'opencode.json'), key: 'mcp' });
     tries.push({ path: join(home, '.config', 'opencode', 'config.json'), key: 'mcp' });
@@ -249,6 +259,7 @@ export function writeMcpEntry(toTool: TargetTool, name: string, entry: any): Cop
   if (toTool === 'claude') { path = join(home, '.mcp.json'); key = 'mcpServers'; }
   else if (toTool === 'gemini') { path = join(home, '.gemini', 'settings.json'); key = 'mcpServers'; }
   else if (toTool === 'agy') { path = join(home, '.gemini', 'config', 'mcp_config.json'); key = 'mcpServers'; }
+  else if (toTool === 'cursor') { path = join(cursorHomeDir(), 'mcp.json'); key = 'mcpServers'; }
   else { path = join(home, '.config', 'opencode', 'opencode.json'); key = 'mcp'; }
 
   let cfg: any = {};

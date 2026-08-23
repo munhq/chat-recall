@@ -38,13 +38,14 @@ export function _resetSourcePolicyCache(): void {
   cache = null;
 }
 
-type Tool = 'claude' | 'gemini' | 'opencode' | 'codex';
+type Tool = 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy' | 'cursor';
+
+const TOOLS: readonly Tool[] = ['claude', 'gemini', 'opencode', 'codex', 'agy', 'cursor'];
 
 /** Pull the originating AI tool from `extra.tool`. Falls back per sourceType. */
 function toolOf(item: MemoryItem): Tool | null {
   const t = item.extra?.tool;
-  if (t === 'claude' || t === 'gemini' || t === 'opencode' || t === 'codex') return t;
-  return null;
+  return typeof t === 'string' && (TOOLS as readonly string[]).includes(t) ? t as Tool : null;
 }
 
 /**

@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#090D14" />
+    <!-- The dashboard shipped with no icon at all, so every tab was blank and
+         a pinned tab was unidentifiable. SVG first because it adapts to the tab
+         strip's theme; the mark is the same one the marketing site uses, so the
+         two surfaces are not two products. -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <!-- Don't leak the path (which can contain a repo/project id) to any
          cross-origin destination via the Referer header. Same-origin keeps the
          full URL so internal navigation/analytics are unaffected. -->

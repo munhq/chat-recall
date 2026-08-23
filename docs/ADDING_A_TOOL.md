@@ -1,14 +1,18 @@
 # Adding a new AI tool to chat-recall
 
-chat-recall supports five AI coding tools today: Claude Code, Gemini CLI,
-OpenCode, Codex and Antigravity. Adding a sixth one is contained — all the per-tool
-knowledge lives behind a single `ToolBackend` interface, and most of the
-heavy lifting (turn extraction, file-edit scanning, diff replay) runs
-through a generic engine that operates on canonical events.
+chat-recall supports six AI coding tools today: Claude Code, Gemini CLI,
+OpenCode, Codex, Antigravity and Cursor. All the per-tool knowledge lives behind
+a single `ToolBackend` interface, and the heavy lifting (turn extraction,
+file-edit scanning, diff replay) runs through a generic engine that operates on
+canonical events.
 
-This guide walks through the full integration. Estimated effort:
-**~80 lines for the format adapter + ~10 lines for the maps + 1 line
-in the bootstrap.** No edits anywhere else.
+**Read §6 before you estimate the work.** This guide used to claim "no edits
+anywhere else". That was wrong and cost real time: the Antigravity commit
+touched 13 files, and Cursor touched around 40. The backend file is the
+interesting part, but roughly 30 enumerations elsewhere list the tools by hand,
+and most of them DROP an unlisted tool silently rather than failing.
+
+Realistic effort: **~1 day.** The format adapter is a few hours; §6 is the rest.
 
 ---
 
@@ -27,13 +31,16 @@ The id prefix makes session ids globally unique across tools (Claude has
 no prefix; everything else has one). The env var lets users relocate
 their installs without editing code.
 
-Add the tool id to `AiTool` in `src/core/live-session-scan.ts`:
+Add the tool id to `AiTool` in `packages/engine/src/core/live-session-scan.ts`:
 
 ```typescript
-export type AiTool = 'claude' | 'gemini' | 'opencode' | 'codex' | 'aider';
+export type AiTool = 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy' | 'cursor' | 'aider';
 ```
 
-That's the only edit outside your new backend file.
+This is the FIRST edit outside your backend file, not the only one. See §6.
+
+> Paths in the older parts of this guide say `src/core/…`. The repo is a
+> monorepo now: read those as `packages/engine/src/core/…`.
 
 ---
 
@@ -233,17 +240,54 @@ shared codebase. Move it into the backend.
 
 ---
 
-## What you don't need to do
+## 6. The enumerations — the part that actually takes the time
 
-- **No edits to MCP handlers.** The handlers in `src/mcp.ts` route every
-  session-id-taking tool through `getBackendForId(id)?.method(...)`.
-  Your new backend is automatically discoverable.
-- **No edits to the indexer / source plugins** unless your tool exposes
-  surface area beyond sessions (skills, plans, hooks). Sessions alone
-  are wired in via the registry.
-- **No edits to the generic engine** (`src/core/generic-engine.ts`) or
-  to `live-session-scan.ts` / `session-multi-tool.ts`'s dispatchers.
-  Those are tool-agnostic.
+The registry is genuinely tool-agnostic. What is not is the ~30 hand-written
+tool lists scattered across the server, CLI and web client. Most are allowlists
+that `continue` or `.filter()` past an unknown id, so a missed one does not
+throw — the tool's data just never appears, and you find out days later.
+
+The compiler catches only some of these. Exhaustive `switch` bodies over a
+union, and `Record<Tool, …>` maps, fail the build — those are the good ones.
+Explicit per-key spreads (`settings.ts`'s `mergeSources`) and `new Set([...])`
+allowlists do not.
+
+**Silent data loss if missed:**
+
+| File | What breaks |
+|---|---|
+| `packages/server/src/services/sessions.ts` (`STORE_BACKED_TOOLS`) | sessions dropped from the local listing and project counts |
+| `packages/server/src/routes/{sync-intents,sync-config,analytics,edits,team-artifacts}.ts` | ingest rejects the tool; filters return empty |
+| `packages/engine/src/core/cached-timeline.ts` | excluded from the default timeline |
+| `packages/engine/src/core/source-policy.ts` | the `<tool>.sessions` policy key is never generated |
+| `packages/engine/src/core/home-approval.ts` | the home is never approved, so it never syncs |
+| `packages/engine/src/core/extractor-version.ts` | sessions mis-attributed to `claude`, so a bump never re-ships them |
+| `packages/server/src/routes/conversations.ts` | the prefix chain falls through to `claude` and renders with the wrong parser |
+
+**Also needs the tool:** `settings.ts` (four coordinated edits — the interface,
+the home override, the defaults, and BOTH explicit lines in `mergeSources`),
+`home-discovery.ts`, `source-discovery.ts`, `tool-paths.ts`, `toolkit-sync.ts`,
+`artifact-codec.ts`, `team-merge.ts`, `vault-source.ts`, `vault-client.ts`,
+`packages/cli/src/{cli,mcp,verify-repair,install-skills}.ts`, and on the client
+`services/tools.ts` plus a `--cr-tool-<id>` colour pair in BOTH theme blocks of
+`index.css`.
+
+`packages/server/client/src/services/tools.ts` is meant to be the client's only
+edit point, and `Sidebar` / `ActivityTimeline` do derive from it — but a dozen
+other components still hardcode their own union. Grep before you trust it.
+
+**Test isolation.** Any test that exercises multi-tool discovery must set
+`CHAT_RECALL_<TOOL>_HOME` for your tool too. `vault-client.test.ts` isolated
+four of the six and silently walked the developer's real home for the rest.
+
+### What you genuinely don't need to touch
+
+- **MCP handlers.** `packages/cli/src/mcp.ts` routes every session-id-taking
+  tool through `getBackendForId(id)?.method(...)`.
+- **The generic engine** (`generic-engine.ts`) and the `live-session-scan.ts`
+  dispatchers. Those are tool-agnostic.
+- **The indexer / source plugins**, unless your tool exposes surface beyond
+  sessions (skills, commands, agents, plans).
 
 ---
 
@@ -255,4 +299,10 @@ shared codebase. Move it into the backend.
 | Gemini      | `src/core/backends/gemini.ts`              | JSON or JSONL under `tmp/<sha>/chats/`              |
 | OpenCode    | `src/core/backends/opencode.ts`            | SQLite at `<root>/opencode.db` (`session/message/part`) |
 | Codex       | `src/core/backends/codex.ts`               | JSONL rollouts under `sessions/YYYY/MM/DD/`         |
+| Antigravity | `src/core/backends/agy.ts`                 | JSONL under `brain/<id>/.system_generated/logs/`    |
+| Cursor      | `src/core/backends/cursor.ts` (+ `cursor-store.ts`, `cursor-ide.ts`) | CLI: content-addressed blob store at `~/.cursor/chats/<md5>/<id>/store.db`. IDE: `~/.config/Cursor/User/globalStorage/state.vscdb` |
 | **(yours)** | `src/core/backends/<your-tool>.ts`         | _whatever your tool uses_                           |
+
+Cursor is the useful one to read if your tool has more than one surface, or if
+its primary format can fail to decode: it reads `store.db` and degrades to a
+lossier JSONL transcript rather than returning an empty session.

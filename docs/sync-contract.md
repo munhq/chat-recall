@@ -42,7 +42,7 @@ Response body:
 
 ```ts
 interface SecretFinding {
-  session_id:         string;   // chat-recall session id (Claude/Codex/Gemini/OpenCode prefix)
+  session_id:         string;   // chat-recall session id (codex_/gemini_/opencode_/agy_/cursor_ prefix; Claude has none)
   detector:           'gitleaks' | 'trufflehog' | 'secretlint' | 'tenant';
   rule:               string;   // rule id from the detector or tenant rule name
   line:               number;
@@ -89,7 +89,7 @@ interface SecretRule {
 ```ts
 interface SessionMetaLite {
   id:            string;
-  tool:          'claude' | 'codex' | 'gemini' | 'opencode';
+  tool:          'claude' | 'codex' | 'gemini' | 'opencode' | 'agy' | 'cursor';
   project_path:  string;     // for grouping; not for processing
   mtime:         number;
   created_at:    number;
