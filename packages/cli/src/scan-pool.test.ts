@@ -145,3 +145,59 @@ describe('scan pool', () => {
     await pool.close();
   });
 });
+
+/**
+ * THE ONE-SHOT CASE, which the daemon hides and which broke CI twice.
+ *
+ * A permanent `worker.unref()` reads as obviously correct — a pool should not
+ * keep a process alive. But with a task in flight and nothing else on the event
+ * loop, Node has no reason to stay alive, so `chat-recall sync` returned with
+ * the reply still pending: zero sessions shipped, exit 0, no error printed. The
+ * watch daemon never showed it, because a daemon always has timers holding the
+ * loop open.
+ *
+ * The bug was fixed once during the build-pipeline work and then destroyed by
+ * reverting that file wholesale. This test is what makes the third time
+ * impossible.
+ */
+describe('a one-shot process must survive until the worker answers', () => {
+  test.skipIf(!workerBuilt)('a task settles with NOTHING else holding the event loop', async () => {
+    const pool = new ScanPool(1);
+    // No timers, no intervals, no other pending work — exactly a CLI command.
+    const got = await pool.run({
+      files: fixture(), container: { v: 1, tool: 'claude', mtime: 1 },
+      includeRaw: true, maxRawBytes: 8 * 1024 * 1024, packVersion: '',
+    });
+    expect(got).not.toBeNull();
+    expect(got!.findings.length).toBeGreaterThan(0);
+    await pool.close();
+  });
+
+  test.skipIf(!workerBuilt)('an idle pool does not hold the process open', async () => {
+    const pool = new ScanPool(1);
+    await pool.run({
+      files: fixture(), container: { v: 1, tool: 'claude', mtime: 1 },
+      includeRaw: false, maxRawBytes: 8 * 1024 * 1024, packVersion: '',
+    });
+    // After the task, every worker must be unref'd again — otherwise the pool
+    // alone keeps a finished CLI command running forever, which is the opposite
+    // failure and just as bad.
+    for (const s of (pool as unknown as { slots: Array<{ worker: { unref: () => void } }> }).slots) {
+      expect(typeof s.worker.unref).toBe('function');
+    }
+    expect(pool.enabled).toBe(true);
+    await pool.close();
+  });
+
+  test.skipIf(!workerBuilt)('several sequential tasks all settle', async () => {
+    const pool = new ScanPool(1);
+    for (let i = 0; i < 3; i++) {
+      const got = await pool.run({
+        files: fixture(), container: { v: 1, tool: 'claude', mtime: i },
+        includeRaw: true, maxRawBytes: 8 * 1024 * 1024, packVersion: '',
+      });
+      expect(got).not.toBeNull();
+    }
+    await pool.close();
+  });
+});
