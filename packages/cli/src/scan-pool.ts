@@ -1,0 +1,191 @@
+/**
+ * A tiny worker pool for the per-session scan/redact/gzip work.
+ *
+ * ── Design constraints, in priority order ────────────────────────────────
+ *
+ * 1. IT RUNS ON SOMEONE ELSE'S LAPTOP. A background collector that saturates
+ *    every core is uninstalled, however fast it is. The pool defaults to ONE
+ *    worker: that already achieves the goal — the main thread stops doing
+ *    seconds of solid computation — while using no more CPU in total than the
+ *    single-threaded version did. More workers only help once the walk builds
+ *    several sessions at a time, which it does not yet; the size is env-tunable
+ *    so that change does not need a release.
+ *
+ * 2. IT MUST NEVER BE THE REASON A SYNC FAILS. Every failure path — no worker
+ *    file (a dev run from source), spawn refused, a worker that dies mid-task,
+ *    a task that throws — falls back to computing the session inline. The
+ *    fallback is the code that shipped for the last year, so the worst case is
+ *    the old behaviour, not a broken sync.
+ *
+ * 3. BOUNDED MEMORY. Each worker holds one session's text, and a 47 MB
+ *    transcript is a real size here. `resourceLimits` caps each worker's heap
+ *    so a pathological session kills one task instead of the daemon — the OOM
+ *    that started all of this was exactly a transcript-sized allocation with no
+ *    ceiling.
+ */
+import { Worker } from 'node:worker_threads';
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { cpus } from 'node:os';
+import type { ScanTask, ScanResult } from './scan-worker.js';
+
+/** Per-worker heap ceiling. One session's text plus its gzip, with headroom. */
+const WORKER_HEAP_MB = Number(process.env.CHAT_RECALL_SCAN_WORKER_HEAP_MB) || 768;
+
+/**
+ * How many workers.
+ *
+ * Default 1 — see constraint 1. `0` disables the pool entirely and everything
+ * runs inline, which is the escape hatch if a machine misbehaves.
+ */
+function poolSize(): number {
+  const raw = process.env.CHAT_RECALL_SCAN_WORKERS;
+  if (raw !== undefined) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return Math.min(Math.floor(n), Math.max(1, cpus().length));
+  }
+  return 1;
+}
+
+/** The bundled worker script, or null when there isn't one (source runs). */
+function workerScript(): string | null {
+  // Two layouts, in order of likelihood:
+  //   1. bundled — dist/scan-worker.js sits beside dist/watch.js and dist/cli.js,
+  //      so this resolves from whichever bundle is running.
+  //   2. from source (dev, tests) — ../dist/scan-worker.js, if a build has run.
+  //
+  // Neither found means no pool and everything runs inline. That is a supported
+  // state, not a failure: a daemon that only works after a build step is a trap.
+  for (const rel of ['./scan-worker.js', '../dist/scan-worker.js']) {
+    try {
+      const p = fileURLToPath(new URL(rel, import.meta.url));
+      if (existsSync(p)) return p;
+    } catch { /* not resolvable from here — try the next */ }
+  }
+  return null;
+}
+
+interface Slot {
+  worker: Worker;
+  /** Resolver for the task in flight, if any. */
+  pending: ((r: ScanResult) => void) | null;
+}
+
+export class ScanPool {
+  private slots: Slot[] = [];
+  private queue: Array<{ task: ScanTask; resolve: (r: ScanResult) => void }> = [];
+  private nextId = 1;
+  private started = false;
+  private disabled = false;
+  /** Version of the rule pack each worker has installed, by slot index. */
+  private packSent = new Map<number, string>();
+
+  constructor(private readonly size = poolSize()) {
+    if (this.size < 1) this.disabled = true;
+  }
+
+  /** True when tasks will actually run on a worker. */
+  get enabled(): boolean { return !this.disabled; }
+
+  private start(): void {
+    if (this.started) return;
+    this.started = true;
+    const script = workerScript();
+    if (!script) { this.disabled = true; return; }
+    for (let i = 0; i < this.size; i++) {
+      try {
+        const worker = new Worker(script, {
+          resourceLimits: { maxOldGenerationSizeMb: WORKER_HEAP_MB },
+        });
+        const slot: Slot = { worker, pending: null };
+        worker.on('message', (r: ScanResult) => {
+          const resolve = slot.pending;
+          slot.pending = null;
+          resolve?.(r);
+          this.pump();
+        });
+        // A dead worker must not strand its caller. Fail the task in flight so
+        // the caller falls back inline, and retire the slot.
+        const die = (err: unknown) => {
+          const resolve = slot.pending;
+          slot.pending = null;
+          this.slots = this.slots.filter((s) => s !== slot);
+          if (this.slots.length === 0) this.disabled = true;
+          resolve?.({ id: -1, findings: [], redactions: 0, error: `scan worker died: ${err}` });
+          this.pump();
+        };
+        worker.on('error', die);
+        worker.on('exit', (code) => { if (code !== 0) die(`exit ${code}`); });
+        worker.unref();   // never hold the process open on the pool's account
+        this.slots.push(slot);
+      } catch { /* one failure is enough to know: fall back inline */ }
+    }
+    if (this.slots.length === 0) this.disabled = true;
+  }
+
+  private pump(): void {
+    if (this.queue.length === 0) return;
+    const slot = this.slots.find((s) => s.pending === null);
+    if (!slot) return;
+    const next = this.queue.shift()!;
+    slot.pending = next.resolve;
+    slot.worker.postMessage(next.task);
+  }
+
+  /**
+   * Run one task on a worker.
+   *
+   * Returns null when the pool cannot take it — the caller must then do the
+   * work inline. Null is a normal outcome, not an error: it is what makes the
+   * pool optional.
+   */
+  async run(task: Omit<ScanTask, 'id'>): Promise<ScanResult | null> {
+    this.start();
+    if (this.disabled) return null;
+    const id = this.nextId++;
+    const result = await new Promise<ScanResult>((resolve) => {
+      this.queue.push({ task: { ...task, id }, resolve });
+      this.pump();
+    });
+    if (result.error) return null;    // fall back inline for this session
+    return result;
+  }
+
+  /**
+   * Has this pool already sent the current rule pack? Lets the caller omit the
+   * ~74-rule pack from every task and send it only when the version changes.
+   *
+   * Conservative on purpose: the answer is per POOL, not per worker, so the
+   * pack is re-sent to every worker whenever the version moves. A worker that
+   * receives a pack it already has reinstalls it once — cheap, and far safer
+   * than a worker scanning with rules it never got.
+   */
+  needsPack(version: string): boolean {
+    return this.packSent.get(0) !== version;
+  }
+
+  markPackSent(version: string): void {
+    this.packSent.set(0, version);
+  }
+
+  async close(): Promise<void> {
+    const slots = this.slots;
+    this.slots = [];
+    this.disabled = true;
+    await Promise.all(slots.map((s) => s.worker.terminate().catch(() => undefined)));
+  }
+}
+
+/** Process-wide pool. Workers are expensive to create; one set is plenty. */
+let shared: ScanPool | null = null;
+export function scanPool(): ScanPool {
+  if (!shared) shared = new ScanPool();
+  return shared;
+}
+
+/** Tests and `logout`: drop the workers. */
+export async function closeScanPool(): Promise<void> {
+  const p = shared;
+  shared = null;
+  await p?.close();
+}
