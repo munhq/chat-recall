@@ -201,3 +201,84 @@ describe('a one-shot process must survive until the worker answers', () => {
     await pool.close();
   });
 });
+
+/**
+ * DERIVED DATA ON A WORKER — the last thing blocking the main thread.
+ *
+ * replay + outcome + turns each read the whole transcript and shell out to git.
+ * Measured inline on six real sessions: 3.1 seconds and ZERO timer ticks — the
+ * loop was completely starved for the duration. On a worker: the same work, the
+ * same wall clock (+2% transfer), and 624 ticks.
+ *
+ * That was the entire remaining tail of a walk. 15,500 sessions skip in seconds;
+ * the couple of hundred needing a rebuild took minutes, all of it on the thread
+ * that has to answer SIGTERM and fire the heartbeat.
+ */
+describe('derived data offload', () => {
+  test('a size of 0 disables it too, so everything runs inline', async () => {
+    const pool = new ScanPool(0);
+    expect(await pool.runDerived({
+      prefixedId: 'nope', toolId: 'claude', mtime: 1, maxRowBytes: 1024, packVersion: '',
+    })).toBeNull();
+  });
+
+  // WORKER AND INLINE MUST AGREE. This test first asserted the worker returned
+  // empty rows and it returned NULL — because a Worker inherits
+  // process.execArgv by default, the harness's `--input-type=module` was
+  // re-applied to a real file, every worker exited with "can only be used with
+  // string input", and the pool degraded to the inline path SILENTLY. Any node
+  // flag on the parent could have done that in production. Workers now start
+  // with execArgv: [].
+  test.skipIf(!workerBuilt)('an unreadable session derives the same on a worker as inline', async () => {
+    const { collectDerivedRows } = await import('./derived.js');
+    const ref = { prefixedId: '00000000-0000-4000-8000-000000000000', toolId: 'claude', mtime: 1 };
+    const inline = collectDerivedRows(ref, 1, { redactions: 0 }, 2 * 1024 * 1024);
+
+    const pool = new ScanPool(1);
+    const got = await pool.runDerived({ ...ref, maxRowBytes: 2 * 1024 * 1024, packVersion: '' });
+    expect(got).not.toBeNull();                       // not the fallback path
+    expect(got!.rows).not.toBeNull();
+    expect(got!.rows!.compute.length).toBe(inline.compute.length);
+    expect(got!.rows!.session_id).toBe(inline.session_id);
+    await pool.close();
+  });
+
+  test.skipIf(!workerBuilt)('the main thread keeps its timers while derived work runs', async () => {
+    const pool = new ScanPool(1);
+    let ticks = 0;
+    const timer = setInterval(() => { ticks++; }, 5);
+    try {
+      // Several in a row: one fast call could finish before any timer was due.
+      for (let i = 0; i < 3; i++) {
+        await pool.runDerived({
+          prefixedId: `0000000${i}-0000-4000-8000-000000000000`,
+          toolId: 'claude', mtime: i, maxRowBytes: 2 * 1024 * 1024, packVersion: '',
+        });
+      }
+    } finally { clearInterval(timer); }
+    expect(ticks).toBeGreaterThan(0);
+    await pool.close();
+  });
+
+  test.skipIf(!workerBuilt)('scan and derived share one pool without interfering', async () => {
+    const pool = new ScanPool(1);
+    const scan = await pool.run({
+      files: fixture(), container: { v: 1, tool: 'claude', mtime: 1 },
+      includeRaw: false, maxRawBytes: 8 * 1024 * 1024, packVersion: '',
+    });
+    const derived = await pool.runDerived({
+      prefixedId: '00000000-0000-4000-8000-000000000000',
+      toolId: 'claude', mtime: 1, maxRowBytes: 2 * 1024 * 1024, packVersion: '',
+    });
+    expect(scan).not.toBeNull();
+    expect(derived).not.toBeNull();
+    // And the pool still works for a scan AFTER a derived task — the dispatcher
+    // must not leave a slot in the wrong state.
+    const again = await pool.run({
+      files: fixture(), container: { v: 1, tool: 'claude', mtime: 2 },
+      includeRaw: false, maxRawBytes: 8 * 1024 * 1024, packVersion: '',
+    });
+    expect(again).not.toBeNull();
+    await pool.close();
+  });
+});
