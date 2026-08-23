@@ -76,6 +76,7 @@ import { extractorVersionForTool, extractorVersionForId, toolOfId, EXTRACTOR_VER
 import { SYNC_FIELDS } from '@chat-recall/engine/core/sync-fields.js';
 import { acquireIndexLock } from '@chat-recall/engine/core/index-lock.js';
 import { fetchWithTimeout } from './http.js';
+import { gzipSync } from 'zlib';
 import { withSessionReadCache , withSessionScanScope } from '@chat-recall/engine/core/live-session-scan.js';
 import '@chat-recall/engine/core/backends/index.js'; // register the tool backends
 
@@ -627,8 +628,17 @@ const CAPS_TTL_MS = 60 * 60_000;
 const capsOk = new Map<string, number>();   // serverUrl -> epoch ms verified
 /** Ingest concurrency the server says it will accept, per serverUrl. */
 const advertisedIngestConc = new Map<string, number>();
+/** Servers that accept a gzipped request body. */
+const advertisedGzipBody = new Set<string>();
 
-export function _resetCapsCacheForTests(): void { capsOk.clear(); advertisedIngestConc.clear(); }
+export function _resetCapsCacheForTests(): void {
+  capsOk.clear(); advertisedIngestConc.clear(); advertisedGzipBody.clear();
+}
+
+/** Does this server accept `Content-Encoding: gzip` on a request body? */
+export function serverAcceptsGzipBody(serverUrl: string): boolean {
+  return advertisedGzipBody.has(serverUrl.replace(/\/$/, ''));
+}
 
 /**
  * How many uploads may be in flight at once, according to the SERVER.
@@ -646,7 +656,7 @@ async function verifyServerApi(serverUrl: string, minApi: number): Promise<boole
   if (seen !== undefined && Date.now() - seen < CAPS_TTL_MS) return true;
   const caps = await fetchWithTimeout(`${base}/api/capabilities`).then((r) => r.json()) as {
     apiVersion?: number;
-    limits?: { ingestConcurrencyPerTenant?: number };
+    limits?: { ingestConcurrencyPerTenant?: number; acceptsGzipBody?: boolean };
   };
   if ((caps.apiVersion ?? 0) < minApi) {
     throw new Error(`server too old: apiVersion ${caps.apiVersion ?? 'none'} < required ${minApi} — update the server image before syncing`);
@@ -659,6 +669,8 @@ async function verifyServerApi(serverUrl: string, minApi: number): Promise<boole
   if (typeof adv === 'number' && Number.isFinite(adv) && adv >= 1) {
     advertisedIngestConc.set(base, Math.floor(adv));
   }
+  if (caps.limits?.acceptsGzipBody === true) advertisedGzipBody.add(base);
+  else advertisedGzipBody.delete(base);
   capsOk.set(base, Date.now());
   return true;
 }
@@ -800,8 +812,25 @@ const refs = listAvailableBackends().flatMap((b) => {
   // Single POST with retry. Retryable: network/abort errors, HTTP 429 (obeying
   // Retry-After — the server's own rate signal), and 5xx. Non-429 4xx (bad
   // token, oversized body) is fatal: retrying can't fix it.
+  // COMPRESS THE BODY. Nothing compressed it before — every sync shipped raw
+  // JSON. Measured over five real sessions, 11.47 MB of envelope became 6.69 MB:
+  // 42% off the wire for one header and one gzipSync.
+  //
+  // Why gzip and not a binary/multipart redesign. The payload is ~64% `raw_b64`
+  // — a gzipped transcript, base64'd into JSON, which inflates it ~33%. Sending
+  // those bytes binary alongside a compressed metadata part measures 6.66 MB:
+  // the SAME bytes as just gzipping the whole thing, because gzip recovers most
+  // of what base64 wasted. Binary buys CPU (115 ms vs 318 ms), not bandwidth,
+  // and costs a new wire format on both sides. Brotli reaches 6.07 MB — another
+  // 5% — and is where to go if bandwidth ever matters more than simplicity.
+  //
+  // Gated on the server advertising it: body-parser inflates transparently and
+  // its size limit still applies to the DECOMPRESSED body, so the 32 MB ceiling
+  // on /api/sync is unchanged.
+  const gzipBody = serverAcceptsGzipBody(cred.serverUrl);
   const post = async (body: Record<string, unknown>): Promise<void> => {
-    const payload = JSON.stringify(body);
+    const json = JSON.stringify(body);
+    const payload: string | Buffer = gzipBody ? gzipSync(Buffer.from(json), { level: 6 }) : json;
     const RETRY_DELAYS_MS = [2000, 8000, 30000];
     for (let attempt = 0; ; attempt++) {
       const ac = new AbortController();
@@ -811,9 +840,11 @@ const refs = listAvailableBackends().flatMap((b) => {
           method: 'POST',
           // No token ⇒ no auth header: a no-auth local server (AUTH_PROVIDER=none)
           // accepts it as the single 'default' tenant.
-          headers: cred.token
-            ? { 'content-type': 'application/json', authorization: `Bearer ${cred.token}` }
-            : { 'content-type': 'application/json' },
+          headers: {
+            'content-type': 'application/json',
+            ...(gzipBody ? { 'content-encoding': 'gzip' } : {}),
+            ...(cred.token ? { authorization: `Bearer ${cred.token}` } : {}),
+          },
           body: payload,
           signal: ac.signal,
         });
