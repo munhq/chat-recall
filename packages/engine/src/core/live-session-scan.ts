@@ -84,29 +84,113 @@ export function detectTool(sessionId: string): AiTool {
  * Kept for callers that specifically want the on-disk path; tool-aware
  * callers should use detectTool() and dispatch to the per-tool scanner.
  */
-export function findSessionFile(sessionId: string): {
+/**
+ * A SCAN SCOPE: inside it, the session-file indexes below are built once and
+ * reused; outside it, every lookup reads the filesystem exactly as it always
+ * did.
+ *
+ * Caching is opt-in on purpose. These lookups answer "where is this session
+ * right now", and a cache that outlives the question is a correctness bug
+ * waiting to happen — a session created a moment ago must be findable. Rather
+ * than guess a TTL that is short enough to be correct and long enough to be
+ * useful, the caller states the window in which the answer cannot change.
+ *
+ * A sync walk is exactly such a window: it snapshots its list of sessions up
+ * front, so a session appearing mid-walk was never part of that walk anyway.
+ *
+ * Nesting is counted, so an inner scope does not drop an outer one's index.
+ */
+let scanScopeDepth = 0;
+
+export async function withSessionScanScope<T>(fn: () => Promise<T>): Promise<T> {
+  scanScopeDepth++;
+  try {
+    return await fn();
+  } finally {
+    if (--scanScopeDepth === 0) {
+      invalidateSessionFileIndex();
+      invalidateGeminiSessionIndex();
+    }
+  }
+}
+
+export function findSessionFile(sessionId: string): LocatedSessionFile | null {
+  return sessionFileIndex().get(sessionId)?.[0] ?? null;
+}
+
+/** One physical copy of a session transcript. */
+export interface LocatedSessionFile {
   path: string;
   projectDir: string;
+  /** Project path is encoded by replacing slashes with dashes. */
   projectPath: string;
-} | null {
-  // All configured homes (~/.claude, ~/.claude-* profiles, CLAUDE_DIRS) —
-  // same set the indexer and backend listSessions scan.
+}
+
+/**
+ * id → every home's copy of that session, built by LISTING the project
+ * directories once instead of probing them per session.
+ *
+ * ── Why this exists ──────────────────────────────────────────────────────
+ * Both lookups used to walk every configured home and call `existsSync` in
+ * every project directory, PER SESSION. On the maintainer's machine that is
+ * 4 homes × 211 project directories ≈ 215 syscalls per lookup, and the sync
+ * walk performs two lookups per session (`spansMultipleSources` then
+ * `fileSize`) for 15,724 sessions — about 6.6 MILLION syscalls per walk.
+ *
+ * Measured: 62.8 seconds of pure filesystem work, to discover that 2 sessions
+ * had changed and 2 spanned more than one home. An intent-triggered full walk
+ * fires every 25–45 s, so the daemon simply never stopped walking — that, and
+ * not the secret scan, is what held a core at 100%.
+ *
+ * Listing instead of probing inverts the cost: ~211 readdirs total, regardless
+ * of how many sessions exist. The work stops scaling with corpus size, which
+ * matters because corpus size only ever grows.
+ *
+ * ── Freshness ────────────────────────────────────────────────────────────
+ * A short TTL, plus `invalidateSessionFileIndex()` for callers that must not
+ * miss a file they just created. A stale entry can only ever mean "a session
+ * created in the last few seconds is not listed yet"; paths never change under
+ * a session, and content reads use the path, not the index. The sync walk
+ * snapshots its ref list up front anyway, so a session appearing mid-walk was
+ * never part of that walk.
+ */
+let indexCache: Map<string, LocatedSessionFile[]> | null = null;
+
+/** Drop the index so the next lookup rebuilds it. */
+export function invalidateSessionFileIndex(): void { indexCache = null; }
+
+function sessionFileIndex(): Map<string, LocatedSessionFile[]> {
+  if (indexCache) return indexCache;
+  const byId = new Map<string, LocatedSessionFile[]>();
+  const seenRoots = new Set<string>();
+  // Home order is preserved so the FIRST entry stays the primary home's copy —
+  // findSessionFile()'s original contract, and what project grouping and
+  // titles rely on.
   for (const root of claudeProjectDirs()) {
-    if (!existsSync(root)) continue;
-    for (const entry of readdirSync(root, { withFileTypes: true })) {
+    if (seenRoots.has(root) || !existsSync(root)) continue;
+    seenRoots.add(root);
+    let entries;
+    try { entries = readdirSync(root, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
       if (!entry.isDirectory()) continue;
-      const candidate = join(root, entry.name, `${sessionId}.jsonl`);
-      if (existsSync(candidate)) {
-        return {
-          path: candidate,
+      const dir = join(root, entry.name);
+      let names: string[];
+      try { names = readdirSync(dir); } catch { continue; }
+      for (const name of names) {
+        if (!name.endsWith('.jsonl')) continue;
+        const id = name.slice(0, -'.jsonl'.length);
+        const located: LocatedSessionFile = {
+          path: join(dir, name),
           projectDir: entry.name,
-          // Project path is encoded by replacing slashes with dashes.
           projectPath: decodeProjectDirName(entry.name),
         };
+        const prior = byId.get(id);
+        if (prior) prior.push(located); else byId.set(id, [located]);
       }
     }
   }
-  return null;
+  if (scanScopeDepth > 0) indexCache = byId;
+  return byId;
 }
 
 /**
@@ -135,30 +219,11 @@ export function findSessionFile(sessionId: string): {
  * content use this and merge; callers that need one canonical path (project
  * grouping, titles) can still take the first.
  */
-export function findSessionFiles(sessionId: string): Array<{
-  path: string;
-  projectDir: string;
-  projectPath: string;
-}> {
-  const out: Array<{ path: string; projectDir: string; projectPath: string }> = [];
-  const seen = new Set<string>();
-  for (const root of claudeProjectDirs()) {
-    if (!existsSync(root)) continue;
-    let entries;
-    try { entries = readdirSync(root, { withFileTypes: true }); } catch { continue; }
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const candidate = join(root, entry.name, `${sessionId}.jsonl`);
-      if (!existsSync(candidate) || seen.has(candidate)) continue;
-      seen.add(candidate);
-      out.push({
-        path: candidate,
-        projectDir: entry.name,
-        projectPath: decodeProjectDirName(entry.name),
-      });
-    }
-  }
-  return out;
+export function findSessionFiles(sessionId: string): LocatedSessionFile[] {
+  // A copy of the list: callers have always received an array they may sort or
+  // splice, and the index must not be mutated underneath the next lookup.
+  const hit = sessionFileIndex().get(sessionId);
+  return hit ? hit.slice() : [];
 }
 
 /**
@@ -327,72 +392,99 @@ function loadGeminiProjectMap(): Map<string, string> {
   return map;
 }
 
-export function findGeminiSessionFile(sessionIdOrFileBase: string): { path: string; projectDir: string; projectPath: string; format: 'json' | 'jsonl' } | null {
-  // Every configured Gemini home, primary first — same reason as Claude and
-  // Codex: a second profile holds its own half of the same conversation.
-  for (const tmpRoot of geminiTmpDirs()) {
-    const found = findGeminiSessionFileIn(tmpRoot, sessionIdOrFileBase);
-    if (found) return found;
+export function findGeminiSessionFile(sessionIdOrFileBase: string): GeminiLocatedFile | null {
+  const idx = geminiIndex();
+  // 1. Exact basename — the common case, free.
+  const exact = idx.byBase.get(sessionIdOrFileBase);
+  if (exact) return exact;
+  // 2. Tail match. The CLI tacks a short hex tail onto the basename
+  //    ("session-2026-05-06T06-37-de4e8d4c" → tail "de4e8d4c") and callers pass
+  //    an id that STARTS WITH that tail. Indexed by tail, so instead of scanning
+  //    every file we probe the query's own prefixes — at most ~32 map lookups.
+  for (let len = Math.min(sessionIdOrFileBase.length, 64); len >= 4; len--) {
+    const hit = idx.byTail.get(sessionIdOrFileBase.slice(0, len));
+    if (hit) return hit;
   }
-  return null;
+  // 3. The id stored INSIDE the file. Needed because the indexer used
+  //    `content.sessionId || basename(file)`. This is the step that used to
+  //    open and parse EVERY chat file in EVERY project on EVERY lookup — 5,246
+  //    gemini sessions × the whole corpus, measured at 30.4 seconds per sync
+  //    walk. Now each file is read at most once per index generation.
+  return geminiInnerIdIndex(idx).get(sessionIdOrFileBase) ?? null;
 }
 
-function findGeminiSessionFileIn(tmpRoot: string, sessionIdOrFileBase: string): { path: string; projectDir: string; projectPath: string; format: 'json' | 'jsonl' } | null {
-  if (!existsSync(tmpRoot)) return null;
-  const projMap = loadGeminiProjectMap();
+export interface GeminiLocatedFile {
+  path: string;
+  projectDir: string;
+  projectPath: string;
+  format: 'json' | 'jsonl';
+}
 
-  // Newer Gemini CLI builds write `.jsonl` (one event per line); older builds
-  // wrote a single-blob `.json`. Match either.
+interface GeminiIndex {
+  byBase: Map<string, GeminiLocatedFile>;
+  byTail: Map<string, GeminiLocatedFile>;
+  all: GeminiLocatedFile[];
+  /** Built on first miss only — it costs one read per file. */
+  byInnerId: Map<string, GeminiLocatedFile> | null;
+}
+
+let geminiCache: GeminiIndex | null = null;
+
+/** Drop the Gemini index so the next lookup rebuilds it. */
+export function invalidateGeminiSessionIndex(): void { geminiCache = null; }
+
+function geminiIndex(): GeminiIndex {
+  if (geminiCache) return geminiCache;
+  const byBase = new Map<string, GeminiLocatedFile>();
+  const byTail = new Map<string, GeminiLocatedFile>();
+  const all: GeminiLocatedFile[] = [];
+  const projMap = loadGeminiProjectMap();
   const isGeminiChat = (f: string) =>
     f.startsWith('session-') && (f.endsWith('.json') || f.endsWith('.jsonl'));
-  const stripExt = (f: string) => f.replace(/\.jsonl?$/, '');
-  const fmt = (f: string): 'json' | 'jsonl' => f.endsWith('.jsonl') ? 'jsonl' : 'json';
-
-  // Many Gemini IDs are short hex tails the CLI tacks onto the basename
-  // (e.g. file "session-2026-05-06T06-37-de4e8d4c.jsonl" → tail "de4e8d4c").
-  // Accept full-uuid prefix matches against the file's tail too.
-  const tailMatches = (fileBase: string, query: string): boolean => {
-    const tail = fileBase.split('-').pop() || '';
-    return tail.length >= 4 && query.startsWith(tail);
-  };
-
-  for (const proj of readdirSync(tmpRoot, { withFileTypes: true })) {
-    if (!proj.isDirectory()) continue;
-    const chats = join(tmpRoot, proj.name, 'chats');
-    if (!existsSync(chats)) continue;
-    let files: string[];
-    try { files = readdirSync(chats); } catch { continue; }
-    for (const f of files) {
-      if (!isGeminiChat(f)) continue;
-      const fileBase = stripExt(f);
-      // Match either by file basename (preferred) or by the sessionId stored
-      // inside the JSON. We try basename first since it's free.
-      if (fileBase === sessionIdOrFileBase || tailMatches(fileBase, sessionIdOrFileBase)) {
-        return { path: join(chats, f), projectDir: proj.name, projectPath: projMap.get(proj.name) || '', format: fmt(f) };
+  // Homes in order, first winner kept: a session present in two profiles must
+  // resolve to the primary, exactly as the sequential search did.
+  for (const tmpRoot of geminiTmpDirs()) {
+    if (!existsSync(tmpRoot)) continue;
+    let projs;
+    try { projs = readdirSync(tmpRoot, { withFileTypes: true }); } catch { continue; }
+    for (const proj of projs) {
+      if (!proj.isDirectory()) continue;
+      const chats = join(tmpRoot, proj.name, 'chats');
+      if (!existsSync(chats)) continue;
+      let files: string[];
+      try { files = readdirSync(chats); } catch { continue; }
+      for (const f of files) {
+        if (!isGeminiChat(f)) continue;
+        const base = f.replace(/\.jsonl?$/, '');
+        const located: GeminiLocatedFile = {
+          path: join(chats, f),
+          projectDir: proj.name,
+          projectPath: projMap.get(proj.name) || '',
+          format: f.endsWith('.jsonl') ? 'jsonl' : 'json',
+        };
+        all.push(located);
+        if (!byBase.has(base)) byBase.set(base, located);
+        const tail = base.split('-').pop() || '';
+        if (tail.length >= 4 && !byTail.has(tail)) byTail.set(tail, located);
       }
     }
   }
+  const built: GeminiIndex = { byBase, byTail, all, byInnerId: null };
+  if (scanScopeDepth > 0) geminiCache = built;
+  return built;
+}
 
-  // Fallback: open every file and check the inner sessionId. Slower but
-  // necessary because indexer used `content.sessionId || basename(file)`.
-  for (const proj of readdirSync(tmpRoot, { withFileTypes: true })) {
-    if (!proj.isDirectory()) continue;
-    const chats = join(tmpRoot, proj.name, 'chats');
-    if (!existsSync(chats)) continue;
-    let files: string[];
-    try { files = readdirSync(chats); } catch { continue; }
-    for (const f of files) {
-      if (!isGeminiChat(f)) continue;
-      const path = join(chats, f);
-      try {
-        const innerId = readGeminiSessionIdFromFile(path, fmt(f));
-        if (innerId && innerId === sessionIdOrFileBase) {
-          return { path, projectDir: proj.name, projectPath: projMap.get(proj.name) || '', format: fmt(f) };
-        }
-      } catch { /* skip */ }
-    }
+function geminiInnerIdIndex(idx: GeminiIndex): Map<string, GeminiLocatedFile> {
+  if (idx.byInnerId) return idx.byInnerId;
+  const byInnerId = new Map<string, GeminiLocatedFile>();
+  for (const located of idx.all) {
+    try {
+      const innerId = readGeminiSessionIdFromFile(located.path, located.format);
+      if (innerId && !byInnerId.has(innerId)) byInnerId.set(innerId, located);
+    } catch { /* skip */ }
   }
-  return null;
+  idx.byInnerId = byInnerId;
+  return byInnerId;
 }
 
 /** Read only the first `bytes` of a file — session transcripts run into the
