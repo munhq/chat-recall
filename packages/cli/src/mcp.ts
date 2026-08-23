@@ -39,7 +39,7 @@ import { sanitizeQuery } from '@chat-recall/engine/core/query-sanitizer.js';
 import { getWAL } from '@chat-recall/engine/core/write-ahead-log.js';
 import { reportClientEvent } from './client-events.js';
 import { isOnPath } from '@chat-recall/engine/core/which.js';
-import { readCollectorHealth, judgeHealth } from '@chat-recall/engine/core/collector-health.js';
+import { readCollectorHealth, judgeHealth, progressLine } from '@chat-recall/engine/core/collector-health.js';
 import {
   INSTRUCTION_KINDS, SEVERITIES, sevRank, taskBody,
   partitionRecs, actionToImprovement, recToImprovement, isOpenAction,
@@ -1793,10 +1793,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // while the daemon aborted 4,851 times. An agent that knows the history is
     // stale can tell the user; an agent that does not will answer confidently
     // from data that stopped growing.
-    const health = judgeHealth(readCollectorHealth());
+    const reported = readCollectorHealth();
+    const health = judgeHealth(reported);
+    // A walk in flight is NOT a fault, so it is its own line rather than a
+    // warning. It answers the question a stale-looking answer raises during a
+    // first sync — "is this broken, or is it still loading?" — which the product
+    // previously could not answer at all.
+    const progress = progressLine(reported);
     const banners = [
       health.ok ? null : `⚠ ${health.summary} Recent work may be missing from these answers.`
         + ` Tell the user, and suggest \`chat-recall doctor\`.`,
+      progress ? `⏳ ${progress}. Older work may not be searchable yet.` : null,
       stalenessBanner(await syncState()),
     ].filter(Boolean) as string[];
     if (banners.length === 0) return result;
