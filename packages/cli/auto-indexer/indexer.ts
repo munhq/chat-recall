@@ -50,6 +50,7 @@ import { loadAllCredentials } from '../src/sync-client.js';
 import { runAutoUpdate } from '../src/auto-update.js';
 import { orderByStaleness, noteIndexed, pruneCursor } from '../src/code-index-cursor.js';
 import { TickQueue, TICK_PRIORITY } from '../src/tick-queue.js';
+import { daemonLog } from '../src/daemon-log.js';
 import { codeFingerprint, checkSelfRestart } from '../src/self-restart.js';
 import { rotateLogIfLarge } from '../src/log-rotate.js';
 import { runCollectorMigration } from '../src/collector-migrate.js';
@@ -113,7 +114,7 @@ let debounceTimer: NodeJS.Timeout | null = null;
 // obvious priority: shipping to the server matters more than refreshing code
 // intelligence, so if both are due the sweep should wait.
 const ticks = new TickQueue({
-  onError: (kind, err) => console.error(`[${ts()}] ${kind} tick failed: ${err instanceof Error ? err.message : err}`),
+  onError: (kind, err) => daemonLog.error(`${kind} tick failed: ${err instanceof Error ? err.message : err}`),
 });
 
 let syncInFlight = false;
@@ -138,14 +139,14 @@ async function shipToServer(trigger: string): Promise<void> {
       // won the lock) — nothing to say. Only the user-actionable reasons
       // warrant a log line.
       if (result.skipped === 'no-credentials') {
-        console.warn(`[${ts()}] Sync skipped (${trigger}): not logged in — run \`chat-recall login\` to ship sessions to a server.`);
+        daemonLog.warn(`Sync skipped (${trigger}): not logged in — run \`chat-recall login\` to ship sessions to a server.`);
       } else if (result.skipped === 'paused') {
-        console.warn(`[${ts()}] Sync skipped (${trigger}): sync is paused in settings — re-run \`chat-recall login <server-url>\` to resume.`);
+        daemonLog.warn(`Sync skipped (${trigger}): sync is paused in settings — re-run \`chat-recall login <server-url>\` to resume.`);
       }
       return;
     }
     if (result.uploaded > 0 || result.derived > 0) {
-      console.log(
+      daemonLog.info(
         `[${ts()}] Sync (${trigger}): ${result.uploaded} session(s) pushed, `
           + `${result.redactions} secret(s) redacted, ${result.skipped} skipped, `
           + `${result.items} items, ${result.links} links, ${result.derived} derived, `
@@ -156,7 +157,7 @@ async function shipToServer(trigger: string): Promise<void> {
     for (const server of syncTargetUrls()) noteSyncOutcome(server, true);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[${ts()}] Sync failed (${trigger}, will retry next flush): ${msg.slice(0, 200)}`);
+    daemonLog.error(`Sync failed (${trigger}, will retry next flush): ${msg.slice(0, 200)}`);
     for (const server of syncTargetUrls()) noteSyncOutcome(server, false, msg);
   } finally {
     syncInFlight = false;
@@ -212,9 +213,9 @@ async function onResumeSignal(path: string): Promise<void> {
     // nothing was read. Not worth a log line every minute per active session —
     // it was two thirds of this log's resume-guard noise.
     if (r.status === 'skipped') return;
-    console.log(`[${ts()}] [resume-guard] shadow ${r.status} for ${id.slice(0, 8)}…` + (r.recovered > 0 ? ` (recovered ${r.recovered} record(s))` : ''));
+    daemonLog.info(`[resume-guard] shadow ${r.status} for ${id.slice(0, 8)}…` + (r.recovered > 0 ? ` (recovered ${r.recovered} record(s))` : ''));
   } catch (e) {
-    console.error(`[${ts()}] [resume-guard] ${e instanceof Error ? e.message : e}`);
+    daemonLog.error(`[resume-guard] ${e instanceof Error ? e.message : e}`);
   }
 }
 
@@ -282,11 +283,11 @@ function watchWithFallback(name: string, pattern: string | string[], t: WatchTun
   w.on('error', (err: unknown) => {
     const code = (err as NodeJS.ErrnoException)?.code;
     if (swapped || FORCE_POLL || (code !== 'ENOSPC' && code !== 'EMFILE')) {
-      console.error(`[${ts()}] ${name} watcher error: ${String(err)}`);
+      daemonLog.error(`${name} watcher error: ${String(err)}`);
       return;
     }
     swapped = true;
-    console.log(`[${ts()}] ${name} watcher: native watching hit ${code} — falling back to polling every ${t.interval}ms.`
+    daemonLog.info(`${name} watcher: native watching hit ${code} — falling back to polling every ${t.interval}ms.`
       + ` Raise fs.inotify.max_user_watches to get native events back.`);
     void w.close().catch(() => {});
     w = chokidar.watch(pattern, watchOpts(t, true));
@@ -429,40 +430,40 @@ const resumeWatcher = chokidar.watch(CURRENT_RESUME_PATH, watchOpts({
 resumeWatcher
   .on('add', (p) => { void onResumeSignal(p); })
   .on('change', (p) => { void onResumeSignal(p); })
-  .on('error', (error) => { console.error(`[${ts()}] [resume-guard] watcher error:`, error); });
+  .on('error', (error) => { daemonLog.error('[resume-guard] watcher error', { err: String(error) }); });
 
 for (const [name, watcher] of Object.entries(watchers)) {
   watcher
     .on('ready', () => {
-      console.log(`[${ts()}] ${name} watcher ready`);
+      daemonLog.info(`${name} watcher ready`);
     })
     .on('add', (path) => {
-      console.log(`[${ts()}] [${name}] New: ${path}`);
+      daemonLog.info(`[${name}] New: ${path}`);
       scheduleSync();
     })
     .on('change', (path) => {
-      console.log(`[${ts()}] [${name}] Modified: ${path}`);
+      daemonLog.info(`[${name}] Modified: ${path}`);
       scheduleSync();
     })
     .on('error', (error) => {
-      console.error(`[${ts()}] [${name}] Watcher error:`, error);
+      daemonLog.error(`[${name}] watcher error`, { err: String(error) });
     });
 }
 
 // ── Startup banner ──────────────────────────────────────────────────
-console.log(`[${ts()}] chat-recall ship daemon started (thin collector — no local index)`);
-console.log(`  Watching sessions: ${CLAUDE_DIR}`);
-console.log(`  Watching plans:    ${PLANS_DIR}`);
-console.log(`  Watching tasks:    ${TASKS_DIR}`);
-console.log(`  Watching history:  ${HISTORY_PATH}`);
-console.log(`  Watching diary:    ${DIARY_DIR}`);
-console.log(`  Watching codex:    ${CODEX_SESSIONS_DIR}`);
-console.log(`  Watching gemini:   ${GEMINI_TMP_DIR}`);
-console.log(`  Watching opencode: ${OPENCODE_DB_DIR}`);
-console.log(`  Watching agent memory: ${CLAUDE_DIR}/*/memory/`);
-console.log(`  Resume-guard:      ${CURRENT_RESUME_PATH}`);
-console.log(`  Debounce: ${DEBOUNCE_MS}ms · ships via syncIncremental() to the configured server`);
-console.log(`  Ready for changes...`);
+daemonLog.info(`chat-recall ship daemon started (thin collector — no local index)`);
+daemonLog.info(`  Watching sessions: ${CLAUDE_DIR}`);
+daemonLog.info(`  Watching plans:    ${PLANS_DIR}`);
+daemonLog.info(`  Watching tasks:    ${TASKS_DIR}`);
+daemonLog.info(`  Watching history:  ${HISTORY_PATH}`);
+daemonLog.info(`  Watching diary:    ${DIARY_DIR}`);
+daemonLog.info(`  Watching codex:    ${CODEX_SESSIONS_DIR}`);
+daemonLog.info(`  Watching gemini:   ${GEMINI_TMP_DIR}`);
+daemonLog.info(`  Watching opencode: ${OPENCODE_DB_DIR}`);
+daemonLog.info(`  Watching agent memory: ${CLAUDE_DIR}/*/memory/`);
+daemonLog.info(`  Resume-guard:      ${CURRENT_RESUME_PATH}`);
+daemonLog.info(`  Debounce: ${DEBOUNCE_MS}ms · ships via syncIncremental() to the configured server`);
+daemonLog.info(`  Ready for changes...`);
 
 // Slow heartbeat: a quiet machine still converges even when no file
 // events fire (e.g. sessions written while the daemon was down). Also
@@ -477,7 +478,7 @@ setTimeout(() => { ticks.request('sync', TICK_PRIORITY.sync, () => shipToServer(
 // enough that a build is picked up within a minute.
 const BOOT_CODE = codeFingerprint();
 if (BOOT_CODE) {
-  console.log(`[${ts()}] running bundle ${BOOT_CODE.path} (${BOOT_CODE.size} bytes)`);
+  daemonLog.info(`running bundle ${BOOT_CODE.path} (${BOOT_CODE.size} bytes)`);
 }
 
 // ── Log rotation ─────────────────────────────────────────────────────
@@ -493,7 +494,7 @@ if (BOOT_CODE) {
 {
   const r = rotateLogIfLarge(join(getDataDir(), 'watch.log'));
   if (r.rotated) {
-    console.log(`[${ts()}] rotated watch.log at ${(r.sizeBefore / 1048576).toFixed(0)}MB → watch.log.1 (copy+truncate; the path is preserved)`);
+    daemonLog.info(`rotated watch.log at ${(r.sizeBefore / 1048576).toFixed(0)}MB → watch.log.1 (copy+truncate; the path is preserved)`);
   }
 }
 
@@ -584,13 +585,13 @@ async function shadowPruneTick(): Promise<void> {
       },
     });
     if (result.deleted > 0) {
-      console.log(`[${ts()}] shadow prune: removed ${result.deleted} of ${result.scanned} archive(s), `
+      daemonLog.info(`shadow prune: removed ${result.deleted} of ${result.scanned} archive(s), `
         + `freed ${(result.freedBytes / 1048576).toFixed(0)}MB, `
         + `${(result.remainingBytes / 1048576).toFixed(0)}MB remaining `
         + `(${result.keptUnacked} kept — not yet acked everywhere)`);
     }
   } catch (err) {
-    console.error(`[${ts()}] shadow prune failed (harmless, retries next tick): ${err instanceof Error ? err.message : err}`);
+    daemonLog.error(`shadow prune failed (harmless, retries next tick): ${err instanceof Error ? err.message : err}`);
   }
 }
 // First pass a few minutes in, so startup work finishes first.
@@ -615,7 +616,7 @@ publishHealth();
 {
   const n = recentStarts().length;
   if (n >= 3) {
-    console.error(`[${ts()}] WARNING: this collector has restarted ${n} times in the last hour.`
+    daemonLog.error(`WARNING: this collector has restarted ${n} times in the last hour.`
       + ` Sync is probably falling behind. Health: ${collectorHealthPath()}`);
   }
 }
@@ -625,8 +626,8 @@ setInterval(() => {
   // Before reporting liveness, make sure we are still the current code. Restarts
   // mid-sync are safe: the ledger only advances on server-acked writes, so an
   // interrupted pass re-ships rather than skipping.
-  if (checkSelfRestart({ boot: BOOT_CODE, log: (m) => console.log(`[${ts()}] ${m}`) })) return;
-  console.log(`[${ts()}] Heartbeat - ${pendingFileCount} pending file event(s), sync ${syncInFlight ? 'in-flight' : 'idle'}`);
+  if (checkSelfRestart({ boot: BOOT_CODE, log: (m) => daemonLog.info(`${m}`) })) return;
+  daemonLog.info(`Heartbeat - ${pendingFileCount} pending file event(s), sync ${syncInFlight ? 'in-flight' : 'idle'}`);
   // Refresh updatedAt, so "has not reported in 30 minutes" means the daemon is
   // gone or wedged, rather than merely idle.
   publishHealth();
@@ -654,7 +655,7 @@ async function drainIntentsTick(): Promise<boolean> {
   if (intentDrainInFlight) {
     const stuckMs = Date.now() - intentDrainStartedAt;
     if (stuckMs < DRAIN_STALL_MS) return false;
-    console.error(`[${ts()}] sync-intents: previous drain has been running ${Math.round(stuckMs / 1000)}s — abandoning it and starting a fresh tick`);
+    daemonLog.error(`sync-intents: previous drain has been running ${Math.round(stuckMs / 1000)}s — abandoning it and starting a fresh tick`);
   }
   intentDrainInFlight = true;
   intentDrainStartedAt = Date.now();
@@ -664,7 +665,7 @@ async function drainIntentsTick(): Promise<boolean> {
   try {
     const r = await drainSyncIntents();
     if (r.processed > 0) {
-      console.log(`[${ts()}] sync-intents: ${r.done} done, ${r.errored} errored`);
+      daemonLog.info(`sync-intents: ${r.done} done, ${r.errored} errored`);
       // Applying an intent wrote files into toolkit dirs the chokidar watcher
       // does NOT watch — push them up now so the UI reflects the change in
       // seconds, instead of waiting for the 15-min heartbeat.
@@ -675,7 +676,7 @@ async function drainIntentsTick(): Promise<boolean> {
     }
     return r.processed > 0;
   } catch (err) {
-    console.error(`[${ts()}] sync-intents drain failed: ${err instanceof Error ? err.message : err}`);
+    daemonLog.error(`sync-intents drain failed: ${err instanceof Error ? err.message : err}`);
     return false;
   } finally {
     if (gen === intentDrainGeneration) intentDrainInFlight = false;
@@ -827,18 +828,18 @@ async function codeIndexTick(): Promise<void> {
     const { collectCode, resolveCodeindexBin } = await import('@chat-recall/engine/core/code/collector.js');
     let bin: string;
     try { bin = await resolveCodeindexBin(true); }   // resolve/install codeindex once per pass
-    catch (e) { console.error(`[${ts()}] code intelligence skipped — codeindex unavailable: ${e instanceof Error ? e.message : e}`); return; }
+    catch (e) { daemonLog.error(`code intelligence skipped — codeindex unavailable: ${e instanceof Error ? e.message : e}`); return; }
     let ok = 0;
     for (const ws of workspaces) {
       // Per-workspace log line — when this tick OOMs or hangs, the log names
       // WHERE. (The 2026-07-03 crash hunt had to reconstruct this from GC
       // timestamps; never again.)
       const t0 = Date.now();
-      console.log(`[${ts()}] code intelligence: indexing ${ws} …`);
+      daemonLog.info(`code intelligence: indexing ${ws} …`);
       let result;
       try { result = await collectCode({ workspace: ws, binPath: bin }); }
       catch (e) {
-        console.log(`[${ts()}] code intelligence: skipped ${ws} after ${Math.round((Date.now() - t0) / 1000)}s (${e instanceof Error ? e.message : e})`);
+        daemonLog.info(`code intelligence: skipped ${ws} after ${Math.round((Date.now() - t0) / 1000)}s (${e instanceof Error ? e.message : e})`);
         continue;   // not a scannable workspace (codeindex refused) or transient — skip
       }
       for (const cred of creds) {
@@ -851,7 +852,7 @@ async function codeIndexTick(): Promise<void> {
       noteIndexed(ws);
       ok++;
     }
-    if (ok > 0) console.log(`[${ts()}] code intelligence: indexed ${ok}/${workspaces.length} workspace(s)`);
+    if (ok > 0) daemonLog.info(`code intelligence: indexed ${ok}/${workspaces.length} workspace(s)`);
   } finally {
     codeIndexInFlight = false;
   }
@@ -859,7 +860,7 @@ async function codeIndexTick(): Promise<void> {
 if (CODE_INDEX_ON) {
   setInterval(() => { ticks.request('codeIndex', TICK_PRIORITY.codeIndex, codeIndexTick); }, CODE_INDEX_MS).unref();
   setTimeout(() => { ticks.request('codeIndex', TICK_PRIORITY.codeIndex, codeIndexTick); }, 90_000);   // first pass shortly after startup
-  console.log(`  Code intelligence: AUTO — discovers your repos & indexes them (every ${CODE_INDEX_MS / 60000}m · ${CODE_INDEX_WINDOW_DAYS}d window · max ${CODE_INDEX_MAX})`);
+  daemonLog.info(`  Code intelligence: AUTO — discovers your repos & indexes them (every ${CODE_INDEX_MS / 60000}m · ${CODE_INDEX_WINDOW_DAYS}d window · max ${CODE_INDEX_MAX})`);
 }
 
 // ── CLI self-update: keep the daemon current with the logged-in server ──────
@@ -871,8 +872,8 @@ async function autoUpdateTick(): Promise<void> {
     const headers: Record<string, string> = cred.token ? { authorization: `Bearer ${cred.token}` } : {};
     try {
       const r = await runAutoUpdate(base, headers, CLI_VERSION);
-      if (r.updated) console.log(`[${ts()}] auto-update: ${r.reason} (${base}) — restarting service`);
-      else if (!/already current|disabled|no CLI release/.test(r.reason)) console.log(`[${ts()}] auto-update: ${r.reason} (${base})`);
+      if (r.updated) daemonLog.info(`auto-update: ${r.reason} (${base}) — restarting service`);
+      else if (!/already current|disabled|no CLI release/.test(r.reason)) daemonLog.info(`auto-update: ${r.reason} (${base})`);
     } catch { /* best effort — never crash the daemon */ }
   }
 }
@@ -899,8 +900,8 @@ async function collectorMigrationOnce(): Promise<void> {
       } catch { return false; }
     };
     try {
-      const r = await runCollectorMigration({ base, authHeaders: headers, current: COLLECTOR_VERSION, reindex, log: (m) => console.log(`[${ts()}] ${m}`) });
-      if (r.reindexed || r.failed || r.missing) console.log(`[${ts()}] collector migration (${base}): re-derived ${r.reindexed}, failed ${r.failed}, skipped-missing ${r.missing}`);
+      const r = await runCollectorMigration({ base, authHeaders: headers, current: COLLECTOR_VERSION, reindex, log: (m) => daemonLog.info(`${m}`) });
+      if (r.reindexed || r.failed || r.missing) daemonLog.info(`collector migration (${base}): re-derived ${r.reindexed}, failed ${r.failed}, skipped-missing ${r.missing}`);
     } catch { /* best effort */ }
   }
 }
@@ -910,10 +911,10 @@ if (CODE_INDEX_ON) setTimeout(() => { void collectorMigrationOnce(); }, 150_000)
 // No child processes to reap anymore (summary generation moved
 // server-side), so shutdown is just: close watchers, flush, exit.
 function shutdown(signal: string): void {
-  console.log(`[${ts()}] Received ${signal}, shutting down...`);
+  daemonLog.info(`Received ${signal}, shutting down...`);
   // Coalesced ledger acks must reach disk before we go, or the next start
   // re-ships everything acked since the last flush.
-  try { flushLedger(); } catch (e) { console.error(`[${ts()}] ledger flush on shutdown failed: ${String(e)}`); }
+  try { flushLedger(); } catch (e) { daemonLog.error(`ledger flush on shutdown failed: ${String(e)}`); }
   for (const watcher of Object.values(watchers)) {
     void watcher.close();
   }

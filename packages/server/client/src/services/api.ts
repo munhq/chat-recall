@@ -749,6 +749,22 @@ export interface ReportedSource {
 
 /** Per-device health for the fleet panel. `warnings` is the payload that matters —
  *  empty means nothing is wrong with that machine. */
+/**
+ * What a device's own collector reported about itself.
+ *
+ * Absent when the device reported nothing — a free plan, an opted-out machine, or
+ * a CLI that predates this. Absence is normal, not a failure, so the UI must
+ * render the card exactly as it did before rather than showing gaps.
+ */
+export interface FleetDeviceTelemetry {
+  breakerTrips: number;
+  failuresByClass: Record<string, number>;
+  oversizedSessions: number;
+  oversizedWorstMb: number;
+  rssPeakMb: number | null;
+  lastScanMs: number | null;
+}
+
 export interface FleetDeviceHealth {
   deviceId: string;
   os: string | null;
@@ -758,6 +774,7 @@ export interface FleetDeviceHealth {
   sessions: number;
   folders: { syncing: number; pending: number; declined: number };
   warnings: string[];
+  telemetry?: FleetDeviceTelemetry;
 }
 
 export async function getFleetHealth(): Promise<{

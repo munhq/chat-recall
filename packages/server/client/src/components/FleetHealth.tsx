@@ -15,6 +15,13 @@ import React, { useEffect, useState } from 'react';
 import { Card, Chip } from './primitives';
 import { getFleetHealth, type FleetDeviceHealth } from '../services/api';
 
+/** ms as something a human reads without doing arithmetic. */
+function dur(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
+  return `${Math.round(ms / 60_000)}m`;
+}
+
 function ago(ts: number | null): string {
   if (!ts) return 'never';
   const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
@@ -98,6 +105,34 @@ export default function FleetHealth() {
                   {d.warnings.map((w) => <li key={w}>{w}</li>)}
                 </ul>
               )}
+              {/* What the collector itself measured, in the muted register and
+                  BELOW the warnings: warnings are what you act on, these are
+                  what you check afterwards. Each value is omitted when the device
+                  did not report it, so a sparse line means "not measured" rather
+                  than "zero" — a distinction that matters when the number is
+                  memory or a failure count. */}
+              {d.telemetry && (() => {
+                const t = d.telemetry!;
+                const parts: string[] = [];
+                if (t.lastScanMs != null) parts.push(`scan ${dur(t.lastScanMs)}`);
+                if (t.rssPeakMb != null) parts.push(`peak ${t.rssPeakMb}MB`);
+                const failures = Object.entries(t.failuresByClass)
+                  .filter(([, n]) => n > 0)
+                  .sort((a, b) => b[1] - a[1]);
+                // Named classes, not a total: "3 rate_limited" is actionable
+                // where "3 failures" sends the reader to the logs.
+                for (const [cls, n] of failures.slice(0, 3)) parts.push(`${n}× ${cls.replace(/_/g, ' ')}`);
+                if (parts.length === 0) return null;
+                return (
+                  <div style={{
+                    marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--cr-line-1)',
+                    color: 'var(--cr-fg-3)', fontSize: 11.5,
+                    fontFamily: 'var(--cr-font-mono)', display: 'flex', gap: 10, flexWrap: 'wrap',
+                  }}>
+                    {parts.map((x) => <span key={x}>{x}</span>)}
+                  </div>
+                );
+              })()}
             </Card>
           );
         })}

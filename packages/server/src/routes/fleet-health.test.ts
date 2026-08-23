@@ -112,3 +112,98 @@ describe('warnings are scoped to the right device', () => {
     expect(h.warnings[0]).toBe('1 transcript folder waiting for a decision');
   });
 });
+
+/**
+ * TELEMETRY WARNINGS — the failures only the device can see.
+ *
+ * Each of these completes a sync successfully from the server's point of view:
+ * the walk finishes, rows arrive, the ledger advances. That is precisely why none
+ * of them was visible before, and why they belong in the panel whose whole
+ * purpose is that healthy and broken look identical everywhere else.
+ */
+const tel = (o: Partial<NonNullable<Parameters<typeof classifyDevice>[4]>> = {}) => ({
+  breakerTrips: 0, failuresByClass: {}, oversizedSessions: 0,
+  oversizedWorstMb: 0, rssPeakMb: null, lastScanMs: null, ...o,
+});
+
+describe('telemetry adds warnings the server cannot see on its own', () => {
+  // ABSENCE IS NORMAL: a free plan, an opted-out machine, or a CLI predating
+  // this all report nothing, and the card must look exactly as it did before.
+  test('no telemetry means no change and no telemetry field', () => {
+    const h = classifyDevice(dev(), act(), [src({ decision: 'primary' })], NOW);
+    expect(h.warnings).toEqual([]);
+    expect(h.telemetry).toBeUndefined();
+  });
+
+  test('reported-but-clean telemetry still produces no warnings', () => {
+    const h = classifyDevice(dev(), act(), [src({ decision: 'primary' })], NOW,
+      tel({ rssPeakMb: 494, lastScanMs: 1234 }));
+    expect(h.warnings).toEqual([]);
+    // Carried through for the numbers line, which is not a warning.
+    expect(h.telemetry?.rssPeakMb).toBe(494);
+  });
+
+  test('a tripped breaker says what it costs, not just that it happened', () => {
+    const h = classifyDevice(dev(), act(), [src({ decision: 'primary' })], NOW,
+      tel({ breakerTrips: 2 }));
+    expect(h.warnings).toHaveLength(1);
+    expect(h.warnings[0]).toContain('stopped trying a sync target 2 times');
+    expect(h.warnings[0]).toContain('not reaching that server');
+  });
+
+  // The one that would have caught the client-4-vs-server-2 mismatch without
+  // anyone reading a log file.
+  test('rate limiting is surfaced as a slowness cause, not a generic failure', () => {
+    const h = classifyDevice(dev(), act(), [src({ decision: 'primary' })], NOW,
+      tel({ failuresByClass: { rate_limited: 3526 } }));
+    expect(h.warnings[0]).toContain('3526 uploads rate-limited');
+    expect(h.warnings[0]).toContain('first sync will take much longer');
+  });
+
+  test('auth failures point at the token, which is the actionable cause', () => {
+    const h = classifyDevice(dev(), act(), [src({ decision: 'primary' })], NOW,
+      tel({ failuresByClass: { auth: 4 } }));
+    expect(h.warnings[0]).toContain('token may be revoked');
+  });
+
+  test('a refused plain-HTTP target says nothing is arriving', () => {
+    const h = classifyDevice(dev(), act(), [src({ decision: 'primary' })], NOW,
+      tel({ failuresByClass: { insecure_transport: 1 } }));
+    expect(h.warnings[0]).toContain('plain HTTP');
+  });
+
+  // Real case: two 117MB OpenCode sessions on the maintainer's machine. The
+  // warning must say what is LOST (the raw archive) and what still works
+  // (search), because "too large" alone reads as data loss.
+  test('oversized sessions name the cost and the size', () => {
+    const h = classifyDevice(dev(), act(), [src({ decision: 'primary' })], NOW,
+      tel({ oversizedSessions: 2, oversizedWorstMb: 117 }));
+    expect(h.warnings[0]).toContain('2 sessions too large to archive');
+    expect(h.warnings[0]).toContain('117MB');
+    expect(h.warnings[0]).toContain('searchable');
+  });
+
+  test('singular and plural both read correctly', () => {
+    const one = classifyDevice(dev(), act(), [src({ decision: 'primary' })], NOW,
+      tel({ breakerTrips: 1, oversizedSessions: 1, oversizedWorstMb: 70 }));
+    expect(one.warnings.join(' ')).toContain('1 time after');
+    expect(one.warnings.join(' ')).toContain('1 session too large');
+  });
+
+  // Server-visible and device-visible problems must coexist, ordered with the
+  // server's first — those are the ones that stop data arriving at all.
+  test('telemetry warnings come after the server-side ones', () => {
+    const h = classifyDevice(
+      dev({ lastSeenAt: NOW - 5 * DAY }), null, [], NOW,
+      tel({ breakerTrips: 1 }),
+    );
+    expect(h.warnings[0]).toContain('no contact');
+    expect(h.warnings.some((w) => w.includes('stopped trying'))).toBe(true);
+  });
+
+  test('a zero count is never reported as a problem', () => {
+    const h = classifyDevice(dev(), act(), [src({ decision: 'primary' })], NOW,
+      tel({ breakerTrips: 0, oversizedSessions: 0, failuresByClass: { rate_limited: 0, auth: 0 } }));
+    expect(h.warnings).toEqual([]);
+  });
+});
