@@ -98,7 +98,7 @@ export function clearRateMultiplierCache(): void {
 /** In-flight resolutions, so a burst on a cold cache spawns ONE lookup. */
 const multiplierPending = new Map<string, Promise<void>>();
 
-async function tenantMultiplier(tenant: string): Promise<number> {
+export async function tenantMultiplier(tenant: string): Promise<number> {
   const cached = multiplierCache.get(tenant);
   if (cached !== undefined) return cached;
   // STALE-WHILE-REVALIDATE, never block: the limiter sits in front of every
@@ -256,6 +256,25 @@ export function rl(className: RlClass, opts: { cost?: (req: Request) => number }
  * batch. Returns whether to proceed and a release fn for the concurrency slot.
  * Always fail-open on error.
  */
+/**
+ * Ingest concurrency THIS TENANT may actually use, right now.
+ *
+ * `CLASSES.ingest.concurrencyPerTenant` is the class ceiling; the gate scales it
+ * by the tenant's plan multiplier and floors at 1. Advertising the unscaled
+ * ceiling was worse than advertising nothing: a free tenant was told 6, asked for
+ * 6, and had 5 of them shed — which is precisely the 429 storm the advertisement
+ * was added to stop, aimed at the users who most need a fast first sync.
+ */
+export async function tenantIngestConcurrency(tenant: string): Promise<number> {
+  const cap = CLASSES.ingest.concurrencyPerTenant ?? 1;
+  try {
+    const mult = await tenantMultiplier(tenant || 'default');
+    return Math.max(1, Math.floor(cap * mult));
+  } catch {
+    return 1;   // unknown plan → the pessimistic answer, never the generous one
+  }
+}
+
 export async function ingestGate(tenant: string, rowCount: number): Promise<{ ok: boolean; release: () => void; retryAfterMs: number }> {
   const cfg = CLASSES.ingest;
   const id = `t:${tenant || 'default'}`;
