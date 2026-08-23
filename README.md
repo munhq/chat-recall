@@ -6,6 +6,8 @@
 [![Smithery](https://img.shields.io/badge/Smithery-darkkraft%2Fchat--recall-7c3aed)](https://smithery.ai/server/darkkraft/chat-recall)
 [![Glama](https://img.shields.io/badge/Glama-munhq%2Fchat--recall-4f46e5)](https://glama.ai/mcp/servers/munhq/chat-recall)
 
+**[chatrecall.dev](https://chatrecall.dev)** · [How it works](https://chatrecall.dev/how-it-works/) · [MCP tools](https://chatrecall.dev/mcp/) · [Pricing](https://chatrecall.dev/pricing/) · [Self-host](https://chatrecall.dev/self-hosting/)
+
 > One memory across every AI coding tool you use. Claude Code, Gemini CLI, Codex, OpenCode and Antigravity share a single searchable history — and the agent can search it itself.
 
 Your coding agents each keep their own transcripts, in their own format, in their own directory, and none of them can read another's. `chat-recall` indexes all of them into one place, redacts secrets on the way, and exposes the result to your agent through **53 MCP tools** so it can recall its own past work instead of you re-explaining it.
