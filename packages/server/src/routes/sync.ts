@@ -314,6 +314,30 @@ router.post('/', async (req, res) => {
     const result = await runWithTenant(agent.tenant, () => runWithAuthor({ sub: agent!.userSub, device: agent!.deviceId }, async () => {
       const store = await createStore();
       const metaCache = await createMetadataCache();
+
+      // COLLECTOR PROGRESS. The web UI could only show an AGE ("25m behind"),
+      // which during a first sync is indistinguishable from broken — and a first
+      // sync on a large corpus runs for a long time. The collector already
+      // computes walk progress for its own surfaces (doctor, the MCP banner);
+      // carrying it on the sync body is what lets the UI answer "is this working
+      // or is it stuck?" without a new endpoint or a schema change.
+      //
+      // Stored in the existing kv_store, which is already tenant-scoped by RLS,
+      // and stamped with a server timestamp: a client that dies mid-walk stops
+      // updating this, and a reader that sees a stale `at` treats the walk as
+      // gone rather than eternally in progress.
+      const prog = req.body?.progress;
+      if (prog && typeof prog === 'object'
+          && typeof prog.done === 'number' && typeof prog.total === 'number') {
+        try {
+          await store.kvSet('collector', 'walk_progress', JSON.stringify({
+            done: Math.max(0, Math.floor(prog.done)),
+            total: Math.max(0, Math.floor(prog.total)),
+            complete: prog.complete === true,
+            at: Date.now(),
+          }));
+        } catch { /* progress is cosmetic — never fail an ingest over it */ }
+      }
       let conv = 0, item = 0, link = 0, find = 0, der = 0, kgE = 0, kgT = 0, chunks = 0, dead = 0, fielded = 0;
       let appendConv = 0, shrinkGuarded = 0;
       const fullResyncNeeded: string[] = [];
