@@ -76,7 +76,7 @@ import { extractorVersionForTool, extractorVersionForId, toolOfId, EXTRACTOR_VER
 import { SYNC_FIELDS } from '@chat-recall/engine/core/sync-fields.js';
 import { acquireIndexLock } from '@chat-recall/engine/core/index-lock.js';
 import { fetchWithTimeout } from './http.js';
-import { withSessionReadCache } from '@chat-recall/engine/core/live-session-scan.js';
+import { withSessionReadCache , withSessionScanScope } from '@chat-recall/engine/core/live-session-scan.js';
 import '@chat-recall/engine/core/backends/index.js'; // register the tool backends
 
 // Lives under the data dir so CHAT_RECALL_DATA_DIR isolates credentials the
@@ -625,22 +625,64 @@ export function batchScanExternal(
  */
 const CAPS_TTL_MS = 60 * 60_000;
 const capsOk = new Map<string, number>();   // serverUrl -> epoch ms verified
+/** Ingest concurrency the server says it will accept, per serverUrl. */
+const advertisedIngestConc = new Map<string, number>();
 
-export function _resetCapsCacheForTests(): void { capsOk.clear(); }
+export function _resetCapsCacheForTests(): void { capsOk.clear(); advertisedIngestConc.clear(); }
+
+/**
+ * How many uploads may be in flight at once, according to the SERVER.
+ *
+ * Returns null when the server does not advertise it (older image) — the caller
+ * then keeps its own default.
+ */
+export function serverIngestConcurrency(serverUrl: string): number | null {
+  return advertisedIngestConc.get(serverUrl.replace(/\/$/, '')) ?? null;
+}
 
 async function verifyServerApi(serverUrl: string, minApi: number): Promise<boolean> {
   const base = serverUrl.replace(/\/$/, '');
   const seen = capsOk.get(base);
   if (seen !== undefined && Date.now() - seen < CAPS_TTL_MS) return true;
-  const caps = await fetchWithTimeout(`${base}/api/capabilities`).then((r) => r.json()) as { apiVersion?: number };
+  const caps = await fetchWithTimeout(`${base}/api/capabilities`).then((r) => r.json()) as {
+    apiVersion?: number;
+    limits?: { ingestConcurrencyPerTenant?: number };
+  };
   if ((caps.apiVersion ?? 0) < minApi) {
     throw new Error(`server too old: apiVersion ${caps.apiVersion ?? 'none'} < required ${minApi} — update the server image before syncing`);
+  }
+  // Learn the server's in-flight budget instead of assuming one. The old
+  // hardcoded 4 was exactly twice the server's per-tenant cap of 2, so every
+  // walk manufactured its own 429 storm — 3,526 of them in one measured log.
+  // A number the server owns can be tuned without shipping a CLI release.
+  const adv = caps.limits?.ingestConcurrencyPerTenant;
+  if (typeof adv === 'number' && Number.isFinite(adv) && adv >= 1) {
+    advertisedIngestConc.set(base, Math.floor(adv));
   }
   capsOk.set(base, Date.now());
   return true;
 }
 
-async function syncToTarget(cred: Credentials, opts: { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number; prune?: boolean; useLedger?: boolean; walk?: 'full' | 'changed' } = {}): Promise<SyncResult> {
+type SyncToTargetOpts = { sinceMs?: number; cleartextPaths?: boolean; limit?: number; throttleMs?: number; prune?: boolean; useLedger?: boolean; walk?: 'full' | 'changed' };
+
+/**
+ * One walk = one scan scope.
+ *
+ * Locating a session used to probe every project directory in every profile
+ * home, PER SESSION — and the walk asks twice per session
+ * (`spansMultipleSources`, then `fileSize`). Measured on a 15,724-session
+ * corpus: 62.8 seconds of filesystem syscalls to discover that 2 sessions had
+ * changed. With the scope open the directories are listed once instead: 196 ms.
+ *
+ * The scope is the honest place for the cache. A walk snapshots its session
+ * list up front, so within it "where does this session live" genuinely cannot
+ * change; outside it every lookup still reads the filesystem.
+ */
+async function syncToTarget(cred: Credentials, opts: SyncToTargetOpts = {}): Promise<SyncResult> {
+  return withSessionScanScope(() => syncToTargetInScope(cred, opts));
+}
+
+async function syncToTargetInScope(cred: Credentials, opts: SyncToTargetOpts = {}): Promise<SyncResult> {
   const sync = loadSettings().sync;
   // Exclusions = local settings ∪ server-side tenant config (dashboard-edited).
   const serverCfg = await fetchTenantSyncConfig(cred);
@@ -735,7 +777,21 @@ const refs = listAvailableBackends().flatMap((b) => {
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const explicitThrottle = typeof opts.throttleMs === 'number' && opts.throttleMs > 0;
   const throttleMs = explicitThrottle ? (opts.throttleMs as number) : 0;
-  const maxInflight = explicitThrottle ? 1 : (isLocalHost(cred.serverUrl) ? 6 : 4);
+  // In-flight budget: the server's advertised per-tenant ingest concurrency when
+  // it publishes one, else the historical default. Never exceed what the server
+  // will accept — an extra in-flight batch does not go faster, it comes back
+  // 429 and then sleeps out its Retry-After.
+  //
+  // A local target is yours: no politeness needed, and no advertised cap to
+  // respect beyond its own.
+  const LOCAL_INFLIGHT = 6;
+  const REMOTE_INFLIGHT_FALLBACK = 4;
+  const advertised = serverIngestConcurrency(cred.serverUrl);
+  const maxInflight = explicitThrottle
+    ? 1
+    : isLocalHost(cred.serverUrl)
+      ? Math.max(LOCAL_INFLIGHT, advertised ?? 0)
+      : (advertised ?? REMOTE_INFLIGHT_FALLBACK);
   // Per-attempt upload timeout. WITHOUT this, a half-open/slow connection makes
   // `fetch` hang FOREVER (Node fetch has no default timeout) — observed as a
   // sync stuck for 20-40min at idle CPU with zero progress. With it, a hung

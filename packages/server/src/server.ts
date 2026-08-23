@@ -59,6 +59,7 @@ import billingRouter from './routes/billing.js';
 import installRouter from './routes/install.js';
 import dataControlsRouter from './routes/data-controls.js';
 import { capabilities, isServerMode } from './util/mode.js';
+import { advertisedLimits } from './middleware/rate-limit-config.js';
 import { cliRelease } from './util/cli-release.js';
 import { generateMissingSummariesAllTenants, serverSummaryConfig } from './services/summary-worker.js';
 import { sweepSyntheticRetention, sweepLapsedRetention, lapsedRetentionDays } from './services/retention.js';
@@ -390,7 +391,7 @@ if (authProviderName() === 'better-auth') {
 // because it is anonymous and it sends mail.
 app.use('/api/contact', rl('sensitive'), contactRouter);
 app.use('/api/licence', licenceRouter);
-app.get('/api/capabilities', (_req, res) => res.json({ ...capabilities(), cli: cliRelease(), authProvider: authProviderName(), oidcIssuer: process.env.OIDC_ISSUER || null, socialProviders: socialProviderNames() }));
+app.get('/api/capabilities', (_req, res) => res.json({ ...capabilities(), cli: cliRelease(), authProvider: authProviderName(), oidcIssuer: process.env.OIDC_ISSUER || null, socialProviders: socialProviderNames(), limits: advertisedLimits() }));
 
 // Self-authenticating surfaces, mounted BEFORE tenantAuth:
 //   /api/sync       — agent (device) token; resolves + scopes its own tenant.

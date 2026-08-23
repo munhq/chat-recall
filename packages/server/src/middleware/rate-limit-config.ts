@@ -52,9 +52,47 @@ export const CLASSES: Record<RlClass, ClassConfig> = {
   'read-light':{ capacity: num('RL_READLIGHT_BURST', 300), refillPerSec: num('RL_READLIGHT_RPS', 50), identity: 'tenant' },
   'read-heavy':{ capacity: num('RL_READHEAVY_BURST', 60),  refillPerSec: num('RL_READHEAVY_RPS', 5),  identity: 'tenant', concurrency: num('RL_READHEAVY_CONC', 8) },
   'write-light':{capacity: num('RL_WRITELIGHT_BURST', 120),refillPerSec: num('RL_WRITELIGHT_RPS', 20), identity: 'tenant' },
+  // INGEST CONCURRENCY, and why these numbers moved.
+  //
+  // They were 4 global / 2 per tenant. The collector ships with an in-flight
+  // budget of 4, so every walk generated 429s BY CONSTRUCTION: the client asked
+  // for exactly twice what a tenant was allowed. Measured on one machine's log:
+  // 3,526 × HTTP 429 plus 1,772 `fetch failed`, still arriving at 26–38/hour.
+  // Nothing was overloaded — two numbers disagreed.
+  //
+  // The global cap was worse than the per-tenant one. These semaphores are
+  // PER PROCESS (see globalSem in rate-limit.ts), so with 2 replicas the whole
+  // service could serve 8 concurrent ingests across ALL customers. Three
+  // tenants backfilling at once starved each other. That is a ceiling on paying
+  // customers, not a safety valve.
+  //
+  // The real ceiling is CPU, not this counter: each API pod is limited to 1
+  // core, and ingest does chunking + FTS insert per row. Raising the cap lets a
+  // tenant keep the pipe full and lets the queue form in one place instead of
+  // bouncing off a 429; it does NOT create throughput that the pod does not
+  // have. Give the pod more CPU to go faster.
+  //
+  // The client no longer hardcodes its side: /api/capabilities advertises
+  // `limits.ingestConcurrencyPerTenant` and the collector clamps to it, so
+  // these stay tunable from the server without shipping a CLI release.
   ingest:      { capacity: num('RL_INGEST_BURST', 100000), refillPerSec: num('RL_INGEST_RPS', 5000),  identity: 'tenant',
-                 concurrency: num('RL_INGEST_CONC', 4), concurrencyPerTenant: num('RL_INGEST_CONC_TENANT', 2) },
+                 concurrency: num('RL_INGEST_CONC', 32), concurrencyPerTenant: num('RL_INGEST_CONC_TENANT', 6) },
 };
+
+/**
+ * What a client may safely run in parallel against /api/sync.
+ *
+ * Advertised on /api/capabilities so the collector's in-flight budget tracks
+ * the server instead of a constant compiled into whatever CLI version the user
+ * happens to have. A free tenant's slots are scaled down at request time
+ * (scaleConcurrency, floor 1), so this is the ceiling, not a promise.
+ */
+export function advertisedLimits(): { ingestConcurrencyPerTenant: number; enforced: boolean } {
+  return {
+    ingestConcurrencyPerTenant: CLASSES.ingest.concurrencyPerTenant ?? 1,
+    enforced: ENFORCE,
+  };
+}
 
 /** Enforce (return 429) vs report-only (log + allow). Default: report-only. */
 export const ENFORCE = process.env.RATE_LIMIT_ENFORCE === '1' || process.env.RATE_LIMIT_ENFORCE === 'true';
