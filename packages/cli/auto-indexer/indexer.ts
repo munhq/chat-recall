@@ -57,7 +57,7 @@ declare const __CLI_VERSION__: string;
 const CLI_VERSION = typeof __CLI_VERSION__ === 'string' ? __CLI_VERSION__ : '0.0.0';
 import { existsSync, readFileSync, statSync } from 'fs';
 import { flushLedger } from '../src/sync-ledger.js';
-import { readCollectorHealth, writeCollectorHealth, collectorHealthPath, type TargetHealth } from '@chat-recall/engine/core/collector-health.js';
+import { readCollectorHealth, writeCollectorHealth, updateCollectorHealth, collectorHealthPath, type TargetHealth } from '@chat-recall/engine/core/collector-health.js';
 
 const DEBOUNCE_MS = 5000;  // coalesce a burst of file events into one flush
 
@@ -505,7 +505,9 @@ function recentStarts(): number[] {
 
 function publishHealth(): void {
   const starts = recentStarts();
-  writeCollectorHealth(Object.assign({
+  // MERGE, do not overwrite. The sync walk writes `progress` into this same
+  // file; a plain write from the heartbeat would erase it every 60 seconds.
+  updateCollectorHealth(Object.assign({
     v: 1 as const,
     updatedAt: Date.now(),
     startedAt: PROC_START,
