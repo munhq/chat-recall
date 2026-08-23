@@ -133,6 +133,9 @@ export interface SourcesEnabled {
   codex:    { sessions: boolean; plugins: boolean; skills: boolean;
               agents: boolean; commands: boolean };
   agy:      { sessions: boolean; plans: boolean };
+  // No `rules` flag: `.cursor/rules/*.mdc` has no MemorySource reading it yet,
+  // and a toggle that switches nothing is worse than an absent one.
+  cursor:   { sessions: boolean; skills: boolean; agents: boolean; commands: boolean };
   // `shared` covers the tool-neutral ~/.agents/{skills} standard read by all tools.
   shared:   { skills: boolean };
   common:   { mcps: boolean; agentMd: boolean };
@@ -145,6 +148,9 @@ export interface SourceSettings {
   codexHome?: string;
   opencodeDbPath?: string;
   agyHome?: string;
+  cursorHome?: string;
+  /** Cursor IDE user-data root (`~/.config/Cursor`) — the desktop app, not the CLI. */
+  cursorIdeHome?: string;
   /** Additional Claude home directories (multi-install: ~/.claude-work, …). */
   extraClaudeHomes?: string[];
   /**
@@ -244,7 +250,7 @@ export interface SyncSettings {
    */
   pathsCleartext?: boolean;
   /** Tools whose findings/meta never leave the device. */
-  excludeTools: Array<'claude' | 'gemini' | 'codex' | 'opencode' | 'agy'>;
+  excludeTools: Array<'claude' | 'gemini' | 'codex' | 'opencode' | 'agy' | 'cursor'>;
   /** Project paths whose findings/meta never leave the device. */
   excludeProjects: string[];
   /**
@@ -387,6 +393,7 @@ function defaultSourcesEnabled(): SourcesEnabled {
     codex:    { sessions: true, plugins: true, skills: true,
                 agents: true, commands: true },
     agy:      { sessions: true, plans: true },
+    cursor:   { sessions: true, skills: true, agents: true, commands: true },
     shared:   { skills: true },
     common:   { mcps: true, agentMd: true },
   };
@@ -458,7 +465,7 @@ function defaultTeam(): TeamSettings {
     },
     vault: {
       enabled: false,
-      syncTools: ['claude', 'gemini', 'codex', 'opencode', 'cursor'],
+      syncTools: ['claude', 'gemini', 'codex', 'opencode', 'agy', 'cursor'],
       excludeProjects: [],
     },
   };
@@ -491,6 +498,7 @@ function mergeSources(base: SourceSettings, partial?: Partial<SourceSettings>): 
     opencode: { ...base.enabled.opencode, ...(partial.enabled?.opencode ?? {}) },
     codex:    { ...base.enabled.codex,    ...(partial.enabled?.codex    ?? {}) },
     agy:      { ...base.enabled.agy,      ...(partial.enabled?.agy      ?? {}) },
+    cursor:   { ...base.enabled.cursor,   ...(partial.enabled?.cursor   ?? {}) },
     shared:   { ...base.enabled.shared,   ...(partial.enabled?.shared   ?? {}) },
     common:   { ...base.enabled.common,   ...(partial.enabled?.common   ?? {}) },
   };
@@ -500,6 +508,8 @@ function mergeSources(base: SourceSettings, partial?: Partial<SourceSettings>): 
     codexHome:        partial.codexHome        ?? base.codexHome,
     opencodeDbPath:   partial.opencodeDbPath   ?? base.opencodeDbPath,
     agyHome:          partial.agyHome          ?? base.agyHome,
+    cursorHome:       partial.cursorHome       ?? base.cursorHome,
+    cursorIdeHome:    partial.cursorIdeHome    ?? base.cursorIdeHome,
     extraClaudeHomes: partial.extraClaudeHomes ?? base.extraClaudeHomes,
     approvedHomes:    partial.approvedHomes    ?? base.approvedHomes,
     declinedHomes:    partial.declinedHomes    ?? base.declinedHomes,

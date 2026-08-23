@@ -4,7 +4,7 @@
  * chat-recall ships a set of SKILL.md skills (../skills, bundled in the npm
  * package) that teach any agent when/how to use the recall_* MCP tools. Every
  * supported tool reads the SAME SKILL.md shape from its own skills dir, so one
- * set covers Claude Code, Gemini, Codex, OpenCode and Antigravity. We drop the
+ * set covers Claude Code, Gemini, Codex, OpenCode, Antigravity and Cursor. We drop the
  * files straight into each tool's dir (the only mechanism that works across all
  * of them — Claude *plugins* are Claude-only).
  *
@@ -22,6 +22,8 @@ import { geminiBackend } from '@chat-recall/engine/core/backends/gemini.js';
 import { opencodeBackend } from '@chat-recall/engine/core/backends/opencode.js';
 import { codexBackend } from '@chat-recall/engine/core/backends/codex.js';
 import { agyBackend } from '@chat-recall/engine/core/backends/agy.js';
+import { cursorBackend } from '@chat-recall/engine/core/backends/cursor.js';
+import { cursorHomeDir } from '@chat-recall/engine/core/tool-paths.js';
 // NOTE: Antigravity (agy) has no skills dir of its own — it reads Gemini's
 // ~/.gemini/skills (same decision as team-merge.installPathFor). So the Gemini
 // target covers agy; we surface agy only for the "available" hint.
@@ -160,6 +162,9 @@ export function skillTargets(): SkillTarget[] {
     { id: 'gemini',   label: 'Gemini CLI / Antigravity', dir: geminiBackend.skillsDir(), available: geminiBackend.isAvailable() || agyBackend.isAvailable() },
     { id: 'codex',    label: 'Codex',        dir: codexBackend.skillsDir(),    available: codexBackend.isAvailable() },
     { id: 'opencode', label: 'OpenCode',     dir: opencodeBackend.skillsDir(), available: opencodeBackend.isAvailable() },
+    // Cursor DOES have its own dir (~/.cursor/skills). `skills-cursor` next to
+    // it is Cursor's bundled set — read-only, never an install target.
+    { id: 'cursor',   label: 'Cursor',       dir: join(cursorHomeDir(), 'skills'), available: cursorBackend.isAvailable() },
   ];
 }
 

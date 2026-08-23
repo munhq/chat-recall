@@ -27,7 +27,7 @@ for (const view of VIEWS) {
     await expect(sidebar).toBeVisible({ timeout: 10_000 });
 
     // Source rows present in every view.
-    for (const tool of ['all', 'claude', 'gemini', 'opencode', 'codex']) {
+    for (const tool of ['all', 'claude', 'gemini', 'opencode', 'codex', 'agy', 'cursor']) {
       await expect(sidebar.getByTestId(`tool-filter-${tool}`)).toBeVisible();
     }
 

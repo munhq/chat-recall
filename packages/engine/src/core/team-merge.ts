@@ -35,6 +35,9 @@ import { teamInstallsList, teamInstallsRecord, teamInstallsForget, type TeamInst
 import { claudeBackend } from './backends/claude.js';
 import { geminiBackend } from './backends/gemini.js';
 import { opencodeBackend } from './backends/opencode.js';
+import { agyBackend } from './backends/agy.js';
+import { cursorBackend } from './backends/cursor.js';
+import { cursorHomeDir } from './tool-paths.js';
 import { codexBackend } from './backends/codex.js';
 
 /**
@@ -42,7 +45,10 @@ import { codexBackend } from './backends/codex.js';
  * Returns null when the type doesn't apply to that tool (e.g. 'hook'
  * only meaningful for Claude — we don't fan-hooks out cross-tool).
  */
-function installPathFor(art: { type: TeamArtifactType; name: string }, tool: 'claude' | 'agy' | 'gemini' | 'opencode' | 'codex'): string | null {
+/** Tools a team artifact can install into. One list, not five inline copies. */
+type MergeTool = 'claude' | 'agy' | 'gemini' | 'opencode' | 'codex' | 'cursor';
+
+function installPathFor(art: { type: TeamArtifactType; name: string }, tool: MergeTool): string | null {
   // SKILL.md naming: every tool with a skills concept stores them as
   // `<dir>/<name>/SKILL.md` — keeps the in-tool layout uniform with
   // what the upstream tools expect.
@@ -55,6 +61,7 @@ function installPathFor(art: { type: TeamArtifactType; name: string }, tool: 'cl
         case 'opencode': return join(opencodeBackend.skillsDir(), art.name, 'SKILL.md');
         // User skills go to ~/.codex/skills (NOT .system, which is OpenAI's bundle).
         case 'codex':    return join(codexBackend.skillsDir(),    art.name, 'SKILL.md');
+        case 'cursor':   return join(cursorHomeDir(), 'skills',   art.name, 'SKILL.md');
       }
       break;
     case 'agent':
@@ -79,6 +86,7 @@ function installPathFor(art: { type: TeamArtifactType; name: string }, tool: 'cl
         case 'agy':
         case 'gemini':   return null;  // Gemini/agy plans live per-session under tmp/
         case 'codex':    return null;
+        case 'cursor':   return null;  // Cursor has no plans concept
       }
       break;
     case 'instructions':
@@ -106,15 +114,20 @@ function installPathFor(art: { type: TeamArtifactType; name: string }, tool: 'cl
  * `cross_tool` fans out to all installed tools the type applies to.
  * Tool-specific artifacts only install if that tool is detected.
  */
-function targetsFor(art: { tool: TeamArtifactTool; type: TeamArtifactType }): Array<'claude' | 'gemini' | 'opencode' | 'codex'> {
-  const installed = {
+function targetsFor(art: { tool: TeamArtifactTool; type: TeamArtifactType }): MergeTool[] {
+  // Typed as a full Record so a tool added to MergeTool without a probe here
+  // is a compile error. It used to be an untyped literal missing `agy`, which
+  // made every agy-tool artifact resolve to `undefined` and install nowhere.
+  const installed: Record<MergeTool, boolean> = {
     claude:   claudeBackend.isAvailable(),
     gemini:   geminiBackend.isAvailable(),
     opencode: opencodeBackend.isAvailable(),
     codex:    codexBackend.isAvailable(),
+    agy:      agyBackend.isAvailable(),
+    cursor:   cursorBackend.isAvailable(),
   };
   if (art.tool === 'cross_tool') {
-    return (Object.entries(installed) as Array<['claude' | 'gemini' | 'opencode' | 'codex', boolean]>)
+    return (Object.entries(installed) as Array<[MergeTool, boolean]>)
       .filter(([_, on]) => on).map(([t]) => t);
   }
   return installed[art.tool] ? [art.tool] : [];
@@ -192,7 +205,7 @@ export async function mergePullResult(opts: {
       continue;
     }
     for (const row of rows) {
-      const path = installPathFor({ type: row.artifactType, name: row.artifactName }, row.tool as 'claude' | 'agy' | 'gemini' | 'opencode' | 'codex');
+      const path = installPathFor({ type: row.artifactType, name: row.artifactName }, row.tool as MergeTool);
       if (!path) continue;
       try {
         if (existsSync(path)) rmSync(path, { force: true });

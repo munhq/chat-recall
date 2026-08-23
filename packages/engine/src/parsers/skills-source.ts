@@ -38,11 +38,15 @@ import type {
 import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
 import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
 import { codexBackend as CODEX } from '../core/backends/codex.js';
+import { cursorHomeDir } from '../core/tool-paths.js';
 import { isSourceEnabled } from '../core/settings.js';
 
 const MAX_CHUNK_CHARS = 2000;
 
-export type SkillTool = 'shared' | 'claude' | 'gemini' | 'opencode' | 'codex';
+// No 'agy': Antigravity has no skills dir of its own and reads Gemini's
+// ~/.gemini/skills, so the gemini root already covers it (see team-merge's
+// installPathFor, which maps agy → geminiBackend.skillsDir()).
+export type SkillTool = 'shared' | 'claude' | 'gemini' | 'opencode' | 'codex' | 'cursor';
 
 interface SkillRoot {
   path: string;
@@ -81,6 +85,11 @@ function resolveRoots(): SkillRoot[] {
     // read-only bundle and is scanned separately as a distinct root.
     all.push({ path: CODEX.skillsDir(), tool: 'codex', skipChildren: ['.system'] });
     all.push({ path: CODEX.skillsSystemDir(), tool: 'codex', readonly: true });
+  }
+  if (isSourceEnabled('cursor', 'skills')) {
+    // `skills-cursor` is Cursor's own bundle — read-only, never a sync target.
+    all.push({ path: join(cursorHomeDir(), 'skills'), tool: 'cursor' });
+    all.push({ path: join(cursorHomeDir(), 'skills-cursor'), tool: 'cursor', readonly: true });
   }
   return all.filter(r => existsSync(r.path));
 }

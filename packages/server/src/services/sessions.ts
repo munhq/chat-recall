@@ -46,7 +46,7 @@ export interface SessionInfo {
   filePath: string;
   firstPrompt?: string;
   summary?: string;
-  tool?: string; // 'claude' | 'gemini' | 'opencode' | 'codex'
+  tool?: string; // any AiTool: claude | gemini | opencode | codex | agy | cursor
   /** Single-prompt invocation (batch/bot run). UI shows a "one-shot" badge. */
   oneShot?: boolean;
   /**
@@ -278,7 +278,7 @@ export interface SessionIndexEntry {
   /** Logical cleartext project id, passed through to the hydrated SessionInfo. */
   projectId?: string;
   mtime: number;
-  tool: 'claude' | 'codex' | 'gemini' | 'opencode' | 'agy';
+  tool: 'claude' | 'codex' | 'gemini' | 'opencode' | 'agy' | 'cursor';
   filePath?: string;
   /** Pre-computed when available (Claude sessions-index.json). Used to
    *  short-circuit hydration when the index already has it. */
@@ -286,6 +286,16 @@ export interface SessionIndexEntry {
   /** Single-prompt invocation (batch/bot run) — synced flag from extra_json. */
   oneShot?: boolean;
 }
+
+/**
+ * Tools whose sessions reach the local listing only through MemoryStore.
+ *
+ * Claude and Codex are walked from the filesystem earlier in this module, so
+ * they are deliberately absent — including them would double-count. Every
+ * other backend has no per-session file to walk, so a tool missing from this
+ * set is silently dropped from `recent` and from the project counts.
+ */
+const STORE_BACKED_TOOLS = new Set<SessionIndexEntry['tool']>(['gemini', 'opencode', 'agy', 'cursor']);
 
 /**
  * Build the light session index across all tools — single pass, no
@@ -374,8 +384,10 @@ export async function getSessionIndex(): Promise<SessionIndexEntry[]> {
       for (const item of items) {
         let extra: Record<string, unknown> = {};
         try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
-        const tool = extra.tool as 'gemini' | 'opencode' | 'agy' | undefined;
-        if (tool !== 'gemini' && tool !== 'opencode' && tool !== 'agy') continue;
+        // Claude and Codex are walked from the filesystem above; the rest have
+        // no per-session file of their own and only exist in MemoryStore.
+        const tool = extra.tool as SessionIndexEntry['tool'] | undefined;
+        if (!tool || !STORE_BACKED_TOOLS.has(tool)) continue;
         out.push({
           sessionId: item.id,
           projectPath: item.project_path || '',
@@ -585,8 +597,8 @@ export async function getSessionProjectCounts(): Promise<{ projects: Record<stri
       for (const item of items) {
         let extra: Record<string, unknown> = {};
         try { extra = JSON.parse(item.extra_json || '{}'); } catch {}
-        const tool = extra.tool as string | undefined;
-        if (!serverMode && tool !== 'gemini' && tool !== 'opencode' && tool !== 'agy') continue;
+        const tool = extra.tool as SessionIndexEntry['tool'] | undefined;
+        if (!serverMode && (!tool || !STORE_BACKED_TOOLS.has(tool))) continue;
         const p = item.project_path || '';
         if (p) projects[p] = (projects[p] || 0) + 1;
         total++;

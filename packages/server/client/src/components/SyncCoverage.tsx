@@ -15,7 +15,7 @@ import {
 } from '../services/api';
 
 const TOOL_LABELS: Record<string, string> = {
-  claude: 'Claude Code', gemini: 'Gemini CLI', opencode: 'OpenCode', codex: 'Codex', agy: 'Antigravity',
+  claude: 'Claude Code', gemini: 'Gemini CLI', opencode: 'OpenCode', codex: 'Codex', agy: 'Antigravity', cursor: 'Cursor',
 };
 
 /** Order + labels for the source types worth surfacing (rest fold into "other"). */
