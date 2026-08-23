@@ -27,7 +27,7 @@ interface SidebarProps {
   setToolFilter: (t: string) => void;
   extraSections?: SidebarSection[];
   view?: string;
-  setView?: (v: 'home' | 'projects' | 'search' | 'memory' | 'tasks' | 'toolkit' | 'security' | 'settings' | 'account' | 'admin' | 'team') => void;
+  setView?: (v: 'home' | 'projects' | 'search' | 'memory' | 'tasks' | 'toolkit' | 'security' | 'health' | 'settings' | 'account' | 'admin' | 'team') => void;
   /** Views this deployment supports (/api/capabilities). Absent = all. */
   enabledViews?: Set<string>;
 }
@@ -37,7 +37,7 @@ interface SidebarProps {
 // Every destination is visible; nothing hides behind a "More" overflow.
 // Order = the daily loop: the spine (Overview → Conversations → Projects)
 // first, then the intelligence surfaces, then Security & Deployment last.
-type NavId = 'home' | 'search' | 'projects' | 'memory' | 'tasks' | 'toolkit' | 'security' | 'team';
+type NavId = 'home' | 'search' | 'projects' | 'memory' | 'tasks' | 'toolkit' | 'security' | 'health' | 'team';
 const NAV_ITEMS: Array<{ id: NavId; label: string; icon: string }> = [
   { id: 'home', label: 'Overview', icon: 'home' },
   { id: 'search', label: 'Conversations', icon: 'message' },
@@ -50,6 +50,11 @@ const NAV_ITEMS: Array<{ id: NavId; label: string; icon: string }> = [
   { id: 'team', label: 'Team', icon: 'grid' },
   { id: 'toolkit', label: 'Toolkit', icon: 'terminal' },
   { id: 'security', label: 'Security', icon: 'shield' },
+  // Last, and deliberately present: the collector's health had no surface at
+  // all — it lived in a Postgres table, a log file on the user's laptop and
+  // `chat-recall doctor`. The fleet panel existed but was buried inside
+  // Account, which nobody opens to ask whether their sync is working.
+  { id: 'health', label: 'System health', icon: 'server' },
 ];
 
 // Tool source list comes from the central tools module — adding a tool
