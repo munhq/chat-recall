@@ -44,7 +44,7 @@ import {
 } from '../imports.js';
 import type { SourceType } from '../imports.js';
 import { dropFuzzyFindings } from '@chat-recall/engine/core/secret-precision.js';
-import { syncAdmission, recordSyncUsage, recordSyncPresence } from '../util/billing.js';
+import { isEntitled, syncAdmission, recordSyncUsage, recordSyncPresence } from '../util/billing.js';
 import { notifyVerifiedSecrets, type VerifiedHit } from '../services/notify.js';
 import { ingestGate } from '../middleware/rate-limit.js';
 import { chunksFromTurns, subagentChunks, type EnvSubagent } from '../services/session-chunks.js';
@@ -831,7 +831,17 @@ router.post('/', async (req, res) => {
     // quota. Never let the meter fail the sync that already succeeded.
     try { await recordSyncUsage(agent.tenant, batchBytes); }
     catch (err) { log.warn(`sync usage record failed for ${agent.tenant}: ${err instanceof Error ? err.message : String(err)}`); }
-    res.json({ ok: true, ...result, tenant: agent.tenant, ack_at: new Date().toISOString(), cli: cliRelease() });
+    // TELL THE CLIENT WHETHER IT MAY REPORT TELEMETRY. It cannot know its own
+    // plan — the entitlement lives in the control plane — so it is told here, on
+    // a response it already parses, and defaults to NOT eligible when an older
+    // server says nothing. The client ALSO honours the user's own opt-out, which
+    // this cannot override.
+    let telemetry = false;
+    try { telemetry = await isEntitled(agent.tenant); } catch { telemetry = false; }
+    res.json({
+      ok: true, ...result, tenant: agent.tenant, ack_at: new Date().toISOString(),
+      cli: cliRelease(), telemetry,
+    });
   } catch (e) {
     log.error({ err: e }, 'sync ingest error');
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
