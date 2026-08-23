@@ -32,6 +32,7 @@ import type {
 import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
 import { codexBackend as CODEX } from '../core/backends/codex.js';
 import { isSourceEnabled } from '../core/settings.js';
+import { cursorHomeDir } from '../core/tool-paths.js';
 
 interface McpConfig {
   command?: string;
@@ -114,6 +115,22 @@ export class McpsSource implements MemorySource {
       scope: 'user',
     });
 
+    // Cursor — ~/.cursor/mcp.json, same `mcpServers` shape as Claude.
+    const cursorMcp = join(cursorHomeDir(), 'mcp.json');
+    yield* this.fromObject(readJson(cursorMcp)?.mcpServers, {
+      tool: 'cursor',
+      filePath: cursorMcp,
+      scope: 'user',
+    });
+
+    // Antigravity — its own mcp_config.json under the Gemini config dir.
+    const agyMcp = join(home, '.gemini', 'config', 'mcp_config.json');
+    yield* this.fromObject(readJson(agyMcp)?.mcpServers, {
+      tool: 'agy',
+      filePath: agyMcp,
+      scope: 'user',
+    });
+
     // Codex — config.toml [mcp_servers.*] + per-plugin .mcp.json files
     yield* this.fromCodexToml(CODEX.configToml());
     const pluginsDir = CODEX.pluginsDir();
@@ -131,7 +148,7 @@ export class McpsSource implements MemorySource {
 
   private async *fromObject(
     obj: Record<string, McpConfig> | undefined | null,
-    ctx: { tool: 'claude' | 'opencode' | 'gemini' | 'codex'; filePath: string; scope: string },
+    ctx: { tool: 'claude' | 'opencode' | 'gemini' | 'codex' | 'agy' | 'cursor'; filePath: string; scope: string },
   ): AsyncGenerator<MemoryItem> {
     if (!obj || typeof obj !== 'object') return;
 

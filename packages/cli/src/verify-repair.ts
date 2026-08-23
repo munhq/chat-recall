@@ -36,7 +36,7 @@ export function forceFullResync(server: string, sessionIds: string[]): number {
 
   for (const key of Object.keys(data)) {
     // Ledger keys are prefixed ids for non-Claude tools; match either form.
-    const bare = key.replace(/^(opencode_|gemini_|codex_|agy_)/, '');
+    const bare = key.replace(/^(opencode_|gemini_|codex_|agy_|cursor_)/, '');
     if (!wanted.has(key) && !wanted.has(bare)) continue;
     const row = data[key];
     if (typeof row !== 'object' || row === null) { delete data[key]; cleared++; continue; }

@@ -30,12 +30,13 @@ import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
 import { opencodeBackend as OPENCODE } from '../core/backends/opencode.js';
 import { codexBackend as CODEX } from '../core/backends/codex.js';
 import { isSourceEnabled } from '../core/settings.js';
+import { cursorHomeDir } from '../core/tool-paths.js';
 import { parseFrontmatter, parseScalarToml } from '../core/toolkit-format.js';
 import { decodeProjectDirName } from '../core/project-dir-name.js';
 
 const MAX_CHUNK_CHARS = 2000;
 
-type AgentTool = 'claude' | 'gemini' | 'opencode' | 'codex';
+type AgentTool = 'claude' | 'gemini' | 'opencode' | 'codex' | 'cursor';
 
 interface AgentRoot {
   path: string;
@@ -93,6 +94,9 @@ export class SubagentsSource implements MemorySource {
     }
     if (isSourceEnabled('codex', 'agents')) {
       roots.push({ path: CODEX.agentsDir(), tool: 'codex', scope: 'user', projectPath: '', format: 'toml' });
+    }
+    if (isSourceEnabled('cursor', 'agents')) {
+      roots.push({ path: join(cursorHomeDir(), 'agents'), tool: 'cursor', scope: 'user', projectPath: '', format: 'md' });
     }
     return roots;
   }

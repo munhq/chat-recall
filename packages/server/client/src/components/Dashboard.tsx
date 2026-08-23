@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Icon, Chip, MetricCard, Card, Avatar, IconButton } from './primitives';
 import { getAnalytics, getPatterns, getSyncStatus, getSecretsSummary, type AnalyticsData, type PatternsResponse, type SyncStatus, type SecretsSummary } from '../services/api';
 
-type InsightsToolFilter = 'all' | 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy';
+type InsightsToolFilter = 'all' | 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy' | 'cursor';
 
 function fmtTokens(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
@@ -58,7 +58,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Sidebar drives the source filter — coerce unknown strings to 'all'.
-  const toolFilter: InsightsToolFilter = (['all', 'claude', 'gemini', 'opencode', 'codex', 'agy'] as const).includes(toolFilterProp as any)
+  const toolFilter: InsightsToolFilter = (['all', 'claude', 'gemini', 'opencode', 'codex', 'agy', 'cursor'] as const).includes(toolFilterProp as any)
     ? (toolFilterProp as InsightsToolFilter)
     : 'all';
 

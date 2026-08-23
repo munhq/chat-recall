@@ -25,13 +25,17 @@ import { claudeBackend } from './backends/claude.js';
 import { geminiBackend } from './backends/gemini.js';
 import { codexBackend } from './backends/codex.js';
 import { agyBackend } from './backends/agy.js';
+import { cursorBackend } from './backends/cursor.js';
+import { listChatsIn, transcriptPath } from './backends/cursor-store.js';
+import { cursorChatDirs, cursorHomeDir } from './tool-paths.js';
 import { loadSettings } from './settings.js';
 import { decodeProjectDirName } from './project-dir-name.js';
 
 export type VaultTool = 'claude' | 'gemini' | 'codex' | 'opencode' | 'cursor' | 'agy';
 
 export interface VaultSourceFile {
-  /** chat-recall-style session id (`<uuid>` for claude, `gemini_<uuid>`, `codex_<basename>`). */
+  /** chat-recall-style session id: bare `<uuid>` for claude, `<tool>_<id>` for
+   *  gemini / codex / opencode / agy / cursor. */
   sessionId: string;
   tool: VaultTool;
   /** Absolute path to the source file. */
@@ -53,12 +57,11 @@ export function* walkVaultSources(): Generator<VaultSourceFile> {
   if (include.has('gemini')   && geminiBackend.isAvailable()) yield* walkGemini();
   if (include.has('codex')    && codexBackend.isAvailable())  yield* walkCodex();
   if (include.has('agy')      && agyBackend.isAvailable())    yield* walkAgy();
-  // opencode + cursor (SQLite-based) are tier C — handled by a separate
-  // module that snapshots the SQLite via the online backup API and
-  // synthesizes JSONL per session. Stub here so the discovery path is
-  // complete even before that module lands.
+  if (include.has('cursor')   && cursorBackend.isAvailable()) yield* walkCursor();
+  // opencode is tier C — its sessions are ROWS in one shared SQLite file with
+  // no per-session file to back up, so it needs a module that snapshots the DB
+  // via the online backup API and synthesizes JSONL per session.
   // if (include.has('opencode') && opencodeBackend.isAvailable()) yield* walkOpenCode();
-  // if (include.has('cursor'))                                    yield* walkCursor();
 }
 
 function safeStat(path: string): { mtimeMs: number; size: number } | null {
@@ -113,6 +116,34 @@ function* walkGemini(): Generator<VaultSourceFile> {
       // Gemini session ids in chat-recall use a `gemini_` prefix.
       const base = f.replace(/^session-/, '').replace(/\.(jsonl?)$/, '');
       yield { sessionId: `gemini_${base}`, tool: 'gemini', path, mtimeMs: s.mtimeMs, sizeBytes: s.size };
+    }
+  }
+}
+
+/**
+ * Cursor CLI chats.
+ *
+ * Cursor was originally filed alongside OpenCode as "SQLite, needs a snapshot
+ * module". That was wrong: the CLI also writes a plain-JSONL transcript per
+ * chat, so the vault can back up a real file today. The JSONL drops tool
+ * results, but a vault entry is a restorable copy of the conversation, not the
+ * indexing path — the backend still reads `store.db` for that.
+ */
+function* walkCursor(): Generator<VaultSourceFile> {
+  for (const chatsRoot of cursorChatDirs()) {
+    for (const chat of listChatsIn(chatsRoot)) {
+      const path = transcriptPath(cursorHomeDir(), chat.projectPath, chat.chatId);
+      if (!path) continue;
+      const s = safeStat(path);
+      if (!s) continue;
+      yield {
+        sessionId: `cursor_${chat.chatId}`,
+        tool: 'cursor',
+        path,
+        mtimeMs: s.mtimeMs,
+        sizeBytes: s.size,
+        projectPath: chat.projectPath || undefined,
+      };
     }
   }
 }

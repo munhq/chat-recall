@@ -66,6 +66,7 @@ function legacyAutoSyncedHomes(): string[] {
     { base: join(home, '.codex'),  marker: 'sessions' },
     { base: join(home, '.gemini', 'antigravity-cli'), marker: 'brain' },
     { base: join(home, '.local', 'share', 'opencode'), marker: 'opencode.db' },
+    { base: join(home, '.cursor'), marker: 'chats' },
   ];
 
   for (const { base, marker } of bases) {
@@ -123,6 +124,7 @@ function primaryHomes(): string[] {
     env.CHAT_RECALL_GEMINI_HOME || s?.geminiHome || join(home, '.gemini'),
     env.CHAT_RECALL_CODEX_HOME  || s?.codexHome  || join(home, '.codex'),
     env.CHAT_RECALL_AGY_HOME    || s?.agyHome    || join(home, '.gemini', 'antigravity-cli'),
+    env.CHAT_RECALL_CURSOR_HOME || s?.cursorHome || join(home, '.cursor'),
     dirOf(opencodeDb),
   ];
   return candidates.map(normalizeHomePath);

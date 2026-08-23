@@ -42,13 +42,13 @@ Freshness gate (willBuild):
   → skip
 - append-eligible: `ack.v >= EXTRACTOR_VERSION && fileSize > ack.s && ack.o > 0`
   → APPEND sync from offset `ack.o`
-- everything else (version bump, file shrank, first sync, OpenCode) → FULL sync
+- everything else (version bump, file shrank, first sync, OpenCode, Cursor) → FULL sync
 
 ### 2. ToolBackend — append-only capability
 
 New optional methods on the backend interface (tool-backend.ts):
-- `isAppendOnly(): boolean` — true for Claude/Gemini/Codex (JSONL files); false
-  for OpenCode (SQLite, no byte offset).
+- `isAppendOnly(): boolean` — true for Claude/Gemini/Codex/Antigravity (JSONL
+  files); false for OpenCode and Cursor (see below).
 - `readFromOffset(prefixedId, offset): Promise<{ text: string; newOffset: number }>`
   — reads file bytes from `offset` to EOF and returns the tail text + new offset.
   **`newOffset` is the byte position of the LAST newline in the read window, NOT
@@ -145,6 +145,12 @@ derived, telemetry, title, the works).
   session close fixes the seam. Acceptable: tool results are view-only, not
   search-indexed.
 - **OpenCode** (SQLite): never append-eligible; always FULL. No regression.
+- **Cursor**: never append-eligible; always FULL. Two independent reasons. Its
+  primary store is SQLite (a content-addressed blob store for the CLI,
+  `state.vscdb` for the IDE), so there is no byte offset to resume from. And its
+  fallback JSONL is REWRITTEN on every resume, not appended — measured: a 5-line
+  transcript became a 9-line one with the original terminator gone. Treating it
+  as append-only would re-ship the whole conversation as duplicate tail chunks.
 - **Torn trailing line**: a tick firing mid-write reads a partial last JSONL
   line. `readFromOffset` returns `newOffset` at the last `\n`, so the partial
   line is excluded this tick and re-read whole next tick. No misalignment.

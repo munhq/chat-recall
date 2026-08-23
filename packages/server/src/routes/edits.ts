@@ -71,7 +71,7 @@ async function getCachedTimeline(opts: {
     sinceMs: opts.sinceMs,
     pattern: opts.pattern,
     projectFilter: opts.projectFilter,
-    tools: opts.tools as ('claude' | 'agy' | 'gemini' | 'opencode' | 'codex')[] | undefined,
+    tools: opts.tools as ('claude' | 'agy' | 'gemini' | 'opencode' | 'codex' | 'cursor')[] | undefined,
     // Server deployments serve synced diff rows only — never live-scan the
     // server host's own filesystem.
     liveFallback: !isServerMode(),
@@ -96,7 +96,7 @@ router.get('/timeline', async (req, res) => {
     const includeReads = (req.query.include_reads as string | undefined) === 'true';
     const groupByRepo = (req.query.group_by_repo as string | undefined) === 'true';
 
-    const validTools = ['claude', 'agy', 'gemini', 'opencode', 'codex'] as const;
+    const validTools = ['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor'] as const;
     type AiTool = typeof validTools[number];
     const toolsParam = (req.query.tools as string | undefined)?.trim();
     const tools: AiTool[] | undefined = toolsParam
@@ -219,7 +219,7 @@ router.get('/summary', async (req, res) => {
     const sinceHours = sinceHoursRaw ? Number(sinceHoursRaw) : 168;
     if (!Number.isFinite(sinceHours) || sinceHours <= 0) return res.status(400).json({ error: 'since_hours must be a positive number' });
     const projectFilter = (req.query.project as string | undefined)?.trim() || undefined;
-    const validTools = ['claude', 'agy', 'gemini', 'opencode', 'codex'] as const;
+    const validTools = ['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor'] as const;
     const toolsParam = (req.query.tools as string | undefined)?.trim();
     const tools = toolsParam ? (toolsParam.split(',').map(t => t.trim().toLowerCase()).filter(t => (validTools as readonly string[]).includes(t))) : undefined;
 

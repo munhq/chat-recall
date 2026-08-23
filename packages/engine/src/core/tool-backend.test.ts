@@ -72,11 +72,15 @@ describe('ToolBackend registry', () => {
     const gemini = makeBackend('gemini', 'gemini_');
     const opencode = makeBackend('opencode', 'opencode_');
     const codex = makeBackend('codex', 'codex_');
-    [claude, gemini, opencode, codex].forEach(registerBackend);
+    const agy = makeBackend('agy', 'agy_');
+    const cursor = makeBackend('cursor', 'cursor_');
+    [claude, gemini, opencode, codex, agy, cursor].forEach(registerBackend);
 
     expect(getBackendForId('gemini_abc')?.id).toBe('gemini');
     expect(getBackendForId('opencode_xyz')?.id).toBe('opencode');
     expect(getBackendForId('codex_q1')?.id).toBe('codex');
+    expect(getBackendForId('agy_d1')?.id).toBe('agy');
+    expect(getBackendForId('cursor_e1')?.id).toBe('cursor');
     expect(getBackendForId('550e8400-e29b-41d4-a716-446655440000')?.id).toBe('claude');
   });
 
@@ -97,10 +101,10 @@ describe('ToolBackend registry', () => {
     expect(listAvailableBackends().map((b) => b.id).sort()).toEqual(['claude', 'opencode']);
   });
 
-  it('production bootstrap registers all five AI tools', async () => {
+  it('production bootstrap registers every AI tool', async () => {
     await bootstrapProduction();
     const ids = listAllBackends().map((b) => b.id).sort();
-    expect(ids).toEqual(['agy', 'claude', 'codex', 'gemini', 'opencode']);
+    expect(ids).toEqual(['agy', 'claude', 'codex', 'cursor', 'gemini', 'opencode']);
   });
 });
 
@@ -130,7 +134,7 @@ describe('registry accessors work on a COLD registry', () => {
     expect(getBackend('claude').id).toBe('claude');
   });
 
-  it.each(['claude', 'gemini', 'opencode', 'codex', 'agy'] as const)(
+  it.each(['claude', 'gemini', 'opencode', 'codex', 'agy', 'cursor'] as const)(
     'getBackend(%s) resolves cold',
     (id) => {
       _resetRegistryForTests();
