@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import UserMenu from './UserMenu';
 import { IconButton, Input, Logo, Button, Avatar } from './primitives';
-import { getSyncStatus } from '../services/api';
+import { getSyncStatus, type SyncStatus } from '../services/api';
 import { getEntitlement } from '../services/api';
 
 type NavView = 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'security' | 'settings' | 'account' | 'connect' | 'admin';
@@ -191,7 +191,10 @@ export default function TopBar({ view, setView, enabledViews, query, setQuery, s
  * the newest session. Trust-by-glance — replaces "is it synced?" arguments.
  */
 export function SyncStatusChip({ refreshSignal }: { refreshSignal?: number }) {
-  const [s, setS] = React.useState<{ sessions: number; rawArchived: number; newestSessionAgeMs: number | null } | null>(null);
+  // The shared SyncStatus type rather than a local restatement of three of its
+  // fields — a hand-copied shape is why adding `progress` to the API did not
+  // reach this component.
+  const [s, setS] = React.useState<SyncStatus | null>(null);
   React.useEffect(() => {
     let dead = false;
     // getSyncStatus goes through the api helper → correct origin + Keycloak
@@ -206,15 +209,30 @@ export function SyncStatusChip({ refreshSignal }: { refreshSignal?: number }) {
   // detail, so they live in the tooltip. A single ok/warn dot + one word keeps
   // the brand zone clean instead of a monospace telemetry chip.
   const fresh = s.newestSessionAgeMs != null && s.newestSessionAgeMs < 120_000;
-  const word = s.newestSessionAgeMs == null ? '—'
+  // A WALK IN FLIGHT OUTRANKS THE AGE. During a first sync the age is large and
+  // says nothing useful — "42m behind" reads as broken when the truth is "still
+  // loading, 62% done". Progress is only present while a walk is actually
+  // running and its report is fresh (the server drops stale ones), so this
+  // replaces the age exactly when the age would mislead.
+  const syncing = s.progress && s.progress.total > 0 ? s.progress : null;
+  const pct = syncing ? Math.min(99, Math.floor((100 * syncing.done) / syncing.total)) : 0;
+  const word = syncing ? `syncing ${pct}%`
+    : s.newestSessionAgeMs == null ? '—'
     : fresh ? 'live'
     : s.newestSessionAgeMs < 3_600_000 ? `${Math.round(s.newestSessionAgeMs / 60_000)}m behind`
     : `${Math.round(s.newestSessionAgeMs / 3_600_000)}h behind`;
-  const dot = fresh ? 'var(--cr-ok-500)' : s.newestSessionAgeMs == null ? 'var(--cr-fg-3)' : 'var(--cr-warn-500)';
+  // Syncing is progress, not a fault, so it does not get the warning colour.
+  const dot = syncing ? 'var(--cr-accent-500, var(--cr-ok-500))'
+    : fresh ? 'var(--cr-ok-500)'
+    : s.newestSessionAgeMs == null ? 'var(--cr-fg-3)'
+    : 'var(--cr-warn-500)';
   return (
     <span
       className="cr-topbar-sync"
-      title={`${s.sessions.toLocaleString()} sessions held · ${s.rawArchived.toLocaleString()} raw-archived · newest data ${word}`}
+      title={syncing
+        ? `Collector is walking ${syncing.total.toLocaleString()} sessions — ${syncing.done.toLocaleString()} considered so far. `
+          + `${s.sessions.toLocaleString()} held · ${s.rawArchived.toLocaleString()} raw-archived`
+        : `${s.sessions.toLocaleString()} sessions held · ${s.rawArchived.toLocaleString()} raw-archived · newest data ${word}`}
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 5,
         padding: '2px 8px 2px 7px', fontSize: 11, fontWeight: 450,
