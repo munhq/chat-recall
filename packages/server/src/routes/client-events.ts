@@ -11,6 +11,7 @@
  */
 import express from 'express';
 import { openPgPool, tenantQuery } from '@chat-recall/engine/core/store/pg-pool.js';
+import { isEntitled } from '../util/billing.js';
 
 const router = express.Router();
 const MAX_BATCH = 50;
@@ -25,6 +26,15 @@ interface InEvent {
 router.post('/', async (req, res) => {
   const tenant = req.tenant;
   if (!tenant) return res.status(401).json({ error: 'no tenant' });
+  // PAYING TENANTS ONLY, enforced HERE and not merely requested of the client.
+  //
+  // The collector also gates itself (telemetry-consent.ts) so a free tenant's
+  // data never leaves the machine, but that is an optimisation: the client is
+  // software on someone else's computer and cannot be the boundary. A free or
+  // lapsed tenant's events are dropped with 204 rather than 402 — this is
+  // fire-and-forget telemetry, and an error would make a collector log a failure
+  // about failing to report failures.
+  if (!(await isEntitled(tenant))) return res.status(204).end();
   const events: InEvent[] = Array.isArray(req.body?.events) ? req.body.events.slice(0, MAX_BATCH) : [];
   if (!events.length) return res.json({ ok: true, ingested: 0 });
   // The client can't know its own device id — the id lives on the token, which

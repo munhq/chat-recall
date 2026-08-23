@@ -80,6 +80,8 @@ import { gzipSync } from 'zlib';
 import { scanPool } from './scan-pool.js';
 import { isPrivateHost, transportRisk, assertTransportSafe } from './transport-safety.js';
 import { breakerState, breakerNotice, noteTargetSuccess, noteTargetFailure } from './target-breaker.js';
+import { setTelemetryEligible } from './telemetry-consent.js';
+import { record, flush } from './telemetry.js';
 
 /**
  * The server rule pack as it arrived, kept for the scan workers.
@@ -457,6 +459,29 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
   // report success, so a crash after this cannot re-ship what the server has.
   // In the finally, because a partial walk's acks are still worth keeping.
   flushLedger();
+
+  // OPERATIONAL TELEMETRY, gated on consent + plan (telemetry-consent.ts). These
+  // are the numbers that were previously only ever measured on one developer
+  // machine, which is why "how long is a first sync for a 5,000-session
+  // customer?" had no answer. Numbers only — the payload cannot carry a path,
+  // project or session id, structurally.
+  if (agg) {
+    record({
+      kind: 'sync_walk',
+      targets: targets.length,
+      skippedTargets: skippedTargets.length,
+      failedTargets: errors.length,
+      uploaded: agg.uploaded,
+      skipped: agg.skipped,
+      redactions: agg.redactions,
+      scanned: agg.scanned,
+      scanMs: Math.round(agg.scanMs),
+      rssPeakMb: Math.round(process.memoryUsage().rss / 1048576),
+    });
+  }
+  // After the walk: the connection is warm and the numbers are final. Never
+  // awaited into the caller's error path — telemetry must not fail a sync.
+  void flush().catch(() => {});
   if (!agg) throw new Error(`sync failed for all targets:\n  ${errors.join('\n  ')}`);
   if (errors.length > 0) console.error(`[sync] ${errors.length} target(s) failed (others succeeded):\n  ${errors.join('\n  ')}`);
   return agg;
@@ -928,7 +953,13 @@ const refs = listAvailableBackends().flatMap((b) => {
           signal: ac.signal,
         });
         if (res.ok) {
-          const body = await res.json().catch(() => ({})) as { cli?: { version: string; sha256: string } | null };
+          const body = await res.json().catch(() => ({})) as {
+            cli?: { version: string; sha256: string } | null;
+            telemetry?: boolean;
+          };
+          // The server owns the plan answer; the user's opt-out is checked
+          // separately and wins over it.
+          if (typeof body.telemetry === 'boolean') setTelemetryEligible(base, body.telemetry);
           if (body.cli && body.cli.version) {
             const { planAutoUpdate, runAutoUpdate } = await import('./auto-update.js');
             const authHeaders: Record<string, string> = cred.token ? { authorization: `Bearer ${cred.token}` } : {};
