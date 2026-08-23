@@ -90,3 +90,19 @@ CODE_TASKS.md
 
 # Local-only working files. Never published.
 .local/
+
+# The private-name list for the publish guard. Never tracked: it holds the
+# strings the guard exists to keep out of this repo.
+.private-names
+
+# Local publish guards. NOT tracked, on purpose.
+#
+# This repo is public. A committed hook or test that filters private names
+# advertises that such a list exists and points at where it lives — a smaller
+# version of the mistake of committing the names themselves. Both only function
+# with the operator's local list anyway, so tracking them buys nothing.
+#
+# Enable in a fresh clone:
+#   git config core.hooksPath .githooks
+.githooks/
+packages/engine/src/core/no-private-names.test.ts
