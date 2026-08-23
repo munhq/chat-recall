@@ -147,7 +147,7 @@ async function shipToServer(trigger: string): Promise<void> {
     }
     if (result.uploaded > 0 || result.derived > 0) {
       daemonLog.info(
-        `[${ts()}] Sync (${trigger}): ${result.uploaded} session(s) pushed, `
+        `Sync (${trigger}): ${result.uploaded} session(s) pushed, `
           + `${result.redactions} secret(s) redacted, ${result.skipped} skipped, `
           + `${result.items} items, ${result.links} links, ${result.derived} derived, `
           + `${result.kgEntities} KG entities, ${result.kgTriples} KG triples`,
