@@ -655,6 +655,37 @@ const RecallSecurityRulesSchema = z.object({
   sample: z.string().optional().describe('For test: text to match against'),
 });
 
+
+/**
+ * The command that actually resumes a session, per tool.
+ *
+ * Every call site used to hardcode `claude --resume <id>`, so an agy, cursor,
+ * codex or opencode session was handed a command that cannot work — it names
+ * the wrong binary AND keeps the chat-recall id prefix the tool never wrote.
+ * Returns null where the tool has no id-based resume (Gemini's `--resume`
+ * takes an index or "latest", not a session id).
+ */
+function resumeCommandFor(sessionId: string, tool?: string): string | null {
+  if (!sessionId) return null;
+  const t = tool || (
+    sessionId.startsWith('codex_') ? 'codex' :
+    sessionId.startsWith('opencode_') ? 'opencode' :
+    sessionId.startsWith('agy_') ? 'agy' :
+    sessionId.startsWith('cursor_') ? 'cursor' :
+    sessionId.startsWith('gemini_') ? 'gemini' : 'claude'
+  );
+  const raw = (prefix: string) => (sessionId.startsWith(prefix) ? sessionId.slice(prefix.length) : sessionId);
+  switch (t) {
+    case 'claude':   return `claude --resume ${sessionId}`;
+    case 'codex':    return `codex resume ${raw('codex_')}`;
+    case 'opencode': return `opencode -s ${raw('opencode_')}`;
+    case 'agy':      return `agy --conversation ${raw('agy_')}`;
+    // The CLI surface only — an IDE composer id is not resumable from a shell.
+    case 'cursor':   return `cursor-agent --resume ${raw('cursor_')}`;
+    default:         return null;
+  }
+}
+
 const server = new Server(
   {
     name: 'chat-recall',
@@ -795,7 +826,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         description: `Search for relevant past sessions to resume.
 
 Find past conversations matching your current task. Returns session IDs that
-can be used with \`claude --resume <session_id>\`.
+can be used to resume that session in the tool that produced it.
 
 Three modes on one tool:
 - \`query\` — free-text search ("I'm working on X, what past work is relevant?").
@@ -1950,7 +1981,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
           if (params.include_outcome) {
             const ol = await outcomeLine(r.sessionId);
             if (ol) lines.push(ol);
-            lines.push(`**Resume:** \`claude --resume ${r.sessionId}\``);
+            { const rc = resumeCommandFor(r.sessionId); if (rc) lines.push(`**Resume:** \`${rc}\``); }
           }
           lines.push('');
         }
@@ -2143,7 +2174,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
           output.push('');
         }
 
-        output.push(`Resume: claude --resume ${params.session_id}`);
+        { const rc = resumeCommandFor(params.session_id); if (rc) output.push(`Resume: ${rc}`); }
 
         return { content: [{ type: 'text', text: output.join('\n') }] };
       }
@@ -2335,7 +2366,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
             '',
             '---',
             '',
-            `**🔄 Resume:** \`claude --resume ${params.session_id}\``,
+            `**🔄 Resume:** \`${resumeCommandFor(params.session_id) ?? 'not resumable from a shell'}\``,
           ].join('\n') }] };
         }
 
@@ -2404,7 +2435,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
 
         lines.push('---');
         lines.push('');
-        lines.push(`**🔄 Resume:** \`claude --resume ${params.session_id}\``);
+        { const rc = resumeCommandFor(params.session_id); if (rc) lines.push(`**🔄 Resume:** \`${rc}\``); }
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
@@ -2776,7 +2807,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         }
         lines.push('');
 
-        lines.push(`**Resume:** \`${meta.tool === 'claude' ? 'claude --resume ' : ''}${sid}\``);
+        { const rc = resumeCommandFor(sid, meta.tool); if (rc) lines.push(`**Resume:** \`${rc}\``); }
 
         return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
