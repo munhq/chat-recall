@@ -10,8 +10,8 @@ test('matrix endpoint returns presence per (type, name, tool)', async ({ page })
   expect(Array.isArray(data.supportedTargets.mcp)).toBe(true);
   // gemini isn't a supported skill target
   expect(data.supportedTargets.skill).not.toContain('gemini');
-  // mcp supports all four
-  for (const t of ['claude', 'opencode', 'gemini', 'codex']) {
+  // mcp supports every tool with an MCP config file
+  for (const t of ['claude', 'opencode', 'gemini', 'codex', 'agy', 'cursor']) {
     expect(data.supportedTargets.mcp).toContain(t);
   }
 });

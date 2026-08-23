@@ -352,6 +352,8 @@ function importedPathFor(tool: VaultTool, sessionId: string): string {
   const base = sessionId
     .replace(/^gemini_/, '')
     .replace(/^codex_/, '')
+    .replace(/^agy_/, '')
+    .replace(/^cursor_/, '')
     .replace(/^opencode_/, '');
   return join(IMPORTED_ROOT(), tool, `${base}.jsonl`);
 }

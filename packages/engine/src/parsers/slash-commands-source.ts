@@ -29,12 +29,13 @@ import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
 import { opencodeBackend as OPENCODE } from '../core/backends/opencode.js';
 import { codexBackend as CODEX } from '../core/backends/codex.js';
 import { isSourceEnabled } from '../core/settings.js';
+import { cursorHomeDir } from '../core/tool-paths.js';
 import { parseFrontmatter, parseScalarToml } from '../core/toolkit-format.js';
 import { decodeProjectDirName } from '../core/project-dir-name.js';
 
 const MAX_CHUNK_CHARS = 2000;
 
-type CmdTool = 'claude' | 'gemini' | 'opencode' | 'codex';
+type CmdTool = 'claude' | 'gemini' | 'opencode' | 'codex' | 'cursor';
 
 interface CmdRoot {
   path: string;
@@ -92,6 +93,9 @@ export class SlashCommandsSource implements MemorySource {
     }
     if (isSourceEnabled('codex', 'commands')) {
       roots.push({ path: CODEX.promptsDir(), tool: 'codex', scope: 'user', projectPath: '', format: 'md' });
+    }
+    if (isSourceEnabled('cursor', 'commands')) {
+      roots.push({ path: join(cursorHomeDir(), 'commands'), tool: 'cursor', scope: 'user', projectPath: '', format: 'md' });
     }
     return roots;
   }

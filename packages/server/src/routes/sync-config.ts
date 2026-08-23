@@ -16,7 +16,7 @@ import { createControlPlane } from '../imports.js';
 const router = express.Router();
 const SYNC_CONFIG_KEY = 'sync_config';
 
-const VALID_TOOLS = ['claude', 'gemini', 'codex', 'opencode', 'agy'] as const;
+const VALID_TOOLS = ['claude', 'gemini', 'codex', 'opencode', 'agy', 'cursor'] as const;
 
 export interface TenantSyncConfig {
   excludeTools: string[];

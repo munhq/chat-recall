@@ -1577,6 +1577,8 @@ router.get('/:id', async (req, res) => {
         tool = 'gemini';
       } else if (id.startsWith('opencode_')) {
         tool = 'opencode';
+      } else if (id.startsWith('cursor_')) {
+        tool = 'cursor';
       }
 
       if (tool === 'claude' && !filePath) {
@@ -1690,12 +1692,12 @@ router.get('/:id', async (req, res) => {
       if (tool === 'gemini') {
         if (!filePath) throw new Error('Session path not found');
         messages = await getGeminiConversation(filePath);
-      } else if (tool === 'agy') {
-        // Antigravity — parse through the generic event bridge (no hand-
-        // written parser; the ToolBackend's readEvents() feeds
+      } else if (tool === 'agy' || tool === 'cursor') {
+        // Antigravity and Cursor — parse through the generic event bridge (no
+        // hand-written parser; the ToolBackend's readEvents() feeds
         // canonicalEventsToMessages). Same path parseTranscript uses.
         const backend = getBackendForId(id);
-        if (!backend) throw new Error('No backend registered for agy sessions');
+        if (!backend) throw new Error(`No backend registered for ${tool} sessions`);
         messages = canonicalEventsToMessages(backend.readEvents(id));
       } else if (tool === 'opencode') {
         messages = await getOpenCodeConversation(id);
@@ -1793,6 +1795,17 @@ router.get('/:id/raw', async (req, res) => {
         log.error({ err: e }, 'opencode raw error');
         return res.status(404).json({ error: e instanceof Error ? e.message : 'OpenCode database not found' });
       }
+    }
+
+    // Cursor — both surfaces are SQLite-backed and neither has a per-session
+    // file, so the raw view is the decoded event stream. The backend already
+    // picks store.db vs the JSONL fallback.
+    if (id.startsWith('cursor_')) {
+      const backend = getBackendForId(id);
+      if (!backend) return res.status(404).json({ error: 'Session not found' });
+      const lines = backend.readEvents(backend.toRawId(id));
+      if (lines.length === 0) return res.status(404).json({ error: 'Session not found' });
+      return res.json({ sessionId: id, tool: 'cursor', lines, count: lines.length });
     }
 
     // Gemini — single JSON file under ~/.gemini/tmp/<hash>/chats/.

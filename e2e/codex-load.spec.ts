@@ -4,6 +4,8 @@ const TOOLS: Array<{ tool: string; label: string }> = [
   { tool: 'codex', label: 'Codex' },
   { tool: 'gemini', label: 'Gemini' },
   { tool: 'opencode', label: 'OpenCode' },
+  { tool: 'agy', label: 'Antigravity' },
+  { tool: 'cursor', label: 'Cursor' },
 ];
 
 /**

@@ -26,6 +26,7 @@ describe('detectTool', () => {
     ['gemini_session-2026-01-foo', 'gemini'],
     ['opencode_ses_xyz', 'opencode'],
     ['codex_2026-05-02T10-21-58-019de790', 'codex'],
+    ['cursor_54a0cffe-a71b-4c91-a2cb-73749a18f3c9', 'cursor'],
   ];
   for (const [id, expected] of cases) {
     test(`prefix → tool: ${id.slice(0, 24)} → ${expected}`, () => {

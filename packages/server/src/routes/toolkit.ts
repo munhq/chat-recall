@@ -17,6 +17,10 @@ import type { SourceType } from '../imports.js';
 import { requireLocalMode } from '../util/mode.js';
 import { listItemsPaged } from '../util/paged-items.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
+import {
+  SUPPORTED_TARGETS as ENGINE_SUPPORTED_TARGETS,
+  SOURCE_PRECEDENCE as ENGINE_SOURCE_PRECEDENCE,
+} from '@chat-recall/engine/core/toolkit-sync.js';
 
 const log = createLogger('toolkit');
 
@@ -36,7 +40,7 @@ router.get('/status', async (_req, res) => {
   try {
     const out: Record<string, Record<string, number>> = {};
     for (const t of VALID_TOOLKIT_TYPES) {
-      out[t] = { claude: 0, agy: 0, gemini: 0, opencode: 0, codex: 0 };
+      out[t] = Object.fromEntries(TARGET_TOOLS.map((tool) => [tool, 0]));
       // Paged (1000-row chunks) with the pre-existing 5k cap — flat memory.
       const items = await listItemsPaged(store, t as SourceType, { cap: 5000, context: 'toolkit-status' });
       for (const it of items) {
@@ -106,19 +110,16 @@ router.get('/item/:type/:id', async (req, res) => {
 // Note:  cp CLAUDE.md → GEMINI.md or AGENTS.md in same project dir
 // ─────────────────────────────────────────────────────────────────
 
-const TARGET_TOOLS = ['claude', 'agy', 'gemini', 'opencode', 'codex'] as const;
+const TARGET_TOOLS = ['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor'] as const;
 type TargetTool = (typeof TARGET_TOOLS)[number];
 
 /** Toolkit primitives that have a clean global-scope cross-tool matrix. */
 type SyncType = 'skill' | 'mcp' | 'command' | 'agent' | 'instructions';
 
-const SUPPORTED_TARGETS: Record<SyncType, TargetTool[]> = {
-  skill:   ['claude', 'agy', 'gemini', 'opencode', 'codex'],
-  mcp:     ['claude', 'opencode', 'agy', 'gemini', 'codex'],
-  command: ['claude', 'agy', 'gemini', 'opencode', 'codex'],
-  agent:   ['claude', 'agy', 'gemini', 'opencode', 'codex'],
-  instructions: ['claude', 'agy', 'gemini', 'opencode', 'codex'],
-};
+// Imported, not re-declared. This table used to be copied here and into the
+// web client, and the three drifted: the server's SOURCE_PRECEDENCE below had
+// lost `agy` entirely. The engine owns it now.
+const SUPPORTED_TARGETS = ENGINE_SUPPORTED_TARGETS as Record<SyncType, TargetTool[]>;
 
 /** The extra_json field holding an artifact's display name, per type. */
 const NAME_FIELD: Record<SyncType, string> = {
@@ -393,13 +394,7 @@ router.get('/matrix', async (_req, res) => {
 // dryRun returns the plan without writing anything.
 // ─────────────────────────────────────────────────────────────────
 
-const SOURCE_PRECEDENCE: Record<SyncType, TargetTool[]> = {
-  skill:   ['claude', 'codex', 'opencode', 'gemini'],
-  mcp:     ['claude', 'codex', 'gemini', 'opencode'],
-  command: ['claude', 'opencode', 'codex', 'gemini'],
-  agent:   ['claude', 'opencode', 'gemini', 'codex'],
-  instructions: ['claude', 'codex', 'opencode', 'gemini'],
-};
+const SOURCE_PRECEDENCE = ENGINE_SOURCE_PRECEDENCE as Record<SyncType, TargetTool[]>;
 
 interface SyncPlanEntry {
   type: SyncType;

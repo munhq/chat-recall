@@ -25,7 +25,7 @@ const router = express.Router();
 // `instructions` (Rules/MD) copy intent after that type was added to the client
 // + engine but not here. Single source of truth = no drift.
 const VALID_TYPES = new Set<string>(ALL_SYNC_TYPES);
-const VALID_TOOLS = new Set(['claude', 'agy', 'gemini', 'opencode', 'codex']);
+const VALID_TOOLS = new Set(['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor']);
 
 /** Agent tokens resolve to userId `device:<id>`; pull the bare device id out. */
 function deviceIdFromUserId(userId?: string): string | null {

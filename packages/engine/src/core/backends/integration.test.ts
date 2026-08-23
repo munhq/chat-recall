@@ -23,6 +23,39 @@ import { getRecentSessions } from '../context.js';
 import { _resetRegistryForTests } from '../tool-backend.js';
 import { bootstrapBackends } from './index.js';
 import { computeOutcome } from '../session-outcome.js';
+import { createHash } from 'crypto';
+
+/**
+ * Write a Cursor CLI chat in its real on-disk shape: a content-addressed blob
+ * store whose protobuf root (repeated field 1) carries the ordered message
+ * hashes. Built by hand rather than copied, so the decoder is what is tested.
+ */
+function seedCursorChat(cursorHome: string, chatId: string, cwd: string, messages: object[]): void {
+  const dir = join(cursorHome, 'chats', createHash('md5').update(cwd).digest('hex'), chatId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'meta.json'), JSON.stringify({
+    schemaVersion: 1, createdAtMs: 1_787_500_000_000, updatedAtMs: 1_787_500_060_000,
+    hasConversation: true, cwd,
+  }));
+
+  const db = new Database(join(dir, 'store.db'));
+  db.exec('CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB)');
+  db.exec('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)');
+  const insert = db.prepare('INSERT OR REPLACE INTO blobs (id, data) VALUES (?, ?)');
+  const parts: Buffer[] = [];
+  for (const m of messages) {
+    const bytes = Buffer.from(JSON.stringify(m), 'utf8');
+    const id = createHash('sha256').update(bytes).digest('hex');
+    insert.run(id, bytes);
+    parts.push(Buffer.from([0x0a, 0x20]), Buffer.from(id, 'hex'));
+  }
+  const root = Buffer.concat(parts);
+  const rootId = createHash('sha256').update(root).digest('hex');
+  insert.run(rootId, root);
+  db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run('0',
+    Buffer.from(JSON.stringify({ agentId: chatId, latestRootBlobId: rootId, createdAt: 1_787_500_000_000 }), 'utf8').toString('hex'));
+  db.close();
+}
 
 function tmp(prefix: string): string {
   return mkdtempSync(join(tmpdir(), `chat-recall-${prefix}-`));
@@ -524,6 +557,9 @@ describe('cross-backend listing', () => {
   let claudeHome: string;
   let geminiHome: string;
   let codexHome: string;
+  let agyHome: string;
+  let cursorHome: string;
+  let cursorIdeHome: string;
   let opencodeDb: string;
   let opencodeDir: string;
   const saved: Record<string, string | undefined> = {};
@@ -533,16 +569,27 @@ describe('cross-backend listing', () => {
     claudeHome   = tmp('cross-claude');
     geminiHome   = tmp('cross-gemini');
     codexHome    = tmp('cross-codex');
+    agyHome      = tmp('cross-agy');
+    cursorHome   = tmp('cross-cursor');
+    cursorIdeHome = tmp('cross-cursor-ide');
     opencodeDir  = tmp('cross-opencode');
     opencodeDb   = join(opencodeDir, 'opencode.db');
 
     saved.CLAUDE_HOME    = process.env.CHAT_RECALL_CLAUDE_HOME;
     saved.GEMINI_HOME    = process.env.CHAT_RECALL_GEMINI_HOME;
     saved.CODEX_HOME     = process.env.CHAT_RECALL_CODEX_HOME;
+    // agy and cursor were absent here, so this suite both skipped them AND
+    // read the developer's real homes when anything did reach them.
+    saved.AGY_HOME       = process.env.CHAT_RECALL_AGY_HOME;
+    saved.CURSOR_HOME    = process.env.CHAT_RECALL_CURSOR_HOME;
+    saved.CURSOR_IDE_HOME = process.env.CHAT_RECALL_CURSOR_IDE_HOME;
     saved.OPENCODE_DB    = process.env.CHAT_RECALL_OPENCODE_DB;
     process.env.CHAT_RECALL_CLAUDE_HOME = claudeHome;
     process.env.CHAT_RECALL_GEMINI_HOME = geminiHome;
     process.env.CHAT_RECALL_CODEX_HOME  = codexHome;
+    process.env.CHAT_RECALL_AGY_HOME    = agyHome;
+    process.env.CHAT_RECALL_CURSOR_HOME = cursorHome;
+    process.env.CHAT_RECALL_CURSOR_IDE_HOME = cursorIdeHome;
     process.env.CHAT_RECALL_OPENCODE_DB = opencodeDb;
 
     bootstrapBackends();
@@ -554,7 +601,7 @@ describe('cross-backend listing', () => {
       if (v === undefined) delete process.env[envKey];
       else process.env[envKey] = v;
     }
-    [claudeHome, geminiHome, codexHome, opencodeDir].forEach(d => {
+    [claudeHome, geminiHome, codexHome, agyHome, cursorHome, cursorIdeHome, opencodeDir].forEach(d => {
       try { rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
     });
   });
@@ -583,12 +630,28 @@ describe('cross-backend listing', () => {
     // OpenCode session
     seedOpencodeDb(opencodeDb);
 
-    const recent = getRecentSessions();
+    // Antigravity session
+    const alogs = join(agyHome, 'brain', 'dddd1111-1111-1111-1111-111111111111', '.system_generated', 'logs');
+    mkdirSync(alogs, { recursive: true });
+    writeFileSync(join(alogs, 'transcript_full.jsonl'),
+      JSON.stringify({ source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'agy prompt', created_at: '2026-05-06T10:00:00Z' }) + '\n' +
+      JSON.stringify({ source: 'MODEL', type: 'CODE_ACTION', status: 'OK',
+        content: 'File Path: `file:///x/agy/app.ts`' }) + '\n');
+
+    // Cursor CLI chat
+    seedCursorChat(cursorHome, 'eeee1111-1111-1111-1111-111111111111', '/x/cursor', [
+      { role: 'user', content: [{ type: 'text', text: '<timestamp>Wed, May 6, 2026, 10:00 AM</timestamp>\n<user_query>\ncr prompt\n</user_query>' }] },
+      { role: 'assistant', content: [{ type: 'text', text: 'ok' }] },
+    ]);
+
+    const recent = getRecentSessions(undefined, 100);
     const tools = new Set(recent.map(s => s.tool));
     // Every backend's home is populated, so every tool should show up.
     expect(tools.has('claude')).toBe(true);
     expect(tools.has('gemini')).toBe(true);
     expect(tools.has('codex')).toBe(true);
     expect(tools.has('opencode')).toBe(true);
+    expect(tools.has('agy')).toBe(true);
+    expect(tools.has('cursor')).toBe(true);
   });
 });

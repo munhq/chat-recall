@@ -97,7 +97,7 @@ function secretTaskId(preview: string): string {
 
 /** Server-side twin of the client's shortId — strips tool prefixes. */
 function shortSessionId(id: string): string {
-  return id.replace(/^(opencode_|gemini_|codex_|agy_)/, '').slice(0, 8);
+  return id.replace(/^(opencode_|gemini_|codex_|agy_|cursor_)/, '').slice(0, 8);
 }
 
 interface DistinctSecret {

@@ -43,6 +43,9 @@ const MAX_CHUNK_CHARS = 2000;
  * came from. Order matters for back-compat: CLAUDE.md first so it keeps
  * its historical id (`<projectName>`).
  */
+// Keyed by FILENAME, so a file is indexed once even when several tools read
+// it. Antigravity reads GEMINI.md and Cursor reads AGENTS.md, both already
+// listed — adding rows for them would double-index the same file.
 const NOTE_FILES: Array<{ filename: string; tool: 'claude' | 'gemini' | 'opencode' | 'codex' }> = [
   { filename: 'CLAUDE.md',   tool: 'claude' },
   { filename: 'GEMINI.md',   tool: 'gemini' },

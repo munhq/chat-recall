@@ -167,7 +167,7 @@ export interface ToolBackend {
   /**
    * String prefix the system uses on raw ids to make them globally unique
    * across tools. Claude has '' (raw uuid is already unique). Other tools
-   * use 'gemini_', 'opencode_', 'codex_'.
+   * use 'gemini_', 'opencode_', 'codex_', 'agy_', 'cursor_'.
    */
   readonly idPrefix: string;
 
@@ -207,7 +207,7 @@ export interface ToolBackend {
    * `parseTranscriptFromContainer` calls this as its generic fallback for any
    * tool without a hardcoded branch. Backends whose format is a single text
    * file (agy, and future single-file tools) should implement it; those with a
-   * dedicated container parser (claude/codex/gemini/opencode) need not. Only
+   * dedicated container parser (claude/codex/gemini/opencode/cursor) need not. Only
    * meaningful for single-file formats — a multi-file/DB tool can omit it.
    */
   readEventsFromText?(text: string, mtimeFallback?: number): CanonicalEvent[];

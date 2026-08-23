@@ -176,6 +176,13 @@ beforeEach(() => {
   setEnv('CHAT_RECALL_GEMINI_HOME', join(tmp, 'gemini'));
   setEnv('CHAT_RECALL_CODEX_HOME',  join(tmp, 'codex'));
   setEnv('CHAT_RECALL_OPENCODE_DB', join(tmp, 'opencode', 'opencode.db'));
+  // agy and cursor need isolating too. They were omitted while the vault
+  // default skipped them; the moment either joined `vault.syncTools` this
+  // suite started walking the DEVELOPER'S real ~/.gemini/antigravity-cli and
+  // ~/.cursor, and the file counts below became machine-dependent.
+  setEnv('CHAT_RECALL_AGY_HOME',    join(tmp, 'agy'));
+  setEnv('CHAT_RECALL_CURSOR_HOME', join(tmp, 'cursor'));
+  setEnv('CHAT_RECALL_CURSOR_IDE_HOME', join(tmp, 'cursor-ide'));
   setEnv('VAULT_TEST_TOKEN', 'fake-bearer-for-test');
 
   // Mark Claude as installed and seed a session JSONL.

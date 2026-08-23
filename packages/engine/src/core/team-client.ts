@@ -16,7 +16,7 @@ export type TeamArtifactType =
   | 'skill' | 'command' | 'agent' | 'mcp' | 'plan'
   | 'hook' | 'plugin' | 'instructions';
 
-export type TeamArtifactTool = 'claude' | 'gemini' | 'opencode' | 'codex' | 'cross_tool';
+export type TeamArtifactTool = 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy' | 'cursor' | 'cross_tool';
 
 export interface TeamArtifactMeta {
   id: string;

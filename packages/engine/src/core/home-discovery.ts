@@ -36,7 +36,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'f
 import { homedir, platform as osPlatform } from 'os';
 import { join } from 'path';
 
-export type HomeTool = 'claude' | 'codex' | 'gemini' | 'agy' | 'opencode';
+export type HomeTool = 'claude' | 'codex' | 'gemini' | 'agy' | 'opencode' | 'cursor';
 
 export interface DiscoveredHome {
   tool: HomeTool;
@@ -97,6 +97,10 @@ export function identifyHome(dir: string): HomeTool | null {
   if (has('tmp') && dirHasTranscript(join(dir, 'tmp'), (f) => f.startsWith('session-'), 3)) return 'gemini';
   // Antigravity: brain/<id>/.system_generated/logs/*.jsonl
   if (has('brain') && dirHasTranscript(join(dir, 'brain'), (f) => f.endsWith('.jsonl'), 4)) return 'agy';
+  // Cursor: chats/<md5-of-cwd>/<chatId>/store.db. Probing for `store.db`
+  // specifically, not any .db, so an unrelated tool that happens to keep a
+  // `chats/` folder is not claimed as ours.
+  if (has('chats') && dirHasTranscript(join(dir, 'chats'), (f) => f === 'store.db', 3)) return 'cursor';
   // OpenCode: the db file itself.
   if (has('opencode.db')) return 'opencode';
   return null;
@@ -123,6 +127,7 @@ function countSessions(dir: string, tool: HomeTool): number {
     codex:    { sub: 'sessions', depth: 4, match: (f) => f.startsWith('rollout-') && f.endsWith('.jsonl') },
     gemini:   { sub: 'tmp',      depth: 3, match: (f) => f.startsWith('session-') },
     agy:      { sub: 'brain',    depth: 4, match: (f) => f.endsWith('.jsonl') },
+    cursor:   { sub: 'chats',    depth: 3, match: (f) => f === 'store.db' },
     opencode: { sub: '',         depth: 0, match: () => false },
   };
   const s = spec[tool];
@@ -170,6 +175,7 @@ export function sessionIdsInHome(dir: string, tool: HomeTool): string[] {
     gemini: { sub: 'tmp', depth: 3,
       idOf: (f) => (f.startsWith('session-') ? `gemini_${f.replace(/\.jsonl?$/, '')}` : null) },
     agy: { sub: 'brain', depth: 1, idOf: () => null },   // id is the DIRECTORY name
+    cursor: { sub: 'chats', depth: 2, idOf: () => null },// id is the DIRECTORY name
     opencode: { sub: '', depth: 0, idOf: () => null },   // rows, not files
   };
   const s = spec[tool];
@@ -180,6 +186,21 @@ export function sessionIdsInHome(dir: string, tool: HomeTool): string[] {
     try {
       for (const e of readdirSync(join(dir, 'brain'), { withFileTypes: true })) {
         if (e.isDirectory()) out.add(`agy_${e.name}`);
+      }
+    } catch { /* unreadable */ }
+    return [...out];
+  }
+
+  // Cursor names the session DIR too, one level deeper: chats/<md5>/<chatId>.
+  if (tool === 'cursor') {
+    try {
+      for (const hash of readdirSync(join(dir, 'chats'), { withFileTypes: true })) {
+        if (!hash.isDirectory()) continue;
+        try {
+          for (const chat of readdirSync(join(dir, 'chats', hash.name), { withFileTypes: true })) {
+            if (chat.isDirectory()) out.add(`cursor_${chat.name}`);
+          }
+        } catch { /* unreadable */ }
       }
     } catch { /* unreadable */ }
     return [...out];
@@ -215,6 +236,8 @@ export function declaredHomes(env = process.env, plat: NodeJS.Platform = osPlatf
   add(env.CHAT_RECALL_CODEX_HOME);
   add(env.CHAT_RECALL_GEMINI_HOME);
   add(env.CHAT_RECALL_AGY_HOME);
+  add(env.CHAT_RECALL_CURSOR_HOME);
+  add(env.CHAT_RECALL_CURSOR_IDE_HOME);
   for (const d of (env.CLAUDE_DIRS || '').split(',')) add(d);
 
   if (plat === 'win32') {

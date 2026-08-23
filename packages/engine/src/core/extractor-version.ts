@@ -66,6 +66,7 @@ export function toolOfId(id: string): string {
   if (id.startsWith('gemini_')) return 'gemini';
   if (id.startsWith('opencode_')) return 'opencode';
   if (id.startsWith('codex_')) return 'codex';
+  if (id.startsWith('cursor_')) return 'cursor';
   return 'claude'; // claude has no prefix
 }
 

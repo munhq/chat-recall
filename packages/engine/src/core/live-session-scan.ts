@@ -43,7 +43,7 @@ import {
 import './backends/index.js';
 import { decodeProjectDirName } from './project-dir-name.js';
 
-export type AiTool = 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy';
+export type AiTool = 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy' | 'cursor';
 
 // Path subdirs — defaults + env-var overrides come from `tool-paths.ts`
 // so backends and this dispatcher share a single source of truth.
