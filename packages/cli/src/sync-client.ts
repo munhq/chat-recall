@@ -88,6 +88,15 @@ import { breakerState, breakerNotice, noteTargetSuccess, noteTargetFailure } fro
  * need the patterns as data. The installed form is compiled RegExp objects,
  * which cannot cross a postMessage.
  */
+/**
+ * Walk progress for the next upload to carry.
+ *
+ * Module-scope because the producer (the walk) and the consumer (the batch
+ * poster) are far apart, and threading it through every batcher signature to
+ * deliver a cosmetic field would be worse than a single slot.
+ */
+let walkProgressForUpload: { done: number; total: number; complete: boolean } | null = null;
+
 let lastServerPackSpec: { version: string; rules: Array<{ name: string; regex: string; flags?: string; redact?: boolean; source?: 'tenant' | 'pack' }> } | null = null;
 import { reportWalkProgress } from '@chat-recall/engine/core/collector-health.js';
 import { withSessionReadCache , withSessionScanScope } from '@chat-recall/engine/core/live-session-scan.js';
@@ -890,7 +899,14 @@ const refs = listAvailableBackends().flatMap((b) => {
     // (with gzip on) the compressed copy stayed reachable for the whole retry
     // chain, i.e. ~2.3× the payload held for as long as the server was slow.
     const payload: Buffer = (() => {
-      const json = JSON.stringify(body);
+      // Ride the progress report along on whatever batch is already going out.
+      // The UI had only an AGE to show ("25m behind"), which during a first sync
+      // is indistinguishable from broken. No extra request, no new endpoint —
+      // the server stashes it and serves it on the status the UI already polls.
+      const withProgress = walkProgressForUpload
+        ? { ...body, progress: walkProgressForUpload }
+        : body;
+      const json = JSON.stringify(withProgress);
       const raw = Buffer.from(json, 'utf8');
       return gzipBody ? gzipSync(raw, { level: 6 }) : raw;
     })();
@@ -1325,6 +1341,7 @@ const refs = listAvailableBackends().flatMap((b) => {
   // user waiting and a user assuming it is broken.
   const walkStartedAt = Date.now();
   reportWalkProgress({ done: 0, total: slice.length, startedAt: walkStartedAt, complete: false });
+  walkProgressForUpload = { done: 0, total: slice.length, complete: false };
   let traceN = 0;
   // ── KEEP THE EVENT LOOP ALIVE ───────────────────────────────────────────
   //
@@ -1372,6 +1389,7 @@ const refs = listAvailableBackends().flatMap((b) => {
     // LOOKED AT, which is this counter and matches the denominator.
     considered++;
     reportWalkProgress({ done: considered, total: slice.length, startedAt: walkStartedAt, complete: false });
+    walkProgressForUpload = { done: considered, total: slice.length, complete: false };
     if (trace && ++traceN % 500 === 0) trace(`walk ${traceN}/${slice.length} · at ${ref.prefixedId}`);
     localSessionIds.add(ref.prefixedId);
     const mode = modeOf(ref);
@@ -1705,6 +1723,7 @@ const refs = listAvailableBackends().flatMap((b) => {
   // tells a finished walk from a daemon that died mid-walk, which is the state
   // an in-progress value left behind means.
   reportWalkProgress({ done: slice.length, total: slice.length, startedAt: walkStartedAt, complete: true });
+  walkProgressForUpload = { done: slice.length, total: slice.length, complete: true };
 
   return {
     uploaded: convBatch.sent + appendResults.uploaded, skipped, redactions,
