@@ -116,7 +116,20 @@ export class ScanPool {
         };
         worker.on('error', die);
         worker.on('exit', (code) => { if (code !== 0) die(`exit ${code}`); });
-        worker.unref();   // never hold the process open on the pool's account
+        // REF WHILE BUSY, UNREF WHILE IDLE — see refIfBusy().
+        //
+        // A permanent unref() looked right ("never hold the process open on the
+        // pool's account") and broke every one-shot command. With a task in
+        // flight and nothing else on the event loop, Node has no reason to stay
+        // alive, so `chat-recall sync` returned with the worker's reply still
+        // pending: it shipped ZERO sessions, exited 0, and said nothing. The
+        // watch daemon hid it completely, because a daemon always has timers.
+        //
+        // This is the second time: the bug was found and fixed during the build
+        // pipeline work, then destroyed by `git checkout -- scan-pool.ts` when
+        // that pipeline was reverted wholesale. The compose integration test —
+        // CLI ↔ real server, one-shot — is what caught it both times.
+        worker.unref();
         this.slots.push(slot);
       } catch { /* one failure is enough to know: fall back inline */ }
     }
@@ -124,12 +137,27 @@ export class ScanPool {
   }
 
   private pump(): void {
-    if (this.queue.length === 0) return;
+    if (this.queue.length === 0) { this.refIfBusy(); return; }
     const slot = this.slots.find((s) => s.pending === null);
-    if (!slot) return;
+    if (!slot) { this.refIfBusy(); return; }
     const next = this.queue.shift()!;
     slot.pending = next.resolve;
     slot.worker.postMessage(next.task);
+    this.refIfBusy();
+  }
+
+  /**
+   * Keep the process alive exactly while the pool owes someone an answer.
+   *
+   * A worker with a task in flight must be ref'd or Node may exit before the
+   * reply lands; an idle one must be unref'd or the pool alone keeps a one-shot
+   * CLI command running forever.
+   */
+  private refIfBusy(): void {
+    const busy = this.queue.length > 0 || this.slots.some((s) => s.pending !== null);
+    for (const s of this.slots) {
+      if (busy) s.worker.ref(); else s.worker.unref();
+    }
   }
 
   /**
