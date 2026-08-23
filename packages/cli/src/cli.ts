@@ -19,7 +19,7 @@ import { tierAll, type ScoreTier } from '@chat-recall/engine/core/score-tier.js'
 import { loadAllCredentials, type Credentials } from './sync-client.js';
 import { printUpdateNotice, updateNotice } from './update-notice.js';
 import { isOnPath } from '@chat-recall/engine/core/which.js';
-import { readCollectorHealth, judgeHealth, collectorHealthPath, STALE_AFTER_MS } from '@chat-recall/engine/core/collector-health.js';
+import { readCollectorHealth, judgeHealth, progressLine, collectorHealthPath, STALE_AFTER_MS } from '@chat-recall/engine/core/collector-health.js';
 
 /**
  * Colour a relevance tier for the terminal.
@@ -1116,6 +1116,11 @@ program
         note(v.ok, 'Collector healthy', v.ok
           ? `last reported ${Math.max(0, Math.round((Date.now() - h.updatedAt) / 1000))}s ago, ${Object.keys(h.targets).length} target(s)`
           : v.reasons.join('; '));
+        // A walk in flight explains a target that looks behind, so report it
+        // BEFORE the per-target lines rather than leaving the user to conclude
+        // something is broken while a first sync is still running.
+        const walking = progressLine(h);
+        if (walking) note(true, 'Sync in progress', walking);
         for (const [url, t] of Object.entries(h.targets)) {
           const okRecently = t.lastOkAt !== null && Date.now() - t.lastOkAt < STALE_AFTER_MS;
           note(okRecently, `Synced to ${url}`, t.lastOkAt === null
