@@ -883,8 +883,17 @@ const refs = listAvailableBackends().flatMap((b) => {
   // on /api/sync is unchanged.
   const gzipBody = serverAcceptsGzipBody(cred.serverUrl);
   const post = async (body: Record<string, unknown>): Promise<void> => {
-    const json = JSON.stringify(body);
-    const payload: string | Buffer = gzipBody ? gzipSync(Buffer.from(json), { level: 6 }) : json;
+    // SERIALISE INTO A BUFFER AND KEEP ONLY THAT. Retries hold the payload for
+    // up to four attempts × a 90s timeout, so anything still referenced here is
+    // resident for minutes. The JSON string is scoped to this block so it is
+    // collectable the moment the Buffer exists — previously both the string and
+    // (with gzip on) the compressed copy stayed reachable for the whole retry
+    // chain, i.e. ~2.3× the payload held for as long as the server was slow.
+    const payload: Buffer = (() => {
+      const json = JSON.stringify(body);
+      const raw = Buffer.from(json, 'utf8');
+      return gzipBody ? gzipSync(raw, { level: 6 }) : raw;
+    })();
     const RETRY_DELAYS_MS = [2000, 8000, 30000];
     for (let attempt = 0; ; attempt++) {
       const ac = new AbortController();
@@ -970,13 +979,30 @@ const refs = listAvailableBackends().flatMap((b) => {
   // whole sync (matching the old serial behaviour).
   const inflight = new Set<Promise<void>>();
   let poolError: unknown = null;
-  const submit = async (body: Record<string, unknown>, after: () => void): Promise<void> => {
-    while (inflight.size >= maxInflight) await Promise.race(inflight);
+  // BOUND THE BYTES, not only the request count. `maxInflight` alone permits
+  // maxInflight × the largest batch resident at once, and a batch is capped at
+  // 4 MB only for the row categories that go through a batcher — a single
+  // oversized conversation ships ALONE and can be far larger. Counting requests
+  // said "4 in flight" whether that was 4 KB or 40 MB.
+  //
+  // An item bigger than the whole budget still ships, alone, once the pipe is
+  // empty: refusing it would silently drop a session, and waiting forever would
+  // deadlock the walk.
+  const MAX_INFLIGHT_BYTES = (Number(process.env.CHAT_RECALL_MAX_INFLIGHT_MB) || 32) * 1024 * 1024;
+  let inflightBytes = 0;
+  const submit = async (body: Record<string, unknown>, after: () => void, bytesHint = 0): Promise<void> => {
+    while (
+      inflight.size > 0
+      && (inflight.size >= maxInflight || inflightBytes + bytesHint > MAX_INFLIGHT_BYTES)
+    ) {
+      await Promise.race(inflight);
+    }
     if (poolError) throw poolError;
+    inflightBytes += bytesHint;
     let task: Promise<void>;
     task = (async () => { await post(body); after(); })()
       .catch((e) => { poolError = poolError ?? e; })
-      .finally(() => { inflight.delete(task); });
+      .finally(() => { inflight.delete(task); inflightBytes -= bytesHint; });
     inflight.add(task);
   };
   const drainInflight = async (): Promise<void> => {
@@ -1019,11 +1045,14 @@ const refs = listAvailableBackends().flatMap((b) => {
       async drain(): Promise<void> {
         if (batch.length === 0) return;
         const rows = flatten ? batch.flat() : batch;
+        const bytes = batchBytes;
         batch = [];
         batchBytes = 0;
         // Hand off to the concurrency pool; `sent`/onFlush (e.g. markSynced)
-        // fire only after the server acks THIS batch, same as before.
-        await submit({ [field]: rows }, () => { this.sent += rows.length; onFlush?.(rows); });
+        // fire only after the server acks THIS batch, same as before. The byte
+        // total is already known here, so the pool can bound memory by size
+        // instead of guessing from the request count.
+        await submit({ [field]: rows }, () => { this.sent += rows.length; onFlush?.(rows); }, bytes);
       },
     };
   };
