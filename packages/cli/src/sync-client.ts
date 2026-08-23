@@ -77,6 +77,8 @@ import { SYNC_FIELDS } from '@chat-recall/engine/core/sync-fields.js';
 import { acquireIndexLock } from '@chat-recall/engine/core/index-lock.js';
 import { fetchWithTimeout } from './http.js';
 import { gzipSync } from 'zlib';
+import { redactDeep } from './redact-deep.js';
+import { collectDerivedRows } from './derived.js';
 import { scanPool } from './scan-pool.js';
 import { isPrivateHost, transportRisk, assertTransportSafe } from './transport-safety.js';
 import { breakerState, breakerNotice, noteTargetSuccess, noteTargetFailure } from './target-breaker.js';
@@ -382,20 +384,6 @@ export function removeCredentials(serverUrl: string): boolean {
 /** Tokenize an absolute project path so the server can group by project
  *  without learning the developer's filesystem layout. */
 const hashPath = (p: string): string => (p ? 'p_' + createHash('sha256').update(p).digest('hex').slice(0, 12) : '');
-
-/** Redact every string anywhere inside a JSON-serializable value. Used for
- *  derived payloads (diffs carry file content; outcomes carry prompt text)
- *  where field-by-field redaction would be fragile. */
-function redactDeep<T>(v: T, count: { redactions: number }): T {
-  if (typeof v === 'string') return redactSecrets(v, { force: true, count }) as unknown as T;
-  if (Array.isArray(v)) return v.map((x) => redactDeep(x, count)) as unknown as T;
-  if (v && typeof v === 'object') {
-    const o: Record<string, unknown> = {};
-    for (const [k, val] of Object.entries(v as Record<string, unknown>)) o[k] = redactDeep(val, count);
-    return o as unknown as T;
-  }
-  return v;
-}
 
 export interface SyncResult {
   uploaded: number;
@@ -1631,8 +1619,31 @@ const refs = listAvailableBackends().flatMap((b) => {
     if (upload.sessionMeta && sessionFileBytes(ref) <= FULL_BUILD_MAX_BYTES) {
       try {
         const count = { redactions: 0 };
-        await derivedBatch.add(collectDerived(ref, mtime, count));
-        redactions += count.redactions;
+        // OFF THE MAIN THREAD. This is the heaviest work in the walk: replay,
+        // outcome and turns each read the whole transcript and shell out to git,
+        // measured at ~5 seconds per session against 78ms for the secret scan.
+        // It was the entire remaining tail of a walk — 15,500 sessions skip in
+        // seconds, then the couple of hundred that need rebuilding take minutes,
+        // all of it on the thread that has to answer signals.
+        //
+        // Only an id crosses the boundary; the worker reads the transcript
+        // itself. Null means the pool could not take it, and the inline path —
+        // the code that shipped before this — runs instead.
+        const offloaded = await scanPool().runDerived({
+          prefixedId: ref.prefixedId, toolId: ref.toolId, mtime,
+          maxRowBytes: MAX_DERIVED_ROW_BYTES,
+          pack: lastServerPackSpec && scanPool().needsPack(lastServerPackSpec.version)
+            ? { version: lastServerPackSpec.version, rules: lastServerPackSpec.rules }
+            : undefined,
+          packVersion: lastServerPackSpec?.version ?? '',
+        });
+        if (offloaded?.rows) {
+          redactions += offloaded.redactions;
+          await derivedBatch.add(offloaded.rows);
+        } else {
+          await derivedBatch.add(collectDerivedRows(ref, mtime, count, MAX_DERIVED_ROW_BYTES));
+          redactions += count.redactions;
+        }
       } catch (err) {
         // Derived is best-effort — the conversation still shipped — but it must
         // NOT be silent: a derived failure means this session shows empty
@@ -2378,79 +2389,6 @@ export async function buildConversationTail(
  * read or warmed — thin collector). Everything is deep-redacted — diffs carry
  * file content.
  */
-function collectDerived(
-  ref: { prefixedId: string; toolId: string; mtime: number },
-  mtime: number,
-  count: { redactions: number },
-): { session_id: string; mtime: number; compute: Array<{ kind: string; mtime: number; data: unknown }>; outcome_row: unknown | null } {
-  const id = ref.prefixedId;
-  const compute: Array<{ kind: string; mtime: number; data: unknown }> = [];
-  let fullOutcome: ReturnType<typeof computeOutcome> | null = null;
-
-  // One read of this transcript instead of four. replay, computeOutcome (twice
-  // internally) and extractTurns each re-read the whole file; the scope holds
-  // exactly one session's text and drops it on the way out.
-  return withSessionReadCache(() => {
-  for (const kind of COMPUTE_KINDS) {
-    let data: unknown = null;
-    try {
-      if (kind === 'diff') {
-        const replay = replaySessionAny(id);
-        if (replay.found) data = replay;
-      } else if (kind === 'outcome') {
-        fullOutcome = computeOutcome(id);
-        if (fullOutcome.found) data = fullOutcome;
-      } else if (kind === 'commits') {
-        // computeOutcome already ran git for the session window — reuse.
-        if (!fullOutcome) fullOutcome = computeOutcome(id);
-        if (fullOutcome.found) data = fullOutcome.commits;
-      } else if (kind === 'markers') {
-        // Analysis-only use of the turns extractor (R4) — markers need
-        // per-prompt line/ts, not render fidelity.
-        const turns = extractTurnsAny(id, { maxTurns: 50_000 });
-        const prompts = turns.turns
-          .filter((t) => t.kind === 'user' && t.text)
-          .map((t) => ({ line: t.line, ts: t.ts, tsIso: t.tsIso, ...markPrompt(t.text!) }));
-        data = { sessionId: id, prompts, summary: summarizeMarkers(prompts) };
-      }
-    } catch { data = null; }
-    if (data === null) continue;
-    const redacted = redactDeep(data, count);
-    if (JSON.stringify(redacted).length > MAX_DERIVED_ROW_BYTES) continue;
-    compute.push({ kind, mtime, data: redacted });
-  }
-
-  // Outcome-badge row (session_outcome_cache) — what the list badges read.
-  // Computed live from the outcome we already ran above.
-  let outcomeRow: Record<string, unknown> | null = null;
-  if (fullOutcome?.found) {
-    outcomeRow = {
-      sessionId: id,
-      tool: ref.toolId,
-      status: fullOutcome.status as any,
-      reason: fullOutcome.reason,
-      fileMtime: mtime,
-      fileSize: 0,
-      contentHash: '',
-      fileCount: fullOutcome.fileCount,
-      linesAdded: fullOutcome.totalLinesAdded,
-      linesRemoved: fullOutcome.totalLinesRemoved,
-      commits: fullOutcome.commits?.totalCommits ?? 0,
-      isFull: true,
-      classifiedAt: Date.now(),
-      lastScannedOffset: 0,
-    };
-  }
-
-  return {
-    session_id: id,
-    mtime,
-    compute,
-    outcome_row: outcomeRow ? redactDeep({ ...outcomeRow, sessionId: undefined }, count) : null,
-  };
-  });
-}
-
 /**
  * Incremental sync for the watch daemon and parameterless `chat-recall sync`:
  * push only sessions modified after `settings.sync.lastSyncAt`, then advance
