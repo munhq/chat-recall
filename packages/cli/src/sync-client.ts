@@ -77,6 +77,7 @@ import { SYNC_FIELDS } from '@chat-recall/engine/core/sync-fields.js';
 import { acquireIndexLock } from '@chat-recall/engine/core/index-lock.js';
 import { fetchWithTimeout } from './http.js';
 import { gzipSync } from 'zlib';
+import { reportWalkProgress } from '@chat-recall/engine/core/collector-health.js';
 import { withSessionReadCache , withSessionScanScope } from '@chat-recall/engine/core/live-session-scan.js';
 import '@chat-recall/engine/core/backends/index.js'; // register the tool backends
 
@@ -1232,8 +1233,23 @@ const refs = listAvailableBackends().flatMap((b) => {
   }
 
   trace?.('conversation walk start');
+  // Say that a walk STARTED, before anything is done. A first sync on a large
+  // corpus runs for a long time, and "0 of 15,724" is the difference between a
+  // user waiting and a user assuming it is broken.
+  const walkStartedAt = Date.now();
+  reportWalkProgress({ done: 0, total: slice.length, startedAt: walkStartedAt, complete: false });
   let traceN = 0;
+  let considered = 0;
   for (const ref of slice) {
+    // PROGRESS COUNTS SESSIONS CONSIDERED, not sessions shipped.
+    //
+    // Reporting `walked` (the shipped count) looked right and was useless: on an
+    // already-synced corpus the ledger skips ~15,700 of 15,727 sessions, so the
+    // report sat at "0 of 15,727 (0%)" for the whole walk and then vanished.
+    // What a waiting user needs to know is how much of the corpus has been
+    // LOOKED AT, which is this counter and matches the denominator.
+    considered++;
+    reportWalkProgress({ done: considered, total: slice.length, startedAt: walkStartedAt, complete: false });
     if (trace && ++traceN % 500 === 0) trace(`walk ${traceN}/${slice.length} · at ${ref.prefixedId}`);
     localSessionIds.add(ref.prefixedId);
     const mode = modeOf(ref);
@@ -1561,6 +1577,12 @@ const refs = listAvailableBackends().flatMap((b) => {
   }
 
   if (opts.prune) await post({ prune_empty_sessions: true });
+
+  // The walk finished. Marking it complete is what stops every later reader
+  // showing a frozen "8,400 of 15,724" forever — and it is also how a reader
+  // tells a finished walk from a daemon that died mid-walk, which is the state
+  // an in-progress value left behind means.
+  reportWalkProgress({ done: slice.length, total: slice.length, startedAt: walkStartedAt, complete: true });
 
   return {
     uploaded: convBatch.sent + appendResults.uploaded, skipped, redactions,
