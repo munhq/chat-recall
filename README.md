@@ -1,4 +1,5 @@
-# chat-recall
+<img src="https://chatrecall.dev/logo.svg" alt="chat-recall" width="208" height="40">
+
 
 [![npm](https://img.shields.io/npm/v/chat-recall?logo=npm&color=cb3837)](https://www.npmjs.com/package/chat-recall)
 [![npm downloads](https://img.shields.io/npm/dm/chat-recall?color=cb3837&label=downloads)](https://www.npmjs.com/package/chat-recall)
