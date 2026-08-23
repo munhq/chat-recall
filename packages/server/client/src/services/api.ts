@@ -665,6 +665,13 @@ export interface SyncStatus {
   rawBytes: number;
   newestSessionAgeMs: number | null;
   sourceTypes: Record<string, number>;
+  /**
+   * Collector walk in flight, when there is one. Absent once it completes and
+   * absent when the last report went stale, so the UI can trust its presence to
+   * mean "a sync is running right now" — which is the one case where the
+   * freshness age is misleading rather than informative.
+   */
+  progress?: { done: number; total: number } | null;
 }
 
 export async function getSyncStatus(): Promise<SyncStatus> {

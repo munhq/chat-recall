@@ -25,12 +25,29 @@ router.get('/sync', async (_req, res) => {
       // Most recent session row mtime = how fresh this store is.
       const recent = await store.querySessionIndex({ limit: 1, offset: 0, includeUntracked: true });
       const newestMtime = recent.rows[0]?.mtime ?? 0;
+      // Collector walk progress, when one is in flight. Ignored once complete,
+      // and ignored when the report has gone stale — a client that died mid-walk
+      // must not leave the UI claiming "syncing, 62%" forever.
+      const PROGRESS_STALE_MS = 10 * 60_000;
+      let progress: { done: number; total: number } | null = null;
+      try {
+        const entry = await store.kvGet('collector', 'walk_progress');
+        const raw = typeof entry === 'string' ? entry : (entry as { value?: string } | null)?.value;
+        if (raw) {
+          const p = JSON.parse(raw) as { done: number; total: number; complete: boolean; at: number };
+          if (!p.complete && p.total > 0 && Date.now() - p.at < PROGRESS_STALE_MS) {
+            progress = { done: p.done, total: p.total };
+          }
+        }
+      } catch { /* no progress reported — the UI falls back to freshness */ }
+
       res.json({
         sessions,
         rawArchived: raw.length,
         rawBytes: 0, // size omitted from the cheap listing; panel shows counts
         newestSessionAgeMs: newestMtime ? Date.now() - newestMtime : null,
         sourceTypes: stats,
+        progress,
       });
     } finally {
       await store.close();
