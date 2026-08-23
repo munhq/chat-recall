@@ -1,28 +1,28 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="chat-recall">
-  <!-- The brand mark is the amber rounded square beside the wordmark in the nav.
-       A wordmark is unreadable at 16px, so the tile carries the identity and the
-       glyph carries the meaning: two transcript lines of unequal length, which is
-       what a session looks like in the product.
+  <!-- Three strokes enter, one leaves: several AI tools writing separate
+       transcripts, joined into one history. That is the product's whole claim,
+       and it is the one thing no other tool in this category does — which is why
+       the mark is this and not a brain. A brain says "AI memory", the category,
+       and every competitor already uses it; rendered at 16px it is also an
+       indistinct blob.
 
-       Two bars, not three. Three 3px bars in a 32-unit box become 1.5px bars at
-       16px, land off the pixel grid and smear into one block. These are 4 units
-       tall at y=8 and y=18, so at 16px they are 2px at y=4 and y=9 — integers,
-       and legible. Same reason the widths are 16 and 12: they halve to 8 and 6.
-
-       SVG favicons honour prefers-color-scheme, so the tile takes the deep amber
-       on a light tab strip and the light amber on a dark one. Both values are the
-       brand-500 the app and site already use. -->
+       Geometry chosen against the pixel grid, verified by rendering. The inlets
+       sit at y=7/16/25 so three strokes stay separable at 16px, where each is
+       about 1.7px. Narrower spacing merged the outer two into the stem, and a
+       4-unit stroke lost the third line entirely. -->
   <style>
     .tile { fill: #A8491D }
-    .mark { fill: #FFFFFF }
+    .mark { stroke: #FFFFFF }
     @media (prefers-color-scheme: dark) {
       .tile { fill: #F5A97F }
-      .mark { fill: #1A0E06 }
+      .mark { stroke: #1A0E06 }
     }
   </style>
   <rect class="tile" width="32" height="32" rx="7"/>
-  <g class="mark">
-    <rect x="8" y="8"  width="16" height="4" rx="2"/>
-    <rect x="8" y="18" width="12" height="4" rx="2"/>
+  <g class="mark" fill="none" stroke-width="3.4" stroke-linecap="round">
+    <path d="M7 7h4c3.5 0 3.5 9 7 9"/>
+    <path d="M7 16h11"/>
+    <path d="M7 25h4c3.5 0 3.5-9 7-9"/>
+    <path d="M18 16h7"/>
   </g>
 </svg>
