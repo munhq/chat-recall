@@ -97,6 +97,27 @@ import { record, flush } from './telemetry.js';
  * poster) are far apart, and threading it through every batcher signature to
  * deliver a cosmetic field would be worse than a single slot.
  */
+/**
+ * Reduce an error message to a bounded CLASS.
+ *
+ * Telemetry must never carry a raw error string: server errors quote paths,
+ * payload fragments and occasionally tokens. An enum is enough to answer "what
+ * is breaking for customers", and cannot leak.
+ */
+function classifyError(msg: string): string {
+  const m = msg.toLowerCase();
+  if (m.includes('429')) return 'rate_limited';
+  if (m.includes('402')) return 'payment_required';
+  if (m.includes('401') || m.includes('403') || m.includes('token')) return 'auth';
+  if (m.includes('timed out') || m.includes('etimedout')) return 'timeout';
+  if (m.includes('econnrefused')) return 'refused';
+  if (m.includes('enotfound') || m.includes('dns')) return 'dns';
+  if (m.includes('fetch failed') || m.includes('econnreset')) return 'network';
+  if (m.includes('plain http') || m.includes('https')) return 'insecure_transport';
+  if (/5\d\d/.test(m)) return 'server_error';
+  return 'other';
+}
+
 let walkProgressForUpload: { done: number; total: number; complete: boolean } | null = null;
 
 let lastServerPackSpec: { version: string; rules: Array<{ name: string; regex: string; flags?: string; redact?: boolean; source?: 'tenant' | 'pack' }> } | null = null;
@@ -443,6 +464,15 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
       const next = noteTargetFailure(cred.serverUrl, msg);
       const notice = breakerNotice(cred.serverUrl, next);
       if (notice) console.error(`[sync] ${notice}`);
+      // The error CLASS, never the message: a server error string can quote a
+      // path or a payload, and this channel must not carry either.
+      record({
+        kind: next.open ? 'breaker_trip' : 'target_failure',
+        failures: next.failures,
+        retryInMs: next.retryInMs,
+        errorClass: classifyError(msg),
+        local: isLocalHost(cred.serverUrl) ? 1 : 0,
+      });
     }
   }
   // A walk that shipped nothing because every target is in cooldown is NOT a
@@ -1926,6 +1956,10 @@ export async function buildConversationSync(
           console.error(`[sync] ${ref.prefixedId} is ${(containerBytes / 1048576).toFixed(0)}MB `
             + `(over the ${(FULL_BUILD_MAX_BYTES / 1048576).toFixed(0)}MB ceiling) — shipping without `
             + 'the raw archive and derived data to keep the walk in memory');
+          // Size and tool only. Knowing that customers hit this, and how big
+          // their sessions get, is how the ceiling gets set from evidence rather
+          // than from one developer's corpus.
+          record({ kind: 'oversized_session', mb: Math.round(containerBytes / 1048576), tool: ref.toolId });
           includeRaw = false;
           includeMeta = false;
         }
