@@ -79,6 +79,7 @@ import { fetchWithTimeout } from './http.js';
 import { gzipSync } from 'zlib';
 import { scanPool } from './scan-pool.js';
 import { isPrivateHost, transportRisk, assertTransportSafe } from './transport-safety.js';
+import { breakerState, breakerNotice, noteTargetSuccess, noteTargetFailure } from './target-breaker.js';
 
 /**
  * The server rule pack as it arrived, kept for the scan workers.
@@ -400,9 +401,23 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
 
   let agg: SyncResult | null = null;
   const errors: string[] = [];
+  const skippedTargets: string[] = [];
   for (const cred of targets) {
+    // CIRCUIT BREAKER. Targets are walked in SEQUENCE, so a dead one does not
+    // just fail — it delays every ship to the healthy targets behind it, and
+    // delays the walk's completion, which the ledger, the health file and the
+    // progress report all wait on. A LAN box that is off should cost one log
+    // line, not a full retry storm per session, every walk, forever.
+    const verdict = breakerState(cred.serverUrl);
+    if (verdict.open) {
+      const notice = breakerNotice(cred.serverUrl, verdict);
+      if (notice) console.error(`[sync] ${notice}`);
+      skippedTargets.push(cred.serverUrl);
+      continue;
+    }
     try {
       const r = await syncToTarget(cred, opts);
+      noteTargetSuccess(cred.serverUrl);
       agg = agg ? {
         uploaded: agg.uploaded + r.uploaded, skipped: agg.skipped + r.skipped, redactions: agg.redactions + r.redactions,
         items: agg.items + r.items, links: agg.links + r.links, findings: agg.findings + r.findings,
@@ -410,8 +425,23 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
         scanned: Math.max(agg.scanned, r.scanned), scanMs: Math.max(agg.scanMs, r.scanMs),
       } : r;
     } catch (e) {
-      errors.push(`${cred.serverUrl}: ${e instanceof Error ? e.message : e}`);
+      const msg = e instanceof Error ? e.message : String(e);
+      errors.push(`${cred.serverUrl}: ${msg}`);
+      // Report the NEXT attempt in the same breath as the failure, so the log
+      // says what will happen rather than leaving the user to infer it.
+      const next = noteTargetFailure(cred.serverUrl, msg);
+      const notice = breakerNotice(cred.serverUrl, next);
+      if (notice) console.error(`[sync] ${notice}`);
     }
+  }
+  // A walk that shipped nothing because every target is in cooldown is NOT a
+  // success, and must not be reported as one — the caller marks target health
+  // from this, and "0 pushed, no error" would read as a healthy quiet walk.
+  if (!agg && skippedTargets.length > 0 && errors.length === 0) {
+    throw new Error(
+      `every sync target is in failure cooldown: ${skippedTargets.join(', ')}. `
+      + 'They will be retried automatically; run `chat-recall doctor` for the last error.',
+    );
   }
   // Ledger writes are coalesced during the walk (see persist() in sync-ledger).
   // This is the durability point: everything acked above reaches disk before we
@@ -976,7 +1006,12 @@ const refs = listAvailableBackends().flatMap((b) => {
     return {
       sent: 0,
       async add(row: any): Promise<void> {
-        const size = JSON.stringify(row).length;
+        // BYTES, not UTF-16 code units. `.length` on the serialised string
+        // undercounts exactly the content that blows the budget: any non-ASCII
+        // character is 2–4 bytes on the wire but 1–2 units here, so a batch of
+        // emoji-heavy or CJK transcript could be ~3× the 4 MB cap it was
+        // measured against and get rejected by the server's body limit.
+        const size = Buffer.byteLength(JSON.stringify(row));
         if (batch.length > 0 && (batchBytes + size > MAX_BATCH_BYTES || batch.length >= maxItems)) await this.drain();
         batch.push(row);
         batchBytes += size;
@@ -1778,13 +1813,45 @@ export async function buildConversationSync(
       // is what stops a resume-truncated or mtime-touched session from being
       // fully rebuilt on every tick (the export/read still happens — it's how we
       // know — but everything expensive after it is skipped).
+      // Build the container ONCE. The hash is needed before the shadow is
+      // touched (a content match short-circuits the whole session), and
+      // updateShadow used to build a second identical copy from the same
+      // export — a wasted copy of every byte on a 47 MB transcript.
+      let built: RawContainer | undefined;
       if (exp) {
-        try { srcHash = containerSrcHash(buildRawContainer(exp)); } catch { srcHash = undefined; }
+        try {
+          built = buildRawContainer(exp);
+          srcHash = containerSrcHash(built);
+        } catch { built = undefined; srcHash = undefined; }
         if (srcHash && opts.priorContentHash && srcHash === opts.priorContentHash) {
           return { unchanged: true, srcHash };
         }
+        // THE SIZE GUARD, MEASURED ON WHAT WE ACTUALLY HAVE.
+        //
+        // `oversized` above is decided from sessionFileBytes(), which returns 0
+        // for any backend that is not append-only — OpenCode implements neither
+        // fileSize() nor isAppendOnly(), because its sessions live in SQLite and
+        // have no file at all. So for those the ceiling never fired and a huge
+        // session took the FULL path: replay and computeOutcome each re-read the
+        // whole thing, and a 353 MB session with 100 MB JSON lines OOMed the walk.
+        //
+        // The export has already happened by here, and it is bounded by the
+        // session's real size. What this protects is everything AFTER it — the
+        // scan, the redact, the git replay, the derived compute — which is where
+        // the memory actually went. Measuring the container closes the guard for
+        // every backend, including any whose fileSize() under-reports.
+        const containerBytes = built
+          ? built.files.reduce((n, f) => n + Buffer.byteLength(f.text), 0)
+          : 0;
+        if (containerBytes > FULL_BUILD_MAX_BYTES) {
+          console.error(`[sync] ${ref.prefixedId} is ${(containerBytes / 1048576).toFixed(0)}MB `
+            + `(over the ${(FULL_BUILD_MAX_BYTES / 1048576).toFixed(0)}MB ceiling) — shipping without `
+            + 'the raw archive and derived data to keep the walk in memory');
+          includeRaw = false;
+          includeMeta = false;
+        }
       }
-      const shadow = updateShadow(ref.rawId, exp);
+      const shadow = updateShadow(ref.rawId, exp, built);
       if (shadow.container) {
         fullestContainer = shadow.container;
         if (shadow.status === 'rewrite-merged' && shadow.recovered > 0) {
