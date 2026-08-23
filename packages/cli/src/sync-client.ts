@@ -1239,8 +1239,43 @@ const refs = listAvailableBackends().flatMap((b) => {
   const walkStartedAt = Date.now();
   reportWalkProgress({ done: 0, total: slice.length, startedAt: walkStartedAt, complete: false });
   let traceN = 0;
+  // ── KEEP THE EVENT LOOP ALIVE ───────────────────────────────────────────
+  //
+  // THIS IS WHY THE COLLECTOR LOOKED DEAD. Every `await` in this loop resolves
+  // as a MICROTASK, and Node drains the entire microtask queue before it
+  // advances to the timer phase. So a backlog of sessions — each one followed by
+  // a multi-second synchronous secret scan — runs as ONE unbroken chain, and for
+  // its whole duration nothing else in the process happens:
+  //
+  //   · the 60-second heartbeat never fires, so the log goes silent
+  //   · collector-health.json freezes, so every reader says "not running"
+  //   · SIGCHLD is not serviced, so a finished codeindex child sits <defunct>
+  //   · SIGTERM is not serviced, so systemd waits 90s and then SIGKILLs
+  //
+  // Measured: 12 sessions, 388 MB, 24.2 seconds of walking, ZERO of 24 expected
+  // heartbeats. With `setImmediate` between sessions — the check phase runs
+  // AFTER the timer phase — the same work fired 11. The daemon was never hung;
+  // it simply never yielded, and "never yields for nine minutes" is
+  // indistinguishable from dead to everything watching it.
+  //
+  // Once per session, unconditionally. A first version gated this behind a
+  // 50 ms budget to avoid "wasting" loop turns on the ~15,700 refs that skip in
+  // microseconds — then measured it: 15,727 unconditional yields cost 37.9 ms
+  // total, 2.4 µs each, against a walk that takes over a minute. The budget
+  // bought nothing and cost an arbitrary constant plus a clock read in the hot
+  // path, so it is gone. One yield per iteration is deterministic and needs no
+  // tuning.
+  //
+  // NOT THE WHOLE ANSWER, and worth being clear about: this makes the process
+  // RESPONSIVE while it works, it does not make the work faster. The scan is
+  // pure, CPU-bound and uses one of this machine's twelve cores. Moving it to
+  // worker_threads is the real fix — it would keep the main thread completely
+  // free AND parallelise across cores. That is a much larger change; yielding is
+  // the correct minimal one, and it is what turns "the collector is dead" back
+  // into "the collector is busy".
   let considered = 0;
   for (const ref of slice) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
     // PROGRESS COUNTS SESSIONS CONSIDERED, not sessions shipped.
     //
     // Reporting `walked` (the shipped count) looked right and was useless: on an
