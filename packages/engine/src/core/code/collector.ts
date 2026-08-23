@@ -106,33 +106,63 @@ export async function resolveCodeindexBin(autoInstall = true): Promise<string> {
  *  split('\n') copy at close) OOM-killed the watch daemon on big workspaces. */
 const MCP_OUT_MAX_BYTES = 64 * 1024 * 1024;
 
-/** Drive the codeindex MCP server: write all calls, close stdin, collect replies by id. */
+/**
+ * Drive the codeindex MCP server: write all calls, close stdin, collect replies
+ * by id.
+ *
+ * PARSE COMPLETE LINES AS THEY ARRIVE. The previous shape accumulated every byte
+ * with `out += d.toString()` and then `split('\n')` at close — so peak memory
+ * was the WHOLE reply stream plus a second copy as an array of every line, and
+ * the `+=` itself is quadratic in the number of chunks. Both were paid in full
+ * before a single reply could be looked at.
+ *
+ * Now each JSON-RPC line is parsed the moment it completes and only the small
+ * extracted text is retained; the buffer never holds more than one partial line.
+ * The 64 MB ceiling stays as a backstop against a reply with no newline in it,
+ * but it is no longer the thing standing between a big workspace and an OOM.
+ */
 function runMcp(binPath: string, workspace: string, calls: any[], timeoutMs = 180_000): Promise<Map<number, string>> {
   return new Promise((resolve, reject) => {
     const p = spawn(binPath, ['--mcp', '--workspace', workspace], { stdio: ['pipe', 'pipe', 'ignore'] });
-    let out = '';
+    const res = new Map<number, string>();
+    let pending = '';        // only ever the tail after the last newline
+    let failed = false;
     const timer = setTimeout(() => { try { p.kill('SIGKILL'); } catch { /* ignore */ } reject(new Error('codeindex MCP timed out')); }, timeoutMs);
-    p.stdout.on('data', (d) => {
-      out += d.toString();
-      if (out.length > MCP_OUT_MAX_BYTES) {
-        out = '';
+
+    const takeLine = (line: string): void => {
+      const t = line.trim();
+      if (!t) return;
+      let m: any;
+      try { m = JSON.parse(t); } catch { return; }
+      const text = m?.result?.content?.[0]?.text;
+      if (m?.id != null && typeof text === 'string') res.set(Number(m.id), text);
+    };
+
+    p.stdout.setEncoding('utf8');
+    p.stdout.on('data', (d: string) => {
+      if (failed) return;
+      pending += d;
+      let nl = pending.indexOf('\n');
+      while (nl !== -1) {
+        takeLine(pending.slice(0, nl));
+        pending = pending.slice(nl + 1);
+        nl = pending.indexOf('\n');
+      }
+      // A single line larger than the whole budget cannot be parsed anyway, and
+      // is the only way the buffer can still grow without bound.
+      if (pending.length > MCP_OUT_MAX_BYTES) {
+        failed = true;
+        pending = '';
         clearTimeout(timer);
         try { p.kill('SIGKILL'); } catch { /* ignore */ }
-        reject(new Error(`codeindex MCP output exceeded ${MCP_OUT_MAX_BYTES / 1048576}MB budget`));
+        reject(new Error(`codeindex MCP emitted a single line over ${MCP_OUT_MAX_BYTES / 1048576}MB`));
       }
     });
     p.on('error', (e) => { clearTimeout(timer); reject(e); });
     p.on('close', () => {
       clearTimeout(timer);
-      const res = new Map<number, string>();
-      for (const line of out.split('\n')) {
-        const s = line.trim();
-        if (!s) continue;
-        let m: any;
-        try { m = JSON.parse(s); } catch { continue; }
-        const text = m?.result?.content?.[0]?.text;
-        if (m?.id != null && typeof text === 'string') res.set(Number(m.id), text);
-      }
+      if (failed) return;              // already rejected
+      if (pending) takeLine(pending);  // last line without a trailing newline
       resolve(res);
     });
     p.stdin.write(calls.map((c) => JSON.stringify(c) + '\n').join(''));
