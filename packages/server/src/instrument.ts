@@ -3,9 +3,14 @@
  * other module) so @sentry/node's auto-instrumentation hooks are installed
  * before the instrumented libraries load.
  *
- * Ships to the shared `munhq-backend` GlitchTip project; the `app` tag (+
- * server_name) marks these events as chat-recall so the tier project stays
+ * Ships to whichever GlitchTip project the DSN points at; the `app` tag (+
+ * server_name) marks these events as chat-recall so a shared project stays
  * filterable per app. No-ops when GLITCHTIP_DSN is unset (graceful degrade).
+ *
+ * The operator's own project name used to be written here. This repo is public
+ * and the DSN already carries the destination, so naming private infrastructure
+ * in a comment told a reader something about the operator and nothing about the
+ * code.
  */
 import * as Sentry from '@sentry/node';
 
