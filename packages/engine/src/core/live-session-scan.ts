@@ -99,6 +99,12 @@ export function detectTool(sessionId: string): AiTool {
  * front, so a session appearing mid-walk was never part of that walk anyway.
  *
  * Nesting is counted, so an inner scope does not drop an outer one's index.
+ *
+ * SIBLING, NOT DUPLICATE: `withSessionReadCache` above shares this shape with a
+ * shorter lifetime on purpose — it caches one session's TEXT for one derive,
+ * where this caches PATHS for a whole walk. Paths are small and stable;
+ * transcript text is neither, and a walk-long cache of it is the exact
+ * out-of-memory bug that history warns about.
  */
 let scanScopeDepth = 0;
 
@@ -301,6 +307,13 @@ export function resolveSessionContentGroups(sessionId: string): SessionContentGr
  *
  * The key includes mtime and byte length, so a file that changes mid-scope is
  * re-read rather than served stale.
+ *
+ * SIBLING, NOT DUPLICATE: `withSessionScanScope` below has the same
+ * nesting-counter shape but a deliberately different lifetime. This one holds
+ * one session's TEXT and is opened around that session's derive; that one holds
+ * the path INDEX and is opened around a whole walk. They are not merged
+ * precisely because giving transcript text a walk-long lifetime is the
+ * out-of-memory bug this comment is about.
  */
 let readScope: { key: string; value: { text: string; mtime: number } } | null = null;
 let readScopeDepth = 0;
