@@ -251,8 +251,20 @@ async function fetchTenantSecurityConfig(cred: Credentials): Promise<TenantSecur
     // servers), so we fail open to "verified enabled" — this is the product default.
     let verifySecrets = true;
     if (settingsRes?.ok) {
-      const body = await settingsRes.json().catch(() => ({})) as { verifySecrets?: boolean };
+      const body = await settingsRes.json().catch(() => ({})) as { verifySecrets?: boolean; telemetry?: boolean };
       if (typeof body.verifySecrets === 'boolean') verifySecrets = body.verifySecrets;
+      // Learned HERE because this request happens on every sync. Reading it from
+      // the /api/sync response meant a fully-synced machine — which uploads
+      // nothing, so gets no response — could never learn its own eligibility.
+      if (typeof body.telemetry === 'boolean') {
+        setTelemetryEligible(base, body.telemetry);
+        try {
+          const prior = readCollectorHealth()?.telemetryEligible ?? {};
+          updateCollectorHealth({
+            telemetryEligible: { ...prior, [base]: { allowed: body.telemetry, at: Date.now() } },
+          });
+        } catch { /* cosmetic — never fail a sync over it */ }
+      }
     }
 
     const config: TenantSecurityConfig = { tenantRules, verifySecrets, rulePackVersion };

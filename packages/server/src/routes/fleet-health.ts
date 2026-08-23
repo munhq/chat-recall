@@ -182,6 +182,58 @@ async function collectorTelemetryByDevice(tenant: string): Promise<Map<string, D
   return out;
 }
 
+/**
+ * Fleet-wide shape, not per device: the numbers that answer "how long does a
+ * sync take for a real customer" rather than "how is this laptop".
+ *
+ * These lived briefly on a separate /api/client-events/health endpoint that
+ * nothing ever called — built before I noticed FleetHealth already owned this
+ * question. Unused endpoints rot, so the aggregate moved into the route the UI
+ * actually fetches and the endpoint was deleted.
+ */
+export interface FleetTelemetrySummary {
+  walks: number;
+  scanMsP50: number | null;
+  scanMsP95: number | null;
+  rssPeakMbMax: number | null;
+  /** CLI versions in use, most-deployed first. */
+  versions: Array<{ version: string; devices: number }>;
+}
+
+async function fleetTelemetrySummary(tenant: string): Promise<FleetTelemetrySummary | null> {
+  try {
+    const { openPgPool, tenantQuery } = await import('@chat-recall/engine/core/store/pg-pool.js');
+    const pool = await openPgPool();
+    const since = Date.now() - TELEMETRY_WINDOW_MS;
+    const agg = await tenantQuery(pool, tenant, `
+      SELECT count(*)::int AS walks,
+             percentile_disc(0.5) WITHIN GROUP (ORDER BY (data->>'scanMs')::int)  AS p50,
+             percentile_disc(0.95) WITHIN GROUP (ORDER BY (data->>'scanMs')::int) AS p95,
+             max((data->>'rssPeakMb')::int) AS rss_max
+        FROM client_events
+       WHERE tenant=$1 AND ts >= $2 AND kind='sync_walk' AND data ? 'scanMs'
+    `, [tenant, since]);
+    const versions = await tenantQuery(pool, tenant, `
+      SELECT cli_version, count(DISTINCT device_id)::int AS devices
+        FROM client_events
+       WHERE tenant=$1 AND ts >= $2 AND cli_version <> ''
+       GROUP BY cli_version ORDER BY devices DESC LIMIT 10
+    `, [tenant, since]);
+    const r = agg.rows[0] as Record<string, unknown> | undefined;
+    if (!r || Number(r.walks) === 0) return null;
+    return {
+      walks: Number(r.walks) || 0,
+      scanMsP50: r.p50 == null ? null : Number(r.p50),
+      scanMsP95: r.p95 == null ? null : Number(r.p95),
+      rssPeakMbMax: r.rss_max == null ? null : Number(r.rss_max),
+      versions: (versions.rows as Array<Record<string, unknown>>)
+        .map((v) => ({ version: String(v.cli_version), devices: Number(v.devices) || 0 })),
+    };
+  } catch {
+    return null;   // no telemetry reported, or a schema without `data`
+  }
+}
+
 const router = express.Router();
 
 /** A device is stale when we have not heard from it in this long. Chosen to be
@@ -239,7 +291,7 @@ router.get('/fleet', async (req, res) => {
   const cp = await createControlPlane();
   const store = await createStore();
   try {
-    const [devices, activity, sourcesRaw, telemetry] = await Promise.all([
+    const [devices, activity, sourcesRaw, telemetry, fleetTelemetry] = await Promise.all([
       cp.listAgentTokens(tenant),
       store.sessionCountsByDevice?.() ?? Promise.resolve([]),
       cp.getTenantSetting(tenant, 'sync_sources'),
@@ -248,6 +300,7 @@ router.get('/fleet', async (req, res) => {
       // error — the panel simply shows what the server can see on its own, which
       // is what it showed before this existed.
       collectorTelemetryByDevice(tenant).catch(() => new Map<string, DeviceTelemetry>()),
+      fleetTelemetrySummary(tenant),
     ]);
 
     let reported: ReportedSource[] = [];
@@ -278,6 +331,9 @@ router.get('/fleet', async (req, res) => {
         unattributedSessions: (activity as Array<{ device: string | null; sessions: number }>)
           .filter((r) => !r.device).reduce((n, r) => n + r.sessions, 0),
       },
+      // Null when no device has reported telemetry — a free plan, opted out, or
+      // an older CLI. The panel omits the row rather than showing zeros.
+      fleetTelemetry,
     });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'fleet health failed' });
