@@ -35,7 +35,9 @@ import chokidar from 'chokidar';
 import { dirname, basename, join, resolve, sep } from 'path';
 import { homedir } from 'os';
 
-import { claudeBackend, listAvailableBackends } from '@chat-recall/engine/core/backends/index.js';
+import {
+  claudeBackend, codexBackend, geminiBackend, opencodeBackend, listAvailableBackends,
+} from '@chat-recall/engine/core/backends/index.js';
 import { getDiaryDir, getDataDir } from '@chat-recall/engine/core/paths.js';
 import { loadSettings, isPersonalPath } from '@chat-recall/engine/core/settings.js';
 
