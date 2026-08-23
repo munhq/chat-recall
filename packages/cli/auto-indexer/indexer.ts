@@ -516,6 +516,61 @@ function publishHealth(): void {
   }, { starts }));
 }
 
+// ── Shadow retention ────────────────────────────────────────────────────
+//
+// The shadow archive had no retention policy and grew forever on the user's own
+// disk: 1.3 GB across 15,720 files on this machine. A background agent silently
+// consuming a gigabyte-plus of someone else's laptop is how you get uninstalled.
+//
+// Only fully-acked shadows are eligible. A shadow exists so a resume that
+// truncates the live file cannot destroy unshipped records — so until every
+// configured target has acked the session, it may be the last copy in existence
+// and is untouchable at any age or size.
+//
+// Runs on a slow timer, never from the 1-second resume guard: this walks the
+// whole archive and stats every file, which is exactly the work that must not
+// sit on a hot path.
+const SHADOW_PRUNE_MS = Number(process.env.CHAT_RECALL_SHADOW_PRUNE_MS) || 6 * 60 * 60 * 1000;
+
+async function shadowPruneTick(): Promise<void> {
+  try {
+    const { pruneShadow } = await import('@chat-recall/engine/transcript/shadow-prune.js');
+    const { getSyncedRows } = await import('../src/sync-ledger.js');
+    const { getBackend } = await import('@chat-recall/engine/core/tool-backend.js');
+    const servers = syncTargetUrls();
+    if (servers.length === 0) return;   // nothing has been shipped anywhere yet
+
+    // One ledger read per target, then a pure membership test per shadow —
+    // rather than a ledger lookup per file.
+    const acked = servers.map((s) => getSyncedRows(s));
+
+    const result = pruneShadow({
+      isFullyAcked: (tool, rawId) => {
+        // The ledger is keyed by PREFIXED id; the shadow filename is the raw id.
+        let prefixed = rawId;
+        try { prefixed = getBackend(tool).toPrefixedId(rawId); } catch { /* unknown tool → raw id */ }
+        // EVERY target, not any: a session shipped to one server and not the
+        // other still needs its shadow for the one that is behind.
+        return acked.every((m) => {
+          const row = m.get(prefixed);
+          return !!row && (row.acked === true || (row.o ?? 0) > 0);
+        });
+      },
+    });
+    if (result.deleted > 0) {
+      console.log(`[${ts()}] shadow prune: removed ${result.deleted} of ${result.scanned} archive(s), `
+        + `freed ${(result.freedBytes / 1048576).toFixed(0)}MB, `
+        + `${(result.remainingBytes / 1048576).toFixed(0)}MB remaining `
+        + `(${result.keptUnacked} kept — not yet acked everywhere)`);
+    }
+  } catch (err) {
+    console.error(`[${ts()}] shadow prune failed (harmless, retries next tick): ${err instanceof Error ? err.message : err}`);
+  }
+}
+// First pass a few minutes in, so startup work finishes first.
+setTimeout(() => { void shadowPruneTick(); }, 5 * 60_000);
+setInterval(() => { void shadowPruneTick(); }, SHADOW_PRUNE_MS).unref();
+
 /** The servers this machine syncs to, for health reporting. Best-effort. */
 function syncTargetUrls(): string[] {
   try { return loadAllCredentials().map((c) => c.serverUrl); } catch { return []; }
