@@ -30,11 +30,20 @@ router.get('/sync', async (_req, res) => {
       // must not leave the UI claiming "syncing, 62%" forever.
       const PROGRESS_STALE_MS = 10 * 60_000;
       let progress: { done: number; total: number } | null = null;
+      // WHEN THE COLLECTOR LAST REPORTED, which is a different question from how
+      // old the newest session is. Without this the UI could only say "1h
+      // behind", meaning the newest transcript is an hour old — which is exactly
+      // what a healthy install looks like when nobody has opened an AI tool for
+      // an hour, and reads as a broken sync. Reported regardless of whether the
+      // walk finished, because a finished walk is precisely the case that needs
+      // it.
+      let lastSyncAgeMs: number | null = null;
       try {
         const entry = await store.kvGet('collector', 'walk_progress');
         const raw = typeof entry === 'string' ? entry : (entry as { value?: string } | null)?.value;
         if (raw) {
           const p = JSON.parse(raw) as { done: number; total: number; complete: boolean; at: number };
+          if (typeof p.at === 'number' && p.at > 0) lastSyncAgeMs = Math.max(0, Date.now() - p.at);
           // done >= total IS complete, whatever the flag says.
           //
           // The collector sets complete:true on the last line of the walk, after
@@ -61,6 +70,7 @@ router.get('/sync', async (_req, res) => {
         newestSessionAgeMs: newestMtime ? Date.now() - newestMtime : null,
         sourceTypes: stats,
         progress,
+        lastSyncAgeMs,
       });
     } finally {
       await store.close();
