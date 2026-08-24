@@ -70,7 +70,7 @@ chat-recall recent                      # what was I working on
 
 By default this syncs to the hosted server at [chatrecall.dev](https://chatrecall.dev), which starts with a 7-day trial that needs no card and is a paid subscription after that — see [pricing](https://chatrecall.dev/pricing/). To keep everything on your own machine instead, run the server yourself: that is **free for one person, forever**, with every feature and no licence key — the task board and Toolkit included — and a licence only buys collaboration: a second member, shared history, assigning work. See [Self-host](#self-host-the-server-docker-compose) below. Either way the CLI is the same binary and the same commands; only the server URL differs.
 
-No API keys are required. Postgres full-text search is the default backend; vector search and AI summaries are upgrades, not prerequisites.
+No API keys are required. Search is Postgres full-text search. AI summaries are an optional upgrade, not a prerequisite.
 
 ## Four things it actually does
 
@@ -82,15 +82,6 @@ No API keys are required. Postgres full-text search is the default backend; vect
 ## Add your own AI tool
 
 A new backend is one file and one line — no changes to the engine. See [`docs/ADDING_A_TOOL.md`](docs/ADDING_A_TOOL.md). If a tool you use writes transcripts to disk, it can be indexed here, and a pull request is the fastest way to make that happen.
-
-### Optional: vector search
-
-```bash
-ollama pull nomic-embed-text
-chat-recall sync --full       # re-ships; the server embeds chunks into pgvector
-```
-
-…or set `EMBEDDING_PROVIDER=gemini` with `GEMINI_API_KEY` if you'd rather use a hosted embedder. Without either, search falls back to Postgres FTS — same results surface, slightly less semantic.
 
 ### Optional: web dashboard
 
@@ -119,8 +110,7 @@ troubleshooting, is in **[docs/SELF_HOSTING.md](docs/SELF_HOSTING.md)**.
 Two containers: the server plus a bundled `pgvector/pgvector` Postgres, so a
 plain `docker compose up` is self-contained. Bring-your-own-Postgres is
 supported too (it is how the hosted service runs): set `DATABASE_URL` to an
-external Postgres 16+. The `pgvector` extension is needed only for semantic
-search — everything degrades to full-text without it.
+external Postgres 16+.
 
 ### Keep the index live (+ optional server sync)
 
@@ -228,12 +218,11 @@ When the codeindex companion is installed, the agent *also* gets 16 code-level t
 
 ## Search architecture
 
-Search runs **on the server**. Two backends, Postgres FTS is the default:
+Search runs **on the server**, and it is Postgres full-text search: keyword
+matching with ranking, plus `pg_trgm` typo tolerance. It needs no embedder, no
+API key and no extra service.
 
-- **Postgres FTS** — zero extra setup. Keyword search with ranking. Always available.
-- **Vector (pgvector)** — opt-in, and needs an embedder: Ollama, any OpenAI-compatible embeddings endpoint, or a Gemini API key. The vector width follows the model you point it at, so pick one embedder and keep it — changing it means a full re-index.
-
-The CLI ships redacted chunks to the server, which indexes them. If no embedder is configured, every search tool transparently falls back to FTS.
+The CLI ships redacted chunks to the server, which indexes them.
 
 ## Cost tracking
 
@@ -307,15 +296,13 @@ Two extension points, both registry-driven:
 
 That is the whole list. No API key is needed to install, index or search.
 
-Two features are opt-in, and each one needs a back end that you choose:
+One feature is opt-in, and it needs a back end that you choose:
 
 | Feature | Back ends you can point it at |
 |---|---|
-| Vector search | Ollama (local, free), any OpenAI-compatible embeddings endpoint, or `GEMINI_API_KEY` |
 | AI summaries | Ollama, a CLI you are already logged in to (`SUMMARY_CLI_CMD`), an OpenAI-compatible endpoint, or `ANTHROPIC_API_KEY` |
 
-Without either back end, search falls back to Postgres FTS and sessions carry no
-generated summary. Everything else works the same.
+Without it, sessions carry no generated summary. Everything else works the same.
 
 ## License
 
