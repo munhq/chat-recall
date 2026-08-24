@@ -76,7 +76,7 @@ describe('/api/sync-config', () => {
     const app = await makeApp('t4');
     // The endpoint must never become a way to hand collectors a path to read.
     const bad = await request(app).post('/api/sync-config').send({
-      excludeTools: [], excludeProjects: [], excludeSources: ['/home/adi/.ssh'],
+      excludeTools: [], excludeProjects: [], excludeSources: ['/home/user/.ssh'],
     });
     expect(bad.status).toBe(400);
 

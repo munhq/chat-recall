@@ -605,7 +605,7 @@ function decodeDirName(dirName: string): string {
     // Try joining progressively more segments with hyphens/underscores
     let matched = false;
 
-    // Try single segment first (most common case: /home, /adi, /code, etc.)
+    // Try single segment first (most common case: /home, /user, /code, etc.)
     const singleCandidate = join(currentPath, segments[i]);
     if (existsSync(singleCandidate)) {
       currentPath = singleCandidate;

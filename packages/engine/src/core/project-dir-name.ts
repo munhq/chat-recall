@@ -4,19 +4,19 @@
  * Claude Code names each project folder under ~/.claude/projects/ after the
  * project's absolute path with every path separator replaced by '-':
  *
- *   /home/adi/code/chat-recall   ->  -home-adi-code-chat-recall
- *   C:\Users\adi\code\app        ->  C--Users-adi-code-app
+ *   /home/user/code/chat-recall   ->  -home-user-code-chat-recall
+ *   C:\Users\user\code\app        ->  C--Users-user-code-app
  *
  * Ten call sites each open-coded `name.replace(/-/g, '/')`, which is correct on
- * POSIX and produces nonsense on Windows: `C--Users-adi-code-app` becomes
- * `C//Users/adi/code/app`. Every session, plan, task, hook, subagent, command,
+ * POSIX and produces nonsense on Windows: `C--Users-user-code-app` becomes
+ * `C//Users/user/code/app`. Every session, plan, task, hook, subagent, command,
  * CLAUDE.md and memory file was therefore attributed to a path that does not
  * exist, so nothing grouped by repo and no project ever resolved to a git id.
  *
  * This is the one decoder. Do not add an eleventh.
  *
  * NOTE ON AMBIGUITY: the encoding is lossy — a real '-' in a directory name is
- * indistinguishable from a separator, which is why `-home-adi-code-chat-recall`
+ * indistinguishable from a separator, which is why `-home-user-code-chat-recall`
  * could be `.../chat-recall` or `.../chat/recall`. Callers that can touch the
  * filesystem should prefer the probing decoder in parsers/session.ts, which
  * resolves the ambiguity against real directories. This function is the cheap
@@ -40,7 +40,7 @@ export function decodeProjectDirName(dirName: string): string {
   if (!dirName) return '';
 
   if (looksWindowsEncoded(dirName)) {
-    // `C--Users-adi-code-app` -> `C:\Users\adi\code\app`. The drive letter and
+    // `C--Users-user-code-app` -> `C:\Users\user\code\app`. The drive letter and
     // its '--' (from ':' plus '\') come off first; the rest is separators.
     const drive = dirName[0].toUpperCase();
     const rest = dirName.slice(3).replace(/-/g, '\\');

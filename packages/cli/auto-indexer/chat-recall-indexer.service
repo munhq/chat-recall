@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=adi
+User=REPLACE_ME
 WorkingDirectory=/home/user/code/personal/chat-recall
 ExecStart=/home/user/.nvm/versions/node/v23.9.0/bin/node /home/user/code/personal/chat-recall/node_modules/.bin/tsx /home/user/code/personal/chat-recall/auto-indexer/indexer.ts
 Restart=always
