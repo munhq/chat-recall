@@ -3,6 +3,7 @@
  * CLI for chat-recall.
  */
 
+import { resumeCommandFor } from '@chat-recall/engine/core/resume-command.js';
 import type { McpClientId } from '@chat-recall/engine/core/mcp-clients.js';
 import { config } from 'dotenv';
 import { Command } from 'commander';
@@ -685,7 +686,7 @@ program
           console.log(`   ${chalk.magenta(label + ':')} ${text}`);
         }
 
-        console.log(`   ${chalk.green('Resume:')} claude --resume ${result.sessionId}`);
+        { const rc = resumeCommandFor(result.sessionId); if (rc) console.log(`   ${chalk.green('Resume:')} ${rc}`); }
         console.log();
       }
     } catch (err) {
@@ -790,7 +791,7 @@ program
       }
 
       console.log(chalk.dim(`Showing ${displayMessages.length} of ${messagesList.length} messages. Use --full for the complete conversation.`));
-      console.log(chalk.dim(`Resume: claude --resume ${sessionId}`));
+      { const rc = resumeCommandFor(sessionId); if (rc) console.log(chalk.dim(`Resume: ${rc}`)); }
     } catch (err) {
       console.error(chalk.red('Error:'), err instanceof Error ? err.message : err);
       process.exit(1);
@@ -884,7 +885,7 @@ memory
         if (preview) console.log(`   ${preview}`);
 
         if (r.sourceType === 'session') {
-          console.log(`   ${chalk.green('Resume:')} claude --resume ${r.itemId}`);
+          { const rc = resumeCommandFor(r.itemId); if (rc) console.log(`   ${chalk.green('Resume:')} ${rc}`); }
         }
 
         console.log();

@@ -10,6 +10,7 @@
 import { existsSync, readFileSync } from 'fs';
 import { basename } from 'path';
 
+import { resumeCommandFor } from './resume-command.js';
 import { listAvailableBackends } from './tool-backend.js';
 import './backends/index.js'; // side-effect: registers backends
 import type { AiTool } from './tool-backend.js';
@@ -299,7 +300,10 @@ export function formatContext(context: ConversationContext): string {
     lines.push('');
   }
   
-  lines.push(`**Resume:** \`claude --resume ${context.sessionId}\``);
+  // Not every tool resumes by id, and none of the prefixed ones take
+  // `claude --resume`. resumeCommandFor() owns that mapping.
+  const resume = resumeCommandFor(context.sessionId);
+  if (resume) lines.push(`**Resume:** \`${resume}\``);
   
   return lines.join('\n');
 }
