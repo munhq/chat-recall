@@ -367,8 +367,8 @@ export function parseGitRemote(url: string): { host: string; owner: string; repo
 /**
  * Strip SSH host-alias suffixes for known providers so multi-account
  * setups don't fragment one logical host into many. e.g. when
- * `~/.ssh/config` defines `Host github.com-darkkraft` for a second
- * GitHub account, the remote `git@github.com-darkkraft:darkkraft/foo`
+ * `~/.ssh/config` defines `Host github.com-second` for a second
+ * GitHub account, the remote `git@github.com-second:owner/repo`
  * should still bucket under `github.com`. Anything we don't recognise
  * is left alone so we don't accidentally collapse self-hosted hosts.
  */
