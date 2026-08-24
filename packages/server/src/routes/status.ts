@@ -35,7 +35,20 @@ router.get('/sync', async (_req, res) => {
         const raw = typeof entry === 'string' ? entry : (entry as { value?: string } | null)?.value;
         if (raw) {
           const p = JSON.parse(raw) as { done: number; total: number; complete: boolean; at: number };
-          if (!p.complete && p.total > 0 && Date.now() - p.at < PROGRESS_STALE_MS) {
+          // done >= total IS complete, whatever the flag says.
+          //
+          // The collector sets complete:true on the last line of the walk, after
+          // its final upload has already gone out, so the flag only ships on the
+          // NEXT post — and a walk that uploaded nothing new never makes one.
+          // The server's last-received value is therefore the final in-loop
+          // report: done === total with complete:false, refreshed often enough
+          // that PROGRESS_STALE_MS never rescues it either. The UI then showed
+          // "syncing 99%" indefinitely (99 because it clamps the percentage).
+          //
+          // Checked here rather than only in the client that sends it, because
+          // collectors already in the field will keep reporting the old way.
+          const finished = p.complete || p.done >= p.total;
+          if (!finished && p.total > 0 && Date.now() - p.at < PROGRESS_STALE_MS) {
             progress = { done: p.done, total: p.total };
           }
         }
