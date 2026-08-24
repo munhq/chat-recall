@@ -33,7 +33,9 @@
  *     not keep writing to a board their plan no longer includes.
  */
 import { createStore, createControlPlane, runWithTenant, runWithAuthor, runUnrestricted } from '../imports.js';
-import { severityOfPri, PRI_SEVERITY, actionIdentityKey } from '@chat-recall/engine/types/code-intel.js';
+import {
+  severityOfPri, PRI_SEVERITY, actionIdentityKey, priOfSeverity,
+} from '@chat-recall/engine/types/code-intel.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { allows } from '../util/entitlements.js';
 import { effectivePlan, billingEnabled } from '../util/billing.js';
@@ -132,10 +134,43 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
       // Reproduced on prod: the panel said "4 findings ready to file" (read as
       // the signed-in user) and Run now said "nothing qualified" (read as
       // auto-tasks) in the same session, against the same table.
-      const { open, existing } = await runUnrestricted(async () => ({
-        open: await store.listCodeActions(undefined, { status: 'suggested', limit: 500 }),
+      const { openActions, openFindings, existing } = await runUnrestricted(async () => ({
+        openActions: await store.listCodeActions(undefined, { status: 'suggested', limit: 500 }),
+        openFindings: await store.listCodeFindings(undefined, { limit: 500 }),
         existing: await store.teamTasksByFindingIds(),
       }));
+
+      // FINDINGS ARE FILEABLE TOO, and until now they were not — runAutoTasks
+      // read code_actions and nothing else. A finding carries a severity string
+      // where an action carries a numeric pri, and the policy is written in pri,
+      // so a CRITICAL finding could not become a card whatever its severity
+      // while a pri-2 "God module" action could. On one account that left 34
+      // criticals — unchecked `unwrap`, and a manifest rule — permanently
+      // unreachable from the board.
+      //
+      // Both are reduced to one shape so the dedup, the cap, the re-point and
+      // the close sweep below need no second copy of themselves.
+      //
+      // A finding's id IS its identity: it hashes content plus an ordinal among
+      // identical siblings, with no volatile part, unlike an action's whose title
+      // counts and location order used to move. Actions still need the separate
+      // identity key.
+      const open = [
+        ...openActions.map((a) => ({
+          id: a.id, pri: a.pri, title: a.title, fix: a.fix, agentPrompt: a.agentPrompt,
+          projectId: a.projectId, loc: a.loc ?? [],
+          identity: actionIdentityKey(a.projectId, a),
+        })),
+        ...openFindings
+          .filter((f) => f.status === 'open')
+          .map((f) => ({
+            id: f.id, pri: priOfSeverity(f.severity), title: f.title,
+            fix: f.why ?? '', agentPrompt: f.agentPrompt ?? '',
+            projectId: f.projectId,
+            loc: [{ file: f.file, line: f.line ?? null }],
+            identity: f.id,
+          })),
+      ];
       const urgent = open.filter((a) => a.pri <= policy.maxPri);
       const byFinding = new Map(existing.map((t) => [t.linkedFindingId as string, t]));
 
@@ -144,9 +179,7 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
       // identity, the two are the same row — which is what lets the close sweep
       // below tell "fixed" from "renamed", and stops a duplicate being filed for
       // a finding that already has a card.
-      const openByIdentity = new Map(
-        open.map((a) => [actionIdentityKey(a.projectId, a), a] as const),
-      );
+      const openByIdentity = new Map(open.map((a) => [a.identity, a] as const));
       // Cards keyed by the identity THE FILER STORED. Not recomputed from the
       // card: a card holds a severity-prefixed title and no category or loc, so
       // any reconstruction would differ from the filer's key and match nothing —
@@ -172,7 +205,7 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
         // cards for "inflate copy-pasted 2× (899 lines each)", one per id the
         // hash produced. Re-pointing also puts the card back inside `stillOpen`
         // for the close sweep, so it stops being a candidate for a false close.
-        const twin = cardIdentities.get(actionIdentityKey(a.projectId, a));
+        const twin = cardIdentities.get(a.identity);
         if (twin) {
           if (twin.linkedFindingId !== a.id) {
             await store.updateTeamTask(twin.id, { linkedFindingId: a.id });
@@ -194,7 +227,7 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
           createdBy: 'auto-tasks',
           linkedFindingId: a.id,
           // Stored so a later id shift is recognisable as the same finding.
-          linkedFindingIdentity: actionIdentityKey(a.projectId, a),
+          linkedFindingIdentity: a.identity,
         });
         created++;
       }
