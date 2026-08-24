@@ -649,6 +649,24 @@ const RecallSecurityDismissSchema = z.object({
   reason: z.string().optional().describe('Optional note'),
 });
 
+const TOOLKIT_TYPES = ['mcp', 'skill', 'command', 'agent', 'instructions'] as const;
+
+const RecallToolkitStatusSchema = z.object({
+  type: z.enum(TOOLKIT_TYPES).optional()
+    .describe('Restrict to one artifact type. Omit for every type.'),
+});
+
+const RecallToolkitSyncSchema = z.object({
+  types: z.array(z.enum(TOOLKIT_TYPES)).optional()
+    .describe('Which artifact types to install. Omit for all of them.'),
+  name: z.string().optional()
+    .describe('Install ONE named artifact. Requires exactly one entry in `types`.'),
+  device: z.string().optional()
+    .describe('Hostname of the machine to install on. Omit to target EVERY device on the account.'),
+  scope: z.enum(['pull', 'fan_out']).optional().default('pull')
+    .describe('pull = install what the account has onto the device(s), from the server (cross-device). fan_out = copy what a device already has between its own tools (single-machine).'),
+});
+
 const RecallSecurityRulesSchema = z.object({
   action: z.enum(['list', 'test']).optional().default('list')
     .describe('list = return tenant rules; test = try a regex against sample text (does not persist)'),
@@ -1603,6 +1621,59 @@ secret. The dismissal syncs across devices.`,
             reason: { type: 'string', description: 'Optional note' },
           },
           required: ['preview', 'status'],
+        },
+      },
+      {
+        name: 'recall_toolkit_status',
+        description: `Which MCP servers, skills, commands and agents exist, on which AI tool, on which device.
+
+Use it before recall_toolkit_sync to see what is missing where, and after, to
+confirm what landed. Counts are per (type, tool) and rows name the device that
+uploaded them, so you can tell "my laptop has it" from "my desktop has it".
+
+NOTE: the server holds an INVENTORY. MCP registrations carry enough to rebuild
+elsewhere; skills and agents do not (their file content is not uploaded), and
+this tool says which is which.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            type: { type: 'string', enum: [...TOOLKIT_TYPES], description: 'Restrict to one artifact type. Omit for every type.' },
+          },
+        },
+      },
+      {
+        name: 'recall_toolkit_sync',
+        description: `Install the account's MCP servers / skills / agents onto a device, or fan a device's own artifacts out across its tools.
+
+TWO DIFFERENT OPERATIONS — pick with \`scope\`:
+
+  scope: 'pull'     Install what the ACCOUNT has onto the target device, sourced
+                    from the server. This is the cross-device one: it is what
+                    sets up a new laptop. Omit \`device\` to target every device.
+
+  scope: 'fan_out'  Copy what ONE device already has between that device's own
+                    tools (claude → codex → cursor …). Single machine only; it
+                    reads that machine's disk.
+
+Examples:
+  everything, everywhere        { }
+  every MCP, everywhere         { types: ['mcp'] }
+  every MCP on one machine      { types: ['mcp'], device: 'my-laptop' }
+  one artifact                  { types: ['mcp'], name: 'acme-mcp' }
+  fan a machine's own set out   { scope: 'fan_out', device: 'my-laptop' }
+
+The work is QUEUED, not done inline: the target device performs it on its next
+drain (the watch daemon polls, or run \`chat-recall toolkit drain\`). Only that
+device can write its own config files, so nothing else could do it. Read the
+outcome back with recall_toolkit_status.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            types: { type: 'array', items: { type: 'string', enum: [...TOOLKIT_TYPES] }, description: 'Artifact types to install. Omit for all.' },
+            name: { type: 'string', description: 'Install ONE named artifact. Requires exactly one entry in types.' },
+            device: { type: 'string', description: 'Hostname of the target machine. Omit to target every device on the account.' },
+            scope: { type: 'string', enum: ['pull', 'fan_out'], default: 'pull', description: "pull = install from the server (cross-device). fan_out = copy between one machine's own tools." },
+          },
         },
       },
       {
@@ -4060,6 +4131,97 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
           reason: params.reason ?? '',
         });
         return { content: [{ type: 'text', text: `Dismissed \`${params.preview}\` as ${params.status}.` }] };
+      }
+
+      case 'recall_toolkit_status': {
+        const params = RecallToolkitStatusSchema.parse(args);
+        requireRemote();
+        const types = params.type ? [params.type] : [...TOOLKIT_TYPES];
+
+        // Types the server cannot rebuild elsewhere. Saying so here stops an
+        // agent queueing a skill sync that can never land, and then reporting
+        // success because the queue accepted it.
+        const REBUILDABLE: Record<string, string> = {
+          mcp: 'yes — a registration is config, and the whole entry is stored',
+          skill: 'no — a skill is a directory of files, and file content is not uploaded',
+          agent: 'no — only a short body preview is uploaded',
+          command: 'no — command bodies are not uploaded',
+          instructions: 'no — project-scoped, and file content is not uploaded',
+        };
+
+        const lines: string[] = ['# Toolkit inventory', ''];
+        for (const type of types) {
+          let items: Array<{ title: string; extra_json?: string | null }> = [];
+          try {
+            const r = await remoteGetQS<{ items?: typeof items }>(`/api/toolkit/browse/${type}`, { limit: 1000 });
+            items = r.items || [];
+          } catch (err) {
+            lines.push(`## ${type}`, `_could not read: ${err instanceof Error ? err.message : err}_`, '');
+            continue;
+          }
+          const byTool = new Map<string, number>();
+          const byDevice = new Map<string, number>();
+          let rebuildable = 0;
+          for (const it of items) {
+            let e: Record<string, unknown> = {};
+            try { e = JSON.parse(it.extra_json || '{}'); } catch { /* row without extra */ }
+            byTool.set(String(e.tool || '?'), (byTool.get(String(e.tool || '?')) || 0) + 1);
+            byDevice.set(String(e.syncedDeviceId || '?'), (byDevice.get(String(e.syncedDeviceId || '?')) || 0) + 1);
+            if (type === 'mcp' && e.spec) rebuildable++;
+          }
+          lines.push(`## ${type} — ${items.length}`);
+          if (byTool.size) lines.push(`- by tool: ${[...byTool].map(([k, v]) => `${k} ${v}`).join(' · ')}`);
+          if (byDevice.size) lines.push(`- by device: ${[...byDevice].map(([k, v]) => `${k} ${v}`).join(' · ')}`);
+          lines.push(`- installable on another device: ${REBUILDABLE[type]}`);
+          if (type === 'mcp') {
+            lines.push(`- carrying a rebuild spec: ${rebuildable}/${items.length}`
+              + (rebuildable < items.length ? ' — the rest need a re-index on their source device' : ''));
+          }
+          lines.push('');
+        }
+        lines.push('Queue an install with `recall_toolkit_sync`.');
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_toolkit_sync': {
+        const params = RecallToolkitSyncSchema.parse(args);
+        requireRemote();
+        if (params.name && (params.types?.length ?? 0) !== 1) {
+          // A bare name is ambiguous — a skill and an MCP can share one.
+          return { content: [{ type: 'text', text: 'A `name` needs exactly one entry in `types`, so the artifact is unambiguous.' }] };
+        }
+        if (params.scope === 'fan_out' && !params.device) {
+          // fan_out reads one machine's disk, so "every device" is meaningless.
+          return { content: [{ type: 'text', text: '`fan_out` copies between ONE machine\'s own tools — name the machine with `device`.' }] };
+        }
+
+        const body = params.scope === 'fan_out'
+          ? { kind: 'sync_all', deviceId: params.device }
+          : { kind: 'pull', types: params.types, name: params.name, deviceId: params.device ?? null };
+        const r = await remotePost<{ ok?: boolean; id?: string; error?: string }>('/api/sync-intents', body);
+        if (!r.id) return { content: [{ type: 'text', text: `Queue refused it: ${r.error || 'unknown error'}` }] };
+
+        const what = params.name ? `"${params.name}"`
+          : params.types?.length ? params.types.join(', ')
+          : 'every artifact type';
+        const where = params.device ? `on ${params.device}` : 'on every device on this account';
+        return {
+          content: [{
+            type: 'text',
+            text: [
+              `Queued: ${params.scope === 'fan_out' ? 'fan out' : 'install'} ${what} ${where}.`,
+              `Intent id: ${r.id}`,
+              '',
+              // The queue accepting is NOT the work happening. Saying so stops
+              // an agent reporting success for something that has not run.
+              'QUEUED, NOT DONE. Only the target device can write its own config',
+              'files, so it performs this on its next drain — the watch daemon polls,',
+              'or run `chat-recall toolkit drain` there to do it now.',
+              '',
+              'Check the result with `recall_toolkit_status`.',
+            ].join('\n'),
+          }],
+        };
       }
 
       case 'recall_security_rules': {
