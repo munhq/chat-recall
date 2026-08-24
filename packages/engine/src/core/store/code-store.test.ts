@@ -21,7 +21,7 @@ import { codeActionId } from '../../types/code-intel.js';
 import type { CodeProjectInput } from '../../types/code-intel.js';
 
 const PG_URL = process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
-const P = '/home/adi/code/personal/demo';
+const P = '/home/user/code/personal/demo';
 
 interface Harness { store: StorageDriver; teardown: () => Promise<void>; }
 let pgSeq = 0;
