@@ -189,18 +189,36 @@ router.delete('/:id', async (req, res) => {
 // rendered view). `?since_hours=N` bounds the scan. Writes NOTHING — this is the
 // authoritative "0 remaining" check (the CLI repair --all scan is metric-fuzzy).
 // Registered BEFORE '/:id' so the literal path isn't captured as an id.
+// THIS ROUTE HAS A DEADLINE. It used to default to "scan the whole tenant"
+// (sinceMs = 0) and hand the result back inline. A full pass costs ~150ms per
+// session, so on a tenant with ~15k sessions it ran for 125s and every single
+// call returned 524 — the documented default was the one that could never
+// work, while `since_hours=24` answered in 1.7s. The hourly background sweep
+// still does the unbounded pass; an HTTP caller gets a bounded one.
+const HEAL_AUDIT_DEFAULT_HOURS = 168;   // 7 days — measured at ~11s
+const HEAL_AUDIT_MAX_SESSIONS = 500;    // ceiling even when the window is wider
+
 router.get('/heal-audit', async (req, res) => {
   const sinceHoursRaw = req.query.since_hours as string | undefined;
-  const sinceHours = sinceHoursRaw ? Number(sinceHoursRaw) : undefined;
-  const sinceMs = sinceHours && Number.isFinite(sinceHours) && sinceHours > 0 ? Date.now() - sinceHours * 3600 * 1000 : 0;
+  const parsed = sinceHoursRaw !== undefined ? Number(sinceHoursRaw) : NaN;
+  // An explicit 0 means "no window" and is honoured; the session cap keeps it
+  // finite. Anything absent or unparseable falls back to the default window.
+  const sinceHours = Number.isFinite(parsed) && parsed >= 0 ? parsed : HEAL_AUDIT_DEFAULT_HOURS;
+  const sinceMs = sinceHours > 0 ? Date.now() - sinceHours * 3600 * 1000 : 0;
   // ?apply=1 actually heals (not just audits) the caller's tenant — a manual
   // "heal now" for when you don't want to wait for the hourly sweep.
   const apply = req.query.apply === '1' || req.query.apply === 'true';
   const store = await createStore();
   try {
     const { selfHealTenant } = await import('../services/self-heal.js');
-    const r = await selfHealTenant(store, { sinceMs, dryRun: !apply });
-    res.json({ scanned: r.scanned, damaged: r.damaged, healed: r.healed, healthy: r.scanned - r.damaged, applied: apply, damagedIds: r.damagedIds });
+    const r = await selfHealTenant(store, { sinceMs, dryRun: !apply, limit: HEAL_AUDIT_MAX_SESSIONS });
+    res.json({
+      scanned: r.scanned, damaged: r.damaged, healed: r.healed, healthy: r.scanned - r.damaged,
+      applied: apply, damagedIds: r.damagedIds,
+      // What the caller did NOT see. Never leave a cap implicit.
+      sinceHours, eligible: r.eligible, truncated: r.truncated,
+      notScanned: Math.max(0, r.eligible - r.scanned),
+    });
   } catch (error) {
     log.error({ err: error }, 'heal-audit error');
     res.status(500).json({ error: error instanceof Error ? error.message : 'heal-audit failed' });
