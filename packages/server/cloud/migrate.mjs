@@ -23,6 +23,11 @@ import { readFileSync } from 'fs';
 const url = process.env.MIGRATE_DATABASE_URL || process.env.DATABASE_URL;
 if (!url) { console.error('MIGRATE_DATABASE_URL required'); process.exit(1); }
 const c = new pg.Client({ connectionString: url });
+// Surface RAISE NOTICE. A repair written as a DO block reports no rowCount, so
+// the "N row(s) affected" line below prints 0 however much it changed — and this
+// runner's whole warning is that a silent no-op is indistinguishable from
+// success. node-postgres drops notices unless something listens.
+c.on('notice', (n) => { if (n?.message) console.log(`  notice: ${n.message}`); });
 await c.connect();
 
 await c.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -34,7 +39,12 @@ await c.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
 // the one-off repairs that used to live here have all been applied and removed.
 // Add a file here only for something the bootstrap cannot express, and delete it
 // again once it has run everywhere.
-const FILES = [];
+const FILES = [
+  // One-off repair. DELETE THIS FILE AND THIS ENTRY once it has run everywhere —
+  // see migrations/README.md. It removes auto-filed cards that closed themselves
+  // because a finding's id shifted, not because anything was fixed.
+  '0009_drop_phantom_autoclosed_tasks.sql',
+];
 
 // REPORT ROWS AFFECTED. A data migration against a tenant-scoped table is
 // silently a NO-OP unless it handles RLS: `tenant_isolation` compares tenant to
