@@ -63,7 +63,7 @@ test.describe('Project sidebar tree', () => {
 
   test('collapses shared /home/user/code prefix and renders categories as top level', async ({ page }) => {
     // `personal` and `acme` sit directly under the shared prefix and
-    // should be the top-level folders. `home`, `adi`, and `code` are
+    // should be the top-level folders. `home`, `user`, and `code` are
     // transparent chain links and must not appear as their own rows.
     const allRows = page.locator('[data-testid="project-folder"], [data-testid="project-item"]');
     const paths = await allRows.evaluateAll((nodes) =>

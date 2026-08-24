@@ -96,7 +96,7 @@ describe('auto-tasks', () => {
     state.tasks = [
       { id: 't_close', title: 'resolved one', status: 'todo', createdBy: 'auto-tasks', linkedFindingId: 'gone' },
       { id: 't_keep1', title: 'still reported', status: 'todo', createdBy: 'auto-tasks', linkedFindingId: 'still-open' },
-      { id: 't_keep2', title: 'human card', status: 'todo', createdBy: 'adi', linkedFindingId: 'gone-too' },
+      { id: 't_keep2', title: 'human card', status: 'todo', createdBy: 'someone', linkedFindingId: 'gone-too' },
       { id: 't_keep3', title: 'already done', status: 'done', createdBy: 'auto-tasks', linkedFindingId: 'gone-three' },
     ];
     const r = await runAutoTasks('t1');

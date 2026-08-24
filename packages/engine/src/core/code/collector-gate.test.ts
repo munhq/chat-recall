@@ -36,8 +36,8 @@ describe('isJunkWorkspacePath — temp/scratchpad roots never code-indexed', () 
     expect(isJunkWorkspacePath('/tmp/claude-1000/a/scratchpad/b')).toBe(true);
   });
   test('allows real repo roots (tmp only as a bounded component)', () => {
-    expect(isJunkWorkspacePath('/home/adi/code/personal/chat-recall')).toBe(false);
-    expect(isJunkWorkspacePath('/home/adi/code/mytmp')).toBe(false);  // not a bare "tmp" component
-    expect(isJunkWorkspacePath('/home/adi/code/temperature')).toBe(false);
+    expect(isJunkWorkspacePath('/home/user/code/personal/chat-recall')).toBe(false);
+    expect(isJunkWorkspacePath('/home/user/code/mytmp')).toBe(false);  // not a bare "tmp" component
+    expect(isJunkWorkspacePath('/home/user/code/temperature')).toBe(false);
   });
 });

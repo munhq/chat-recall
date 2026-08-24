@@ -133,7 +133,7 @@ export async function pushProjectTaskStatuses(
       // Bounded: this runs INSIDE the intent drain, whose tick is guarded by a
       // single in-flight flag — one silent, never-settling request here stops
       // the daemon from ever draining another intent (exactly what happened on
-      // adi-pc: 18 intents queued, none applied, no error anywhere).
+      // desktop: 18 intents queued, none applied, no error anywhere).
       const res = await fetchWithTimeout(`${base}${fk.trackedPath}`, { headers: authHeaders });
       if (!res.ok) continue;
       projects = ((await res.json()) as { projects?: string[] }).projects || [];
