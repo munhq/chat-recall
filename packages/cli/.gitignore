@@ -1,0 +1,10 @@
+# Copied in from the repo root by the `prepack` script, so npm has a readme.
+#
+# npm only reads a README from the package directory it publishes, never from a
+# monorepo root. `files` listed README.md and no such file existed, so
+# npmjs.com/package/chat-recall rendered "ERROR: No README data found!" — a blank
+# page on the install surface a CLI is found through.
+#
+# Generated rather than committed, so the root README stays the single source of
+# truth and the two cannot drift.
+README.md
