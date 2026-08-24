@@ -10,7 +10,7 @@ import Database from 'better-sqlite3';
 import { existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { randomBytes } from 'crypto';
-import { codeFindingId, codeHotspotId, codeActionId } from '../types/code-intel.js';
+import { codeFindingId, codeFindingIds, codeHotspotId, codeActionId } from '../types/code-intel.js';
 import type {
   CodeProjectInput, CodeProjectRow, CodeFindingInput, CodeFindingRow, CodeFindingsSummary,
   CodeHotspotInput, CodeHotspotRow, CodeActionInput, CodeActionRow, CodeHealth, CodeMap,
