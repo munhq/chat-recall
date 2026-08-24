@@ -30,9 +30,14 @@
  */
 
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
-import { delimiter, join, basename, isAbsolute } from 'node:path';
+import { delimiter, dirname, join, basename, isAbsolute } from 'node:path';
 
 import { SOURCE_PRECEDENCE, SUPPORTED_TARGETS, readMcpEntry, writeMcpEntry, skillsDirFor, type TargetTool, type SyncType } from './toolkit-sync.js';
+// The codec is what makes an agent or a command portable: the stored body is
+// in ITS SOURCE TOOL's encoding (markdown+frontmatter or TOML), and writing it
+// verbatim into a tool expecting the other one produces a file that tool
+// silently ignores. Normalise, then emit what the target actually wants.
+import { emit, encodingFor, parseAgentText, parseCommandText, type CodecType, type Encoding, type ToolId } from './artifact-codec.js';
 
 /** Is `p` an executable file that exists here? */
 function isExecutableFile(p: string): boolean {
@@ -121,12 +126,9 @@ interface McpSpec {
 
 /** Rows the server holds for types whose bytes it never received. */
 const NOT_REBUILDABLE: Record<string, string> = {
-  // Agents and commands differ in FORMAT per tool (markdown vs TOML), and the
-  // stored body is in its source tool's format — writing it verbatim into a
-  // tool that expects the other one produces a file the tool silently ignores.
-  // Converting between them needs the codec, which is the next piece.
-  agent: 'the stored body is in its source tool\'s format; cross-format conversion is not wired up yet',
-  command: 'the stored body is in its source tool\'s format; cross-format conversion is not wired up yet',
+  // Instructions are the one type that SHOULD not travel by device: a CLAUDE.md
+  // belongs to a repository, so installing one per machine would put a
+  // project's rules somewhere they do not apply.
   instructions: 'project-scoped — it belongs to a repo, not to a machine',
 };
 
@@ -174,6 +176,7 @@ export function planPull(
 ): {
   mcps: Array<{ name: string; spec: McpSpec; tools: TargetTool[] }>;
   skills: Array<{ name: string; body: string; truncated: boolean; redacted: boolean; tools: TargetTool[] }>;
+  codecs: Array<{ type: 'agent' | 'command'; name: string; body: string; format: Encoding; redacted: boolean; tools: TargetTool[] }>;
   unsupported: PullReport['unsupported'];
 } {
   const wanted = opts.types;
@@ -183,6 +186,9 @@ export function planPull(
   // may have uploaded a row without one.
   const byName = new Map<string, McpSpec>();
   const skillsByName = new Map<string, { body: string; rank: number; truncated: boolean; redacted: boolean }>();
+  type CodecEntry = { body: string; rank: number; format: Encoding; redacted: boolean };
+  const agentsByName = new Map<string, CodecEntry>();
+  const commandsByName = new Map<string, CodecEntry>();
 
   for (const row of rows) {
     const type = row.source_type;
@@ -216,6 +222,28 @@ export function planPull(
       }
       continue;
     }
+    if (type === 'agent' || type === 'command') {
+      if (wanted && !wanted.includes(type)) continue;
+      const extra = parseExtra(row);
+      const name = (extra[type === 'agent' ? 'agentName' : 'commandName'] as string) || row.title;
+      const body = extra.body;
+      if (!name || typeof body !== 'string' || !body.trim() || extra.bodyTruncated === true) {
+        seenUnsupported.set(type, (seenUnsupported.get(type) || 0) + 1);
+        continue;
+      }
+      const tool = String(extra.tool || '');
+      const rank = SOURCE_PRECEDENCE[type].indexOf(tool as TargetTool);
+      const bucket = type === 'agent' ? agentsByName : commandsByName;
+      const prev = bucket.get(name);
+      if (!prev || (rank >= 0 && (prev.rank < 0 || rank < prev.rank))) {
+        bucket.set(name, {
+          body, rank,
+          format: (extra.format === 'toml' ? 'toml' : 'md') as Encoding,
+          redacted: extra.bodySecretsRedacted === true,
+        });
+      }
+      continue;
+    }
     if (type !== 'mcp') {
       if (NOT_REBUILDABLE[type]) seenUnsupported.set(type, (seenUnsupported.get(type) || 0) + 1);
       continue;
@@ -244,7 +272,11 @@ export function planPull(
     reason: NOT_REBUILDABLE[type]
       ?? 'the stored rows carry no full body — re-index on the device that has them',
   }));
-  return { mcps, skills, unsupported };
+  const codecs = [
+    ...[...agentsByName.entries()].map(([name, v]) => ({ type: 'agent' as const, name, body: v.body, format: v.format, redacted: v.redacted, tools: SUPPORTED_TARGETS.agent })),
+    ...[...commandsByName.entries()].map(([name, v]) => ({ type: 'command' as const, name, body: v.body, format: v.format, redacted: v.redacted, tools: SUPPORTED_TARGETS.command })),
+  ];
+  return { mcps, skills, codecs, unsupported };
 }
 
 /** Execute a pull. `dryRun` reports what would change and writes nothing. */
@@ -252,7 +284,7 @@ export function executePull(
   rows: RemoteArtifactRow[],
   opts: { thisDeviceId?: string; types?: SyncType[]; dryRun?: boolean } = {},
 ): PullReport {
-  const { mcps, skills, unsupported } = planPull(rows, opts);
+  const { mcps, skills, codecs, unsupported } = planPull(rows, opts);
   const outcomes: PullOutcome[] = [];
 
   for (const { name, body, truncated, redacted, tools } of skills) {
@@ -275,6 +307,48 @@ export function executePull(
         outcomes.push({ type: 'skill', name, tool, status: 'written', path: file, redactedContent: redacted });
       } catch (e) {
         outcomes.push({ type: 'skill', name, tool, status: 'failed', reason: e instanceof Error ? e.message : 'write failed' });
+      }
+    }
+  }
+
+  // Agents and commands, THROUGH THE CODEC. The body arrived in its source
+  // tool's encoding; each target gets the encoding it actually reads, and the
+  // filename it expects.
+  for (const { type, name, body, format, redacted, tools } of codecs) {
+    let art;
+    try {
+      art = type === 'agent' ? parseAgentText(body, format, name) : parseCommandText(body, format, name);
+    } catch (e) {
+      for (const tool of tools) {
+        outcomes.push({ type, name, tool, status: 'failed', reason: `could not parse the stored body: ${e instanceof Error ? e.message : 'failed'}` });
+      }
+      continue;
+    }
+    if (!art.body.trim()) {
+      // A parse that yields an empty body means the stored text was not in the
+      // format the row claimed. Writing it would create an inert file.
+      for (const tool of tools) {
+        outcomes.push({ type, name, tool, status: 'skipped', reason: `the stored body did not parse as ${format}` });
+      }
+      continue;
+    }
+    for (const tool of tools) {
+      let out;
+      try {
+        out = emit(type as CodecType, art, tool as ToolId);
+      } catch (e) {
+        outcomes.push({ type, name, tool, status: 'failed', reason: e instanceof Error ? e.message : 'emit failed' });
+        continue;
+      }
+      // Never overwrite: a local edit outranks the account's copy.
+      if (existsSync(out.path)) { outcomes.push({ type, name, tool, status: 'present' }); continue; }
+      if (opts.dryRun) { outcomes.push({ type, name, tool, status: 'written', reason: 'dry run', redactedContent: redacted }); continue; }
+      try {
+        mkdirSync(dirname(out.path), { recursive: true });
+        writeFileSync(out.path, out.content);
+        outcomes.push({ type, name, tool, status: 'written', path: out.path, redactedContent: redacted });
+      } catch (e) {
+        outcomes.push({ type, name, tool, status: 'failed', reason: e instanceof Error ? e.message : 'write failed' });
       }
     }
   }
