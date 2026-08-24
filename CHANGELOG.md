@@ -4,6 +4,40 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.9] — 2026-08-24
+
+### Fixed
+
+- A finding's id moving is no longer read as the problem being fixed. An
+  auto-filed card closed itself whenever its finding id left the open set, and an
+  id shift was indistinguishable from a fix by that test. On one board 93 of 97
+  cards closed that way — none with a session attached — while all 313 findings
+  were still open, and duplicates piled up: six cards for one title. Cards now
+  store the finding's identity as well as its id; a card whose identity still
+  matches an open finding is re-pointed rather than closed, and only a card with
+  no match closes, naming the id that vanished.
+- A finding survives an edit above it. `codeFindingId` hashed the line number,
+  the most volatile part of a finding, and `replaceCodeFindings` carries `status`
+  and `first_seen_at` forward by id — so adding an import at the top of a file
+  discarded every triage verdict in it. Identity is now content plus an ordinal
+  among identical siblings, ordered by line: stable under edits elsewhere,
+  distinct per occurrence.
+- A recommendation you already applied stops asking. Applying a rule does not
+  change the findings that motivated it, so the card regenerated forever. The
+  applied state already existed in the sync-intent log and nothing read it.
+- Migration 0009 removes the phantom auto-closed cards. Its predicate requires
+  all of created_by='auto-tasks', done, no linked session, and an orphaned
+  finding id, so a real completion and a human rejection are both untouched.
+
+### Added
+
+- Critical findings can reach the task board. `runAutoTasks` read `code_actions`
+  and nothing else, and findings carry a severity string where an action carries
+  a numeric pri — so a finding was never filtered out, it was never looked at. On
+  one account that left 34 criticals permanently unable to become a task while a
+  pri-2 "God module" filed one. `priOfSeverity` maps severity onto the floor the
+  policy already speaks, and both sources share one fileable path.
+
 ## [0.5.8] — 2026-08-24
 
 ### Fixed
