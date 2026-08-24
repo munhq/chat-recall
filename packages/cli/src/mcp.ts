@@ -351,7 +351,7 @@ const RecallMemorySearchSchema = z.object({
     .describe('Filter by source types (default: all)'),
   project_filter: z.string().optional().describe('Filter by project path'),
   semantic: z.boolean().optional().default(false)
-    .describe('Run the pgvector semantic tier as well as keyword FTS (needs an embedder configured server-side; ignored otherwise).'),
+    .describe('Reserved and currently ignored: the semantic tier is switched off server-side, so every search runs keyword FTS.'),
 });
 
 const RecallSmartResumeSchema = z.object({
@@ -1065,7 +1065,7 @@ with recall_show (pass the plan id).`,
             project_filter: { type: 'string', description: 'Filter by project path' },
             provider: { type: 'string', enum: ['ollama', 'gemini'], default: 'ollama' },
             scope: { type: 'string', enum: ['local', 'server'], default: 'local', description: 'server = synced cross-device history (needs chat-recall login).' },
-            semantic: { type: 'boolean', default: false, description: 'Also run the pgvector semantic tier, not just keyword FTS. Needs an embedder configured server-side; ignored otherwise.' },
+            semantic: { type: 'boolean', default: false, description: 'Reserved and currently ignored: the semantic tier is switched off server-side, so every search runs keyword FTS.' },
           },
           required: ['query'],
         },
