@@ -243,6 +243,27 @@ export function severityOfPri(pri: number): PriSeverity {
   return PRI_SEVERITY[Math.min(Math.floor(pri), PRI_SEVERITY.length - 1)];
 }
 
+/**
+ * The inverse, for findings.
+ *
+ * Actions carry a numeric `pri`; findings carry a `severity` STRING. The
+ * auto-filer's policy is expressed in pri, and it only ever read actions — so a
+ * finding could not be filed at all, whatever its severity. On one account that
+ * meant 34 critical findings (unchecked `unwrap`, and a manifest rule) were
+ * structurally incapable of becoming a task while a pri-2 "God module" filed one.
+ *
+ * 'info' maps to 3 rather than off the end: a policy that says "file everything"
+ * should mean it, and clamping is what asMaxPri already does on the other side.
+ */
+export function priOfSeverity(severity: string): number {
+  switch (severity) {
+    case 'critical': return 0;
+    case 'high': return 1;
+    case 'medium': return 2;
+    default: return 3;          // low, info, and anything unrecognised
+  }
+}
+
 // ── Deterministic ids ───────────────────────────────────────────────────────
 // Stable across re-index so findings/hotspots/actions upsert in place rather
 // than duplicate. Shared by the collector (builds rows) and the store (writes).
@@ -251,11 +272,75 @@ function shortHash(s: string): string {
   return createHash('sha256').update(s).digest('hex').slice(0, 16);
 }
 
+/**
+ * A finding's snippet, reduced to what identifies it.
+ *
+ * Whitespace only — digits are NOT collapsed here, unlike identityTitle. A
+ * title's numbers are counts the collector computed about the finding; a
+ * snippet's numbers are the code itself, and `retry(3)` is not `retry(9)`.
+ */
+function snippetKey(snippet?: string): string {
+  return (snippet ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
+}
+
+/**
+ * Stable ids for a whole batch of findings.
+ *
+ * WHY A BATCH. The old id hashed `project|category|file|LINE|rule`, and a line
+ * number is the most volatile thing about a finding — every edit above it shifts
+ * it. `replaceCodeFindings` carries `status` and `first_seen_at` forward BY ID,
+ * so each shift silently discarded a triage verdict and reset the age; and the
+ * auto-filer read the same instability as findings appearing and disappearing.
+ *
+ * Dropping the line is not enough on its own. Measured on 7,670 real findings:
+ *
+ *   with line                          7,670 distinct  (today — unstable)
+ *   without line                       2,464 distinct  (merges real occurrences)
+ *   without line, with snippet         4,973 distinct  (still merges ~2,700)
+ *
+ * Eight `.unwrap()` calls in one file are eight findings with one rule and one
+ * snippet text, so no content hash can separate them. What separates them is
+ * their ORDER, so identity is content plus an ordinal among identical siblings
+ * in the same file. That is stable under edits elsewhere in the file, distinct
+ * per occurrence, and shifts only when an identical sibling is added or removed
+ * above one — which is the floor of what any scheme can achieve.
+ *
+ * Returns ids positionally aligned with `findings`.
+ */
+export function codeFindingIds(
+  projectId: string,
+  findings: ReadonlyArray<{ category: string; file: string; line?: number | null; rule: string; snippet?: string }>,
+): string[] {
+  // Group identical siblings, then order each group by line so the ordinal is a
+  // property of position in the file rather than of the collector's emit order.
+  const groups = new Map<string, number[]>();
+  findings.forEach((f, i) => {
+    const key = [f.category, f.file, f.rule, snippetKey(f.snippet)].join('|');
+    const g = groups.get(key);
+    if (g) g.push(i); else groups.set(key, [i]);
+  });
+
+  const ids = new Array<string>(findings.length);
+  for (const [key, idxs] of groups) {
+    idxs.sort((a, b) => (findings[a].line ?? 0) - (findings[b].line ?? 0));
+    idxs.forEach((idx, ordinal) => {
+      ids[idx] = 'cf_' + shortHash([projectId, key, ordinal].join('|'));
+    });
+  }
+  return ids;
+}
+
+/**
+ * Single-finding id. Kept for callers that have one finding and no batch, but
+ * PREFER codeFindingIds: without the batch there is no way to know a finding's
+ * ordinal among its identical siblings, so this assumes it is the first — which
+ * is wrong for the second `.unwrap()` in a file.
+ */
 export function codeFindingId(
   projectId: string,
-  f: { category: string; file: string; line?: number | null; rule: string },
+  f: { category: string; file: string; line?: number | null; rule: string; snippet?: string },
 ): string {
-  return 'cf_' + shortHash([projectId, f.category, f.file, f.line ?? '', f.rule].join('|'));
+  return codeFindingIds(projectId, [f])[0];
 }
 
 export function codeHotspotId(projectId: string, file: string): string {

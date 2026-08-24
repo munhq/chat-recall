@@ -1,6 +1,6 @@
 import { randomBytes } from 'crypto';
 import { tenantQuery, tenantTx, bulkInsert } from './pg-pool.js';
-import { codeFindingId, codeHotspotId, codeActionId } from '../../types/code-intel.js';
+import { codeFindingId, codeFindingIds, codeHotspotId, codeActionId } from '../../types/code-intel.js';
 /**
  * PgStore — Postgres StorageDriver for team/cloud mode. Real implementation
  * (no longer a stub). Every table carries a `tenant` column so one Postgres
@@ -1191,8 +1191,11 @@ export class PgStore implements StorageDriver {
       const prev = (await c.query(`SELECT id, first_seen_at, status FROM code_findings WHERE tenant=$1 AND project_id=$2`, [this.t, projectId])).rows;
       const prevById = new Map<string, any>(prev.map((r: any) => [r.id, r]));
       await c.query(`DELETE FROM code_findings WHERE tenant=$1 AND project_id=$2`, [this.t, projectId]);
-      const rows = findings.map((f) => {
-        const id = f.id ?? codeFindingId(projectId, f);
+      // Ids for the WHOLE batch: a finding's identity includes its ordinal among
+      // identical siblings in the same file, which no per-row call can know.
+      const batchIds = codeFindingIds(projectId, findings);
+      const rows = findings.map((f, i) => {
+        const id = f.id ?? batchIds[i];
         const carried = prevById.get(id);
         return [this.t, id, projectId, f.category, f.severity, f.file, f.line ?? null, f.rule, f.title,
           f.snippet ?? '', f.why ?? '', f.agentPrompt ?? '', carried?.status ?? 'open',
