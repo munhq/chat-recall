@@ -14,6 +14,10 @@ import { describe, test, expect, beforeEach, vi } from 'vitest';
 const state = {
   settings: new Map<string, string>(),
   actions: [] as Array<{ id: string; pri: number; title: string; fix: string; loc: never[]; agentPrompt: string; projectId: string; status: string }>,
+  // code_findings, the OTHER source. Kept separate because it is separate in the
+  // database, and reading only one of the two is exactly what made 34 critical
+  // findings unfileable.
+  findings: [] as Array<{ id: string; severity: string; category: string; title: string; file: string; line: number | null; rule: string; why: string; agentPrompt: string; projectId: string; status: string }>,
   tasks: [] as Array<{ id: string; title: string; status: string; createdBy: string; linkedFindingId: string | null; linkedFindingIdentity: string | null; projectId: string }>,
   created: [] as string[],
   updated: [] as Array<{ id: string; patch: Record<string, unknown> }>,
@@ -36,6 +40,8 @@ vi.mock('../imports.js', async (importOriginal) => ({
     // nothing. currentAuthor().sub is 'auto-tasks' inside runWithAuthor and null
     // under runUnrestricted, which is exactly the distinction that broke prod.
     listCodeActions: async () => (currentAuthorSub() ? [] : state.actions),
+    // Same author-visibility behaviour: this read must also happen unrestricted.
+    listCodeFindings: async () => (currentAuthorSub() ? [] : state.findings),
     teamTasksByFindingIds: async () => (currentAuthorSub() ? [] : state.tasks),
     createTeamTask: async (input: { title: string; linkedFindingId?: string | null; linkedFindingIdentity?: string | null; projectId?: string }) => {
       state.created.push(input.linkedFindingId as string);
@@ -73,6 +79,7 @@ beforeEach(() => {
   delete process.env.STRIPE_SECRET_KEY;   // self-host shape: plan gate is a no-op
   state.settings.clear();
   state.actions = [];
+  state.findings = [];
   state.tasks = [];
   state.created = [];
   state.updated = [];
@@ -345,5 +352,83 @@ describe('an id shift is not a fix', () => {
 
     expect(r?.closed).toBe(0);
     expect(state.updated.some((u) => u.patch.status !== undefined)).toBe(false);
+  });
+});
+
+/**
+ * A CRITICAL finding can reach the board.
+ *
+ * Until this, runAutoTasks read `code_actions` and nothing else. Findings live in
+ * `code_findings` and carry a severity STRING where an action carries a numeric
+ * `pri`, and the policy is written in pri — so a finding was not filtered out,
+ * it was never looked at. Measured on one account: 34 critical findings
+ * (unchecked `unwrap`, a manifest rule) permanently unable to become a task,
+ * while a pri-2 "God module" action filed a card happily. The most serious
+ * things the product knows about could not reach the surface built for acting on
+ * them.
+ */
+describe('findings are fileable, not just actions', () => {
+  const finding = (id: string, severity: string, o: Record<string, unknown> = {}) => ({
+    id, severity, category: 'security', title: `${severity} thing ${id}`,
+    file: `src/${id}.rs`, line: 12, rule: 'unwrap', why: 'a crash waiting to happen',
+    agentPrompt: 'fix the unwrap', projectId: 'p1', status: 'open', ...o,
+  });
+
+  test('THE POINT: a critical finding files a card under a high floor', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.findings = [finding('f1', 'critical')];
+    const r = await runAutoTasks('t1');
+    expect(r?.created).toBe(1);
+    expect(state.created).toEqual(['f1']);
+  });
+
+  test('severity maps onto the pri floor the policy already speaks', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.findings = [
+      finding('f_crit', 'critical'),   // pri 0 — files
+      finding('f_high', 'high'),       // pri 1 — files
+      finding('f_med', 'medium'),      // pri 2 — below the floor
+      finding('f_low', 'low'),         // pri 3 — below the floor
+      finding('f_info', 'info'),       // pri 3 — below the floor
+    ];
+    await runAutoTasks('t1');
+    expect(state.created).toEqual(['f_crit', 'f_high']);
+  });
+
+  test('actions and findings are filed from the same run and share the cap', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [action('a1', 0)];
+    state.findings = [finding('f1', 'critical')];
+    const r = await runAutoTasks('t1');
+    expect(r?.created).toBe(2);
+    expect(state.created.sort()).toEqual(['a1', 'f1']);
+  });
+
+  test('a finding already dismissed or fixed is not filed', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.findings = [finding('f1', 'critical', { status: 'dismissed' })];
+    await runAutoTasks('t1');
+    expect(state.created).toEqual([]);
+  });
+
+  test('a finding-backed card closes when the finding stops being reported', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.findings = [finding('f1', 'critical')];
+    await runAutoTasks('t1');
+    state.comments = [];
+    state.findings = [];                      // fixed and re-indexed
+    const r = await runAutoTasks('t1', { force: true });
+    expect(r?.closed).toBe(1);
+  });
+
+  test('a finding-backed card is NOT filed twice across runs', async () => {
+    // A finding's id is already its identity — content plus an ordinal, no
+    // volatile part — so a second run must recognise its own card.
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.findings = [finding('f1', 'critical')];
+    await runAutoTasks('t1');
+    await runAutoTasks('t1', { force: true });
+    expect(state.tasks).toHaveLength(1);
+    expect(state.created).toEqual(['f1']);
   });
 });

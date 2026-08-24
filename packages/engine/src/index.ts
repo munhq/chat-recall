@@ -7,7 +7,8 @@ export { MemoryIndex, type MemoryChunkRecord } from './core/memory-index.js';
 export { MemoryStore, type SyncIntentInput, type SyncIntentRow } from './core/memory-store.js';
 // Code intelligence (codeindex merge) — shared shapes + deterministic id helpers.
 export {
-  codeFindingId, codeHotspotId, codeActionId, severityOfPri, PRI_SEVERITY, type PriSeverity,
+  codeFindingId, codeFindingIds, codeHotspotId, codeActionId, actionIdentityKey,
+  severityOfPri, PRI_SEVERITY, type PriSeverity,
   type CodeFindingCategory, type CodeSeverity, type CodeFindingStatus, type CodeActionStatus,
   type CodeProjectLabel, type CodeHealth, type CodeMap, type CodeMapNode, type CodeMapEdge,
   type CodeProjectInput, type CodeProjectRow,
