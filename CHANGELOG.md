@@ -4,6 +4,17 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.11] — 2026-08-24
+
+### Fixed
+
+- A card older than `linked_finding_identity` now acquires one. It matches by id,
+  so the filing loop's early `continue` skipped it on every run and it never
+  gained an identity — meaning the first time its id shifted it would close
+  itself as fixed, which is exactly what the column exists to prevent. The cards
+  left after migration 0009 are precisely these, so without the backfill they
+  stayed vulnerable indefinitely.
+
 ## [0.5.10] — 2026-08-24
 
 ### Fixed

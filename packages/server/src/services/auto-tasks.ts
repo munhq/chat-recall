@@ -90,7 +90,7 @@ export function parsePolicy(raw: string | null): AutoTasksPolicy {
 export async function runAutoTasks(
   tenant: string,
   opts: { force?: boolean } = {},
-): Promise<{ created: number; closed: number; repointed: number } | null> {
+): Promise<{ created: number; closed: number; repointed: number; backfilled: number } | null> {
   try {
     return await run(tenant, opts.force === true);
   } catch (err) {
@@ -99,7 +99,7 @@ export async function runAutoTasks(
   }
 }
 
-async function run(tenant: string, force = false): Promise<{ created: number; closed: number; repointed: number } | null> {
+async function run(tenant: string, force = false): Promise<{ created: number; closed: number; repointed: number; backfilled: number } | null> {
   const cp = await createControlPlane();
   let policy: AutoTasksPolicy;
   try {
@@ -196,10 +196,27 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
       /** Cards whose finding id moved under them. Reported because a run that
        *  re-points twenty cards did real work and used to look idle. */
       let repointed = 0;
+      /** Pre-identity cards given one. Reported so a run that only repairs
+       *  bookkeeping is distinguishable from a run that did nothing. */
+      let backfilled = 0;
       // WRITES keep the author stamp, so a card records who filed it.
       await runWithAuthor({ sub: 'auto-tasks', device: null }, async () => {
       for (const a of urgent) {
-        if (byFinding.has(a.id)) continue;           // card exists, any status
+        const byId = byFinding.get(a.id);
+        if (byId) {
+          // BACKFILL. A card that predates linked_finding_identity matches by id
+          // and would `continue` here forever, so it never gains an identity —
+          // and the first time its id shifted it would close itself as fixed,
+          // which is the entire bug this column exists to prevent. Cards left
+          // after the 0009 repair are exactly these, so without this they stay
+          // vulnerable indefinitely.
+          if (!byId.linkedFindingIdentity) {
+            await store.updateTeamTask(byId.id, { linkedFindingIdentity: a.identity });
+            cardIdentities.set(a.identity, { ...byId, linkedFindingIdentity: a.identity });
+            backfilled++;
+          }
+          continue;                                  // card exists, any status
+        }
         // A card for this finding under its OLD id. Re-point it instead of
         // filing a second one: this is where the duplicates came from — six
         // cards for "inflate copy-pasted 2× (899 lines each)", one per id the
@@ -281,16 +298,16 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
 
       });
 
-      if (created || closed || repointed) log.info({ tenant, created, closed, repointed }, 'auto-tasks run');
+      if (created || closed || repointed || backfilled) log.info({ tenant, created, closed, repointed, backfilled }, 'auto-tasks run');
       // Recorded even when both counts are zero: "it ran and found nothing" and
       // "it never ran" are different answers to "is anything happening?", and
       // the UI can only tell them apart if the zero is written down.
       const cp2 = await createControlPlane();
       try {
         await cp2.setTenantSetting(tenant, LAST_RESULT_KEY,
-          JSON.stringify({ at: Date.now(), created, closed, repointed }));
+          JSON.stringify({ at: Date.now(), created, closed, repointed, backfilled }));
       } finally { await cp2.close(); }
-      return { created, closed, repointed };
+      return { created, closed, repointed, backfilled };
     } finally {
       await store.close();
     }
