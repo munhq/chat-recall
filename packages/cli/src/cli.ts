@@ -2096,7 +2096,11 @@ toolkit
     const skipped = report.outcomes.filter(o => o.status === 'skipped');
 
     for (const o of written) {
-      console.log(chalk.green(`  + ${o.type} ${o.name} → ${o.tool}`) + chalk.dim(`  ${o.path || '(dry run)'}`));
+      // Say when the command was re-pointed at this machine's copy — the entry
+      // is NOT byte-identical to the one on the source device, and a silent
+      // rewrite is the kind of difference that confuses the next debugging run.
+      const note = o.rewrittenCommand ? chalk.cyan(`  [using this machine's ${o.rewrittenCommand}]`) : '';
+      console.log(chalk.green(`  + ${o.type} ${o.name} → ${o.tool}`) + chalk.dim(`  ${o.path || '(dry run)'}`) + note);
     }
     for (const o of failed) console.log(chalk.red(`  ✗ ${o.type} ${o.name} → ${o.tool}: ${o.reason}`));
     for (const o of skipped) console.log(chalk.yellow(`  ~ ${o.type} ${o.name} → ${o.tool}: ${o.reason}`));
