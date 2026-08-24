@@ -86,7 +86,7 @@ implementing:
 
 One new file in `packages/engine/src/core/backends/`, one line in
 `backends/index.ts`, zero edits elsewhere — the generic engine consumes the
-`ToolBackend` interface. Walkthrough: [`docs/ADDING_A_TOOL.md`](docs/ADDING_A_TOOL.md).
+`ToolBackend` interface.
 
 ## Adding a new MCP tool
 
