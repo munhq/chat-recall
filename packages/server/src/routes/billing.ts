@@ -28,6 +28,14 @@
  *   STRIPE_WEBHOOK_SECRET  — endpoint signing secret (whsec_…) for verification.
  *   STRIPE_SUCCESS_URL     — redirect after successful checkout.
  *   STRIPE_CANCEL_URL      — redirect if the user backs out.
+ *
+ * Optional:
+ *   STRIPE_PRODUCT_TAG     — which product this deployment sells, so one Stripe
+ *                            account can sell several. Default 'chat-recall'.
+ *                            See belongsToThisProduct().
+ *   STRIPE_AUTOMATIC_TAX=1 — let Stripe Tax calculate VAT/sales tax at checkout
+ *                            and collect the buyer's VAT id. OFF by default, and
+ *                            deliberately so: see taxArgs().
  */
 import express from 'express';
 import type { Request } from 'express';
@@ -228,6 +236,86 @@ function tenantOf(o: Record<string, unknown>): string | null {
 const asStr = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
 
 /**
+ * Which product this deployment sells. Stamped onto every checkout we create and
+ * checked on every event we receive.
+ *
+ * WHY: one Stripe account is going to sell more than one product. Stripe fans an
+ * event out to EVERY enabled endpoint subscribed to that event type — it does
+ * not route by product — so a second product's `customer.subscription.updated`
+ * arrives here too. `tenantOf()` accepts any `client_reference_id`, and the
+ * tenant ids of two products built on the same identity provider collide by
+ * construction. Without a guard, buying product B grants a paid entitlement in
+ * chat-recall.
+ */
+const productTag = (): string => process.env.STRIPE_PRODUCT_TAG || 'chat-recall';
+
+/**
+ * Stripe Tax arguments for a checkout session, or nothing at all.
+ *
+ * WHY IT IS OFF BY DEFAULT, and must stay off until the account is ready:
+ * `automatic_tax` needs a tax behavior on every line — either on the price, or
+ * as the account-level default in Tax settings. All eight live prices carry
+ * `tax_behavior: unspecified` and the account default is unset, so flipping this
+ * on first would fail every checkout on the account. That is a total revenue
+ * outage, not a degraded experience, which is why it is a switch and not a
+ * constant. Enable it only after Tax settings report `status: active`.
+ *
+ * `tax_id_collection` is part of the same switch on purpose. Without it an EU
+ * business buyer cannot enter a VAT id, so they are charged consumer VAT on a
+ * B2B sale that should have been reverse-charged — and they ask for it back.
+ * Turning tax calculation on without VAT id collection creates that problem;
+ * there is no configuration where one is wanted and the other is not.
+ *
+ * No `customer_update` here: this session does not pass an existing `customer`,
+ * so Stripe creates one and Checkout collects the address it needs. Sending
+ * customer_update without customer is an API error.
+ */
+export function taxArgs(): {
+  automatic_tax?: { enabled: true };
+  tax_id_collection?: { enabled: true };
+} {
+  const on = process.env.STRIPE_AUTOMATIC_TAX;
+  if (!on || on === '0' || on.toLowerCase() === 'false') return {};
+  return { automatic_tax: { enabled: true }, tax_id_collection: { enabled: true } };
+}
+
+/**
+ * Whether an event belongs to THIS product. Two independent layers, because
+ * layer 1 alone is only as good as the other product's discipline.
+ *
+ * Layer 1 — the metadata tag. A mismatch is decisive: the event states which
+ * product it is for, and it is not us.
+ *
+ * Layer 2 — the price id. An untagged event whose line item is a price outside
+ * our catalogue is not ours either, and this holds even if the other product
+ * never stamps a tag at all. It only applies when the catalogue is populated and
+ * the event actually carries items[] — `checkout.session.completed` carries
+ * neither status nor items, so it cannot grant entitlement on its own and layer
+ * 1 is sufficient there.
+ *
+ * An untagged event with a price WE sell is ours: every subscription bought
+ * before this guard existed is untagged, and failing closed on absence would
+ * drop renewals for current paying customers. Absence is fail-open by design;
+ * only a positive signal of foreignness rejects.
+ */
+function belongsToThisProduct(o: Record<string, unknown>): boolean {
+  const md = (o.metadata ?? null) as Record<string, unknown> | null;
+  const tag = md && typeof md.product === 'string' ? md.product.trim() : '';
+  if (tag) return tag === productTag();
+
+  const items = ((o.items as Record<string, unknown> | undefined)?.data ?? []) as Array<Record<string, unknown>>;
+  if (!items.length) return true;              // no items to judge by — see above
+  const catalogue = planCatalogue().filter((p) => p.priceId);
+  if (!catalogue.length) return true;          // legacy STRIPE_PRICE_ID deployment
+
+  return items.some((it) => {
+    const price = it.price as Record<string, unknown> | undefined;
+    const id = price && typeof price.id === 'string' ? price.id : null;
+    return !!id && catalogue.some((p) => p.priceId === id);
+  });
+}
+
+/**
  * Apply a Stripe event to the control plane's entitlement store. Pure w.r.t.
  * Stripe: takes an already-parsed event and a control plane, performs the
  * `setEntitlement` upsert, and returns what it did (or null if ignored / no
@@ -237,6 +325,21 @@ const asStr = (v: unknown): string | null => (typeof v === 'string' && v ? v : n
  *   checkout.session.completed     → first activation (records customer + sub).
  *   customer.subscription.updated  → status / period changes (renew, past_due…).
  *   customer.subscription.deleted  → cancellation.
+ *   customer.subscription.trial_will_end → notify, 3 days out. NO entitlement
+ *       change: the trial is still live and the customer is still entitled.
+ *
+ * NOT handled, deliberately: invoice.payment_failed. Stripe owns dunning — Smart
+ * Retries choose retry times from its own success data, and its emails carry a
+ * hosted payment-update link. Anything written here could only restate that
+ * worse ("over the next few days" instead of the real schedule) and would arrive
+ * as a second email about one event. Enable it under
+ * Settings → Billing → Manage failed payments.
+ *
+ * trial_will_end is the opposite case, and the reason it IS handled: Stripe's
+ * trial email can say "add a card", and nothing else. It cannot say that
+ * everything already synced stays searchable, that nothing is deleted, that one
+ * `sync --full` catches the server up, or that self-hosting is free — which is
+ * both the true story and the one the pricing page promises.
  */
 export async function applyStripeEvent(
   event: StripeLikeEvent,
@@ -245,6 +348,14 @@ export async function applyStripeEvent(
   const o = event.data.object;
   const tenant = tenantOf(o);
   if (!tenant) return null;
+
+  // Another product on the same Stripe account. Ack with 200 and do nothing —
+  // returning an error would make Stripe retry an event that is not ours to act
+  // on, forever, and eventually disable the endpoint.
+  if (!belongsToThisProduct(o)) {
+    console.warn(`[billing] ignoring ${event.type}: not ${productTag()}`);
+    return null;
+  }
 
   switch (event.type) {
     case 'checkout.session.completed': {
@@ -345,6 +456,25 @@ export async function applyStripeEvent(
         stripeSubscriptionId: asStr(o.id),
       });
       return { tenant, status: 'canceled' };
+    }
+    case 'customer.subscription.trial_will_end': {
+      // Notify only. Stripe fires this three days before trial_end; the customer
+      // is still trialing and still entitled, so touching the entitlement here
+      // could only downgrade someone mid-trial.
+      const to = subscriberEmail(o);
+      const endsAtSec = typeof o.trial_end === 'number' ? o.trial_end : null;
+      if (to && endsAtSec) {
+        try {
+          const { sendMail, trialEndingMail } = await import('../auth/mailer.js');
+          const url = process.env.TRIAL_UPGRADE_URL || 'https://chatrecall.dev/pricing/';
+          await sendMail(trialEndingMail(to, new Date(endsAtSec * 1000), url));
+        } catch (e) {
+          // A mail failure must never 5xx the webhook: Stripe would retry the
+          // event, and the entitlement work is already done.
+          console.error('[billing] trial-ending mail failed:', (e as Error).message);
+        }
+      }
+      return null;
     }
     default:
       return null; // event we don't care about — ack with 200, do nothing.
@@ -469,6 +599,8 @@ router.post('/checkout', async (req, res) => {
       // and referral discounts possible WITHOUT building a referral system:
       // codes are created in the Stripe dashboard and honoured here.
       allow_promotion_codes: true,
+      // VAT / sales tax, when the account is configured for it. See taxArgs().
+      ...taxArgs(),
       // client_reference_id ties the resulting subscription back to OUR tenant;
       // we also stamp it into the subscription metadata so later subscription.*
       // events (which lack client_reference_id) can resolve the tenant.
@@ -477,7 +609,10 @@ router.post('/checkout', async (req, res) => {
       // checkout.session.completed carries the SESSION object, whose metadata is
       // separate from the subscription's. Without this, planOf() sees nothing on
       // the first event and the entitlement records a null plan.
-      metadata: { tenant, plan: line.plan.key, seats: String(line.quantity) },
+      // `product` is what lets this account sell more than one thing: every
+      // endpoint on the account receives every subscribed event, so each product
+      // has to be able to recognise its own. See belongsToThisProduct().
+      metadata: { tenant, plan: line.plan.key, seats: String(line.quantity), product: productTag() },
       subscription_data: {
         // plan + seats recorded on the subscription so a later webhook (and any
         // support question) can tell WHICH plan was bought — the events
@@ -486,7 +621,10 @@ router.post('/checkout', async (req, res) => {
         // subscription event is what knows the plan, and it carries no address of its
         // own. Without this a self-host purchase succeeds and the customer receives
         // nothing.
-        metadata: { tenant, plan: line.plan.key, seats: String(line.quantity), email: user.email ?? '' },
+        metadata: {
+          tenant, plan: line.plan.key, seats: String(line.quantity),
+          email: user.email ?? '', product: productTag(),
+        },
         // Exactly one of trial_end / trial_period_days, or neither. See above.
         ...trialArg,
       },
