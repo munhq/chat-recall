@@ -120,8 +120,16 @@ describe('auto-tasks', () => {
     ];
     const r = await runAutoTasks('t1');
     expect(r?.closed).toBe(1);
-    expect(state.updated).toEqual([{ id: 't_close', patch: { status: 'done' } }]);
+    // Assert the CLOSE, not the whole write log. t_keep1 matches a live action by
+    // id and carries no identity, so it is also written — a backfill, which is
+    // correct and is asserted below rather than mistaken for a second closure.
+    expect(state.updated.filter((u) => u.patch.status !== undefined))
+      .toEqual([{ id: 't_close', patch: { status: 'done' } }]);
     expect(state.comments).toEqual(['t_close']);
+    expect(r?.backfilled).toBe(1);
+    expect(state.updated.some((u) => u.id === 't_keep1' && u.patch.linkedFindingIdentity)).toBe(true);
+    // The human's card and the already-done one are never written at all.
+    expect(state.updated.some((u) => u.id === 't_keep2' || u.id === 't_keep3')).toBe(false);
   });
 
   test('debounces: a second run inside the window is a no-op', async () => {
@@ -147,7 +155,7 @@ describe('auto-tasks', () => {
     state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 0 }));
     state.actions = [];                      // nothing qualifies
     const r = await runAutoTasks('t1');
-    expect(r).toEqual({ created: 0, closed: 0, repointed: 0 });
+    expect(r).toEqual({ created: 0, closed: 0, repointed: 0, backfilled: 0 });
     // "ran and found nothing" must be distinguishable from "never ran", or the
     // UI cannot answer "is anything happening?".
     const st = await autoTasksStatus('t1');
@@ -238,7 +246,7 @@ describe('reads are unrestricted, writes are authored', () => {
     state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
     state.actions = [action('c1', 0), action('h1', 1)];
     const r = await runAutoTasks('t1');
-    expect(r).toEqual({ created: 2, closed: 0, repointed: 0 });
+    expect(r).toEqual({ created: 2, closed: 0, repointed: 0, backfilled: 0 });
     expect(state.created).toEqual(['c1', 'h1']);
   });
 
@@ -430,5 +438,59 @@ describe('findings are fileable, not just actions', () => {
     await runAutoTasks('t1', { force: true });
     expect(state.tasks).toHaveLength(1);
     expect(state.created).toEqual(['f1']);
+  });
+});
+
+/**
+ * A card older than the identity column must acquire one.
+ *
+ * It matches by id, so the filing loop's `continue` skipped it forever and it
+ * never gained an identity — meaning the first time its id shifted it would
+ * close itself as fixed, which is precisely the bug the column exists to stop.
+ * The cards left after the 0009 repair are exactly these, so without the
+ * backfill they stay vulnerable indefinitely.
+ */
+describe('pre-identity cards are repaired in place', () => {
+  test('THE GAP: a card matching by id but holding no identity gets one', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [action('a1', 0)];
+    // A card as migration 0009 leaves them: right id, no identity.
+    state.tasks = [{
+      id: 't_old', title: '[critical] fix a1', status: 'todo', createdBy: 'auto-tasks',
+      linkedFindingId: 'a1', linkedFindingIdentity: null, projectId: 'p1',
+    }];
+    const r = await runAutoTasks('t1');
+    expect(r?.backfilled).toBe(1);
+    expect(r?.created).toBe(0);                       // no duplicate filed
+    expect(state.tasks[0].linkedFindingIdentity).toBeTruthy();
+  });
+
+  test('and once it has one, a later run does not write again', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [action('a1', 0)];
+    state.tasks = [{
+      id: 't_old', title: '[critical] fix a1', status: 'todo', createdBy: 'auto-tasks',
+      linkedFindingId: 'a1', linkedFindingIdentity: null, projectId: 'p1',
+    }];
+    await runAutoTasks('t1');
+    const second = await runAutoTasks('t1', { force: true });
+    expect(second?.backfilled).toBe(0);
+  });
+
+  test('a backfilled card then survives an id shift instead of closing', async () => {
+    // The whole point: repair, then prove the repair works.
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [action('a1', 0)];
+    state.tasks = [{
+      id: 't_old', title: '[critical] fix a1', status: 'todo', createdBy: 'auto-tasks',
+      linkedFindingId: 'a1', linkedFindingIdentity: null, projectId: 'p1',
+    }];
+    await runAutoTasks('t1');                          // backfills identity
+    // Same action, new id — what used to close the card as done.
+    state.actions = [{ ...action('a1', 0), id: 'a1_rehashed' }];
+    const r = await runAutoTasks('t1', { force: true });
+    expect(r?.closed).toBe(0);
+    expect(r?.repointed).toBe(1);
+    expect(state.tasks[0].linkedFindingId).toBe('a1_rehashed');
   });
 });
