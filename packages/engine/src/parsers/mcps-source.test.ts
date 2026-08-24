@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { McpsSource } from './mcps-source.js';
+import { McpsSource, redactInlineSecrets } from './mcps-source.js';
 
 let tmpHome: string;
 const origHome = process.env.HOME;
@@ -97,5 +97,38 @@ describe('McpsSource', () => {
 
   test('returns nothing when no config files exist', async () => {
     expect(await collect()).toHaveLength(0);
+  });
+});
+
+describe('redactInlineSecrets', () => {
+  test('a connection-string password is removed, the rest of the url survives', () => {
+    // A Postgres MCP puts the password in an ARGUMENT, so guarding `env` alone
+    // guards nothing. Four rows had already reached the server this way.
+    const r = redactInlineSecrets('postgresql://postgres:hunter2@localhost:5432/appdb');
+    expect(r.redacted).toBe(true);
+    expect(r.text).not.toContain('hunter2');
+    expect(r.text).toContain('postgresql://postgres:');
+    expect(r.text).toContain('@localhost:5432/appdb');
+  });
+
+  test('provider-shaped tokens on a command line are removed', () => {
+    for (const secret of ['sk-abcdefghijklmnopqrstuv', 'ghp_abcdefghijklmnopqrstuvwxyz', 'AIzaSyABCDEFGHIJKLMNOPQRSTUVWX']) {
+      const r = redactInlineSecrets(`--key ${secret}`);
+      expect(r.redacted).toBe(true);
+      expect(r.text).not.toContain(secret);
+    }
+  });
+
+  test('an ordinary command is untouched and not flagged', () => {
+    // Over-redacting would break every entry that has nothing to hide.
+    const r = redactInlineSecrets('npx -y @modelcontextprotocol/server-github');
+    expect(r.redacted).toBe(false);
+    expect(r.text).toBe('npx -y @modelcontextprotocol/server-github');
+  });
+
+  test('a url with no password keeps its userinfo', () => {
+    const r = redactInlineSecrets('https://user@example.com/sse');
+    expect(r.redacted).toBe(false);
+    expect(r.text).toBe('https://user@example.com/sse');
   });
 });
