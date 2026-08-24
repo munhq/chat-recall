@@ -43,7 +43,12 @@ const FILES = [
   // One-off repair. DELETE THIS FILE AND THIS ENTRY once it has run everywhere —
   // see migrations/README.md. It removes auto-filed cards that closed themselves
   // because a finding's id shifted, not because anything was fixed.
-  '0009_drop_phantom_autoclosed_tasks.sql',
+  // The './migrations/' prefix is REQUIRED. Entries resolve against
+  // import.meta.url, which is this file — not the migrations directory — so a
+  // bare filename resolves to /app/0009_….sql and the initContainer dies with
+  // ENOENT. It did: the rollout sat in Init:CrashLoopBackOff (no outage, because
+  // Kubernetes kept the previous pods serving) until this prefix was restored.
+  './migrations/0009_drop_phantom_autoclosed_tasks.sql',
 ];
 
 // REPORT ROWS AFFECTED. A data migration against a tenant-scoped table is
