@@ -4,6 +4,25 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.10] — 2026-08-24
+
+### Fixed
+
+- The 0.5.9 rollout could not start. Migration 0009's entry in `migrate.mjs`
+  lacked the `./migrations/` prefix, and entries resolve against
+  `import.meta.url` — which is `migrate.mjs` itself, not the migrations directory
+  — so the initContainer opened `/app/migrate/0009_….sql`, got ENOENT and died.
+  Kubernetes kept the previous pods serving, so there was no outage, but the new
+  ReplicaSet sat in `Init:CrashLoopBackOff` and the repair never ran. The removed
+  0001–0008 files all carried the prefix; this one dropped it because `FILES` had
+  been empty and nothing exercised the path.
+- Migration 0009 is now verified against a throwaway Postgres rather than
+  reasoned about: seven fixtures covering every branch, of which only the two
+  phantoms are deleted — a completion with a session, a human rejection, an open
+  card, a card whose finding still exists and a human-created card all survive,
+  the orphaned comment goes and the real one stays. Re-running removes 0, and on
+  a database with no tables it reports and returns.
+
 ## [0.5.9] — 2026-08-24
 
 ### Fixed
