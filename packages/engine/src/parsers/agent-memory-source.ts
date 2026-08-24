@@ -78,7 +78,7 @@ function parseFrontmatter(content: string): { fm: Frontmatter; body: string } {
 
 /**
  * Resolve a Claude project-hash dir name back to a filesystem path:
- *   -home-adi-code-personal-chat-recall → /home/adi/code/personal/chat-recall
+ *   -home-user-code-personal-chat-recall → /home/user/code/personal/chat-recall
  */
 function projectHashToPath(hashDir: string): string {
   return decodeProjectDirName(hashDir);

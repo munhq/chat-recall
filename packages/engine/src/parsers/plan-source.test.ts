@@ -62,7 +62,7 @@ Replace OAuth with passkeys.`);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'video-stack.md'), `---
 session_id: 23e2a716-ea62-417c-8cd6-f4ada749abe4
-cwd: /home/adi/code/personal/munbot
+cwd: /home/user/code/personal/example-app
 timestamp: 2026-06-29T06:16:03Z
 ---
 
@@ -74,7 +74,7 @@ Some detail here.`);
     for await (const i of src.discover()) items.push(i);
     const plan = items.find(i => i.id === 'video-stack');
     expect(plan).toBeDefined();
-    expect(plan.projectPath).toBe('/home/adi/code/personal/munbot');
+    expect(plan.projectPath).toBe('/home/user/code/personal/example-app');
     expect(plan.title).toBe('Plan: Generative Video');
     // Body preview must not contain the frontmatter fence.
     expect(plan.contentPreview).not.toMatch(/session_id:/);
@@ -85,7 +85,7 @@ Some detail here.`);
     expect(sessionLink!.targetType).toBe('session');
     expect(sessionLink!.targetId).toBe('23e2a716-ea62-417c-8cd6-f4ada749abe4');
     // cwd basename drives the project link.
-    expect(links.find(l => l.linkType === 'plan_for_project')?.targetId).toBe('munbot');
+    expect(links.find(l => l.linkType === 'plan_for_project')?.targetId).toBe('example-app');
   });
 
   test('UUID-named plan file links to the session of the same id', async () => {
@@ -106,7 +106,7 @@ Some detail here.`);
     mkdirSync(plans, { recursive: true });
     writeFileSync(join(plans, 'shiny-lark-agent-a12a956c6eb5d1285.md'), '# agent plan\nbody');
     // The subagent transcript lives under <project>/<parentSession>/subagents/.
-    const subDir = join(tmpHome, '.claude', 'projects', '-home-adi-code-personal-meal-planner',
+    const subDir = join(tmpHome, '.claude', 'projects', '-home-user-code-personal-meal-planner',
       'addc79f4-ccd7-47a5-8eeb-daf7fa546271', 'subagents');
     mkdirSync(subDir, { recursive: true });
     writeFileSync(join(subDir, 'agent-a12a956c6eb5d1285.jsonl'), '{}\n');

@@ -643,7 +643,7 @@ setInterval(() => {
 // The in-flight flag is a single point of failure: it is only cleared in the
 // `finally`, so ONE await that never settles means the daemon stops draining
 // forever, silently — no error, no log, just a queue that never empties (seen
-// on adi-pc: 18 intents pending for days while the daemon logged healthy
+// on desktop: 18 intents pending for days while the daemon logged healthy
 // heartbeats the whole time). Every request in the drain path is now bounded,
 // and this watchdog is the backstop for whatever comes next: if a tick has
 // been running longer than any legitimate drain, say so and start a new one.
@@ -785,7 +785,7 @@ function discoverWorkspaces(): string[] {
  * Is this directory actually a repository we can index?
  *
  * The log was full of `code intelligence: indexing /` and `indexing /tmp` and
- * `indexing /home/adi/code/personal`, each costing a process spawn and up to
+ * `indexing /home/user/code/personal`, each costing a process spawn and up to
  * 78 seconds before codeindex refused it — and each retried on the next sweep,
  * forever, because nothing here filtered on anything but existsSync.
  *
