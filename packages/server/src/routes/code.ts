@@ -255,6 +255,33 @@ router.patch('/actions/:id', async (req, res) => {
   finally { await store.close(); }
 });
 
+/**
+ * Recommendation ids this product has already carried out, from the sync-intent
+ * log. Only status='done' counts: a queued apply has not happened yet and a
+ * failed one must keep offering itself.
+ *
+ * The intent's `name` is the JSON the apply route wrote, carrying recId and
+ * projectId. Read rather than a new column because the record already exists —
+ * nothing ever read it, which is why an applied rule kept being recommended.
+ */
+async function appliedRecIds(
+  store: { listSyncIntents(limit?: number): Promise<Array<{ kind: string; status: string; name: string | null }>> },
+  projectId: string,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  try {
+    for (const it of await store.listSyncIntents(500)) {
+      if (it.kind !== 'code_apply' || it.status !== 'done' || !it.name) continue;
+      try {
+        const meta = JSON.parse(it.name) as { recId?: unknown; projectId?: unknown };
+        // A global apply (no projectId) is not evidence about THIS project.
+        if (typeof meta.recId === 'string' && meta.projectId === projectId) out.add(meta.recId);
+      } catch { /* a name that is not our JSON is not our intent */ }
+    }
+  } catch { /* the log being unreadable must not blank the panel */ }
+  return out;
+}
+
 // GET /api/code/recommendations?project= — behavior × code → actionable recommendations.
 router.get('/recommendations', async (req, res) => {
   const projectId = typeof req.query.project === 'string' ? req.query.project : '';
@@ -274,7 +301,10 @@ router.get('/recommendations', async (req, res) => {
     // routes/recommendations.ts. Shared helper — see util/behavior-signal.ts.
     const behavior = await behaviorSignal(async () =>
       (await store.listItemsByProjectId('session', projectId, 200)).map((s) => s.id));
-    const recommendations = buildRecommendations({ project, summary, findings, hotspots, behavior });
+    const recommendations = buildRecommendations({
+      project, summary, findings, hotspots, behavior,
+      appliedRecIds: await appliedRecIds(store as never, projectId),
+    });
     res.json({ recommendations, behavior: behavior ?? null });
   } catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : 'failed' }); }
   finally { await store.close(); }
@@ -377,6 +407,9 @@ router.post('/recommendations/:id/apply', async (req, res) => {
       store.listCodeFindings(projectId, { limit: 500 }),
       store.listCodeHotspots(projectId, 50),
     ]);
+    // Deliberately UNFILTERED by appliedRecIds: re-applying is idempotent, and
+    // filtering here would 404 a retry of an apply whose intent already
+    // succeeded — turning a harmless repeat into an error.
     const recs = buildRecommendations({ project, summary, findings, hotspots });
     const rec = recs.find((r) => r.id === req.params.id);
     if (!rec) return res.status(404).json({ error: 'recommendation not found (re-fetch; it may have changed)' });
