@@ -51,9 +51,9 @@ describe('parseGitRemote', () => {
     expect(parseGitRemote('not a url')).toBeNull();
   });
   test('normalises SSH host aliases for github (multi-account setup)', () => {
-    // ~/.ssh/config: Host github.com-darkkraft → second GitHub account
-    expect(parseGitRemote('git@github.com-darkkraft:darkkraft/chat-recall.git'))
-      .toEqual({ host: 'github.com', owner: 'darkkraft', repo: 'chat-recall' });
+    // ~/.ssh/config: Host github.com-second → a second GitHub account
+    expect(parseGitRemote('git@github.com-second:owner/repo.git'))
+      .toEqual({ host: 'github.com', owner: 'owner', repo: 'repo' });
   });
   test('normalises host aliases for other major providers', () => {
     expect(parseGitRemote('git@gitlab.com-work:team/api.git'))
