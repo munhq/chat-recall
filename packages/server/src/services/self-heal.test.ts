@@ -154,4 +154,35 @@ describe('healSessionFromArchive', () => {
     expect(r2.recheckEnqueued).toBe(0);
     await store.close();
   });
+
+  // The HTTP route has a gateway deadline; the background sweep does not. An
+  // unbounded pass costs ~150ms per session, so the route's own default —
+  // "scan everything" — took 125s on a real tenant and returned 524 every
+  // time. `limit` is what makes the route answerable, and `truncated` is what
+  // stops a capped answer reading as "your whole history is healthy".
+  test('limit caps the pass, reports what it skipped, and takes the freshest first', async () => {
+    const { createStore } = await import('../imports.js');
+    const { selfHealTenant } = await import('./self-heal.js');
+    const { gzipSync } = await import('zlib');
+    const store = await createStore();
+
+    const base = 1760000300000;
+    for (let i = 0; i < 5; i++) {
+      const body = JSON.stringify({ type: 'user', message: { role: 'user', content: `body ${i}` } });
+      const gz = gzipSync(Buffer.from(body + '\n'));
+      await store.putRawSession(`cap-${i}`, 'claude', base + i * 1000, gz, gz.length, 'git:github.com/o/repo', '/home/u/repo');
+    }
+
+    const capped = await selfHealTenant(store, { sinceMs: 0, dryRun: true, limit: 2 });
+    expect(capped.scanned).toBe(2);
+    expect(capped.eligible).toBeGreaterThanOrEqual(5);
+    expect(capped.truncated).toBe(true);
+
+    // No limit: everything, and it must not claim truncation.
+    const full = await selfHealTenant(store, { sinceMs: 0, dryRun: true });
+    expect(full.scanned).toBe(full.eligible);
+    expect(full.truncated).toBe(false);
+    expect(full.scanned).toBeGreaterThan(capped.scanned);
+    await store.close();
+  });
 });
