@@ -46,10 +46,35 @@ function deviceIdFromUserId(userId?: string): string | null {
 router.post('/', requireFeature('toolkit'), express.json(), async (req, res) => {
   const b = req.body ?? {};
   const kind = b.kind;
-  if (kind !== 'copy' && kind !== 'sync_all') {
-    return res.status(400).json({ error: "kind must be 'copy' or 'sync_all'" });
+  if (kind !== 'copy' && kind !== 'sync_all' && kind !== 'pull') {
+    return res.status(400).json({ error: "kind must be 'copy', 'sync_all' or 'pull'" });
   }
   const input: SyncIntentInput = { kind, createdBy: req.userId ?? null, deviceId: b.deviceId ?? null };
+
+  // `pull` = install what the ACCOUNT has onto the draining device, from the
+  // server. `copy`/`sync_all` only ever move files between tools on one
+  // machine, which is why they can never set up a second machine.
+  //   { kind:'pull' }                              → everything, every device
+  //   { kind:'pull', types:['mcp'] }               → all MCPs
+  //   { kind:'pull', types:['mcp'], name:'acme' }  → one artifact
+  //   { kind:'pull', deviceId:'laptop' }           → that machine only
+  if (kind === 'pull') {
+    const types = Array.isArray(b.types) ? b.types.map(String) : [];
+    for (const t of types) {
+      if (!VALID_TYPES.has(t)) return res.status(400).json({ error: `types must each be one of ${[...VALID_TYPES].join(', ')}` });
+    }
+    if (b.name !== undefined && b.name !== null && typeof b.name !== 'string') {
+      return res.status(400).json({ error: 'name must be a string when present' });
+    }
+    if (b.name && types.length !== 1) {
+      // A bare name is ambiguous across types — a skill and an MCP can share one.
+      return res.status(400).json({ error: 'name requires exactly one entry in types' });
+    }
+    // Reuses the existing columns rather than migrating the table: the type
+    // list rides in artifact_type, the optional name in name.
+    input.artifactType = types.length ? types.join(',') : null;
+    input.name = b.name || null;
+  }
 
   if (kind === 'copy') {
     if (!VALID_TYPES.has(b.artifactType)) return res.status(400).json({ error: `artifactType must be one of ${[...VALID_TYPES].join(', ')}` });

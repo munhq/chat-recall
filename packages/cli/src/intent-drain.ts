@@ -26,7 +26,7 @@ import { pushProjectTaskStatuses } from './project-tasks.js';
 
 interface PendingIntent {
   id: string;
-  kind: 'copy' | 'sync_all' | 'code_apply' | 'recheck_session';
+  kind: 'copy' | 'sync_all' | 'pull' | 'code_apply' | 'recheck_session';
   artifact_type: string | null;
   name: string | null;
   from_tool: string | null;
@@ -78,6 +78,59 @@ export interface DrainResult {
 }
 
 /** Run one intent and return the (status, result-json) to ack with. */
+/**
+ * Install what the account holds onto THIS machine, from one server.
+ *
+ * Fetches the toolkit inventory and hands it to the engine's executor. Only an
+ * inventory travels, so what can actually be rebuilt is decided there — see
+ * toolkit-pull.ts. A type the server cannot reconstruct is reported, never
+ * silently dropped.
+ */
+async function runPull(
+  base: string,
+  opts: { types?: SyncType[]; name?: string },
+): Promise<{ status: 'done' | 'error'; result: string }> {
+  const { executePull } = await import('@chat-recall/engine/core/toolkit-pull.js');
+  const { hostname } = await import('node:os');
+  const creds = loadAllCredentials().find((c) => c.serverUrl.replace(/\/+$/, '') === base.replace(/\/+$/, ''));
+  const headers = creds?.token ? { authorization: `Bearer ${creds.token}` } : {};
+
+  const wanted = opts.types?.length ? opts.types : (['mcp', 'skill', 'command', 'agent', 'instructions'] as SyncType[]);
+  const rows: Array<{ id: string; title: string; source_type: string; extra_json?: string | null }> = [];
+  for (const type of wanted) {
+    try {
+      const res = await fetchWithTimeout(`${base}/api/toolkit/browse/${type}?limit=1000`, { headers });
+      if (!res.ok) continue;
+      const body = (await res.json()) as { items?: Array<{ id: string; title: string; source_type: string; extra_json?: string | null }> };
+      for (const it of body.items || []) rows.push(it);
+    } catch { /* one type failing must not abort the rest */ }
+  }
+
+  const filtered = opts.name
+    ? rows.filter((r) => {
+        try { return (JSON.parse(r.extra_json || '{}').mcpName || r.title) === opts.name; }
+        catch { return r.title === opts.name; }
+      })
+    : rows;
+
+  const report = executePull(filtered, { thisDeviceId: hostname(), types: wanted });
+  const written = report.outcomes.filter((o) => o.status === 'written');
+  const failed = report.outcomes.filter((o) => o.status === 'failed');
+  return {
+    // A skip is a reported outcome, not a failure — the artifact genuinely
+    // cannot be installed here and the reason travels back with the ack.
+    status: failed.length > 0 ? 'error' : 'done',
+    result: JSON.stringify({
+      installed: written.length,
+      present: report.outcomes.filter((o) => o.status === 'present').length,
+      skipped: report.outcomes.filter((o) => o.status === 'skipped').map((o) => `${o.name}: ${o.reason}`).slice(0, 20),
+      failed: failed.map((o) => `${o.name}: ${o.reason}`).slice(0, 20),
+      needsEnv: [...new Set(written.flatMap((o) => o.needsEnv || []))],
+      unsupported: report.unsupported,
+    }),
+  };
+}
+
 async function runIntent(intent: PendingIntent, ctx: { base: string }): Promise<{ status: 'done' | 'error'; result: string }> {
   try {
     if (intent.kind === 'recheck_session') {
@@ -93,6 +146,18 @@ async function runIntent(intent: PendingIntent, ctx: { base: string }): Promise<
     }
     if (intent.kind === 'code_apply') {
       return applyCodeRecommendation(intent);
+    }
+    if (intent.kind === 'pull') {
+      // CROSS-DEVICE. `sync_all` copies between tools on THIS disk; `pull`
+      // installs what the account has, sourced from the server — the only
+      // kind that can set up a machine that has nothing yet.
+      const types = (intent.artifact_type || '')
+        .split(',').map((t) => t.trim()).filter(Boolean) as SyncType[];
+      const r = await runPull(ctx.base, {
+        types: types.length ? types : undefined,
+        name: intent.name || undefined,
+      });
+      return r;
     }
     if (intent.kind === 'sync_all') {
       const report = await executeSyncAll();
@@ -161,6 +226,7 @@ export async function drainSyncIntents(opts: { verbose?: boolean } = {}): Promis
       if (status === 'done') out.done++; else out.errored++;
       if (opts.verbose) {
         const label = intent.kind === 'sync_all' ? 'sync_all'
+          : intent.kind === 'pull' ? `pull ${intent.artifact_type || 'all'}${intent.name ? ` "${intent.name}"` : ''}`
           : intent.kind === 'recheck_session' ? `recheck ${intent.name}`
           : `${intent.artifact_type} "${intent.name}" ${intent.from_tool}→${intent.to_tool}`;
         console.error(`[sync-intent] ${label}: ${status}`);
