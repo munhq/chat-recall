@@ -33,6 +33,9 @@ import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
 import { codexBackend as CODEX } from '../core/backends/codex.js';
 import { isSourceEnabled } from '../core/settings.js';
 import { cursorHomeDir } from '../core/tool-paths.js';
+import { redactInlineSecrets } from '../core/redact-inline.js';
+
+export { redactInlineSecrets };
 
 interface McpConfig {
   command?: string;
@@ -67,41 +70,6 @@ function commandPreview(cfg: McpConfig): string {
     return [cfg.command, args].filter(Boolean).join(' ');
   }
   return '';
-}
-
-/**
- * Strip inline credentials from a command or argument before it is uploaded.
- *
- * ENV IS NOT THE ONLY PLACE SECRETS LIVE. A Postgres MCP is configured as
- * `npx @modelcontextprotocol/server-postgres postgres://user:PASSWORD@host/db`
- * — the password sits in an ARGUMENT, so protecting `env` alone protects
- * nothing. Four rows already on the server carry a database password this way,
- * uploaded by the flattened `command` preview long before there was a spec.
- *
- * The redacted form keeps the shape (so the entry is still recognisable and
- * still rebuildable once the user supplies the value) and loses the value.
- */
-export function redactInlineSecrets(value: string): { text: string; redacted: boolean } {
-  let redacted = false;
-  let out = value;
-
-  // scheme://user:password@host — the password, not the username.
-  out = out.replace(/(\w+:\/\/[^:/@\s]+:)([^@\s]{1,512})(@)/g, (_m, head, _pw, tail) => {
-    redacted = true;
-    return `${head}__SECRET_NOT_SYNCED__${tail}`;
-  });
-
-  // Provider-shaped bearer tokens pasted straight onto a command line.
-  const tokenShapes: RegExp[] = [
-    /\bsk-[A-Za-z0-9_-]{16,}\b/g,          // OpenAI-style
-    /\bgh[pousr]_[A-Za-z0-9]{16,}\b/g,     // GitHub
-    /\bAIza[0-9A-Za-z_-]{20,}\b/g,         // Google
-    /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,   // Slack
-  ];
-  for (const re of tokenShapes) {
-    out = out.replace(re, () => { redacted = true; return '__SECRET_NOT_SYNCED__'; });
-  }
-  return { text: out, redacted };
 }
 
 /**

@@ -29,10 +29,10 @@
  * use, far from the cause.
  */
 
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { delimiter, join, basename, isAbsolute } from 'node:path';
 
-import { SUPPORTED_TARGETS, readMcpEntry, writeMcpEntry, type TargetTool, type SyncType } from './toolkit-sync.js';
+import { SOURCE_PRECEDENCE, SUPPORTED_TARGETS, readMcpEntry, writeMcpEntry, skillsDirFor, type TargetTool, type SyncType } from './toolkit-sync.js';
 
 /** Is `p` an executable file that exists here? */
 function isExecutableFile(p: string): boolean {
@@ -97,6 +97,8 @@ export interface PullOutcome {
   needsEnv?: string[];
   /** Set when the source machine's absolute path was replaced by this machine's copy. */
   rewrittenCommand?: string;
+  /** Set when a credential was stripped from the body before upload, so the file needs an edit. */
+  redactedContent?: boolean;
 }
 
 export interface PullReport {
@@ -119,10 +121,13 @@ interface McpSpec {
 
 /** Rows the server holds for types whose bytes it never received. */
 const NOT_REBUILDABLE: Record<string, string> = {
-  skill: 'a skill is a directory of files, and file content is not uploaded',
-  agent: 'only a short body preview is uploaded, not the agent body',
-  command: 'command bodies are not uploaded',
-  instructions: 'project-scoped, and file content is not uploaded',
+  // Agents and commands differ in FORMAT per tool (markdown vs TOML), and the
+  // stored body is in its source tool's format — writing it verbatim into a
+  // tool that expects the other one produces a file the tool silently ignores.
+  // Converting between them needs the codec, which is the next piece.
+  agent: 'the stored body is in its source tool\'s format; cross-format conversion is not wired up yet',
+  command: 'the stored body is in its source tool\'s format; cross-format conversion is not wired up yet',
+  instructions: 'project-scoped — it belongs to a repo, not to a machine',
 };
 
 /**
@@ -166,16 +171,51 @@ function parseExtra(row: RemoteArtifactRow): Record<string, unknown> {
 export function planPull(
   rows: RemoteArtifactRow[],
   opts: { thisDeviceId?: string; types?: SyncType[] } = {},
-): { mcps: Array<{ name: string; spec: McpSpec; tools: TargetTool[] }>; unsupported: PullReport['unsupported'] } {
+): {
+  mcps: Array<{ name: string; spec: McpSpec; tools: TargetTool[] }>;
+  skills: Array<{ name: string; body: string; truncated: boolean; redacted: boolean; tools: TargetTool[] }>;
+  unsupported: PullReport['unsupported'];
+} {
   const wanted = opts.types;
   const seenUnsupported = new Map<string, number>();
   // One entry per MCP NAME. The same server is registered in several tools, so
   // the rows collide by name — the richest spec wins, because an older client
   // may have uploaded a row without one.
   const byName = new Map<string, McpSpec>();
+  const skillsByName = new Map<string, { body: string; rank: number; truncated: boolean; redacted: boolean }>();
 
   for (const row of rows) {
     const type = row.source_type;
+    if (type === 'skill') {
+      if (wanted && !wanted.includes('skill')) continue;
+      const extra = parseExtra(row);
+      const name = (extra.skillName as string) || row.title;
+      const body = extra.body;
+      // A row without a body predates the full-body upload. Refusing is
+      // correct: rebuilding a skill from its 2000-char search chunk would
+      // write a TRUNCATED skill that looks installed and quietly misbehaves.
+      if (!name || typeof body !== 'string' || !body.trim()) {
+        seenUnsupported.set('skill', (seenUnsupported.get('skill') || 0) + 1);
+        continue;
+      }
+      // The SAME skill name exists in several tools with different content, so
+      // the rows collide and one has to win. Picking the longest body was
+      // arbitrary and non-deterministic across machines — it installed a
+      // 19KB copy where the source of truth was the 16KB one. Use the
+      // precedence order the local fan-out already uses, so both paths agree
+      // on which tool owns a name.
+      const tool = String(extra.tool || '');
+      const rank = SOURCE_PRECEDENCE.skill.indexOf(tool as TargetTool);
+      const prev = skillsByName.get(name);
+      if (!prev || (rank >= 0 && (prev.rank < 0 || rank < prev.rank))) {
+        skillsByName.set(name, {
+          body, rank,
+          truncated: extra.bodyTruncated === true,
+          redacted: extra.bodySecretsRedacted === true,
+        });
+      }
+      continue;
+    }
     if (type !== 'mcp') {
       if (NOT_REBUILDABLE[type]) seenUnsupported.set(type, (seenUnsupported.get(type) || 0) + 1);
       continue;
@@ -195,10 +235,16 @@ export function planPull(
 
   const targets = SUPPORTED_TARGETS.mcp;
   const mcps = [...byName.entries()].map(([name, spec]) => ({ name, spec, tools: targets }));
-  const unsupported = [...seenUnsupported.entries()].map(([type, count]) => ({
-    type, rows: count, reason: NOT_REBUILDABLE[type],
+  const skills = [...skillsByName.entries()].map(([name, v]) => ({
+    name, body: v.body, truncated: v.truncated, redacted: v.redacted, tools: SUPPORTED_TARGETS.skill,
   }));
-  return { mcps, unsupported };
+  const unsupported = [...seenUnsupported.entries()].map(([type, count]) => ({
+    type,
+    rows: count,
+    reason: NOT_REBUILDABLE[type]
+      ?? 'the stored rows carry no full body — re-index on the device that has them',
+  }));
+  return { mcps, skills, unsupported };
 }
 
 /** Execute a pull. `dryRun` reports what would change and writes nothing. */
@@ -206,8 +252,32 @@ export function executePull(
   rows: RemoteArtifactRow[],
   opts: { thisDeviceId?: string; types?: SyncType[]; dryRun?: boolean } = {},
 ): PullReport {
-  const { mcps, unsupported } = planPull(rows, opts);
+  const { mcps, skills, unsupported } = planPull(rows, opts);
   const outcomes: PullOutcome[] = [];
+
+  for (const { name, body, truncated, redacted, tools } of skills) {
+    for (const tool of tools) {
+      const dir = join(skillsDirFor(tool), name);
+      const file = join(dir, 'SKILL.md');
+      // NEVER overwrite. The local copy may be edited, and a skill the user
+      // changed here is more valuable than the account's version of it.
+      if (existsSync(file)) { outcomes.push({ type: 'skill', name, tool, status: 'present' }); continue; }
+      if (truncated) {
+        outcomes.push({ type: 'skill', name, tool, status: 'skipped', reason: 'the stored body was truncated — installing it would write a corrupted skill' });
+        continue;
+      }
+      if (opts.dryRun) { outcomes.push({ type: 'skill', name, tool, status: 'written', reason: 'dry run', redactedContent: redacted }); continue; }
+      try {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(file, body);
+        // Flagged, not hidden: a placeholder sits where the credential was, so
+        // the skill needs an edit before its example commands will run.
+        outcomes.push({ type: 'skill', name, tool, status: 'written', path: file, redactedContent: redacted });
+      } catch (e) {
+        outcomes.push({ type: 'skill', name, tool, status: 'failed', reason: e instanceof Error ? e.message : 'write failed' });
+      }
+    }
+  }
 
   for (const { name, spec, tools } of mcps) {
     const built = entryFromSpec(spec);

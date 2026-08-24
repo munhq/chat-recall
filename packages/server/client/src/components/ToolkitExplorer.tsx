@@ -1162,8 +1162,8 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
         setOneClickMsg('Queued. It applies when that machine next syncs (is `chat-recall watch` running there?).');
         return;
       }
-      // Report the SKIPS too. Skills and agents cannot be installed remotely —
-      // the server holds an inventory, not their file content — and a summary
+      // Report the SKIPS too. Not every type can be installed remotely (an
+      // agent's body is stored in its source tool's format), and a summary
       // that hides that reads as a success that did nothing.
       try {
         const r = JSON.parse(done.result || '{}');
