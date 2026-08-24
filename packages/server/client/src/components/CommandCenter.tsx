@@ -34,8 +34,9 @@ export default function CommandCenter({ setView, onOpenProject, onFocusProjects,
   // active device tokens can never receive another byte — say so at the top
   // of the home view, not buried in Account. (Live incident: a revoked token
   // left prod frozen at 7 conversations with no visible signal.) Secondary
-  // signal: devices exist but nothing has arrived for 48h — the machine's
-  // watch service is probably down.
+  // signal: devices exist but the collector has not REPORTED for 48h — the
+  // machine's watch service is probably down. Deliberately not "no new data
+  // for 48h": that is what an idle fortnight looks like on a healthy install.
   const [syncAlert, setSyncAlert] = useState<null | { kind: 'no-device' | 'stale'; ageH?: number }>(null);
   useEffect(() => {
     if (!cloud) return;
@@ -49,7 +50,21 @@ export default function CommandCenter({ setView, onOpenProject, onFocusProjects,
         if (!on) return;
         const active = devices.filter((d) => !d.revoked);
         if (active.length === 0 && s.sessions > 0) setSyncAlert({ kind: 'no-device' });
-        else if (active.length > 0 && s.newestSessionAgeMs != null && s.newestSessionAgeMs > 48 * 3600_000) {
+        // MEASURE THE COLLECTOR, NOT THE CALENDAR.
+        //
+        // This fired on newestSessionAgeMs > 48h, so a fortnight's holiday
+        // produced a red "nothing is arriving, go debug your machine" banner on
+        // an install whose collector had reported ninety seconds earlier. Old
+        // data is not a fault; a silent collector is.
+        //
+        // lastSyncAgeMs is absent only where no collector has ever reported, and
+        // there the session age is the sole signal available, so it stays as the
+        // fallback.
+        else if (active.length > 0 && s.lastSyncAgeMs != null && s.lastSyncAgeMs > 48 * 3600_000) {
+          setSyncAlert({ kind: 'stale', ageH: Math.round(s.lastSyncAgeMs / 3600_000) });
+        }
+        else if (active.length > 0 && s.lastSyncAgeMs == null
+                 && s.newestSessionAgeMs != null && s.newestSessionAgeMs > 48 * 3600_000) {
           setSyncAlert({ kind: 'stale', ageH: Math.round(s.newestSessionAgeMs / 3600_000) });
         }
       } catch { /* control-plane hiccup — no banner beats a wrong banner */ }
@@ -137,8 +152,8 @@ export default function CommandCenter({ setView, onOpenProject, onFocusProjects,
             </>
           ) : (
             <>
-              <strong style={{ color: 'var(--cr-err-500)' }}>No new data for {syncAlert.ageH}h</strong> — a device token
-              is active but nothing is arriving. On your machine, check:{' '}
+              <strong style={{ color: 'var(--cr-err-500)' }}>No sync for {syncAlert.ageH}h</strong> — a device token
+              is active but the collector has not reported. On your machine, check:{' '}
               <code>chat-recall service status</code> · <code>chat-recall sync</code>
             </>
           )}
