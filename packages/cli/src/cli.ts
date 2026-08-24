@@ -17,6 +17,7 @@ import { getDataDir, getIdentityFilePath, getHooksDir } from '@chat-recall/engin
 import { claudeBackend } from '@chat-recall/engine/core/backends/claude.js';
 import { claudeHomeDirs } from '@chat-recall/engine/core/tool-paths.js';
 import { resolveProjectId } from '@chat-recall/engine/core/project-resolver.js';
+import type { RemoteArtifactRow } from '@chat-recall/engine/core/toolkit-pull.js';
 import { tierAll, type ScoreTier } from '@chat-recall/engine/core/score-tier.js';
 import { loadAllCredentials, type Credentials } from './sync-client.js';
 import { printUpdateNotice, updateNotice } from './update-notice.js';
@@ -446,6 +447,50 @@ program
         console.log(`   ${chalk.yellow('Skill install failed')} — ${err instanceof Error ? err.message : err}`);
       }
       console.log();
+
+      // Bring this machine up to the setup the ACCOUNT already has, not just
+      // the setup chat-recall ships. Without this step a second device gets
+      // chat-recall's own MCP + skills and nothing else, so every other MCP
+      // server the user relies on has to be registered by hand in each of
+      // their tools — which is the whole reason cross-device setup was painful.
+      // MCP registrations are the part the server can rebuild; see
+      // toolkit-pull.ts for what cannot travel yet and why.
+      if (!options.skipMcp && firstTarget()) {
+        console.log(chalk.bold('Installing your other MCP servers from your account...'));
+        try {
+          const { loadAllCredentials } = await import('./sync-client.js');
+          const { executePull } = await import('@chat-recall/engine/core/toolkit-pull.js');
+          const { hostname } = await import('node:os');
+          const rows: RemoteArtifactRow[] = [];
+          for (const t of loadAllCredentials()) {
+            try {
+              const res = await fetch(`${t.serverUrl}/api/toolkit/browse/mcp?limit=1000`, {
+                headers: t.token ? { authorization: `Bearer ${t.token}` } : {},
+                signal: AbortSignal.timeout(20_000),
+              });
+              if (!res.ok) continue;
+              const body = await res.json() as { items?: RemoteArtifactRow[] };
+              for (const it of body.items || []) rows.push(it);
+            } catch { /* one unreachable target must not stop init */ }
+          }
+          const report = executePull(rows, { thisDeviceId: hostname(), types: ['mcp'] });
+          const written = report.outcomes.filter((o) => o.status === 'written');
+          const present = report.outcomes.filter((o) => o.status === 'present').length;
+          if (written.length === 0 && present === 0) {
+            console.log(chalk.dim('   Nothing on your account to install yet.'));
+          } else {
+            console.log(`   ${chalk.green(`Installed ${written.length}`)} ${chalk.dim(`(${present} already present)`)}`);
+            const envVars = [...new Set(written.flatMap((o) => o.needsEnv || []))].sort();
+            if (envVars.length) {
+              console.log(`   ${chalk.yellow('Set these env vars — their values were never uploaded:')} ${envVars.join(', ')}`);
+            }
+          }
+        } catch (err) {
+          console.log(`   ${chalk.yellow('Could not install account MCPs')} — ${err instanceof Error ? err.message : err}`);
+          console.log(`   ${chalk.dim('Re-run `chat-recall toolkit pull` later.')}`);
+        }
+        console.log();
+      }
 
       // Step 6: First sync — collect this machine's local sessions and ship
       // them to the server. Skipped when there's no login (nothing to ship to)
@@ -1092,25 +1137,51 @@ program
     const target = targets[0] ? { base: targets[0].serverUrl.replace(/\/+$/, ''), token: targets[0].token } : null;
     if (!target) {
       note(false, 'Logged in', 'no credentials — run `chat-recall login <server-url>`');
-    } else {
-      note(true, 'Logged in', `${targets.length} target(s); primary: ${target.base}`);
     }
 
-    // Server reachability — GET /api/capabilities is unauthenticated and cheap,
-    // and confirms the server is up and speaks a version we can sync to.
+    // Reachability FIRST, then the credential — because the two failures have
+    // different fixes and the old code could not tell them apart. A host that
+    // had been renamed away served an HTML 404, `.json()` threw on `<!DO`, and
+    // the single catch reported a JSON parse error while the row above still
+    // showed a green "Logged in" tick (it only checked that the file had an
+    // entry). See server-probe.ts.
     if (target) {
-      try {
-        const caps = await fetch(`${target.base}/api/capabilities`).then((r) => r.json() as Promise<{ apiVersion?: number; edition?: string; cli?: { version?: string } | null }>);
-        note((caps.apiVersion ?? 0) >= 2, 'Server reachable', `apiVersion ${caps.apiVersion ?? 'unknown'}${caps.edition ? `, edition ${caps.edition}` : ''}`);
+      const { probeServer, probeOk, probeAdvice } = await import('./server-probe.js');
+      const probe = await probeServer(target.base);
+      note(probeOk(probe), 'Server reachable', probeAdvice(probe, target.base));
+
+      if (probeOk(probe)) {
+        // The server is real, so a credential failure now means the CREDENTIAL,
+        // which is the only case where "re-login" is the right advice.
+        let tokenNote: { ok: boolean; detail: string };
+        try {
+          const res = await fetch(`${target.base}/api/status`, {
+            headers: target.token ? { authorization: `Bearer ${target.token}` } : {},
+            signal: AbortSignal.timeout(10_000),
+          });
+          if (res.ok) {
+            tokenNote = { ok: true, detail: `${targets.length} target(s); primary: ${target.base}` };
+          } else if (res.status === 401 || res.status === 403) {
+            tokenNote = { ok: false, detail: `${target.base} rejected the token (HTTP ${res.status}) — run \`chat-recall login ${target.base}\`` };
+          } else {
+            tokenNote = { ok: false, detail: `${target.base} answered HTTP ${res.status} for an authenticated request` };
+          }
+        } catch (err) {
+          tokenNote = { ok: false, detail: `could not verify the token: ${err instanceof Error ? err.message : err}` };
+        }
+        note(tokenNote.ok, 'Logged in', tokenNote.detail);
+
         // A stale CLI is the quietest failure this product has — it keeps
         // "working" while collecting with months-old logic. Make it a first-
         // class doctor row, not something you infer from missing data.
         const { refreshUpdateCheck } = await import('./update-notice.js');
         await refreshUpdateCheck(true).catch(() => null);
         const stale = updateNotice();
-        note(!stale, 'CLI up to date', stale ? `${stale} (server serves ${caps.cli?.version ?? '?'})` : `${pkgVersion} — current`);
-      } catch (err) {
-        note(false, 'Server reachable', `unreachable: ${err instanceof Error ? err.message : err}`);
+        note(!stale, 'CLI up to date', stale ? `${stale} (server serves ${probe.cliVersion ?? '?'})` : `${pkgVersion} — current`);
+      } else {
+        // Do NOT claim the login is fine when nothing answered — that green tick
+        // is what sent the last debugging session after the wrong problem.
+        note(false, 'Logged in', `cannot verify against ${target.base} — fix the server row above first`);
       }
     } else {
       note(false, 'Server reachable', 'N/A (not logged in)');
@@ -1974,6 +2045,88 @@ toolkit
     for (const f of r.failed) console.log(chalk.red(`  ✗ ${f.type} ${f.name} → ${f.toTool}: ${f.error}`));
     console.log(chalk.bold(`Synced: ${r.copied.length} copied, ${r.skipped.length} already present, ${r.failed.length} failed.`));
     if (r.copied.length > 0) await pushToolkitToServer();
+  });
+
+toolkit
+  .command('pull')
+  .description('Install artifacts this device is missing, from the server (cross-device setup)')
+  .option('--types <list>', 'comma-separated subset: mcp')
+  .option('--dry-run', 'report what would change, write nothing')
+  .action(async (options: { types?: string; dryRun?: boolean }) => {
+    const { loadAllCredentials } = await import('./sync-client.js');
+    const { executePull } = await import('@chat-recall/engine/core/toolkit-pull.js');
+    const { hostname } = await import('node:os');
+
+    const targets = loadAllCredentials();
+    if (targets.length === 0) {
+      console.error(chalk.red('Not logged in.'), 'Run `chat-recall login <server-url>` first.');
+      process.exit(1);
+    }
+
+    // Every logged-in server, so a self-host target and the hosted one both
+    // contribute. Rows collide by MCP name and the planner keeps the richest.
+    const rows: RemoteArtifactRow[] = [];
+    for (const t of targets) {
+      for (const type of ['mcp', 'skill', 'agent', 'command', 'instructions']) {
+        try {
+          const res = await fetch(`${t.serverUrl}/api/toolkit/browse/${type}?limit=1000`, {
+            headers: t.token ? { authorization: `Bearer ${t.token}` } : {},
+          });
+          if (!res.ok) continue;
+          const body = await res.json() as { items?: RemoteArtifactRow[] };
+          for (const it of body.items || []) rows.push(it);
+        } catch (err) {
+          console.log(chalk.dim(`  (${t.serverUrl} ${type}: ${err instanceof Error ? err.message : err})`));
+        }
+      }
+    }
+    if (rows.length === 0) {
+      console.log('Nothing on the server to pull. Run `chat-recall index` on the device that has your setup.');
+      return;
+    }
+
+    const types = options.types
+      ? options.types.split(',').map(x => x.trim()).filter(Boolean) as Array<'skill' | 'mcp' | 'command' | 'agent' | 'instructions'>
+      : undefined;
+    const report = executePull(rows, { thisDeviceId: hostname(), types, dryRun: options.dryRun });
+
+    const written = report.outcomes.filter(o => o.status === 'written');
+    const present = report.outcomes.filter(o => o.status === 'present');
+    const failed = report.outcomes.filter(o => o.status === 'failed');
+    const skipped = report.outcomes.filter(o => o.status === 'skipped');
+
+    for (const o of written) {
+      console.log(chalk.green(`  + ${o.type} ${o.name} → ${o.tool}`) + chalk.dim(`  ${o.path || '(dry run)'}`));
+    }
+    for (const o of failed) console.log(chalk.red(`  ✗ ${o.type} ${o.name} → ${o.tool}: ${o.reason}`));
+    for (const o of skipped) console.log(chalk.yellow(`  ~ ${o.type} ${o.name} → ${o.tool}: ${o.reason}`));
+
+    console.log(chalk.bold(
+      `${options.dryRun ? 'Would install' : 'Installed'}: ${written.length}`
+      + ` · already present: ${present.length}`
+      + ` · failed: ${failed.length}`
+      + ` · skipped: ${skipped.length}`,
+    ));
+
+    // Env values never leave the source machine, so say which ones to set here
+    // rather than leaving a registration that fails on first use.
+    const envVars = [...new Set(written.flatMap(o => o.needsEnv || []))].sort();
+    if (envVars.length) {
+      console.log('');
+      console.log(chalk.yellow.bold('Set these environment variables — their values were never uploaded:'));
+      for (const v of envVars) console.log(`  ${v}`);
+    }
+
+    // NAME what could not travel. A partial sync reported as a success is why
+    // nobody checks a sync report twice.
+    if (report.unsupported.length) {
+      console.log('');
+      console.log(chalk.dim('Not installable from the server yet:'));
+      for (const u of report.unsupported) {
+        console.log(chalk.dim(`  ${u.type} (${u.rows} on the server) — ${u.reason}`));
+      }
+      console.log(chalk.dim('  Those need artifact content upload; the server holds an inventory only.'));
+    }
   });
 
 toolkit
