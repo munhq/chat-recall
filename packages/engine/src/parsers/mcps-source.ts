@@ -70,6 +70,41 @@ function commandPreview(cfg: McpConfig): string {
 }
 
 /**
+ * Strip inline credentials from a command or argument before it is uploaded.
+ *
+ * ENV IS NOT THE ONLY PLACE SECRETS LIVE. A Postgres MCP is configured as
+ * `npx @modelcontextprotocol/server-postgres postgres://user:PASSWORD@host/db`
+ * — the password sits in an ARGUMENT, so protecting `env` alone protects
+ * nothing. Four rows already on the server carry a database password this way,
+ * uploaded by the flattened `command` preview long before there was a spec.
+ *
+ * The redacted form keeps the shape (so the entry is still recognisable and
+ * still rebuildable once the user supplies the value) and loses the value.
+ */
+export function redactInlineSecrets(value: string): { text: string; redacted: boolean } {
+  let redacted = false;
+  let out = value;
+
+  // scheme://user:password@host — the password, not the username.
+  out = out.replace(/(\w+:\/\/[^:/@\s]+:)([^@\s]{1,512})(@)/g, (_m, head, _pw, tail) => {
+    redacted = true;
+    return `${head}__SECRET_NOT_SYNCED__${tail}`;
+  });
+
+  // Provider-shaped bearer tokens pasted straight onto a command line.
+  const tokenShapes: RegExp[] = [
+    /\bsk-[A-Za-z0-9_-]{16,}\b/g,          // OpenAI-style
+    /\bgh[pousr]_[A-Za-z0-9]{16,}\b/g,     // GitHub
+    /\bAIza[0-9A-Za-z_-]{20,}\b/g,         // Google
+    /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g,   // Slack
+  ];
+  for (const re of tokenShapes) {
+    out = out.replace(re, () => { redacted = true; return '__SECRET_NOT_SYNCED__'; });
+  }
+  return { text: out, redacted };
+}
+
+/**
  * A faithful, SECRET-FREE description of one MCP registration, for rebuilding
  * it on a different machine.
  *
@@ -84,15 +119,24 @@ function reconstructionSpec(cfg: McpConfig): Record<string, unknown> {
     type: cfg.type || (cfg.url ? 'remote' : 'local'),
     enabled: cfg.enabled !== false,
   };
-  if (typeof cfg.url === 'string' && cfg.url) out.url = cfg.url;
+  let hidSecret = false;
+  const clean = (v: string): string => {
+    const r = redactInlineSecrets(v);
+    if (r.redacted) hidSecret = true;
+    return r.text;
+  };
+  if (typeof cfg.url === 'string' && cfg.url) out.url = clean(cfg.url);
   // Kept structured: a flattened string cannot be split back into command +
   // args without guessing at quoting.
-  if (Array.isArray(cfg.command)) out.command = cfg.command as unknown as string[];
-  else if (typeof cfg.command === 'string') out.command = cfg.command;
-  if (Array.isArray(cfg.args)) out.args = cfg.args as string[];
+  if (Array.isArray(cfg.command)) out.command = (cfg.command as unknown as string[]).map(clean);
+  else if (typeof cfg.command === 'string') out.command = clean(cfg.command);
+  if (Array.isArray(cfg.args)) out.args = (cfg.args as string[]).map((a) => clean(String(a)));
   // The FULL allow-list, not the truncated display copy.
   if (Array.isArray(cfg.alwaysAllow)) out.alwaysAllow = cfg.alwaysAllow as string[];
   if (cfg.env && typeof cfg.env === 'object') out.envKeys = Object.keys(cfg.env).sort();
+  // Tell the puller that this entry is incomplete BY DESIGN, so it can say so
+  // instead of installing a server that fails to connect.
+  if (hidSecret) out.secretsRedacted = true;
   return out;
 }
 
@@ -184,7 +228,7 @@ export class McpsSource implements MemorySource {
 
     for (const [name, cfgRaw] of Object.entries(obj)) {
       const cfg = (cfgRaw || {}) as McpConfig;
-      const cmd = commandPreview(cfg);
+      const cmd = redactInlineSecrets(commandPreview(cfg)).text;
       const allow = Array.isArray(cfg.alwaysAllow) ? (cfg.alwaysAllow as string[]).slice(0, 8) : [];
       const spec = reconstructionSpec(cfg);
 

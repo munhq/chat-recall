@@ -113,6 +113,8 @@ interface McpSpec {
   enabled?: boolean;
   alwaysAllow?: string[];
   envKeys?: string[];
+  /** Set when an inline credential was stripped before upload; see mcps-source.ts. */
+  secretsRedacted?: boolean;
 }
 
 /** Rows the server holds for types whose bytes it never received. */
@@ -218,6 +220,17 @@ export function executePull(
       // real env values that this rebuild cannot supply.
       if (readMcpEntry(tool, name)) {
         outcomes.push({ type: 'mcp', name, tool, status: 'present' });
+        continue;
+      }
+
+      // An entry whose secret was stripped on upload cannot work as written.
+      // Installing it would produce a server that fails to connect on a fresh
+      // machine, which reads as "chat-recall installed a broken MCP".
+      if (spec.secretsRedacted) {
+        outcomes.push({
+          type: 'mcp', name, tool, status: 'skipped',
+          reason: 'its command contains a secret, which is never uploaded — register this one by hand',
+        });
         continue;
       }
 
