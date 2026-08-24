@@ -28,6 +28,9 @@ playwright.config.ts
 # Documentation
 *.md
 !CLAUDE.md
+# The CLI's `prepack` copies this into packages/cli so `npm pack` has a readme to
+# ship. Excluded by *.md above, the copy throws ENOENT and the image build fails.
+!README.md
 
 # OS files
 .DS_Store
