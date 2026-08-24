@@ -12,6 +12,7 @@ import helmet from 'helmet';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
+import { classifyStaticPath } from './util/static-routing.js';
 import searchRouter from './routes/search.js';
 import conversationsRouter from './routes/conversations.js';
 import statusRouter from './routes/status.js';
@@ -654,12 +655,55 @@ if (existsSync(STATIC_DIR)) {
     },
   }));
 
-  // SPA fallback — any non-API path returns index.html so client-side routes
-  // work. The static marketing pages are matched above by express.static, so
-  // they never reach this.
-  app.get(/^\/(?!api|health).*/, (_req, res) => {
+  /**
+   * The app shell for real app paths, a real 404 for everything else.
+   *
+   * WHY THIS IS NOT A BLANKET FALLBACK ANY MORE: it used to return the SPA shell
+   * with status 200 for every unmatched path. So `/definitely-not-a-page`,
+   * `/settings`, every typo and every retired link answered 200 with an
+   * indexable document that canonicalised to `/app`. Google calls that a soft
+   * 404 and it costs real indexing: dead URLs enter the crawl set, crawl budget
+   * goes on addresses that do not exist, and the canonical points at a path
+   * robots.txt disallows. A styled `404.html` was already being built and
+   * shipped — carrying `noindex,follow` and deliberately no canonical — and this
+   * handler was the reason nothing ever served it.
+   *
+   * The allowlist is exhaustive, not a guess: the client has no path router at
+   * all (`services/url-state.ts` keeps navigational state in QUERY params on the
+   * current path), so `/`, `/app` and `/device` are the only paths the app owns.
+   * `/app/install/*` is served by its own router well before this one.
+   *
+   * The allowlist itself lives in util/static-routing.ts, because server.ts
+   * starts listening on import and so cannot be unit-tested.
+   */
+  const NOT_FOUND = resolve(STATIC_DIR, '404.html');
+  const hasNotFound = existsSync(NOT_FOUND);
+
+  app.get(/^\/(?!api|health).*/, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
-    res.sendFile(SPA_SHELL);
+
+    if (classifyStaticPath(req.path) === 'app-shell') {
+      // The authenticated product has nothing to index. robots.txt already says
+      // so; this header repeats it to anything that fetched the page anyway —
+      // and unlike robots.txt, a header is honoured on a URL already crawled.
+      res.setHeader('X-Robots-Tag', 'noindex');
+      res.sendFile(SPA_SHELL);
+      return;
+    }
+
+    res.status(404);
+    res.setHeader('X-Robots-Tag', 'noindex');
+    if (hasNotFound) {
+      res.sendFile(NOT_FOUND);
+      return;
+    }
+    // No 404.html in this build. Still answer 404 — the status code is the part
+    // that matters to a crawler, and a wrong 200 is worse than a plain page.
+    res.type('html').send(
+      '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+      + '<meta name="robots" content="noindex,follow"><title>Page not found</title></head>'
+      + '<body><h1>That page does not exist.</h1><p><a href="/">Home</a></p></body></html>',
+    );
   });
   log.info({ staticDir: STATIC_DIR, landing: hasLanding }, 'serving client');
 }
