@@ -200,7 +200,7 @@ export default function LicenceDeliveryPanel({ sessionId }: { sessionId: string 
           <p>{msg}</p>
           <p>
             Your payment is unaffected. The serial is emailed to you as well — if
-            it does not arrive, write to hello@munhq.com with the date of purchase.
+            it does not arrive, write to contact@chatrecall.dev with the date of purchase.
           </p>
         </div>
       )}
