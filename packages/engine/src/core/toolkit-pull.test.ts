@@ -90,9 +90,12 @@ describe('planPull', () => {
     ];
     const { mcps, unsupported } = planPull(rows);
     expect(mcps).toHaveLength(1);
+    // Skills ARE installable now, but only when the row carries a full body.
+    // These fixtures have none, so they are reported as such rather than
+    // rebuilt from a 2000-char search chunk.
     const skill = unsupported.find(u => u.type === 'skill');
     expect(skill?.rows).toBe(2);
-    expect(skill?.reason).toMatch(/directory of files/);
+    expect(skill?.reason).toMatch(/no full body/);
     expect(unsupported.find(u => u.type === 'agent')?.rows).toBe(1);
   });
 
@@ -134,5 +137,63 @@ describe('portableCommand', () => {
     const r = portableCommand('/opt/nowhere/bin/definitely-not-installed-xyz');
     expect(r).toEqual({ missing: '/opt/nowhere/bin/definitely-not-installed-xyz' });
     expect(portableCommand('definitely-not-installed-xyz')).toEqual({ missing: 'definitely-not-installed-xyz' });
+  });
+});
+
+describe('planPull — skills', () => {
+  const skill = (name: string, tool: string, body: string, extra: Record<string, unknown> = {}) =>
+    ({ id: `${tool}_skill_${name}`, title: name, source_type: 'skill',
+       extra_json: JSON.stringify({ skillName: name, tool, body, ...extra }) });
+
+  test('a skill with a full body is planned for every tool', () => {
+    const { skills } = planPull([skill('deploy', 'claude', '# Deploy\nsteps')]);
+    expect(skills).toHaveLength(1);
+    expect(skills[0].body).toBe('# Deploy\nsteps');
+    expect(skills[0].tools.length).toBeGreaterThan(1);
+  });
+
+  test('a row with NO body is refused, not rebuilt from the search chunk', () => {
+    // The search chunk is capped at 2000 chars. Rebuilding from it would write
+    // a truncated skill that looks installed and quietly misbehaves — 733 of
+    // 794 real skills exceed that cap.
+    const row = { id: 'x', title: 'deploy', source_type: 'skill',
+                  extra_json: JSON.stringify({ skillName: 'deploy', tool: 'claude' }) };
+    const { skills, unsupported } = planPull([row]);
+    expect(skills).toHaveLength(0);
+    expect(unsupported.find(u => u.type === 'skill')?.rows).toBe(1);
+  });
+
+  test('THE COLLISION: the same name in two tools resolves by precedence, not by length', () => {
+    // Picking the longest body was arbitrary and differed between machines: it
+    // installed a cursor copy over the claude one that owns the name.
+    const { skills } = planPull([
+      skill('shared', 'cursor', 'x'.repeat(500)),
+      skill('shared', 'claude', 'the owner'),
+    ]);
+    expect(skills).toHaveLength(1);
+    expect(skills[0].body).toBe('the owner');
+  });
+
+  test('precedence holds regardless of row order', () => {
+    const a = planPull([skill('s', 'claude', 'A'), skill('s', 'gemini', 'B')]).skills[0].body;
+    const b = planPull([skill('s', 'gemini', 'B'), skill('s', 'claude', 'A')]).skills[0].body;
+    expect(a).toBe('A');
+    expect(b).toBe('A');
+  });
+
+  test('a truncated body is carried through so the installer can refuse it', () => {
+    const { skills } = planPull([skill('big', 'claude', 'partial', { bodyTruncated: true })]);
+    expect(skills[0].truncated).toBe(true);
+  });
+
+  test('a body whose secret was stripped is flagged, not hidden', () => {
+    const { skills } = planPull([skill('k', 'claude', 'run --key __SECRET_NOT_SYNCED__', { bodySecretsRedacted: true })]);
+    expect(skills[0].redacted).toBe(true);
+  });
+
+  test('agents and commands are still named as not-yet-installable, with a real reason', () => {
+    const rows = [{ id: 'a', title: 'auditor', source_type: 'agent', extra_json: '{}' }];
+    const { unsupported } = planPull(rows);
+    expect(unsupported.find(u => u.type === 'agent')?.reason).toMatch(/format/);
   });
 });

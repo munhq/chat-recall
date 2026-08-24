@@ -4143,10 +4143,10 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         // success because the queue accepted it.
         const REBUILDABLE: Record<string, string> = {
           mcp: 'yes — a registration is config, and the whole entry is stored',
-          skill: 'no — a skill is a directory of files, and file content is not uploaded',
-          agent: 'no — only a short body preview is uploaded',
-          command: 'no — command bodies are not uploaded',
-          instructions: 'no — project-scoped, and file content is not uploaded',
+          skill: 'yes — the full file is stored, so it can be written on any machine',
+          agent: "not yet — the body is stored, but in its source tool's format, and cross-format conversion is not wired up",
+          command: "not yet — same as agents: the body is stored in its source tool's format",
+          instructions: 'no — project-scoped; it belongs to a repo, not to a machine',
         };
 
         const lines: string[] = ['# Toolkit inventory', ''];
@@ -4168,11 +4168,16 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
             byTool.set(String(e.tool || '?'), (byTool.get(String(e.tool || '?')) || 0) + 1);
             byDevice.set(String(e.syncedDeviceId || '?'), (byDevice.get(String(e.syncedDeviceId || '?')) || 0) + 1);
             if (type === 'mcp' && e.spec) rebuildable++;
+            if (type === 'skill' && typeof e.body === 'string' && e.body) rebuildable++;
           }
           lines.push(`## ${type} — ${items.length}`);
           if (byTool.size) lines.push(`- by tool: ${[...byTool].map(([k, v]) => `${k} ${v}`).join(' · ')}`);
           if (byDevice.size) lines.push(`- by device: ${[...byDevice].map(([k, v]) => `${k} ${v}`).join(' · ')}`);
           lines.push(`- installable on another device: ${REBUILDABLE[type]}`);
+          if (type === 'skill') {
+            lines.push(`- carrying a full body: ${rebuildable}/${items.length}`
+              + (rebuildable < items.length ? ' — the rest need a re-index on their source device' : ''));
+          }
           if (type === 'mcp') {
             lines.push(`- carrying a rebuild spec: ${rebuildable}/${items.length}`
               + (rebuildable < items.length ? ' — the rest need a re-index on their source device' : ''));
