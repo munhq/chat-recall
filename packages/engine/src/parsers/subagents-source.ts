@@ -34,7 +34,35 @@ import { cursorHomeDir } from '../core/tool-paths.js';
 import { parseFrontmatter, parseScalarToml } from '../core/toolkit-format.js';
 import { decodeProjectDirName } from '../core/project-dir-name.js';
 
+import { redactInlineSecrets } from '../core/redact-inline.js';
+
 const MAX_CHUNK_CHARS = 2000;
+
+/**
+ * The artifact's full text, for rebuilding it on another machine.
+ *
+ * WHY THIS IS SEPARATE FROM THE SEARCH CHUNK. The chunk is capped at 2000
+ * characters because that is the right size for FTS and embeddings — and that
+ * cap silently truncated 733 of 794 real skills, losing 5.5MB. Reconstructing
+ * from a truncated body produces a CORRUPTED skill, which is worse than not
+ * syncing it: it looks installed and quietly misbehaves. So the search chunk
+ * keeps its cap and the rebuild body is stored whole, redacted.
+ */
+const MAX_BODY_CHARS = 512 * 1024;   // the largest real skill measured is 139KB
+
+function rebuildBody(content: string): Record<string, unknown> {
+  const { text, redacted } = redactInlineSecrets(content);
+  const out: Record<string, unknown> = {};
+  if (text.length > MAX_BODY_CHARS) {
+    // Say so rather than shipping a body that cannot be trusted whole.
+    out.body = text.slice(0, MAX_BODY_CHARS);
+    out.bodyTruncated = true;
+  } else {
+    out.body = text;
+  }
+  if (redacted) out.bodySecretsRedacted = true;
+  return out;
+}
 
 type AgentTool = 'claude' | 'gemini' | 'opencode' | 'codex' | 'cursor';
 
@@ -127,6 +155,9 @@ export class SubagentsSource implements MemorySource {
               tools: parsed.tools,
               scope: root.scope,
               format: root.format,
+              // The whole file, so another machine can rebuild it. The search
+              // chunk stays capped at 2000 chars; this does not.
+              ...rebuildBody(content),
             },
           };
         } catch { /* skip */ }
