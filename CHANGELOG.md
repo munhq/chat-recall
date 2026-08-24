@@ -4,6 +4,20 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.8] — 2026-08-24
+
+### Fixed
+
+- The image build failed on 0.5.7, so the release published to npm but no image
+  and no deployment followed it. The CLI's new `prepack` copies the root README
+  into `packages/cli`, and `docker/Dockerfile.server` runs `npm pack` inside the
+  image to produce the tarball the server hands out at
+  `/install/chat-recall.tgz`. `*.md` in `.dockerignore` kept the README out of
+  the build context, so the copy threw ENOENT. Fixed by shipping the file rather
+  than softening the copy: weakening `prepack` would have restored the original
+  defect — a publish with no readme at all — and the served tarball should carry
+  the same readme the registry does.
+
 ## [0.5.7] — 2026-08-24
 
 ### Fixed
