@@ -6,6 +6,7 @@
  */
 
 import { resumeCommandFor } from '@chat-recall/engine/core/resume-command.js';
+import { resolveProjectId } from '@chat-recall/engine/core/project-resolver.js';
 import { config } from 'dotenv';
 import { buildHttpError, stalenessBanner, type SyncState } from './mcp-diagnostics.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -16,7 +17,7 @@ import {
   ToolSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
 import { execSync as _execSync, spawn } from 'child_process';
 import { fileURLToPath } from 'node:url';
@@ -1659,7 +1660,7 @@ This is the authoritative "0 remaining" check. Read-only by default; apply=true 
         inputSchema: {
           type: 'object',
           properties: {
-            since_hours: { type: 'number', description: 'Bound the scan to the last N hours' },
+            since_hours: { type: 'number', description: 'Bound the scan to the last N hours. Default 168 (7 days). The scan is capped at 500 sessions so it returns within the request timeout; the reply reports what it did not cover.' },
             apply: { type: 'boolean', default: false, description: 'false = audit only; true = heal now' },
           },
         },
@@ -2800,8 +2801,19 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         //     local repo; the server has no checkout of the producer's repo.
         //   - "Related Work in Other Projects": a cross-project FTS sweep over
         //     the local index; the dossier endpoint is single-project scoped.
+        // RESOLVE THE PATH HERE, NOT ON THE SERVER. `resolveProjectId` reads the
+        // git remote of a directory, and the directory is on THIS machine — the
+        // server has no checkout, so it used to fall back to `path:/home/…`,
+        // match nothing, and return an empty-looking dossier for a project with
+        // thousands of items. Only an existing local directory is resolved: a
+        // bare name like `chat-recall` must travel intact so the server can
+        // match it by name.
+        const target = existsSync(params.project_path) && statSync(params.project_path).isDirectory()
+          ? resolveProjectId(params.project_path).id
+          : params.project_path;
+
         const dossier = await remoteGetQS<{ project_id: string; markdown: string }>(
-          `/api/projects/${encodeURIComponent(params.project_path)}/dossier`,
+          `/api/projects/${encodeURIComponent(target)}/dossier`,
           { sessions: params.limit, tasks: params.tasks, plans: params.plans },
         );
         return { content: [{ type: 'text', text: dossier.markdown }] };
@@ -4112,17 +4124,29 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
       case 'recall_heal_audit': {
         const params = RecallHealAuditSchema.parse(args);
         requireRemote();
-        const r = await remoteGetQS<{ scanned: number; damaged: number; healed: number; healthy: number; applied: boolean; damagedIds?: string[] }>(
+        const r = await remoteGetQS<{ scanned: number; damaged: number; healed: number; healthy: number; applied: boolean; damagedIds?: string[]; sinceHours?: number; eligible?: number; truncated?: boolean; notScanned?: number }>(
           '/api/conversations/heal-audit',
           { since_hours: params.since_hours, apply: params.apply ? '1' : undefined },
         );
         const lines = [
-          `# Transcript integrity${params.since_hours ? ` (last ${params.since_hours}h)` : ''}`,
+          `# Transcript integrity${r.sinceHours ? ` (last ${r.sinceHours}h)` : ''}`,
           '',
           `- scanned: **${r.scanned}**`,
           `- healthy: **${r.healthy}**`,
           `- damaged: **${r.damaged}**${r.damaged ? ' — the archive holds more than the rendered view' : ' ✅'}`,
         ];
+        // A CAP MUST NEVER BE SILENT. "0 damaged" over 500 of 15,000 sessions is
+        // not "your history is intact", and an agent cannot tell the difference
+        // unless the answer says so.
+        if (r.truncated) {
+          lines.push(
+            `- **not scanned: ${r.notScanned}** of ${r.eligible} sessions in this window`,
+            '',
+            'This audit is capped so it answers within the request timeout. '
+            + 'Narrow it with `since_hours` to cover a window completely; the hourly '
+            + 'server sweep covers everything with no cap.',
+          );
+        }
         if (r.applied) lines.push(`- healed this run: **${r.healed}**`);
         else if (r.damaged) lines.push('', 'Re-run with `apply: true` to heal, or run `chat-recall repair`.');
         if (r.damagedIds?.length) {
