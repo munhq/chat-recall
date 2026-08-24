@@ -14,6 +14,7 @@ import { Card, Chip, Button, Icon, pressableProps } from './primitives';
 import ConnectMachine from './ConnectMachine';
 import SyncCoverage from './SyncCoverage';
 import SyncRules from './SyncRules';
+import { staleSyncAlert } from '../services/sync-label';
 import {
   getCodeProjects, getAccountRecommendations, applyAccountRecommendation, getSecretsSummary, getStatus, getSyncStatus, getOutcomeSummary,
   getMe, listDevices,
@@ -50,22 +51,12 @@ export default function CommandCenter({ setView, onOpenProject, onFocusProjects,
         if (!on) return;
         const active = devices.filter((d) => !d.revoked);
         if (active.length === 0 && s.sessions > 0) setSyncAlert({ kind: 'no-device' });
-        // MEASURE THE COLLECTOR, NOT THE CALENDAR.
-        //
-        // This fired on newestSessionAgeMs > 48h, so a fortnight's holiday
-        // produced a red "nothing is arriving, go debug your machine" banner on
-        // an install whose collector had reported ninety seconds earlier. Old
-        // data is not a fault; a silent collector is.
-        //
-        // lastSyncAgeMs is absent only where no collector has ever reported, and
-        // there the session age is the sole signal available, so it stays as the
-        // fallback.
-        else if (active.length > 0 && s.lastSyncAgeMs != null && s.lastSyncAgeMs > 48 * 3600_000) {
-          setSyncAlert({ kind: 'stale', ageH: Math.round(s.lastSyncAgeMs / 3600_000) });
-        }
-        else if (active.length > 0 && s.lastSyncAgeMs == null
-                 && s.newestSessionAgeMs != null && s.newestSessionAgeMs > 48 * 3600_000) {
-          setSyncAlert({ kind: 'stale', ageH: Math.round(s.newestSessionAgeMs / 3600_000) });
+        else {
+          // Gated on the SYNC age, not the session age. See services/sync-label:
+          // the previous condition read newestSessionAgeMs, so an idle fortnight
+          // produced a red "nothing is arriving" banner on a healthy install.
+          const stale = staleSyncAlert(s, active.length);
+          if (stale) setSyncAlert({ kind: 'stale', ageH: stale.ageH });
         }
       } catch { /* control-plane hiccup — no banner beats a wrong banner */ }
     })();
