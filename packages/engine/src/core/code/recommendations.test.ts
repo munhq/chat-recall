@@ -133,3 +133,53 @@ describe('buildAccountRecommendations (chat-recall own data)', () => {
     expect(recs.length).toBe(0);
   });
 });
+
+/**
+ * An applied recommendation stops recommending itself.
+ *
+ * buildRecommendations is pure over the CURRENT findings, and applying a rule
+ * does not change them — adding "search before you write" to CLAUDE.md does not
+ * delete the 47 duplication findings that motivated it. So the card regenerated
+ * on every load, forever, after being applied.
+ *
+ * Observed on this repository: the rule is in CLAUDE.md under the header
+ * "## Rule (added by chat-recall recommendation)", its code_apply sync intent is
+ * status='done', and the panel still said Apply. A suggestion that cannot notice
+ * it was taken teaches you to ignore the panel — which is worse than not
+ * suggesting.
+ */
+describe('applied recommendations are not re-offered', () => {
+  const input = () => ({
+    project: { projectId: 'p1', rootPath: '/r', label: null } as never,
+    summary: { critical: 0, high: 4, medium: 100, low: 0, info: 0, total: 104 } as never,
+    findings: Array.from({ length: 47 }, (_, i) => ({
+      id: `f${i}`, category: 'duplication', severity: 'medium', file: `src/${i}.ts`,
+      line: 1, rule: 'copy_paste', title: `dupe ${i}`,
+    })) as never,
+    hotspots: [] as never,
+  });
+
+  test('the same input yields the recommendation when nothing is applied', () => {
+    const recs = buildRecommendations(input());
+    expect(recs.length).toBeGreaterThan(0);
+  });
+
+  test('THE REGRESSION: an applied id disappears from the list', () => {
+    const before = buildRecommendations(input());
+    const target = before[0];
+    const after = buildRecommendations({ ...input(), appliedRecIds: new Set([target.id]) });
+    expect(after.map((r) => r.id)).not.toContain(target.id);
+    expect(after).toHaveLength(before.length - 1);
+  });
+
+  test('an empty applied set changes nothing', () => {
+    expect(buildRecommendations({ ...input(), appliedRecIds: new Set() }))
+      .toEqual(buildRecommendations(input()));
+  });
+
+  test('an unrelated applied id filters nothing', () => {
+    const before = buildRecommendations(input());
+    const after = buildRecommendations({ ...input(), appliedRecIds: new Set(['rec_somethingelse']) });
+    expect(after).toHaveLength(before.length);
+  });
+});

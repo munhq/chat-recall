@@ -51,6 +51,20 @@ export interface RecommendationInput {
   findings: Array<CodeFindingInput | CodeFindingRow>;
   hotspots: Array<CodeHotspotInput | CodeHotspotRow>;
   behavior?: BehaviorSignal;
+  /**
+   * Recommendation ids already applied, so a done one stops being recommended.
+   *
+   * WHY THIS IS AN INPUT. buildRecommendations is pure over the CURRENT findings,
+   * and an applied rule does not change them: adding "search before you write" to
+   * CLAUDE.md does not delete the 47 duplication findings that motivated it. So
+   * the recommendation regenerated on every load, forever, after being applied.
+   *
+   * Observed on this very repository: the rule sits in CLAUDE.md under the header
+   * "## Rule (added by chat-recall recommendation)", its code_apply sync intent
+   * is status='done', and the card still said Apply. A suggestion that cannot
+   * notice it was taken teaches you to ignore the panel.
+   */
+  appliedRecIds?: ReadonlySet<string>;
 }
 
 const FRONTEND_LANGS = ['tsx', 'jsx', 'typescriptreact', 'javascriptreact', 'css', 'scss', 'svelte', 'vue'];
@@ -208,7 +222,11 @@ export function buildRecommendations(input: RecommendationInput): Recommendation
 
   const order = { high: 0, medium: 1, low: 2 };
   recs.sort((a, b) => order[a.severity] - order[b.severity]);
-  return recs;
+  // Drop what has already been done. Only ACTIONS THE PRODUCT PERFORMED are
+  // filtered — the caller derives the set from completed sync intents, so a rule
+  // whose apply failed or is still queued keeps offering itself.
+  const applied = input.appliedRecIds;
+  return applied?.size ? recs.filter((r) => !applied.has(r.id)) : recs;
 }
 
 /** Tenant-wide signals for account-level recommendations (the "same approach"
