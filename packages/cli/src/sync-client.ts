@@ -1479,8 +1479,16 @@ const refs = listAvailableBackends().flatMap((b) => {
     // What a waiting user needs to know is how much of the corpus has been
     // LOOKED AT, which is this counter and matches the denominator.
     considered++;
-    reportWalkProgress({ done: considered, total: slice.length, startedAt: walkStartedAt, complete: false });
-    walkProgressForUpload = { done: considered, total: slice.length, complete: false };
+    // complete is `considered === slice.length`, not a constant false.
+    //
+    // The post-loop report below sets complete:true, but it lands after the last
+    // upload has gone out, so it only ships on the NEXT post — and a walk with
+    // nothing new to upload never makes one. The server was therefore left
+    // holding done === total with complete:false forever, and the UI read that
+    // as "syncing 99%" until something else happened to sync.
+    const walkDone = considered >= slice.length;
+    reportWalkProgress({ done: considered, total: slice.length, startedAt: walkStartedAt, complete: walkDone });
+    walkProgressForUpload = { done: considered, total: slice.length, complete: walkDone };
     if (trace && ++traceN % 500 === 0) trace(`walk ${traceN}/${slice.length} · at ${ref.prefixedId}`);
     localSessionIds.add(ref.prefixedId);
     const mode = modeOf(ref);
