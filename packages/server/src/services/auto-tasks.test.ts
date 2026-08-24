@@ -14,7 +14,7 @@ import { describe, test, expect, beforeEach, vi } from 'vitest';
 const state = {
   settings: new Map<string, string>(),
   actions: [] as Array<{ id: string; pri: number; title: string; fix: string; loc: never[]; agentPrompt: string; projectId: string; status: string }>,
-  tasks: [] as Array<{ id: string; title: string; status: string; createdBy: string; linkedFindingId: string | null }>,
+  tasks: [] as Array<{ id: string; title: string; status: string; createdBy: string; linkedFindingId: string | null; linkedFindingIdentity: string | null; projectId: string }>,
   created: [] as string[],
   updated: [] as Array<{ id: string; patch: Record<string, unknown> }>,
   comments: [] as string[],
@@ -37,13 +37,18 @@ vi.mock('../imports.js', async (importOriginal) => ({
     // under runUnrestricted, which is exactly the distinction that broke prod.
     listCodeActions: async () => (currentAuthorSub() ? [] : state.actions),
     teamTasksByFindingIds: async () => (currentAuthorSub() ? [] : state.tasks),
-    createTeamTask: async (input: { title: string; linkedFindingId?: string | null }) => {
+    createTeamTask: async (input: { title: string; linkedFindingId?: string | null; linkedFindingIdentity?: string | null; projectId?: string }) => {
       state.created.push(input.linkedFindingId as string);
-      const t = { id: `t_${++seq}`, title: input.title, status: 'todo', createdBy: 'auto-tasks', linkedFindingId: input.linkedFindingId ?? null };
+      const t = { id: `t_${++seq}`, title: input.title, status: 'todo', createdBy: 'auto-tasks', linkedFindingId: input.linkedFindingId ?? null, linkedFindingIdentity: input.linkedFindingIdentity ?? null, projectId: input.projectId ?? 'p1' };
       state.tasks.push(t);
       return t;
     },
-    updateTeamTask: async (id: string, patch: Record<string, unknown>) => { state.updated.push({ id, patch }); return null; },
+    updateTeamTask: async (id: string, patch: Record<string, unknown>) => {
+      state.updated.push({ id, patch });
+      const t = state.tasks.find((x) => x.id === id);
+      if (t) Object.assign(t, patch);   // mirror the pg driver's RETURNING *
+      return null;
+    },
     addTeamTaskComment: async (id: string) => { state.comments.push(id); return null; },
     close: async () => {},
   }),
@@ -53,8 +58,15 @@ import { runAutoTasks, autoTasksStatus, AUTO_TASKS_KEY } from './auto-tasks.js';
 import { currentAuthor } from '@chat-recall/engine/core/store/tenant-context.js';
 currentAuthorSub = () => currentAuthor().sub;
 
+// `category` and a distinct `loc` are part of a real action, and both feed its
+// identity. Without them two fixtures collide — a state the real collector cannot
+// produce, because codeActionId hashes exactly these inputs, so two actions with
+// one identity would share one id and dedupeById would merge them before insert.
 const action = (id: string, pri: number) => ({
-  id, pri, title: `fix ${id}`, fix: 'do it', loc: [] as never[], agentPrompt: '', projectId: 'p1', status: 'suggested',
+  id, pri, title: `fix ${id}`, fix: 'do it',
+  loc: [{ file: `src/${id}.ts` }] as never[],
+  category: 'duplication',
+  agentPrompt: '', projectId: 'p1', status: 'suggested',
 });
 
 beforeEach(() => {
@@ -128,7 +140,7 @@ describe('auto-tasks', () => {
     state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 0 }));
     state.actions = [];                      // nothing qualifies
     const r = await runAutoTasks('t1');
-    expect(r).toEqual({ created: 0, closed: 0 });
+    expect(r).toEqual({ created: 0, closed: 0, repointed: 0 });
     // "ran and found nothing" must be distinguishable from "never ran", or the
     // UI cannot answer "is anything happening?".
     const st = await autoTasksStatus('t1');
@@ -219,7 +231,7 @@ describe('reads are unrestricted, writes are authored', () => {
     state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
     state.actions = [action('c1', 0), action('h1', 1)];
     const r = await runAutoTasks('t1');
-    expect(r).toEqual({ created: 2, closed: 0 });
+    expect(r).toEqual({ created: 2, closed: 0, repointed: 0 });
     expect(state.created).toEqual(['c1', 'h1']);
   });
 
@@ -229,5 +241,109 @@ describe('reads are unrestricted, writes are authored', () => {
     state.tasks = [{ id: 't_x', title: 'stale', status: 'todo', createdBy: 'auto-tasks', linkedFindingId: 'gone' }];
     const r = await runAutoTasks('t1');
     expect(r?.closed).toBe(1);
+  });
+});
+
+/**
+ * An id that moved is not a problem that was fixed.
+ *
+ * THE BUG THESE PIN. `code_actions.id` was hashed over data that moved — a title
+ * carrying its own occurrence counts, a location key taking whichever copy the
+ * analyzer happened to list first. A re-index over UNCHANGED code therefore
+ * minted a new id for the same finding, and the close sweep, which only asked
+ * "is this card's finding id in the open set", answered no and closed the card
+ * as done. Then filed a duplicate under the new id.
+ *
+ * Measured on prod before the repair: 97 cards, 93 'done', every one with no
+ * session attached, 93 distinct finding ids over 33 distinct titles — while all
+ * 313 findings were still 'suggested'. Roughly ninety completed pieces of work
+ * were asserted that never happened.
+ *
+ * Both halves are asserted, because fixing either alone still leaves the board
+ * wrong: no false close, AND no duplicate card.
+ */
+describe('an id shift is not a fix', () => {
+  const withLoc = (id: string, pri: number, title: string, file: string) => ({
+    id, pri, title, fix: 'do it', loc: [{ file }] as never[],
+    agentPrompt: '', projectId: 'p1', status: 'suggested', category: 'duplication',
+  });
+
+  test('THE REGRESSION: the card is re-pointed, not closed as done', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    // Round one files a card for the finding as it is currently identified.
+    state.actions = [withLoc('ca_old', 1, 'inflate copy-pasted 2× (899 lines each)', 'src/a.js')];
+    await runAutoTasks('t1');
+    expect(state.created).toEqual(['ca_old']);
+    const card = state.tasks[0];
+    expect(card.linkedFindingIdentity).toBeTruthy();
+
+    // Round two: same problem, same file, one more copy found — so the title's
+    // counter moved and the collector emitted a different id. This is the exact
+    // shape that produced 93 phantom closures.
+    state.updated = [];
+    state.comments = [];
+    state.actions = [withLoc('ca_new', 1, 'inflate copy-pasted 3× (899 lines each)', 'src/a.js')];
+    const r = await runAutoTasks('t1', { force: true });
+
+    expect(r?.closed).toBe(0);                                  // NOT closed
+    expect(r?.repointed).toBe(1);                               // relinked instead
+    expect(state.comments).toEqual([]);                         // no "closed automatically"
+    expect(state.updated.some((u) => u.patch.status === 'done')).toBe(false);
+    expect(state.tasks.find((t) => t.id === card.id)?.linkedFindingId).toBe('ca_new');
+  });
+
+  test('and no duplicate card is filed for the renamed finding', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [withLoc('ca_old', 1, 'inflate copy-pasted 2× (899 lines each)', 'src/a.js')];
+    await runAutoTasks('t1');
+    state.actions = [withLoc('ca_new', 1, 'inflate copy-pasted 9× (899 lines each)', 'src/a.js')];
+    await runAutoTasks('t1', { force: true });
+
+    // One card, not six. Six is what prod actually had for this exact title.
+    expect(state.tasks).toHaveLength(1);
+    expect(state.created).toEqual(['ca_old']);
+  });
+
+  test('a finding that really is gone still closes, and says which id vanished', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [withLoc('ca_old', 1, 'inflate copy-pasted 2× (899 lines each)', 'src/a.js')];
+    await runAutoTasks('t1');
+    state.comments = [];
+    state.actions = [];                        // genuinely fixed and re-indexed
+    const r = await runAutoTasks('t1', { force: true });
+
+    expect(r?.closed).toBe(1);
+    expect(r?.repointed).toBe(0);
+    expect(state.comments).toHaveLength(1);
+  });
+
+  test('a DIFFERENT finding in the same project is not mistaken for the same one', async () => {
+    // Guards the first version of this fix, which keyed identity on project +
+    // title alone. identityTitle collapses every digit, so "Circular dependency
+    // (18 files)" and "Circular dependency (87 files)" collided — two real
+    // findings became one card, and one was silently dropped. The location is
+    // what separates them, exactly as it does in the id.
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [
+      withLoc('ca_a', 1, 'Circular dependency (18 files)', 'src/a.ts'),
+      withLoc('ca_b', 1, 'Circular dependency (87 files)', 'src/b.ts'),
+    ];
+    await runAutoTasks('t1');
+    expect(state.created).toEqual(['ca_a', 'ca_b']);
+    expect(state.tasks).toHaveLength(2);
+  });
+
+  test('a REJECTED card is never re-pointed or reopened', async () => {
+    // Rejection is the human's verdict and it outlives the finding's id.
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [withLoc('ca_old', 1, 'inflate copy-pasted 2× (899 lines each)', 'src/a.js')];
+    await runAutoTasks('t1');
+    state.tasks[0].status = 'rejected';
+    state.updated = [];
+    state.actions = [withLoc('ca_new', 1, 'inflate copy-pasted 5× (899 lines each)', 'src/a.js')];
+    const r = await runAutoTasks('t1', { force: true });
+
+    expect(r?.closed).toBe(0);
+    expect(state.updated.some((u) => u.patch.status !== undefined)).toBe(false);
   });
 });
