@@ -215,6 +215,10 @@ export function SyncStatusChip({ refreshSignal }: { refreshSignal?: number }) {
   // running and its report is fresh (the server drops stale ones), so this
   // replaces the age exactly when the age would mislead.
   const syncing = s.progress && s.progress.total > 0 ? s.progress : null;
+  // Clamped to 99 so a long tail cannot sit on "100%" while still working.
+  // That clamp is also why a finished-but-unflagged walk read as exactly 99:
+  // see the server's status route, which now treats done >= total as complete
+  // so this branch is not entered at all in that case.
   const pct = syncing ? Math.min(99, Math.floor((100 * syncing.done) / syncing.total)) : 0;
   const word = syncing ? `syncing ${pct}%`
     : s.newestSessionAgeMs == null ? '—'
