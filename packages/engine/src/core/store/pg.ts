@@ -317,6 +317,7 @@ export class PgStore implements StorageDriver {
       blocks: arr(r.blocks), blockedBy: arr(r.blocked_by),
       linkedSessionId: r.linked_session_id ?? null,
       linkedFindingId: r.linked_finding_id ?? null,
+      linkedFindingIdentity: r.linked_finding_identity ?? null,
       due: r.due != null ? Number(r.due) : null,
       createdAt: Number(r.created_at) || 0, updatedAt: Number(r.updated_at) || 0,
     };
@@ -326,9 +327,9 @@ export class PgStore implements StorageDriver {
     const id = 't_' + randomBytes(9).toString('hex');
     const now = Date.now();
     await this.q(
-      `INSERT INTO team_tasks (tenant,id,project_id,title,description,status,assignee_sub,created_by,blocks,blocked_by,linked_session_id,linked_finding_id,due,created_at,updated_at)
-       VALUES ($1,$2,$3,$4,$5,'todo',$6,$7,'[]','[]',$8,$9,$10,$11,$11)`,
-      [this.t, id, input.projectId || '', input.title, input.description || '', input.assigneeSub ?? null, input.createdBy, input.linkedSessionId ?? null, input.linkedFindingId ?? null, input.due ?? null, now],
+      `INSERT INTO team_tasks (tenant,id,project_id,title,description,status,assignee_sub,created_by,blocks,blocked_by,linked_session_id,linked_finding_id,linked_finding_identity,due,created_at,updated_at)
+       VALUES ($1,$2,$3,$4,$5,'todo',$6,$7,'[]','[]',$8,$9,$10,$11,$12,$12)`,
+      [this.t, id, input.projectId || '', input.title, input.description || '', input.assigneeSub ?? null, input.createdBy, input.linkedSessionId ?? null, input.linkedFindingId ?? null, input.linkedFindingIdentity ?? null, input.due ?? null, now],
     );
     return (await this.getTeamTask(id))!.task;
   }
@@ -362,6 +363,7 @@ export class PgStore implements StorageDriver {
     if (patch.blockedBy !== undefined) add('blocked_by', JSON.stringify(patch.blockedBy));
     if (patch.linkedSessionId !== undefined) add('linked_session_id', patch.linkedSessionId);
     if (patch.linkedFindingId !== undefined) add('linked_finding_id', patch.linkedFindingId);
+    if (patch.linkedFindingIdentity !== undefined) add('linked_finding_identity', patch.linkedFindingIdentity);
     if (sets.length === 0) return (await this.getTeamTask(id))?.task ?? null;
     params.push(Date.now()); sets.push(`updated_at=$${params.length}`);
     const r = await this.q(`UPDATE team_tasks SET ${sets.join(', ')} WHERE tenant=$1 AND id=$2 RETURNING *`, params);

@@ -45,6 +45,15 @@ export interface TeamTask {
   linkedSessionId: string | null;
   /** The finding/code-action this card was auto-materialized from, or null. */
   linkedFindingId: string | null;
+  /**
+   * The finding's IDENTITY, which survives its id changing. Null on cards filed
+   * before this existed, and on anything a person created.
+   *
+   * linkedFindingId is a hash over data that moves, so its absence from the open
+   * set means either "fixed" or "renamed" and the close sweep could not tell
+   * which. It guessed fixed, 93 times out of 97, while every finding was open.
+   */
+  linkedFindingIdentity: string | null;
   due: number | null;
   createdAt: number;
   updatedAt: number;
@@ -59,6 +68,7 @@ export interface CreateTeamTaskInput {
   due?: number | null;
   linkedSessionId?: string | null;
   linkedFindingId?: string | null;
+  linkedFindingIdentity?: string | null;
 }
 export interface UpdateTeamTaskPatch {
   title?: string;
@@ -70,6 +80,7 @@ export interface UpdateTeamTaskPatch {
   blockedBy?: string[];
   linkedSessionId?: string | null;
   linkedFindingId?: string | null;
+  linkedFindingIdentity?: string | null;
 }
 
 /**

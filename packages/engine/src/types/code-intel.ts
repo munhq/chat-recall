@@ -275,8 +275,32 @@ export function codeHotspotId(projectId: string, file: string): string {
  * Digits collapse to '#' for identity only. The stored title keeps its real
  * numbers — this is what the row is KEYED by, not what anyone reads.
  */
-function identityTitle(title: string): string {
+export function identityTitle(title: string): string {
   return title.replace(/\d+/g, '#');
+}
+
+/**
+ * The identity of an action independent of its id, for recognising the SAME
+ * finding after its id has changed.
+ *
+ * WHY IT EXISTS. An id shift was indistinguishable from a finding disappearing,
+ * so a card closed itself ("the finding is no longer reported") while the
+ * finding sat there under a new id — and a duplicate was filed for it. 93 of 97
+ * cards on one board went that way while all 313 findings were still open.
+ *
+ * IT MUST HASH EXACTLY WHAT codeActionId HASHES, minus the volatility. Keying on
+ * project + title alone is WRONG and was the first thing tried: identityTitle
+ * collapses every digit, so "Circular dependency (18 files)" and "Circular
+ * dependency (87 files)" become one identity — and without the location, two
+ * genuinely different findings in one project merge and one card is silently
+ * dropped. The location is what keeps them apart, and it is in the id for the
+ * same reason.
+ */
+export function actionIdentityKey(
+  projectId: string,
+  a: { category: string; title: string; loc: CodeActionLoc[] },
+): string {
+  return [projectId, a.category, identityTitle(a.title), locationKey(a.loc)].join('|');
 }
 
 /**
