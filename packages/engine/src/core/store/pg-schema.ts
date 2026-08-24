@@ -733,6 +733,14 @@ CREATE TABLE IF NOT EXISTS team_tasks (
 );
 -- Live databases predate the column; must stay BELOW the CREATE (fresh boot).
 ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS linked_finding_id TEXT;
+-- The finding's identity, which OUTLIVES its id. linked_finding_id is a hash of
+-- data that can move, so the close sweep could not tell "this finding was fixed"
+-- from "this finding is now called something else" — and chose fixed, 93 times
+-- out of 97, while every finding was still open. Stored by the filer rather than
+-- reconstructed from the card, because a reconstruction that disagrees with the
+-- filer by one character matches nothing and fails silently.
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS linked_finding_identity TEXT;
+CREATE INDEX IF NOT EXISTS idx_team_tasks_identity ON team_tasks(tenant, linked_finding_identity);
 -- 'rejected' is the HUMAN verdict: done is earned by the work, so the only
 -- thing a person can say about a card they disagree with is no. It shipped in
 -- the route, the client and the board and never reached here, so every reject

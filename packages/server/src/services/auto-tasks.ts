@@ -1,11 +1,19 @@
 /**
  * Auto-tasks — findings file their own cards, agents close them with proof.
  *
- * The loop this completes: the code indexer writes actions with DETERMINISTIC
- * ids (hash of project|category|title|loc, stable across re-index), this
+ * The loop this completes: the code indexer writes actions with deterministic
+ * ids (hash of project|category|identityTitle|sorted-files), this
  * service materializes the urgent ones onto the shared board, an agent picks a
  * card up (linking its session, so the shipped-badge can verify the fix), and
  * when a re-index no longer reports the action, the card closes itself.
+ *
+ * "No longer reports" is checked by IDENTITY, not by id. Those ids were once
+ * derived from data that moved — a title carrying its own occurrence counts, a
+ * location key taking whichever copy the analyzer listed first — so the same
+ * finding reappeared under a new id, its card closed itself as fixed, and a
+ * duplicate was filed. 93 of 97 cards on one board were closed that way while
+ * all 313 findings were still open. The id inputs are fixed; the close sweep no
+ * longer trusts them alone.
  *
  * Deliberate boundaries:
  *   - OPT-IN per tenant. The board is team-visible and has no delete; nothing
@@ -25,7 +33,7 @@
  *     not keep writing to a board their plan no longer includes.
  */
 import { createStore, createControlPlane, runWithTenant, runWithAuthor, runUnrestricted } from '../imports.js';
-import { severityOfPri, PRI_SEVERITY } from '@chat-recall/engine/types/code-intel.js';
+import { severityOfPri, PRI_SEVERITY, actionIdentityKey } from '@chat-recall/engine/types/code-intel.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { allows } from '../util/entitlements.js';
 import { effectivePlan, billingEnabled } from '../util/billing.js';
@@ -80,7 +88,7 @@ export function parsePolicy(raw: string | null): AutoTasksPolicy {
 export async function runAutoTasks(
   tenant: string,
   opts: { force?: boolean } = {},
-): Promise<{ created: number; closed: number } | null> {
+): Promise<{ created: number; closed: number; repointed: number } | null> {
   try {
     return await run(tenant, opts.force === true);
   } catch (err) {
@@ -89,7 +97,7 @@ export async function runAutoTasks(
   }
 }
 
-async function run(tenant: string, force = false): Promise<{ created: number; closed: number } | null> {
+async function run(tenant: string, force = false): Promise<{ created: number; closed: number; repointed: number } | null> {
   const cp = await createControlPlane();
   let policy: AutoTasksPolicy;
   try {
@@ -131,12 +139,48 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
       const urgent = open.filter((a) => a.pri <= policy.maxPri);
       const byFinding = new Map(existing.map((t) => [t.linkedFindingId as string, t]));
 
+      // IDENTITY, not id. An action's id is a hash, and when the hash inputs
+      // changed under it the same finding arrived wearing a new id. Keyed by
+      // identity, the two are the same row — which is what lets the close sweep
+      // below tell "fixed" from "renamed", and stops a duplicate being filed for
+      // a finding that already has a card.
+      const openByIdentity = new Map(
+        open.map((a) => [actionIdentityKey(a.projectId, a), a] as const),
+      );
+      // Cards keyed by the identity THE FILER STORED. Not recomputed from the
+      // card: a card holds a severity-prefixed title and no category or loc, so
+      // any reconstruction would differ from the filer's key and match nothing —
+      // silently, which is the failure mode this whole change exists to remove.
+      // Cards filed before the column existed have null and are skipped here;
+      // they fall through to the old id-only behaviour.
+      const cardIdentities = new Map(
+        existing.filter((t) => t.linkedFindingIdentity)
+          .map((t) => [t.linkedFindingIdentity as string, t] as const),
+      );
+
       let created = 0;
       let closed = 0;
+      /** Cards whose finding id moved under them. Reported because a run that
+       *  re-points twenty cards did real work and used to look idle. */
+      let repointed = 0;
       // WRITES keep the author stamp, so a card records who filed it.
       await runWithAuthor({ sub: 'auto-tasks', device: null }, async () => {
       for (const a of urgent) {
         if (byFinding.has(a.id)) continue;           // card exists, any status
+        // A card for this finding under its OLD id. Re-point it instead of
+        // filing a second one: this is where the duplicates came from — six
+        // cards for "inflate copy-pasted 2× (899 lines each)", one per id the
+        // hash produced. Re-pointing also puts the card back inside `stillOpen`
+        // for the close sweep, so it stops being a candidate for a false close.
+        const twin = cardIdentities.get(actionIdentityKey(a.projectId, a));
+        if (twin) {
+          if (twin.linkedFindingId !== a.id) {
+            await store.updateTeamTask(twin.id, { linkedFindingId: a.id });
+            byFinding.set(a.id, twin);
+            repointed++;
+          }
+          continue;
+        }
         if (created >= MAX_NEW_CARDS_PER_RUN) break;
         await store.createTeamTask({
           title: `[${severityOfPri(a.pri)}] ${a.title}`.slice(0, 500),
@@ -149,6 +193,8 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
           projectId: a.projectId,
           createdBy: 'auto-tasks',
           linkedFindingId: a.id,
+          // Stored so a later id shift is recognisable as the same finding.
+          linkedFindingIdentity: actionIdentityKey(a.projectId, a),
         });
         created++;
       }
@@ -163,29 +209,55 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
       // next run flips the card the user rejected to 'done' and comments that it
       // closed itself. The machine would overwrite the human verdict, silently,
       // and rejection is the ONE verdict that is the human's alone to give.
+      // A MISSING ID IS NOT A FIXED PROBLEM. This closed a card whenever its
+      // finding id was absent from the open set, and an id shift is
+      // indistinguishable from a fix by that test alone. It was not a rare race:
+      // 93 of 97 cards on one board were closed this way, all with no session
+      // attached, while every one of the 313 findings was still open. The board
+      // asserted ~90 completed pieces of work that never happened.
+      //
+      // So before closing, ask whether the finding is really gone — by IDENTITY,
+      // not by id. If an open action still matches, the id moved and the card is
+      // re-pointed at it rather than closed.
       const stillOpen = new Set(open.map((a) => a.id));
       const CLOSED: ReadonlySet<string> = new Set(['done', 'rejected']);
       for (const t of existing) {
         if (t.createdBy !== 'auto-tasks' || CLOSED.has(t.status)) continue;
-        if (t.linkedFindingId && !stillOpen.has(t.linkedFindingId)) {
-          await store.updateTeamTask(t.id, { status: 'done' });
-          await store.addTeamTaskComment(t.id, 'auto-tasks', 'Closed automatically: the finding is no longer reported.');
-          closed++;
+        if (!t.linkedFindingId || stillOpen.has(t.linkedFindingId)) continue;
+
+        // Only the stored identity can answer this. A card without one predates
+        // the column, and for it a missing id still means "gone" — which is safe,
+        // because the phantom cards that behaviour produced have been removed and
+        // every card filed from here on carries an identity.
+        const twin = t.linkedFindingIdentity
+          ? openByIdentity.get(t.linkedFindingIdentity) : undefined;
+        if (twin) {
+          await store.updateTeamTask(t.id, { linkedFindingId: twin.id });
+          repointed++;
+          continue;
         }
+
+        await store.updateTeamTask(t.id, { status: 'done' });
+        // Name the id that vanished. "The finding is no longer reported" gave a
+        // reader nothing to check, and every one of those 93 comments was wrong.
+        await store.addTeamTaskComment(t.id, 'auto-tasks',
+          `Closed automatically: finding ${t.linkedFindingId} is no longer reported, `
+          + 'and no open finding matches this card. If the problem is still there, reopen it.');
+        closed++;
       }
 
       });
 
-      if (created || closed) log.info({ tenant, created, closed }, 'auto-tasks run');
+      if (created || closed || repointed) log.info({ tenant, created, closed, repointed }, 'auto-tasks run');
       // Recorded even when both counts are zero: "it ran and found nothing" and
       // "it never ran" are different answers to "is anything happening?", and
       // the UI can only tell them apart if the zero is written down.
       const cp2 = await createControlPlane();
       try {
         await cp2.setTenantSetting(tenant, LAST_RESULT_KEY,
-          JSON.stringify({ at: Date.now(), created, closed }));
+          JSON.stringify({ at: Date.now(), created, closed, repointed }));
       } finally { await cp2.close(); }
-      return { created, closed };
+      return { created, closed, repointed };
     } finally {
       await store.close();
     }
