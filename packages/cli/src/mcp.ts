@@ -5,6 +5,7 @@
  * Exposes chat recall as tools that can be used by Claude Code.
  */
 
+import { resumeCommandFor } from '@chat-recall/engine/core/resume-command.js';
 import { config } from 'dotenv';
 import { buildHttpError, stalenessBanner, type SyncState } from './mcp-diagnostics.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -656,35 +657,6 @@ const RecallSecurityRulesSchema = z.object({
 });
 
 
-/**
- * The command that actually resumes a session, per tool.
- *
- * Every call site used to hardcode `claude --resume <id>`, so an agy, cursor,
- * codex or opencode session was handed a command that cannot work — it names
- * the wrong binary AND keeps the chat-recall id prefix the tool never wrote.
- * Returns null where the tool has no id-based resume (Gemini's `--resume`
- * takes an index or "latest", not a session id).
- */
-function resumeCommandFor(sessionId: string, tool?: string): string | null {
-  if (!sessionId) return null;
-  const t = tool || (
-    sessionId.startsWith('codex_') ? 'codex' :
-    sessionId.startsWith('opencode_') ? 'opencode' :
-    sessionId.startsWith('agy_') ? 'agy' :
-    sessionId.startsWith('cursor_') ? 'cursor' :
-    sessionId.startsWith('gemini_') ? 'gemini' : 'claude'
-  );
-  const raw = (prefix: string) => (sessionId.startsWith(prefix) ? sessionId.slice(prefix.length) : sessionId);
-  switch (t) {
-    case 'claude':   return `claude --resume ${sessionId}`;
-    case 'codex':    return `codex resume ${raw('codex_')}`;
-    case 'opencode': return `opencode -s ${raw('opencode_')}`;
-    case 'agy':      return `agy --conversation ${raw('agy_')}`;
-    // The CLI surface only — an IDE composer id is not resumable from a shell.
-    case 'cursor':   return `cursor-agent --resume ${raw('cursor_')}`;
-    default:         return null;
-  }
-}
 
 const server = new Server(
   {
