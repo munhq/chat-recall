@@ -672,6 +672,13 @@ export interface SyncStatus {
    * freshness age is misleading rather than informative.
    */
   progress?: { done: number; total: number } | null;
+  /**
+   * How long ago the collector last reported, which is NOT how old the newest
+   * session is. A healthy install where nobody has opened an AI tool for an hour
+   * has an hour-old newest session and a minutes-old last sync; reporting only
+   * the former made a working sync read as "1h behind".
+   */
+  lastSyncAgeMs?: number | null;
 }
 
 export async function getSyncStatus(): Promise<SyncStatus> {

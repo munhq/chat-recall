@@ -215,20 +215,39 @@ export function SyncStatusChip({ refreshSignal }: { refreshSignal?: number }) {
   // running and its report is fresh (the server drops stale ones), so this
   // replaces the age exactly when the age would mislead.
   const syncing = s.progress && s.progress.total > 0 ? s.progress : null;
-  // Clamped to 99 so a long tail cannot sit on "100%" while still working.
-  // That clamp is also why a finished-but-unflagged walk read as exactly 99:
-  // see the server's status route, which now treats done >= total as complete
-  // so this branch is not entered at all in that case.
-  const pct = syncing ? Math.min(99, Math.floor((100 * syncing.done) / syncing.total)) : 0;
+  // No 99 clamp. floor(100 * done / total) only reaches 100 when done === total,
+  // and that case is no longer "syncing" at all — the server drops progress once
+  // done >= total. The clamp could therefore never fire for a real in-flight
+  // walk; all it ever did was turn this bug into a permanent "99%".
+  const pct = syncing ? Math.floor((100 * syncing.done) / syncing.total) : 0;
+  // WHEN A SYNC LAST RAN, not how old the newest transcript is.
+  //
+  // The old label read the session age, so an install that had synced ninety
+  // seconds ago said "1h behind" whenever the user had not opened an AI tool for
+  // an hour. Nothing was behind: there was nothing to fetch. The question the
+  // badge answers is "is this thing working", and the answer to that is when it
+  // last ran.
+  const ago = (ms: number) =>
+    ms < 90_000 ? 'just now'
+    : ms < 3_600_000 ? `${Math.round(ms / 60_000)}m ago`
+    : ms < 86_400_000 ? `${Math.round(ms / 3_600_000)}h ago`
+    : `${Math.round(ms / 86_400_000)}d ago`;
   const word = syncing ? `syncing ${pct}%`
+    : s.lastSyncAgeMs != null ? `synced ${ago(s.lastSyncAgeMs)}`
+    // No collector has ever reported. Fall back to data freshness, which is all
+    // there is to say.
     : s.newestSessionAgeMs == null ? '—'
     : fresh ? 'live'
     : s.newestSessionAgeMs < 3_600_000 ? `${Math.round(s.newestSessionAgeMs / 60_000)}m behind`
     : `${Math.round(s.newestSessionAgeMs / 3_600_000)}h behind`;
   // Syncing is progress, not a fault, so it does not get the warning colour.
+  // Green while a sync is recent, amber only when one has genuinely not run for
+  // a while. Previously amber tracked the session age, so the dot went warning
+  // coloured on a perfectly healthy install that had simply been idle.
+  const syncedRecently = s.lastSyncAgeMs != null && s.lastSyncAgeMs < 15 * 60_000;
   const dot = syncing ? 'var(--cr-accent-500, var(--cr-ok-500))'
-    : fresh ? 'var(--cr-ok-500)'
-    : s.newestSessionAgeMs == null ? 'var(--cr-fg-3)'
+    : syncedRecently || fresh ? 'var(--cr-ok-500)'
+    : s.lastSyncAgeMs == null && s.newestSessionAgeMs == null ? 'var(--cr-fg-3)'
     : 'var(--cr-warn-500)';
   return (
     <span
@@ -236,7 +255,9 @@ export function SyncStatusChip({ refreshSignal }: { refreshSignal?: number }) {
       title={syncing
         ? `Collector is walking ${syncing.total.toLocaleString()} sessions — ${syncing.done.toLocaleString()} considered so far. `
           + `${s.sessions.toLocaleString()} held · ${s.rawArchived.toLocaleString()} raw-archived`
-        : `${s.sessions.toLocaleString()} sessions held · ${s.rawArchived.toLocaleString()} raw-archived · newest data ${word}`}
+        : `${s.sessions.toLocaleString()} sessions held · ${s.rawArchived.toLocaleString()} raw-archived`
+          + (s.lastSyncAgeMs != null ? ` · last sync ${ago(s.lastSyncAgeMs)}` : '')
+          + (s.newestSessionAgeMs != null ? ` · newest session ${ago(s.newestSessionAgeMs)}` : '')}
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 5,
         padding: '2px 8px 2px 7px', fontSize: 11, fontWeight: 450,
