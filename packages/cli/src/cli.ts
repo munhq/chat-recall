@@ -222,6 +222,7 @@ const DEFAULT_ALLOW = [
   'recall_code_index', 'recall_code_projects', 'recall_code_findings',
   'recall_code_actions',
   'recall_claude_suggestions', 'recall_improvements',
+  'recall_toolkit_status', 'recall_toolkit_sync',
 ];
 const SELF_HOST_DOCS = 'https://github.com/munhq/chat-recall/blob/main/docs/SELF_HOSTING.md';
 
