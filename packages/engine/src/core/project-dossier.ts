@@ -61,6 +61,17 @@ interface SessionExtra {
 // completed ones — fixed to use the real counts + the [status] preview lines.
 interface TaskExtra { taskCount?: number; completedCount?: number }
 
+/**
+ * The only three reads the project resolver needs. Narrower than the full
+ * StorageDriver on purpose: it makes the resolver unit-testable without a
+ * database, which is why the bug it fixes had no test before.
+ */
+export interface ProjectLookup {
+  listItemsByProjectId(tenant: null, projectId: string, since: number): Promise<MemoryMetadataRow[]>;
+  listAllProjectIdPaths(): Promise<Array<{ project_id: string; project_path: string }>>;
+  listProjectsSummary(): Promise<Array<{ project_id: string; items: number; last_mtime: number }>>;
+}
+
 /* -----------------------------------------------------------------------
  * Public entry points
  * --------------------------------------------------------------------- */
@@ -69,25 +80,122 @@ export async function buildProjectDossier(
   input: string,
   opts: DossierOptions = {},
 ): Promise<string> {
-  // Accept either a project_id (starts with a known scheme prefix) or a
-  // filesystem path. Paths are resolved via the resolver so the same
-  // command works for `chat-recall dossier /home/user/code/personal/foo`
-  // and `chat-recall dossier git:github.com/me/foo`.
-  const projectId = looksLikeProjectId(input) ? input : resolveProjectId(input).id;
-  const displayName = deriveDisplayName(projectId);
-
   const store = await createStore();
   const kg = await createKnowledgeGraph();
   try {
-    const rows = await store.listItemsByProjectId(null, projectId, 0);
-    if (rows.length === 0) {
-      return `# ${displayName}\n\nNo indexed items for project \`${projectId}\`.\n`;
+    const resolved = await resolveAgainstIndex(store, input);
+    if (!resolved) {
+      // Say what was tried. The old message reported the unresolvable id as
+      // though the project were merely empty, which reads as "you have never
+      // worked here" — the worst answer a memory product can give.
+      return `# ${deriveDisplayName(input)}\n\n`
+        + `No project matches \`${input}\`.\n\n`
+        + 'Nothing in the index has that project id, that path, or a name containing it. '
+        + 'List the ids that do exist with `chat-recall projects`.\n';
     }
-    return await renderDossier(displayName, projectId, rows, kg, opts);
+    const displayName = deriveDisplayName(resolved.projectId);
+    return await renderDossier(displayName, resolved.projectId, resolved.rows, kg, opts);
   } finally {
     await store.close();
     await kg.close();
   }
+}
+
+/**
+ * Turn whatever the caller passed into a project_id THAT HAS ROWS.
+ *
+ * WHY THIS IS NOT JUST `resolveProjectId`. That helper reads the git remote of
+ * a directory on the machine it runs on. The dossier runs on the SERVER, and
+ * the path belongs to the user's laptop — so on the server the directory does
+ * not exist, the resolver falls back to `path:/home/…`, nothing matches it, and
+ * the endpoint returned an empty-looking report for a project with thousands of
+ * indexed items. Every documented way to call it except the internal
+ * `git:` id was broken, silently.
+ *
+ * The index already knows the answer: the collector stores project_id AND
+ * project_path on every row, so the mapping the server cannot compute it can
+ * simply look up. Order is most-specific first, and each step must produce rows
+ * to win:
+ *
+ *   1. an explicit project_id  (`git:`, `ws:`, …)
+ *   2. every id claiming this exact directory — the local resolution plus
+ *      whatever the index recorded against the same path
+ *   3. a path prefix           (a subdirectory of a known checkout)
+ *   4. a name substring        (`example-app` → `git:github.com/acme/example-app`)
+ *
+ * Within a step the project with the most indexed items wins, so a stray
+ * one-row leftover cannot outrank the real project.
+ */
+export async function resolveAgainstIndex(
+  store: ProjectLookup,
+  input: string,
+): Promise<{ projectId: string; rows: MemoryMetadataRow[] } | null> {
+  const attempt = async (id: string) => {
+    if (!id) return null;
+    const rows = await store.listItemsByProjectId(null, id, 0);
+    return rows.length > 0 ? { projectId: id, rows } : null;
+  };
+
+  // 1 — an explicit id. Nothing to resolve; if it has no rows it is genuinely
+  // empty, and reporting that against the id the caller named is honest.
+  if (looksLikeProjectId(input)) {
+    const rows = await store.listItemsByProjectId(null, input, 0);
+    return { projectId: input, rows };
+  }
+
+  const paths = await store.listAllProjectIdPaths();
+  const counts = new Map<string, number>();
+  for (const p of await store.listProjectsSummary()) counts.set(p.project_id, p.items);
+  const busiest = (ids: string[]) =>
+    [...new Set(ids)].sort((a, b) => (counts.get(b) ?? 0) - (counts.get(a) ?? 0))[0];
+
+  const needle = input.replace(/\/+$/, '');
+
+  // 2 — every id that claims THIS directory: the local resolution (exact when
+  // the dossier runs on the CLI, since it reads the real git remote) and every
+  // id the index recorded against the same path.
+  //
+  // These compete, so the busiest wins rather than the first tried. A repo
+  // indexed before it had a remote leaves a `path:` id behind; that leftover
+  // holds a handful of rows while the real `git:` id holds thousands, and
+  // trying the local resolution FIRST handed the caller the leftover. A test
+  // caught it — the ordering looked obviously right and was not.
+  const sameDir = [
+    resolveProjectId(input).id,
+    ...paths.filter(p => p.project_path.replace(/\/+$/, '') === needle).map(p => p.project_id),
+  ].filter(Boolean);
+  if (sameDir.length) {
+    const hit = await attempt(busiest(sameDir));
+    if (hit) return hit;
+  }
+
+  // 4 — a subdirectory of a known checkout (`…/repo/packages/cli`).
+  if (needle.startsWith('/')) {
+    const under = paths.filter(p => p.project_path && needle.startsWith(p.project_path.replace(/\/+$/, '') + '/'));
+    if (under.length) {
+      // Deepest checkout wins: a nested repo is more specific than its parent.
+      under.sort((a, b) => b.project_path.length - a.project_path.length);
+      const hit = await attempt(under[0].project_id);
+      if (hit) return hit;
+    }
+  }
+
+  // 5 — a name substring, which is what a human types.
+  const lower = needle.toLowerCase();
+  const byName = paths
+    .map(p => p.project_id)
+    .filter(id => deriveDisplayName(id).toLowerCase() === lower);
+  if (byName.length) {
+    const hit = await attempt(busiest(byName));
+    if (hit) return hit;
+  }
+  const loose = paths.map(p => p.project_id).filter(id => id.toLowerCase().includes(lower));
+  if (loose.length) {
+    const hit = await attempt(busiest(loose));
+    if (hit) return hit;
+  }
+
+  return null;
 }
 
 /* -----------------------------------------------------------------------
