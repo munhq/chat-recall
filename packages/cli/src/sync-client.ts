@@ -72,7 +72,7 @@ import { buildSourceRegistry } from '@chat-recall/engine/parsers/all-sources.js'
 import { getSyncedRows, markSynced, getLedgerData, persistLedgerData,
   fieldNeedsScan, markFieldCoverage, fieldNeedsFullPass, markFieldFullPassDone,
   syncMode, markFullResync, loadItemVersions, saveItemVersions, flushLedger, pruneLedgerTargets, type SyncedRow } from './sync-ledger.js';
-import { extractorVersionForTool, extractorVersionForId, toolOfId, EXTRACTOR_VERSION } from '@chat-recall/engine/core/extractor-version.js';
+import { extractorVersionForTool, extractorVersionForId, extractorVersionForItem, toolOfId, EXTRACTOR_VERSION } from '@chat-recall/engine/core/extractor-version.js';
 import { SYNC_FIELDS } from '@chat-recall/engine/core/sync-fields.js';
 import { acquireIndexLock } from '@chat-recall/engine/core/index-lock.js';
 import { fetchWithTimeout } from './http.js';
@@ -1695,6 +1695,7 @@ const refs = listAvailableBackends().flatMap((b) => {
   // not a blanket re-ship of every item.
   const itemVersions = loadItemVersions(base);
   const seenTools = new Set<string>();
+  const seenItemKeys = new Map<string, number>();
   const registry = buildSourceRegistry();
   for (const sourceType of registry.getRegisteredTypes()) {
     if (sourceType === 'session') continue;
@@ -1705,7 +1706,12 @@ const refs = listAvailableBackends().flatMap((b) => {
         for await (const item of discovered) {
           const itemTool = toolOfId(item.id);
           seenTools.add(itemTool);
-          const versionStale = (itemVersions[itemTool] ?? EXTRACTOR_VERSION) < extractorVersionForId(item.id);
+          // Keyed by tool AND source type: a payload change to skills must not
+          // re-walk that tool's plans and tasks, and must not touch sessions at
+          // all (they use a different ledger and a different version).
+          const itemKey = `${itemTool}:${item.sourceType}`;
+          seenItemKeys.set(itemKey, extractorVersionForItem(item.id, item.sourceType));
+          const versionStale = (itemVersions[itemKey] ?? EXTRACTOR_VERSION) < extractorVersionForItem(item.id, item.sourceType);
           if ((item.mtime || 0) < (opts.sinceMs ?? 0) && !versionStale) continue;
           if (excluded(item.projectPath || '')) continue;
           if (!includedProject(item.projectPath || '')) continue;
@@ -1811,6 +1817,9 @@ const refs = listAvailableBackends().flatMap((b) => {
     try {
       const rec: Record<string, number> = {};
       for (const t of seenTools) rec[t] = extractorVersionForTool(t);
+      // Stamp the per-(tool, source) keys too, so a source-payload bump
+      // re-ships exactly once rather than on every sync afterwards.
+      for (const [k, v] of seenItemKeys) rec[k] = v;
       saveItemVersions(base, rec);
     } catch { /* local bookkeeping — best-effort */ }
   }
