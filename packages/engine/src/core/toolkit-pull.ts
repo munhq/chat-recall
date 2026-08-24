@@ -29,7 +29,53 @@
  * use, far from the cause.
  */
 
+import { existsSync, statSync } from 'node:fs';
+import { delimiter, join, basename, isAbsolute } from 'node:path';
+
 import { SUPPORTED_TARGETS, readMcpEntry, writeMcpEntry, type TargetTool, type SyncType } from './toolkit-sync.js';
+
+/** Is `p` an executable file that exists here? */
+function isExecutableFile(p: string): boolean {
+  try { return statSync(p).isFile(); } catch { return false; }
+}
+
+/** First match for a bare command name on this machine's PATH. */
+function onPath(name: string): string | null {
+  const dirs = (process.env.PATH || '').split(delimiter).filter(Boolean);
+  for (const d of dirs) {
+    const candidate = join(d, name);
+    if (isExecutableFile(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Make one command portable to THIS machine, or refuse.
+ *
+ * WHY THIS IS NOT OPTIONAL. 40 of 183 registrations on the machine that
+ * uploaded them name an ABSOLUTE path — `/home/<user>/.local/bin/some-mcp`,
+ * a release binary inside a checkout, a dev `dist/mcp.js`. None of those paths
+ * exist on a second machine, and its home directory is not even the same shape
+ * (`/Users/...` vs `/home/...`). Installing them verbatim would register 40
+ * servers that fail to spawn, in five tools each, and the AI tool reports that
+ * as a broken MCP rather than as a bad path.
+ *
+ * So: keep the path when it resolves here; otherwise fall back to the bare
+ * name if this machine has its own copy on PATH (the common case — the same
+ * tool installed to a different prefix); otherwise refuse and say which
+ * command is missing. A named refusal is the useful outcome: it tells the user
+ * what to install.
+ */
+export function portableCommand(cmd: string): { command: string; rewritten: boolean } | { missing: string } {
+  if (!isAbsolute(cmd)) {
+    // A bare name must still be resolvable, or the entry cannot work.
+    return onPath(cmd) ? { command: cmd, rewritten: false } : { missing: cmd };
+  }
+  if (isExecutableFile(cmd)) return { command: cmd, rewritten: false };
+  const base = basename(cmd);
+  if (onPath(base)) return { command: base, rewritten: true };
+  return { missing: cmd };
+}
 
 /** One inventory row as the server returns it. */
 export interface RemoteArtifactRow {
@@ -49,6 +95,8 @@ export interface PullOutcome {
   path?: string;
   /** Env variables the rebuilt entry needs, whose values never left the source machine. */
   needsEnv?: string[];
+  /** Set when the source machine's absolute path was replaced by this machine's copy. */
+  rewrittenCommand?: string;
 }
 
 export interface PullReport {
@@ -172,12 +220,30 @@ export function executePull(
         outcomes.push({ type: 'mcp', name, tool, status: 'present' });
         continue;
       }
+
+      // The source machine's paths are not this machine's paths.
+      const entry = { ...built.entry };
+      let rewrittenCommand: string | undefined;
+      if (!entry.url) {
+        const raw = Array.isArray(entry.command) ? (entry.command as string[])[0] : entry.command as string;
+        const port = portableCommand(raw);
+        if ('missing' in port) {
+          outcomes.push({ type: 'mcp', name, tool, status: 'skipped', reason: `not installed here: ${port.missing}` });
+          continue;
+        }
+        if (port.rewritten) {
+          rewrittenCommand = port.command;
+          if (Array.isArray(entry.command)) entry.command = [port.command, ...(entry.command as string[]).slice(1)];
+          else entry.command = port.command;
+        }
+      }
+
       if (opts.dryRun) {
-        outcomes.push({ type: 'mcp', name, tool, status: 'written', reason: 'dry run', needsEnv: built.needsEnv });
+        outcomes.push({ type: 'mcp', name, tool, status: 'written', reason: 'dry run', needsEnv: built.needsEnv, rewrittenCommand });
         continue;
       }
-      const r = writeMcpEntry(tool, name, built.entry);
-      if (r.ok) outcomes.push({ type: 'mcp', name, tool, status: 'written', path: r.targetPath, needsEnv: built.needsEnv });
+      const r = writeMcpEntry(tool, name, entry);
+      if (r.ok) outcomes.push({ type: 'mcp', name, tool, status: 'written', path: r.targetPath, needsEnv: built.needsEnv, rewrittenCommand });
       else if (r.status === 409) outcomes.push({ type: 'mcp', name, tool, status: 'present' });
       else outcomes.push({ type: 'mcp', name, tool, status: 'failed', reason: r.error });
     }
