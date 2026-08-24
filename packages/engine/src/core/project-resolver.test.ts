@@ -36,12 +36,12 @@ afterEach(() => {
 
 describe('parseGitRemote', () => {
   test('ssh-style', () => {
-    expect(parseGitRemote('git@github.com:adi/chat-recall.git'))
-      .toEqual({ host: 'github.com', owner: 'adi', repo: 'chat-recall' });
+    expect(parseGitRemote('git@github.com:owner/chat-recall.git'))
+      .toEqual({ host: 'github.com', owner: 'owner', repo: 'chat-recall' });
   });
   test('https-style', () => {
-    expect(parseGitRemote('https://github.com/adi/chat-recall.git'))
-      .toEqual({ host: 'github.com', owner: 'adi', repo: 'chat-recall' });
+    expect(parseGitRemote('https://github.com/owner/chat-recall.git'))
+      .toEqual({ host: 'github.com', owner: 'owner', repo: 'chat-recall' });
   });
   test('gitlab nested groups treated as owner=last-group', () => {
     expect(parseGitRemote('https://gitlab.com/group/sub/repo.git'))

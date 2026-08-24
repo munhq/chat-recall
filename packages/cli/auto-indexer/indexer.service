@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=adi
+User=REPLACE_ME
 WorkingDirectory=/home/user/code/personal/chat-recall-ui
 ExecStart=/usr/bin/npx tsx /home/user/code/personal/chat-recall-ui/auto-indexer/indexer.ts
 Restart=always

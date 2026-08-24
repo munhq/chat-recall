@@ -134,14 +134,14 @@ describe('a payload can never carry the user\'s work', () => {
   // Each of these is exactly the "just a bit of context" field that erodes the
   // promise one commit at a time.
   test.each([
-    ['projectPath', { projectPath: '/home/adi/code/secret' }],
+    ['projectPath', { projectPath: '/home/user/code/secret' }],
     ['sessionId', { sessionId: 'abc-123' }],
     ['prompt', { prompt: 'what the user typed' }],
     ['filePath', { filePath: '/etc/passwd' }],
     ['repo', { repo: 'acme/private' }],
     ['content', { content: 'transcript text' }],
     ['email', { email: 'someone@example.com' }],
-    ['cwd', { cwd: '/home/adi' }],
+    ['cwd', { cwd: '/home/user' }],
   ])('%s is refused', (_name, payload) => {
     expect(mod.findSensitiveKeys(payload).length).toBeGreaterThan(0);
     expect(() => mod.assertNoSensitiveKeys(payload)).toThrow(/forbidden key/);

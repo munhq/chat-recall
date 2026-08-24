@@ -293,7 +293,10 @@ describe('CursorBackend — JSONL fallback when store.db cannot be decoded', () 
   });
 
   test('the project slug matches Cursor\'s own, which is lossy by design', () => {
-    expect(cursorProjectSlug('/home/adi/code/personal/baby')).toBe('home-adi-code-personal-baby');
+    // Synthetic paths only. This asserted against a real home directory and a
+    // real private project, which put a username and a side project into a
+    // public repo to test a slash-to-dash substitution that cares about neither.
+    expect(cursorProjectSlug('/home/user/code/personal/example')).toBe('home-user-code-personal-example');
     expect(cursorProjectSlug('/tmp/a__b/c')).toBe('tmp-a-b-c');
   });
 });

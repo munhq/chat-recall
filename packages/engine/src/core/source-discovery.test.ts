@@ -115,15 +115,15 @@ describe('exclusions can only ever REMOVE a source', () => {
 
     // A hostile/buggy server sends paths and path-shaped strings instead of ids.
     const applied = installSourceExclusions([
-      '/home/adi/.ssh',
+      '/home/user/.ssh',
       '../../etc',
       'src_not-hex-here',
       'claude-work',
-      '/home/adi/.claude-work/projects',
+      '/home/user/.claude-work/projects',
     ] as string[]);
 
     expect(applied.excluded).toBe(0);
-    expect(isSourceExcluded('/home/adi/.ssh')).toBe(false);
+    expect(isSourceExcluded('/home/user/.ssh')).toBe(false);
     // And nothing about what we scan has changed.
     expect(claudeProjectDirs()).toEqual(before);
   });

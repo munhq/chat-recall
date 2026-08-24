@@ -25,12 +25,12 @@ import { isJunkWorkspacePath } from './collector.js';
 
 describe('refusing junk workspaces', () => {
   test.each([
-    ['/home/adi/.cache/foo', 'posix cache'],
+    ['/home/user/.cache/foo', 'posix cache'],
     ['/tmp/scratch/scratchpad', 'posix scratchpad'],
-    ['/home/adi/proj/node_modules', 'posix node_modules'],
+    ['/home/user/proj/node_modules', 'posix node_modules'],
     ['/tmp', 'posix tmp itself'],
-    ['C:\\Users\\adi\\AppData\\Local\\Temp\\scratchpad', 'windows scratchpad'],
-    ['C:\\Users\\adi\\.cache\\thing', 'windows cache'],
+    ['C:\\Users\\user\\AppData\\Local\\Temp\\scratchpad', 'windows scratchpad'],
+    ['C:\\Users\\user\\.cache\\thing', 'windows cache'],
     ['C:\\proj\\node_modules', 'windows node_modules'],
     ['C:\\proj\\.git', 'windows git dir'],
     ['D:\\tmp', 'windows tmp on another drive'],
@@ -39,12 +39,12 @@ describe('refusing junk workspaces', () => {
   });
 
   test.each([
-    ['/home/adi/code/chat-recall'],
-    ['C:\\Users\\adi\\code\\chat-recall'],
+    ['/home/user/code/chat-recall'],
+    ['C:\\Users\\user\\code\\chat-recall'],
     // Near-misses: a real repo whose name merely contains a junk word.
-    ['/home/adi/code/tmpl-service'],
+    ['/home/user/code/tmpl-service'],
     ['C:\\code\\mytmp-app'],
-    ['/home/adi/code/gitops'],
+    ['/home/user/code/gitops'],
   ])('accepts %s', (p) => {
     expect(isJunkWorkspacePath(p)).toBe(false);
   });
@@ -68,16 +68,16 @@ describe('workspace-relative paths', () => {
   };
 
   test('posix path under a posix workspace', () => {
-    expect(relFor('/home/adi/repo')('/home/adi/repo/src/a.ts')).toBe('src/a.ts');
+    expect(relFor('/home/user/repo')('/home/user/repo/src/a.ts')).toBe('src/a.ts');
   });
 
   test('windows path under a windows workspace — the case that was broken', () => {
-    expect(relFor('C:\\Users\\adi\\repo')('C:\\Users\\adi\\repo\\src\\a.ts')).toBe('src/a.ts');
+    expect(relFor('C:\\Users\\user\\repo')('C:\\Users\\user\\repo\\src\\a.ts')).toBe('src/a.ts');
   });
 
   test('a trailing separator on the workspace is stripped, either kind', () => {
-    expect(relFor('/home/adi/repo/')('/home/adi/repo/src/a.ts')).toBe('src/a.ts');
-    expect(relFor('C:\\Users\\adi\\repo\\')('C:\\Users\\adi\\repo\\src\\a.ts')).toBe('src/a.ts');
+    expect(relFor('/home/user/repo/')('/home/user/repo/src/a.ts')).toBe('src/a.ts');
+    expect(relFor('C:\\Users\\user\\repo\\')('C:\\Users\\user\\repo\\src\\a.ts')).toBe('src/a.ts');
   });
 
   test('the result is always forward-slash, so it means the same on any host', () => {
@@ -92,6 +92,6 @@ describe('workspace-relative paths', () => {
   });
 
   test('a path outside the workspace is left alone rather than mangled', () => {
-    expect(relFor('/home/adi/repo')('/etc/passwd')).toBe('/etc/passwd');
+    expect(relFor('/home/user/repo')('/etc/passwd')).toBe('/etc/passwd');
   });
 });
