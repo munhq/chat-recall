@@ -4,6 +4,58 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.7] — 2026-08-24
+
+### Fixed
+
+- The npm page was blank. `npmjs.com/package/chat-recall` rendered
+  `ERROR: No README data found!` — nothing at all on the surface a CLI is found
+  through. `files` listed `README.md` and no such file existed, because npm reads
+  a README only from the package directory it publishes, never from a monorepo
+  root. A `prepack` script copies the root README in, gitignored so the two
+  cannot drift.
+- The npm description contradicted the product model, calling this "local-first"
+  with an "optional" server sync when there is no local store and no offline
+  mode, and it named four AI tools of six. `keywords` was empty while the GitHub
+  repository already carried sixteen usable topics.
+- Every URL that does not exist answered **200** with the app shell, canonical
+  pointing at `/app` — a path `robots.txt` disallows. Google classes that as a
+  soft 404: dead addresses enter the crawl set, crawl budget goes on URLs that
+  are not real, and the styled 404 page already being built could never be
+  reached. Unknown paths now serve it with status 404 and
+  `X-Robots-Tag: noindex`. The allowlist is exhaustive because the client has no
+  path router — navigational state lives in query params — so `/`, `/app` and
+  `/device` are the only paths the app owns.
+
+### Added
+
+- The trial-ending email. The pricing page says, twice, "We email you before the
+  trial ends", and nothing sent it: the live webhook was not subscribed to
+  `customer.subscription.trial_will_end`, no case handled it, and no such mail
+  existed. A trial lapsed in silence and the customer learned it when sync
+  stopped. The handler notifies only — three days out the customer is still
+  trialing and still entitled, so writing an entitlement there could only
+  downgrade someone mid-trial.
+- A product guard on the Stripe webhook, for selling more than one product from
+  one account. Stripe fans an event out to every enabled endpoint and does not
+  route by product, so another product's subscription events arrive here, and
+  two products on one identity provider produce colliding tenant ids. Two
+  layers: `metadata.product` is decisive, and an untagged event whose price sits
+  outside our catalogue is rejected without the other product's cooperation. A
+  missing tag is accepted, because every existing subscription predates the tag
+  and failing closed would stop renewals for customers who already pay.
+- `STRIPE_AUTOMATIC_TAX`, off by default. Enabling Stripe Tax while every live
+  price carries `tax_behavior: unspecified` and the account default is unset
+  would reject every checkout on the account, so this is a switch rather than a
+  constant.
+
+### Note
+
+- `invoice.payment_failed` is deliberately not handled. Stripe owns dunning: its
+  Smart Retries choose better retry times than we can, and its own mail carries a
+  hosted card-update link, so our copy could only restate that worse and arrive
+  as a second email about one event.
+
 ## [0.5.6] — 2026-08-22
 
 ### Added
