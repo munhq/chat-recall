@@ -191,9 +191,53 @@ describe('planPull — skills', () => {
     expect(skills[0].redacted).toBe(true);
   });
 
-  test('agents and commands are still named as not-yet-installable, with a real reason', () => {
+  test('an agent row with no body is reported, not rebuilt from its preview', () => {
+    // Agents DO cross devices now, through the codec — but only when the row
+    // carries a full body. One without is named, never approximated.
     const rows = [{ id: 'a', title: 'auditor', source_type: 'agent', extra_json: '{}' }];
+    const { codecs, unsupported } = planPull(rows);
+    expect(codecs).toHaveLength(0);
+    expect(unsupported.find(u => u.type === 'agent')?.reason).toMatch(/no full body/);
+  });
+});
+
+describe('planPull — agents and commands through the codec', () => {
+  const agent = (name: string, tool: string, body: string, format = 'md', extra: Record<string, unknown> = {}) =>
+    ({ id: `${tool}_agent_${name}`, title: name, source_type: 'agent',
+       extra_json: JSON.stringify({ agentName: name, tool, format, body, ...extra }) });
+
+  test('an agent with a full body is planned for every tool', () => {
+    const { codecs } = planPull([agent('auditor', 'claude', '---\nname: auditor\n---\nDo the audit.')]);
+    expect(codecs).toHaveLength(1);
+    expect(codecs[0].type).toBe('agent');
+    expect(codecs[0].format).toBe('md');
+    expect(codecs[0].tools.length).toBeGreaterThan(1);
+  });
+
+  test('the source ENCODING is carried, because each target needs a different one', () => {
+    // A TOML body written into a tool that reads markdown is a file the tool
+    // silently ignores — the whole reason this goes through the codec.
+    const { codecs } = planPull([agent('a', 'codex', 'name = "a"\ninstructions = "x"', 'toml')]);
+    expect(codecs[0].format).toBe('toml');
+  });
+
+  test('a row with no body, or a truncated one, is refused rather than approximated', () => {
+    const noBody = { id: 'x', title: 'a', source_type: 'agent', extra_json: JSON.stringify({ agentName: 'a', tool: 'claude' }) };
+    expect(planPull([noBody]).codecs).toHaveLength(0);
+    expect(planPull([agent('a', 'claude', 'partial', 'md', { bodyTruncated: true })]).codecs).toHaveLength(0);
+  });
+
+  test('a name in two tools resolves by precedence, deterministically', () => {
+    const rows = [agent('dup', 'cursor', 'from cursor'), agent('dup', 'claude', 'from claude')];
+    expect(planPull(rows).codecs[0].body).toBe('from claude');
+    expect(planPull([...rows].reverse()).codecs[0].body).toBe('from claude');
+  });
+
+  test('instructions remain excluded — and for a reason that is not a limitation', () => {
+    // A CLAUDE.md belongs to a REPOSITORY. Installing one per machine would put
+    // a project's rules where they do not apply.
+    const rows = [{ id: 'i', title: 'CLAUDE.md', source_type: 'instructions', extra_json: '{}' }];
     const { unsupported } = planPull(rows);
-    expect(unsupported.find(u => u.type === 'agent')?.reason).toMatch(/format/);
+    expect(unsupported.find(u => u.type === 'instructions')?.reason).toMatch(/repo, not to a machine/);
   });
 });
