@@ -106,3 +106,7 @@ CODE_TASKS.md
 #   git config core.hooksPath .githooks
 .githooks/
 packages/engine/src/core/no-private-names.test.ts
+
+# Playwright MCP writes evaluate() exports into the repo root.
+.playwright-mcp/
+icon-datauris.json
