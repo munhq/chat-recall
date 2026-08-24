@@ -9,7 +9,7 @@
 
 import { describe, expect, test } from 'vitest';
 
-import { entryFromSpec, planPull, type RemoteArtifactRow } from './toolkit-pull.js';
+import { entryFromSpec, planPull, portableCommand, type RemoteArtifactRow } from './toolkit-pull.js';
 
 const row = (type: string, name: string, extra: Record<string, unknown>): RemoteArtifactRow => ({
   id: `${name}-${type}`,
@@ -105,5 +105,34 @@ describe('planPull', () => {
     const rows = [row('mcp', 'acme', { mcpName: 'acme', spec: { command: 'acme-mcp' } })];
     expect(planPull(rows, { types: ['skill'] }).mcps).toHaveLength(0);
     expect(planPull(rows, { types: ['mcp'] }).mcps).toHaveLength(1);
+  });
+});
+
+describe('portableCommand', () => {
+  test('a bare name that exists on PATH is kept as-is', () => {
+    // `node` is running these tests, so it is on PATH by definition.
+    const r = portableCommand('node');
+    expect(r).toEqual({ command: 'node', rewritten: false });
+  });
+
+  test('an absolute path that exists here is kept', () => {
+    const r = portableCommand(process.execPath);   // the running node binary
+    expect(r).toEqual({ command: process.execPath, rewritten: false });
+  });
+
+  test("THE CROSS-DEVICE TRAP: another machine's absolute path falls back to this machine's copy", () => {
+    // 40 of 183 real registrations name a path under the uploader's home. That
+    // path does not exist on the second machine — and its home is not even the
+    // same shape. Registering it verbatim yields a server that cannot spawn.
+    const r = portableCommand('/opt/somewhere-else/bin/node');
+    expect(r).toEqual({ command: 'node', rewritten: true });
+  });
+
+  test('a command this machine does not have at all is refused, and named', () => {
+    // A named refusal tells the user what to install; a silent write gives them
+    // a broken MCP in five tools.
+    const r = portableCommand('/opt/nowhere/bin/definitely-not-installed-xyz');
+    expect(r).toEqual({ missing: '/opt/nowhere/bin/definitely-not-installed-xyz' });
+    expect(portableCommand('definitely-not-installed-xyz')).toEqual({ missing: 'definitely-not-installed-xyz' });
   });
 });
