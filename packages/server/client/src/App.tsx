@@ -1229,7 +1229,15 @@ function AppInner() {
               />
             )
           )}
-          {view === 'health' && <SystemHealth />}
+          {view === 'health' && (
+            /* Needs the same scroll container every sibling view has. Rendered
+               bare, it was a flex child of a clipped column, so anything past
+               the fold had nowhere to go — invisible on a desktop tall enough
+               to fit both sections, and unreachable on a phone. */
+            <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+              <SystemHealth />
+            </div>
+          )}
           {view === 'security' && (
             <SecurityExplorer
               onSessionClick={(sid) => handleMemorySessionClick(sid, { initialTab: 'security' })}
