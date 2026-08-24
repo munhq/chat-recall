@@ -69,6 +69,33 @@ function commandPreview(cfg: McpConfig): string {
   return '';
 }
 
+/**
+ * A faithful, SECRET-FREE description of one MCP registration, for rebuilding
+ * it on a different machine.
+ *
+ * `env` VALUES ARE NEVER INCLUDED — only the variable names. An MCP's env is
+ * where API keys live, and this payload is uploaded to the server, so shipping
+ * the values would publish every key the user has configured. The names are
+ * what the other machine needs anyway: it writes the same variable names and
+ * tells the user which ones to set locally.
+ */
+function reconstructionSpec(cfg: McpConfig): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    type: cfg.type || (cfg.url ? 'remote' : 'local'),
+    enabled: cfg.enabled !== false,
+  };
+  if (typeof cfg.url === 'string' && cfg.url) out.url = cfg.url;
+  // Kept structured: a flattened string cannot be split back into command +
+  // args without guessing at quoting.
+  if (Array.isArray(cfg.command)) out.command = cfg.command as unknown as string[];
+  else if (typeof cfg.command === 'string') out.command = cfg.command;
+  if (Array.isArray(cfg.args)) out.args = cfg.args as string[];
+  // The FULL allow-list, not the truncated display copy.
+  if (Array.isArray(cfg.alwaysAllow)) out.alwaysAllow = cfg.alwaysAllow as string[];
+  if (cfg.env && typeof cfg.env === 'object') out.envKeys = Object.keys(cfg.env).sort();
+  return out;
+}
+
 export class McpsSource implements MemorySource {
   readonly sourceType = 'mcp' as SourceType;
 
@@ -159,6 +186,7 @@ export class McpsSource implements MemorySource {
       const cfg = (cfgRaw || {}) as McpConfig;
       const cmd = commandPreview(cfg);
       const allow = Array.isArray(cfg.alwaysAllow) ? (cfg.alwaysAllow as string[]).slice(0, 8) : [];
+      const spec = reconstructionSpec(cfg);
 
       yield {
         id: `${ctx.tool}_mcp_${name}`,
@@ -176,6 +204,12 @@ export class McpsSource implements MemorySource {
           alwaysAllow: allow,
           type: cfg.type || (cfg.url ? 'remote' : 'local'),
           enabled: cfg.enabled !== false,
+          // Enough to REBUILD this registration on another machine. The three
+          // display fields above cannot do it: `command` flattens a remote
+          // MCP's url into a shell string, and `alwaysAllow` is truncated to
+          // 8 for the preview — rebuilding from either produces a broken or
+          // half-permissioned server, silently.
+          spec,
         },
       };
     }
