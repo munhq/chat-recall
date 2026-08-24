@@ -26,7 +26,7 @@ startCommand:
         title: Tool profile
         description: >-
           "lean" registers the 25 tools people reach for most; "full" registers
-          all 53 tools, plus recall_help — a directory of the rest. Lean is the default because tool choice degrades as the list
+          all 55 tools, plus recall_help — a directory of the rest. Lean is the default because tool choice degrades as the list
           grows. Every tool still works when called by name under either.
         enum: [lean, full]
         default: lean
