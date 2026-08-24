@@ -250,7 +250,7 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
               press a button that is not on the page is worse than silence. */}
           {!coverageGated && (
             <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 8 }}>
-              Which tool has which skill / MCP / command / agent. A gap = not synced there. Click a cell to queue a copy, or ⚡ Sync everything.
+              Which tool has which skill / MCP / command / agent, per device. A gap = not synced there. Click a cell to queue a copy, ⚡ Sync everything to fan a machine's own artifacts across its tools, or ⬇ Install to put what your account has onto a machine that does not have it yet.
             </div>
           )}
           <SyncMatrix inline onClose={() => {}} onMutated={refreshAfterMutation}
@@ -1129,6 +1129,60 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
     }
   }, [onMutated, reload]);
 
+  /** Which machine an "install from account" targets. '' = every device. */
+  const [pullDevice, setPullDevice] = useState<string>('');
+
+  /**
+   * Install what the ACCOUNT holds onto a device, sourced from the server.
+   *
+   * Different operation from ⚡ Sync everything, which fans a machine's own
+   * artifacts across that machine's tools by reading its disk — so it can
+   * never set up a machine that has nothing yet. This queues a `pull`, and the
+   * target device installs from the server on its next drain.
+   *
+   * `everything: true` ignores the type tab and installs every type.
+   */
+  const installFromAccount = useCallback(async (everything: boolean) => {
+    setOneClickMsg(null);
+    const what = everything ? 'every artifact type' : activeType;
+    const where = pullDevice || 'every device on this account';
+    if (!confirm(`Install ${what} on ${where}?\n\nThe target machine installs from your account on its next sync. Existing entries are never overwritten.`)) return;
+    setApplying(true);
+    try {
+      const enq = await enqueueSyncIntent({
+        kind: 'pull',
+        types: everything ? undefined : [activeType as SyncType],
+        deviceId: pullDevice || null,
+      });
+      if (!enq.ok || !enq.id) { setApplying(false); setOneClickMsg(enq.error || 'Failed to queue.'); return; }
+      setOneClickMsg('Queued — the target machine will install it on its next sync…');
+      const done = await pollIntent(enq.id);
+      setApplying(false);
+      if (!done) {
+        setOneClickMsg('Queued. It applies when that machine next syncs (is `chat-recall watch` running there?).');
+        return;
+      }
+      // Report the SKIPS too. Skills and agents cannot be installed remotely —
+      // the server holds an inventory, not their file content — and a summary
+      // that hides that reads as a success that did nothing.
+      try {
+        const r = JSON.parse(done.result || '{}');
+        const bits = [`${r.installed ?? 0} installed`, `${r.present ?? 0} already there`];
+        if (r.skipped?.length) bits.push(`${r.skipped.length} skipped`);
+        if (r.failed?.length) bits.push(`${r.failed.length} failed`);
+        let msg = bits.join(' · ');
+        if (r.needsEnv?.length) msg += ` — set these on that machine: ${r.needsEnv.join(', ')}`;
+        if (r.unsupported?.length) msg += ` — not installable remotely: ${r.unsupported.map((u: { type: string }) => u.type).join(', ')}`;
+        setOneClickMsg(msg);
+      } catch { setOneClickMsg(done.status === 'error' ? 'Reported errors — see agent logs.' : 'Done.'); }
+      onMutated();
+      await reload();
+    } catch (e) {
+      setApplying(false);
+      setOneClickMsg(e instanceof Error ? e.message : 'Install failed');
+    }
+  }, [activeType, pullDevice, onMutated, reload]);
+
   const apply = useCallback(async () => {
     if (!matrix || pending.size === 0) return;
     const ops = [...pending.entries()].map(([k, action]) => {
@@ -1290,6 +1344,37 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
             Click a cell to queue a change. Filled = present; ring = pending add; X = pending remove.
           </span>
           <div style={{ flex: 1 }} />
+          <select
+            data-testid="toolkit-pull-device"
+            value={pullDevice}
+            onChange={(e) => setPullDevice(e.target.value)}
+            disabled={applying}
+            title="Which machine to install on"
+            style={{ fontSize: 12, padding: '4px 6px', borderRadius: 6, border: '1px solid var(--cr-border)', background: 'var(--cr-bg)', color: 'var(--cr-fg)' }}
+          >
+            <option value="">All devices</option>
+            {devices.map((d) => <option key={d} value={d}>{d}</option>)}
+          </select>
+          <Button
+            data-testid="toolkit-pull-type"
+            variant="outline"
+            size="sm"
+            disabled={applying}
+            onClick={() => installFromAccount(false)}
+            title={`Install every ${activeType} on your account onto the selected machine, from the server`}
+          >
+            {applying ? 'Queuing…' : `⬇ Install ${activeType}s`}
+          </Button>
+          <Button
+            data-testid="toolkit-pull-all"
+            variant="outline"
+            size="sm"
+            disabled={applying}
+            onClick={() => installFromAccount(true)}
+            title="Install every artifact type on your account onto the selected machine, from the server"
+          >
+            ⬇ Install everything
+          </Button>
           <Button
             data-testid="toolkit-sync-everything"
             variant="outline"
