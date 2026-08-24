@@ -60,6 +60,11 @@ RUN npm ci
 COPY packages/engine/ ./packages/engine/
 COPY packages/server/ ./packages/server/
 COPY packages/cli/ ./packages/cli/
+# The CLI's `prepack` copies this into packages/cli, because npm reads a readme
+# only from the package directory it publishes. `npm pack` below therefore FAILS
+# without it — and the tarball this server hands out should carry the same readme
+# the registry does, so the fix is to ship the file, not to soften the copy.
+COPY README.md ./
 # Build server + engine, then build AND `npm pack` the CLI: the tarball is
 # served by this same server at /install/chat-recall.tgz (routes/install.ts),
 # so every deployment hands out a CLI that exactly matches its own version —
