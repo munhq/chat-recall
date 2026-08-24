@@ -153,6 +153,47 @@ export function verifyEmailMail(to: string, url: string): Mail {
   return { to, subject: 'Confirm your email to start your chat-recall trial', text };
 }
 
+/**
+ * Trial-ending notice.
+ *
+ * The pricing page says, twice, "We email you before the trial ends." Nothing
+ * sent it: the live webhook was not subscribed to
+ * customer.subscription.trial_will_end, nothing handled it, and no reminder
+ * existed here. A trial lapsed in silence and the customer found out when sync
+ * stopped, which is the worst possible moment to learn it.
+ *
+ * Stripe fires trial_will_end three days out. The mail leads with what actually
+ * happens, because the honest answer is reassuring: nothing is deleted, and
+ * everything already synced stays searchable.
+ */
+export function trialEndingMail(to: string, endsAt: Date, upgradeUrl: string): Mail {
+  const when = endsAt.toISOString().slice(0, 10);
+  const text = [
+    `Your chat-recall trial ends on ${when}.`,
+    '',
+    'If you do nothing:',
+    '',
+    '  - new sessions stop syncing',
+    '  - everything already synced stays fully searchable',
+    '  - export keeps working',
+    '  - nothing is deleted',
+    '',
+    'Because your transcripts live on your own disk, one `chat-recall sync --full`',
+    'brings the server current again the day you subscribe. You lose no history by',
+    'waiting.',
+    '',
+    'Keep syncing:',
+    '',
+    `  ${upgradeUrl}`,
+    '',
+    'Or run the server yourself instead — free forever for one person, every',
+    'feature, no licence key: https://chatrecall.dev/self-hosting/',
+    '',
+    'Questions: contact@chatrecall.dev',
+  ].join('\n');
+  return { to, subject: `Your chat-recall trial ends on ${when}`, text };
+}
+
 /** The self-host licence email. The serial is the deliverable, so it leads. */
 export function licenceSerialMail(to: string, serial: string, interval: 'month' | 'year'): Mail {
   const text = [
