@@ -9,12 +9,12 @@ what to do when it does not work.
 ## What you get
 
 Two containers: the chat-recall **server** (REST API + web dashboard) and
-**Postgres** with pgvector. The CLI on each of your machines indexes the
+**Postgres**. The CLI on each of your machines indexes the
 transcripts your AI tools already wrote to disk, redacts secrets locally, and
 pushes them to your server.
 
-Full-text search works out of the box. Semantic (vector) search is optional and
-needs an embedder — see [Optional: semantic search](#optional-semantic-search).
+Search is Postgres full-text search. It needs no embedder, no API key and no
+extra service.
 
 ## Requirements
 
@@ -140,28 +140,6 @@ curl -s localhost:8080/api/capabilities | grep -o '"license":{[^}]*}'
 `"team":true` means it is active. A key carries an optional seat count; without
 one it is a site licence with no member limit.
 
-## Optional: semantic search
-
-Full-text search needs nothing. For vector search, point the server at any
-OpenAI-compatible embeddings endpoint — a local Ollama is the usual choice:
-
-```bash
-ollama pull nomic-embed-text
-```
-
-```yaml
-# docker-compose.override.yml
-services:
-  server:
-    environment:
-      EMBEDDING_PROVIDER: ollama
-      OLLAMA_HOST: http://host.docker.internal:11434
-```
-
-Then `chat-recall index --force` to backfill vectors for existing sessions.
-Without an embedder every search silently falls back to full-text, which is
-good enough that many people never add one.
-
 ## Bring your own Postgres
 
 The bundled `db` service exists so `docker compose up` is self-contained. To use
@@ -174,7 +152,6 @@ services:
       DATABASE_URL: postgres://user:pass@host:5432/chat_recall
 ```
 
-The `pgvector` extension is needed only for semantic search.
 
 ## Upgrading
 
