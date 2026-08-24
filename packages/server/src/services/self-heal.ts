@@ -180,9 +180,10 @@ export interface SweepResult { scanned: number; healed: number; damaged: number;
  *  fuller than its view; then enqueue client-recheck intents for sessions the
  *  server CANNOT heal (an envelope but no raw archive — the client may hold the
  *  fuller copy in its shadow). Returns per-tenant counts. */
-export async function selfHealTenant(store: Store, opts: { sinceMs?: number; dryRun?: boolean } = {}): Promise<{ scanned: number; healed: number; damaged: number; recheckEnqueued: number; damagedIds: string[] }> {
+export async function selfHealTenant(store: Store, opts: { sinceMs?: number; dryRun?: boolean; limit?: number } = {}): Promise<{ scanned: number; healed: number; damaged: number; recheckEnqueued: number; damagedIds: string[]; eligible: number; truncated: boolean }> {
   const sinceMs = opts.sinceMs ?? 0;
   let scanned = 0, healed = 0, damaged = 0, recheckEnqueued = 0;
+  let eligible = 0, truncated = false;
   const damagedIds: string[] = [];
 
   // The diff heal lives in the metadata cache (compute_cache), not the store.
@@ -192,7 +193,17 @@ export async function selfHealTenant(store: Store, opts: { sinceMs?: number; dry
     //    pass must cover EVERY session, or old-but-damaged ones get left behind.
     let rows = await store.listRawSessionVersions(); // [{ session_id, mtime, size }]
     if (sinceMs > 0) rows = rows.filter((r) => (r.mtime || 0) >= sinceMs);
-    rows.sort((a, b) => (b.mtime || 0) - (a.mtime || 0)); // freshest first (only matters if ever capped upstream)
+    rows.sort((a, b) => (b.mtime || 0) - (a.mtime || 0)); // freshest first — this is what makes a cap safe
+    // `limit` exists for CALLERS THAT HAVE A DEADLINE, i.e. the HTTP route. A
+    // full pass costs ~150ms per session, so a tenant with 15k sessions needs
+    // ~40 minutes and no gateway will hold that connection: the route returned
+    // 524 every time it was called with its own documented default. The
+    // background sweep passes no limit and still covers every session.
+    // Freshest-first ordering means a capped pass covers the sessions most
+    // likely to be damaged, and `truncated` tells the caller what it missed —
+    // a silent cap would read as "your whole history is healthy".
+    eligible = rows.length;
+    if (opts.limit && rows.length > opts.limit) { rows = rows.slice(0, opts.limit); truncated = true; }
     for (const r of rows) {
       scanned++;
       const res = await healSessionFromArchive(store, r.session_id, { dryRun: opts.dryRun, metaCache });
@@ -227,7 +238,7 @@ export async function selfHealTenant(store: Store, opts: { sinceMs?: number; dry
     }
   }
 
-  return { scanned, healed, damaged, recheckEnqueued, damagedIds };
+  return { scanned, healed, damaged, recheckEnqueued, damagedIds, eligible, truncated };
 }
 
 /**
