@@ -2157,11 +2157,20 @@ function rowToCodeAction(r: any): CodeActionRow {
 
 /** Input to enqueue a cross-tool sync intent. */
 export interface SyncIntentInput {
-  kind: 'copy' | 'sync_all' | 'code_apply' | 'recheck_session';
+  /**
+   * `copy` / `sync_all` move artifacts BETWEEN TOOLS on one machine, reading
+   * that machine's disk. `pull` is the cross-device one: install what the
+   * ACCOUNT has onto the device that drains it, sourced from the server. The
+   * distinction is the whole reason a second machine used to get nothing —
+   * a `copy` tells a device to copy from a disk that does not have the file.
+   */
+  kind: 'copy' | 'sync_all' | 'pull' | 'code_apply' | 'recheck_session';
   /** Target device (null/undefined = any device in the tenant). */
   deviceId?: string | null;
-  artifactType?: string | null;  // skill|mcp|command|agent (copy only)
-  name?: string | null;          // artifact name (copy only)
+  /** copy: skill|mcp|command|agent. pull: comma-separated types to install. */
+  artifactType?: string | null;
+  /** copy: the artifact name. pull: one artifact name, or null for all. */
+  name?: string | null;
   fromTool?: string | null;
   toTool?: string | null;
   createdBy?: string | null;
