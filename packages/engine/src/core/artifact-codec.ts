@@ -64,28 +64,43 @@ export function encodingFor(type: CodecType, tool: ToolId): Encoding {
 
 // ── Readers ────────────────────────────────────────────────────────
 
-export function readCommand(filePath: string, format: Encoding): NormalizedArtifact {
-  const content = readFileSync(filePath, 'utf-8');
+/**
+ * The parse, separated from the read.
+ *
+ * The readers below took a PATH, which is fine for a copy between two tools on
+ * one machine. A cross-device install has the file's TEXT and no path — the
+ * body arrived over the wire — so it needs the same parse without touching
+ * disk. Splitting it is what lets an agent or command cross machines: the text
+ * normalises here, and `emit` writes whatever encoding the target tool wants.
+ */
+export function parseCommandText(content: string, format: Encoding, fallbackName: string): NormalizedArtifact {
   if (format === 'toml') {
     const t = parseScalarToml(content);
-    return { name: t.name || base(filePath), description: t.description || '', body: t.prompt || '' };
+    return { name: t.name || fallbackName, description: t.description || '', body: t.prompt || '' };
   }
   const { fm, body } = parseFrontmatter(content);
-  return { name: fm.name || base(filePath), description: fm.description || '', body: body.trim() };
+  return { name: fm.name || fallbackName, description: fm.description || '', body: body.trim() };
 }
 
-export function readAgent(filePath: string, format: Encoding): NormalizedArtifact {
-  const content = readFileSync(filePath, 'utf-8');
+export function parseAgentText(content: string, format: Encoding, fallbackName: string): NormalizedArtifact {
   if (format === 'toml') {
     const t = parseScalarToml(content);
     return {
-      name: t.name || base(filePath),
+      name: t.name || fallbackName,
       description: t.description || '',
       body: t.developer_instructions || t.instructions || '',
     };
   }
   const { fm, body } = parseFrontmatter(content);
-  return { name: fm.name || base(filePath), description: fm.description || '', tools: fm.tools, body: body.trim() };
+  return { name: fm.name || fallbackName, description: fm.description || '', tools: fm.tools, body: body.trim() };
+}
+
+export function readCommand(filePath: string, format: Encoding): NormalizedArtifact {
+  return parseCommandText(readFileSync(filePath, 'utf-8'), format, base(filePath));
+}
+
+export function readAgent(filePath: string, format: Encoding): NormalizedArtifact {
+  return parseAgentText(readFileSync(filePath, 'utf-8'), format, base(filePath));
 }
 
 export function readInstructions(filePath: string, name: string): NormalizedArtifact {
