@@ -22,6 +22,7 @@
 
 import { existsSync, readFileSync } from 'fs';
 
+import { resumeCommandFor } from './resume-command.js';
 import { createStore } from './store/index.js';
 import { createKnowledgeGraph, type KnowledgeGraphDriver } from './store/knowledge-graph.js';
 import { resolveProjectId } from './project-resolver.js';
@@ -217,7 +218,11 @@ function activitySection(sessions: MemoryMetadataRow[], limit: number): string {
     const extra = parseExtra<SessionExtra>(s.extra_json);
     const prompt = (extra.firstPrompt || s.content_preview || '').trim().slice(0, 140);
     const date = s.mtime ? new Date(s.mtime).toISOString().slice(0, 10) : '????';
-    return `- **${date}** — ${prompt || '_(no first prompt)_'}  \n  \`claude --resume ${s.id}\``;
+    // A gemini session has no resume-by-id, so it gets the entry without a
+    // command rather than a command that cannot work.
+    const resume = resumeCommandFor(s.id);
+    const head = `- **${date}** — ${prompt || '_(no first prompt)_'}`;
+    return resume ? `${head}  \n  \`${resume}\`` : head;
   });
   return `## Recent Activity (${recent.length} of ${sessions.length} sessions)\n\n${lines.join('\n')}`;
 }

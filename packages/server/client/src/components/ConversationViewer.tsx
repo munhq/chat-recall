@@ -34,6 +34,9 @@ import {
 import { stripInjectedBanners, summaryTitle } from '../utils/clean';
 import SessionTrace from './SessionTrace';
 import { MemoryDetail } from './MemoryExplorer';
+// ONE implementation of the resume command, shared with the CLI and the MCP
+// server. This file used to carry its own copy, and the two could drift.
+import { resumeCommandFor } from '@chat-recall/engine/core/resume-command.js';
 
 type ViewMode = 'summary' | 'insights' | 'metrics' | 'firstPrompt' | 'full' | 'trace' | 'related' | 'diff' | 'commits' | 'outcome' | 'security' | 'plans';
 type MessageFilter = 'all' | 'user' | 'assistant' | 'thinking' | 'tools' | 'edits';
@@ -138,33 +141,6 @@ function makeTermHighlighter(query: string | undefined) {
     };
     visit(tree);
   };
-}
-
-/**
- * The terminal command that resumes a session in its origin tool, or null when
- * the tool has no resume-by-id (chat-recall is read-only; you resume in your own
- * terminal). Single source of truth for the Resume affordance — keep in sync with
- * the tool backends (packages/engine/src/core/backends). ids are prefixed
- * `<tool>_<inner>` except claude (no prefix); strip the prefix for the CLI.
- *   claude   → claude --resume <id>
- *   codex    → codex resume <id>            (codex_)
- *   opencode → opencode -s <id>             (opencode_;  -s/--session "id to continue")
- *   agy      → agy --conversation <id>      (agy_;  Antigravity "resume conversation by ID")
- *   cursor   → cursor-agent --resume <id>   (cursor_; the CLI surface only —
- *              an IDE composer id is not resumable from a terminal)
- *   gemini   → (none) — `gemini --resume` takes an index/"latest", not a UUID.
- */
-export function resumeCommandFor(tool: string | undefined, sessionId: string): string | null {
-  if (!sessionId) return null;
-  const raw = (p: string) => (sessionId.startsWith(p) ? sessionId.slice(p.length) : sessionId);
-  switch (tool) {
-    case 'claude': return `claude --resume ${sessionId}`;
-    case 'codex': return `codex resume ${raw('codex_')}`;
-    case 'opencode': return `opencode -s ${raw('opencode_')}`;
-    case 'agy': return `agy --conversation ${raw('agy_')}`;
-    case 'cursor': return `cursor-agent --resume ${raw('cursor_')}`;
-    default: return null;
-  }
 }
 
 export default function ConversationViewer({
@@ -558,7 +534,7 @@ export default function ConversationViewer({
   };
 
   const handleResume = () => {
-    const command = resumeCommandFor(tool, sessionId);
+    const command = resumeCommandFor(sessionId, tool);
     if (!command) return;
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -681,7 +657,7 @@ export default function ConversationViewer({
             Back
           </Button>
           <div style={{ flex: 1 }} />
-          {resumeCommandFor(tool, sessionId) && (
+          {resumeCommandFor(sessionId, tool) && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               {copied && <span style={{ fontSize: 12, color: 'var(--cr-ok-500)', fontWeight: 600 }}>Copied!</span>}
               <Button 
