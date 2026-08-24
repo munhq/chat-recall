@@ -1767,8 +1767,13 @@ export interface SyncIntentRow {
 }
 
 export type SyncIntentBody =
-  | { kind: 'sync_all' }
-  | { kind: 'copy'; artifactType: SyncType; name: string; fromTool: SyncTool; toTool: SyncTool; deviceId?: string | null };
+  | { kind: 'sync_all'; deviceId?: string | null }
+  | { kind: 'copy'; artifactType: SyncType; name: string; fromTool: SyncTool; toTool: SyncTool; deviceId?: string | null }
+  // Cross-device. `copy`/`sync_all` move artifacts between the tools on ONE
+  // machine, reading that machine's disk — which is why they can never set up
+  // a second machine. `pull` installs what the ACCOUNT has onto the target
+  // device, sourced from the server. deviceId null = every device.
+  | { kind: 'pull'; types?: SyncType[]; name?: string | null; deviceId?: string | null };
 
 /** Queue a cross-tool sync intent. The user's local CLI agent drains + executes it. */
 export async function enqueueSyncIntent(body: SyncIntentBody): Promise<{ ok: boolean; id?: string; error?: string }> {
