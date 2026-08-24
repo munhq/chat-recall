@@ -25,18 +25,15 @@ session: a different tool, a different transcript format, one index.
 
 ![recall_smart_resume called from OpenCode with a Claude Code session id, returning that session's request, plan and completed work](docs/media/7-cross-claude.png)
 
-**Your assistant asks what you were doing, and picks the work back up.**
-
-![recall_smart_resume returning the pending work, touched files and token budget of a past session](docs/media/1-resume.png)
-
-**Every file a session touched, and by how much.**
-
-![recall_diff listing 28 files with per-file additions and deletions for one session](docs/media/4-diff.png)
-
 **Or just ask in plain English** — no tool names, no session ids. The agent picks
 the call itself:
 
 ![Claude Code answering a question about a past session by calling chat-recall itself](docs/media/A-claude-code.gif)
+
+**It also finds the credentials you pasted, and checks which ones still work.**
+A dead key is hygiene. A live one is an incident, and only live ones raise an alert.
+
+![The security view: leaked secrets grouped by rule, each with a masked preview, a live-or-dead verdict and the sessions it appeared in](docs/media/security-scans.png)
 
 ## Install
 
@@ -81,7 +78,7 @@ No API keys are required. Search is Postgres full-text search. AI summaries are 
 
 ## Add your own AI tool
 
-A new backend is one file and one line — no changes to the engine. See [`docs/ADDING_A_TOOL.md`](docs/ADDING_A_TOOL.md). If a tool you use writes transcripts to disk, it can be indexed here, and a pull request is the fastest way to make that happen.
+A new backend is one file and one line — no changes to the engine. If a tool you use writes transcripts to disk, it can be indexed here, and a pull request is the fastest way to make that happen.
 
 ### Optional: web dashboard
 
@@ -286,7 +283,7 @@ e2e/                     Playwright tests for the dashboard
 Two extension points, both registry-driven:
 
 - **Adding a new content type** (e.g. another file format to index) — implement `MemorySource` (`discover` → `parse` → `extractLinks`) and register it in the `SourceRegistry`.
-- **Adding a new AI tool** (a seventh backend alongside Claude/Gemini/OpenCode/Codex/Antigravity/Cursor) — implement `ToolBackend` (paths, ID handling, `readEvents`, `fileToolMap`, `extractEditDelta`) and register it in `packages/engine/src/core/backends/index.ts`. Walkthrough: [`docs/ADDING_A_TOOL.md`](docs/ADDING_A_TOOL.md). All paths are env-overridable via `CHAT_RECALL_{CLAUDE,GEMINI,CODEX,AGY,CURSOR,CURSOR_IDE}_HOME` / `CHAT_RECALL_OPENCODE_DB`.
+- **Adding a new AI tool** (a seventh backend alongside Claude/Gemini/OpenCode/Codex/Antigravity/Cursor) — implement `ToolBackend` (paths, ID handling, `readEvents`, `fileToolMap`, `extractEditDelta`) and register it in `packages/engine/src/core/backends/index.ts`. All paths are env-overridable via `CHAT_RECALL_{CLAUDE,GEMINI,CODEX,AGY,CURSOR,CURSOR_IDE}_HOME` / `CHAT_RECALL_OPENCODE_DB`.
 
 ## Requirements
 
