@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import UserMenu from './UserMenu';
 import { IconButton, Input, Logo, Button, Avatar } from './primitives';
 import { getSyncStatus, type SyncStatus } from '../services/api';
+import { syncLabel, syncTone, ago } from '../services/sync-label';
 import { getEntitlement } from '../services/api';
 
 type NavView = 'home' | 'projects' | 'search' | 'memory' | 'toolkit' | 'security' | 'settings' | 'account' | 'connect' | 'admin';
@@ -208,47 +209,16 @@ export function SyncStatusChip({ refreshSignal }: { refreshSignal?: number }) {
   // Freshness is the one signal worth showing at a glance; raw counts are
   // detail, so they live in the tooltip. A single ok/warn dot + one word keeps
   // the brand zone clean instead of a monospace telemetry chip.
-  const fresh = s.newestSessionAgeMs != null && s.newestSessionAgeMs < 120_000;
-  // A WALK IN FLIGHT OUTRANKS THE AGE. During a first sync the age is large and
-  // says nothing useful — "42m behind" reads as broken when the truth is "still
-  // loading, 62% done". Progress is only present while a walk is actually
-  // running and its report is fresh (the server drops stale ones), so this
-  // replaces the age exactly when the age would mislead.
+  // Both decisions live in services/sync-label.ts, where they can be tested.
+  // They were a JSX ternary here, which is why "syncing 99%" and "1h behind on
+  // a healthy install" both shipped.
   const syncing = s.progress && s.progress.total > 0 ? s.progress : null;
-  // No 99 clamp. floor(100 * done / total) only reaches 100 when done === total,
-  // and that case is no longer "syncing" at all — the server drops progress once
-  // done >= total. The clamp could therefore never fire for a real in-flight
-  // walk; all it ever did was turn this bug into a permanent "99%".
-  const pct = syncing ? Math.floor((100 * syncing.done) / syncing.total) : 0;
-  // WHEN A SYNC LAST RAN, not how old the newest transcript is.
-  //
-  // The old label read the session age, so an install that had synced ninety
-  // seconds ago said "1h behind" whenever the user had not opened an AI tool for
-  // an hour. Nothing was behind: there was nothing to fetch. The question the
-  // badge answers is "is this thing working", and the answer to that is when it
-  // last ran.
-  const ago = (ms: number) =>
-    ms < 90_000 ? 'just now'
-    : ms < 3_600_000 ? `${Math.round(ms / 60_000)}m ago`
-    : ms < 86_400_000 ? `${Math.round(ms / 3_600_000)}h ago`
-    : `${Math.round(ms / 86_400_000)}d ago`;
-  const word = syncing ? `syncing ${pct}%`
-    : s.lastSyncAgeMs != null ? `synced ${ago(s.lastSyncAgeMs)}`
-    // No collector has ever reported. Fall back to data freshness, which is all
-    // there is to say.
-    : s.newestSessionAgeMs == null ? '—'
-    : fresh ? 'live'
-    : s.newestSessionAgeMs < 3_600_000 ? `${Math.round(s.newestSessionAgeMs / 60_000)}m behind`
-    : `${Math.round(s.newestSessionAgeMs / 3_600_000)}h behind`;
-  // Syncing is progress, not a fault, so it does not get the warning colour.
-  // Green while a sync is recent, amber only when one has genuinely not run for
-  // a while. Previously amber tracked the session age, so the dot went warning
-  // coloured on a perfectly healthy install that had simply been idle.
-  const syncedRecently = s.lastSyncAgeMs != null && s.lastSyncAgeMs < 15 * 60_000;
-  const dot = syncing ? 'var(--cr-accent-500, var(--cr-ok-500))'
-    : syncedRecently || fresh ? 'var(--cr-ok-500)'
-    : s.lastSyncAgeMs == null && s.newestSessionAgeMs == null ? 'var(--cr-fg-3)'
-    : 'var(--cr-warn-500)';
+  const word = syncLabel(s);
+  const tone = syncTone(s);
+  const dot = tone === 'busy' ? 'var(--cr-accent-500, var(--cr-ok-500))'
+    : tone === 'ok' ? 'var(--cr-ok-500)'
+    : tone === 'warn' ? 'var(--cr-warn-500)'
+    : 'var(--cr-fg-3)';
   return (
     <span
       className="cr-topbar-sync"
@@ -266,7 +236,7 @@ export function SyncStatusChip({ refreshSignal }: { refreshSignal?: number }) {
     >
       <span style={{
         width: 6, height: 6, borderRadius: '50%', background: dot, flexShrink: 0,
-        boxShadow: fresh ? `0 0 5px ${dot}` : 'none',
+        boxShadow: tone === 'ok' ? `0 0 5px ${dot}` : 'none',
       }} />
       {word}
     </span>

@@ -5,6 +5,7 @@
 import express from 'express';
 import { SearchService } from '../services/search.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
+import { readWalkProgress } from './walk-progress.js';
 
 const log = createLogger('status');
 
@@ -25,43 +26,14 @@ router.get('/sync', async (_req, res) => {
       // Most recent session row mtime = how fresh this store is.
       const recent = await store.querySessionIndex({ limit: 1, offset: 0, includeUntracked: true });
       const newestMtime = recent.rows[0]?.mtime ?? 0;
-      // Collector walk progress, when one is in flight. Ignored once complete,
-      // and ignored when the report has gone stale — a client that died mid-walk
-      // must not leave the UI claiming "syncing, 62%" forever.
-      const PROGRESS_STALE_MS = 10 * 60_000;
-      let progress: { done: number; total: number } | null = null;
-      // WHEN THE COLLECTOR LAST REPORTED, which is a different question from how
-      // old the newest session is. Without this the UI could only say "1h
-      // behind", meaning the newest transcript is an hour old — which is exactly
-      // what a healthy install looks like when nobody has opened an AI tool for
-      // an hour, and reads as a broken sync. Reported regardless of whether the
-      // walk finished, because a finished walk is precisely the case that needs
-      // it.
-      let lastSyncAgeMs: number | null = null;
-      try {
-        const entry = await store.kvGet('collector', 'walk_progress');
-        const raw = typeof entry === 'string' ? entry : (entry as { value?: string } | null)?.value;
-        if (raw) {
-          const p = JSON.parse(raw) as { done: number; total: number; complete: boolean; at: number };
-          if (typeof p.at === 'number' && p.at > 0) lastSyncAgeMs = Math.max(0, Date.now() - p.at);
-          // done >= total IS complete, whatever the flag says.
-          //
-          // The collector sets complete:true on the last line of the walk, after
-          // its final upload has already gone out, so the flag only ships on the
-          // NEXT post — and a walk that uploaded nothing new never makes one.
-          // The server's last-received value is therefore the final in-loop
-          // report: done === total with complete:false, refreshed often enough
-          // that PROGRESS_STALE_MS never rescues it either. The UI then showed
-          // "syncing 99%" indefinitely (99 because it clamps the percentage).
-          //
-          // Checked here rather than only in the client that sends it, because
-          // collectors already in the field will keep reporting the old way.
-          const finished = p.complete || p.done >= p.total;
-          if (!finished && p.total > 0 && Date.now() - p.at < PROGRESS_STALE_MS) {
-            progress = { done: p.done, total: p.total };
-          }
-        }
-      } catch { /* no progress reported — the UI falls back to freshness */ }
+      // Collector walk progress and last-report age. The decision lives in
+      // readWalkProgress so it can be tested without a Postgres tenant and a
+      // live collector — which is why it was wrong for months.
+      const entry = await store.kvGet('collector', 'walk_progress');
+      const rawProgress = typeof entry === 'string'
+        ? entry
+        : (entry as { value?: string } | null)?.value ?? null;
+      const { progress, lastSyncAgeMs } = readWalkProgress(rawProgress, Date.now());
 
       res.json({
         sessions,
