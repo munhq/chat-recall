@@ -52,6 +52,43 @@
  */
 const BASE_EXTRACTOR_VERSION = 2;
 
+/**
+ * Per-SOURCE-TYPE bumps, for the toolkit items — NOT sessions.
+ *
+ * The per-tool bump above is shared with session extraction, so raising it to
+ * re-ship 794 skills would also re-ship 15,000 transcripts. That is exactly the
+ * waste the per-tool split exists to avoid, one dimension further in.
+ *
+ * Toolkit items keep their own ledger (`item-versions.json`), so they can have
+ * their own dimension. Raise an entry here when a SOURCE's payload changes
+ * shape and previously-synced rows are therefore incomplete — mtime cannot see
+ * it, because the file on disk did not change; only the code that reads it did.
+ *
+ * History:
+ *   mcp +1     — `extra.spec`: the full command/args/url, the WHOLE allow-list
+ *                (the display copy is truncated to 8) and env variable NAMES.
+ *                Without it a registration cannot be rebuilt on another machine.
+ *   skill +1   — `extra.body`: the whole file. The search chunk is capped at
+ *                2000 chars, which truncated 733 of 794 real skills, and
+ *                rebuilding from it would write a corrupted skill.
+ *   agent +1   — `extra.body`, same reason; the codec converts it per tool.
+ *   command +1 — `extra.body`, same reason.
+ */
+const ITEM_SOURCE_BUMP: Record<string, number> = {
+  mcp: 1,
+  skill: 1,
+  agent: 1,
+  command: 1,
+};
+
+/**
+ * Effective version for one toolkit ITEM. Tool bump plus the source-type bump,
+ * so a payload change re-ships that source alone.
+ */
+export function extractorVersionForItem(id: string, sourceType: string): number {
+  return extractorVersionForTool(toolOfId(id)) + (ITEM_SOURCE_BUMP[sourceType] ?? 0);
+}
+
 /** Per-tool bumps ON TOP of the base. Key by AiTool id (the id prefix's tool). */
 const TOOL_EXTRACTOR_BUMP: Record<string, number> = {
   agy: 2,
