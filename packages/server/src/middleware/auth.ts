@@ -237,8 +237,19 @@ async function verifyKeycloakJwt(token: string): Promise<{ sub: string; email: s
  */
 async function verifyUser(req: Request): Promise<{ sub: string; email: string | null; roles: string[] } | null> {
   if (provider() === 'better-auth') {
-    const { getSessionUser } = await import('../auth/better-auth.js');
-    return getSessionUser(req.headers);
+    const { getSessionUser, mcpSessionUser } = await import('../auth/better-auth.js');
+    const session = await getSessionUser(req.headers);
+    if (session) return session;
+    // Then the OAuth access token, which is the credential the REMOTE MCP
+    // endpoint's tools carry on their loopback calls. It is not a session
+    // token — better-auth stores it in `oauthAccessToken`, and the core session
+    // path never looks there — so without this fallback every remote tool call
+    // answers 401 'login required' while the OAuth handshake itself succeeds.
+    //
+    // Tried second, not first: a session token is the common case by orders of
+    // magnitude (every dashboard request), and this costs an extra lookup only
+    // on the path that would otherwise fail outright.
+    return mcpSessionUser(req.headers);
   }
   const tok = bearer(req);
   return tok ? verifyKeycloakJwt(tok) : null;
