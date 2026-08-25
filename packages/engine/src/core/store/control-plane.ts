@@ -174,6 +174,11 @@ export interface ControlPlane {
     ownerSub: string,
     ownerEmail?: string | null,
     attribution?: SignupAttribution,
+    /** Derive the slug from the owner instead of randomly, so a concurrent
+     *  duplicate collides on the primary key rather than creating a second
+     *  workspace. Used by the first-request auto-provision; never by an explicit
+     *  "create a team" action, where two same-named teams must be allowed. */
+    ownerKeyed?: boolean,
   ): Promise<{ slug: string; name: string }>;
   listMemberships(userSub: string): Promise<Membership[]>;
   roleOf(userSub: string, teamSlug: string): Promise<'owner' | 'member' | null>;
@@ -361,6 +366,32 @@ function slugify(name: string): string {
   );
 }
 
+/**
+ * A slug DERIVED from the owner, for the workspace auto-provisioned on a user's
+ * first authenticated request.
+ *
+ * The random suffix above is right for a team someone deliberately creates —
+ * two teams called "backend" must be able to coexist. It is wrong for the
+ * auto-provision path, and the failure is not theoretical: a client that fires
+ * two requests at once on first login (a dashboard load, or an OAuth connector
+ * doing sign-in and a tool call together) produced TWO workspaces, both owned by
+ * the same user, at the same second. Every request after that answered
+ * `400 multiple teams — pass the x-team header`, and the client reads a
+ * tenant-resolution failure as "subscribe" — so a brand-new user was shown a
+ * paywall for a product they had not been charged for.
+ *
+ * middleware/auth.ts already handles losing this race: it catches the create
+ * error, re-reads memberships, and uses whichever one won. That recovery was
+ * simply unreachable, because two random slugs never collide. Deriving the
+ * suffix from the owner makes the second insert violate the primary key, which
+ * is what turns the comment's claim — "two concurrent first requests converge on
+ * one workspace" — from an assumption into something the database enforces.
+ */
+function ownerSlug(name: string, ownerSub: string): string {
+  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32) || 'team';
+  return `${base}-${createHash('sha256').update(ownerSub).digest('hex').slice(0, 6)}`;
+}
+
 // ──────────────────────────────────────────────────────────────────
 // SQLite
 // ──────────────────────────────────────────────────────────────────
@@ -513,8 +544,9 @@ class SqliteControlPlane implements ControlPlane {
     ownerSub: string,
     ownerEmail?: string | null,
     attribution?: SignupAttribution,
+    ownerKeyed = false,
   ): Promise<{ slug: string; name: string }> {
-    const slug = slugify(name);
+    const slug = ownerKeyed ? ownerSlug(name, ownerSub) : slugify(name);
     const now = Date.now();
     await this.ensureTenant(slug, name, attribution);
     this.db.prepare(`INSERT INTO cp_teams (slug, name, owner_sub, created_at) VALUES (?, ?, ?, ?)`)
@@ -957,8 +989,9 @@ class PgControlPlane implements ControlPlane {
     ownerSub: string,
     ownerEmail?: string | null,
     attribution?: SignupAttribution,
+    ownerKeyed = false,
   ): Promise<{ slug: string; name: string }> {
-    const slug = slugify(name);
+    const slug = ownerKeyed ? ownerSlug(name, ownerSub) : slugify(name);
     const now = Date.now();
     await this.ensureTenant(slug, name, attribution);
     await this.q(`INSERT INTO teams (slug, name, owner_sub, created_at) VALUES ($1, $2, $3, $4)`, [slug, name, ownerSub, now]);

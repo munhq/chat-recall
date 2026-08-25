@@ -505,6 +505,14 @@ async function resolveTenantForUser(
         const created = await createTeamFor(
           user.sub, user.email, base || 'workspace',
           firstTouchFromCookieHeader(req.headers.cookie ?? null),
+          // ownerKeyed: the slug comes from the owner, so a concurrent first
+          // request violates the primary key and lands in the catch below rather
+          // than creating a SECOND workspace. Without it the recovery under this
+          // try was unreachable — two random slugs never collide — and a user
+          // whose client fired two requests at once ended up with two teams,
+          // then `400 multiple teams` on everything, which the dashboard renders
+          // as a paywall.
+          true,
         );
         log.info({ tenant: created.slug, sub: user.sub }, 'provisioned workspace on first request');
         return { tenant: created.slug, userId: user.sub, authorSub: user.sub, authorDevice: null };

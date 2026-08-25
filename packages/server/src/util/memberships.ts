@@ -55,10 +55,16 @@ export async function createTeamFor(
   // not, so it is passed in rather than looked up. Optional so the self-host
   // admin path can create a tenant without inventing an attribution for it.
   attribution?: SignupAttribution,
+  /** True for the workspace provisioned on a user's FIRST authenticated request.
+   *  Derives the slug from the owner so a concurrent duplicate collides on the
+   *  primary key instead of creating a second workspace — see ownerSlug in
+   *  control-plane.ts for what that race did to new signups. Left false for an
+   *  explicit "create a team", where two same-named teams must coexist. */
+  ownerKeyed = false,
 ): Promise<{ slug: string; name: string }> {
   const cp = await createControlPlane();
   try {
-    const t = await cp.createTeam(name, userSub, email ?? undefined, attribution);
+    const t = await cp.createTeam(name, userSub, email ?? undefined, attribution, ownerKeyed);
     // install — it exists. Fired here rather than at each caller because this is
     // the one funnel through which every tenant is created, including the
     // auto-provision on a user's first authenticated request.
