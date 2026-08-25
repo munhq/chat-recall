@@ -31,9 +31,39 @@ afterEach(() => setMultiTenantMode(false));
 describe('the empty-account message', () => {
   test('remote: says the account exists and the trial is already running', async () => {
     const h = await hint(true);
-    expect(h).toMatch(/already set up/i);
-    expect(h).toMatch(/free trial/i);
-    expect(h).toMatch(/nothing more to sign up for/i);
+    expect(h).toMatch(/already exists/i);
+    expect(h).toMatch(/free trial is running/i);
+    expect(h).toMatch(/nothing to sign up for/i);
+  });
+
+  test('remote: hands a SHELL-CAPABLE agent something it can just run', async () => {
+    // Most connector clients that hit this are coding agents with a Bash tool.
+    // Told plainly, the agent closes the gap itself and the user types nothing.
+    const h = await hint(true);
+    expect(h).toMatch(/if you have a shell/i);
+    // Two numbered steps rather than one chained command: `init` blocks on a
+    // browser approval, so chaining it with && hides which half is waiting.
+    expect(h).toContain('npm install -g chat-recall');
+    expect(h).toContain('chat-recall init');
+  });
+
+  test('remote: stays short enough to survive summarising', async () => {
+    // A bound exists because the first version was a wall of prose, and a wall
+    // gets compressed into "you need to install the CLI" with the commands
+    // dropped. Numbered steps earn their length; paragraphs do not.
+    const h = await hint(true);
+    expect(h.length).toBeLessThan(1200);
+  });
+
+  test('remote: reads as an ordered procedure, not a paragraph', async () => {
+    const h = await hint(true);
+    expect(h).toMatch(/1\. npm install -g chat-recall/);
+    expect(h).toMatch(/2\. chat-recall init/);
+    // Step 2 blocks on a human approving in a browser. An agent that does not
+    // expect the wait kills the command and reports a hang.
+    expect(h).toMatch(/do not kill the command/i);
+    // And it must close the loop rather than leaving the agent guessing.
+    expect(h).toMatch(/recall_status to confirm/i);
   });
 
   test('remote: gives the npm install and init, not a command they lack', async () => {
@@ -44,16 +74,15 @@ describe('the empty-account message', () => {
     expect(h).not.toMatch(/run `chat-recall sync`/);
   });
 
-  test('remote: says init LINKS this account, not creates a second one', async () => {
+  test('remote: says it LINKS this account, not creates a second one', async () => {
     const h = await hint(true);
     expect(h).toMatch(/same account/i);
-    expect(h).toMatch(/not a second\s*\n?\s*signup|not a second signup/i);
   });
 
   test('remote: says what already works, so it does not read as an empty product', async () => {
     const h = await hint(true);
     expect(h).toMatch(/facts, decisions, tasks/i);
-    expect(h).toMatch(/do not report this as a failure/i);
+    expect(h).toMatch(/not an error/i);
   });
 
   test('local: stays short — the CLI user already has the CLI', async () => {
