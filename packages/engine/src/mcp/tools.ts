@@ -24,7 +24,6 @@ import {
 import { z } from 'zod';
 import { existsSync, readFileSync, statSync } from 'fs';
 import { join } from 'path';
-import { execSync as _execSync, spawn } from 'child_process';
 import { fileURLToPath } from 'node:url';
 
 // KEEP THIS IMPORT LIST LEAN. The MCP is a thin collector — every read goes
@@ -72,6 +71,17 @@ let indexRunner: IndexRunner | null = null;
 /** Supply the local indexer. The CLI entry point calls this at boot; the remote
  *  server deliberately does not. */
 export function setIndexRunner(fn: IndexRunner | null): void { indexRunner = fn; }
+
+/**
+ * What a local-only tool says when a REMOTE caller reaches it by name.
+ *
+ * One sentence, one place, because there are two of these and they must not
+ * drift into telling the user two different stories about the same limit.
+ */
+function localOnlyRefusal(tool: string): string {
+  return `${tool} runs on YOUR machine, not on the server — this connection has no access to your files. `
+    + 'Install the chat-recall CLI and run it there; everything it collects syncs here and stays searchable from this connection.';
+}
 
 async function runIndexChild(force: boolean): Promise<string> {
   if (!indexRunner) {
@@ -2168,6 +2178,14 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
       }
       
       case 'recall_index': {
+        // Explicit, though runIndexChild's default already answers honestly when
+        // no host supplied an indexer. Two reviewers read the unset-hook version
+        // as "the server spawns a child process" — it never could — and a
+        // security property nobody can see by reading the case arm is one that
+        // gets removed by accident later.
+        if (isMultiTenant()) {
+          return { content: [{ type: 'text', text: localOnlyRefusal('recall_index') }] };
+        }
         const params = RecallIndexSchema.parse(args);
         getWAL().log('index', { force: params.force });
         requireRemote();
@@ -3427,6 +3445,21 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
       // codeindex binary is on PATH; see the pre-switch guard) ──
       case 'recall_code_index': {
         const params = RecallCodeIndexSchema.parse(args);
+        // Refused in the DISPATCH, not only dropped from the listing. Removing a
+        // tool from tools/list stops a client OFFERING it; it does not stop one
+        // CALLING it by name from a cached list. Here that gap was a real hole:
+        // this handler resolves a caller-supplied path and runs the collector
+        // over it, so on the remote endpoint a caller could have the SERVER
+        // index the server's own filesystem and post the result into their own
+        // tenant, then read it back with recall_code_findings.
+        //
+        // It was blocked only by an accident — the companion analyzer binary is
+        // absent from the server image, so the pre-switch guard refused the
+        // whole recall_code_* family. An accident is not a control: install that
+        // binary for any reason and the hole opens with no code change.
+        if (isMultiTenant()) {
+          return { content: [{ type: 'text', text: localOnlyRefusal('recall_code_index') }] };
+        }
         requireRemote();
         const { collectCode } = await import('../core/code/collector.js');
         const { resolve: resolvePath } = await import('node:path');
@@ -4098,7 +4131,12 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         // Identity: param > file > default. The file lets users seed a stable
         // self-description that survives across sessions ("I'm Adi's coding agent…").
         let identity = params.identity ?? 'AI coding assistant';
-        if (!params.identity) {
+        // Never read the identity file when serving many callers: that file is
+        // the SERVER's, so its contents would be handed to every remote caller
+        // as their own identity. Empty in the shipped image, which makes this a
+        // latent leak rather than a live one — and a latent leak is the kind
+        // that ships.
+        if (!params.identity && !isMultiTenant()) {
           const idFile = getIdentityFilePath();
           if (existsSync(idFile)) {
             try { identity = readFileSync(idFile, 'utf-8').trim() || identity; } catch {}

@@ -321,14 +321,53 @@ export function oauthProtectedResourceHandler(): NodeHandler {
 export async function mcpSessionFor(
   reqHeaders: Record<string, string | string[] | undefined>,
 ): Promise<{ userId: string; accessToken: string } | null> {
-  const headers = new Headers();
-  for (const [k, v] of Object.entries(reqHeaders)) {
-    if (typeof v === 'string') headers.set(k, v);
-    else if (Array.isArray(v)) headers.set(k, v.join(', '));
-  }
-  const grant = await getAuth().api.getMcpSession({ headers });
+  const grant = await getAuth().api.getMcpSession({ headers: toHeaders(reqHeaders) });
   if (!grant?.userId) return null;
   return { userId: grant.userId, accessToken: grant.accessToken };
+}
+
+/**
+ * The same OAuth grant, resolved to the USER SHAPE the tenant middleware needs.
+ *
+ * This is what makes an OAuth access token a first-class credential on /api/*,
+ * and without it the remote MCP endpoint is decorative. The tools reach the
+ * server over loopback carrying the caller's access token; `resolve()` in
+ * middleware/auth.ts takes the bearer, finds it does NOT start with 'ct_' (a
+ * better-auth OAuth token is generateRandomString(32,'a-z','A-Z') — the charset
+ * has no underscore), and falls through to getSessionUser, which resolves the
+ * `session` table. An access token lives in `oauthAccessToken` and appears
+ * nowhere in better-auth's core session path.
+ *
+ * So every tool call answered 401 'login required' while the front door
+ * authenticated perfectly — initialize and tools/list touch no API and looked
+ * fine, which is exactly why the smoke test missed it.
+ *
+ * The email matters and is not decoration: resolveTenantForUser passes it to
+ * createTeamFor, which derives a brand-new user's workspace slug from it. A null
+ * email there means every OAuth signup lands in a workspace called 'workspace'.
+ */
+export async function mcpSessionUser(
+  reqHeaders: Record<string, string | string[] | undefined>,
+): Promise<{ sub: string; email: string | null; roles: string[] } | null> {
+  const grant = await getAuth().api.getMcpSession({ headers: toHeaders(reqHeaders) });
+  if (!grant?.userId) return null;
+
+  // better-auth exposes no "get user by id" endpoint, so read the row. Quoted:
+  // both the table name and the column are case-sensitive in Postgres. Same
+  // access pattern hasVerifiedMember already uses on this table.
+  let email: string | null = null;
+  try {
+    const { rows } = await authPool().query<{ email: string | null }>(
+      'SELECT email FROM "user" WHERE id = $1 LIMIT 1',
+      [grant.userId],
+    );
+    email = rows[0]?.email ?? null;
+  } catch {
+    // A missing row or an unreadable table must not turn an authenticated
+    // caller into an anonymous one — the grant already proved who they are.
+  }
+
+  return { sub: grant.userId, email, roles: rolesFor(email) };
 }
 
 /** Create/upgrade the better-auth tables. Called once at boot (server.ts),
@@ -343,24 +382,44 @@ export async function runAuthMigrations(): Promise<void> {
 /** Resolve the better-auth session (cookie or Bearer) on an Express request.
  *  Returns the identity in the exact shape verifyKeycloakJwt returned, so the
  *  middleware treats both providers identically. */
-export async function getSessionUser(
-  reqHeaders: Record<string, string | string[] | undefined>,
-): Promise<{ sub: string; email: string | null; roles: string[] } | null> {
+/** Express headers → the Fetch Headers better-auth's endpoints expect. */
+function toHeaders(reqHeaders: Record<string, string | string[] | undefined>): Headers {
   const headers = new Headers();
   for (const [k, v] of Object.entries(reqHeaders)) {
     if (typeof v === 'string') headers.set(k, v);
     else if (Array.isArray(v)) headers.set(k, v.join(', '));
   }
-  const session = await getAuth().api.getSession({ headers });
-  if (!session?.user?.id) return null;
-  const email = session.user.email ?? null;
-  // Operator role: Keycloak had the `chat-recall-admin` realm role; the
-  // embedded provider grants it to the ADMIN_EMAILS allowlist instead
-  // (comma-separated, case-insensitive) — same mechanism invisiprompt uses.
+  return headers;
+}
+
+/**
+ * Operator role: Keycloak had the `chat-recall-admin` realm role; the embedded
+ * provider grants it to the ADMIN_EMAILS allowlist instead (comma-separated,
+ * case-insensitive).
+ *
+ * One copy, because it is now asked twice — a session token and an OAuth access
+ * token must not disagree about who is an operator.
+ */
+function rolesFor(email: string | null): string[] {
   const admins = (process.env.ADMIN_EMAILS || '')
     .split(',')
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
-  const roles = email && admins.includes(email.toLowerCase()) ? ['chat-recall-admin'] : [];
-  return { sub: session.user.id, email, roles };
+  return email && admins.includes(email.toLowerCase()) ? ['chat-recall-admin'] : [];
+}
+
+/** The auth instance's own pool, for the one query better-auth exposes no
+ *  endpoint for (user email by id). Lazily reached through the same instance so
+ *  there is never a second pool against the same database. */
+function authPool(): pg.Pool {
+  return (getAuth().options as { database: pg.Pool }).database;
+}
+
+export async function getSessionUser(
+  reqHeaders: Record<string, string | string[] | undefined>,
+): Promise<{ sub: string; email: string | null; roles: string[] } | null> {
+  const session = await getAuth().api.getSession({ headers: toHeaders(reqHeaders) });
+  if (!session?.user?.id) return null;
+  const email = session.user.email ?? null;
+  return { sub: session.user.id, email, roles: rolesFor(email) };
 }
