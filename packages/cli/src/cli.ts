@@ -287,7 +287,7 @@ program
       console.log(chalk.bold('2. Connecting to your server...'));
       let target = firstTarget();
       if (options.server) {
-        await runLogin(options.server, { token: options.token });
+        await runLogin(options.server, { token: options.token, fromInit: true });
         target = firstTarget();
       } else if (!target) {
         // Default to the hosted service. Before this, `npx chat-recall init`
@@ -301,7 +301,7 @@ program
         console.log(`   Connecting to ${chalk.bold(DEFAULT_SERVER)} — sign in to approve this machine.`);
         console.log(`   ${chalk.dim(`Prefer your own server? ${chalk.bold('--server <url>')}. Self-hosting is free: ${SELF_HOST_DOCS}`)}`);
         try {
-          await runLogin(DEFAULT_SERVER, { token: options.token });
+          await runLogin(DEFAULT_SERVER, { token: options.token, fromInit: true });
           target = firstTarget();
         } catch (e) {
           // A declined or failed sign-in must not fail the whole init: MCP
@@ -2999,7 +2999,15 @@ program
  */
 async function runLogin(
   serverUrl: string,
-  opts: { token?: string; issuer?: string; clientId?: string; team?: string; deviceId?: string; check?: boolean },
+  opts: {
+    token?: string; issuer?: string; clientId?: string; team?: string; deviceId?: string; check?: boolean;
+    /** True when `init` is driving this. It syncs immediately afterwards, so the
+     *  "now run sync" line below would tell someone to do a thing that already
+     *  happened — and it is the LAST line they read, so it reads as the next
+     *  step rather than as a stale afterthought. Standalone `login` still gets
+     *  it, because there it is genuinely what to do next. */
+    fromInit?: boolean;
+  },
 ): Promise<void> {
   const { saveCredentials, loadAllCredentials } = await import('./sync-client.js');
   const base = serverUrl.replace(/\/+$/, '');
@@ -3132,7 +3140,9 @@ async function runLogin(
 
     saveCredentials({ serverUrl, token });
     console.log(chalk.green(`✓ Logged in to ${chalk.bold(slug!)}`) + chalk.dim(`  (device: ${deviceId})  server: ${serverUrl}`));
-    console.log(chalk.dim('Run `chat-recall sync` to push redacted conversations.'));
+    if (!opts.fromInit) {
+      console.log(chalk.dim('Run `chat-recall sync` to push redacted conversations.'));
+    }
   } catch (err) {
     console.error(chalk.red('login failed:'), err instanceof Error ? err.message : err);
     process.exit(1);
