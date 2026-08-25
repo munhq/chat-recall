@@ -73,7 +73,7 @@ describe('entitlement resolver — the floor and the self-host grant', () => {
 /**
  * The advertised TOOL COUNT, which has drifted twice.
  *
- * The registry that decides it lives in packages/cli/src/mcp.ts. The README
+ * The registry that decides it lives in packages/engine/src/mcp/tools.ts. The README
  * states a number and is checked here. The marketing pages and llms.txt also
  * state one; those are checked by the site repo's parity script, since that is
  * where they now live — and llms.txt is the worst place to be wrong, because it
@@ -87,7 +87,7 @@ describe('advertised MCP tool count ↔ the registry', () => {
   // pricing site disagree by exactly one forever. The number a page quotes is
   // what the product can DO.
   const registered = new Set(
-    [...readFileSync(resolve(repoRoot, 'packages/cli/src/mcp.ts'), 'utf-8')
+    [...readFileSync(resolve(repoRoot, 'packages/engine/src/mcp/tools.ts'), 'utf-8')
       .matchAll(/name: '(recall_[a-z_]+)'/g)].map((m) => m[1])
       .filter((n) => n !== 'recall_help'),
   ).size;
