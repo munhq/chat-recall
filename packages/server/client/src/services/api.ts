@@ -2718,6 +2718,9 @@ export interface AutoTasksStatus extends AutoTasksPolicy {
   } | null;
   eligible: number;
   filed: number;
+  /** Auto-filed cards open right now, and the ceiling filing stops at. */
+  openCards?: number;
+  ceiling?: number;
   byProject: Array<{ projectId: string; counts: Record<string, number>; eligible: number }>;
 }
 export async function getAutoTasksPolicy(): Promise<AutoTasksStatus> {
@@ -2726,7 +2729,7 @@ export async function getAutoTasksPolicy(): Promise<AutoTasksStatus> {
     ? 'The task board needs a plan that includes tasks. It is free on self-hosted servers.'
     : `Failed to load the auto-file setting (HTTP ${res.status})`);
   const j = await res.json();
-  return { lastRun: null, eligible: 0, filed: 0, byProject: [], ...j };
+  return { lastRun: null, eligible: 0, filed: 0, openCards: 0, ceiling: 0, byProject: [], ...j };
 }
 /** Run the policy now instead of waiting for the next code index. */
 export async function runAutoTasksNow(): Promise<{

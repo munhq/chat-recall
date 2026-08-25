@@ -50,6 +50,12 @@ vi.mock('../imports.js', async (importOriginal) => ({
     // Exact-id lookup: the close sweep's source of truth about a card's finding.
     codeFindingsByIds: async (ids: string[]) => (currentAuthorSub() ? [] : state.findings.filter((f) => ids.includes(f.id))),
     teamTasksByFindingIds: async () => (currentAuthorSub() ? [] : state.tasks),
+    // The status read counts findings too, so it needs the summary.
+    codeFindingsSummary: async () => {
+      const bySeverity: Record<string, number> = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+      for (const f of state.findings) bySeverity[f.severity] = (bySeverity[f.severity] ?? 0) + 1;
+      return { total: state.findings.length, bySeverity, byCategory: {} };
+    },
     createTeamTask: async (input: { title: string; linkedFindingId?: string | null; linkedFindingIdentity?: string | null; projectId?: string }) => {
       state.created.push(input.linkedFindingId as string);
       const t = { id: `t_${++seq}`, title: input.title, status: 'todo', createdBy: 'auto-tasks', linkedFindingId: input.linkedFindingId ?? null, linkedFindingIdentity: input.linkedFindingIdentity ?? null, projectId: input.projectId ?? 'p1' };
@@ -820,5 +826,105 @@ describe('a roll-up action and its member findings', () => {
     const r = await runAutoTasks('t1');
     expect(r?.created).toBe(2);
     expect(state.created.sort()).toEqual(['ca_rollup', 'cf_member']);
+  });
+});
+
+/**
+ * THE CEILING. The per-run cap bounds a burst, not a total: every ingest triggers
+ * a run, so 10-at-a-time keeps going until the whole backlog is cards. Moving one
+ * real account's floor from high to medium made 1,070 items eligible, and a board
+ * of a thousand cards is the same unreadable board that duplicates produced,
+ * reached by volume instead.
+ */
+describe('the open-card ceiling', () => {
+  /** 50 open auto-filed cards: the ceiling, exactly. */
+  const fullBoard = () => Array.from({ length: 50 }, (_, i) => ({
+    id: `t_full_${i}`, title: `card ${i}`, status: 'todo', createdBy: 'auto-tasks',
+    linkedFindingId: `cf_full_${i}`, linkedFindingIdentity: `cf_full_${i}`,
+    projectId: 'p1', createdAt: 1000 + i,
+  }));
+
+  test('THE POINT: a full board files nothing', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 2 }));
+    state.tasks = fullBoard();
+    state.actions = [action('ca_new', 0)];
+
+    const r = await runAutoTasks('t1');
+    expect(r?.created).toBe(0);
+    expect(state.created).toEqual([]);
+  });
+
+  test('room for three files three, not ten', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 2 }));
+    state.tasks = fullBoard().slice(0, 47);
+    state.actions = Array.from({ length: 10 }, (_, i) => action(`ca_${i}`, 0));
+
+    const r = await runAutoTasks('t1');
+    expect(r?.created).toBe(3);
+  });
+
+  test('a closed card gives its room back', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 2 }));
+    // 50 cards, but two of them are done — 48 open, so two may be filed.
+    state.tasks = fullBoard().map((t, i) => (i < 2 ? { ...t, status: 'done' } : t));
+    state.actions = Array.from({ length: 5 }, (_, i) => action(`ca_${i}`, 0));
+
+    const r = await runAutoTasks('t1');
+    expect(r?.created).toBe(2);
+  });
+
+  test('retiring duplicates in the same run frees room in that run', async () => {
+    // The dedup sweeps run BEFORE filing, so the board's size is what is capped,
+    // not the run's ambition.
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 2 }));
+    const dup = (i: number) => ({
+      id: `t_dup_${i}`, title: 'dup', status: 'todo', createdBy: 'auto-tasks',
+      linkedFindingId: 'cf_shared', linkedFindingIdentity: 'cf_shared',
+      projectId: 'p1', createdAt: 2000 + i,
+    });
+    state.tasks = [...fullBoard().slice(0, 47), dup(1), dup(2), dup(3)];
+    state.findings = [{
+      id: 'cf_shared', severity: 'high', category: 'schema', title: 'shared',
+      file: 'a.ts', line: 1, rule: 'r', why: '', agentPrompt: '', projectId: 'p1', status: 'open',
+    }];
+    state.actions = Array.from({ length: 5 }, (_, i) => action(`ca_${i}`, 0));
+
+    const r = await runAutoTasks('t1');
+    expect(r?.deduped).toBe(2);      // three cards on one finding → one survives
+    expect(r?.created).toBe(2);      // and the two freed slots are filled
+  });
+
+  test('a full board still CLOSES — the ceiling never blocks shrinking', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 2 }));
+    // Every card names a finding that is no longer reported.
+    state.tasks = fullBoard();
+    state.findings = [];
+    state.actions = [];
+
+    const r = await runAutoTasks('t1');
+    expect(r?.closed).toBe(50);
+  });
+
+  test('the status reports the ceiling and what is against it', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 2 }));
+    state.tasks = fullBoard().map((t, i) => (i < 10 ? { ...t, status: 'done' } : t));
+    const st = await autoTasksStatus('t1');
+    expect(st.ceiling).toBe(50);
+    expect(st.openCards).toBe(40);
+  });
+
+  test('the status counts FINDINGS too, not only actions', async () => {
+    // This read looked at code_actions alone while the filer reads both, so it
+    // answered 316 when the true number was 1,070 — and a floor was chosen on it.
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 2 }));
+    state.actions = [action('ca_1', 2)];
+    state.findings = [
+      { id: 'cf_1', severity: 'medium', category: 'c', title: 't', file: 'a', line: 1, rule: 'r', why: '', agentPrompt: '', projectId: 'p1', status: 'open' },
+      { id: 'cf_2', severity: 'medium', category: 'c', title: 't2', file: 'b', line: 1, rule: 'r', why: '', agentPrompt: '', projectId: 'p1', status: 'open' },
+      { id: 'cf_3', severity: 'low', category: 'c', title: 't3', file: 'c', line: 1, rule: 'r', why: '', agentPrompt: '', projectId: 'p1', status: 'open' },
+    ];
+    const st = await autoTasksStatus('t1');
+    // 1 action + 2 medium findings. The low one is under a floor of 2.
+    expect(st.eligible).toBe(3);
   });
 });
