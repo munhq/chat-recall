@@ -211,6 +211,23 @@ export interface CodeActionInput {
   fix: string;
   loc: CodeActionLoc[];
   agentPrompt: string;
+  /**
+   * Finding ids this action ROLLS UP, stamped by the collector.
+   *
+   * An action is a summary of findings the same run also emitted — "unwrap — 12
+   * occurrence(s)" over twelve unwrap findings, "_callWithFeeRetry copy-pasted
+   * 30×" over the clone finding for that group. Both are fileable, so without
+   * this the board gets a card for the summary AND a card for each member: three
+   * cards for one problem, observed as `_callWithFeeRetry ×30` next to
+   * `_callWithFeeRetry copy-pasted 30× (10 lines each)`.
+   *
+   * WHY IT IS STAMPED AT THE SOURCE. The collector is the only place that knows
+   * the parentage — it builds both from the same analyzer output. Anything
+   * downstream has to guess from titles, and the titles are worded differently
+   * for the same problem, so the guess is wrong in both directions. Absent on
+   * anything an older collector sent, which simply means no suppression.
+   */
+  covers?: string[];
 }
 
 export interface CodeActionRow extends Required<Omit<CodeActionInput, never>> {
@@ -305,27 +322,57 @@ function snippetKey(snippet?: string): string {
  * per occurrence, and shifts only when an identical sibling is added or removed
  * above one — which is the floor of what any scheme can achieve.
  *
- * Returns ids positionally aligned with `findings`.
+ * THE TITLE IS PART OF THE KEY, and leaving it out cost twice.
+ *
+ * 1. It INVENTED identities. A collector that emits one finding four times — same
+ *    category, file, line, rule, snippet, title, why, byte for byte — got four
+ *    ids, because the ordinal counted EMISSIONS. Four cards were filed for
+ *    `memory-index.ts:53`, and 387 of 8,290 stored findings were duplicates of
+ *    this kind. So the ordinal now counts DISTINCT LINES: two findings on the
+ *    same line with the same content are one occurrence, and the store's
+ *    dedupe-by-id collapses them.
+ * 2. It MERGED real ones. 918 findings carry no line at all — `type_drift` names
+ *    a type, not a place — so sorting by line was a no-op and the ordinal fell
+ *    back to the collector's emit order. 38 distinct missing fields on `AppState`
+ *    were separated only by the analyzer's output order, which means re-running
+ *    it over unchanged code renumbered them all. What actually distinguishes them
+ *    is their title, and once the title is in the key they no longer need an
+ *    ordinal to stay apart.
+ *
+ * `identityTitle` collapses digits, so a title's counts stay out of identity —
+ * measured on the same 8,290: nothing distinct merges under that collapse, and it
+ * is what keeps "copy-pasted 29×" from becoming a new finding at 30.
+ *
+ * Returns ids positionally aligned with `findings`; identical siblings on the
+ * same line share an id, so the result is not necessarily distinct.
  */
 export function codeFindingIds(
   projectId: string,
-  findings: ReadonlyArray<{ category: string; file: string; line?: number | null; rule: string; snippet?: string }>,
+  findings: ReadonlyArray<{ category: string; file: string; line?: number | null; rule: string; title?: string; snippet?: string }>,
 ): string[] {
   // Group identical siblings, then order each group by line so the ordinal is a
   // property of position in the file rather than of the collector's emit order.
   const groups = new Map<string, number[]>();
   findings.forEach((f, i) => {
-    const key = [f.category, f.file, f.rule, snippetKey(f.snippet)].join('|');
+    const key = [f.category, f.file, f.rule, identityTitle(f.title ?? ''), snippetKey(f.snippet)].join('|');
     const g = groups.get(key);
     if (g) g.push(i); else groups.set(key, [i]);
   });
 
+  // -1 for a missing line, never 0: a null line must not collide with line 0, and
+  // nulls sort first so their ordinal is stable whatever else the file holds.
+  const lineOf = (i: number): number => findings[i].line ?? -1;
   const ids = new Array<string>(findings.length);
   for (const [key, idxs] of groups) {
-    idxs.sort((a, b) => (findings[a].line ?? 0) - (findings[b].line ?? 0));
-    idxs.forEach((idx, ordinal) => {
+    idxs.sort((a, b) => lineOf(a) - lineOf(b));
+    let ordinal = -1;
+    let prevLine = Number.NaN;
+    for (const idx of idxs) {
+      // A new ordinal per distinct LINE, not per emission. Same line, same
+      // content ⇒ same finding, however many times the collector reported it.
+      if (lineOf(idx) !== prevLine) { ordinal++; prevLine = lineOf(idx); }
       ids[idx] = 'cf_' + shortHash([projectId, key, ordinal].join('|'));
-    });
+    }
   }
   return ids;
 }
