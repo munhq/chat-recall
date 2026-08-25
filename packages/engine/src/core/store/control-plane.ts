@@ -123,8 +123,28 @@ export interface ArtifactMeta {
 }
 export interface ArtifactBody extends ArtifactMeta { bodyB64: string }
 
+/**
+ * Where a tenant came from, captured on the marketing site before the tenant
+ * existed. Written on the INSERT and never on a conflict — see ensureTenant.
+ */
+export interface SignupAttribution {
+  source: string;
+  referrer?: string | null;
+  campaign?: string | null;
+}
+
 export interface ControlPlane {
-  ensureTenant(tenant: string, displayName?: string): Promise<void>;
+  /**
+   * Create the tenant row if absent.
+   *
+   * `attribution` is applied ONLY when this call actually inserts. ensureTenant
+   * is called on nearly every authenticated path (mintAgentToken calls it too),
+   * so applying it on conflict would overwrite the first touch with whatever
+   * cookie the current request happens to carry — which is last-touch
+   * attribution wearing a first-touch label, and it would quietly credit
+   * `direct` for everything.
+   */
+  ensureTenant(tenant: string, displayName?: string, attribution?: SignupAttribution): Promise<void>;
   /** Resolve a raw bearer token → tenant/device, or null (unknown / revoked). */
   resolveAgentToken(rawToken: string): Promise<AgentTokenInfo | null>;
   /** Mint (or rotate) a device token. Returns the raw token — shown once. */
@@ -408,9 +428,23 @@ class SqliteControlPlane implements ControlPlane {
     }
   }
 
-  async ensureTenant(tenant: string, displayName?: string): Promise<void> {
-    this.db.prepare(`INSERT OR IGNORE INTO cp_tenants (tenant, display_name, created_at) VALUES (?, ?, ?)`)
-      .run(tenant, displayName ?? tenant, Date.now());
+  async ensureTenant(tenant: string, displayName?: string, attribution?: SignupAttribution): Promise<void> {
+    // INSERT OR IGNORE already means "first write wins", which is exactly the
+    // first-touch rule — so attribution goes in the same statement and a later
+    // call with a different cookie is ignored along with the rest of the row.
+    for (const col of ['signup_source TEXT', 'signup_referrer TEXT', 'signup_campaign TEXT']) {
+      try { this.db.exec(`ALTER TABLE cp_tenants ADD COLUMN ${col}`); } catch { /* already there */ }
+    }
+    this.db.prepare(
+      `INSERT OR IGNORE INTO cp_tenants
+         (tenant, display_name, created_at, signup_source, signup_referrer, signup_campaign)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      tenant, displayName ?? tenant, Date.now(),
+      attribution?.source ?? null,
+      attribution?.referrer ?? null,
+      attribution?.campaign ?? null,
+    );
   }
 
   async resolveAgentToken(rawToken: string): Promise<AgentTokenInfo | null> {
@@ -824,10 +858,21 @@ class PgControlPlane implements ControlPlane {
     return (await this.pool.query(sql, params)).rows;
   }
 
-  async ensureTenant(tenant: string, displayName?: string): Promise<void> {
+  async ensureTenant(tenant: string, displayName?: string, attribution?: SignupAttribution): Promise<void> {
+    // DO NOTHING on conflict is the first-touch guarantee: the attribution
+    // columns are only ever populated by the statement that creates the row.
+    // Do NOT change this to DO UPDATE — see the interface comment.
     await this.q(
-      `INSERT INTO tenants (tenant, display_name, created_at) VALUES ($1, $2, $3) ON CONFLICT (tenant) DO NOTHING`,
-      [tenant, displayName ?? tenant, Date.now()],
+      `INSERT INTO tenants
+         (tenant, display_name, created_at, signup_source, signup_referrer, signup_campaign)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (tenant) DO NOTHING`,
+      [
+        tenant, displayName ?? tenant, Date.now(),
+        attribution?.source ?? null,
+        attribution?.referrer ?? null,
+        attribution?.campaign ?? null,
+      ],
     );
   }
 
