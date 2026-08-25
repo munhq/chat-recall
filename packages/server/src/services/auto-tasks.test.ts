@@ -41,7 +41,14 @@ vi.mock('../imports.js', async (importOriginal) => ({
     // under runUnrestricted, which is exactly the distinction that broke prod.
     listCodeActions: async () => (currentAuthorSub() ? [] : state.actions),
     // Same author-visibility behaviour: this read must also happen unrestricted.
-    listCodeFindings: async () => (currentAuthorSub() ? [] : state.findings),
+    // Honours `severity`, because the service now queries per severity rather
+    // than pulling one capped page of everything.
+    listCodeFindings: async (_p?: string, opts?: { severity?: string }) => {
+      if (currentAuthorSub()) return [];
+      return opts?.severity ? state.findings.filter((f) => f.severity === opts.severity) : state.findings;
+    },
+    // Exact-id lookup: the close sweep's source of truth about a card's finding.
+    codeFindingsByIds: async (ids: string[]) => (currentAuthorSub() ? [] : state.findings.filter((f) => ids.includes(f.id))),
     teamTasksByFindingIds: async () => (currentAuthorSub() ? [] : state.tasks),
     createTeamTask: async (input: { title: string; linkedFindingId?: string | null; linkedFindingIdentity?: string | null; projectId?: string }) => {
       state.created.push(input.linkedFindingId as string);
@@ -492,5 +499,70 @@ describe('pre-identity cards are repaired in place', () => {
     expect(r?.closed).toBe(0);
     expect(r?.repointed).toBe(1);
     expect(state.tasks[0].linkedFindingId).toBe('a1_rehashed');
+  });
+});
+
+/**
+ * A capped list cannot answer "is this still open".
+ *
+ * The findings read was listCodeFindings(limit: 500) across EVERY project, and
+ * the close sweep treated that page as the complete set of open findings. With
+ * 8,096 findings in one real database and 500 slots, everything past the cap
+ * looks deleted — so a card pointing at it closes itself as fixed. That is the
+ * bug this whole service was just repaired for, reintroduced by a LIMIT.
+ *
+ * It was harmless only by accident: the ordering is severity-first and just 31
+ * findings were critical-or-high, so every fileable one fell inside the page. It
+ * would have become live the moment the policy floor moved from 1 to 2 — a
+ * correctness that depends on a setting nobody connected to it.
+ *
+ * The fix is to fetch by intent: per-severity for filing, by exact id for the
+ * close sweep. These tests pin the second half, since it is the one that
+ * silently destroys data.
+ */
+describe('a finding beyond any page is not treated as deleted', () => {
+  const finding = (id: string, severity: string) => ({
+    id, severity, category: 'security', title: `t ${id}`, file: `src/${id}.rs`,
+    line: 1, rule: 'unwrap', why: 'w', agentPrompt: '', projectId: 'p1', status: 'open',
+  });
+
+  test('THE REGRESSION: a low-severity finding a card names is not closed', async () => {
+    // maxPri 1 means 'low' is never FILED — but a card may already point at one
+    // (filed when the floor was lower, or promoted by hand). The close sweep must
+    // still see that it exists, which a severity-filtered filing query alone
+    // would not show.
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.findings = [finding('cf_low', 'low')];
+    state.tasks = [{
+      id: 't_low', title: '[low] t cf_low', status: 'todo', createdBy: 'auto-tasks',
+      linkedFindingId: 'cf_low', linkedFindingIdentity: 'cf_low', projectId: 'p1',
+    }];
+    const r = await runAutoTasks('t1');
+    expect(r?.closed).toBe(0);
+    expect(state.updated.some((u) => u.patch.status === 'done')).toBe(false);
+  });
+
+  test('and one that really is absent still closes', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.findings = [];                       // nothing exists at any severity
+    state.tasks = [{
+      id: 't_gone', title: '[critical] t cf_gone', status: 'todo', createdBy: 'auto-tasks',
+      linkedFindingId: 'cf_gone', linkedFindingIdentity: 'cf_gone', projectId: 'p1',
+    }];
+    const r = await runAutoTasks('t1');
+    expect(r?.closed).toBe(1);
+  });
+
+  test('filing still respects the floor even though the sweep sees more', async () => {
+    // The union must not widen what gets FILED — otherwise raising visibility for
+    // the close sweep would quietly file everything.
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.findings = [finding('cf_crit', 'critical'), finding('cf_med', 'medium'), finding('cf_low', 'low')];
+    state.tasks = [{
+      id: 't_low', title: '[low] t cf_low', status: 'todo', createdBy: 'auto-tasks',
+      linkedFindingId: 'cf_low', linkedFindingIdentity: 'cf_low', projectId: 'p1',
+    }];
+    await runAutoTasks('t1');
+    expect(state.created).toEqual(['cf_crit']);   // not cf_med, not cf_low
   });
 });

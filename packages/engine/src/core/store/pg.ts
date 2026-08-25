@@ -1207,6 +1207,12 @@ export class PgStore implements StorageDriver {
       return findings.length;
     }));
   }
+  async codeFindingsByIds(ids: string[]): Promise<Ret<'listCodeFindings'>> {
+    if (!ids.length) return [] as Ret<'listCodeFindings'>;
+    const rows = await this.qr(
+      `SELECT * FROM code_findings WHERE tenant=$1 AND id = ANY($2)`, [this.t, ids]);
+    return rows.map(pgRowToCodeFinding) as Ret<'listCodeFindings'>;
+  }
   async listCodeFindings(projectId?: string, opts: Args<'listCodeFindings'>[1] = {}): Promise<Ret<'listCodeFindings'>> {
     const where: string[] = ['tenant=$1']; const params: unknown[] = [this.t];
     if (projectId) { params.push(projectId); where.push(`project_id=$${params.length}`); }

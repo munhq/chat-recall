@@ -221,6 +221,10 @@ export interface StorageDriver {
   deleteCodeProject: AsyncMethod<MemoryStore['deleteCodeProject']>;
   replaceCodeFindings: AsyncMethod<MemoryStore['replaceCodeFindings']>;
   listCodeFindings: AsyncMethod<MemoryStore['listCodeFindings']>;
+  /** Findings by exact id. Needed because listCodeFindings is CAPPED, and a
+   *  capped list cannot answer "does this card's finding still exist" — beyond
+   *  the cap every finding looks deleted. */
+  codeFindingsByIds: AsyncMethod<MemoryStore['codeFindingsByIds']>;
   codeFindingsSummary: AsyncMethod<MemoryStore['codeFindingsSummary']>;
   replaceCodeHotspots: AsyncMethod<MemoryStore['replaceCodeHotspots']>;
   listCodeHotspots: AsyncMethod<MemoryStore['listCodeHotspots']>;
