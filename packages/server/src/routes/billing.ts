@@ -251,6 +251,30 @@ const asStr = (v: unknown): string | null => (typeof v === 'string' && v ? v : n
 const productTag = (): string => process.env.STRIPE_PRODUCT_TAG || 'chat-recall';
 
 /**
+ * Whether this plan's checkout offers the promotion-code box. Self-hosted does
+ * not.
+ *
+ * A coupon can be limited to products with `applies_to.products`, but this
+ * account's API drops the field silently — it is absent from the coupon object
+ * on every API version, and there is no /v1/promotions either, so the limit is
+ * Dashboard-only. Both founder coupons are therefore guarded by a minimum spend
+ * alone, and two self-hosted seats already clear FOUNDERSOLO's $150. Refusing the
+ * box here closes that from our side and cannot be undone by a coupon edit.
+ *
+ * Excluding rather than allowlisting is deliberate: a new hosted plan should get
+ * promo codes without anyone remembering to add it, and a new self-hosted variant
+ * is the one that must be named. The `selfhost` prefix is the catalogue's, and
+ * the same one applyStripeEvent matches for licence issuance, so the two cannot
+ * disagree about what self-hosted means.
+ *
+ * Solo-code-on-Team is left open on purpose: 20% is a worse deal than
+ * FOUNDERTEAM's 28%, so nobody takes it.
+ */
+export function acceptsPromotionCodes(planKey: string | null | undefined): boolean {
+  return !(planKey ?? '').toLowerCase().startsWith('selfhost');
+}
+
+/**
  * Stripe Tax arguments for a checkout session, or nothing at all.
  *
  * WHY IT IS OFF BY DEFAULT, and must stay off until the account is ready:
@@ -612,7 +636,8 @@ router.post('/checkout', async (req, res) => {
       // Lets a coupon be redeemed at checkout. This is what makes launch promos
       // and referral discounts possible WITHOUT building a referral system:
       // codes are created in the Stripe dashboard and honoured here.
-      allow_promotion_codes: true,
+      // Except on self-hosted — see acceptsPromotionCodes().
+      allow_promotion_codes: acceptsPromotionCodes(line.plan.key),
       // VAT / sales tax, when the account is configured for it. See taxArgs().
       ...taxArgs(),
       // client_reference_id ties the resulting subscription back to OUR tenant;
