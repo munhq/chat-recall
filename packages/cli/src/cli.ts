@@ -222,6 +222,12 @@ const DEFAULT_ALLOW = [
   'recall_code_index', 'recall_code_projects', 'recall_code_findings',
   'recall_code_actions',
   'recall_claude_suggestions', 'recall_improvements',
+  // Acting on advice, not just reading it. Allowed like the other writes
+  // (task_create, kg_add, security_dismiss): the prompt is not the safeguard —
+  // the tool descriptions say when to ask the user, and the annotations tell a
+  // host which of these overwrite state.
+  'recall_recommendation_apply', 'recall_recommendation_dismiss',
+  'recall_project_label',
   'recall_toolkit_status', 'recall_toolkit_sync',
 ];
 const SELF_HOST_DOCS = 'https://github.com/munhq/chat-recall/blob/main/docs/SELF_HOSTING.md';

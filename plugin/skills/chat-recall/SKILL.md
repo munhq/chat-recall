@@ -63,6 +63,15 @@ tool is registered and never named here, so adding a tool means placing it.
 **Resume / cold start** — `recall_smart_resume` (structured resume bundle; needs a session id), `recall_recent` (list recent sessions), `recall_wake_up` (identity + high-signal facts), `recall_context` (structured dump of one session), `recall_show` (raw slice — returns 10 messages unless you raise `max_messages`), `recall_summary` (AI summary + outcome).
 **Search** — `recall_search` (sessions; `include_outcome`, `like_session`), `recall_memory_search` (every memory type), `recall_memory_item` (read ONE item found by search, or browse a source type), `recall_user_prompts` (what the user actually typed), `recall_subagent_search` (inside subagent transcripts, whose work never reaches the main conversation), `recall_redundant_files` (before writing a new file, check you have not written one like it already).
 **Project** — `recall_project_context` (rich dump), `recall_weekly_digest`, `recall_analytics_summary`, `recall_outcome_summary` (how many recent sessions actually shipped), `recall_code_findings` / `recall_code_actions` / `recall_code_projects` / `recall_code_index` / `recall_recommendations`.
+
+**Acting on advice, not just reading it** — `recall_recommendation_apply` adds a
+recommendation's rule to the repo's CLAUDE.md or sets the label it asks for;
+`recall_recommendation_dismiss` says no to one for this project, with a reason;
+`recall_project_label` marks a repo poc / production / engineering, which is the
+guardrail every later session reads. Reach for these when `recall_recommendations`
+returns something — advice nobody acts on is why that panel gets ignored. A
+CLAUDE.md rule is additive and reversible, so take it; ask first before setting
+`production`, clearing a label, or dismissing something the user may want.
 **Findings, ranked** — `recall_claude_suggestions` (every finding that becomes an agent-instruction change — the CLAUDE.md rules and skill installs — merged across account scope and every indexed project) and `recall_improvements` (everything else, most urgent first; `create_tasks: true` opens one team task per item). They split the same engines, so an item never appears in both. Neither needs the codeindex binary: without it you still get the account-level half.
 **What changed** — `recall_edits_timeline` (cross-tool edits), `recall_diff` (per-session diffs), `recall_commits` (did it actually land), `recall_markers` (where a session went sideways).
 **Durable memory / KG** — `recall_kg_query` / `recall_kg_add` / `recall_kg_invalidate` / `recall_kg_timeline` / `recall_kg_stats`, `recall_decision_record`, `recall_diary_write` / `recall_diary_read`, `recall_set` / `recall_get`.

@@ -720,6 +720,24 @@ const RecallSecuritySessionSchema = z.object({
   session_id: z.string().describe('Session ID from search results or the security dashboard'),
 });
 
+const RecallRecommendationApplySchema = z.object({
+  id: z.string().describe('Recommendation id (the `id` field from recall_recommendations)'),
+  project: z.string().describe('Project id the recommendation belongs to (from recall_code_projects)'),
+});
+
+const RecallRecommendationDismissSchema = z.object({
+  id: z.string().describe('Recommendation id from recall_recommendations'),
+  project: z.string().describe('Project id the recommendation belongs to'),
+  reason: z.string().describe('Why it does not apply here. Required — a dismissal changes how the AI treats this repo, and an unexplained one cannot be reviewed later.'),
+  undo: z.boolean().optional().describe('Put a previously dismissed recommendation back on the list.'),
+});
+
+const RecallProjectLabelSchema = z.object({
+  project: z.string().describe('Project id (from recall_code_projects)'),
+  label: z.enum(['poc', 'production', 'engineering', 'none'])
+    .describe('poc = may reset its db and move fast. production = protect data, no destructive steps. engineering = raise the bar on tests and review. none = clear the label.'),
+});
+
 const RecallSecurityDismissSchema = z.object({
   preview: z.string().describe('The masked secret preview (e.g. "************************ZeMa")'),
   status: z.enum(['rotated', 'false_positive', 'dismissed', 'undismissed'])
@@ -859,6 +877,9 @@ const WRITE_TOOLS = new Set<string>([
   'recall_task_update',
   'recall_task_comment',
   'recall_security_dismiss',
+  'recall_recommendation_apply',    // queues a CLAUDE.md edit / sets a label
+  'recall_recommendation_dismiss',  // retires advice for this project
+  'recall_project_label',           // changes the guardrails every session reads
   'recall_reclassify',         // rewrites classifier tags on indexed chunks
   'recall_regenerate_summary', // overwrites a stored summary
   'recall_rename_session',     // overwrites the session name
@@ -867,6 +888,7 @@ const WRITE_TOOLS = new Set<string>([
 /** Writes that OVERWRITE or retire earlier state, rather than only adding to it. */
 const DESTRUCTIVE_TOOLS = new Set<string>([
   'recall_kg_invalidate',
+  'recall_recommendation_dismiss',  // retires advice; undo exists but it is a decision
   'recall_reclassify',
   'recall_regenerate_summary',
   'recall_rename_session',
@@ -876,6 +898,8 @@ const DESTRUCTIVE_TOOLS = new Set<string>([
 /** Writes where calling twice with the same input leaves the same state. */
 const IDEMPOTENT_TOOLS = new Set<string>([
   'recall_set',
+  'recall_recommendation_dismiss',
+  'recall_project_label',
   'recall_kg_invalidate',
   'recall_rename_session',
   'recall_security_dismiss',
@@ -1709,6 +1733,69 @@ in a session matched which detector.`,
             session_id: { type: 'string', description: 'Session ID from search results' },
           },
           required: ['session_id'],
+        },
+      },
+      {
+        name: 'recall_recommendation_apply',
+        description: `Apply a recommendation: add its rule to the repo's CLAUDE.md, or set the label it asks for.
+
+Use it when a recommendation from recall_recommendations is right. You do not need
+to ask permission for a CLAUDE.md rule — it is additive, visible in the diff, and
+the user can delete a line. DO ask first for anything that changes what the AI is
+allowed to do destructively.
+
+A CLAUDE.md edit is queued for the machine that has the repo and lands within
+about 45 seconds; only that machine has the file. A label applies immediately.
+Applying twice is harmless.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'Recommendation id from recall_recommendations' },
+            project: { type: 'string', description: 'Project id the recommendation belongs to' },
+          },
+          required: ['id', 'project'],
+        },
+      },
+      {
+        name: 'recall_recommendation_dismiss',
+        description: `Say no to a recommendation for this project, with a reason.
+
+Use it when advice does not apply to THIS repo — a reuse rule on a repo that is
+deliberately duplicated per environment, a label on a scratch project. Dismissed
+recommendations stop being offered for that project and no other.
+
+TELL THE USER what you dismissed and why. This changes how future sessions treat
+their codebase, and a reason nobody sees is a decision nobody can review. Pass
+undo: true to put one back.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'Recommendation id from recall_recommendations' },
+            project: { type: 'string', description: 'Project id the recommendation belongs to' },
+            reason: { type: 'string', description: 'Why it does not apply here. Required.' },
+            undo: { type: 'boolean', description: 'Restore a previously dismissed recommendation.' },
+          },
+          required: ['id', 'project', 'reason'],
+        },
+      },
+      {
+        name: 'recall_project_label',
+        description: `Label a project POC, production or engineering — the guardrails every future session reads.
+
+This is the highest-leverage single call in the surface: the label tells any
+assistant working here whether it may reset a database and move fast (poc),
+must protect data and avoid destructive steps (production), or should hold a
+higher bar on tests and review (engineering).
+
+ASK THE USER before setting 'production' or clearing a label. Both change what
+other agents will consider permitted, and that is not yours to decide alone.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Project id from recall_code_projects' },
+            label: { type: 'string', enum: ['poc', 'production', 'engineering', 'none'], description: 'none clears it' },
+          },
+          required: ['project', 'label'],
         },
       },
       {
@@ -3542,7 +3629,10 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
       case 'recall_recommendations': {
         const params = RecallRecommendationsSchema.parse(args);
         requireRemote();
-        type Rec = { kind: string; severity: string; title: string; rationale: string; evidence: string[]; action: { type: string; payload: any } };
+        // `id` is load-bearing now: recall_recommendation_apply and _dismiss both
+        // take it, and it was omitted from this type and from the rendered output,
+        // so the two new tools would have had no way to name their target.
+        type Rec = { id: string; kind: string; severity: string; title: string; rationale: string; evidence: string[]; action: { type: string; payload: any } };
 
         // scope "project" — behavior × code recommendations for one
         // code-indexed project (the old recall_code_recommendations).
@@ -3556,12 +3646,23 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
           const lines = [`# Recommendations (${recommendations.length}) — behavior × code\n`];
           for (const r of recommendations) {
             lines.push(`## [${r.severity}] ${r.title} (${r.kind})`);
+            lines.push(`- id: \`${r.id}\``);
             lines.push(r.rationale);
             if (r.evidence?.length) lines.push(`Evidence: ${r.evidence.join('; ')}`);
             if (r.action?.type === 'append_claude_md') lines.push('Apply → add to CLAUDE.md:\n```\n' + r.action.payload.text + '\n```');
             else lines.push(`Apply → ${r.action.type} ${JSON.stringify(r.action.payload)}`);
             lines.push('');
           }
+          lines.push('---', '',
+            '### Acting on these',
+            '',
+            'Apply one with `recall_recommendation_apply` (id + project). A CLAUDE.md rule is',
+            'additive and reversible — take it without asking. A label or anything destructive:',
+            'ask first.',
+            '',
+            'If one does not apply to this repo, `recall_recommendation_dismiss` with a reason,',
+            'and TELL THE USER what you dismissed. Leaving it undismissed means every future',
+            'session sees the same advice again.');
           return { content: [{ type: 'text', text: lines.join('\n') }] };
         }
 
@@ -4290,6 +4391,43 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
           }
         }
         return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_recommendation_apply': {
+        const params = RecallRecommendationApplySchema.parse(args);
+        requireRemote();
+        const r = await remotePost<{ ok: boolean; applied?: boolean; queued?: boolean; message?: string }>(
+          `/api/code/recommendations/${encodeURIComponent(params.id)}/apply`, { project: params.project });
+        // The route distinguishes applied-now from queued-for-your-machine, and
+        // the difference matters to the caller: a queued CLAUDE.md edit is not on
+        // disk yet, so an agent that immediately reads the file would not see it.
+        return { content: [{ type: 'text', text: r.message
+          || (r.queued ? 'Queued for your machine — it lands on the next drain (~45s).' : 'Applied.') }] };
+      }
+
+      case 'recall_recommendation_dismiss': {
+        const params = RecallRecommendationDismissSchema.parse(args);
+        requireRemote();
+        if (params.undo) {
+          await remotePost(`/api/code/recommendations/${encodeURIComponent(params.id)}/undismiss`,
+            { project: params.project });
+          return { content: [{ type: 'text', text: `Restored ${params.id} — it will be offered again.` }] };
+        }
+        await remotePost(`/api/code/recommendations/${encodeURIComponent(params.id)}/dismiss`,
+          { project: params.project, reason: params.reason });
+        return { content: [{ type: 'text', text:
+          `Dismissed ${params.id} for ${params.project}: ${params.reason}\n\n`
+          + '_Tell the user — this changes how future sessions treat their repo._' }] };
+      }
+
+      case 'recall_project_label': {
+        const params = RecallProjectLabelSchema.parse(args);
+        requireRemote();
+        const label = params.label === 'none' ? null : params.label;
+        await remotePatch(`/api/code/projects/${encodeURIComponent(params.project)}/label`, { label });
+        return { content: [{ type: 'text', text: label
+          ? `${params.project} is now labelled ${label}. Every future session in this repo reads it.`
+          : `Cleared the label on ${params.project}.` }] };
       }
 
       case 'recall_security_dismiss': {
