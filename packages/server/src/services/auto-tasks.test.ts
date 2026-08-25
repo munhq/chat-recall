@@ -13,12 +13,12 @@ import { describe, test, expect, beforeEach, vi } from 'vitest';
 
 const state = {
   settings: new Map<string, string>(),
-  actions: [] as Array<{ id: string; pri: number; title: string; fix: string; loc: never[]; agentPrompt: string; projectId: string; status: string }>,
+  actions: [] as Array<{ id: string; pri: number; title: string; fix: string; loc: never[]; agentPrompt: string; projectId: string; status: string; covers?: string[] }>,
   // code_findings, the OTHER source. Kept separate because it is separate in the
   // database, and reading only one of the two is exactly what made 34 critical
   // findings unfileable.
   findings: [] as Array<{ id: string; severity: string; category: string; title: string; file: string; line: number | null; rule: string; why: string; agentPrompt: string; projectId: string; status: string }>,
-  tasks: [] as Array<{ id: string; title: string; status: string; createdBy: string; linkedFindingId: string | null; linkedFindingIdentity: string | null; projectId: string }>,
+  tasks: [] as Array<{ id: string; title: string; status: string; createdBy: string; linkedFindingId: string | null; linkedFindingIdentity: string | null; projectId: string; createdAt?: number }>,
   created: [] as string[],
   updated: [] as Array<{ id: string; patch: Record<string, unknown> }>,
   comments: [] as string[],
@@ -75,11 +75,13 @@ currentAuthorSub = () => currentAuthor().sub;
 // identity. Without them two fixtures collide — a state the real collector cannot
 // produce, because codeActionId hashes exactly these inputs, so two actions with
 // one identity would share one id and dedupeById would merge them before insert.
-const action = (id: string, pri: number) => ({
+const action = (id: string, pri: number, covers: string[] = []) => ({
   id, pri, title: `fix ${id}`, fix: 'do it',
   loc: [{ file: `src/${id}.ts` }] as never[],
   category: 'duplication',
   agentPrompt: '', projectId: 'p1', status: 'suggested',
+  // What the collector says this roll-up summarises.
+  covers,
 });
 
 beforeEach(() => {
@@ -162,7 +164,7 @@ describe('auto-tasks', () => {
     state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 0 }));
     state.actions = [];                      // nothing qualifies
     const r = await runAutoTasks('t1');
-    expect(r).toEqual({ created: 0, closed: 0, repointed: 0, backfilled: 0, reopened: 0 });
+    expect(r).toEqual({ created: 0, closed: 0, repointed: 0, backfilled: 0, reopened: 0, deduped: 0 });
     // "ran and found nothing" must be distinguishable from "never ran", or the
     // UI cannot answer "is anything happening?".
     const st = await autoTasksStatus('t1');
@@ -253,7 +255,7 @@ describe('reads are unrestricted, writes are authored', () => {
     state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
     state.actions = [action('c1', 0), action('h1', 1)];
     const r = await runAutoTasks('t1');
-    expect(r).toEqual({ created: 2, closed: 0, repointed: 0, backfilled: 0, reopened: 0 });
+    expect(r).toEqual({ created: 2, closed: 0, repointed: 0, backfilled: 0, reopened: 0, deduped: 0 });
     expect(state.created).toEqual(['c1', 'h1']);
   });
 
@@ -636,5 +638,187 @@ describe('a machine-closed card reopens when its finding returns', () => {
     expect(r?.reopened).toBe(0);
     expect(r?.closed).toBe(0);                     // already closed, not re-closed
     expect(state.tasks[0].status).toBe('done');
+  });
+});
+
+/**
+ * ONE finding must not hold several cards.
+ *
+ * Two routes to that state, both observed: the id scheme invented an identity per
+ * EMISSION, so one finding reported four times filed four cards (`memory-index.ts:53`,
+ * and 387 stored findings were duplicates of the same kind); and any id change
+ * re-points cards through the remap, which can land several on one id.
+ *
+ * The oldest card wins because it holds the history. The retired one has its
+ * finding link CLEARED — left pointing at the survivor's finding it would satisfy
+ * the reopen branch on the very next run, and the pair would flap for ever.
+ */
+describe('duplicate cards for one finding', () => {
+  const card = (id: string, findingId: string, createdAt: number, status = 'todo') => ({
+    id, title: `[high] dup ${id}`, status, createdBy: 'auto-tasks',
+    linkedFindingId: findingId, linkedFindingIdentity: findingId, projectId: 'p1', createdAt,
+  });
+  const finding = (id: string) => ({
+    id, severity: 'high', category: 'schema', title: 'MemoryIndex: missing_migration',
+    file: 'packages/engine/src/core/memory-index.ts', line: 53, rule: 'missing_migration',
+    why: 'drift', agentPrompt: '', projectId: 'p1', status: 'open',
+  });
+
+  test('THE POINT: four cards on one finding leave one open, and three closed', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.findings = [finding('cf_1')];
+    state.tasks = [card('t_a', 'cf_1', 100), card('t_b', 'cf_1', 200), card('t_c', 'cf_1', 300), card('t_d', 'cf_1', 400)];
+
+    const r = await runAutoTasks('t1');
+    expect(r?.deduped).toBe(3);
+    expect(state.tasks.filter((t) => t.status === 'todo').map((t) => t.id)).toEqual(['t_a']);
+    // …and no replacement was filed for the finding that already has a card.
+    expect(state.created).toEqual([]);
+  });
+
+  test('the retired duplicates lose the finding link, so they cannot flap', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.findings = [finding('cf_1')];
+    state.tasks = [card('t_old', 'cf_1', 100), card('t_new', 'cf_1', 200)];
+
+    await runAutoTasks('t1');
+    expect(state.tasks.find((t) => t.id === 't_new')?.linkedFindingId).toBeNull();
+
+    // A second run must be a no-op rather than reopening what the first retired.
+    // `force`, because the run is debounced and a debounced call returns null.
+    state.updated = [];
+    const again = await runAutoTasks('t1', { force: true });
+    expect(again?.deduped).toBe(0);
+    expect(again?.reopened).toBe(0);
+    expect(state.tasks.find((t) => t.id === 't_new')?.status).toBe('done');
+  });
+
+  test('a human-touched card is left alone', async () => {
+    // 'done' and 'rejected' are outside the live set: a person's verdict is not
+    // a duplicate to be tidied away.
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.findings = [finding('cf_1')];
+    state.tasks = [card('t_a', 'cf_1', 100), { ...card('t_b', 'cf_1', 200), status: 'rejected' }];
+
+    const r = await runAutoTasks('t1');
+    expect(r?.deduped).toBe(0);
+    expect(state.tasks.find((t) => t.id === 't_b')?.status).toBe('rejected');
+  });
+
+  test("a person's own duplicate card is not the machine's to close", async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.findings = [finding('cf_1')];
+    state.tasks = [card('t_a', 'cf_1', 100), { ...card('t_mine', 'cf_1', 200), createdBy: 'user-alice' }];
+
+    const r = await runAutoTasks('t1');
+    expect(r?.deduped).toBe(0);
+    expect(state.tasks.find((t) => t.id === 't_mine')?.status).toBe('todo');
+  });
+
+  test('two cards on DIFFERENT findings are not duplicates', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.findings = [finding('cf_1'), { ...finding('cf_2'), title: 'Other: missing_migration' }];
+    state.tasks = [card('t_a', 'cf_1', 100), card('t_b', 'cf_2', 200)];
+
+    const r = await runAutoTasks('t1');
+    expect(r?.deduped).toBe(0);
+    expect(state.tasks.every((t) => t.status === 'todo')).toBe(true);
+  });
+});
+
+/**
+ * ONE problem, TWO sources.
+ *
+ * An action is a roll-up of findings the same collector run also emitted, and
+ * both are fileable — so the board showed `_callWithFeeRetry ×30` (the clone
+ * finding) next to `_callWithFeeRetry copy-pasted 30× (10 lines each)` (the
+ * roll-up), four times over. The collector stamps which findings each roll-up
+ * covers, because it is the only place that knows: downstream, the two are worded
+ * differently and any match on titles is a guess.
+ */
+describe('a roll-up action and its member findings', () => {
+  const clone = (id: string, severity = 'high') => ({
+    id, severity, category: 'clone', title: '_callWithFeeRetry ×30',
+    file: 'contracts/lib.sol', line: 944, rule: 'copy_paste',
+    why: 'duplicated', agentPrompt: '', projectId: 'p1', status: 'open',
+  });
+
+  test('THE POINT: the roll-up files, the member does not', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [action('ca_rollup', 1, ['cf_member'])];
+    state.findings = [clone('cf_member')];
+
+    const r = await runAutoTasks('t1');
+    expect(r?.created).toBe(1);
+    expect(state.created).toEqual(['ca_rollup']);
+  });
+
+  test('a member whose roll-up is BELOW the floor still files its own card', async () => {
+    // The exact regression the finding source was added to fix: 34 criticals were
+    // unreachable because only actions were read, and an action's pri is its own.
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [action('ca_rollup', 2, ['cf_member'])];   // pri 2 > floor 1
+    state.findings = [clone('cf_member')];                     // high ⇒ pri 1
+
+    const r = await runAutoTasks('t1');
+    expect(r?.created).toBe(1);
+    expect(state.created).toEqual(['cf_member']);
+  });
+
+  test('suppression does not close an existing card for the member', async () => {
+    // Filing and closing ask different questions. The member finding is still
+    // reported, so a card that already names it is still about a real problem.
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [action('ca_rollup', 1, ['cf_member'])];
+    state.findings = [clone('cf_member')];
+    state.tasks = [{
+      id: 't_member', title: '[high] _callWithFeeRetry ×30', status: 'todo', createdBy: 'auto-tasks',
+      linkedFindingId: 'cf_member', linkedFindingIdentity: 'cf_member', projectId: 'p1', createdAt: 100,
+    }];
+
+    await runAutoTasks('t1');
+    expect(state.updated.find((u) => u.id === 't_member' && u.patch.status === 'done')).toBeUndefined();
+  });
+
+  test('an EXISTING member card is retired in favour of the roll-up card', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [action('ca_rollup', 1, ['cf_member'])];
+    state.findings = [clone('cf_member')];
+    state.tasks = [
+      // The member card is OLDER, and still loses: the roll-up states the whole
+      // problem while the member is one instance of it.
+      { id: 't_member', title: '[high] _callWithFeeRetry ×30', status: 'todo', createdBy: 'auto-tasks', linkedFindingId: 'cf_member', linkedFindingIdentity: 'cf_member', projectId: 'p1', createdAt: 100 },
+      { id: 't_rollup', title: '[high] copy-pasted 30×', status: 'todo', createdBy: 'auto-tasks', linkedFindingId: 'ca_rollup', linkedFindingIdentity: 'p1|duplication|x', projectId: 'p1', createdAt: 200 },
+    ];
+
+    const r = await runAutoTasks('t1');
+    expect(r?.deduped).toBe(1);
+    expect(state.tasks.find((t) => t.id === 't_member')?.status).toBe('done');
+    expect(state.tasks.find((t) => t.id === 't_member')?.linkedFindingId).toBeNull();
+    expect(state.tasks.find((t) => t.id === 't_rollup')?.status).toBe('todo');
+  });
+
+  test("a person's member card is not the machine's to retire", async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [action('ca_rollup', 1, ['cf_member'])];
+    state.findings = [clone('cf_member')];
+    state.tasks = [
+      { id: 't_mine', title: 'mine', status: 'todo', createdBy: 'user-alice', linkedFindingId: 'cf_member', linkedFindingIdentity: null, projectId: 'p1', createdAt: 100 },
+      { id: 't_rollup', title: 'roll-up', status: 'todo', createdBy: 'auto-tasks', linkedFindingId: 'ca_rollup', linkedFindingIdentity: 'p1|duplication|x', projectId: 'p1', createdAt: 200 },
+    ];
+
+    const r = await runAutoTasks('t1');
+    expect(r?.deduped).toBe(0);
+    expect(state.tasks.find((t) => t.id === 't_mine')?.status).toBe('todo');
+  });
+
+  test('an old collector that stamps nothing files exactly as before', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [action('ca_rollup', 1)];        // no covers at all
+    state.findings = [clone('cf_member')];
+
+    const r = await runAutoTasks('t1');
+    expect(r?.created).toBe(2);
+    expect(state.created.sort()).toEqual(['ca_rollup', 'cf_member']);
   });
 });
