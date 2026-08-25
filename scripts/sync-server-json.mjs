@@ -41,6 +41,10 @@ function sync(relPath, stamp) {
 
   // Preserve the file's trailing newline convention rather than reformatting it:
   // a version bump should produce a one-line diff, not a whitespace rewrite.
+  //
+  // Note on non-ASCII: JSON.stringify emits real characters, not \uXXXX escapes.
+  // If a manifest was previously written with escaped em-dashes, the first run
+  // normalises them and the diff is two lines, not one. That happens once.
   const out = `${JSON.stringify(manifest, null, 2)}${raw.endsWith('\n') ? '\n' : ''}`;
   if (out === raw) {
     console.log(`${relPath} already at ${cliVersion} — nothing to do`);
