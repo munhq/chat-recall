@@ -103,21 +103,38 @@ function localOnlyRefusal(tool: string): string {
  * the same person three different stories about the same state.
  */
 function emptyIndexHint(): string {
+  // Two audiences read this, and the difference is whether the agent has a
+  // shell. In Claude Code or Cursor it does — so give it a command it can just
+  // RUN, and the whole gap closes without the user typing anything. On claude.ai
+  // it does not, and the same two lines are what the user needs to be told.
+  // Short, because a wall of text gets summarised away and the commands with it.
+  // Written as a PROCEDURE the agent executes, not a paragraph it summarises.
+  //
+  // Most clients that reach this are coding agents with a shell — Claude Code,
+  // Cursor, Codex. Told plainly and in order, the agent does the whole setup and
+  // the user clicks once. A paragraph gets compressed into "you need to install
+  // the CLI" and the commands vanish with it, which is why this is numbered and
+  // why the commands sit on their own lines.
+  //
+  // Step 2 cannot be automated away: `init` opens a browser approval, and that
+  // is the point — it is what links the machine to an account without a token
+  // being pasted around. The agent should expect it and say so rather than
+  // treating the wait as a hang.
   return isMultiTenant()
-    ? 'This account has no coding history in it yet — which is normal, not an error. '
-      + 'THE ACCOUNT IS ALREADY SET UP: authorizing this connection created it and started the free trial, '
-      + 'so there is nothing more to sign up for. What is missing is the history itself, and it cannot be '
-      + 'uploaded from here — the session transcripts sit on the user\'s own machine. '
-      + 'Two commands on that machine, and nothing else:\n'
-      + '  npm install -g chat-recall\n'
-      + '  chat-recall init\n'
-      + '`init` links the machine to THIS SAME ACCOUNT (one browser approval, same login — not a second '
-      + 'signup), then indexes what Claude Code, Codex, Gemini CLI, OpenCode, Antigravity and Cursor have '
-      + 'already written to disk, redacts secrets locally, and syncs. Every search tool on this connection '
-      + 'then answers over the whole history. '
-      + 'Meanwhile this connection already works for memory the user creates here — facts, decisions, tasks '
-      + 'and diary entries persist across conversations right now. '
-      + 'Tell the user the two commands. Do not report this as a failure or an empty product.'
+    ? 'No coding history in this account yet — normal for a new one, not an error. '
+      + 'The account already exists and the free trial is running; there is nothing to sign up for. '
+      + 'The transcripts live on the user\'s own machine, so they must be indexed there.\n\n'
+      + 'IF YOU HAVE A SHELL, DO THIS NOW — it is the whole setup:\n'
+      + '  1. npm install -g chat-recall\n'
+      + '  2. chat-recall init\n'
+      + '     Prints a URL and waits. Tell the user to open it and approve — one click, same account,\n'
+      + '     not a second signup. Do not kill the command while it waits.\n'
+      + '  3. It then indexes this machine\'s Claude Code, Codex, Gemini CLI, OpenCode, Antigravity and\n'
+      + '     Cursor sessions, redacts secrets locally, and syncs them.\n'
+      + '  4. Call recall_status to confirm, then retry what you were asked.\n'
+      + 'If you have no shell, give the user steps 1 and 2 verbatim.\n\n'
+      + 'Meanwhile this connection already works for memory created here — facts, decisions, tasks and '
+      + 'diary entries persist across conversations right now.'
     : 'Nothing has been indexed yet. Run `chat-recall init` (first time) or `chat-recall index` to collect '
       + 'this machine\'s sessions and sync them.';
 }
@@ -697,7 +714,7 @@ const RecallUserPromptsSchema = z.object({
 
 const RecallDecisionRecordSchema = z.object({
   subject: z.string().describe('What the decision is about (e.g., "chat-recall", "auth strategy")'),
-  decision: z.string().describe('The decision itself in plain words (e.g., "use SQLite FTS5 as the default search backend")'),
+  decision: z.string().describe('The decision itself in plain words (e.g., "use Postgres full-text search as the default backend")'),
   reason: z.string().optional().describe('Why this was decided — short rationale'),
   importance: z.number().min(1).max(5).optional().default(4)
     .describe('1–5; the classifier surfaces 4+ in wake-up context'),
@@ -1058,7 +1075,7 @@ when the user is asking "what did we change?" and the diffs/SQL/commands matter.
       },
       {
         name: 'recall_recent',
-        description: `List recent Claude Code sessions.
+        description: `List recent sessions across every AI tool chat-recall indexes.
 
 Shows your most recent conversations across all projects or filtered by project.
 Use this when the user says "continue our last conversation" or wants to see recent work.
@@ -1095,7 +1112,7 @@ The name persists across re-syncs and summary regeneration (it's stored separate
       {
         name: 'recall_edits_timeline',
         description: `Chronological list of file edits across recent sessions, spanning every AI tool
-chat-recall indexes — Claude Code, Gemini CLI, OpenCode, Codex and Antigravity.
+chat-recall indexes — Claude Code, Gemini CLI, OpenCode, Codex, Antigravity and Cursor.
 
 Returns rows shaped like (timestamp, tool, session_id, project, file, op) sorted newest
 first. Pulls live from each tool's native session store — Claude JSONL, Gemini chat
@@ -1197,8 +1214,8 @@ by extension, with tools used) — "which files did session X actually touch?".`
         name: 'recall_commits',
         description: `Find git commits that landed during a session's edit window, grouped by repo.
 
-Multi-repo aware: a session that touched ~/code/personal/k8s_gpu and
-~/code/personal/munbot returns commits from each repo, with overlap shown
+Multi-repo aware: a session that touched ~/code/example/infra and
+~/code/example/api returns commits from each repo, with overlap shown
 between commit-files and session-touched-files.
 
 Use this to verify "shipped" claims — if the session edited 18 files but no
@@ -1289,9 +1306,9 @@ overview (from CLAUDE.md), tech stack (KG uses), architecture / deployment / sec
 sections (from CLAUDE.md), decisions log (KG chose/rejected), recent session activity
 with summaries, open tasks, plans, agent diary conclusions, and cost rollup.
 
-Accepts EITHER a project path / name substring (e.g. "munbot", "chat-recall",
-"/home/user/code/poly") OR a stable project_id:
-  - "git:<host>/<owner>/<repo>"   (e.g. "git:github.com/me/munbot")
+Accepts EITHER a project path / name substring (e.g. "api", "example-app",
+"/home/user/code/example") OR a stable project_id:
+  - "git:<host>/<owner>/<repo>"   (e.g. "git:github.com/owner/repo")
   - "ws:<name>"                   (workspace rollup)
   - "git-local:<sha1>"            (local-only git repo)
   - "user:<custom>"               (declared in ~/.chat-recall/projects.json)
@@ -1437,7 +1454,7 @@ without editing the task itself. Pass the task id (t_…) from recall_tasks.`,
         name: 'recall_kg_query',
         description: `Query the knowledge graph for an entity's relationships.
 
-Returns typed facts with temporal validity. E.g. "chat-recall" → uses TypeScript, has source FTS5.
+Returns typed facts with temporal validity. E.g. "example-app" → uses TypeScript, deploys to Kubernetes.
 Filter by date with as_of to see what was true at a specific point in time.
 Use this to VERIFY facts before asserting them.`,
         inputSchema: {
@@ -1454,7 +1471,7 @@ Use this to VERIFY facts before asserting them.`,
         name: 'recall_kg_add',
         description: `Add a fact to the knowledge graph. Subject → predicate → object with optional time window.
 
-E.g. ("chat-recall", "uses", "LanceDB", valid_from="2024-01-15")`,
+E.g. ("example-app", "uses", "Postgres", valid_from="2026-01-15")`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -2038,11 +2055,18 @@ Complements recall_memory_search: search finds candidates, this reads the specif
   if (hidden > 0) {
     lean.push({
       name: 'recall_help',
+      // The env-var advice only applies to a LOCAL server the user launches.
+      // Over the remote endpoint the process is ours, so telling a connector
+      // user to set CHAT_RECALL_MCP_PROFILE names a knob they cannot reach —
+      // and the useful half of the sentence (they still work by name) got lost
+      // behind it.
       description:
         `List the ${hidden} additional chat-recall tools that are not registered in this `
         + 'profile (analytics, knowledge-graph navigation, code intelligence, sharing, '
-        + 'security triage, maintenance). They all still WORK if called by name. Set '
-        + 'CHAT_RECALL_MCP_PROFILE=full to register every tool up front.',
+        + 'security triage, maintenance). Every one of them still WORKS if you call it by '
+        + 'name — this profile shortens the LIST, not the surface, because tool choice '
+        + 'degrades as the list grows.'
+        + (isMultiTenant() ? '' : ' Set CHAT_RECALL_MCP_PROFILE=full to register them all up front.'),
       inputSchema: { type: 'object', properties: {} },
     });
   }
@@ -2357,7 +2381,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         const lines = [
           'Chat-Recall Server Status',
           `Synced sessions: ${sync.sessions}`,
-          `FTS5 chunks: ${status.totalChunks}`,
+          `Indexed chunks: ${status.totalChunks}`,
           `Raw archives: ${sync.rawArchived}`,
         ];
         // "You are running an old CLI" had exactly one channel: a stderr line on
