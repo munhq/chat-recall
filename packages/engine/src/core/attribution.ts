@@ -105,6 +105,15 @@ export interface FirstTouch {
   c?: string;
   /** first-seen epoch ms */
   t?: number;
+  /**
+   * Anonymous id, minted by the page on first touch and also handed to the
+   * analytics session. It is the join key between "a visitor arrived from
+   * reddit.com" and "a tenant was created" — without it those are two unrelated
+   * records and the only answerable question is a count, not a path.
+   *
+   * An id we issue, never a fingerprint we compute.
+   */
+  a?: string;
 }
 
 export interface Attribution {
@@ -112,6 +121,8 @@ export interface Attribution {
   /** Raw referrer host, so a mis-bucketed row stays debuggable. */
   referrer: string | null;
   campaign: string | null;
+  /** Joins this signup to the analytics session that preceded it. */
+  anonId: string | null;
 }
 
 /** Strip a hostname down to something matchable. Never throws. */
@@ -139,22 +150,25 @@ function hostOf(raw: string): string {
  */
 export function classifyFirstTouch(ft: FirstTouch | null | undefined): Attribution {
   const campaign = ft?.c?.trim().slice(0, 120) || null;
+  // Bounded and character-restricted: it reaches a SQL parameter and a join, so
+  // a hostile value must not be able to be long or strange, only useless.
+  const anonId = (ft?.a && /^[A-Za-z0-9-]{8,64}$/.test(ft.a)) ? ft.a : null;
   const rawHost = ft?.r ? hostOf(ft.r) : '';
   const referrer = rawHost || null;
 
   const utm = ft?.u?.trim().toLowerCase();
-  if (utm && UTM_MAP[utm]) return { source: UTM_MAP[utm]!, referrer, campaign };
+  if (utm && UTM_MAP[utm]) return { source: UTM_MAP[utm]!, referrer, campaign, anonId };
 
-  if (!rawHost) return { source: 'direct', referrer: null, campaign };
+  if (!rawHost) return { source: 'direct', referrer: null, campaign, anonId };
 
   // Longest suffix first, so a future shorter entry cannot shadow a longer one.
   const ordered = [...HOST_MAP].sort((a, b) => b[0].length - a[0].length);
   for (const [needle, bucket] of ordered) {
     if (rawHost === needle || rawHost.endsWith(`.${needle}`) || rawHost.includes(needle)) {
-      return { source: bucket, referrer, campaign };
+      return { source: bucket, referrer, campaign, anonId };
     }
   }
-  return { source: 'other', referrer, campaign };
+  return { source: 'other', referrer, campaign, anonId };
 }
 
 /**
@@ -177,6 +191,7 @@ export function parseFirstTouchCookie(value: string | null | undefined): FirstTo
       u: typeof u === 'string' ? u.slice(0, 60) : undefined,
       c: typeof c === 'string' ? c.slice(0, 120) : undefined,
       t: typeof t === 'number' && Number.isFinite(t) ? t : undefined,
+      a: typeof (o as FirstTouch).a === 'string' ? (o as FirstTouch).a!.slice(0, 64) : undefined,
     };
   } catch {
     return null;
@@ -185,7 +200,7 @@ export function parseFirstTouchCookie(value: string | null | undefined): FirstTo
 
 /** Read `cr_src` out of a raw Cookie header. */
 export function firstTouchFromCookieHeader(header: string | null | undefined): Attribution {
-  if (!header) return { source: 'direct', referrer: null, campaign: null };
+  if (!header) return { source: 'direct', referrer: null, campaign: null, anonId: null };
   const m = /(?:^|;\s*)cr_src=([^;]*)/.exec(header);
   return classifyFirstTouch(parseFirstTouchCookie(m?.[1]));
 }
