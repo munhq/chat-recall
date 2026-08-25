@@ -296,15 +296,35 @@ async function appliedRecIds(
 const DISMISS_SCOPE = 'rec_dismissed';
 const dismissKey = (projectId: string, recId: string): string => `${projectId}|${recId}`;
 
-async function dismissedRecIds(
+/** What a dismissal recorded, for the reader who has to review it later. */
+export interface RecDismissal { reason: string; by: string; at: number }
+
+/**
+ * The dismissals for one project, keyed by recommendation id.
+ *
+ * A Map, not a Set: the listing shows the reason and who gave it, because a
+ * dismissal that cannot be read back cannot be undone by anyone but the person
+ * who remembers making it.
+ */
+async function dismissedRecs(
   store: { kvList(scope?: string, limit?: number): Promise<Array<{ key: string; value: string }>> },
   projectId: string,
-): Promise<Set<string>> {
-  const out = new Set<string>();
+): Promise<Map<string, RecDismissal>> {
+  const out = new Map<string, RecDismissal>();
   try {
     for (const row of await store.kvList(DISMISS_SCOPE, 1000)) {
       const [proj, recId] = row.key.split('|');
-      if (proj === projectId && recId) out.add(recId);
+      if (proj !== projectId || !recId) continue;
+      let meta: RecDismissal = { reason: '', by: 'unknown', at: 0 };
+      try {
+        const o = JSON.parse(row.value) as Partial<RecDismissal>;
+        meta = {
+          reason: typeof o.reason === 'string' ? o.reason : '',
+          by: typeof o.by === 'string' ? o.by : 'unknown',
+          at: Number(o.at) || 0,
+        };
+      } catch { /* a value we cannot parse is still a dismissal — keep the id */ }
+      out.set(recId, meta);
     }
   } catch { /* an unreadable store must not blank the panel */ }
   return out;
@@ -331,17 +351,22 @@ router.get('/recommendations', async (req, res) => {
       (await store.listItemsByProjectId('session', projectId, 200)).map((s) => s.id));
     const [applied, dismissed] = await Promise.all([
       appliedRecIds(store as never, projectId),
-      dismissedRecIds(store as never, projectId),
+      dismissedRecs(store as never, projectId),
     ]);
-    const recommendations = buildRecommendations({
+    // Applied recommendations are suppressed at build time: the rule is in the
+    // file, so the advice is no longer true. A dismissal is the opposite — the
+    // advice still holds and a person said no to it — so those are BUILT and then
+    // split out below. Suppressing them here too is what made the dismissal
+    // one-way: the card vanished, and nothing could offer to undo it.
+    const built = buildRecommendations({
       project, summary, findings, hotspots, behavior,
-      // Both are "the user has already answered this". Applied and dismissed are
-      // kept apart in storage because they mean different things to a reader, and
-      // an applied rule that gets deleted should come back while a dismissed one
-      // should not.
-      appliedRecIds: new Set([...applied, ...dismissed]),
+      appliedRecIds: applied,
     });
-    res.json({ recommendations, behavior: behavior ?? null });
+    const recommendations = built.filter((r) => !dismissed.has(r.id));
+    const dismissedList = built
+      .filter((r) => dismissed.has(r.id))
+      .map((r) => ({ ...r, dismissal: dismissed.get(r.id) as RecDismissal }));
+    res.json({ recommendations, dismissed: dismissedList, behavior: behavior ?? null });
   } catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : 'failed' }); }
   finally { await store.close(); }
 });
