@@ -54,6 +54,22 @@ export interface GrowthProps {
   anonId?: string | null;
   /** Anything else. Keep it small; this is not a log. */
   extra?: Record<string, unknown>;
+  /**
+   * Collapse repeats: at most one row per tenant per UTC day, per process.
+   *
+   * REQUIRED for anything fired from a hot path. `activate` on every successful
+   * sync measured at ~1,200 rows per day for ONE tenant in production — for a
+   * fact that only ever needs to be "did this tenant ever activate". At a
+   * hundred tenants that is tens of millions of identical rows a year, held for
+   * the full retention window.
+   *
+   * Per-process, so N replicas can emit up to N rows a day rather than one.
+   * That is deliberate: a shared counter would need either a read this
+   * credential does not have or a round trip on a hot path, and N rows a day
+   * instead of 1,200 is the entire win. Funnel queries count DISTINCT tenant,
+   * so the exact number of duplicates never mattered — only the volume did.
+   */
+  oncePerDay?: boolean;
 }
 
 const PRODUCT = process.env.METRICS_PRODUCT ?? '';
@@ -65,6 +81,23 @@ const ENABLED = process.env.METRICS_ENABLED === 'true' && !!process.env.METRICS_
  * serve a request. Two connections is plenty for three events per tenant
  * lifetime.
  */
+/**
+ * Seen-today set for `oncePerDay`. Bounded so a long-lived process with many
+ * tenants cannot grow it without limit — at the cap it is cleared wholesale,
+ * which costs at most one extra row per tenant and never leaks.
+ */
+const seen = new Map<string, number>();
+const SEEN_MAX = 20_000;
+function alreadySentToday(event: GrowthEvent, tenant: string | null | undefined): boolean {
+  if (!tenant) return false;               // no key to throttle on; let it through
+  const key = `${event}:${tenant}`;
+  const day = Math.floor(Date.now() / 86_400_000);
+  if (seen.get(key) === day) return true;
+  if (seen.size >= SEEN_MAX) seen.clear();
+  seen.set(key, day);
+  return false;
+}
+
 let pool: Pool | null = null;
 function getPool(): Pool | null {
   if (!ENABLED) return null;
@@ -98,6 +131,7 @@ function getPool(): Pool | null {
  */
 export function growth(event: GrowthEvent, props: GrowthProps = {}): void {
   if (!ENABLED) return;
+  if (props.oncePerDay && alreadySentToday(event, props.tenant)) return;
   const p = getPool();
   if (!p) return;
 
@@ -123,6 +157,9 @@ export function growth(event: GrowthEvent, props: GrowthProps = {}): void {
     });
   });
 }
+
+/** Test-only: forget the oncePerDay state. */
+export function __resetGrowthThrottle(): void { seen.clear(); }
 
 /** For tests and for `chat-recall doctor` — is measurement actually on? */
 export function growthEnabled(): boolean {

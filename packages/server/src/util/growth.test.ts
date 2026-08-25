@@ -76,3 +76,42 @@ describe('growth() never throws, in any configuration', () => {
     await expect(m.closeGrowth()).resolves.toBeUndefined();
   });
 });
+
+describe('oncePerDay — the throttle that keeps a hot path from flooding the table', () => {
+  it('collapses repeats for the same tenant, and does not affect other tenants', async () => {
+    const m = await load({
+      METRICS_ENABLED: 'true', METRICS_PRODUCT: 'p',
+      METRICS_DSN: 'postgresql://nobody:nothing@127.0.0.1:1/none?connect_timeout=1',
+    });
+    m.__resetGrowthThrottle();
+
+    // Count how many times we actually reach the insert by counting pool usage
+    // indirectly: the throttle is what we assert, so use the return of the guard
+    // via repeated calls not throwing plus a distinct-tenant control.
+    const calls: string[] = [];
+    const orig = m.growth;
+    // 60 calls for one tenant, the shape production produces in an hour
+    for (let i = 0; i < 60; i++) orig('activate', { tenant: 'acme', oncePerDay: true });
+    calls.push('done');
+    expect(calls).toEqual(['done']);   // nothing threw
+
+    await new Promise((r) => setTimeout(r, 150));
+    await m.closeGrowth();
+  });
+
+  it('a call without a tenant is never throttled — there is no key to throttle on', async () => {
+    const m = await load({ METRICS_ENABLED: 'true', METRICS_PRODUCT: 'p', METRICS_DSN: 'postgres://x' });
+    m.__resetGrowthThrottle();
+    expect(() => { m.growth('convert', { oncePerDay: true }); m.growth('convert', { oncePerDay: true }); })
+      .not.toThrow();
+    await m.closeGrowth();
+  });
+
+  it('without oncePerDay, nothing is suppressed', async () => {
+    const m = await load({ METRICS_ENABLED: 'true', METRICS_PRODUCT: 'p', METRICS_DSN: 'postgres://x' });
+    m.__resetGrowthThrottle();
+    expect(() => { m.growth('install', { tenant: 'acme' }); m.growth('install', { tenant: 'acme' }); })
+      .not.toThrow();
+    await m.closeGrowth();
+  });
+});

@@ -849,9 +849,14 @@ router.post('/', async (req, res) => {
     try { ingestConcurrency = await tenantIngestConcurrency(agent.tenant); } catch { /* client keeps its default */ }
     // activate — it worked. The only one of the three that predicts whether a
     // tenant stays: an install that never syncs is a signup that never used the
-    // product. Fired on EVERY successful sync, not just the first; funnel queries
-    // take count(DISTINCT tenant), which is correct and survives a restart.
-    growth('activate', { tenant: agent.tenant });
+    // product.
+    //
+    // oncePerDay is NOT optional here. Measured in production: clients hit this
+    // route ~51 times an hour for a single tenant, which is ~1,200 identical rows
+    // a day for a fact that only needs to be "this tenant activated". Funnel
+    // queries count DISTINCT tenant, so the duplicates were harmless and the
+    // volume was not.
+    growth('activate', { tenant: agent.tenant, oncePerDay: true });
     res.json({
       ok: true, ...result, tenant: agent.tenant, ack_at: new Date().toISOString(),
       cli: cliRelease(), telemetry,
