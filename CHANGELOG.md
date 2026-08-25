@@ -4,6 +4,24 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+### Fixed
+
+- **Four cards for one finding.** The finding id gave every EMISSION its own
+  ordinal, so a collector that reported the same finding four times — byte
+  identical in every column — produced four ids and four cards for
+  `memory-index.ts:53`. 387 of 8,290 stored findings were duplicates of that kind.
+  The ordinal counts distinct LINES now, and the title joined the key so the 918
+  findings that carry no line stop depending on the analyzer's emit order to stay
+  apart. A finding's triage verdict and age, and every card pointing at it, now
+  survive the id change that this implies.
+- **One problem filed twice, once from each source.** A roll-up action summarises
+  findings the same run also emitted, and both were fileable: `_callWithFeeRetry
+  ×30` beside `_callWithFeeRetry copy-pasted 30× (10 lines each)`. The collector
+  stamps which findings each roll-up covers — it is the only place that knows —
+  and a member is suppressed only when its roll-up is itself being filed, so a
+  summary below the policy floor can never silence a critical. Cards already
+  duplicated on the board are collapsed, and the run reports how many.
+
 ### Added
 
 - **A person can dismiss a recommendation, not only an agent.** 0.5.16 gave the
