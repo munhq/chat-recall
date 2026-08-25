@@ -4,6 +4,53 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.15] — 2026-08-25
+
+### Added
+
+- **A remote MCP endpoint: `POST /mcp`, Streamable HTTP with OAuth 2.1.** A client
+  that cannot run the CLI — claude.ai, ChatGPT, a browser IDE, anything in an MCP
+  directory — can now connect to `https://chatrecall.dev/mcp` and get the same
+  tool table the local stdio server serves. Dynamic client registration, PKCE
+  S256, refresh tokens, and both RFC 8414/9728 discovery documents at the origin
+  root. An MCP identity IS the account identity: the OAuth grant resolves to the
+  same `user` row the dashboard and the CLI device flow use.
+- `server.json` declares the endpoint under `remotes`, which is what makes a
+  directory list chat-recall as hosted rather than stdio-only.
+- `OPERATOR_TENANTS` / `OPERATOR_PLAN`: an allowlist of tenant slugs that are
+  always entitled. It grants a plan, never the operator role.
+
+### Changed
+
+- **A lapsed account is refused, not served stale history.** Reads used to pass
+  through, so an account whose trial had ended kept answering searches out of the
+  corpus it held the day it lapsed, with a banner carrying the caveat. A caveat
+  only works on an agent that reads caveats. Every value surface now answers 402
+  `no_plan`. Nothing is deleted — `/api/data` export and delete lost their gate
+  rather than gaining one, because taking your history with you must never
+  require paying again, and neither must erasing it.
+- The 55-tool surface moved to `packages/engine/src/mcp/`, so the stdio server and
+  the remote endpoint serve one definition and cannot drift into two products.
+
+### Fixed
+
+- The remote endpoint authenticated the caller and then answered 401 on every
+  tool call: it passed the OAuth access token as the loopback credential, and
+  that is not a session token. `initialize` and `tools/list` touch no API, so
+  every manual check passed. There is now an end-to-end script that calls a tool.
+- `recall_code_index` was reachable by name on the remote endpoint, where it
+  would have run the analyzer over the SERVER's filesystem. Local-only tools now
+  refuse in the dispatch, not just in the listing.
+- `POST /mcp` had no rate limit; `GET /mcp/` returned JSON over the documentation
+  page that `README.md` links and npm ships.
+- `smithery.yaml` launched `npx -y chat-recall-mcp`, which is E404 —
+  `chat-recall-mcp` is a bin inside `chat-recall`, not a package.
+- `plugin/.claude-plugin/plugin.json` sat eight releases behind; `version:sync`
+  now stamps it too.
+- A brand-new account was told its "subscription has lapsed". Every connector
+  signup starts before the trial is granted, so that was the first sentence a new
+  user read, and it hid the one action that fixes it.
+
 ## [0.5.14] — 2026-08-25
 
 ### Fixed
