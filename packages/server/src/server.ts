@@ -71,6 +71,7 @@ import { createLogger, setLogContextProvider } from '@chat-recall/engine/core/lo
 import { closePgPools } from '@chat-recall/engine/core/store/pg-pool.js';
 import { requestContext, attachTenantToContext, logContext } from './middleware/request-context.js';
 import { httpObservability } from './middleware/http-observability.js';
+import { funnelTelemetry } from './middleware/funnel.js';
 import {
   summarySweepsTotal, summariesGeneratedTotal, summariesFailedTotal, summariesSkippedTotal,
   summaryConcurrency, vectorSweepsTotal, vectorsEmbeddedTotal,
@@ -374,7 +375,11 @@ if (authProviderName() === 'better-auth') {
     authHandler, oauthAuthorizationServerHandler, oauthProtectedResourceHandler, runAuthMigrations,
   } = await import('./auth/better-auth.js');
   await runAuthMigrations();
-  app.all('/api/auth/*', authHandler());
+  // Funnel telemetry sits IN FRONT of the auth handler, so it sees the requests
+  // a user makes before they have succeeded at anything — a sign-up, a
+  // verification code, a CLI login prompt. It reads only the path and the
+  // response status; never a body, an email, a code or a token.
+  app.all('/api/auth/*', funnelTelemetry, authHandler());
 
   // OAuth discovery, at the ROOT and not under /api/auth.
   //
