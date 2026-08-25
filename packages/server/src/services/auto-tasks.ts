@@ -134,11 +134,48 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
       // Reproduced on prod: the panel said "4 findings ready to file" (read as
       // the signed-in user) and Run now said "nothing qualified" (read as
       // auto-tasks) in the same session, against the same table.
-      const { openActions, openFindings, existing } = await runUnrestricted(async () => ({
-        openActions: await store.listCodeActions(undefined, { status: 'suggested', limit: 500 }),
-        openFindings: await store.listCodeFindings(undefined, { limit: 500 }),
-        existing: await store.teamTasksByFindingIds(),
-      }));
+      // A CAPPED LIST CANNOT ANSWER "IS THIS STILL OPEN".
+      //
+      // This read was listCodeFindings(limit: 500) over EVERY project, and the
+      // close sweep then treated that page as the whole set of open findings.
+      // With 8,096 findings and 500 slots, everything past the cap looks deleted,
+      // so a card pointing at it closes itself as fixed — the exact bug this
+      // service was just repaired for, reintroduced by a LIMIT.
+      //
+      // It happened to be harmless while the policy floor was 1: the ordering is
+      // severity-first and only 31 findings are critical-or-high, so every
+      // fileable one fell inside the page. It would have become live the moment
+      // the floor moved to 2. A correctness that depends on a setting nobody
+      // connected to it is not correctness.
+      //
+      // So: fetch what is needed, not a page of everything.
+      //   - FILING wants findings at or under the floor → query per severity,
+      //     which is bounded by the policy rather than by an arbitrary number.
+      //   - THE CLOSE SWEEP wants the truth about the specific findings the
+      //     existing cards name → look those up by exact id.
+      const wantedSeverities = PRI_SEVERITY.filter((sv) => priOfSeverity(sv) <= policy.maxPri);
+      const { openActions, fileable, existing } = await runUnrestricted(async () => {
+        const tasks = await store.teamTasksByFindingIds();
+        const perSeverity = await Promise.all(
+          wantedSeverities.map((severity) => store.listCodeFindings(undefined, { severity, limit: 2000 })),
+        );
+        return {
+          openActions: await store.listCodeActions(undefined, { status: 'suggested', limit: 500 }),
+          fileable: perSeverity.flat(),
+          existing: tasks,
+        };
+      });
+
+      // The findings the cards point at, resolved exactly. A card whose finding
+      // is absent HERE is genuinely gone, not merely past a page boundary.
+      const cardFindingIds = existing
+        .map((t) => t.linkedFindingId)
+        .filter((id): id is string => !!id && id.startsWith('cf_'));
+      const referenced = await runUnrestricted(() => store.codeFindingsByIds(cardFindingIds));
+      // Union, deduped: everything fileable plus everything a card still names.
+      const byId = new Map<string, (typeof fileable)[number]>();
+      for (const f of [...fileable, ...referenced]) byId.set(f.id, f);
+      const openFindings = [...byId.values()];
 
       // FINDINGS ARE FILEABLE TOO, and until now they were not — runAutoTasks
       // read code_actions and nothing else. A finding carries a severity string

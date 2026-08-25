@@ -2003,6 +2003,15 @@ export class MemoryStore {
     return tx(findings);
   }
 
+  /** Findings by exact id — see the driver contract. A capped list cannot tell
+   *  "deleted" from "past the cap". */
+  codeFindingsByIds(ids: string[]): CodeFindingRow[] {
+    if (!ids.length) return [];
+    const qs = ids.map(() => '?').join(',');
+    return (this.db.prepare(`SELECT * FROM code_findings WHERE id IN (${qs})`).all(...ids) as any[])
+      .map(rowToCodeFinding);
+  }
+
   listCodeFindings(projectId?: string, opts: { severity?: CodeSeverity; category?: string; limit?: number } = {}): CodeFindingRow[] {
     const where: string[] = []; const params: any[] = [];
     if (projectId) { where.push('project_id = ?'); params.push(projectId); }
