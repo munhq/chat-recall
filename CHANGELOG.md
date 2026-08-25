@@ -4,6 +4,22 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.13] — 2026-08-25
+
+### Fixed
+
+- A machine-closed card now reopens when its finding comes back. The sweep only
+  ever closed: `done` sat in the closed set so the card was skipped for ever, and
+  the filing loop matches an open finding to a card by id, so it filed nothing
+  either. The finding became invisible — the board said done, the code still had
+  the problem, and no surface showed it. Eight cards on one board were in exactly
+  that state. It is the expected shape now that a finding's id is derived from its
+  content: a finding that returns returns as itself.
+- Only machine-closed cards reopen. A card carrying the session that did the work
+  records a finished episode, so a returning finding gets a new card rather than
+  resurrecting someone's completed one; `rejected` stays the human's verdict; and
+  a person's own card is never touched.
+
 ## [0.5.12] — 2026-08-25
 
 ### Fixed

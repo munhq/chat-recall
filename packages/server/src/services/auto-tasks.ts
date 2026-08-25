@@ -90,7 +90,7 @@ export function parsePolicy(raw: string | null): AutoTasksPolicy {
 export async function runAutoTasks(
   tenant: string,
   opts: { force?: boolean } = {},
-): Promise<{ created: number; closed: number; repointed: number; backfilled: number } | null> {
+): Promise<{ created: number; closed: number; repointed: number; backfilled: number; reopened: number } | null> {
   try {
     return await run(tenant, opts.force === true);
   } catch (err) {
@@ -99,7 +99,7 @@ export async function runAutoTasks(
   }
 }
 
-async function run(tenant: string, force = false): Promise<{ created: number; closed: number; repointed: number; backfilled: number } | null> {
+async function run(tenant: string, force = false): Promise<{ created: number; closed: number; repointed: number; backfilled: number; reopened: number } | null> {
   const cp = await createControlPlane();
   let policy: AutoTasksPolicy;
   try {
@@ -236,6 +236,10 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
       /** Pre-identity cards given one. Reported so a run that only repairs
        *  bookkeeping is distinguishable from a run that did nothing. */
       let backfilled = 0;
+      /** Machine-closed cards whose finding came back. Counted separately from
+       *  `created`: a reopen is not a new problem, it is one that was never
+       *  fixed, and conflating the two hides how often that happens. */
+      let reopened = 0;
       // WRITES keep the author stamp, so a card records who filed it.
       await runWithAuthor({ sub: 'auto-tasks', device: null }, async () => {
       for (const a of urgent) {
@@ -309,7 +313,41 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
       const stillOpen = new Set(open.map((a) => a.id));
       const CLOSED: ReadonlySet<string> = new Set(['done', 'rejected']);
       for (const t of existing) {
-        if (t.createdBy !== 'auto-tasks' || CLOSED.has(t.status)) continue;
+        if (t.createdBy !== 'auto-tasks') continue;
+
+        // ── REOPEN. A close is not permanent, because a finding can come back.
+        //
+        // The sweep only ever closed. 'done' sat in CLOSED, so a machine-closed
+        // card was skipped for ever — and the filing loop above matches an open
+        // finding to a card BY ID, so it filed nothing either. The finding was
+        // therefore invisible: the board said done, the code still had the
+        // problem, and nothing surfaced it. Worse than a duplicate card.
+        //
+        // Observed on this board: 8 cards closed in one sweep, then their
+        // findings reappeared under the SAME ids — which is expected now, since a
+        // finding's id is derived from its content and is stable, so a finding
+        // that returns returns as itself.
+        //
+        // Only machine-closed cards reopen, and the guard is the linked session:
+        //   - createdBy 'auto-tasks'  — never a card a person made
+        //   - status 'done'           — 'rejected' is the human's verdict and stands
+        //   - NO linked session       — a card closed by work that attached its
+        //     session records a finished episode. If the finding returns after
+        //     that, it is a new occurrence and deserves a new card, not the
+        //     resurrection of someone's completed one.
+        if (t.status === 'done'
+            && !t.linkedSessionId
+            && t.linkedFindingId
+            && stillOpen.has(t.linkedFindingId)) {
+          await store.updateTeamTask(t.id, { status: 'todo' });
+          await store.addTeamTaskComment(t.id, 'auto-tasks',
+            `Reopened: finding ${t.linkedFindingId} is being reported again. This card was `
+            + 'closed automatically, not by work, so the problem was never fixed.');
+          reopened++;
+          continue;
+        }
+
+        if (CLOSED.has(t.status)) continue;
         if (!t.linkedFindingId || stillOpen.has(t.linkedFindingId)) continue;
 
         // Only the stored identity can answer this. A card without one predates
@@ -335,16 +373,16 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
 
       });
 
-      if (created || closed || repointed || backfilled) log.info({ tenant, created, closed, repointed, backfilled }, 'auto-tasks run');
+      if (created || closed || repointed || backfilled || reopened) log.info({ tenant, created, closed, repointed, backfilled, reopened }, 'auto-tasks run');
       // Recorded even when both counts are zero: "it ran and found nothing" and
       // "it never ran" are different answers to "is anything happening?", and
       // the UI can only tell them apart if the zero is written down.
       const cp2 = await createControlPlane();
       try {
         await cp2.setTenantSetting(tenant, LAST_RESULT_KEY,
-          JSON.stringify({ at: Date.now(), created, closed, repointed, backfilled }));
+          JSON.stringify({ at: Date.now(), created, closed, repointed, backfilled, reopened }));
       } finally { await cp2.close(); }
-      return { created, closed, repointed, backfilled };
+      return { created, closed, repointed, backfilled, reopened };
     } finally {
       await store.close();
     }
