@@ -4,6 +4,35 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.16] — 2026-08-25
+
+### Added
+
+- The assistant can ACT on recommendations, not only read them. Three tools,
+  taking the surface to 58:
+  - `recall_recommendation_apply` — add a recommendation's rule to the repo's
+    CLAUDE.md, or set the label it asks for. The apply route already enqueued a
+    sync intent for the machine holding the repo, so the execution path was always
+    agent-driven; only the decision was stuck behind a dashboard button.
+  - `recall_recommendation_dismiss` — say no for one project, with a reason. The
+    reason is required: these tools are reachable by an agent, so a dismissal is a
+    machine changing how future sessions treat someone's codebase, and an
+    unexplained one cannot be reviewed. `undo: true` restores it.
+  - `recall_project_label` — mark a repo poc / production / engineering, the
+    guardrail every later session reads.
+- The wake-up bundle carries a project's top three recommendations, so a session
+  starting in a repo is told what would make it better before anyone asks.
+  Project-scoped and capped: unscoped it would be every project's advice at once,
+  at the moment a session is trying to orient.
+
+### Fixed
+
+- `recall_recommendations` never emitted the recommendation `id`, which would have
+  left the two new tools with no way to name their target.
+- Dismissals live in `kv_store`, not a new table: one fact per id, already
+  tenant-scoped and RLS-walled, and a table would have needed a migration to carry
+  something that small.
+
 ## [0.5.15] — 2026-08-25
 
 ### Added
