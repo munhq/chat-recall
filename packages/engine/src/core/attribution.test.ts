@@ -158,3 +158,34 @@ describe('the closed set stays closed', () => {
     expect(SIGNUP_SOURCES).toContain('other');
   });
 });
+
+describe('anonId — the join between a visit and a signup', () => {
+  it('carries a well-formed id through', () => {
+    const a = classifyFirstTouch({ r: 'reddit.com', a: '3f2b1c9d-4e5a-6b7c-8d9e-0f1a2b3c4d5e' });
+    expect(a.anonId).toBe('3f2b1c9d-4e5a-6b7c-8d9e-0f1a2b3c4d5e');
+  });
+
+  it('rejects anything that is not plainly an id', () => {
+    // It reaches a SQL parameter and a join key, so a hostile value must be
+    // useless rather than merely escaped.
+    for (const bad of ["'; DROP TABLE tenants;--", 'a'.repeat(200), 'short', '', 'has spaces', '<script>']) {
+      expect(classifyFirstTouch({ r: 'reddit.com', a: bad }).anonId).toBeNull();
+    }
+  });
+
+  it('is null when the page never minted one (an older cookie)', () => {
+    expect(classifyFirstTouch({ r: 'reddit.com' }).anonId).toBeNull();
+  });
+
+  it('survives the cookie round trip', () => {
+    const v = encodeURIComponent(JSON.stringify({ r: 'reddit.com', a: '11111111-2222-3333-4444-555555555555' }));
+    expect(firstTouchFromCookieHeader(`cr_src=${v}`).anonId).toBe('11111111-2222-3333-4444-555555555555');
+  });
+
+  it('is present on every branch, including direct and other', () => {
+    const id = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    expect(classifyFirstTouch({ a: id }).anonId).toBe(id);                        // direct
+    expect(classifyFirstTouch({ r: 'nowhere.example', a: id }).anonId).toBe(id);  // other
+    expect(classifyFirstTouch({ u: 'reddit', a: id }).anonId).toBe(id);           // utm branch
+  });
+});
