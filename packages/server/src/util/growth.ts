@@ -73,6 +73,67 @@ export interface GrowthProps {
 }
 
 const PRODUCT = process.env.METRICS_PRODUCT ?? '';
+
+/**
+ * Analytics ingest. Optional and independent of the table: a product with no
+ * marketing site sets no website id and simply does not send.
+ *
+ * WHY SEND TO BOTH. The table is the record — ours, durable, cross-product, and
+ * it outlives the analytics instance. The dashboard is the view: the analytics
+ * tool already has Funnel, Goal, Attribution and Revenue reports, and nobody
+ * should run psql to read their own funnel.
+ */
+const UMAMI_URL = process.env.UMAMI_INGEST_URL ?? '';
+const UMAMI_SITE = process.env.UMAMI_WEBSITE_ID ?? '';
+const UMAMI_ON = !!UMAMI_URL && !!UMAMI_SITE;
+
+/**
+ * Umami DROPS any request whose User-Agent does not look like a browser — its
+ * bot filter, and it fails silently with a 200. A server-side event therefore
+ * has to present a browser-shaped agent or it is discarded with no error
+ * anywhere. Found the hard way: the first server event returned 200 and was
+ * never stored.
+ */
+const UMAMI_UA =
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+/**
+ * Send one named event to analytics, bound to the visitor who caused it.
+ *
+ * `id` is the anonymous id the marketing page minted and passed to
+ * umami.identify(<string>). Umami stores it as session.distinct_id, so an event
+ * carrying the same id is attributed to THAT visitor — the one who arrived from
+ * a particular Reddit thread — even though this request comes from the cluster
+ * with a different address. Verified in production.
+ *
+ * With no anon id the event still records, it just cannot be tied to a referrer.
+ */
+function sendToAnalytics(event: GrowthEvent, props: GrowthProps): void {
+  if (!UMAMI_ON) return;
+  const body = JSON.stringify({
+    type: 'event',
+    payload: {
+      website: UMAMI_SITE,
+      hostname: process.env.PUBLIC_HOSTNAME || 'server',
+      url: '/',
+      name: event,
+      ...(props.anonId ? { id: props.anonId } : {}),
+      data: {
+        ...(props.tenant ? { tenant: props.tenant } : {}),
+        ...(props.source ? { source: props.source } : {}),
+        ...(props.extra ?? {}),
+      },
+    },
+  });
+  // AbortSignal.timeout, so a slow analytics endpoint cannot hold a socket open
+  // behind a request that has already been answered.
+  fetch(UMAMI_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'User-Agent': UMAMI_UA },
+    body,
+    signal: AbortSignal.timeout(3000),
+  }).catch((err) => log.debug({ err, event }, 'analytics event dropped'));
+}
 const ENABLED = process.env.METRICS_ENABLED === 'true' && !!process.env.METRICS_DSN && !!PRODUCT;
 
 /**
@@ -130,10 +191,16 @@ function getPool(): Pool | null {
  * exactly the coupling this whole design avoids.
  */
 export function growth(event: GrowthEvent, props: GrowthProps = {}): void {
-  if (!ENABLED) return;
+  if (!ENABLED && !UMAMI_ON) return;
   if (props.oncePerDay && alreadySentToday(event, props.tenant)) return;
+  if (!ENABLED) { sendToAnalytics(event, props); return; }
   const p = getPool();
-  if (!p) return;
+  if (!p) { sendToAnalytics(event, props); return; }
+
+  // Analytics first and separately: the two destinations must not be able to
+  // fail together. A Postgres outage must not cost the dashboard event, and a
+  // dead analytics endpoint must not cost the durable row.
+  sendToAnalytics(event, props);
 
   // Detached on purpose. queueMicrotask rather than awaiting, so the caller's
   // request finishes regardless of what Postgres does.
