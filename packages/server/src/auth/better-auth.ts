@@ -23,7 +23,11 @@
  * in pg-schema.ts never touches them.
  */
 import { betterAuth } from 'better-auth';
-import { bearer, deviceAuthorization } from 'better-auth/plugins';
+import {
+  bearer, deviceAuthorization, mcp, oAuthDiscoveryMetadata, oAuthProtectedResourceMetadata,
+} from 'better-auth/plugins';
+import { toNodeHandler } from 'better-auth/node';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import pg from 'pg';
 import { sendMail, resetPasswordMail, verifyEmailMail } from './mailer.js';
 
@@ -224,15 +228,107 @@ function createAuth() {
         verificationUri: '/device',
         validateClient: (clientId: string) => clientId === CLI_CLIENT_ID,
       }),
+      // OAuth 2.1 authorization server for the REMOTE MCP endpoint (/mcp).
+      //
+      // This is what lets a client that cannot run our CLI — claude.ai, ChatGPT,
+      // a browser IDE — connect with one click instead of a device code. It
+      // brings dynamic client registration (RFC 7591), authorization_code with
+      // PKCE S256, refresh tokens, and the two discovery documents the spec
+      // requires. Every one of those is a thing we would otherwise write and
+      // then own; better-auth already carries them, keyed on the same user rows
+      // the dashboard and the CLI device flow use, so an MCP identity IS the
+      // account identity and no third credential store appears.
+      //
+      // `loginPage` is where an unauthenticated authorize request is sent. It
+      // must be a page that can also SIGN SOMEONE UP: the whole point of the
+      // connector is a user who arrives from claude.ai having never seen the
+      // dashboard, and a login-only page dead-ends them. /app renders sign-in
+      // and sign-up together, with Google and GitHub, and a social sign-in marks
+      // the address verified — which is what lets ensureTrial grant the trial on
+      // the spot rather than waiting for an inbox.
+      //
+      // `resource` is the canonical identifier of the protected resource; it is
+      // what the protected-resource metadata advertises and what a client audits
+      // its token against, so it must equal the real /mcp URL.
+      mcp({
+        loginPage: '/app?view=signin',
+        resource: `${baseURL()}/mcp`,
+      }),
     ],
   });
 }
 
 let _auth: ReturnType<typeof createAuth> | null = null;
 
-export function getAuth(): ReturnType<typeof createAuth> {
+/**
+ * The auth instance. NOT exported, and that is load-bearing.
+ *
+ * Its inferred type names better-auth's internal `MCPOptions`, which the package
+ * does not export. Exporting anything typed by it makes this package's
+ * declaration emit fail with TS4058 ("has or is using name 'MCPOptions' from
+ * external module"), and the whole server stops building.
+ *
+ * Casting the plugin to `BetterAuthPlugin` "fixes" that by erasing the MCP
+ * endpoints from the instance — which then breaks oAuthDiscoveryMetadata and
+ * oAuthProtectedResourceMetadata, both of which require them. So the instance
+ * stays fully typed and stays internal, and this module exports READY-MADE
+ * HANDLERS instead, whose signatures name only Node's own types.
+ */
+function getAuth(): ReturnType<typeof createAuth> {
   if (!_auth) _auth = createAuth();
   return _auth;
+}
+
+/** A Node request handler, in the shape Express accepts at `app.all`/`app.get`.
+ *  Named here so no exported signature below has to name a better-auth type. */
+type NodeHandler = (req: IncomingMessage, res: ServerResponse) => unknown;
+
+/** Everything under `/api/auth/*` — sign-in/up/out, get-session, the RFC 8628
+ *  device flow, and the OAuth authorize/token/register endpoints the MCP
+ *  plugin adds. */
+export function authHandler(): NodeHandler {
+  return toNodeHandler(getAuth()) as NodeHandler;
+}
+
+/**
+ * The two OAuth discovery documents, for mounting at the ORIGIN ROOT.
+ *
+ * An MCP client is given one URL (`https://<host>/mcp`) and finds everything
+ * else at spec-fixed well-known paths on that origin. It never guesses that our
+ * authorization server lives under `/api/auth`, so these must not be served only
+ * there — see the mounts in server.ts.
+ */
+export function oauthAuthorizationServerHandler(): NodeHandler {
+  return toNodeHandler(oAuthDiscoveryMetadata(getAuth())) as NodeHandler;
+}
+
+export function oauthProtectedResourceHandler(): NodeHandler {
+  return toNodeHandler(oAuthProtectedResourceMetadata(getAuth())) as NodeHandler;
+}
+
+/**
+ * Resolve an OAuth ACCESS TOKEN (the credential an MCP client holds) to its
+ * grant, or null.
+ *
+ * Distinct from getSessionUser below, which resolves a SESSION token — the thing
+ * the dashboard and the CLI device flow carry. They are different credentials
+ * with different lifetimes, and the /mcp endpoint only ever sees the first kind.
+ *
+ * Returns the raw grant rather than a user shape because the caller needs the
+ * token string back: the tool surface presents it again on its own loopback
+ * calls, so the request arrives at tenantAuth as the same identity.
+ */
+export async function mcpSessionFor(
+  reqHeaders: Record<string, string | string[] | undefined>,
+): Promise<{ userId: string; accessToken: string } | null> {
+  const headers = new Headers();
+  for (const [k, v] of Object.entries(reqHeaders)) {
+    if (typeof v === 'string') headers.set(k, v);
+    else if (Array.isArray(v)) headers.set(k, v.join(', '));
+  }
+  const grant = await getAuth().api.getMcpSession({ headers });
+  if (!grant?.userId) return null;
+  return { userId: grant.userId, accessToken: grant.accessToken };
 }
 
 /** Create/upgrade the better-auth tables. Called once at boot (server.ts),
