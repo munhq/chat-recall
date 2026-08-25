@@ -159,7 +159,20 @@ export interface ControlPlane {
   /** Devices with a token (active or revoked) — metadata only, never hashes. */
   listAgentTokens(tenant: string): Promise<AgentTokenMeta[]>;
 
-  createTeam(name: string, ownerSub: string, ownerEmail?: string | null): Promise<{ slug: string; name: string }>;
+  /**
+   * Create a team, which IS a tenant — this is where a SaaS tenant is born.
+   *
+   * `attribution` reaches `ensureTenant`, which applies it only on the INSERT.
+   * The overwhelming majority of tenants are created by the auto-provision in
+   * middleware/auth.ts on a user's first authenticated request, so that is the
+   * call site whose cookie actually decides a launch's numbers.
+   */
+  createTeam(
+    name: string,
+    ownerSub: string,
+    ownerEmail?: string | null,
+    attribution?: SignupAttribution,
+  ): Promise<{ slug: string; name: string }>;
   listMemberships(userSub: string): Promise<Membership[]>;
   roleOf(userSub: string, teamSlug: string): Promise<'owner' | 'member' | null>;
   createInvite(teamSlug: string, role: 'owner' | 'member', emailHint: string | null, createdBy: string): Promise<{ invite: string; expiresAt: number }>;
@@ -492,10 +505,15 @@ class SqliteControlPlane implements ControlPlane {
     }));
   }
 
-  async createTeam(name: string, ownerSub: string, ownerEmail?: string | null): Promise<{ slug: string; name: string }> {
+  async createTeam(
+    name: string,
+    ownerSub: string,
+    ownerEmail?: string | null,
+    attribution?: SignupAttribution,
+  ): Promise<{ slug: string; name: string }> {
     const slug = slugify(name);
     const now = Date.now();
-    await this.ensureTenant(slug, name);
+    await this.ensureTenant(slug, name, attribution);
     this.db.prepare(`INSERT INTO cp_teams (slug, name, owner_sub, created_at) VALUES (?, ?, ?, ?)`)
       .run(slug, name, ownerSub, now);
     this.db.prepare(`INSERT INTO cp_memberships (user_sub, team_slug, role, email, created_at) VALUES (?, ?, 'owner', ?, ?)`)
@@ -930,10 +948,15 @@ class PgControlPlane implements ControlPlane {
     }));
   }
 
-  async createTeam(name: string, ownerSub: string, ownerEmail?: string | null): Promise<{ slug: string; name: string }> {
+  async createTeam(
+    name: string,
+    ownerSub: string,
+    ownerEmail?: string | null,
+    attribution?: SignupAttribution,
+  ): Promise<{ slug: string; name: string }> {
     const slug = slugify(name);
     const now = Date.now();
-    await this.ensureTenant(slug, name);
+    await this.ensureTenant(slug, name, attribution);
     await this.q(`INSERT INTO teams (slug, name, owner_sub, created_at) VALUES ($1, $2, $3, $4)`, [slug, name, ownerSub, now]);
     await this.q(
       `INSERT INTO memberships (user_sub, team_slug, role, email, created_at) VALUES ($1, $2, 'owner', $3, $4)`,

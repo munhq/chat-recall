@@ -27,6 +27,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { runWithTenant, runWithAuthor, createControlPlane } from '../imports.js';
 import { allows } from '../util/entitlements.js';
 import { createTeamFor } from '../util/memberships.js';
+import { firstTouchFromCookieHeader } from '@chat-recall/engine/core/attribution.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 
 const log = createLogger('auth');
@@ -486,7 +487,14 @@ async function resolveTenantForUser(
       // converge on one workspace rather than making two.
       const base = (user.email?.split('@')[0] ?? '').replace(/[^a-z0-9]/gi, '').toLowerCase();
       try {
-        const created = await createTeamFor(user.sub, user.email, base || 'workspace');
+        // First touch, off the `cr_src` cookie the marketing site set before this
+        // user had an account. THIS is the call site that decides a launch's
+        // numbers: almost every tenant is born here, on a first authenticated
+        // request, not through an explicit POST /api/teams.
+        const created = await createTeamFor(
+          user.sub, user.email, base || 'workspace',
+          firstTouchFromCookieHeader(req.headers.cookie ?? null),
+        );
         log.info({ tenant: created.slug, sub: user.sub }, 'provisioned workspace on first request');
         return { tenant: created.slug, userId: user.sub, authorSub: user.sub, authorDevice: null };
       } catch (err) {
