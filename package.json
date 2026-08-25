@@ -34,7 +34,8 @@
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "docker:build": "docker compose build",
-    "docker:logs": "docker compose logs -f"
+    "docker:logs": "docker compose logs -f",
+    "version:sync": "node scripts/sync-server-json.mjs"
   },
   "engines": {
     "node": ">=22.5.0"
