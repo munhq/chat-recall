@@ -36,7 +36,10 @@ startCommand:
   commandFunction: |-
     (config) => ({
       command: 'npx',
-      args: ['-y', 'chat-recall-mcp'],
+      // -p chat-recall, then the BIN name. `npx -y chat-recall-mcp` looks right
+      // and is E404: chat-recall-mcp is a bin inside the `chat-recall` package,
+      // not a package of its own. plugin/.mcp.json already had this right.
+      args: ['-y', '-p', 'chat-recall', 'chat-recall-mcp'],
       env: Object.assign(
         {},
         config.chatRecallServer ? { CHAT_RECALL_SERVER: config.chatRecallServer } : {},
