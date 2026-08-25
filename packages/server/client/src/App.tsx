@@ -19,7 +19,7 @@ import ProjectWorkspace from './components/ProjectWorkspace';
 import KnowledgeGraph from './components/KnowledgeGraph';
 import { SegmentedControl, Card } from './components/primitives';
 import SettingsPage from './components/SettingsPage';
-import AccountPage, { SubscribeScreen } from './components/AccountPage';
+import AccountPage, { SubscribeScreen, ConfirmEmailScreen } from './components/AccountPage';
 import TeamView from './components/TeamView';
 import TeamTasks from './components/TeamTasks';
 import ConnectTokenPage from './components/ConnectTokenPage';
@@ -276,7 +276,7 @@ function AppInner() {
   // full-screen trial gate; 'ok' renders the app. No gate when billing is off
   // (Stripe not configured) or on self-host. A late 402 from any data call
   // (lapsed mid-session) flips us back to 'subscribe'.
-  const [gate, setGate] = useState<'loading' | 'ok' | 'subscribe'>(isCloud() ? 'loading' : 'ok');
+  const [gate, setGate] = useState<'loading' | 'ok' | 'subscribe' | 'confirm-email'>(isCloud() ? 'loading' : 'ok');
   // True while the URL still carries a completed Stripe Checkout redirect. Read
   // once from the initial URL so a later state change cannot revoke it.
   const [justPaid] = useState<boolean>(() => {
@@ -294,6 +294,18 @@ function AppInner() {
     getEntitlement()
       .then((e) => {
         if (Array.isArray(e.features)) setTenantFeatures(new Set(e.features));
+        // NEVER CONFIRMED → its own full page, not the dashboard.
+        //
+        // status 'none' means no entitlement row was ever written, which happens
+        // for exactly one reason: the address is unconfirmed, so ensureTrial
+        // withheld the grant. EVERY new signup is in this state for as long as it
+        // takes to reach an inbox — and since a lapsed/unentitled account now has
+        // its reads refused, the dashboard behind this renders empty. The user
+        // saw a blank page with a 12px warning strip and no idea what to do.
+        //
+        // One action is available to them and it is not on this page, so the page
+        // should say so and nothing else.
+        if (e.status === 'none' && e.entitled === false) { setGate('confirm-email'); return; }
         // FREE IS THE FLOOR. A tenant whose entitlement resolved — active,
         // trialing, lapsed, canceled — renders the app: the server serves a
         // lapsed tenant the free plan (windowed search, metered sync) rather
@@ -960,6 +972,7 @@ function AppInner() {
   // the only reason they returned, and a reload loses the session_id for good.
   //
   // A checkout=success redirect is proof of payment on its own, so it wins.
+  if (gate === 'confirm-email') return <ConfirmEmailScreen />;
   if (gate === 'subscribe' && !justPaid) return <SubscribeScreen />;
 
   // The installer's token page renders chrome-free: the user is mid-command in
