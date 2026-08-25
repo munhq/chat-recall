@@ -427,7 +427,38 @@ router.get('/wake-up', async (req, res) => {
       const tasks = await store.listTeamTasks({});
       openTasks = scopeOpenTasks(tasks, projectFilter);
     } catch { /* board unavailable — wake-up still answers */ }
-    res.json({ openTasks, highFacts, kg });
+
+    // RECOMMENDATIONS RIDE ALONG TOO, and this is the point of the bundle.
+    //
+    // They say what would make the assistant better at THIS repo — a reuse rule
+    // for CLAUDE.md, a project label that sets the guardrails, a skill worth
+    // installing. Until now they existed only in the dashboard, so the only way
+    // they reached the AI was a human noticing them and clicking. The thing the
+    // advice is about never heard it.
+    //
+    // Only when a project is named: unscoped, this would be every project's
+    // advice at once, which is noise at the exact moment a session is trying to
+    // orient. Capped, and only the top few by severity — a wake-up bundle that
+    // takes a screen to read gets skipped.
+    let recommendations: Array<{ id: string; kind: string; severity: string; title: string }> | undefined;
+    if (projectFilter) {
+      try {
+        const { buildRecommendations } = await import('@chat-recall/engine/core/code/recommendations.js');
+        const project = await store.getCodeProject(projectFilter);
+        if (project) {
+          const [summary, findings, hotspots] = await Promise.all([
+            store.codeFindingsSummary(projectFilter),
+            store.listCodeFindings(projectFilter, { limit: 500 }),
+            store.listCodeHotspots(projectFilter, 50),
+          ]);
+          recommendations = buildRecommendations({ project, summary, findings, hotspots })
+            .slice(0, 3)
+            .map((r) => ({ id: r.id, kind: r.kind, severity: r.severity, title: r.title }));
+        }
+      } catch { /* not code-indexed, or the collector never ran — not an error */ }
+    }
+
+    res.json({ openTasks, highFacts, kg, recommendations });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'wake-up failed' });
   } finally {
