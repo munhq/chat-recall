@@ -202,7 +202,10 @@ export class MemoryStore {
         status       TEXT NOT NULL DEFAULT 'suggested',
         queued       INTEGER NOT NULL DEFAULT 0,
         created_at   INTEGER NOT NULL,
-        updated_at   INTEGER NOT NULL
+        updated_at   INTEGER NOT NULL,
+        -- The findings this roll-up summarises: the board files the summary OR
+        -- its members, never both.
+        covers_json  TEXT NOT NULL DEFAULT '[]'
       );
       CREATE INDEX IF NOT EXISTS idx_code_actions_proj ON code_actions(project_id, pri);
 
@@ -1975,9 +1978,29 @@ export class MemoryStore {
   replaceCodeFindings(projectId: string, findings: CodeFindingInput[]): number {
     const now = Date.now();
     const tx = this.db.transaction((items: CodeFindingInput[]) => {
-      const prev = this.db.prepare(`SELECT id, first_seen_at, status FROM code_findings WHERE project_id = ?`)
-        .all(projectId) as Array<{ id: string; first_seen_at: number; status: string }>;
-      const prevById = new Map(prev.map((r) => [r.id, r]));
+      // Content, not just ids — see the pg driver for why: a finding's id is a
+      // hash of its content, so a hashing change makes the same finding arrive
+      // under a new id, and a carry-forward keyed on the STORED id throws away
+      // every triage verdict at that moment.
+      const prev = this.db.prepare(
+        `SELECT id, first_seen_at, status, category, file, line, rule, title, snippet
+           FROM code_findings WHERE project_id = ?`).all(projectId) as Array<{
+        id: string; first_seen_at: number; status: string;
+        category: string; file: string; line: number | null; rule: string; title: string; snippet: string;
+      }>;
+      const prevIds = codeFindingIds(projectId, prev);
+      const carriedById = new Map<string, { first_seen_at: number; status: string }>();
+      const remap = new Map<string, string>();
+      prev.forEach((r, i) => {
+        const id = prevIds[i];
+        if (id !== r.id) remap.set(r.id, id);
+        const held = carriedById.get(id);
+        carriedById.set(id, {
+          first_seen_at: held ? Math.min(held.first_seen_at, r.first_seen_at) : r.first_seen_at,
+          status: held && held.status !== 'open' ? held.status : r.status,
+        });
+      });
+
       this.db.prepare(`DELETE FROM code_findings WHERE project_id = ?`).run(projectId);
       // OR REPLACE: two findings can hash to the same deterministic id within a
       // single run (last wins) — collapse rather than crash.
@@ -1985,10 +2008,11 @@ export class MemoryStore {
         INSERT OR REPLACE INTO code_findings (id, project_id, category, severity, file, line, rule, title, snippet, why, agent_prompt, status, first_seen_at, last_seen_at, extra_json)
         VALUES (@id, @project_id, @category, @severity, @file, @line, @rule, @title, @snippet, @why, @agent_prompt, @status, @first_seen_at, @last_seen_at, @extra_json)
       `);
-      let n = 0;
-      for (const f of items) {
-        const id = f.id ?? codeFindingId(projectId, f);
-        const carried = prevById.get(id);
+      const batchIds = codeFindingIds(projectId, items);
+      const seen = new Set<string>();
+      items.forEach((f, i) => {
+        const id = f.id ?? batchIds[i];
+        const carried = carriedById.get(id);
         ins.run({
           id, project_id: projectId, category: f.category, severity: f.severity, file: f.file,
           line: f.line ?? null, rule: f.rule, title: f.title, snippet: f.snippet ?? '', why: f.why ?? '',
@@ -1996,9 +2020,18 @@ export class MemoryStore {
           first_seen_at: carried?.first_seen_at ?? now, last_seen_at: now,
           extra_json: JSON.stringify(f.extra ?? {}),
         });
-        n++;
-      }
-      return n;
+        seen.add(id);
+      });
+
+      // NO CARD MOVE HERE. `team_tasks` is a server-side table and does not
+      // exist in this schema, so there is nothing pointing at these ids to
+      // repair — the pg driver does that half, where the cards live. `remap` is
+      // still built above because the carry-forward needs it.
+      void remap;
+
+      // What was stored, not what was offered: the difference is exactly the
+      // duplicates the collector emitted.
+      return seen.size;
     });
     return tx(findings);
   }
@@ -2074,11 +2107,12 @@ export class MemoryStore {
     const now = Date.now();
     const tx = this.db.transaction((items: CodeActionInput[]) => {
       const up = this.db.prepare(`
-        INSERT INTO code_actions (id, project_id, pri, category, title, fix, loc_json, agent_prompt, status, queued, created_at, updated_at)
-        VALUES (@id, @project_id, @pri, @category, @title, @fix, @loc_json, @agent_prompt, 'suggested', 0, @now, @now)
+        INSERT INTO code_actions (id, project_id, pri, category, title, fix, loc_json, agent_prompt, status, queued, created_at, updated_at, covers_json)
+        VALUES (@id, @project_id, @pri, @category, @title, @fix, @loc_json, @agent_prompt, 'suggested', 0, @now, @now, @covers_json)
         ON CONFLICT(id) DO UPDATE SET
           pri=excluded.pri, category=excluded.category, title=excluded.title, fix=excluded.fix,
-          loc_json=excluded.loc_json, agent_prompt=excluded.agent_prompt, updated_at=excluded.updated_at
+          loc_json=excluded.loc_json, agent_prompt=excluded.agent_prompt, updated_at=excluded.updated_at,
+          covers_json=excluded.covers_json
       `);
       let n = 0;
       const keepIds = new Set<string>();
@@ -2088,6 +2122,7 @@ export class MemoryStore {
         up.run({
           id, project_id: projectId, pri: a.pri | 0, category: a.category, title: a.title,
           fix: a.fix, loc_json: JSON.stringify(a.loc ?? []), agent_prompt: a.agentPrompt, now,
+          covers_json: JSON.stringify(a.covers ?? []),
         });
         n++;
       }
@@ -2161,6 +2196,7 @@ function rowToCodeAction(r: any): CodeActionRow {
     id: r.id, projectId: r.project_id, pri: r.pri, category: r.category, title: r.title, fix: r.fix,
     loc: safeJson<CodeActionLoc[]>(r.loc_json, []), agentPrompt: r.agent_prompt, status: r.status,
     queued: !!r.queued, createdAt: Number(r.created_at), updatedAt: Number(r.updated_at),
+    covers: safeJson<string[]>(r.covers_json, []),
   };
 }
 
