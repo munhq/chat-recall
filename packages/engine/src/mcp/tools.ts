@@ -83,6 +83,50 @@ function localOnlyRefusal(tool: string): string {
     + 'Install the chat-recall CLI and run it there; everything it collects syncs here and stays searchable from this connection.';
 }
 
+/**
+ * What to say when the account has NO HISTORY AT ALL.
+ *
+ * This is the first thing a connector user ever reads, and it used to be
+ * "No sessions on the server yet — run `chat-recall sync` on your machines."
+ * That sentence assumes the CLI is already installed and names the wrong command
+ * for a first-timer. Someone who connected from claude.ai has installed nothing,
+ * so they were told to run a command they do not have, to fix a state they had
+ * no way to understand — and the honest read of that is "this product is
+ * broken", when in fact the account is simply new.
+ *
+ * The distinction that matters, and the reason this is a function rather than a
+ * constant: an empty result because a FILTER matched nothing is a completely
+ * different message from an empty result because nothing was ever indexed. Only
+ * the second one should tell someone to go and install something.
+ *
+ * Kept to one place so the twelve or so empty paths cannot drift into telling
+ * the same person three different stories about the same state.
+ */
+function emptyIndexHint(): string {
+  return isMultiTenant()
+    ? 'This account has no coding history in it yet — which is normal, not an error. '
+      + 'THE ACCOUNT IS ALREADY SET UP: authorizing this connection created it and started the free trial, '
+      + 'so there is nothing more to sign up for. What is missing is the history itself, and it cannot be '
+      + 'uploaded from here — the session transcripts sit on the user\'s own machine. '
+      + 'Two commands on that machine, and nothing else:\n'
+      + '  npm install -g chat-recall\n'
+      + '  chat-recall init\n'
+      + '`init` links the machine to THIS SAME ACCOUNT (one browser approval, same login — not a second '
+      + 'signup), then indexes what Claude Code, Codex, Gemini CLI, OpenCode, Antigravity and Cursor have '
+      + 'already written to disk, redacts secrets locally, and syncs. Every search tool on this connection '
+      + 'then answers over the whole history. '
+      + 'Meanwhile this connection already works for memory the user creates here — facts, decisions, tasks '
+      + 'and diary entries persist across conversations right now. '
+      + 'Tell the user the two commands. Do not report this as a failure or an empty product.'
+    : 'Nothing has been indexed yet. Run `chat-recall init` (first time) or `chat-recall index` to collect '
+      + 'this machine\'s sessions and sync them.';
+}
+
+/** Test-only handle on the message above. It is the first thing a connector user
+ *  reads, and it has already regressed once, so it is asserted directly rather
+ *  than reached through a tool call that needs a server. */
+export const __emptyIndexHintForTest = (): string => emptyIndexHint();
+
 async function runIndexChild(force: boolean): Promise<string> {
   if (!indexRunner) {
     return 'Indexing runs on YOUR machine, not on the server — this connection has no access to your transcripts. '
@@ -2243,7 +2287,21 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
           '/api/search', { query: searchQuery, topK: params.top_k, projectFilter: params.project_filter },
         );
         if (!remote.results?.length) {
-          return { content: [{ type: 'text', text: `No matching sessions on the server for "${params.query}".` }] };
+          // Two very different states share this branch, and conflating them is
+          // how a brand-new account reads as a broken product: a query that
+          // matched nothing, versus an account with nothing to match against.
+          // Ask the server which one it is — /api/status is cheap and already
+          // tenant-scoped — and only send someone to install a CLI in the
+          // second case.
+          let indexed = 1;
+          try {
+            const st = await remoteGet<{ totalChunks: number }>('/api/status');
+            indexed = st.totalChunks ?? 1;
+          } catch { /* unreachable status: assume there IS data and stay quiet */ }
+          const text = indexed === 0
+            ? emptyIndexHint()
+            : `No matching sessions on the server for "${params.query}".`;
+          return { content: [{ type: 'text', text }] };
         }
         const lines = [`# Server results for: "${params.query}"`, '_(synced history across your devices)_', ''];
         for (let i = 0; i < remote.results.length; i++) {
@@ -2484,7 +2542,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
           // project_filter was the real cause (1000+ sessions synced, 0 matched).
           const empty = (params.project_filter || params.since_hours)
             ? `No sessions match${params.project_filter ? ` project filter "${params.project_filter}"` : ''}${params.since_hours ? ` in the last ${params.since_hours}h` : ''}. The project filter is a case-insensitive substring of the project path — try a broader term, or drop it.`
-            : 'No sessions on the server yet — run `chat-recall sync` on your machines.';
+            : emptyIndexHint();
           return { content: [{ type: 'text', text: empty }] };
         }
         const lines = [`# Recent sessions (server — ${remote.total} total synced)\n`];
