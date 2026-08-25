@@ -758,6 +758,10 @@ ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS linked_finding_id TEXT;
 -- reconstructed from the card, because a reconstruction that disagrees with the
 -- filer by one character matches nothing and fails silently.
 ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS linked_finding_identity TEXT;
+-- The findings a roll-up action summarises, so the board files the summary OR
+-- its members and never both. Absent on rows an older collector wrote, which
+-- reads as "covers nothing" and files exactly as before.
+ALTER TABLE code_actions ADD COLUMN IF NOT EXISTS covers_json TEXT;
 CREATE INDEX IF NOT EXISTS idx_team_tasks_identity ON team_tasks(tenant, linked_finding_identity);
 -- 'rejected' is the HUMAN verdict: done is earned by the work, so the only
 -- thing a person can say about a card they disagree with is no. It shipped in

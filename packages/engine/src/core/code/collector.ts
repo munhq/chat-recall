@@ -16,6 +16,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { join, basename } from 'node:path';
 
 import { resolveProjectId } from '../project-resolver.js';
+import { codeFindingIds } from '../../types/code-intel.js';
 import { checkCodeindexStatus, installCodeindex } from '../companions.js';
 import { redactSecrets } from '../secret-redactor.js';
 import { scanDirForSecrets } from '../secret-scanner.js';
@@ -39,8 +40,13 @@ import type {
  *   2 — FP purge: heuristic-security rules dropped from actions, test/example
  *       secrets excluded, common-name reinvention skipped, dead-code batch
  *       removed, non-code hotspots excluded, junk-path guard.
+ *   3 — identity + coverage. Finding ids gained the title and their ordinal now
+ *       counts distinct LINES, so a repeated emission is one finding rather than
+ *       four; roll-up actions stamp the findings they summarise, so the board
+ *       files the summary or its members and never both. Both need stored data
+ *       re-derived: the ids change, and `covers` is empty until a run writes it.
  */
-export const COLLECTOR_VERSION = 2;
+export const COLLECTOR_VERSION = 3;
 
 const ANALYSES = [
   'health', 'security', 'duplication', 'clones', 'literal_scan', 'coupling', 'cycles', 'dead_code',
@@ -374,6 +380,21 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
 
   // ── Findings (the per-row drawer feed) ──────────────────────────────────
   const findings: CodeFindingInput[] = [];
+  /**
+   * Which findings each roll-up action will summarise.
+   *
+   * Keyed by the ANALYZER OBJECT (or its rule name) the finding came from,
+   * because the action pass below iterates exactly the same objects — so the
+   * parentage is recorded where it is known rather than reconstructed from
+   * titles later, which cannot be done: the same problem is worded differently
+   * on each side. Finding OBJECTS, not indexes: the vendored/generated filter
+   * splices this array, and an index would silently point at another finding.
+   */
+  const coveredBySecurityRule = new Map<string, CodeFindingInput[]>();
+  const coveredByCloneGroup = new Map<object, CodeFindingInput>();
+  const coveredByDupCluster = new Map<object, CodeFindingInput>();
+  const coveredByGodModule = new Map<string, CodeFindingInput>();
+  const coveredByCycle = new Map<object, CodeFindingInput>();
   // Literal scan is heuristic (substring/regex), so it never outranks a real
   // security rule: secret_suspect is medium at most, the rest low/info.
   const sevFromLiteral = (cat: string): CodeSeverity =>
@@ -441,11 +462,14 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
     log(`security: repo secret scan unavailable (${e instanceof Error ? e.message : e}) — install gitleaks/trufflehog for secret coverage`);
   }
   for (const f of [...securityRows, ...heuristicSec]) {
-    findings.push({
+    const finding: CodeFindingInput = {
       category: 'security', severity: f.severity, file: f.file, line: f.line,
       rule: f.rule, title: f.rule, snippet: f.snippet,
       why: FINDING_WHY.security, agentPrompt: securityPrompt(f.rule, f.severity, f.file, f.line),
-    });
+    };
+    findings.push(finding);
+    const byRuleList = coveredBySecurityRule.get(f.rule);
+    if (byRuleList) byRuleList.push(finding); else coveredBySecurityRule.set(f.rule, [finding]);
   }
   for (const f of (lit?.findings ?? []).slice(0, 150)) {
     const file = rel(f.file); const cat = f.category ?? 'literal';
@@ -460,20 +484,24 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
     const names = [...new Set(fns.map((x: any) => x.name))] as string[];
     const fileList = fns.map((x: any) => rel(x.file)).slice(0, 6);
     const heavy = (g.lines ?? 0) * (g.count ?? 0) >= 150;
-    findings.push({
+    const finding: CodeFindingInput = {
       category: 'clone', severity: heavy ? 'high' : 'medium', file: fileList[0] ?? '', line: fns[0]?.line ?? null,
       rule: 'copy_paste', title: `${names.join(', ')} ×${g.count}`, snippet: `${g.lines} lines, ${g.count} copies`,
       why: FINDING_WHY.clone, agentPrompt: clonePrompt(names, g.lines ?? 0, g.count ?? 0, fileList),
-    });
+    };
+    findings.push(finding);
+    coveredByCloneGroup.set(g as object, finding);
   }
   for (const c of (dup?.clusters ?? []).slice(0, 40)) {
     // file = the reinvented symbol name: a meaningful locator AND the
     // discriminator that keeps each cluster's deterministic id unique.
-    findings.push({
+    const finding: CodeFindingInput = {
       category: 'duplication', severity: 'low', file: c.name ?? '', line: null, rule: 'reinvention',
       title: `${c.name} reimplemented ×${c.count}`, snippet: `${c.kind}, ${c.count} files`,
       why: FINDING_WHY.duplication, agentPrompt: duplicationPrompt(c.name, c.kind ?? '', c.count ?? 0),
-    });
+    };
+    findings.push(finding);
+    coveredByDupCluster.set(c as object, finding);
   }
   for (const s of (dead?.symbols ?? []).slice(0, 120)) {
     const file = rel(s.file);
@@ -485,19 +513,23 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
   }
   for (const m of (coup?.god_modules ?? []).slice(0, 15)) {
     const file = rel(m.file);
-    findings.push({
+    const finding: CodeFindingInput = {
       category: 'coupling', severity: 'medium', file, line: null, rule: 'god_module',
       title: `God module ${basename(file)}`, snippet: `fan-in ${m.fan_in}, fan-out ${m.fan_out}`,
       why: FINDING_WHY.coupling, agentPrompt: couplingPrompt(file, m.fan_in ?? 0, m.fan_out ?? 0, Math.round((m.instability ?? 0) * 100) / 100),
-    });
+    };
+    findings.push(finding);
+    coveredByGodModule.set(file, finding);
   }
   for (const c of (cyc?.cycles ?? []).slice(0, 25)) {
     const chain = (c.files ?? []).map(rel);
-    findings.push({
+    const finding: CodeFindingInput = {
       category: 'cycle', severity: 'medium', file: chain[0] ?? '', line: null, rule: 'circular_dependency',
       title: `Circular dependency (${chain.length} files)`, snippet: chain.slice(0, 4).join(' → '),
       why: FINDING_WHY.cycle, agentPrompt: cyclePrompt(chain.slice(0, 6)),
-    });
+    };
+    findings.push(finding);
+    coveredByCycle.set(c as object, finding);
   }
 
   for (const f of (unwrap?.findings ?? []).slice(0, 150)) {
@@ -664,8 +696,19 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
   // ── Synthesis: the ranked, actionable plan ──────────────────────────────
   log('synthesising action plan …');
   const actions: CodeActionInput[] = [];
-  const pushAction = (pri: number, category: string, title: string, fix: string, loc: Array<{ file: string; line?: number | null }>, agentPrompt: string) =>
-    actions.push({ pri, category, title, fix, loc, agentPrompt });
+  // The id every finding will be stored under. Computed here, from the FINAL
+  // findings list (after the vendored/generated splice), with the same pure
+  // function the server uses — so a `covers` id names the same row on both sides.
+  const findingIdOf = new Map<CodeFindingInput, string>();
+  {
+    const ids = codeFindingIds(projectId, findings);
+    findings.forEach((f, i) => findingIdOf.set(f, ids[i]));
+  }
+  /** The ids of the findings an action rolls up; a dropped finding has none. */
+  const coversOf = (fs: Array<CodeFindingInput | undefined>): string[] =>
+    [...new Set(fs.map((f) => (f ? findingIdOf.get(f) : undefined)).filter((id): id is string => !!id))];
+  const pushAction = (pri: number, category: string, title: string, fix: string, loc: Array<{ file: string; line?: number | null }>, agentPrompt: string, covers: string[] = []) =>
+    actions.push({ pri, category, title, fix, loc, agentPrompt, covers });
 
   // 1. security grouped by rule — real scanner secrets only, and never
   //    test/example fixtures (fake-by-design placeholders aren't tasks).
@@ -679,7 +722,10 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
     const pri = sev === 'critical' ? 0 : sev === 'high' ? 1 : 2;
     pushAction(pri, 'security', `${rule} — ${hits.length} occurrence(s)`, secFix(rule),
       hits.slice(0, 4).map((h) => ({ file: h.file, line: h.line })),
-      securityPrompt(rule, sev, hits[0].file, hits[0].line));
+      securityPrompt(rule, sev, hits[0].file, hits[0].line),
+      // Every security finding on this rule. The card IS the roll-up, so the
+      // members must not each file one of their own.
+      coversOf(coveredBySecurityRule.get(rule) ?? []));
   }
   // 2. copy-paste clones. Vendored/generated copies are dropped BEFORE the group
   //    is judged: a bundle duplicated four times is not a refactor, and it used
@@ -695,7 +741,8 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
       pushAction((g.lines ?? 0) * (g.count ?? 0) >= 150 ? 1 : 2, 'duplication',
         `${names.join(', ')} copy-pasted ${g.count}× (${g.lines} lines each)`,
         'Extract one shared implementation and replace the copies.',
-        locs.map((f: string) => ({ file: f })), clonePrompt(names, g.lines ?? 0, g.count ?? 0, locs));
+        locs.map((f: string) => ({ file: f })), clonePrompt(names, g.lines ?? 0, g.count ?? 0, locs),
+        coversOf([coveredByCloneGroup.get(g as object)]));
     }
   }
   // 3. reinvented utilities — but a symbol NAME colliding across files is not
@@ -710,7 +757,8 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
     if (nm.length <= 3 || COMMON_SYMBOL_NAMES.has(nm.toLowerCase())) continue;
     if (kind === 'type_alias' || kind === 'interface' || kind === 'enum' || kind === 'type') continue;
     pushAction(2, 'reuse', `${nm} (${c.kind}) reimplemented in ${c.count} files`,
-      'Consolidate into a single shared utility/module.', [], duplicationPrompt(nm, c.kind ?? '', c.count));
+      'Consolidate into a single shared utility/module.', [], duplicationPrompt(nm, c.kind ?? '', c.count),
+      coversOf([coveredByDupCluster.get(c as object)]));
   }
   // 4. god modules
   for (const m of (coup?.god_modules ?? []).slice(0, 5)) {
@@ -718,7 +766,8 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
     if (isGenerated(file)) continue;
     pushAction(2, 'modularity', `God module ${file} (fan-in ${m.fan_in}, fan-out ${m.fan_out})`,
       'Split into cohesive sub-modules; introduce interfaces to cut fan-out.', [{ file }],
-      couplingPrompt(file, m.fan_in ?? 0, m.fan_out ?? 0, Math.round((m.instability ?? 0) * 100) / 100));
+      couplingPrompt(file, m.fan_in ?? 0, m.fan_out ?? 0, Math.round((m.instability ?? 0) * 100) / 100),
+      coversOf([coveredByGodModule.get(file)]));
   }
   // 5. cycles
   for (const c of (cyc?.cycles ?? []).slice(0, 5)) {
@@ -726,7 +775,8 @@ export async function collectCode(opts: CollectOpts): Promise<CollectResult> {
     if (chain.length < 2) continue;
     pushAction(2, 'architecture', `Circular dependency (${chain.length} files)`,
       'Break the cycle: extract the shared type/interface into a separate module.',
-      chain.slice(0, 4).map((f: string) => ({ file: f })), cyclePrompt(chain.slice(0, 6)));
+      chain.slice(0, 4).map((f: string) => ({ file: f })), cyclePrompt(chain.slice(0, 6)),
+      coversOf([coveredByCycle.get(c as object)]));
   }
   // 6. hotspots — real churn×complexity on code files only.
   for (const h of hotspotsAll.slice(0, 5)) {
