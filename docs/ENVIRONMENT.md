@@ -1,8 +1,9 @@
 # Environment variables
 
 Every knob is optional — chat-recall runs with sane defaults. This is the single
-reference for the `CHAT_RECALL_*` variables (grep the source for the authoritative
-behavior; defaults below are current at time of writing).
+reference for the `CHAT_RECALL_*` variables, plus the server's auth and billing
+ones (grep the source for the authoritative behavior; defaults below are current
+at time of writing).
 
 ## Collector / sync (the `chat-recall` CLI + `chat-recall-watch` daemon)
 
@@ -63,3 +64,36 @@ Set on the **server** container, not the CLI. See the quick-start header of
 Other server-internal flags (`CHAT_RECALL_EDITION`, `_ROLE`, `_SERVER_MODE`,
 `_TENANT`, `_FEATURE_*`, `_VECTOR_PARTITIONS`, `_TELEMETRY`) tune SaaS/edition
 behavior; consult the server source before setting them.
+
+## Billing (Stripe)
+
+Set on the **server**. Billing is entirely optional: with `STRIPE_SECRET_KEY`
+absent the server boots with billing off, and a self-host box never needs any of
+these. Stripe owns the amounts — the server reads prices back from Stripe, so a
+price change in the dashboard needs no deploy.
+
+Required to sell anything:
+
+| Variable | What it does |
+|---|---|
+| `STRIPE_SECRET_KEY` | Secret API key (`sk_live_…` / `sk_test_…`). Its presence is what turns billing on. |
+| `STRIPE_WEBHOOK_SECRET` | Endpoint signing secret (`whsec_…`). The webhook verifies over the raw bytes; without this it rejects every event. |
+| `BILLING_PLANS` | JSON array of the plans this deployment sells: `[{"key":"solo-monthly","label":"Solo","priceId":"price_…","seats":"fixed"}]`. `seats` is `fixed` (quantity 1) or `per_seat` (with optional `minSeats`/`maxSeats`). A plan with `contact` and no `priceId` is contact-only: checkout refuses it and returns the address. Malformed JSON degrades to the legacy single plan below — it never crashes the server. |
+| `STRIPE_PRICE_ID` | The pre-catalogue single plan. Used only when `BILLING_PLANS` is unset or unparsable. Keep it for an existing one-plan deployment; prefer `BILLING_PLANS` for anything new. |
+
+Redirects. Set `PUBLIC_URL` and the three below are derived from it; set one
+explicitly to send a return somewhere else:
+
+| Variable | What it does |
+|---|---|
+| `STRIPE_SUCCESS_URL` | Where checkout returns after a successful subscribe. |
+| `STRIPE_CANCEL_URL` | Where checkout returns when the buyer backs out. |
+| `STRIPE_PORTAL_RETURN_URL` | Where the customer portal returns. |
+
+Optional:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `STRIPE_PRODUCT_TAG` | `chat-recall` | Which product this deployment sells. **Set it if one Stripe account sells more than one product.** Stripe fans an event out to every endpoint subscribed to that event type — it does not route by product — so another product's `customer.subscription.updated` arrives here too. The tag is stamped on every checkout and checked on every event, so buying product B cannot grant a paid entitlement here. |
+| `STRIPE_AUTOMATIC_TAX` | **off** | Set `1` to let Stripe Tax calculate VAT/sales tax at checkout and collect the buyer's VAT id. **Warning: enable this only after Stripe Tax settings report `status: active` and every live price carries a tax behavior.** `automatic_tax` needs a tax behavior on each line, so turning it on too early fails every checkout on the account — a revenue outage, not a degraded experience. VAT id collection is part of the same switch on purpose: tax calculation without it charges consumer VAT on B2B sales that should have been reverse-charged. |
+| `STRIPE_TRIAL_DAYS` | `7` | Length of the no-card trial. |
