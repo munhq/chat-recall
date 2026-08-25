@@ -177,8 +177,20 @@ const MANIFEST: Record<string, { gates: string[]; reason: string }> = {
     reason: 'CSP violation sink: unauthenticated by necessity (browsers send it without credentials); it only logs, with a 16kb bound and field truncation.',
   },
   'all /api/auth/*': {
-    gates: ['toNodeHandler(getAuth())'],
-    reason: 'better-auth owns sign-in/up/out and the device flow; it IS the login, so it runs before tenantAuth and reads its own body.',
+    gates: ['authHandler()'],
+    reason: 'better-auth owns sign-in/up/out, the device flow and the MCP OAuth authorize/token/register endpoints; it IS the login, so it runs before tenantAuth and reads its own body. Mounted via authHandler() rather than toNodeHandler(getAuth()) because the auth instance type cannot cross a module boundary — see the note on getAuth in auth/better-auth.ts.',
+  },
+  'get /.well-known/oauth-authorization-server': {
+    gates: ['oauthAuthorizationServerHandler()'],
+    reason: 'RFC 8414 OAuth discovery. DELIBERATELY UNGATED and unauthenticated: a client reads this in order to find out how to authenticate, so any gate here is a deadlock. It exposes only endpoint URLs and supported grant types — no tenant data, and nothing an attacker cannot infer from the spec.',
+  },
+  'use /mcp': {
+    gates: ["express.json({ limit: '4mb' })", 'mcpRouter'],
+    reason: 'The remote MCP endpoint. DELIBERATELY OUTSIDE the /api gates: it authenticates with an OAuth access token rather than a tenant session, so tenantAuth would reject it before its own auth ran. It is not ungated — the router 401s without a valid grant, 403s a cross-origin browser request, and its tools then call back through /api over loopback, where entitlement, rate limits and RLS all apply on the way in.',
+  },
+  'get /.well-known/oauth-protected-resource': {
+    gates: ['oauthProtectedResourceHandler()'],
+    reason: 'RFC 9728 protected-resource metadata, the first document an MCP client fetches after a 401 from /mcp. Ungated for the same reason as the authorization-server document above; it names the resource and its authorization servers, nothing tenant-scoped. Served at the ORIGIN ROOT because clients look there and never under /api/auth.',
   },
   'use /api/contact': {
     gates: ["rl('sensitive')", 'contactRouter'],
