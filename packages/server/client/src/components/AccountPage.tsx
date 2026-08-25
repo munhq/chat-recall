@@ -13,7 +13,7 @@ import {
   type Entitlement, type PlanInfo,
 } from '../services/api';
 import { Button } from './primitives';
-import { isCloud, logout, resendVerificationEmail } from '../services/auth';
+import { isCloud, logout, resendVerificationEmail, verifyEmailWithOtp } from '../services/auth';
 import { completedCheckoutSessionId } from '../utils/checkout';
 
 /** Days remaining at which the plan picker stops waiting to be asked. */
@@ -319,6 +319,7 @@ function gateReason(ent: { status?: string; hasSubscription?: boolean } | null):
  */
 export function ConfirmEmailScreen() {
   const [email, setEmail] = useState<string | null>(null);
+  const [code, setCode] = useState('');
   const [sent, setSent] = useState(false);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -332,6 +333,17 @@ export function ConfirmEmailScreen() {
     if (r.ok) setSent(true); else setErr(r.error || 'could not resend');
   }
 
+  async function submit() {
+    if (!email || code.trim().length < 4) return;
+    setBusy(true); setErr('');
+    const r = await verifyEmailWithOtp(email, code.trim());
+    setBusy(false);
+    // Reload rather than route: the trial is granted server-side on the next
+    // authenticated request, so the whole app needs to re-resolve its gate.
+    if (r.ok) window.location.reload();
+    else setErr(r.error || 'that code did not work');
+  }
+
   return (
     <div className="sub-screen">
       <style>{ACCT_CSS}</style>
@@ -339,19 +351,43 @@ export function ConfirmEmailScreen() {
         <div className="sub-logo">◆ chat-recall</div>
         <h1>Check your inbox</h1>
         <p className="muted">
-          We sent a confirmation link to <strong>{email ?? 'your address'}</strong>. Opening it starts
-          your free trial — nothing is counting down until you do, and there is nothing to pay.
+          We sent a six-digit code to <strong>{email ?? 'your address'}</strong>. Enter it below and your
+          free trial starts — nothing is counting down until you do, and there is nothing to pay.
         </p>
+        <div style={{ marginTop: 20, display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            value={code}
+            onChange={(e) => setCode(e.target.value.replace(/\s/g, ''))}
+            onKeyDown={(e) => { if (e.key === 'Enter') void submit(); }}
+            placeholder="123456"
+            inputMode="numeric"
+            // Lets iOS and Android offer the code from the mail as a one-tap
+            // autofill, which is most of the reason a code is not worse than a
+            // link on a phone.
+            autoComplete="one-time-code"
+            autoFocus
+            aria-label="Confirmation code"
+            data-testid="otp-input"
+            style={{
+              flex: 1, padding: '10px 12px', fontSize: 18, letterSpacing: '0.18em',
+              fontFamily: 'var(--cr-font-mono)', borderRadius: 'var(--cr-radius-md)',
+              border: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-1)',
+              color: 'var(--cr-fg-1)',
+            }}
+          />
+          <Button variant="primary" disabled={busy || code.trim().length < 4} onClick={submit} data-testid="verify-otp">
+            {busy ? 'Checking…' : 'Confirm'}
+          </Button>
+        </div>
+        {err && <div className="acct-err">{err}</div>}
+        {sent && <p className="muted" data-testid="resent">Sent again — check your inbox.</p>}
         <p className="muted" style={{ marginTop: 14 }}>
           Not there? It can take a minute, and it is worth checking spam.
         </p>
-        {err && <div className="acct-err">{err}</div>}
-        {sent && <p className="muted" data-testid="resent">Sent again — check your inbox.</p>}
-        <div className="acct-actions" style={{ marginTop: 18 }}>
-          <Button variant="primary" disabled={busy || !email} onClick={resend} data-testid="resend-verification">
-            {busy ? 'Sending…' : 'Send it again'}
+        <div className="acct-actions" style={{ marginTop: 12 }}>
+          <Button variant="ghost" disabled={busy || !email} onClick={resend} data-testid="resend-verification">
+            Send a new code
           </Button>
-          <Button variant="ghost" onClick={() => window.location.reload()}>I have confirmed — reload</Button>
         </div>
         <div style={{ marginTop: 18 }}>
           <Button variant="ghost" onClick={() => logout()} data-testid="confirm-signout">Sign out</Button>

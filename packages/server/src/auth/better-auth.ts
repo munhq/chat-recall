@@ -24,12 +24,12 @@
  */
 import { betterAuth } from 'better-auth';
 import {
-  bearer, deviceAuthorization, mcp, oAuthDiscoveryMetadata, oAuthProtectedResourceMetadata,
+  bearer, deviceAuthorization, emailOTP, mcp, oAuthDiscoveryMetadata, oAuthProtectedResourceMetadata,
 } from 'better-auth/plugins';
 import { toNodeHandler } from 'better-auth/node';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import pg from 'pg';
-import { sendMail, resetPasswordMail, verifyEmailMail } from './mailer.js';
+import { sendMail, resetPasswordMail, verifyOtpMail } from './mailer.js';
 
 /** How long a reset link stays valid. One hour: long enough to survive a slow
  *  mail relay and a user who reads mail on a different device, short enough
@@ -139,9 +139,10 @@ function createAuth() {
     emailVerification: {
       sendOnSignUp: true,
       autoSignInAfterVerification: true,
-      sendVerificationEmail: async ({ user, url }) => {
-        await sendMail(verifyEmailMail(user.email, url));
-      },
+      // No sendVerificationEmail here on purpose: the emailOTP plugin's init()
+      // supplies one that sends a CODE, and a second definition would be dead
+      // code that reads like the live path. See the plugin registration below
+      // for why a code beats a link for this product.
     },
     emailAndPassword: {
       enabled: true,
@@ -220,6 +221,40 @@ function createAuth() {
     },
     plugins: [
       bearer(),
+      // A CODE, not a link, for email verification.
+      //
+      // The link had two failure modes that both look like nothing from our
+      // side. Corporate mail scanners (Safe Links, Proofpoint, Mimecast) GET
+      // every URL to check it, which CONSUMES the verification token before the
+      // human clicks — and the token is a stateless JWT, so there is no row and
+      // no record that it happened. And a link opened in the default browser, or
+      // on a phone, lands in a different session from the one that signed up.
+      // Our audience is developers, mostly on corporate mail, so neither is
+      // hypothetical.
+      //
+      // A code cannot be spent by a scanner reading it, works across devices,
+      // and — the reason it wins HERE specifically — it completes in the tab the
+      // user is already in. ConfirmEmailScreen exists because a new signup used
+      // to land on a blank dashboard; with a code that page takes the input and
+      // finishes, instead of sending the user away and hoping they come back.
+      //
+      // Registering this plugin REPLACES emailVerification.sendVerificationEmail
+      // (see its init()), so the code is the whole mechanism rather than a
+      // second one bolted beside the link.
+      emailOTP({
+        sendVerificationOnSignUp: true,
+        // 15 minutes, not the 5-minute default: someone who signs up on a laptop
+        // and reads mail on a phone is routinely slower than five minutes, and an
+        // expired code sends them back to the start of the only step that stands
+        // between them and the product.
+        expiresIn: 900,
+        // Never store what was sent. A leaked database should not hand over live
+        // verification codes, and nothing here needs to read one back.
+        storeOTP: 'hashed',
+        sendVerificationOTP: async ({ email, otp, type }) => {
+          await sendMail(verifyOtpMail(email, otp, type));
+        },
+      }),
       deviceAuthorization({
         expiresIn: '10m',
         interval: '5s',
