@@ -202,6 +202,25 @@ export async function signInSocial(provider: string): Promise<AuthResult> {
   return { ok: true };
 }
 
+/**
+ * Ask for another confirmation mail.
+ *
+ * The one action available to an account that has signed up and not confirmed,
+ * and it had no UI at all: the address could be a typo, the mail could be in
+ * spam, or the first send could simply have failed, and the only recovery was to
+ * make a second account.
+ */
+export async function resendVerificationEmail(email: string): Promise<AuthResult> {
+  const res = await fetch(authUrl('/send-verification-email'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email, callbackURL: '/app' }),
+  });
+  if (res.ok) return { ok: true };
+  return { ok: false, error: await authError(res, 'could not resend the confirmation email') };
+}
+
 /** Approve or deny a CLI device-login request (?user_code=… on /device).
  *  GET /device first: it binds the pending code to THIS session, which the
  *  approve/deny endpoints require. Both calls carry the session cookie. */
