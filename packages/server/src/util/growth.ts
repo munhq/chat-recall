@@ -42,7 +42,15 @@ import { createLogger } from '@chat-recall/engine/core/logger.js';
 
 const log = createLogger('growth');
 
-export type GrowthEvent = 'install' | 'activate' | 'convert';
+export type GrowthEvent =
+  | 'install'   // a workspace was created — the user got past login
+  | 'activate'  // first sync — the product actually did something for them
+  | 'convert'   // paid
+  // The steps a user can FAIL at. The three above all fire AFTER success, so
+  // the funnel could only ever show people who made it — and every question
+  // worth asking is about the ones who did not. See middleware/funnel.ts.
+  | 'funnel'
+  | 'funnel_fail';
 
 export interface GrowthProps {
   /** The tenant this is about. Always set it — it is the funnel's join key. */
