@@ -1,16 +1,19 @@
 /**
- * The lapsed-tenant degradation: lapsed lands on the FREE TIER, not read-only.
+ * The lapsed-tenant HARD STOP: no live entitlement, no answers.
  *
- * requireEntitlement passes a lapsed tenant THROUGH — the refusals moved to the
- * layers that know what "free" means: requireFeature (which resolves the plan
- * to 'free'), the search window, and the sync meters (syncAdmission). What this
- * middleware still owns is the anti-abuse edge: a tenant that never confirmed
- * an email address may not write.
+ * requireEntitlement refuses a lapsed tenant with 402 `no_plan`, reads included.
+ * Until 2026-08-25 it passed every GET through and let the free tier's feature
+ * map decide, which meant a lapsed account kept answering searches from the
+ * corpus it held the day it lapsed. That is the failure this file now guards
+ * against: a memory product answering from a memory that stopped growing looks
+ * broken rather than cheap, and the staleness banner that carried the caveat
+ * only reaches an agent that reads banners.
  *
- * Both failure directions stay silent and bad: too strict and a former
- * customer cannot reach their own history; too loose and an unverified signup
- * spends money. "Unpaid tenant syncs forever" is now syncAdmission's test, not
- * this file's.
+ * Both failure directions stay silent and bad: too loose and a lapsed account
+ * quietly serves stale history as if it were current; too strict and the routes
+ * a person needs in order to pay us stop working. The second is why /api/data,
+ * /api/status, /api/account, /api/billing and /api/teams carry no `paid` gate —
+ * see the mounts in server.ts.
  */
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -60,30 +63,49 @@ async function seed(tenant: string, patch: Record<string, unknown>) {
   try { await cp.setEntitlement(tenant, patch as any); } finally { await cp.close(); }
 }
 
-describe('requireEntitlement degradation', () => {
-  test('a LAPSED tenant may READ', async () => {
+describe('requireEntitlement hard stop', () => {
+  test('a LAPSED tenant is REFUSED on a read', async () => {
+    // This asserted 200 until 2026-08-25. The read is the whole point: a lapsed
+    // account that still answers searches is the failure, not the courtesy.
     await seed('lapsed-read', { status: 'trialing', currentPeriodEnd: Date.now() - 1000 });
     const res = await request(appFor('lapsed-read')).get('/thing');
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe('read');
+    expect(res.status).toBe(402);
+    expect(res.body.kind).toBe('no_plan');
   });
 
-  test('a LAPSED tenant passes through — the free tier owns the refusals now', async () => {
-    // The write reaches the handler: whether it is allowed is decided by the
-    // feature gate on the mount (a lapsed plan resolves to 'free') and by the
-    // sync meters — not by a blanket write-402 here, which would also refuse
-    // the kg/diary/kv writes the free tier includes.
+  test('the refusal names the state, not a feature', async () => {
+    // featureRequired('memory') would say "this feature requires the solo plan",
+    // which invites the reader to think the rest still works. A dormant account
+    // does not lack one capability; it lacks a plan.
+    await seed('lapsed-msg', { status: 'trialing', currentPeriodEnd: Date.now() - 1000 });
+    const res = await request(appFor('lapsed-msg')).get('/thing');
+    expect(res.body.error).toMatch(/no active plan/i);
+    // It must still say nothing was lost, or a 402 on your own history reads as
+    // deletion — and point at the two things that survive.
+    expect(String(res.body.detail)).toMatch(/export/i);
+    expect(String(res.body.detail)).toMatch(/sync --full/);
+    expect(res.body.upgradeUrl).toBeTruthy();
+  });
+
+  test('a LAPSED tenant is refused on a write too', async () => {
     await seed('lapsed-write', { status: 'trialing', currentPeriodEnd: Date.now() - 1000 });
     const res = await request(appFor('lapsed-write')).post('/thing');
-    expect(res.status).toBe(200);
-    expect(res.body.ok).toBe('write');
+    expect(res.status).toBe(402);
+    expect(res.body.kind).toBe('no_plan');
   });
 
-  test('a CANCELLED subscriber lands on the same free tier', async () => {
-    // Same principle as a lapsed trial: they may come back, and the data is theirs.
+  test('a CANCELLED subscriber lands on the same hard stop', async () => {
     await seed('churned', { status: 'canceled' });
-    expect((await request(appFor('churned')).get('/thing')).status).toBe(200);
-    expect((await request(appFor('churned')).post('/thing')).status).toBe(200);
+    expect((await request(appFor('churned')).get('/thing')).status).toBe(402);
+    expect((await request(appFor('churned')).post('/thing')).status).toBe(402);
+  });
+
+  test('CORS preflight is never the thing that fails', async () => {
+    // A refused OPTIONS makes the browser report a CORS error, which hides the
+    // 402 the dashboard needs in order to render the subscribe prompt.
+    await seed('lapsed-cors', { status: 'canceled' });
+    const res = await request(appFor('lapsed-cors')).options('/thing');
+    expect(res.status).not.toBe(402);
   });
 
   test('an ENTITLED tenant may do both', async () => {
