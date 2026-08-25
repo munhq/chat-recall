@@ -57,7 +57,8 @@ function actor(req: express.Request): string { return (req.authorSub || req.user
  * OPT-IN, stored per tenant, read by services/auto-tasks.ts after every code
  * index. Behind this router's 'tasks' mount, so the free plan cannot set it.
  *
- *   GET  /api/tasks/policy      → { enabled, maxPri, lastRun, eligible, filed, byProject }
+ *   GET  /api/tasks/policy      → { enabled, maxPri, lastRun, eligible, filed,
+ *                                 openCards, ceiling, byProject }
  *                                 maxPri: 0 critical, 1 high, 2 medium, 3 low
  *   PUT  /api/tasks/policy {enabled, maxPri?}
  *   POST /api/tasks/policy/run  → run it NOW, returns
@@ -72,7 +73,10 @@ function actor(req: express.Request): string { return (req.authorSub || req.user
 router.get('/policy', async (req, res) => {
   try {
     const st = await autoTasksStatus(req.tenant as string);
-    res.json({ ...st.policy, lastRun: st.lastRun, eligible: st.eligible, filed: st.filed, byProject: st.byProject });
+    res.json({
+      ...st.policy, lastRun: st.lastRun, eligible: st.eligible, filed: st.filed,
+      openCards: st.openCards, ceiling: st.ceiling, byProject: st.byProject,
+    });
   } catch (e) {
     log.error({ err: e }, 'auto-tasks status failed');
     // Degrade to the bare setting rather than 500: the switch must stay usable
@@ -80,7 +84,7 @@ router.get('/policy', async (req, res) => {
     const cp = await createControlPlane();
     try {
       const policy = parsePolicy(await cp.getTenantSetting(req.tenant as string, AUTO_TASKS_KEY));
-      res.json({ ...policy, lastRun: null, eligible: 0, filed: 0, byProject: [] });
+      res.json({ ...policy, lastRun: null, eligible: 0, filed: 0, openCards: 0, ceiling: 0, byProject: [] });
     } finally { await cp.close(); }
   }
 });
