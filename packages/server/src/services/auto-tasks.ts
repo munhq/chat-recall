@@ -54,6 +54,25 @@ const LAST_RESULT_KEY = 'auto_tasks_last_result';
 /** One run never files more than this many new cards — a first index of a
  *  messy repo must not bury the board. The rest surface on later runs. */
 const MAX_NEW_CARDS_PER_RUN = 10;
+/**
+ * How many auto-filed cards may be OPEN at once, across every project.
+ *
+ * The per-run cap alone bounds a burst, not a total: every ingest triggers a run,
+ * so 10-at-a-time keeps going until the whole backlog is cards. Measured on one
+ * real account, moving the floor from high to medium made 1,070 items eligible —
+ * 316 actions and 754 findings — and a board of a thousand cards is not a queue
+ * anyone works from. It is the same unreadable board that duplicate cards
+ * produced, reached by volume instead.
+ *
+ * So filing STOPS at the ceiling and resumes as cards are closed, which makes the
+ * board self-limiting rather than monotonic. Nothing is lost: the backlog stays
+ * visible as `eligible`, and the ranked findings view already shows all of it.
+ * Closing, re-pointing and de-duplicating are never blocked — those only ever
+ * make the board smaller.
+ */
+const MAX_OPEN_AUTO_CARDS = 50;
+/** The card states that count against the ceiling: work not yet finished. */
+const OPEN_CARD_STATES: ReadonlySet<string> = new Set(['todo', 'in_progress']);
 
 export interface AutoTasksPolicy {
   enabled: boolean;
@@ -290,7 +309,7 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
       // reopened on the next run (its finding is still reported), closed again,
       // and again, for ever. Clearing it says what is true: this card no longer
       // represents a finding, because the survivor does.
-      const OPEN_STATES = new Set(['todo', 'in_progress']);
+      const OPEN_STATES = OPEN_CARD_STATES;
       const byFindingAll = new Map<string, typeof existing>();
       for (const t of existing) {
         if (t.createdBy !== 'auto-tasks' || !t.linkedFindingId) continue;
@@ -343,6 +362,23 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
         }
       }
 
+      // ── THE CEILING ──────────────────────────────────────────────────────
+      //
+      // Counted here, after the two dedup sweeps above, so a run that retires
+      // three duplicates may file three more — the board's size is what is
+      // capped, not the run's ambition.
+      //
+      // `existing` is every finding-linked card, and the sweeps mutated the rows
+      // in place, so this reads the post-sweep state.
+      const openNow = existing.filter(
+        (t) => t.createdBy === 'auto-tasks' && OPEN_CARD_STATES.has(t.status)).length;
+      const room = Math.max(0, MAX_OPEN_AUTO_CARDS - openNow);
+      const budget = Math.min(MAX_NEW_CARDS_PER_RUN, room);
+      if (room === 0) {
+        log.info({ tenant, openNow, ceiling: MAX_OPEN_AUTO_CARDS },
+          'auto-tasks: board at the ceiling — filing paused, closing still runs');
+      }
+
       for (const a of fileableNow) {
         const byId = byFinding.get(a.id);
         if (byId) {
@@ -373,7 +409,7 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
           }
           continue;
         }
-        if (created >= MAX_NEW_CARDS_PER_RUN) break;
+        if (created >= budget) break;
         await store.createTeamTask({
           title: `[${severityOfPri(a.pri)}] ${a.title}`.slice(0, 500),
           description: [
@@ -523,6 +559,9 @@ export async function autoTasksStatus(tenant: string): Promise<{
   lastRun: AutoTasksLastRun | null;
   eligible: number;
   filed: number;
+  /** Auto-filed cards currently open, and the ceiling they are counted against. */
+  openCards: number;
+  ceiling: number;
   byProject: Array<{ projectId: string; counts: Record<string, number>; eligible: number }>;
 }> {
   const cp = await createControlPlane();
@@ -558,6 +597,16 @@ export async function autoTasksStatus(tenant: string): Promise<{
       const open = await store.listCodeActions(undefined, { status: 'suggested', limit: 500 });
       const existing = await store.teamTasksByFindingIds();
       const carded = new Set(existing.map((t) => t.linkedFindingId).filter(Boolean) as string[]);
+      const openCards = existing.filter(
+        (t) => t.createdBy === 'auto-tasks' && OPEN_CARD_STATES.has(t.status)).length;
+      // FINDINGS COUNT TOO. This read only ever looked at code_actions, while the
+      // filer reads both sources — so the panel's promise about a lower floor was
+      // short by every finding. Asked what moving the floor to medium would pick
+      // up, it answered 316 when the true number was 1,070, and a floor was
+      // chosen on that answer. `codeFindingsSummary` is exact and uncapped, which
+      // a capped list is not.
+      const fsum = await store.codeFindingsSummary();
+      const cardedFindings = [...carded].filter((id) => id.startsWith('cf_')).length;
 
       // Every severity is counted, not just the two above the old floor: the
       // panel has to show what a LOWER floor would pick up, or choosing one is
@@ -578,7 +627,23 @@ export async function autoTasksStatus(tenant: string): Promise<{
         PRI_SEVERITY.reduce((n, s, i) => n + (c[s] ?? 0) * (PRI_SEVERITY.length - i) * 1000, 0);
       const byProject = [...rows.values()]
         .sort((x, y) => weight(y.counts) - weight(x.counts) || x.projectId.localeCompare(y.projectId));
-      return { policy, lastRun, eligible, filed, byProject };
+
+      // Findings at or under the floor, less the ones that already have a card.
+      // Approximate in one direction only: a finding suppressed by a roll-up is
+      // still counted here, so the number is an upper bound rather than a promise
+      // the filer will break. `byProject` stays action-derived — the per-project
+      // finding counts would be a query per project.
+      let findingsEligible = 0;
+      for (const sev of PRI_SEVERITY) {
+        if (priOfSeverity(sev) <= policy.maxPri) findingsEligible += fsum.bySeverity[sev] ?? 0;
+      }
+      findingsEligible = Math.max(0, findingsEligible - cardedFindings);
+
+      return {
+        policy, lastRun, filed, byProject, openCards,
+        eligible: eligible + findingsEligible,
+        ceiling: MAX_OPEN_AUTO_CARDS,
+      };
     } finally {
       await store.close();
     }
