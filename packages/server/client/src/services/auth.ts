@@ -211,14 +211,32 @@ export async function signInSocial(provider: string): Promise<AuthResult> {
  * make a second account.
  */
 export async function resendVerificationEmail(email: string): Promise<AuthResult> {
-  const res = await fetch(authUrl('/send-verification-email'), {
+  const res = await fetch(authUrl('/email-otp/send-verification-otp'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ email, callbackURL: '/app' }),
+    body: JSON.stringify({ email, type: 'email-verification' }),
   });
   if (res.ok) return { ok: true };
-  return { ok: false, error: await authError(res, 'could not resend the confirmation email') };
+  return { ok: false, error: await authError(res, 'could not resend the confirmation code') };
+}
+
+/**
+ * Finish verification with the code from the mail.
+ *
+ * The whole reason a code beats a link for this product: it completes HERE,
+ * in the tab the person signed up in, rather than in whichever browser their
+ * mail client happens to open.
+ */
+export async function verifyEmailWithOtp(email: string, otp: string): Promise<AuthResult> {
+  const res = await fetch(authUrl('/email-otp/verify-email'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email, otp }),
+  });
+  if (res.ok) return { ok: true };
+  return { ok: false, error: await authError(res, 'that code did not work') };
 }
 
 /** Approve or deny a CLI device-login request (?user_code=… on /device).
