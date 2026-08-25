@@ -15,6 +15,7 @@
  */
 
 import { createControlPlane } from '../imports.js';
+import type { SignupAttribution } from '@chat-recall/engine/core/store/control-plane.js';
 
 export interface MembershipRow {
   team_slug: string;
@@ -48,10 +49,15 @@ export async function createTeamFor(
   // requireUser yields `string | null`; cp.createTeam wants `string | undefined`.
   email: string | null | undefined,
   name: string,
+  // Where this signup came from, read off the `cr_src` cookie by the caller —
+  // every caller is a route handler that has the request, and this helper does
+  // not, so it is passed in rather than looked up. Optional so the self-host
+  // admin path can create a tenant without inventing an attribution for it.
+  attribution?: SignupAttribution,
 ): Promise<{ slug: string; name: string }> {
   const cp = await createControlPlane();
   try {
-    const t = await cp.createTeam(name, userSub, email ?? undefined);
+    const t = await cp.createTeam(name, userSub, email ?? undefined, attribution);
     return { slug: t.slug, name: t.name };
   } finally { await cp.close(); }
 }
