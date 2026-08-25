@@ -13,7 +13,7 @@ import {
   type Entitlement, type PlanInfo,
 } from '../services/api';
 import { Button } from './primitives';
-import { isCloud, logout } from '../services/auth';
+import { isCloud, logout, resendVerificationEmail } from '../services/auth';
 import { completedCheckoutSessionId } from '../utils/checkout';
 
 /** Days remaining at which the plan picker stops waiting to be asked. */
@@ -305,6 +305,62 @@ function gateReason(ent: { status?: string; hasSubscription?: boolean } | null):
   return { title: 'Choose a plan', detail: kept };
 }
 
+/**
+ * What a brand-new account sees until it confirms its address.
+ *
+ * EVERY signup lands here, for as long as it takes to reach an inbox. Before
+ * this it landed on the dashboard instead — and since an unentitled account has
+ * its reads refused, that dashboard rendered empty behind a 12px warning strip.
+ * The report was "a blank page with nothing", which is exactly right.
+ *
+ * There is one action available and it is not on this page, so this page says
+ * that and offers the only two things it usefully can: send the mail again, and
+ * a way out that is not closing the tab.
+ */
+export function ConfirmEmailScreen() {
+  const [email, setEmail] = useState<string | null>(null);
+  const [sent, setSent] = useState(false);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { getMe().then((me) => setEmail(me.user.email ?? null)).catch(() => {}); }, []);
+
+  async function resend() {
+    if (!email) return;
+    setBusy(true); setErr(''); setSent(false);
+    const r = await resendVerificationEmail(email);
+    setBusy(false);
+    if (r.ok) setSent(true); else setErr(r.error || 'could not resend');
+  }
+
+  return (
+    <div className="sub-screen">
+      <style>{ACCT_CSS}</style>
+      <div className="sub-box" data-testid="confirm-email-screen">
+        <div className="sub-logo">◆ chat-recall</div>
+        <h1>Check your inbox</h1>
+        <p className="muted">
+          We sent a confirmation link to <strong>{email ?? 'your address'}</strong>. Opening it starts
+          your free trial — nothing is counting down until you do, and there is nothing to pay.
+        </p>
+        <p className="muted" style={{ marginTop: 14 }}>
+          Not there? It can take a minute, and it is worth checking spam.
+        </p>
+        {err && <div className="acct-err">{err}</div>}
+        {sent && <p className="muted" data-testid="resent">Sent again — check your inbox.</p>}
+        <div className="acct-actions" style={{ marginTop: 18 }}>
+          <Button variant="primary" disabled={busy || !email} onClick={resend} data-testid="resend-verification">
+            {busy ? 'Sending…' : 'Send it again'}
+          </Button>
+          <Button variant="ghost" onClick={() => window.location.reload()}>I have confirmed — reload</Button>
+        </div>
+        <div style={{ marginTop: 18 }}>
+          <Button variant="ghost" onClick={() => logout()} data-testid="confirm-signout">Sign out</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function SubscribeScreen() {
   const [plan, setPlan] = useState<PlanInfo | null>(null);
   const [err, setErr] = useState('');
@@ -318,7 +374,17 @@ export function SubscribeScreen() {
   useEffect(() => {
     getMe().then((me) => setHasWorkspace(me.teams.length > 0)).catch(() => setHasWorkspace(false));
   }, []);
-  const trialDays = plan?.trialDays ?? 14;
+  // NO NUMERIC FALLBACK. This was `?? 14`, so the headline rendered
+  // "Start your 14-day free trial" for the moment before /api/billing/plans
+  // arrived, then snapped to 7 — the first thing a new signup saw was the
+  // product changing its own offer in front of them. 14 was also simply wrong:
+  // the server has said 7 since the card-trial length was cut, and the site says
+  // 7 in eight places.
+  //
+  // Rendering nothing until the real number lands is the honest version: a
+  // heading that appears a beat late beats a heading that lies and corrects
+  // itself.
+  const trialDays = plan?.trialDays ?? null;
 
   // First-run bootstrap: the same workspace creation StartTrialButton does, minus
   // Stripe. Creating the team is what provisions the no-card trial server-side.
@@ -371,7 +437,7 @@ export function SubscribeScreen() {
           </>
         ) : (
           <>
-            <h1>Start your {trialDays}-day free trial</h1>
+            <h1>{trialDays ? `Start your ${trialDays}-day free trial` : 'Start your free trial'}</h1>
             <p className="muted">Your subscription is required to access your sessions, search, analytics and live secret-leak
               alerts. Card required, cancel anytime — no charge until the trial ends.</p>
             {err && <div className="acct-err">{err}</div>}
