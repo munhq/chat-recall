@@ -16,6 +16,7 @@
 
 import { createControlPlane } from '../imports.js';
 import type { SignupAttribution } from '@chat-recall/engine/core/store/control-plane.js';
+import { growth } from './growth.js';
 
 export interface MembershipRow {
   team_slug: string;
@@ -58,6 +59,14 @@ export async function createTeamFor(
   const cp = await createControlPlane();
   try {
     const t = await cp.createTeam(name, userSub, email ?? undefined, attribution);
+    // install — it exists. Fired here rather than at each caller because this is
+    // the one funnel through which every tenant is created, including the
+    // auto-provision on a user's first authenticated request.
+    growth('install', {
+      tenant: t.slug,
+      source: attribution?.source ?? null,
+      campaign: attribution?.campaign ?? null,
+    });
     return { slug: t.slug, name: t.name };
   } finally { await cp.close(); }
 }
