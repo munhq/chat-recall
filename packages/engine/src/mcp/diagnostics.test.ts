@@ -1,19 +1,77 @@
 /**
- * What an agent is told when sync has stopped.
+ * What an agent is told when the account has no live plan.
  *
- * A lapsed tenant keeps read access, so `recall_search` still answers — from a
- * history that stopped growing the day the subscription ended. Nothing told the
- * agent that, so it would report "you never worked on that" about work done last
- * week. Silently wrong is the worst failure a memory product can have, and it is
- * the same defect as a paginated transcript presenting itself as a whole session.
+ * A lapsed tenant used to keep read access, so `recall_search` kept answering
+ * from a history that stopped growing the day the subscription ended, and this
+ * banner carried the caveat. Since 2026-08-25 the server refuses those reads
+ * outright, because a caveat only works on an agent that reads caveats. The
+ * banner's job changed with it: state the account is off, and stop the agent
+ * substituting its own recollection for the recall it just lost.
  *
  * Tested through the exported helpers rather than by booting an MCP server: the
  * decision being pinned is what the text says and when it appears at all.
  */
 import { describe, test, expect } from 'vitest';
-import { stalenessBanner, buildHttpError } from './mcp-diagnostics.js';
+import { stalenessBanner, trialEndingBanner, buildHttpError, TRIAL_WARN_DAYS } from './diagnostics.js';
 
 const DAY = 86_400_000;
+const BASE = 'https://recall.example';
+
+/**
+ * The trial countdown — the ONLY deadline surface a connector user ever sees.
+ *
+ * They arrive from claude.ai, sign in with Google and work. They never load the
+ * dashboard, so TrialBanner never renders for them, and the reminder email lands
+ * in an inbox they have not connected to this. If the tool result does not carry
+ * the deadline, nothing does, and the trial ending is a surprise.
+ */
+describe('trialEndingBanner', () => {
+  const trial = (daysLeft: number | null, over: Partial<Parameters<typeof trialEndingBanner>[0]> = {}) =>
+    ({ entitled: true, status: 'trialing', periodEnd: Date.now() + (daysLeft ?? 0) * DAY,
+      onTrial: true, trialDaysLeft: daysLeft, ...over });
+
+  test('silent while the trial has room', () => {
+    expect(trialEndingBanner(trial(TRIAL_WARN_DAYS + 1), BASE)).toBeNull();
+    expect(trialEndingBanner(trial(7), BASE)).toBeNull();
+  });
+
+  test('fires from the warning threshold, and names the day', () => {
+    expect(trialEndingBanner(trial(3), BASE)).toContain('IN 3 DAYS');
+    expect(trialEndingBanner(trial(1), BASE)).toContain('TOMORROW');
+    expect(trialEndingBanner(trial(0), BASE)).toContain('TODAY');
+  });
+
+  test('carries the account link on THIS server, not a hardcoded host', () => {
+    // Self-host is the reason this is passed in. A baked chatrecall.dev link
+    // sends someone running their own server to an account they do not have.
+    expect(trialEndingBanner(trial(2), BASE)).toContain(`${BASE}/app?view=account`);
+    expect(trialEndingBanner(trial(2), 'http://localhost:5000/')).toContain('http://localhost:5000/app?view=account');
+  });
+
+  test('tells the agent to relay it — a banner nobody repeats reached nobody', () => {
+    const b = trialEndingBanner(trial(2), BASE)!;
+    expect(b).toMatch(/tell the user/i);
+    // And it must not imply data loss, which is the one wrong takeaway.
+    expect(b).toMatch(/nothing is deleted/i);
+  });
+
+  test('says nothing for a CARD trial — that one is Stripe\'s to remind about', () => {
+    expect(trialEndingBanner(trial(2, { onTrial: false }), BASE)).toBeNull();
+  });
+
+  test('says nothing without a deadline, or when already lapsed', () => {
+    expect(trialEndingBanner(trial(null), BASE)).toBeNull();
+    // A lapsed account is stalenessBanner's job; two banners would contradict.
+    expect(trialEndingBanner({ ...trial(0), entitled: false }, BASE)).toBeNull();
+    expect(trialEndingBanner(null, BASE)).toBeNull();
+  });
+
+  test('never fires alongside the lapsed banner', () => {
+    const lapsed = { entitled: false, status: 'trialing', periodEnd: Date.now() - DAY, onTrial: true, trialDaysLeft: 0 };
+    expect(stalenessBanner(lapsed)).not.toBeNull();
+    expect(trialEndingBanner(lapsed, BASE)).toBeNull();
+  });
+});
 
 describe('stalenessBanner', () => {
   test('says nothing at all when entitled', () => {
@@ -31,21 +89,21 @@ describe('stalenessBanner', () => {
   test('warns, dates it, and tells the agent what NOT to conclude', () => {
     const lapsed = Date.now() - 14 * DAY;
     const b = stalenessBanner({ entitled: false, status: 'canceled', periodEnd: lapsed })!;
-    expect(b).toContain('SYNCING IS OFF');
+    expect(b).toContain('NO ACTIVE PLAN');
     expect(b).toContain('subscription has lapsed');
     expect(b).toContain(new Date(lapsed).toISOString().slice(0, 10));
     expect(b).toContain('14 days ago');
-    // Reads are COMPLETE on a dormant account — the window this used to warn
-    // about was removed on 2026-08-22, and telling an agent history is locked
-    // now makes it invent a limit that does not exist.
-    expect(b).toContain('WHOLE synced history');
-    // The word "locked" survives only inside the instruction NOT to say it.
-    expect(b).not.toMatch(/history is locked|stored but locked|recent window|last 7 days/i);
-    // The instruction that stops the actual harm.
-    expect(b).toMatch(/do not tell the user their history is gone/i);
-    // What is genuinely absent, and the one command that fixes it.
-    expect(b).toMatch(/since the lapse/i);
+    // Say the reads are refused. 'WHOLE synced history' was asserted here until
+    // 2026-08-25 and is now false — the exact drift this file exists to catch.
+    expect(b).toMatch(/refused/i);
+    expect(b).not.toMatch(/whole synced history|recent window|last 7 days/i);
+    // A 402 on your own history reads as deletion unless the text says otherwise.
+    expect(b).toMatch(/nothing was deleted/i);
+    expect(b).toMatch(/history is intact/i);
     expect(b).toContain('sync --full');
+    // The instruction that stops the actual harm now: an agent with no recall
+    // must not answer from its own recollection as if recall still worked.
+    expect(b).toMatch(/do not answer from memory/i);
   });
 
   test('names the right reason for each status', () => {
@@ -57,7 +115,7 @@ describe('stalenessBanner', () => {
 
   test('copes with no recorded period end', () => {
     const b = stalenessBanner({ entitled: false, status: 'canceled', periodEnd: null })!;
-    expect(b).toContain('SYNCING IS OFF');
+    expect(b).toContain('NO ACTIVE PLAN');
     expect(b).not.toContain('undefined');
     expect(b).not.toContain('NaN');
   });

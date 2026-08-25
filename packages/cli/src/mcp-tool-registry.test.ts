@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const mcpSrc = readFileSync(join(here, 'mcp.ts'), 'utf-8');
+const mcpSrc = readFileSync(join(here, '../../engine/src/mcp/tools.ts'), 'utf-8');
 const cliSrc = readFileSync(join(here, 'cli.ts'), 'utf-8');
 
 const uniq = (xs: string[]) => [...new Set(xs)].sort();
@@ -93,8 +93,22 @@ describe('MCP tool annotations', () => {
   const idempotent = setNames('IDEMPOTENT_TOOLS');
 
   test('both ListTools return paths annotate — lean and full', () => {
-    expect(mcpSrc).toContain('return { tools: all.map(annotate) }');
+    // `visible`, not `all`, since the remote endpoint drops the disk-bound tools
+    // from the listing. Whatever the source set, BOTH return paths must annotate:
+    // an unannotated tool makes a host treat 50 reads as if each could mutate.
+    expect(mcpSrc).toContain('return { tools: visible.map(annotate) }');
     expect(mcpSrc).toContain('return { tools: lean.map(annotate) }');
+  });
+
+  test('the listing filters local-only tools, and the two names are real', () => {
+    // recall_index and recall_code_index run the collector over the CALLER'S
+    // filesystem. On the remote endpoint that filesystem is the server's, so
+    // listing them would advertise something that cannot work. A typo here would
+    // silently filter nothing, so the names are checked against the registry.
+    expect(mcpSrc).toContain("const localOnly = new Set(['recall_index', 'recall_code_index']);");
+    for (const name of ['recall_index', 'recall_code_index']) {
+      expect(defined, `${name} must exist to be filtered`).toContain(name);
+    }
   });
 
   test('no annotation set names a tool that does not exist', () => {

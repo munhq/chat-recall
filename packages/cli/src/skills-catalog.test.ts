@@ -27,7 +27,7 @@ const skillsDir = join(here, '..', 'skills');
 const pluginSkillsDir = join(here, '..', '..', '..', 'plugin', 'skills');
 
 const defined = [...new Set(
-  [...readFileSync(join(here, 'mcp.ts'), 'utf-8').matchAll(/name: '(recall_[a-z_]+)'/g)].map((m) => m[1]),
+  [...readFileSync(join(here, '../../engine/src/mcp/tools.ts'), 'utf-8').matchAll(/name: '(recall_[a-z_]+)'/g)].map((m) => m[1]),
 )].sort();
 
 /** Every SKILL.md we ship, as { name, text }. */

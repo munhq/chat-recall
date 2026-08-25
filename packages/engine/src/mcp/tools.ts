@@ -5,12 +5,17 @@
  * Exposes chat recall as tools that can be used by Claude Code.
  */
 
-import { resumeCommandFor } from '@chat-recall/engine/core/resume-command.js';
-import { resolveProjectId } from '@chat-recall/engine/core/project-resolver.js';
+import { resumeCommandFor } from '../core/resume-command.js';
+import { resolveProjectId } from '../core/project-resolver.js';
 import { config } from 'dotenv';
-import { buildHttpError, stalenessBanner, type SyncState } from './mcp-diagnostics.js';
+import {
+  buildHttpError, stalenessBanner, trialEndingBanner, type SyncState,
+} from './diagnostics.js';
+import {
+  currentCredentials, withCredentials, setMultiTenantMode, isMultiTenant,
+} from './credential-context.js';
+export { withCredentials, setMultiTenantMode };
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -27,27 +32,78 @@ import { fileURLToPath } from 'node:url';
 // migration. Dead engine imports here aren't just clutter: they drag heavy
 // engine modules (once the whole store layer, incl. lancedb + pino) into the
 // published bundle, which broke every fresh `npm i -g chat-recall`.
-import { formatContext } from '@chat-recall/engine/core/context.js';
-import { getIdentityFilePath, getDataDir } from '@chat-recall/engine/core/paths.js';
-import { envCredentials } from '@chat-recall/engine/core/credentials-env.js';
-import { liveScanModifiedFiles } from '@chat-recall/engine/core/live-session-scan.js';
+import { formatContext } from '../core/context.js';
+import { getIdentityFilePath, getDataDir } from '../core/paths.js';
+import { envCredentials } from '../core/credentials-env.js';
+import { liveScanModifiedFiles } from '../core/live-session-scan.js';
 // Side-effect import: registers the four ToolBackend implementations so
 // getBackendForId(...) works everywhere downstream.
-import '@chat-recall/engine/core/backends/index.js';
-import { getBackendForId } from '@chat-recall/engine/core/tool-backend.js';
-import { markPrompt } from '@chat-recall/engine/core/session-sentiment.js';
-import { statusEmoji } from '@chat-recall/engine/core/outcome-display.js';
-import { sanitizeQuery } from '@chat-recall/engine/core/query-sanitizer.js';
-import { getWAL } from '@chat-recall/engine/core/write-ahead-log.js';
-import { reportClientEvent } from './client-events.js';
-import { isOnPath } from '@chat-recall/engine/core/which.js';
-import { readCollectorHealth, judgeHealth, progressLine } from '@chat-recall/engine/core/collector-health.js';
+import '../core/backends/index.js';
+import { getBackendForId } from '../core/tool-backend.js';
+import { markPrompt } from '../core/session-sentiment.js';
+import { statusEmoji } from '../core/outcome-display.js';
+import { sanitizeQuery } from '../core/query-sanitizer.js';
+import { getWAL } from '../core/write-ahead-log.js';
+import { isOnPath } from '../core/which.js';
+import { readCollectorHealth, judgeHealth, progressLine } from '../core/collector-health.js';
 import {
   INSTRUCTION_KINDS, SEVERITIES, sevRank, taskBody,
   partitionRecs, actionToImprovement, recToImprovement, isOpenAction,
   rankImprovements, rankInstructions,
   type EngineRec, type EngineAction, type Improvement,
 } from './recommendation-merge.js';
+
+// ── Host hooks ──────────────────────────────────────────────────────────
+//
+// Two things this tool surface needs are properties of the HOST, not of the
+// tools: running an index over the caller's own disk, and reporting a tool
+// error to the operator's telemetry. Both are trivially available to the stdio
+// CLI (it IS the user's machine) and meaningless to the remote /mcp server (its
+// disk is nobody's transcripts, and its telemetry is the server's own).
+//
+// So the surface declares what it needs and the host supplies it. The defaults
+// are the remote answers, because the remote host is the one that supplies
+// nothing — a missing injection must degrade to an honest message, never to a
+// crash or to a silent no-op that looks like success.
+
+type IndexRunner = (force: boolean) => Promise<string>;
+let indexRunner: IndexRunner | null = null;
+
+/** Supply the local indexer. The CLI entry point calls this at boot; the remote
+ *  server deliberately does not. */
+export function setIndexRunner(fn: IndexRunner | null): void { indexRunner = fn; }
+
+async function runIndexChild(force: boolean): Promise<string> {
+  if (!indexRunner) {
+    return 'Indexing runs on YOUR machine, not on the server — this connection has no access to your transcripts. '
+      + 'Install the CLI and run `chat-recall index` (or `chat-recall init` for first-time setup) on the machine '
+      + 'whose history you want searchable here.';
+  }
+  return indexRunner(force);
+}
+
+type EventReporter = (kind: string, opts: { tool?: string; message?: string }) => void;
+let eventReporter: EventReporter | null = null;
+
+/** Supply the telemetry sink. Absent, tool errors are simply not reported —
+ *  which is correct for a host that has no operator to report them to. */
+export function setEventReporter(fn: EventReporter | null): void { eventReporter = fn; }
+
+function reportClientEvent(kind: string, opts: { tool?: string; message?: string } = {}): void {
+  try { eventReporter?.(kind, opts); } catch { /* telemetry must never fail a tool */ }
+}
+
+type UpdateNotice = () => string | null;
+let updateNoticeFn: UpdateNotice | null = null;
+
+/** Supply the "your CLI is out of date" line for recall_status. Local hosts
+ *  only — see the call site. */
+export function setUpdateNotice(fn: UpdateNotice | null): void { updateNoticeFn = fn; }
+
+function updateNotice(): string | null {
+  try { return updateNoticeFn ? updateNoticeFn() : null; } catch { return null; }
+}
+
 
 // Load .env configuration.
 //
@@ -102,6 +158,18 @@ function withCodeindexHint(body: string, kind: 'files' | 'session'): string {
 // faster, and always present.
 
 function remoteCredentials(): { base: string; token: string } | null {
+  // FIRST, ahead of both env and disk: the credentials of the caller whose
+  // request we are inside. Set only by the remote /mcp endpoint, where one
+  // process serves many people and the identity arrives per request in an OAuth
+  // bearer token — see ./credential-context.ts. Under stdio there is no store
+  // and this is null, so the local product's resolution order is untouched.
+  //
+  // The order is not a preference, it is a safety property: if env were
+  // consulted first, a server that happened to have CHAT_RECALL_TOKEN set would
+  // answer every remote caller out of that one account.
+  const ambient = currentCredentials();
+  if (ambient) return ambient;
+
   // A container has no credentials file and cannot run a login, so an explicit
   // CHAT_RECALL_TOKEN outranks the disk. This is what lets Glama and the Docker
   // MCP catalog run this server at all.
@@ -677,20 +745,45 @@ const RecallSecurityRulesSchema = z.object({
 
 
 
-const server = new Server(
-  {
-    name: 'chat-recall',
-    // Resolves to packages/cli/package.json from both src/ and the bundled dist/
-    version: JSON.parse(
-      readFileSync(new URL('../package.json', import.meta.url), 'utf-8')
-    ).version,
-  },
-  {
-    capabilities: {
-      tools: {},
-    },
-  }
-);
+/**
+ * The version this server reports to clients, supplied by the HOST.
+ *
+ * It used to be read from `../package.json` relative to this file, which
+ * resolved to the CLI's manifest while the tool surface lived in that package.
+ * It no longer does: from packages/engine that path is the ENGINE's manifest,
+ * which carries a different version entirely (0.4.8 against the CLI's 0.5.12).
+ * The failure was not the crash that exposed it — it was that the next resolve
+ * would have quietly advertised the wrong version to every client forever.
+ *
+ * Neither manifest is the right answer in general, because the version a caller
+ * cares about is the version of the THING SERVING THEM: the installed CLI over
+ * stdio, the deployed server over /mcp. So the host states it.
+ */
+const DEFAULT_VERSION = '0.0.0-unset';
+let serverVersion = DEFAULT_VERSION;
+
+/** Set the reported version. Call BEFORE createMcpServer(); after that the
+ *  value is baked into the instance the client sees. */
+export function setServerVersion(version: string): void {
+  if (version) serverVersion = version;
+}
+
+/**
+ * Build an MCP Server with every tool handler attached.
+ *
+ * A factory rather than a module-level singleton because the two hosts differ:
+ * stdio needs exactly one, for the life of the process; the remote endpoint
+ * needs one per authenticated session, since the SDK ties transport state to
+ * the instance. A shared singleton there would cross-wire sessions.
+ */
+export function createMcpServer(): Server {
+  const s = new Server(
+    { name: 'chat-recall', version: serverVersion },
+    { capabilities: { tools: {} } },
+  );
+  attachHandlers(s);
+  return s;
+}
 
 /**
  * The tools an agent sees by default.
@@ -810,6 +903,7 @@ function annotate(t: ToolDef): ToolDef & { annotations: Record<string, unknown> 
 }
 
 // List available tools
+function attachHandlers(server: Server): void {
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   const all: Array<{ name: string; description: string; inputSchema: unknown }> = [
       {
@@ -1784,13 +1878,22 @@ Complements recall_memory_search: search finds candidates, this reads the specif
       },
   ];
 
-  if (toolProfile() === 'full') return { tools: all.map(annotate) };
+  // Tools that read the CALLER'S OWN DISK, dropped when this process serves many
+  // callers over /mcp. There, "the filesystem" is the server's, which holds
+  // nobody's transcripts — so listing these would advertise a capability that
+  // cannot work, and whose failure would look like success. The dispatch still
+  // answers them by name with an explanation (runIndexChild's default), so a
+  // client working from a cached list gets a sentence rather than a 404.
+  const localOnly = new Set(['recall_index', 'recall_code_index']);
+  const visible = isMultiTenant() ? all.filter((t) => !localOnly.has(t.name)) : all;
+
+  if (toolProfile() === 'full') return { tools: visible.map(annotate) };
 
   // Lean: the everyday set, plus a signpost so neither the user nor the agent
   // has to guess that more exists. Without this line the omission looks like a
   // missing feature rather than a choice.
-  const lean = all.filter((t) => LEAN_TOOLS.has(t.name));
-  const hidden = all.length - lean.length;
+  const lean = visible.filter((t) => LEAN_TOOLS.has(t.name));
+  const hidden = visible.length - lean.length;
   if (hidden > 0) {
     lean.push({
       name: 'recall_help',
@@ -1842,6 +1945,12 @@ async function syncState(): Promise<SyncState | null> {
             entitled: b.entitled,
             status: typeof b.status === 'string' ? b.status : 'unknown',
             periodEnd: typeof b.currentPeriodEnd === 'number' ? b.currentPeriodEnd : null,
+            // Both server-computed, for the same reason `entitled` is: the days
+            // left and "is this OUR no-card trial" are decisions the server
+            // already makes (isNoCardTrial / trialDaysLeft), and a second copy
+            // here would drift the moment either rule changes.
+            onTrial: b.onTrial === true,
+            trialDaysLeft: typeof b.trialDaysLeft === 'number' ? b.trialDaysLeft : null,
           };
         }
       }
@@ -1849,6 +1958,29 @@ async function syncState(): Promise<SyncState | null> {
   } catch { /* leave null — no warning rather than a wrong one */ }
   syncStateCache = { at: Date.now(), state };
   return state;
+}
+
+/**
+ * The trial countdown, at most ONCE per MCP process.
+ *
+ * Unlike the staleness banner, this fires while everything still works, so
+ * repeating it on every tool call would attach a sales notice to fifty
+ * consecutive answers and train the agent to ignore the banner slot — which is
+ * the slot the genuine "your account is off" warning also uses.
+ *
+ * One process is one session under stdio, and the remote endpoint builds a fresh
+ * server per request, so this reads as once-per-conversation on the host where
+ * it matters. That is the right cadence for a deadline the user can act on at
+ * any point in the next three days.
+ */
+let trialNoticeShown = false;
+function trialCountdownOnce(state: SyncState | null): string | null {
+  if (trialNoticeShown) return null;
+  const cred = remoteCredentials();
+  if (!cred) return null;
+  const banner = trialEndingBanner(state, cred.base);
+  if (banner) trialNoticeShown = true;
+  return banner;
 }
 
 // Handle tool calls.
@@ -1875,11 +2007,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // first sync — "is this broken, or is it still loading?" — which the product
     // previously could not answer at all.
     const progress = progressLine(reported);
+    const state = await syncState();
     const banners = [
       health.ok ? null : `⚠ ${health.summary} Recent work may be missing from these answers.`
         + ` Tell the user, and suggest \`chat-recall doctor\`.`,
       progress ? `⏳ ${progress}. Older work may not be searchable yet.` : null,
-      stalenessBanner(await syncState()),
+      stalenessBanner(state),
+      trialCountdownOnce(state),
     ].filter(Boolean) as string[];
     if (banners.length === 0) return result;
     const banner = banners.join('\n\n');
@@ -1892,6 +2026,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return result;   // never let the warning break a working answer
   }
 });
+}   // end attachHandlers
 
 /** What every tool handler returns. The index signature keeps it assignable to
  *  the SDK's own result union, which allows extra fields. */
@@ -2068,7 +2203,10 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         // line, never self-updates (the updater lives in the daemon), and
         // silently keeps a months-old collector. Say it where they actually are.
         {
-          const { updateNotice } = await import('./update-notice.js');
+          // Host-supplied: only a local CLI install HAS a version that can be
+          // out of date. A remote connection is served by whatever the server
+          // runs, so there is nothing for the caller to update and the hook is
+          // deliberately left unset there.
           const notice = updateNotice();
           if (notice) lines.push('', `⚠ ${notice}`);
         }
@@ -3290,7 +3428,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
       case 'recall_code_index': {
         const params = RecallCodeIndexSchema.parse(args);
         requireRemote();
-        const { collectCode } = await import('@chat-recall/engine/core/code/collector.js');
+        const { collectCode } = await import('../core/code/collector.js');
         const { resolve: resolvePath } = await import('node:path');
         const workspace = params.path ? resolvePath(params.path) : process.cwd();
         const result = await collectCode({ workspace });
@@ -4456,169 +4594,10 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
   }
 }
 
-/**
- * Background freshness loop — the architecture's writer. The binary IS the
- * MCP + indexer + sync; there is no separate daemon to install on any OS.
- * Claude Code spawns this process for every session (Windows/macOS/Linux
- * alike, via mcp.json), so it runs exactly while the user works — which is
- * exactly when transcripts change. Each tick pushes the incremental delta
- * via syncIncremental(); the index-lock elects ONE writer among concurrent
- * sessions' MCP processes; the settings watermark makes ticks idempotent.
- * Not logged in → no-op. The 15s startup tick flushes whatever the
- * previous session left behind.
- */
-/**
- * Run `chat-recall index` in a CHILD process so a large collect can never OOM
- * the MCP tool server. The child (dist/cli.js) has its own heap; if it dies
- * (OOM/kill), we report it and the MCP stays up serving tools. Strips ANSI,
- * returns the child's summary line(s).
- */
-function runIndexChild(force: boolean): Promise<string> {
-  return new Promise((resolve) => {
-    let cliPath: string;
-    try { cliPath = fileURLToPath(new URL('./cli.js', import.meta.url)); }
-    catch { resolve('Index unavailable: could not locate the CLI entry point.'); return; }
 
-    const args = [cliPath, 'index'];
-    if (force) args.push('--force');
-    let out = '', err = '', done = false;
-    const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '').trim();
-    const finish = (msg: string) => { if (!done) { done = true; resolve(msg); } };
-
-    const child = spawn(process.execPath, args, { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
-    child.stdout?.on('data', (d) => { out += d; });
-    child.stderr?.on('data', (d) => { err += d; });
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      finish('Indexing a large history is still running in the background — it finishes on its own, and the watch daemon syncs continuously regardless.');
-    }, 10 * 60_000);
-    timer.unref?.();
-    child.on('error', (e) => { clearTimeout(timer); finish(`Could not start indexer: ${e.message}`); });
-    child.on('exit', (code, signal) => {
-      clearTimeout(timer);
-      if (code === 0) {
-        finish(strip(out).split('\n').filter(Boolean).slice(-3).join('\n') || 'Collected + shipped to your chat-recall server.');
-      } else {
-        // A child killed by a signal reports code === null, so `code` alone
-        // yields the useless "exited with code null". Name the signal instead —
-        // that string was seen in the field and told us nothing about the cause
-        // (it is NOT the OOM path below, which says so explicitly).
-        const reason = signal === 'SIGKILL' || code === 134
-          ? 'ran out of memory (very large history)'
-          : signal
-            ? `was killed by ${signal}`
-            : `exited with code ${code}`;
-        const last = strip(err).split('\n').filter(Boolean).pop() || '';
-        finish(`Indexer ${reason}. The watch daemon keeps syncing in the background, so your history still ships incrementally. ${last}`.trim());
-      }
-    });
-  });
-}
-
-const SYNC_TICK_MS = 3 * 60_000;
-function startBackgroundSync(): void {
-  const tick = async (scope: 'full' | 'changed') => {
-    try {
-      // syncIncremental() takes the single sync lock itself (see docs/SYNC.md)
-      // and no-ops if another writer holds it — so concurrent sessions' MCP
-      // ticks (and any other caller) serialize on ONE writer. No outer lock
-      // here: double-acquiring would make the inner call always skip.
-      const { syncIncremental } = await import('./sync-client.js');
-      await syncIncremental({ scope });
-    } catch (err) {
-      console.error('[mcp] background sync tick failed:', err instanceof Error ? err.message : err);
-    }
-  };
-  // Startup tick: FULL ledger walk — flushes whatever the previous session
-  // left behind, including sessions whose earlier sync failed. Interval
-  // ticks: 'changed' — bounded recent-mtime walk. A full walk lists ALL
-  // ~30k+ sessions; doing that every 3 minutes in EVERY session's MCP
-  // process was a main driver of multi-hundred-MB MCP RSS. Old failed
-  // sessions still converge via each new session's startup tick and the
-  // watch daemon's 15-min heartbeat.
-  setInterval(() => { void tick('changed'); }, SYNC_TICK_MS).unref();
-  setTimeout(() => { void tick('full'); }, 15_000).unref();
-
-  // Keep the update probe warm and SAY it once per process. updateNotice()
-  // reads a cached file, so without something refreshing it an MCP-only user's
-  // cache is written by nobody and the warning never fires. The refresh itself
-  // is throttled to 6h inside refreshUpdateCheck().
-  const updateTick = async (): Promise<void> => {
-    try {
-      const { refreshUpdateCheck, updateNotice } = await import('./update-notice.js');
-      await refreshUpdateCheck();
-      const notice = updateNotice();
-      if (notice) console.error(`[mcp] ${notice}`);
-    } catch { /* never block or fail the server over a version check */ }
-  };
-  setTimeout(() => { void updateTick(); }, 20_000).unref();
-  setInterval(() => { void updateTick(); }, 6 * 60 * 60 * 1000).unref();
-}
-
-// ── Crash guards ────────────────────────────────────────────────────────
-// This process serves the recall tools AND runs the background sync/indexer
-// in the same event loop. Without these, a single stray rejection or throw in
-// the sync path (a bad transcript, a dropped socket, a batcher error) takes
-// down the WHOLE process — and the client loses EVERY recall tool mid-session
-// ("tools no longer load"). The tool handlers already have per-call try/catch,
-// so nothing a caller awaits is swallowed here; this only stops background
-// faults from killing tool-serving. Log loudly to stderr and stay up.
-function installCrashGuards(): void {
-  process.on('unhandledRejection', (reason) => {
-    const msg = reason instanceof Error ? (reason.stack || reason.message) : String(reason);
-    console.error('[mcp] unhandledRejection (server stays up):', msg);
-    reportClientEvent('mcp_unhandled', { message: msg }); // so the operator sees it
-  });
-  process.on('uncaughtException', (err) => {
-    console.error('[mcp] uncaughtException (server stays up):', err.stack || err.message);
-    reportClientEvent('mcp_crash', { message: err.stack || err.message });
-  });
-}
-
-async function main() {
-  installCrashGuards();
-  // NOTE on heap bounding: v8.setFlagsFromString('--max-old-space-size=…')
-  // does NOT take effect after startup (verified empirically on Node 23) —
-  // the cap must come from the spawner. `chat-recall init` writes
-  // NODE_OPTIONS into the MCP registration for exactly that reason; the
-  // in-process defense is the bounded 'changed' sync ticks above.
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-
-  // Deliver the chat-recall skills to this machine's AI tools. This is THE
-  // delivery hook that works no matter how the MCP was configured — `chat-recall
-  // init`, CLI auto-update, the Claude plugin, or an MCP-store / hand-written
-  // .mcp.json entry: whenever the MCP process runs, it refreshes the skills.
-  // Version-gated (only writes when the bundled version differs from what's
-  // installed) + marker-guarded (only ever touches chat-recall-* skills) +
-  // best-effort (skills are a nicety; never break or block the tool server).
-  void (async () => {
-    try {
-      const m = await import('./install-skills.js');
-      if (m.skillsNeedRefresh()) {
-        const r = m.installSkills();
-        const n = r.perTarget.reduce((s, t) => s + t.installed.length, 0);
-        if (n > 0) console.error(`[mcp] chat-recall skills refreshed into local AI tools (${n} file group(s), v${r.version})`);
-      }
-    } catch { /* best-effort — never break the tool server over skills */ }
-  })();
-
-  // The watch daemon owns continuous sync. When it's running, the MCP must NOT
-  // also run the heavy sync in its tool-serving event loop: a full-ledger walk
-  // over a large history (30k+ sessions — transcript parse + base64 + KG
-  // extraction) spikes memory and can OOM/kill THIS process, which drops the
-  // JSON-RPC stdio connection (client sees -32000) and deregisters every recall
-  // tool mid-session. Decoupling keeps the tool server lightweight and alive.
-  let daemonRunning = false;
-  try {
-    const { isServiceRunning } = await import('./service-installer.js');
-    daemonRunning = isServiceRunning();
-  } catch { /* detection best-effort; fall through to running sync */ }
-  if (daemonRunning) {
-    console.error('[mcp] watch daemon active — MCP will not run background sync (keeps the tool server lightweight; the daemon syncs).');
-  } else {
-    startBackgroundSync();
-  }
-}
-
-main().catch(console.error);
+// ── Exports ─────────────────────────────────────────────────────────────
+// createMcpServer() builds an instance with every tool handler above attached.
+// The stdio entry point makes one for the process; the remote endpoint makes one
+// per authenticated session. `dispatchTool` is exported for tests and for a host
+// that wants to call a tool without a transport at all.
+export { dispatchTool };

@@ -59,6 +59,7 @@ import fleetHealthRouter from './routes/fleet-health.js';
 import billingRouter from './routes/billing.js';
 import installRouter from './routes/install.js';
 import dataControlsRouter from './routes/data-controls.js';
+import mcpRouter from './routes/mcp.js';
 import { capabilities, isServerMode } from './util/mode.js';
 import { advertisedLimits } from './middleware/rate-limit-config.js';
 import { cliRelease } from './util/cli-release.js';
@@ -369,11 +370,47 @@ if (!ssoAllowed(authProviderName(), { hosted: billingEnabled(), licensed: licenc
 // Boot-time migrations create/upgrade the auth tables in the same Postgres —
 // same fail-fast contract as ensurePgSchema() below.
 if (authProviderName() === 'better-auth') {
-  const { toNodeHandler } = await import('better-auth/node');
-  const { getAuth, runAuthMigrations } = await import('./auth/better-auth.js');
+  const {
+    authHandler, oauthAuthorizationServerHandler, oauthProtectedResourceHandler, runAuthMigrations,
+  } = await import('./auth/better-auth.js');
   await runAuthMigrations();
-  app.all('/api/auth/*', toNodeHandler(getAuth()));
-  log.info('better-auth mounted at /api/auth (embedded provider)');
+  app.all('/api/auth/*', authHandler());
+
+  // OAuth discovery, at the ROOT and not under /api/auth.
+  //
+  // An MCP client is handed one URL — https://chatrecall.dev/mcp — and finds
+  // everything else by spec-fixed well-known paths on that origin. It never
+  // guesses that our authorization server lives under /api/auth, so serving
+  // these only there makes the endpoint undiscoverable no matter how correct
+  // the rest of the flow is. Both currently answer 404 in production.
+  //
+  //   /.well-known/oauth-protected-resource  (RFC 9728) — names the resource
+  //       and points at its authorization servers. This is the first document a
+  //       client fetches after a 401 from /mcp.
+  //   /.well-known/oauth-authorization-server (RFC 8414) — the endpoints,
+  //       grant types, PKCE methods and the dynamic-registration URL.
+  //
+  // Mounted here, before every /api gate below, because discovery MUST be
+  // reachable unauthenticated: a client cannot authenticate until it has read
+  // these, so putting them behind tenantAuth would be a deadlock.
+  app.get('/.well-known/oauth-authorization-server', oauthAuthorizationServerHandler());
+  app.get('/.well-known/oauth-protected-resource', oauthProtectedResourceHandler());
+
+  // The remote MCP endpoint. Mounted HERE, inside the better-auth branch and
+  // above every /api gate, for three reasons:
+  //
+  //   - it authenticates with an OAuth access token, not a tenant session, so
+  //     tenantAuth would reject it before its own auth ever ran;
+  //   - its own tools call back through /api and pass those gates properly on
+  //     the way in, which is where entitlement and rate limits belong;
+  //   - it needs the raw body, and the /api JSON parsers are scoped below.
+  //
+  // It exists only under better-auth: the OAuth authorization server IS that
+  // plugin, so a Keycloak or no-auth deployment has nothing to authenticate a
+  // remote client with and must not advertise an endpoint that cannot work.
+  app.use('/mcp', express.json({ limit: '4mb' }), mcpRouter);
+
+  log.info('better-auth mounted at /api/auth; OAuth discovery at /.well-known/*; remote MCP at /mcp');
 }
 
 // Open metadata: lets the client decide which views to render before auth.
@@ -506,6 +543,12 @@ app.use('/api/secrets', paid, rl('read-light'), secretsRouter);
 // Store-backed in both modes: the edits timeline reads synced compute_cache
 // diff rows, the projects tree reads memory_metadata project_ids.
 app.use('/api/edits', paid, rl('read-heavy'), editsRouter);
+// The user's own export and delete controls. DELIBERATELY UNGATED — do not add
+// `paid` here. Taking your history with you must never require paying again, and
+// erasing it must not either: a lapsed account that cannot delete its own data is
+// a consumer-rights problem, not a monetisation lever. It used to sit behind
+// `paid`, which passed the export GET and refused both delete POSTs — exactly
+// backwards, and invisible while requireEntitlement let every read through.
 // The user's own export and delete controls. `paid` still applies, and its
 // lapsed-tenant rule is exactly right here: export is a GET so it keeps working
 // after a subscription ends — taking your history with you must never require
