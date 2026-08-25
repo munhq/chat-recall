@@ -4,6 +4,33 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+### Added
+
+- **A person can dismiss a recommendation, not only an agent.** 0.5.16 gave the
+  assistant `recall_recommendation_dismiss` and left the dashboard with no such
+  button — a capability the human did not have. The card now carries "Not for this
+  repo", which asks for the reason the server requires, and a "Show dismissed"
+  list with "Put it back".
+- `docs/ENVIRONMENT.md` documents billing: every `STRIPE_*` variable and
+  `BILLING_PLANS`. The file had zero mentions of Stripe, including the two vars
+  0.5.16 added. `STRIPE_AUTOMATIC_TAX` carries the warning that matters — enabling
+  it before Stripe Tax reports `status: active` fails every checkout on the
+  account.
+
+### Fixed
+
+- **A dismissal was one-way.** The listing suppressed dismissed recommendations at
+  build time, exactly like applied ones, so the card vanished from the only screen
+  that could offer to bring it back and the recorded reason was written to a store
+  nothing read. Dismissed ones are now returned apart from the live list, with
+  their reason and author, which is what makes an agent's dismissal reviewable.
+- **The auto-file panel under-reported its own work.** A run that re-pointed twenty
+  cards onto renamed findings said "Filed 0, closed 0" — indistinguishable from a
+  dead switch, which is the one thing that panel exists to disprove. The run now
+  reports all five counters (filed, closed, reopened, re-linked, repaired), and
+  `autoTasksStatus` reads back the three it had been discarding, so the count
+  survives a reload instead of living only in a toast.
+
 ## [0.5.16] — 2026-08-25
 
 ### Added
