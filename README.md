@@ -7,6 +7,9 @@
 [![Smithery](https://img.shields.io/badge/Smithery-darkkraft%2Fchat--recall-7c3aed)](https://smithery.ai/server/darkkraft/chat-recall)
 [![Glama](https://img.shields.io/badge/Glama-munhq%2Fchat--recall-4f46e5)](https://glama.ai/mcp/servers/munhq/chat-recall)
 
+[![Install in Cursor](https://img.shields.io/badge/Install-Cursor-000?logo=cursor)](cursor://anysphere.cursor-deeplink/mcp/install?name=chat-recall&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIi1wIiwiY2hhdC1yZWNhbGwiLCJjaGF0LXJlY2FsbC1tY3AiXX0=)
+[![Install in VS Code](https://img.shields.io/badge/Install-VS%20Code-007ACC?logo=visualstudiocode)](vscode:mcp/install?%7B%22name%22%3A%22chat-recall%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22-p%22%2C%22chat-recall%22%2C%22chat-recall-mcp%22%5D%7D)
+
 **[chatrecall.dev](https://chatrecall.dev)** · [How it works](https://chatrecall.dev/how-it-works/) · [MCP tools](https://chatrecall.dev/mcp/) · [Pricing](https://chatrecall.dev/pricing/) · [Self-host](https://chatrecall.dev/self-hosting/)
 
 > One memory across every AI coding tool you use. Claude Code, Gemini CLI, Codex, OpenCode, Antigravity and Cursor share a single searchable history — and the agent can search it itself.
