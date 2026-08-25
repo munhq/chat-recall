@@ -139,19 +139,50 @@ export function resetPasswordMail(to: string, url: string, expiresInMinutes: num
  * because the trial does not start until this link is opened — so this mail is
  * the first step of the product, not an administrative chore.
  */
-export function verifyEmailMail(to: string, url: string): Mail {
+/**
+ * The confirmation CODE.
+ *
+ * This replaced a link. A link is one click and it is what most products send,
+ * but two things kill it silently here: corporate mail scanners GET every URL to
+ * check it, which spends a single-use verification token before the human ever
+ * clicks; and a link opened in the default browser — or on a phone — lands in a
+ * different session from the one that signed up. Neither leaves a trace, so both
+ * arrive as "it doesn't work" with nothing in the logs.
+ *
+ * A code cannot be spent by something reading the mail, and it finishes in the
+ * tab the person is already looking at.
+ *
+ * The code goes on its own line with nothing after it, because that is what makes
+ * it selectable on a phone, and iOS/Android offer a one-tap autofill from a mail
+ * shaped this way.
+ */
+export function verifyOtpMail(
+  to: string,
+  otp: string,
+  type: 'sign-in' | 'email-verification' | 'forget-password' | 'change-email',
+): Mail {
+  const subject = type === 'forget-password'
+    ? 'Your chat-recall password reset code'
+    : 'Your chat-recall confirmation code';
+  const lead = type === 'forget-password'
+    ? 'Enter this code to reset your password:'
+    : 'Enter this code to confirm your address and start your chat-recall trial:';
   const text = [
-    'Confirm this address to start your chat-recall trial.',
+    lead,
     '',
-    url,
+    otp,
     '',
-    'Your trial begins when you open that link, so nothing is counting down',
-    'until you do. You can sign in and look around before confirming.',
+    'It expires in 15 minutes.',
+    '',
+    type === 'forget-password'
+      ? 'If you did not ask to reset your password, ignore this message and nothing changes.'
+      : 'Your trial begins when you enter it, so nothing is counting down until you do.',
     '',
     'If you did not create a chat-recall account, ignore this message.',
   ].join('\n');
-  return { to, subject: 'Confirm your email to start your chat-recall trial', text };
+  return { to, subject, text };
 }
+
 
 /**
  * Trial-ending notice.
