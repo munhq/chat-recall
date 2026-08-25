@@ -4,6 +4,17 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.14] — 2026-08-25
+
+### Fixed
+
+- 0.5.13 published its image but not its npm package: `server.json` carries the
+  version too, the registry publishes what it says, and a parity test asserts the
+  two match — but the bump was a manual step nobody could see. So the sequence was
+  bump the CLI, tag, push, the image ships, and only then does the release fail on
+  a version field. `npm run version:sync` now copies the CLI's version into
+  `server.json`, so the number has one source and the step is visible.
+
 ## [0.5.13] — 2026-08-25
 
 ### Fixed
