@@ -65,6 +65,17 @@ diary conclusions, and cost. Accepts a path, a name substring, or a project id
   a teammate and attached to a project. Returns the new task id.
 - `mcp__chat-recall__recall_task_update` — change status, reassign, rename or
   comment. Takes the `t_…` id from `recall_tasks`.
+  - **`done` needs the session that did the work.** Pass your own session id;
+    without one the update is refused. A card asserts a problem in the code, so
+    closing it asserts the code changed, and the board shows the files and commits
+    behind the claim. If a card should not be worked at all, use `rejected` — that
+    is the verdict a machine may not give itself.
+  - Cards filed from findings also close THEMSELVES once a re-index stops
+    reporting the finding, so fixing the code and re-indexing is usually enough.
+    Attach your session anyway: the closure keeps its evidence.
+  - Filing is capped — at most 10 new cards per run and 50 open at once. A board
+    at the ceiling files nothing until cards close; the backlog stays visible in
+    the ranked findings view.
 - `mcp__chat-recall__recall_team_activity` — per-teammate × per-project rollup
   (session counts, last activity) for "what is the team working on".
 - `mcp__chat-recall__recall_shares` — which projects are shared into the team
