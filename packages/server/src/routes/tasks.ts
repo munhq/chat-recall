@@ -60,7 +60,8 @@ function actor(req: express.Request): string { return (req.authorSub || req.user
  *   GET  /api/tasks/policy      → { enabled, maxPri, lastRun, eligible, filed, byProject }
  *                                 maxPri: 0 critical, 1 high, 2 medium, 3 low
  *   PUT  /api/tasks/policy {enabled, maxPri?}
- *   POST /api/tasks/policy/run  → run it NOW, returns { created, closed }
+ *   POST /api/tasks/policy/run  → run it NOW, returns
+ *                                 { created, closed, repointed, backfilled, reopened }
  *
  * GET returns the RUN STATE, not only the setting. The switch used to report
  * nothing back, so turning it on and turning it on-but-broken looked identical:

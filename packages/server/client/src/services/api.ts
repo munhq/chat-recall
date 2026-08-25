@@ -312,9 +312,41 @@ export async function patchCodeProjectLabel(id: string, label: string | null): P
   return r.ok;
 }
 export interface CodeRecommendation { id: string; kind: string; severity: string; title: string; rationale: string; evidence: string[]; action: { type: string; payload: Record<string, unknown> }; }
-export async function getCodeRecommendations(project: string): Promise<{ recommendations: CodeRecommendation[]; behavior: { failedOrAbandoned: number; totalSessions: number } | null }> {
+/** Why a recommendation was retired, and by whom. A reason is mandatory. */
+export interface RecDismissal { reason: string; by: string; at: number }
+export type DismissedRecommendation = CodeRecommendation & { dismissal: RecDismissal };
+export async function getCodeRecommendations(project: string): Promise<{
+  recommendations: CodeRecommendation[];
+  /** Retired advice, still derived, kept so a dismissal can be undone later. */
+  dismissed: DismissedRecommendation[];
+  behavior: { failedOrAbandoned: number; totalSessions: number } | null;
+}> {
   const r = await fetchWithTimeout(`${API_BASE}/code/recommendations${qs({ project })}`);
-  return r.ok ? r.json() : { recommendations: [], behavior: null };
+  if (!r.ok) return { recommendations: [], dismissed: [], behavior: null };
+  // `dismissed` is newer than this endpoint: default it so an older server does
+  // not make the list undefined.
+  return { dismissed: [], ...(await r.json()) };
+}
+/**
+ * Say no to a recommendation for one project. The reason is required by the
+ * server, not decoration: a dismissal changes how every later session treats the
+ * repo, and an unexplained one cannot be reviewed six weeks from now.
+ */
+export async function dismissCodeRecommendation(project: string, recId: string, reason: string): Promise<{ ok: boolean; message?: string }> {
+  const r = await fetchWithTimeout(`${API_BASE}/code/recommendations/${encodeURIComponent(recId)}/dismiss`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project, reason }),
+  });
+  if (r.ok) return r.json();
+  let message = `HTTP ${r.status}`;
+  try { const j = await r.json(); message = j.detail || j.error || message; } catch { /* not JSON */ }
+  return { ok: false, message };
+}
+/** Put a dismissed recommendation back on the list. */
+export async function undismissCodeRecommendation(project: string, recId: string): Promise<{ ok: boolean; message?: string }> {
+  const r = await fetchWithTimeout(`${API_BASE}/code/recommendations/${encodeURIComponent(recId)}/undismiss`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project }),
+  });
+  return r.ok ? r.json() : { ok: false, message: `HTTP ${r.status}` };
 }
 export async function applyCodeRecommendation(project: string, recId: string): Promise<{ ok: boolean; queued?: boolean; applied?: boolean; message?: string }> {
   const r = await fetchWithTimeout(`${API_BASE}/code/recommendations/${encodeURIComponent(recId)}/apply`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ project }) });
@@ -2677,7 +2709,13 @@ export interface AutoTasksPolicy { enabled: boolean; maxPri: 0 | 1 | 2 | 3 }
 export const SEVERITY_BY_PRI = ['critical', 'high', 'medium', 'low'] as const;
 /** The run state behind the switch: what it did last, and what is waiting. */
 export interface AutoTasksStatus extends AutoTasksPolicy {
-  lastRun: { at: number; created: number; closed: number } | null;
+  // repointed / backfilled / reopened are what a run does when it is NOT filing.
+  // Without them the panel reported "Filed 0, closed 0" after re-pointing twenty
+  // cards, which reads as "the switch does nothing".
+  lastRun: {
+    at: number; created: number; closed: number;
+    repointed?: number; backfilled?: number; reopened?: number;
+  } | null;
   eligible: number;
   filed: number;
   byProject: Array<{ projectId: string; counts: Record<string, number>; eligible: number }>;
@@ -2691,7 +2729,9 @@ export async function getAutoTasksPolicy(): Promise<AutoTasksStatus> {
   return { lastRun: null, eligible: 0, filed: 0, byProject: [], ...j };
 }
 /** Run the policy now instead of waiting for the next code index. */
-export async function runAutoTasksNow(): Promise<{ created: number; closed: number }> {
+export async function runAutoTasksNow(): Promise<{
+  created: number; closed: number; repointed?: number; backfilled?: number; reopened?: number;
+}> {
   const res = await fetchWithTimeout(`${API_BASE}/tasks/policy/run`, { method: 'POST' });
   if (!res.ok) {
     let msg = `Run failed (HTTP ${res.status})`;

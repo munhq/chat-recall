@@ -73,6 +73,30 @@ type Member = { sub: string; email: string | null; role: string };
  * are this app's tokens, so it rendered in hardcoded light grey inside a dark
  * product and ignored the theme toggle entirely. Everything here is --cr-*.
  */
+/**
+ * What a run did, in words, from its counters.
+ *
+ * Filing is only one of the five things a run does. Re-pointing a card onto a
+ * renamed finding, repairing a card's identity or reopening one that closed
+ * early are all real work, and a panel that says "Filed 0, closed 0" after
+ * twenty of them reads as a dead switch — the one thing this panel exists to
+ * disprove. One formatter, because the toast after "Run now" and the status
+ * line after a reload must not describe the same run differently.
+ */
+export function describeRun(r: {
+  created?: number; closed?: number;
+  reopened?: number; repointed?: number; backfilled?: number;
+}): string {
+  const parts = [
+    r.created ? `filed ${r.created}` : '',
+    r.closed ? `closed ${r.closed}` : '',
+    r.reopened ? `reopened ${r.reopened}` : '',
+    r.repointed ? `re-linked ${r.repointed}` : '',
+    r.backfilled ? `repaired ${r.backfilled}` : '',
+  ].filter(Boolean);
+  return parts.join(', ');
+}
+
 export default function TeamTasks({ members, mySub }: { members: Member[]; mySub: string | null }) {
   const [tasks, setTasks] = useState<TeamTask[]>([]);
   const [title, setTitle] = useState('');
@@ -145,8 +169,9 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
     setAutoNote('');
     try {
       const r = await runAutoTasksNow();
-      setAutoNote(r.created || r.closed
-        ? `Filed ${r.created}, closed ${r.closed}.`
+      const did = describeRun(r);
+      setAutoNote(did
+        ? `It ran: ${did}.`
         : 'It ran. Nothing qualified, so no cards were filed.');
       await Promise.all([refresh(), loadAuto()]);
     } catch (e: any) { setAutoErr(String(e?.message || e)); }
@@ -470,9 +495,14 @@ function AutoPanel({
       ? `${auto.eligible} finding${auto.eligible === 1 ? '' : 's'} ready to file`
       : auto.filed > 0 ? 'All caught up' : 'On. Nothing to file yet.';
 
+  // The toast after "Run now" is gone on the next reload, so the last run has to
+  // describe itself here too — otherwise the only readback of a re-linking run
+  // is a message the person had to be looking at to see.
+  const lastDid = auto.lastRun ? describeRun(auto.lastRun) : '';
   const sub = [
     auto.filed > 0 ? `${auto.filed} filed` : '',
     auto.lastRun ? `last run ${ago(auto.lastRun.at)}` : 'never run',
+    lastDid ? `(${lastDid})` : '',
   ].filter(Boolean).join(', ');
 
   return (
