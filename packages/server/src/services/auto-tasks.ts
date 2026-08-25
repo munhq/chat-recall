@@ -389,8 +389,22 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
   });
 }
 
-/** What the last run did, if there has been one. */
-export interface AutoTasksLastRun { at: number; created: number; closed: number }
+/**
+ * What the last run did, if there has been one.
+ *
+ * All five counters, not only `created`/`closed`: a run that re-points twenty
+ * cards onto renamed findings did real work, and reporting it as "created 0,
+ * closed 0" is indistinguishable from a dead switch. `run()` has always
+ * persisted the five; this shape used to read back two of them.
+ */
+export interface AutoTasksLastRun {
+  at: number;
+  created: number;
+  closed: number;
+  repointed: number;
+  backfilled: number;
+  reopened: number;
+}
 
 /**
  * The state a person needs to trust the switch: what it is set to, what it did
@@ -418,7 +432,17 @@ export async function autoTasksStatus(tenant: string): Promise<{
       const raw = await cp.getTenantSetting(tenant, LAST_RESULT_KEY);
       const o = JSON.parse(raw ?? '');
       if (o && Number.isFinite(o.at)) {
-        lastRun = { at: Number(o.at), created: Number(o.created) || 0, closed: Number(o.closed) || 0 };
+        lastRun = {
+          at: Number(o.at),
+          created: Number(o.created) || 0,
+          closed: Number(o.closed) || 0,
+          // Absent in results recorded before these counters existed: an old
+          // record must still read back as a run, with zeros for what it
+          // never measured.
+          repointed: Number(o.repointed) || 0,
+          backfilled: Number(o.backfilled) || 0,
+          reopened: Number(o.reopened) || 0,
+        };
       }
     } catch { /* never recorded, or unreadable — same answer: no last run */ }
   } finally {
