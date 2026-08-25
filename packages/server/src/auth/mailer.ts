@@ -163,8 +163,10 @@ export function verifyEmailMail(to: string, url: string): Mail {
  * stopped, which is the worst possible moment to learn it.
  *
  * Stripe fires trial_will_end three days out. The mail leads with what actually
- * happens, because the honest answer is reassuring: nothing is deleted, and
- * everything already synced stays searchable.
+ * happens, because the honest answer is still reassuring: nothing is deleted and
+ * export always works, even though recall itself stops. "Everything already
+ * synced stays searchable" was the old promise and is no longer true — see the
+ * hard stop in util/billing.ts.
  */
 export function trialEndingMail(to: string, endsAt: Date, upgradeUrl: string): Mail {
   const when = endsAt.toISOString().slice(0, 10);
@@ -173,9 +175,9 @@ export function trialEndingMail(to: string, endsAt: Date, upgradeUrl: string): M
     '',
     'If you do nothing:',
     '',
+    '  - recall switches off: searches stop answering',
     '  - new sessions stop syncing',
-    '  - everything already synced stays fully searchable',
-    '  - export keeps working',
+    '  - your history stays on the server, and export keeps working',
     '  - nothing is deleted',
     '',
     'Because your transcripts live on your own disk, one `chat-recall sync --full`',

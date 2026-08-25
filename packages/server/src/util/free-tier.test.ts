@@ -2,21 +2,25 @@
  * DORMANCY — the floor a cloud tenant lands on when their entitlement stops
  * being live.
  *
- * Rewritten on 2026-08-22, when the free tier stopped syncing. It used to keep
- * ingest and window search to seven days; both directions are now reversed,
- * because history depth is the product and ingest is the cost.
+ * Rewritten on 2026-08-25, when dormancy became a HARD STOP. Two earlier shapes
+ * are recorded in the git history: metered sync with a seven-day search window,
+ * then the whole corpus readable with ingest stopped. The second one left a
+ * memory product answering from a memory that stopped growing.
  *
  * The contract under test, end to end:
- *   1. 'free' grants memory + scan and NOT sync: reads over the whole synced
- *      corpus, no new ingest. It is never offered as the tier to upgrade to.
- *   2. No plan windows search any more — not free, not trial, not paid.
- *   3. The meters moved to the TRIAL, the only unpaid plan that still ingests.
+ *   1. 'free' grants NOTHING, and is never offered as the tier to upgrade to.
+ *   2. No plan windows search — a window is a degraded answer, and dormancy no
+ *      longer answers at all.
+ *   3. The meters live on the TRIAL, the only unpaid plan that still ingests.
  *   4. Unknown or absent plans FAIL CLOSED to dormancy, so an unrecorded plan
  *      cannot mean unmetered ingest.
  *   5. effectivePlan() is the one switch: live entitlement → recorded plan,
  *      anything else → 'free'.
  *   6. syncAdmission() refuses a dormant tenant with the sync_off payload, and
  *      still refuses an unverified one; entitled and self-host are untouched.
+ *   7. planFeatures(null) still grants memory + scan — that is the safety net
+ *      for a PAYING tenant whose plan failed to record, and it is a different
+ *      question from what a lapsed tenant gets.
  */
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
@@ -55,7 +59,7 @@ import {
 } from './entitlements.js';
 import {
   effectivePlan, tenantLimits, syncAdmission, recordSyncUsage,
-  clearEntitlementCache, currentUsageMonth, nextMonthStartMs,
+  clearEntitlementCache, currentUsageMonth, nextMonthStartMs, isEntitled, operatorPlan,
 } from './billing.js';
 
 const DAY = 86_400_000;
@@ -78,20 +82,82 @@ afterEach(() => {
   if (ORIG_STRIPE === undefined) delete process.env.STRIPE_SECRET_KEY;
   else process.env.STRIPE_SECRET_KEY = ORIG_STRIPE;
   delete process.env.TRIAL_STORAGE_MB;
+  delete process.env.OPERATOR_TENANTS;
+  delete process.env.OPERATOR_PLAN;
   clearEntitlementCache();
+});
+
+// ── 0. The operator override ─────────────────────────────────────────────────
+describe('OPERATOR_TENANTS — the people who run the service are not locked out of it', () => {
+  test('a lapsed operator is still entitled, on the full plan', async () => {
+    const t = tenant();
+    process.env.OPERATOR_TENANTS = `someone-else, ${t} ,another`;   // spaces tolerated
+    // The row says lapsed. Configuration outranks it.
+    state.ent = { status: 'trialing', plan: 'trial', currentPeriodEnd: Date.now() - 30 * DAY };
+    expect(await isEntitled(t)).toBe(true);
+    expect(await effectivePlan(t)).toBe('enterprise');
+    expect(await tenantLimits(t)).toEqual(FULL_LIMITS);
+    expect(planFeatures(await effectivePlan(t)).has('team')).toBe(true);
+  });
+
+  test('an operator syncs unmetered, whatever the trial cap says', async () => {
+    const t = tenant();
+    process.env.OPERATOR_TENANTS = t;
+    process.env.TRIAL_STORAGE_MB = '1';
+    state.ent = { status: 'trialing', plan: 'trial', currentPeriodEnd: Date.now() - DAY };
+    state.storedBytes = 500 * MB;
+    const a = await syncAdmission(t, 50 * MB);
+    expect(a.ok).toBe(true);
+  });
+
+  test('OPERATOR_PLAN picks the tier, and enterprise is the default', () => {
+    process.env.OPERATOR_TENANTS = 'me';
+    expect(operatorPlan('me')).toBe('enterprise');
+    process.env.OPERATOR_PLAN = 'team-monthly';
+    expect(operatorPlan('me')).toBe('team-monthly');
+  });
+
+  test('it is an allowlist, not a switch — an unlisted tenant is untouched', async () => {
+    const t = tenant();
+    process.env.OPERATOR_TENANTS = 'somebody-else';
+    state.ent = { status: 'trialing', plan: 'trial', currentPeriodEnd: Date.now() - DAY };
+    expect(operatorPlan(t)).toBeNull();
+    expect(await isEntitled(t)).toBe(false);
+    expect(await effectivePlan(t)).toBe('free');
+  });
+
+  test('unset means nobody — an empty list must not match the empty slug', () => {
+    delete process.env.OPERATOR_TENANTS;
+    expect(operatorPlan('')).toBeNull();
+    expect(operatorPlan('anyone')).toBeNull();
+    process.env.OPERATOR_TENANTS = '';
+    expect(operatorPlan('')).toBeNull();
+  });
 });
 
 // ── 1. Packaging ─────────────────────────────────────────────────────────────
 describe("the 'free' plan in the packaging map", () => {
-  test('grants memory and scan — and NOT sync', () => {
+  test('grants nothing at all', () => {
+    // 'memory' and 'scan' left this set on 2026-08-25. Reading a corpus that
+    // stopped growing is not a cheaper product, so a lapsed account is refused
+    // rather than degraded. requireEntitlement sends the 402 before any feature
+    // gate is consulted; this asserts the map agrees, so a route that somehow
+    // reaches the gate cannot quietly serve a dormant tenant.
     const f = planFeatures('free');
-    for (const has of ['memory', 'scan']) expect(f.has(has as never)).toBe(true);
-    // 'sync' left this set on 2026-08-22: a lapsed account reads its history and
-    // stops adding to it. Ingest is what costs us money, and the transcripts are
-    // on the user's disk either way.
-    for (const not of ['sync', 'insights', 'findings', 'alerts', 'tasks', 'toolkit', 'team', 'sso', 'audit']) {
-      expect(f.has(not as never)).toBe(false);
+    for (const not of ['memory', 'scan', 'sync', 'insights', 'findings', 'alerts', 'tasks', 'toolkit', 'team', 'sso', 'audit']) {
+      expect(f.has(not as never), `'free' must not grant ${not}`).toBe(false);
     }
+    expect(f.size).toBe(0);
+  });
+
+  test('an UNRECORDED plan still grants memory + scan — that safety net is separate', () => {
+    // planFeatures(null) is what a PAYING tenant hits when checkout failed to
+    // record the plan (it has happened). Emptying 'free' must not empty this:
+    // one is a lapsed account, the other is a customer we are already billing.
+    const f = planFeatures(null);
+    expect(f.has('memory')).toBe(true);
+    expect(f.has('scan')).toBe(true);
+    expect(f.has('sync')).toBe(false);
   });
 
   test('is never named as the tier to buy', () => {
@@ -167,8 +233,8 @@ describe('effectivePlan — the one switch every gate resolves through', () => {
     state.ent = { status: 'trialing', plan: 'trial', currentPeriodEnd: Date.now() - DAY };
     const t = tenant();
     expect(await effectivePlan(t)).toBe('free');
-    // The downgrade takes away ingest, not history.
-    expect(planFeatures(await effectivePlan(t)).has('sync')).toBe(false);
+    // The downgrade takes away everything: since 2026-08-25 'free' grants none.
+    expect(planFeatures(await effectivePlan(t)).size).toBe(0);
     expect((await tenantLimits(t)).searchWindowDays).toBeNull();
   });
 
@@ -237,8 +303,11 @@ describe('syncAdmission — the gate /api/sync never had', () => {
     if (!a.ok) {
       expect(a.status).toBe(402);
       expect(a.body.kind).toBe('sync_off');
-      // The refusal has to say what still works, or it reads as breakage.
-      expect(String(a.body.detail)).toMatch(/searchable/i);
+      // The refusal has to say what still works, or it reads as data loss.
+      // 'searchable' left this assertion on 2026-08-25: a dormant account is no
+      // longer searchable, so promising it here would be the drift this test
+      // exists to catch. Export and the one restoring command are what remain.
+      expect(String(a.body.detail)).toMatch(/export/i);
       expect(String(a.body.detail)).toMatch(/sync --full/);
     }
   });

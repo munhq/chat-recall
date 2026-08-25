@@ -92,10 +92,18 @@ describe('the copy says what actually happens', () => {
 
   test('states the reassuring facts, because they are the true ones', () => {
     // The trial ending is not data loss, and a customer deciding whether to pay
-    // deserves to know that rather than be scared into it.
+    // deserves to know that rather than be scared into it. What it must NOT do
+    // is over-reassure: 'stays fully searchable' was asserted here until
+    // 2026-08-25, and recall stops on a lapsed account now.
     expect(mail.text).toContain('nothing is deleted');
-    expect(mail.text).toContain('stays fully searchable');
+    expect(mail.text).toContain('export keeps working');
     expect(mail.text).toContain('sync --full');
+    expect(mail.text).not.toMatch(/searchable/i);
+  });
+
+  test('does not hide that recall itself stops', () => {
+    expect(mail.text).toMatch(/recall switches off/i);
+    expect(mail.text).toMatch(/searches stop/i);
   });
 
   test('offers the free self-hosted path as well as the paid one', () => {

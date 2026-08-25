@@ -273,8 +273,8 @@ const MANIFEST: Record<string, { gates: string[]; reason: string }> = {
     reason: 'Project tree over memory metadata: memory value (paid), cheap reads.',
   },
   'use /api/data': {
-    gates: ['paid', "rl('write-light')", 'dataControlsRouter'],
-    reason: 'Export/delete controls: `paid` is exactly right here — its lapsed rule keeps the export GET working while the delete POSTs stop.',
+    gates: ["rl('write-light')", 'dataControlsRouter'],
+    reason: 'Export/delete controls: DELIBERATELY UNGATED. Taking your history with you must never require paying again, and neither must erasing it. `paid` was removed on 2026-08-25, when the lapsed rule became a hard stop: under the old rule it passed the export GET and refused both delete POSTs, which was exactly backwards.',
   },
   'use /api/secrets': {
     gates: ['paid', "rl('read-light')", 'secretsRouter'],
