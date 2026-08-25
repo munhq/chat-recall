@@ -106,6 +106,18 @@ describe('stalenessBanner', () => {
     expect(b).toMatch(/do not answer from memory/i);
   });
 
+  test("a NEVER-STARTED account is told to confirm, not that it lapsed", () => {
+    // Every connector signup passes through status 'none' — the trial is
+    // withheld until the address is confirmed — so this is the first thing a
+    // brand-new user reads. Saying "your subscription has lapsed" there names a
+    // subscription they never had and hides the one action that fixes it.
+    const b = stalenessBanner({ entitled: false, status: 'none', periodEnd: null })!;
+    expect(b).toMatch(/not started its trial/i);
+    expect(b).toMatch(/confirmation link/i);
+    expect(b).not.toMatch(/lapsed|subscription has/i);
+    expect(b).not.toContain('undefined');
+  });
+
   test('names the right reason for each status', () => {
     const at = Date.now() - DAY;
     expect(stalenessBanner({ entitled: false, status: 'trialing', periodEnd: at })).toContain('trial has ended');

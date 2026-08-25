@@ -33,7 +33,6 @@
  * request/response, so there is nothing a long-lived session would buy.
  */
 import { Router, type Request, type Response } from 'express';
-import { randomUUID } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
   createMcpServer, setServerVersion, setMultiTenantMode, withCredentials,
@@ -125,19 +124,23 @@ router.post('/', async (req: Request, res: Response) => {
   // and the reason a process-wide credential was never an option here.
   const creds = { base: selfBase(), token: session.accessToken };
 
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  const server = createMcpServer();
-
-  // Close BOTH when the response ends, however it ends. A transport left open
-  // per request is the leak that stateless mode exists to avoid.
+  // Everything from here is inside the try, and the cleanup is registered before
+  // anything can throw. Constructing outside it left a window where a throw
+  // between `new Transport` and `res.on('close')` leaked the transport — and
+  // express 4 does not catch a rejected async handler, so the rejection went
+  // unhandled rather than to the 500 below.
+  let transport: StreamableHTTPServerTransport | null = null;
+  let server: ReturnType<typeof createMcpServer> | null = null;
   res.on('close', () => {
-    void transport.close().catch(() => {});
-    void server.close().catch(() => {});
+    void transport?.close().catch(() => {});
+    void server?.close().catch(() => {});
   });
 
   try {
+    transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    server = createMcpServer();
     await server.connect(transport);
-    await withCredentials(creds, () => transport.handleRequest(req, res, req.body));
+    await withCredentials(creds, () => transport!.handleRequest(req, res, req.body));
   } catch (err) {
     log.error({ err, userId: session.userId }, 'mcp request failed');
     if (!res.headersSent) {
@@ -158,13 +161,27 @@ router.post('/', async (req: Request, res: Response) => {
  * POST-only, which every one of them supports. Answering 404 instead would read
  * as "no endpoint here" and send a working client away.
  */
-router.get('/', (_req, res) => {
-  res.setHeader('Allow', 'POST');
-  res.status(405).json({
-    jsonrpc: '2.0',
-    error: { code: -32000, message: 'This endpoint is POST-only (stateless Streamable HTTP).' },
-    id: null,
-  });
+router.get('/', (req, res, next) => {
+  // A BROWSER asking for /mcp/ wants the documentation page, and there is one:
+  // README.md links https://chatrecall.dev/mcp/ and that README ships to npm.
+  // Mounting this router above express.static turned that live, published URL
+  // into a JSON-RPC 405 — a regression visible to anyone who followed the link.
+  //
+  // Split on Accept rather than moving either one. The endpoint URL is already
+  // published in the protected-resource metadata a client has cached, so moving
+  // it breaks discovery; the docs URL is in a README already on npm, so moving
+  // that breaks a link we cannot recall. An MCP client asking for a GET stream
+  // sends `Accept: text/event-stream`; a browser never does.
+  if ((req.get('accept') || '').includes('text/event-stream')) {
+    res.setHeader('Allow', 'POST');
+    res.status(405).json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'This endpoint is POST-only (stateless Streamable HTTP); reconnect with POST.' },
+      id: null,
+    });
+    return;
+  }
+  next();   // fall through to the static handler, which serves the docs page
 });
 
 router.delete('/', (_req, res) => {
@@ -176,5 +193,4 @@ router.delete('/', (_req, res) => {
   });
 });
 
-export { randomUUID };   // re-exported for the session-id generator if stateful mode returns
 export default router;

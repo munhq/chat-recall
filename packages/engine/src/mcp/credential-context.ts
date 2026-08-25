@@ -75,8 +75,10 @@ export function currentCredentials(): RemoteCredentials | null {
  * remote transport is active.
  *
  * Tools that read the CALLER'S OWN DISK (`recall_index`, `recall_code_index`)
- * are meaningless and misleading there — the server's disk is not the user's —
- * so the listing drops them and the dispatch refuses them by name. Set once at
+ * are meaningless and misleading there — the server's disk is not the user's.
+ * Both the LISTING and the DISPATCH consult this: dropping a tool from
+ * tools/list stops a client offering it, and stops nothing else, so a client
+ * calling it by name from a cached list still reaches the handler. Set once at
  * boot by the remote transport; never true for stdio.
  */
 let multiTenant = false;
