@@ -6,12 +6,12 @@
     "url": "https://github.com/munhq/chat-recall",
     "source": "github"
   },
-  "version": "0.5.12",
+  "version": "0.5.14",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "chat-recall",
-      "version": "0.5.12",
+      "version": "0.5.14",
       "transport": {
         "type": "stdio"
       },
@@ -25,7 +25,7 @@
         },
         {
           "name": "CHAT_RECALL_MCP_PROFILE",
-          "description": "Which tools to register: \"lean\" (default, 25 tools \u2014 tool choice degrades as the list grows) or \"full\" (all 55 tools, plus recall_help — a directory of the rest). Every tool works when called by name either way.",
+          "description": "Which tools to register: \"lean\" (default, 25 tools — tool choice degrades as the list grows) or \"full\" (all 55 tools, plus recall_help — a directory of the rest). Every tool works when called by name either way.",
           "isRequired": false,
           "isSecret": false,
           "format": "string",
