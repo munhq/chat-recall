@@ -162,7 +162,7 @@ describe('auto-tasks', () => {
     state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 0 }));
     state.actions = [];                      // nothing qualifies
     const r = await runAutoTasks('t1');
-    expect(r).toEqual({ created: 0, closed: 0, repointed: 0, backfilled: 0 });
+    expect(r).toEqual({ created: 0, closed: 0, repointed: 0, backfilled: 0, reopened: 0 });
     // "ran and found nothing" must be distinguishable from "never ran", or the
     // UI cannot answer "is anything happening?".
     const st = await autoTasksStatus('t1');
@@ -253,7 +253,7 @@ describe('reads are unrestricted, writes are authored', () => {
     state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
     state.actions = [action('c1', 0), action('h1', 1)];
     const r = await runAutoTasks('t1');
-    expect(r).toEqual({ created: 2, closed: 0, repointed: 0, backfilled: 0 });
+    expect(r).toEqual({ created: 2, closed: 0, repointed: 0, backfilled: 0, reopened: 0 });
     expect(state.created).toEqual(['c1', 'h1']);
   });
 
@@ -564,5 +564,77 @@ describe('a finding beyond any page is not treated as deleted', () => {
     }];
     await runAutoTasks('t1');
     expect(state.created).toEqual(['cf_crit']);   // not cf_med, not cf_low
+  });
+});
+
+/**
+ * A close is not permanent, because a finding can come back.
+ *
+ * The sweep only ever closed. 'done' was in CLOSED so a machine-closed card was
+ * skipped for ever, and the filing loop matches an open finding to a card BY ID,
+ * so it filed nothing either. The finding became invisible: the board said done,
+ * the code still had the problem, and no surface showed it. That is worse than a
+ * duplicate card.
+ *
+ * Seen on the real board: 8 cards closed in one sweep, then their findings
+ * reappeared under the SAME ids — which is now the expected shape, because a
+ * finding's id is derived from its content, so one that returns returns as itself.
+ */
+describe('a machine-closed card reopens when its finding returns', () => {
+  const openCard = (o = {}) => ({
+    id: 't_c', title: '[critical] fix a1', status: 'done', createdBy: 'auto-tasks',
+    linkedFindingId: 'a1', linkedFindingIdentity: 'p1|duplication|fix a#|src/a1.ts',
+    linkedSessionId: null, projectId: 'p1', ...o,
+  });
+
+  test('THE REGRESSION: done + no session + finding live again -> todo', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [action('a1', 0)];
+    state.tasks = [openCard()];
+    const r = await runAutoTasks('t1');
+    expect(r?.reopened).toBe(1);
+    expect(state.tasks[0].status).toBe('todo');
+    expect(state.comments).toEqual(['t_c']);       // says why, for the reader
+    expect(r?.created).toBe(0);                    // reopened, not duplicated
+  });
+
+  test('a card closed BY WORK is not resurrected', async () => {
+    // It carries the session that did the work. If the finding returns after
+    // that, it is a new occurrence and deserves a new card, not someone's
+    // finished episode reopened under them.
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [action('a1', 0)];
+    state.tasks = [openCard({ linkedSessionId: 'sess_abc' })];
+    const r = await runAutoTasks('t1');
+    expect(r?.reopened).toBe(0);
+    expect(state.tasks[0].status).toBe('done');
+  });
+
+  test('a REJECTED card is never reopened — that verdict is the human is', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [action('a1', 0)];
+    state.tasks = [openCard({ status: 'rejected' })];
+    const r = await runAutoTasks('t1');
+    expect(r?.reopened).toBe(0);
+    expect(state.tasks[0].status).toBe('rejected');
+  });
+
+  test("a person's own done card is never touched", async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [action('a1', 0)];
+    state.tasks = [openCard({ createdBy: 'alice' })];
+    const r = await runAutoTasks('t1');
+    expect(r?.reopened).toBe(0);
+    expect(state.tasks[0].status).toBe('done');
+  });
+
+  test('a done card whose finding is still gone stays done', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 1 }));
+    state.actions = [];
+    state.tasks = [openCard()];
+    const r = await runAutoTasks('t1');
+    expect(r?.reopened).toBe(0);
+    expect(r?.closed).toBe(0);                     // already closed, not re-closed
+    expect(state.tasks[0].status).toBe('done');
   });
 });
