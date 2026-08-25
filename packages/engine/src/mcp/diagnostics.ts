@@ -103,6 +103,20 @@ export function stalenessBanner(state: SyncState | null): string | null {
   const days = state.periodEnd
     ? Math.max(0, Math.floor((Date.now() - state.periodEnd) / 86_400_000))
     : null;
+  // status 'none' means NO entitlement row was ever written, which happens for
+  // exactly one reason: the address is unconfirmed, so ensureTrial withheld the
+  // grant. Telling that person their "subscription has lapsed" names a
+  // subscription they never had and hides the one action that fixes it. Found by
+  // driving the real OAuth flow with a fresh account — every connector signup
+  // starts in this state, so it is the FIRST thing a new user would have read.
+  if (state.status === 'none') {
+    return [
+      '⚠ THIS ACCOUNT HAS NOT STARTED ITS TRIAL — the email address is not confirmed yet.',
+      'Recall is switched off until it is: searches and session reads are refused, and nothing is syncing.',
+      'Nothing is wrong with the account. Tell the user to click the confirmation link in their inbox,',
+      'and that the free trial starts the moment they do. Nothing is counting down until then.',
+    ].join(' ');
+  }
   const reason = state.status === 'trialing'
     ? 'the trial has ended'
     : state.status === 'past_due'
