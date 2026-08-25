@@ -4,7 +4,24 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+### Added
+
+- **A ceiling on open auto-filed cards (50).** The per-run cap bounded a burst,
+  not a total: every ingest triggers a run, so 10-at-a-time kept going until the
+  whole backlog was cards. Moving one account's floor from high to medium made
+  1,070 items eligible, and a thousand-card board is the same unreadable board
+  duplicates produced, reached by volume. Filing now stops at the ceiling and
+  resumes as cards close; closing, re-pointing and de-duplicating are never
+  blocked, and the panel says "Board full" rather than promising work it will not
+  do.
+
 ### Fixed
+
+- **The auto-file panel counted only half of what it files.** It read
+  `code_actions` alone while the filer reads findings too, so asked what a lower
+  priority floor would pick up it answered 316 when the true number was 1,070 — a
+  floor was chosen on that answer. It counts both sources now, exactly and
+  uncapped.
 
 - **Four cards for one finding.** The finding id gave every EMISSION its own
   ordinal, so a collector that reported the same finding four times — byte

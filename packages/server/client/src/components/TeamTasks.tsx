@@ -489,19 +489,29 @@ function AutoPanel({
     return h < 24 ? `${h} h ago` : `${Math.round(h / 24)} d ago`;
   };
 
+  // At the ceiling, "N ready to file" is a promise the filer will not keep. Say
+  // which of the two it is, because "nothing is happening" and "the board is
+  // full" are different problems with different answers.
+  const atCeiling = (auto.ceiling ?? 0) > 0 && (auto.openCards ?? 0) >= (auto.ceiling ?? 0);
+
   /** The one sentence that answers "is anything happening?". */
   const headline = !auto.enabled
     ? 'Off. Findings stay in the ranked view.'
-    : auto.eligible > 0
-      ? `${auto.eligible} finding${auto.eligible === 1 ? '' : 's'} ready to file`
-      : auto.filed > 0 ? 'All caught up' : 'On. Nothing to file yet.';
+    : atCeiling
+      ? `Board full — ${auto.openCards} open cards`
+      : auto.eligible > 0
+        ? `${auto.eligible} finding${auto.eligible === 1 ? '' : 's'} ready to file`
+        : auto.filed > 0 ? 'All caught up' : 'On. Nothing to file yet.';
 
   // The toast after "Run now" is gone on the next reload, so the last run has to
   // describe itself here too — otherwise the only readback of a re-linking run
   // is a message the person had to be looking at to see.
   const lastDid = auto.lastRun ? describeRun(auto.lastRun) : '';
   const sub = [
-    auto.filed > 0 ? `${auto.filed} filed` : '',
+    atCeiling
+      ? `${auto.eligible} still eligible — close some to let more in`
+      : auto.filed > 0 ? `${auto.filed} filed` : '',
+    (auto.ceiling ?? 0) > 0 && !atCeiling ? `${auto.openCards}/${auto.ceiling} open` : '',
     auto.lastRun ? `last run ${ago(auto.lastRun.at)}` : 'never run',
     lastDid ? `(${lastDid})` : '',
   ].filter(Boolean).join(', ');
@@ -511,7 +521,7 @@ function AutoPanel({
       <div className="tt-auto-bar">
         <label
           className="tt-switch"
-          title="After each code index, critical and high findings open their own cards here. At most 10 per run, deduplicated, and each card closes itself when a re-index stops reporting its finding. Nothing is ever deleted."
+          title="After each code index, findings at or under the priority floor open their own cards here. At most 10 per run and 50 open at once, deduplicated, and each card closes itself when a re-index stops reporting its finding. Filing pauses at the ceiling and resumes as you close cards. Nothing is ever deleted."
         >
           <input
             type="checkbox" checked={auto.enabled} disabled={busy}
