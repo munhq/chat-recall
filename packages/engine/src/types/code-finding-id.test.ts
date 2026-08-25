@@ -23,7 +23,7 @@ import { describe, test, expect } from 'vitest';
 import { codeFindingIds, codeFindingId } from './code-intel.js';
 
 const f = (o: Partial<Parameters<typeof codeFindingIds>[1][number]> = {}) => ({
-  category: 'security', file: 'src/main.rs', rule: 'unwrap',
+  category: 'security', file: 'src/main.rs', rule: 'unwrap', title: 'Unwrap in main',
   line: 10, snippet: 'let x = y.unwrap();', ...o,
 });
 
@@ -108,5 +108,72 @@ describe('the single-finding helper', () => {
   test('every id is prefixed cf_ and is a stable length', () => {
     const ids = codeFindingIds('p', [f(), f({ line: 20 }), f({ file: 'x.rs' })]);
     for (const id of ids) expect(id).toMatch(/^cf_[0-9a-f]{16}$/);
+  });
+});
+
+/**
+ * THE SECOND BUG. The ordinal counted emissions, so a collector that reported one
+ * finding four times got four ids — and the board got four cards for
+ * `memory-index.ts:53`. 387 of 8,290 stored findings were duplicates of exactly
+ * this kind. An ordinal is a position in a file, so it counts distinct LINES.
+ */
+describe('a repeated emission is one finding, not several', () => {
+  test('THE POINT: four byte-identical findings on one line share one id', () => {
+    const four = codeFindingIds('p', [f(), f(), f(), f()]);
+    expect(new Set(four).size).toBe(1);
+  });
+
+  test('two on the same line, one below: two ids, and the lower one is unaffected', () => {
+    const dupThenNext = codeFindingIds('p', [f({ line: 10 }), f({ line: 10 }), f({ line: 40 })]);
+    expect(dupThenNext[0]).toBe(dupThenNext[1]);
+    expect(dupThenNext[2]).not.toBe(dupThenNext[0]);
+    // …and the one below keeps the id it has without the duplicate present.
+    const clean = codeFindingIds('p', [f({ line: 10 }), f({ line: 40 })]);
+    expect(dupThenNext[2]).toBe(clean[1]);
+  });
+
+  test('duplicates with NO line collapse too', () => {
+    // 918 real findings carry no line: type_drift names a type, not a place.
+    const three = codeFindingIds('p', [f({ line: null }), f({ line: null }), f({ line: null })]);
+    expect(new Set(three).size).toBe(1);
+  });
+});
+
+/**
+ * THE THIRD BUG, and the reason the title had to join the key. With no line to
+ * sort by, the ordinal fell back to the COLLECTOR'S EMIT ORDER — so 38 distinct
+ * missing fields on one type were held apart by nothing more stable than the
+ * analyzer's output order, and re-running it renumbered every one of them.
+ */
+describe('null-line siblings are separated by content, not by emit order', () => {
+  const drift = (title: string) => ({
+    category: 'type_drift', file: 'AppState', rule: 'missing_field',
+    line: null, title, snippet: 'field missing in one language',
+  });
+
+  test('THE POINT: distinct titles are distinct findings', () => {
+    const ids = codeFindingIds('p', [drift('AppState.foo missing'), drift('AppState.bar missing')]);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  test('and their ids do not depend on the order they were emitted in', () => {
+    const asc = codeFindingIds('p', [drift('a missing'), drift('b missing')]);
+    const desc = codeFindingIds('p', [drift('b missing'), drift('a missing')]);
+    expect(desc[1]).toBe(asc[0]);   // 'a missing' in both
+    expect(desc[0]).toBe(asc[1]);   // 'b missing' in both
+  });
+
+  test('a title COUNT still does not move the id', () => {
+    // identityTitle collapses digits: "copy-pasted 29×" must stay the same
+    // finding at 30, or the card closes itself and a twin is filed.
+    const a = codeFindingIds('p', [f({ title: 'slice copy-pasted 29× (13 lines each)' })])[0];
+    const b = codeFindingIds('p', [f({ title: 'slice copy-pasted 30× (13 lines each)' })])[0];
+    expect(a).toBe(b);
+  });
+
+  test('but the title is otherwise part of identity', () => {
+    const a = codeFindingIds('p', [f({ title: 'Unwrap in main' })])[0];
+    const b = codeFindingIds('p', [f({ title: 'Unwrap in shutdown' })])[0];
+    expect(a).not.toBe(b);
   });
 });
