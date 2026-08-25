@@ -185,8 +185,8 @@ const MANIFEST: Record<string, { gates: string[]; reason: string }> = {
     reason: 'RFC 8414 OAuth discovery. DELIBERATELY UNGATED and unauthenticated: a client reads this in order to find out how to authenticate, so any gate here is a deadlock. It exposes only endpoint URLs and supported grant types — no tenant data, and nothing an attacker cannot infer from the spec.',
   },
   'use /mcp': {
-    gates: ["express.json({ limit: '4mb' })", 'mcpRouter'],
-    reason: 'The remote MCP endpoint. DELIBERATELY OUTSIDE the /api gates: it authenticates with an OAuth access token rather than a tenant session, so tenantAuth would reject it before its own auth ran. It is not ungated — the router 401s without a valid grant, 403s a cross-origin browser request, and its tools then call back through /api over loopback, where entitlement, rate limits and RLS all apply on the way in.',
+    gates: ['apiLimiter', "express.json({ limit: '4mb' })", 'mcpRouter'],
+    reason: 'The remote MCP endpoint. DELIBERATELY OUTSIDE the /api gates: it authenticates with an OAuth access token rather than a tenant session, so tenantAuth would reject it before its own auth ran. It is not ungated — the router 401s without a valid grant, 403s a cross-origin browser request, and its tools then call back through /api over loopback, where entitlement, rate limits and RLS all apply on the way in. It carries apiLimiter explicitly because the /api mount does not cover it, and an unauthenticated endpoint that does a database lookup per request is a brute-force and DoS surface without one.',
   },
   'get /.well-known/oauth-protected-resource': {
     gates: ['oauthProtectedResourceHandler()'],

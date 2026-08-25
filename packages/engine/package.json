@@ -21,6 +21,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.25.3",
     "@noble/ciphers": "^2.2.0",
     "@noble/hashes": "^2.2.0",
     "diff": "^9.0.0",

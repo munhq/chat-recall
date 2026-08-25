@@ -408,7 +408,12 @@ if (authProviderName() === 'better-auth') {
   // It exists only under better-auth: the OAuth authorization server IS that
   // plugin, so a Keycloak or no-auth deployment has nothing to authenticate a
   // remote client with and must not advertise an endpoint that cannot work.
-  app.use('/mcp', express.json({ limit: '4mb' }), mcpRouter);
+  // apiLimiter is scoped to /api, and this mount is deliberately outside it —
+  // so without naming it here the endpoint is unauthenticated, unthrottled and
+  // backed by a database lookup on every request (the OAuth token check). That
+  // is a token-brute-force and DoS surface, and the Origin check does not cover
+  // it: a non-browser client sends no Origin and is allowed by design.
+  app.use('/mcp', apiLimiter, express.json({ limit: '4mb' }), mcpRouter);
 
   log.info('better-auth mounted at /api/auth; OAuth discovery at /.well-known/*; remote MCP at /mcp');
 }
