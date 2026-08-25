@@ -177,8 +177,8 @@ const MANIFEST: Record<string, { gates: string[]; reason: string }> = {
     reason: 'CSP violation sink: unauthenticated by necessity (browsers send it without credentials); it only logs, with a 16kb bound and field truncation.',
   },
   'all /api/auth/*': {
-    gates: ['authHandler()'],
-    reason: 'better-auth owns sign-in/up/out, the device flow and the MCP OAuth authorize/token/register endpoints; it IS the login, so it runs before tenantAuth and reads its own body. Mounted via authHandler() rather than toNodeHandler(getAuth()) because the auth instance type cannot cross a module boundary — see the note on getAuth in auth/better-auth.ts.',
+    gates: ['funnelTelemetry', 'authHandler()'],
+    reason: 'better-auth owns sign-in/up/out, the device flow and the MCP OAuth authorize/token/register endpoints; it IS the login, so it runs before tenantAuth and reads its own body. funnelTelemetry sits in front of it — NOT a gate, and it refuses nothing: it is the only place that can observe the steps a user FAILS at, since every growth event before it fired only after success and the CLI cannot report a login it never completed. It reads the path and the response status, never a body. Mounted via authHandler() rather than toNodeHandler(getAuth()) because the auth instance type cannot cross a module boundary — see the note on getAuth in auth/better-auth.ts.',
   },
   'get /.well-known/oauth-authorization-server': {
     gates: ['oauthAuthorizationServerHandler()'],
