@@ -1188,23 +1188,74 @@ export class PgStore implements StorageDriver {
     const now = Date.now();
     // Unrestricted: PROJECT-scoped shared data — see upsertCodeProject.
     return runUnrestricted(() => tenantTx(this.pool, this.tenant, async (c) => {
-      const prev = (await c.query(`SELECT id, first_seen_at, status FROM code_findings WHERE tenant=$1 AND project_id=$2`, [this.t, projectId])).rows;
-      const prevById = new Map<string, any>(prev.map((r: any) => [r.id, r]));
+      // The previous rows' CONTENT, not only their ids. A finding's id is a hash
+      // of its content, so when the hashing changes the same finding arrives
+      // wearing a new id — and a carry-forward keyed on the stored id silently
+      // discards every triage verdict and resets every age to now. Recomputing
+      // the old rows' ids with TODAY's function is what makes the two comparable.
+      const prev = (await c.query(
+        `SELECT id, first_seen_at, status, category, file, line, rule, title, snippet
+           FROM code_findings WHERE tenant=$1 AND project_id=$2`, [this.t, projectId])).rows;
+      const prevIds = codeFindingIds(projectId, prev.map((r: any) => ({
+        category: r.category, file: r.file, line: r.line, rule: r.rule, title: r.title, snippet: r.snippet,
+      })));
+      // Keyed by the RECOMPUTED id. Two old rows can collapse onto one when they
+      // were duplicates of each other: keep the earliest first_seen_at, and keep
+      // a triaged status over 'open' — a human's verdict must not be lost to a
+      // collapse it had no say in.
+      const carriedById = new Map<string, { first_seen_at: number; status: string }>();
+      const remap = new Map<string, string>();
+      prev.forEach((r: any, i: number) => {
+        const id = prevIds[i];
+        if (id !== r.id) remap.set(r.id, id);
+        const seen = Number(r.first_seen_at);
+        const held = carriedById.get(id);
+        carriedById.set(id, {
+          first_seen_at: held ? Math.min(held.first_seen_at, seen) : seen,
+          status: held && held.status !== 'open' ? held.status : String(r.status),
+        });
+      });
+
       await c.query(`DELETE FROM code_findings WHERE tenant=$1 AND project_id=$2`, [this.t, projectId]);
       // Ids for the WHOLE batch: a finding's identity includes its ordinal among
       // identical siblings in the same file, which no per-row call can know.
       const batchIds = codeFindingIds(projectId, findings);
       const rows = findings.map((f, i) => {
         const id = f.id ?? batchIds[i];
-        const carried = prevById.get(id);
+        const carried = carriedById.get(id);
         return [this.t, id, projectId, f.category, f.severity, f.file, f.line ?? null, f.rule, f.title,
           f.snippet ?? '', f.why ?? '', f.agentPrompt ?? '', carried?.status ?? 'open',
           carried ? Number(carried.first_seen_at) : now, now, JSON.stringify(f.extra ?? {})];
       });
+      const stored = dedupeById(rows);
       await bulkInsert(c, 'code_findings',
         ['tenant','id','project_id','category','severity','file','line','rule','title','snippet','why','agent_prompt','status','first_seen_at','last_seen_at','extra_json'],
-        dedupeById(rows));
-      return findings.length;
+        stored);
+
+      // Move the CARDS with the ids, in this transaction.
+      //
+      // A card names a finding by id. Nothing else in the schema does, so this is
+      // the referential-integrity half of the rename and it belongs where both
+      // sides are known — the alternative is a window in which a card points at a
+      // row that no longer exists, and auto-tasks reads that as "the finding is
+      // gone, the work must be done" and closes it. That is not hypothetical:
+      // it closed 93 of 97 cards on one board while every finding was still open.
+      if (remap.size) {
+        const from = [...remap.keys()];
+        const to = from.map((k) => remap.get(k) as string);
+        await c.query(
+          `UPDATE team_tasks AS t SET linked_finding_id = m.new_id,
+             linked_finding_identity = CASE WHEN t.linked_finding_identity = m.old_id
+                                            THEN m.new_id ELSE t.linked_finding_identity END
+             FROM (SELECT unnest($2::text[]) AS old_id, unnest($3::text[]) AS new_id) AS m
+            WHERE t.tenant = $1 AND t.linked_finding_id = m.old_id`,
+          [this.t, from, to],
+        );
+      }
+      // The count of what is STORED, not of what was offered: the two differ by
+      // exactly the duplicates the collector emitted, and reporting the input
+      // would tell an operator the board is bigger than it is.
+      return stored.length;
     }));
   }
   async codeFindingsByIds(ids: string[]): Promise<Ret<'listCodeFindings'>> {
@@ -1266,15 +1317,17 @@ export class PgStore implements StorageDriver {
       const rows = actions.map((a) => {
         const id = a.id ?? codeActionId(projectId, a);
         return [this.t, id, projectId, a.pri | 0, a.category, a.title, a.fix,
-          JSON.stringify(a.loc ?? []), a.agentPrompt, 'suggested', 0, now, now];
+          JSON.stringify(a.loc ?? []), a.agentPrompt, 'suggested', 0, now, now,
+          JSON.stringify(a.covers ?? [])];
       });
       // Preserve status/queued/created_at on conflict (durable user state).
       await bulkInsert(c, 'code_actions',
-        ['tenant','id','project_id','pri','category','title','fix','loc_json','agent_prompt','status','queued','created_at','updated_at'],
+        ['tenant','id','project_id','pri','category','title','fix','loc_json','agent_prompt','status','queued','created_at','updated_at','covers_json'],
         dedupeById(rows),
         `ON CONFLICT (tenant, id) DO UPDATE SET
            pri=excluded.pri, category=excluded.category, title=excluded.title, fix=excluded.fix,
-           loc_json=excluded.loc_json, agent_prompt=excluded.agent_prompt, updated_at=excluded.updated_at`);
+           loc_json=excluded.loc_json, agent_prompt=excluded.agent_prompt, updated_at=excluded.updated_at,
+           covers_json=excluded.covers_json`);
       // Prune stale suggestions this run no longer produced (e.g. old false
       // positives dropped by an improved collector), but keep anything the user
       // triaged (queued/done/dismissed) so their state is never lost.
@@ -1354,6 +1407,7 @@ function pgRowToCodeAction(r: any): any {
     id: r.id, projectId: r.project_id, pri: r.pri, category: r.category, title: r.title, fix: r.fix,
     loc: pgJson(r.loc_json, []), agentPrompt: r.agent_prompt, status: r.status,
     queued: !!r.queued, createdAt: Number(r.created_at), updatedAt: Number(r.updated_at),
+    covers: pgJson(r.covers_json, []),
   };
 }
 
