@@ -90,7 +90,7 @@ export function parsePolicy(raw: string | null): AutoTasksPolicy {
 export async function runAutoTasks(
   tenant: string,
   opts: { force?: boolean } = {},
-): Promise<{ created: number; closed: number; repointed: number; backfilled: number; reopened: number } | null> {
+): Promise<{ created: number; closed: number; repointed: number; backfilled: number; reopened: number; deduped: number } | null> {
   try {
     return await run(tenant, opts.force === true);
   } catch (err) {
@@ -99,7 +99,7 @@ export async function runAutoTasks(
   }
 }
 
-async function run(tenant: string, force = false): Promise<{ created: number; closed: number; repointed: number; backfilled: number; reopened: number } | null> {
+async function run(tenant: string, force = false): Promise<{ created: number; closed: number; repointed: number; backfilled: number; reopened: number; deduped: number } | null> {
   const cp = await createControlPlane();
   let policy: AutoTasksPolicy;
   try {
@@ -197,6 +197,9 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
           id: a.id, pri: a.pri, title: a.title, fix: a.fix, agentPrompt: a.agentPrompt,
           projectId: a.projectId, loc: a.loc ?? [],
           identity: actionIdentityKey(a.projectId, a),
+          // The findings this action ROLLS UP. Stamped by the collector, which is
+          // the only place that knows the parentage.
+          covers: (a.covers ?? []) as string[],
         })),
         ...openFindings
           .filter((f) => f.status === 'open')
@@ -206,10 +209,31 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
             projectId: f.projectId,
             loc: [{ file: f.file, line: f.line ?? null }],
             identity: f.id,
+            covers: [] as string[],       // a finding summarises nothing
           })),
       ];
       const urgent = open.filter((a) => a.pri <= policy.maxPri);
+
+      // ── A ROLL-UP SPEAKS FOR ITS MEMBERS ─────────────────────────────────
+      //
+      // An action summarises findings the same collector run also emitted, and
+      // both are fileable, so one problem produced two cards worded differently:
+      // `_callWithFeeRetry ×30` (the clone finding) beside `_callWithFeeRetry
+      // copy-pasted 30× (10 lines each)` (the roll-up). Four such pairs on this
+      // board.
+      //
+      // Suppression applies to FILING ONLY, and only when the roll-up is itself
+      // being filed — a member whose summary sits below the policy floor must
+      // still be reachable, which is the bug the finding source was added to fix.
+      // `open` is left whole on purpose: the close sweep asks whether a finding
+      // is still reported, and a suppressed finding is still very much there.
+      const rolledUp = new Set<string>();
+      for (const a of urgent) for (const id of a.covers) rolledUp.add(id);
+      const fileableNow = urgent.filter((a) => !rolledUp.has(a.id));
+
       const byFinding = new Map(existing.map((t) => [t.linkedFindingId as string, t]));
+      /** Roll-up id → what it covers, for the card-level reconciliation below. */
+      const coversByActionId = new Map(openActions.map((a) => [a.id, (a.covers ?? []) as string[]]));
 
       // IDENTITY, not id. An action's id is a hash, and when the hash inputs
       // changed under it the same finding arrived wearing a new id. Keyed by
@@ -230,6 +254,9 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
 
       let created = 0;
       let closed = 0;
+      /** Redundant cards for one finding, retired in favour of the oldest.
+       *  Reported because a run that only tidies the board still did work. */
+      let deduped = 0;
       /** Cards whose finding id moved under them. Reported because a run that
        *  re-points twenty cards did real work and used to look idle. */
       let repointed = 0;
@@ -242,7 +269,81 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
       let reopened = 0;
       // WRITES keep the author stamp, so a card records who filed it.
       await runWithAuthor({ sub: 'auto-tasks', device: null }, async () => {
-      for (const a of urgent) {
+
+      // ── DEDUP: several cards, ONE finding ────────────────────────────────
+      //
+      // Two ways a board ends up with duplicates of the same finding, and both
+      // have happened here:
+      //
+      //  1. The id scheme invented identities. A collector that emitted one
+      //     finding four times got four ids, so four cards were filed for
+      //     `memory-index.ts:53` — byte-identical, and 387 stored findings were
+      //     duplicates of that kind. The ordinal now counts distinct lines, so
+      //     those four collapse to one id, and the four cards land on it.
+      //  2. Any id change re-points cards through the remap in
+      //     replaceCodeFindings, which can likewise land several on one id.
+      //
+      // The OLDEST card wins: it holds the history, the comments, and whatever a
+      // person did to it. A retired duplicate is closed and has its finding link
+      // CLEARED — not left pointing at the survivor's finding. That link is what
+      // the reopen branch below reads, so a duplicate that kept it would be
+      // reopened on the next run (its finding is still reported), closed again,
+      // and again, for ever. Clearing it says what is true: this card no longer
+      // represents a finding, because the survivor does.
+      const OPEN_STATES = new Set(['todo', 'in_progress']);
+      const byFindingAll = new Map<string, typeof existing>();
+      for (const t of existing) {
+        if (t.createdBy !== 'auto-tasks' || !t.linkedFindingId) continue;
+        const g = byFindingAll.get(t.linkedFindingId);
+        if (g) g.push(t); else byFindingAll.set(t.linkedFindingId, [t]);
+      }
+      for (const [findingId, group] of byFindingAll) {
+        const live = group.filter((t) => OPEN_STATES.has(t.status))
+          .sort((a, b) => a.createdAt - b.createdAt);
+        if (live.length < 2) continue;
+        const [survivor, ...extra] = live;
+        for (const dup of extra) {
+          await store.updateTeamTask(dup.id, { status: 'done', linkedFindingId: null });
+          await store.addTeamTaskComment(dup.id, 'auto-tasks',
+            `Closed as a duplicate of ${survivor.id}: both cards were filed for finding `
+            + `${findingId}. The older card keeps the history; this one was an artefact of `
+            + 'the same finding being reported more than once.');
+          deduped++;
+        }
+        byFinding.set(findingId, survivor);
+      }
+
+      // ── AND ACROSS THE TWO SOURCES ───────────────────────────────────────
+      //
+      // The pass above only sees cards that name the SAME id. A roll-up card and
+      // a card for one of the findings it summarises name different ids, so they
+      // are the same duplication seen from the other side — and the four clone
+      // cards on this board sit next to four duplication roll-ups saying the same
+      // thing in different words.
+      //
+      // Here the ROLL-UP wins regardless of age, unlike the pass above: it states
+      // the whole problem ("copy-pasted 30× across these files") while the member
+      // is one instance of it, so retiring the summary and keeping the instance
+      // would lose what the board is for.
+      for (const rollup of existing) {
+        if (rollup.createdBy !== 'auto-tasks' || !rollup.linkedFindingId) continue;
+        if (!OPEN_STATES.has(rollup.status)) continue;
+        const covers = coversByActionId.get(rollup.linkedFindingId);
+        if (!covers?.length) continue;
+        for (const memberId of covers) {
+          const member = byFinding.get(memberId);
+          if (!member || member.id === rollup.id) continue;
+          if (member.createdBy !== 'auto-tasks' || !OPEN_STATES.has(member.status)) continue;
+          await store.updateTeamTask(member.id, { status: 'done', linkedFindingId: null });
+          await store.addTeamTaskComment(member.id, 'auto-tasks',
+            `Closed as a duplicate of ${rollup.id}: that card is the roll-up for finding `
+            + `${memberId} and everything else in the same group, so this card repeated one `
+            + 'part of it. The roll-up is where the work is tracked.');
+          deduped++;
+        }
+      }
+
+      for (const a of fileableNow) {
         const byId = byFinding.get(a.id);
         if (byId) {
           // BACKFILL. A card that predates linked_finding_identity matches by id
@@ -373,16 +474,16 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
 
       });
 
-      if (created || closed || repointed || backfilled || reopened) log.info({ tenant, created, closed, repointed, backfilled, reopened }, 'auto-tasks run');
+      if (created || closed || repointed || backfilled || reopened || deduped) log.info({ tenant, created, closed, repointed, backfilled, reopened, deduped }, 'auto-tasks run');
       // Recorded even when both counts are zero: "it ran and found nothing" and
       // "it never ran" are different answers to "is anything happening?", and
       // the UI can only tell them apart if the zero is written down.
       const cp2 = await createControlPlane();
       try {
         await cp2.setTenantSetting(tenant, LAST_RESULT_KEY,
-          JSON.stringify({ at: Date.now(), created, closed, repointed, backfilled, reopened }));
+          JSON.stringify({ at: Date.now(), created, closed, repointed, backfilled, reopened, deduped }));
       } finally { await cp2.close(); }
-      return { created, closed, repointed, backfilled, reopened };
+      return { created, closed, repointed, backfilled, reopened, deduped };
     } finally {
       await store.close();
     }
@@ -404,6 +505,7 @@ export interface AutoTasksLastRun {
   repointed: number;
   backfilled: number;
   reopened: number;
+  deduped: number;
 }
 
 /**
@@ -442,6 +544,7 @@ export async function autoTasksStatus(tenant: string): Promise<{
           repointed: Number(o.repointed) || 0,
           backfilled: Number(o.backfilled) || 0,
           reopened: Number(o.reopened) || 0,
+          deduped: Number(o.deduped) || 0,
         };
       }
     } catch { /* never recorded, or unreadable — same answer: no last run */ }

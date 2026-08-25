@@ -2714,7 +2714,7 @@ export interface AutoTasksStatus extends AutoTasksPolicy {
   // cards, which reads as "the switch does nothing".
   lastRun: {
     at: number; created: number; closed: number;
-    repointed?: number; backfilled?: number; reopened?: number;
+    repointed?: number; backfilled?: number; reopened?: number; deduped?: number;
   } | null;
   eligible: number;
   filed: number;
@@ -2730,7 +2730,8 @@ export async function getAutoTasksPolicy(): Promise<AutoTasksStatus> {
 }
 /** Run the policy now instead of waiting for the next code index. */
 export async function runAutoTasksNow(): Promise<{
-  created: number; closed: number; repointed?: number; backfilled?: number; reopened?: number;
+  created: number; closed: number;
+  repointed?: number; backfilled?: number; reopened?: number; deduped?: number;
 }> {
   const res = await fetchWithTimeout(`${API_BASE}/tasks/policy/run`, { method: 'POST' });
   if (!res.ok) {
