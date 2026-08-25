@@ -48,3 +48,26 @@ jobs:
 
       - name: Test
         run: npx vitest run
+
+  # Every image and video that reaches a public surface, OCR'd frame by frame.
+  #
+  # A grep polices generated text and can say nothing about a PNG. Screenshots
+  # taken by hand carried a private project name inside an MCP list, an all-time
+  # spend figure on a dashboard, and a session title that read as astroturfing.
+  # None of those were visible to any text check.
+  #
+  # Its own job: apt-installing tesseract and ffmpeg must not slow build-and-test.
+  # No private-name list in CI, so this catches profanity, money, real home
+  # directories, credentials and key blocks — the rules that need no secret. The
+  # name check runs locally, where the list exists.
+  assets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install the OCR toolchain
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq tesseract-ocr ffmpeg
+      - name: Scan every published asset
+        run: node scripts/assetguard.mjs docs/media
