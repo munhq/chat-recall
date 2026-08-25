@@ -282,6 +282,34 @@ async function appliedRecIds(
   return out;
 }
 
+/**
+ * Recommendations the user (or their agent) has said no to.
+ *
+ * Kept in kv_store rather than a table of its own: a dismissal is one boolean per
+ * recommendation id, the store is already tenant-scoped and RLS-walled, and a new
+ * table would need a migration to carry a fact this small.
+ *
+ * Scope is per project, because the same recommendation kind can be right for one
+ * repo and wrong for another — "label this project" dismissed on a scratch repo
+ * must not silence it on a production one.
+ */
+const DISMISS_SCOPE = 'rec_dismissed';
+const dismissKey = (projectId: string, recId: string): string => `${projectId}|${recId}`;
+
+async function dismissedRecIds(
+  store: { kvList(scope?: string, limit?: number): Promise<Array<{ key: string; value: string }>> },
+  projectId: string,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  try {
+    for (const row of await store.kvList(DISMISS_SCOPE, 1000)) {
+      const [proj, recId] = row.key.split('|');
+      if (proj === projectId && recId) out.add(recId);
+    }
+  } catch { /* an unreadable store must not blank the panel */ }
+  return out;
+}
+
 // GET /api/code/recommendations?project= — behavior × code → actionable recommendations.
 router.get('/recommendations', async (req, res) => {
   const projectId = typeof req.query.project === 'string' ? req.query.project : '';
@@ -301,9 +329,17 @@ router.get('/recommendations', async (req, res) => {
     // routes/recommendations.ts. Shared helper — see util/behavior-signal.ts.
     const behavior = await behaviorSignal(async () =>
       (await store.listItemsByProjectId('session', projectId, 200)).map((s) => s.id));
+    const [applied, dismissed] = await Promise.all([
+      appliedRecIds(store as never, projectId),
+      dismissedRecIds(store as never, projectId),
+    ]);
     const recommendations = buildRecommendations({
       project, summary, findings, hotspots, behavior,
-      appliedRecIds: await appliedRecIds(store as never, projectId),
+      // Both are "the user has already answered this". Applied and dismissed are
+      // kept apart in storage because they mean different things to a reader, and
+      // an applied rule that gets deleted should come back while a dismissed one
+      // should not.
+      appliedRecIds: new Set([...applied, ...dismissed]),
     });
     res.json({ recommendations, behavior: behavior ?? null });
   } catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : 'failed' }); }
@@ -436,6 +472,56 @@ router.post('/recommendations/:id/apply', async (req, res) => {
       createdBy: 'code-recommendation',
     });
     res.json({ ok: true, queued: true, intentId: id, message: 'Queued for your machine — the local agent appends the rule to this project\'s CLAUDE.md on next drain (≤45s).' });
+  } catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : 'failed' }); }
+  finally { await store.close(); }
+});
+
+// POST /api/code/recommendations/:id/dismiss — { project, reason? }
+//
+// The counterpart to apply, and it did not exist: a recommendation could be taken
+// or ignored, never answered. So advice that did not apply to a repo came back on
+// every load, which is how a panel earns being skipped.
+//
+// A reason is required. A dismissal is a decision about how the AI should treat
+// this codebase, and an unexplained one is indistinguishable from a misclick six
+// weeks later — this is also what makes an AGENT dismissing something reviewable
+// rather than silent.
+router.post('/recommendations/:id/dismiss', async (req, res) => {
+  const projectId = typeof req.body?.project === 'string' ? req.body.project : '';
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+  if (!projectId) return res.status(400).json({ error: 'project is required' });
+  if (!reason) {
+    return res.status(400).json({
+      error: 'reason is required',
+      detail: 'A dismissal changes how the AI treats this repo. Say why, so it can be reviewed later.',
+    });
+  }
+  const store = await createStore();
+  try {
+    // Recorded, not verified against the current list. A recommendation is
+    // DERIVED, so the one being dismissed may legitimately not be in this
+    // moment's output (the findings shifted between the read and the click), and
+    // refusing then would make the button fail at random.
+    await store.kvSet(DISMISS_SCOPE, dismissKey(projectId, req.params.id), JSON.stringify({
+      reason,
+      by: (req.authorSub || req.userId || 'unknown') as string,
+      at: Date.now(),
+    }));
+    res.json({ ok: true, dismissed: true, id: req.params.id });
+  } catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : 'failed' }); }
+  finally { await store.close(); }
+});
+
+// POST /api/code/recommendations/:id/undismiss — { project }
+// Because a dismissal that cannot be undone is a trap, and an agent that
+// dismissed something wrongly needs a way to say so.
+router.post('/recommendations/:id/undismiss', async (req, res) => {
+  const projectId = typeof req.body?.project === 'string' ? req.body.project : '';
+  if (!projectId) return res.status(400).json({ error: 'project is required' });
+  const store = await createStore();
+  try {
+    await store.kvDelete(DISMISS_SCOPE, dismissKey(projectId, req.params.id));
+    res.json({ ok: true, dismissed: false, id: req.params.id });
   } catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : 'failed' }); }
   finally { await store.close(); }
 });
