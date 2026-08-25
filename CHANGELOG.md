@@ -4,6 +4,23 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.12] — 2026-08-25
+
+### Fixed
+
+- The auto-filer's findings read was `limit: 500` across every project, and the
+  close sweep treated that one page as the complete set of open findings. With
+  8,096 findings and 500 slots, everything past the cap looks deleted — so a card
+  pointing at it closes itself as fixed, which is the bug this service had just
+  been repaired for, reintroduced by a LIMIT. It was harmless only by accident:
+  the ordering is severity-first and just 31 findings were critical-or-high, so
+  every fileable one fell inside the page. It would have become live the moment
+  the policy floor moved from 1 to 2.
+- Reads are now bounded by intent instead of by a page size: per-severity queries
+  for what the floor admits, and a new `codeFindingsByIds` for the exact findings
+  the existing cards name. A card's finding is judged absent only when a
+  by-id lookup says so.
+
 ## [0.5.11] — 2026-08-24
 
 ### Fixed
