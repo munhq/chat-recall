@@ -23,7 +23,7 @@ import { planGrantsTeam } from '../routes/billing.js';
 import { ensureTrial } from './trial.js';
 import {
   allows, featureRequired, featuresFor, dormantLimits, trialLimits, limitReached, syncOffPayload,
-  FULL_LIMITS, type Feature, type PlanLimits,
+  noPlanPayload, FULL_LIMITS, type Feature, type PlanLimits,
 } from './entitlements.js';
 
 /**
@@ -49,10 +49,44 @@ export function clearEntitlementCache(): void {
   confirmationCache.clear();
 }
 
+/**
+ * Tenants this deployment always treats as fully entitled, and the plan they
+ * resolve to. `OPERATOR_TENANTS` is a comma-separated list of tenant slugs;
+ * `OPERATOR_PLAN` names the tier (default 'enterprise', the only one granting
+ * every feature).
+ *
+ * This exists because the people who run chat-recall are also its heaviest
+ * users, and the hard stop applies to them too: the maintainer's own account
+ * runs on the same no-card trial as everybody else's, so it lapses on the same
+ * schedule and takes the dogfooding with it. Paying yourself through Stripe to
+ * keep working is a worse answer than saying so in configuration.
+ *
+ * Read from env on every call rather than cached at import, so adding a tenant
+ * is a rollout and not a rebuild. Deliberately keyed on the TENANT SLUG, not on
+ * an email: the gates all run on `req.tenant`, and resolving an address per
+ * request would add a lookup to every gated route.
+ *
+ * It grants a plan; it does NOT grant the operator role. `chat-recall-admin`
+ * stays with ADMIN_EMAILS / ADMIN_KEY, because "may use every feature" and "may
+ * read across tenants" must not be the same switch.
+ */
+export function operatorPlan(tenant: string): string | null {
+  const list = (process.env.OPERATOR_TENANTS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!list.includes(tenant)) return null;
+  return (process.env.OPERATOR_PLAN || 'enterprise').trim() || 'enterprise';
+}
+
 /** The tenant's recorded plan, or null. Empty on self-host, where the licence —
  *  not a plan — decides, and the resolver ignores this value entirely. */
 export async function tenantPlan(tenant: string): Promise<string | null> {
   if (!billingEnabled()) return null;
+  // Before the cache: an operator's plan comes from configuration, so a stale
+  // cached row must not outrank it, and a control-plane round trip is pointless.
+  const operator = operatorPlan(tenant);
+  if (operator) return operator;
   const cached = planCache.get(tenant);
   if (cached !== undefined) return cached;
   const cp = await createControlPlane();
@@ -194,15 +228,22 @@ export function billingEnabled(): boolean {
  *     still valid; otherwise it must be in the future).
  *
  * A tenant with no entitlement history is granted the no-card trial here (see
- * util/trial.ts) and is entitled for its duration. There is no flag that skips
- * this check: access is always the answer of a real entitlement row, which is
- * what keeps this path exercised in production instead of only after GA.
+ * util/trial.ts) and is entitled for its duration.
+ *
+ * ONE flag skips this check: OPERATOR_TENANTS (see operatorPlan above), which
+ * exists so the people running the service are not locked out of it by their own
+ * trial clock. It is an allowlist of named slugs, so it cannot widen by accident
+ * the way a boolean "dev mode" does — and every other tenant still gets a real
+ * entitlement row, which is what keeps this path exercised in production.
  *
  * Fail-closed on cloud: an unknown status or a past period resolves to NOT
  * entitled.
  */
 export async function isEntitled(tenant: string): Promise<boolean> {
   if (!billingEnabled()) return true;
+  // Ahead of the cache and the control plane, for the same reason as in
+  // tenantPlan: configuration outranks a row, and asking costs a round trip.
+  if (operatorPlan(tenant)) return true;
 
   // Served from the 30s TTL cache when warm — one control-plane query per
   // tenant per window instead of one per paid request.
@@ -263,39 +304,27 @@ async function needsEmailConfirmation(tenant: string): Promise<boolean> {
 }
 
 /**
- * Safe methods, for the lapsed-tenant degradation below. GET and HEAD read;
- * everything else changes state. OPTIONS is included so CORS preflight is never
- * the thing that fails.
- */
-function isReadRequest(req: Request): boolean {
-  return req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS';
-}
-
-/**
  * Express middleware: the entitlement gate. Mount AFTER tenantAuth so
  * `req.tenant` is resolved. On self-host this is a transparent pass-through
  * (isEntitled → true).
  *
- * A LAPSED tenant lands on the FREE TIER, not on read-only. This middleware
- * therefore refuses almost nothing itself any more: for a lapsed tenant it
- * passes the request through and the decision moves to the layers that know
- * what "free" means —
+ * A tenant with no live entitlement is REFUSED here, reads included. Until
+ * 2026-08-25 this passed every GET through, so a lapsed account kept answering
+ * from the corpus it had at the moment it lapsed. That was the wrong trade: a
+ * memory product whose memory stopped last month is not a cheaper product, it is
+ * a wrong one, and the staleness banner that was supposed to carry the caveat
+ * only works on an agent that reads banners.
  *
- *   - requireFeature, which resolves through effectivePlan and so answers
- *     'free' for a lapsed tenant (insights, tasks, toolkit, team → 402 with
- *     the upgrade offer),
- *   - the search/list window (routes clamp to tenantLimits().searchWindowDays),
- *   - the sync meters (syncAdmission below).
+ * Two surfaces deliberately do NOT carry this gate, and must not gain it:
+ *   - /api/data — export and delete. Refusing to hand back or erase data
+ *     someone uploaded is a different category of problem from withholding a
+ *     feature.
+ *   - /api/status, /api/health, /api/account, /api/billing, /api/teams — the
+ *     routes a person needs in order to see this state and fix it.
  *
- * The data behind this gate is the user's own conversation history, indexed from
- * their own machine — so locking them out buys no leverage while guaranteeing
- * the worst possible story about us. The free tier keeps the daily habit (sync,
- * recent search) alive and prices the accumulated history instead.
- *
- * The ONE refusal left here: a tenant that never confirmed an email address gets
- * 402 on writes. That is the anti-abuse gate — an unconfirmed address must not
- * spend money — and the message tells them to check their inbox, not to
- * subscribe, because that is the actual fix.
+ * The other refusal here: a tenant that never confirmed an email address. That
+ * is the anti-abuse gate, and its message names the inbox rather than the
+ * pricing page, because that is the actual fix.
  */
 export function requireEntitlement(req: Request, res: Response, next: NextFunction): void {
   const tenant = req.tenant;
@@ -308,7 +337,10 @@ export function requireEntitlement(req: Request, res: Response, next: NextFuncti
   isEntitled(tenant)
     .then(async (ok) => {
       if (ok) return next();
-      if (isReadRequest(req)) return next();   // free tier reads; routes window them
+      // CORS preflight carries no credentials and reads nothing. Refusing it
+      // makes the browser report a CORS failure instead of the 402 the app
+      // needs to render, which hides the one message that explains the state.
+      if (req.method === 'OPTIONS') return next();
       if (await needsEmailConfirmation(tenant)) {
         res.status(402).json({
           error: 'email confirmation required',
@@ -317,11 +349,7 @@ export function requireEntitlement(req: Request, res: Response, next: NextFuncti
         });
         return;
       }
-      // Lapsed → free tier. Writes to the free surfaces (kg, diary, kv) are part
-      // of the tier; writes to paid surfaces are refused by their feature gates
-      // with a payload that names the plan to buy — a better answer than a
-      // blanket "subscription required" that can't say what for.
-      next();
+      res.status(402).json(noPlanPayload());
     })
     .catch(next);
 }

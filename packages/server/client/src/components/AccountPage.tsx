@@ -115,8 +115,9 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
               </div>
             )}
             <p className="muted">
-              No card needed for the trial. When it ends, new sessions stop syncing — everything
-              already synced stays fully searchable, export keeps working, and nothing is deleted.
+              No card needed for the trial. When it ends, recall switches off — searches and session
+              reads stop, and new sessions stop syncing. Nothing is deleted: your history stays on
+              the server, export keeps working, and subscribing turns it all back on.
             </p>
             {/* The picker is not open by default while the trial is healthy.
                 Three priced cards with seat spinners under "14 days left" asks
@@ -145,9 +146,9 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
               <span className="badge badge-free" data-testid="free-plan-badge">Dormant</span>
             </div>
             <p className="muted">
-              New sessions are not syncing. Everything already synced stays fully searchable and
-              export keeps working — nothing was deleted. Subscribe and one{' '}
-              <code>chat-recall sync --full</code> brings the server current.
+              Recall is switched off: searches and session reads are refused, and new sessions are
+              not syncing. Nothing was deleted — your history is intact and export keeps working.
+              Subscribe and one <code>chat-recall sync --full</code> brings the server current.
             </p>
             {/* The meters, from the same payload the server enforces with — the
                 page must never show a fuller or emptier meter than the gate acts
@@ -288,11 +289,15 @@ function AlertsCard({ onError }: { onError: (s: string) => void }) {
 function gateReason(ent: { status?: string; hasSubscription?: boolean } | null): {
   title: string; detail: string;
 } {
-  const kept = `You are on the free plan: sync keeps working (metered) and search covers your recent history. Your full history is stored and locked — it unlocks instantly when you subscribe.`;
+  // This sentence has been wrong twice, each time because the tier moved and the
+  // copy did not: it promised a metered free sync after sync left the free tier,
+  // and a recent-history window months after the window was removed. Say only
+  // what a lapsed account actually keeps — the history on the server, and export.
+  const kept = `Recall is switched off until you subscribe: searches and session reads are refused, and new sessions are not syncing. Nothing is deleted — your full history is intact on the server, export keeps working, and subscribing turns it all back on.`;
   if (ent?.status === 'trialing') return { title: 'Your trial has ended', detail: kept };
   if (ent?.status === 'past_due') return {
     title: 'Your last payment did not go through',
-    detail: 'Your history is kept. Update your payment method to resume syncing.',
+    detail: 'Your history is kept and nothing is deleted. Update your payment method to turn recall back on.',
   };
   if (ent?.status === 'canceled' || ent?.hasSubscription) return {
     title: 'Your subscription has ended', detail: kept,
@@ -357,8 +362,8 @@ export function SubscribeScreen() {
           <>
             <h1>Start your {plan.freeTrialDays}-day trial</h1>
             <p className="muted">No card needed. Create your workspace, connect your machine, and your
-              AI-session history becomes searchable. When the trial ends you land on the free
-              plan — sync keeps working and search covers your recent history. Nothing is deleted.</p>
+              AI-session history becomes searchable. When the trial ends, recall switches off until
+              you subscribe — nothing is deleted, and export always works.</p>
             {err && <div className="acct-err">{err}</div>}
             <Button variant="primary" disabled={busy} onClick={createWorkspace}>
               {busy ? 'Setting up…' : 'Create your workspace →'}
