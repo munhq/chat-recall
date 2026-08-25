@@ -19,8 +19,9 @@ import ForceGraph from './ForceGraph';
 import {
   getCodeProjects, getCodeProject, getCodeSummary, getCodeFindings, getCodeHotspots,
   getCodeActions, patchCodeAction, patchCodeProjectLabel,
-  getCodeRecommendations, applyCodeRecommendation, writeTasksToProject, getFileSessions,
-  type CodeProject, type CodeFinding, type CodeHotspot, type CodeAction, type CodeFindingsSummary, type CodeRecommendation, type CodeCouplingMetric, type SessionInfo,
+  getCodeRecommendations, applyCodeRecommendation, dismissCodeRecommendation,
+  undismissCodeRecommendation, writeTasksToProject, getFileSessions,
+  type CodeProject, type CodeFinding, type CodeHotspot, type CodeAction, type CodeFindingsSummary, type CodeRecommendation, type DismissedRecommendation, type CodeCouplingMetric, type SessionInfo,
 } from '../services/api';
 
 type Tab = 'recs' | 'overview' | 'plan' | 'security' | 'quality' | 'structure' | 'integrity' | 'hotspots' | 'map';
@@ -48,6 +49,7 @@ export default function CodeExplorer({ projectFilter, embedded, onSessionClick }
   const [hotspots, setHotspots] = useState<CodeHotspot[]>([]);
   const [actions, setActions] = useState<CodeAction[]>([]);
   const [recs, setRecs] = useState<CodeRecommendation[]>([]);
+  const [dismissedRecs, setDismissedRecs] = useState<DismissedRecommendation[]>([]);
   const [behavior, setBehavior] = useState<{ failedOrAbandoned: number; totalSessions: number } | null>(null);
   const [tab, setTab] = useState<Tab>('recs');
   const [loading, setLoading] = useState(true);
@@ -76,7 +78,7 @@ export default function CodeExplorer({ projectFilter, embedded, onSessionClick }
       getCodeHotspots(id), getCodeActions(id, { limit: 200 }), getCodeRecommendations(id),
     ]).then(([p, s, f, h, a, r]) => {
       setProject(p); setSummary(s); setFindings(f); setHotspots(h); setActions(a);
-      setRecs(r.recommendations); setBehavior(r.behavior); setLoading(false);
+      setRecs(r.recommendations); setDismissedRecs(r.dismissed); setBehavior(r.behavior); setLoading(false);
     });
   }, []);
 
@@ -231,7 +233,7 @@ export default function CodeExplorer({ projectFilter, embedded, onSessionClick }
         />
       </div>
 
-      {tab === 'recs' && <RecommendationsView recs={recs} projectId={projectId} onApplied={() => projectId && reload(projectId)} />}
+      {tab === 'recs' && <RecommendationsView recs={recs} dismissed={dismissedRecs} projectId={projectId} onApplied={() => projectId && reload(projectId)} />}
       {tab === 'overview' && project && <OverviewTab project={project} behavior={behavior} />}
       {tab === 'plan' && <ActionList actions={planActions} onOpen={openAction} queuedIds={queuedActionIds} />}
       {tab === 'security' && <FindingList findings={securityFindings} onOpen={openFinding} />}
@@ -663,10 +665,13 @@ export function TasksDrawer({ name, projectId, queuedActions, queued, onClose }:
 
 // ── Recommendations (the moat: behavior × code → apply) ─────────────────────
 const REC_CHIP: Record<string, ChipKind> = { high: 'err', medium: 'warn', low: 'neutral' };
-export function RecommendationsView({ recs, projectId, onApplied }: { recs: CodeRecommendation[]; projectId: string | null; onApplied: () => void }) {
+export function RecommendationsView({ recs, dismissed, projectId, onApplied }: { recs: CodeRecommendation[]; dismissed: DismissedRecommendation[]; projectId: string | null; onApplied: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<Record<string, string>>({});
-  if (!recs.length) return <Empty>No recommendations yet — index a project with findings, or wait for behavioral signal. The engine turns code × behavior into rules, labels and skills to apply.</Empty>;
+  /** Which card is asking for its dismissal reason, and what has been typed. */
+  const [dismissing, setDismissing] = useState<string | null>(null);
+  const [reason, setReason] = useState('');
+  const [showDismissed, setShowDismissed] = useState(false);
   const apply = async (r: CodeRecommendation) => {
     if (!projectId) return;
     setBusy(r.id);
@@ -675,7 +680,28 @@ export function RecommendationsView({ recs, projectId, onApplied }: { recs: Code
     setBusy(null);
     if (res.applied) onApplied();
   };
+  /** Say no, with the reason the server requires. Reloads so the card moves to
+   *  the dismissed list rather than only disappearing. */
+  const confirmDismiss = async (r: CodeRecommendation) => {
+    if (!projectId || !reason.trim()) return;
+    setBusy(r.id);
+    const res = await dismissCodeRecommendation(projectId, r.id, reason.trim());
+    setBusy(null);
+    if (!res.ok) { setMsg((m) => ({ ...m, [r.id]: res.message || 'failed' })); return; }
+    setDismissing(null); setReason('');
+    onApplied();
+  };
+  const undo = async (r: DismissedRecommendation) => {
+    if (!projectId) return;
+    setBusy(r.id);
+    const res = await undismissCodeRecommendation(projectId, r.id);
+    setBusy(null);
+    if (res.ok) onApplied(); else setMsg((m) => ({ ...m, [r.id]: res.message || 'failed' }));
+  };
   const copyRule = (r: CodeRecommendation) => { const t = (r.action.payload as any)?.text; if (t) navigator.clipboard.writeText(String(t)); };
+  // The empty state is only empty when nothing was dismissed either — otherwise it
+  // would hide the undo for every card the person retired.
+  if (!recs.length && !dismissed.length) return <Empty>No recommendations yet — index a project with findings, or wait for behavioral signal. The engine turns code × behavior into rules, labels and skills to apply.</Empty>;
   return (
     <div data-testid="recs-list">
       {recs.map((r) => (
@@ -694,15 +720,70 @@ export function RecommendationsView({ recs, projectId, onApplied }: { recs: Code
           {r.action.type === 'append_claude_md' && (r.action.payload as any)?.text && (
             <pre style={{ background: 'var(--cr-ink-2,#0d1117)', border: '1px solid var(--cr-line-1)', borderRadius: 6, padding: 10, fontSize: 12, whiteSpace: 'pre-wrap', fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-1)', marginBottom: 8 }}>{String((r.action.payload as any).text)}</pre>
           )}
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <Button variant="primary" onClick={() => apply(r)} disabled={busy === r.id}>
               {busy === r.id ? 'applying…' : r.kind === 'label' ? 'Apply label' : r.kind === 'rule' ? 'Apply to CLAUDE.md' : 'Apply'}
             </Button>
             {r.action.type === 'append_claude_md' && <Button variant="secondary" onClick={() => copyRule(r)}>Copy rule</Button>}
+            {dismissing !== r.id && (
+              <Button variant="secondary" onClick={() => { setDismissing(r.id); setReason(''); }} disabled={busy === r.id}>
+                Not for this repo
+              </Button>
+            )}
             {msg[r.id] && <span style={{ fontSize: 12, color: 'var(--cr-fg-2)' }}>{msg[r.id]}</span>}
           </div>
+          {dismissing === r.id && (
+            // The reason is a field, not a confirm dialog: the server refuses a
+            // dismissal without one, and in six weeks the reason is the only thing
+            // that separates a decision from a misclick.
+            <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <input
+                data-testid={`rec-dismiss-reason-${r.id}`}
+                autoFocus
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') void confirmDismiss(r); if (e.key === 'Escape') { setDismissing(null); setReason(''); } }}
+                placeholder="Why does this not apply here? (required)"
+                style={{ flex: '1 1 280px', minWidth: 200, padding: '6px 8px', fontSize: 13, borderRadius: 6, border: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-2,#0d1117)', color: 'var(--cr-fg-1)' }}
+              />
+              <Button variant="primary" onClick={() => confirmDismiss(r)} disabled={!reason.trim() || busy === r.id}>
+                {busy === r.id ? 'dismissing…' : 'Dismiss'}
+              </Button>
+              <Button variant="secondary" onClick={() => { setDismissing(null); setReason(''); }}>Cancel</Button>
+            </div>
+          )}
         </Card>
       ))}
+      {dismissed.length > 0 && (
+        <div style={{ marginTop: 14 }}>
+          <Button variant="secondary" onClick={() => setShowDismissed((v) => !v)} data-testid="recs-dismissed-toggle">
+            {showDismissed ? 'Hide' : 'Show'} dismissed ({dismissed.length})
+          </Button>
+          {showDismissed && (
+            <div style={{ marginTop: 10 }} data-testid="recs-dismissed-list">
+              {dismissed.map((r) => (
+                <Card key={r.id} style={{ padding: 12, marginBottom: 8, opacity: 0.7 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <Chip kind="neutral" size="sm">dismissed</Chip>
+                    <strong style={{ fontWeight: 500 }}>{r.title}</strong>
+                    <Chip kind="mono" size="sm">{r.kind}</Chip>
+                  </div>
+                  <div style={{ color: 'var(--cr-fg-2)', fontSize: 12, marginBottom: 8 }}>
+                    {r.dismissal.reason || 'no reason recorded'}
+                    {r.dismissal.at ? ` — ${new Date(r.dismissal.at).toLocaleDateString()}` : ''}
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <Button variant="secondary" onClick={() => undo(r)} disabled={busy === r.id}>
+                      {busy === r.id ? 'restoring…' : 'Put it back'}
+                    </Button>
+                    {msg[r.id] && <span style={{ fontSize: 12, color: 'var(--cr-fg-2)' }}>{msg[r.id]}</span>}
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
