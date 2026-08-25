@@ -66,6 +66,7 @@ export async function createTeamFor(
       tenant: t.slug,
       source: attribution?.source ?? null,
       campaign: attribution?.campaign ?? null,
+      anonId: attribution?.anonId ?? null,
     });
     return { slug: t.slug, name: t.name };
   } finally { await cp.close(); }

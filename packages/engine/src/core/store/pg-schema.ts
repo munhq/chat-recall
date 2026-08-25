@@ -279,6 +279,12 @@ ALTER TABLE tenants ADD COLUMN IF NOT EXISTS display_name TEXT;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS signup_source   TEXT;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS signup_referrer TEXT;
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS signup_campaign TEXT;
+-- The anonymous id the page minted on first touch, also handed to the analytics
+-- session. This column is the join: analytics knows a visitor came from
+-- reddit.com, this knows a tenant was created, and the id is what makes those the
+-- same person rather than two unrelated counts.
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS signup_anon_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_tenants_signup_anon ON tenants (signup_anon_id) WHERE signup_anon_id IS NOT NULL;
 
 -- ── Control plane: identity → tenant mapping ────────────────────────────
 -- Deliberately NOT in the RLS loop below: these rows are looked up BEFORE a
