@@ -549,11 +549,7 @@ app.use('/api/edits', paid, rl('read-heavy'), editsRouter);
 // a consumer-rights problem, not a monetisation lever. It used to sit behind
 // `paid`, which passed the export GET and refused both delete POSTs — exactly
 // backwards, and invisible while requireEntitlement let every read through.
-// The user's own export and delete controls. `paid` still applies, and its
-// lapsed-tenant rule is exactly right here: export is a GET so it keeps working
-// after a subscription ends — taking your history with you must never require
-// paying again — while the deletes are POSTs and stop, like every other write.
-app.use('/api/data', paid, rl('write-light'), dataControlsRouter);
+app.use('/api/data', rl('write-light'), dataControlsRouter);
 app.use('/api/projects', paid, rl('read-light'), projectsRouter);
 
 // Recall surfaces for the thin-collector MCP: knowledge graph + key-value.
