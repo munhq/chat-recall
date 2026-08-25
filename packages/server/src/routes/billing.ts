@@ -49,6 +49,7 @@ import {
 import { ensureTrial, isNoCardTrial, trialDaysLeft, trialLengthDays } from '../util/trial.js';
 import { planCatalogue, resolveLine, isPlanError, trialDays, resolvePlanKey } from '../util/billing-plans.js';
 import type { PlanLimits } from '../util/entitlements.js';
+import { growth } from '../util/growth.js';
 import { publicOrigin, UnsafeOriginError } from './install.js';
 
 const router = express.Router();
@@ -413,6 +414,19 @@ export async function applyStripeEvent(
         stripeCustomerId: asStr(o.customer),
         stripeSubscriptionId: asStr(o.id),
       });
+
+      // convert — it earned. ONLY on 'active', never on 'trialing': a 7-day
+      // no-card trial is not revenue, and counting it as conversion would make
+      // every channel look like it converts and tell us nothing. The trial is
+      // already visible as install + activate.
+      //
+      // This event fires repeatedly for one subscription (created, then updated
+      // on every renewal), so the row is written more than once per customer.
+      // That is fine and deliberate — funnel queries count DISTINCT tenant, and
+      // the alternative needs a read this credential does not have.
+      if (status === 'active') {
+        growth('convert', { tenant, extra: { plan: plan ?? null, seats: seatsOf(o) ?? null } });
+      }
 
       // A SELF-HOST purchase is delivered as a licence serial, not as access to our
       // servers, so it needs an artefact the customer can paste into their own

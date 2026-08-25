@@ -50,6 +50,7 @@ import { ingestGate } from '../middleware/rate-limit.js';
 import { tenantIngestConcurrency } from '../middleware/rate-limit.js';
 import { chunksFromTurns, subagentChunks, type EnvSubagent } from '../services/session-chunks.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
+import { growth } from '../util/growth.js';
 
 const log = createLogger('sync');
 
@@ -846,6 +847,11 @@ router.post('/', async (req, res) => {
     // exists to prevent. This response is authenticated, so it can be right.
     let ingestConcurrency: number | undefined;
     try { ingestConcurrency = await tenantIngestConcurrency(agent.tenant); } catch { /* client keeps its default */ }
+    // activate — it worked. The only one of the three that predicts whether a
+    // tenant stays: an install that never syncs is a signup that never used the
+    // product. Fired on EVERY successful sync, not just the first; funnel queries
+    // take count(DISTINCT tenant), which is correct and survives a restart.
+    growth('activate', { tenant: agent.tenant });
     res.json({
       ok: true, ...result, tenant: agent.tenant, ack_at: new Date().toISOString(),
       cli: cliRelease(), telemetry,
