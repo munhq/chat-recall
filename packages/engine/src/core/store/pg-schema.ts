@@ -267,6 +267,18 @@ CREATE TABLE IF NOT EXISTS tenants (
   created_at  BIGINT NOT NULL
 );
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS display_name TEXT;
+-- ── Signup attribution ────────────────────────────────────────────────────
+-- First touch, captured on the marketing site before this tenant existed, and
+-- written once when the tenant row is created. NEVER updated afterwards: the
+-- referrer that earned the signup is the one that counts, and a later direct
+-- visit must not overwrite it.
+--
+-- signup_source is a NORMALISED bucket from a closed set (see
+-- attribution.ts) — raw referrer strings are unusable for GROUP BY. The raw
+-- host is kept alongside it so a mis-bucketed row is debuggable instead of lost.
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS signup_source   TEXT;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS signup_referrer TEXT;
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS signup_campaign TEXT;
 
 -- ── Control plane: identity → tenant mapping ────────────────────────────
 -- Deliberately NOT in the RLS loop below: these rows are looked up BEFORE a
