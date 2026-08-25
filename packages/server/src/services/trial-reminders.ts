@@ -66,24 +66,31 @@ export function reminderStage(daysLeft: number | null): ReminderStage | null {
 
 const UPGRADE_URL = process.env.TRIAL_UPGRADE_URL || 'https://chatrecall.dev/pricing';
 
+/** The account page on THIS deployment — where a person sees their plan, their
+ *  days left and the subscribe button. Derived from the app's own base URL so a
+ *  self-hoster's reminder links to their server, not to ours. */
+const ACCOUNT_URL = `${(process.env.BETTER_AUTH_URL || process.env.APP_URL || 'https://chatrecall.dev').replace(/\/+$/, '')}/app?view=account`;
+
 /**
  * The reminder copy.
  *
  * States what happens at the end in every message, because the thing that makes
- * a deadline email tolerable is that it does not threaten: the history is kept,
- * search over it keeps working, and export is never withheld — nobody has to act
- * out of fear of losing work. It names no numbers, so it cannot promise a limit
- * the server does not enforce.
+ * a deadline email tolerable is that it does not threaten: the history is kept
+ * and export is never withheld, so nobody has to act out of fear of losing work.
+ * It names no numbers, so it cannot promise a limit the server does not enforce.
+ *
+ * It also must not promise more than the server delivers. Until 2026-08-25 this
+ * said the synced history stayed searchable after the trial; it does not any
+ * more, and a reassurance the product then contradicts is worse than the plain
+ * fact.
  */
 export function trialReminderMail(to: string, stage: ReminderStage, daysLeft: number) {
   const keep = 'Nothing is deleted, and export always works.';
   // What actually happens at the end, in the words the CLI and the banner use.
-  // No search window is mentioned because none is applied: the whole synced
-  // history stays searchable and only new ingest stops.
   const after = [
-    'What changes: new sessions stop syncing.',
-    'What does not: everything already synced stays fully searchable, and',
-    'export keeps working.',
+    'What changes: recall switches off — searches stop answering, and new',
+    'sessions stop syncing.',
+    'What does not: your history stays on the server, and export keeps working.',
     '',
     'Your transcripts live on your own disk, so nothing is stranded — one',
     '`chat-recall sync --full` brings the server current the day you subscribe.',
@@ -129,6 +136,14 @@ export function trialReminderMail(to: string, stage: ReminderStage, daysLeft: nu
       'The longer it runs, the more of your own history it can recall — so this is',
       'usually the point where it starts earning its place.',
       '',
+      ...after,
+      '',
+      // The account page, not only the price list. Someone who connected through
+      // the MCP connector has never opened the dashboard — they signed in once at
+      // an OAuth prompt and have worked inside their AI tool since. This is the
+      // first time they are told the dashboard exists, and "what am I on, and
+      // until when" is the question they have; a pricing page does not answer it.
+      `See your account and days left: ${ACCOUNT_URL}`,
       `Subscribe any time: ${UPGRADE_URL}`,
     ].join('\n'),
   };

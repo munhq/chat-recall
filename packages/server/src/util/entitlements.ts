@@ -79,21 +79,21 @@ const PLAN_FEATURES: Array<{ prefix: string; features: readonly Feature[]; purch
   // util/billing.ts). Never bought, never granted by a webhook: it is the floor a
   // cloud tenant lands on when their entitlement stops being live.
   //
-  // It grants memory + scan and NOT sync. Between 2026-08-21 and 2026-08-22 it
-  // was the reverse — sync metered, search windowed to seven days — and that was
-  // the wrong axis to cut. This product's value IS history depth: a seven-day
-  // window demonstrates only what `claude --continue` already does for free, so
-  // the tier hid the one capability worth paying for and kept the one that costs
-  // us money. It also cut first for the heaviest users, who are the likeliest
-  // buyers: a working machine writes ~500 MB of transcript a month against a
-  // 50 MB quota.
+  // It grants NOTHING. Two earlier shapes were tried and both were worse:
+  // sync metered with search windowed to seven days (2026-08-21), then the whole
+  // corpus readable with ingest stopped (2026-08-22). The second kept a memory
+  // product answering from a memory that stopped growing. The banner said so on
+  // every tool result, and an agent that ignores a banner answers confidently
+  // from a frozen corpus — which reads as a broken product at the exact moment
+  // someone decides whether to pay.
   //
-  // Pausing INGEST loses nobody anything, because the transcripts never lived
-  // here — they are on the user's disk, and `chat-recall sync --full` re-ships
-  // everything the day they subscribe. So dormant keeps the whole synced history
-  // searchable, keeps export working, and stops paying to ingest new data for an
-  // account that declined to pay.
-  { prefix: 'free',       features: ['memory', 'scan'], purchasable: false },
+  // So a lapsed account gets a refusal that names the state, not a degraded
+  // answer. Nothing is lost by it: the transcripts live on the user's disk, and
+  // `chat-recall sync --full` re-ships everything the day they subscribe.
+  // EXPORT AND DELETE ARE NOT GATED — see the /api/data mount in server.ts.
+  // Refusing to hand back data someone uploaded is a different category of
+  // problem from withholding a feature.
+  { prefix: 'free',       features: [], purchasable: false },
   // The SELF-HOST licence. Same grant as Solo, bought as a subscription, delivered
   // as a licence key rather than as access to our servers. Listed last so the
   // cheapest-tier scan in featureRequired() still names 'solo' for a cloud user —
@@ -432,8 +432,8 @@ export function limitReached(kind: 'sync_quota' | 'sync_storage', used: number, 
  *
  * Its own payload rather than featureRequired('sync'), because "this feature
  * requires the solo plan" is true and useless at that moment: the person needs
- * to know that reads still work, that nothing was lost, and what one command
- * restores it. The CLI and the dashboard banner say the same three things.
+ * to know what happened, that nothing was lost, and what one command restores
+ * it. The CLI and the dashboard banner say the same three things.
  */
 export function syncOffPayload(): {
   error: string; kind: string; detail: string; feature: Feature; requires: string; upgradeUrl: string;
@@ -443,10 +443,35 @@ export function syncOffPayload(): {
     error: 'syncing is off — the trial on this account has ended',
     kind: 'sync_off',
     detail:
-      'Everything already synced stays fully searchable, and export always works. '
-      + 'Your transcripts are on this machine, so nothing is stranded: subscribe, then run '
-      + '`chat-recall sync --full` to bring the server current.',
+      'Export always works, and your transcripts are on this machine, so nothing is '
+      + 'stranded: subscribe, then run `chat-recall sync --full` to bring the server current.',
     feature: 'sync',
+    requires,
+    upgradeUrl,
+  };
+}
+
+/**
+ * The refusal EVERY value surface gives a tenant with no live plan.
+ *
+ * One payload rather than featureRequired(...) per route, because a dormant
+ * account does not lack one feature — it lacks a plan, and naming a feature
+ * invites the reader to think the rest still works. `kind` lets the CLI, the MCP
+ * and the dashboard recognise this without parsing prose.
+ */
+export function noPlanPayload(): {
+  error: string; kind: string; detail: string; requires: string; upgradeUrl: string;
+} {
+  const { requires, upgradeUrl } = featureRequired('sync');
+  return {
+    error: 'this account has no active plan',
+    kind: 'no_plan',
+    detail:
+      'The trial on this account has ended, so recall is switched off — searches and '
+      + 'session reads are refused rather than answered from a history that stopped '
+      + 'growing. Nothing was deleted: export still works, your transcripts are on your '
+      + 'own machine, and `chat-recall sync --full` brings the server current the day '
+      + 'you subscribe.',
     requires,
     upgradeUrl,
   };

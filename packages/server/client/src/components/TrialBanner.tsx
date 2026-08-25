@@ -11,19 +11,20 @@ import { Button } from './primitives';
  * this costs nothing to deliver and cannot land in spam. Email covers the user
  * who has drifted away; this covers the one still working.
  *
- * A LAPSED tenant is not read-only and not broken: INGEST stops, reads do not.
- * Their whole synced history stays searchable and export always works, so the
- * banner states one change and one remedy. It never says "read-only", and it no
- * longer says "search covers your last N days" — that window was removed on
- * 2026-08-22, because a memory product that forgets is not a demo of anything.
+ * A LAPSED tenant is switched OFF, not degraded: since 2026-08-25 the server
+ * refuses searches and session reads as well as ingest. The banner therefore
+ * states what stopped and what survives — the history is intact and export
+ * always works — and does not promise a searchable corpus it no longer has.
+ * Two earlier versions of this text promised exactly that, each written when
+ * the tier below it still existed.
  *
  * Dismissal:
  *  - Trial countdown: per remaining-days value — dismissing at 7 days hides it
  *    until the number changes. The final two days are NOT dismissible; that is
  *    the whole point of a deadline.
- *  - Free plan: per calendar day. It is a standing offer, not a deadline, so it
- *    must be quietable — but it returns tomorrow, because the locked history
- *    only grows.
+ *  - Lapsed: per calendar day. It is a standing offer, not a deadline, so it
+ *    must be quietable — but it returns tomorrow, because every session written
+ *    while the account is off is one more that never reached the server.
  */
 const DISMISS_KEY = 'cr-trialbanner-dismissed-at-days';
 const FREE_DISMISS_KEY = 'cr-freebanner-dismissed-day';
@@ -102,9 +103,10 @@ export default function TrialBanner({
         <style>{CSS}</style>
         <span className="cr-trialbanner-dot" />
         <span className="cr-trialbanner-text">
-          <strong>Syncing is off</strong> — your trial has ended, so new sessions stop arriving.{' '}
+          <strong>Recall is off</strong> — your trial has ended, so searches are refused and new
+          sessions stop arriving.{' '}
           <span className="muted">
-            Everything already synced stays fully searchable, and export always works. Subscribe
+            Nothing was deleted: your history is intact and export always works. Subscribe
             and one <code>chat-recall sync --full</code> brings you current.
           </span>
         </span>

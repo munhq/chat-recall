@@ -44,7 +44,7 @@ import { createControlPlane, type EntitlementStatus, type ControlPlane } from '.
 import { requireUser } from '../middleware/auth.js';
 import {
   billingEnabled, isEntitled, tenantFeatures, effectivePlan, tenantLimits, currentUsageMonth,
-  tenantStoredBytes,
+  tenantStoredBytes, operatorPlan,
 } from '../util/billing.js';
 import { ensureTrial, isNoCardTrial, trialDaysLeft, trialLengthDays } from '../util/trial.js';
 import { planCatalogue, resolveLine, isPlanError, trialDays, resolvePlanKey } from '../util/billing-plans.js';
@@ -748,7 +748,13 @@ router.get('/', async (req, res) => {
     // authenticated call a new tenant makes, and it must report the trial it is
     // actually on rather than "none" until some other route provisions it.
     const ent = await ensureTrial(cp, tenant);
-    const onTrial = isNoCardTrial(ent);
+    // An OPERATOR tenant (OPERATOR_TENANTS) is entitled by configuration, so its
+    // trial row is history rather than a deadline. Reporting onTrial from the row
+    // alone would put a countdown banner in front of someone who cannot lapse —
+    // the same "client re-derives the gate's decision" drift the comment on
+    // `entitled` below warns about, one field along.
+    const operator = !!operatorPlan(tenant);
+    const onTrial = !operator && isNoCardTrial(ent);
     // Resolve the derived answers ONCE and in parallel. This endpoint backs the
     // app gate and the banner on every mount; three serial resolutions that
     // each re-derive the others (tenantLimits consults the same entitlement as
