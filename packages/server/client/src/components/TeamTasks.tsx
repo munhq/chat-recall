@@ -85,7 +85,7 @@ type Member = { sub: string; email: string | null; role: string };
  */
 export function describeRun(r: {
   created?: number; closed?: number;
-  reopened?: number; repointed?: number; backfilled?: number;
+  reopened?: number; repointed?: number; backfilled?: number; deduped?: number;
 }): string {
   const parts = [
     r.created ? `filed ${r.created}` : '',
@@ -93,6 +93,7 @@ export function describeRun(r: {
     r.reopened ? `reopened ${r.reopened}` : '',
     r.repointed ? `re-linked ${r.repointed}` : '',
     r.backfilled ? `repaired ${r.backfilled}` : '',
+    r.deduped ? `merged ${r.deduped} duplicate${r.deduped === 1 ? '' : 's'}` : '',
   ].filter(Boolean);
   return parts.join(', ');
 }
