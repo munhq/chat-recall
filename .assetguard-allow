@@ -1,0 +1,10 @@
+# Accepted risks. Format:  <path-or-filename> <rule-id> <reason>
+#
+# An entry here means somebody looked at the file and decided to publish it
+# anyway. Weakening a rule in assetguard.mjs would hide that class of finding
+# from every future asset; allowing one file keeps the rule strict and the
+# decision visible.
+#
+# Rule ids: profanity money home-path credential private-key astroturf private-name
+
+4-diff.png  home-path  Shows /home/adi in the diff paths. It is the maintainer's own username, not a client, and the shot demonstrates per-file line counts which need real paths to be legible. Re-record under a synthetic HOME if this ever ships to the landing page.
