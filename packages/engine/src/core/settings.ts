@@ -14,6 +14,7 @@ import { delimiter } from 'path';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
 import type { EmbedderProvider } from './embedder.js';
+import { projectPathIncludes } from './project-path-match.js';
 import { getDataDir } from './paths.js';
 
 /**
@@ -298,7 +299,11 @@ export function isProjectSyncable(
 ): boolean {
   if ((cfg.syncMode ?? 'all') !== 'only') return true;
   if (projectId && cfg.syncOnly.has(projectId)) return true;
-  for (const x of cfg.syncOnly) if (x && projectPath.includes(x)) return true;
+  // projectPathIncludes, not String.includes: the path we are handed is decoded
+  // from Claude Code's lossy directory name, so a project the user allowlisted
+  // as `~/code/chat-recall` arrives here as `/home/user/code/chat/recall` and a
+  // raw substring test never matched it — the allowlist shipped nothing.
+  for (const x of cfg.syncOnly) if (projectPathIncludes(projectPath, x)) return true;
   return false;
 }
 
