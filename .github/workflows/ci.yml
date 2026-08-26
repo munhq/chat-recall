@@ -46,6 +46,17 @@ jobs:
       - name: Build
         run: npm run build
 
+      # The DASHBOARD, which `npm run build` above does NOT cover: the root
+      # tsc -b project references the engine, cli and server, and the React
+      # client has its own tsconfig that only Vite reads. So a client type error
+      # passed CI green and first appeared in the Docker image build
+      # (Dockerfile.server stage 1) — a seven-minute round trip, on a job most
+      # pushes do not even run. It cost exactly that: `deleteConversation(sessionId)`
+      # against a `string | null` prop shipped green from here.
+      - name: Typecheck the dashboard client
+        working-directory: packages/server/client
+        run: npm ci && npx tsc -b --pretty false
+
       - name: Test
         run: npx vitest run
 
