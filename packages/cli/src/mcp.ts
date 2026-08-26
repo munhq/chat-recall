@@ -87,7 +87,18 @@ function startLoginChild(server: string): Promise<LoginPrompt> {
     try { cliPath = fileURLToPath(new URL('./cli.js', import.meta.url)); }
     catch { reject(new Error('could not locate the CLI entry point')); return; }
 
-    const child = spawn(process.execPath, [cliPath, 'login', server, '--prompt-json'], {
+    // `init`, NOT `login`. Logging in alone leaves the user with working tools
+    // and an empty account: nothing installs the skills, registers the MCP with
+    // their other AI tools, or starts the background service that ships new
+    // conversations — so every tool would answer "no sessions yet" forever.
+    // init does all of it and then syncs, which is the difference between
+    // "connected" and "useful".
+    //
+    // --yes because there is no terminal here to pause for confirmation. init
+    // still prints its scope summary, and the message we return names the
+    // controls (recall_exclude_path, `chat-recall exclude`) so narrowing is one
+    // sentence away rather than buried in a console nobody read.
+    const child = spawn(process.execPath, [cliPath, 'init', '--server', server, '--prompt-json', '--yes'], {
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe'],
       // Outlives this call by design: it polls until the user approves. Detached
