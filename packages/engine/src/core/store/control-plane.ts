@@ -232,6 +232,22 @@ export interface ControlPlane {
    */
   deleteTenant(tenant: string): Promise<boolean>;
 
+  /**
+   * Delete a PERSON: the identity rows better-auth owns, by email.
+   *
+   * deleteTenant purges a workspace and everything in it, and leaves the human
+   * behind — memberships, teams and entitlements gone, the `user` row still
+   * there. That orphan can sign in, gets a fresh workspace auto-created, and can
+   * never sign UP again because the address is taken. For a product that ships
+   * `recall_forget` and a delete-everything control, "we cannot delete an
+   * account" was the one hole, and it left psql as the only way out.
+   *
+   * REFUSES while the person still owns a workspace: deleting the identity first
+   * would strand tenant rows nothing can reach. Delete the tenants, then the
+   * account — and the refusal says so rather than half-doing it.
+   */
+  deleteAccount(email: string): Promise<{ deleted: boolean; reason?: string; tenants?: string[] }>;
+
   /** All tenant slugs. For cross-tenant background sweeps (e.g. the vector
    *  backfill worker), since RLS hides other tenants from a scoped query. */
   listTenants(): Promise<string[]>;
@@ -823,6 +839,13 @@ class SqliteControlPlane implements ControlPlane {
     return this.db.prepare(`DELETE FROM team_project_shares WHERE team_slug = ? AND owner_sub = ? AND project_id = ?`).run(teamSlug, ownerSub, projectId).changes > 0;
   }
 
+  /** Tests only, like the rest of this backend — better-auth's tables are a
+   *  Postgres-server concern and do not exist here, so there is no identity to
+   *  delete. Reported honestly rather than pretending success. */
+  async deleteAccount(_email: string): Promise<{ deleted: boolean; reason?: string; tenants?: string[] }> {
+    return { deleted: false, reason: 'account deletion needs the Postgres backend (better-auth tables)' };
+  }
+
   async deleteTenant(tenant: string): Promise<boolean> {
     const exists = this.db.prepare(`SELECT 1 FROM cp_tenants WHERE tenant = ?`).get(tenant);
     if (!exists) return false;
@@ -1333,6 +1356,53 @@ class PgControlPlane implements ControlPlane {
     await this.q(`DELETE FROM teams            WHERE slug = $1`, [tenant]);
     await this.q(`DELETE FROM tenants          WHERE tenant = $1`, [tenant]);
     return true;
+  }
+
+  async deleteAccount(email: string): Promise<{ deleted: boolean; reason?: string; tenants?: string[] }> {
+    const addr = email.trim().toLowerCase();
+    if (!addr) return { deleted: false, reason: 'no email given' };
+
+    // better-auth stores the address as entered; compare case-insensitively so
+    // "Adrian@..." and "adrian@..." are the same person, which is how every mail
+    // provider treats it and how the user typed it on a different day.
+    const rows = (await this.q(
+      `SELECT id FROM "user" WHERE lower(email) = $1`, [addr])) as Array<{ id: string }>;
+    if (!rows.length) return { deleted: false, reason: 'no such account' };
+
+    const owned = (await this.q(
+      `SELECT team_slug FROM memberships WHERE lower(email) = $1`, [addr])) as Array<{ team_slug: string }>;
+    if (owned.length) {
+      return {
+        deleted: false,
+        reason: 'this account still belongs to a workspace — delete those tenants first',
+        tenants: owned.map((r) => r.team_slug),
+      };
+    }
+
+    // One transaction: a half-deleted identity (sessions gone, user row left) is
+    // worse than either end state, because the next login half-works.
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const id of rows.map((r) => r.id)) {
+        // Child rows first. These tables are better-auth's; a missing one means
+        // a plugin is not installed, which is not an error here.
+        for (const t of ['session', 'account']) {
+          try { await client.query(`DELETE FROM "${t}" WHERE "userId" = $1`, [id]); }
+          catch { /* table absent for this deployment's plugin set */ }
+        }
+      }
+      try { await client.query(`DELETE FROM "verification" WHERE identifier = $1`, [addr]); }
+      catch { /* ditto */ }
+      const del = await client.query(`DELETE FROM "user" WHERE lower(email) = $1`, [addr]);
+      await client.query('COMMIT');
+      return { deleted: (del.rowCount ?? 0) > 0 };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async close(): Promise<void> { /* shared pool — see pg-pool.ts closePgPools */ }
