@@ -28,6 +28,7 @@ import {
 } from 'better-auth/plugins';
 import { toNodeHandler } from 'better-auth/node';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { sendMail, resetPasswordMail, verifyOtpMail } from './mailer.js';
 
@@ -335,6 +336,60 @@ type NodeHandler = (req: IncomingMessage, res: ServerResponse) => unknown;
  *  plugin adds. */
 export function authHandler(): NodeHandler {
   return toNodeHandler(getAuth()) as NodeHandler;
+}
+
+/**
+ * Store a CIMD-resolved client as the same row DCR would have written.
+ *
+ * Raw SQL against better-auth's own table rather than its adapter, because the
+ * adapter is only reachable through the auth instance and that instance cannot
+ * cross a module boundary (see the note on getAuth). The columns are pinned by
+ * better-auth's migration, and `clientId` carries a UNIQUE constraint — which is
+ * what makes the upsert safe under two authorize requests racing for the same
+ * new client.
+ *
+ * `userId` stays null: the client belongs to nobody, exactly as an anonymously
+ * registered DCR client does. The consent screen still binds it to whoever signs
+ * in.
+ */
+export async function upsertCimdClient(client: {
+  clientId: string; clientName: string; redirectUris: string[]; isPublic: boolean;
+}): Promise<void> {
+  const pool = cimdPool();
+  await pool.query(
+    `INSERT INTO "oauthApplication"
+       (id, name, "clientId", "clientSecret", "redirectUrls", type, disabled, "userId", "createdAt", "updatedAt")
+     VALUES ($1, $2, $3, '', $4, $5, false, NULL, now(), now())
+     ON CONFLICT ("clientId") DO UPDATE
+       SET name = EXCLUDED.name,
+           "redirectUrls" = EXCLUDED."redirectUrls",
+           "updatedAt" = now()`,
+    [
+      randomUUID(),
+      client.clientName,
+      client.clientId,
+      client.redirectUris.join(','),
+      client.isPublic ? 'public' : 'web',
+    ],
+  );
+}
+
+/** Is this client_id already stored (by DCR, or by an earlier CIMD resolve)? */
+export async function cimdClientExists(clientId: string): Promise<boolean> {
+  const pool = cimdPool();
+  const r = await pool.query('SELECT 1 FROM "oauthApplication" WHERE "clientId" = $1 LIMIT 1', [clientId]);
+  return r.rowCount !== null && r.rowCount > 0;
+}
+
+let _cimdPool: pg.Pool | null = null;
+function cimdPool(): pg.Pool {
+  if (!_cimdPool) {
+    _cimdPool = new pg.Pool({
+      connectionString: process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL,
+      max: Number(process.env.AUTH_CIMD_POOL_MAX) || 2,
+    });
+  }
+  return _cimdPool;
 }
 
 /**
