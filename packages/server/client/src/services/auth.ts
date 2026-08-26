@@ -35,6 +35,7 @@
  */
 
 import { checkoutReturnPath } from '../utils/checkout';
+import { postAuthorizeSignInPath } from '../utils/oauth-resume';
 
 const CLOUD = !!(import.meta.env.VITE_CLOUD || import.meta.env.VITE_OIDC_ISSUER);
 // Both are pre-cookie storage keys. Nothing writes them any more; they are
@@ -185,7 +186,11 @@ export async function socialProviders(): Promise<string[]> {
  * ignored — this builds the path, it never echoes arbitrary input.
  */
 function postSignInPath(): string {
-  return checkoutReturnPath() ?? '/app';
+  // The MCP authorize request comes FIRST. A visitor sent here by claude.ai is
+  // mid-authorization, and landing them on '/app' drops the request: the client
+  // waits for a code that is never issued, while the user sees a working
+  // dashboard and no error. See utils/oauth-resume.ts.
+  return postAuthorizeSignInPath() ?? checkoutReturnPath() ?? '/app';
 }
 
 export async function signInSocial(provider: string): Promise<AuthResult> {
