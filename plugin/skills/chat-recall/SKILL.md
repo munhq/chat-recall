@@ -35,6 +35,16 @@ and apply the test in `chat-recall-memory` before calling one:
 `recall_security_dismiss`, `recall_rename_session`, `recall_regenerate_summary`,
 `recall_reclassify`, `recall_index`, `recall_code_index`.
 
+Two of those are in a class of their own — they REMOVE what the user has stored,
+and the host will ask before each call because they are deliberately not on the
+auto-approve list. `recall_forget` deletes one conversation from the server
+permanently (their own transcript file is untouched — say so). `recall_exclude_path`
+stops a path syncing, here and on their other devices. Both take `confirm: true`,
+and you pass it only when the user actually asked: "forget this conversation",
+"stop syncing this repo". Never infer it from frustration about a conversation.
+There is no tool that undoes either — an agent may narrow what is stored, never
+widen it. Widening is `chat-recall exclude remove` or the dashboard.
+
 `recall_improvements` is a read UNLESS you pass `create_tasks: true`, which opens
 one task per returned item on the shared team board. Pass it only when the user
 asked for the work to be tracked — the board is visible to teammates and the API
@@ -80,6 +90,8 @@ CLAUDE.md rule is additive and reversible, so take it; ask first before setting
 
 **Security** — `recall_security_summary` (leaked secrets that still need action — start here for "did I paste a key somewhere"), `recall_security_session` (findings for one session), `recall_security_dismiss` (mark rotated / false positive — do this only when the user confirms which), `recall_security_rules` (tenant detection rules; also tests a regex).
 **Health / maintenance** — `recall_status` (is the index alive, what is synced), `recall_index` (sync now), `recall_help` (names the tools the lean profile leaves unlisted — they all still work by name), `recall_heal_audit` (sessions whose rendered text is thinner than the raw archive, i.e. truncated upstream), `recall_regenerate_summary` (stored summary is stale or wrong), `recall_reclassify` (re-run the classifier over old chunks), `recall_rename_session`.
+
+**Removing things** — `recall_forget` (delete one conversation from the server, permanently, tombstoned so no later sync restores it), `recall_exclude_path` (stop syncing a path, on this machine and on the account). Both need `confirm: true` and an explicit request from the user.
 
 ## If you're unsure where to start
 
