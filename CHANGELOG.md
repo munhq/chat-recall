@@ -4,6 +4,51 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.17] — 2026-08-26
+
+### Fixed
+
+- **A new user could not use this product at all.** Every published install —
+  `server.json`, `smithery.yaml`, `plugin/.mcp.json`, the README badges — is
+  `npx -y -p chat-recall chat-recall-mcp`, which runs the MCP from a transient
+  cache and puts NOTHING on PATH. So all 27 offered tools answered "not logged
+  in. Run `chat-recall login <server-url>`", naming a command the user did not
+  have. One instruction, and it was `command not found`. The MCP now starts the
+  sign-in itself — it is the only part of the product actually running — and
+  returns a device link and code for the assistant to show. A fresh install
+  primes it at startup so the FIRST tool call carries the link. Approving runs
+  the full `init`: skills into every detected AI tool, MCP registered with each,
+  the background sync service started, and existing sessions synced. The link is
+  in the response and not only in a browser, because an MCP can run over ssh or
+  in a container where nothing can open; a browser is opened as a convenience.
+- **`recall_smart_resume` required the one thing a resume cannot have.**
+  "Continue where we left off" routes to this tool, and `session_id` was
+  mandatory, so a bare call died with a schema error. It now defaults to the
+  newest session, resolved through the same endpoint `recall_recent` uses.
+- **The device-approval page was off-brand and dead-ended.** The first screen a
+  new user sees was the only page ignoring the design system: 15 hardcoded hex
+  values, a blue accent against our warm brand, and no light mode. It also said
+  "you can close this tab" to someone whose trial had just started, and told MCP
+  users to "go back to your terminal" when there is none. It now uses the tokens,
+  says the trial is live, and offers the dashboard.
+- **A merge to main did not mean deployed.** The deploy repo discovered commits
+  on a `*/15` cron that GitHub deprioritises under load — four consecutive slots
+  skipped in one afternoon. A push now notifies it directly, with the poll kept
+  as the safety net.
+
+### Added
+
+- **Client ID Metadata Documents (CIMD).** A `client_id` that is an https URL is
+  now resolved by fetching it, so a registry can connect without registering —
+  which is how Smithery authenticates, and therefore why it could not connect at
+  all. Guarded as an SSRF surface must be: https only, post-DNS address checks
+  against private ranges over both families, no redirects followed, size and time
+  caps, and the document must name itself.
+- **The JWKS both discovery documents advertise.** `/api/auth/mcp/jwks` 404'd
+  while being published in the metadata. It serves an empty key set, which is the
+  true answer — the access tokens are opaque, so no signing key exists.
+
+
 ### Fixed
 
 - **A read replica going away 500'd reads the primary could serve.** `PgStore`
