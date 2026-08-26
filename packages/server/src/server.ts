@@ -64,7 +64,7 @@ import { capabilities, isServerMode } from './util/mode.js';
 import { advertisedLimits } from './middleware/rate-limit-config.js';
 import { cliRelease } from './util/cli-release.js';
 import { generateMissingSummariesAllTenants, serverSummaryConfig } from './services/summary-worker.js';
-import { sweepSyntheticRetention, sweepLapsedRetention, lapsedRetentionDays } from './services/retention.js';
+import { sweepSyntheticRetention, sweepUserRetention, sweepLapsedRetention, lapsedRetentionDays } from './services/retention.js';
 import { sweepTrialReminders } from './services/trial-reminders.js';
 import { embedMissingVectors, serverEmbedderConfigured } from './services/vector-backfill-worker.js';
 import { createLogger, setLogContextProvider } from '@chat-recall/engine/core/logger.js';
@@ -885,6 +885,10 @@ const httpServer = app.listen(PORT, HOST, () => {
       retentionInFlight = true;
       try {
         await sweepSyntheticRetention();
+        // The user's own window, on the same tick. Runs for every tenant that
+        // set one and is a no-op for the rest (0 = keep everything, the default),
+        // so this costs one tenant-setting read per workspace per sweep.
+        await sweepUserRetention();
         // Off unless LAPSED_RETENTION_DAYS is set, and report-only unless
         // LAPSED_RETENTION_APPLY=1 as well. Two switches because this one
         // deletes paying-customers-who-stopped-paying data, and a deploy must
