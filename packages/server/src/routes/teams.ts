@@ -239,4 +239,46 @@ router.delete('/accounts/:email', async (req, res) => {
   } finally { await cp.close(); }
 });
 
+/**
+ * PUT /api/tenants/:slug/entitlement — set a plan without Stripe.
+ *
+ * Every entitlement until now came from one of two places: the Stripe webhook,
+ * or ensureTrial's one-shot 7-day grant. Nothing could give a workspace a plan
+ * outside those, so a demo or reviewer account was always on a SEVEN-DAY CLOCK —
+ * and when it lapsed, recall switched off and every search was refused. A
+ * connector-directory review can take longer than a week, which would have meant
+ * the submission being judged on a paywall.
+ *
+ * `currentPeriodEnd: null` is the load-bearing part. isEntitled treats a null end
+ * as live indefinitely (ensureTrial: `currentPeriodEnd == null || > now`), so
+ * this is how a workspace stops expiring, rather than someone pushing its date
+ * forward by hand every month and forgetting once.
+ *
+ * Admin key only, and deliberately not reachable by a signed-in user: it hands
+ * out paid features.
+ */
+router.put('/tenants/:slug/entitlement', express.json({ limit: '2kb' }), async (req, res) => {
+  if (!adminOk(req, res)) return;
+  const slug = req.params.slug;
+  const { plan, status, seats } = (req.body || {}) as { plan?: string; status?: string; seats?: number };
+  const ALLOWED = ['active', 'trialing', 'past_due', 'canceled', 'none'];
+  if (status && !ALLOWED.includes(status)) {
+    return res.status(400).json({ error: `status must be one of ${ALLOWED.join(', ')}` });
+  }
+  const cp = await createControlPlane();
+  try {
+    // Refuse an unknown slug rather than conjuring an entitlement for a tenant
+    // that does not exist: that row would be invisible and never cleaned up.
+    const tenants = await cp.listTenants();
+    if (!tenants.includes(slug)) return res.status(404).json({ error: 'tenant not found' });
+    await cp.setEntitlement(slug, {
+      plan: plan ?? 'solo',
+      status: (status ?? 'active') as 'active',
+      currentPeriodEnd: null,
+      ...(seats !== undefined ? { seats } : {}),
+    });
+    res.json({ ok: true, tenant: slug, entitlement: await cp.getEntitlement(slug) });
+  } finally { await cp.close(); }
+});
+
 export default router;
