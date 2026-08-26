@@ -15,7 +15,7 @@ import { gzipSync, gunzipSync } from 'zlib';
 import type { MetadataCache } from '../metadata-cache.js';
 import type { OutcomeCache } from '../outcome-cache.js';
 import { resolveBackend, type CreateStoreOptions } from './index.js';
-import { openPgPool, openPgPoolRo, ensurePgSchema, pgTenant, tenantQuery } from './pg-pool.js';
+import { openPgPool, openPgPoolRo, ensurePgSchema, pgTenant, tenantQuery, tenantQueryRo } from './pg-pool.js';
 
 // Postgres BIGINT columns reject the fractional `stat.mtimeMs` values that
 // SQLite stores verbatim. Floor to whole ms at every pg bind and mtime
@@ -141,7 +141,7 @@ export class PgMetadataCache implements MetadataCacheDriver {
   private async q(sql: string, params: unknown[] = []): Promise<any[]> { return (await tenantQuery(this.pool, this.t, sql, params)).rows; }
   // Read-replica variant for pure, lag-tolerant cache LOOKUPS (a stale miss just
   // recomputes). Falls back to the primary pool when no RO DSN is configured.
-  private async qRo(sql: string, params: unknown[] = []): Promise<any[]> { return (await tenantQuery(this.poolRo, this.t, sql, params)).rows; }
+  private async qRo(sql: string, params: unknown[] = []): Promise<any[]> { return (await tenantQueryRo(this.poolRo, this.pool, this.t, sql, params)).rows; }
 
   async setCompute(...a: MArgs<'setCompute'>) {
     const [sessionId, kind, mtime, data] = a;
@@ -334,7 +334,7 @@ export class PgOutcomeCache implements OutcomeCacheDriver {
   private async q(sql: string, params: unknown[] = []): Promise<any[]> { return (await tenantQuery(this.pool, this.t, sql, params)).rows; }
   // Read-replica variant for pure outcome-cache LOOKUPS (a stale miss just
   // reclassifies). Falls back to the primary pool when no RO DSN is configured.
-  private async qRo(sql: string, params: unknown[] = []): Promise<any[]> { return (await tenantQuery(this.poolRo, this.t, sql, params)).rows; }
+  private async qRo(sql: string, params: unknown[] = []): Promise<any[]> { return (await tenantQueryRo(this.poolRo, this.pool, this.t, sql, params)).rows; }
 
   async get(...a: OArgs<'get'>) {
     const r = (await this.qRo(`SELECT ${OUTCOME_COLS} FROM session_outcome_cache WHERE tenant=$1 AND session_id=$2`, [this.t, a[0]]))[0];
