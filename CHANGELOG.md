@@ -4,6 +4,44 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.19] — 2026-08-27
+
+### Fixed
+
+- **A long-lived process reinstalled the CLI and restarted the daemon forever.**
+  `ownVersion` is read once, at module import, so any process alive since before
+  a release keeps reporting the old number while the package on disk has already
+  been replaced. It then asks the server, is told a newer version exists,
+  installs a version that is ALREADY INSTALLED, restarts the watch service — and
+  nothing about the running process changes, so it does it again on the next
+  tick. Observed on a real machine: seven MCP servers reinstalling the CLI and
+  bouncing the daemon every 2-3 seconds, indefinitely, with `node_modules`
+  rewritten each time. Silent, too — the daemon still syncs between bounces, so
+  only CPU and disk churn give it away. Any user who leaves an editor open across
+  a release hits this. `runAutoUpdate` now re-reads the manifest at decision time
+  and lets the DISK win: once the installed bytes satisfy the server the answer is
+  "already current", however stale the process asking. A genuine update still
+  proceeds, and a disk ahead of the server is never downgraded.
+- **Hosted users were told about the server's collector.** The collector-health
+  banner ("chat-recall is not syncing… run `chat-recall doctor`") is prepended to
+  every tool answer and was not gated on multi-tenant mode, so over the remote
+  /mcp endpoint it read the SERVER's health file — reporting a collector the user
+  does not own and cannot fix, and prepending our operational state to every
+  tenant's output. Both that banner and the first-sync progress line are now
+  local-only.
+
+### Added
+
+- **`PUT /api/tenants/:slug/entitlement`** — set a plan without Stripe, admin-key
+  only. Every entitlement previously came from the Stripe webhook or the one-shot
+  7-day trial, so a demo or reviewer workspace was always on a seven-day clock and
+  went dark mid-review. A null period end means live indefinitely.
+- **`DELETE /api/accounts/:email`** — delete a person, not just a workspace.
+  `deleteTenant` left the identity behind: it could sign in, got a fresh workspace,
+  and could never sign up again. It refuses while the account still owns a tenant,
+  and names them.
+
+
 ## [0.5.18] — 2026-08-26
 
 ### Fixed
