@@ -108,6 +108,18 @@ jobs:
           }
           echo "PASS: CLI ↔ compose server round-trip (sync + search) works"
 
+      - name: Privacy controls, end to end (exclude / allowlist / delete / MCP)
+        # The gate for what chatrecall.dev/security PROMISES. Unit tests cover the
+        # pure predicates; this drives the real CLI against this booted server and
+        # asserts the row never appeared in Postgres — which is the only statement
+        # a user cares about. It caught `exclude project ~/code/chat-recall` not
+        # excluding chat-recall (the path the gate sees is decoded from Claude
+        # Code's lossy directory name), a bug every unit test passed straight
+        # through because each one wrote both sides of the comparison itself.
+        env:
+          SERVER: http://localhost:8080
+        run: node scripts/exclusion-e2e.mjs
+
       - name: Teardown
         if: always()
         run: docker compose down -v
