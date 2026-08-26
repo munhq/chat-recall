@@ -4,6 +4,24 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.18] — 2026-08-26
+
+### Fixed
+
+- **An email signup was never asked to confirm, so it never got a trial.**
+  Signing up with an address created an account and walked straight into the app
+  with the address unverified — nothing asked for a code. `verifyEmailWithOtp`
+  and `resendVerificationEmail` existed with no UI behind them while the server
+  mailed codes nobody could enter. `ensureTrial` says "No trial until an address
+  is confirmed", so those accounts worked and had nothing: no trial, and paid
+  features answering 402 for a reason the user was never told. Social sign-in was
+  never affected — the provider vouches for the address — which is why the copy
+  looked correct while being false for most signups. Sign-up now goes to a
+  6-digit code screen with a resend, and there is no way past it into the app.
+- **The sign-in message stopped promising a trial it could not grant.** Social
+  starts on the spot; email starts once the code is confirmed.
+
+
 ## [0.5.17] — 2026-08-26
 
 ### Fixed
