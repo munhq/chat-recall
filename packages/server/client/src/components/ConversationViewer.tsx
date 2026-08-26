@@ -30,6 +30,7 @@ import {
   getSessionSecrets,
   regenerateSummary,
   renameConversation,
+  deleteConversation,
 } from '../services/api';
 import { stripInjectedBanners, summaryTitle } from '../utils/clean';
 import SessionTrace from './SessionTrace';
@@ -243,6 +244,27 @@ export default function ConversationViewer({
   }, [pendingSearchJump, messages, searchResult, hasMoreMessages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [copied, setCopied] = useState(false);
+  const [deleteState, setDeleteState] = useState<'idle' | 'confirm' | 'deleting'>('idle');
+
+  /** Delete this conversation everywhere, then leave the view — staying on a
+   *  session that no longer exists would show a stale page and a 404 on reload. */
+  async function handleDelete() {
+    // `sessionId` is nullable for the empty state. The control is gated on it
+    // below, so this cannot fire with null — but the check is what tells the
+    // compiler that, and it is cheaper than a non-null assertion that would
+    // still be a lie if the gate ever moved.
+    if (!sessionId) return;
+    setDeleteState('deleting');
+    try {
+      await deleteConversation(sessionId);
+      onClose();
+    } catch (e) {
+      setDeleteState('idle');
+      // eslint-disable-next-line no-alert -- the viewer has no toast surface; a
+      // silent failure on a delete is worse than a browser dialog.
+      alert(e instanceof Error ? e.message : 'Could not delete this conversation');
+    }
+  }
   const [relatedData, setRelatedData] = useState<RelatedItemsResponse | null>(null);
   const [relatedLoading, setRelatedLoading] = useState(false);
   // Plan opened for full-content reading in the Plans tab (overlay).
@@ -657,6 +679,38 @@ export default function ConversationViewer({
             Back
           </Button>
           <div style={{ flex: 1 }} />
+          {/* Delete lives beside Resume, not in a menu, and it is the only
+              ghost-red control on the screen. Removing ONE conversation had no
+              UI at all: the endpoint existed and the CLI used it, so a person in
+              the dashboard either dropped to a terminal or deleted the whole
+              project — which is the wrong thing done because it was the only
+              thing reachable. */}
+          {sessionId && (deleteState === 'idle' ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              icon="trash"
+              onClick={() => setDeleteState('confirm')}
+              data-testid="delete-conversation"
+            >
+              Delete
+            </Button>
+          ) : deleteState === 'confirm' ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              {/* The warning is one sentence and it says the two things that are
+                  actually in doubt: it cannot be undone, and their own transcript
+                  is not being touched. */}
+              <span style={{ fontSize: 12, color: 'var(--cr-fg-2)' }}>
+                Delete permanently? Your local transcript is untouched.
+              </span>
+              <Button variant="ghost" size="sm" onClick={() => setDeleteState('idle')}>Cancel</Button>
+              <Button variant="danger" size="sm" onClick={handleDelete} data-testid="confirm-delete-conversation">
+                Delete
+              </Button>
+            </div>
+          ) : (
+            <span style={{ fontSize: 12, color: 'var(--cr-fg-2)' }}>Deleting…</span>
+          ))}
           {resumeCommandFor(sessionId, tool) && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               {copied && <span style={{ fontSize: 12, color: 'var(--cr-ok-500)', fontWeight: 600 }}>Copied!</span>}
