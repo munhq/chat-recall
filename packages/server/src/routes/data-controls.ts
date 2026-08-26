@@ -24,6 +24,10 @@
  * removed — without that, "delete" means "delete until the daemon notices".
  */
 import express from 'express';
+import {
+  getRetentionDays, setRetentionDays, parseRetentionDays, countOlderThan,
+  MIN_RETENTION_DAYS, MAX_RETENTION_DAYS, RETENTION_WARNING,
+} from '../services/retention.js';
 import { createStore } from '../imports.js';
 import { noteStorageWiped } from '../util/billing.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
@@ -125,6 +129,84 @@ router.post('/delete', express.json({ limit: '4kb' }), async (req, res) => {
  * A checkbox is not enough for an action with no undo, and a phrase the UI cannot
  * pre-fill is the difference between a decision and a misclick.
  */
+/**
+ * The tenant's retention window — read and set.
+ *
+ * Lives under /api/data with export and delete because it is the same category
+ * of thing: a control over your own data that must not sit behind a plan. It is
+ * also the only one of the three that PREVENTS accumulation rather than reacting
+ * to it, which is what makes it worth having.
+ *
+ * 0 clears the window (keep everything) and is the default for every workspace,
+ * so shipping this deletes nothing until somebody asks for it.
+ */
+router.get('/retention', async (req, res) => {
+  const tenant = req.tenant;
+  if (!tenant) return res.status(401).json({ error: 'no tenant' });
+  try {
+    const days = await getRetentionDays(tenant);
+    // ?days=N previews a CANDIDATE window without arming it, so a UI can show
+    // "this would delete 412 sessions" while the user is still deciding. Without
+    // it the only way to learn the number is to set the window and find out.
+    const candidate = parseRetentionDays(req.query.days);
+    const previewDays = req.query.days !== undefined && candidate !== null ? candidate : days;
+    res.json({
+      days,
+      previewDays,
+      wouldDelete: await countOlderThan(tenant, previewDays),
+      min: MIN_RETENTION_DAYS,
+      max: MAX_RETENTION_DAYS,
+      warning: RETENTION_WARNING,
+    });
+  } catch (e) {
+    log.error({ err: (e as Error).message }, 'retention read failed');
+    res.status(500).json({ error: 'could not read the retention window' });
+  }
+});
+
+router.post('/retention', express.json({ limit: '1kb' }), async (req, res) => {
+  const tenant = req.tenant;
+  if (!tenant) return res.status(401).json({ error: 'no tenant' });
+  const days = parseRetentionDays(req.body?.days);
+  if (days === null) {
+    return res.status(400).json({
+      error: `days must be 0 (keep everything) or between ${MIN_RETENTION_DAYS} and ${MAX_RETENTION_DAYS}`,
+    });
+  }
+  try {
+    // A DESTRUCTIVE change needs an explicit acknowledgement, and only a
+    // destructive one does.
+    //
+    // Destructive = this window would delete sessions we currently hold. Setting
+    // 90 days on a workspace three weeks old deletes nothing, and demanding a
+    // ceremony there trains people to click through the ceremony that matters.
+    // Clearing the window (0) is never destructive.
+    //
+    // The refusal carries the COUNT and the warning, so a client that did not
+    // preview still cannot arm this without being told what it costs.
+    const wouldDelete = await countOlderThan(tenant, days);
+    if (wouldDelete > 0 && req.body?.acknowledge !== true) {
+      return res.status(409).json({
+        error: 'acknowledgement required',
+        wouldDelete,
+        days,
+        warning: RETENTION_WARNING,
+        detail: `A ${days}-day window deletes ${wouldDelete} session(s) we currently hold. `
+          + 'Re-send with { "acknowledge": true } to confirm.',
+      });
+    }
+
+    await setRetentionDays(tenant, days);
+    // WARN, not info: this is the one setting that starts deleting a customer's
+    // data on a timer, so it belongs in the same log band as a manual delete.
+    log.warn({ tenant, days, wouldDelete }, days > 0 ? 'retention window set' : 'retention window cleared');
+    res.json({ days, wouldDelete, warning: days > 0 ? RETENTION_WARNING : undefined });
+  } catch (e) {
+    log.error({ err: (e as Error).message }, 'retention write failed');
+    res.status(500).json({ error: 'could not set the retention window' });
+  }
+});
+
 router.post('/delete-all', express.json({ limit: '4kb' }), async (req, res) => {
   const confirm = typeof req.body?.confirm === 'string' ? req.body.confirm.trim().toLowerCase() : '';
   if (confirm !== DELETE_ALL_PHRASE) {

@@ -2830,6 +2830,37 @@ export async function deleteAllData(confirm: string): Promise<{ deleted: number 
   return await res.json();
 }
 
+/** The server's retention window, plus what a candidate window would delete. */
+export interface RetentionState {
+  days: number;
+  previewDays: number;
+  wouldDelete: number;
+  min: number;
+  max: number;
+  warning: string;
+}
+
+/** Read the window. Pass `days` to price a CANDIDATE window without arming it —
+ *  the count is what makes the warning concrete rather than decorative. */
+export async function getRetention(days?: number): Promise<RetentionState> {
+  const qs = days === undefined ? '' : `?days=${encodeURIComponent(String(days))}`;
+  const res = await fetchWithTimeout(`${API_BASE}/data/retention${qs}`, {}, 60_000);
+  if (!res.ok) await throwForResponse(res, 'Could not read the retention window');
+  return await res.json();
+}
+
+/** Arm (or clear, with 0) the window. `acknowledge` is required by the server
+ *  whenever the change would delete sessions it currently holds, so the UI must
+ *  have shown the count first. */
+export async function setRetention(days: number, acknowledge: boolean): Promise<{ days: number; wouldDelete: number }> {
+  const res = await fetchWithTimeout(`${API_BASE}/data/retention`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ days, acknowledge }),
+  }, 60_000);
+  if (!res.ok) await throwForResponse(res, 'Could not set the retention window');
+  return await res.json();
+}
+
 /** The phrase /api/data/delete-all demands. Shown to the user to type. */
 export const DELETE_ALL_PHRASE = 'delete everything';
 

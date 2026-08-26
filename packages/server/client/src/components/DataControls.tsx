@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button, Input } from './primitives';
 import {
   dataExportUrl, deleteProjectData, deleteAllData, DELETE_ALL_PHRASE,
+  getRetention, setRetention, type RetentionState,
 } from '../services/api';
 
 /**
@@ -19,11 +20,23 @@ import {
  * with no undo, a checkbox is a misclick waiting to happen; typing "delete
  * everything" is a decision. The button stays disabled until it matches, and the
  * copy says plainly that it cannot be undone rather than hinting at it.
+ *
+ * The retention window follows the same rule for a harder case: it deletes on a
+ * TIMER, so the person arming it is not present when it acts. The panel prices
+ * the change first — "this removes 412 sessions" — and will not send it until
+ * that count is acknowledged, because a number is the only thing that makes an
+ * unattended deletion real to the person switching it on. It also says the part
+ * that is easy to leave out: re-syncing recovers a session only while its
+ * transcript still exists on a machine they have.
  */
 export default function DataControls({ projects }: { projects: string[] }) {
   const [project, setProject] = useState('');
   const [phrase, setPhrase] = useState('');
-  const [busy, setBusy] = useState<'project' | 'all' | null>(null);
+  const [busy, setBusy] = useState<'project' | 'all' | 'retention' | null>(null);
+  const [ret, setRet] = useState<RetentionState | null>(null);
+  const [retDays, setRetDays] = useState('');
+  const [retPreview, setRetPreview] = useState<number | null>(null);
+  const [retAck, setRetAck] = useState(false);
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
 
@@ -50,6 +63,39 @@ export default function DataControls({ projects }: { projects: string[] }) {
     } finally { setBusy(null); }
   }
 
+  useEffect(() => {
+    getRetention().then((r) => { setRet(r); setRetDays(r.days ? String(r.days) : ''); }).catch(() => {});
+  }, []);
+
+  // Price the candidate as it is typed, so the count the user acknowledges is the
+  // count for the window they are actually about to set.
+  useEffect(() => {
+    const n = Number(retDays);
+    if (!retDays || !Number.isInteger(n) || n <= 0) { setRetPreview(null); return; }
+    let live = true;
+    const id = setTimeout(() => {
+      getRetention(n).then((r) => { if (live) setRetPreview(r.wouldDelete); }).catch(() => {});
+    }, 400);
+    return () => { live = false; clearTimeout(id); };
+  }, [retDays]);
+
+  async function saveRetention(days: number) {
+    setBusy('retention'); setErr(''); setMsg('');
+    try {
+      const r = await setRetention(days, true);
+      setRet(await getRetention());
+      setRetAck(false);
+      setMsg(days === 0
+        ? 'Retention window cleared — the server keeps everything you sync.'
+        : `Retention window set to ${r.days} days. ${r.wouldDelete} session(s) will be removed on the next sweep.`);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'could not set the window');
+    } finally { setBusy(null); }
+  }
+
+  const retN = Number(retDays);
+  const retValid = !!ret && Number.isInteger(retN) && retN >= ret.min && retN <= ret.max;
+  const retDestructive = (retPreview ?? 0) > 0;
   const phraseOk = phrase.trim().toLowerCase() === DELETE_ALL_PHRASE;
 
   return (
@@ -91,6 +137,59 @@ export default function DataControls({ projects }: { projects: string[] }) {
         </>
       )}
 
+      {ret && (
+        <>
+          <h3 className="dc-h3">How long we keep it</h3>
+          <p className="muted">
+            {ret.days
+              ? `We delete anything older than ${ret.days} days, on a timer.`
+              : 'We keep everything you sync, with no time limit. Set a window and we delete anything older.'}
+          </p>
+          <div className="acct-actions">
+            <Input
+              placeholder={`Days (${ret.min}–${ret.max})`}
+              value={retDays}
+              inputMode="numeric"
+              onChange={(e) => { setRetDays(e.target.value); setRetAck(false); }}
+              aria-label="Retention window in days"
+            />
+            <Button
+              variant={retDestructive ? 'danger' : 'secondary'}
+              disabled={!retValid || busy !== null || (retDestructive && !retAck)}
+              onClick={() => saveRetention(retN)}
+            >
+              {busy === 'retention' ? 'Saving…' : 'Set window'}
+            </Button>
+            {!!ret.days && (
+              <Button variant="secondary" disabled={busy !== null} onClick={() => saveRetention(0)}>
+                Keep everything
+              </Button>
+            )}
+          </div>
+
+          {retValid && retDestructive && (
+            /* The warning appears only when the change actually destroys
+               something. Showing it for a window that deletes nothing would
+               teach people to dismiss it. */
+            <div className="dc-warn" role="alert">
+              <strong>This deletes {retPreview} session{retPreview === 1 ? '' : 's'} now,</strong> and anything
+              older than {retN} days from then on.
+              <br />
+              Re-syncing brings a session back <strong>only</strong> if its transcript is still on a machine you
+              have. For a laptop you no longer own, history your AI tool has rotated, or files you deleted, our
+              copy is the only copy — those are gone for good. Export first if you want one.
+              <label className="dc-ack">
+                <input type="checkbox" checked={retAck} onChange={(e) => setRetAck(e.target.checked)} />
+                I understand {retPreview} session{retPreview === 1 ? '' : 's'} will be deleted and may not be recoverable
+              </label>
+            </div>
+          )}
+          {retValid && !retDestructive && (
+            <p className="muted dc-small">Nothing you have synced is older than {retN} days, so this deletes nothing today.</p>
+          )}
+        </>
+      )}
+
       <h3 className="dc-h3 dc-danger-h">Delete everything</h3>
       <p className="muted">
         Every session, on every machine, permanently. This cannot be undone and we
@@ -112,6 +211,12 @@ export default function DataControls({ projects }: { projects: string[] }) {
 }
 
 const DC_CSS = `
+.dc-warn { background: var(--cr-err-surf); color: var(--cr-fg-1);
+  border: 1px solid var(--cr-err-line); padding: 10px 12px;
+  border-radius: var(--cr-radius-md); margin: 10px 0 4px; font-size: 13px; line-height: 1.5; }
+.dc-ack { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; font-weight: 600; }
+.dc-ack input { margin-top: 2px; }
+.dc-small { font-size: 13px; margin-top: 8px; }
 .dc-err { background: var(--cr-err-surf); color: var(--cr-err-500);
   border: 1px solid var(--cr-err-line); padding: 8px 12px;
   border-radius: var(--cr-radius-md); margin-bottom: 12px; font-size: 13px; }
