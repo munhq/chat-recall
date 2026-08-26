@@ -40,6 +40,20 @@ const allowListed = (() => {
   return matchAll(cliSrc.slice(start, end), /'(recall_[a-z_]+)'/g);
 })();
 
+/** The tools LISTED by the default (lean) profile. */
+const leanListed = (() => {
+  const start = mcpSrc.indexOf('const LEAN_TOOLS = new Set([');
+  expect(start, 'LEAN_TOOLS not found in tools.ts').toBeGreaterThan(-1);
+  return matchAll(mcpSrc.slice(start, mcpSrc.indexOf(']);', start)), /'(recall_[a-z_]+)'/g);
+})();
+
+/** The deny-list in cli.ts: tools deliberately kept out of alwaysAllow. */
+const neverAutoAllow = (() => {
+  const start = cliSrc.indexOf('const NEVER_AUTO_ALLOW = [');
+  expect(start, 'NEVER_AUTO_ALLOW not found in cli.ts').toBeGreaterThan(-1);
+  return matchAll(cliSrc.slice(start, cliSrc.indexOf('];', start)), /'(recall_[a-z_]+)'/g);
+})();
+
 describe('MCP tool registry consistency', () => {
   test('every defined tool has a dispatch case', () => {
     expect(defined.filter((t) => !dispatched.includes(t))).toEqual([]);
@@ -53,8 +67,27 @@ describe('MCP tool registry consistency', () => {
     expect(allowListed.filter((t) => !defined.includes(t))).toEqual([]);
   });
 
-  test('every tool is in alwaysAllow — otherwise it prompts on every call', () => {
-    expect(defined.filter((t) => !allowListed.includes(t))).toEqual([]);
+  test('every tool is in alwaysAllow EXCEPT the ones that must prompt', () => {
+    expect(defined.filter((t) => !allowListed.includes(t) && !neverAutoAllow.includes(t))).toEqual([]);
+  });
+
+  test('the scope-narrowing tools are NOT auto-approved', () => {
+    // The load-bearing assertion for the whole design. A destructive tool that
+    // reaches DEFAULT_ALLOW never prompts again, so an agent could delete a
+    // conversation with no human in the loop — and nothing else in the codebase
+    // would notice, because the annotations would still look right.
+    expect(neverAutoAllow.length).toBeGreaterThan(0);
+    expect(neverAutoAllow.filter((t) => allowListed.includes(t))).toEqual([]);
+  });
+
+  test('every never-auto-allowed tool actually exists, and is annotated destructive', () => {
+    // A typo here would silently protect nothing.
+    expect(neverAutoAllow.filter((t) => !defined.includes(t))).toEqual([]);
+    const destructive = matchAll(
+      mcpSrc.slice(mcpSrc.indexOf('const DESTRUCTIVE_TOOLS = new Set<string>([')),
+      /'(recall_[a-z_]+)'/g,
+    );
+    expect(neverAutoAllow.filter((t) => !destructive.includes(t))).toEqual([]);
   });
 
   test('the setup-complete banner is derived, not hand-typed', () => {
@@ -70,9 +103,25 @@ describe('MCP tool registry consistency', () => {
     expect(hardcoded.map((m) => m[1])).toEqual([]);
   });
 
+  test('the remove tools are LISTED by the default profile', () => {
+    // They shipped in DESTRUCTIVE_TOOLS, in NEVER_AUTO_ALLOW and in the skills
+    // catalogs — everything except the one set that decides whether an agent
+    // can SEE them. The default is lean, so "forget this conversation" reached
+    // a model whose tool list had no recall_forget in it, and the e2e harness
+    // missed it because it drives the server with CHAT_RECALL_MCP_PROFILE=full.
+    //
+    // Being listed is not the safety boundary: `confirm: true` and absence from
+    // alwaysAllow are, and the tests above pin both. This pins reachability.
+    expect(neverAutoAllow.filter((t) => !leanListed.includes(t))).toEqual([]);
+  });
+
+  test('every lean-listed tool exists', () => {
+    expect(leanListed.filter((t) => !defined.includes(t))).toEqual([]);
+  });
+
   test('the registry is non-trivial (guards against a broken regex passing vacuously)', () => {
     expect(defined.length).toBeGreaterThan(40);
-    expect(allowListed.length).toBe(defined.length);
+    expect(allowListed.length).toBe(defined.length - neverAutoAllow.length);
   });
 });
 
