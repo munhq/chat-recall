@@ -15,6 +15,7 @@
  */
 
 import type { MemoryItem, SourceType } from '../types/memory.js';
+import { projectPathAtOrUnder } from './project-path-match.js';
 import { loadSettings, settingsFilePath, type AppSettings, type SourcesEnabled } from './settings.js';
 import { statSync } from 'fs';
 
@@ -105,7 +106,12 @@ function matchesProjectList(projectPath: string, patterns: string[]): boolean {
       const parent = p.slice(0, -2);
       const tail = projectPath.slice(parent.length + 1);
       if (projectPath.startsWith(parent + '/') && !tail.includes('/')) return true;
-    } else if (projectPath === p || projectPath.startsWith(p + '/')) {
+    } else if (projectPathAtOrUnder(projectPath, p)) {
+      // projectPathAtOrUnder, not a raw ===/startsWith: a session's projectPath
+      // can be decoded from Claude Code's lossy directory name, so a denylist
+      // entry of `/home/user/code/chat-recall` has to match the
+      // `/home/user/code/chat/recall` form of the same project. See
+      // project-path-match.ts.
       return true;
     }
   }
