@@ -15,9 +15,11 @@
  * restart) are injected so they can be validated without a real global install.
  */
 import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { fetchWithTimeout } from './http.js';
 import { writeFileSync, mkdtempSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 
@@ -52,6 +54,33 @@ export function isAutoUpdateEnabled(_edition: string | undefined, flag: string |
 }
 
 export const tarballUrl = (base: string) => `${base.replace(/\/+$/, '')}/install/chat-recall.tgz`;
+
+/** The higher of two versions, treating an unparseable one as older. */
+export function newerOf(a: string, b: string | null): string {
+  if (!b) return a;
+  if (!a) return b;
+  return compareVersions(a, b) >= 0 ? a : b;
+}
+
+/**
+ * The version currently ON DISK, read fresh every call.
+ *
+ * Deliberately not cached and deliberately not the module-load constant: the
+ * whole point is to notice that an update already landed underneath a
+ * long-running process. Returns null when the manifest cannot be read, which
+ * leaves the caller's own value in charge rather than inventing one.
+ */
+export function installedVersion(): string | null {
+  try {
+    // dist/auto-update.js → dist/../package.json, i.e. the manifest of the
+    // package this file was loaded from, whatever npm has since written there.
+    const here = dirname(fileURLToPath(import.meta.url));
+    const raw = readFileSync(join(here, '..', 'package.json'), 'utf-8');
+    return (JSON.parse(raw) as { version?: string }).version || null;
+  } catch {
+    return null;
+  }
+}
 
 export interface UpdatePlan {
   update: boolean;
@@ -133,7 +162,26 @@ export async function runAutoUpdate(
     caps = (await res.json()) as Caps;
   } catch (e) { return { updated: false, reason: `capabilities unreachable: ${e instanceof Error ? e.message : e}` }; }
 
-  const plan = planAutoUpdate(base, caps, ownVersion, process.env.CHAT_RECALL_AUTO_UPDATE);
+  // THE VERSION ON DISK WINS, and this is not a refinement — it is the fix for a
+  // permanent reinstall loop.
+  //
+  // Callers pass a version captured when their MODULE was imported. A process
+  // that has been alive since before an update therefore reports the old number
+  // forever, while the package it was launched from has already been replaced.
+  // So it asks the server, sees "newer available", installs a version that is
+  // ALREADY INSTALLED, and restarts the watch service — then does it again on
+  // the next tick, and the next, because nothing about the running process ever
+  // changes. Observed in the field: seven long-lived MCP servers reinstalling the
+  // CLI and bouncing the daemon every 2-3 seconds, indefinitely.
+  //
+  // Re-reading the manifest at DECISION time closes it: once the bytes on disk
+  // satisfy the server, the answer is "already current" no matter how stale the
+  // process asking is. The stale process keeps running old code until it is
+  // restarted, which is correct and harmless — what must not happen is it
+  // thrashing the machine trying to fix itself.
+  const effectiveOwn = newerOf(ownVersion, installedVersion());
+
+  const plan = planAutoUpdate(base, caps, effectiveOwn, process.env.CHAT_RECALL_AUTO_UPDATE);
   if (!plan.update) return { updated: false, reason: plan.reason };
   const result = await executeAutoUpdate(plan, {
     download: deps?.download ?? realDownload,
