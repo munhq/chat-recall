@@ -94,6 +94,89 @@ function firstTarget(): RemoteTarget | null {
 }
 
 /**
+ * Show what the first sync would upload, and give the user the chance to narrow
+ * it before it happens. Returns true when the sync should run.
+ *
+ * ── Why this exists ───────────────────────────────────────────────────────
+ *
+ * init's first sync ships every transcript on the machine. The exclusions that
+ * govern it (`chat-recall exclude project`, `sync-only`) are only useful BEFORE
+ * that upload, and nothing in the CLI mentioned them until after it. The site
+ * promises the user decides what leaves their disk; this is where that promise
+ * either holds or is decoration.
+ *
+ * ── Why it does not hang a script ─────────────────────────────────────────
+ *
+ * The pause needs a TTY on stdin. `npx chat-recall init` inside a Dockerfile, a
+ * provisioning script or CI has none, and a prompt there would block forever —
+ * so with no TTY (or with --yes) the summary still PRINTS and the sync proceeds.
+ * Non-interactive callers get the information; only an interactive user gets the
+ * question.
+ */
+async function confirmFirstSyncScope(skipPause: boolean): Promise<boolean> {
+  const { summariseSyncScope } = await import('@chat-recall/engine/core/sync-scope.js');
+  let scope;
+  try {
+    scope = summariseSyncScope();
+  } catch {
+    // A preview that cannot be computed must not block the product. Say so and
+    // carry on rather than refusing to sync over a listing error.
+    console.log(chalk.dim('   (could not summarise local scope — proceeding)'));
+    return true;
+  }
+
+  console.log(chalk.bold('6. What would leave this machine'));
+  if (scope.included === 0 && scope.heldBack === 0) {
+    console.log(chalk.dim('   No local sessions found yet — nothing to ship.'));
+    return true;
+  }
+
+  const tools = scope.byTool.map((t) => `${t.tool} ${t.sessions}`).join(', ');
+  console.log(`   ${chalk.bold(String(scope.included))} session(s) would upload${tools ? chalk.dim(`  (${tools})`) : ''}`);
+  if (scope.heldBack > 0) {
+    console.log(`   ${chalk.green(String(scope.heldBack))} held back by your existing rules`);
+  }
+  if (scope.allowlistMode) {
+    console.log(chalk.yellow('   Allowlist mode is on — only the projects you listed would ship.'));
+  }
+  if (scope.noPathSessions > 0) {
+    // Said plainly, because the alternative is a user who excludes three paths
+    // and believes they are covered. Some tools file transcripts under a hash
+    // rather than a project directory, so no path rule can reach those.
+    console.log(`   ${chalk.yellow(String(scope.noPathSessions))} of those carry no project path — only \`exclude tool\` can hold those back`);
+  }
+
+  // The top projects BY NAME. A count alone does not let anyone recognise the
+  // client repo they did not mean to include.
+  const shown = scope.projects.filter((p) => !p.heldBackBy).slice(0, 8);
+  for (const p of shown) {
+    console.log(`     ${chalk.cyan(p.projectPath || p.id)} ${chalk.dim(`· ${p.sessions}`)}`);
+  }
+  const more = scope.projects.filter((p) => !p.heldBackBy).length - shown.length;
+  if (more > 0) console.log(chalk.dim(`     …and ${more} more project(s)`));
+
+  console.log(chalk.dim('   Secrets are masked on this machine before anything uploads.'));
+  console.log(chalk.dim('   Hold one back:  chat-recall exclude project <path>'));
+  console.log(chalk.dim('   Or invert it:   chat-recall sync-only add <project>'));
+
+  if (skipPause || !process.stdin.isTTY) {
+    console.log();
+    return true;
+  }
+
+  const { createInterface } = await import('node:readline/promises');
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const answer = (await rl.question('   Upload these now? [Y/n] ')).trim().toLowerCase();
+  rl.close();
+  if (answer === 'n' || answer === 'no') {
+    console.log(chalk.dim('   Skipped. Set your rules, then run `chat-recall sync`.'));
+    return false;
+  }
+  console.log();
+  return true;
+}
+
+/**
  * Resolve the first target or exit with the uniform "you must log in" message.
  * Every server-backed read command calls this so the user always gets the same
  * actionable error instead of a raw fetch failure.
@@ -249,7 +332,8 @@ program
   .option('--with-codeindex', 'Force-download the codeindex binary during init. Default behavior is to detect an already-installed codeindex on PATH and register it as an MCP server.')
   .option('--skip-codeindex', 'Skip the codeindex companion entirely (no detection, no registration).')
   .option('--skip-service', 'Skip installing the per-user background sync service (Linux/macOS/Windows). By default init installs it so new conversations ship automatically.')
-  .action(async (options: { server?: string; token?: string; skipMcp?: boolean; skipSync?: boolean; withCodeindex?: boolean; skipCodeindex?: boolean; skipService?: boolean }) => {
+  .option('--yes', 'Do not pause before the first upload. The scope summary still prints.', false)
+  .action(async (options: { server?: string; token?: string; skipMcp?: boolean; skipSync?: boolean; withCodeindex?: boolean; skipCodeindex?: boolean; skipService?: boolean; yes?: boolean }) => {
     try {
       console.log(chalk.bold('chat-recall init'));
       console.log();
@@ -503,7 +587,17 @@ program
       // them to the server. Skipped when there's no login (nothing to ship to)
       // or when --skip-sync is passed.
       if (!options.skipSync && firstTarget()) {
-        console.log(chalk.bold('6. Shipping local sessions to your server...'));
+        // BEFORE the upload, not after. This step used to open with "Shipping
+        // local sessions" and report counts once every transcript on the disk
+        // was already on the server — so the one irreversible decision in init
+        // was made on the user's behalf and described in the past tense.
+        const shipped = await confirmFirstSyncScope(!!options.yes);
+        if (!shipped) {
+          console.log();
+        } else {
+        // Not a second "6." — the scope summary above owns that number, and this
+        // is the same step continuing once the user has agreed to it.
+        console.log(chalk.dim('   Shipping...'));
         try {
           const { syncSessions } = await import('./sync-client.js');
           const r = await syncSessions();
@@ -511,6 +605,7 @@ program
         } catch (err) {
           console.log(`   ${chalk.yellow('Sync failed')} — ${err instanceof Error ? err.message : err}`);
           console.log(`   ${chalk.dim('Re-run `chat-recall sync` once your server is reachable.')}`);
+        }
         }
       } else if (!options.skipSync) {
         console.log(chalk.bold('6. Skipping first sync (not logged in)'));
