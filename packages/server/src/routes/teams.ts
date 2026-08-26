@@ -206,4 +206,37 @@ router.delete('/tenants/:slug', async (req, res) => {
   } finally { await cp.close(); }
 });
 
+/**
+ * DELETE /api/accounts/:email — remove a PERSON, not a workspace.
+ *
+ * deleteTenant next door purges a workspace and leaves the human: memberships,
+ * teams and entitlements gone, the `user` row still standing. That orphan can
+ * sign in and get a fresh workspace, and can never sign UP again because the
+ * address is taken — and there was no way to clear it except psql against
+ * production, which is exactly the thing this codebase refuses to do by hand.
+ *
+ * Admin-only, and it REFUSES while the account still owns a workspace: deleting
+ * the identity first would strand tenant rows nothing can reach. The response
+ * names the tenants to delete, so the two calls compose.
+ *
+ * The email lives in the PATH, so it never reaches a log body — and it is
+ * matched case-insensitively, because a person who typed Adrian@ on Tuesday and
+ * adrian@ on Friday is one person.
+ */
+router.delete('/accounts/:email', async (req, res) => {
+  if (!adminOk(req, res)) return;
+  const email = decodeURIComponent(req.params.email || '');
+  const cp = await createControlPlane();
+  try {
+    const r = await cp.deleteAccount(email);
+    if (!r.deleted) {
+      // 409 when it is a state problem the caller can fix (owns a workspace),
+      // 404 when there is simply nobody by that address.
+      const code = r.tenants?.length ? 409 : 404;
+      return res.status(code).json({ error: r.reason || 'not deleted', tenants: r.tenants });
+    }
+    res.json({ ok: true, deleted: email });
+  } finally { await cp.close(); }
+});
+
 export default router;
