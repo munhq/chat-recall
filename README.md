@@ -10,11 +10,11 @@
 [![Install in Cursor](https://img.shields.io/badge/Install-Cursor-000?logo=cursor)](cursor://anysphere.cursor-deeplink/mcp/install?name=chat-recall&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIi1wIiwiY2hhdC1yZWNhbGwiLCJjaGF0LXJlY2FsbC1tY3AiXX0=)
 [![Install in VS Code](https://img.shields.io/badge/Install-VS%20Code-007ACC?logo=visualstudiocode)](vscode:mcp/install?%7B%22name%22%3A%22chat-recall%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22-p%22%2C%22chat-recall%22%2C%22chat-recall-mcp%22%5D%7D)
 
-**[chatrecall.dev](https://chatrecall.dev)** · [How it works](https://chatrecall.dev/how-it-works/) · [MCP tools](https://chatrecall.dev/mcp/) · [Pricing](https://chatrecall.dev/pricing/) · [Self-host](https://chatrecall.dev/self-hosting/)
+**[chatrecall.dev](https://chatrecall.dev)** · [How it works](https://chatrecall.dev/how-it-works/) · [MCP tools](https://chatrecall.dev/mcp/) · [Pricing](https://chatrecall.dev/pricing/) · [Self-host](https://chatrecall.dev/self-hosting/) · [Security](https://chatrecall.dev/security/)
 
 > One memory across every AI coding tool you use. Claude Code, Gemini CLI, Codex, OpenCode, Antigravity and Cursor share a single searchable history — and the agent can search it itself.
 
-Your coding agents each keep their own transcripts, in their own format, in their own directory, and none of them can read another's. `chat-recall` indexes all of them into one place, redacts secrets on the way, and exposes the result to your agent through **58 MCP tools** so it can recall its own past work instead of you re-explaining it.
+Your coding agents each keep their own transcripts, in their own format, in their own directory, and none of them can read another's. `chat-recall` indexes all of them into one place, redacts secrets on the way, and exposes the result to your agent through **60 MCP tools** so it can recall its own past work instead of you re-explaining it.
 
 That cross-tool part is the point. A single tool's built-in history stops at its own boundary; this does not.
 
@@ -72,10 +72,30 @@ By default this syncs to the hosted server at [chatrecall.dev](https://chatrecal
 
 No API keys are required. Search is Postgres full-text search. AI summaries are an optional upgrade, not a prerequisite.
 
+### What never leaves your machine
+
+It indexes every AI session on this disk, so `init` shows you what would upload — count, tools, and the projects by name — and waits for a yes before the first sync. (`--yes`, or no TTY, prints the same summary and proceeds; `--skip-sync` holds the upload back entirely.) Secrets are masked client-side and project paths are sent as hashes; on top of that you choose what is in scope at all:
+
+```bash
+chat-recall exclude project ~/work/client   # a path, and everything under it, never syncs
+chat-recall exclude tool cursor             # one AI tool never syncs
+chat-recall sync-only add git:github.com/me/app   # invert it: ship ONLY what you list
+chat-recall sources decline ~/.claude-work  # a whole transcript profile stays out
+                                            #   (--delete-remote purges what it already sent)
+chat-recall exclude list                    # every rule in force
+chat-recall delete <session-id>             # purge one session on every server, tombstoned
+chat-recall retention                       # how long the server keeps what you sent
+chat-recall retention set 90                # delete anything older, on a timer (0 = keep everything)
+```
+
+Some tools file transcripts under a hash rather than a project folder, so those sessions have no path for a path rule to match; `exclude tool` is the control that covers them, and `init` prints that count. **A retention window deletes from the server on a timer.** `retention set` prints how many sessions it would remove and makes you confirm the number. It is undoable only where the original transcript is still on a machine you have — widen the window and `chat-recall sync --full` re-ships what it admits. For a laptop you no longer own, history your AI tool rotated, or files you deleted, our copy is the only copy. Export first if you want one.
+
+Exclusions live on the machine that holds the data, so the CLI owns them; they apply from the next sync, and rows already synced stay until deleted. The dashboard's **Sync rules** panel adds rules across every device — unioned with the local ones, so it can only ever add protection. Full model, limits included: [Security](https://chatrecall.dev/security/).
+
 ## Four things it actually does
 
 1. **Cross-tool unified memory.** One index, one search, one UI over Claude Code (`~/.claude/projects/`), Gemini CLI (`~/.gemini/tmp/`), Codex (`~/.codex/`), OpenCode (`~/.local/share/opencode/`), Antigravity and Cursor (`~/.cursor/` for the CLI, `~/.config/Cursor/` for the IDE). Sessions, plans, tasks, CLAUDE.md files, paste cache, shell history and agent diaries all share one pluggable `MemorySource` interface.
-2. **The agent recalls itself.** 58 MCP tools, so Claude Code can `recall_smart_resume`, `recall_search` (with `like_session` to find similar work), `recall_edits_timeline`, `recall_subagent_search` and `recall_redundant_files` rather than asking you what happened last time. It writes back too, via `recall_decision_record`, `recall_kg_add` and `recall_set`.
+2. **The agent recalls itself.** 60 MCP tools, so Claude Code can `recall_smart_resume`, `recall_search` (with `like_session` to find similar work), `recall_edits_timeline`, `recall_subagent_search` and `recall_redundant_files` rather than asking you what happened last time. It writes back too, via `recall_decision_record`, `recall_kg_add` and `recall_set`.
 3. **Warns before you redo work.** A `UserPromptSubmit` hook searches for similar past sessions on every prompt and injects a short "you have done this before, in session X" note into the agent's context.
 4. **Temporal knowledge graph.** Decisions and tool mentions become entity-relationship triples with `valid_from`/`valid_to` windows, so you can ask what was decided in March and whether it still holds.
 
@@ -198,7 +218,7 @@ codeindex is open source (MIT) at [github.com/munhq/codeindex](https://github.co
 | **Paste** | `~/.claude/paste-cache/*.txt` | Large pasted blobs |
 | **Diary** | `~/.chat-recall/index/diary/<agent>/*.json` | What the agent told its future self via `recall_diary_write` |
 
-## MCP tools (55, including 4 code-intelligence tools that register when the companion binary is installed)
+## MCP tools (60, including 4 code-intelligence tools that register when the companion binary is installed)
 
 **Search & retrieve** — `recall_search`, `recall_memory_search`, `recall_recent`, `recall_show`, `recall_context`, `recall_summary`, `recall_smart_resume`, `recall_project_context`, `recall_weekly_digest`, `recall_analytics_summary`, `recall_wake_up`.
 
@@ -213,6 +233,8 @@ codeindex is open source (MIT) at [github.com/munhq/codeindex](https://github.co
 **KV state** — `recall_set`, `recall_get` (no key = list the scope). Small persistent values keyed by namespaced strings: "current PR url", "branch I'm working on", user prefs.
 
 **Diary & status** — `recall_diary_write`, `recall_diary_read`, `recall_status` (includes memory breakdown), `recall_index`. Plans/tasks: search via `recall_memory_search(source_types:['plan','task'])`, read via `recall_show`.
+
+**Removing things** — `recall_forget` deletes one conversation from the server permanently, tombstoned so no later sync restores it (your own transcript file is untouched); `recall_exclude_path` stops a path syncing, on this machine and on your account. They exist as tools because "forget that conversation" and "stop syncing this repo" are things people say mid-conversation, not things they open a dashboard for. Both require `confirm: true`, both are annotated destructive, and neither is auto-approved — your client asks every time. The boundary is one-way on purpose: an agent can narrow what is stored and there is no tool that widens it again (no un-exclude, no allowlist, no retention). Widening is yours: `chat-recall exclude remove`, or the dashboard.
 
 When the codeindex companion is installed, the agent *also* gets 16 code-level tools (`find_symbol`, `find_callers`, `get_imports`, `plan_change`, `get_change_impact`, `analyze`, etc.) from a separate MCP server. They compose: chat-recall finds what you've done; codeindex tells you what currently exists.
 

@@ -18,6 +18,27 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ### Added
 
+- **Two MCP tools that NARROW what we hold, and a rule that keeps them one-way.**
+  `recall_forget` deletes one conversation from the server permanently (the
+  user's own transcript is untouched); `recall_exclude_path` stops a path syncing
+  here and on the account. Both are the answer to something said mid-conversation
+  — "forget that", "stop syncing this repo" — which is why they belong in the
+  agent and not only in a dashboard.
+
+  The safety is directional: an agent may narrow what is stored and never widen
+  it. There is deliberately no tool that removes an exclusion, widens the
+  allowlist or lengthens a retention window. Both are annotated destructive, both
+  require `confirm: true` (annotations are advisory — a host may ignore them, so
+  the only host-independent brake is an argument the model must pass on purpose),
+  and both are kept OUT of the `alwaysAllow` list `init` writes, which is what
+  actually makes the host prompt. `NEVER_AUTO_ALLOW` names them and
+  mcp-tool-registry.test.ts pins the rule in both directions.
+
+- **Delete one conversation from the dashboard.** The endpoint had existed since
+  the CLI's `chat-recall delete`, with no way to reach it from the UI — so
+  removing a single conversation meant a terminal, or deleting the whole project,
+  which is what people did instead.
+
 - **A retention window you set yourself**, with the warning it needs. `GET`/`POST
   /api/data/retention` ({days}), a `chat-recall retention` command, and a
   dashboard panel; swept server-side beside the existing purges. The only answer to "how
