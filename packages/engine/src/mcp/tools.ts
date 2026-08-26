@@ -13,6 +13,7 @@ import { config } from 'dotenv';
 import {
   buildHttpError, stalenessBanner, trialEndingBanner, type SyncState,
 } from './diagnostics.js';
+import { loginInstruction } from './login-prompt.js';
 import {
   currentCredentials, withCredentials, setMultiTenantMode, isMultiTenant,
 } from './credential-context.js';
@@ -342,9 +343,11 @@ async function remoteDelete<T>(path: string): Promise<T> {
 function requireRemote(): { base: string; token: string } {
   const cred = remoteCredentials();
   if (!cred) {
-    throw new Error(
-      'chat-recall is not logged in. Run `chat-recall login <server-url>` to connect this machine to your chat-recall server (self-host or cloud), then retry.',
-    );
+    // Not a dead end any more. The old message named `chat-recall login`, which
+    // an npx-installed MCP user does not have on PATH — so the single
+    // instruction we gave was `command not found`. loginInstruction() starts a
+    // real device-code sign-in and hands back the link and code to show.
+    throw new Error(loginInstruction());
   }
   return cred;
 }
@@ -534,7 +537,15 @@ const RecallMemorySearchSchema = z.object({
 });
 
 const RecallSmartResumeSchema = z.object({
-  session_id: z.string().describe('Session ID to get smart resume context for'),
+  // OPTIONAL, because the question this tool answers is "continue where we left
+  // off" and whoever asks it does not have a session id. Requiring one made the
+  // routing advice ("continue" -> recall_smart_resume) impossible to follow: the
+  // agent had to call recall_recent first, and a bare call failed with a zod
+  // error about a missing field rather than doing the obvious thing.
+  session_id: z.string().optional()
+    .describe('Session to resume. Omit for the most recent one.'),
+  project_filter: z.string().optional()
+    .describe('When session_id is omitted, resume the latest session from this project (path or name substring).'),
 });
 
 // ── Tools added to close the UI↔MCP gap ─────────────────────────────
@@ -1380,7 +1391,11 @@ with recall_show (pass the plan id).`,
       },
       {
         name: 'recall_smart_resume',
-        description: `Get structured resume context for a session.
+        description: `Get structured resume context for a session — by default, the most recent one.
+
+Call it with NO arguments to resume the latest session. That is the common case:
+"continue", "pick up where we left off". Pass session_id only to resume a
+specific one, or project_filter to take the latest from one project.
 
 Returns:
 - What was done (completed work, decisions made)
@@ -1393,9 +1408,9 @@ Use this instead of recall_context for a more actionable summary when resuming w
         inputSchema: {
           type: 'object',
           properties: {
-            session_id: { type: 'string', description: 'Session ID to resume' },
+            session_id: { type: 'string', description: 'Session to resume. OMIT to resume the most recent session.' },
+            project_filter: { type: 'string', description: 'With session_id omitted, resume the latest session from this project.' },
           },
-          required: ['session_id'],
         },
       },
       {
@@ -3165,7 +3180,23 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
 
       case 'recall_smart_resume': {
         const params = RecallSmartResumeSchema.parse(args);
-        const sid = params.session_id;
+        requireRemote();
+        // No session id: take the newest one, which is what "continue" means.
+        // Resolved through the same /recent endpoint recall_recent uses, so the
+        // "latest" here and the top row there can never disagree.
+        let sid = params.session_id;
+        if (!sid) {
+          const qs = new URLSearchParams({ limit: '1' });
+          if (params.project_filter) qs.set('project', params.project_filter);
+          const recent = await remoteGet<{ sessions: Array<{ sessionId: string }> }>(
+            `/api/conversations/recent?${qs.toString()}`);
+          sid = recent.sessions?.[0]?.sessionId;
+          if (!sid) {
+            return { content: [{ type: 'text', text: params.project_filter
+              ? `No sessions found for project \`${params.project_filter}\` — nothing to resume.`
+              : 'No sessions have synced yet, so there is nothing to resume. Run `chat-recall index` first.' }] };
+          }
+        }
         const enc = encodeURIComponent(sid);
 
         // Server-backed resume dossier, composed from the synced endpoints.
