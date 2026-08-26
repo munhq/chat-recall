@@ -2281,13 +2281,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // while the daemon aborted 4,851 times. An agent that knows the history is
     // stale can tell the user; an agent that does not will answer confidently
     // from data that stopped growing.
-    const reported = readCollectorHealth();
-    const health = judgeHealth(reported);
+    // BOTH OF THESE DESCRIBE THE CALLER'S OWN MACHINE, so neither means anything
+    // when this process serves many callers over /mcp. There, the health file
+    // belongs to the SERVER: a hosted user would be told "chat-recall is not
+    // syncing" about a collector that is not theirs and that they cannot fix,
+    // and our own operational state would be prepended to every tenant's tool
+    // output. Read nothing rather than read the wrong machine's answer.
+    const local = !isMultiTenant();
+    const reported = local ? readCollectorHealth() : null;
+    const health = local ? judgeHealth(reported) : { ok: true, summary: '' };
     // A walk in flight is NOT a fault, so it is its own line rather than a
     // warning. It answers the question a stale-looking answer raises during a
     // first sync — "is this broken, or is it still loading?" — which the product
     // previously could not answer at all.
-    const progress = progressLine(reported);
+    const progress = local ? progressLine(reported) : null;
     const state = await syncState();
     const banners = [
       health.ok ? null : `⚠ ${health.summary} Recent work may be missing from these answers.`
