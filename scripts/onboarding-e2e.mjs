@@ -171,8 +171,29 @@ async function main() {
 
     // The child writes credentials on approval; give it a beat to land.
     await new Promise((r) => setTimeout(r, 2000));
-    const credsExist = existsSync(join(HOME, '.chat-recall', 'credentials.json'));
-    check(credsExist, 'credentials were written to the sandbox HOME');
+    check(existsSync(join(HOME, '.chat-recall', 'credentials.json')),
+      'credentials were written to the sandbox HOME');
+
+    // The whole point of spawning `init` rather than `login`: a user who only
+    // logged in would have working tools and an empty account forever, because
+    // nothing installs the skills, registers the MCP with their other AI tools,
+    // or starts the service that ships new conversations.
+    const skillDirs = ['.claude/skills', '.codex/skills', '.gemini/skills', '.config/opencode/skills', '.cursor/skills'];
+    const withSkills = skillDirs.filter((d) => {
+      const p = join(HOME, d);
+      return existsSync(p) && readdirSync(p).some((n) => n.startsWith('chat-recall'));
+    });
+    check(withSkills.length > 0, `skills installed into ${withSkills.length} AI tool dir(s): ${withSkills.join(', ') || 'NONE'}`);
+
+    check(existsSync(join(HOME, '.mcp.json')) || existsSync(join(HOME, '.claude.json')),
+      'the MCP was registered with at least one AI tool');
+
+    // Linux only — the unit lands in the sandbox HOME because systemd --user
+    // reads XDG paths. On macOS this is a launchd plist; skip rather than fail.
+    if (process.platform === 'linux') {
+      const unit = join(HOME, '.config/systemd/user/chat-recall-watch.service');
+      check(existsSync(unit), 'the background sync service was installed');
+    }
 
     const after = answer(await mcp.rpc('tools/call', { name: 'recall_status', arguments: {} }));
     console.log(c.d(after.split('\n').slice(0, 12).map((l) => `    ${l}`).join('\n')));
