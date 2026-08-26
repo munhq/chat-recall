@@ -2,12 +2,27 @@
 #
 # Smithery installs an MCP server on a user's behalf, so this file describes how
 # to START it and what it needs, not what it does. The tool descriptions in
-# packages/cli/src/mcp.ts carry the "what".
+# packages/engine/src/mcp/tools.ts carry the "what".
 #
-# stdio, not a hosted deployment, and that is not a limitation to work around: the
-# CLI reads transcripts off the user's own disk and redacts credentials there
-# before anything is uploaded. A remotely hosted copy could do neither, which
-# would remove the property the security model rests on.
+# READ THIS BEFORE ASSUMING THIS FILE PUBLISHES ANYTHING. It does not. Smithery's
+# current documented paths are a public HTTPS URL entered at smithery.ai/new, or
+# an .mcpb bundle — not "put a smithery.yaml in a GitHub repo and we will scan
+# it". This file was written for that older flow, and it sat here while the
+# server was listed nowhere, its tool count dutifully maintained by a test.
+# It is kept because the schema is still what a Smithery-style stdio launcher
+# consumes, and because the launch command below is correct wherever it is read.
+#
+# The URL path now works too: https://chatrecall.dev/mcp speaks streamable HTTP
+# and OAuth, including Client ID Metadata Documents — which is how Smithery
+# authenticates ("Smithery handles client registration automatically via Client
+# ID Metadata Documents"). Before CIMD support the URL would have been rejected
+# with invalid_client, so pasting it in could not have worked. See
+# packages/server/src/auth/cimd.ts.
+#
+# stdio remains the right default for a coding agent on a workstation, and that
+# is not a limitation to work around: the CLI reads transcripts off the user's
+# own disk and redacts credentials there before anything is uploaded. The remote
+# endpoint serves what has already been synced; it cannot see anyone's disk.
 startCommand:
   type: stdio
   configSchema:
