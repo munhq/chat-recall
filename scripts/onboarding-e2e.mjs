@@ -32,11 +32,12 @@ import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createInterface } from 'node:readline/promises';
 
 const SERVER = (process.env.SERVER || 'https://chatrecall.dev').replace(/\/+$/, '');
 const INTERACTIVE = process.argv.includes('--interactive');
 const REPO = process.cwd();
+/** How long to wait for a human to click through the browser. */
+const APPROVAL_WAIT_MS = Number(process.env.APPROVAL_WAIT_MS || 300_000);
 
 const c = { g: (s) => `\x1b[32m${s}\x1b[0m`, r: (s) => `\x1b[31m${s}\x1b[0m`, d: (s) => `\x1b[2m${s}\x1b[0m`, b: (s) => `\x1b[1m${s}\x1b[0m` };
 let failures = 0;
@@ -48,6 +49,20 @@ const ROOT = mkdtempSync(join(tmpdir(), 'cr-onboard-'));
 const HOME = join(ROOT, 'home');
 const PREFIX = join(ROOT, 'prefix');
 execFileSync('mkdir', ['-p', HOME, PREFIX]);
+
+/**
+ * Give the sandbox a Claude Code install, because every real user of this has
+ * one — they are adding an MCP to an editor they already use.
+ *
+ * An EMPTY home made two checks lie: `init` detects the AI tools present and
+ * installs skills into each, so with none present it correctly installed zero,
+ * and the harness read that as a failure. A fixture that cannot occur in the
+ * field tests nothing. (Path invented, not read off this machine.)
+ */
+execFileSync('mkdir', ['-p',
+  join(HOME, '.claude', 'projects', '-home-user-code-example'),
+  join(HOME, '.claude', 'skills'),
+]);
 
 function cleanup() { try { rmSync(ROOT, { recursive: true, force: true }); } catch { /* best effort */ } }
 
@@ -164,16 +179,31 @@ async function main() {
 
     /* ── 4. a human approves, then the tools must work ──────────────────── */
     step('4. approve it in a browser — this is the part CI cannot do');
-    console.log(`  Open: ${c.b(url || SERVER + '/device')}`);
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    await rl.question(c.d('  Press Enter once you have approved the sign-in… '));
-    rl.close();
+    console.log(`\n  ${c.b('OPEN THIS:')} ${c.b(url || SERVER + '/device')}\n`);
 
-    // The child writes credentials on approval; give it a beat to land.
-    await new Promise((r) => setTimeout(r, 2000));
-    check(existsSync(join(HOME, '.chat-recall', 'credentials.json')),
-      'credentials were written to the sandbox HOME');
+    // POLLED, not a keypress. Waiting on stdin means this can only be run by a
+    // human sitting at a terminal — so it could not be driven by an agent, a
+    // remote session, or anything that pipes stdout, which is most of the ways
+    // it will actually be used. The credentials file appearing IS the approval,
+    // so watch for the real signal rather than asking someone to confirm it.
+    const credsPath = join(HOME, '.chat-recall', 'credentials.json');
+    const deadline = Date.now() + APPROVAL_WAIT_MS;
+    let approved = false;
+    while (Date.now() < deadline) {
+      if (existsSync(credsPath)) { approved = true; break; }
+      await new Promise((r) => setTimeout(r, 2000));
+      const left = Math.round((deadline - Date.now()) / 1000);
+      if (left % 30 === 0 || left < 5) process.stdout.write(c.d(`  waiting for approval… ${left}s left\r`));
+    }
+    console.log('');
+    check(approved, approved
+      ? 'the sign-in was approved and credentials landed'
+      : `no approval within ${Math.round(APPROVAL_WAIT_MS / 1000)}s — nothing to verify past this point`);
+    if (!approved) return;
 
+    // init keeps working after the token lands (skills, MCP registration,
+    // service, first sync). Give it room before asserting what it produced.
+    await new Promise((r) => setTimeout(r, 15000));
     // The whole point of spawning `init` rather than `login`: a user who only
     // logged in would have working tools and an empty account forever, because
     // nothing installs the skills, registers the MCP with their other AI tools,
@@ -190,9 +220,15 @@ async function main() {
 
     // Linux only — the unit lands in the sandbox HOME because systemd --user
     // reads XDG paths. On macOS this is a launchd plist; skip rather than fail.
+    // NOT asserted, and the reason is worth stating: `systemctl --user` talks to
+    // the real user's systemd instance over its session bus, so a unit installed
+    // from this sandbox would land in the DEVELOPER's ~/.config/systemd/user and
+    // fight their running daemon. A harness that installs a background service
+    // on the machine running it is a harness nobody runs twice. Verify the
+    // service separately with `chat-recall doctor` on a real install.
     if (process.platform === 'linux') {
-      const unit = join(HOME, '.config/systemd/user/chat-recall-watch.service');
-      check(existsSync(unit), 'the background sync service was installed');
+      console.log(c.d('  SKIP  background service — cannot be checked from a sandbox HOME '
+        + '(systemctl --user is per-real-user); verify with `chat-recall doctor`'));
     }
 
     const after = answer(await mcp.rpc('tools/call', { name: 'recall_status', arguments: {} }));
