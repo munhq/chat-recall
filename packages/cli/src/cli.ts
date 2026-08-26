@@ -3320,6 +3320,93 @@ include
     console.log(chalk.green(`✓ Removed ${path}`) + chalk.dim(' — back to skipped.'));
   });
 
+// ── Retention: how long the SERVER keeps what you sent ────────────────────
+// The third data control, beside `exclude` (what never goes) and `delete` (undo
+// one thing). This one acts later and unattended, which is exactly why it prints
+// the count and the warning before it will arm, and why shortening a window
+// needs a typed number rather than a keystroke.
+const retention = program
+  .command('retention')
+  .description('How long the server keeps your synced sessions. Bare `retention` shows the current window.');
+
+retention
+  .command('show', { isDefault: true })
+  .description('Show the window and how many sessions it would delete')
+  .action(async () => {
+    const t = requireTarget();
+    const r = await serverGet<{ days: number; wouldDelete: number; min: number; max: number; warning: string }>('/api/data/retention');
+    console.log(chalk.bold('Retention') + chalk.dim(`  (server: ${t.base})`));
+    if (!r.days) {
+      console.log(`  window: ${chalk.green('none')} — the server keeps everything you sync`);
+    } else {
+      console.log(`  window: ${chalk.yellow(`${r.days} days`)}`);
+      console.log(`  sessions currently outside it: ${r.wouldDelete}`);
+    }
+    console.log(chalk.dim(`  Set one: chat-recall retention set <${r.min}-${r.max}>   ·   clear it: chat-recall retention set 0`));
+  });
+
+retention
+  .command('set <days>')
+  .description('Set the window in days, or 0 to keep everything. Prints what it would delete and asks first.')
+  .option('--yes', 'Skip the confirmation (for scripts). The warning still prints.', false)
+  .action(async (daysArg: string, opts: { yes?: boolean }) => {
+    requireTarget();
+    const days = Number(daysArg);
+    if (!Number.isInteger(days) || days < 0) {
+      console.error(chalk.red(`'${daysArg}' is not a whole number of days.`));
+      process.exit(1);
+    }
+
+    // Preview against the CANDIDATE window, not the current one: the number that
+    // matters is what THIS change would remove.
+    const preview = await serverGet<{ wouldDelete: number; warning: string; min: number; max: number }>(
+      `/api/data/retention?days=${days}`,
+    );
+
+    if (days === 0) {
+      await serverPost('/api/data/retention', { days: 0 });
+      console.log(chalk.green('✓ Window cleared') + chalk.dim(' — the server keeps everything you sync.'));
+      return;
+    }
+
+    if (preview.wouldDelete > 0) {
+      console.log();
+      console.log(chalk.yellow(`This deletes ${preview.wouldDelete} session(s) from the server, and keeps deleting`));
+      console.log(chalk.yellow(`anything older than ${days} days from now on.`));
+      console.log();
+      // The conditional half of the recovery story, said out loud. "Just re-sync"
+      // is only true while the transcript still exists on a machine you have.
+      console.log(chalk.dim('  Re-syncing can restore a session ONLY if its transcript is still on a'));
+      console.log(chalk.dim('  machine you have. For a laptop you no longer own, history your AI tool'));
+      console.log(chalk.dim('  has rotated, or files you deleted, our copy is the only copy.'));
+      console.log(chalk.dim('  Take one first if you want it:  chat-recall export'));
+      console.log();
+      if (!opts.yes) {
+        if (!process.stdin.isTTY) {
+          console.error(chalk.red('Refusing: this would delete data and there is no terminal to confirm at.'));
+          console.error(chalk.dim('Pass --yes if you mean it.'));
+          process.exit(1);
+        }
+        const { createInterface } = await import('node:readline/promises');
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        // The COUNT, typed. A y/n on a number this size is a reflex; retyping the
+        // number is reading it.
+        const answer = (await rl.question(`Type ${preview.wouldDelete} to confirm: `)).trim();
+        rl.close();
+        if (answer !== String(preview.wouldDelete)) {
+          console.log(chalk.dim('Cancelled — nothing changed.'));
+          return;
+        }
+      }
+    }
+
+    const res = await serverPost<{ days: number; wouldDelete: number }>(
+      '/api/data/retention', { days, acknowledge: true },
+    );
+    console.log(chalk.green(`✓ Window set to ${res.days} days`)
+      + chalk.dim(` — ${res.wouldDelete} session(s) will be removed on the next sweep.`));
+  });
+
 // ── Selective sync: opt-in project allowlist ───────────────────────────────
 // The inverse of `exclude`: with mode 'only', ONLY the listed projects sync.
 const syncOnly = program
