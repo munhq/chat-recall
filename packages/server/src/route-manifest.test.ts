@@ -180,6 +180,10 @@ const MANIFEST: Record<string, { gates: string[]; reason: string }> = {
     gates: ['funnelTelemetry', 'authHandler()'],
     reason: 'better-auth owns sign-in/up/out, the device flow and the MCP OAuth authorize/token/register endpoints; it IS the login, so it runs before tenantAuth and reads its own body. funnelTelemetry sits in front of it — NOT a gate, and it refuses nothing: it is the only place that can observe the steps a user FAILS at, since every growth event before it fired only after success and the CLI cannot report a login it never completed. It reads the path and the response status, never a body. Mounted via authHandler() rather than toNodeHandler(getAuth()) because the auth instance type cannot cross a module boundary — see the note on getAuth in auth/better-auth.ts.',
   },
+  'get /api/auth/mcp/jwks': {
+    gates: ['<inline>'],
+    reason: 'The JWK Set both discovery documents advertise (better-auth publishes jwks_uri and registers no endpoint for it, so the URL 404\'d). DELIBERATELY UNGATED, for the same reason as the two well-known documents: it is part of discovery, read before any credential exists. It returns an EMPTY key set and that is the true answer, not a stub — the MCP plugin issues opaque access tokens looked up server-side, so no signing key exists for a client to verify against. Exposes nothing: a public key would be publishable anyway, and there is not even one.',
+  },
   'get /.well-known/oauth-authorization-server': {
     gates: ['oauthAuthorizationServerHandler()'],
     reason: 'RFC 8414 OAuth discovery. DELIBERATELY UNGATED and unauthenticated: a client reads this in order to find out how to authenticate, so any gate here is a deadlock. It exposes only endpoint URLs and supported grant types — no tenant data, and nothing an attacker cannot infer from the spec.',
