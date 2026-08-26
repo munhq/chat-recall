@@ -118,8 +118,13 @@ function signInText(p: LoginPrompt, server: string): string {
     `(If the link does not carry the code, enter it at ${p.verificationUri}.)`,
     '',
     'Sign in with Google or GitHub and a free 7-day trial starts immediately — no card.',
-    'This machine is then connected, and your past sessions begin syncing. Re-run this',
-    'tool once you have approved it; the first sync reports its progress, so a tool that',
-    'says "still syncing" is working, not broken.',
+    '',
+    'Approving also finishes the setup for you: the chat-recall skills go into your AI',
+    'tools, the MCP is registered with them, and a background service starts shipping new',
+    'conversations. Your existing sessions then sync — the first pass reports progress, so',
+    'a tool that says "still syncing" is working rather than broken.',
+    '',
+    'Nothing is read or uploaded until you approve. To keep a repo out afterwards:',
+    '`recall_exclude_path`, or `chat-recall exclude project <path>`.',
   ].join('\n');
 }
