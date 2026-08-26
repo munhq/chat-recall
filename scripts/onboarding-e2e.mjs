@@ -29,7 +29,7 @@
  * Exit code is the verdict.
  */
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -63,6 +63,36 @@ execFileSync('mkdir', ['-p',
   join(HOME, '.claude', 'projects', '-home-user-code-example'),
   join(HOME, '.claude', 'skills'),
 ]);
+
+/**
+ * And give it TRANSCRIPTS, because "did it sync" is the question the product
+ * exists to answer and an empty home cannot answer it.
+ *
+ * The first version seeded only an empty project dir, so `init` synced the
+ * toolkit inventory (the MCP servers and skills it registered) and zero
+ * sessions — 13 rows that looked like a working sync until you read the
+ * source_type. A marker unique per run is what makes the assertion exact: a hit
+ * can only be THIS fixture, never a leftover from a previous run or another
+ * tenant.
+ */
+const SYNC_MARKER = `onboardsync${Math.random().toString(36).slice(2, 10)}`;
+const FIXTURE_SESSION = '11111111-2222-4333-8444-555555555555';
+{
+  const dir = join(HOME, '.claude', 'projects', '-home-user-code-example');
+  // Two turns, in the JSONL shape the Claude backend reads: a user prompt
+  // carrying the marker, and an assistant reply. Paths are invented.
+  const lines = [
+    { type: 'user', uuid: 'u1', sessionId: FIXTURE_SESSION, timestamp: new Date(Date.now() - 60_000).toISOString(),
+      cwd: '/home/user/code/example',
+      message: { role: 'user', content: `Explain the retry logic ${SYNC_MARKER}` } },
+    { type: 'assistant', uuid: 'a1', parentUuid: 'u1', sessionId: FIXTURE_SESSION, timestamp: new Date().toISOString(),
+      cwd: '/home/user/code/example',
+      message: { role: 'assistant', model: 'claude-sonnet-4-5',
+        content: [{ type: 'text', text: `It retries three times with backoff. ${SYNC_MARKER}` }],
+        usage: { input_tokens: 120, output_tokens: 40 } } },
+  ];
+  writeFileSync(join(dir, `${FIXTURE_SESSION}.jsonl`), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+}
 
 function cleanup() { try { rmSync(ROOT, { recursive: true, force: true }); } catch { /* best effort */ } }
 
@@ -230,6 +260,19 @@ async function main() {
       console.log(c.d('  SKIP  background service — cannot be checked from a sandbox HOME '
         + '(systemctl --user is per-real-user); verify with `chat-recall doctor`'));
     }
+
+    // THE PAYOFF: is the planted session on the server and searchable back?
+    // init syncs after login, so retry rather than asserting on the first look.
+    let found = '';
+    for (let i = 0; i < 12; i++) {
+      found = answer(await mcp.rpc('tools/call', { name: 'recall_search', arguments: { query: SYNC_MARKER } }));
+      // recall_search echoes the query in its header, so test the BODY only —
+      // otherwise the echo makes every empty result look like a hit.
+      if (found.split('\n').slice(1).join('\n').includes(SYNC_MARKER)) break;
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+    check(found.split('\n').slice(1).join('\n').includes(SYNC_MARKER),
+      'the planted session synced and is searchable through the MCP');
 
     const after = answer(await mcp.rpc('tools/call', { name: 'recall_status', arguments: {} }));
     console.log(c.d(after.split('\n').slice(0, 12).map((l) => `    ${l}`).join('\n')));
