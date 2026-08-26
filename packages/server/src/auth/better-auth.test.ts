@@ -13,6 +13,8 @@
  * a reset link must have for the flow to work at all.
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { resetLinkFor, RESET_CALLBACK_PATH } from './better-auth.js';
 
 const BASE = 'https://chatrecall.dev/api/auth/reset-password/TOK123';
@@ -64,5 +66,56 @@ describe('resetLinkFor', () => {
     // the outer query and the SPA would never see the view.
     const link = resetLinkFor(`${BASE}?callbackURL=`);
     expect(link).toContain('callbackURL=%2Fapp%3Fview%3Dreset');
+  });
+});
+
+/**
+ * The SAME bug family as the reset link above — composing a query string against
+ * one better-auth already builds — in the one place it breaks the connector.
+ *
+ * better-auth's MCP plugin sends an unauthenticated authorize request to the
+ * login page with a HARDCODED '?':
+ *
+ *   plugins/mcp/authorize.mjs:  throw ctx.redirect(`${options.loginPage}?${queryFromURL}`)
+ *
+ * `loginPage: '/app?view=signin'` therefore produced
+ * `/app?view=signin?response_type=code&client_id=…`. A URL has one '?', so
+ * `view` became the value "signin?response_type=code" and every OAuth parameter
+ * was buried inside it: no client_id, no redirect_uri, no code_challenge to
+ * resume the flow with. A visitor from claude.ai signed in, landed on the
+ * dashboard, and the client that sent them waited for a code forever — with a
+ * 302 and a 200 at every step, so nothing was red.
+ *
+ * Read from source text because the auth instance is deliberately not exported
+ * (see the note on getAuth), and this invariant is about the CONFIG, not the
+ * runtime object.
+ */
+describe('the MCP loginPage', () => {
+  const src = readFileSync(join(import.meta.dirname, 'better-auth.ts'), 'utf-8');
+
+  const loginPage = (() => {
+    const m = src.match(/loginPage:\s*'([^']*)'/);
+    expect(m, 'loginPage not found in better-auth.ts').not.toBeNull();
+    return m![1];
+  })();
+
+  it('carries no query string, because better-auth appends one with a hardcoded ?', () => {
+    expect(loginPage).not.toContain('?');
+  });
+
+  it('carries no fragment either, for the same reason', () => {
+    expect(loginPage).not.toContain('#');
+  });
+
+  it('is a same-origin absolute path, so the redirect cannot leave the app', () => {
+    expect(loginPage.startsWith('/')).toBe(true);
+    expect(loginPage).not.toMatch(/^\/\//);
+  });
+
+  it('composes into a single-question-mark URL', () => {
+    // Exactly what authorize.mjs does, so this fails if the shape regresses.
+    const composed = `${loginPage}?response_type=code&client_id=abc`;
+    expect(composed.split('?').length - 1).toBe(1);
+    expect(new URLSearchParams(composed.split('?')[1]).get('client_id')).toBe('abc');
   });
 });
