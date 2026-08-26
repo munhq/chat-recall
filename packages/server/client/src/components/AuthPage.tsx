@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useDocumentScroll } from '../hooks/useDocumentScroll';
-import { signInEmail, signUpEmail, requestPasswordReset, resetPassword, socialProviders, signInSocial } from '../services/auth';
+import { signInEmail, signUpEmail, requestPasswordReset, resetPassword, socialProviders, signInSocial } from '../services/auth'
+import { verifyEmailWithOtp, resendVerificationEmail } from '../services/auth';
 
 /**
  * Provider marks, inline so the page needs no icon dependency and no network
@@ -45,7 +46,7 @@ function resetParamsFromUrl(): { token: string | null; error: string | null } {
   } catch { return { token: null, error: null }; }
 }
 
-type Mode = 'signin' | 'signup' | 'forgot' | 'reset';
+type Mode = 'signin' | 'signup' | 'forgot' | 'reset' | 'verify';
 
 /**
  * Email + password sign-in / sign-up / password reset for cloud mode. This form
@@ -78,6 +79,8 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
   const signup = mode === 'signup';
   const forgot = mode === 'forgot';
   const resetting = mode === 'reset';
+  const verifying = mode === 'verify';
+  const [otp, setOtp] = useState('');
 
   const go = (m: Mode) => { setMode(m); setError(null); setNotice(null); };
 
@@ -130,26 +133,64 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
       return;
     }
 
+    if (verifying) {
+      const r = await verifyEmailWithOtp(email.trim(), otp.trim());
+      setBusy(false);
+      if (r.ok) onSuccess();
+      else setError(r.error);
+      return;
+    }
+
     const r = signup
       ? await signUpEmail(name.trim() || email.split('@')[0], email.trim(), password)
       : await signInEmail(email.trim(), password);
     setBusy(false);
-    if (r.ok) onSuccess();
+    if (!r.ok) { setError(r.error); return; }
+
+    // A NEW EMAIL ACCOUNT MUST CONFIRM ITS ADDRESS, and this screen is the only
+    // place that can ask. ensureTrial refuses to grant a trial to a tenant with
+    // no verified member — "No trial until an address is confirmed", the
+    // anti-abuse gate — so signing up and walking straight into the app produced
+    // an account that worked and had nothing: no trial, and every paid feature
+    // answering 402 for a reason the user was never told.
+    //
+    // Social sign-in does not come through here: the provider vouches for the
+    // address, better-auth marks it verified, and the trial lands immediately.
+    // That asymmetry is exactly why the email path needed its own step.
+    if (signup) {
+      setOtp('');
+      go('verify');
+      setNotice('Check your email for a 6-digit code. Entering it starts your free trial.');
+      return;
+    }
+    onSuccess();
+  };
+
+  /** Send another code. The first one can land in spam or simply fail to send. */
+  const resend = async () => {
+    if (busy) return;
+    setBusy(true); setError(null); setNotice(null);
+    const r = await resendVerificationEmail(email.trim());
+    setBusy(false);
+    if (r.ok) setNotice('A new code is on its way.');
     else setError(r.error);
   };
 
-  const heading = resetting ? 'Choose a new password'
-    : forgot ? 'Reset your password'
-      : signup ? 'Create your account' : 'Welcome back';
+  const heading = verifying ? 'Confirm your email'
+    : resetting ? 'Choose a new password'
+      : forgot ? 'Reset your password'
+        : signup ? 'Create your account' : 'Welcome back';
   // A subtitle per mode, because the heading alone leaves the two reset screens
   // ambiguous — "Reset your password" does not say whether a mail is coming.
-  const subtitle = resetting ? 'Pick something you have not used elsewhere.'
-    : forgot ? 'We will email you a link. It works once and expires in an hour.'
-      : signup ? 'One memory across Claude Code, Gemini, Codex and OpenCode.'
-        : 'Sign in to your chat-recall account.';
-  const cta = resetting ? 'Update password'
-    : forgot ? 'Send reset link'
-      : signup ? 'Create account' : 'Sign in';
+  const subtitle = verifying ? `We sent a 6-digit code to ${email}. It starts your free 7-day trial.`
+    : resetting ? 'Pick something you have not used elsewhere.'
+      : forgot ? 'We will email you a link. It works once and expires in an hour.'
+        : signup ? 'One memory across Claude Code, Gemini, Codex and OpenCode.'
+          : 'Sign in to your chat-recall account.';
+  const cta = verifying ? 'Confirm and start my trial'
+    : resetting ? 'Update password'
+      : forgot ? 'Send reset link'
+        : signup ? 'Create account' : 'Sign in';
 
   return (
     <div className="au-wrap">
@@ -182,14 +223,22 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
                 autoComplete="name" placeholder="Ada" />
             </label>
           )}
-          {!resetting && (
+          {verifying && (
+            <label>
+              Verification code
+              <input type="text" value={otp} onChange={(e) => setOtp(e.target.value)}
+                inputMode="numeric" autoComplete="one-time-code" required
+                minLength={6} maxLength={8} placeholder="123456" className="au-otp" />
+            </label>
+          )}
+          {!resetting && !verifying && (
             <label>
               Email
               <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
                 autoComplete="email" required placeholder="you@example.com" />
             </label>
           )}
-          {!forgot && (
+          {!forgot && !verifying && (
             <label>
               {resetting ? 'New password' : 'Password'}
               <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
@@ -203,7 +252,12 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
             {busy ? <span className="au-spin" aria-label="Working" /> : cta}
           </button>
         </form>
-        {!resetting && (
+        {verifying && (
+          <button className="au-toggle" onClick={resend} disabled={busy}>
+            Didn't get it? Send another code
+          </button>
+        )}
+        {!resetting && !verifying && (
           <button className="au-toggle" onClick={() => go(signup ? 'signin' : 'signup')}>
             {signup ? 'Already have an account? Sign in' : 'New here? Create an account'}
           </button>
@@ -211,7 +265,7 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
         {mode === 'signin' && (
           <button className="au-toggle" onClick={() => go('forgot')}>Forgot your password?</button>
         )}
-        {(forgot || resetting) && (
+        {(forgot || resetting || verifying) && (
           <button className="au-toggle" onClick={() => go('signin')}>Back to sign in</button>
         )}
       </div>
@@ -220,6 +274,9 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
 }
 
 const AUTH_CSS = `
+.au-otp { font-family: var(--cr-font-mono); font-size: 20px; letter-spacing: 0.28em;
+  text-align: center; }
+
 /* Every colour, radius, font and focus ring comes from the design tokens in
  * index.css (loaded globally by main.tsx), never from literals — the one
  * exception being Google's brand marks, which their guidelines require
