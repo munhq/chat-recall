@@ -271,12 +271,29 @@ const pkgVersion: string = JSON.parse(
 const DEFAULT_SERVER = 'https://chatrecall.dev';
 
 /**
+ * Tools NEVER written into `alwaysAllow`, so the host asks every time.
+ *
+ * Everything else chat-recall exposes either reads, or writes something the user
+ * can undo — and prompting on all of it is how a memory tool becomes a permission
+ * dialog with a search feature attached. These two are different: they narrow
+ * what we hold, and `recall_forget` has no undo at all. Auto-approving them would
+ * mean an agent could delete a conversation with no human in the loop, which is
+ * the one thing a privacy control must not allow.
+ *
+ * The annotations (destructiveHint) say the same thing, but they are advisory —
+ * a host may ignore them. Absence from this list is what actually produces the
+ * prompt, so `mcp-tool-registry.test.ts` pins the rule in both directions: every
+ * other tool must be allow-listed, and these must not be.
+ */
+const NEVER_AUTO_ALLOW = ['recall_forget', 'recall_exclude_path'];
+
+/**
  * Tools written into every AI tool's `alwaysAllow`, and printed by `init`.
  *
  * Module scope on purpose: the MCP registration and the setup-complete banner
  * must name the SAME set. The banner used to be a hand-typed literal and drifted
  * to naming ten tools that do not exist. `mcp-tool-registry.test.ts` asserts this
- * array equals the tools mcp.ts actually registers.
+ * array equals the tools mcp.ts registers, MINUS NEVER_AUTO_ALLOW.
  */
 const DEFAULT_ALLOW = [
   'recall_search', 'recall_show', 'recall_index', 'recall_status',
