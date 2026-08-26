@@ -27,6 +27,7 @@ import toolkitRouter from './routes/toolkit.js';
 import secretsRouter from './routes/secrets.js';
 import { tenantAuth, validateAuthConfig, authProviderName } from './middleware/auth.js';
 // Only the NAMES — the ids and secrets never leave the server.
+import { mcpCimdResolver } from './auth/cimd-middleware.js';
 import { enabledSocialProviders as socialProviderNames } from './auth/better-auth.js';
 import { apiLimiter, syncLimiter, rl } from './middleware/rate-limit.js';
 import { costMiddleware, startCostTelemetry } from './middleware/request-cost.js';
@@ -397,6 +398,18 @@ if (authProviderName() === 'better-auth') {
   app.get('/api/auth/mcp/jwks', (_req, res) => {
     res.type('application/jwk-set+json').json({ keys: [] });
   });
+
+  // CIMD: a client_id that IS an https URL, resolved into a stored client before
+  // better-auth's authorize endpoint validates it. better-auth implements DCR
+  // only, so a URL client_id was answered `invalid_client` — which is how
+  // Smithery connects ("Smithery handles client registration automatically via
+  // Client ID Metadata Documents"), and therefore how it could not connect here.
+  //
+  // Mounted BEFORE the catch-all, and a no-op for every DCR client: it returns
+  // immediately unless client_id starts with https://. See auth/cimd.ts for the
+  // SSRF guards, which are the load-bearing part — the client_id is
+  // attacker-controlled and we fetch it.
+  app.get('/api/auth/mcp/authorize', mcpCimdResolver());
 
   app.all('/api/auth/*', funnelTelemetry, authHandler());
 
