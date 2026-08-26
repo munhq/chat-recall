@@ -379,6 +379,25 @@ if (authProviderName() === 'better-auth') {
   // a user makes before they have succeeded at anything — a sign-up, a
   // verification code, a CLI login prompt. It reads only the path and the
   // response status; never a body, an email, a code or a token.
+  // The JWKS the discovery documents ADVERTISE, which nothing served.
+  //
+  // better-auth's MCP plugin publishes `jwks_uri: <baseURL>/mcp/jwks` in both
+  // well-known documents and registers no endpoint for it, so the URL 404'd. A
+  // client that fetches the key set during discovery — a directory review is one
+  // — saw a broken authorization server.
+  //
+  // An EMPTY key set is the correct answer, not a placeholder: the plugin issues
+  // opaque access tokens (32 random characters, looked up server-side), so there
+  // is no signing key for a client to verify anything against, and inventing one
+  // to fill the document would be worse than the 404. `{"keys":[]}` is a valid
+  // JWK Set (RFC 7517) and says exactly that.
+  //
+  // Registered BEFORE the better-auth catch-all, which would otherwise swallow
+  // the path and 404 it again.
+  app.get('/api/auth/mcp/jwks', (_req, res) => {
+    res.type('application/jwk-set+json').json({ keys: [] });
+  });
+
   app.all('/api/auth/*', funnelTelemetry, authHandler());
 
   // OAuth discovery, at the ROOT and not under /api/auth.
