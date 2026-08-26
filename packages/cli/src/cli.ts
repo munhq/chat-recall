@@ -3113,6 +3113,9 @@ async function runLogin(
   serverUrl: string,
   opts: {
     token?: string; issuer?: string; clientId?: string; team?: string; deviceId?: string; check?: boolean;
+    /** Emit the device prompt as JSON on stdout instead of prose, so a parent
+     *  process (the MCP) can relay the link and code to the user. */
+    promptJson?: boolean;
     /** True when `init` is driving this. It syncs immediately afterwards, so the
      *  "now run sync" line below would tell someone to do a thing that already
      *  happened — and it is the LAST line they read, so it reads as the next
@@ -3210,6 +3213,12 @@ async function runLogin(
       } catch { /* fall through — deviceLogin surfaces the missing-issuer error */ }
     }
     const onPrompt = (p: { url: string; userCode: string; verificationUri: string }) => {
+      if (opts.promptJson) {
+        // ONE line, flushed immediately: the parent reads it to learn the link
+        // while this process keeps polling for the approval.
+        console.log(JSON.stringify({ prompt: p }));
+        return;
+      }
       console.log();
       console.log(chalk.bold('To log in, open:'));
       console.log('  ' + chalk.cyan(p.url));
@@ -3565,16 +3574,20 @@ exclude
   });
 
 program
-  .command('login <server-url>')
-  .description('Log in via Keycloak (device flow) and mint a sync device token → ~/.chat-recall/credentials.json (0600)')
+  .command('login [server-url]')
+  .description(`Log in (device flow) and mint a sync device token → ~/.chat-recall/credentials.json (0600). Defaults to ${DEFAULT_SERVER}.`)
   .option('--token <token>', 'Self-host: skip OIDC and save this device token directly')
   .option('--check', 'Report-only: exit 0 if a working credential for this server exists, 1 otherwise (never interactive)')
   .option('--issuer <url>', 'OIDC issuer URL (default: learned from the server via /api/capabilities)')
   .option('--client-id <id>', 'OIDC client id (default: chat-recall-web)')
   .option('--team <slug>', 'Team to mint the device token for (default: your only team)')
   .option('--device-id <id>', 'Device id for this machine (default: hostname)')
-  .action((serverUrl: string, opts: { token?: string; check?: boolean; issuer?: string; clientId?: string; team?: string; deviceId?: string }) =>
-    runLogin(serverUrl, opts));
+  // Machine-readable prompt, for a caller that cannot show a terminal — the MCP
+  // spawns this and relays the link into the conversation, which is the only
+  // channel a user of an npx-installed MCP actually sees.
+  .option('--prompt-json', 'Print the device prompt as one JSON line on stdout, then wait for approval', false)
+  .action((serverUrl: string | undefined, opts: { token?: string; check?: boolean; issuer?: string; clientId?: string; team?: string; deviceId?: string; promptJson?: boolean }) =>
+    runLogin(serverUrl || DEFAULT_SERVER, opts));
 
 program
   .command('logout <server-url>')

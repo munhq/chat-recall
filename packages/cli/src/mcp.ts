@@ -27,6 +27,8 @@ import { fileURLToPath } from 'node:url';
 import {
   createMcpServer, setIndexRunner, setEventReporter, setUpdateNotice, setServerVersion,
 } from '@chat-recall/engine/mcp/tools.js';
+import { setLoginStarter, type LoginPrompt } from '@chat-recall/engine/mcp/login-prompt.js';
+import { openBrowser } from './open-browser.js';
 import { readFileSync } from 'node:fs';
 import { reportClientEvent } from './client-events.js';
 import { updateNotice } from './update-notice.js';
@@ -42,6 +44,7 @@ setServerVersion(JSON.parse(
 setEventReporter(reportClientEvent);
 setIndexRunner(runIndexChild);
 setUpdateNotice(updateNotice);
+setLoginStarter(startLoginChild);
 
 /**
  * Background freshness loop — the architecture's writer. The binary IS the
@@ -60,6 +63,73 @@ setUpdateNotice(updateNotice);
  * (OOM/kill), we report it and the MCP stays up serving tools. Strips ANSI,
  * returns the child's summary line(s).
  */
+/**
+ * Start a device-code sign-in and return the prompt as soon as the server issues
+ * it, leaving the child to poll for approval.
+ *
+ * IN A CHILD PROCESS, and that is not incidental: runLogin() calls
+ * process.exit(1) on around seven different failures. In-process, any one of
+ * them would take THIS server down mid-session — the stdio connection drops, the
+ * client sees -32000, and every recall tool is deregistered. Same reasoning as
+ * runIndexChild below.
+ *
+ * Spawned as `node <this package>/dist/cli.js`, not `chat-recall`, because the
+ * published install is `npx -y -p chat-recall chat-recall-mcp` and puts nothing
+ * on PATH — the whole reason a new user could not log in at all.
+ *
+ * The child writes ~/.chat-recall/credentials.json when the user approves, which
+ * is how the next tool call picks the login up: nothing needs to be handed back
+ * through this promise.
+ */
+function startLoginChild(server: string): Promise<LoginPrompt> {
+  return new Promise((resolve, reject) => {
+    let cliPath: string;
+    try { cliPath = fileURLToPath(new URL('./cli.js', import.meta.url)); }
+    catch { reject(new Error('could not locate the CLI entry point')); return; }
+
+    const child = spawn(process.execPath, [cliPath, 'login', server, '--prompt-json'], {
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // Outlives this call by design: it polls until the user approves. Detached
+      // so a client that restarts the MCP does not abort a sign-in the user is
+      // halfway through in their browser.
+      detached: true,
+    });
+    child.unref();
+
+    let out = '';
+    let settled = false;
+    const fail = (msg: string) => { if (!settled) { settled = true; reject(new Error(msg)); } };
+
+    child.stdout?.on('data', (d) => {
+      if (settled) return;
+      out += d;
+      // The prompt arrives as one JSON line; anything else on stdout is noise.
+      for (const line of out.split('\n')) {
+        const t = line.trim();
+        if (!t.startsWith('{')) continue;
+        try {
+          const parsed = JSON.parse(t) as { prompt?: LoginPrompt };
+          if (parsed.prompt?.url) {
+            settled = true;
+            // Convenience only — the URL is also in the message the agent shows,
+            // because an MCP can be running where no browser exists.
+            openBrowser(parsed.prompt.url);
+            resolve(parsed.prompt);
+            return;
+          }
+        } catch { /* partial line — wait for more */ }
+      }
+    });
+    child.on('error', (e) => fail(e.message));
+    child.on('exit', (code) => fail(`login helper exited (${code ?? 'signal'}) before issuing a code`));
+    // The device code itself is valid for ten minutes; if the server has not
+    // even issued one in thirty seconds, something is wrong with the server.
+    const timer = setTimeout(() => fail('the server did not issue a device code in time'), 30_000);
+    timer.unref?.();
+  });
+}
+
 function runIndexChild(force: boolean): Promise<string> {
   return new Promise((resolve) => {
     let cliPath: string;
@@ -196,6 +266,24 @@ async function main() {
   // extraction) spikes memory and can OOM/kill THIS process, which drops the
   // JSON-RPC stdio connection (client sees -32000) and deregisters every recall
   // tool mid-session. Decoupling keeps the tool server lightweight and alive.
+  // A machine with NO credentials at all is a fresh install, and its first tool
+  // call is going to need a sign-in link. Fetching the device code takes a few
+  // hundred ms against the server, and requireRemote() is synchronous (51 call
+  // sites), so asking for it lazily means the first call can only say "starting,
+  // ask again". Start it here instead: by the time a human has typed a prompt,
+  // the link is ready and the FIRST answer carries it.
+  //
+  // Only when nothing is configured — a self-host or offline user who has
+  // deliberately not logged in must not have a sign-in started for them on
+  // every boot, and someone already logged in obviously needs none of this.
+  try {
+    const { loadAllCredentials } = await import('./sync-client.js');
+    if (loadAllCredentials().length === 0 && !process.env.CHAT_RECALL_TOKEN) {
+      const { loginInstruction } = await import('@chat-recall/engine/mcp/login-prompt.js');
+      loginInstruction();   // fire-and-forget: primes the prompt, never throws
+    }
+  } catch { /* best-effort — the lazy path still works */ }
+
   let daemonRunning = false;
   try {
     const { isServiceRunning } = await import('./service-installer.js');
