@@ -81,6 +81,15 @@ setLoginStarter(startLoginChild);
  * is how the next tool call picks the login up: nothing needs to be handed back
  * through this promise.
  */
+/** Mark a device URL as coming from the MCP, leaving a malformed one alone. */
+function withVia(url: string): string {
+  try {
+    const u = new URL(url);
+    u.searchParams.set('via', 'mcp');
+    return u.toString();
+  } catch { return url; }
+}
+
 function startLoginChild(server: string): Promise<LoginPrompt> {
   return new Promise((resolve, reject) => {
     let cliPath: string;
@@ -123,10 +132,14 @@ function startLoginChild(server: string): Promise<LoginPrompt> {
           const parsed = JSON.parse(t) as { prompt?: LoginPrompt };
           if (parsed.prompt?.url) {
             settled = true;
+            // Tell the approval page who is asking, so it stops instructing an
+            // editor user to "go back to your terminal" — there isn't one, and
+            // the thing finishing the login is this background child.
+            const tagged = { ...parsed.prompt, url: withVia(parsed.prompt.url) };
             // Convenience only — the URL is also in the message the agent shows,
             // because an MCP can be running where no browser exists.
-            openBrowser(parsed.prompt.url);
-            resolve(parsed.prompt);
+            openBrowser(tagged.url);
+            resolve(tagged);
             return;
           }
         } catch { /* partial line — wait for more */ }
