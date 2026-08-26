@@ -289,11 +289,56 @@ export function _resetTenantSecurityConfigCache(): void {
 // The dashboard edits exclusions once; every device pulls them here at the
 // start of each sync and UNIONS them with local settings. Union is the
 // fail-safe direction: the server can add exclusions for all devices but can
-// never re-enable something a machine excluded locally. Same 5-minute cache
-// policy as the security config; fail-open to empty (older servers have no
-// endpoint, and an outage must not stop the collector).
+// never re-enable something a machine excluded locally.
+//
+// THIS USED TO FAIL OPEN. Any non-2xx or network error returned an EMPTY rule
+// set, so a five-second blip made every dashboard exclusion silently not apply
+// for that sync — and the sync then uploaded the projects those rules exist to
+// hold back. Nothing logged it; the rules still showed in the dashboard.
+//
+// The distinction that fixes it without breaking older servers:
+//
+//   404          → this server has no such endpoint. Empty IS the right answer,
+//                  and it is cached as a real answer.
+//   anything else → we do not know the rules. Reuse the last set we successfully
+//                  fetched (persisted to disk, so a fresh CLI process has it),
+//                  and if we have never fetched one, REFUSE the sync rather than
+//                  upload under rules we cannot see.
+//
+// Refusing is recoverable — the user re-runs — while uploading is not.
 interface TenantSyncConfig { excludeTools: string[]; excludeProjects: string[]; excludeSources: string[]; approveSources: string[] }
 const _syncConfigCache = new Map<string, { fetchedAt: number; config: TenantSyncConfig }>();
+
+const EMPTY_SYNC_CONFIG: TenantSyncConfig = { excludeTools: [], excludeProjects: [], excludeSources: [], approveSources: [] };
+
+/** Where the last successfully fetched rule set is kept, per server. A CLI
+ *  invocation is a new process, so an in-memory cache alone would leave the
+ *  common case (one `chat-recall sync` per tick) with nothing to fall back to. */
+function syncConfigCachePath(): string {
+  return join(getDataDir(), 'sync-config-cache.json');
+}
+
+type PersistedSyncConfigs = Record<string, { fetchedAt: number; config: TenantSyncConfig }>;
+
+function readPersistedSyncConfigs(): PersistedSyncConfigs {
+  try {
+    return JSON.parse(readFileSync(syncConfigCachePath(), 'utf-8')) as PersistedSyncConfigs;
+  } catch {
+    return {};
+  }
+}
+
+function persistSyncConfig(base: string, config: TenantSyncConfig): void {
+  try {
+    const all = readPersistedSyncConfigs();
+    all[base] = { fetchedAt: Date.now(), config };
+    mkdirSync(dirname(syncConfigCachePath()), { recursive: true });
+    writeFileSync(syncConfigCachePath(), JSON.stringify(all, null, 2));
+  } catch {
+    // A cache we cannot write is a degraded fallback, not a failed sync. The
+    // in-memory copy still serves this process.
+  }
+}
 
 async function fetchTenantSyncConfig(cred: Credentials): Promise<TenantSyncConfig> {
   const base = cred.serverUrl.replace(/\/+$/, '');
@@ -316,7 +361,12 @@ async function fetchTenantSyncConfig(cred: Credentials): Promise<TenantSyncConfi
     } catch { /* reporting is advisory — never block a sync on it */ }
 
     const res = await fetchWithTimeout(`${base}/api/sync-config`, { headers });
-    if (!res.ok) return { excludeTools: [], excludeProjects: [], excludeSources: [], approveSources: [] };
+    if (res.status === 404) {
+      // No endpoint on this server — a real answer, not an outage.
+      _syncConfigCache.set(base, { fetchedAt: Date.now(), config: EMPTY_SYNC_CONFIG });
+      return EMPTY_SYNC_CONFIG;
+    }
+    if (!res.ok) return lastKnownSyncConfig(base, `HTTP ${res.status}`);
     const body = await res.json().catch(() => ({})) as Partial<TenantSyncConfig>;
     const config: TenantSyncConfig = {
       excludeTools: Array.isArray(body.excludeTools) ? body.excludeTools.filter((t): t is string => typeof t === 'string') : [],
@@ -353,10 +403,37 @@ async function fetchTenantSyncConfig(cred: Credentials): Promise<TenantSyncConfi
     } catch { /* advisory — a failure must not stop the sync */ }
 
     _syncConfigCache.set(base, { fetchedAt: Date.now(), config });
+    persistSyncConfig(base, config);
     return config;
-  } catch {
-    return { excludeTools: [], excludeProjects: [], excludeSources: [], approveSources: [] };
+  } catch (err) {
+    return lastKnownSyncConfig(base, err instanceof Error ? err.message : 'request failed');
   }
+}
+
+/** Test seam. The function itself is internal — one caller, inside the sync —
+ *  but the three failure outcomes it now distinguishes are exactly what has to
+ *  be pinned, and reaching them through a full sync would need a server. */
+export const _fetchTenantSyncConfigForTests = fetchTenantSyncConfig;
+
+/**
+ * The last rule set we successfully fetched for this server, or a refusal.
+ *
+ * Called only when the fetch failed in a way that is NOT "this server has no
+ * such endpoint". Reuse is stale but honest; an empty set is a lie that uploads
+ * data. With nothing to reuse we throw, which aborts this sync and leaves the
+ * ledger untouched, so the next run retries from the same place.
+ */
+function lastKnownSyncConfig(base: string, reason: string): TenantSyncConfig {
+  const remembered = _syncConfigCache.get(base) ?? readPersistedSyncConfigs()[base];
+  if (remembered) {
+    console.error(`[sync] could not read server-side sync rules (${reason}) — applying the last known set from ${new Date(remembered.fetchedAt).toISOString()}`);
+    return remembered.config;
+  }
+  throw new Error(
+    `Cannot read the server-side sync rules from ${base} (${reason}), and this machine has never `
+    + 'successfully read them. Refusing to sync: uploading without knowing your exclusions could '
+    + 'ship a project you told the dashboard to hold back. Fix the server or retry.',
+  );
 }
 
 /** Stable-ish machine label for the dashboard's per-device grouping. */
