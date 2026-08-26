@@ -1,0 +1,77 @@
+# Tell the deploy repo that main moved, instead of waiting to be noticed.
+#
+# chatrecall.dev is built by a PRIVATE repo that clones this one, layers the
+# operator's site on, and pushes the image Keel rolls. That repo has no push
+# trigger from here — this repo deliberately holds no credentials for it — so it
+# discovered new commits on a `*/15` cron.
+#
+# GitHub deprioritises scheduled workflows under load, and it showed: on
+# 2026-08-26 the poll last fired at 12:16Z and had still not run an hour later,
+# four slots skipped. So "merged to main" did not mean "deployed", it meant
+# "deployed eventually, and nothing tells you which". Every urgent change needed
+# somebody to remember `workflow_dispatch` by hand.
+#
+# This closes that loop without weakening the reason the poll existed. The cron
+# STAYS as the safety net; this is only the fast path.
+#
+# WHY IT IS SAFE TO HAVE NO SECRET. The step is skipped when DEPLOY_DISPATCH_TOKEN
+# is absent, so a fork, a contributor's branch, or this repo before the secret is
+# configured all behave exactly as before — the poll still deploys. A missing
+# secret degrades to the old behaviour rather than failing a build.
+#
+# ONE-TIME SETUP (the token cannot be created from here):
+#   1. Create a fine-grained PAT scoped to the deploy repo ONLY, with the single
+#      permission `Contents: read and write` (repository_dispatch needs it).
+#      Nothing else — not this repo, not the org.
+#   2. Add it here as the secret DEPLOY_DISPATCH_TOKEN.
+# Scope it that narrowly on purpose: a token in a public repo's secrets is still
+# a token, and this one must be unable to do anything except say "main moved".
+name: notify-deploy
+
+on:
+  push:
+    branches: [main]
+    # Only what actually changes the product image. A README-only commit should
+    # not roll production pods.
+    paths:
+      - 'packages/**'
+      - 'server.json'
+      - 'docker/**'
+      - 'plugin/**'
+  workflow_dispatch:
+
+# Nothing is read from this repo; the token in the step carries its own rights.
+permissions: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    # Never from a fork: a fork has no access to the secret anyway, and the
+    # explicit guard keeps the intent readable.
+    if: github.repository == 'munhq/chat-recall'
+    steps:
+      - name: Ask the deploy repo to build this commit
+        env:
+          TOKEN: ${{ secrets.DEPLOY_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "${TOKEN:-}" ]; then
+            echo "DEPLOY_DISPATCH_TOKEN is not set — skipping."
+            echo "The deploy repo's */15 poll will pick this commit up instead."
+            exit 0
+          fi
+          code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' \
+            -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/repos/munhq/chat-recall-site/dispatches \
+            -d "{\"event_type\":\"product-push\",\"client_payload\":{\"sha\":\"${GITHUB_SHA}\"}}")
+          echo "dispatch responded $code"
+          # 204 is the documented success. Anything else must fail the job:
+          # a silent dispatch failure would recreate exactly the problem this
+          # workflow exists to remove — a deploy nobody knows did not happen.
+          if [ "$code" != "204" ]; then
+            echo "::error::repository_dispatch failed ($code)"; cat /tmp/resp.json || true
+            exit 1
+          fi
+          echo "Deploy repo notified for ${GITHUB_SHA}."
