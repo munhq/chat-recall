@@ -350,7 +350,10 @@ program
   .option('--skip-codeindex', 'Skip the codeindex companion entirely (no detection, no registration).')
   .option('--skip-service', 'Skip installing the per-user background sync service (Linux/macOS/Windows). By default init installs it so new conversations ship automatically.')
   .option('--yes', 'Do not pause before the first upload. The scope summary still prints.', false)
-  .action(async (options: { server?: string; token?: string; skipMcp?: boolean; skipSync?: boolean; withCodeindex?: boolean; skipCodeindex?: boolean; skipService?: boolean; yes?: boolean }) => {
+  // For a non-terminal caller (the MCP) that must relay the sign-in link into a
+  // conversation instead of printing it to a console nobody is reading.
+  .option('--prompt-json', 'Print the device prompt as one JSON line on stdout, then continue', false)
+  .action(async (options: { server?: string; token?: string; skipMcp?: boolean; skipSync?: boolean; withCodeindex?: boolean; skipCodeindex?: boolean; skipService?: boolean; yes?: boolean; promptJson?: boolean }) => {
     try {
       console.log(chalk.bold('chat-recall init'));
       console.log();
@@ -388,7 +391,7 @@ program
       console.log(chalk.bold('2. Connecting to your server...'));
       let target = firstTarget();
       if (options.server) {
-        await runLogin(options.server, { token: options.token, fromInit: true });
+        await runLogin(options.server, { token: options.token, fromInit: true, promptJson: options.promptJson });
         target = firstTarget();
       } else if (!target) {
         // Default to the hosted service. Before this, `npx chat-recall init`
@@ -402,7 +405,7 @@ program
         console.log(`   Connecting to ${chalk.bold(DEFAULT_SERVER)} — sign in to approve this machine.`);
         console.log(`   ${chalk.dim(`Prefer your own server? ${chalk.bold('--server <url>')}. Self-hosting is free: ${SELF_HOST_DOCS}`)}`);
         try {
-          await runLogin(DEFAULT_SERVER, { token: options.token, fromInit: true });
+          await runLogin(DEFAULT_SERVER, { token: options.token, fromInit: true, promptJson: options.promptJson });
           target = firstTarget();
         } catch (e) {
           // A declined or failed sign-in must not fail the whole init: MCP
