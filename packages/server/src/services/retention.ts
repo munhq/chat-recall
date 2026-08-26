@@ -85,6 +85,200 @@ export async function sweepSyntheticRetention(
 }
 
 
+// ── The user's OWN retention window ────────────────────────────────────────
+//
+// The only answer we had to "how long do you keep my sessions?" was "while your
+// workspace exists". For a product that indexes every line a developer's agents
+// wrote, indefinite is the wrong default to have no alternative to, and a
+// retention window is the one privacy control a user cannot implement for
+// themselves — deleting by hand means finding every session older than a date.
+//
+// Per tenant, opt-in, stored as a tenant setting so it survives without a schema
+// change and is readable by the same control plane the reminders use.
+//
+// NO TOMBSTONES, deliberately, and this is the difference from a user pressing
+// delete. A tombstone is permanent: it would mean raising the window later could
+// never bring anything back, and it would grow one row per expired session
+// forever. Without one, the purge is just "the server stops holding this" — the
+// transcript is still on the user's disk, so a `chat-recall sync --full` after
+// widening the window re-ships whatever the new window admits. Pressing delete
+// means "erase this"; a retention window means "do not keep it this long".
+//
+// The client's own ledger stops it re-shipping on ordinary ticks, so a purged
+// session does not bounce straight back in.
+
+/** Tenant-setting key holding the window, in days. Absent or 0 = keep forever. */
+const RETENTION_KEY = 'retention_days';
+
+/** Lower bound on a window a user may set. A one-day window on a product whose
+ *  value is recall would delete the thing they came for, and the support cost of
+ *  "where did my history go" outweighs serving that request. */
+export const MIN_RETENTION_DAYS = 7;
+/** Upper bound, so the value stays a number and not an accident (10 years). */
+export const MAX_RETENTION_DAYS = 3650;
+
+/** Parse a user-supplied window. Returns null when the input is not a usable
+ *  number, and 0 for an explicit "keep everything". */
+export function parseRetentionDays(input: unknown): number | null {
+  if (input === 0 || input === '0' || input === null) return 0;
+  const n = Number(input);
+  if (!Number.isFinite(n) || !Number.isInteger(n)) return null;
+  if (n === 0) return 0;
+  if (n < MIN_RETENTION_DAYS || n > MAX_RETENTION_DAYS) return null;
+  return n;
+}
+
+/**
+ * THE WARNING, written once and served to every surface.
+ *
+ * A retention window deletes data on a timer, and the recovery story is
+ * conditional in a way that is easy to state too comfortably. "Widen it and
+ * re-sync" only works while the transcript still exists ON A MACHINE THE USER
+ * STILL HAS. It does not work for:
+ *
+ *   - a laptop they no longer own, or a machine they wiped;
+ *   - transcripts their AI tool has since rotated or pruned;
+ *   - transcripts they deleted themselves to free space.
+ *
+ * In those cases our copy was the only copy, and the window destroyed it. So the
+ * warning says so in those words rather than implying a safety net that may not
+ * be there. Exported here so the API, the CLI and the dashboard cannot drift into
+ * three different descriptions of the same irreversible action.
+ */
+export const RETENTION_WARNING = [
+  'A retention window deletes sessions from the server on a timer, permanently.',
+  'It can only be undone where the original transcript still exists on a machine you have:'
+  + ' widening the window and running `chat-recall sync --full` re-ships whatever it admits.',
+  'Sessions whose transcript is gone — a machine you no longer own, history your AI tool rotated,'
+  + ' files you deleted — cannot come back. For those, our copy is the only copy.',
+  'Export first if you want one: GET /api/data/export.',
+].join(' ');
+
+/**
+ * How many sessions a window of `days` would delete RIGHT NOW.
+ *
+ * The point of the whole feature is that it acts later and unattended, so the
+ * number has to be shown before it is armed — the same reason `init` prints its
+ * scope before the first upload rather than counts after it. Counting is a walk
+ * over metadata rows (mtime only), not a read of any content.
+ */
+export async function countOlderThan(tenant: string, days: number, now = Date.now()): Promise<number> {
+  if (!Number.isFinite(days) || days <= 0) return 0;
+  const cutoff = now - days * 24 * 60 * 60 * 1000;
+  return runWithTenant(tenant, async () => {
+    const store = await createStore();
+    let count = 0;
+    try {
+      const PAGE = 500;
+      for (let offset = 0; ; offset += PAGE) {
+        const page = await store.listItems('session', PAGE, offset);
+        if (!page.length) break;
+        // listItems is mtime DESC, so once a whole page is stale the rest are
+        // too — but count them properly rather than extrapolating: the number is
+        // shown to a user about to delete their history.
+        for (const row of page) if ((row.mtime ?? 0) < cutoff) count++;
+        if (page.length < PAGE) break;
+      }
+    } finally {
+      await store.close();
+    }
+    return count;
+  });
+}
+
+/** Read one tenant's window. 0 when unset — the current behaviour, kept as the
+ *  default so no existing workspace starts deleting because this shipped. */
+export async function getRetentionDays(tenant: string): Promise<number> {
+  const cp = await createControlPlane();
+  try {
+    const raw = await cp.getTenantSetting(tenant, RETENTION_KEY);
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } finally {
+    await cp.close();
+  }
+}
+
+/** Set (or clear, with 0) one tenant's window. */
+export async function setRetentionDays(tenant: string, days: number): Promise<void> {
+  const cp = await createControlPlane();
+  try {
+    await cp.setTenantSetting(tenant, RETENTION_KEY, String(days));
+  } finally {
+    await cp.close();
+  }
+}
+
+/**
+ * Purge sessions older than each tenant's own window.
+ *
+ * Same paging shape as the synthetic sweep — `listItems` is mtime DESC, so the
+ * expired rows are a contiguous suffix — and the same per-tenant batch cap, so a
+ * tenant that sets a 30-day window on ten years of history drains over several
+ * sweeps instead of holding one enormous transaction.
+ */
+export async function sweepUserRetention(
+  opts: { batchPerTenant?: number; now?: number; tenants?: string[] } = {},
+): Promise<Array<{ tenant: string; days: number; purged: number }>> {
+  const batch = opts.batchPerTenant ?? 500;
+  const now = opts.now ?? Date.now();
+  const results: Array<{ tenant: string; days: number; purged: number }> = [];
+
+  // `tenants` narrows the sweep to a named set. Two uses: re-running a purge for
+  // one workspace after a support question, and testing the sweep at all — the
+  // control plane's tenant list is a production concept, so a test that has to
+  // go through it is testing the control plane instead of the sweep.
+  let tenants: string[] = opts.tenants ?? [];
+  if (!opts.tenants) {
+    const cp = await createControlPlane();
+    try {
+      tenants = await cp.listTenants();
+    } finally {
+      await cp.close();
+    }
+  }
+
+  const synthetic = new Set(syntheticTenants());
+
+  for (const tenant of tenants) {
+    if (synthetic.has(tenant)) continue;   // the other sweep owns those
+    const days = await getRetentionDays(tenant);
+    if (days <= 0) continue;               // keep forever — the default
+
+    const cutoff = now - days * 24 * 60 * 60 * 1000;
+    const purged = await runWithTenant(tenant, async () => {
+      const store = await createStore();
+      let count = 0;
+      try {
+        let offset = 0;
+        const PAGE = 200;
+        let guard = Math.ceil(batch / PAGE) + 100;
+        while (count < batch && guard-- > 0) {
+          const page = await store.listItems('session', PAGE, offset);
+          if (page.length === 0) break;
+          const stale = page.filter((r) => (r.mtime ?? 0) < cutoff);
+          if (stale.length === 0) {
+            if (page.length < PAGE) break;
+            offset += page.length;
+            continue;
+          }
+          for (const row of stale) {
+            if (count >= batch) break;
+            await store.purgeSession(row.id);
+            count++;
+          }
+        }
+      } finally {
+        await store.close();
+      }
+      return count;
+    });
+    if (purged > 0) log.info({ tenant, days, purged, cutoff }, 'user retention purge');
+    results.push({ tenant, days, purged });
+  }
+  return results;
+}
+
 // ── Lapsed-tenant deletion ──────────────────────────────────────────────────
 //
 // Storing someone's complete AI coding transcripts indefinitely after they have
