@@ -67,6 +67,7 @@ try {
 import { markPrompt, summarizeMarkers } from '@chat-recall/engine/core/session-sentiment.js';
 import { parseSessionFile, readCwdFromJsonl } from '@chat-recall/engine/parsers/session.js';
 import { resolveProjectId } from '@chat-recall/engine/core/project-resolver.js';
+import { projectPathIncludes } from '@chat-recall/engine/core/project-path-match.js';
 import { extractEntities } from '@chat-recall/engine/core/entity-extractor.js';
 import { buildSourceRegistry } from '@chat-recall/engine/parsers/all-sources.js';
 import { getSyncedRows, markSynced, getLedgerData, persistLedgerData,
@@ -840,8 +841,14 @@ async function syncToTargetInScope(cred: Credentials, opts: SyncToTargetOpts = {
   // (sync.pathsCleartext — what the watch daemon uses).
   const cleartext = opts.cleartextPaths ?? sync?.pathsCleartext === true;
   const mapPath = (p: string): string => (cleartext ? p : hashPath(p));
+  // projectPathIncludes, not String.includes. `listSessions()` decodes the
+  // project path from Claude Code's directory name, which replaced every
+  // separator with '-' and cannot be inverted — so an `exclude project
+  // ~/code/chat-recall` rule was compared against `/home/user/code/chat/recall`
+  // and never matched. The project kept syncing with the rule sitting there
+  // looking applied. See engine/core/project-path-match.ts.
   const excluded = (projectPath: string): boolean =>
-    excludeProjects.some((x) => x && projectPath.includes(x));
+    excludeProjects.some((x) => projectPathIncludes(projectPath, x));
   // Opt-in selective sync (settings.sync.syncMode='only'): ship ONLY allowlisted
   // projects. Allowlist = local ∪ tenant config; matched on the resolved project
   // id (what the dashboard picker lists) or a path substring. 'all'/unset ships
