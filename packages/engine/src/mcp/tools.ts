@@ -5,6 +5,8 @@
  * Exposes chat recall as tools that can be used by Claude Code.
  */
 
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
 import { resumeCommandFor } from '../core/resume-command.js';
 import { resolveProjectId } from '../core/project-resolver.js';
 import { config } from 'dotenv';
@@ -321,6 +323,17 @@ async function remotePatch<T>(path: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+async function remoteDelete<T>(path: string): Promise<T> {
+  const cred = remoteCredentials();
+  if (!cred) throw new Error('scope "server" needs a login — run `chat-recall login <server-url>` first.');
+  const res = await fetch(cred.base + path, {
+    method: 'DELETE',
+    headers: { authorization: `Bearer ${cred.token}` },
+  });
+  if (!res.ok) throw await buildHttpError(path, res);
+  return res.json() as Promise<T>;
+}
+
 /**
  * Throw the uniform "you must log in" error when no credentials exist.
  * Every server-backed tool calls this at entry so the agent always gets the
@@ -426,6 +439,33 @@ const RecallRecentSchema = z.object({
 const RecallRenameSchema = z.object({
   session_id: z.string().describe('Session ID to name (from recall_recent / recall_search).'),
   name: z.string().describe('The name to give this conversation. Pass an empty string to clear it and revert to the auto title.'),
+});
+
+/**
+ * The two SCOPE-NARROWING tools.
+ *
+ * Everything else an agent can call either reads, or adds something a user can
+ * remove. These two remove data and change what syncs — which is exactly why
+ * they belong in the agent, because "forget that conversation" and "stop syncing
+ * this repo" are said mid-conversation, not in a dashboard. The rule that makes
+ * them safe is directional: an agent may NARROW what we hold and never widen it.
+ * There is deliberately no tool that removes an exclusion, widens the allowlist
+ * or lengthens a retention window.
+ *
+ * `confirm` is required rather than implied. Annotations (destructiveHint) are
+ * advisory — a host may ignore them, and `alwaysAllow` is the user's own file to
+ * edit — so the only host-independent brake is an argument the model has to pass
+ * on purpose. It is the same shape as the typed count in `chat-recall retention`
+ * and the typed phrase in the dashboard.
+ */
+const RecallForgetSchema = z.object({
+  session_id: z.string().describe('Session ID to delete everywhere (from recall_recent / recall_search).'),
+  confirm: z.literal(true).describe('Must be true. Only pass it when the user has actually asked for this conversation to be deleted.'),
+});
+
+const RecallExcludePathSchema = z.object({
+  path: z.string().min(1).describe('Absolute path (or a distinctive part of one) to stop syncing.'),
+  confirm: z.literal(true).describe('Must be true. Only pass it when the user has actually asked to stop syncing this path.'),
 });
 
 const RecallEditsTimelineSchema = z.object({
@@ -910,6 +950,17 @@ const LEAN_TOOLS = new Set([
   'recall_diary_write', 'recall_diary_read',
   // Health, and the one that pays out on day one.
   'recall_status', 'recall_index', 'recall_security_summary',
+  // The two REMOVE tools. They are here for the same reason as the rest — they
+  // answer something a person says mid-conversation ("forget that", "stop
+  // syncing this repo") — and a privacy control the agent cannot see is a
+  // dashboard feature wearing an MCP badge. They shipped outside this set and
+  // the e2e harness proved them working under CHAT_RECALL_MCP_PROFILE=full,
+  // which is the one profile no user runs.
+  //
+  // Cost: two names on a 25-name list. Brake: `confirm: true` is a
+  // z.literal(true), and both are kept out of the alwaysAllow list `init`
+  // writes, so the host prompts every time. Neither depends on the listing.
+  'recall_forget', 'recall_exclude_path',
 ]);
 
 function toolProfile(): 'lean' | 'full' {
@@ -927,6 +978,8 @@ function toolProfile(): 'lean' | 'full' {
  * read-only is a lie the host acts on.
  */
 const WRITE_TOOLS = new Set<string>([
+  'recall_forget',             // deletes a session everywhere, with a tombstone
+  'recall_exclude_path',       // changes what syncs, here and on the account
   'recall_index',              // indexes and ships new rows
   'recall_code_index',         // runs the analyzer, then syncs findings
   'recall_kg_add',
@@ -948,6 +1001,10 @@ const WRITE_TOOLS = new Set<string>([
 
 /** Writes that OVERWRITE or retire earlier state, rather than only adding to it. */
 const DESTRUCTIVE_TOOLS = new Set<string>([
+  // The two scope-narrowing tools. recall_forget has no undo at all; excluding a
+  // path changes what leaves the machine until someone removes the rule by hand.
+  'recall_forget',
+  'recall_exclude_path',
   'recall_kg_invalidate',
   'recall_recommendation_dismiss',  // retires advice; undo exists but it is a decision
   'recall_reclassify',
@@ -1089,6 +1146,50 @@ Pass \`since_hours: N\` to restrict to sessions modified in the last N hours.`,
             since_hours:    { type: 'number', description: 'Only include sessions modified in the last N hours.' },
             scope:          { type: 'string', enum: ['local', 'server'], default: 'local', description: 'server = synced cross-device history (needs chat-recall login).' },
           },
+        },
+      },
+      {
+        name: 'recall_forget',
+        description: `Delete one conversation from chat-recall, everywhere, permanently.
+
+Use it when the user says "forget this conversation", "delete that session", "remove what we discussed
+about X" — anything that asks for a conversation to stop existing on the server.
+
+WHAT IT DOES: purges the session on every server this machine is logged in to, and tombstones the id so
+no later sync can bring it back. The AI tool's own transcript file on the user's disk is NOT touched —
+tell them that, because it is usually what they mean to keep.
+
+IRREVERSIBLE. There is no undo and no tool that restores it. Only pass \`confirm: true\` when the user
+has actually asked for this; do not infer it from a complaint about a conversation.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            session_id: { type: 'string', description: 'Session ID to delete (from recall_recent / recall_search).' },
+            confirm: { type: 'boolean', description: 'Must be true. Only when the user actually asked to delete it.' },
+          },
+          required: ['session_id', 'confirm'],
+        },
+      },
+      {
+        name: 'recall_exclude_path',
+        description: `Stop syncing a project path. Nothing under it leaves the machine from the next sync on.
+
+Use it when the user says "stop syncing this repo", "don't upload anything from ~/work/client", "keep this
+project out of chat-recall".
+
+WHAT IT DOES: adds the path to the exclusion rules — on this machine, and on the account so every device
+the user syncs from honours it. Sessions ALREADY uploaded from that path stay until they are deleted; say
+so, and offer recall_forget for the ones that matter.
+
+There is deliberately no tool to REMOVE an exclusion: an agent may narrow what is synced, never widen it.
+Undo it with \`chat-recall exclude remove <path>\` or in the dashboard.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'Absolute path (or a distinctive part of one) to stop syncing.' },
+            confirm: { type: 'boolean', description: 'Must be true. Only when the user actually asked to stop syncing it.' },
+          },
+          required: ['path', 'confirm'],
         },
       },
       {
@@ -2580,6 +2681,80 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
           lines.push('');
         }
         return { content: [{ type: 'text', text: lines.join('\n') }] };
+      }
+
+      case 'recall_forget': {
+        const params = RecallForgetSchema.parse(args);
+        getWAL().log('forget', { session_id: params.session_id });
+        requireRemote();
+        const r = await remoteDelete<{ deleted: string; tombstoned: boolean }>(
+          `/api/conversations/${encodeURIComponent(params.session_id)}`);
+        return {
+          content: [{
+            type: 'text',
+            text: `✓ Deleted session \`${r.deleted || params.session_id}\` from the server`
+              + `${r.tombstoned ? ' and tombstoned it, so no later sync can bring it back' : ''}.\n`
+              + 'The transcript on this machine is untouched — this only removed the copy chat-recall held.',
+          }],
+        };
+      }
+
+      case 'recall_exclude_path': {
+        const params = RecallExcludePathSchema.parse(args);
+        getWAL().log('exclude_path', { path: params.path });
+
+        // BOTH sides, because they do different jobs. The local rule takes
+        // effect on this machine's very next sync even if the server is
+        // unreachable; the account rule is what makes the user's OTHER devices
+        // honour it too. The sync client unions them, so writing both cannot
+        // conflict — it can only make the exclusion apply sooner and wider.
+        const written: string[] = [];
+        if (!isMultiTenant()) {
+          const { loadSettings, saveSettings } = await import('../core/settings.js');
+          const settings = loadSettings();
+          const abs = resolve(params.path.replace(/^~(?=\/|$)/, homedir()));
+          if (!settings.sync.excludeProjects.includes(abs)) {
+            settings.sync.excludeProjects.push(abs);
+            saveSettings(settings);
+          }
+          written.push('this machine');
+        }
+
+        // The account-wide rule REPLACES the stored list, so read it, merge, and
+        // write it back — posting only the new path would drop every rule the
+        // user already had.
+        try {
+          const current = await remoteGet<{ excludeTools: string[]; excludeProjects: string[]; excludeSources: string[]; approveSources: string[] }>('/api/sync-config');
+          if (!current.excludeProjects.includes(params.path)) {
+            await remotePost('/api/sync-config', {
+              ...current,
+              excludeProjects: [...current.excludeProjects, params.path],
+            });
+          }
+          written.push('your account (every device)');
+        } catch (err) {
+          // A local rule that landed is still worth reporting, and hiding the
+          // server failure would leave the user believing their other machines
+          // are covered when they are not.
+          if (!written.length) throw err;
+          return {
+            content: [{
+              type: 'text',
+              text: `✓ Stopped syncing \`${params.path}\` from this machine.\n`
+                + `⚠ Could not write the rule to your account (${err instanceof Error ? err.message : 'request failed'}), `
+                + 'so your other devices are NOT covered yet. Retry, or add it in the dashboard.',
+            }],
+          };
+        }
+
+        return {
+          content: [{
+            type: 'text',
+            text: `✓ Stopped syncing \`${params.path}\` — rule written to ${written.join(' and ')}.\n`
+              + 'Sessions already uploaded from that path stay until they are deleted; '
+              + 'use recall_forget for the ones that matter.',
+          }],
+        };
       }
 
       case 'recall_rename_session': {

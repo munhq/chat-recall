@@ -59,6 +59,46 @@ describe('server.json version parity', () => {
     }
   });
 
+  it('the tool counts the directories advertise match the code', () => {
+    // These numbers are the FIRST thing a person reads about this server, on
+    // registry.modelcontextprotocol.io and on smithery.ai, and they are typed
+    // by hand into two files that no test looked at. The 58 -> 60 move needed a
+    // sweep of five files; the lean count then drifted the moment two tools
+    // joined LEAN_TOOLS, because nothing derived it from the set.
+    //
+    // Read from source text, not by importing: importing tools.ts starts a
+    // server and reads credentials (same reason as mcp-tool-registry.test.ts).
+    const toolsSrc = readFileSync(
+      join(repoRoot, 'packages/engine/src/mcp/tools.ts'), 'utf-8');
+
+    const namesIn = (start: number, end: number) => new Set(
+      [...toolsSrc.slice(start, end).matchAll(/'(recall_[a-z_]+)'/g)].map((m) => m[1]));
+
+    const leanStart = toolsSrc.indexOf('const LEAN_TOOLS = new Set([');
+    expect(leanStart, 'LEAN_TOOLS not found').toBeGreaterThan(-1);
+    // +1 for recall_help, which lean APPENDS as the signpost to the rest.
+    const leanCount = namesIn(leanStart, toolsSrc.indexOf(']);', leanStart)).size + 1;
+    // recall_help is defined inside that same append, not in the `all` array, so
+    // it is not one of the tools the full profile registers. Counting it made
+    // this read 61 against a live full listing of 60.
+    const allNames = new Set(
+      [...toolsSrc.matchAll(/name: '(recall_[a-z_]+)'/g)].map((m) => m[1]));
+    allNames.delete('recall_help');
+    const fullCount = allNames.size;
+
+    expect(leanCount, 'lean set looks empty — regex broken?').toBeGreaterThan(10);
+    expect(fullCount).toBeGreaterThan(leanCount);
+
+    const manifest = JSON.stringify(read('server.json'));
+    const smithery = readFileSync(join(repoRoot, 'smithery.yaml'), 'utf-8');
+    for (const [where, text] of [['server.json', manifest], ['smithery.yaml', smithery]] as const) {
+      expect(text, `${where} does not state the lean count of ${leanCount}`)
+        .toContain(`${leanCount} tools`);
+      expect(text, `${where} does not state the full count of ${fullCount}`)
+        .toContain(`${fullCount} tools`);
+    }
+  });
+
   it('the manifest still exists where the workflow looks for it', () => {
     // The workflow runs `node -p "require('./server.json').version"` from the
     // repo root. Moving the file would make it read undefined and publish
