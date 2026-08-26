@@ -6,6 +6,7 @@ import AuthPage from './components/AuthPage';
 import DeviceApprovePage from './components/DeviceApprovePage';
 import ErrorBoundary from './components/ErrorBoundary';
 import { isCloud, isSignedIn, clearLegacyTokens } from './services/auth';
+import { authorizeResumeUrl } from './utils/oauth-resume';
 import './index.css';
 
 // Crash reporting → the operator's shared frontend GlitchTip project. The `app` tag
@@ -62,6 +63,23 @@ function render(node: React.ReactNode) {
 // of marketing copy for their own product.
 const isDeviceVisit = window.location.pathname === '/device';
 
+/**
+ * Step 4 of the connector flow: replay the authorize request now that a session
+ * exists. Returns true when the browser is leaving, so the caller renders
+ * nothing — painting the dashboard first would show a frame of an app the
+ * visitor never asked for, on their way back to the client that sent them.
+ *
+ * This is the ONLY thing that finishes the flow. Without it a visitor from
+ * claude.ai signed in, landed here, and the request they arrived with was
+ * dropped in silence. See utils/oauth-resume.ts.
+ */
+function resumeAuthorizeIfPending(): boolean {
+  const url = authorizeResumeUrl();
+  if (!url) return false;
+  window.location.replace(url);
+  return true;
+}
+
 /** Pre-auth splash. Deliberately not a spinner: at ~50ms a spinner is a flicker
  *  that reads as jank, while a still surface in the page background reads as
  *  the page still loading. Uses the theme tokens so it cannot flash white on a
@@ -78,9 +96,17 @@ if (isCloud()) {
   render(<Splash />);
   void isSignedIn().then((signedIn) => {
     if (signedIn) {
+      if (resumeAuthorizeIfPending()) return;
       render(isDeviceVisit ? <DeviceApprovePage /> : <App />);
     } else {
-      const after = () => render(isDeviceVisit ? <DeviceApprovePage /> : <App />);
+      // Both sign-in paths land here: the embedded email form keeps the URL, and
+      // a social round trip comes back to '/app' carrying the same query
+      // (postSignInPath in services/auth.ts). Either way the request is still in
+      // the URL at this point, so one check covers both.
+      const after = () => {
+        if (resumeAuthorizeIfPending()) return;
+        render(isDeviceVisit ? <DeviceApprovePage /> : <App />);
+      };
       render(<AuthPage onSuccess={after} />);
     }
   });
