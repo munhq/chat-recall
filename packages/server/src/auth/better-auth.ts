@@ -286,7 +286,19 @@ function createAuth() {
       // what the protected-resource metadata advertises and what a client audits
       // its token against, so it must equal the real /mcp URL.
       mcp({
-        loginPage: '/app?view=signin',
+        // NO QUERY STRING HERE. better-auth appends the authorize parameters
+        // with a hardcoded '?' (plugins/mcp/authorize.mjs: `${loginPage}?${q}`),
+        // so '/app?view=signin' produced
+        //   /app?view=signin?response_type=code&client_id=…
+        // — a second '?', which makes `view` the value
+        // "signin?response_type=code" and leaves every OAuth parameter buried
+        // inside it rather than readable as its own. The client then had no
+        // client_id, no redirect_uri and no code_challenge to resume with.
+        //
+        // '?view=signin' was also doing nothing: no component reads a `view`
+        // param of that name. The SPA already shows the sign-in form to anyone
+        // without a session, which is what this redirect produces.
+        loginPage: '/app',
         resource: `${baseURL()}/mcp`,
       }),
     ],
