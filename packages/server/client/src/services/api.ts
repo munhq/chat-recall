@@ -2830,6 +2830,24 @@ export async function deleteAllData(confirm: string): Promise<{ deleted: number 
   return await res.json();
 }
 
+/**
+ * Delete ONE conversation, everywhere.
+ *
+ * The endpoint has existed since the CLI's `chat-recall delete`; the dashboard
+ * had no way to reach it, so removing a single conversation meant dropping to a
+ * terminal — or deleting the whole project, which is what people did instead.
+ *
+ * Purges on the server and writes a tombstone, so no later sync restores it. The
+ * transcript on the user's own disk is untouched.
+ */
+export async function deleteConversation(id: string): Promise<{ deleted: string; tombstoned: boolean }> {
+  const res = await fetchWithTimeout(`${API_BASE}/conversations/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  }, 60_000);
+  if (!res.ok) await throwForResponse(res, 'Could not delete this conversation');
+  return await res.json();
+}
+
 /** The server's retention window, plus what a candidate window would delete. */
 export interface RetentionState {
   days: number;
