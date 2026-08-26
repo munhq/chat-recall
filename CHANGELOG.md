@@ -4,7 +4,73 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+### Fixed
+
+- **A read replica going away 500'd reads the primary could serve.** `PgStore`
+  validated the replica once, at startup, and degraded to the primary if it was
+  unreachable — but a replica does not only fail at startup. A CloudNativePG
+  failover took ours away mid-life and `/api/conversations/recent` answered 500
+  while the primary was healthy, because the metadata caches open the RO pool
+  directly and had no such guard. The fallback now belongs to the QUERY, in one
+  function: an unavailable replica (FATAL/PANIC, class 08, 57P0x, or a dead
+  socket) retries on the primary, a wrong query does not retry at all, and the
+  degraded-read warning is rate limited so a dead replica cannot flood the log.
+
 ### Added
+
+- **A retention window you set yourself**, with the warning it needs. `GET`/`POST
+  /api/data/retention` ({days}), a `chat-recall retention` command, and a
+  dashboard panel; swept server-side beside the existing purges. The only answer to "how
+  long do you keep my sessions?" was "while your workspace exists", and a window
+  is the one privacy control a user cannot implement for themselves. 0 (the
+  default for every existing workspace) keeps everything, so shipping this
+  deletes nothing until somebody asks. A value below the 7-day floor is REFUSED
+  rather than clamped — silently turning a typed 1 into 7 tells the user nothing.
+  Ungated, beside export and delete: a control over your own data does not sit
+  behind a plan. No tombstones, unlike a manual delete, so widening the window
+  and running `sync --full` re-ships what the new window admits.
+
+  Because it deletes on a TIMER, the person arming it is not present when it
+  acts — so nothing arms until the cost is shown and acknowledged. `GET
+  ?days=N` prices a candidate window without setting it; a change that would
+  delete sessions we hold is refused with 409 plus the count until the caller
+  sends `acknowledge: true`; the CLI makes you retype the count; the dashboard
+  shows a warning and a checkbox naming the number. A window that deletes
+  nothing asks for nothing — a ceremony on the harmless case teaches people to
+  click through the one that matters. And the warning says the part that is easy
+  to leave out: re-syncing recovers a session ONLY while its transcript still
+  exists on a machine you have. For a laptop you no longer own, history a tool
+  rotated, or files you deleted, our copy is the only copy.
+
+- **`init` says what would leave the machine BEFORE it uploads.** It used to run
+  the first sync and report afterwards — "Synced 412 session(s)" — so the one
+  irreversible decision in setup was made for the user and described in the past
+  tense, while the exclusions that govern it are only useful beforehand. Step 6
+  now prints the session count, the tools, the top projects by name, and how many
+  sessions carry no project path at all (a tool that files transcripts under a
+  hash rather than per directory leaves nothing for a path rule to match, and
+  `exclude tool` is the control that covers those). An interactive run can answer `n` and set rules first; with
+  no TTY, or with `--yes`, the summary still prints and the sync proceeds, so no
+  script hangs. The preview calls the SAME predicates the sync gate calls, so it
+  cannot drift into a reassurance the upload does not honour.
+
+- **The security page now answers where the data lives and what we do not do with
+  it.** EU-only hosting (OVHcloud, Gravelines), no third-party AI APIs, ungated
+  export and deletion, and "we do not train on your sessions" — which existed
+  only in the legal pages and, for the training question, in the *pricing* FAQ.
+  It also documents the **Vault**: a client-side-encrypted backup (Argon2id key
+  derivation, XChaCha20-Poly1305, the server holds ciphertext and cannot decrypt)
+  that was implemented and advertised nowhere, stated together with what it does
+  not cover — the searchable index, which must reach Postgres as text for search
+  to work.
+
+- **An end-to-end gate for the privacy controls** (`scripts/exclusion-e2e.mjs`,
+  wired into the compose workflow). It boots the real server, drives the real
+  CLI, and asserts what a user actually cares about — the row never reached
+  Postgres — for `exclude project`, `exclude tool`, `sync-only`, rule removal,
+  `delete <session>`, `POST /api/data/delete`, and the read-back through MCP.
+  23 checks. Every one of those paths previously had unit tests of the pure
+  predicate only, which is how the bug below survived.
 
 - **A ceiling on open auto-filed cards (50).** The per-run cap bounded a burst,
   not a total: every ingest triggers a run, so 10-at-a-time kept going until the
@@ -16,6 +82,38 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
   do.
 
 ### Fixed
+
+- **The server-side sync rules failed OPEN.** `fetchTenantSyncConfig` returned an
+  empty rule set on any non-2xx or network error, so a five-second blip made
+  every dashboard exclusion silently not apply for that sync — and the sync then
+  uploaded the projects those rules exist to hold back, with the rules still
+  showing as applied in the dashboard. Now: a 404 still means empty (an older
+  self-hosted server has no such endpoint, and that IS the answer); any other
+  failure reuses the last successfully fetched set, persisted to disk so a fresh
+  CLI process has it; and with nothing ever fetched, the sync REFUSES rather than
+  uploading under rules it cannot see. Refusing is recoverable — re-run it —
+  while an upload is not.
+
+- **The scope preview could report "nothing would upload" on a full machine.**
+  `summariseSyncScope()` reads the tool-backend registry, which is populated by a
+  bootstrapper that only runs once `core/backends/index.js` has been imported —
+  so with no other module pulling it in first, the preview returned zeros. For a
+  privacy preview, under-reporting is the one failure that must be impossible; it
+  now takes that dependency itself.
+
+- **`chat-recall exclude project ~/code/chat-recall` did not exclude
+  chat-recall.** Claude Code names a project folder after its path with every
+  separator replaced by `-`, and that encoding cannot be inverted: the sync gate
+  received `/home/user/code/chat/recall` while the rule stored the hyphenated
+  path the user typed, so the substring test was false and the project kept
+  uploading. Silently — the rule sat in `exclude list` looking applied. Any
+  project whose directory name contains `-` or `_` was affected, which is most of
+  them; `sync-only` failed the same way, in the safe direction (it shipped
+  nothing). One matcher now collapses `-`, `_` and `/` on both sides
+  (`project-path-match.ts`), and every comparison tries the raw form first, so a
+  rule that matched before still matches and the change can only ever withhold
+  more. Applied to the sync gate, the selective-sync allowlist, and the
+  index-time allow/deny lists.
 
 - **The auto-file panel counted only half of what it files.** It read
   `code_actions` alone while the filer reads findings too, so asked what a lower

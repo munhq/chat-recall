@@ -285,6 +285,67 @@ export async function tenantQuery(
 }
 
 /**
+ * Is this error the replica being UNAVAILABLE, rather than the query being wrong?
+ *
+ * The distinction decides whether retrying on the primary is honest. A syntax
+ * error would fail identically there; a backend that is shutting down would not.
+ *
+ * `FATAL`/`PANIC` covers the case that actually happened: a CloudNativePG
+ * failover put the replica into "the database system is shutting down" (08P01,
+ * severity FATAL) and the pooler answered "server login has been failing" with
+ * the same class. Postgres class 08 is connection-exception, 57P0x is
+ * shutdown/cannot-connect-now, and the Node codes are the socket giving up.
+ */
+function isReplicaUnavailable(e: unknown): boolean {
+  const err = e as { code?: unknown; severity?: unknown } | null | undefined;
+  if (!err || typeof err !== 'object') return false;
+  const sev = String(err.severity ?? '');
+  if (sev === 'FATAL' || sev === 'PANIC') return true;
+  const code = String(err.code ?? '');
+  if (code.startsWith('08')) return true;                       // connection exception
+  return ['57P01', '57P02', '57P03',                            // shutdown / cannot connect now
+    'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ENOTFOUND', 'EPIPE'].includes(code);
+}
+
+/** Rate-limit the "degraded to primary" warning: a dead replica must not flood. */
+let lastRoWarnAt = 0;
+
+/**
+ * A lag-tolerant READ, with the primary as its fallback.
+ *
+ * WHY THIS EXISTS. `PgStore.init` validated the replica once, at startup, and
+ * degraded to the primary if it was unreachable — but a replica does not only
+ * fail at startup. A failover took ours away mid-life, the metadata caches call
+ * `openPgPoolRo()` directly with no such guard, and `/api/conversations/recent`
+ * answered 500 while the primary was healthy and serving everything else. The
+ * log even said "using primary for reads", from the one path that did fall back,
+ * which made the failure read like something else entirely.
+ *
+ * The fallback therefore belongs to the QUERY, not to startup, and to one
+ * function rather than each caller. Safe by construction: every caller of this
+ * is a pure, lag-tolerant SELECT (a stale miss recomputes), so the primary is
+ * always a correct place to ask — it is only ever more current.
+ */
+export async function tenantQueryRo(
+  roPool: any, rwPool: any, tenant: string, sql: string, params: unknown[] = [],
+  opts: { lockTimeoutMs?: number } = {},
+): Promise<any> {
+  if (!roPool || roPool === rwPool) return tenantQuery(rwPool, tenant, sql, params, opts);
+  try {
+    return await tenantQuery(roPool, tenant, sql, params, opts);
+  } catch (e) {
+    if (!isReplicaUnavailable(e)) throw e;
+    const now = Date.now();
+    if (now - lastRoWarnAt > 60_000) {
+      lastRoWarnAt = now;
+      const { createLogger } = await import('../logger.js');
+      createLogger('pg').warn({ err: e }, 'read replica unavailable — this read fell back to the primary');
+    }
+    return await tenantQuery(rwPool, tenant, sql, params, opts);
+  }
+}
+
+/**
  * Run MANY statements inside ONE tenant-scoped transaction (one BEGIN/SET
  * GUC/COMMIT, one connection). Use this whenever a write touches more than one
  * row/statement — calling tenantQuery per row pays the BEGIN+SET+COMMIT

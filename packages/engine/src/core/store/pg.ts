@@ -1,5 +1,5 @@
 import { randomBytes } from 'crypto';
-import { tenantQuery, tenantTx, bulkInsert } from './pg-pool.js';
+import { tenantQuery, tenantTx, bulkInsert, tenantQueryRo } from './pg-pool.js';
 import { codeFindingId, codeFindingIds, codeHotspotId, codeActionId } from '../../types/code-intel.js';
 /**
  * PgStore — Postgres StorageDriver for team/cloud mode. Real implementation
@@ -90,7 +90,9 @@ export class PgStore implements StorageDriver {
   /** Read query → replica pool (falls back to the write pool when no RO DSN).
    *  Use ONLY for pure, lag-tolerant SELECTs — never read-after-write. */
   private async qr(sql: string, params: unknown[] = []): Promise<any[]> {
-    const r = await tenantQuery(this.roPool, this.tenant, sql, params);
+    // Falls back to the primary when the replica goes away MID-LIFE, not only
+    // when it was already down at init — see tenantQueryRo.
+    const r = await tenantQueryRo(this.roPool, this.pool, this.tenant, sql, params);
     return r.rows;
   }
   private async one(sql: string, params: unknown[] = []): Promise<any> {
