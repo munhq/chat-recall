@@ -9,6 +9,14 @@ import {
 
 let tmp: string;
 const origHome = homeEnvSnapshot();
+
+/**
+ * `emit` returns a path built with `path.join`, so its separator is the
+ * platform's. These assertions were written as `/`-separated regex tails and
+ * failed on Windows against a perfectly correct `…\.gemini\commands\review.toml`.
+ * Compare against a path built the same way the product builds it.
+ */
+const tail = (...parts: string[]) => join(...parts);
 beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'codec-')); useHomeDir(tmp); });
 afterEach(() => { restoreHomeEnv(origHome); rmSync(tmp, { recursive: true, force: true }); });
 
@@ -38,7 +46,7 @@ describe('command translation', () => {
     expect(art.body).toBe('Review the diff for bugs.');
 
     const out = emit('command', art, 'gemini');
-    expect(out.path).toMatch(/\.gemini\/commands\/review\.toml$/);
+    expect(out.path.endsWith(tail('.gemini', 'commands', 'review.toml'))).toBe(true);
     expect(out.content).toContain('description = "Code review"');
     expect(out.content).toContain('prompt = ');
 
@@ -55,7 +63,7 @@ describe('command translation', () => {
     writeFileSync(p, 'description = "run tests"\nprompt = """\nRun all tests.\n"""\n');
     const art = readCommand(p, 'toml');
     const out = emit('command', art, 'codex');
-    expect(out.path).toMatch(/\.codex\/prompts\/test\.md$/);
+    expect(out.path.endsWith(tail('.codex', 'prompts', 'test.md'))).toBe(true);
     expect(out.content).toContain('Run all tests.');
   });
 });
@@ -67,7 +75,7 @@ describe('agent translation', () => {
     const art = readAgent(p, 'md');
     expect(art.tools).toBe('Read,Grep');
     const out = emit('agent', art, 'codex');
-    expect(out.path).toMatch(/\.codex\/agents\/auditor\.toml$/);
+    expect(out.path.endsWith(tail('.codex', 'agents', 'auditor.toml'))).toBe(true);
     expect(out.content).toContain('developer_instructions = ');
     expect(out.content).toContain('You audit code.');
 
@@ -86,7 +94,7 @@ describe('instructions translation', () => {
     writeFileSync(p, '# Project rules\nAlways use tabs.\n');
     const art = readInstructions(p, 'rules');
     const out = emit('instructions', art, 'opencode', '/work/proj');
-    expect(out.path).toBe('/work/proj/AGENTS.md');
+    expect(out.path).toBe(join('/work/proj', 'AGENTS.md'));
     expect(out.content).toContain('Always use tabs.');
   });
 
@@ -94,6 +102,6 @@ describe('instructions translation', () => {
     writeFileSync(join(tmp, 'x'), 'hi');
     const art = readInstructions(join(tmp, 'x'), 'g');
     const out = emit('instructions', art, 'gemini');
-    expect(out.path).toMatch(/\.gemini\/GEMINI\.md$/);
+    expect(out.path.endsWith(tail('.gemini', 'GEMINI.md'))).toBe(true);
   });
 });

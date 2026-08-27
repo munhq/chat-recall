@@ -63,7 +63,7 @@ describe('discovery', () => {
     const found = discoverSessionSources();
     expect(found).toHaveLength(2);
     expect(found[0].isPrimary).toBe(true);
-    expect(found[0].path).toContain('.claude/projects');
+    expect(found[0].path).toContain(join('.claude', 'projects'));
     expect(found[0].sessions).toBe(2);
 
     const work = found.find((s) => s.path.includes('.claude-work'))!;

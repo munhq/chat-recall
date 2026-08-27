@@ -45,6 +45,19 @@ function writeSession(claudeHome: string, lines: string[]): string {
   return p;
 }
 
+/**
+ * The profile root a transcript lives under.
+ *
+ * This was `path.replace(/\/projects\/.*$/, '')`, and a `join`-built path on
+ * Windows is separated by `\` — so the regex matched nothing, `approveHome`
+ * received the whole file path instead of the profile root, the profile stayed
+ * pending, and the assertion that a secondary's growth is detected failed on
+ * Windows alone. Build the path back the way it was built in the first place.
+ */
+function homeRootOf(claudeHome: string): string {
+  return join(home, claudeHome);
+}
+
 /** The modules read env at call time; import fresh so nothing is cached. */
 async function mods() {
   const scan = await import('./live-session-scan.js');
@@ -138,8 +151,8 @@ describe('a session split across two homes', () => {
 
     // A second profile created later needs a decision — silence must not mean
     // "we started uploading a work account".
-    const secondary = writeSession('.claude-t2', [rec('x', 'live')]);
-    expect(homeDecision(secondary.replace(/\/projects\/.*$/, ''))).toBe('pending');
+    writeSession('.claude-t2', [rec('x', 'live')]);
+    expect(homeDecision(homeRootOf('.claude-t2'))).toBe('pending');
     expect(claudeBackend.fileSize(SID)).toBe(before);      // not scanned while pending
   });
 
@@ -149,8 +162,8 @@ describe('a session split across two homes', () => {
     writeSession('.claude', [rec('a', 'one')]);
     const before = claudeBackend.fileSize(SID);
 
-    const secondary = writeSession('.claude-t2', [rec('x', 'a much longer live record'.repeat(4))]);
-    approveHome(secondary.replace(/\/projects\/.*$/, ''));
+    writeSession('.claude-t2', [rec('x', 'a much longer live record'.repeat(4))]);
+    approveHome(homeRootOf('.claude-t2'));
 
     // A frozen primary + growing secondary previously reported a constant size,
     // so append-only change detection never fired and the session never re-synced.

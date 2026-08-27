@@ -47,6 +47,7 @@ import searchRouter from './search.js';
 import memoryRouter from './memory.js';
 import conversationsRouter from './conversations.js';
 import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '@chat-recall/engine/test-support/home-env.js';
+import { removeTestDir } from '@chat-recall/engine/test-support/tmp-dir.js';
 
 const DAY = 86_400_000;
 const NOW = Date.now();
@@ -113,7 +114,9 @@ afterAll(() => {
   restoreHomeEnv(origHome);
   if (origDataDir === undefined) delete process.env.CHAT_RECALL_DATA_DIR;
   else process.env.CHAT_RECALL_DATA_DIR = origDataDir;
-  rmSync(tmpHome, { recursive: true, force: true });
+  // removeTestDir, not rmSync: this directory holds an open SQLite handle and
+  // Windows refuses to unlink a file in use. See test-support/tmp-dir.ts.
+  removeTestDir(tmpHome);
 });
 
 describe('POST /api/search — session search window', () => {
