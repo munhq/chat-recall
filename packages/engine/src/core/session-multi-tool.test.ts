@@ -7,11 +7,12 @@ import {
   replaySessionAny,
 } from './session-multi-tool.js';
 import { computeOutcome } from './session-outcome.js';
+import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '../test-support/home-env.js';
 
 let tmpHome: string;
-const origHome = process.env.HOME;
-beforeEach(() => { tmpHome = mkdtempSync(join(tmpdir(), 'mt-')); process.env.HOME = tmpHome; });
-afterEach(() => { process.env.HOME = origHome; rmSync(tmpHome, { recursive: true, force: true }); });
+const origHome = homeEnvSnapshot();
+beforeEach(() => { tmpHome = mkdtempSync(join(tmpdir(), 'mt-')); useHomeDir(tmpHome); });
+afterEach(() => { restoreHomeEnv(origHome); rmSync(tmpHome, { recursive: true, force: true }); });
 
 function writeClaudeSession(uuid: string, lines: object[]) {
   const dir = join(tmpHome, '.claude', 'projects', '-x');

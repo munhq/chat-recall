@@ -10,20 +10,21 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import toolkitRouter from './toolkit.js';
+import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '@chat-recall/engine/test-support/home-env.js';
 
 let tmpHome: string;
-const origHome = process.env.HOME;
+const origHome = homeEnvSnapshot();
 let app: Express;
 
 beforeAll(() => {
   tmpHome = mkdtempSync(join(tmpdir(), 'toolkit-'));
-  process.env.HOME = tmpHome;
+  useHomeDir(tmpHome);
   app = express();
   app.use(express.json());
   app.use('/api/toolkit', toolkitRouter);
 });
 afterAll(() => {
-  process.env.HOME = origHome;
+  restoreHomeEnv(origHome);
   rmSync(tmpHome, { recursive: true, force: true });
 });
 
