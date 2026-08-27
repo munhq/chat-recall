@@ -4,6 +4,27 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.21] — 2026-08-27
+
+### Fixed
+
+- **`init --server https://chatrecall.dev` could fail with "No OIDC issuer
+  configured".** The login asks /api/capabilities which sign-in flow to run, and
+  that was one 8-second attempt inside `catch {}`. A slow or blocked probe left
+  the provider unknown, execution fell through to the OIDC branch, and the user
+  was told to pass `--issuer <url>` or set CHAT_RECALL_OIDC_ISSUER — for a hosted
+  service that has never had an OIDC issuer, with no hint that a request had
+  failed. Seen on a clean macOS install. The probe now retries three times with a
+  longer timeout, keeps the failure reason and prints it, and when it still
+  cannot be read assumes the better-auth device flow that the hosted service and
+  every AUTH_PROVIDER=better-auth self-host run. A wrong guess produces a
+  specific error; refusing to try helped nobody. `--issuer` and Keycloak servers
+  are unaffected.
+- **The MCP now identifies itself** — title, description, websiteUrl and icons in
+  serverInfo, which clients show when asking a user whether to trust a server,
+  and which every directory previously had to scrape or invent.
+
+
 ## [0.5.20] — 2026-08-27
 
 ### Fixed

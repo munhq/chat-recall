@@ -3208,12 +3208,47 @@ async function runLogin(
     // "use --token" message instead of hitting someone's realm.
     let issuer = opts.issuer;
     let authProvider: string | undefined;
+    let capsError: string | null = null;
     if (!issuer) {
-      try {
-        const caps = await fetch(`${base}/api/capabilities`, { signal: AbortSignal.timeout(8000) }).then((r) => r.json()) as { authProvider?: string; oidcIssuer?: string | null };
-        authProvider = caps?.authProvider;
-        if (caps?.oidcIssuer) issuer = caps.oidcIssuer;
-      } catch { /* fall through — deviceLogin surfaces the missing-issuer error */ }
+      // THREE ATTEMPTS, AND THE FAILURE IS NOT SWALLOWED.
+      //
+      // This one request decides which login flow runs, and it used to be a
+      // single 8-second try inside `catch {}`. A slow or blocked probe therefore
+      // left authProvider undefined, the code fell through to the OIDC branch,
+      // and the user was told:
+      //
+      //   "No OIDC issuer configured for SSO login. Pass --issuer <url>…"
+      //
+      // on a plain `init --server https://chatrecall.dev` — sending them to look
+      // for a Keycloak URL that has never existed for the hosted service, with
+      // no hint that anything had failed to load. Seen on a real machine.
+      for (let attempt = 1; attempt <= 3 && !authProvider; attempt++) {
+        try {
+          const res = await fetch(`${base}/api/capabilities`, { signal: AbortSignal.timeout(15_000) });
+          if (!res.ok) { capsError = `HTTP ${res.status}`; }
+          else {
+            const caps = await res.json() as { authProvider?: string; oidcIssuer?: string | null };
+            authProvider = caps?.authProvider;
+            if (caps?.oidcIssuer) issuer = caps.oidcIssuer;
+            capsError = null;
+          }
+        } catch (err) {
+          capsError = err instanceof Error ? err.message : String(err);
+        }
+        if (!authProvider && attempt < 3) await new Promise((r) => setTimeout(r, attempt * 1000));
+      }
+    }
+    if (!authProvider && !issuer) {
+      // Still unknown, and no issuer to fall back on. Assume the flow the
+      // overwhelming majority of servers use rather than erroring: better-auth
+      // is what the hosted service runs and what every `AUTH_PROVIDER=better-auth`
+      // self-host runs, and its device endpoints answer for themselves — if the
+      // guess is wrong, THAT failure is specific and reported. Refusing to try
+      // is the one outcome guaranteed to help nobody.
+      authProvider = 'better-auth';
+      if (capsError) {
+        console.log(`   ${chalk.yellow('Could not read the server\'s capabilities')} (${capsError}) — assuming the standard sign-in flow.`);
+      }
     }
     const onPrompt = (p: { url: string; userCode: string; verificationUri: string }) => {
       if (opts.promptJson) {
