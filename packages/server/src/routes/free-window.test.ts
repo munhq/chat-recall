@@ -110,13 +110,16 @@ beforeEach(() => {
   limitsState.searchWindowDays = null;
 });
 
-afterAll(() => {
+afterAll(async () => {
   restoreHomeEnv(origHome);
   if (origDataDir === undefined) delete process.env.CHAT_RECALL_DATA_DIR;
   else process.env.CHAT_RECALL_DATA_DIR = origDataDir;
-  // removeTestDir, not rmSync: this directory holds an open SQLite handle and
-  // Windows refuses to unlink a file in use. See test-support/tmp-dir.ts.
-  removeTestDir(tmpHome);
+  // removeTestDir, not rmSync. `conversationsRouter` (mounted above) keeps a
+  // module-level MetadataCache for the process lifetime, so cache.db under this
+  // directory is legitimately open — and Windows will not unlink a file in use.
+  // See test-support/tmp-dir.ts: it retries, then names what is left rather than
+  // failing a suite whose assertions have already passed.
+  await removeTestDir(tmpHome);
 });
 
 describe('POST /api/search — session search window', () => {
