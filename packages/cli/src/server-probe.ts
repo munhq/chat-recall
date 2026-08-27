@@ -33,7 +33,22 @@ export type ProbeResult =
   /** 2xx, but not a chat-recall API — a proxy, a captive portal, a parked domain. */
   | { kind: 'not_api'; status: number; snippet: string }
   /** Never got an HTTP response at all: DNS, TLS, connection, timeout. */
-  | { kind: 'unreachable'; error: string };
+  /** No HTTP response at all. `reason` names WHY — the thing `fetch failed`
+   *  refuses to tell you — and `error` keeps the raw string for a report. */
+  | { kind: 'unreachable'; error: string; reason: UnreachableReason };
+
+/** Why a request never got an answer. Node's fetch reports every one of these as
+ *  the same five characters, "fetch failed", with the real code hidden in
+ *  `err.cause`. A user pasting that string leaves nothing to diagnose — which is
+ *  exactly what happened on a macOS install: the message named SSO, the cause
+ *  was the network, and nobody could tell which. */
+export type UnreachableReason =
+  | 'dns'        // ENOTFOUND / EAI_AGAIN — the name does not resolve
+  | 'refused'    // ECONNREFUSED — resolves, nothing listening
+  | 'tls'        // certificate rejected: expired, self-signed, wrong host
+  | 'timeout'    // no answer in time; a silent drop looks like this
+  | 'reset'      // ECONNRESET / EPIPE — connection cut mid-flight
+  | 'unknown';   // classified as such rather than guessed at
 
 /** True when the probe proves a usable chat-recall server. */
 export function probeOk(r: ProbeResult): r is Extract<ProbeResult, { kind: 'ok' }> {
@@ -58,7 +73,11 @@ export async function probeServer(
       signal: AbortSignal.timeout(opts.timeoutMs ?? 10_000),
     });
   } catch (err) {
-    return { kind: 'unreachable', error: err instanceof Error ? err.message : String(err) };
+    return {
+      kind: 'unreachable',
+      error: describeCause(err),
+      reason: classifyUnreachable(err),
+    };
   }
 
   if (res.status === 401 || res.status === 403) return { kind: 'unauthorized', status: res.status };
@@ -72,7 +91,7 @@ export async function probeServer(
   // says nothing about the actual problem, which is how this bug shipped.
   let body: string;
   try { body = await res.text(); } catch (err) {
-    return { kind: 'unreachable', error: err instanceof Error ? err.message : String(err) };
+    return { kind: 'unreachable', error: describeCause(err), reason: classifyUnreachable(err) };
   }
   let parsed: { apiVersion?: number; edition?: string; cli?: { version?: string } | null };
   try { parsed = JSON.parse(body); } catch {
@@ -111,6 +130,63 @@ export function probeAdvice(r: ProbeResult, base: string): string {
       return `${base} answered ${r.status} with something that is not the chat-recall API `
         + `(${JSON.stringify(r.snippet)}) — check the URL, a proxy or a captive portal`;
     case 'unreachable':
-      return `no HTTP response from ${base} (${r.error}) — check the URL, DNS, or that the server is running`;
+      // One sentence per cause, each naming the fix rather than the error.
+      switch (r.reason) {
+        case 'dns':
+          return `cannot resolve the host in ${base} (${r.error}) — check the URL for a typo, `
+            + 'and your DNS or VPN';
+        case 'refused':
+          return `${base} resolves but refused the connection (${r.error}) — the server is not `
+            + 'running, or the port is wrong';
+        case 'tls':
+          return `the TLS certificate at ${base} was rejected (${r.error}) — expired, self-signed, `
+            + 'or issued for another host. A corporate proxy that re-signs traffic does this.';
+        case 'timeout':
+          return `${base} did not answer in time (${r.error}) — a firewall or proxy that drops `
+            + 'traffic silently looks exactly like this';
+        case 'reset':
+          return `the connection to ${base} was cut (${r.error}) — often a proxy or a captive portal`;
+        default:
+          return `no HTTP response from ${base} (${r.error}) — check the URL, DNS, or that the `
+            + 'server is running';
+      }
   }
+}
+
+/**
+ * Dig the real code out of a fetch failure.
+ *
+ * `err.message` on a failed `fetch` is the constant string "fetch failed" for
+ * every network cause there is. undici puts the truth in `err.cause`, one or two
+ * levels down, as a Node error code. Walk the chain and classify.
+ */
+export function classifyUnreachable(err: unknown): UnreachableReason {
+  if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) return 'timeout';
+  for (let e: unknown = err, depth = 0; e && depth < 5; depth++) {
+    const code = String((e as { code?: unknown }).code ?? '');
+    const msg = String((e as { message?: unknown }).message ?? '');
+    if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return 'dns';
+    if (code === 'ECONNREFUSED') return 'refused';
+    if (code === 'ECONNRESET' || code === 'EPIPE') return 'reset';
+    if (code === 'ETIMEDOUT' || code === 'UND_ERR_CONNECT_TIMEOUT' || code === 'UND_ERR_HEADERS_TIMEOUT') return 'timeout';
+    // TLS codes are many and all start the same way, plus the self-signed pair.
+    if (code.startsWith('CERT_') || code.startsWith('ERR_TLS')
+      || code === 'DEPTH_ZERO_SELF_SIGNED_CERT' || code === 'SELF_SIGNED_CERT_IN_CHAIN'
+      || code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' || /certificate/i.test(msg)) return 'tls';
+    e = (e as { cause?: unknown }).cause;
+  }
+  return 'unknown';
+}
+
+/** The most specific string available: the underlying code where there is one,
+ *  because "fetch failed" is worth nothing in a bug report. */
+export function describeCause(err: unknown): string {
+  const parts: string[] = [];
+  for (let e: unknown = err, depth = 0; e && depth < 5; depth++) {
+    const code = (e as { code?: unknown }).code;
+    if (typeof code === 'string' && code && !parts.includes(code)) parts.push(code);
+    e = (e as { cause?: unknown }).cause;
+  }
+  const base = err instanceof Error ? err.message : String(err);
+  return parts.length ? `${base}: ${parts.join(' → ')}` : base;
 }
