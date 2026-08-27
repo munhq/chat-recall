@@ -1059,7 +1059,29 @@ export class PgStore implements StorageDriver {
       if (Number(existing.size) === uncompressedSize && Number(existing.mtime) >= intMs(mtime)) return 'unchanged';
       if (uncompressedSize < Number(existing.size)) return 'shrink-protected';
     }
-    await this.q(
+    // UNRESTRICTED, because this row is written BEFORE its parent exists.
+    //
+    // THE PRODUCTION FAILURE. raw_sessions carries a RESTRICTIVE
+    // `author_visibility` policy FOR SELECT whose USING requires a VISIBLE
+    // memory_metadata session row. PostgreSQL applies a SELECT policy's USING as
+    // the WITH CHECK of an `INSERT … ON CONFLICT DO UPDATE` — the resulting row
+    // must still be visible to the writer — so writing this child before its
+    // parent row exists fails with
+    //
+    //   42501: new row violates row-level security policy "author_visibility"
+    //          for table "raw_sessions"
+    //
+    // and the whole ingest request 500s, so the user's sync never completes.
+    // The ingest MUST write the archive first: the envelope is derived from
+    // these bytes and its first prompt becomes the metadata row's title, so the
+    // order cannot simply be swapped.
+    //
+    // Elevating the WRITE is the same remedy code_* already uses, with the same
+    // safety argument: raw_sessions carries NO author-write-guard (see the guard
+    // list in pg-schema.ts), tenant isolation is untouched — app.tenant comes
+    // from a separate context — and reads keep the member's real viewer, so this
+    // makes nothing newly visible to anyone. See runUnrestricted.
+    await runUnrestricted(() => this.q(
       `INSERT INTO raw_sessions (tenant, session_id, tool, mtime, size, gz, captured_at, project_id, project_path)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
        ON CONFLICT (tenant, session_id) DO UPDATE SET
@@ -1067,7 +1089,7 @@ export class PgStore implements StorageDriver {
          gz=excluded.gz, captured_at=excluded.captured_at,
          project_id=CASE WHEN excluded.project_id <> '' THEN excluded.project_id ELSE raw_sessions.project_id END,
          project_path=CASE WHEN excluded.project_path <> '' THEN excluded.project_path ELSE raw_sessions.project_path END`,
-      [this.t, sessionId, tool, intMs(mtime), uncompressedSize, gz, Date.now(), projectId, projectPath]);
+      [this.t, sessionId, tool, intMs(mtime), uncompressedSize, gz, Date.now(), projectId, projectPath]));
     return 'stored';
   }
   // Primary: fetching a raw archived session is re-processing-adjacent (and may
