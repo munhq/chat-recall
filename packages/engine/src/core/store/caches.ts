@@ -1,4 +1,4 @@
-import { currentTenant, currentAuthor } from './tenant-context.js';
+import { currentTenant, currentAuthor, runUnrestricted } from './tenant-context.js';
 /**
  * Async drivers for the two other cache.db-backed stores:
  *   - MetadataCache — session metadata, summaries, per-session compute cache,
@@ -151,10 +151,23 @@ export class PgMetadataCache implements MetadataCacheDriver {
     if (payload.length > 20_000_000) return;
     let gz: Buffer | null = null; let text: string | null = null;
     if (payload.length >= 1024) { try { gz = gzipSync(payload, { level: 6 }); } catch { text = payload; } } else text = payload;
-    await this.q(
+    // UNRESTRICTED — same reason as raw_sessions (see putRawSession in pg.ts).
+    // compute_cache carries the RESTRICTIVE `author_visibility` policy FOR SELECT
+    // whose USING needs a VISIBLE memory_metadata session row, and PostgreSQL
+    // applies that USING as the WITH CHECK of an `INSERT … ON CONFLICT DO
+    // UPDATE`. A derived row for a session whose metadata row is not visible
+    // therefore fails with 42501 and 500s the whole ingest request:
+    //
+    //   new row violates row-level security policy "author_visibility"
+    //   for table "compute_cache"
+    //
+    // compute_cache carries NO author-write-guard (see the guard list in
+    // pg-schema.ts), tenant isolation is untouched, and reads keep the member's
+    // real viewer — so elevating this write makes nothing newly visible.
+    await runUnrestricted(() => this.q(
       `INSERT INTO compute_cache (tenant,session_id,kind,mtime,payload_json,payload_gz,computed_at) VALUES ($1,$2,$3,$4,$5,$6,$7)
        ON CONFLICT (tenant,session_id,kind) DO UPDATE SET mtime=excluded.mtime, payload_json=excluded.payload_json, payload_gz=excluded.payload_gz, computed_at=excluded.computed_at`,
-      [this.t, sessionId, kind, intMs(mtime), text ?? '', gz, Date.now()]);
+      [this.t, sessionId, kind, intMs(mtime), text ?? '', gz, Date.now()]));
   }
   async invalidateCompute(...a: MArgs<'invalidateCompute'>) {
     await this.q(`DELETE FROM compute_cache WHERE tenant=$1 AND session_id=$2`, [this.t, a[0]]);
