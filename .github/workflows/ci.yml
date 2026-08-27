@@ -83,6 +83,54 @@ jobs:
       - name: Test
         run: npx vitest run
 
+  # ── THE POSTGRES HALF OF THE SUITE, WHICH HAD NEVER RUN IN CI ─────────────
+  # `vitest.config.ts` switches the store tests to Postgres when DATABASE_URL is
+  # set — and NO workflow set it. So `behaviorSuite('postgres')`, every tenant
+  # isolation test and every RLS test were skipped on every run, and the only
+  # Postgres coverage was compose-integration, which drives the CLI rather than
+  # the store and connects as the Compose bootstrap role.
+  #
+  # That role is a SUPERUSER with BYPASSRLS, and PostgreSQL bypasses row-level
+  # security entirely for such a role — FORCE ROW LEVEL SECURITY does not change
+  # it. So even that job ran with RLS switched off. A production sync then failed
+  # on every batch with
+  #
+  #   42501: new row violates row-level security policy "author_visibility"
+  #          for table "compute_cache"
+  #
+  # which no test in the repository was capable of reproducing.
+  #
+  # rls-child-writes.test.ts creates its own NON-superuser role from this
+  # connection and reconnects as that, so RLS is genuinely enforced here.
+  postgres-tests:
+    name: store tests against real Postgres (RLS enforced)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: chat_recall
+          POSTGRES_PASSWORD: ci_only_password
+          POSTGRES_DB: chat_recall
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U chat_recall"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgres://chat_recall:ci_only_password@127.0.0.1:5432/chat_recall
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # The store suites only. The rest of the suite already runs on three
+      # platforms above; re-running it here would double the bill for no signal.
+      - name: Store + RLS tests
+        run: npx vitest run packages/engine/src/core/store
+
   # Every image and video that reaches a public surface, OCR'd frame by frame.
   #
   # A grep polices generated text and can say nothing about a PNG. Screenshots
