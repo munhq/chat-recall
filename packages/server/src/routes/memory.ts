@@ -326,12 +326,27 @@ router.post('/reindex', async (req, res) => {
 router.post('/reclassify', async (req, res) => {
   try {
     const { createStore } = await import('../imports.js');
-    const store = await createStore() as { reclassifyChunks?: (batch?: number) => Promise<{ scanned: number; updated: number }> };
-    if (typeof store.reclassifyChunks !== 'function') {
-      return res.status(501).json({ error: 'reclassify not supported by this storage backend' });
+    // A LEAKED STORE, ON EVERY EXIT PATH. This opened a store and closed it
+    // nowhere: not on the 501 early return, not on success, not on a throw.
+    // Every other route in this file wraps the handle in try/finally; this one
+    // was written without it, so each request held a connection (a pg pool
+    // client in production) until the process ended. It was invisible on Linux —
+    // and on Windows it surfaced as the test teardown failing with
+    //   EPERM, Permission denied: …\Temp\mem-route-…
+    // because Windows will not unlink a file that still has an open handle.
+    const store = await createStore() as {
+      reclassifyChunks?: (batch?: number) => Promise<{ scanned: number; updated: number }>;
+      close: () => Promise<void>;
+    };
+    try {
+      if (typeof store.reclassifyChunks !== 'function') {
+        return res.status(501).json({ error: 'reclassify not supported by this storage backend' });
+      }
+      const result = await store.reclassifyChunks();
+      res.json({ message: 'Reclassify sweep complete', ...result });
+    } finally {
+      await store.close();
     }
-    const result = await store.reclassifyChunks();
-    res.json({ message: 'Reclassify sweep complete', ...result });
   } catch (error) {
     log.error({ err: error }, 'memory reclassify error');
     res.status(500).json({ error: error instanceof Error ? error.message : 'Reclassify failed' });
