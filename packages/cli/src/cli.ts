@@ -94,93 +94,40 @@ function firstTarget(): RemoteTarget | null {
 }
 
 /**
- * Show what the first sync would upload, and give the user the chance to narrow
- * it before it happens. Returns true when the sync should run.
- *
- * ── Why this exists ───────────────────────────────────────────────────────
- *
- * init's first sync ships every transcript on the machine. The exclusions that
- * govern it (`chat-recall exclude project`, `sync-only`) are only useful BEFORE
- * that upload, and nothing in the CLI mentioned them until after it. The site
- * promises the user decides what leaves their disk; this is where that promise
- * either holds or is decoration.
- *
- * ── Why it does not hang a script ─────────────────────────────────────────
- *
- * The pause needs a TTY on stdin. `npx chat-recall init` inside a Dockerfile, a
- * provisioning script or CI has none, and a prompt there would block forever —
- * so with no TTY (or with --yes) the summary still PRINTS and the sync proceeds.
- * Non-interactive callers get the information; only an interactive user gets the
- * question.
- */
-async function confirmFirstSyncScope(skipPause: boolean): Promise<boolean> {
-  const { summariseSyncScope } = await import('@chat-recall/engine/core/sync-scope.js');
-  let scope;
-  try {
-    scope = summariseSyncScope();
-  } catch {
-    // A preview that cannot be computed must not block the product. Say so and
-    // carry on rather than refusing to sync over a listing error.
-    console.log(chalk.dim('   (could not summarise local scope — proceeding)'));
-    return true;
-  }
-
-  console.log(chalk.bold('6. What would leave this machine'));
-  if (scope.included === 0 && scope.heldBack === 0) {
-    console.log(chalk.dim('   No local sessions found yet — nothing to ship.'));
-    return true;
-  }
-
-  const tools = scope.byTool.map((t) => `${t.tool} ${t.sessions}`).join(', ');
-  console.log(`   ${chalk.bold(String(scope.included))} session(s) would upload${tools ? chalk.dim(`  (${tools})`) : ''}`);
-  if (scope.heldBack > 0) {
-    console.log(`   ${chalk.green(String(scope.heldBack))} held back by your existing rules`);
-  }
-  if (scope.allowlistMode) {
-    console.log(chalk.yellow('   Allowlist mode is on — only the projects you listed would ship.'));
-  }
-  if (scope.noPathSessions > 0) {
-    // Said plainly, because the alternative is a user who excludes three paths
-    // and believes they are covered. Some tools file transcripts under a hash
-    // rather than a project directory, so no path rule can reach those.
-    console.log(`   ${chalk.yellow(String(scope.noPathSessions))} of those carry no project path — only \`exclude tool\` can hold those back`);
-  }
-
-  // The top projects BY NAME. A count alone does not let anyone recognise the
-  // client repo they did not mean to include.
-  const shown = scope.projects.filter((p) => !p.heldBackBy).slice(0, 8);
-  for (const p of shown) {
-    console.log(`     ${chalk.cyan(p.projectPath || p.id)} ${chalk.dim(`· ${p.sessions}`)}`);
-  }
-  const more = scope.projects.filter((p) => !p.heldBackBy).length - shown.length;
-  if (more > 0) console.log(chalk.dim(`     …and ${more} more project(s)`));
-
-  console.log(chalk.dim('   Secrets are masked on this machine before anything uploads.'));
-  console.log(chalk.dim('   Hold one back:  chat-recall exclude project <path>'));
-  console.log(chalk.dim('   Or invert it:   chat-recall sync-only add <project>'));
-
-  if (skipPause || !process.stdin.isTTY) {
-    console.log();
-    return true;
-  }
-
-  const { createInterface } = await import('node:readline/promises');
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const answer = (await rl.question('   Upload these now? [Y/n] ')).trim().toLowerCase();
-  rl.close();
-  if (answer === 'n' || answer === 'no') {
-    console.log(chalk.dim('   Skipped. Set your rules, then run `chat-recall sync`.'));
-    return false;
-  }
-  console.log();
-  return true;
-}
-
-/**
  * Resolve the first target or exit with the uniform "you must log in" message.
  * Every server-backed read command calls this so the user always gets the same
  * actionable error instead of a raw fetch failure.
  */
+/** The specific cause behind a `fetch failed`, not the constant string. Shares
+ *  server-probe's walk of `err.cause` so both surfaces describe a failure the
+ *  same way. */
+function describeProbeError(err: unknown): string {
+  const codes: string[] = [];
+  for (let e: unknown = err, depth = 0; e && depth < 5; depth++) {
+    const code = (e as { code?: unknown }).code;
+    if (typeof code === 'string' && code && !codes.includes(code)) codes.push(code);
+    e = (e as { cause?: unknown }).cause;
+  }
+  const base = err instanceof Error ? err.message : String(err);
+  return codes.length ? `${base}: ${codes.join(' → ')}` : base;
+}
+
+/**
+ * One place decides whether a login failure ends the process.
+ *
+ * `chat-recall login` has nothing to do after a failure, so it exits. `init` has
+ * five more steps that work without a server, so it gets a thrown error and
+ * carries on. Before this, every failure path called process.exit(1) and `init`
+ * stopped at step 2 with MCP unconfigured — the symptom that started all of
+ * this. A helper rather than a flag at each site, because the next failure path
+ * added will otherwise reintroduce the exit.
+ */
+function failLogin(opts: { fromInit?: boolean }, message: string): never {
+  if (opts.fromInit) throw new Error(message);
+  console.error(chalk.red('login failed:'), message);
+  process.exit(1);
+}
+
 function requireTarget(): RemoteTarget {
   const t = firstTarget();
   if (!t) {
@@ -257,6 +204,12 @@ async function serverDelete<T>(path: string, body: unknown): Promise<T> {
 }
 
 // Resolves to packages/cli/package.json from both src/ and the bundled dist/
+const pkgEngines: string = (() => {
+  try {
+    return (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf-8')).engines?.node) ?? '';
+  } catch { return ''; }
+})();
+
 const pkgVersion: string = JSON.parse(
   readFileSync(new URL('../package.json', import.meta.url), 'utf-8')
 ).version;
@@ -332,6 +285,31 @@ const DEFAULT_ALLOW = [
 ];
 const SELF_HOST_DOCS = 'https://github.com/munhq/chat-recall/blob/main/docs/SELF_HOSTING.md';
 
+/**
+ * REFUSE AN UNSUPPORTED NODE, BY VERSION, BEFORE ANYTHING ELSE RUNS.
+ *
+ * `engines` in package.json is advisory: npm prints a warning nobody reads and
+ * installs anyway, and the CLI then dies somewhere deep on a syntax or API it
+ * cannot use. What the user sees is a stack trace from a file they have never
+ * heard of, so they report the symptom and we chase the wrong bug.
+ *
+ * The floor comes from `engines` — one source, so a bump cannot drift — and the
+ * message names the version found, because "requires Node 22" without "you have
+ * 18.19.0" is half an answer.
+ */
+function enforceNodeVersion(): void {
+  const required = Number(/(\d+)/.exec(String(pkgEngines))?.[1] ?? 0);
+  const found = Number(process.versions.node.split('.')[0]);
+  if (!required || !found || found >= required) return;
+  console.error(`chat-recall needs Node ${required} or newer. This is Node ${process.versions.node}.`);
+  console.error(`Install it with your version manager (\`nvm install ${required}\`, \`fnm install ${required}\`, \`brew upgrade node\`), then run this again.`);
+  process.exit(1);
+}
+// The version the reporter stamps on a failure. Set here so install-report.ts
+// needs no import of the manifest.
+process.env.CHAT_RECALL_CLI_VERSION = pkgVersion;
+enforceNodeVersion();
+
 const program = new Command();
 
 program
@@ -399,8 +377,25 @@ program
       console.log(chalk.bold('2. Connecting to your server...'));
       let target = firstTarget();
       if (options.server) {
-        await runLogin(options.server, { token: options.token, fromInit: true, promptJson: options.promptJson });
-        target = firstTarget();
+        // WRAPPED, exactly like the default branch below.
+        //
+        // It was not, and the difference was visible: `init --server <url>` with a
+        // failing sign-in threw out of the whole command at step 2, so MCP was
+        // never wired, no skills were installed, and the user was left with a
+        // half-configured machine and one misleading line. The default branch had
+        // always continued. Two paths through the same step must not disagree
+        // about whether a login failure is fatal — it is not: everything after
+        // this point is useful without a server.
+        try {
+          await runLogin(options.server, { token: options.token, fromInit: true, promptJson: options.promptJson });
+          target = firstTarget();
+        } catch (e) {
+          // describeProbeError, not e.message: the device flow fails through the
+          // same fetch, so its message is the same useless "fetch failed" while
+          // the code sits in e.cause.
+          console.log(`   ${chalk.yellow('Not connected.')} ${describeProbeError(e)}`);
+          console.log(`   ${chalk.dim(`Run ${chalk.bold(`chat-recall login ${options.server}`)} when ready, or self-host: ${SELF_HOST_DOCS}`)}`);
+        }
       } else if (!target) {
         // Default to the hosted service. Before this, `npx chat-recall init`
         // with no flags connected to nothing and printed an instruction, so the
@@ -418,7 +413,7 @@ program
         } catch (e) {
           // A declined or failed sign-in must not fail the whole init: MCP
           // wiring and skill installation below are still useful locally.
-          console.log(`   ${chalk.yellow('Not connected.')} ${e instanceof Error ? e.message : e}`);
+          console.log(`   ${chalk.yellow('Not connected.')} ${describeProbeError(e)}`);
           console.log(`   ${chalk.dim(`Run ${chalk.bold('chat-recall login <server-url>')} when ready, or self-host: ${SELF_HOST_DOCS}`)}`);
         }
       }
@@ -427,9 +422,9 @@ program
       }
       console.log();
 
-      // Step 4: Configure MCP server
+      // Step 3: Configure MCP server
       if (!options.skipMcp) {
-        console.log(chalk.bold('4. Configuring MCP server...'));
+        console.log(chalk.bold('3. Configuring MCP server...'));
         const projectRoot = join(import.meta.dirname, '..');
 
         // Prefer the installed `chat-recall-mcp` bin (on PATH after `npm i -g`
@@ -477,11 +472,11 @@ program
         }
         console.log(chalk.dim(`   Launch: ${launch.command}${launch.args ? ' ' + launch.args.join(' ') : ''}`));
       } else {
-        console.log(chalk.bold('4. Skipping MCP configuration (--skip-mcp)'));
+        console.log(chalk.bold('3. Skipping MCP configuration (--skip-mcp)'));
       }
       console.log();
 
-      // Step 5: Codeindex companion. Three modes:
+      // Step 4: Codeindex companion. Three modes:
       //   1. --skip-codeindex      → do nothing
       //   2. (default)             → detect an already-installed codeindex on
       //                              PATH and register it as an MCP server
@@ -494,7 +489,7 @@ program
       const forceInstall = options.withCodeindex === true || process.env.CHAT_RECALL_WITH_CODEINDEX === '1';
 
       if (skipCodeindex) {
-        console.log(chalk.bold('5. Skipping codeindex companion (--skip-codeindex)'));
+        console.log(chalk.bold('4. Skipping codeindex companion (--skip-codeindex)'));
       } else {
         const {
           checkCodeindexStatus,
@@ -506,7 +501,7 @@ program
         const detected = checkCodeindexStatus();
 
         if (detected.installed && !forceInstall) {
-          console.log(chalk.bold('5. Detected codeindex companion'));
+          console.log(chalk.bold('4. Detected codeindex companion'));
           console.log(`   ${chalk.green('codeindex')}: ${detected.path}`);
           if (!options.skipMcp) {
             const mcpJsonPath = join(homedir(), '.mcp.json');
@@ -515,7 +510,7 @@ program
             else console.log(`   codeindex MCP server: ${chalk.green('already registered')}`);
           }
         } else if (forceInstall) {
-          console.log(chalk.bold('5. Installing codeindex companion (--with-codeindex)...'));
+          console.log(chalk.bold('4. Installing codeindex companion (--with-codeindex)...'));
           try {
             const result = await installCodeindex({ force: true });
             if (result.installed) {
@@ -538,7 +533,7 @@ program
             }
           }
         } else {
-          console.log(chalk.bold('5. codeindex companion: not installed'));
+          console.log(chalk.bold('4. codeindex companion: not installed'));
           console.log(chalk.dim('   codeindex is a separate MCP server for code-level lookup —'));
           console.log(chalk.dim('   find_symbol, plan_change, get_change_impact, etc.'));
           console.log(chalk.dim('   To install: `chat-recall init --with-codeindex`'));
@@ -611,21 +606,24 @@ program
         console.log();
       }
 
-      // Step 6: First sync — collect this machine's local sessions and ship
+      // Step 5: First sync — collect this machine's local sessions and ship
       // them to the server. Skipped when there's no login (nothing to ship to)
       // or when --skip-sync is passed.
       if (!options.skipSync && firstTarget()) {
-        // BEFORE the upload, not after. This step used to open with "Shipping
-        // local sessions" and report counts once every transcript on the disk
-        // was already on the server — so the one irreversible decision in init
-        // was made on the user's behalf and described in the past tense.
-        const shipped = await confirmFirstSyncScope(!!options.yes);
-        if (!shipped) {
-          console.log();
-        } else {
-        // Not a second "6." — the scope summary above owns that number, and this
-        // is the same step continuing once the user has agreed to it.
-        console.log(chalk.dim('   Shipping...'));
+        // ONE LINE, AND NO QUESTION.
+        //
+        // This step briefly printed a scope preview — every project by name, the
+        // session count, and "Upload these now? [Y/n]". It was added to make the
+        // privacy story visible and it did the opposite: "what would leave this
+        // machine" reads as a breach notice, and it asked permission for the one
+        // thing the user had just asked for by running `init` against a server
+        // they signed into. Nobody types Y to a wall of their own paths. It
+        // turned the last step of onboarding into the place people quit.
+        //
+        // The controls still exist and are documented where someone looks for
+        // them — `chat-recall exclude`, the dashboard, and chatrecall.dev/security.
+        // Onboarding just gets on with it.
+        console.log(chalk.bold('5. Indexing and uploading your sessions'));
         try {
           const { syncSessions } = await import('./sync-client.js');
           const r = await syncSessions();
@@ -634,15 +632,14 @@ program
           console.log(`   ${chalk.yellow('Sync failed')} — ${err instanceof Error ? err.message : err}`);
           console.log(`   ${chalk.dim('Re-run `chat-recall sync` once your server is reachable.')}`);
         }
-        }
       } else if (!options.skipSync) {
-        console.log(chalk.bold('6. Skipping first sync (not logged in)'));
+        console.log(chalk.bold('5. Skipping first sync (not logged in)'));
       } else {
-        console.log(chalk.bold('6. Skipping first sync (--skip-sync)'));
+        console.log(chalk.bold('5. Skipping first sync (--skip-sync)'));
       }
       console.log();
 
-      // Step 7: Background sync. There is ONE writer (see docs/SYNC.md): the
+      // Step 6: Background sync. There is ONE writer (see docs/SYNC.md): the
       // MCP server (configured above) ticks `syncIncremental()` every few
       // minutes while Claude Code runs — cross-platform, zero-install, and that
       // is exactly when transcripts change. We deliberately DON'T install the
@@ -650,7 +647,7 @@ program
       // raced the sync ledger with the MCP one (clobbered coverage, CPU spin).
       // Users who want an always-on agent (headless boxes, no editor running)
       // opt in with `chat-recall watch --install-service`.
-      console.log(chalk.bold('7. Background sync'));
+      console.log(chalk.bold('6. Background sync'));
       console.log(chalk.dim('   Runs via the MCP server while Claude Code is open (no extra service to install).'));
       console.log(chalk.dim('   Always-on / headless? Opt in with `chat-recall watch --install-service`.'));
       void options.skipService; // retained for back-compat; no longer changes behaviour
@@ -3158,19 +3155,16 @@ async function runLogin(
     // Non-ASCII in the token would otherwise be saved silently and crash every
     // later sync inside fetch() with an opaque "ByteString" error.
     if (/[^\x21-\x7e]/.test(token)) {
-      console.error(chalk.red('login failed: the token contains non-ASCII characters — this looks like a masked/truncated copy (e.g. "ct_12345678…").'));
       console.error(chalk.dim('Use the Copy button next to the token in the dashboard and paste the full line.'));
-      process.exit(1);
+      return failLogin(opts, 'the token contains non-ASCII characters — this looks like a masked/truncated copy (e.g. "ct_12345678…")');
     }
     const check = await verifyToken(token);
     if (!check.ok) {
       if (check.status === 401 || check.status === 403) {
-        console.error(chalk.red(`login failed: ${base} rejected the token (HTTP ${check.status}).`));
         console.error(chalk.dim('Tokens are shown once — mint a fresh one (Account → Connect your machine) and copy the whole line.'));
-      } else {
-        console.error(chalk.red(`login failed: could not verify the token against ${base}:`), check.error || `HTTP ${check.status}`);
+        return failLogin(opts, `${base} rejected the token (HTTP ${check.status})`);
       }
-      process.exit(1);
+      return failLogin(opts, `could not verify the token against ${base}: ${check.error || `HTTP ${check.status}`}`);
     }
     saveCredentials({ serverUrl, token });
     console.log(chalk.green('✓ Logged in.') + chalk.dim(`  server: ${serverUrl} (token verified)`));
@@ -3230,18 +3224,30 @@ async function runLogin(
       // on a plain `init --server https://chatrecall.dev` — sending them to look
       // for a Keycloak URL that has never existed for the hosted service, with
       // no hint that anything had failed to load. Seen on a real machine.
+      // ONE probe implementation, shared with `doctor`.
+      //
+      // This used to be its own inline fetch, so the two surfaces disagreed:
+      // `doctor` could tell a DNS failure from a TLS rejection from a proxy
+      // interstitial, and login reported all three as "fetch failed" — five
+      // characters that name no cause and suggest no fix. server-probe.ts
+      // classifies; this just retries it.
+      const { probeServer, probeOk, probeAdvice } = await import('./server-probe.js');
       for (let attempt = 1; attempt <= 3 && !authProvider; attempt++) {
-        try {
-          const res = await fetch(`${base}/api/capabilities`, { signal: AbortSignal.timeout(15_000) });
-          if (!res.ok) { capsError = `HTTP ${res.status}`; }
-          else {
-            const caps = await res.json() as { authProvider?: string; oidcIssuer?: string | null };
+        const probe = await probeServer(base, { timeoutMs: 15_000 });
+        if (probeOk(probe)) {
+          // The probe validates the API shape; this needs two more fields off
+          // the same document, so read it once more from a server now known good.
+          try {
+            const caps = await fetch(`${base}/api/capabilities`, { signal: AbortSignal.timeout(15_000) })
+              .then((r) => r.json()) as { authProvider?: string; oidcIssuer?: string | null };
             authProvider = caps?.authProvider;
             if (caps?.oidcIssuer) issuer = caps.oidcIssuer;
             capsError = null;
+          } catch (err) {
+            capsError = describeProbeError(err);
           }
-        } catch (err) {
-          capsError = err instanceof Error ? err.message : String(err);
+        } else {
+          capsError = probeAdvice(probe, base);
         }
         if (!authProvider && attempt < 3) await new Promise((r) => setTimeout(r, attempt * 1000));
       }
@@ -3256,6 +3262,16 @@ async function runLogin(
       authProvider = 'better-auth';
       if (capsError) {
         console.log(`   ${chalk.yellow('Could not read the server\'s capabilities')} (${capsError}) — assuming the standard sign-in flow.`);
+        // Tell the server this happened. This is the ONLY signal that exists for
+        // a first run that fails before login — see install-report.ts. Not
+        // awaited: a diagnostic must never delay or fail the command it reports.
+        void import('./install-report.js')
+          .then(({ reportInstallFailure }) => reportInstallFailure(base, {
+            step: 'cli_login_probe',
+            reason: capsError?.slice(0, 40) ?? null,
+            message: capsError,
+          }))
+          .catch(() => {});
       }
     }
     const onPrompt = (p: { url: string; userCode: string; verificationUri: string }) => {
@@ -3294,7 +3310,12 @@ async function runLogin(
         slug = ((await created.json()) as { slug: string }).slug;
         console.log(chalk.dim(`Created workspace "${name}" (${slug}) — you're its owner.`));
       }
-      else { console.error(chalk.red('You belong to multiple teams — pass --team <slug>:')); teams.forEach((t) => console.error(`  ${t.team_slug}  ${chalk.dim(t.name)}`)); process.exit(1); }
+      else {
+        // Throw rather than exit: inside the try, so the one catch below decides
+        // whether this is fatal (standalone `login`) or reportable (`init`).
+        teams.forEach((t) => console.error(`  ${t.team_slug}  ${chalk.dim(t.name)}`));
+        throw new Error('you belong to multiple teams — pass --team <slug> (listed above)');
+      }
     }
 
     // Mint a per-device sync token for that team.
@@ -3311,6 +3332,15 @@ async function runLogin(
       console.log(chalk.dim('Run `chat-recall sync` to push redacted conversations.'));
     }
   } catch (err) {
+    // FROM `init`, THROW; STANDALONE, EXIT.
+    //
+    // This called process.exit(1) unconditionally, which is why `init` died at
+    // step 2 on a failed sign-in and never wired MCP or installed skills — and
+    // why wrapping the call in a try/catch at the call site did nothing: the
+    // process was already gone. A login failure is fatal to `chat-recall login`,
+    // which has nothing else to do, and NOT fatal to `init`, where everything
+    // after it is useful without a server.
+    if (opts.fromInit) throw err instanceof Error ? err : new Error(String(err));
     console.error(chalk.red('login failed:'), err instanceof Error ? err.message : err);
     process.exit(1);
   }

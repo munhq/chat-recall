@@ -202,4 +202,60 @@ router.get('/install/chat-recall.tgz', (_req, res) => {
   res.sendFile(TGZ_PATH);
 });
 
+/**
+ * POST /install/report — the only way a FAILED install can tell us it happened.
+ *
+ * Every other funnel event fires after the user got past login (see
+ * util/growth.ts), and this failure happens before it: no credential, no tenant,
+ * nothing to attribute. So a broken first run was invisible, and the way we
+ * learned about the last one was the founder typing the command on his own
+ * laptop. That is not a monitoring strategy.
+ *
+ * Mounted here because this router is already pre-auth and top-level.
+ *
+ * WHAT IT ACCEPTS IS FIXED AND TINY — a step name, an error CLASS, a one-line
+ * message, and three environment strings. No paths, no arguments, no stack
+ * trace, no hostname: a diagnostic surface that grows into a log is how user
+ * content ends up somewhere nobody audits. Anything else in the body is dropped
+ * rather than stored, and the fields kept are truncated hard.
+ *
+ * ONE HONEST LIMIT: a machine that cannot reach us cannot report. This catches
+ * the case where the network is fine and something in between is not — a proxy,
+ * a WAF, a TLS interception, a resolver — which is the failure that is otherwise
+ * impossible to attribute.
+ */
+const REPORT_STEPS = new Set([
+  'cli_login_probe', 'cli_login_device', 'cli_mcp_config', 'cli_first_sync', 'cli_node_version',
+]);
+const cut = (v: unknown, n: number): string | null =>
+  (typeof v === 'string' && v.trim() ? v.trim().slice(0, n) : null);
+
+router.post('/install/report', express.json({ limit: '2kb' }), async (req, res) => {
+  const step = cut(req.body?.step, 40);
+  if (!step || !REPORT_STEPS.has(step)) {
+    // Refuse an unknown step rather than record it: an open enum is how this
+    // becomes a log.
+    res.status(400).json({ error: 'unknown step' });
+    return;
+  }
+  try {
+    const { growth } = await import('../util/growth.js');
+    growth('funnel_fail', {
+      tenant: null,
+      extra: {
+        step,
+        reason: cut(req.body?.reason, 40),        // the classification, e.g. 'dns'
+        message: cut(req.body?.message, 200),     // already redacted by the CLI
+        cliVersion: cut(req.body?.cliVersion, 20),
+        node: cut(req.body?.node, 20),
+        os: cut(req.body?.os, 20),
+      },
+    });
+  } catch {
+    // Telemetry must never be the reason a install-time request fails.
+  }
+  // 204 always: the CLI is fire-and-forget and must not branch on this.
+  res.status(204).end();
+});
+
 export default router;
