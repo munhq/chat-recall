@@ -172,8 +172,14 @@ export function pruneLedgerTargets(configuredServers: string[]): number {
     return 0;
   }
   const rows = names.reduce((n, s) => n + Object.keys(orphans[s]).length, 0);
-  console.error(`[sync] ledger: parked ${rows} row(s) for ${names.length} server(s) no longer configured `
-    + `(${names.join(', ')}) in ${side}`);
+  // NAME IT AS LOCAL BOOKKEEPING. This read as "we contacted a server you were
+  // just told is dead": it printed a retired hostname, mid-sync, with no hint
+  // that nothing had left the machine. The host is only a KEY in a local file
+  // here — the rows record what was already shipped to it, and they are moved
+  // aside rather than deleted so logging back in later re-ships nothing.
+  console.error(`[sync] tidied local bookkeeping: ${rows} already-synced marker(s) for `
+    + `${names.length} server(s) you no longer sync to (${names.join(', ')}) moved to ${side}. `
+    + 'Nothing was uploaded there; the file is kept so logging back in re-ships nothing.');
   persistNow(data);
   return names.length;
 }
