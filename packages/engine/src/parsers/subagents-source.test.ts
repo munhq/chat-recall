@@ -3,11 +3,12 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SubagentsSource } from './subagents-source.js';
+import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '../test-support/home-env.js';
 
 let tmpHome: string;
-const origHome = process.env.HOME;
-beforeEach(() => { tmpHome = mkdtempSync(join(tmpdir(), 'agents-')); process.env.HOME = tmpHome; });
-afterEach(() => { process.env.HOME = origHome; rmSync(tmpHome, { recursive: true, force: true }); });
+const origHome = homeEnvSnapshot();
+beforeEach(() => { tmpHome = mkdtempSync(join(tmpdir(), 'agents-')); useHomeDir(tmpHome); });
+afterEach(() => { restoreHomeEnv(origHome); rmSync(tmpHome, { recursive: true, force: true }); });
 
 async function collect(): Promise<any[]> {
   const out: any[] = [];

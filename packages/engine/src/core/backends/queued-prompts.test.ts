@@ -19,6 +19,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { useHomeDir } from '../../test-support/home-env.js';
 
 const SID = '99999999-8888-7777-6666-555555555555';
 const PROJ = '-home-user-code-demo';
@@ -47,13 +48,13 @@ function writeSession(lines: string[]): string {
 
 beforeEach(() => {
   prev = {
-    HOME: process.env.HOME,
+    HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE,
     CHAT_RECALL_CLAUDE_HOME: process.env.CHAT_RECALL_CLAUDE_HOME,
     CLAUDE_DIRS: process.env.CLAUDE_DIRS,
     CHAT_RECALL_DATA_DIR: process.env.CHAT_RECALL_DATA_DIR,
   };
   home = mkdtempSync(join(tmpdir(), 'cr-queued-'));
-  process.env.HOME = home;
+  useHomeDir(home);
   delete process.env.CHAT_RECALL_CLAUDE_HOME;   // a home override kills sibling discovery
   delete process.env.CLAUDE_DIRS;
   process.env.CHAT_RECALL_DATA_DIR = join(home, '.chat-recall');

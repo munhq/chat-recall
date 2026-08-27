@@ -18,9 +18,10 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { homeEnvSnapshot, restoreHomeEnv, useHomeDir, type HomeEnvSnapshot } from '../test-support/home-env.js';
 
 let home: string;
-let prevHome: string | undefined;
+let prevHome: HomeEnvSnapshot;
 let prevClaudeHome: string | undefined;
 let prevClaudeDirs: string | undefined;
 let prevDataDir: string | undefined;
@@ -52,12 +53,12 @@ async function mods() {
 }
 
 beforeEach(() => {
-  prevHome = process.env.HOME;
+  prevHome = homeEnvSnapshot();
   prevClaudeHome = process.env.CHAT_RECALL_CLAUDE_HOME;
   prevClaudeDirs = process.env.CLAUDE_DIRS;
   prevDataDir = process.env.CHAT_RECALL_DATA_DIR;
   home = mkdtempSync(join(tmpdir(), 'cr-crosshome-'));
-  process.env.HOME = home;
+  useHomeDir(home);
   // A home override disables sibling discovery, so it must be clear.
   delete process.env.CHAT_RECALL_CLAUDE_HOME;
   delete process.env.CLAUDE_DIRS;
@@ -65,8 +66,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // HOME and USERPROFILE go back together through the helper — os.homedir()
+  // reads the first on POSIX and the second on Windows.
+  restoreHomeEnv(prevHome);
   for (const [k, v] of Object.entries({
-    HOME: prevHome,
     CHAT_RECALL_CLAUDE_HOME: prevClaudeHome,
     CLAUDE_DIRS: prevClaudeDirs,
     CHAT_RECALL_DATA_DIR: prevDataDir,

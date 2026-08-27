@@ -4,11 +4,12 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { extractTurnsAny as extractTurns } from './session-multi-tool.js';
 import type { SessionTurn } from './session-turns.js';
+import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '../test-support/home-env.js';
 
 let tmpHome: string;
-const origHome = process.env.HOME;
-beforeEach(() => { tmpHome = mkdtempSync(join(tmpdir(), 'turns-')); process.env.HOME = tmpHome; });
-afterEach(() => { process.env.HOME = origHome; rmSync(tmpHome, { recursive: true, force: true }); });
+const origHome = homeEnvSnapshot();
+beforeEach(() => { tmpHome = mkdtempSync(join(tmpdir(), 'turns-')); useHomeDir(tmpHome); });
+afterEach(() => { restoreHomeEnv(origHome); rmSync(tmpHome, { recursive: true, force: true }); });
 
 function writeSession(uuid: string, lines: object[]) {
   const dir = join(tmpHome, '.claude', 'projects', '-x');

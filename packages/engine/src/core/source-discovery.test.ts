@@ -14,6 +14,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { useHomeDir } from '../test-support/home-env.js';
 
 let home: string;
 const saved: Record<string, string | undefined> = {};
@@ -36,7 +37,7 @@ beforeEach(async () => {
     saved[k] = process.env[k];
   }
   home = mkdtempSync(join(tmpdir(), 'cr-sources-'));
-  process.env.HOME = home;
+  useHomeDir(home);
   delete process.env.CHAT_RECALL_CLAUDE_HOME;   // an override disables discovery
   delete process.env.CLAUDE_DIRS;
   process.env.CHAT_RECALL_DATA_DIR = join(home, '.chat-recall');

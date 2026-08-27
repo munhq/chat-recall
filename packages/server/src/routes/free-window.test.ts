@@ -46,6 +46,7 @@ vi.mock('../util/billing.js', async (importOriginal) => {
 import searchRouter from './search.js';
 import memoryRouter from './memory.js';
 import conversationsRouter from './conversations.js';
+import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '@chat-recall/engine/test-support/home-env.js';
 
 const DAY = 86_400_000;
 const NOW = Date.now();
@@ -56,13 +57,13 @@ const MID_ID = 'win-mid-3d';         // inside a 7-day window, outside 48h
 const OLD_ID = 'win-old-30d';        // behind a 7-day window
 
 let tmpHome: string;
-const origHome = process.env.HOME;
+const origHome = homeEnvSnapshot();
 const origDataDir = process.env.CHAT_RECALL_DATA_DIR;
 let app: Express;
 
 beforeAll(async () => {
   tmpHome = mkdtempSync(join(tmpdir(), 'win-route-'));
-  process.env.HOME = tmpHome;
+  useHomeDir(tmpHome);
   // Pin the engine data dir so seeding via createStore and the routes'
   // per-request createStore() resolve the same sqlite file.
   process.env.CHAT_RECALL_DATA_DIR = join(tmpHome, '.chat-recall');
@@ -109,7 +110,7 @@ beforeEach(() => {
 });
 
 afterAll(() => {
-  process.env.HOME = origHome;
+  restoreHomeEnv(origHome);
   if (origDataDir === undefined) delete process.env.CHAT_RECALL_DATA_DIR;
   else process.env.CHAT_RECALL_DATA_DIR = origDataDir;
   rmSync(tmpHome, { recursive: true, force: true });
