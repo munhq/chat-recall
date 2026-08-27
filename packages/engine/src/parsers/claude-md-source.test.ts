@@ -3,20 +3,21 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ClaudeMdSource } from './claude-md-source.js';
+import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '../test-support/home-env.js';
 
 let tmp: string;
 let tmpHome: string;
-const origHome = process.env.HOME;
+const origHome = homeEnvSnapshot();
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), 'cmd-'));
   // Isolate $HOME — ClaudeMdSource also scans ~/.claude/projects + ~/CLAUDE.md.
   // Without overriding, the developer's real notes pollute the result.
   tmpHome = mkdtempSync(join(tmpdir(), 'cmd-home-'));
-  process.env.HOME = tmpHome;
+  useHomeDir(tmpHome);
 });
 afterEach(() => {
-  process.env.HOME = origHome;
+  restoreHomeEnv(origHome);
   rmSync(tmp, { recursive: true, force: true });
   rmSync(tmpHome, { recursive: true, force: true });
 });

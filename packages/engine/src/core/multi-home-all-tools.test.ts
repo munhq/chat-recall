@@ -16,6 +16,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { useHomeDir } from '../test-support/home-env.js';
 
 let home: string;
 const saved: Record<string, string | undefined> = {};
@@ -37,7 +38,7 @@ async function paths() { return await import('./tool-paths.js'); }
 beforeEach(async () => {
   for (const k of ENV) saved[k] = process.env[k];
   home = mkdtempSync(join(tmpdir(), 'cr-multihome-'));
-  process.env.HOME = home;
+  useHomeDir(home);
   // Any explicit override disables sibling discovery for that tool — clear them.
   for (const k of ENV.slice(1)) delete process.env[k];
   process.env.CHAT_RECALL_DATA_DIR = join(home, '.chat-recall');

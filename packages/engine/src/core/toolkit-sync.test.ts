@@ -8,14 +8,15 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
+import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '../test-support/home-env.js';
 import {
   discoverLocalArtifacts, planSync, executeSyncAll, executeCopy, writeMcpEntry,
 } from './toolkit-sync.js';
 
 let tmp: string;
-const origHome = process.env.HOME;
-beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'tksync-')); process.env.HOME = tmp; });
-afterEach(() => { process.env.HOME = origHome; rmSync(tmp, { recursive: true, force: true }); });
+const origHome = homeEnvSnapshot();
+beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'tksync-')); useHomeDir(tmp); });
+afterEach(() => { restoreHomeEnv(origHome); rmSync(tmp, { recursive: true, force: true }); });
 
 function w(p: string, c: string) { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, c); }
 

@@ -8,14 +8,15 @@ import request from 'supertest';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '@chat-recall/engine/test-support/home-env.js';
 
 let tmpHome: string;
-const origHome = process.env.HOME;
+const origHome = homeEnvSnapshot();
 let app: Express;
 
 beforeAll(async () => {
   tmpHome = mkdtempSync(join(tmpdir(), 'files-route-'));
-  process.env.HOME = tmpHome;
+  useHomeDir(tmpHome);
   const { createStore } = await import('../imports.js');
   const filesRouter = (await import('./files.js')).default;
   const store = await createStore();
@@ -27,7 +28,7 @@ beforeAll(async () => {
   app = express();
   app.use('/api/files', filesRouter);
 });
-afterAll(() => { process.env.HOME = origHome; rmSync(tmpHome, { recursive: true, force: true }); });
+afterAll(() => { restoreHomeEnv(origHome); rmSync(tmpHome, { recursive: true, force: true }); });
 
 describe('GET /api/files/redundant', () => {
   test('exact basename match scores 1.0', async () => {

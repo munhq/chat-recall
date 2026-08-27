@@ -2,14 +2,15 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '../test-support/home-env.js';
 import {
   readCommand, readAgent, readInstructions, emit, encodingFor, instructionsFilename,
 } from './artifact-codec.js';
 
 let tmp: string;
-const origHome = process.env.HOME;
-beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'codec-')); process.env.HOME = tmp; });
-afterEach(() => { process.env.HOME = origHome; rmSync(tmp, { recursive: true, force: true }); });
+const origHome = homeEnvSnapshot();
+beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'codec-')); useHomeDir(tmp); });
+afterEach(() => { restoreHomeEnv(origHome); rmSync(tmp, { recursive: true, force: true }); });
 
 describe('artifact-codec encodings', () => {
   test('picks TOML for gemini commands and codex agents only', () => {

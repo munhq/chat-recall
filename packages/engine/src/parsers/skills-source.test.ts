@@ -3,16 +3,17 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SkillsSource } from './skills-source.js';
+import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '../test-support/home-env.js';
 
 let tmpHome: string;
-const origHome = process.env.HOME;
+const origHome = homeEnvSnapshot();
 
 beforeEach(() => {
   tmpHome = mkdtempSync(join(tmpdir(), 'skills-'));
-  process.env.HOME = tmpHome;
+  useHomeDir(tmpHome);
 });
 afterEach(() => {
-  process.env.HOME = origHome;
+  restoreHomeEnv(origHome);
   rmSync(tmpHome, { recursive: true, force: true });
 });
 

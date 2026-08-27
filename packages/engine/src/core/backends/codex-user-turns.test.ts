@@ -15,6 +15,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { useHomeDir } from '../../test-support/home-env.js';
 
 const SID = '01a01fc6-3581-7283-bf57-a591cf30e310';
 let home: string;
@@ -35,9 +36,9 @@ const legacyUser = (message: string) => JSON.stringify({
 });
 
 beforeEach(() => {
-  prev = { HOME: process.env.HOME, CHAT_RECALL_CODEX_HOME: process.env.CHAT_RECALL_CODEX_HOME };
+  prev = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, CHAT_RECALL_CODEX_HOME: process.env.CHAT_RECALL_CODEX_HOME };
   home = mkdtempSync(join(tmpdir(), 'cr-codex-'));
-  process.env.HOME = home;
+  useHomeDir(home);
   process.env.CHAT_RECALL_CODEX_HOME = join(home, '.codex');
   const dir = join(home, '.codex', 'sessions', '2026', '08', '20');
   mkdirSync(dir, { recursive: true });

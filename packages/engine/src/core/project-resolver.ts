@@ -456,10 +456,33 @@ function isInside(child: string, parent: string): boolean {
   return c.startsWith(p);
 }
 
-/** Tiny glob matcher: supports `**`, `*`, `?` and brace groups `{a,b}`. */
+/**
+ * Tiny glob matcher: supports `**`, `*`, `?` and brace groups `{a,b}`.
+ *
+ * SEPARATORS ARE NORMALISED, AND THAT IS THE WHOLE POINT ON WINDOWS. This
+ * matched raw strings against a regex built with `/` hard-coded — `*` compiled
+ * to `[^/]*` and `**` consumed only a `/`. A Windows path is separated by `\`,
+ * so:
+ *
+ *   * a rule written the natural Windows way, `C:/code/vendored/**`, matched
+ *     nothing at all;
+ *   * a rule written `C:\code\vendored\*` matched, but `*` crossed a
+ *     directory boundary, because `\` is not in `[^/]`.
+ *
+ * Either way an ignore rule the user set silently failed to apply and the
+ * project they had excluded was indexed and uploaded — the same class of failure
+ * as an exclusion that does not exclude, on the platform with no test coverage.
+ * Both sides are converted to `/` before matching, so a pattern written with
+ * either separator means the same thing.
+ */
 export function globMatch(pattern: string, path: string): boolean {
-  const re = new RegExp('^' + globToRegex(pattern) + '$');
-  return re.test(path);
+  const re = new RegExp('^' + globToRegex(toPosix(pattern)) + '$');
+  return re.test(toPosix(path));
+}
+
+/** Backslashes to forward slashes, for separator-agnostic pattern matching. */
+function toPosix(p: string): string {
+  return p.replace(/\\/g, '/');
 }
 
 function globToRegex(glob: string): string {

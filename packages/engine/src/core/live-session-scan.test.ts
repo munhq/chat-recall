@@ -19,6 +19,7 @@ import {
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '../test-support/home-env.js';
 
 describe('detectTool', () => {
   const cases: Array<[string, AiTool]> = [
@@ -37,14 +38,14 @@ describe('detectTool', () => {
 
 describe('liveScanSessionEdits (claude)', () => {
   let tmpHome: string;
-  const origHome = process.env.HOME;
+  const origHome = homeEnvSnapshot();
 
   beforeEach(() => {
     tmpHome = mkdtempSync(join(tmpdir(), 'live-scan-'));
-    process.env.HOME = tmpHome;
+    useHomeDir(tmpHome);
   });
   afterEach(() => {
-    process.env.HOME = origHome;
+    restoreHomeEnv(origHome);
     rmSync(tmpHome, { recursive: true, force: true });
   });
 
@@ -138,9 +139,9 @@ describe('liveScanSessionEdits (claude)', () => {
 
 describe('liveScanModifiedFiles', () => {
   let tmpHome: string;
-  const origHome = process.env.HOME;
-  beforeEach(() => { tmpHome = mkdtempSync(join(tmpdir(), 'mod-')); process.env.HOME = tmpHome; });
-  afterEach(() => { process.env.HOME = origHome; rmSync(tmpHome, { recursive: true, force: true }); });
+  const origHome = homeEnvSnapshot();
+  beforeEach(() => { tmpHome = mkdtempSync(join(tmpdir(), 'mod-')); useHomeDir(tmpHome); });
+  afterEach(() => { restoreHomeEnv(origHome); rmSync(tmpHome, { recursive: true, force: true }); });
 
   test('separates writes (files) from reads', () => {
     const sid = 'aaaaaaaa-1111-4222-8333-444444444444';
@@ -170,9 +171,9 @@ describe('liveScanModifiedFiles', () => {
 
 describe('liveScanRecentEdits', () => {
   let tmpHome: string;
-  const origHome = process.env.HOME;
-  beforeEach(() => { tmpHome = mkdtempSync(join(tmpdir(), 'recent-')); process.env.HOME = tmpHome; });
-  afterEach(() => { process.env.HOME = origHome; rmSync(tmpHome, { recursive: true, force: true }); });
+  const origHome = homeEnvSnapshot();
+  beforeEach(() => { tmpHome = mkdtempSync(join(tmpdir(), 'recent-')); useHomeDir(tmpHome); });
+  afterEach(() => { restoreHomeEnv(origHome); rmSync(tmpHome, { recursive: true, force: true }); });
 
   test('returns empty when no projects directory exists', () => {
     const r = liveScanRecentEdits({ sinceMs: 0 });

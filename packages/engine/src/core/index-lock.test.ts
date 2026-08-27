@@ -58,12 +58,16 @@ describe('index-lock', () => {
 
   test('stale lock from a dead PID is taken over after the staleness window', () => {
     const lockPath = join(tmp, 'data', 'index', '.compact.lock');
-    // Plant a lock file pointing at PID 1 (init/systemd — alive — should NOT be stolen).
-    writeFileSync(lockPath, JSON.stringify({ pid: 1, kind: 'fake', startedAt: 0 }));
+    // A GUARANTEED-ALIVE PID, and it must not be 1. PID 1 is init only on a
+    // POSIX system; on Windows there is no such process, so `process.kill(1, 0)`
+    // threw ESRCH, the holder was judged dead, and the lock WAS stolen — this
+    // assertion failed on Windows alone. This process is alive by definition on
+    // every platform, and nothing in the lock treats its own pid specially.
+    writeFileSync(lockPath, JSON.stringify({ pid: process.pid, kind: 'fake', startedAt: 0 }));
     // Backdate it so it qualifies on age alone.
     const old = (Date.now() - 60 * 60_000) / 1000;
     utimesSync(lockPath, old, old);
-    // PID 1 is alive — must NOT take it over.
+    // The holder is alive — must NOT take it over.
     const stillBusy = acquireIndexLock({ kind: 'taker', staleAfterMs: 1_000 });
     expect(stillBusy).toBeNull();
 

@@ -3,11 +3,12 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { GeminiSessionSource } from './gemini-source.js';
+import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '../test-support/home-env.js';
 
 let tmpHome: string;
-const origHome = process.env.HOME;
-beforeEach(() => { tmpHome = mkdtempSync(join(tmpdir(), 'gem-')); process.env.HOME = tmpHome; });
-afterEach(() => { process.env.HOME = origHome; rmSync(tmpHome, { recursive: true, force: true }); });
+const origHome = homeEnvSnapshot();
+beforeEach(() => { tmpHome = mkdtempSync(join(tmpdir(), 'gem-')); useHomeDir(tmpHome); });
+afterEach(() => { restoreHomeEnv(origHome); rmSync(tmpHome, { recursive: true, force: true }); });
 
 function writeGeminiSession(projHash: string, sid: string, content: object) {
   const dir = join(tmpHome, '.gemini', 'tmp', projHash, 'chats');
