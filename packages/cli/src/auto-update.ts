@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { fetchWithTimeout } from './http.js';
 import { writeFileSync, mkdtempSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 
@@ -105,6 +105,8 @@ export interface UpdateDeps {
   install: (tgzPath: string) => void;
   restart: (platform: NodeJS.Platform) => void;
   platform?: NodeJS.Platform;
+  /** Version actually on disk after the install — the post-condition check. */
+  verify?: () => string | null;
 }
 
 export interface UpdateResult { updated: boolean; reason: string; from?: string; to?: string; }
@@ -122,6 +124,26 @@ export async function executeAutoUpdate(plan: UpdatePlan, deps: UpdateDeps): Pro
   writeFileSync(tgz, buf);
   try { deps.install(tgz); }
   catch (e) { return { updated: false, reason: `install failed: ${e instanceof Error ? e.message : e}` }; }
+
+  // VERIFY THE BYTES ON DISK, because "npm exited 0" is not "the user now runs
+  // the new version". This reported `updated 0.5.18 → 0.5.24` on every sync for
+  // six releases while the copy on PATH never changed — npm had succeeded into a
+  // different prefix (see realInstall). An unverified success is the worst
+  // possible outcome: it silences the update notice too, so nothing ever
+  // complains again.
+  //
+  // `verify` is injectable so a test can drive both outcomes; the default reads
+  // the manifest of the package THIS file was loaded from.
+  const landed = (deps.verify ?? installedVersion)();
+  if (landed && plan.to && compareVersions(landed, plan.to) < 0) {
+    return {
+      updated: false,
+      reason: `install reported success but ${landed} is still on disk (wanted ${plan.to}) — `
+        + 'the package that runs is not the one npm wrote. Reinstall by hand: '
+        + `npm install -g ${plan.url}`,
+    };
+  }
+
   try { deps.restart(deps.platform ?? process.platform); } catch { /* daemon will pick up new bin on its next natural restart */ }
   return { updated: true, reason: `updated ${plan.from} → ${plan.to}`, from: plan.from, to: plan.to };
 }
@@ -133,9 +155,54 @@ async function realDownload(url: string): Promise<Buffer> {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return Buffer.from(await res.arrayBuffer());
 }
+/**
+ * The npm prefix the RUNNING copy was installed into.
+ *
+ * `<prefix>/lib/node_modules/chat-recall/dist/auto-update.js` → `<prefix>`.
+ * Returns null when this file is not inside a node_modules tree (a source
+ * checkout, a bundled binary), where there is nothing to reinstall over.
+ */
+export function runningPrefix(moduleUrl = import.meta.url): string | null {
+  const here = fileURLToPath(moduleUrl);
+  const marker = `${sep}node_modules${sep}`;
+  const at = here.lastIndexOf(marker);
+  if (at === -1) return null;
+  // <prefix>/lib/node_modules/... → strip the trailing `/lib` too, because that
+  // is what `npm --prefix` expects.
+  const beforeNodeModules = here.slice(0, at);
+  return beforeNodeModules.endsWith(`${sep}lib`)
+    ? beforeNodeModules.slice(0, -4)
+    : beforeNodeModules;
+}
+
+/**
+ * Install the new tarball OVER THE COPY THAT IS RUNNING.
+ *
+ * ── The silent no-op this fixes ───────────────────────────────────────────
+ * This was `npm install -g`, with a `--prefix ~/.local` fallback only if that
+ * THREW. On a machine with nvm, plain `npm install -g` succeeds — into nvm's
+ * prefix — so the fallback never ran, and a CLI living in `~/.local` (which is
+ * where install.sh puts it whenever the global prefix is not writable, i.e.
+ * exactly the population the fallback exists for) was never replaced. Measured
+ * on a real machine:
+ *
+ *   ~/.nvm/versions/node/v23.9.0/lib/node_modules/chat-recall  0.5.24  (not on PATH)
+ *   ~/.local/lib/node_modules/chat-recall                      0.5.18  (on PATH)
+ *
+ * The updater reported `✓ updated 0.5.18 → 0.5.24` truthfully — it HAD installed
+ * 0.5.24 — while every command kept running 0.5.18, and it did so again on every
+ * sync, for every release. A self-updater that installs somewhere the user never
+ * runs is worse than none: it reports success forever.
+ *
+ * So target the prefix this file was loaded from, and fall back to npm's own
+ * global only when that cannot be determined.
+ */
 function realInstall(tgz: string): void {
-  // Prefer a global install; fall back to a user prefix when global isn't
-  // writable (same policy as install.sh).
+  const prefix = runningPrefix();
+  if (prefix) {
+    execSync(`npm install -g --prefix "${prefix}" "${tgz}"`, { stdio: 'ignore' });
+    return;
+  }
   try { execSync(`npm install -g "${tgz}"`, { stdio: 'ignore' }); }
   catch { execSync(`npm install -g --prefix "${process.env.HOME}/.local" "${tgz}"`, { stdio: 'ignore' }); }
 }
