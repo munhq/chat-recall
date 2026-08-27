@@ -920,7 +920,37 @@ export function setServerVersion(version: string): void {
  */
 export function createMcpServer(): Server {
   const s = new Server(
-    { name: 'chat-recall', version: serverVersion },
+    {
+      name: 'chat-recall',
+      version: serverVersion,
+      // WHO WE ARE, in the protocol rather than left to be scraped.
+      //
+      // MCP's Implementation object carries title, description, websiteUrl and
+      // icons, and we sent none of them — so every directory had to guess. The
+      // cost was visible: Smithery scored our server metadata 3 out of 35, the
+      // three points being the display name it could infer from `name`. A
+      // listing with no description and no icon is one a human scrolls past, and
+      // the information was ours to supply all along.
+      //
+      // These are also what a client shows a user when it asks whether to trust
+      // this server, which is a better reason than a score.
+      title: 'chat-recall',
+      description:
+        'One memory across every AI coding tool you use. Indexes your Claude Code, '
+        + 'Codex, Gemini CLI, OpenCode and Cursor sessions into one searchable history, '
+        + 'so an assistant can resume past work, search what you actually typed, read '
+        + 'the diffs and commits from a session, recall decisions, and flag secrets '
+        + 'pasted into old conversations.',
+      websiteUrl: 'https://chatrecall.dev',
+      // Served from the product's own origin, which is what the spec asks for
+      // ("URLs serving icons SHOULD be from the same domain"). PNG first: every
+      // client that renders icons must support it, while SVG support is only a
+      // SHOULD and carries a scripting caveat.
+      icons: [
+        { src: 'https://chatrecall.dev/apple-touch-icon.png', mimeType: 'image/png', sizes: ['180x180'] },
+        { src: 'https://chatrecall.dev/favicon.svg', mimeType: 'image/svg+xml', sizes: ['any'] },
+      ],
+    },
     // resources and prompts are declared EMPTY rather than omitted: clients probe
     // them regardless of what is advertised, and an unregistered method answers
     // -32601, which every directory scan logs as a failure of a server that is
