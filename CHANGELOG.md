@@ -4,6 +4,25 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.20] — 2026-08-27
+
+### Fixed
+
+- **Every tool parameter now carries a description.** Seven tools had arguments
+  with none at all, and they were not cosmetic: `importance` on
+  recall_decision_record decides whether a fact ever reaches a future session's
+  wake-up bundle (only 4 and 5 do), and `direction` on recall_kg_query silently
+  decides whether you get facts where the entity is subject or object. An agent
+  guessing at those writes memory that either shouts or vanishes.
+- **`resources/list` and `prompts/list` answer with an empty list** instead of
+  JSON-RPC -32601. This server has no resources or prompts and says so in its
+  capabilities, but clients probe anyway, so every directory scan recorded two
+  failures against a server that was working correctly.
+- **The Smithery badge and Glama maintainer named a personal account.** The badge
+  ships on npm, so the package page showed a personal handle for a commercial
+  product; everything else already said munhq.
+
+
 ## [0.5.19] — 2026-08-27
 
 ### Fixed
