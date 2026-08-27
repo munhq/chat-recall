@@ -1,7 +1,7 @@
 {
   "name": "chat-recall",
   "description": "Skills that teach any agent to use the chat-recall MCP — resume prior sessions, search past work, recall decisions, and get project intelligence across all your AI coding tools. Bundles the chat-recall MCP server so install wires everything in one step.",
-  "version": "0.5.21",
+  "version": "0.5.22",
   "author": {
     "name": "munhq"
   },
