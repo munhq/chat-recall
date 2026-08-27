@@ -881,8 +881,10 @@ BEGIN
     );
   END IF;
 
-  -- session-keyed children (visible iff the session is).
-  FOREACH t IN ARRAY ARRAY['secret_findings','session_metadata','session_outcome_cache','compute_cache','raw_sessions'] LOOP
+  -- session-keyed children with NO author column: visible iff the session is.
+  -- Their WRITES are elevated (runUnrestricted) because a child is legitimately
+  -- written before its parent — see putRawSession / setCompute / OutcomeCache.put.
+  FOREACH t IN ARRAY ARRAY['session_outcome_cache','compute_cache','raw_sessions'] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE tablename=t AND policyname='author_visibility') THEN
       EXECUTE format($p$
         CREATE POLICY author_visibility ON %1$I AS RESTRICTIVE FOR SELECT USING (
@@ -891,6 +893,46 @@ BEGIN
                      WHERE m.tenant = %1$I.tenant AND m.id = %1$I.session_id AND m.source_type='session')
         )$p$, t);
     END IF;
+  END LOOP;
+
+  -- ── session-keyed children that DO carry an author, and why they differ ──
+  --
+  -- secret_findings and session_metadata were gated purely on the parent
+  -- session, exactly like the three above — and PostgreSQL applies a SELECT
+  -- policy USING as the WITH CHECK of an INSERT .. ON CONFLICT, so writing
+  -- one before its parent fails with 42501 and 500s the whole ingest request.
+  -- Reproduced directly against a non-superuser role:
+  --
+  --   ERROR: new row violates row-level security policy "author_visibility"
+  --          for table "session_metadata"
+  --
+  -- The other three are fixed by elevating the write. These two CANNOT be:
+  -- they carry an author-write-guard (below), and elevating to the '*' viewer
+  -- would bypass it, letting one member overwrite another's row.
+  --
+  -- So they get the escape that already makes diary_entries and kg_triples
+  -- immune to this: YOUR OWN ROW IS VISIBLE TO YOU. That is not a widening —
+  -- the write-guard means a named member can only ever write rows they author,
+  -- and they can already see their own sessions; it only removes the transient
+  -- window where a row you just wrote is invisible because its parent has not
+  -- landed yet. A different member still sees nothing: their sub does not match
+  -- and the parent is not visible to them either.
+  --
+  -- DROP-then-CREATE, not IF NOT EXISTS: every other policy here is created only
+  -- when absent, which means a definition change never reaches a database that
+  -- already has the old one. That is why this had to be found in production
+  -- rather than at deploy time, and it is exactly the shape of the code_*
+  -- DROP block below.
+  FOREACH t IN ARRAY ARRAY['secret_findings','session_metadata'] LOOP
+    EXECUTE format('DROP POLICY IF EXISTS author_visibility ON %I', t);
+    EXECUTE format($p$
+      CREATE POLICY author_visibility ON %1$I AS RESTRICTIVE FOR SELECT USING (
+        current_setting('app.viewer', true) = '*'
+        OR %1$I.author_sub IS NULL
+        OR %1$I.author_sub = current_setting('app.viewer', true)
+        OR EXISTS (SELECT 1 FROM memory_metadata m
+                   WHERE m.tenant = %1$I.tenant AND m.id = %1$I.session_id AND m.source_type='session')
+      )$p$, t);
   END LOOP;
 
   -- project-keyed children (code intel): visible iff the viewer sees any session in the project.
