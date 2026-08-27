@@ -62,7 +62,7 @@ describe('every tool discovers sibling profiles', () => {
     const { geminiTmpDirs } = await paths();
     const roots = geminiTmpDirs();
     expect(roots).toHaveLength(2);
-    expect(roots[0]).toContain('.gemini/tmp');           // primary first
+    expect(roots[0]).toContain(join('.gemini', 'tmp'));           // primary first
     expect(roots.some((r) => r.includes('.gemini-work'))).toBe(true);
   });
 
@@ -72,7 +72,7 @@ describe('every tool discovers sibling profiles', () => {
     const { codexSessionDirs } = await paths();
     const roots = codexSessionDirs();
     expect(roots).toHaveLength(2);
-    expect(roots[0]).toContain('.codex/sessions');
+    expect(roots[0]).toContain(join('.codex', 'sessions'));
   });
 
   test('agy: brain/ roots from every home', async () => {
@@ -81,7 +81,7 @@ describe('every tool discovers sibling profiles', () => {
     const { agyBrainDirs } = await paths();
     const roots = agyBrainDirs();
     expect(roots).toHaveLength(2);
-    expect(roots[0]).toContain('antigravity-cli/brain');
+    expect(roots[0]).toContain(join('antigravity-cli', 'brain'));
   });
 
   test('opencode: a FILE, so siblings come from sibling data dirs', async () => {
@@ -90,7 +90,7 @@ describe('every tool discovers sibling profiles', () => {
     const { opencodeDbPaths } = await paths();
     const dbs = opencodeDbPaths();
     expect(dbs).toHaveLength(2);
-    expect(dbs[0]).toContain('share/opencode/opencode.db');
+    expect(dbs[0]).toContain(join('share', 'opencode', 'opencode.db'));
     expect(dbs.some((d) => d.includes('opencode-work'))).toBe(true);
   });
 
