@@ -301,6 +301,44 @@ describe('sync against a host that is no longer chat-recall', () => {
   });
 });
 
+/**
+ * THE READ COMMANDS, which are most of the CLI.
+ *
+ * `recent`, `search`, `show`, `tasks` and the rest go through five generic
+ * helpers (serverGet / serverGetSoft / serverPost / serverPatch / serverDelete).
+ * Each checked `!res.ok` and then called `.json()` — and a captive portal, a
+ * corporate SSO wall or a parked domain answers 200 with HTML for every path it
+ * does not recognise. So the status check passed and thirty-odd commands could
+ * report `Unexpected token '<', "<!DOCTYPE "... is not valid JSON`, which names
+ * no host, no status and no fix.
+ */
+describe('a read command against a host that answers 200 with HTML', () => {
+  const servers: HostileServer[] = [];
+  afterAll(async () => { for (const s of servers) await s.close(); });
+
+  // `search` goes through serverPost, `status` through serverGet — the two
+  // helpers every other read command is built on.
+  for (const cmd of [['search', 'marker'], ['status']]) {
+    test(`\`${cmd[0]}\` names what answered instead of dying in JSON.parse`, async () => {
+      const s = await startHostileServer('html200');
+      servers.push(s);
+      const { out } = await runCli(cmd, { credentialsFor: s.url });
+      expect(s.hits.length).toBeGreaterThan(0);
+      expect(out).not.toMatch(/Unexpected token|is not valid JSON|JSON at position/i);
+      expect(out).toMatch(/not JSON/i);
+      expect(out).toMatch(/proxy|captive portal/i);
+    });
+  }
+
+  test('a plain-text 404 on a read command keeps its status', async () => {
+    const s = await startHostileServer('text404');
+    servers.push(s);
+    const { out } = await runCli(['search', 'marker'], { credentialsFor: s.url });
+    expect(out).not.toMatch(/JSON at position/i);
+    expect(out).toMatch(/HTTP 404/);
+  });
+});
+
 describe('the Node floor', () => {
   // Reads the bundle as text, so it only applies when the artifact under test IS
   // the bundle. Against an installed binary the same guard is covered by the
