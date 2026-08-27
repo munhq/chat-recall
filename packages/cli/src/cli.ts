@@ -251,7 +251,17 @@ const pkgVersion: string = JSON.parse(
  * browser, so this only decides which sign-in page they see. Self-hosting stays
  * a first-class path — see SELF_HOST_DOCS — and `--server` overrides this.
  */
-const DEFAULT_SERVER = 'https://chatrecall.dev';
+/**
+ * Where `init` and a bare `login` go when no URL is given.
+ *
+ * OVERRIDABLE, for two reasons. A test of the "your saved server was retired,
+ * switching" path cannot be written against a hardcoded constant without
+ * starting a device flow against the production service — so that path had no
+ * test at all. And a self-hoster running `init` on ten machines should be able to
+ * name their own server once in the environment instead of passing `--server`
+ * every time.
+ */
+const DEFAULT_SERVER = (process.env.CHAT_RECALL_DEFAULT_SERVER || 'https://chatrecall.dev').replace(/\/+$/, '');
 
 /**
  * Tools NEVER written into `alwaysAllow`, so the host asks every time.
@@ -406,6 +416,10 @@ program
       // login is reused untouched.
       console.log(chalk.bold('2. Connecting to your server...'));
       let target = firstTarget();
+      /** Set when step 2 PROVES the saved server is not chat-recall any more, so
+       *  step 5 does not spend a walk uploading into a 404 and then bury the
+       *  cause under a transport error. */
+      let deadTarget = false;
       if (options.server) {
         // WRAPPED, exactly like the default branch below.
         //
@@ -447,7 +461,60 @@ program
           console.log(`   ${chalk.dim(`Run ${chalk.bold('chat-recall login <server-url>')} when ready, or self-host: ${SELF_HOST_DOCS}`)}`);
         }
       }
-      if (target) {
+      if (target && !options.server) {
+        // "CONNECTED" USED TO MEAN "credentials.json HAS A ROW", AND NOTHING MORE.
+        //
+        // A macOS user re-ran `npx chat-recall@latest init` on a machine still
+        // logged in to a host that had since been retired. Step 2 printed
+        //
+        //     Connected → https://recall.example.com          (green, and false)
+        //
+        // every step after it reported success, and the run only fell over at
+        // step 5 with `Unexpected non-whitespace character after JSON at
+        // position 4` from the transport. Three things were wrong at once: the
+        // line asserted a connection it had never tested, a stale target beat
+        // the default server so `init` never even considered the working one,
+        // and the actual cause surfaced three steps away from the claim.
+        //
+        // So: PROVE it, and when the proof says this host is not chat-recall,
+        // move. `moved` (404/410) and `not_api` (a 2xx that is not our document)
+        // are ANSWERS — retrying cannot improve on them. Login is still the
+        // consent gate: the device flow needs a browser approval, exactly as it
+        // does on a machine with no credentials at all.
+        const { probeServer, probeOk, probeAdvice } = await import('./server-probe.js');
+        const probe = await probeServer(target.base, { timeoutMs: 10_000 });
+        if (probeOk(probe)) {
+          console.log(`   ${chalk.green('Connected')} → ${target.base}`);
+        } else if (probe.kind === 'moved' || probe.kind === 'not_api') {
+          const retired = target.base;
+          console.log(`   ${chalk.yellow('The saved server no longer serves chat-recall')} → ${retired}`);
+          console.log(`   ${probeAdvice(probe, retired)}`);
+          console.log(`   Switching to ${chalk.bold(DEFAULT_SERVER)} — sign in to approve this machine.`);
+          try {
+            await runLogin(DEFAULT_SERVER, { token: options.token, fromInit: true, promptJson: options.promptJson });
+            // Drop the retired entry only AFTER the new one works. Every sync
+            // pushes to ALL targets, so leaving a host that provably cannot
+            // answer would make every future sync report a failure — and the
+            // user would be told to fix a server that is not theirs any more.
+            const { removeCredentials } = await import('./sync-client.js');
+            if (removeCredentials(retired)) {
+              console.log(`   ${chalk.dim(`Removed the retired target ${retired} (log in there again any time).`)}`);
+            }
+            target = firstTarget();
+            if (target) console.log(`   ${chalk.green('Connected')} → ${target.base}`);
+          } catch (e) {
+            console.log(`   ${chalk.yellow('Not connected.')} ${describeProbeError(e)}`);
+            console.log(`   ${chalk.dim(`Run ${chalk.bold(`chat-recall login ${DEFAULT_SERVER}`)} when ready, then ${chalk.bold(`chat-recall logout ${retired}`)}.`)}`);
+            deadTarget = true;
+          }
+        } else {
+          // Unreachable, or a 5xx: the host may well be ours and simply down.
+          // Say what happened and keep the credential — do NOT re-point a
+          // machine away from its own server over a transient failure.
+          console.log(`   ${chalk.yellow('Saved server did not answer')} → ${target.base}`);
+          console.log(`   ${probeAdvice(probe, target.base)}`);
+        }
+      } else if (target) {
         console.log(`   ${chalk.green('Connected')} → ${target.base}`);
       }
       console.log();
@@ -606,21 +673,48 @@ program
           const { executePull } = await import('@chat-recall/engine/core/toolkit-pull.js');
           const { hostname } = await import('node:os');
           const rows: RemoteArtifactRow[] = [];
+          // "NOTHING ON YOUR ACCOUNT" IS A CLAIM ABOUT THE ACCOUNT, AND IT WAS
+          // PRINTED FOR A FAILED REQUEST. `if (!res.ok) continue` swallowed the
+          // retired host's 404, `rows` stayed empty, and a user with a dozen
+          // registered MCP servers was told their account had none. An empty
+          // RESULT and an unanswered QUESTION are not the same sentence, so
+          // count the targets that actually answered.
+          let answered = 0;
+          const askFailed: string[] = [];
           for (const t of loadAllCredentials()) {
             try {
               const res = await fetch(`${t.serverUrl}/api/toolkit/browse/mcp?limit=1000`, {
                 headers: t.token ? { authorization: `Bearer ${t.token}` } : {},
                 signal: AbortSignal.timeout(20_000),
               });
-              if (!res.ok) continue;
-              const body = await res.json() as { items?: RemoteArtifactRow[] };
+              if (!res.ok) {
+                askFailed.push(`${t.serverUrl} (HTTP ${res.status})`);
+                continue;
+              }
+              // Text first: a 200 of HTML from a proxy or a captive portal used
+              // to throw a JSON parse error out of this whole step.
+              const text = await res.text();
+              let body: { items?: RemoteArtifactRow[] };
+              try { body = JSON.parse(text) as { items?: RemoteArtifactRow[] }; }
+              catch {
+                askFailed.push(`${t.serverUrl} (not JSON: ${JSON.stringify(text.trim().slice(0, 40))})`);
+                continue;
+              }
+              answered++;
               for (const it of body.items || []) rows.push(it);
-            } catch { /* one unreachable target must not stop init */ }
+            } catch (e) {
+              askFailed.push(`${t.serverUrl} (${describeProbeError(e)})`);
+            }
           }
           const report = executePull(rows, { thisDeviceId: hostname(), types: ['mcp'] });
           const written = report.outcomes.filter((o) => o.status === 'written');
           const present = report.outcomes.filter((o) => o.status === 'present').length;
-          if (written.length === 0 && present === 0) {
+          if (answered === 0) {
+            // Nobody answered, so nothing is known about the account.
+            console.log(`   ${chalk.yellow('Could not ask your server what MCP servers are on your account')}`);
+            for (const f of askFailed) console.log(`   ${chalk.dim(f)}`);
+            console.log(`   ${chalk.dim('Re-run `chat-recall toolkit pull` once the server answers.')}`);
+          } else if (written.length === 0 && present === 0) {
             console.log(chalk.dim('   Nothing on your account to install yet.'));
           } else {
             console.log(`   ${chalk.green(`Installed ${written.length}`)} ${chalk.dim(`(${present} already present)`)}`);
@@ -639,7 +733,10 @@ program
       // Step 5: First sync — collect this machine's local sessions and ship
       // them to the server. Skipped when there's no login (nothing to ship to)
       // or when --skip-sync is passed.
-      if (!options.skipSync && firstTarget()) {
+      if (deadTarget) {
+        console.log(chalk.bold('5. Skipping first sync — the saved server is not serving chat-recall'));
+        console.log(`   ${chalk.dim(`Re-point with the two commands above, then run ${chalk.bold('chat-recall sync')}.`)}`);
+      } else if (!options.skipSync && firstTarget()) {
         // ONE LINE, AND NO QUESTION.
         //
         // This step briefly printed a scope preview — every project by name, the
