@@ -11,6 +11,7 @@ import { join } from 'path';
 import memoryRouter from './memory.js';
 import { runWithTenant } from '@chat-recall/engine/core/store/tenant-context.js';
 import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '@chat-recall/engine/test-support/home-env.js';
+import { removeTestDir } from '@chat-recall/engine/test-support/tmp-dir.js';
 
 let tmpHome: string;
 const origHome = homeEnvSnapshot();
@@ -31,7 +32,9 @@ afterAll(() => {
   restoreHomeEnv(origHome);
   if (origDataDir === undefined) delete process.env.CHAT_RECALL_DATA_DIR;
   else process.env.CHAT_RECALL_DATA_DIR = origDataDir;
-  rmSync(tmpHome, { recursive: true, force: true });
+  // removeTestDir, not rmSync: this directory holds an open SQLite handle and
+  // Windows refuses to unlink a file in use. See test-support/tmp-dir.ts.
+  removeTestDir(tmpHome);
 });
 
 describe('Memory route validator', () => {

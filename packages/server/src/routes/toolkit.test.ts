@@ -11,6 +11,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import toolkitRouter from './toolkit.js';
 import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '@chat-recall/engine/test-support/home-env.js';
+import { removeTestDir } from '@chat-recall/engine/test-support/tmp-dir.js';
 
 let tmpHome: string;
 const origHome = homeEnvSnapshot();
@@ -25,7 +26,9 @@ beforeAll(() => {
 });
 afterAll(() => {
   restoreHomeEnv(origHome);
-  rmSync(tmpHome, { recursive: true, force: true });
+  // removeTestDir, not rmSync: this directory holds an open SQLite handle and
+  // Windows refuses to unlink a file in use. See test-support/tmp-dir.ts.
+  removeTestDir(tmpHome);
 });
 
 describe('GET /api/toolkit/status', () => {

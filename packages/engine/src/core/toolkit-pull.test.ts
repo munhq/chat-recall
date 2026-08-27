@@ -9,7 +9,10 @@
 
 import { describe, expect, test } from 'vitest';
 
+import { basename } from 'node:path';
+
 import { entryFromSpec, planPull, portableCommand, type RemoteArtifactRow } from './toolkit-pull.js';
+import { isOnPath } from './which.js';
 
 const row = (type: string, name: string, extra: Record<string, unknown>): RemoteArtifactRow => ({
   id: `${name}-${type}`,
@@ -116,6 +119,22 @@ describe('portableCommand', () => {
     // `node` is running these tests, so it is on PATH by definition.
     const r = portableCommand('node');
     expect(r).toEqual({ command: 'node', rewritten: false });
+  });
+
+  test('THE PATHEXT TRAP: the resolver is the shared one, on whatever platform this is', () => {
+    // This file used to carry its own PATH walk that looked for a file named
+    // exactly `node`. On Windows executability IS the extension — there is only
+    // `node.exe` — so every bare-name MCP command resolved to nothing and
+    // `portableCommand` reported the tools the user HAS as missing. Asserting
+    // against `basename(process.execPath)` states it in a way that is true on
+    // all three platforms: `node` on POSIX, `node.exe` on Windows, and both must
+    // resolve because that binary is the one running this test.
+    const running = basename(process.execPath);
+    expect(isOnPath(running) || isOnPath('node')).toBe(true);
+    expect(portableCommand(running)).toEqual({ command: running, rewritten: false });
+    // And the same resolver answers for both surfaces — one implementation.
+    expect(isOnPath('definitely-not-installed-xyz')).toBe(false);
+    expect(portableCommand('definitely-not-installed-xyz')).toEqual({ missing: 'definitely-not-installed-xyz' });
   });
 
   test('an absolute path that exists here is kept', () => {
