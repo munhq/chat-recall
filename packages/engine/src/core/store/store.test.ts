@@ -13,7 +13,9 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync } from 'fs';
+import { mkdtempSync, readFileSync } from 'fs';
+// Windows will not unlink a file whose handle the OS has not yet released.
+import { removeTestDir } from '../../test-support/tmp-dir.js';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -45,7 +47,7 @@ function makeSqlite(): () => Promise<Harness> {
     const dbPath = join(tmp, 't.db');
     new MetadataCache(dbPath).close();  // create session_metadata so session setItem works
     const store = await createStore({ sqlitePath: dbPath });
-    return { store, teardown: async () => { await store.close(); rmSync(tmp, { recursive: true, force: true }); } };
+    return { store, teardown: async () => { await store.close(); removeTestDir(tmp); } };
   };
 }
 function makePostgres(): () => Promise<Harness> {
@@ -295,7 +297,7 @@ describe('SqliteStore — wiring parity (wrapper === inner)', () => {
     await store.kvSet('s', 'k', 'v');
     await store.setCachedContent('p1', 'plan', 1000, 'cached');
   });
-  afterEach(async () => { await store.close(); rmSync(tmp, { recursive: true, force: true }); });
+  afterEach(async () => { await store.close(); removeTestDir(tmp); });
 
   const READ_CALLS: Array<[string, unknown[]]> = [
     ['getItem', ['s1', 'session']], ['needsUpdate', ['s1', 'session', 1]], ['listItems', ['plan', 10, 0]],
@@ -321,7 +323,7 @@ describe('SqliteStore — wiring parity (wrapper === inner)', () => {
 describe('SqliteMetadataCache', () => {
   let tmp: string; let mc: SqliteMetadataCache;
   beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'cr-mc-')); mc = new SqliteMetadataCache(new MetadataCache(join(tmp, 't.db'))); });
-  afterEach(async () => { await mc.close(); rmSync(tmp, { recursive: true, force: true }); });
+  afterEach(async () => { await mc.close(); removeTestDir(tmp); });
   test('set/get round-trip', async () => {
     await mc.set({ sessionId: 's1', firstPrompt: 'hi', summary: 'did x', summarySource: 'gemini', mtime: 5, indexedAt: 6 });
     const got = await mc.get('s1');
@@ -342,7 +344,7 @@ describe('SqliteOutcomeCache', () => {
   let tmp: string; let oc: SqliteOutcomeCache;
   const rec = (sessionId: string) => ({ sessionId, tool: 'claude', status: 'shipped' as const, reason: 'merged', fileMtime: 1, fileSize: 2, contentHash: 'h', fileCount: 1, linesAdded: 10, linesRemoved: 2, commits: 1, isFull: true, lastScannedOffset: 0 });
   beforeEach(async () => { tmp = mkdtempSync(join(tmpdir(), 'cr-oc-')); oc = await createOutcomeCache({ sqlitePath: join(tmp, 't.db') }) as SqliteOutcomeCache; });
-  afterEach(async () => { await oc.close(); rmSync(tmp, { recursive: true, force: true }); });
+  afterEach(async () => { await oc.close(); removeTestDir(tmp); });
   test('put/get + getMany + invalidate', async () => {
     await oc.put(rec('s1'));
     expect((await oc.get('s1'))?.status).toBe('shipped');
@@ -356,7 +358,7 @@ describe('SqliteOutcomeCache', () => {
 describe('SqliteKnowledgeGraph', () => {
   let tmp: string; let kg: SqliteKnowledgeGraph;
   beforeEach(async () => { tmp = mkdtempSync(join(tmpdir(), 'cr-kg-')); kg = await createKnowledgeGraph({ sqlitePath: join(tmp, 'kg.db') }) as SqliteKnowledgeGraph; });
-  afterEach(async () => { await kg.close(); rmSync(tmp, { recursive: true, force: true }); });
+  afterEach(async () => { await kg.close(); removeTestDir(tmp); });
   test('addTriple → queryEntity → stats', async () => {
     await kg.addEntity('chat-recall', 'project');
     await kg.addTriple('chat-recall', 'uses', 'postgres');
@@ -369,7 +371,7 @@ describe('SqliteKnowledgeGraph', () => {
 describe('FileWal', () => {
   let tmp: string;
   beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'cr-wal-')); });
-  afterEach(() => { rmSync(tmp, { recursive: true, force: true }); });
+  afterEach(() => { removeTestDir(tmp); });
   test('log() appends a JSONL line with the operation', async () => {
     await new FileWal(tmp).log('kg_add', { subject: 's', predicate: 'p', object: 'o' });
     const parsed = JSON.parse(readFileSync(join(tmp, 'write_log.jsonl'), 'utf-8').trim().split('\n')[0]);
@@ -380,7 +382,7 @@ describe('FileWal', () => {
 describe('FileDiary', () => {
   let tmp: string; const prev = process.env.CHAT_RECALL_DATA_DIR;
   beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'cr-diary-')); process.env.CHAT_RECALL_DATA_DIR = tmp; });
-  afterEach(() => { if (prev === undefined) delete process.env.CHAT_RECALL_DATA_DIR; else process.env.CHAT_RECALL_DATA_DIR = prev; rmSync(tmp, { recursive: true, force: true }); });
+  afterEach(() => { if (prev === undefined) delete process.env.CHAT_RECALL_DATA_DIR; else process.env.CHAT_RECALL_DATA_DIR = prev; removeTestDir(tmp); });
   test('write → read round-trip', async () => {
     const d: FileDiary = await createDiary() as FileDiary;
     const id = await d.write({ agent: 'tester', topic: 't', content: 'remembered this', timestamp: '2020-01-01T00:00:00.000Z' });
@@ -488,7 +490,7 @@ describe('createStore factory + resolveBackend', () => {
     const tmp = mkdtempSync(join(tmpdir(), 'cr-factory-'));
     const s = await createStore({ backend: 'sqlite', sqlitePath: join(tmp, 't.db') });
     expect(s).toBeInstanceOf(SqliteStore);
-    await s.close(); rmSync(tmp, { recursive: true, force: true });
+    await s.close(); removeTestDir(tmp);
   });
   test('resolveBackend honors env + aliases and is fail-closed', () => {
     const prev = process.env.CHAT_RECALL_STORAGE;
