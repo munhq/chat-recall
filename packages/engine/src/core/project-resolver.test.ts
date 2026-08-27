@@ -289,3 +289,36 @@ describe('resolveProjectId — bot worktrees', () => {
     expect(resolveProjectId(a).id).toBe(resolveProjectId(b).id);
   });
 });
+
+/**
+ * A rule must mean the same thing on every platform.
+ *
+ * globMatch built its regex with `/` hard-coded: `*` became `[^/]*` and `**`
+ * consumed only a `/`. On Windows that made a rule written `C:/code/vendored/**`
+ * match nothing, and a rule written with backslashes let `*` cross a directory
+ * boundary. Either way the project the user had excluded was indexed anyway.
+ * These run on all three platforms, so the separator can never be assumed again.
+ */
+describe('globMatch is separator-agnostic', () => {
+  test('a forward-slash pattern matches a backslash path', () => {
+    expect(globMatch('C:/code/vendored/**', 'C:\\code\\vendored\\repo\\sub')).toBe(true);
+  });
+
+  test('a backslash pattern matches a forward-slash path', () => {
+    expect(globMatch('C:\\code\\vendored\\**', 'C:/code/vendored/repo')).toBe(true);
+  });
+
+  test('a single * does NOT cross a backslash separator', () => {
+    // The Windows half of the bug: `\` is not excluded by `[^/]`, so `*` used to
+    // swallow whole directories.
+    expect(globMatch('C:/code/*', 'C:\\code\\repo')).toBe(true);
+    expect(globMatch('C:/code/*', 'C:\\code\\repo\\sub')).toBe(false);
+  });
+
+  test('the POSIX behaviour is unchanged', () => {
+    expect(globMatch('/home/user/code/*', '/home/user/code/app')).toBe(true);
+    expect(globMatch('/home/user/code/*', '/home/user/code/app/sub')).toBe(false);
+    expect(globMatch('/home/user/code/**', '/home/user/code/app/sub')).toBe(true);
+    expect(globMatch('/home/user/{a,b}/x', '/home/user/b/x')).toBe(true);
+  });
+});

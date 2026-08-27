@@ -17,6 +17,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync, symlinkSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { useHomeDir } from '@chat-recall/engine/test-support/home-env.js';
 
 let home: string;
 const saved: Record<string, string | undefined> = {};
@@ -39,7 +40,7 @@ function claudeHome(name: string, opts: { withProjects?: boolean } = {}): string
 beforeEach(() => {
   for (const k of ENV) saved[k] = process.env[k];
   home = mkdtempSync(join(tmpdir(), 'cr-skills-'));
-  process.env.HOME = home;
+  useHomeDir(home);
   // A home override disables sibling discovery, so it must be clear.
   delete process.env.CHAT_RECALL_CLAUDE_HOME;
   delete process.env.CLAUDE_DIRS;

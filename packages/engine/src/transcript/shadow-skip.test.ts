@@ -15,6 +15,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, appendFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { useHomeDir } from '../test-support/home-env.js';
 
 let dir: string;
 let home: string;
@@ -39,7 +40,7 @@ beforeEach(() => {
   for (const k of ['HOME', 'CHAT_RECALL_DATA_DIR', 'CHAT_RECALL_CLAUDE_HOME']) saved[k] = process.env[k];
   dir = mkdtempSync(join(tmpdir(), 'cr-shadow-skip-'));
   home = dir;
-  process.env.HOME = home;
+  useHomeDir(home);
   process.env.CHAT_RECALL_DATA_DIR = join(dir, '.chat-recall');
   process.env.CHAT_RECALL_CLAUDE_HOME = join(home, '.claude');
 });

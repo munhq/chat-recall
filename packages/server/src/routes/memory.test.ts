@@ -10,15 +10,16 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import memoryRouter from './memory.js';
 import { runWithTenant } from '@chat-recall/engine/core/store/tenant-context.js';
+import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '@chat-recall/engine/test-support/home-env.js';
 
 let tmpHome: string;
-const origHome = process.env.HOME;
+const origHome = homeEnvSnapshot();
 const origDataDir = process.env.CHAT_RECALL_DATA_DIR;
 let app: Express;
 
 beforeAll(() => {
   tmpHome = mkdtempSync(join(tmpdir(), 'mem-route-'));
-  process.env.HOME = tmpHome;
+  useHomeDir(tmpHome);
   // Pin the engine data dir so seeding via createStore and the routes'
   // per-request createStore() resolve the same sqlite file.
   process.env.CHAT_RECALL_DATA_DIR = join(tmpHome, '.chat-recall');
@@ -27,7 +28,7 @@ beforeAll(() => {
   app.use('/api/memory', memoryRouter);
 });
 afterAll(() => {
-  process.env.HOME = origHome;
+  restoreHomeEnv(origHome);
   if (origDataDir === undefined) delete process.env.CHAT_RECALL_DATA_DIR;
   else process.env.CHAT_RECALL_DATA_DIR = origDataDir;
   rmSync(tmpHome, { recursive: true, force: true });
