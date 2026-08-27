@@ -16,27 +16,26 @@
 # back — allowing it would let a fork's pull request execute code inside the
 # production cluster.
 #
-# macOS and Windows stay gated to the paths below rather than every push. They
-# are free now, but each adds minutes of wall-clock to a push for ~15s of real
-# work, and Linux already catches almost everything:
-#   * workflow_dispatch — on demand, before you hand the tarball to anyone;
-#   * a `v*` tag        — the release gate, once releases are tagged;
-#   * the daily cron    — early warning that main still installs everywhere.
-# A plain push to main gets Linux only.
+# ALL THREE PLATFORMS RUN ON EVERY PUSH TO MAIN.
 #
-# NOTE ON THE TAG TRIGGER: as of writing there is no release process — no
-# version tags, no GitHub releases, and `chat-recall` is not on npm. The `v*`
-# trigger is therefore dormant, deliberately: it arms itself the day you cut a
-# real tag. Until then `workflow_dispatch` and the cron are the only paths that
-# reach macOS/Windows, which is why the cron stays even though it costs minutes.
-# Gating cross-platform coverage on tags ALONE would silently never run — the
-# exact 18-day blind spot the cron was added to end.
+# macOS and Windows used to be gated to workflow_dispatch, a `v*` tag and a daily
+# cron, on the reasoning that "Linux already catches almost everything". It does
+# not. The network-error classifier walked `err.cause` alone, and on a dual-stack
+# host — the default for `localhost` on macOS and Windows — undici reports the
+# failure as an AggregateError whose members carry the codes. The identical
+# refused connection therefore printed "connection refused" on Linux and the bare
+# five characters "fetch failed" on the other two. A gate that runs tomorrow does
+# not stop that being handed to a person today, and a public repository is billed
+# nothing for any of the three runners.
+#
+# The cron stays as well: it answers "does main still install everywhere" on a
+# day with no pushes, which is the 18-day blind spot it was added to end.
 name: Fresh-machine install gate
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]      # Linux only (see the matrix expression below)
+    branches: [main]      # all three platforms
     tags: ['v*']          # release: all three platforms
   schedule:
     - cron: '0 6 * * *'   # daily, so a broken install surfaces within a day
@@ -50,15 +49,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # A job-level `if:` cannot read the `matrix` context, so the platform
-        # set is chosen here instead — `strategy` can read `github`. Everything
-        # except a plain branch push gets the full matrix.
-        runner: >-
-          ${{ fromJSON(
-                (github.event_name != 'push' || startsWith(github.ref, 'refs/tags/v'))
-                && '["ubuntu-latest","macos-latest","windows-latest"]'
-                || '["ubuntu-latest"]'
-              ) }}
+        runner: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -94,3 +85,21 @@ jobs:
           # missing on macOS runners and broken under Git bash on Windows)
           node .github/scripts/mcp-boot-check.cjs
           echo "fresh install OK on ${{ runner.os }}"
+
+      # ── THE INSTALLED BINARY, AGAINST SERVERS THAT ANSWER BADLY ────────────
+      # `--version`, `status` and an MCP boot were the whole of this gate, and
+      # they are the three things a new user never types. `init`, `login` and
+      # `sync` were untested here, and every install bug found on 2026-08-27 was
+      # in one of them — found by a person on a laptop, all reproducible with no
+      # network against a server that answers 404, HTML, 502 or nothing.
+      #
+      # CHAT_RECALL_TEST_CLI re-points install-hostile.test.ts, which CI already
+      # runs against the built bundle, at `chat-recall` — the globally installed
+      # binary from the tarball above. Same assertions, the artifact a customer
+      # actually has, on all three platforms. The suite redirects every tool home
+      # into a throwaway tree, so it writes nothing outside its sandbox.
+      - name: init / login / sync against hostile servers (installed binary)
+        shell: bash
+        env:
+          CHAT_RECALL_TEST_CLI: chat-recall
+        run: npx vitest run packages/cli/src/install-hostile.test.ts

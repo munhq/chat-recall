@@ -21,6 +21,7 @@ import type { RemoteArtifactRow } from '@chat-recall/engine/core/toolkit-pull.js
 import { tierAll, type ScoreTier } from '@chat-recall/engine/core/score-tier.js';
 import { loadAllCredentials, type Credentials } from './sync-client.js';
 import { printUpdateNotice, updateNotice } from './update-notice.js';
+import { describeUnreachable } from './server-probe.js';
 import { isOnPath } from '@chat-recall/engine/core/which.js';
 import { readCollectorHealth, judgeHealth, progressLine, collectorHealthPath, STALE_AFTER_MS } from '@chat-recall/engine/core/collector-health.js';
 import { userConsents, serverAllowsTelemetry } from './telemetry-consent.js';
@@ -102,14 +103,16 @@ function firstTarget(): RemoteTarget | null {
  *  server-probe's walk of `err.cause` so both surfaces describe a failure the
  *  same way. */
 function describeProbeError(err: unknown): string {
-  const codes: string[] = [];
-  for (let e: unknown = err, depth = 0; e && depth < 5; depth++) {
-    const code = (e as { code?: unknown }).code;
-    if (typeof code === 'string' && code && !codes.includes(code)) codes.push(code);
-    e = (e as { cause?: unknown }).cause;
-  }
-  const base = err instanceof Error ? err.message : String(err);
-  return codes.length ? `${base}: ${codes.join(' → ')}` : base;
+  // A NON-NETWORK error keeps its own message: the device flow throws
+  // `device-auth init failed: HTTP 404 …`, which already names the cause, and
+  // running it through a network classifier would relabel it "no HTTP response".
+  const msg = err instanceof Error ? err.message : String(err);
+  if (!/fetch failed|ECONN|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|CERT_|aborted|timeout/i.test(msg)) return msg;
+  // Network failure: name the reason. This function used to be a private copy of
+  // describeCause, walking `cause` only, and it printed a bare "fetch failed"
+  // for every cause that carries no code — which is what `init` showed as
+  // "Not connected. fetch failed".
+  return describeUnreachable(err);
 }
 
 /**
@@ -3144,7 +3147,10 @@ async function runLogin(
       });
       return { ok: res.ok, status: res.status };
     } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      // describeUnreachable, not err.message: every network cause there is
+      // arrives here as the constant string "fetch failed", and this string is
+      // printed verbatim to the user.
+      return { ok: false, error: describeUnreachable(err) };
     }
   };
 
@@ -3158,11 +3164,36 @@ async function runLogin(
       console.error(chalk.dim('Use the Copy button next to the token in the dashboard and paste the full line.'));
       return failLogin(opts, 'the token contains non-ASCII characters — this looks like a masked/truncated copy (e.g. "ct_12345678…")');
     }
+    // IDENTIFY THE HOST BEFORE TRUSTING IT WITH TRANSCRIPTS.
+    //
+    // `/api/status` returning 200 was the only test, on this path as on the
+    // no-auth one below — and an HTML login wall, a parked domain or any
+    // unrelated service returns 200 too. This saved the target and the next sync
+    // uploaded to it. `probeServer` reads `/api/capabilities` and requires a
+    // chat-recall apiVersion, so a 200 from something else can no longer become
+    // a sync destination. Its advice line also names a 404/502 properly, which
+    // "could not verify the token" never did.
+    const { probeServer: identifyServer, probeOk: identified, probeAdvice: identifyAdvice } =
+      await import('./server-probe.js');
+    const who = await identifyServer(base, { timeoutMs: 10_000 });
+    if (!identified(who)) return failLogin(opts, identifyAdvice(who, base));
     const check = await verifyToken(token);
     if (!check.ok) {
       if (check.status === 401 || check.status === 403) {
         console.error(chalk.dim('Tokens are shown once — mint a fresh one (Account → Connect your machine) and copy the whole line.'));
         return failLogin(opts, `${base} rejected the token (HTTP ${check.status})`);
+      }
+      // NAME THE PARTY AT FAULT. Every non-401 answer used to read "could not
+      // verify the token", which points the user at the one thing that is
+      // probably fine: a 502 is a broken server, a 404 is a host that no longer
+      // serves chat-recall, and neither is fixed by minting another token.
+      if (check.status !== undefined && check.status >= 500) {
+        return failLogin(opts, `${base} answered HTTP ${check.status} — the server is up but failing. `
+          + 'The token was never checked. Nothing to fix locally.');
+      }
+      if (check.status === 404 || check.status === 410) {
+        return failLogin(opts, `${base} does not serve the chat-recall API (HTTP ${check.status}). `
+          + 'If the server moved, log in to its new URL.');
       }
       return failLogin(opts, `could not verify the token against ${base}: ${check.error || `HTTP ${check.status}`}`);
     }
@@ -3185,12 +3216,29 @@ async function runLogin(
   // (a no-auth /api/status returns 200; an auth-required server returns 401) and
   // save a tokenless target instead of forcing the OIDC flow. Runs under --check
   // too: connecting to a no-auth server is free, so "connected" is the answer.
+  //
+  // ANY HTTP 200 USED TO BE ENOUGH, AND THAT WAS A DATA-EXFILTRATION BUG.
+  // The check was `fetch(/api/status).status === 200` — nothing verified the
+  // answer came from chat-recall. So `init --server <a parked domain>`, a
+  // captive portal, a corporate login wall or an unrelated JSON API all printed
+  //
+  //     ✓ Logged in.  http://… (local server — no auth, no token needed)
+  //
+  // and PERSISTED that host as a sync target. The very next sync then uploaded
+  // this machine's transcripts to a stranger's server, on the strength of one
+  // 200. Two conditions now, in this order: /api/capabilities must identify a
+  // chat-recall server of a usable apiVersion, and only then does an
+  // unauthenticated 200 on /api/status mean "this one wants no token".
   try {
-    const probe = await fetch(`${base}/api/status`, { signal: AbortSignal.timeout(8000) });
-    if (probe.status === 200) {
-      saveCredentials({ serverUrl, token: '' });
-      console.log(chalk.green('✓ Logged in.') + chalk.dim(`  ${serverUrl} (local server — no auth, no token needed)`));
-      return;
+    const { probeServer, probeOk } = await import('./server-probe.js');
+    const identified = await probeServer(base, { timeoutMs: 8000 });
+    if (probeOk(identified)) {
+      const probe = await fetch(`${base}/api/status`, { signal: AbortSignal.timeout(8000) });
+      if (probe.status === 200) {
+        saveCredentials({ serverUrl, token: '' });
+        console.log(chalk.green('✓ Logged in.') + chalk.dim(`  ${serverUrl} (local server — no auth, no token needed)`));
+        return;
+      }
     }
   } catch { /* unreachable or not a no-auth server — fall through to OIDC */ }
 
@@ -3235,17 +3283,33 @@ async function runLogin(
       for (let attempt = 1; attempt <= 3 && !authProvider; attempt++) {
         const probe = await probeServer(base, { timeoutMs: 15_000 });
         if (probeOk(probe)) {
-          // The probe validates the API shape; this needs two more fields off
-          // the same document, so read it once more from a server now known good.
-          try {
-            const caps = await fetch(`${base}/api/capabilities`, { signal: AbortSignal.timeout(15_000) })
-              .then((r) => r.json()) as { authProvider?: string; oidcIssuer?: string | null };
-            authProvider = caps?.authProvider;
-            if (caps?.oidcIssuer) issuer = caps.oidcIssuer;
-            capsError = null;
-          } catch (err) {
-            capsError = describeProbeError(err);
-          }
+          // ONE probe, and its parsed document. This re-fetched /api/capabilities
+          // with a bare `.json()`, so a server that answered the probe and then
+          // hiccupped produced a parse error here — the same failure mode the
+          // probe exists to end.
+          const caps = probe.raw as { authProvider?: string; oidcIssuer?: string | null };
+          authProvider = caps?.authProvider;
+          if (caps?.oidcIssuer) issuer = caps.oidcIssuer;
+          capsError = null;
+        } else if (probe.kind === 'moved' || probe.kind === 'not_api') {
+          // POSITIVE EVIDENCE THIS IS NOT OUR SERVER — do not guess a login flow.
+          //
+          // Every non-ok probe used to be treated as "the probe did not work",
+          // so the code assumed better-auth and POSTed a device-code request to
+          // a host that had already said it does not serve chat-recall. Against
+          // an unrelated JSON API that request returned 200, the response had no
+          // device fields, and the user was shown
+          //   To log in, open:
+          //     undefined
+          // and left waiting for an approval link that did not exist.
+          //
+          // 'moved' (a 404/410) and 'not_api' (a 2xx that is not our document)
+          // are ANSWERS, not failed attempts. Retrying and guessing cannot
+          // improve on them, so stop with the advice the probe already produced.
+          // A genuinely inconclusive probe — unreachable, 5xx — still falls
+          // through to the optimistic guess below, which is the case that
+          // guess was added for.
+          return failLogin(opts, probeAdvice(probe, base));
         } else {
           capsError = probeAdvice(probe, base);
         }

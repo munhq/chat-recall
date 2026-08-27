@@ -49,6 +49,51 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * Run the full device flow. `onPrompt` receives the human-facing instructions
  * (verification URL + code) so the caller controls presentation.
  */
+/**
+ * Read a device-code response, or say what answered instead.
+ *
+ * TWO FAILURES CAME THROUGH THIS ONE LINE (`await startRes.json()`):
+ *
+ *   - a 200 carrying HTML — a login wall or a parked domain — threw
+ *     "Unexpected token '<', \"<!DOCTYPE \"... is not valid JSON", which names
+ *     neither the host nor the fix;
+ *   - a 200 carrying SOMEBODY ELSE'S JSON parsed fine, every field came back
+ *     undefined, and the CLI printed
+ *
+ *         To log in, open:
+ *           undefined
+ *           (if prompted, enter code: undefined at undefined)
+ *         Waiting for approval…
+ *
+ *     then polled a stranger's endpoint until the (undefined → NaN) deadline
+ *     expired and reported "the code expired before approval". The user waited
+ *     for a link that never existed.
+ *
+ * So: read as text, parse defensively, and require the three fields RFC 8628
+ * makes mandatory before telling a human to go and approve something.
+ */
+async function readDeviceCode(res: Response, where: string): Promise<DeviceAuthResponse> {
+  const text = await res.text().catch(() => '');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(
+      `${where} answered ${res.status} with something that is not a device-code response `
+      + `(${JSON.stringify(text.trim().slice(0, 60))}) — this host is not serving the chat-recall API`,
+    );
+  }
+  const d = parsed as Partial<DeviceAuthResponse>;
+  if (typeof d?.device_code !== 'string' || typeof d?.user_code !== 'string'
+    || typeof d?.verification_uri !== 'string' || typeof d?.expires_in !== 'number') {
+    throw new Error(
+      `${where} answered ${res.status} with JSON that is not a device-code response `
+      + `(${JSON.stringify(text.trim().slice(0, 60))}) — this host is not serving the chat-recall API`,
+    );
+  }
+  return d as DeviceAuthResponse;
+}
+
 export async function deviceLogin(
   opts: { issuer?: string; clientId?: string; scope?: string },
   onPrompt: (p: { url: string; userCode: string; verificationUri: string }) => void,
@@ -77,7 +122,7 @@ export async function deviceLogin(
   if (!startRes.ok) {
     throw new Error(`device-auth init failed: HTTP ${startRes.status} ${await startRes.text().catch(() => '')}`);
   }
-  const start = (await startRes.json()) as DeviceAuthResponse;
+  const start = await readDeviceCode(startRes, issuer);
 
   onPrompt({
     url: start.verification_uri_complete || start.verification_uri,
@@ -146,7 +191,7 @@ export async function betterAuthDeviceLogin(
   if (!startRes.ok) {
     throw new Error(`device-auth init failed: HTTP ${startRes.status} ${await startRes.text().catch(() => '')}`);
   }
-  const start = (await startRes.json()) as DeviceAuthResponse;
+  const start = await readDeviceCode(startRes, base);
 
   onPrompt({
     url: start.verification_uri_complete || start.verification_uri,
