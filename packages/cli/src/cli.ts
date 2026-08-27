@@ -140,12 +140,39 @@ function requireTarget(): RemoteTarget {
   return t;
 }
 
+/**
+ * Parse a response body as JSON, or say what actually answered.
+ *
+ * THE `!res.ok` CHECK IS NOT ENOUGH, and every helper below had only that. A
+ * captive portal, a corporate SSO wall or a parked domain answers 200 with HTML
+ * for every path it does not know — so the status check passed, `.json()` met
+ * `<!DOCTYPE`, and around thirty commands could report
+ *
+ *     Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+ *
+ * which names no host, no status and no fix. Same shape as the sync bug in
+ * sync-client.ts and the login bug in server-probe.ts: read the body as TEXT
+ * first, and treat "this is not our API" as its own answer.
+ */
+async function readJsonBody<T>(res: Response, base: string, what: string): Promise<T> {
+  const text = await res.text().catch(() => '');
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(
+      `${base} answered ${res.status} with something that is not JSON `
+      + `(${JSON.stringify(text.trim().slice(0, 60))}) for ${what} — a proxy, a captive portal or a `
+      + 'host that no longer serves the chat-recall API',
+    );
+  }
+}
+
 /** GET <path> on the first target and parse JSON. Throws on non-2xx. */
 async function serverGet<T>(path: string): Promise<T> {
   const t = requireTarget();
   const res = await fetch(t.base + path, { headers: t.token ? { authorization: `Bearer ${t.token}` } : {} });
   if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
-  return res.json() as Promise<T>;
+  return readJsonBody<T>(res, t.base, `GET ${path}`);
 }
 
 /**
@@ -161,7 +188,7 @@ async function serverGetSoft<T>(path: string): Promise<{ status: number; data: T
     return { status: res.status, data: null, message: (body as { message?: string }).message };
   }
   if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
-  return { status: res.status, data: (await res.json()) as T };
+  return { status: res.status, data: await readJsonBody<T>(res, t.base, `GET ${path}`) };
 }
 
 /** POST <path> with a JSON body on the first target and parse JSON. Throws on non-2xx. */
@@ -175,7 +202,7 @@ async function serverPost<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
-  return res.json() as Promise<T>;
+  return readJsonBody<T>(res, t.base, `POST ${path}`);
 }
 
 /** PATCH <path> with a JSON body on the first target. Throws on non-2xx. */
@@ -189,7 +216,7 @@ async function serverPatch<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
-  return res.json() as Promise<T>;
+  return readJsonBody<T>(res, t.base, `PATCH ${path}`);
 }
 
 /** DELETE <path> with a JSON body on the first target. Throws on non-2xx. */
@@ -203,7 +230,7 @@ async function serverDelete<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`server ${path}: HTTP ${res.status} ${await res.text().catch(() => '')}`);
-  return res.json() as Promise<T>;
+  return readJsonBody<T>(res, t.base, `DELETE ${path}`);
 }
 
 // Resolves to packages/cli/package.json from both src/ and the bundled dist/
@@ -3362,7 +3389,12 @@ async function runLogin(
     // (zero teams) gets a workspace auto-created — same as the web onboarding.
     // Bouncing them to "run `team create`, then re-run login" mid-funnel is a
     // dead end for the one-command install.
-    const me = await fetch(`${base}/api/me`, { headers: authHdr }).then((r) => r.json() as Promise<{ user?: { email?: string }; teams: { team_slug: string; name: string }[] }>);
+    // NO STATUS CHECK AT ALL, and this runs immediately after a successful
+    // device approval — so a 500 or an HTML error page here surfaced as a JSON
+    // parse offset at the very end of a login the user had already completed.
+    const meRes = await fetch(`${base}/api/me`, { headers: authHdr });
+    if (!meRes.ok) throw new Error(`${base}/api/me: HTTP ${meRes.status} ${await meRes.text().catch(() => '')}`);
+    const me = await readJsonBody<{ user?: { email?: string }; teams: { team_slug: string; name: string }[] }>(meRes, base, 'GET /api/me');
     const teams = me.teams || [];
     let slug = opts.team;
     if (!slug) {
@@ -3371,7 +3403,7 @@ async function runLogin(
         const name = me.user?.email?.split('@')[0]?.replace(/[^a-z0-9]/gi, '') || 'workspace';
         const created = await fetch(`${base}/api/teams`, { method: 'POST', headers: authHdr, body: JSON.stringify({ name }) });
         if (!created.ok) throw new Error(`workspace create failed: HTTP ${created.status} ${await created.text().catch(() => '')}`);
-        slug = ((await created.json()) as { slug: string }).slug;
+        slug = (await readJsonBody<{ slug: string }>(created, base, 'POST /api/teams')).slug;
         console.log(chalk.dim(`Created workspace "${name}" (${slug}) — you're its owner.`));
       }
       else {
@@ -3388,7 +3420,7 @@ async function runLogin(
       method: 'POST', headers: authHdr, body: JSON.stringify({ device_id: deviceId }),
     });
     if (!mint.ok) throw new Error(`token mint failed: HTTP ${mint.status} ${await mint.text().catch(() => '')}`);
-    const { token } = (await mint.json()) as { token: string };
+    const { token } = await readJsonBody<{ token: string }>(mint, base, 'POST /api/teams/:slug/tokens');
 
     saveCredentials({ serverUrl, token });
     console.log(chalk.green(`✓ Logged in to ${chalk.bold(slug!)}`) + chalk.dim(`  (device: ${deviceId})  server: ${serverUrl}`));
