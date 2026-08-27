@@ -40,8 +40,21 @@
 import { readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
-/** Retries EPERM/EBUSY/ENOTEMPTY/EMFILE, yielding to the event loop between. */
-const RETRY = { maxRetries: 10, retryDelay: 100 } as const;
+/**
+ * A SHORT retry, and this is deliberate.
+ *
+ * Node retries EVERY failing entry with a LINEAR backoff — attempt n waits
+ * `retryDelay * n` — so 10 retries at 100ms is 5.5 seconds per entry. On a tree
+ * whose `cache.db` is locked for the process's whole life, several entries fail
+ * (the file, then every directory above it), and the total blew past the 30s
+ * hook budget: the EPERM stopped failing the suite and started TIMING OUT it
+ * instead. Retrying cannot win against a handle that is never released.
+ *
+ * Two attempts cover the only thing a retry can fix here — a genuine race where
+ * Windows has not yet released a handle the test just closed. A permanent lock
+ * now fails in ~150ms and is reported.
+ */
+const RETRY = { maxRetries: 2, retryDelay: 50 } as const;
 
 export async function removeTestDir(dir: string): Promise<void> {
   if (!dir) return;
