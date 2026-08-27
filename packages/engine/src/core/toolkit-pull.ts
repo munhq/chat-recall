@@ -30,7 +30,11 @@
  */
 
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
-import { delimiter, dirname, join, basename, isAbsolute } from 'node:path';
+import { dirname, join, basename, isAbsolute } from 'node:path';
+
+// ONE PATH LOOKUP FOR THE WHOLE PRODUCT. This file had its own, and it was the
+// wrong one — see the comment above `onPath` below.
+import { resolveOnPath } from './which.js';
 
 import { SOURCE_PRECEDENCE, SUPPORTED_TARGETS, readMcpEntry, writeMcpEntry, skillsDirFor, type TargetTool, type SyncType } from './toolkit-sync.js';
 // The codec is what makes an agent or a command portable: the stored body is
@@ -44,14 +48,24 @@ function isExecutableFile(p: string): boolean {
   try { return statSync(p).isFile(); } catch { return false; }
 }
 
-/** First match for a bare command name on this machine's PATH. */
+/**
+ * First match for a bare command name on this machine's PATH.
+ *
+ * A PRIVATE COPY THAT WAS BROKEN ON WINDOWS. This walked PATH looking for a file
+ * named exactly `name` — and on Windows executability IS the extension, so there
+ * is no file called `node`, only `node.exe`. Every bare-name MCP command
+ * (`node`, `npx`, `uvx`, `python`) therefore resolved to nothing and
+ * `portableCommand` refused the registration as `{ missing: 'node' }`: a Windows
+ * user pulling their toolkit was told the tools they have installed are not
+ * installed, for every MCP server they own.
+ *
+ * `which.ts` had solved this before this function was written — PATHEXT, quoted
+ * PATH entries, the X_OK check on POSIX that `statSync().isFile()` skips — and
+ * its own docblock names this exact failure. It just was not used here. This is
+ * now a one-line delegation, so there is one implementation to be right.
+ */
 function onPath(name: string): string | null {
-  const dirs = (process.env.PATH || '').split(delimiter).filter(Boolean);
-  for (const d of dirs) {
-    const candidate = join(d, name);
-    if (isExecutableFile(candidate)) return candidate;
-  }
-  return null;
+  return resolveOnPath(name);
 }
 
 /**
