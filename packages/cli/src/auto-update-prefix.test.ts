@@ -21,32 +21,45 @@
  * loaded from, and a reported success is checked against the bytes on disk.
  */
 import { describe, expect, test } from 'vitest';
-import { sep } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { executeAutoUpdate, runningPrefix, type UpdatePlan } from './auto-update.js';
 
+/**
+ * Asserted as a PROPERTY, not as a literal string.
+ *
+ * The first version compared against a hand-built `/home/user/.local`, and on
+ * Windows `pathToFileURL('/home/user/…')` resolves against the current drive —
+ * so it produced `D:\home\user\.local` and three tests failed on Windows only.
+ * Hard-coding an absolute path in a test is the same mistake as hard-coding a
+ * separator. The property that actually matters is the round trip: the prefix
+ * returned must be the one npm would install into, i.e. the ancestor for which
+ * `<prefix>/lib/node_modules/chat-recall/dist/auto-update.js` is the input.
+ */
+function expectPrefixRoundTrip(prefixParts: string[]): void {
+  const prefix = resolve(sep, ...prefixParts);
+  const moduleFile = join(prefix, 'lib', 'node_modules', 'chat-recall', 'dist', 'auto-update.js');
+  expect(runningPrefix(pathToFileURL(moduleFile).href)).toBe(prefix);
+}
+
 describe('runningPrefix — the prefix the running copy came from', () => {
   test('a user-prefix install resolves to that prefix, NOT npm global', () => {
-    const url = pathToFileURL(`/home/user/.local/lib/node_modules/chat-recall/dist/auto-update.js`).href;
-    expect(runningPrefix(url)).toBe(`${sep}home${sep}user${sep}.local`);
+    expectPrefixRoundTrip(['home', 'user', '.local']);
   });
 
   test('an nvm-style global install resolves to the nvm prefix', () => {
-    const url = pathToFileURL('/home/user/.nvm/versions/node/v23.9.0/lib/node_modules/chat-recall/dist/auto-update.js').href;
-    expect(runningPrefix(url)).toBe(
-      ['', 'home', 'user', '.nvm', 'versions', 'node', 'v23.9.0'].join(sep));
+    expectPrefixRoundTrip(['home', 'user', '.nvm', 'versions', 'node', 'v23.9.0']);
   });
 
   test('a system install resolves to the system prefix', () => {
-    const url = pathToFileURL('/usr/lib/node_modules/chat-recall/dist/auto-update.js').href;
-    expect(runningPrefix(url)).toBe(`${sep}usr`);
+    expectPrefixRoundTrip(['usr']);
   });
 
   test('a source checkout has no prefix to install over', () => {
     // Running from a clone: there is nothing npm-managed to replace, so the
     // caller falls back rather than writing into a random directory.
-    const url = pathToFileURL('/home/user/code/example/packages/cli/dist/auto-update.js').href;
+    const url = pathToFileURL(resolve(sep, 'home', 'user', 'code', 'example', 'packages', 'cli', 'dist', 'auto-update.js')).href;
     expect(runningPrefix(url)).toBeNull();
   });
 });
