@@ -24,8 +24,26 @@ permissions:
   contents: read
 
 jobs:
+  # ── THREE PLATFORMS, EVERY PUSH AND EVERY PR ───────────────────────────────
+  # This job ran on ubuntu-latest alone, and the product ships to macOS and
+  # Windows. The gap was not theoretical: the network-error classifier walked
+  # `err.cause` only, and on a dual-stack host — which `localhost` is by default
+  # on macOS and Windows — undici reports the failure as an AggregateError whose
+  # members hold the codes. So a refused connection printed "connection refused"
+  # on Linux CI and the bare five characters "fetch failed" on the two platforms
+  # nobody tested. A unit suite that only ever runs on one OS cannot find that.
+  #
+  # This repository is public, so GitHub bills nothing for standard Linux, macOS
+  # or Windows runners; the three run in parallel and the slowest sets the wall
+  # clock. `fail-fast: false` because "it broke on Windows only" is precisely the
+  # answer this matrix exists to give — cancelling the others would hide it.
   build-and-test:
-    runs-on: ubuntu-latest
+    name: build + test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -53,10 +71,15 @@ jobs:
       # (Dockerfile.server stage 1) — a seven-minute round trip, on a job most
       # pushes do not even run. It cost exactly that: `deleteConversation(sessionId)`
       # against a `string | null` prop shipped green from here.
+      # Type errors are identical on every OS, so this pays for itself once.
       - name: Typecheck the dashboard client
+        if: matrix.os == 'ubuntu-latest'
         working-directory: packages/server/client
         run: npm ci && npx tsc -b --pretty false
 
+      # Includes install-hostile.test.ts, which spawns the BUILT cli against
+      # servers that answer 404/HTML/502/silence — the class of failure every
+      # bug in this area belonged to, now exercised on all three platforms.
       - name: Test
         run: npx vitest run
 

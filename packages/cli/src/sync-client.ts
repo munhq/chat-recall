@@ -406,6 +406,13 @@ async function fetchTenantSyncConfig(cred: Credentials): Promise<TenantSyncConfi
     persistSyncConfig(base, config);
     return config;
   } catch (err) {
+    // DO NOT RE-WRAP OUR OWN REFUSAL. `lastKnownSyncConfig` is called inside
+    // this try (the !res.ok branch) and throws when there is nothing to fall
+    // back on — so this catch caught that throw and fed the whole sentence back
+    // in as the `reason`, printing it nested inside itself:
+    //   "Cannot read the sync rules from X (Cannot read the sync rules from X
+    //    (HTTP 502), and this machine has never…), and this machine has never…"
+    if (isSyncRulesRefusal(err)) throw err;
     return lastKnownSyncConfig(base, err instanceof Error ? err.message : 'request failed');
   }
 }
@@ -429,11 +436,22 @@ function lastKnownSyncConfig(base: string, reason: string): TenantSyncConfig {
     console.error(`[sync] could not read server-side sync rules (${reason}) — applying the last known set from ${new Date(remembered.fetchedAt).toISOString()}`);
     return remembered.config;
   }
-  throw new Error(
+  const refusal = new Error(
     `Cannot read the server-side sync rules from ${base} (${reason}), and this machine has never `
     + 'successfully read them. Refusing to sync: uploading without knowing your exclusions could '
     + 'ship a project you told the dashboard to hold back. Fix the server or retry.',
   );
+  (refusal as { [SYNC_RULES_REFUSAL]?: true })[SYNC_RULES_REFUSAL] = true;
+  throw refusal;
+}
+
+/** Marks the refusal above as ours, so the caller's catch can rethrow it
+ *  untouched instead of describing it a second time. A symbol rather than a
+ *  message match: the text is user-facing and will be reworded. */
+const SYNC_RULES_REFUSAL = Symbol.for('chat-recall.syncRulesRefusal');
+
+function isSyncRulesRefusal(err: unknown): boolean {
+  return !!err && typeof err === 'object' && (err as Record<symbol, unknown>)[SYNC_RULES_REFUSAL] === true;
 }
 
 /** Stable-ish machine label for the dashboard's per-device grouping. */
@@ -851,11 +869,39 @@ export function serverIngestConcurrency(serverUrl: string): number | null {
   return advertisedIngestConc.get(serverUrl.replace(/\/$/, '')) ?? null;
 }
 
+/**
+ * Is this a chat-recall server new enough to sync to?
+ *
+ * THE BUG THIS LINE HELD FOR MONTHS, and the one a user hit on macOS:
+ *
+ *     fetchWithTimeout(`${base}/api/capabilities`).then((r) => r.json())
+ *
+ * No `r.ok`, no content-type check, one hop from the response to JSON.parse. A
+ * host that had stopped serving chat-recall answered Traefik's `404 page not
+ * found` in text/plain; JSON.parse read `404` as a number, choked on the space,
+ * and every sync on that machine failed with
+ *
+ *     Unexpected non-whitespace character after JSON at position 4
+ *
+ * — a message that names no host, no status and no fix, for a problem whose fix
+ * is one `chat-recall login <new-url>`. `doctor` had classified this correctly
+ * since server-probe.ts was written; sync just never used it. It does now: ONE
+ * probe, and the `limits` this function needs come off the same document rather
+ * than a second unclassified request.
+ */
 async function verifyServerApi(serverUrl: string, minApi: number): Promise<boolean> {
   const base = serverUrl.replace(/\/$/, '');
   const seen = capsOk.get(base);
   if (seen !== undefined && Date.now() - seen < CAPS_TTL_MS) return true;
-  const caps = await fetchWithTimeout(`${base}/api/capabilities`).then((r) => r.json()) as {
+  const { probeServer, probeAdvice } = await import('./server-probe.js');
+  // Our own fetch, so the CLI-version and OS headers still reach the server's
+  // device heartbeat; probeServer supplies the timeout signal.
+  const probe = await probeServer(base, {
+    fetchImpl: ((url: string | URL | Request, init?: RequestInit) =>
+      fetchWithTimeout(String(url), init ?? {})) as typeof fetch,
+  });
+  if (probe.kind !== 'ok') throw new Error(probeAdvice(probe, base));
+  const caps = probe.raw as {
     apiVersion?: number;
     limits?: { ingestConcurrencyPerTenant?: number; acceptsGzipBody?: boolean };
   };
