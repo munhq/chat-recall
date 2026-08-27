@@ -1,6 +1,6 @@
 {
   "name": "chat-recall",
-  "version": "0.5.22",
+  "version": "0.5.23",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/munhq/chat-recall.git"
@@ -9,7 +9,7 @@
   "bugs": {
     "url": "https://github.com/munhq/chat-recall/issues"
   },
-  "description": "One memory across every AI coding tool \u2014 indexes Claude Code, Gemini CLI, Codex, OpenCode, Antigravity and Cursor sessions, redacts secrets, and exposes them to your agent over MCP.",
+  "description": "One memory across every AI coding tool — indexes Claude Code, Gemini CLI, Codex, OpenCode, Antigravity and Cursor sessions, redacts secrets, and exposes them to your agent over MCP.",
   "keywords": [
     "mcp",
     "mcp-server",
