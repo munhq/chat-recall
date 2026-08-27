@@ -22,6 +22,8 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
+  ListResourcesRequestSchema,
+  ListPromptsRequestSchema,
   ToolSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
@@ -919,7 +921,11 @@ export function setServerVersion(version: string): void {
 export function createMcpServer(): Server {
   const s = new Server(
     { name: 'chat-recall', version: serverVersion },
-    { capabilities: { tools: {} } },
+    // resources and prompts are declared EMPTY rather than omitted: clients probe
+    // them regardless of what is advertised, and an unregistered method answers
+    // -32601, which every directory scan logs as a failure of a server that is
+    // working correctly. See the handlers in attachHandlers.
+    { capabilities: { tools: {}, resources: {}, prompts: {} } },
   );
   attachHandlers(s);
   return s;
@@ -1067,6 +1073,27 @@ function annotate(t: ToolDef): ToolDef & { annotations: Record<string, unknown> 
 
 // List available tools
 function attachHandlers(server: Server): void {
+
+/**
+ * ANSWER resources/list and prompts/list, with nothing in them.
+ *
+ * This server offers tools and no resources or prompts, and it says so in its
+ * advertised capabilities — but clients ask anyway, and an unregistered method
+ * returns JSON-RPC -32601 "Method not found". Smithery's directory scan recorded
+ * exactly that against us:
+ *
+ *   Warning: Failed to list resources: MCP error -32601: Method not found;
+ *            Failed to list prompts: MCP error -32601: Method not found
+ *
+ * Two error lines in the log of every reviewer and every directory that probes
+ * this server, describing a server that is behaving correctly. An empty list is
+ * the same information without the word "Failed" in it, and it costs eight
+ * lines. Declared in capabilities too, so a client that reads those first is not
+ * surprised by a method it was told did not exist.
+ */
+server.setRequestHandler(ListResourcesRequestSchema, async () => ({ resources: [] }));
+server.setRequestHandler(ListPromptsRequestSchema, async () => ({ prompts: [] }));
+
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   const all: Array<{ name: string; description: string; inputSchema: unknown }> = [
       {
