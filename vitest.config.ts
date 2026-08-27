@@ -33,6 +33,15 @@ export default defineConfig({
     // Serialize files only when the shared Postgres is in play (see above).
     fileParallelism: !pgMode,
     testTimeout: 15000,
+    // HOOKS GOT LESS TIME THAN THE TESTS THEY SET UP. `hookTimeout` was never
+    // set, so it stayed at vitest's 10s default while tests had 15s — and these
+    // hooks do real work: mkdtemp, create a SQLite database, open a driver, then
+    // close and unlink it all. On Windows that is slower again (a newly created
+    // .db is scanned before it can be reopened, and an unlink retries while the
+    // OS releases the handle — see test-support/tmp-dir.ts), and one store.test
+    // hook crossed the line: `Error: Hook timed out in 10000ms`, on Windows
+    // only. Setup must not be given a smaller budget than the assertion.
+    hookTimeout: 30000,
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html', 'json-summary'],
