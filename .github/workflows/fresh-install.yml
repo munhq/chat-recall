@@ -98,8 +98,17 @@ jobs:
       # binary from the tarball above. Same assertions, the artifact a customer
       # actually has, on all three platforms. The suite redirects every tool home
       # into a throwaway tree, so it writes nothing outside its sandbox.
-      - name: init / login / sync against hostile servers (installed binary)
+      - name: init / login / sync, hostile AND happy path (installed binary)
         shell: bash
         env:
           CHAT_RECALL_TEST_CLI: chat-recall
-        run: npx vitest run packages/cli/src/install-hostile.test.ts
+        run: |
+          # install-hostile: the failure paths — 404, HTML, 502, silence.
+          # sync-happy-path: a real login + sync that must SUCCEED, against the
+          # smallest conformant server, with a real transcript on disk. Until
+          # this existed, nothing anywhere proved a sync can complete on macOS
+          # or Windows: the only such test is compose-integration, which needs
+          # Docker and therefore runs on Linux alone.
+          npx vitest run \
+            packages/cli/src/install-hostile.test.ts \
+            packages/cli/src/sync-happy-path.test.ts
