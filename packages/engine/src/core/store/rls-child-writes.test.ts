@@ -165,6 +165,48 @@ describe('a session-keyed child row written before its parent', () => {
     }
   });
 
+  pgTest('the two write-GUARDED children accept a row before their parent too', async () => {
+    // secret_findings and session_metadata cannot be fixed by elevating the
+    // write — they carry an author-write-guard, and the '*' viewer would bypass
+    // it. They get the escape that already makes diary_entries immune: your own
+    // row is visible to you. Both threw 42501 before that change.
+    const tenant = `rls_guarded_${process.pid}`;
+    const store = await createStore({ backend: 'postgres', databaseUrl: probeUrl, tenant } as any);
+    const cache = await createMetadataCache({ backend: 'postgres', databaseUrl: probeUrl, tenant } as any);
+    try {
+      await runWithAuthor({ sub: 'guarded-author', device: 'd1' }, async () => {
+        await cache.set({ sessionId: 'sm-orphan', firstPrompt: 'no parent row yet', summary: 's', summarySource: 'test', mtime: 1, indexedAt: 1 } as any);
+        await store.replaceSecretFindings('sf-orphan', [
+          { detector: 'd', rule: 'r', line: 1, preview: 'p' } as any,
+        ]);
+      });
+    } finally {
+      await cache.close();
+      await store.close();
+    }
+  });
+
+  pgTest('and the author escape does NOT let another member read them', async () => {
+    // The escape is `author_sub = viewer`. If it were wider than that, this is
+    // where it shows.
+    const tenant = `rls_guarded_read_${process.pid}`;
+    const store = await createStore({ backend: 'postgres', databaseUrl: probeUrl, tenant } as any);
+    try {
+      await runWithAuthor({ sub: 'author-one', device: 'd1' }, () =>
+        store.replaceSecretFindings('sf-private', [
+          { detector: 'd', rule: 'r', line: 7, preview: 'secret-ish' } as any,
+        ]));
+      const mine = await runWithAuthor({ sub: 'author-one', device: 'd1' },
+        () => store.secretFindingsSummary());
+      expect(mine.totals.length).toBeGreaterThan(0);
+      const theirs = await runWithAuthor({ sub: 'author-two', device: 'd2' },
+        () => store.secretFindingsSummary());
+      expect(theirs.totals).toEqual([]);
+    } finally {
+      await store.close();
+    }
+  });
+
   // EVERY session-keyed child, enumerated from the schema rather than listed by
   // hand. pg-schema.ts attaches `author_visibility` to exactly these five, and
   // the fix was applied to two of them, then three — this asserts the set is
@@ -176,17 +218,25 @@ describe('a session-keyed child row written before its parent', () => {
     // always see their own row and the upsert never fail-closes — they are
     // deliberately excluded by the `author_sub` condition below rather than by
     // being left off a hand-written list.
-    const rows = await admin.query(`
+    // Gated PURELY on the parent — no author escape. These three MUST have an
+    // elevated write, and each is asserted above.
+    const parentOnly = (await admin.query(`
       SELECT tablename FROM pg_policies
        WHERE policyname='author_visibility' AND cmd='SELECT'
          AND qual LIKE '%.session_id%'
          AND qual NOT LIKE '%author_sub%'
-       ORDER BY tablename`);
-    const gated = rows.rows.map((r: { tablename: string }) => r.tablename);
-    expect(gated).toEqual([
-      'compute_cache', 'raw_sessions', 'secret_findings',
-      'session_metadata', 'session_outcome_cache',
-    ]);
+       ORDER BY tablename`)).rows.map((r: { tablename: string }) => r.tablename);
+    expect(parentOnly).toEqual(['compute_cache', 'raw_sessions', 'session_outcome_cache']);
+
+    // Session-keyed AND author-aware: safe without elevating, because a writer
+    // always sees their own row. The two write-guarded tables moved here.
+    const authorAware = (await admin.query(`
+      SELECT tablename FROM pg_policies
+       WHERE policyname='author_visibility' AND cmd='SELECT'
+         AND qual LIKE '%.session_id%'
+         AND qual LIKE '%author_sub%'
+       ORDER BY tablename`)).rows.map((r: { tablename: string }) => r.tablename);
+    expect(authorAware).toEqual(['diary_entries', 'secret_findings', 'session_metadata']);
     // Of those five: three are elevated at the write (they carry no
     // author-write-guard) and are asserted above; session_metadata and
     // secret_findings DO carry a guard, so elevating them would bypass it — they
