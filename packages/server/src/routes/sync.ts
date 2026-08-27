@@ -710,6 +710,27 @@ router.post('/', async (req, res) => {
         }
         const verifiedHits: VerifiedHit[] = [];
         for (const [sessionId, fs] of bySession) {
+          // AN ORPHAN FINDING MUST NOT 500 THE WHOLE BATCH.
+          //
+          // `findings` is a top-level array keyed by session_id, independent of
+          // the conversations in this request — so a collector can ship a
+          // finding for a session whose metadata row was never uploaded (an
+          // excluded project, a session the walk skipped). secret_findings
+          // carries the RESTRICTIVE `author_visibility` policy whose USING needs
+          // a VISIBLE memory_metadata session row, and PostgreSQL applies that
+          // USING as the WITH CHECK of an `INSERT … ON CONFLICT`, so the write
+          // fails with 42501 and takes the entire ingest request with it. Seen in
+          // production: four findings blocked a sync that had otherwise landed.
+          //
+          // A finding is meaningless without its session, so skipping it is the
+          // right answer rather than elevating the write — secret_findings DOES
+          // carry an author-write-guard (see pg-schema.ts), and elevating would
+          // bypass it. Logged, never silent.
+          if (!(await store.getItem(sessionId, 'session'))) {
+            log.warn({ sessionId, findings: fs.length },
+              'skipping secret findings for a session with no metadata row on this server');
+            continue;
+          }
           const r = await store.replaceSecretFindings(sessionId, fs.map((f) => ({
             detector: f.detector,
             rule: f.rule,
