@@ -355,7 +355,15 @@ program
   .option('--prompt-json', 'Print the device prompt as one JSON line on stdout, then continue', false)
   .action(async (options: { server?: string; token?: string; skipMcp?: boolean; skipSync?: boolean; withCodeindex?: boolean; skipCodeindex?: boolean; skipService?: boolean; yes?: boolean; promptJson?: boolean }) => {
     try {
-      console.log(chalk.bold('chat-recall init'));
+      // THE VERSION, ON THE FIRST LINE.
+      //
+      // `init` printed a bare banner, so an error it produced could not be
+      // attributed to a build. That cost a real round trip: a macOS install
+      // failed with a message that had already been fixed and published, and
+      // neither the reporter nor anyone reading the output could tell that
+      // `npx chat-recall` had run an older global binary instead of the
+      // registry's latest. One line makes every future report self-diagnosing.
+      console.log(chalk.bold('chat-recall init') + chalk.dim(`  v${pkgVersion}`));
       console.log();
 
       // Step 1: Detect available AI CLIs (so the user can see which tools'
