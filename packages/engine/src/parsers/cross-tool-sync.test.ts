@@ -12,11 +12,12 @@ import { SlashCommandsSource } from './slash-commands-source.js';
 import { SubagentsSource } from './subagents-source.js';
 import { SkillsSource } from './skills-source.js';
 import { readCommand, readAgent, emit } from '../core/artifact-codec.js';
+import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '../test-support/home-env.js';
 
 let tmp: string;
-const origHome = process.env.HOME;
-beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'xsync-')); process.env.HOME = tmp; });
-afterEach(() => { process.env.HOME = origHome; rmSync(tmp, { recursive: true, force: true }); });
+const origHome = homeEnvSnapshot();
+beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'xsync-')); useHomeDir(tmp); });
+afterEach(() => { restoreHomeEnv(origHome); rmSync(tmp, { recursive: true, force: true }); });
 
 async function collect(src: any): Promise<any[]> {
   const out: any[] = [];

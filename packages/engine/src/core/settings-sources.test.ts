@@ -22,15 +22,16 @@ import { claudeHomeDir } from './tool-paths.js';
 import { SessionSource } from '../parsers/session-source.js';
 import { PasteSource } from '../parsers/paste-source.js';
 import { PlanSource } from '../parsers/plan-source.js';
+import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '../test-support/home-env.js';
 
 let tmpHome: string;
-const origHome = process.env.HOME;
+const origHome = homeEnvSnapshot();
 const origClaudeHomeEnv = process.env.CHAT_RECALL_CLAUDE_HOME;
 const origDataDirEnv = process.env.CHAT_RECALL_DATA_DIR;
 
 beforeEach(() => {
   tmpHome = mkdtempSync(join(tmpdir(), 'src-set-'));
-  process.env.HOME = tmpHome;
+  useHomeDir(tmpHome);
   // Pin chat-recall's own data dir into the tmpdir so tests don't read/write
   // the developer's real settings.json.
   process.env.CHAT_RECALL_DATA_DIR = join(tmpHome, '.chat-recall');
@@ -39,8 +40,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (origHome === undefined) delete process.env.HOME;
-  else process.env.HOME = origHome;
+  restoreHomeEnv(origHome);
   if (origDataDirEnv === undefined) delete process.env.CHAT_RECALL_DATA_DIR;
   else process.env.CHAT_RECALL_DATA_DIR = origDataDirEnv;
   if (origClaudeHomeEnv === undefined) delete process.env.CHAT_RECALL_CLAUDE_HOME;

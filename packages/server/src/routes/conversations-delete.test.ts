@@ -8,15 +8,16 @@ import request from 'supertest';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '@chat-recall/engine/test-support/home-env.js';
 
 let tmpHome: string;
-const origHome = process.env.HOME;
+const origHome = homeEnvSnapshot();
 const origDataDir = process.env.CHAT_RECALL_DATA_DIR;
 let app: Express;
 
 beforeAll(async () => {
   tmpHome = mkdtempSync(join(tmpdir(), 'conv-del-'));
-  process.env.HOME = tmpHome;
+  useHomeDir(tmpHome);
   process.env.CHAT_RECALL_DATA_DIR = join(tmpHome, '.chat-recall');
   const conversationsRouter = (await import('./conversations.js')).default;
   app = express();
@@ -24,7 +25,7 @@ beforeAll(async () => {
   app.use('/api/conversations', conversationsRouter);
 });
 afterAll(() => {
-  process.env.HOME = origHome;
+  restoreHomeEnv(origHome);
   if (origDataDir === undefined) delete process.env.CHAT_RECALL_DATA_DIR; else process.env.CHAT_RECALL_DATA_DIR = origDataDir;
   rmSync(tmpHome, { recursive: true, force: true });
 });

@@ -1,0 +1,34 @@
+# LF in the working tree on every platform.
+#
+# There was no .gitattributes, and a Windows checkout defaults to
+# core.autocrlf=true — so every text file in the repository arrived with CRLF on
+# Windows and LF everywhere else. That is not a cosmetic difference here:
+#
+#   * the skills shipped in packages/cli/plugin are parsed by their frontmatter
+#     delimiter, and `---\r\n` is not `---\n`;
+#   * transcript fixtures are JSONL, read line by line;
+#   * the published npm tarball and the Docker image are built with LF, so a
+#     Windows contributor was building and testing a different artifact from the
+#     one that ships.
+#
+# `text=auto eol=lf` normalises on commit and checks out LF everywhere, so the
+# working tree matches what is published. Binary assets are marked so git never
+# touches them.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.mp4 binary
+*.webm binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.gz binary
+*.tgz binary
+*.zip binary
+*.db binary

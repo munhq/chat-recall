@@ -4,24 +4,25 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { AgentMemorySource } from './agent-memory-source.js';
 import { _resetSourceSettingsCache } from '../core/settings.js';
+import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '../test-support/home-env.js';
 
 let tmpHome: string;
 const origClaudeHome = process.env.CHAT_RECALL_CLAUDE_HOME;
-const origHome = process.env.HOME;
+const origHome = homeEnvSnapshot();
 
 beforeEach(() => {
   tmpHome = mkdtempSync(join(tmpdir(), 'am-home-'));
   // Pin the Claude home so discoverMemoryDirs only scans our temp tree
   // (no sibling .claude-* profiles, no real ~/.claude).
   process.env.CHAT_RECALL_CLAUDE_HOME = tmpHome;
-  process.env.HOME = tmpHome;
+  useHomeDir(tmpHome);
   _resetSourceSettingsCache();
 });
 
 afterEach(() => {
   if (origClaudeHome === undefined) delete process.env.CHAT_RECALL_CLAUDE_HOME;
   else process.env.CHAT_RECALL_CLAUDE_HOME = origClaudeHome;
-  process.env.HOME = origHome;
+  restoreHomeEnv(origHome);
   _resetSourceSettingsCache();
   rmSync(tmpHome, { recursive: true, force: true });
 });

@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, statSync } from 'fs';
 import { tmpdir, homedir } from 'os';
 import { join } from 'path';
+import { homeEnvSnapshot, restoreHomeEnv, useHomeDir, type HomeEnvSnapshot } from '../test-support/home-env.js';
 import {
   getDataDir,
   getCacheDbPath,
@@ -128,19 +129,18 @@ describe('legacy migration', () => {
 describe('migration logic — synthetic legacy fixture', () => {
   // To exercise the *actual* migration code without touching real ~/.claude,
   // we simulate the layout in a temp dir and point HOME at it.
-  let savedHome: string | undefined;
+  let savedHome: HomeEnvSnapshot;
 
   beforeEach(() => {
-    savedHome = process.env.HOME;
-    process.env.HOME = tmpRoot;
+    savedHome = homeEnvSnapshot();
+    useHomeDir(tmpRoot);
     // Remove the data-dir override so the migration runs.
     delete process.env.CHAT_RECALL_DATA_DIR;
     _resetMigrationStateForTests();
   });
 
   afterEach(() => {
-    if (savedHome !== undefined) process.env.HOME = savedHome;
-    else delete process.env.HOME;
+    restoreHomeEnv(savedHome);
   });
 
   test('moves legacy chat-recall-cache.db into the new data dir', () => {
