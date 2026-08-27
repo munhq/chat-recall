@@ -379,7 +379,19 @@ export class PgOutcomeCache implements OutcomeCacheDriver {
   async put(...a: OArgs<'put'>) {
     const rec = a[0];
     const classifiedAt = rec.classifiedAt ?? Date.now();
-    await this.q(
+    // UNRESTRICTED — the THIRD of the five session-keyed child tables to need
+    // this, and the one I missed when fixing raw_sessions and compute_cache.
+    // pg-schema.ts attaches the same RESTRICTIVE `author_visibility` policy to
+    // all five (secret_findings, session_metadata, session_outcome_cache,
+    // compute_cache, raw_sessions), and PostgreSQL applies a SELECT policy's
+    // USING as the WITH CHECK of an `INSERT … ON CONFLICT DO UPDATE`. So a
+    // derived outcome row for a session whose metadata row is not visible fails
+    // with 42501 and 500s the whole ingest batch — which is exactly what a user
+    // hit after the first two were fixed. session_outcome_cache carries NO
+    // author-write-guard, so elevating the write is safe by the same argument;
+    // rls-child-writes.test.ts now walks every one of the five so a fourth
+    // cannot be missed.
+    await runUnrestricted(() => this.q(
       `INSERT INTO session_outcome_cache (tenant,session_id,tool,status,reason,file_mtime,file_size,content_hash,file_count,lines_added,lines_removed,commits,is_full,classified_at,last_scanned_offset)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
        ON CONFLICT (tenant,session_id) DO UPDATE SET
@@ -389,7 +401,7 @@ export class PgOutcomeCache implements OutcomeCacheDriver {
          is_full=CASE WHEN excluded.is_full=1 THEN 1 ELSE session_outcome_cache.is_full END,
          classified_at=excluded.classified_at, last_scanned_offset=excluded.last_scanned_offset`,
       [this.t, rec.sessionId, rec.tool, rec.status, rec.reason, intMs(rec.fileMtime), rec.fileSize, rec.contentHash,
-       rec.fileCount, rec.linesAdded, rec.linesRemoved, rec.commits, rec.isFull ? 1 : 0, classifiedAt, rec.lastScannedOffset]);
+       rec.fileCount, rec.linesAdded, rec.linesRemoved, rec.commits, rec.isFull ? 1 : 0, classifiedAt, rec.lastScannedOffset]));
   }
   async putMany(...a: OArgs<'putMany'>) {
     for (const rec of a[0]) await this.put(rec);

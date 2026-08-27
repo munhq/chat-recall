@@ -38,7 +38,7 @@
 import { describe, test, expect, beforeAll, afterAll } from 'vitest';
 
 import { createStore } from './index.js';
-import { createMetadataCache } from './caches.js';
+import { createMetadataCache, createOutcomeCache } from './caches.js';
 import { runWithAuthor } from './tenant-context.js';
 
 const PG_URL = process.env.DATABASE_URL || process.env.CHAT_RECALL_DATABASE_URL;
@@ -144,6 +144,58 @@ describe('a session-keyed child row written before its parent', () => {
     } finally {
       await cache.close();
     }
+  });
+
+  pgTest('session_outcome_cache accepts an outcome before the metadata row exists', async () => {
+    // The one missed when raw_sessions and compute_cache were fixed — a user hit
+    // it on the very next sync. Same policy, same mechanism, different table.
+    const tenant = `rls_outcome_${process.pid}`;
+    const oc = await createOutcomeCache({ backend: 'postgres', databaseUrl: probeUrl, tenant } as any);
+    try {
+      await runWithAuthor({ sub: 'sub-under-test', device: 'dev-1' }, async () => {
+        await oc.put({
+          sessionId: 'sess-outcome-first', tool: 'claude', status: 'shipped', reason: 'test',
+          fileMtime: 1, fileSize: 1, contentHash: 'h', fileCount: 1,
+          linesAdded: 1, linesRemoved: 0, commits: 0, isFull: true, lastScannedOffset: 0,
+        } as any);
+      });
+      expect((await oc.get('sess-outcome-first'))?.status).toBe('shipped');
+    } finally {
+      await oc.close();
+    }
+  });
+
+  // EVERY session-keyed child, enumerated from the schema rather than listed by
+  // hand. pg-schema.ts attaches `author_visibility` to exactly these five, and
+  // the fix was applied to two of them, then three — this asserts the set is
+  // covered so a fourth omission is a red test rather than a user's failed sync.
+  pgTest('every table with this policy is accounted for', async () => {
+    // The vulnerable shape is a policy gated PURELY on the parent session, with
+    // no `author_sub = viewer` escape. `diary_entries` and `kg_triples` also
+    // reference a session but allow their own author through, so a writer can
+    // always see their own row and the upsert never fail-closes — they are
+    // deliberately excluded by the `author_sub` condition below rather than by
+    // being left off a hand-written list.
+    const rows = await admin.query(`
+      SELECT tablename FROM pg_policies
+       WHERE policyname='author_visibility' AND cmd='SELECT'
+         AND qual LIKE '%.session_id%'
+         AND qual NOT LIKE '%author_sub%'
+       ORDER BY tablename`);
+    const gated = rows.rows.map((r: { tablename: string }) => r.tablename);
+    expect(gated).toEqual([
+      'compute_cache', 'raw_sessions', 'secret_findings',
+      'session_metadata', 'session_outcome_cache',
+    ]);
+    // Of those five: three are elevated at the write (they carry no
+    // author-write-guard) and are asserted above; session_metadata and
+    // secret_findings DO carry a guard, so elevating them would bypass it — they
+    // are written after their parent instead, and the ingest route additionally
+    // skips an orphan finding rather than failing the batch.
+    //
+    // If this list grows, the new table needs one of those two treatments. The
+    // fix was shipped for two of the five and a user hit the third on the next
+    // sync; this assertion is what makes a fourth omission a red test.
   });
 
   pgTest('THE PROTECTION IS INTACT: elevating the write did not widen any READ', async () => {
