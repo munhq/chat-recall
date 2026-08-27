@@ -22,6 +22,7 @@ import { tierAll, type ScoreTier } from '@chat-recall/engine/core/score-tier.js'
 import { loadAllCredentials, type Credentials } from './sync-client.js';
 import { printUpdateNotice, updateNotice } from './update-notice.js';
 import { describeUnreachable } from './server-probe.js';
+import { openBrowser } from './open-browser.js';
 import { isOnPath } from '@chat-recall/engine/core/which.js';
 import { readCollectorHealth, judgeHealth, progressLine, collectorHealthPath, STALE_AFTER_MS } from '@chat-recall/engine/core/collector-health.js';
 import { userConsents, serverAllowsTelemetry } from './telemetry-consent.js';
@@ -3473,6 +3474,20 @@ async function runLogin(
       console.log(chalk.bold('To log in, open:'));
       console.log('  ' + chalk.cyan(p.url));
       console.log(chalk.dim(`  (if prompted, enter code: ${chalk.bold(p.userCode)} at ${p.verificationUri})`));
+      // TRY TO OPEN IT, AND PRINT IT REGARDLESS.
+      //
+      // open-browser.ts existed and was wired into the MCP server's login relay
+      // only, so the CLI — the surface almost everyone signs in through — made
+      // the user copy a URL out of a terminal by hand. Every comparable tool
+      // (`gh auth login`, `aws sso login`, `gcloud auth login`, `stripe login`,
+      // `npm login`) opens the browser AND prints the link.
+      //
+      // The link is printed FIRST and unconditionally: openBrowser returns
+      // whether a launcher started, never whether a browser appeared, and over
+      // ssh, in a container, on a headless box or in CI there is nothing to
+      // open. It refuses on CI and on CHAT_RECALL_NO_BROWSER=1 by itself.
+      const opened = openBrowser(p.url);
+      if (opened) console.log(chalk.dim('  (opening your browser… if nothing happens, use the link above)'));
       console.log(chalk.dim('After approving, come back to THIS terminal — it finishes the login by itself.'));
       console.log(chalk.dim('Waiting for approval…'));
     };
