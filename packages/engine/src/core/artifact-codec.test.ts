@@ -1,22 +1,26 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '../test-support/home-env.js';
 import {
   readCommand, readAgent, readInstructions, emit, encodingFor, instructionsFilename,
+  parseCommandText,
 } from './artifact-codec.js';
 
 let tmp: string;
 const origHome = homeEnvSnapshot();
 
 /**
- * `emit` returns a path built with `path.join`, so its separator is the
- * platform's. These assertions were written as `/`-separated regex tails and
- * failed on Windows against a perfectly correct `…\.gemini\commands\review.toml`.
- * Compare against a path built the same way the product builds it.
+ * ASSERT THE WHOLE PATH, not a `/`-separated tail.
+ *
+ * These were regex tails like `/\.gemini\/commands\/review\.toml$/`, which is a
+ * POSIX separator asserted against a `path.join` result — wrong on Windows. The
+ * first fix compared a suffix instead, and that hid the interesting half: when
+ * it failed it printed only `expected false to be true`, so the actual path
+ * (which contained an entire absolute path where a NAME belonged — see `base()`
+ * in artifact-codec.ts) was invisible. The full comparison names both sides.
  */
-const tail = (...parts: string[]) => join(...parts);
 beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'codec-')); useHomeDir(tmp); });
 afterEach(() => { restoreHomeEnv(origHome); rmSync(tmp, { recursive: true, force: true }); });
 
@@ -46,7 +50,7 @@ describe('command translation', () => {
     expect(art.body).toBe('Review the diff for bugs.');
 
     const out = emit('command', art, 'gemini');
-    expect(out.path.endsWith(tail('.gemini', 'commands', 'review.toml'))).toBe(true);
+    expect(out.path).toBe(join(tmp, '.gemini', 'commands', 'review.toml'));
     expect(out.content).toContain('description = "Code review"');
     expect(out.content).toContain('prompt = ');
 
@@ -63,7 +67,7 @@ describe('command translation', () => {
     writeFileSync(p, 'description = "run tests"\nprompt = """\nRun all tests.\n"""\n');
     const art = readCommand(p, 'toml');
     const out = emit('command', art, 'codex');
-    expect(out.path.endsWith(tail('.codex', 'prompts', 'test.md'))).toBe(true);
+    expect(out.path).toBe(join(tmp, '.codex', 'prompts', 'test.md'));
     expect(out.content).toContain('Run all tests.');
   });
 });
@@ -75,7 +79,7 @@ describe('agent translation', () => {
     const art = readAgent(p, 'md');
     expect(art.tools).toBe('Read,Grep');
     const out = emit('agent', art, 'codex');
-    expect(out.path.endsWith(tail('.codex', 'agents', 'auditor.toml'))).toBe(true);
+    expect(out.path).toBe(join(tmp, '.codex', 'agents', 'auditor.toml'));
     expect(out.content).toContain('developer_instructions = ');
     expect(out.content).toContain('You audit code.');
 
@@ -102,6 +106,44 @@ describe('instructions translation', () => {
     writeFileSync(join(tmp, 'x'), 'hi');
     const art = readInstructions(join(tmp, 'x'), 'g');
     const out = emit('instructions', art, 'gemini');
-    expect(out.path.endsWith(tail('.gemini', 'GEMINI.md'))).toBe(true);
+    expect(out.path).toBe(join(tmp, '.gemini', 'GEMINI.md'));
+  });
+});
+
+/**
+ * THE NAME MUST BE A NAME, on a path from either platform.
+ *
+ * `base()` was `filePath.split('/').pop()`. A Windows path contains no `/`, so
+ * that returned the WHOLE absolute path and the artifact's name became
+ * `C:\Users\alice\.claude\commands\review`. Every target path built from it
+ * came out as `…\.codex\prompts\C:\Users\alice\…\review.md` — not a filename
+ * any OS will write — so `toolkit sync` and `toolkit pull` produced garbage on
+ * Windows, and the name (which travels to the server) carried the source
+ * machine's absolute path.
+ *
+ * `base()` is only ever given a path from THIS machine's filesystem, so
+ * `path.basename` is exactly the right rule: it splits on `\` as well as `/` on
+ * Windows, and on `/` alone on POSIX, where `\` is a legal filename character.
+ * A cross-platform basename would therefore be wrong, not more robust.
+ *
+ * The Windows half of this is proved by the third test running on a Windows
+ * runner — which is the whole reason the suite is on all three platforms.
+ */
+describe('the artifact name is derived from a path on either platform', () => {
+  const CMD = 'description = "run tests"\nprompt = """\nRun all tests.\n"""\n';
+
+  test('a POSIX path yields the bare name', () => {
+    expect(parseCommandText(CMD, 'toml', 'review').name).toBe('review');
+  });
+
+  test('readCommand on a real file names it after the file, not the path', () => {
+    const p = join(tmp, 'named-from-file.toml');
+    writeFileSync(p, CMD);
+    const art = readCommand(p, 'toml');
+    expect(art.name).toBe('named-from-file');
+    // And the emitted target is a filename, not a path inside a filename.
+    const out = emit('command', art, 'codex');
+    expect(out.path).toBe(join(tmp, '.codex', 'prompts', 'named-from-file.md'));
+    expect(basename(out.path)).toBe('named-from-file.md');
   });
 });

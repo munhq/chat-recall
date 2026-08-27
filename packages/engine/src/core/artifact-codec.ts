@@ -18,7 +18,7 @@
  */
 
 import { readFileSync } from 'fs';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { homedir } from 'os';
 
 import { claudeBackend as CLAUDE } from './backends/claude.js';
@@ -198,7 +198,24 @@ export function emit(
       art.body) };
 }
 
+/**
+ * The artifact NAME behind a file path.
+ *
+ * `filePath.split('/').pop()` is a POSIX-only basename, and on Windows a path
+ * contains no `/` at all — so `pop()` returned the WHOLE absolute path and the
+ * artifact's name became
+ *
+ *     C:\Users\alice\.claude\commands\review
+ *
+ * Every target path built from that name then came out as
+ * `…\.codex\prompts\C:\Users\alice\.claude\commands\review.md`, which is
+ * not a filename any OS will write. So `toolkit sync` and `toolkit pull`
+ * produced garbage on Windows — and the name, which travels to the server, would
+ * have carried the source machine's absolute path with it.
+ *
+ * `path.basename` handles both separators on Windows and only `/` on POSIX,
+ * which is exactly the rule wanted here.
+ */
 function base(filePath: string): string {
-  const b = filePath.split('/').pop() || filePath;
-  return b.replace(/\.(md|toml)$/, '');
+  return basename(filePath).replace(/\.(md|toml)$/, '');
 }
