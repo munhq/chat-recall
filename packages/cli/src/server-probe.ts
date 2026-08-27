@@ -22,8 +22,12 @@
  */
 
 export type ProbeResult =
-  /** Spoke to a chat-recall server and understood the answer. */
-  | { kind: 'ok'; apiVersion: number; edition?: string; cliVersion?: string }
+  /** Spoke to a chat-recall server and understood the answer. `raw` is the
+   *  parsed document, so a caller needing more fields off /api/capabilities
+   *  (the sync client wants `limits`) reads them from THIS probe instead of
+   *  issuing a second, unclassified request — which is how the sync client
+   *  ended up with its own `.json()` and its own JSON-parse offsets. */
+  | { kind: 'ok'; apiVersion: number; edition?: string; cliVersion?: string; raw: Record<string, unknown> }
   /** Reached an HTTP server, but nothing is mounted here. Usually a moved host. */
   | { kind: 'moved'; status: number }
   /** The server is there and refused the credential. */
@@ -48,6 +52,7 @@ export type UnreachableReason =
   | 'tls'        // certificate rejected: expired, self-signed, wrong host
   | 'timeout'    // no answer in time; a silent drop looks like this
   | 'reset'      // ECONNRESET / EPIPE — connection cut mid-flight
+  | 'bad_port'   // undici refuses the port outright (WHATWG bad-port list)
   | 'unknown';   // classified as such rather than guessed at
 
 /** True when the probe proves a usable chat-recall server. */
@@ -105,6 +110,7 @@ export async function probeServer(
     apiVersion: parsed.apiVersion,
     edition: parsed.edition,
     cliVersion: parsed.cli?.version,
+    raw: parsed as Record<string, unknown>,
   };
 }
 
@@ -146,6 +152,9 @@ export function probeAdvice(r: ProbeResult, base: string): string {
             + 'traffic silently looks exactly like this';
         case 'reset':
           return `the connection to ${base} was cut (${r.error}) — often a proxy or a captive portal`;
+        case 'bad_port':
+          return `${base} names a port that Node and every browser refuse to open (the WHATWG `
+            + "bad-port list) — use the server's real port";
         default:
           return `no HTTP response from ${base} (${r.error}) — check the URL, DNS, or that the `
             + 'server is running';
@@ -162,7 +171,7 @@ export function probeAdvice(r: ProbeResult, base: string): string {
  */
 export function classifyUnreachable(err: unknown): UnreachableReason {
   if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) return 'timeout';
-  for (let e: unknown = err, depth = 0; e && depth < 5; depth++) {
+  for (const e of walkErrorChain(err)) {
     const code = String((e as { code?: unknown }).code ?? '');
     const msg = String((e as { message?: unknown }).message ?? '');
     if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return 'dns';
@@ -173,20 +182,70 @@ export function classifyUnreachable(err: unknown): UnreachableReason {
     if (code.startsWith('CERT_') || code.startsWith('ERR_TLS')
       || code === 'DEPTH_ZERO_SELF_SIGNED_CERT' || code === 'SELF_SIGNED_CERT_IN_CHAIN'
       || code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' || /certificate/i.test(msg)) return 'tls';
-    e = (e as { cause?: unknown }).cause;
+    // undici refuses a fetch to a port on the WHATWG "bad port" list (1, 7, 9,
+    // 11, 13, … 6697) before it opens a socket, and reports it as a bare
+    // `Error: bad port` with NO code — so every code-based branch above misses
+    // it and the user gets the five useless characters "fetch failed".
+    if (/^bad port$/i.test(msg)) return 'bad_port';
   }
   return 'unknown';
+}
+
+/**
+ * Every error reachable from a failed fetch, in order: the error itself, the
+ * members of any AggregateError on the way, and the `cause` chain.
+ *
+ * THE CHAIN IS NOT A LINE. A `cause` walk alone was enough on Linux CI and wrong
+ * on the two platforms this product also ships to: when a host name resolves to
+ * both an A and an AAAA record — which `localhost` does on a default macOS and
+ * Windows install — undici tries both addresses and reports the pair as an
+ * `AggregateError`, whose members hold the real codes and whose own `code` is
+ * undefined. So a refused connection on a Mac classified as 'unknown' and
+ * printed "fetch failed", while the identical failure on Linux printed
+ * "connection refused". A cross-platform product cannot diagnose itself with a
+ * classifier that only works on one platform.
+ */
+function* walkErrorChain(err: unknown, depth = 0): Generator<object> {
+  if (!err || typeof err !== 'object' || depth > 5) return;
+  yield err as object;
+  const members = (err as { errors?: unknown }).errors;
+  if (Array.isArray(members)) {
+    for (const m of members) yield* walkErrorChain(m, depth + 1);
+  }
+  yield* walkErrorChain((err as { cause?: unknown }).cause, depth + 1);
 }
 
 /** The most specific string available: the underlying code where there is one,
  *  because "fetch failed" is worth nothing in a bug report. */
 export function describeCause(err: unknown): string {
   const parts: string[] = [];
-  for (let e: unknown = err, depth = 0; e && depth < 5; depth++) {
+  for (const e of walkErrorChain(err)) {
     const code = (e as { code?: unknown }).code;
     if (typeof code === 'string' && code && !parts.includes(code)) parts.push(code);
-    e = (e as { cause?: unknown }).cause;
   }
   const base = err instanceof Error ? err.message : String(err);
   return parts.length ? `${base}: ${parts.join(' → ')}` : base;
+}
+
+/**
+ * One sentence naming WHY a request never got an answer — for the callers that
+ * have no URL to advise about and only need to say what happened.
+ *
+ * `describeCause` alone degrades to "fetch failed" whenever no error in the
+ * chain carries a `code`, and `init` printed exactly that: "Not connected. fetch
+ * failed". The reason is the part a person can act on, so it leads.
+ */
+export function describeUnreachable(err: unknown): string {
+  const reason = classifyUnreachable(err);
+  const detail = describeCause(err);
+  const phrase: Record<UnreachableReason, string> = {
+    dns: 'the host name does not resolve',
+    refused: 'the connection was refused — nothing is listening there',
+    tls: 'the TLS certificate was rejected',
+    timeout: 'no answer before the timeout',
+    reset: 'the connection was cut mid-request',
+    bad_port: 'that port is one Node and every browser refuse to open',
+    unknown: 'no HTTP response',
+  };
+  return `${phrase[reason]} (${detail})`;
 }
