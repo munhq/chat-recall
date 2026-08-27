@@ -24,11 +24,14 @@ beforeAll(() => {
   app.use(express.json());
   app.use('/api/toolkit', toolkitRouter);
 });
-afterAll(() => {
+afterAll(async () => {
   restoreHomeEnv(origHome);
-  // removeTestDir, not rmSync: this directory holds an open SQLite handle and
-  // Windows refuses to unlink a file in use. See test-support/tmp-dir.ts.
-  removeTestDir(tmpHome);
+  // removeTestDir, not rmSync. `conversationsRouter` (mounted above) keeps a
+  // module-level MetadataCache for the process lifetime, so cache.db under this
+  // directory is legitimately open — and Windows will not unlink a file in use.
+  // See test-support/tmp-dir.ts: it retries, then names what is left rather than
+  // failing a suite whose assertions have already passed.
+  await removeTestDir(tmpHome);
 });
 
 describe('GET /api/toolkit/status', () => {

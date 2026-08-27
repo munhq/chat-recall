@@ -1,65 +1,75 @@
 /**
  * Remove a throwaway directory, including on Windows.
  *
- * ── The failure ───────────────────────────────────────────────────────────
+ * ── The failure, and what it actually was ─────────────────────────────────
  * `rmSync(dir, { recursive: true, force: true })` in an afterAll threw
  *
  *     Error: EPERM, Permission denied: \\?\C:\Users\…\Temp\win-route-h9ld4J
  *
- * on three test files and nowhere else. `force: true` only suppresses "it does
- * not exist"; it does nothing about "it is in use". On Windows a file cannot be
- * unlinked while any handle to it is open, and these suites open a SQLite
- * database (plus its `-wal` and `-shm` sidecars) under the directory they are
- * deleting. Every handle the test and the routes take IS closed — an audit of
- * every store factory in the repo found exactly one leak, in
- * `POST /api/memory/reclassify`, and that is fixed — but the OS releases a
- * handle asynchronously, so the unlink can lose a race that simply cannot happen
- * on Linux or macOS, where unlinking an open file succeeds.
+ * on three suites and nowhere else. `force: true` only suppresses "it does not
+ * exist"; it does nothing about "it is in use", and Windows will not unlink a
+ * file while any handle to it is open.
  *
- * ── Why this does not throw ───────────────────────────────────────────────
- * A teardown is not the thing under test. By the time it runs, every assertion
- * in the suite has already passed or failed on its own merits, and the directory
- * is inside the OS temp directory, which the OS reclaims. Turning a lost unlink
- * race into a red build on one platform reports a defect that is not there.
+ * Instrumenting the failure named the file: `cache.db`. It is not a leak.
+ * `routes/conversations.ts` keeps a module-level `MetadataCache` and
+ * `OutcomeCache` for the process lifetime — a deliberate cache on a hot path,
+ * never closed — and all three of those suites mount `conversationsRouter`. So
+ * the directory genuinely cannot be deleted while the process lives, on the one
+ * platform that enforces it. (An audit of every store / metadata-cache /
+ * outcome-cache / knowledge-graph factory in the repo found exactly one true
+ * leak, in `POST /api/memory/reclassify`, and that is fixed.)
  *
- * ── Why it is not silent either ───────────────────────────────────────────
- * A handle held FOREVER is a real leak and looks identical, at teardown, to one
- * held a moment too long. So on final failure this names the files that are
- * still there. Node's EPERM message names only the directory, which is the one
- * thing you already know; the listing says whether it is `cache.db`, a `-wal`
- * sidecar, or something else entirely — the fact the next Windows run needs, and
- * the reason the first version of this helper could not be diagnosed further.
+ * ── Why this is async ─────────────────────────────────────────────────────
+ * The first version used the SYNCHRONOUS `rmSync` with `maxRetries`, which
+ * blocks the event loop for the whole retry window — up to five seconds. A
+ * vitest worker that cannot run its event loop cannot answer the parent, so the
+ * run then died with
+ *
+ *     Error: [vitest-worker]: Timeout calling "onTaskUpdate"
+ *
+ * and the job failed with every single test passing. A teardown must never take
+ * the thread away from the runner: `fs/promises.rm` yields between retries.
+ *
+ * ── Why it does not throw ─────────────────────────────────────────────────
+ * A teardown is not the thing under test. Every assertion has already passed or
+ * failed on its own merits, the directory is inside the OS temp directory, and
+ * the handle holding it is one the server is supposed to hold. Failing the build
+ * over it reports a defect that is not there — while staying SILENT would hide a
+ * future real leak, so the leftovers are named.
  */
-import { readdirSync, rmSync } from 'node:fs';
+import { readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
-/** Retries EPERM/EBUSY/ENOTEMPTY/EMFILE for up to five seconds. */
-const RETRY = { maxRetries: 20, retryDelay: 250 } as const;
+/** Retries EPERM/EBUSY/ENOTEMPTY/EMFILE, yielding to the event loop between. */
+const RETRY = { maxRetries: 10, retryDelay: 100 } as const;
 
-export function removeTestDir(dir: string): void {
+export async function removeTestDir(dir: string): Promise<void> {
   if (!dir) return;
   try {
-    rmSync(dir, { recursive: true, force: true, ...RETRY });
+    await rm(dir, { recursive: true, force: true, ...RETRY });
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code ?? 'unknown';
     // eslint-disable-next-line no-console
     console.warn(
-      `[test-support] could not remove ${dir} after ${RETRY.maxRetries} attempts (${code}). `
-      + `Leaving it to the OS. Still present: ${describeLeftovers(dir)}`,
+      `[test-support] could not remove ${dir} (${code}) — leaving it to the OS. `
+      + `Still present: ${await describeLeftovers(dir)}`,
     );
   }
 }
 
 /** What is still in the directory, one level deep, so a locked file is named. */
-function describeLeftovers(dir: string, depth = 0): string {
+async function describeLeftovers(dir: string, depth = 0): Promise<string> {
   if (depth > 1) return '…';
   try {
-    const entries = readdirSync(dir, { withFileTypes: true });
+    const entries = await readdir(dir, { withFileTypes: true });
     if (entries.length === 0) return '(empty)';
-    return entries
-      .slice(0, 12)
-      .map((e) => (e.isDirectory() ? `${e.name}/{${describeLeftovers(join(dir, e.name), depth + 1)}}` : e.name))
-      .join(', ');
+    const parts: string[] = [];
+    for (const e of entries.slice(0, 12)) {
+      parts.push(e.isDirectory()
+        ? `${e.name}/{${await describeLeftovers(join(dir, e.name), depth + 1)}}`
+        : e.name);
+    }
+    return parts.join(', ');
   } catch {
     return '(unreadable)';
   }
