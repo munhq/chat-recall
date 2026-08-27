@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { execSync } from 'child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -25,7 +25,13 @@ function gitInit(dir: string, remote?: string) {
 }
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), 'project-resolver-'));
+  // realpathSync, because the resolver canonicalises every path it is given
+  // (see `safeRealpath`) and the ids it returns are therefore real paths. On
+  // macOS `os.tmpdir()` is `/var/folders/…`, a symlink to `/private/var/folders/…`,
+  // so a fixture built from the un-canonicalised value made every assertion
+  // that compares an id against a fixture path fail — on macOS only. The
+  // product was right; the fixture was not.
+  root = realpathSync(mkdtempSync(join(tmpdir(), 'project-resolver-')));
   _setProjectsConfigForTests({});
 });
 
