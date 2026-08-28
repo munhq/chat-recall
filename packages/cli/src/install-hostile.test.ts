@@ -169,17 +169,36 @@ describe('init against a server that cannot be reached', () => {
   test('init CONTINUES past a failed connection and still configures MCP', async () => {
     // The regression that mattered most: runLogin called process.exit(1), so the
     // whole command died at step 2 and the user was left with nothing wired.
-    const { out } = await runCli(['init', '--server', await refusedUrl(), '--skip-codeindex', '--skip-service', '--skip-sync']);
-    expect(out).toMatch(/Configuring MCP server/i);
-    expect(out).toMatch(/Setup complete/i);
+    // Asserted on the SUMMARY rather than the old per-step heading: init now
+    // prints one status line and one done line, so "MCP in N clients" in the
+    // summary is the evidence that the wiring happened.
+    const { out, home } = await runCli(['init', '--server', await refusedUrl(), '--skip-codeindex', '--skip-service', '--skip-sync']);
+    // Asserted on the FILES, not on a printed count. init says "Installing…" and
+    // "✓ Done" and nothing per-step, so the evidence that it carried on past the
+    // failed connection is that the MCP config it writes actually exists.
+    expect(out).toMatch(/Done/);
+    expect(existsSync(join(home, '.mcp.json'))).toBe(true);
   });
 
-  test('the step numbers are contiguous — a hole reads as a missed step', async () => {
+  test('THE OUTPUT IS SHORT, and a failure is still visible in it', async () => {
+    // This asserted that the numbered steps were contiguous. There are no
+    // numbered steps any more — init prints one status line and one summary —
+    // so that test could no longer fail, and a test that cannot fail is the
+    // thing that let today's bugs ship. It is replaced by the property the
+    // rewrite actually has to hold.
+    //
+    // Forty lines was the complaint. The floor is the failure: whatever else is
+    // trimmed, a user who cannot reach their server must still be told.
     const { out } = await runCli(['init', '--server', await refusedUrl(), ...INIT_LOCAL_ONLY]);
-    const steps = [...out.matchAll(/^(\d)\. /gm)].map((m) => Number(m[1]));
-    const unique = [...new Set(steps)].sort((a, b) => a - b);
-    expect(unique).toEqual(Array.from({ length: unique.length }, (_, i) => i + 1));
+    const lines = out.trim().split('\n').filter((l) => l.trim());
+    expect(lines.length).toBeLessThanOrEqual(6);
+    expect(out).toMatch(/Not connected/);
+    expect(out).toMatch(/refused/i);
+    // And none of the per-item audit that used to fill it.
+    expect(out).not.toMatch(/^\s*\w[\w ]*: (found|not found)$/m);
+    expect(out).not.toMatch(/recall_search, recall_show/);   // the 60-tool list
   });
+
 
   test('the version is on the first line, so a report can be attributed to a build', async () => {
     const { out } = await runCli(['init', '--server', await refusedUrl(), ...INIT_LOCAL_ONLY]);
