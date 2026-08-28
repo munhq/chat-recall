@@ -49,6 +49,10 @@ const FILES = [
   // ENOENT. It did: the rollout sat in Init:CrashLoopBackOff (no outage, because
   // Kubernetes kept the previous pods serving) until this prefix was restored.
   './migrations/0009_drop_phantom_autoclosed_tasks.sql',
+  // One-off repair. DELETE THIS FILE AND THIS ENTRY once it has run everywhere.
+  // Moves cards the machine closed out of 'done', which they were never entitled
+  // to: 'done' requires the session that did the work, and these had none.
+  './migrations/0010_machine_closures_are_not_done.sql',
 ];
 
 // REPORT ROWS AFFECTED. A data migration against a tenant-scoped table is

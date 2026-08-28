@@ -123,3 +123,31 @@ describe('rejected', () => {
     expect(r.status).toBe(200);
   });
 });
+
+describe('what counts as a commit sha', () => {
+  test('free text is refused — the point of a sha is that it can be opened', async () => {
+    tasks.set('t_1', card({ linkedSessionId: 's_1' }));
+    const r = await request(app()).patch('/api/tasks/t_1')
+      .send({ status: 'done', doneEvidence: { commits: ['fixed it'] } });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toMatch(/do not look like commit shas/);
+  });
+
+  test('short and full shas both pass', async () => {
+    for (const sha of ['a1b2c3d', 'd64b7e3e', 'a'.repeat(40)]) {
+      tasks.set('t_1', card({ linkedSessionId: 's_1' }));
+      patches.length = 0;
+      const r = await request(app()).patch('/api/tasks/t_1')
+        .send({ status: 'done', doneEvidence: { commits: [sha] } });
+      expect(r.status, sha).toBe(200);
+    }
+  });
+
+  test('a valid sha alongside junk keeps the valid one', async () => {
+    tasks.set('t_1', card({ linkedSessionId: 's_1' }));
+    const r = await request(app()).patch('/api/tasks/t_1')
+      .send({ status: 'done', doneEvidence: { commits: ['a1b2c3d', 'not-a-sha'] } });
+    expect(r.status).toBe(200);
+    expect(patches[0].patch.doneEvidence).toMatchObject({ commits: ['a1b2c3d'] });
+  });
+});

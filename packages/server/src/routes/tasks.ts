@@ -80,6 +80,7 @@ router.get('/policy', async (req, res) => {
     res.json({
       ...st.policy, lastRun: st.lastRun, eligible: st.eligible, filed: st.filed,
       openCards: st.openCards, ceiling: st.ceiling, byProject: st.byProject,
+      availableCategories: st.availableCategories,
     });
   } catch (e) {
     log.error({ err: e }, 'auto-tasks status failed');
@@ -88,7 +89,14 @@ router.get('/policy', async (req, res) => {
     const cp = await createControlPlane();
     try {
       const policy = parsePolicy(await cp.getTenantSetting(req.tenant as string, AUTO_TASKS_KEY));
-      res.json({ ...policy, lastRun: null, eligible: 0, filed: 0, openCards: 0, ceiling: 0, byProject: [] });
+      // The COUNTS are unknown here, not zero — but the POLICY is known, and
+      // `ceiling: 0` was a lie a client could write straight back: read, change
+      // one field, PUT, and the board's ceiling silently became 1 (the clamp
+      // floor) because the read had reported zero.
+      res.json({
+        ...policy, lastRun: null, eligible: 0, filed: 0, openCards: 0,
+        byProject: [], availableCategories: [], degraded: true,
+      });
     } finally { await cp.close(); }
   }
 });
@@ -255,9 +263,23 @@ router.patch('/:id', async (req, res) => {
       // A sha is checkable and it belongs to one repo. Requiring it makes the
       // claim "this is fixed" point at something a reader can open.
       const ev = req.body?.doneEvidence;
-      const commits: string[] = Array.isArray(ev?.commits)
-        ? ev.commits.filter((c: unknown): c is string => typeof c === 'string' && !!c.trim()).map((c: string) => c.trim())
+      // A sha SHAPE, not free text. The point of naming commits is that a reader
+      // can open them; "fixed it" in the commits array would defeat that while
+      // still passing the check.
+      const isSha = (c: string) => /^[0-9a-f]{7,40}$/i.test(c);
+      // Blank entries are NOTHING OFFERED, not something malformed: they fall
+      // through to the "needs commits" refusal below, which says what to do.
+      const offered: string[] = Array.isArray(ev?.commits)
+        ? ev.commits.filter((c: unknown): c is string => typeof c === 'string')
+            .map((c: string) => c.trim()).filter(Boolean)
         : [];
+      const commits = offered.filter(isSha);
+      if (offered.length && !commits.length) {
+        return res.status(400).json({
+          error: 'those do not look like commit shas',
+          detail: `Expected hex sha(s), 7-40 characters. Got: ${offered.slice(0, 3).join(', ')}`,
+        });
+      }
       const hadEvidence = (existing?.task.doneEvidence?.commits?.length ?? 0) > 0;
       if (!commits.length && !hadEvidence) {
         return res.status(409).json({
