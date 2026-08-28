@@ -675,6 +675,27 @@ const RecallTaskUpdateSchema = z.object({
     .describe('Session id to attach to the task (null detaches). Pass YOUR OWN current session id when you start working on the task.'),
 });
 /**
+ * Add or remove ONE project from the never-file list, against the CURRENT list.
+ *
+ * Pure and exported because it is the part that can quietly lose data: "also
+ * exclude this repo" must not drop the repos already excluded, which is exactly
+ * what a naive `excludedProjects: [one]` would do. Order is preserved so the
+ * list does not churn between reads.
+ */
+export function mergeExcludedProjects(
+  current: unknown, opts: { add?: string; remove?: string },
+): string[] {
+  const list = Array.isArray(current)
+    ? current.filter((p): p is string => typeof p === 'string' && !!p.trim()).map((p) => p.trim())
+    : [];
+  const out = [...new Set(list)];
+  const add = opts.add?.trim();
+  const remove = opts.remove?.trim();
+  if (add && !out.includes(add)) out.push(add);
+  return remove ? out.filter((p) => p !== remove) : out;
+}
+
+/**
  * The board's own settings. Read with no arguments; pass a field to change it.
  *
  * These decide WHAT gets carded — the severity floor, how many cards may be open
@@ -3874,10 +3895,9 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         // Add/remove ONE, computed against the CURRENT list: "also exclude this
         // repo" must not silently drop the projects already excluded.
         if (params.exclude_project || params.include_project) {
-          const list = new Set(Array.isArray(cur.excludedProjects) ? cur.excludedProjects as string[] : []);
-          if (params.exclude_project) list.add(params.exclude_project);
-          if (params.include_project) list.delete(params.include_project);
-          patch.excludedProjects = [...list];
+          patch.excludedProjects = mergeExcludedProjects(cur.excludedProjects, {
+            add: params.exclude_project, remove: params.include_project,
+          });
         }
         if (!Object.keys(patch).length) {
           return { content: [{ type: 'text', text: [
