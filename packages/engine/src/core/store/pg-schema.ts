@@ -773,7 +773,23 @@ CREATE INDEX IF NOT EXISTS idx_team_tasks_identity ON team_tasks(tenant, linked_
 -- data fails on the next write to those rows.
 ALTER TABLE team_tasks DROP CONSTRAINT IF EXISTS team_tasks_status_check;
 ALTER TABLE team_tasks ADD CONSTRAINT team_tasks_status_check
-  CHECK (status IN ('todo','in_progress','blocked','done','rejected'));
+  CHECK (status IN ('todo','in_progress','blocked','done','rejected','closed'));
+-- 'closed' = shut WITHOUT the work being done, and why.
+--
+-- Two machine paths close cards: a finding stops being reported, or a card turns
+-- out to duplicate another. Both used to write 'done', which is the one status
+-- the API refuses to anybody who cannot name the session that earned it. So the
+-- strictest rule in the product was bypassed by the paths that produced most of
+-- the closures, and two thirds of one real board's Done column was work nobody
+-- had done. A separate status keeps 'done' meaning done.
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS closed_reason TEXT;
+-- The PROOF behind a done: the commits (and files) the closer says fixed it.
+--
+-- The session link alone was not enough. A card closed with a real session
+-- attached rendered "74 commits" belonging to a DIFFERENT repository — the
+-- session's whole footprint, unscoped. Right session, wrong evidence. Naming the
+-- commits makes the claim checkable against the repo the card is about.
+ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS done_evidence_json TEXT;
 CREATE INDEX IF NOT EXISTS idx_team_tasks_finding ON team_tasks(tenant, linked_finding_id);
 CREATE INDEX IF NOT EXISTS idx_team_tasks_proj ON team_tasks(tenant, project_id, status);
 CREATE INDEX IF NOT EXISTS idx_team_tasks_assignee ON team_tasks(tenant, assignee_sub, status);

@@ -299,7 +299,7 @@ const DEFAULT_ALLOW = [
   // gap, which is a tool that DOES exist prompting on every call.
   'recall_recent', 'recall_context', 'recall_summary',
   'recall_memory_search', 'recall_memory_item', 'recall_reclassify',
-  'recall_tasks', 'recall_task_create', 'recall_task_update', 'recall_task_comment',
+  'recall_tasks', 'recall_task_create', 'recall_task_update', 'recall_task_comment', 'recall_task_policy',
   'recall_help',
   'recall_smart_resume', 'recall_project_context', 'recall_weekly_digest',
   'recall_kg_query', 'recall_kg_add', 'recall_kg_invalidate',
