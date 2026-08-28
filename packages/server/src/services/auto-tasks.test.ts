@@ -928,3 +928,69 @@ describe('the open-card ceiling', () => {
     expect(st.eligible).toBe(3);
   });
 });
+
+/**
+ * A REPOSITORY THAT IS NOT YOURS TO PUT WORK IN.
+ *
+ * A client's codebase, an archive, a vendored mirror: index it, search it, show
+ * the findings — but never file a card, and never hand an agent a task in it.
+ * The severity floor cannot say that. It is global, and a critical in someone
+ * else's repository is still a critical.
+ */
+describe('excluded projects', () => {
+  const inOther = (id: string, pri = 0) => ({ ...action(id, pri), projectId: 'p_client' });
+
+  test('THE POINT: nothing files for an excluded project, at any severity', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({
+      enabled: true, maxPri: 2, excludedProjects: ['p_client'],
+    }));
+    state.actions = [inOther('crit', 0), inOther('high', 1)];
+
+    const r = await runAutoTasks('t1');
+    expect(r?.created).toBe(0);
+    expect(state.created).toEqual([]);
+  });
+
+  test('every other project still files', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({
+      enabled: true, maxPri: 2, excludedProjects: ['p_client'],
+    }));
+    state.actions = [inOther('theirs', 0), action('mine', 0)];
+
+    const r = await runAutoTasks('t1');
+    expect(r?.created).toBe(1);
+    expect(state.created).toEqual(['mine']);
+  });
+
+  test('the count agrees with the filer — no promise of work that will not happen', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({
+      enabled: true, maxPri: 2, excludedProjects: ['p_client'],
+    }));
+    state.actions = [inOther('theirs', 0), action('mine', 0)];
+    const st = await autoTasksStatus('t1');
+    expect(st.eligible).toBe(1);
+    expect(st.policy.excludedProjects).toEqual(['p_client']);
+  });
+
+  test('cards that already exist there are NOT closed — exclusion stops filing, not history', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({
+      enabled: true, maxPri: 2, excludedProjects: ['p_client'],
+    }));
+    state.actions = [inOther('theirs', 0)];
+    state.tasks = [{
+      id: 't_existing', title: 'old card', status: 'todo', createdBy: 'auto-tasks',
+      linkedFindingId: 'theirs', linkedFindingIdentity: 'theirs', projectId: 'p_client', createdAt: 1,
+    }];
+
+    const r = await runAutoTasks('t1');
+    expect(r?.closed).toBe(0);
+    expect(state.tasks[0].status).toBe('todo');
+  });
+
+  test('no exclusions configured ⇒ everything files, as before', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 2 }));
+    state.actions = [inOther('theirs', 0), action('mine', 0)];
+    const r = await runAutoTasks('t1');
+    expect(r?.created).toBe(2);
+  });
+});
