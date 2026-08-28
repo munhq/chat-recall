@@ -6,6 +6,7 @@ import PlanPicker from './PlanPicker';
 import { formatMB } from '../utils/bytes';
 import LicenceDeliveryPanel from './LicenceDelivery';
 import DataControls from './DataControls';
+import TwoFactorCard from './TwoFactorCard';
 import {
   getProjectTree,
   getEntitlement, startCheckout, openBillingPortal, getAlertConfig, setAlertConfig,
@@ -210,6 +211,7 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
 
       {/* Last on the page: everything above manages the account, this ends it.
           Export sits above the deletes inside the panel for the same reason. */}
+      <TwoFactorCard />
       <DataControls projects={dataProjects} />
     </div>
   );
