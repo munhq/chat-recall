@@ -87,17 +87,21 @@ describe('marking a task done', () => {
     expect(res.body.reject).toContain('"status":"rejected"');
   });
 
-  test('allowed when the agent attaches its session in the same call', async () => {
+  test('allowed when the agent attaches its session AND names the commits', async () => {
+    // The session alone stopped being enough: it proves WHO worked, not WHAT
+    // changed, and one card's session badge showed commits from another repo.
     const res = await request(await app())
-      .patch('/api/tasks/t_1').send({ status: 'done', linkedSessionId: 'sess_abc' });
+      .patch('/api/tasks/t_1')
+      .send({ status: 'done', linkedSessionId: 'sess_abc', doneEvidence: { commits: ['a1b2c3d'] } });
     expect(res.status).toBe(200);
     expect(state.patches[0].patch.status).toBe('done');
     expect(state.patches[0].patch.linkedSessionId).toBe('sess_abc');
   });
 
-  test('allowed when the card was already claimed', async () => {
+  test('allowed when the card was already claimed, with the commits', async () => {
     state.task = { id: 't_1', status: 'in_progress', linkedSessionId: 'sess_abc', linkedFindingId: null };
-    const res = await request(await app()).patch('/api/tasks/t_1').send({ status: 'done' });
+    const res = await request(await app()).patch('/api/tasks/t_1')
+      .send({ status: 'done', doneEvidence: { commits: ['a1b2c3d'] } });
     expect(res.status).toBe(200);
     expect(state.patches[0].patch.status).toBe('done');
   });
