@@ -238,6 +238,27 @@ router.post('/install/report', express.json({ limit: '2kb' }), async (req, res) 
     res.status(400).json({ error: 'unknown step' });
     return;
   }
+  // REQUIRE THE ENVIRONMENT FIELDS. The CLI always sends `node` and `os` — they
+  // are computed from process.versions and process.platform, never optional —
+  // so a report without them did not come from a chat-recall install.
+  //
+  // This endpoint is public and unauthenticated by necessity: a first run that
+  // fails has no credential. That also makes it the easiest surface in the
+  // product to poison, and the first report it ever recorded was exactly that:
+  // a body containing nothing but a step name, filed against a step that means
+  // "someone's install could not reach the server". It was counted as a lost
+  // user for two days.
+  //
+  // Refusing an empty report is the same rule already applied to an unknown
+  // step, for the same reason: a diagnostic surface that accepts anything
+  // becomes a log, and a funnel anyone can write to measures nothing.
+  const node = cut(req.body?.node, 20);
+  const os = cut(req.body?.os, 20);
+  if (!node || !os) {
+    res.status(400).json({ error: 'report must carry node and os' });
+    return;
+  }
+
   try {
     const { growth } = await import('../util/growth.js');
     growth('funnel_fail', {
@@ -247,8 +268,8 @@ router.post('/install/report', express.json({ limit: '2kb' }), async (req, res) 
         reason: cut(req.body?.reason, 40),        // the classification, e.g. 'dns'
         message: cut(req.body?.message, 200),     // already redacted by the CLI
         cliVersion: cut(req.body?.cliVersion, 20),
-        node: cut(req.body?.node, 20),
-        os: cut(req.body?.os, 20),
+        node,
+        os,
       },
     });
   } catch {

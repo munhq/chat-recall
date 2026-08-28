@@ -59,6 +59,16 @@ const STEPS: Array<[test: RegExp, step: string]> = [
   [/\/mcp\/token$/, 'connector_authorized'],
 ];
 
+/**
+ * Steps a client retries on its own, where a raw count measures impatience
+ * rather than interest.
+ *
+ * Only device/code is polled today. `/device/approve` fires once, when the
+ * human actually clicks, and must stay uncollapsed — it is the number the whole
+ * middleware exists to compare against.
+ */
+const POLLED_STEPS = new Set(['cli_login_prompt']);
+
 function stepFor(path: string): string | null {
   for (const [test, step] of STEPS) if (test.test(path)) return step;
   return null;
@@ -82,6 +92,20 @@ export function funnelTelemetry(req: Request, res: Response, next: NextFunction)
       const ok = res.statusCode >= 200 && res.statusCode < 300;
       growth(ok ? 'funnel' : 'funnel_fail', {
         extra: { step, status: res.statusCode },
+        // Collapse the polled steps to one row per day.
+        //
+        // `/device/code` is POLLED: the CLI asks repeatedly while the human
+        // decides in a browser, so one person approving a login produced 120
+        // rows in a day against 3 approvals. That does not read as "polling",
+        // it reads as 117 people who walked away, and it was the single most
+        // prominent number on the funnel.
+        //
+        // oncePerDay is per PROCESS and keyed on the tenant, and this step has
+        // no tenant yet — nobody has logged in. So it collapses per replica per
+        // day, which turns 120 into single digits: still not a headcount, but
+        // no longer an order of magnitude wrong. A real distinct-visitor count
+        // needs an identifier the pre-auth CLI does not have.
+        oncePerDay: POLLED_STEPS.has(step),
       });
     } catch { /* telemetry must never affect the request */ }
   });
