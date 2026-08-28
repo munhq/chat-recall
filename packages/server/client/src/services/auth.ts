@@ -81,6 +81,10 @@ export async function isSignedIn(): Promise<boolean> {
 
 type AuthResult = { ok: true } | { ok: false; error: string };
 
+/** Sign-in has a third outcome besides success and failure: the password was
+ *  right and a second factor is still owed. */
+export type SignInResult = AuthResult | { ok: false; needsTwoFactor: true; error: string };
+
 async function authError(res: Response, fallback: string): Promise<string> {
   const body = (await res.json().catch(() => null)) as { message?: string; error?: string } | null;
   return body?.message || body?.error || `${fallback} (HTTP ${res.status})`;
@@ -88,14 +92,23 @@ async function authError(res: Response, fallback: string): Promise<string> {
 
 /** Email + password sign-in. The session arrives as an httpOnly cookie; there
  *  is deliberately nothing to store on this side. */
-export async function signInEmail(email: string, password: string): Promise<AuthResult> {
+export async function signInEmail(email: string, password: string): Promise<SignInResult> {
   const res = await fetch(authUrl('/sign-in/email'), {
     method: 'POST',
     credentials: 'include',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email, password }),
   });
-  if (res.ok) { clearLegacyTokens(); return { ok: true }; }
+  if (res.ok) {
+    // A 200 does NOT always mean signed in. With 2FA armed, better-auth answers
+    // `{ twoFactorRedirect: true }` and issues no session — so a caller that
+    // only checked res.ok would show a dashboard to someone holding half a
+    // credential, which is the entire point of the second factor.
+    const body = (await res.json().catch(() => null)) as { twoFactorRedirect?: boolean } | null;
+    if (body?.twoFactorRedirect) return { ok: false, needsTwoFactor: true, error: '' };
+    clearLegacyTokens();
+    return { ok: true };
+  }
   return { ok: false, error: await authError(res, 'sign-in failed') };
 }
 
@@ -109,6 +122,93 @@ export async function signUpEmail(name: string, email: string, password: string)
   });
   if (res.ok) { clearLegacyTokens(); return { ok: true }; }
   return { ok: false, error: await authError(res, 'sign-up failed') };
+}
+
+/* ── Two-factor (TOTP) ────────────────────────────────────────────────────
+ *
+ * TOTP ONLY. No SMS: it is a paid service per message, it is the factor SIM-swap
+ * defeats, and an authenticator app needs no third party at all — the code is
+ * generated offline and verified against a secret the server already holds.
+ *
+ * Enrolment is deliberately two steps. `enable` returns the URI and the backup
+ * codes but does NOT arm the factor; `verifyTotp` with a code from the app does.
+ * A user who mis-scans the QR therefore finds out while they can still cancel,
+ * instead of at their next sign-in with no way back in.
+ */
+
+/** What `enable` hands back: the otpauth:// URI for the QR, and the one-time
+ *  recovery codes — shown once, because the server stores them hashed. */
+export interface TwoFactorSetup { totpURI: string; backupCodes: string[] }
+
+/** Start enrolment. Requires the password: without it, anyone with a borrowed
+ *  session could bind their own authenticator to the account. */
+export async function enableTwoFactor(password: string): Promise<{ ok: true; setup: TwoFactorSetup } | { ok: false; error: string }> {
+  const res = await fetch(authUrl('/two-factor/enable'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+  if (!res.ok) return { ok: false, error: await authError(res, 'could not start two-factor setup') };
+  const body = (await res.json().catch(() => null)) as { totpURI?: string; backupCodes?: string[] } | null;
+  if (!body?.totpURI) return { ok: false, error: 'the server returned no setup URI' };
+  return { ok: true, setup: { totpURI: body.totpURI, backupCodes: body.backupCodes ?? [] } };
+}
+
+/**
+ * Verify a six-digit code — the same call for two jobs.
+ *
+ * During enrolment it arms the factor. At sign-in it completes the login that
+ * returned `twoFactorRedirect`. One endpoint, so there is one place a code is
+ * checked and no second implementation to drift.
+ */
+export async function verifyTotp(code: string, trustDevice = false): Promise<AuthResult> {
+  const res = await fetch(authUrl('/two-factor/verify-totp'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ code, trustDevice }),
+  });
+  if (res.ok) return { ok: true };
+  return { ok: false, error: await authError(res, 'that code was not accepted') };
+}
+
+/** Sign in with a recovery code when the authenticator is gone. Each is single
+ *  use — the reason `enable` shows them once and tells the user to keep them. */
+export async function verifyBackupCode(code: string): Promise<AuthResult> {
+  const res = await fetch(authUrl('/two-factor/verify-backup-code'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ code }),
+  });
+  if (res.ok) return { ok: true };
+  return { ok: false, error: await authError(res, 'that recovery code was not accepted') };
+}
+
+/** Turn it off. Password again, for the same reason enabling needs one. */
+export async function disableTwoFactor(password: string): Promise<AuthResult> {
+  const res = await fetch(authUrl('/two-factor/disable'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+  if (res.ok) return { ok: true };
+  return { ok: false, error: await authError(res, 'could not turn off two-factor') };
+}
+
+/** Is it on for the signed-in user? Read from the session, so it cannot
+ *  disagree with what the server will enforce at the next sign-in. */
+export async function twoFactorEnabled(): Promise<boolean> {
+  try {
+    const res = await fetch(authUrl('/get-session'), { credentials: 'include' });
+    if (!res.ok) return false;
+    const body = (await res.json().catch(() => null)) as { user?: { twoFactorEnabled?: boolean } } | null;
+    return body?.user?.twoFactorEnabled === true;
+  } catch {
+    return false;
+  }
 }
 
 /**

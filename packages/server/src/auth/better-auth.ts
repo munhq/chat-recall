@@ -25,6 +25,7 @@
 import { betterAuth } from 'better-auth';
 import {
   bearer, deviceAuthorization, emailOTP, mcp, oAuthDiscoveryMetadata, oAuthProtectedResourceMetadata,
+  twoFactor,
 } from 'better-auth/plugins';
 import { toNodeHandler } from 'better-auth/node';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -255,6 +256,31 @@ function createAuth() {
         sendVerificationOTP: async ({ email, otp, type }) => {
           await sendMail(verifyOtpMail(email, otp, type));
         },
+      }),
+      /**
+       * TOTP, AND ONLY TOTP.
+       *
+       * The account holds every AI coding session a developer has run, so a
+       * password plus an OAuth button was the weakest link in a product whose
+       * whole argument is care with that data — and the first question any
+       * security questionnaire asks.
+       *
+       * NO SMS, deliberately and permanently. SMS is a paid service per message,
+       * it is the factor that SIM-swap defeats, and adding it would mean a second
+       * vendor for a weaker guarantee. An authenticator app generates the code
+       * offline and this verifies it locally against a stored secret, so 2FA
+       * costs nothing to run and involves no third party at all — not even the
+       * SES account the verification mail uses.
+       *
+       * `skipVerificationOnEnable` stays at its default (false): enabling asks
+       * for a code from the app before the factor is armed, so a user cannot lock
+       * themselves out with a mis-scanned QR. Backup codes are generated at the
+       * same time — the only recovery path, because we cannot reset a secret we
+       * never had.
+       */
+      twoFactor({
+        // Shown in the authenticator app beside the account name.
+        issuer: 'chat-recall',
       }),
       deviceAuthorization({
         expiresIn: '10m',
