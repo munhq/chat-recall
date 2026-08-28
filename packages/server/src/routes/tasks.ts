@@ -10,7 +10,11 @@
  *   GET    /api/tasks?project=&assignee=&status=   → list
  *   POST   /api/tasks {title, description?, projectId?, assigneeSub?, due?, linkedSessionId?}
  *   GET    /api/tasks/:id                          → { task, comments }
- *   PATCH  /api/tasks/:id {status?, assigneeSub?, title?, description?, due?, linkedSessionId?}
+ *   PATCH  /api/tasks/:id {status?, assigneeSub?, title?, description?, due?,
+ *                           linkedSessionId?, closedReason?}
+ *     status 'done'   → needs the session that did the work AND
+ *                       doneEvidence.commits — the sha(s) that fixed it
+ *     status 'closed' → needs closedReason (shut without the work being done)
  *   POST   /api/tasks/:id/comments {body}
  */
 import express from 'express';
@@ -28,7 +32,7 @@ const router = express.Router();
 // written it, and the board has no column for it since the reject work, so a
 // card set to 'blocked' would simply disappear from the UI. The DB constraint
 // still accepts it, because rows written before it was retired keep the value.
-const STATUSES = new Set(['todo', 'in_progress', 'done', 'rejected']);
+const STATUSES = new Set(['todo', 'in_progress', 'done', 'rejected', 'closed']);
 
 /**
  * Assigning work to SOMEONE ELSE is the collaboration boundary — the mount is
@@ -60,7 +64,7 @@ function actor(req: express.Request): string { return (req.authorSub || req.user
  *   GET  /api/tasks/policy      → { enabled, maxPri, lastRun, eligible, filed,
  *                                 openCards, ceiling, byProject }
  *                                 maxPri: 0 critical, 1 high, 2 medium, 3 low
- *   PUT  /api/tasks/policy {enabled, maxPri?}
+ *   PUT  /api/tasks/policy {enabled, maxPri?, ceiling?, maxPerRun?, categories?}
  *   POST /api/tasks/policy/run  → run it NOW, returns
  *                                 { created, closed, repointed, backfilled, reopened }
  *
@@ -115,8 +119,21 @@ router.put('/policy', async (req, res) => {
   const maxPri = Number.isFinite(n) ? Math.min(Math.max(n, 0), 3) : 1;
   const cp = await createControlPlane();
   try {
-    await cp.setTenantSetting(req.tenant as string, AUTO_TASKS_KEY, JSON.stringify({ enabled, maxPri }));
-    res.json({ enabled, maxPri });
+    // The knobs that decide what gets filed were a constant and a UI-only
+    // select. Whoever owns the board decides how big it may get, how fast it
+    // fills and which categories are worth carding — from either surface.
+    const current = parsePolicy(await cp.getTenantSetting(req.tenant as string, AUTO_TASKS_KEY));
+    const next = {
+      enabled,
+      maxPri,
+      ceiling: req.body?.ceiling === undefined ? current.ceiling : req.body.ceiling,
+      maxPerRun: req.body?.maxPerRun === undefined ? current.maxPerRun : req.body.maxPerRun,
+      categories: req.body?.categories === undefined ? current.categories : req.body.categories,
+    };
+    // Round-trip through the parser so the same clamping applies to every writer.
+    const saved = parsePolicy(JSON.stringify(next));
+    await cp.setTenantSetting(req.tenant as string, AUTO_TASKS_KEY, JSON.stringify(saved));
+    res.json(saved);
   } finally { await cp.close(); }
 });
 
@@ -228,6 +245,52 @@ router.patch('/:id', async (req, res) => {
           reject: `PATCH /api/tasks/${req.params.id} {"status":"rejected"}`,
         });
       }
+      // AND NAME THE COMMITS.
+      //
+      // The session link alone proved the wrong thing. A card closed with a real
+      // session attached rendered "74 commits" belonging to a DIFFERENT
+      // repository: the session's entire footprint, unscoped. Right session,
+      // wrong evidence, and nothing on the card said which was which.
+      //
+      // A sha is checkable and it belongs to one repo. Requiring it makes the
+      // claim "this is fixed" point at something a reader can open.
+      const ev = req.body?.doneEvidence;
+      const commits: string[] = Array.isArray(ev?.commits)
+        ? ev.commits.filter((c: unknown): c is string => typeof c === 'string' && !!c.trim()).map((c: string) => c.trim())
+        : [];
+      const hadEvidence = (existing?.task.doneEvidence?.commits?.length ?? 0) > 0;
+      if (!commits.length && !hadEvidence) {
+        return res.status(409).json({
+          error: 'closing a task needs the commits that fixed it',
+          detail: 'Pass doneEvidence.commits — the sha(s) in THIS card\'s repository. '
+            + 'If the fix is not committed yet, commit it first. If the card no longer applies, '
+            + 'use status "closed" with a reason instead; if it was never a real problem, reject it.',
+          example: `PATCH /api/tasks/${req.params.id} {"status":"done","linkedSessionId":"…","doneEvidence":{"commits":["a1b2c3d"]}}`,
+        });
+      }
+      if (commits.length) {
+        patch.doneEvidence = {
+          commits: commits.slice(0, 50),
+          files: Array.isArray(ev?.files)
+            ? ev.files.filter((f: unknown): f is string => typeof f === 'string').slice(0, 100) : undefined,
+          summary: typeof ev?.summary === 'string' ? ev.summary.slice(0, 2000) : undefined,
+        };
+      }
+    }
+    // CLOSED NEEDS A REASON, for the same reason `done` needs a session: a card
+    // shut without the work being done has to say why, or in six weeks it is
+    // indistinguishable from a card someone tidied away. The machine paths that
+    // write this always supply one; a person or an agent must too.
+    if (req.body.status === 'closed') {
+      const reason = typeof req.body.closedReason === 'string' ? req.body.closedReason.trim() : '';
+      if (!reason) {
+        return res.status(400).json({
+          error: 'closing a task needs a reason',
+          detail: 'Say why the card no longer applies (closedReason). Use "done" with the session '
+            + 'that did the work if it was actually fixed, or "rejected" if it was never a real problem.',
+        });
+      }
+      patch.closedReason = reason.slice(0, 2000);
     }
     patch.status = req.body.status;
   }

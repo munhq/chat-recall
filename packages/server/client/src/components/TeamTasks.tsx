@@ -27,10 +27,14 @@ const COLUMNS: Array<{ status: TeamTaskStatus; label: string }> = [
   { status: 'todo', label: 'To do' },
   { status: 'in_progress', label: 'In progress' },
   { status: 'done', label: 'Done' },
+  // Shut without the work being done — a finding that stopped being reported, or
+  // a duplicate. Its own column because sharing one with `done` is what let a
+  // board claim 55 completed cards when 19 had been worked.
+  { status: 'closed', label: 'Closed' },
   { status: 'rejected', label: 'Rejected' },
 ];
 /** Columns whose cards are finished business — collapsed until asked for. */
-const CLOSED_COLUMNS: readonly TeamTaskStatus[] = ['done', 'rejected'];
+const CLOSED_COLUMNS: readonly TeamTaskStatus[] = ['done', 'closed', 'rejected'];
 
 /** Done cards with no session behind them: expired, not achieved. */
 const autoClosedCount = (items: Array<{ linkedSessionId?: string | null }>): number =>
@@ -214,10 +218,29 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
    * someone else needs a team plan.
    */
   const move = useCallback(async (id: string, status: TeamTaskStatus) => {
+    // A CARD LEAVING THE BOARD SAYS WHY.
+    //
+    // Dragging used to send a bare status. For 'closed' the server now refuses
+    // that outright, and for 'rejected' the reason is the only thing that tells
+    // a reader in six weeks whether the advice was wrong or the card was tidied
+    // away. Ask once, here, rather than letting the drop fail with a 400.
+    let closedReason: string | undefined;
+    if (status === 'closed' || status === 'rejected') {
+      const asked = window.prompt(status === 'closed'
+        ? 'Why does this card no longer apply?\n(the finding went away, it duplicates another…)'
+        : 'Why is this not a real problem?\n(this also stops the finding being re-filed)');
+      if (asked === null) return;                       // cancelled: leave the card alone
+      closedReason = asked.trim();
+      if (!closedReason) { setErr('A reason is needed to take a card off the board.'); return; }
+    }
     const before = tasks;
     setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, status } : t)));
-    try { await updateTask(id, { status }); }
-    catch (e: any) { setTasks(before); setErr(String(e.message || e)); }
+    try {
+      await updateTask(id, closedReason ? { status, closedReason } : { status });
+      // 'rejected' has no column for the reason, so it lands as a comment —
+      // otherwise the answer to "why was this rejected?" is nowhere.
+      if (status === 'rejected' && closedReason) await addTaskComment(id, `Rejected: ${closedReason}`);
+    } catch (e: any) { setTasks(before); setErr(String(e.message || e)); }
   }, [tasks]);
 
   async function reassign(t: TeamTask, sub: string) {
@@ -282,8 +305,8 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
         // being reported, 7 retired as duplicates. Counting those as
         // achievements is how a board ends up asserting work that never
         // happened — which is the failure this product exists to catch.
-        doneCount={tasks.filter((t) => t.status === 'done' && t.linkedSessionId).length}
-        machineClosedCount={tasks.filter((t) => t.status === 'done' && !t.linkedSessionId).length}
+        doneCount={tasks.filter((t) => t.status === 'done').length}
+        machineClosedCount={tasks.filter((t) => t.status === 'closed').length}
         rejectedCount={tasks.filter((t) => t.status === 'rejected').length}
       />
 
@@ -334,7 +357,7 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
                   >
                     Show {items.length} {col.label.toLowerCase()}
                     {col.status === 'done' && autoClosedCount(items) > 0
-                      && ` · ${items.length - autoClosedCount(items)} worked, ${autoClosedCount(items)} closed without work`}
+                      && ` · ${autoClosedCount(items)} with no session behind them`}
                   </button>
                 )
               ) : items.map((t) => (
@@ -361,6 +384,28 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
 
                   {/* The differentiator: did the session attached to this card
                       actually ship anything? */}
+                  {/* THE CARD'S OWN EVIDENCE FIRST.
+                      The session badge shows a session's WHOLE footprint, and a
+                      card closed with a real session attached rendered "74
+                      commits" from a DIFFERENT repository — right session, wrong
+                      repo. The shas named on the card belong to this card. */}
+                  {t.doneEvidence?.commits?.length ? (
+                    <div className="tt-evidence" title={t.doneEvidence.summary || 'The commits offered as proof for this card'}>
+                      <span className="tt-evidence-label">fixed by</span>
+                      {t.doneEvidence.commits.slice(0, 4).map((c) => (
+                        <code key={c} className="tt-sha">{c.slice(0, 8)}</code>
+                      ))}
+                      {t.doneEvidence.commits.length > 4 && <span>+{t.doneEvidence.commits.length - 4}</span>}
+                      {t.doneEvidence.files?.length ? (
+                        <span className="tt-evidence-files">
+                          {t.doneEvidence.files.length} file{t.doneEvidence.files.length === 1 ? '' : 's'}
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {t.closedReason && (
+                    <div className="tt-closedwhy" title="Why this card stopped applying">{t.closedReason}</div>
+                  )}
                   {t.linkedSessionId && <SessionOutcome sessionId={t.linkedSessionId} />}
 
                   {/* The brief. The auto-filer writes the fix, the file
@@ -426,6 +471,7 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
               {items.length === 0 && (
                 <div className="tt-empty">
                   {col.status === 'done' ? 'Nothing finished yet.'
+                    : col.status === 'closed' ? 'Cards that stopped applying — the finding went away, or it duplicated another.'
                     : col.status === 'rejected' ? 'Reject a card to stop it coming back.'
                     : col.status === 'in_progress' ? 'An agent claims a card here.'
                     : 'Drop a card here.'}
@@ -550,7 +596,7 @@ function AutoPanel({
   // last, and it is named as waiting rather than as a demand on the reader.
   const sub = [
     doneCount > 0 ? `${doneCount} worked` : '',
-    machineClosedCount > 0 ? `${machineClosedCount} closed by the machine` : '',
+    machineClosedCount > 0 ? `${machineClosedCount} closed unworked` : '',
     rejectedCount > 0 ? `${rejectedCount} rejected` : '',
     (auto.ceiling ?? 0) > 0 ? `${auto.openCards}/${auto.ceiling} open` : '',
     auto.eligible > 0 ? `${auto.eligible} waiting` : '',
@@ -908,6 +954,21 @@ const TT_CSS = `
 .tt-outcome:hover { border-color: var(--cr-brand-line); color: var(--cr-fg-2); }
 .tt-outcome-status { color: var(--cr-fg-2); font-weight: 500; }
 .tt-diff { color: var(--cr-ok-500); }
+
+/* The card's OWN proof — the shas that fixed this one, not the session's whole
+   footprint. Sits above the session badge because it is the narrower claim. */
+.tt-evidence { display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin-bottom: 8px; padding: 5px 7px; border-radius: var(--cr-radius-sm);
+  background: var(--cr-ink-0); border: 1px solid var(--cr-ok-line, var(--cr-line-1));
+  font-size: 10.5px; color: var(--cr-fg-3); }
+.tt-evidence-label { color: var(--cr-ok-500); font-weight: 500; }
+.tt-sha { font-family: var(--cr-font-mono); color: var(--cr-fg-2);
+  background: var(--cr-ink-2); padding: 1px 5px; border-radius: 4px; }
+.tt-evidence-files { color: var(--cr-fg-3); }
+/* Why a card left the board. Muted: it is context, not an achievement. */
+.tt-closedwhy { margin-bottom: 8px; padding: 5px 7px; border-radius: var(--cr-radius-sm);
+  background: var(--cr-ink-0); border: 1px solid var(--cr-line-1);
+  font-size: 10.5px; color: var(--cr-fg-3); font-style: italic; }
 
 .tt-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
 .tt-due { font-size: 10.5px; color: var(--cr-fg-3); font-variant-numeric: tabular-nums; }

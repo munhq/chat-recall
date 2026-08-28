@@ -51,8 +51,8 @@ const LAST_RUN_KEY = 'auto_tasks_last_run';
  *  indistinguishable from a switch that does nothing — which is exactly how this
  *  looked to the first person who ticked it. */
 const LAST_RESULT_KEY = 'auto_tasks_last_result';
-/** One run never files more than this many new cards — a first index of a
- *  messy repo must not bury the board. The rest surface on later runs. */
+/** DEFAULT for policy.maxPerRun — one run never files more than this many new
+ *  cards, so a first index of a messy repo cannot bury the board. Settable. */
 const MAX_NEW_CARDS_PER_RUN = 10;
 /**
  * How many auto-filed cards may be OPEN at once, across every project.
@@ -70,7 +70,7 @@ const MAX_NEW_CARDS_PER_RUN = 10;
  * Closing, re-pointing and de-duplicating are never blocked — those only ever
  * make the board smaller.
  */
-const MAX_OPEN_AUTO_CARDS = 50;
+const MAX_OPEN_AUTO_CARDS = 50;   // DEFAULT for policy.ceiling — settable.
 /** The card states that count against the ceiling: work not yet finished. */
 const OPEN_CARD_STATES: ReadonlySet<string> = new Set(['todo', 'in_progress']);
 
@@ -79,6 +79,43 @@ export interface AutoTasksPolicy {
   /** Highest pri that materializes. 0 critical, 1 high, 2 medium, 3 low —
    *  inclusive, so 2 files critical + high + medium. */
   maxPri: 0 | 1 | 2 | 3;
+  /**
+   * How many auto-filed cards may be OPEN at once. Was a constant, which meant
+   * the one number that decides whether the board keeps moving could be changed
+   * by nobody — not from the dashboard, not from an agent. A board pinned at a
+   * ceiling its owner cannot raise is a product deciding for them.
+   */
+  ceiling: number;
+  /** Cap on NEW cards per run: bounds a burst, so a first index of a messy repo
+   *  cannot bury the board in one go. */
+  maxPerRun: number;
+  /**
+   * Which finding/action categories may file, or null for all of them.
+   *
+   * The priority floor is a blunt instrument: it cannot say "security yes,
+   * hotspots no", and hotspot cards on a file with two commits were the largest
+   * class of rejection on this board. A category filter says what to work on in
+   * the terms the findings are actually written in.
+   */
+  categories: string[] | null;
+}
+
+/** Bounds for the two counters, so a typo cannot disable or flood the board. */
+const CEILING_RANGE = { min: 1, max: 1000, default: MAX_OPEN_AUTO_CARDS } as const;
+const PER_RUN_RANGE = { min: 1, max: 100, default: MAX_NEW_CARDS_PER_RUN } as const;
+
+function clampInt(v: unknown, { min, max, default: dflt }: { min: number; max: number; default: number }): number {
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n)) return dflt;
+  return Math.min(Math.max(n, min), max);
+}
+
+/** A category list, normalised. Empty ⇒ null ⇒ "every category". */
+function asCategories(v: unknown): string[] | null {
+  if (!Array.isArray(v)) return null;
+  const out = [...new Set(v.filter((x): x is string => typeof x === 'string')
+    .map((x) => x.trim().toLowerCase()).filter(Boolean))];
+  return out.length ? out.slice(0, 40) : null;
 }
 
 /** Clamp anything into the pri range the policy understands. */
@@ -88,6 +125,8 @@ function asMaxPri(v: unknown): 0 | 1 | 2 | 3 {
   return Math.min(n, PRI_SEVERITY.length - 1) as 0 | 1 | 2 | 3;
 }
 
+export const POLICY_LIMITS = { ceiling: CEILING_RANGE, maxPerRun: PER_RUN_RANGE } as const;
+
 export function parsePolicy(raw: string | null): AutoTasksPolicy {
   // Fail to DISABLED on anything unreadable: a corrupt setting must not start
   // writing to the board.
@@ -96,9 +135,17 @@ export function parsePolicy(raw: string | null): AutoTasksPolicy {
     return {
       enabled: o?.enabled === true,
       maxPri: o?.maxPri === undefined ? 1 : asMaxPri(o.maxPri),
+      // Absent on every policy written before these were settable, which must
+      // read as the behaviour those tenants already have.
+      ceiling: clampInt(o?.ceiling, CEILING_RANGE),
+      maxPerRun: clampInt(o?.maxPerRun, PER_RUN_RANGE),
+      categories: asCategories(o?.categories),
     };
   } catch {
-    return { enabled: false, maxPri: 1 };
+    return {
+      enabled: false, maxPri: 1,
+      ceiling: CEILING_RANGE.default, maxPerRun: PER_RUN_RANGE.default, categories: null,
+    };
   }
 }
 
@@ -216,6 +263,7 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
           id: a.id, pri: a.pri, title: a.title, fix: a.fix, agentPrompt: a.agentPrompt,
           projectId: a.projectId, loc: a.loc ?? [],
           identity: actionIdentityKey(a.projectId, a),
+          category: a.category ?? '',
           // The findings this action ROLLS UP. Stamped by the collector, which is
           // the only place that knows the parentage.
           covers: (a.covers ?? []) as string[],
@@ -228,6 +276,7 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
             projectId: f.projectId,
             loc: [{ file: f.file, line: f.line ?? null }],
             identity: f.id,
+            category: f.category ?? '',
             covers: [] as string[],       // a finding summarises nothing
           })),
       ];
@@ -246,6 +295,21 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
       // still be reachable, which is the bug the finding source was added to fix.
       // `open` is left whole on purpose: the close sweep asks whether a finding
       // is still reported, and a suppressed finding is still very much there.
+      // CATEGORY TARGETING. The priority floor cannot say "security yes, hotspots
+      // no", and hotspot cards on files with two commits were the largest class
+      // of rejection on one real board. An empty list means every category.
+      const wanted = policy.categories;
+      if (wanted) {
+        const before = urgent.length;
+        for (let i = urgent.length - 1; i >= 0; i--) {
+          if (!wanted.includes((urgent[i].category ?? '').toLowerCase())) urgent.splice(i, 1);
+        }
+        if (before !== urgent.length) {
+          log.info({ tenant, categories: wanted, skipped: before - urgent.length },
+            'auto-tasks: categories the policy does not ask for were skipped');
+        }
+      }
+
       const rolledUp = new Set<string>();
       for (const a of urgent) for (const id of a.covers) rolledUp.add(id);
       const fileableNow = urgent.filter((a) => !rolledUp.has(a.id));
@@ -322,7 +386,10 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
         if (live.length < 2) continue;
         const [survivor, ...extra] = live;
         for (const dup of extra) {
-          await store.updateTeamTask(dup.id, { status: 'done', linkedFindingId: null });
+          await store.updateTeamTask(dup.id, {
+            status: 'closed', linkedFindingId: null,
+            closedReason: `duplicate of ${survivor.id} — both cards named finding ${findingId}`,
+          });
           await store.addTeamTaskComment(dup.id, 'auto-tasks',
             `Closed as a duplicate of ${survivor.id}: both cards were filed for finding `
             + `${findingId}. The older card keeps the history; this one was an artefact of `
@@ -353,7 +420,10 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
           const member = byFinding.get(memberId);
           if (!member || member.id === rollup.id) continue;
           if (member.createdBy !== 'auto-tasks' || !OPEN_STATES.has(member.status)) continue;
-          await store.updateTeamTask(member.id, { status: 'done', linkedFindingId: null });
+          await store.updateTeamTask(member.id, {
+            status: 'closed', linkedFindingId: null,
+            closedReason: `superseded by roll-up ${rollup.id}, which covers finding ${memberId}`,
+          });
           await store.addTeamTaskComment(member.id, 'auto-tasks',
             `Closed as a duplicate of ${rollup.id}: that card is the roll-up for finding `
             + `${memberId} and everything else in the same group, so this card repeated one `
@@ -372,10 +442,10 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
       // in place, so this reads the post-sweep state.
       const openNow = existing.filter(
         (t) => t.createdBy === 'auto-tasks' && OPEN_CARD_STATES.has(t.status)).length;
-      const room = Math.max(0, MAX_OPEN_AUTO_CARDS - openNow);
-      const budget = Math.min(MAX_NEW_CARDS_PER_RUN, room);
+      const room = Math.max(0, policy.ceiling - openNow);
+      const budget = Math.min(policy.maxPerRun, room);
       if (room === 0) {
-        log.info({ tenant, openNow, ceiling: MAX_OPEN_AUTO_CARDS },
+        log.info({ tenant, openNow, ceiling: policy.ceiling },
           'auto-tasks: board at the ceiling — filing paused, closing still runs');
       }
 
@@ -448,7 +518,7 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
       // not by id. If an open action still matches, the id moved and the card is
       // re-pointed at it rather than closed.
       const stillOpen = new Set(open.map((a) => a.id));
-      const CLOSED: ReadonlySet<string> = new Set(['done', 'rejected']);
+      const CLOSED: ReadonlySet<string> = new Set(['done', 'rejected', 'closed']);
       for (const t of existing) {
         if (t.createdBy !== 'auto-tasks') continue;
 
@@ -472,7 +542,7 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
         //     session records a finished episode. If the finding returns after
         //     that, it is a new occurrence and deserves a new card, not the
         //     resurrection of someone's completed one.
-        if (t.status === 'done'
+        if ((t.status === 'done' || t.status === 'closed')
             && !t.linkedSessionId
             && t.linkedFindingId
             && stillOpen.has(t.linkedFindingId)) {
@@ -499,7 +569,14 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
           continue;
         }
 
-        await store.updateTeamTask(t.id, { status: 'done' });
+        // CLOSED, not done. "No longer reported" is not "fixed": a collector rule
+        // change makes a finding vanish exactly like a fix does, and one real
+        // board closed a critical credential finding that way with nobody having
+        // touched a manifest for five days.
+        await store.updateTeamTask(t.id, {
+          status: 'closed',
+          closedReason: `finding ${t.linkedFindingId} is no longer reported by the collector`,
+        });
         // Name the id that vanished. "The finding is no longer reported" gave a
         // reader nothing to check, and every one of those 93 comments was wrong.
         await store.addTeamTaskComment(t.id, 'auto-tasks',
@@ -642,7 +719,7 @@ export async function autoTasksStatus(tenant: string): Promise<{
       return {
         policy, lastRun, filed, byProject, openCards,
         eligible: eligible + findingsEligible,
-        ceiling: MAX_OPEN_AUTO_CARDS,
+        ceiling: policy.ceiling,
       };
     } finally {
       await store.close();
