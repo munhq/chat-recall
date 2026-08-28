@@ -123,6 +123,8 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
   const [overCol, setOverCol] = useState<TeamTaskStatus | null>(null);
   // Which closed columns the user has chosen to expand, this session.
   const [openClosed, setOpenClosed] = useState<Set<TeamTaskStatus>>(new Set());
+  /** The card being taken off the board, waiting for its reason. */
+  const [asking, setAsking] = useState<{ id: string; status: TeamTaskStatus } | null>(null);
   /** Board filter. The board groups by STATUS; criticals arrive per project, so
    *  without this a busy tenant reads four columns of mixed repositories. */
   const [projFilter, setProjFilter] = useState('');
@@ -217,31 +219,29 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
    * the server's message, which is how a Solo tenant learns that assigning to
    * someone else needs a team plan.
    */
+  /** Commit a status change, with the reason the server needs for a close. */
+  const applyMove = useCallback(async (id: string, status: TeamTaskStatus, reason?: string) => {
+    const before = tasks;
+    setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, status } : t)));
+    try {
+      await updateTask(id, reason ? { status, closedReason: reason } : { status });
+      // 'rejected' has no column for the reason, so it lands as a comment —
+      // otherwise the answer to "why was this rejected?" is nowhere.
+      if (status === 'rejected' && reason) await addTaskComment(id, `Rejected: ${reason}`);
+    } catch (e: any) { setTasks(before); setErr(String(e.message || e)); }
+  }, [tasks]);
+
   const move = useCallback(async (id: string, status: TeamTaskStatus) => {
     // A CARD LEAVING THE BOARD SAYS WHY.
     //
     // Dragging used to send a bare status. For 'closed' the server now refuses
     // that outright, and for 'rejected' the reason is the only thing that tells
     // a reader in six weeks whether the advice was wrong or the card was tidied
-    // away. Ask once, here, rather than letting the drop fail with a 400.
-    let closedReason: string | undefined;
-    if (status === 'closed' || status === 'rejected') {
-      const asked = window.prompt(status === 'closed'
-        ? 'Why does this card no longer apply?\n(the finding went away, it duplicates another…)'
-        : 'Why is this not a real problem?\n(this also stops the finding being re-filed)');
-      if (asked === null) return;                       // cancelled: leave the card alone
-      closedReason = asked.trim();
-      if (!closedReason) { setErr('A reason is needed to take a card off the board.'); return; }
-    }
-    const before = tasks;
-    setTasks((ts) => ts.map((t) => (t.id === id ? { ...t, status } : t)));
-    try {
-      await updateTask(id, closedReason ? { status, closedReason } : { status });
-      // 'rejected' has no column for the reason, so it lands as a comment —
-      // otherwise the answer to "why was this rejected?" is nowhere.
-      if (status === 'rejected' && closedReason) await addTaskComment(id, `Rejected: ${closedReason}`);
-    } catch (e: any) { setTasks(before); setErr(String(e.message || e)); }
-  }, [tasks]);
+    // away. Asked inline on the card — the same shape as every other prompt in
+    // this app — rather than through a browser modal.
+    if (status === 'closed' || status === 'rejected') { setAsking({ id, status }); return; }
+    await applyMove(id, status);
+  }, [applyMove]);
 
   async function reassign(t: TeamTask, sub: string) {
     setBusy(true);
@@ -368,6 +368,18 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
                   onDragStart={(e) => { setDragId(t.id); e.dataTransfer.setData('text/plain', t.id); }}
                   onDragEnd={() => setDragId(null)}
                 >
+                  {/* The reason, asked where the card is, not in a browser modal. */}
+                  {asking?.id === t.id && (
+                    <ReasonPrompt
+                      status={asking.status}
+                      onCancel={() => setAsking(null)}
+                      onConfirm={async (reason) => {
+                        const { id, status } = asking;
+                        setAsking(null);
+                        await applyMove(id, status, reason);
+                      }}
+                    />
+                  )}
                   <div className="tt-title">
                     {(() => {
                       const { sev, text } = splitSeverity(t.title);
@@ -744,6 +756,47 @@ function outcomeFor(sessionId: string): Promise<SessionOutcomeResponse | null> {
   return p;
 }
 
+/**
+ * "Why is this leaving the board?", asked on the card.
+ *
+ * `closed` is refused by the server without a reason and `rejected` has nowhere
+ * else to record one, so both ask. Inline rather than `window.prompt`: the modal
+ * blocks the tab, cannot be styled, and is the one control on this board that
+ * would not have matched the rest of the app.
+ */
+function ReasonPrompt({ status, onConfirm, onCancel }: {
+  status: TeamTaskStatus;
+  onConfirm: (reason: string) => void | Promise<void>;
+  onCancel: () => void;
+}) {
+  const [text, setText] = useState('');
+  const closing = status === 'closed';
+  return (
+    <div className="tt-reason" onDragStart={(e) => e.preventDefault()}>
+      <label className="tt-reason-label">
+        {closing ? 'Why does this no longer apply?' : 'Why is this not a real problem?'}
+      </label>
+      <input
+        autoFocus
+        className="tt-reason-input"
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && text.trim()) void onConfirm(text.trim());
+          if (e.key === 'Escape') onCancel();
+        }}
+        placeholder={closing ? 'the finding went away, it duplicates another…' : 'this also stops the finding being re-filed'}
+      />
+      <div className="tt-reason-actions">
+        <button type="button" className="tt-btn-sm" disabled={!text.trim()} onClick={() => void onConfirm(text.trim())}>
+          {closing ? 'Close' : 'Reject'}
+        </button>
+        <button type="button" className="tt-btn-sm tt-btn-ghost" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
 function SessionOutcome({ sessionId }: { sessionId: string }) {
   const [out, setOut] = useState<SessionOutcomeResponse | null>(null);
 
@@ -954,6 +1007,18 @@ const TT_CSS = `
 .tt-outcome:hover { border-color: var(--cr-brand-line); color: var(--cr-fg-2); }
 .tt-outcome-status { color: var(--cr-fg-2); font-weight: 500; }
 .tt-diff { color: var(--cr-ok-500); }
+
+/* Asked on the card when it is about to leave the board. */
+.tt-reason { margin-bottom: 8px; padding: 7px; border-radius: var(--cr-radius-sm);
+  background: var(--cr-ink-0); border: 1px solid var(--cr-brand-line); }
+.tt-reason-label { display: block; font-size: 10.5px; color: var(--cr-fg-2); margin-bottom: 5px; }
+.tt-reason-input { width: 100%; padding: 5px 7px; font-size: 11px; border-radius: 5px;
+  border: 1px solid var(--cr-line-1); background: var(--cr-ink-2); color: var(--cr-fg-1); }
+.tt-reason-actions { display: flex; gap: 6px; margin-top: 6px; }
+.tt-btn-sm { padding: 3px 9px; font-size: 10.5px; border-radius: 5px; cursor: pointer;
+  border: 1px solid var(--cr-line-1); background: var(--cr-ink-2); color: var(--cr-fg-1); }
+.tt-btn-sm:disabled { opacity: 0.5; cursor: default; }
+.tt-btn-ghost { background: transparent; color: var(--cr-fg-3); }
 
 /* The card's OWN proof — the shas that fixed this one, not the session's whole
    footprint. Sits above the session badge because it is the narrower claim. */
