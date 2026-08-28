@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useDocumentScroll } from '../hooks/useDocumentScroll';
-import { signInEmail, signUpEmail, requestPasswordReset, resetPassword, socialProviders, signInSocial } from '../services/auth'
+import { signInEmail, signUpEmail, requestPasswordReset, resetPassword, socialProviders, signInSocial, verifyTotp, verifyBackupCode } from '../services/auth'
 import { verifyEmailWithOtp, resendVerificationEmail } from '../services/auth';
 
 /**
@@ -46,7 +46,7 @@ function resetParamsFromUrl(): { token: string | null; error: string | null } {
   } catch { return { token: null, error: null }; }
 }
 
-type Mode = 'signin' | 'signup' | 'forgot' | 'reset' | 'verify';
+type Mode = 'signin' | 'signup' | 'forgot' | 'reset' | 'verify' | 'twofactor';
 
 /**
  * Email + password sign-in / sign-up / password reset for cloud mode. This form
@@ -81,6 +81,12 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
   const resetting = mode === 'reset';
   const verifying = mode === 'verify';
   const [otp, setOtp] = useState('');
+  /* The second factor. `twoFa` is the six digits from the authenticator;
+   * `useBackup` swaps the field for a recovery code, which is the only way back
+   * in for someone whose phone is gone. */
+  const twofactor = mode === 'twofactor';
+  const [twoFa, setTwoFa] = useState('');
+  const [useBackup, setUseBackup] = useState(false);
 
   const go = (m: Mode) => { setMode(m); setError(null); setNotice(null); };
 
@@ -133,6 +139,15 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
       return;
     }
 
+    if (twofactor) {
+      const code = twoFa.trim();
+      const r = useBackup ? await verifyBackupCode(code) : await verifyTotp(code);
+      setBusy(false);
+      if (r.ok) onSuccess();
+      else setError(r.error);
+      return;
+    }
+
     if (verifying) {
       const r = await verifyEmailWithOtp(email.trim(), otp.trim());
       setBusy(false);
@@ -145,7 +160,19 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
       ? await signUpEmail(name.trim() || email.split('@')[0], email.trim(), password)
       : await signInEmail(email.trim(), password);
     setBusy(false);
-    if (!r.ok) { setError(r.error); return; }
+    if (!r.ok) {
+      // The password was right and a second factor is owed. Not an error: show
+      // the code field instead of a red message the user cannot act on.
+      if ('needsTwoFactor' in r && r.needsTwoFactor) {
+        setPassword('');
+        setTwoFa('');
+        setUseBackup(false);
+        go('twofactor');
+        return;
+      }
+      setError(r.error);
+      return;
+    }
 
     // A NEW EMAIL ACCOUNT MUST CONFIRM ITS ADDRESS, and this screen is the only
     // place that can ask. ensureTrial refuses to grant a trial to a tenant with
@@ -176,18 +203,24 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
     else setError(r.error);
   };
 
-  const heading = verifying ? 'Confirm your email'
+  const heading = twofactor ? 'Two-factor authentication'
+    : verifying ? 'Confirm your email'
     : resetting ? 'Choose a new password'
       : forgot ? 'Reset your password'
         : signup ? 'Create your account' : 'Welcome back';
   // A subtitle per mode, because the heading alone leaves the two reset screens
   // ambiguous — "Reset your password" does not say whether a mail is coming.
-  const subtitle = verifying ? `We sent a 6-digit code to ${email}. It starts your free 7-day trial.`
+  const subtitle = twofactor
+    ? (useBackup
+      ? 'Enter one of the recovery codes you saved. Each works once.'
+      : 'Enter the 6-digit code from your authenticator app.')
+    : verifying ? `We sent a 6-digit code to ${email}. It starts your free 7-day trial.`
     : resetting ? 'Pick something you have not used elsewhere.'
       : forgot ? 'We will email you a link. It works once and expires in an hour.'
         : signup ? 'One memory across Claude Code, Gemini, Codex and OpenCode.'
           : 'Sign in to your chat-recall account.';
-  const cta = verifying ? 'Confirm and start my trial'
+  const cta = twofactor ? 'Verify'
+    : verifying ? 'Confirm and start my trial'
     : resetting ? 'Update password'
       : forgot ? 'Send reset link'
         : signup ? 'Create account' : 'Sign in';
@@ -231,14 +264,22 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
                 minLength={6} maxLength={8} placeholder="123456" className="au-otp" />
             </label>
           )}
-          {!resetting && !verifying && (
+          {twofactor && (
+            <label>
+              {useBackup ? 'Recovery code' : 'Authentication code'}
+              <input type="text" value={twoFa} onChange={(e) => setTwoFa(e.target.value)}
+                inputMode={useBackup ? 'text' : 'numeric'} autoComplete="one-time-code" autoFocus required
+                placeholder={useBackup ? 'One of your saved codes' : '123456'} className="au-otp" />
+            </label>
+          )}
+          {!resetting && !verifying && !twofactor && (
             <label>
               Email
               <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
                 autoComplete="email" required placeholder="you@example.com" />
             </label>
           )}
-          {!forgot && !verifying && (
+          {!forgot && !verifying && !twofactor && (
             <label>
               {resetting ? 'New password' : 'Password'}
               <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
@@ -257,7 +298,12 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
             Didn't get it? Send another code
           </button>
         )}
-        {!resetting && !verifying && (
+        {twofactor && (
+          <button className="au-toggle" onClick={() => { setUseBackup(!useBackup); setTwoFa(''); setError(null); }}>
+            {useBackup ? 'Use your authenticator app instead' : 'Lost your phone? Use a recovery code'}
+          </button>
+        )}
+        {!resetting && !verifying && !twofactor && (
           <button className="au-toggle" onClick={() => go(signup ? 'signin' : 'signup')}>
             {signup ? 'Already have an account? Sign in' : 'New here? Create an account'}
           </button>
@@ -265,7 +311,7 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
         {mode === 'signin' && (
           <button className="au-toggle" onClick={() => go('forgot')}>Forgot your password?</button>
         )}
-        {(forgot || resetting || verifying) && (
+        {(forgot || resetting || verifying || twofactor) && (
           <button className="au-toggle" onClick={() => go('signin')}>Back to sign in</button>
         )}
       </div>
