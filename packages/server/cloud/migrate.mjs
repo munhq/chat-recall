@@ -53,6 +53,11 @@ const FILES = [
   // Moves cards the machine closed out of 'done', which they were never entitled
   // to: 'done' requires the session that did the work, and these had none.
   './migrations/0010_machine_closures_are_not_done.sql',
+  // One-off repair. DELETE THIS FILE AND THIS ENTRY once it has run everywhere.
+  // Stamps an owner on rows written before attribution existed. A NULL author is
+  // read as "legacy, visible to the whole tenant", which is the one thing a new
+  // member can see on the day they join.
+  './migrations/0011_backfill_author_sub.sql',
 ];
 
 // REPORT ROWS AFFECTED. A data migration against a tenant-scoped table is
