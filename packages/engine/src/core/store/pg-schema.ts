@@ -842,6 +842,36 @@ BEGIN
   END LOOP;
 END $$;
 
+-- ── Operator read access for the cockpit ─────────────────────────────────
+-- A cross-tenant SELECT on client_events, and ONLY on client_events.
+--
+-- WHY IT IS NEEDED. client_events is the CLI and MCP reporting their own
+-- breakage — crashes, tool errors, breaker trips. Reading it is how an operator
+-- learns a customer's install is failing, and that question is portfolio-wide by
+-- nature: "which versions are crashing" cannot be asked one tenant at a time.
+--
+-- WHY IT FAILED SILENTLY WITHOUT THIS. The dashboard read the table as a role
+-- with no app.tenant set. current_setting returns EMPTY STRING, no row matches
+-- it, and the query returns zero rows — not an error. 3,491 rows were invisible
+-- and the page showed a confident, empty table. Fail-closed RLS and "there is
+-- nothing wrong" are indistinguishable from the outside, which is exactly the
+-- failure this table exists to prevent.
+--
+-- WHY IT IS SAFE. SELECT only, one named role, one table. The role owns nothing
+-- and cannot write here. It deliberately does NOT get BYPASSRLS: that would open
+-- every table in the database to answer a question about one of them.
+--
+-- Guarded on the role existing so a self-host database, which has no operator
+-- dashboard, is unaffected.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cockpit')
+     AND NOT EXISTS (SELECT 1 FROM pg_policies
+                      WHERE tablename = 'client_events' AND policyname = 'cockpit_read_all') THEN
+    EXECUTE 'CREATE POLICY cockpit_read_all ON client_events FOR SELECT TO cockpit USING (true)';
+  END IF;
+END $$;
+
 -- tenants is control-plane (identity-to-tenant mapping, queried BEFORE any
 -- tenant context exists), so it must NOT be RLS-walled. Earlier versions
 -- included it in the loop above — undo that on upgraded databases.
