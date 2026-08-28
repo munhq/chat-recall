@@ -3470,26 +3470,37 @@ async function runLogin(
         console.log(JSON.stringify({ prompt: p }));
         return;
       }
+      // ONE LINK, AND IT ALREADY CONTAINS THE CODE.
+      //
+      // `p.url` is the RFC 8628 `verification_uri_complete` — the URI with
+      // ?user_code= on it — so opening it needs no typing at all. What was
+      // printed under it was a fallback hint naming the BARE uri and the code
+      // separately, in the same weight, which read as "here is a link, and by
+      // the way you must type this code somewhere else". Two addresses, one of
+      // them incomplete, is a worse instruction than one address.
+      //
+      // The code still prints, because a link that wraps in a terminal is
+      // copied wrong and the approval page asks for it — but as a fallback,
+      // clearly second, and only once.
       console.log();
-      console.log(chalk.bold('To log in, open:'));
+      console.log(chalk.bold('Open this to approve the machine:'));
       console.log('  ' + chalk.cyan(p.url));
-      console.log(chalk.dim(`  (if prompted, enter code: ${chalk.bold(p.userCode)} at ${p.verificationUri})`));
-      // TRY TO OPEN IT, AND PRINT IT REGARDLESS.
+
+      // TRY TO OPEN IT, AND NEVER CLAIM THAT IT WORKED.
       //
-      // open-browser.ts existed and was wired into the MCP server's login relay
-      // only, so the CLI — the surface almost everyone signs in through — made
-      // the user copy a URL out of a terminal by hand. Every comparable tool
-      // (`gh auth login`, `aws sso login`, `gcloud auth login`, `stripe login`,
-      // `npm login`) opens the browser AND prints the link.
-      //
-      // The link is printed FIRST and unconditionally: openBrowser returns
-      // whether a launcher started, never whether a browser appeared, and over
-      // ssh, in a container, on a headless box or in CI there is nothing to
-      // open. It refuses on CI and on CHAT_RECALL_NO_BROWSER=1 by itself.
-      const opened = openBrowser(p.url);
-      if (opened) console.log(chalk.dim('  (opening your browser… if nothing happens, use the link above)'));
-      console.log(chalk.dim('After approving, come back to THIS terminal — it finishes the login by itself.'));
-      console.log(chalk.dim('Waiting for approval…'));
+      // openBrowser returns whether a LAUNCHER STARTED, not whether a browser
+      // appeared. Inside an agent shell, over ssh, in a container or on a
+      // headless box the launcher can start and nothing happens — and a line
+      // asserting that a browser is being opened then tells the user to wait for
+      // a window that is never coming, which is how a working login reads as a
+      // hang. Say what was attempted, not what resulted. (The phrase itself is
+      // absent on purpose: login-browser.test.ts greps the bundle for it, and a
+      // comment quoting it would defeat the check.)
+      if (openBrowser(p.url)) {
+        console.log(chalk.dim('  (tried to open it for you — if no window appeared, use the link above)'));
+      }
+      console.log(chalk.dim(`  If the page asks for a code: ${chalk.bold(p.userCode)}`));
+      console.log(chalk.dim('Then come back here — this finishes on its own. Waiting…'));
     };
     const tokens = authProvider === 'better-auth'
       ? await betterAuthDeviceLogin(base, onPrompt)
