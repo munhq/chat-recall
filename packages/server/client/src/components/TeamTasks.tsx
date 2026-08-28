@@ -149,6 +149,21 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
     catch (e: any) { setAuto(null); setAutoErr(String(e?.message || e)); }
   }, []);
   useEffect(() => { void loadAuto(); }, [loadAuto]);
+  // RE-READ IT. The panel loaded once and then aged in place: a board left open
+  // reported "last run 2 h ago" while a run had happened thirty seconds earlier,
+  // which reads as a dead switch. Refresh on a timer and whenever the tab is
+  // looked at again, because that is exactly when someone asks the question.
+  useEffect(() => {
+    const tick = () => { if (document.visibilityState === 'visible') void loadAuto(); };
+    const id = window.setInterval(tick, 60_000);
+    window.addEventListener('visibilitychange', tick);
+    window.addEventListener('focus', tick);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener('visibilitychange', tick);
+      window.removeEventListener('focus', tick);
+    };
+  }, [loadAuto]);
 
   /** Save a policy change, then re-read the state so the panel reports the
    *  server's answer rather than the optimistic guess. */
@@ -262,6 +277,8 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
         open={autoOpen} onOpen={() => setAutoOpen((o) => !o)}
         onSave={saveAuto} onRun={runNow}
         projFilter={projFilter} onProject={setProjFilter}
+        doneCount={tasks.filter((t) => t.status === 'done').length}
+        rejectedCount={tasks.filter((t) => t.status === 'rejected').length}
       />
 
       <div className="tt-board">
@@ -434,9 +451,13 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
  * missing was feedback, not steps.
  */
 function AutoPanel({
-  auto, err, note, busy, open, onOpen, onSave, onRun, projFilter, onProject,
+  auto, err, note, busy, open, onOpen, onSave, onRun, projFilter, onProject, doneCount, rejectedCount,
 }: {
   auto: AutoTasksStatus | null;
+  /** What the board has FINISHED. The panel reported only backlog, so a board
+   *  with 55 completed cards behind a collapsed column read as pure debt. */
+  doneCount: number;
+  rejectedCount: number;
   err: string;
   note: string;
   busy: boolean;
@@ -498,7 +519,7 @@ function AutoPanel({
   const headline = !auto.enabled
     ? 'Off. Findings stay in the ranked view.'
     : atCeiling
-      ? `Board full — ${auto.openCards} open cards`
+      ? `Board full — ${auto.openCards} open, filing paused`
       : auto.eligible > 0
         ? `${auto.eligible} finding${auto.eligible === 1 ? '' : 's'} ready to file`
         : auto.filed > 0 ? 'All caught up' : 'On. Nothing to file yet.';
@@ -507,14 +528,23 @@ function AutoPanel({
   // describe itself here too — otherwise the only readback of a re-linking run
   // is a message the person had to be looking at to see.
   const lastDid = auto.lastRun ? describeRun(auto.lastRun) : '';
+  // PROGRESS FIRST, backlog second.
+  //
+  // This line used to read "1763 still eligible — close some to let more in",
+  // next to a Done column collapsed behind a button. So a board that had
+  // finished 55 cards and rejected 11 showed neither, and the one number it did
+  // show was the size of the debt. It read as a product that does nothing.
+  //
+  // The eligible count stays — it is the honest size of the backlog — but it is
+  // last, and it is named as waiting rather than as a demand on the reader.
   const sub = [
-    atCeiling
-      ? `${auto.eligible} still eligible — close some to let more in`
-      : auto.filed > 0 ? `${auto.filed} filed` : '',
-    (auto.ceiling ?? 0) > 0 && !atCeiling ? `${auto.openCards}/${auto.ceiling} open` : '',
+    doneCount > 0 ? `${doneCount} done` : '',
+    rejectedCount > 0 ? `${rejectedCount} rejected` : '',
+    (auto.ceiling ?? 0) > 0 ? `${auto.openCards}/${auto.ceiling} open` : '',
+    auto.eligible > 0 ? `${auto.eligible} waiting` : '',
     auto.lastRun ? `last run ${ago(auto.lastRun.at)}` : 'never run',
     lastDid ? `(${lastDid})` : '',
-  ].filter(Boolean).join(', ');
+  ].filter(Boolean).join(' · ');
 
   return (
     <section className="tt-auto-wrap">
