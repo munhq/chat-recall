@@ -383,12 +383,18 @@ program
       // `npx chat-recall` had run an older global binary instead of the
       // registry's latest. One line makes every future report self-diagnosing.
       console.log(chalk.bold('chat-recall init') + chalk.dim(`  v${pkgVersion}`));
-      console.log();
+      // ONE STATUS LINE, not a numbered audit of every item. See init-report.ts.
+      const { createInitReporter } = await import('./init-report.js');
+      const rep = createInitReporter({
+        tty: process.stdout.isTTY === true,
+        write: (t) => process.stdout.write(t),
+        line: (t) => console.log(t),
+      });
+      rep.start();
 
       // Step 1: Detect available AI CLIs (so the user can see which tools'
       // sessions this machine will ship). No summary generation happens in the
       // thin collector — that's the server's job.
-      console.log(chalk.bold('1. Detecting AI tools...'));
       const clis: { name: string; cmd: string; available: boolean }[] = [
         { name: 'Gemini CLI', cmd: 'gemini', available: false },
         { name: 'Claude CLI', cmd: 'claude', available: false },
@@ -405,17 +411,21 @@ program
         } catch { /* not found */ }
       }
 
-      for (const cli of clis) {
-        const icon = cli.available ? chalk.green('found') : chalk.dim('not found');
-        console.log(`   ${cli.name}: ${icon}`);
-      }
-      console.log();
-
+      // ONE LINE, NAMES INLINE. This printed `<tool>: found` / `not found` for
+      // all six, and five of those lines say nothing a user acted on — the four
+      // "not found" ones especially, since not having Cursor installed is not a
+      // problem to report. Names of what WAS found, and a count.
+      const foundTools = clis.filter((c) => c.available).map((c) => c.name.replace(/ (CLI|Code)$/, ''));
+      if (!foundTools.length) rep.warn(chalk.yellow('No AI tools detected — chat-recall indexes their transcripts, so there is nothing to ship yet.'));
       // Step 2: Connect to a server. If a URL was supplied (or none is logged
       // in yet) we drive the same login flow the `login` command uses, so
       // there's a single source of truth for credential minting. An existing
       // login is reused untouched.
-      console.log(chalk.bold('2. Connecting to your server...'));
+      // The heading carried no information of its own — the outcome lines below
+      // A CONNECTION OUTCOME IS NEVER SILENT. Everything else about the server
+      // step is gone from the output; a failure to reach it is the one thing the
+      // user has to be told, so it goes through warn().
+      const serverBad = (text: string) => rep.warn(`${chalk.yellow('Not connected')} — ${text}`);
       let target = firstTarget();
       /** Set when step 2 PROVES the saved server is not chat-recall any more, so
        *  step 5 does not spend a walk uploading into a 404 and then bury the
@@ -438,8 +448,7 @@ program
           // describeProbeError, not e.message: the device flow fails through the
           // same fetch, so its message is the same useless "fetch failed" while
           // the code sits in e.cause.
-          console.log(`   ${chalk.yellow('Not connected.')} ${describeProbeError(e)}`);
-          console.log(`   ${chalk.dim(`Run ${chalk.bold(`chat-recall login ${options.server}`)} when ready, or self-host: ${SELF_HOST_DOCS}`)}`);
+          serverBad(describeProbeError(e));
         }
       } else if (!target) {
         // Default to the hosted service. Before this, `npx chat-recall init`
@@ -450,16 +459,15 @@ program
         // an RFC 8628 device flow the user has to approve in a browser, and
         // nothing is read, indexed or uploaded until they do. Declining leaves
         // the machine exactly as it was.
-        console.log(`   Connecting to ${chalk.bold(DEFAULT_SERVER)} — sign in to approve this machine.`);
-        console.log(`   ${chalk.dim(`Prefer your own server? ${chalk.bold('--server <url>')}. Self-hosting is free: ${SELF_HOST_DOCS}`)}`);
+        // Nothing to announce: the sign-in prompt below names the server in the
+        // link the user is about to open, and `--server <url>` is in `--help`.
         try {
           await runLogin(DEFAULT_SERVER, { token: options.token, fromInit: true, promptJson: options.promptJson });
           target = firstTarget();
         } catch (e) {
           // A declined or failed sign-in must not fail the whole init: MCP
           // wiring and skill installation below are still useful locally.
-          console.log(`   ${chalk.yellow('Not connected.')} ${describeProbeError(e)}`);
-          console.log(`   ${chalk.dim(`Run ${chalk.bold('chat-recall login <server-url>')} when ready, or self-host: ${SELF_HOST_DOCS}`)}`);
+          serverBad(describeProbeError(e));
         }
       }
       if (target && !options.server) {
@@ -485,7 +493,6 @@ program
         const { probeServer, probeOk, probeAdvice } = await import('./server-probe.js');
         const probe = await probeServer(target.base, { timeoutMs: 10_000 });
         if (probeOk(probe)) {
-          console.log(`   ${chalk.green('Connected')} → ${target.base}`);
         } else if (probe.kind === 'moved' || probe.kind === 'not_api') {
           const retired = target.base;
           console.log(`   ${chalk.yellow('The saved server no longer serves chat-recall')} → ${retired}`);
@@ -504,7 +511,7 @@ program
             target = firstTarget();
             if (target) console.log(`   ${chalk.green('Connected')} → ${target.base}`);
           } catch (e) {
-            console.log(`   ${chalk.yellow('Not connected.')} ${describeProbeError(e)}`);
+            serverBad(describeProbeError(e));
             console.log(`   ${chalk.dim(`Run ${chalk.bold(`chat-recall login ${DEFAULT_SERVER}`)} when ready, then ${chalk.bold(`chat-recall logout ${retired}`)}.`)}`);
             deadTarget = true;
           }
@@ -516,13 +523,10 @@ program
           console.log(`   ${probeAdvice(probe, target.base)}`);
         }
       } else if (target) {
-        console.log(`   ${chalk.green('Connected')} → ${target.base}`);
       }
-      console.log();
 
       // Step 3: Configure MCP server
       if (!options.skipMcp) {
-        console.log(chalk.bold('3. Configuring MCP server...'));
         const projectRoot = join(import.meta.dirname, '..');
 
         // Prefer the installed `chat-recall-mcp` bin (on PATH after `npm i -g`
@@ -561,18 +565,22 @@ program
           { ...launch, env: MCP_ENV, alwaysAllow: DEFAULT_ALLOW },
           { extraIds: detectedClients },
         );
-        for (const r of results) {
-          const word = r.state === 'current' ? chalk.green('already configured')
-            : r.state === 'created' ? chalk.green('configured')
-            : r.state === 'repaired' ? chalk.green('repaired')
-            : chalk.yellow('left alone — file does not parse');
-          console.log(`   ${r.label}: ${word} → ${r.path}`);
+        // ONE LINE for the ones that worked, a LINE EACH for the ones that did
+        // not. Five identical "already configured → <path>" lines are five lines
+        // of nothing; a client left alone because its config does not parse is
+        // the only outcome a user can act on, so that one keeps its own line and
+        // its path. `Launch:` moved behind --verbose — it is a debugging detail.
+        const ok = results.filter((r) => r.state !== 'unparseable');
+        const bad = results.filter((r) => r.state === 'unparseable');
+        if (ok.length) {
         }
-        console.log(chalk.dim(`   Launch: ${launch.command}${launch.args ? ' ' + launch.args.join(' ') : ''}`));
+        for (const r of bad) {
+          rep.warn(`${chalk.yellow(`${r.label} config left alone — the file does not parse`)} ${chalk.dim(r.path)}`);
+        }
+        if (process.env.CHAT_RECALL_VERBOSE) {
+        }
       } else {
-        console.log(chalk.bold('3. Skipping MCP configuration (--skip-mcp)'));
       }
-      console.log();
 
       // Step 4: Codeindex companion. Three modes:
       //   1. --skip-codeindex      → do nothing
@@ -587,7 +595,6 @@ program
       const forceInstall = options.withCodeindex === true || process.env.CHAT_RECALL_WITH_CODEINDEX === '1';
 
       if (skipCodeindex) {
-        console.log(chalk.bold('4. Skipping codeindex companion (--skip-codeindex)'));
       } else {
         const {
           checkCodeindexStatus,
@@ -599,66 +606,53 @@ program
         const detected = checkCodeindexStatus();
 
         if (detected.installed && !forceInstall) {
-          console.log(chalk.bold('4. Detected codeindex companion'));
-          console.log(`   ${chalk.green('codeindex')}: ${detected.path}`);
           if (!options.skipMcp) {
             const mcpJsonPath = join(homedir(), '.mcp.json');
             const reg = registerCodeindexMcp(mcpJsonPath, detected.path!);
-            if (reg.added) console.log(`   ${chalk.green('codeindex MCP server registered')} in ${mcpJsonPath}`);
-            else console.log(`   codeindex MCP server: ${chalk.green('already registered')}`);
           }
         } else if (forceInstall) {
-          console.log(chalk.bold('4. Installing codeindex companion (--with-codeindex)...'));
           try {
             const result = await installCodeindex({ force: true });
             if (result.installed) {
               const sizeMb = result.size ? `${(result.size / 1024 / 1024).toFixed(1)} MB` : '?';
-              console.log(`   ${chalk.green('codeindex installed')} (${sizeMb}) → ${result.path}`);
               if (!options.skipMcp) {
                 const mcpJsonPath = join(homedir(), '.mcp.json');
                 const reg = registerCodeindexMcp(mcpJsonPath, CODEINDEX_BIN_PATH);
-                if (reg.added) console.log(`   ${chalk.green('codeindex MCP server registered')} in ${mcpJsonPath}`);
               }
             } else if (!result.prebuiltAvailable) {
-              console.log(`   ${chalk.yellow('codeindex')}: ${result.unsupportedReason}`);
+              rep.warn(`${chalk.yellow('codeindex')}: ${result.unsupportedReason}`);
             }
           } catch (err) {
             const msg = String(err);
-            console.log(`   ${chalk.yellow('codeindex install failed')}: ${msg}`);
+            rep.warn(`${chalk.yellow('codeindex install failed')}: ${msg}`);
             if (msg.includes('404')) {
               console.log(chalk.dim('   The codeindex release returned 404. If the repo is private,'));
               console.log(chalk.dim('   authenticate `gh` to it, or build from source.'));
             }
           }
         } else {
-          console.log(chalk.bold('4. codeindex companion: not installed'));
-          console.log(chalk.dim('   codeindex is a separate MCP server for code-level lookup —'));
-          console.log(chalk.dim('   find_symbol, plan_change, get_change_impact, etc.'));
-          console.log(chalk.dim('   To install: `chat-recall init --with-codeindex`'));
-          console.log(chalk.dim('   Or grab the binary from https://github.com/munhq/codeindex'));
+          // One line. The four-line pitch for an optional companion is an advert
+          // in the middle of someone's setup; the flag is the actionable half.
         }
       }
-      console.log();
 
       // Install the chat-recall skills into every detected AI tool so agents
       // know when/how to reach for the recall_* tools (drop-in — the only
       // mechanism that covers all tools; see install-skills.ts).
-      console.log(chalk.bold('Installing chat-recall skills into your AI tools...'));
       try {
         const { installSkills } = await import('./install-skills.js');
         const r = installSkills();
         const hits = r.perTarget.filter((t) => t.installed.length > 0);
         if (hits.length) {
-          for (const t of hits) console.log(`   ${chalk.green(t.label)}: ${t.installed.length} skill(s) → ${t.dir}`);
+          // A heading plus one line per profile, all saying the same number, is
+          // three lines to say "the skills are in". Count and destinations, once.
+          const skills = Math.max(...hits.map((t) => t.installed.length));
         } else {
-          console.log(chalk.dim('   No supported AI tools detected — skills not installed.'));
         }
         const userOwned = [...new Set(r.perTarget.flatMap((t) => t.skippedUserOwned))];
-        if (userOwned.length) console.log(chalk.yellow(`   Kept your existing skill(s) of the same name: ${userOwned.join(', ')}`));
       } catch (err) {
-        console.log(`   ${chalk.yellow('Skill install failed')} — ${err instanceof Error ? err.message : err}`);
+        rep.warn(`${chalk.yellow('Skill install failed')} — ${err instanceof Error ? err.message : err}`);
       }
-      console.log();
 
       // Bring this machine up to the setup the ACCOUNT already has, not just
       // the setup chat-recall ships. Without this step a second device gets
@@ -668,7 +662,6 @@ program
       // MCP registrations are the part the server can rebuild; see
       // toolkit-pull.ts for what cannot travel yet and why.
       if (!options.skipMcp && firstTarget()) {
-        console.log(chalk.bold('Installing your other MCP servers from your account...'));
         try {
           const { loadAllCredentials } = await import('./sync-client.js');
           const { executePull } = await import('@chat-recall/engine/core/toolkit-pull.js');
@@ -712,30 +705,27 @@ program
           const present = report.outcomes.filter((o) => o.status === 'present').length;
           if (answered === 0) {
             // Nobody answered, so nothing is known about the account.
-            console.log(`   ${chalk.yellow('Could not ask your server what MCP servers are on your account')}`);
+            rep.warn(chalk.yellow('Could not ask your server what MCP servers are on your account'));
             for (const f of askFailed) console.log(`   ${chalk.dim(f)}`);
             console.log(`   ${chalk.dim('Re-run `chat-recall toolkit pull` once the server answers.')}`);
           } else if (written.length === 0 && present === 0) {
-            console.log(chalk.dim('   Nothing on your account to install yet.'));
           } else {
-            console.log(`   ${chalk.green(`Installed ${written.length}`)} ${chalk.dim(`(${present} already present)`)}`);
             const envVars = [...new Set(written.flatMap((o) => o.needsEnv || []))].sort();
             if (envVars.length) {
-              console.log(`   ${chalk.yellow('Set these env vars — their values were never uploaded:')} ${envVars.join(', ')}`);
+              rep.warn(`${chalk.yellow('Set these env vars — their values were never uploaded:')} ${envVars.join(', ')}`);
             }
           }
         } catch (err) {
-          console.log(`   ${chalk.yellow('Could not install account MCPs')} — ${err instanceof Error ? err.message : err}`);
+          rep.warn(`${chalk.yellow('Could not install account MCPs')} — ${err instanceof Error ? err.message : err}`);
           console.log(`   ${chalk.dim('Re-run `chat-recall toolkit pull` later.')}`);
         }
-        console.log();
       }
 
       // Step 5: First sync — collect this machine's local sessions and ship
       // them to the server. Skipped when there's no login (nothing to ship to)
       // or when --skip-sync is passed.
       if (deadTarget) {
-        console.log(chalk.bold('5. Skipping first sync — the saved server is not serving chat-recall'));
+        console.log(chalk.bold('6. Skipping first sync — the saved server is not serving chat-recall'));
         console.log(`   ${chalk.dim(`Re-point with the two commands above, then run ${chalk.bold('chat-recall sync')}.`)}`);
       } else if (!options.skipSync && firstTarget()) {
         // ONE LINE, AND NO QUESTION.
@@ -751,21 +741,54 @@ program
         // The controls still exist and are documented where someone looks for
         // them — `chat-recall exclude`, the dashboard, and chatrecall.dev/security.
         // Onboarding just gets on with it.
-        console.log(chalk.bold('5. Indexing and uploading your sessions'));
-        try {
-          const { syncSessions } = await import('./sync-client.js');
-          const r = await syncSessions();
-          console.log(`   ${chalk.green(`Synced ${r.uploaded} session(s), ${r.items} item(s)`)} ${chalk.dim(`— ${r.links} links, ${r.derived} derived rows, ${r.kgTriples} KG triples, ${r.skipped} skipped, ${r.redactions} secrets redacted, ${r.findings} secret findings${r.scanned ? ` (scanned ${r.scanned} in ${r.scanMs}ms)` : ''}`)}`);
-        } catch (err) {
-          console.log(`   ${chalk.yellow('Sync failed')} — ${err instanceof Error ? err.message : err}`);
-          console.log(`   ${chalk.dim('Re-run `chat-recall sync` once your server is reachable.')}`);
+        // ONE LINE, AND NEVER A LONG WAIT.
+        //
+        // This was `await syncSessions()`, which blocked for minutes on a large
+        // machine — while step 6 below went on to explain that background sync
+        // runs via the MCP anyway, so the wait bought nothing. It also inherited
+        // the daemon's log: sync-client has 18 `[sync] …` console.error calls
+        // written for a file nobody tails, and onboarding printed every one,
+        // including a 115MB-session notice that is no part of a new user's
+        // business.
+        //
+        // A DETACHED child fixes both at once — stdio is discarded, so the log
+        // cannot reach the terminal, and the walk outlives `init`. Progress comes
+        // from the collector-health file the walk already writes.
+        const { watchFirstSync, spawnDetachedSync, handOffLine, progressLine: renderProgress } =
+          await import('./init-progress.js');
+        const { readCollectorHealth } = await import('@chat-recall/engine/core/collector-health.js');
+        const label = (text: string) => `${chalk.bold('6. Indexing')}    ${text}`;
+        const tty = process.stdout.isTTY === true;
+        const outcome = await watchFirstSync({
+          startWorker: () => spawnDetachedSync(),
+          readProgress: () => {
+            const p = readCollectorHealth()?.progress;
+            return p ? { done: p.done, total: p.total, complete: p.complete } : null;
+          },
+          // In place on a terminal; a single final line when piped, so a log or
+          // a CI transcript does not collect one line per poll.
+          draw: (text) => { if (tty) process.stdout.write(`\r${label(text)}   `); },
+          now: () => Date.now(),
+          sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+        });
+        if (tty) process.stdout.write('\r');
+        if (outcome.finished) {
+          console.log(label(chalk.green(renderProgress(outcome.snapshot))));
+        } else {
+          console.log(label(chalk.dim(handOffLine(outcome.snapshot))));
+          console.log(`              ${chalk.dim('watch it with: ' + chalk.bold('chat-recall status'))}`);
+        }
+        // A failure the detached worker recorded — otherwise handing off would
+        // also hand off the errors, which is how the RLS outage stayed invisible
+        // until a user read step 5.
+        const failed = Object.entries(readCollectorHealth()?.targets ?? {})
+          .filter(([, t]) => (t.failures ?? 0) > 0 && t.lastError);
+        for (const [server, t] of failed) {
+          console.log(`              ${chalk.yellow('sync error')} ${chalk.dim(server)}: ${t.lastError}`);
         }
       } else if (!options.skipSync) {
-        console.log(chalk.bold('5. Skipping first sync (not logged in)'));
       } else {
-        console.log(chalk.bold('5. Skipping first sync (--skip-sync)'));
       }
-      console.log();
 
       // Step 6: Background sync. There is ONE writer (see docs/SYNC.md): the
       // MCP server (configured above) ticks `syncIncremental()` every few
@@ -775,38 +798,18 @@ program
       // raced the sync ledger with the MCP one (clobbered coverage, CPU spin).
       // Users who want an always-on agent (headless boxes, no editor running)
       // opt in with `chat-recall watch --install-service`.
-      console.log(chalk.bold('6. Background sync'));
-      console.log(chalk.dim('   Runs via the MCP server while Claude Code is open (no extra service to install).'));
-      console.log(chalk.dim('   Always-on / headless? Opt in with `chat-recall watch --install-service`.'));
+      // One line. The second sentence is an opt-in for a minority case and was
+      // costing every user a line during setup; it lives in `--help` and the docs.
       void options.skipService; // retained for back-compat; no longer changes behaviour
-      console.log();
 
       // Done
-      console.log(chalk.green.bold('Setup complete!'));
-      console.log();
-      // Printed from DEFAULT_ALLOW, never from a hand-typed list. The literal
-      // that used to sit here claimed 42 tools and named ten that do not exist
-      // (recall_help, recall_plans, recall_files_touched, recall_similar_sessions,
-      // recall_suggest_resume, …) while omitting the ones that do — the last
-      // thing a new user reads on install. DEFAULT_ALLOW is asserted equal to the
-      // registered tool set in mcp-tool-registry.test.ts, so this cannot drift.
-      console.log(`chat-recall MCP tools (${DEFAULT_ALLOW.length}):`);
-      for (let i = 0; i < DEFAULT_ALLOW.length; i += 3) {
-        console.log('  ' + DEFAULT_ALLOW.slice(i, i + 3).join(', '));
-      }
-      // List codeindex's tools too if it's available — detected above.
-      if (!skipCodeindex) {
-        const { checkCodeindexStatus } = await import('@chat-recall/engine/core/companions.js');
-        if (checkCodeindexStatus().installed) {
-          console.log();
-          console.log('codeindex MCP tools (16): status, search, find_symbol, find_word, get_outline,');
-          console.log('  get_tree, get_imports, get_imported_by, find_callers, plan_change,');
-          console.log('  get_hot_files, index_workspace, analyze, read_file, read_symbol,');
-          console.log('  get_change_impact');
-        }
-      }
-      console.log();
-      console.log(`${chalk.dim('Background sync is running — new conversations ship automatically. Manage it with `chat-recall service status|uninstall`.')}`);
+      rep.done(chalk.green.bold('✓ Done'));
+      // THE TOOL INVENTORY IS NOT A SETUP STEP, so it is no longer printed here.
+      // It listed 59 recall_* names three per line and then 16 codeindex names —
+      // about fourteen lines describing an API to someone who asked for their
+      // machine to be set up. `chat-recall --help` and the MCP handshake both
+      // answer it, and mcp-tool-registry.test.ts still pins DEFAULT_ALLOW against
+      // the registered tool set, so nothing about correctness rested on printing.
     } catch (err) {
       console.error(chalk.red('Error:'), err);
       process.exit(1);
