@@ -41,7 +41,10 @@ const autoClosedCount = (items: Array<{ linkedSessionId?: string | null }>): num
   items.filter((t) => !t.linkedSessionId).length;
 
 /** Columns a human may drag INTO, and pick in the per-card select. */
-const HUMAN_STATUSES: readonly TeamTaskStatus[] = ['todo', 'in_progress', 'rejected'];
+// 'done' is absent on purpose — it needs the session and the commits, which a
+// dropdown cannot supply. 'closed' IS here: it asks for its reason inline, and a
+// board that can only be closed by dragging is unusable by keyboard or on a phone.
+const HUMAN_STATUSES: readonly TeamTaskStatus[] = ['todo', 'in_progress', 'closed', 'rejected'];
 
 /**
  * Auto-filed cards carry their severity as a `[critical] `/`[high] ` title
@@ -414,7 +417,7 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
                       commits" from a DIFFERENT repository — right session, wrong
                       repo. The shas named on the card belong to this card. */}
                   {t.doneEvidence?.commits?.length ? (
-                    <div className="tt-evidence" title={t.doneEvidence.summary || 'The commits offered as proof for this card'}>
+                    <div className="tt-evidence" data-testid={`evidence-${t.id}`} title={t.doneEvidence.summary || 'The commits offered as proof for this card'}>
                       <span className="tt-evidence-label">fixed by</span>
                       {t.doneEvidence.commits.slice(0, 4).map((c) => (
                         <code key={c} className="tt-sha">{c.slice(0, 8)}</code>
@@ -428,7 +431,7 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
                     </div>
                   ) : null}
                   {t.closedReason && (
-                    <div className="tt-closedwhy" title="Why this card stopped applying">{t.closedReason}</div>
+                    <div className="tt-closedwhy" data-testid={`closed-why-${t.id}`} title="Why this card stopped applying">{t.closedReason}</div>
                   )}
                   {t.linkedSessionId && <SessionOutcome sessionId={t.linkedSessionId} />}
 
@@ -460,9 +463,9 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
                     {/* Keyboard and touch route: a board that ONLY moves by drag
                         is unusable on a phone and unreachable by keyboard. */}
                     {t.status === 'done' ? (
-                      <span className="tt-donetag" title={t.linkedSessionId
-                        ? 'Closed by the session linked to this card'
-                        : 'Closed automatically: a re-index stopped reporting the finding'}>done</span>
+                      <span className="tt-donetag" data-testid={`done-tag-${t.id}`} title={t.linkedSessionId
+                        ? 'Done by the session linked to this card'
+                        : 'Marked done before closures had to name their evidence'}>done</span>
                     ) : (
                       <select
                         className="tt-sel-sm" value={t.status} aria-label={`Status of ${t.title}`}
@@ -647,8 +650,8 @@ function AutoPanel({
         </label>
 
         <span className="tt-auto-head">
-          <b>{headline}</b>
-          <span className="tt-auto-sub">{sub}</span>
+          <b data-testid="auto-headline">{headline}</b>
+          <span className="tt-auto-sub" data-testid="auto-sub">{sub}</span>
         </span>
 
         <span className="tt-auto-actions">
@@ -725,6 +728,7 @@ function AutoPanel({
                       <span
                         role="button"
                         tabIndex={0}
+                        data-testid={`exclude-${r.projectId}`}
                         className="tt-ptile-x"
                         title={excluded.has(r.projectId)
                           ? 'Excluded — no cards are filed for this project. Click to allow again.'
@@ -808,12 +812,13 @@ function ReasonPrompt({ status, onConfirm, onCancel }: {
   const [text, setText] = useState('');
   const closing = status === 'closed';
   return (
-    <div className="tt-reason" onDragStart={(e) => e.preventDefault()}>
+    <div className="tt-reason" data-testid="reason-prompt" onDragStart={(e) => e.preventDefault()}>
       <label className="tt-reason-label">
         {closing ? 'Why does this no longer apply?' : 'Why is this not a real problem?'}
       </label>
       <input
         autoFocus
+        data-testid="reason-input"
         className="tt-reason-input"
         value={text}
         onChange={(e) => setText(e.target.value)}
@@ -824,7 +829,7 @@ function ReasonPrompt({ status, onConfirm, onCancel }: {
         placeholder={closing ? 'the finding went away, it duplicates another…' : 'this also stops the finding being re-filed'}
       />
       <div className="tt-reason-actions">
-        <button type="button" className="tt-btn-sm" disabled={!text.trim()} onClick={() => void onConfirm(text.trim())}>
+        <button type="button" data-testid="reason-confirm" className="tt-btn-sm" disabled={!text.trim()} onClick={() => void onConfirm(text.trim())}>
           {closing ? 'Close' : 'Reject'}
         </button>
         <button type="button" className="tt-btn-sm tt-btn-ghost" onClick={onCancel}>Cancel</button>
