@@ -320,6 +320,8 @@ export class PgStore implements StorageDriver {
       linkedSessionId: r.linked_session_id ?? null,
       linkedFindingId: r.linked_finding_id ?? null,
       linkedFindingIdentity: r.linked_finding_identity ?? null,
+      closedReason: r.closed_reason ?? null,
+      doneEvidence: pgJson(r.done_evidence_json, null),
       due: r.due != null ? Number(r.due) : null,
       createdAt: Number(r.created_at) || 0, updatedAt: Number(r.updated_at) || 0,
     };
@@ -366,6 +368,10 @@ export class PgStore implements StorageDriver {
     if (patch.linkedSessionId !== undefined) add('linked_session_id', patch.linkedSessionId);
     if (patch.linkedFindingId !== undefined) add('linked_finding_id', patch.linkedFindingId);
     if (patch.linkedFindingIdentity !== undefined) add('linked_finding_identity', patch.linkedFindingIdentity);
+    if (patch.closedReason !== undefined) add('closed_reason', patch.closedReason);
+    if (patch.doneEvidence !== undefined) {
+      add('done_evidence_json', patch.doneEvidence === null ? null : JSON.stringify(patch.doneEvidence));
+    }
     if (sets.length === 0) return (await this.getTeamTask(id))?.task ?? null;
     params.push(Date.now()); sets.push(`updated_at=$${params.length}`);
     const r = await this.q(`UPDATE team_tasks SET ${sets.join(', ')} WHERE tenant=$1 AND id=$2 RETURNING *`, params);

@@ -326,6 +326,19 @@ async function remotePatch<T>(path: string, body: unknown): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/** PUT, for the routes that model a whole-value replace (the task policy). */
+async function remotePut<T>(path: string, body: unknown): Promise<T> {
+  const cred = remoteCredentials();
+  if (!cred) throw new Error('scope "server" needs a login — run `chat-recall login <server-url>` first.');
+  const res = await fetch(cred.base + path, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${cred.token}` },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await buildHttpError(path, res);
+  return res.json() as Promise<T>;
+}
+
 async function remoteDelete<T>(path: string): Promise<T> {
   const cred = remoteCredentials();
   if (!cred) throw new Error('scope "server" needs a login — run `chat-recall login <server-url>` first.');
@@ -626,8 +639,10 @@ const RecallTeamActivitySchema = z.object({
 //   - 'blocked' is retired. Nothing has ever written it, and the board has no
 //     column for it — an agent setting it would make the card vanish from the
 //     UI entirely, because byStatus() never queries that bucket.
-const TASK_STATUS_FILTER = ['todo', 'in_progress', 'done', 'rejected'] as const;
-const TASK_STATUS_SETTABLE = ['todo', 'in_progress', 'done'] as const;
+const TASK_STATUS_FILTER = ['todo', 'in_progress', 'done', 'rejected', 'closed'] as const;
+// 'closed' is settable and REQUIRES closed_reason: a card shut without the work
+// being done must say why. 'rejected' stays absent — that verdict is the user's.
+const TASK_STATUS_SETTABLE = ['todo', 'in_progress', 'done', 'closed'] as const;
 const RecallTasksSchema = z.object({
   mine: z.boolean().optional().describe('Only tasks assigned to me'),
   project: z.string().optional().describe('Filter to one project_id'),
@@ -645,12 +660,39 @@ const RecallTaskCreateSchema = z.object({
 });
 const RecallTaskUpdateSchema = z.object({
   id: z.string().describe('Task id (t_…)'),
-  status: z.enum(TASK_STATUS_SETTABLE).optional(),
+  status: z.enum(TASK_STATUS_SETTABLE).optional()
+    .describe("'done' needs linked_session_id — the session that did the work. 'closed' means the card no longer applies (its finding went away, or it duplicates another) and needs closed_reason. If it was never a real problem, do not close it: tell the user, because rejecting is their call."),
+  closed_reason: z.string().optional()
+    .describe("Why the card no longer applies. REQUIRED with status 'closed'."),
+  commits: z.array(z.string()).optional()
+    .describe("The commit sha(s) that fixed this, in THIS card's repository. REQUIRED with status 'done' — a session link alone proved the wrong thing once: a card closed with a real session attached showed 74 commits belonging to a DIFFERENT repository."),
+  files: z.array(z.string()).optional().describe('Files those commits changed (optional).'),
+  summary: z.string().optional().describe('One line on what changed (optional).'),
   assignee: z.string().optional().describe('Reassign to this user id (sub); empty string unassigns'),
   title: z.string().optional(),
   comment: z.string().optional().describe('Add a comment to the task'),
   linked_session_id: z.string().nullable().optional()
     .describe('Session id to attach to the task (null detaches). Pass YOUR OWN current session id when you start working on the task.'),
+});
+/**
+ * The board's own settings. Read with no arguments; pass a field to change it.
+ *
+ * These decide WHAT gets carded — the severity floor, how many cards may be open
+ * at once, how fast they arrive, and which categories are worth filing at all.
+ * They were a UI-only select next to two hardcoded constants, so an agent could
+ * work the board but never ask what the board was set to, and nobody could raise
+ * the ceiling that stops it filling.
+ */
+const RecallTaskPolicySchema = z.object({
+  enabled: z.boolean().optional().describe('Turn auto-filing on or off.'),
+  max_pri: z.number().int().min(0).max(3).optional()
+    .describe('Severity floor, inclusive: 0 critical, 1 high, 2 medium, 3 low.'),
+  ceiling: z.number().int().min(1).max(1000).optional()
+    .describe('How many auto-filed cards may be OPEN at once. Filing pauses at this number and resumes as cards close.'),
+  max_per_run: z.number().int().min(1).max(100).optional()
+    .describe('Cap on NEW cards per run, so one index cannot bury the board.'),
+  categories: z.array(z.string()).optional()
+    .describe('Only file these finding/action categories (e.g. ["security","clone"]). Pass an empty array for all of them.'),
 });
 const RecallTaskCommentSchema = z.object({
   task_id: z.string().describe('Task id (t_…) from recall_tasks'),
@@ -1037,6 +1079,7 @@ const WRITE_TOOLS = new Set<string>([
   'recall_task_create',
   'recall_task_update',
   'recall_task_comment',
+  'recall_task_policy',
   'recall_security_dismiss',
   'recall_recommendation_apply',    // queues a CLAUDE.md edit / sets a label
   'recall_recommendation_dismiss',  // retires advice for this project
@@ -1594,12 +1637,28 @@ WORKFLOW — do this whenever the user asks you to work on a task from the board
    as linked_session_id (the session id you know from your own context; this MCP
    server cannot see it). The board uses that link to show whether the linked
    session actually shipped — files, diff stats, commits.
-2. When you finish, set status 'done'.`,
+2. When you finish, set status 'done' AND pass commits — the sha(s) in this
+   card's repository that fixed it. Without them the close is refused.
+
+THE THREE ENDINGS ARE NOT THE SAME:
+- 'done'     — you fixed it. Needs linked_session_id; refused without one.
+- 'closed'   — the card no longer applies: its finding stopped being reported, or
+               it duplicates another card. Needs closed_reason.
+- rejected   — NOT yours to set. If the card is not a real problem, say so to the
+               user and let them reject it, because that also stops the finding
+               being re-filed.
+Closing a card you did not fix, as 'done', is the one thing that makes this board
+worthless: two thirds of one real board's Done column turned out to be work
+nobody had done.`,
         inputSchema: {
           type: 'object',
           properties: {
             id: { type: 'string', description: 'Task id (t_…)' },
-            status: { type: 'string', enum: [...TASK_STATUS_SETTABLE], description: "Set the card's state. There is no 'rejected' here on purpose: rejecting is the user's verdict, not yours." },
+            status: { type: 'string', enum: [...TASK_STATUS_SETTABLE], description: "Set the card's state. 'done' needs linked_session_id; 'closed' needs closed_reason. There is no 'rejected' here on purpose: rejecting is the user's verdict, not yours." },
+            closed_reason: { type: 'string', description: "Why the card no longer applies. REQUIRED with status 'closed'." },
+            commits: { type: 'array', items: { type: 'string' }, description: "Commit sha(s) in THIS card's repository that fixed it. REQUIRED with status 'done'." },
+            files: { type: 'array', items: { type: 'string' }, description: 'Files those commits changed (optional).' },
+            summary: { type: 'string', description: 'One line on what changed (optional).' },
             assignee: { type: 'string', description: 'Reassign to this user id (sub)' },
             title: { type: 'string', description: 'Rename the card. Omit to leave the title alone.' },
             comment: { type: 'string', description: 'Add a comment' },
@@ -1620,6 +1679,29 @@ without editing the task itself. Pass the task id (t_…) from recall_tasks.`,
             body: { type: 'string', description: 'The comment text' },
           },
           required: ['task_id', 'body'],
+        },
+      },
+      {
+        name: 'recall_task_policy',
+        description: `Read or change what the board FILES — call with no arguments to read it.
+
+  max_pri      severity floor, inclusive: 0 critical, 1 high, 2 medium, 3 low
+  ceiling      how many auto-filed cards may be open at once
+  max_per_run  cap on new cards per run
+  categories   only file these categories (e.g. ["security"]); [] means all
+
+Use this when the user says what they want worked on — "only security", "high and
+critical for now", "stop filing hotspots", "let more in". Reading it first also
+explains a quiet board: at the ceiling, filing pauses until cards close.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            enabled: { type: 'boolean', description: 'Turn auto-filing on or off.' },
+            max_pri: { type: 'number', description: 'Severity floor: 0 critical, 1 high, 2 medium, 3 low.' },
+            ceiling: { type: 'number', description: 'How many auto-filed cards may be OPEN at once.' },
+            max_per_run: { type: 'number', description: 'Cap on NEW cards per run.' },
+            categories: { type: 'array', items: { type: 'string' }, description: 'Only file these categories; [] means all.' },
+          },
         },
       },
       // ── Knowledge Graph Tools ──────────────────────────────────
@@ -3736,6 +3818,26 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         if (params.assignee !== undefined) patch.assigneeSub = params.assignee || null;
         if (params.title) patch.title = params.title;
         if (params.linked_session_id !== undefined) patch.linkedSessionId = params.linked_session_id;
+        if (params.closed_reason !== undefined) patch.closedReason = params.closed_reason;
+        if (params.commits?.length) {
+          patch.doneEvidence = { commits: params.commits, files: params.files, summary: params.summary };
+        }
+        if (params.status === 'done' && !params.commits?.length) {
+          return { content: [{ type: 'text', text:
+            "Closing as 'done' needs the commit sha(s) that fixed it, in this card's repository — pass "
+            + 'commits. Commit the fix first if you have not. If the card no longer applies, use '
+            + "status 'closed' with closed_reason; if it was never a real problem, leave it open and "
+            + 'tell the user, because rejecting is their call.' }] };
+        }
+        // Refuse here rather than let the server 400: the caller is a model, and
+        // "closing a card needs a reason" is more useful before the round trip.
+        if (params.status === 'closed' && !(params.closed_reason ?? '').trim()) {
+          return { content: [{ type: 'text', text:
+            "closed_reason is required when closing a task. Say why the card no longer applies "
+            + "(its finding stopped being reported, or it duplicates another card). If you FIXED it, "
+            + "use status 'done' with linked_session_id instead; if it was never a real problem, "
+            + 'leave it open and tell the user, because rejecting it is their call.' }] };
+        }
         let did = false;
         if (Object.keys(patch).length > 0) { await remotePatch(`/api/tasks/${encodeURIComponent(params.id)}`, patch); did = true; }
         if (params.comment) { await remotePost(`/api/tasks/${encodeURIComponent(params.id)}/comments`, { body: params.comment }); did = true; }
@@ -3743,6 +3845,33 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         return { content: [{ type: 'text', text: `Updated task ${params.id}.` }] };
       }
 
+      case 'recall_task_policy': {
+        const params = RecallTaskPolicySchema.parse(args);
+        requireRemote();
+        const patch: Record<string, unknown> = {};
+        if (params.enabled !== undefined) patch.enabled = params.enabled;
+        if (params.max_pri !== undefined) patch.maxPri = params.max_pri;
+        if (params.ceiling !== undefined) patch.ceiling = params.ceiling;
+        if (params.max_per_run !== undefined) patch.maxPerRun = params.max_per_run;
+        if (params.categories !== undefined) patch.categories = params.categories;
+        // A read needs no arguments; a write must not silently drop the rest of
+        // the policy, so the PUT is given the current values it does not change.
+        const cur = await remoteGetQS<Record<string, unknown>>('/api/tasks/policy', {});
+        if (!Object.keys(patch).length) {
+          return { content: [{ type: 'text', text: [
+            `auto-filing: ${cur.enabled ? 'on' : 'off'}`,
+            `severity floor: ${cur.maxPri} (0 critical … 3 low, inclusive)`,
+            `open-card ceiling: ${cur.openCards ?? '?'}/${cur.ceiling}`,
+            `new cards per run: ${cur.maxPerRun}`,
+            `categories: ${Array.isArray(cur.categories) && cur.categories.length ? (cur.categories as string[]).join(', ') : 'all'}`,
+            `waiting to be filed: ${cur.eligible}`,
+          ].join('\n') }] };
+        }
+        const saved = await remotePut<Record<string, unknown>>('/api/tasks/policy', {
+          enabled: cur.enabled, maxPri: cur.maxPri, ...patch,
+        });
+        return { content: [{ type: 'text', text: `Policy updated: ${JSON.stringify(saved)}` }] };
+      }
       case 'recall_task_comment': {
         const params = RecallTaskCommentSchema.parse(args);
         requireRemote();
@@ -5086,7 +5215,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         ];
         const groups: Array<[string, string[]]> = [
           ['Aggregate views', ['recall_weekly_digest', 'recall_analytics_summary', 'recall_team_activity', 'recall_outcome_summary']],
-          ['Task board', ['recall_task_comment']],
+          ['Task board', ['recall_task_comment', 'recall_task_policy']],
           ['Knowledge graph', ['recall_kg_timeline', 'recall_kg_stats', 'recall_kg_invalidate']],
           ['Session detail', ['recall_markers', 'recall_subagent_search', 'recall_memory_item', 'recall_rename_session', 'recall_regenerate_summary']],
           ['Code intelligence', ['recall_code_index', 'recall_code_projects', 'recall_code_findings', 'recall_code_actions']],

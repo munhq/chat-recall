@@ -2694,13 +2694,20 @@ export async function removeShare(projectId: string): Promise<void> {
 
 /** `rejected` is the human verdict; `done` is the machine's and needs a linked
  *  session behind it. `blocked` is legacy — nothing ever wrote it. */
-export type TeamTaskStatus = 'todo' | 'in_progress' | 'blocked' | 'done' | 'rejected';
+/** `done` is earned (needs the session that did the work); `closed` is shut
+ *  without the work being done and needs a reason; `rejected` is the human
+ *  verdict that it was never a real problem. */
+export type TeamTaskStatus = 'todo' | 'in_progress' | 'blocked' | 'done' | 'rejected' | 'closed';
 export interface TeamTask {
   id: string; projectId: string; title: string; description: string;
   status: TeamTaskStatus; assigneeSub: string | null; createdBy: string;
   blocks: string[]; blockedBy: string[]; linkedSessionId: string | null;
   /** Set when the card was auto-filed from a code finding. */
   linkedFindingId?: string | null;
+  /** Why a `closed` card stopped applying. */
+  closedReason?: string | null;
+  /** The commits offered as proof for a `done` card, in ITS repository. */
+  doneEvidence?: { commits: string[]; files?: string[]; summary?: string } | null;
   due: number | null; createdAt: number; updatedAt: number;
 }
 
@@ -2778,7 +2785,13 @@ export async function getTask(id: string): Promise<{ task: TeamTask; comments: T
   return await res.json();
 }
 
-export async function updateTask(id: string, patch: { status?: TeamTaskStatus; assigneeSub?: string | null; title?: string; description?: string }): Promise<TeamTask> {
+export async function updateTask(id: string, patch: {
+  status?: TeamTaskStatus; assigneeSub?: string | null; title?: string; description?: string;
+  /** Required by the server when status becomes 'closed'. */
+  closedReason?: string;
+  /** Required by the server when status becomes 'done' — the shas that fixed it. */
+  doneEvidence?: { commits: string[]; files?: string[]; summary?: string };
+}): Promise<TeamTask> {
   const res = await fetchWithTimeout(`${API_BASE}/tasks/${encodeURIComponent(id)}`, {
     method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch),
   });
