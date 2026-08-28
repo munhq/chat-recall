@@ -64,7 +64,8 @@ function actor(req: express.Request): string { return (req.authorSub || req.user
  *   GET  /api/tasks/policy      → { enabled, maxPri, lastRun, eligible, filed,
  *                                 openCards, ceiling, byProject }
  *                                 maxPri: 0 critical, 1 high, 2 medium, 3 low
- *   PUT  /api/tasks/policy {enabled, maxPri?, ceiling?, maxPerRun?, categories?}
+ *   PUT  /api/tasks/policy {enabled, maxPri?, ceiling?, maxPerRun?, categories?,
+ *                            excludedProjects?}
  *   POST /api/tasks/policy/run  → run it NOW, returns
  *                                 { created, closed, repointed, backfilled, reopened }
  *
@@ -137,6 +138,8 @@ router.put('/policy', async (req, res) => {
       ceiling: req.body?.ceiling === undefined ? current.ceiling : req.body.ceiling,
       maxPerRun: req.body?.maxPerRun === undefined ? current.maxPerRun : req.body.maxPerRun,
       categories: req.body?.categories === undefined ? current.categories : req.body.categories,
+      excludedProjects: req.body?.excludedProjects === undefined
+        ? current.excludedProjects : req.body.excludedProjects,
     };
     // Round-trip through the parser so the same clamping applies to every writer.
     const saved = parsePolicy(JSON.stringify(next));

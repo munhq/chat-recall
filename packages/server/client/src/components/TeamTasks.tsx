@@ -171,9 +171,20 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
     };
   }, [loadAuto]);
 
+  /** Never file cards for this project again — or allow it back. Computed
+   *  against the CURRENT list so excluding a second repo cannot drop the first. */
+  const toggleExcluded = useCallback(async (projectId: string) => {
+    if (!auto) return;
+    const list = new Set(auto.excludedProjects ?? []);
+    if (list.has(projectId)) list.delete(projectId); else list.add(projectId);
+    setAuto({ ...auto, excludedProjects: [...list] });
+    try { await setAutoTasksPolicy({ ...auto, excludedProjects: [...list] }); await loadAuto(); }
+    catch { setAuto(auto); setAutoErr('Could not change which projects file cards.'); }
+  }, [auto, loadAuto]);
+
   /** Save a policy change, then re-read the state so the panel reports the
    *  server's answer rather than the optimistic guess. */
-  const saveAuto = async (next: { enabled: boolean; maxPri: 0 | 1 | 2 | 3 }) => {
+  const saveAuto = async (next: { enabled: boolean; maxPri: 0 | 1 | 2 | 3; excludedProjects?: string[] }) => {
     if (!auto) return;
     const before = auto;
     setAuto({ ...auto, ...next });
@@ -300,6 +311,7 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
         open={autoOpen} onOpen={() => setAutoOpen((o) => !o)}
         onSave={saveAuto} onRun={runNow}
         projFilter={projFilter} onProject={setProjFilter}
+        onToggleExcluded={toggleExcluded}
         // WORKED, not "done". Two thirds of one real board's Done column had no
         // session behind it: 29 cards auto-closed because a finding stopped
         // being reported, 7 retired as duplicates. Counting those as
@@ -515,9 +527,11 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
  * missing was feedback, not steps.
  */
 function AutoPanel({
-  auto, err, note, busy, open, onOpen, onSave, onRun, projFilter, onProject,
+  auto, err, note, busy, open, onOpen, onSave, onRun, projFilter, onProject, onToggleExcluded,
   doneCount, machineClosedCount, rejectedCount,
 }: {
+  /** Add or remove a project from the never-file list. */
+  onToggleExcluded: (projectId: string) => void;
   auto: AutoTasksStatus | null;
   /** What the board has FINISHED — cards with a session behind them. The panel
    *  reported only backlog, so completed work behind a collapsed column never
@@ -583,6 +597,7 @@ function AutoPanel({
   // which of the two it is, because "nothing is happening" and "the board is
   // full" are different problems with different answers.
   const atCeiling = (auto.ceiling ?? 0) > 0 && (auto.openCards ?? 0) >= (auto.ceiling ?? 0);
+  const excluded = new Set(auto.excludedProjects ?? []);
 
   /** The one sentence that answers "is anything happening?". */
   const headline = !auto.enabled
@@ -696,11 +711,32 @@ function AutoPanel({
                 return (
                   <button
                     key={r.projectId}
-                    className={`tt-ptile${on ? ' tt-ptile-on' : ''}`}
+                    className={`tt-ptile${on ? ' tt-ptile-on' : ''}${excluded.has(r.projectId) ? ' tt-ptile-off' : ''}`}
                     onClick={() => onProject(on ? '' : r.projectId)}
                     title={on ? 'Show every project' : `Show only ${r.projectId}`}
                   >
-                    <span className="tt-ptile-name">{r.projectId}</span>
+                    <span className="tt-ptile-name">
+                      {r.projectId}
+                      {/* NEVER FILE THIS ONE. A client's repository, an archive, a
+                          mirror: indexed and searchable as before, simply never
+                          put on the board. The severity floor cannot say that —
+                          it is global, and a critical in someone else's codebase
+                          is still a critical. */}
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        className="tt-ptile-x"
+                        title={excluded.has(r.projectId)
+                          ? 'Excluded — no cards are filed for this project. Click to allow again.'
+                          : 'Never file cards for this project'}
+                        onClick={(e) => { e.stopPropagation(); onToggleExcluded(r.projectId); }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); onToggleExcluded(r.projectId); }
+                        }}
+                      >
+                        {excluded.has(r.projectId) ? 'excluded' : 'exclude'}
+                      </span>
+                    </span>
                     <span className="tt-ptile-nums">
                       {SEVERITY_BY_PRI.filter((sv) => (r.counts[sv] ?? 0) > 0).map((sv, i) => (
                         <span key={sv} className="tt-ptile-n">
@@ -1007,6 +1043,16 @@ const TT_CSS = `
 .tt-outcome:hover { border-color: var(--cr-brand-line); color: var(--cr-fg-2); }
 .tt-outcome-status { color: var(--cr-fg-2); font-weight: 500; }
 .tt-diff { color: var(--cr-ok-500); }
+
+/* The never-file toggle on a project tile. Muted until it is on, then it is the
+   loudest thing on the tile — an excluded project is a deliberate state, and a
+   board silently not filing for a repo would be worse than not having it. */
+.tt-ptile-x { margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 9.5px;
+  color: var(--cr-fg-3); border: 1px solid var(--cr-line-1); cursor: pointer; }
+.tt-ptile-x:hover { color: var(--cr-fg-1); border-color: var(--cr-line-2); }
+.tt-ptile-off { opacity: 0.55; }
+.tt-ptile-off .tt-ptile-x { color: var(--cr-warn-500, var(--cr-fg-2));
+  border-color: var(--cr-warn-line, var(--cr-line-2)); }
 
 /* Asked on the card when it is about to leave the board. */
 .tt-reason { margin-bottom: 8px; padding: 7px; border-radius: var(--cr-radius-sm);

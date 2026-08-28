@@ -693,6 +693,12 @@ const RecallTaskPolicySchema = z.object({
     .describe('Cap on NEW cards per run, so one index cannot bury the board.'),
   categories: z.array(z.string()).optional()
     .describe('Only file these finding/action categories (e.g. ["security","clone"]). Pass an empty array for all of them.'),
+  excluded_projects: z.array(z.string()).optional()
+    .describe('Projects that never file a card — replaces the whole list. Use exclude_project/include_project to change one.'),
+  exclude_project: z.string().optional()
+    .describe('Add ONE project to the never-file list. For "do not put work on my board for this repo" — a client codebase, an archive, a mirror.'),
+  include_project: z.string().optional()
+    .describe('Remove ONE project from the never-file list.'),
 });
 const RecallTaskCommentSchema = z.object({
   task_id: z.string().describe('Task id (t_…) from recall_tasks'),
@@ -1689,6 +1695,10 @@ without editing the task itself. Pass the task id (t_…) from recall_tasks.`,
   ceiling      how many auto-filed cards may be open at once
   max_per_run  cap on new cards per run
   categories   only file these categories (e.g. ["security"]); [] means all
+  exclude_project / include_project
+               a repository that never files a card — a client's codebase, an
+               archive, a mirror. Indexed and searchable as before; simply never
+               put on the board.
 
 Use this when the user says what they want worked on — "only security", "high and
 critical for now", "stop filing hotspots", "let more in". Reading it first also
@@ -1701,6 +1711,9 @@ explains a quiet board: at the ceiling, filing pauses until cards close.`,
             ceiling: { type: 'number', description: 'How many auto-filed cards may be OPEN at once.' },
             max_per_run: { type: 'number', description: 'Cap on NEW cards per run.' },
             categories: { type: 'array', items: { type: 'string' }, description: 'Only file these categories; [] means all.' },
+            excluded_projects: { type: 'array', items: { type: 'string' }, description: 'Replace the never-file list.' },
+            exclude_project: { type: 'string', description: 'Add ONE project to the never-file list.' },
+            include_project: { type: 'string', description: 'Remove ONE project from the never-file list.' },
           },
         },
       },
@@ -3854,9 +3867,18 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         if (params.ceiling !== undefined) patch.ceiling = params.ceiling;
         if (params.max_per_run !== undefined) patch.maxPerRun = params.max_per_run;
         if (params.categories !== undefined) patch.categories = params.categories;
+        if (params.excluded_projects !== undefined) patch.excludedProjects = params.excluded_projects;
         // A read needs no arguments; a write must not silently drop the rest of
         // the policy, so the PUT is given the current values it does not change.
         const cur = await remoteGetQS<Record<string, unknown>>('/api/tasks/policy', {});
+        // Add/remove ONE, computed against the CURRENT list: "also exclude this
+        // repo" must not silently drop the projects already excluded.
+        if (params.exclude_project || params.include_project) {
+          const list = new Set(Array.isArray(cur.excludedProjects) ? cur.excludedProjects as string[] : []);
+          if (params.exclude_project) list.add(params.exclude_project);
+          if (params.include_project) list.delete(params.include_project);
+          patch.excludedProjects = [...list];
+        }
         if (!Object.keys(patch).length) {
           return { content: [{ type: 'text', text: [
             `auto-filing: ${cur.enabled ? 'on' : 'off'}`,
@@ -3865,6 +3887,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
             `new cards per run: ${cur.maxPerRun}`,
             `categories: ${Array.isArray(cur.categories) && cur.categories.length ? (cur.categories as string[]).join(', ') : 'all'}`,
             `  (available: ${Array.isArray(cur.availableCategories) && cur.availableCategories.length ? (cur.availableCategories as string[]).join(', ') : 'none indexed yet'})`,
+            `never filed: ${Array.isArray(cur.excludedProjects) && cur.excludedProjects.length ? (cur.excludedProjects as string[]).join(', ') : 'nothing excluded'}`,
             `waiting to be filed: ${cur.eligible}`,
           ].join('\n') }] };
         }

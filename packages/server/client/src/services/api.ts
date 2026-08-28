@@ -2712,7 +2712,16 @@ export interface TeamTask {
 }
 
 /** maxPri is a FLOOR and inclusive: 0 critical, 1 high, 2 medium, 3 low. */
-export interface AutoTasksPolicy { enabled: boolean; maxPri: 0 | 1 | 2 | 3 }
+export interface AutoTasksPolicy {
+  enabled: boolean;
+  maxPri: 0 | 1 | 2 | 3;
+  ceiling?: number;
+  maxPerRun?: number;
+  /** null/absent ⇒ every category files. */
+  categories?: string[] | null;
+  /** Projects that never file a card, however urgent the finding. */
+  excludedProjects?: string[];
+}
 export const SEVERITY_BY_PRI = ['critical', 'high', 'medium', 'low'] as const;
 /** The run state behind the switch: what it did last, and what is waiting. */
 export interface AutoTasksStatus extends AutoTasksPolicy {
@@ -2728,6 +2737,10 @@ export interface AutoTasksStatus extends AutoTasksPolicy {
   /** Auto-filed cards open right now, and the ceiling filing stops at. */
   openCards?: number;
   ceiling?: number;
+  /** Every category present in the data, so the filter is pickable. */
+  availableCategories?: string[];
+  /** True when the counts could not be read; the POLICY is still accurate. */
+  degraded?: boolean;
   byProject: Array<{ projectId: string; counts: Record<string, number>; eligible: number }>;
 }
 export async function getAutoTasksPolicy(): Promise<AutoTasksStatus> {
