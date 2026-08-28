@@ -11,8 +11,8 @@ import compression from 'compression';
 import helmet from 'helmet';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { resolve } from 'node:path';
-import { classifyStaticPath } from './util/static-routing.js';
+import { resolve, relative } from 'node:path';
+import { classifyStaticPath, cacheControlFor } from './util/static-routing.js';
 import searchRouter from './routes/search.js';
 import conversationsRouter from './routes/conversations.js';
 import statusRouter from './routes/status.js';
@@ -719,20 +719,14 @@ if (existsSync(STATIC_DIR)) {
     res.sendFile(wantsApp || !hasLanding ? SPA_SHELL : LANDING);
   });
 
-  // index.html must NEVER be cached: a browser running a stale app shell
-  // renders current data with outdated code — the worst kind of lie
-  // (hashed JS/CSS assets stay cacheable; their names change per build).
-  //
-  // The marketing pages are the opposite case: they are static documents with
-  // no session in them, so they get a short public TTL. Fonts are immutable
-  // (their content is their name's whole reason to exist) and get a year.
+  // Which files may be cached, and for how long, is decided by cacheControlFor
+  // in util/static-routing.ts — pure, and unit-tested, because the rule it
+  // replaces was three lines of endsWith() that quietly applied the SPA shell's
+  // no-store to every marketing page as well.
   app.use(express.static(STATIC_DIR, {
-    setHeaders: (res, path) => {
-      if (path.endsWith('index.html') || path.endsWith('landing.html')) {
-        res.setHeader('Cache-Control', 'no-store');
-      } else if (path.includes('/fonts/')) {
-        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-      }
+    setHeaders: (res, filePath) => {
+      const value = cacheControlFor(relative(STATIC_DIR, filePath));
+      if (value) res.setHeader('Cache-Control', value);
     },
   }));
 
