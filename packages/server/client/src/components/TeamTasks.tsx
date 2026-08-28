@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  listTasks, createTask, updateTask, getTask, addTaskComment, getSessionOutcome,
+  listTasks, createTask, updateTask, getTask, addTaskComment, getSessionOutcome, getSessionDiff,
   getAutoTasksPolicy, setAutoTasksPolicy, runAutoTasksNow, SEVERITY_BY_PRI,
   type TeamTask, type TeamTaskStatus, type TeamTaskComment, type SessionOutcomeResponse,
+  type SessionDiffResponse, type SessionDiffFile,
   type AutoTasksStatus,
 } from '../services/api';
 import { Button, Chip, Icon, Input } from './primitives';
@@ -36,15 +37,29 @@ const COLUMNS: Array<{ status: TeamTaskStatus; label: string }> = [
 /** Columns whose cards are finished business — collapsed until asked for. */
 const CLOSED_COLUMNS: readonly TeamTaskStatus[] = ['done', 'closed', 'rejected'];
 
+/**
+ * How many cards to render in a column before offering "show the rest".
+ *
+ * The closed columns are open by default now, and a hundred finished cards is a
+ * wall that pushes the open work off the screen — the problem collapsing them
+ * was meant to solve. A cap keeps both properties: the work is visible without
+ * being asked for, and it cannot bury what is still to do.
+ */
+const COLUMN_SOFT_CAP = 12;
+
 /** Done cards with no session behind them: expired, not achieved. */
 const autoClosedCount = (items: Array<{ linkedSessionId?: string | null }>): number =>
   items.filter((t) => !t.linkedSessionId).length;
 
 /** Columns a human may drag INTO, and pick in the per-card select. */
-// 'done' is absent on purpose — it needs the session and the commits, which a
-// dropdown cannot supply. 'closed' IS here: it asks for its reason inline, and a
-// board that can only be closed by dragging is unusable by keyboard or on a phone.
-const HUMAN_STATUSES: readonly TeamTaskStatus[] = ['todo', 'in_progress', 'closed', 'rejected'];
+// What a PERSON may set from the board.
+//
+// 'done' is absent because it needs the session and the commits, and 'in_progress'
+// because claiming needs the session doing the work — neither is something a
+// dropdown can supply, and the server refuses both without it. 'closed' and
+// 'rejected' are here: each asks for its reason inline, and a board that can only
+// be changed by dragging is unusable by keyboard and on a phone.
+const HUMAN_STATUSES: readonly TeamTaskStatus[] = ['todo', 'closed', 'rejected'];
 
 /**
  * Auto-filed cards carry their severity as a `[critical] `/`[high] ` title
@@ -125,7 +140,17 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
   const [autoNote, setAutoNote] = useState('');
   const [overCol, setOverCol] = useState<TeamTaskStatus | null>(null);
   // Which closed columns the user has chosen to expand, this session.
-  const [openClosed, setOpenClosed] = useState<Set<TeamTaskStatus>>(new Set());
+  // OPEN BY DEFAULT. These columns collapsed because a board once carried 93
+  // phantom 'done' cards that nobody had worked, and that pile was the loudest
+  // thing on it. Those cards are gone and 'done' now means earned, so hiding the
+  // finished work behind a button just made the board look like pure debt —
+  // which is exactly how it read. Rejected stays collapsed: it is a verdict
+  // nobody needs to re-read, and it is the one column that only grows.
+  const [openClosed, setOpenClosed] = useState<Set<TeamTaskStatus>>(new Set(['done', 'closed']));
+  /** Columns the reader asked to see in full, past the soft cap. */
+  const [uncapped, setUncapped] = useState<Set<TeamTaskStatus>>(new Set());
+  const shownLimit = (status: TeamTaskStatus, total: number) =>
+    (uncapped.has(status) || !CLOSED_COLUMNS.includes(status) ? total : COLUMN_SOFT_CAP);
   /** The card being taken off the board, waiting for its reason. */
   const [asking, setAsking] = useState<{ id: string; status: TeamTaskStatus } | null>(null);
   /** Board filter. The board groups by STATUS; criticals arrive per project, so
@@ -375,7 +400,7 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
                       && ` · ${autoClosedCount(items)} with no session behind them`}
                   </button>
                 )
-              ) : items.map((t) => (
+              ) : items.slice(0, shownLimit(col.status, items.length)).map((t) => (
                 <article
                   key={t.id}
                   className={`tt-card${dragId === t.id ? ' tt-dragging' : ''}`}
@@ -416,19 +441,12 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
                       card closed with a real session attached rendered "74
                       commits" from a DIFFERENT repository — right session, wrong
                       repo. The shas named on the card belong to this card. */}
-                  {t.doneEvidence?.commits?.length ? (
-                    <div className="tt-evidence" data-testid={`evidence-${t.id}`} title={t.doneEvidence.summary || 'The commits offered as proof for this card'}>
-                      <span className="tt-evidence-label">fixed by</span>
-                      {t.doneEvidence.commits.slice(0, 4).map((c) => (
-                        <code key={c} className="tt-sha">{c.slice(0, 8)}</code>
-                      ))}
-                      {t.doneEvidence.commits.length > 4 && <span>+{t.doneEvidence.commits.length - 4}</span>}
-                      {t.doneEvidence.files?.length ? (
-                        <span className="tt-evidence-files">
-                          {t.doneEvidence.files.length} file{t.doneEvidence.files.length === 1 ? '' : 's'}
-                        </span>
-                      ) : null}
-                    </div>
+                  {/* Every card that claims something shows what is behind it: a
+                      done card its commits and their diff, an in-progress card
+                      the changes its session has made SO FAR. Waiting for the
+                      commit is what made "in progress" unanswerable. */}
+                  {(t.doneEvidence?.commits?.length || (t.status === 'in_progress' && t.linkedSessionId)) ? (
+                    <CardEvidence task={t} />
                   ) : null}
                   {t.closedReason && (
                     <div className="tt-closedwhy" data-testid={`closed-why-${t.id}`} title="Why this card stopped applying">{t.closedReason}</div>
@@ -494,6 +512,17 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
                   {openId === t.id && <TaskComments taskId={t.id} who={who} />}
                 </article>
               ))}
+
+              {items.length > shownLimit(col.status, items.length) && (
+                <button
+                  type="button"
+                  className="tt-showclosed"
+                  data-testid={`show-all-${col.status}`}
+                  onClick={() => setUncapped((prev) => new Set(prev).add(col.status))}
+                >
+                  Show the remaining {items.length - COLUMN_SOFT_CAP}
+                </button>
+              )}
 
               {items.length === 0 && (
                 <div className="tt-empty">
@@ -797,6 +826,95 @@ function outcomeFor(sessionId: string): Promise<SessionOutcomeResponse | null> {
 }
 
 /**
+ * The proof on a done card: the shas, and the actual changed lines behind them.
+ *
+ * Naming the commits made the claim checkable. It did not make it READABLE —
+ * "fixed by a1b2c3d4" still asks the reader to go and look somewhere else. So the
+ * block expands into the real per-file diff from the session that closed the
+ * card, FILTERED to the files those commits touched, which is what keeps a card
+ * for one repository from showing another repository's work.
+ */
+function CardEvidence({ task }: { task: TeamTask }) {
+  const ev = task.doneEvidence;
+  const [open, setOpen] = useState(false);
+  const [diff, setDiff] = useState<SessionDiffResponse | null>(null);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    if (!open || diff || !task.linkedSessionId) return;
+    let live = true;
+    getSessionDiff(task.linkedSessionId)
+      .then((d) => { if (live) setDiff(d); })
+      .catch((e) => { if (live) setErr(String(e?.message || e)); });
+    return () => { live = false; };
+  }, [open, diff, task.linkedSessionId]);
+
+  const claimed = task.status === 'in_progress' && !!task.linkedSessionId;
+  if (!ev?.commits?.length && !claimed) return null;
+  // The card's own files, when the closer named them: a session touches every
+  // repository it worked in, and only some of that belongs to this card.
+  const wanted = new Set((ev?.files ?? []).map((f) => f.replace(/^\.?\//, '')));
+  const files = (diff?.files ?? []).filter((f: SessionDiffFile) => !wanted.size
+    || wanted.has(f.file.replace(/^\.?\//, ''))
+    || [...wanted].some((w) => f.file.endsWith(w)));
+
+  return (
+    <div className="tt-evidence" data-testid={`evidence-${task.id}`}>
+      <div className="tt-evidence-head">
+        <span className="tt-evidence-label">{ev?.commits?.length ? 'fixed by' : 'being worked in'}</span>
+        {(ev?.commits ?? []).slice(0, 4).map((c) => (
+          <code key={c} className="tt-sha">{c.slice(0, 8)}</code>
+        ))}
+        {(ev?.commits?.length ?? 0) > 4 && <span>+{(ev?.commits?.length ?? 0) - 4}</span>}
+        {!ev?.commits?.length && task.linkedSessionId && (
+          <code className="tt-sha">{task.linkedSessionId.slice(0, 8)}</code>
+        )}
+        {ev?.files?.length ? (
+          <span className="tt-evidence-files">
+            {ev.files.length} file{ev.files.length === 1 ? '' : 's'}
+          </span>
+        ) : null}
+        {task.linkedSessionId && (
+          <button
+            type="button"
+            className="tt-evidence-more"
+            data-testid={`evidence-toggle-${task.id}`}
+            aria-expanded={open}
+            onClick={() => setOpen((o) => !o)}
+          >
+            {open ? 'hide changes' : (ev?.commits?.length ? 'changes' : 'changes so far')}
+          </button>
+        )}
+      </div>
+      {ev?.summary && <div className="tt-evidence-summary">{ev.summary}</div>}
+      {open && (
+        <div className="tt-evidence-diff" data-testid={`evidence-diff-${task.id}`}>
+          {err && <div className="tt-evidence-note">Could not load the changes: {err}</div>}
+          {!err && !diff && <div className="tt-evidence-note">Loading the changes…</div>}
+          {diff?._computing && <div className="tt-evidence-note">Still computing this session's diff — check back shortly.</div>}
+          {diff && !diff._computing && files.length === 0 && (
+            <div className="tt-evidence-note">
+              {ev?.commits?.length
+                ? 'The session recorded no file edits for these commits. Shell-driven edits leave no tool record, so the commits are the evidence here.'
+                : 'Nothing changed in this session yet.'}
+            </div>
+          )}
+          {files.map((f: SessionDiffFile) => (
+            <details key={f.file} className="tt-difffile">
+              <summary>
+                <code>{f.file}</code>
+                <span className="tt-diff">+{f.linesAdded}/−{f.linesRemoved}</span>
+              </summary>
+              <pre className="tt-diffbody">{f.diff.slice(0, 20_000)}</pre>
+            </details>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * "Why is this leaving the board?", asked on the card.
  *
  * `closed` is refused by the server without a reason and `rejected` has nowhere
@@ -1081,6 +1199,20 @@ const TT_CSS = `
 .tt-sha { font-family: var(--cr-font-mono); color: var(--cr-fg-2);
   background: var(--cr-ink-2); padding: 1px 5px; border-radius: 4px; }
 .tt-evidence-files { color: var(--cr-fg-3); }
+.tt-evidence-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.tt-evidence-more { margin-left: auto; padding: 1px 6px; border-radius: 4px; font-size: 9.5px;
+  cursor: pointer; color: var(--cr-fg-2); background: transparent;
+  border: 1px solid var(--cr-line-1); }
+.tt-evidence-more:hover { border-color: var(--cr-brand-line); color: var(--cr-fg-1); }
+.tt-evidence-summary { margin-top: 5px; color: var(--cr-fg-3); font-size: 10.5px; }
+.tt-evidence-diff { margin-top: 6px; border-top: 1px solid var(--cr-line-1); padding-top: 6px; }
+.tt-evidence-note { color: var(--cr-fg-3); font-size: 10.5px; }
+.tt-difffile > summary { display: flex; gap: 8px; align-items: center; cursor: pointer;
+  font-size: 10.5px; color: var(--cr-fg-2); padding: 2px 0; }
+.tt-diffbody { margin: 4px 0 8px; padding: 7px; border-radius: var(--cr-radius-sm);
+  background: var(--cr-ink-2); border: 1px solid var(--cr-line-1);
+  font-family: var(--cr-font-mono); font-size: 10px; line-height: 1.45;
+  color: var(--cr-fg-2); max-height: 320px; overflow: auto; white-space: pre; }
 /* Why a card left the board. Muted: it is context, not an achievement. */
 .tt-closedwhy { margin-bottom: 8px; padding: 5px 7px; border-radius: var(--cr-radius-sm);
   background: var(--cr-ink-0); border: 1px solid var(--cr-line-1);
