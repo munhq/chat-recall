@@ -31,7 +31,24 @@ type AsyncMethod<M> = M extends (...args: infer A) => infer R
  * change exists. `blocked` stays only so rows written before this still load —
  * nothing writes it.
  */
-export type TeamTaskStatus = 'todo' | 'in_progress' | 'blocked' | 'done' | 'rejected';
+/**
+ * `done` is EARNED — the API refuses it without the session that did the work.
+ * `closed` is the honest alternative for a card that stopped being relevant:
+ * its finding is no longer reported, or it duplicates another card. `rejected`
+ * stays the human verdict "this is not a real problem".
+ */
+/**
+ * What the closer offers as proof of the fix, scoped to the card's own project.
+ * `commits` are the checkable half — a sha exists or it does not.
+ */
+export interface DoneEvidence {
+  commits: string[];
+  files?: string[];
+  /** Free text: what changed, in one line. */
+  summary?: string;
+}
+
+export type TeamTaskStatus = 'todo' | 'in_progress' | 'blocked' | 'done' | 'rejected' | 'closed';
 export interface TeamTask {
   id: string;
   projectId: string;
@@ -54,6 +71,10 @@ export interface TeamTask {
    * which. It guessed fixed, 93 times out of 97, while every finding was open.
    */
   linkedFindingIdentity: string | null;
+  /** Why a `closed` card was closed. Required when closing; null otherwise. */
+  closedReason: string | null;
+  /** What proves a `done` card was done: commits, and the files they touched. */
+  doneEvidence: DoneEvidence | null;
   due: number | null;
   createdAt: number;
   updatedAt: number;
@@ -81,6 +102,10 @@ export interface UpdateTeamTaskPatch {
   linkedSessionId?: string | null;
   linkedFindingId?: string | null;
   linkedFindingIdentity?: string | null;
+  /** Why the card was closed. The API requires it when status becomes 'closed'. */
+  closedReason?: string | null;
+  /** Proof for a `done`. The API requires at least one commit with it. */
+  doneEvidence?: DoneEvidence | null;
 }
 
 /**

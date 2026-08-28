@@ -139,7 +139,7 @@ describe('auto-tasks', () => {
     // id and carries no identity, so it is also written — a backfill, which is
     // correct and is asserted below rather than mistaken for a second closure.
     expect(state.updated.filter((u) => u.patch.status !== undefined))
-      .toEqual([{ id: 't_close', patch: { status: 'done' } }]);
+      .toEqual([{ id: 't_close', patch: { status: 'closed', closedReason: expect.stringContaining('no longer reported') } }]);
     expect(state.comments).toEqual(['t_close']);
     expect(r?.backfilled).toBe(1);
     expect(state.updated.some((u) => u.id === 't_keep1' && u.patch.linkedFindingIdentity)).toBe(true);
@@ -696,7 +696,7 @@ describe('duplicate cards for one finding', () => {
     const again = await runAutoTasks('t1', { force: true });
     expect(again?.deduped).toBe(0);
     expect(again?.reopened).toBe(0);
-    expect(state.tasks.find((t) => t.id === 't_new')?.status).toBe('done');
+    expect(state.tasks.find((t) => t.id === 't_new')?.status).toBe('closed');
   });
 
   test('a human-touched card is left alone', async () => {
@@ -799,7 +799,7 @@ describe('a roll-up action and its member findings', () => {
 
     const r = await runAutoTasks('t1');
     expect(r?.deduped).toBe(1);
-    expect(state.tasks.find((t) => t.id === 't_member')?.status).toBe('done');
+    expect(state.tasks.find((t) => t.id === 't_member')?.status).toBe('closed');
     expect(state.tasks.find((t) => t.id === 't_member')?.linkedFindingId).toBeNull();
     expect(state.tasks.find((t) => t.id === 't_rollup')?.status).toBe('todo');
   });
