@@ -277,7 +277,13 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
         open={autoOpen} onOpen={() => setAutoOpen((o) => !o)}
         onSave={saveAuto} onRun={runNow}
         projFilter={projFilter} onProject={setProjFilter}
-        doneCount={tasks.filter((t) => t.status === 'done').length}
+        // WORKED, not "done". Two thirds of one real board's Done column had no
+        // session behind it: 29 cards auto-closed because a finding stopped
+        // being reported, 7 retired as duplicates. Counting those as
+        // achievements is how a board ends up asserting work that never
+        // happened — which is the failure this product exists to catch.
+        doneCount={tasks.filter((t) => t.status === 'done' && t.linkedSessionId).length}
+        machineClosedCount={tasks.filter((t) => t.status === 'done' && !t.linkedSessionId).length}
         rejectedCount={tasks.filter((t) => t.status === 'rejected').length}
       />
 
@@ -328,7 +334,7 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
                   >
                     Show {items.length} {col.label.toLowerCase()}
                     {col.status === 'done' && autoClosedCount(items) > 0
-                      && ` · ${autoClosedCount(items)} closed by a re-index, not by work`}
+                      && ` · ${items.length - autoClosedCount(items)} worked, ${autoClosedCount(items)} closed without work`}
                   </button>
                 )
               ) : items.map((t) => (
@@ -451,12 +457,17 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
  * missing was feedback, not steps.
  */
 function AutoPanel({
-  auto, err, note, busy, open, onOpen, onSave, onRun, projFilter, onProject, doneCount, rejectedCount,
+  auto, err, note, busy, open, onOpen, onSave, onRun, projFilter, onProject,
+  doneCount, machineClosedCount, rejectedCount,
 }: {
   auto: AutoTasksStatus | null;
-  /** What the board has FINISHED. The panel reported only backlog, so a board
-   *  with 55 completed cards behind a collapsed column read as pure debt. */
+  /** What the board has FINISHED — cards with a session behind them. The panel
+   *  reported only backlog, so completed work behind a collapsed column never
+   *  showed at all. */
   doneCount: number;
+  /** Closed WITHOUT work: the finding stopped being reported, or the card was a
+   *  duplicate. Kept separate because conflating the two is the lie. */
+  machineClosedCount: number;
   rejectedCount: number;
   err: string;
   note: string;
@@ -538,7 +549,8 @@ function AutoPanel({
   // The eligible count stays — it is the honest size of the backlog — but it is
   // last, and it is named as waiting rather than as a demand on the reader.
   const sub = [
-    doneCount > 0 ? `${doneCount} done` : '',
+    doneCount > 0 ? `${doneCount} worked` : '',
+    machineClosedCount > 0 ? `${machineClosedCount} closed by the machine` : '',
     rejectedCount > 0 ? `${rejectedCount} rejected` : '',
     (auto.ceiling ?? 0) > 0 ? `${auto.openCards}/${auto.ceiling} open` : '',
     auto.eligible > 0 ? `${auto.eligible} waiting` : '',
