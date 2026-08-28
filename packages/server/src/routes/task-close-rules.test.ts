@@ -118,8 +118,35 @@ describe('closed', () => {
 });
 
 describe('rejected', () => {
-  test('needs neither session nor commits — it is a verdict, not a claim of work', async () => {
+  test('needs no session and no commits — it is a verdict, not a claim of work', async () => {
+    const r = await request(app()).patch('/api/tasks/t_1')
+      .send({ status: 'rejected', closedReason: 'versioned artifacts, duplication is deliberate' });
+    expect(r.status).toBe(200);
+  });
+
+  test('but it DOES need a reason: it stops the finding being filed again', async () => {
     const r = await request(app()).patch('/api/tasks/t_1').send({ status: 'rejected' });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toMatch(/needs a reason/);
+  });
+});
+
+describe('in_progress', () => {
+  test('claiming needs the session doing the work', async () => {
+    const r = await request(app()).patch('/api/tasks/t_1').send({ status: 'in_progress' });
+    expect(r.status).toBe(409);
+    expect(r.body.error).toMatch(/needs the session/);
+  });
+
+  test('with a session it is accepted, and the card can then show its changes', async () => {
+    const r = await request(app()).patch('/api/tasks/t_1')
+      .send({ status: 'in_progress', linkedSessionId: 'sess_1' });
+    expect(r.status).toBe(200);
+  });
+
+  test('a card already carrying a session may be re-claimed', async () => {
+    tasks.set('t_1', card({ linkedSessionId: 'sess_1' }));
+    const r = await request(app()).patch('/api/tasks/t_1').send({ status: 'in_progress' });
     expect(r.status).toBe(200);
   });
 });

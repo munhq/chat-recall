@@ -230,6 +230,18 @@ router.patch('/:id', async (req, res) => {
   if (typeof req.body?.description === 'string') patch.description = req.body.description.slice(0, 20000);
   if (typeof req.body?.status === 'string') {
     if (!STATUSES.has(req.body.status)) return res.status(400).json({ error: `status must be one of ${[...STATUSES].join(', ')}` });
+    // Read the card once: every ending below asks what it already carries, and
+    // three separate lookups would be three round trips for one decision.
+    // Best-effort: this read only ever RELAXES a check (it is what lets a card
+    // that already carries a session or a reason be re-set without repeating
+    // them). If it fails, the strict path still applies, so a broken read cannot
+    // let an unevidenced close through — and cannot 500 a legal patch either.
+    const existingTask = await (async () => {
+      try {
+        const store = await createStore();
+        try { return (await store.getTeamTask(req.params.id))?.task ?? null; } finally { await store.close(); }
+      } catch { return null; }
+    })();
     // DONE MUST BE EARNED.
     //
     // A card says a problem exists in the code. Moving it to done asserts that
@@ -242,11 +254,7 @@ router.patch('/:id', async (req, res) => {
     // If you disagree with a card, REJECT it — that is the human verdict, and it
     // stops the finding coming back (below).
     if (req.body.status === 'done') {
-      const existing = await (async () => {
-        const store = await createStore();
-        try { return await store.getTeamTask(req.params.id); } finally { await store.close(); }
-      })();
-      const willHaveSession = req.body?.linkedSessionId ?? existing?.task.linkedSessionId ?? null;
+      const willHaveSession = req.body?.linkedSessionId ?? existingTask?.linkedSessionId ?? null;
       if (!willHaveSession) {
         return res.status(409).json({
           error: 'a task is marked done by the work, not by hand',
@@ -283,7 +291,7 @@ router.patch('/:id', async (req, res) => {
           detail: `Expected hex sha(s), 7-40 characters. Got: ${offered.slice(0, 3).join(', ')}`,
         });
       }
-      const hadEvidence = (existing?.task.doneEvidence?.commits?.length ?? 0) > 0;
+      const hadEvidence = (existingTask?.doneEvidence?.commits?.length ?? 0) > 0;
       if (!commits.length && !hadEvidence) {
         return res.status(409).json({
           error: 'closing a task needs the commits that fixed it',
@@ -301,6 +309,37 @@ router.patch('/:id', async (req, res) => {
           summary: typeof ev?.summary === 'string' ? ev.summary.slice(0, 2000) : undefined,
         };
       }
+    }
+    // CLAIMING NEEDS A CLAIMANT. `in_progress` asserted that work was under way
+    // and required nothing at all, so a card could sit "in progress" for days
+    // with nothing behind it and no way to ask what was happening. The session id
+    // is the answer to "by what?", and it is what lets the card show the changes
+    // as they land rather than only after the commit.
+    if (req.body.status === 'in_progress') {
+      const willHaveSession = req.body?.linkedSessionId ?? existingTask?.linkedSessionId ?? null;
+      if (!willHaveSession) {
+        return res.status(409).json({
+          error: 'claiming a task needs the session doing the work',
+          detail: 'Pass linkedSessionId — your own session id. The board shows that session\'s '
+            + 'changes on the card while the work is happening, which is the point of claiming it.',
+        });
+      }
+    }
+    // REJECTING NEEDS A REASON TOO. It was enforced in the dashboard and nowhere
+    // else, so any other client could retire advice silently — and a rejection
+    // also stops the finding being re-filed, which makes it the most consequential
+    // of the three endings.
+    if (req.body.status === 'rejected') {
+      const reason = typeof req.body.closedReason === 'string' ? req.body.closedReason.trim() : '';
+      const had = (existingTask?.closedReason ?? '').trim();
+      if (!reason && !had) {
+        return res.status(400).json({
+          error: 'rejecting a task needs a reason',
+          detail: 'Say why this is not a real problem (closedReason). It also stops the finding '
+            + 'being filed again, so the reason is what makes that reviewable later.',
+        });
+      }
+      if (reason) patch.closedReason = reason.slice(0, 2000);
     }
     // CLOSED NEEDS A REASON, for the same reason `done` needs a session: a card
     // shut without the work being done has to say why, or in six weeks it is

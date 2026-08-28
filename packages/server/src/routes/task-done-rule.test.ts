@@ -106,13 +106,14 @@ describe('marking a task done', () => {
     expect(state.patches[0].patch.status).toBe('done');
   });
 
-  test('every other move stays free — a person may park or reject anything', async () => {
-    for (const s of ['todo', 'in_progress', 'rejected']) {
-      state.patches = [];
-      const res = await request(await app()).patch('/api/tasks/t_1').send({ status: s });
-      expect(res.status, s).toBe(200);
-      expect(state.patches[0].patch.status, s).toBe(s);
-    }
+  test('parking a card stays free — only the ENDINGS have to prove something', async () => {
+    // 'todo' asserts nothing, so it asks for nothing. Every other move now
+    // carries its evidence: in_progress a session, rejected a reason, done both
+    // a session and the commits.
+    state.patches = [];
+    const res = await request(await app()).patch('/api/tasks/t_1').send({ status: 'todo' });
+    expect(res.status).toBe(200);
+    expect(state.patches[0].patch.status).toBe('todo');
   });
 
   test('an unknown status is refused by the route, not by the database', async () => {
@@ -137,7 +138,7 @@ describe('marking a task done', () => {
  */
 describe('rejecting a card', () => {
   test('stores the verdict AND dismisses the finding behind it', async () => {
-    const res = await request(await app()).patch('/api/tasks/t_1').send({ status: 'rejected' });
+    const res = await request(await app()).patch('/api/tasks/t_1').send({ status: 'rejected', closedReason: 'not a real problem' });
     expect(res.status).toBe(200);
     expect(state.patches[0].patch.status).toBe('rejected');
     expect(state.dismissed).toEqual(['ca_123']);
@@ -145,7 +146,7 @@ describe('rejecting a card', () => {
 
   test('a hand-written card has no finding to dismiss, and that is fine', async () => {
     state.task = { id: 't_1', status: 'todo', linkedSessionId: null, linkedFindingId: null };
-    const res = await request(await app()).patch('/api/tasks/t_1').send({ status: 'rejected' });
+    const res = await request(await app()).patch('/api/tasks/t_1').send({ status: 'rejected', closedReason: 'not a real problem' });
     expect(res.status).toBe(200);
     expect(state.dismissed).toEqual([]);
   });
@@ -160,7 +161,7 @@ describe('rejecting a card', () => {
     // Best-effort by design: the verdict is the user's and must persist even if
     // the findings store is unreachable. Worst case the card is re-filed later.
     state.statusWriteFails = true;
-    const res = await request(await app()).patch('/api/tasks/t_1').send({ status: 'rejected' });
+    const res = await request(await app()).patch('/api/tasks/t_1').send({ status: 'rejected', closedReason: 'not a real problem' });
     expect(res.status).toBe(200);
     expect(state.patches[0].patch.status).toBe('rejected');
   });
