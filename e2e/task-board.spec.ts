@@ -184,7 +184,10 @@ test.describe('a card leaving the board', () => {
       .locator('option').allTextContents();
     expect(options).toContain('Closed');
     expect(options).toContain('Rejected');
+    // Neither ending a dropdown can evidence: 'done' needs a session and the
+    // commits, 'in progress' needs the session doing the work.
     expect(options).not.toContain('Done');
+    expect(options).not.toContain('In progress');
   });
 });
 
@@ -192,8 +195,7 @@ test.describe('what a card shows', () => {
   test('a done card names the commits that fixed it', async ({ page }) => {
     await mockBoard(page);
     await openBoard(page);
-    await page.getByRole('button', { name: /Show 1 done/ }).click();
-
+    // Done is expanded by default now — finished work is not something to hunt for.
     const ev = page.getByTestId('evidence-t_done');
     await expect(ev).toContainText('fixed by');
     await expect(ev).toContainText('a1b2c3d4');
@@ -203,7 +205,6 @@ test.describe('what a card shows', () => {
   test('a closed card says why it stopped applying', async ({ page }) => {
     await mockBoard(page);
     await openBoard(page);
-    await page.getByRole('button', { name: /Show 1 closed/ }).click();
     await expect(page.getByTestId('closed-why-t_closed'))
       .toContainText('the collector stopped reporting its finding');
   });
@@ -211,8 +212,9 @@ test.describe('what a card shows', () => {
   test('done and closed are separate columns, so neither is counted as the other', async ({ page }) => {
     await mockBoard(page);
     await openBoard(page);
-    await expect(page.getByRole('button', { name: /Show 1 done/ })).toBeVisible();
-    await expect(page.getByRole('button', { name: /Show 1 closed/ })).toBeVisible();
+    // Both visible without being asked for, and each showing its own kind of proof.
+    await expect(page.getByTestId('evidence-t_done')).toBeVisible();
+    await expect(page.getByTestId('closed-why-t_closed')).toBeVisible();
   });
 });
 
@@ -247,5 +249,45 @@ test.describe('excluding a project', () => {
     await expect.poll(() => put).not.toBeNull();
     // The OTHER exclusion survives — replacing the list would have dropped it.
     expect(put.excludedProjects).toEqual(['git:h/o/other']);
+  });
+});
+
+test.describe('the changes behind a card', () => {
+  test('THE POINT: a done card expands into the real diff of its files', async ({ page }) => {
+    await mockBoard(page);
+    await page.route('**/api/conversations/*/diff**', (r) => r.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({
+        sessionId: 'sess_1', projectPath: '/x', totalLinesAdded: 4, totalLinesRemoved: 1,
+        files: [
+          { file: 'src/main.rs', diff: '@@ -1 +1 @@\n-panic!()\n+return Err(e)', linesAdded: 4, linesRemoved: 1, reverted: false, succeededEvents: 1, failedEvents: 0, initialKnown: true, events: [] },
+          { file: 'docs/other.md', diff: 'not this card', linesAdded: 9, linesRemoved: 0, reverted: false, succeededEvents: 1, failedEvents: 0, initialKnown: true, events: [] },
+        ],
+      }),
+    }));
+    await openBoard(page);
+
+    await page.getByTestId('evidence-toggle-t_done').click();
+    const body = page.getByTestId('evidence-diff-t_done');
+    await expect(body).toContainText('src/main.rs');
+    await expect(body).toContainText('+4/−1');
+    // Scoped to the files this card named — a session touches more than one repo.
+    await expect(body).not.toContainText('docs/other.md');
+
+    await page.getByText('src/main.rs').click();
+    await expect(body).toContainText('return Err(e)');
+  });
+
+  test('a session with no recorded edits says so, instead of showing nothing', async ({ page }) => {
+    await mockBoard(page);
+    await page.route('**/api/conversations/*/diff**', (r) => r.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({ sessionId: 'sess_1', projectPath: '/x', totalLinesAdded: 0, totalLinesRemoved: 0, files: [] }),
+    }));
+    await openBoard(page);
+
+    await page.getByTestId('evidence-toggle-t_done').click();
+    await expect(page.getByTestId('evidence-diff-t_done'))
+      .toContainText('Shell-driven edits leave no tool record');
   });
 });
