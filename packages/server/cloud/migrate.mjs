@@ -52,7 +52,12 @@ const FILES = [
   // One-off repair. DELETE THIS FILE AND THIS ENTRY once it has run everywhere.
   // Moves cards the machine closed out of 'done', which they were never entitled
   // to: 'done' requires the session that did the work, and these had none.
-  './migrations/0010_machine_closures_are_not_done.sql',
+  //
+  // NUMBERED 0012 because 0010 was this file and was lost: it guarded on a column
+  // the SERVER adds, migrations run before the server boots, so it skipped — and
+  // the ledger recorded the skip as success. A renamed file is the only way past
+  // a ledger entry, and the SQL no longer has a path where it does nothing.
+  './migrations/0012_machine_closures_are_not_done.sql',
   // One-off repair. DELETE THIS FILE AND THIS ENTRY once it has run everywhere.
   // Stamps an owner on rows written before attribution existed. A NULL author is
   // read as "legacy, visible to the whole tenant", which is the one thing a new
