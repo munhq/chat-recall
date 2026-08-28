@@ -3864,6 +3864,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
             `open-card ceiling: ${cur.openCards ?? '?'}/${cur.ceiling}`,
             `new cards per run: ${cur.maxPerRun}`,
             `categories: ${Array.isArray(cur.categories) && cur.categories.length ? (cur.categories as string[]).join(', ') : 'all'}`,
+            `  (available: ${Array.isArray(cur.availableCategories) && cur.availableCategories.length ? (cur.availableCategories as string[]).join(', ') : 'none indexed yet'})`,
             `waiting to be filed: ${cur.eligible}`,
           ].join('\n') }] };
         }

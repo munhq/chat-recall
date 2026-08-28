@@ -636,6 +636,10 @@ export async function autoTasksStatus(tenant: string): Promise<{
   lastRun: AutoTasksLastRun | null;
   eligible: number;
   filed: number;
+  /** Every category present in this tenant's findings and actions. Without it
+   *  `categories` is a setting nobody can spell: the names come from the
+   *  collector, not from anything a person would guess. */
+  availableCategories: string[];
   /** Auto-filed cards currently open, and the ceiling they are counted against. */
   openCards: number;
   ceiling: number;
@@ -691,13 +695,20 @@ export async function autoTasksStatus(tenant: string): Promise<{
       const rows = new Map<string, { projectId: string; counts: Record<string, number>; eligible: number }>();
       let eligible = 0;
       let filed = 0;
+      // The filer skips categories the policy does not ask for, so a count that
+      // ignores them promises work that will never happen — the same mismatch
+      // that made this panel answer 316 when the true number was 1,070.
+      const wanted = policy.categories;
+      const asked = (cat: string | undefined) => !wanted || wanted.includes((cat ?? '').toLowerCase());
+      const catsSeen = new Set<string>();
       for (const a of open) {
         const key = a.projectId || 'unknown';
         const row = rows.get(key) ?? { projectId: key, counts: {}, eligible: 0 };
         const sev = severityOfPri(a.pri);
+        if (a.category) catsSeen.add(a.category.toLowerCase());
         row.counts[sev] = (row.counts[sev] ?? 0) + 1;
         if (carded.has(a.id)) { if (a.pri <= policy.maxPri) filed++; }
-        else if (a.pri <= policy.maxPri) { row.eligible++; eligible++; }
+        else if (a.pri <= policy.maxPri && asked(a.category)) { row.eligible++; eligible++; }
         rows.set(key, row);
       }
       const weight = (c: Record<string, number>) =>
@@ -714,11 +725,24 @@ export async function autoTasksStatus(tenant: string): Promise<{
       for (const sev of PRI_SEVERITY) {
         if (priOfSeverity(sev) <= policy.maxPri) findingsEligible += fsum.bySeverity[sev] ?? 0;
       }
+      for (const cat of Object.keys(fsum.byCategory ?? {})) catsSeen.add(cat.toLowerCase());
+      // With a category filter the severity totals overcount, and the summary
+      // cannot be sliced both ways at once. Scale by the share of findings whose
+      // category the policy asks for — an estimate, and named as one, rather
+      // than a precise number that is precisely wrong.
+      if (wanted) {
+        const all = Object.values(fsum.byCategory ?? {}).reduce((n, c) => n + c, 0) || 1;
+        const kept = Object.entries(fsum.byCategory ?? {})
+          .filter(([c]) => wanted.includes(c.toLowerCase()))
+          .reduce((n, [, c]) => n + c, 0);
+        findingsEligible = Math.round(findingsEligible * (kept / all));
+      }
       findingsEligible = Math.max(0, findingsEligible - cardedFindings);
 
       return {
         policy, lastRun, filed, byProject, openCards,
         eligible: eligible + findingsEligible,
+        availableCategories: [...catsSeen].sort(),
         ceiling: policy.ceiling,
       };
     } finally {
