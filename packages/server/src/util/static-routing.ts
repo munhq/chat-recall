@@ -36,3 +36,52 @@ export type StaticVerdict = 'app-shell' | 'not-found';
 export function classifyStaticPath(path: string): StaticVerdict {
   return APP_PATHS.has(path) ? 'app-shell' : 'not-found';
 }
+
+/**
+ * What `Cache-Control` a file under STATIC_DIR should be served with.
+ *
+ * WHAT WENT WRONG BEFORE: the rule was `path.endsWith('index.html')`, written to
+ * mean "the SPA shell". Every marketing page is `<slug>/index.html`, so every
+ * one of them matched and was served `no-store` — while the comment above the
+ * rule said marketing pages "get a short public TTL". Measured on production:
+ * `curl -I https://<origin>/guides/<slug>/` answered `cache-control: no-store`.
+ *
+ * The cost is not a wrong header. It is that no browser, and no CDN, may keep a
+ * marketing page for even a second: every repeat visitor and every crawler
+ * re-downloads ~50KB of HTML from the origin, and a conditional request can
+ * never be answered with a 304.
+ *
+ * Three cases, and only the first two are genuinely uncacheable:
+ *
+ *   index.html AT THE ROOT — the SPA shell. Must never be cached: a browser
+ *     running a stale shell renders current data with outdated code, which is
+ *     the worst kind of lie. (Its hashed JS and CSS stay cacheable; their names
+ *     change per build, which is what the hash is for.)
+ *   landing.html — served at '/', where the response varies on a session
+ *     cookie. Cloudflare ignores `Vary: Cookie` below Enterprise, so an
+ *     edge-cached '/' would eventually hand one kind of visitor the other's
+ *     document.
+ *   everything else under a directory — a marketing page. No session in it, no
+ *     personalisation, changes only on deploy.
+ *
+ * `path` is POSIX-relative to STATIC_DIR. Returning null means "say nothing",
+ * which leaves express.static's own ETag and Last-Modified in place.
+ */
+export function cacheControlFor(path: string): string | null {
+  const rel = path.replace(/\\/g, '/').replace(/^\.?\//, '');
+
+  if (rel === 'index.html' || rel === 'landing.html') return 'no-store';
+
+  // A year, and immutable: a font's content is the whole reason its name exists.
+  if (rel.startsWith('fonts/') || rel.includes('/fonts/')) {
+    return 'public, max-age=31536000, immutable';
+  }
+
+  // Five minutes at the edge, a day of serving stale while it refreshes. Short
+  // enough that a deploy is visible almost at once — Keel's roll is not instant
+  // either — and long enough that a crawl or a burst of traffic does not hit the
+  // origin for every page view.
+  if (rel.endsWith('.html')) return 'public, max-age=300, stale-while-revalidate=86400';
+
+  return null;
+}
