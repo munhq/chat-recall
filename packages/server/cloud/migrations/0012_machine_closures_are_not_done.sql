@@ -11,10 +11,21 @@
 -- and infers each reason from the comment the sweep left. Idempotent: it only
 -- touches 'done' rows with no session, and re-running matches nothing.
 --
--- GUARDED on the table existing (this runs before the server boots on a fresh
--- database) and RLS-aware: team_tasks is tenant-scoped with FORCE RLS, so a
--- migration that sets no tenant matches ZERO rows without erroring. Loop the
--- tenants and set the GUC per iteration, exactly as tenantQuery does.
+-- WHY 0012 AND NOT 0010. 0010 was this file, and it was LOST exactly the way this
+-- directory's README warns about. It guarded on `closed_reason` existing and
+-- RETURNed when it did not — but migrations run in an initContainer BEFORE the
+-- server boots, and the server is what adds that column. So on the deploy where
+-- both landed together the guard skipped, the runner recorded the file as
+-- applied, and the ledger made the no-op permanent: 36 rows still said 'done'.
+--
+-- Two fixes, both here. A new NAME, so the ledger does not skip it. And no
+-- boot-order dependency at all: it adds the column itself, idempotently, instead
+-- of trusting something else to have done so. A migration that can silently
+-- decide to do nothing is a migration that will.
+--
+-- RLS-aware: team_tasks is tenant-scoped with FORCE RLS, so a migration that sets
+-- no tenant matches ZERO rows without erroring. Loop the tenants and set the GUC
+-- per iteration, exactly as tenantQuery does.
 DO $$
 DECLARE tn TEXT; moved INT; total INT := 0;
 BEGIN
@@ -22,11 +33,12 @@ BEGIN
     RAISE NOTICE 'team_tasks does not exist yet — nothing to repair';
     RETURN;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'team_tasks' AND column_name = 'closed_reason') THEN
-    RAISE NOTICE 'closed_reason not added yet — the bootstrap runs first, skipping';
-    RETURN;
-  END IF;
+  -- Add what this repair needs rather than skipping when it is absent. Both are
+  -- idempotent, and the bootstrap declares the same column on every boot.
+  ALTER TABLE team_tasks ADD COLUMN IF NOT EXISTS closed_reason TEXT;
+  ALTER TABLE team_tasks DROP CONSTRAINT IF EXISTS team_tasks_status_check;
+  ALTER TABLE team_tasks ADD CONSTRAINT team_tasks_status_check
+    CHECK (status IN ('todo','in_progress','blocked','done','rejected','closed'));
 
   FOR tn IN SELECT tenant FROM tenants LOOP
     PERFORM set_config('app.tenant', tn, true);
