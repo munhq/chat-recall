@@ -4,7 +4,7 @@
 [![npm](https://img.shields.io/npm/v/chat-recall?logo=npm&color=cb3837)](https://www.npmjs.com/package/chat-recall)
 [![npm downloads](https://img.shields.io/npm/dm/chat-recall?color=cb3837&label=downloads)](https://www.npmjs.com/package/chat-recall)
 [![MCP registry](https://img.shields.io/badge/MCP%20registry-io.github.munhq%2Fchat--recall-1f6feb)](https://registry.modelcontextprotocol.io/v0/servers?search=chat-recall)
-[![Smithery](https://img.shields.io/badge/Smithery-munhq%2Fchat--recall-7c3aed)](https://smithery.ai/server/munhq/chat-recall)
+[![Smithery](https://img.shields.io/badge/Smithery-munhq%2Fchat--recall-7c3aed)](https://smithery.ai/servers/munhq/chat-recall)
 [![Glama](https://img.shields.io/badge/Glama-munhq%2Fchat--recall-4f46e5)](https://glama.ai/mcp/servers/munhq/chat-recall)
 
 [![Install in Cursor](https://img.shields.io/badge/Install-Cursor-000?logo=cursor)](cursor://anysphere.cursor-deeplink/mcp/install?name=chat-recall&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIi1wIiwiY2hhdC1yZWNhbGwiLCJjaGF0LXJlY2FsbC1tY3AiXX0=)
