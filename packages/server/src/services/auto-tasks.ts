@@ -98,6 +98,15 @@ export interface AutoTasksPolicy {
    * the terms the findings are actually written in.
    */
   categories: string[] | null;
+  /**
+   * Projects that never file a card, however urgent the finding.
+   *
+   * "Index it, show me the findings, but do not put work on my board and do not
+   * let an agent loose in it" — a client's repository, an archive, a vendored
+   * mirror. The severity floor cannot express that: it is global, and a critical
+   * in someone else's codebase is still a critical.
+   */
+  excludedProjects: string[];
 }
 
 /** Bounds for the two counters, so a typo cannot disable or flood the board. */
@@ -108,6 +117,13 @@ function clampInt(v: unknown, { min, max, default: dflt }: { min: number; max: n
   const n = Math.floor(Number(v));
   if (!Number.isFinite(n)) return dflt;
   return Math.min(Math.max(n, min), max);
+}
+
+/** A project-id list, normalised. Ids are opaque strings, so only trimmed. */
+function asProjects(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return [...new Set(v.filter((x): x is string => typeof x === 'string')
+    .map((x) => x.trim()).filter(Boolean))].slice(0, 200);
 }
 
 /** A category list, normalised. Empty ⇒ null ⇒ "every category". */
@@ -140,11 +156,13 @@ export function parsePolicy(raw: string | null): AutoTasksPolicy {
       ceiling: clampInt(o?.ceiling, CEILING_RANGE),
       maxPerRun: clampInt(o?.maxPerRun, PER_RUN_RANGE),
       categories: asCategories(o?.categories),
+      excludedProjects: asProjects(o?.excludedProjects),
     };
   } catch {
     return {
       enabled: false, maxPri: 1,
       ceiling: CEILING_RANGE.default, maxPerRun: PER_RUN_RANGE.default, categories: null,
+      excludedProjects: [],
     };
   }
 }
@@ -298,6 +316,21 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
       // CATEGORY TARGETING. The priority floor cannot say "security yes, hotspots
       // no", and hotspot cards on files with two commits were the largest class
       // of rejection on one real board. An empty list means every category.
+      // EXCLUDED PROJECTS FILE NOTHING. Before the category filter, because it is
+      // the stronger statement: not "this kind of finding is not worth a card"
+      // but "this repository is not mine to put work in".
+      if (policy.excludedProjects.length) {
+        const skip = new Set(policy.excludedProjects);
+        const before = urgent.length;
+        for (let i = urgent.length - 1; i >= 0; i--) {
+          if (skip.has(urgent[i].projectId)) urgent.splice(i, 1);
+        }
+        if (before !== urgent.length) {
+          log.info({ tenant, excluded: policy.excludedProjects, skipped: before - urgent.length },
+            'auto-tasks: excluded projects file nothing');
+        }
+      }
+
       const wanted = policy.categories;
       if (wanted) {
         const before = urgent.length;
@@ -700,6 +733,7 @@ export async function autoTasksStatus(tenant: string): Promise<{
       // that made this panel answer 316 when the true number was 1,070.
       const wanted = policy.categories;
       const asked = (cat: string | undefined) => !wanted || wanted.includes((cat ?? '').toLowerCase());
+      const excluded = new Set(policy.excludedProjects);
       const catsSeen = new Set<string>();
       for (const a of open) {
         const key = a.projectId || 'unknown';
@@ -708,7 +742,7 @@ export async function autoTasksStatus(tenant: string): Promise<{
         if (a.category) catsSeen.add(a.category.toLowerCase());
         row.counts[sev] = (row.counts[sev] ?? 0) + 1;
         if (carded.has(a.id)) { if (a.pri <= policy.maxPri) filed++; }
-        else if (a.pri <= policy.maxPri && asked(a.category)) { row.eligible++; eligible++; }
+        else if (a.pri <= policy.maxPri && asked(a.category) && !excluded.has(a.projectId)) { row.eligible++; eligible++; }
         rows.set(key, row);
       }
       const weight = (c: Record<string, number>) =>
