@@ -1662,8 +1662,9 @@ add a comment. Pass the task id (t_…) from recall_tasks.
 WORKFLOW — do this whenever the user asks you to work on a task from the board:
 1. When you start, set status 'in_progress' AND pass your own current session id
    as linked_session_id (the session id you know from your own context; this MCP
-   server cannot see it). The board uses that link to show whether the linked
-   session actually shipped — files, diff stats, commits.
+   server cannot see it). This is REQUIRED — claiming without it is refused,
+   because "in progress" with nothing behind it cannot be asked about. The card
+   then shows that session's changes as they land, not only after the commit.
 2. When you finish, set status 'done' AND pass commits — the sha(s) in this
    card's repository that fixed it. Without them the close is refused.
 
@@ -1673,7 +1674,7 @@ THE THREE ENDINGS ARE NOT THE SAME:
                it duplicates another card. Needs closed_reason.
 - rejected   — NOT yours to set. If the card is not a real problem, say so to the
                user and let them reject it, because that also stops the finding
-               being re-filed.
+               being re-filed. (When they do, the API requires their reason.)
 Closing a card you did not fix, as 'done', is the one thing that makes this board
 worthless: two thirds of one real board's Done column turned out to be work
 nobody had done.`,
