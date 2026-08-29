@@ -86,6 +86,10 @@ agent prompt for each card, so "what can I pick up" is one call.
   - Cards filed from findings also close THEMSELVES once a re-index stops
     reporting the finding, so fixing the code and re-indexing is usually enough.
     Attach your session anyway: the closure keeps its evidence.
+  - **Stay inside the card's project.** A card names one repository; fix it there
+    and nowhere else. If the real fix needs a change in another repo, say so and
+    leave the card open — the API refuses evidence whose file paths climb out of
+    the project, and a diff spanning repositories cannot be reviewed as one change.
   - Filing is capped — at most 10 new cards per run and 50 open at once. A board
     at the ceiling files nothing until cards close; the backlog stays visible in
     the ranked findings view.

@@ -211,3 +211,42 @@ describe('what counts as a commit sha', () => {
     expect(patches[0].patch.doneEvidence).toMatchObject({ commits: ['a1b2c3d'] });
   });
 });
+
+describe('a card stays inside its own project', () => {
+  test('THE POINT: an absolute path is refused — it claims work in another repo', async () => {
+    tasks.set('t_1', card({ linkedSessionId: 's_1' }));
+    const r = await request(app()).patch('/api/tasks/t_1').send({
+      status: 'done',
+      doneEvidence: { commits: ['a1b2c3d'], files: ['/home/user/other-repo/src/main.rs'] },
+    });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toMatch(/outside this card/);
+  });
+
+  test('a path climbing out with .. is refused too', async () => {
+    tasks.set('t_1', card({ linkedSessionId: 's_1' }));
+    const r = await request(app()).patch('/api/tasks/t_1').send({
+      status: 'done',
+      doneEvidence: { commits: ['a1b2c3d'], files: ['../sibling/src/lib.rs'] },
+    });
+    expect(r.status).toBe(400);
+  });
+
+  test('ordinary repo-relative paths pass', async () => {
+    tasks.set('t_1', card({ linkedSessionId: 's_1' }));
+    const r = await request(app()).patch('/api/tasks/t_1').send({
+      status: 'done',
+      doneEvidence: { commits: ['a1b2c3d'], files: ['src/main.rs', 'crates/core/src/lib.rs'] },
+    });
+    expect(r.status).toBe(200);
+  });
+
+  test('a filename that merely CONTAINS dots is not an escape', async () => {
+    tasks.set('t_1', card({ linkedSessionId: 's_1' }));
+    const r = await request(app()).patch('/api/tasks/t_1').send({
+      status: 'done',
+      doneEvidence: { commits: ['a1b2c3d'], files: ['src/my..odd..name.rs', 'a/.hidden/x.ts'] },
+    });
+    expect(r.status).toBe(200);
+  });
+});

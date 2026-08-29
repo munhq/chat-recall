@@ -2721,6 +2721,8 @@ export interface AutoTasksPolicy {
   categories?: string[] | null;
   /** Projects that never file a card, however urgent the finding. */
   excludedProjects?: string[];
+  /** Per-project floor/category overrides; absent keys use the global value. */
+  perProject?: Record<string, { maxPri?: 0 | 1 | 2 | 3; categories?: string[] | null }>;
 }
 export const SEVERITY_BY_PRI = ['critical', 'high', 'medium', 'low'] as const;
 /** The run state behind the switch: what it did last, and what is waiting. */

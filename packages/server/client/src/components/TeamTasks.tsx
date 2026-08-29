@@ -210,6 +210,19 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
     catch { setAuto(auto); setAutoErr('Could not change which projects file cards.'); }
   }, [auto, loadAuto]);
 
+  /** Give ONE project its own floor, or send it back to the global one.
+   *  Merged server-side, so setting one project cannot drop another's. */
+  const setProjectFloor = useCallback(async (projectId: string, maxPri: 0 | 1 | 2 | 3 | null) => {
+    if (!auto) return;
+    try {
+      await setAutoTasksPolicy({
+        ...auto,
+        perProject: { [projectId]: maxPri === null ? null : { maxPri } },
+      } as never);
+      await loadAuto();
+    } catch { setAutoErr('Could not change that project\'s priority floor.'); }
+  }, [auto, loadAuto]);
+
   /** Save a policy change, then re-read the state so the panel reports the
    *  server's answer rather than the optimistic guess. */
   const saveAuto = async (next: { enabled: boolean; maxPri: 0 | 1 | 2 | 3; excludedProjects?: string[] }) => {
@@ -340,6 +353,7 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
         onSave={saveAuto} onRun={runNow}
         projFilter={projFilter} onProject={setProjFilter}
         onToggleExcluded={toggleExcluded}
+        onProjectFloor={setProjectFloor}
         // WORKED, not "done". Two thirds of one real board's Done column had no
         // session behind it: 29 cards auto-closed because a finding stopped
         // being reported, 7 retired as duplicates. Counting those as
@@ -565,10 +579,12 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
  */
 function AutoPanel({
   auto, err, note, busy, open, onOpen, onSave, onRun, projFilter, onProject, onToggleExcluded,
-  doneCount, machineClosedCount, rejectedCount,
+  onProjectFloor, doneCount, machineClosedCount, rejectedCount,
 }: {
   /** Add or remove a project from the never-file list. */
   onToggleExcluded: (projectId: string) => void;
+  /** Give one project its own floor, or null to follow the global one. */
+  onProjectFloor: (projectId: string, maxPri: 0 | 1 | 2 | 3 | null) => void;
   auto: AutoTasksStatus | null;
   /** What the board has FINISHED — cards with a session behind them. The panel
    *  reported only backlog, so completed work behind a collapsed column never
@@ -774,6 +790,26 @@ function AutoPanel({
                       >
                         {excluded.has(r.projectId) ? 'excluded' : 'exclude'}
                       </span>
+                      {/* This project's own floor. One number across every repo
+                          forces the strictest on all of them — a client's
+                          codebase and a scratch project are not the same job. */}
+                      <select
+                        className="tt-sel-sm tt-ptile-floor"
+                        data-testid={`floor-${r.projectId}`}
+                        aria-label={`Priority floor for ${r.projectId}`}
+                        value={auto.perProject?.[r.projectId]?.maxPri ?? ''}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          const v = e.target.value;
+                          onProjectFloor(r.projectId, v === '' ? null : (Number(v) as 0 | 1 | 2 | 3));
+                        }}
+                      >
+                        <option value="">follows global</option>
+                        {SEVERITY_BY_PRI.map((sv, i) => (
+                          <option key={sv} value={i}>{sv} and above</option>
+                        ))}
+                      </select>
                     </span>
                     <span className="tt-ptile-nums">
                       {SEVERITY_BY_PRI.filter((sv) => (r.counts[sv] ?? 0) > 0).map((sv, i) => (
@@ -1269,6 +1305,7 @@ const TT_CSS = `
   color: var(--cr-fg-3); border: 1px solid var(--cr-line-1); cursor: pointer; }
 .tt-ptile-x:hover { color: var(--cr-fg-1); border-color: var(--cr-line-2); }
 .tt-ptile-off { opacity: 0.55; }
+.tt-ptile-floor { margin-left: 6px; font-size: 9.5px; padding: 1px 4px; }
 .tt-ptile-off .tt-ptile-x { color: var(--cr-warn-500, var(--cr-fg-2));
   border-color: var(--cr-warn-line, var(--cr-line-2)); }
 
