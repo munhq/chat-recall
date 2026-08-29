@@ -373,4 +373,25 @@ test.describe('the changes behind a card', () => {
     // for the file list: cross-repo shell work is invisible to the commit scan.
     await expect(body).toContainText('x.rs');
   });
+
+  test('THE POINT: the diff the closer recorded is shown, no derivation needed', async ({ page }) => {
+    // No session diff, no commit scan, no file list — just what the agent wrote
+    // down when it closed the card. This is the only source that always exists.
+    await mockBoard(page, { doneEvidence: {
+      diff: '--- a/crates/hft-core/src/base64.rs\n+++ b/crates/hft-core/src/base64.rs\n@@ -1 +1 @@\n-let mut result = String::new();\n+let mut result = String::with_capacity(n);',
+      summary: 'extracted to hft-core::base64',
+    } });
+    let derivationRequests = 0;
+    await page.route('**/api/conversations/*/diff**', (r) => { derivationRequests++; return r.fulfill({ status: 200, contentType: 'application/json', body: '{"files":[]}' }); });
+    await openBoard(page);
+
+    await expect(page.getByTestId('evidence-t_done')).toContainText('diff recorded');
+    await page.getByTestId('evidence-toggle-t_done').click();
+
+    const shown = page.getByTestId('recorded-diff-t_done');
+    await expect(shown).toContainText('String::with_capacity(n)');
+    await expect(shown).toContainText('crates/hft-core/src/base64.rs');
+    // …and it did not go looking for a diff it had already been given.
+    expect(derivationRequests).toBe(0);
+  });
 });
