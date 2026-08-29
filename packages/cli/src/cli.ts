@@ -732,7 +732,7 @@ program
       // them to the server. Skipped when there's no login (nothing to ship to)
       // or when --skip-sync is passed.
       if (deadTarget) {
-        console.log(chalk.bold('6. Skipping first sync — the saved server is not serving chat-recall'));
+        console.log(chalk.bold('Skipping first sync — the saved server is not serving chat-recall'));
         console.log(`   ${chalk.dim(`Re-point with the two commands above, then run ${chalk.bold('chat-recall sync')}.`)}`);
       } else if (!options.skipSync && firstTarget()) {
         // ONE LINE, AND NO QUESTION.
@@ -764,7 +764,10 @@ program
         const { watchFirstSync, spawnDetachedSync, handOffLine, progressLine: renderProgress } =
           await import('./init-progress.js');
         const { readCollectorHealth } = await import('@chat-recall/engine/core/collector-health.js');
-        const label = (text: string) => `${chalk.bold('6. Indexing')}    ${text}`;
+        // No step number. Every other numbered heading was deleted when init
+        // became "Installing… / ✓ Done", and this one kept its literal '6.',
+        // so a real run printed a lone step 6 with no 1 through 5 above it.
+        const label = (text: string) => `${chalk.bold('Indexing')}  ${text}`;
         const tty = process.stdout.isTTY === true;
         const outcome = await watchFirstSync({
           startWorker: () => spawnDetachedSync(),
@@ -783,7 +786,7 @@ program
           console.log(label(chalk.green(renderProgress(outcome.snapshot))));
         } else {
           console.log(label(chalk.dim(handOffLine(outcome.snapshot))));
-          console.log(`              ${chalk.dim('watch it with: ' + chalk.bold('chat-recall status'))}`);
+          console.log(`          ${chalk.dim('watch it with: ' + chalk.bold('chat-recall status'))}`);
         }
         // A failure the detached worker recorded — otherwise handing off would
         // also hand off the errors, which is how the RLS outage stayed invisible
@@ -791,7 +794,7 @@ program
         const failed = Object.entries(readCollectorHealth()?.targets ?? {})
           .filter(([, t]) => (t.failures ?? 0) > 0 && t.lastError);
         for (const [server, t] of failed) {
-          console.log(`              ${chalk.yellow('sync error')} ${chalk.dim(server)}: ${t.lastError}`);
+          console.log(`          ${chalk.yellow('sync error')} ${chalk.dim(server)}: ${t.lastError}`);
         }
       } else if (!options.skipSync) {
       } else {
