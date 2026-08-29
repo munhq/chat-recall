@@ -367,7 +367,10 @@ test.describe('the changes behind a card', () => {
     await openBoard(page);
 
     await page.getByTestId('evidence-toggle-t_done').click();
-    await expect(page.getByTestId('evidence-diff-t_done'))
-      .toContainText('git has no record of deadbee');
+    const body = page.getByTestId('evidence-diff-t_done');
+    await expect(body).toContainText('git has no record of deadbee');
+    // …and still shows what the closer named, which is the whole point of asking
+    // for the file list: cross-repo shell work is invisible to the commit scan.
+    await expect(body).toContainText('x.rs');
   });
 });
