@@ -65,12 +65,38 @@ describe('done', () => {
     expect(r.body.error).toMatch(/done by the work/);
   });
 
-  test('THE POINT: refused with a session but NO commits', async () => {
+  test('THE POINT: refused with a session but no record of the change', async () => {
     tasks.set('t_1', card({ linkedSessionId: 's_1' }));
     const r = await request(app()).patch('/api/tasks/t_1').send({ status: 'done' });
     expect(r.status).toBe(409);
-    expect(r.body.error).toMatch(/needs the commits/);
+    expect(r.body.error).toMatch(/needs the change/);
     expect(patches).toHaveLength(0);
+  });
+
+  test('THE DIFF ALONE IS ENOUGH — not every fix is committed when it closes', async () => {
+    // And it is the only source that always exists: the board cannot see
+    // shell-driven edits, and its commit scan only searches repositories the
+    // session tool-touched. The closer knows; it writes it down.
+    tasks.set('t_1', card({ linkedSessionId: 's_1' }));
+    const r = await request(app()).patch('/api/tasks/t_1')
+      .send({ status: 'done', doneEvidence: { diff: '--- a/x.rs\n+++ b/x.rs\n@@ -1 +1 @@\n-panic!()\n+Ok(())' } });
+    expect(r.status).toBe(200);
+    expect((patches[0].patch.doneEvidence as any).diff).toContain('+Ok(())');
+  });
+
+  test('a diff and its commits are both kept', async () => {
+    tasks.set('t_1', card({ linkedSessionId: 's_1' }));
+    await request(app()).patch('/api/tasks/t_1')
+      .send({ status: 'done', doneEvidence: { diff: '@@ x', commits: ['a1b2c3d'], files: ['x.rs'] } });
+    expect(patches[0].patch.doneEvidence).toMatchObject({
+      diff: '@@ x', commits: ['a1b2c3d'], files: ['x.rs'],
+    });
+  });
+
+  test('re-closing keeps the evidence already recorded', async () => {
+    tasks.set('t_1', card({ linkedSessionId: 's_1', doneEvidence: { diff: '@@ earlier' } }));
+    const r = await request(app()).patch('/api/tasks/t_1').send({ status: 'done' });
+    expect(r.status).toBe(200);
   });
 
   test('accepted with commits, and the shas are stored on the card', async () => {
@@ -88,7 +114,14 @@ describe('done', () => {
     expect(r.status).toBe(409);
   });
 
-  test('a card that already carries evidence can be re-marked done', async () => {
+  test('a blank diff is not a record of anything either', async () => {
+    tasks.set('t_1', card({ linkedSessionId: 's_1' }));
+    const r = await request(app()).patch('/api/tasks/t_1')
+      .send({ status: 'done', doneEvidence: { diff: '   \n  ' } });
+    expect(r.status).toBe(409);
+  });
+
+  test('a card that already carries commits can be re-marked done', async () => {
     // Re-opening and re-closing must not demand the shas a second time.
     tasks.set('t_1', card({ linkedSessionId: 's_1', doneEvidence: { commits: ['abc1234'] } }));
     const r = await request(app()).patch('/api/tasks/t_1').send({ status: 'done' });

@@ -42,7 +42,19 @@ type AsyncMethod<M> = M extends (...args: infer A) => infer R
  * `commits` are the checkable half — a sha exists or it does not.
  */
 export interface DoneEvidence {
-  commits: string[];
+  /**
+   * THE CHANGE ITSELF, as a unified diff, recorded by whoever closed the card.
+   *
+   * This is the evidence. Everything else on this object describes it. The first
+   * design required commits and re-derived the diff from the session's Edit/Write
+   * records or a git scan — and both are blind to an agent that edits through a
+   * shell or works in a repository the session never tool-touched, which is most
+   * of them. The closer knows exactly what it changed; asking it is not only
+   * simpler, it is the only source that is always right.
+   */
+  diff?: string;
+  /** The commits carrying that change, if it was committed. */
+  commits?: string[];
   files?: string[];
   /** Free text: what changed, in one line. */
   summary?: string;

@@ -12,8 +12,8 @@
  *   GET    /api/tasks/:id                          → { task, comments }
  *   PATCH  /api/tasks/:id {status?, assigneeSub?, title?, description?, due?,
  *                           linkedSessionId?, closedReason?}
- *     status 'done'   → needs the session that did the work AND
- *                       doneEvidence.commits — the sha(s) that fixed it
+ *     status 'done'   → needs the session that did the work AND the change:
+ *                       doneEvidence.diff (the unified diff) and/or .commits
  *     status 'closed' → needs closedReason (shut without the work being done)
  *   POST   /api/tasks/:id/comments {body}
  */
@@ -264,15 +264,18 @@ router.patch('/:id', async (req, res) => {
           reject: `PATCH /api/tasks/${req.params.id} {"status":"rejected"}`,
         });
       }
-      // AND NAME THE COMMITS.
+      // AND SHOW WHAT CHANGED.
       //
       // The session link alone proved the wrong thing. A card closed with a real
       // session attached rendered "74 commits" belonging to a DIFFERENT
       // repository: the session's entire footprint, unscoped. Right session,
       // wrong evidence, and nothing on the card said which was which.
       //
-      // A sha is checkable and it belongs to one repo. Requiring it makes the
-      // claim "this is fixed" point at something a reader can open.
+      // The DIFF is the evidence, and the closer is the only party that always
+      // has it: a session's Edit/Write records miss every shell-driven edit, and
+      // the commit scan only searches repositories a session tool-touched. Both
+      // came back empty on the first real card worked this way. Commits are
+      // welcome — they make the claim checkable — but they are not the change.
       const ev = req.body?.doneEvidence;
       // A sha SHAPE, not free text. The point of naming commits is that a reader
       // can open them; "fixed it" in the commits array would defeat that while
@@ -288,25 +291,34 @@ router.patch('/:id', async (req, res) => {
       if (offered.length && !commits.length) {
         return res.status(400).json({
           error: 'those do not look like commit shas',
-          detail: `Expected hex sha(s), 7-40 characters. Got: ${offered.slice(0, 3).join(', ')}`,
+          detail: `Expected hex sha(s), 7-40 characters. Got: ${offered.slice(0, 3).join(', ')}. `
+            + 'If the change is not committed, send doneEvidence.diff instead.',
         });
       }
-      const hadEvidence = (existingTask?.doneEvidence?.commits?.length ?? 0) > 0;
-      if (!commits.length && !hadEvidence) {
+      const diff = typeof ev?.diff === 'string' ? ev.diff.trim() : '';
+      const prev = existingTask?.doneEvidence;
+      const hadEvidence = (prev?.commits?.length ?? 0) > 0 || !!prev?.diff;
+      if (!commits.length && !diff && !hadEvidence) {
         return res.status(409).json({
-          error: 'closing a task needs the commits that fixed it',
-          detail: 'Pass doneEvidence.commits — the sha(s) in THIS card\'s repository. '
-            + 'If the fix is not committed yet, commit it first. If the card no longer applies, '
-            + 'use status "closed" with a reason instead; if it was never a real problem, reject it.',
-          example: `PATCH /api/tasks/${req.params.id} {"status":"done","linkedSessionId":"…","doneEvidence":{"commits":["a1b2c3d"]}}`,
+          error: 'closing a task needs the change that fixed it',
+          detail: 'Pass doneEvidence.diff — the unified diff of what you changed for THIS card — '
+            + 'and doneEvidence.commits if you committed it. You are the only one who knows: a '
+            + 'session\'s edit history misses shell-driven edits, and the commit scan only sees '
+            + 'repositories the session tool-touched. If the card no longer applies use status '
+            + '"closed" with a reason; if it was never a real problem, reject it.',
+          example: `PATCH /api/tasks/${req.params.id} {"status":"done","linkedSessionId":"…","doneEvidence":{"diff":"--- a/x\n+++ b/x\n@@ …","commits":["a1b2c3d"]}}`,
         });
       }
-      if (commits.length) {
+      if (commits.length || diff) {
         patch.doneEvidence = {
-          commits: commits.slice(0, 50),
+          // A patch, not a repository. 200 KB is far past any single card's
+          // change and far short of a row nobody can read back.
+          diff: diff ? diff.slice(0, 200_000) : prev?.diff,
+          commits: commits.length ? commits.slice(0, 50) : prev?.commits,
           files: Array.isArray(ev?.files)
-            ? ev.files.filter((f: unknown): f is string => typeof f === 'string').slice(0, 100) : undefined,
-          summary: typeof ev?.summary === 'string' ? ev.summary.slice(0, 2000) : undefined,
+            ? ev.files.filter((f: unknown): f is string => typeof f === 'string').slice(0, 100)
+            : prev?.files,
+          summary: typeof ev?.summary === 'string' ? ev.summary.slice(0, 2000) : prev?.summary,
         };
       }
     }
