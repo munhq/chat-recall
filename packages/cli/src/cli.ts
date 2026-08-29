@@ -574,8 +574,15 @@ program
         const bad = results.filter((r) => r.state === 'unparseable');
         if (ok.length) {
         }
+        // SAY WHAT IS WRONG WITH IT. This printed "the file does not parse" and
+        // the path, and dropped `r.error` — which carries the position the
+        // parser choked on. So the one line a user was expected to act on told
+        // them a file was broken and nothing about where, turning the last
+        // actionable output of init into a search party.
         for (const r of bad) {
-          rep.warn(`${chalk.yellow(`${r.label} config left alone — the file does not parse`)} ${chalk.dim(r.path)}`);
+          const why = (r.error ?? '').replace(/^SyntaxError:\s*/, '').split('\n')[0];
+          rep.warn(`${chalk.yellow(`${r.label} config left alone — ${why || 'the file does not parse'}`)} ${chalk.dim(r.path)}`);
+          rep.warn(`${chalk.dim(`   fix that file, then: chat-recall init   (nothing else needs redoing)`)}`);
         }
         if (process.env.CHAT_RECALL_VERBOSE) {
         }
