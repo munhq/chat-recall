@@ -65,7 +65,9 @@ function actor(req: express.Request): string { return (req.authorSub || req.user
  *                                 openCards, ceiling, byProject }
  *                                 maxPri: 0 critical, 1 high, 2 medium, 3 low
  *   PUT  /api/tasks/policy {enabled, maxPri?, ceiling?, maxPerRun?, categories?,
- *                            excludedProjects?}
+ *                            excludedProjects?, perProject?}
+ *     perProject: { "<projectId>": {maxPri?, categories?} | null } — merged into
+ *     what is stored; null clears one project's override.
  *   POST /api/tasks/policy/run  → run it NOW, returns
  *                                 { created, closed, repointed, backfilled, reopened }
  *
@@ -140,6 +142,15 @@ router.put('/policy', async (req, res) => {
       categories: req.body?.categories === undefined ? current.categories : req.body.categories,
       excludedProjects: req.body?.excludedProjects === undefined
         ? current.excludedProjects : req.body.excludedProjects,
+      // MERGED, not replaced: setting one project's floor must not silently drop
+      // every other project's override. Pass null for a project to clear it.
+      perProject: req.body?.perProject === undefined ? current.perProject : (() => {
+        const merged = { ...current.perProject } as Record<string, unknown>;
+        for (const [id, over] of Object.entries(req.body.perProject ?? {})) {
+          if (over === null) delete merged[id]; else merged[id] = over;
+        }
+        return merged;
+      })(),
     };
     // Round-trip through the parser so the same clamping applies to every writer.
     const saved = parsePolicy(JSON.stringify(next));
@@ -307,6 +318,24 @@ router.patch('/:id', async (req, res) => {
             + 'repositories the session tool-touched. If the card no longer applies use status '
             + '"closed" with a reason; if it was never a real problem, reject it.',
           example: `PATCH /api/tasks/${req.params.id} {"status":"done","linkedSessionId":"…","doneEvidence":{"diff":"--- a/x\n+++ b/x\n@@ …","commits":["a1b2c3d"]}}`,
+        });
+      }
+      // THE FILES MUST BELONG TO THIS CARD'S PROJECT.
+      //
+      // A card names one repository. A path that climbs out of it — absolute, or
+      // with a `..` segment — is a claim that the fix happened somewhere else,
+      // and a diff spanning repositories cannot be reviewed as one change. This
+      // is the cheap half of the rule the MCP states in words; it cannot verify
+      // a relative path really lives in that repo, but it can refuse the shapes
+      // that certainly do not.
+      const escaping = (Array.isArray(ev?.files) ? ev.files : [])
+        .filter((f: unknown): f is string => typeof f === 'string')
+        .filter((f: string) => f.startsWith('/') || f.startsWith('~') || /(^|\/)\.\.(\/|$)/.test(f));
+      if (escaping.length) {
+        return res.status(400).json({
+          error: 'those files are outside this card\'s project',
+          detail: `Paths must be relative to the repository this card names. Got: ${escaping.slice(0, 3).join(', ')}. `
+            + 'If the fix genuinely needed a change in another repository, say so and leave the card open.',
         });
       }
       if (commits.length || diff) {

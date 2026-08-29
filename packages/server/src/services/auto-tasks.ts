@@ -107,6 +107,19 @@ export interface AutoTasksPolicy {
    * in someone else's codebase is still a critical.
    */
   excludedProjects: string[];
+  /**
+   * Per-project overrides of the floor and the categories.
+   *
+   * One floor for every repository forces the strictest one on all of them: a
+   * client's codebase and a scratch project genuinely want different rules, and
+   * before this the only per-project control was "exclude it entirely". Absent
+   * keys fall through to the global value, so a tenant that never sets one
+   * behaves exactly as it did.
+   *
+   * The CEILING and the per-run cap stay global on purpose — they bound the
+   * BOARD, which is one board however many repositories feed it.
+   */
+  perProject: Record<string, { maxPri?: 0 | 1 | 2 | 3; categories?: string[] | null }>;
 }
 
 /** Bounds for the two counters, so a typo cannot disable or flood the board. */
@@ -117,6 +130,23 @@ function clampInt(v: unknown, { min, max, default: dflt }: { min: number; max: n
   const n = Math.floor(Number(v));
   if (!Number.isFinite(n)) return dflt;
   return Math.min(Math.max(n, min), max);
+}
+
+/** Per-project overrides, normalised through the same clamps as the globals. */
+function asPerProject(v: unknown): Record<string, { maxPri?: 0 | 1 | 2 | 3; categories?: string[] | null }> {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {};
+  const out: Record<string, { maxPri?: 0 | 1 | 2 | 3; categories?: string[] | null }> = {};
+  for (const [project, raw] of Object.entries(v as Record<string, unknown>).slice(0, 200)) {
+    const id = project.trim();
+    if (!id || !raw || typeof raw !== 'object') continue;
+    const o = raw as { maxPri?: unknown; categories?: unknown };
+    const entry: { maxPri?: 0 | 1 | 2 | 3; categories?: string[] | null } = {};
+    if (o.maxPri !== undefined && o.maxPri !== null) entry.maxPri = asMaxPri(o.maxPri);
+    if (o.categories !== undefined) entry.categories = asCategories(o.categories);
+    // An override that overrides nothing is noise in the stored policy.
+    if (entry.maxPri !== undefined || entry.categories !== undefined) out[id] = entry;
+  }
+  return out;
 }
 
 /** A project-id list, normalised. Ids are opaque strings, so only trimmed. */
@@ -141,6 +171,22 @@ function asMaxPri(v: unknown): 0 | 1 | 2 | 3 {
   return Math.min(n, PRI_SEVERITY.length - 1) as 0 | 1 | 2 | 3;
 }
 
+/**
+ * The rules in force for ONE project: its override where it has one, the global
+ * value otherwise. Exported because the filer and the count must agree — that
+ * mismatch has been the bug twice, and a shared function is how it stops being
+ * possible.
+ */
+export function policyFor(policy: AutoTasksPolicy, projectId: string | undefined): {
+  maxPri: number; categories: string[] | null;
+} {
+  const over = (projectId && policy.perProject[projectId]) || {};
+  return {
+    maxPri: over.maxPri ?? policy.maxPri,
+    categories: over.categories !== undefined ? over.categories : policy.categories,
+  };
+}
+
 export const POLICY_LIMITS = { ceiling: CEILING_RANGE, maxPerRun: PER_RUN_RANGE } as const;
 
 export function parsePolicy(raw: string | null): AutoTasksPolicy {
@@ -157,12 +203,13 @@ export function parsePolicy(raw: string | null): AutoTasksPolicy {
       maxPerRun: clampInt(o?.maxPerRun, PER_RUN_RANGE),
       categories: asCategories(o?.categories),
       excludedProjects: asProjects(o?.excludedProjects),
+      perProject: asPerProject(o?.perProject),
     };
   } catch {
     return {
       enabled: false, maxPri: 1,
       ceiling: CEILING_RANGE.default, maxPerRun: PER_RUN_RANGE.default, categories: null,
-      excludedProjects: [],
+      excludedProjects: [], perProject: {},
     };
   }
 }
@@ -237,7 +284,14 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
       //     which is bounded by the policy rather than by an arbitrary number.
       //   - THE CLOSE SWEEP wants the truth about the specific findings the
       //     existing cards name → look those up by exact id.
-      const wantedSeverities = PRI_SEVERITY.filter((sv) => priOfSeverity(sv) <= policy.maxPri);
+      // The widest floor ANY project asks for. Querying only the global floor
+      // would starve a project whose override is more permissive: its findings
+      // would never be fetched, so its override could never take effect.
+      const widestPri = Math.max(
+        policy.maxPri,
+        ...Object.values(policy.perProject).map((o) => o.maxPri ?? policy.maxPri),
+      );
+      const wantedSeverities = PRI_SEVERITY.filter((sv) => priOfSeverity(sv) <= widestPri);
       const { openActions, fileable, existing } = await runUnrestricted(async () => {
         const tasks = await store.teamTasksByFindingIds();
         const perSeverity = await Promise.all(
@@ -298,7 +352,10 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
             covers: [] as string[],       // a finding summarises nothing
           })),
       ];
-      const urgent = open.filter((a) => a.pri <= policy.maxPri);
+      // Per project, because one floor across every repository forces the
+      // strictest one on all of them. policyFor() is the single place that
+      // decides, so the filer and the count below cannot drift apart.
+      const urgent = open.filter((a) => a.pri <= policyFor(policy, a.projectId).maxPri);
 
       // ── A ROLL-UP SPEAKS FOR ITS MEMBERS ─────────────────────────────────
       //
@@ -331,14 +388,14 @@ async function run(tenant: string, force = false): Promise<{ created: number; cl
         }
       }
 
-      const wanted = policy.categories;
-      if (wanted) {
+      {
         const before = urgent.length;
         for (let i = urgent.length - 1; i >= 0; i--) {
-          if (!wanted.includes((urgent[i].category ?? '').toLowerCase())) urgent.splice(i, 1);
+          const cats = policyFor(policy, urgent[i].projectId).categories;
+          if (cats && !cats.includes((urgent[i].category ?? '').toLowerCase())) urgent.splice(i, 1);
         }
         if (before !== urgent.length) {
-          log.info({ tenant, categories: wanted, skipped: before - urgent.length },
+          log.info({ tenant, skipped: before - urgent.length },
             'auto-tasks: categories the policy does not ask for were skipped');
         }
       }
@@ -731,9 +788,11 @@ export async function autoTasksStatus(tenant: string): Promise<{
       // The filer skips categories the policy does not ask for, so a count that
       // ignores them promises work that will never happen — the same mismatch
       // that made this panel answer 316 when the true number was 1,070.
-      const wanted = policy.categories;
-      const asked = (cat: string | undefined) => !wanted || wanted.includes((cat ?? '').toLowerCase());
       const excluded = new Set(policy.excludedProjects);
+      const asked = (cat: string | undefined, projectId: string | undefined) => {
+        const cats = policyFor(policy, projectId).categories;
+        return !cats || cats.includes((cat ?? '').toLowerCase());
+      };
       const catsSeen = new Set<string>();
       for (const a of open) {
         const key = a.projectId || 'unknown';
@@ -741,8 +800,9 @@ export async function autoTasksStatus(tenant: string): Promise<{
         const sev = severityOfPri(a.pri);
         if (a.category) catsSeen.add(a.category.toLowerCase());
         row.counts[sev] = (row.counts[sev] ?? 0) + 1;
-        if (carded.has(a.id)) { if (a.pri <= policy.maxPri) filed++; }
-        else if (a.pri <= policy.maxPri && asked(a.category) && !excluded.has(a.projectId)) { row.eligible++; eligible++; }
+        const floor = policyFor(policy, a.projectId).maxPri;
+        if (carded.has(a.id)) { if (a.pri <= floor) filed++; }
+        else if (a.pri <= floor && asked(a.category, a.projectId) && !excluded.has(a.projectId)) { row.eligible++; eligible++; }
         rows.set(key, row);
       }
       const weight = (c: Record<string, number>) =>
@@ -755,6 +815,9 @@ export async function autoTasksStatus(tenant: string): Promise<{
       // still counted here, so the number is an upper bound rather than a promise
       // the filer will break. `byProject` stays action-derived — the per-project
       // finding counts would be a query per project.
+      // The findings summary is not sliced by project, so this half of the count
+      // uses the GLOBAL floor. Stated rather than hidden: with per-project
+      // overrides in play it is an estimate, and the action half above is exact.
       let findingsEligible = 0;
       for (const sev of PRI_SEVERITY) {
         if (priOfSeverity(sev) <= policy.maxPri) findingsEligible += fsum.bySeverity[sev] ?? 0;
@@ -764,7 +827,8 @@ export async function autoTasksStatus(tenant: string): Promise<{
       // cannot be sliced both ways at once. Scale by the share of findings whose
       // category the policy asks for — an estimate, and named as one, rather
       // than a precise number that is precisely wrong.
-      if (wanted) {
+      if (policy.categories) {
+        const wanted = policy.categories;
         const all = Object.values(fsum.byCategory ?? {}).reduce((n, c) => n + c, 0) || 1;
         const kept = Object.entries(fsum.byCategory ?? {})
           .filter(([c]) => wanted.includes(c.toLowerCase()))
