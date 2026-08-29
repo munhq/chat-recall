@@ -40,6 +40,7 @@ const TASKS = [
 const POLICY = {
   enabled: true, maxPri: 2, ceiling: 50, maxPerRun: 10, categories: null,
   excludedProjects: [] as string[],
+  perProject: {} as Record<string, { maxPri?: number }>,
   lastRun: { at: Date.now() - 120_000, created: 3, closed: 0, repointed: 0, backfilled: 0, reopened: 0, deduped: 0 },
   eligible: 1763, filed: 4, openCards: 50,
   availableCategories: ['clone', 'security', 'stability'],
@@ -236,6 +237,37 @@ test.describe('excluding a project', () => {
 
     await expect.poll(() => put).not.toBeNull();
     expect(put.excludedProjects).toEqual(['git:h/o/example-app']);
+  });
+
+  test('THE POINT: a project can be given its own floor, and others are untouched', async ({ page }) => {
+    let put: any = null;
+    await mockBoard(page, { onPolicyPut: (b) => { put = b; } });
+    await openBoard(page);
+    await openAutoSettings(page);
+
+    await page.getByTestId('floor-git:h/o/example-app').selectOption('0');
+
+    await expect.poll(() => put).not.toBeNull();
+    // Scoped to that project. The global floor is untouched, and the server
+    // merges, so no other project's override is dropped.
+    expect(put.perProject).toEqual({ 'git:h/o/example-app': { maxPri: 0 } });
+    expect(put.maxPri).toBe(2);
+  });
+
+  test('and can be sent back to the global floor', async ({ page }) => {
+    let put: any = null;
+    await mockBoard(page, {
+      onPolicyPut: (b) => { put = b; },
+      policy: { perProject: { 'git:h/o/example-app': { maxPri: 0 } } } as any,
+    });
+    await openBoard(page);
+    await openAutoSettings(page);
+
+    await expect(page.getByTestId('floor-git:h/o/example-app')).toHaveValue('0');
+    await page.getByTestId('floor-git:h/o/example-app').selectOption('');
+
+    await expect.poll(() => put).not.toBeNull();
+    expect(put.perProject).toEqual({ 'git:h/o/example-app': null });
   });
 
   test('an already-excluded project offers to come back, and keeps the others', async ({ page }) => {

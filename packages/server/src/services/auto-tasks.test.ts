@@ -994,3 +994,67 @@ describe('excluded projects', () => {
     expect(r?.created).toBe(2);
   });
 });
+
+/**
+ * ONE FLOOR ACROSS EVERY REPOSITORY forces the strictest one on all of them.
+ *
+ * A client's codebase and a scratch project want different rules, and the only
+ * per-project control before this was "exclude it entirely". Overrides fall
+ * through to the global value, so a tenant that sets none behaves as it did.
+ */
+describe('per-project overrides', () => {
+  const inProj = (id: string, project: string, pri: number) => ({ ...action(id, pri), projectId: project });
+
+  test('THE POINT: a stricter override files less than the global floor', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({
+      enabled: true, maxPri: 2, perProject: { p_client: { maxPri: 0 } },
+    }));
+    state.actions = [inProj('client_med', 'p_client', 2), inProj('client_crit', 'p_client', 0), action('mine_med', 2)];
+
+    const r = await runAutoTasks('t1');
+    expect(state.created.sort()).toEqual(['client_crit', 'mine_med']);
+    expect(r?.created).toBe(2);
+  });
+
+  test('a MORE permissive override files more, and its findings are fetched', async () => {
+    // The severity query widens to the most permissive floor in force — without
+    // that, an override looser than the global could never take effect.
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({
+      enabled: true, maxPri: 0, perProject: { p_loose: { maxPri: 2 } },
+    }));
+    state.actions = [inProj('loose_med', 'p_loose', 2), action('mine_med', 2)];
+
+    await runAutoTasks('t1');
+    expect(state.created).toEqual(['loose_med']);
+  });
+
+  test('categories can be set per project', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({
+      enabled: true, maxPri: 2, perProject: { p_sec: { categories: ['security'] } },
+    }));
+    state.actions = [
+      { ...inProj('sec', 'p_sec', 1), category: 'security' },
+      { ...inProj('dup', 'p_sec', 1), category: 'duplication' },
+      { ...action('mine', 1), category: 'duplication' },
+    ];
+
+    await runAutoTasks('t1');
+    expect(state.created.sort()).toEqual(['mine', 'sec']);
+  });
+
+  test('the count agrees with the filer, per project', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({
+      enabled: true, maxPri: 2, perProject: { p_client: { maxPri: 0 } },
+    }));
+    state.actions = [inProj('client_med', 'p_client', 2), action('mine_med', 2)];
+    const st = await autoTasksStatus('t1');
+    expect(st.eligible).toBe(1);
+  });
+
+  test('no overrides ⇒ exactly the behaviour before they existed', async () => {
+    state.settings.set(AUTO_TASKS_KEY, JSON.stringify({ enabled: true, maxPri: 2 }));
+    state.actions = [inProj('a', 'p_client', 2), action('b', 2)];
+    const r = await runAutoTasks('t1');
+    expect(r?.created).toBe(2);
+  });
+});
