@@ -666,7 +666,8 @@ const RecallTaskUpdateSchema = z.object({
     .describe("Why the card no longer applies. REQUIRED with status 'closed'."),
   commits: z.array(z.string()).optional()
     .describe("The commit sha(s) that fixed this, in THIS card's repository. REQUIRED with status 'done' — a session link alone proved the wrong thing once: a card closed with a real session attached showed 74 commits belonging to a DIFFERENT repository."),
-  files: z.array(z.string()).optional().describe('Files those commits changed (optional).'),
+  files: z.array(z.string()).optional()
+    .describe("Files those commits changed. PASS THESE: without them the card cannot narrow the session's diff to this card, and shows no changes at all rather than another repository's."),
   summary: z.string().optional().describe('One line on what changed (optional).'),
   assignee: z.string().optional().describe('Reassign to this user id (sub); empty string unassigns'),
   title: z.string().optional(),
@@ -1666,7 +1667,10 @@ WORKFLOW — do this whenever the user asks you to work on a task from the board
    because "in progress" with nothing behind it cannot be asked about. The card
    then shows that session's changes as they land, not only after the commit.
 2. When you finish, set status 'done' AND pass commits — the sha(s) in this
-   card's repository that fixed it. Without them the close is refused.
+   card's repository that fixed it. Without them the close is refused. Pass
+   the FILES too: they are what lets the card show the exact change, because a
+   session's diff covers every repository it touched and only the file list can
+   narrow it to this card.
 
 THE THREE ENDINGS ARE NOT THE SAME:
 - 'done'     — you fixed it. Needs linked_session_id; refused without one.
@@ -1685,7 +1689,7 @@ nobody had done.`,
             status: { type: 'string', enum: [...TASK_STATUS_SETTABLE], description: "Set the card's state. 'done' needs linked_session_id; 'closed' needs closed_reason. There is no 'rejected' here on purpose: rejecting is the user's verdict, not yours." },
             closed_reason: { type: 'string', description: "Why the card no longer applies. REQUIRED with status 'closed'." },
             commits: { type: 'array', items: { type: 'string' }, description: "Commit sha(s) in THIS card's repository that fixed it. REQUIRED with status 'done'." },
-            files: { type: 'array', items: { type: 'string' }, description: 'Files those commits changed (optional).' },
+            files: { type: 'array', items: { type: 'string' }, description: "Files those commits changed. PASS THESE: the card scopes the session's diff by them, and without them it can show no changes rather than risk showing another repository's." },
             summary: { type: 'string', description: 'One line on what changed (optional).' },
             assignee: { type: 'string', description: 'Reassign to this user id (sub)' },
             title: { type: 'string', description: 'Rename the card. Omit to leave the title alone.' },

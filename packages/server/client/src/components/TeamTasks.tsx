@@ -445,7 +445,12 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
                       done card its commits and their diff, an in-progress card
                       the changes its session has made SO FAR. Waiting for the
                       commit is what made "in progress" unanswerable. */}
-                  {(t.doneEvidence?.commits?.length || (t.status === 'in_progress' && t.linkedSessionId)) ? (
+                  {/* Any card with something behind it shows it: commits when the
+                      closer named them, otherwise the session and its changes.
+                      Requiring commits to RENDER meant every card closed before
+                      that rule existed showed nothing at all — the feature was
+                      live and invisible on the 19 cards the board actually had. */}
+                  {(t.doneEvidence?.commits?.length || t.linkedSessionId) ? (
                     <CardEvidence task={t} />
                   ) : null}
                   {t.closedReason && (
@@ -841,7 +846,9 @@ function CardEvidence({ task }: { task: TeamTask }) {
   const [err, setErr] = useState('');
 
   useEffect(() => {
-    if (!open || diff || !task.linkedSessionId) return;
+    // An unscoped card has nothing to filter the session's files by, so there is
+    // nothing honest to render — do not spend the request either.
+    if (!open || diff || !task.linkedSessionId || !(ev?.files?.length)) return;
     let live = true;
     getSessionDiff(task.linkedSessionId)
       .then((d) => { if (live) setDiff(d); })
@@ -849,19 +856,30 @@ function CardEvidence({ task }: { task: TeamTask }) {
     return () => { live = false; };
   }, [open, diff, task.linkedSessionId]);
 
-  const claimed = task.status === 'in_progress' && !!task.linkedSessionId;
-  if (!ev?.commits?.length && !claimed) return null;
-  // The card's own files, when the closer named them: a session touches every
-  // repository it worked in, and only some of that belongs to this card.
+  if (!ev?.commits?.length && !task.linkedSessionId) return null;
+  // THE CARD'S OWN FILES — and NOTHING when it named none.
+  //
+  // A session touches every repository it worked in, and only some of that
+  // belongs to this card. The first version fell back to "show everything" when
+  // the closer named no files, which is the common case: `files` is optional and
+  // every card closed before it existed has none. That fallback re-created the
+  // exact bug this block exists to kill — a card rendering another repository's
+  // work as though it were the fix. Better to show the commits and say the
+  // changes are not scoped than to show changes that are not this card's.
   const wanted = new Set((ev?.files ?? []).map((f) => f.replace(/^\.?\//, '')));
-  const files = (diff?.files ?? []).filter((f: SessionDiffFile) => !wanted.size
-    || wanted.has(f.file.replace(/^\.?\//, ''))
-    || [...wanted].some((w) => f.file.endsWith(w)));
+  const scoped = wanted.size > 0;
+  const files = scoped
+    ? (diff?.files ?? []).filter((f: SessionDiffFile) =>
+        wanted.has(f.file.replace(/^\.?\//, '')) || [...wanted].some((w) => f.file.endsWith(w)))
+    : [];
 
   return (
     <div className="tt-evidence" data-testid={`evidence-${task.id}`}>
       <div className="tt-evidence-head">
-        <span className="tt-evidence-label">{ev?.commits?.length ? 'fixed by' : 'being worked in'}</span>
+        <span className="tt-evidence-label">
+          {ev?.commits?.length ? 'fixed by'
+            : task.status === 'in_progress' ? 'being worked in' : 'worked in'}
+        </span>
         {(ev?.commits ?? []).slice(0, 4).map((c) => (
           <code key={c} className="tt-sha">{c.slice(0, 8)}</code>
         ))}
@@ -890,13 +908,27 @@ function CardEvidence({ task }: { task: TeamTask }) {
       {open && (
         <div className="tt-evidence-diff" data-testid={`evidence-diff-${task.id}`}>
           {err && <div className="tt-evidence-note">Could not load the changes: {err}</div>}
-          {!err && !diff && <div className="tt-evidence-note">Loading the changes…</div>}
+          {scoped && !err && !diff && <div className="tt-evidence-note">Loading the changes…</div>}
           {diff?._computing && <div className="tt-evidence-note">Still computing this session's diff — check back shortly.</div>}
-          {diff && !diff._computing && files.length === 0 && (
+          {!scoped && (
+            <div className="tt-evidence-note">
+              This card does not name the files it changed, so the linked session&apos;s diff
+              cannot be narrowed to it — a session touches every repository it worked in, and
+              showing all of it here would credit this card with someone else&apos;s work.
+              {' '}
+              {task.linkedSessionId && (
+                <a href={`/?view=search&session=${encodeURIComponent(task.linkedSessionId)}`}>
+                  Open the session to see everything it changed.
+                </a>
+              )}
+            </div>
+          )}
+          {scoped && diff && !diff._computing && files.length === 0 && (
             <div className="tt-evidence-note">
               {ev?.commits?.length
                 ? 'The session recorded no file edits for these commits. Shell-driven edits leave no tool record, so the commits are the evidence here.'
-                : 'Nothing changed in this session yet.'}
+                : task.status === 'in_progress' ? 'Nothing changed in this session yet.'
+                : 'This session recorded no file edits — shell-driven edits leave no tool record.'}
             </div>
           )}
           {files.map((f: SessionDiffFile) => (
