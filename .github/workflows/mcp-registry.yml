@@ -8,14 +8,28 @@
 # namespace. A workflow in this repo IS the org speaking for itself: the OIDC
 # token GitHub mints for this run proves repo+owner, no app policy involved.
 #
-# Runs on version tags (the release checklist says re-publish on every bump so
-# the listing never points at a tarball that does not exist) and on manual
-# dispatch for the first publish and for fixes to server.json alone.
+# Runs after every successful release-npm (the listing must never point at a
+# tarball that does not exist) and on manual dispatch, for the first publish and
+# for fixes to server.json alone.
 name: mcp-registry
 
+# AFTER release-npm, not beside it.
+#
+# This used to fire on the same tag push, so it started at the same second as
+# the publish it depends on and then sat polling npm for the version that
+# publish was still uploading. That is a race the workflow can only lose or
+# win by luck, and it has lost twice: v0.5.5 got a 400 "version not found",
+# and v0.5.28 timed out after five minutes while npm was still processing the
+# tarball — the release itself was fine both times, only the listing was left
+# pointing at the previous version.
+#
+# workflow_run makes the dependency real: this cannot start until release-npm
+# has finished, and the `success` guard means a failed publish no longer
+# triggers a registry push for a tarball that does not exist.
 on:
-  push:
-    tags: ['v*']
+  workflow_run:
+    workflows: ['release-npm']
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -24,9 +38,21 @@ permissions:
 
 jobs:
   publish:
+    # A manual run is always allowed. An automatic one only follows a release
+    # that SUCCEEDED and was cut from a tag — release-npm also runs on
+    # workflow_dispatch for dry runs, and those must not publish a listing.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
     runs-on: ubuntu-latest
     steps:
+      # workflow_run checks out the DEFAULT branch unless told otherwise, and
+      # server.json on main may already have moved past the tag being
+      # published. head_branch is the tag that triggered release-npm.
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch || github.ref }}
 
       - name: Install mcp-publisher
         run: |
@@ -37,22 +63,23 @@ jobs:
         run: ./mcp-publisher login github-oidc
 
       # The registry VALIDATES that the npm version in server.json already
-      # exists, and this workflow and release-npm both fire on the same tag with
-      # no ordering between them. v0.5.5 lost that race: the registry answered
-      # 400 "version '0.5.5' was not found (status: 404)" while npm was still
-      # publishing. Wait for npm to serve the version instead of racing it.
+      # exists. release-npm has now finished, but `npm publish` returning is not
+      # the same as the registry serving it — npm says so itself ("your package
+      # is being processed and may take a few minutes"). So this is no longer a
+      # race, only propagation, and fifteen minutes is generous rather than
+      # tight. Five was not enough on v0.5.28.
       - name: Wait for the npm version to be visible
         run: |
           VERSION=$(node -p "require('./server.json').version")
           echo "waiting for chat-recall@$VERSION on npm"
-          for i in $(seq 1 30); do
+          for i in $(seq 1 90); do
             if npm view "chat-recall@$VERSION" version >/dev/null 2>&1; then
               echo "npm has $VERSION"
               exit 0
             fi
             sleep 10
           done
-          echo "npm never served $VERSION after 5 minutes" >&2
+          echo "npm never served $VERSION after 15 minutes" >&2
           exit 1
 
       # From the repo root, where server.json lives. The manifest's versions
