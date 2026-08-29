@@ -84,6 +84,30 @@ function writeFileMkdir(path: string, body: string): void {
   writeFileSync(path, body);
 }
 
+/**
+ * Read a client's JSON config, treating an EMPTY file as an empty object.
+ *
+ * `JSON.parse('')` throws "Unexpected end of JSON input", which the callers
+ * correctly refuse to overwrite — the rule being that a stray comma in a user's
+ * settings must not cost them their configuration. But an empty file holds no
+ * configuration to lose, and it is a state these files legitimately reach: a
+ * tool that touches its config on first run before writing anything, an
+ * interrupted write, an editor that saved an empty buffer.
+ *
+ * Measured on a real machine: Antigravity's ~/.gemini/config/mcp_config.json
+ * was reported "left alone — the file does not parse", so init finished with
+ * that one client silently unwired, and the message named neither the reason
+ * nor anything the user could act on.
+ *
+ * Whitespace counts as empty. Anything else that fails to parse still throws,
+ * and the caller still refuses to touch it.
+ */
+function readJsonObject(path: string): Record<string, unknown> {
+  const raw = readFileSync(path, 'utf-8');
+  if (raw.trim() === '') return {};
+  return JSON.parse(raw) as Record<string, unknown>;
+}
+
 /* ─────────────────────────── JSON: mcpServers ─────────────────────────── */
 
 /**
@@ -98,7 +122,7 @@ function registerMcpServersJson(
   let cfg: Record<string, unknown> = {};
   if (existsSync(path)) {
     try {
-      cfg = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+      cfg = readJsonObject(path);
     } catch (err) {
       // Never clobber a file we cannot read: a stray comma in a user's settings
       // must not cost them their whole configuration.
@@ -141,7 +165,7 @@ function registerOpencodeJson(path: string, spec: McpLaunchSpec): McpRegisterRes
   let cfg: Record<string, unknown> = {};
   if (existsSync(path)) {
     try {
-      cfg = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
+      cfg = readJsonObject(path);
     } catch (err) {
       return { id, label, path, state: 'unparseable', error: String(err) };
     }
