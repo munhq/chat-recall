@@ -956,10 +956,21 @@ function CardEvidence({ task }: { task: TeamTask }) {
             </details>
           ))}
           {!!named.length && !matched.length && commits && !commits._computing && (
-            <div className="tt-evidence-note">
-              git has no record of {named.join(', ')} in the repositories this session touched —
-              the commit is in another repository, or was made outside the session&apos;s window.
-            </div>
+            <>
+              <div className="tt-evidence-note">
+                git has no record of {named.join(', ')} in the repositories this session touched —
+                the commit scan follows the files a session EDITED WITH TOOLS, and shell-driven
+                edits leave none, so work in another repository is invisible to it. These are the
+                files the closer named:
+              </div>
+              {/* The card's own list. Not git's word, and labelled as such — but it
+                  is the difference between seeing what changed and seeing nothing,
+                  and every sha here is still there to check. */}
+              <div className="tt-commitfiles">
+                {(ev?.files ?? []).map((f) => <div key={f}><code>{f}</code></div>)}
+                {!ev?.files?.length && <div>The closer named no files either.</div>}
+              </div>
+            </>
           )}
           {scoped && diff && !diff._computing && files.length === 0 && (
             <div className="tt-evidence-note">
