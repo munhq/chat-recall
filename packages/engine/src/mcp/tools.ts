@@ -723,6 +723,8 @@ const RecallTaskPolicySchema = z.object({
     .describe('Add ONE project to the never-file list. For "do not put work on my board for this repo" — a client codebase, an archive, a mirror.'),
   include_project: z.string().optional()
     .describe('Remove ONE project from the never-file list.'),
+  project: z.string().optional()
+    .describe('Apply max_pri and categories to THIS PROJECT ONLY, leaving every other repo on the global setting. For "only security in the client repo, everything in mine".'),
 });
 const RecallTaskCommentSchema = z.object({
   task_id: z.string().describe('Task id (t_…) from recall_tasks'),
@@ -1675,6 +1677,12 @@ WORKFLOW — do this whenever the user asks you to work on a task from the board
    commit scan only searches repositories this session already tool-touched.
    The diff you paste is what the next person reads on the card.
 
+STAY INSIDE THE CARD'S PROJECT. A card names one project; fix it there and
+nowhere else. If the real fix needs a change in another repository, say so and
+leave the card open rather than reaching across — the person who filed this board
+did not ask you to touch a second codebase, and a diff spanning repositories
+cannot be reviewed as one change.
+
 TELL THE USER WHAT YOU ARE DOING. Say that you are taking tasks off the
 chat-recall board, name the ones you picked, and say when each is done and what
 changed. A card closing on its own, with no word to the person whose board it is,
@@ -1730,6 +1738,8 @@ without editing the task itself. Pass the task id (t_…) from recall_tasks.`,
   ceiling      how many auto-filed cards may be open at once
   max_per_run  cap on new cards per run
   categories   only file these categories (e.g. ["security"]); [] means all
+  project      apply max_pri/categories to THAT REPOSITORY ONLY — one floor
+               across every repo forces the strictest one on all of them
   exclude_project / include_project
                a repository that never files a card — a client's codebase, an
                archive, a mirror. Indexed and searchable as before; simply never
@@ -1746,6 +1756,7 @@ explains a quiet board: at the ceiling, filing pauses until cards close.`,
             ceiling: { type: 'number', description: 'How many auto-filed cards may be OPEN at once.' },
             max_per_run: { type: 'number', description: 'Cap on NEW cards per run.' },
             categories: { type: 'array', items: { type: 'string' }, description: 'Only file these categories; [] means all.' },
+            project: { type: 'string', description: 'Apply max_pri/categories to THIS project only, leaving other repos on the global setting.' },
             excluded_projects: { type: 'array', items: { type: 'string' }, description: 'Replace the never-file list.' },
             exclude_project: { type: 'string', description: 'Add ONE project to the never-file list.' },
             include_project: { type: 'string', description: 'Remove ONE project from the never-file list.' },
@@ -3902,10 +3913,19 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         requireRemote();
         const patch: Record<string, unknown> = {};
         if (params.enabled !== undefined) patch.enabled = params.enabled;
-        if (params.max_pri !== undefined) patch.maxPri = params.max_pri;
+        if (params.project) {
+          // Scoped to one repository. The ceiling and the per-run cap stay global
+          // whatever is asked here: they bound the BOARD, which is one board.
+          const over: Record<string, unknown> = {};
+          if (params.max_pri !== undefined) over.maxPri = params.max_pri;
+          if (params.categories !== undefined) over.categories = params.categories;
+          patch.perProject = { [params.project]: Object.keys(over).length ? over : null };
+        } else {
+          if (params.max_pri !== undefined) patch.maxPri = params.max_pri;
+          if (params.categories !== undefined) patch.categories = params.categories;
+        }
         if (params.ceiling !== undefined) patch.ceiling = params.ceiling;
         if (params.max_per_run !== undefined) patch.maxPerRun = params.max_per_run;
-        if (params.categories !== undefined) patch.categories = params.categories;
         if (params.excluded_projects !== undefined) patch.excludedProjects = params.excluded_projects;
         // A read needs no arguments; a write must not silently drop the rest of
         // the policy, so the PUT is given the current values it does not change.
