@@ -664,8 +664,10 @@ const RecallTaskUpdateSchema = z.object({
     .describe("'done' needs linked_session_id — the session that did the work. 'closed' means the card no longer applies (its finding went away, or it duplicates another) and needs closed_reason. If it was never a real problem, do not close it: tell the user, because rejecting is their call."),
   closed_reason: z.string().optional()
     .describe("Why the card no longer applies. REQUIRED with status 'closed'."),
+  diff: z.string().optional()
+    .describe("THE CHANGE YOU MADE for this card, as a unified diff (`git diff`, or the patch you applied). REQUIRED with status 'done' unless you pass commits. You are the only one who knows it: the board cannot reconstruct shell-driven edits, and its commit scan only sees repositories this session tool-touched."),
   commits: z.array(z.string()).optional()
-    .describe("The commit sha(s) that fixed this, in THIS card's repository. REQUIRED with status 'done' — a session link alone proved the wrong thing once: a card closed with a real session attached showed 74 commits belonging to a DIFFERENT repository."),
+    .describe("The commit sha(s) carrying that change, if you committed it. Pass them with the diff when you have both — the diff is what a reader sees, the sha is what makes it checkable."),
   files: z.array(z.string()).optional()
     .describe("Files those commits changed. PASS THESE: without them the card cannot narrow the session's diff to this card, and shows no changes at all rather than another repository's."),
   summary: z.string().optional().describe('One line on what changed (optional).'),
@@ -1666,11 +1668,17 @@ WORKFLOW — do this whenever the user asks you to work on a task from the board
    server cannot see it). This is REQUIRED — claiming without it is refused,
    because "in progress" with nothing behind it cannot be asked about. The card
    then shows that session's changes as they land, not only after the commit.
-2. When you finish, set status 'done' AND pass commits — the sha(s) in this
-   card's repository that fixed it. Without them the close is refused. Pass
-   the FILES too: they are what lets the card show the exact change, because a
-   session's diff covers every repository it touched and only the file list can
-   narrow it to this card.
+2. When you finish, set status 'done' AND RECORD WHAT YOU CHANGED: pass the diff
+   (unified — what git diff printed for this fix) and the commits if you
+   committed it. The close is refused without one of them. Do not expect the
+   board to work it out — it cannot see edits made through a shell, and its
+   commit scan only searches repositories this session already tool-touched.
+   The diff you paste is what the next person reads on the card.
+
+TELL THE USER WHAT YOU ARE DOING. Say that you are taking tasks off the
+chat-recall board, name the ones you picked, and say when each is done and what
+changed. A card closing on its own, with no word to the person whose board it is,
+is how this board stopped being trusted the first time.
 
 THE THREE ENDINGS ARE NOT THE SAME:
 - 'done'     — you fixed it. Needs linked_session_id; refused without one.
@@ -1688,7 +1696,8 @@ nobody had done.`,
             id: { type: 'string', description: 'Task id (t_…)' },
             status: { type: 'string', enum: [...TASK_STATUS_SETTABLE], description: "Set the card's state. 'done' needs linked_session_id; 'closed' needs closed_reason. There is no 'rejected' here on purpose: rejecting is the user's verdict, not yours." },
             closed_reason: { type: 'string', description: "Why the card no longer applies. REQUIRED with status 'closed'." },
-            commits: { type: 'array', items: { type: 'string' }, description: "Commit sha(s) in THIS card's repository that fixed it. REQUIRED with status 'done'." },
+            diff: { type: 'string', description: "THE CHANGE YOU MADE for this card, as a unified diff. REQUIRED with status 'done' unless you pass commits — the board cannot reconstruct shell-driven edits, so this is the only reliable record." },
+            commits: { type: 'array', items: { type: 'string' }, description: 'Commit sha(s) carrying that change, if you committed it.' },
             files: { type: 'array', items: { type: 'string' }, description: "Files those commits changed. PASS THESE: the card scopes the session's diff by them, and without them it can show no changes rather than risk showing another repository's." },
             summary: { type: 'string', description: 'One line on what changed (optional).' },
             assignee: { type: 'string', description: 'Reassign to this user id (sub)' },
@@ -3858,15 +3867,19 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         if (params.title) patch.title = params.title;
         if (params.linked_session_id !== undefined) patch.linkedSessionId = params.linked_session_id;
         if (params.closed_reason !== undefined) patch.closedReason = params.closed_reason;
-        if (params.commits?.length) {
-          patch.doneEvidence = { commits: params.commits, files: params.files, summary: params.summary };
+        if (params.commits?.length || params.diff) {
+          patch.doneEvidence = {
+            diff: params.diff, commits: params.commits, files: params.files, summary: params.summary,
+          };
         }
-        if (params.status === 'done' && !params.commits?.length) {
+        if (params.status === 'done' && !params.commits?.length && !params.diff) {
           return { content: [{ type: 'text', text:
-            "Closing as 'done' needs the commit sha(s) that fixed it, in this card's repository — pass "
-            + 'commits. Commit the fix first if you have not. If the card no longer applies, use '
-            + "status 'closed' with closed_reason; if it was never a real problem, leave it open and "
-            + 'tell the user, because rejecting is their call.' }] };
+            "Closing as 'done' needs the change that fixed it: pass `diff` — the unified diff of what "
+            + 'you changed for this card — and `commits` if you committed it. Nothing else can supply '
+            + 'it: the board cannot see shell-driven edits, and its commit scan only searches '
+            + "repositories this session tool-touched. If the card no longer applies, use status "
+            + "'closed' with closed_reason; if it was never a real problem, leave it open and tell "
+            + 'the user, because rejecting is their call.' }] };
         }
         // Refuse here rather than let the server 400: the caller is a model, and
         // "closing a card needs a reason" is more useful before the round trip.

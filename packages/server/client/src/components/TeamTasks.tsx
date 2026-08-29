@@ -912,7 +912,8 @@ function CardEvidence({ task }: { task: TeamTask }) {
             {ev.files.length} file{ev.files.length === 1 ? '' : 's'}
           </span>
         ) : null}
-        {task.linkedSessionId && (
+        {ev?.diff && <span className="tt-evidence-files">diff recorded</span>}
+        {(task.linkedSessionId || ev?.diff) && (
           <button
             type="button"
             className="tt-evidence-more"
@@ -927,10 +928,23 @@ function CardEvidence({ task }: { task: TeamTask }) {
       {ev?.summary && <div className="tt-evidence-summary">{ev.summary}</div>}
       {open && (
         <div className="tt-evidence-diff" data-testid={`evidence-diff-${task.id}`}>
+          {/* WHAT THE CLOSER RECORDED, first and without asking anything else.
+              Everything below this is derivation — the session's edit history and
+              a git scan — and both are blind to shell-driven edits and to repos a
+              session never tool-touched. The closer knew; it wrote it down. */}
+          {ev?.diff && (
+            <details className="tt-difffile" open data-testid={`recorded-diff-${task.id}`}>
+              <summary>
+                <code>the change</code>
+                <span className="tt-diff">as recorded by whoever closed this</span>
+              </summary>
+              <pre className="tt-diffbody">{ev.diff.slice(0, 200_000)}</pre>
+            </details>
+          )}
           {err && <div className="tt-evidence-note">Could not load the changes: {err}</div>}
           {scoped && !err && !diff && <div className="tt-evidence-note">Loading the changes…</div>}
           {diff?._computing && <div className="tt-evidence-note">Still computing this session's diff — check back shortly.</div>}
-          {!scoped && (
+          {!ev?.diff && !scoped && (
             <div className="tt-evidence-note">
               This card does not name the files it changed, so the linked session&apos;s diff
               cannot be narrowed to it — a session touches every repository it worked in, and
@@ -955,7 +969,7 @@ function CardEvidence({ task }: { task: TeamTask }) {
               </div>
             </details>
           ))}
-          {!!named.length && !matched.length && commits && !commits._computing && (
+          {!ev?.diff && !!named.length && !matched.length && commits && !commits._computing && (
             <>
               <div className="tt-evidence-note">
                 git has no record of {named.join(', ')} in the repositories this session touched —
@@ -972,7 +986,7 @@ function CardEvidence({ task }: { task: TeamTask }) {
               </div>
             </>
           )}
-          {scoped && diff && !diff._computing && files.length === 0 && (
+          {!ev?.diff && scoped && diff && !diff._computing && files.length === 0 && (
             <div className="tt-evidence-note">
               {ev?.commits?.length
                 ? 'The session recorded no file edits for these commits. Shell-driven edits leave no tool record, so the commits are the evidence here.'

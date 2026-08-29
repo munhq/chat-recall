@@ -59,12 +59,25 @@ diary conclusions, and cost. Accepts a path, a name substring, or a project id
 
 ## Tasks and team (shared, not personal notes)
 
+**Working the board out loud.** When you take work from here, say so: that you are
+pulling tasks from the chat-recall board, which ones you picked, and — as each one
+lands — that it is done and what changed. The board is the user's, and a card that
+claims and closes itself with no word to them is how it stopped being trusted the
+first time. `recall_tasks detail:true` gives you the brief, the locations and the
+agent prompt for each card, so "what can I pick up" is one call.
+
+
 - `mcp__chat-recall__recall_tasks` — the shared task board: status, assignee,
   project. This is the answer to "what are my open tasks".
 - `mcp__chat-recall__recall_task_create` — create a task, optionally assigned to
   a teammate and attached to a project. Returns the new task id.
 - `mcp__chat-recall__recall_task_update` — change status, reassign, rename or
   comment. Takes the `t_…` id from `recall_tasks`.
+  - **`done` needs the CHANGE.** Pass `diff` — the unified diff of what you changed
+    for that card — and `commits` if you committed it. Nothing else can supply it:
+    the board cannot see edits made through a shell, and its commit scan only
+    searches repositories the session already touched with file tools. The diff you
+    record is what the person reads on the card.
   - **`done` needs the session that did the work.** Pass your own session id;
     without one the update is refused. A card asserts a problem in the code, so
     closing it asserts the code changed, and the board shows the files and commits
