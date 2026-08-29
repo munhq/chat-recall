@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  listTasks, createTask, updateTask, getTask, addTaskComment, getSessionOutcome, getSessionDiff,
+  listTasks, createTask, updateTask, getTask, addTaskComment, getSessionOutcome, getSessionDiff, getSessionCommits,
   getAutoTasksPolicy, setAutoTasksPolicy, runAutoTasksNow, SEVERITY_BY_PRI,
   type TeamTask, type TeamTaskStatus, type TeamTaskComment, type SessionOutcomeResponse,
-  type SessionDiffResponse, type SessionDiffFile,
+  type SessionDiffResponse, type SessionDiffFile, type SessionCommitsResponse,
   type AutoTasksStatus,
 } from '../services/api';
 import { Button, Chip, Icon, Input } from './primitives';
@@ -843,18 +843,31 @@ function CardEvidence({ task }: { task: TeamTask }) {
   const ev = task.doneEvidence;
   const [open, setOpen] = useState(false);
   const [diff, setDiff] = useState<SessionDiffResponse | null>(null);
+  const [commits, setCommits] = useState<SessionCommitsResponse | null>(null);
   const [err, setErr] = useState('');
 
   useEffect(() => {
-    // An unscoped card has nothing to filter the session's files by, so there is
-    // nothing honest to render — do not spend the request either.
-    if (!open || diff || !task.linkedSessionId || !(ev?.files?.length)) return;
+    if (!open || !task.linkedSessionId) return;
     let live = true;
-    getSessionDiff(task.linkedSessionId)
-      .then((d) => { if (live) setDiff(d); })
-      .catch((e) => { if (live) setErr(String(e?.message || e)); });
+    // THE COMMITS FIRST, because they are ground truth.
+    //
+    // The session diff is rebuilt from Edit/Write tool records, and an agent that
+    // edits through the shell leaves none — this very card was fixed with four
+    // files that the session diff does not contain. Git knows what the commit
+    // touched regardless of how the edit was made, so the named shas are the
+    // better source and the tool-record diff is the bonus on top.
+    if (!commits) {
+      getSessionCommits(task.linkedSessionId)
+        .then((c) => { if (live) setCommits(c); })
+        .catch(() => { /* the diff below may still have something */ });
+    }
+    if (!diff && ev?.files?.length) {
+      getSessionDiff(task.linkedSessionId)
+        .then((d) => { if (live) setDiff(d); })
+        .catch((e) => { if (live) setErr(String(e?.message || e)); });
+    }
     return () => { live = false; };
-  }, [open, diff, task.linkedSessionId]);
+  }, [open, diff, commits, task.linkedSessionId, ev?.files?.length]);
 
   if (!ev?.commits?.length && !task.linkedSessionId) return null;
   // THE CARD'S OWN FILES — and NOTHING when it named none.
@@ -866,6 +879,13 @@ function CardEvidence({ task }: { task: TeamTask }) {
   // exact bug this block exists to kill — a card rendering another repository's
   // work as though it were the fix. Better to show the commits and say the
   // changes are not scoped than to show changes that are not this card's.
+  // The named shas, as git recorded them. Prefix match because a card stores the
+  // short sha a human would paste.
+  const named = (ev?.commits ?? []).map((c) => c.toLowerCase());
+  const matched = (commits?.repos ?? [])
+    .flatMap((r) => r.commits ?? [])
+    .filter((c) => named.some((n) => c.sha.toLowerCase().startsWith(n) || c.shortSha.toLowerCase() === n));
+
   const wanted = new Set((ev?.files ?? []).map((f) => f.replace(/^\.?\//, '')));
   const scoped = wanted.size > 0;
   const files = scoped
@@ -921,6 +941,24 @@ function CardEvidence({ task }: { task: TeamTask }) {
                   Open the session to see everything it changed.
                 </a>
               )}
+            </div>
+          )}
+          {matched.map((c) => (
+            <details key={c.sha} className="tt-difffile" open={matched.length === 1}>
+              <summary>
+                <code>{c.shortSha}</code>
+                <span>{c.subject}</span>
+                <span className="tt-diff">+{c.linesAdded}/−{c.linesRemoved}</span>
+              </summary>
+              <div className="tt-commitfiles">
+                {c.files.map((f) => <div key={f}><code>{f}</code></div>)}
+              </div>
+            </details>
+          ))}
+          {!!named.length && !matched.length && commits && !commits._computing && (
+            <div className="tt-evidence-note">
+              git has no record of {named.join(', ')} in the repositories this session touched —
+              the commit is in another repository, or was made outside the session&apos;s window.
             </div>
           )}
           {scoped && diff && !diff._computing && files.length === 0 && (
@@ -1239,6 +1277,8 @@ const TT_CSS = `
 .tt-evidence-summary { margin-top: 5px; color: var(--cr-fg-3); font-size: 10.5px; }
 .tt-evidence-diff { margin-top: 6px; border-top: 1px solid var(--cr-line-1); padding-top: 6px; }
 .tt-evidence-note { color: var(--cr-fg-3); font-size: 10.5px; }
+.tt-commitfiles { margin: 4px 0 8px 10px; font-size: 10px; color: var(--cr-fg-3);
+  font-family: var(--cr-font-mono); }
 .tt-difffile > summary { display: flex; gap: 8px; align-items: center; cursor: pointer;
   font-size: 10.5px; color: var(--cr-fg-2); padding: 2px 0; }
 .tt-diffbody { margin: 4px 0 8px; padding: 7px; border-radius: var(--cr-radius-sm);
