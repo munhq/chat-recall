@@ -321,4 +321,53 @@ test.describe('the changes behind a card', () => {
     // …and it does not even ask for a diff it could not honestly scope.
     expect(diffRequests).toBe(0);
   });
+
+  test('THE POINT: the named sha resolves against GIT, not the tool records', async ({ page }) => {
+    // A session that edits through the shell leaves no Edit/Write records, so its
+    // reconstructed diff is empty — but git still knows what the commit touched.
+    // The commits are the source of truth; the tool-record diff is a bonus.
+    await mockBoard(page, { doneEvidence: { commits: ['08da6d9'], files: ['crates/hft-core/src/base64.rs'] } });
+    await page.route('**/api/conversations/*/commits**', (r) => r.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({
+        sessionId: 'sess_1', startMs: 0, endMs: 1, totalCommits: 1,
+        repos: [{ repo: '/repo', repoName: 'example', commits: [{
+          repo: '/repo', repoName: 'example', sha: '08da6d9aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          shortSha: '08da6d9', authorIso: '', authorName: 'x',
+          subject: 'core: one base64, not two copies', body: '',
+          files: ['crates/hft-core/src/base64.rs', 'crates/hft-io/src/ktls_websocket.rs'],
+          linesAdded: 88, linesRemoved: 46, matchedSessionFiles: [],
+        }] }],
+      }),
+    }));
+    // The tool-record diff is deliberately EMPTY, the shell-edit case.
+    await page.route('**/api/conversations/*/diff**', (r) => r.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({ sessionId: 'sess_1', projectPath: '/repo', totalLinesAdded: 0, totalLinesRemoved: 0, files: [] }),
+    }));
+    await openBoard(page);
+
+    await page.getByTestId('evidence-toggle-t_done').click();
+    const body = page.getByTestId('evidence-diff-t_done');
+    await expect(body).toContainText('core: one base64, not two copies');
+    await expect(body).toContainText('+88/−46');
+    await expect(body).toContainText('crates/hft-core/src/base64.rs');
+  });
+
+  test('a sha git never saw says so, instead of showing nothing', async ({ page }) => {
+    await mockBoard(page, { doneEvidence: { commits: ['deadbee'], files: ['x.rs'] } });
+    await page.route('**/api/conversations/*/commits**', (r) => r.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({ sessionId: 'sess_1', startMs: 0, endMs: 1, totalCommits: 0, repos: [] }),
+    }));
+    await page.route('**/api/conversations/*/diff**', (r) => r.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({ sessionId: 'sess_1', projectPath: '/x', totalLinesAdded: 0, totalLinesRemoved: 0, files: [] }),
+    }));
+    await openBoard(page);
+
+    await page.getByTestId('evidence-toggle-t_done').click();
+    await expect(page.getByTestId('evidence-diff-t_done'))
+      .toContainText('git has no record of deadbee');
+  });
 });
