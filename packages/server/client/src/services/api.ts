@@ -2707,7 +2707,7 @@ export interface TeamTask {
   /** Why a `closed` card stopped applying. */
   closedReason?: string | null;
   /** The commits offered as proof for a `done` card, in ITS repository. */
-  doneEvidence?: { commits: string[]; files?: string[]; summary?: string } | null;
+  doneEvidence?: { diff?: string; commits?: string[]; files?: string[]; summary?: string } | null;
   due: number | null; createdAt: number; updatedAt: number;
 }
 
@@ -2803,7 +2803,7 @@ export async function updateTask(id: string, patch: {
   /** Required by the server when status becomes 'closed'. */
   closedReason?: string;
   /** Required by the server when status becomes 'done' — the shas that fixed it. */
-  doneEvidence?: { commits: string[]; files?: string[]; summary?: string };
+  doneEvidence?: { diff?: string; commits?: string[]; files?: string[]; summary?: string };
 }): Promise<TeamTask> {
   const res = await fetchWithTimeout(`${API_BASE}/tasks/${encodeURIComponent(id)}`, {
     method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch),
