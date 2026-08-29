@@ -59,6 +59,10 @@ const FILES = [
   // a ledger entry, and the SQL no longer has a path where it does nothing.
   './migrations/0012_machine_closures_are_not_done.sql',
   // One-off repair. DELETE THIS FILE AND THIS ENTRY once it has run everywhere.
+  // Fills done_evidence_json from the sha a card's own closing comment already
+  // names, for cards closed before naming it was required.
+  './migrations/0013_recover_commits_from_comments.sql',
+  // One-off repair. DELETE THIS FILE AND THIS ENTRY once it has run everywhere.
   // Stamps an owner on rows written before attribution existed. A NULL author is
   // read as "legacy, visible to the whole tenant", which is the one thing a new
   // member can see on the day they join.

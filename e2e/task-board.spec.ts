@@ -50,7 +50,12 @@ async function mockBoard(page: Page, opts: {
   onPatch?: (id: string, body: any) => void;
   onPolicyPut?: (body: any) => void;
   policy?: Partial<typeof POLICY>;
+  /** Override the done card's evidence — e.g. commits with no file list. */
+  doneEvidence?: { commits: string[]; files?: string[]; summary?: string };
 } = {}) {
+  const tasks = opts.doneEvidence
+    ? TASKS.map((t) => (t.id === 't_done' ? { ...t, doneEvidence: opts.doneEvidence! } : t))
+    : TASKS;
   await page.route('**/api/status', (r: Route) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(STATUS_FIXTURE) }));
   await page.route('**/api/status/stream', (r) => r.abort());
@@ -66,13 +71,13 @@ async function mockBoard(page: Page, opts: {
     if (method === 'PATCH' && m) {
       const body = JSON.parse(r.request().postData() || '{}');
       opts.onPatch?.(m[1], body);
-      const task = { ...TASKS.find((t) => t.id === m[1]), ...body };
+      const task = { ...tasks.find((t) => t.id === m[1]), ...body };
       return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ task }) });
     }
     if (method === 'POST') {
       return r.fulfill({ status: 200, contentType: 'application/json', body: '{"comment":{}}' });
     }
-    return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ tasks: TASKS }) });
+    return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ tasks }) });
   });
 
   // AFTER the catch-all on purpose: Playwright tries the most recently added
@@ -289,5 +294,31 @@ test.describe('the changes behind a card', () => {
     await page.getByTestId('evidence-toggle-t_done').click();
     await expect(page.getByTestId('evidence-diff-t_done'))
       .toContainText('Shell-driven edits leave no tool record');
+  });
+
+  test('a card that named NO files shows no diff at all, rather than the session\'s whole footprint', async ({ page }) => {
+    // The bug this whole block exists to kill: a session touches every repo it
+    // worked in, so rendering all of it on one card credits that card with
+    // another repository's work.
+    await mockBoard(page, { doneEvidence: { commits: ['a1b2c3d4'] } });
+    let diffRequests = 0;
+    await page.route('**/api/conversations/*/diff**', (r) => {
+      diffRequests++;
+      return r.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({
+          sessionId: 'sess_1', projectPath: '/x', totalLinesAdded: 99, totalLinesRemoved: 9,
+          files: [{ file: 'some/other/repo.ts', diff: 'not this card', linesAdded: 99, linesRemoved: 9, reverted: false, succeededEvents: 1, failedEvents: 0, initialKnown: true, events: [] }],
+        }),
+      });
+    });
+    await openBoard(page);
+
+    await page.getByTestId('evidence-toggle-t_done').click();
+    const body = page.getByTestId('evidence-diff-t_done');
+    await expect(body).toContainText('does not name the files it changed');
+    await expect(body).not.toContainText('some/other/repo.ts');
+    // …and it does not even ask for a diff it could not honestly scope.
+    expect(diffRequests).toBe(0);
   });
 });
