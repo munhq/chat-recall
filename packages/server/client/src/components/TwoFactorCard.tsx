@@ -94,8 +94,8 @@ export default function TwoFactorCard() {
         <>
           <p className="muted">
             Your account holds every session you have synced. A second factor means a
-            stolen password is not enough to read it. Use any authenticator app —
-            we never send codes by SMS or email.
+            stolen password is not enough to read it. Use any authenticator app: the
+            second factor is always a code you generate, never a text message.
           </p>
           <div className="acct-actions">
             <Input type="password" placeholder="Your password" value={password}
