@@ -10,6 +10,7 @@ import {
   _setProjectsConfigForTests,
   parseGitRemote,
   globMatch,
+  resetProjectResolverCache,
 } from './project-resolver.js';
 
 let root: string;
@@ -320,5 +321,54 @@ describe('globMatch is separator-agnostic', () => {
     expect(globMatch('/home/user/code/*', '/home/user/code/app/sub')).toBe(false);
     expect(globMatch('/home/user/code/**', '/home/user/code/app/sub')).toBe(true);
     expect(globMatch('/home/user/{a,b}/x', '/home/user/b/x')).toBe(true);
+  });
+});
+
+/**
+ * A repo with a remote must never be filed as local-only.
+ *
+ * The probe used to run `git remote get-url origin` and read EVERY failure as
+ * "no remote", so a repo whose remote is named `upstream`, or a machine where
+ * git was slow or absent, got a permanent `git-local:<sha1(path)>` id — a
+ * second identity for a project that already had one, splitting its sessions.
+ * `coolcode`, with a plain https origin, reached a real board as
+ * `git-local:9c548119504c`.
+ */
+describe('a remote is found however it is named', () => {
+  const repo = (name: string, remotes: Array<[string, string]> = []) => {
+    const d = mkdtempSync(join(tmpdir(), name));
+    execSync('git init -q', { cwd: d });
+    for (const [n, url] of remotes) execSync(`git remote add ${n} ${url}`, { cwd: d });
+    resetProjectResolverCache();
+    return d;
+  };
+
+  test('origin is used when present', () => {
+    const d = repo('origin-', [['origin', 'https://github.com/acme/example-app.git']]);
+    const r = resolveProjectId(d);
+    expect(r.source).toBe('git-remote');
+    expect(r.id).toBe('git:github.com/acme/example-app');
+  });
+
+  test('a remote NOT named origin still counts as a remote', () => {
+    const d = repo('upstream-', [['upstream', 'git@github.com:acme/example-app.git']]);
+    const r = resolveProjectId(d);
+    expect(r.source).toBe('git-remote');
+    expect(r.id).toBe('git:github.com/acme/example-app');
+  });
+
+  test('origin wins when several remotes exist', () => {
+    const d = repo('two-', [
+      ['upstream', 'git@github.com:acme/fork-source.git'],
+      ['origin', 'git@github.com:acme/mine.git'],
+    ]);
+    expect(resolveProjectId(d).id).toBe('git:github.com/acme/mine');
+  });
+
+  test('a repo with genuinely no remote is still git-local', () => {
+    const d = repo('none-');
+    const r = resolveProjectId(d);
+    expect(r.source).toBe('git-local');
+    expect(r.id).toMatch(/^git-local:[0-9a-f]{12}$/);
   });
 });
