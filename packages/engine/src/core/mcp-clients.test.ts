@@ -192,3 +192,63 @@ describe('inspectMcpClients', () => {
     expect(rows.find((r) => r.id === 'opencode')!.registered).toBe(true);
   });
 });
+
+/**
+ * "Already configured" has to mean OpenCode will SPAWN it.
+ *
+ * The current-check compared the command and the env and skipped `type`
+ * entirely, so an entry with the right command and no `type: 'local'` was
+ * reported as configured while OpenCode silently declined to start it. Reported
+ * from a laptop whose init printed "OpenCode: already configured" and which had
+ * no chat-recall tools in OpenCode.
+ */
+describe('OpenCode entries are repaired unless they are spawnable', () => {
+  const ocPath = () => join(home, '.config', 'opencode', 'opencode.json');
+  const seed = (entry: unknown) => {
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+    writeFileSync(ocPath(), JSON.stringify({ mcp: { 'chat-recall': entry } }, null, 2));
+  };
+  // `{ home }` is not optional in these tests: without it the resolver falls
+  // back to the real homedir and the assertions run against the developer's own
+  // OpenCode config.
+  const register = () =>
+    registerMcpEverywhere(SPEC, { home, extraIds: ['opencode'] }).find((r) => r.id === 'opencode')!;
+
+  test.each([
+    ['no type', { command: ['chat-recall-mcp'], enabled: true }],
+    ['no enabled', { type: 'local', command: ['chat-recall-mcp'] }],
+    ['enabled: false', { type: 'local', command: ['chat-recall-mcp'], enabled: false }],
+    ['wrong type', { type: 'remote', command: ['chat-recall-mcp'], enabled: true }],
+  ])('repairs an entry with %s', (_label, entry) => {
+    seed(entry);
+    expect(register().state).toBe('repaired');
+    const after = readJson(ocPath()).mcp['chat-recall'];
+    expect(after.type).toBe('local');
+    expect(after.enabled).toBe(true);
+    expect(after.command).toEqual(['chat-recall-mcp']);
+  });
+
+  test('leaves a spawnable entry alone', () => {
+    seed({
+      type: 'local',
+      command: ['chat-recall-mcp'],
+      enabled: true,
+      environment: { NODE_OPTIONS: '--max-old-space-size=1024' },
+    });
+    expect(register().state).toBe('current');
+  });
+
+  test('keeps the user other servers while repairing ours', () => {
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+    writeFileSync(ocPath(), JSON.stringify({
+      mcp: {
+        theirs: { type: 'local', command: ['their-server'], enabled: true },
+        'chat-recall': { command: ['chat-recall-mcp'] },
+      },
+    }, null, 2));
+    expect(register().state).toBe('repaired');
+    const after = readJson(ocPath()).mcp;
+    expect(after.theirs).toEqual({ type: 'local', command: ['their-server'], enabled: true });
+    expect(after['chat-recall'].type).toBe('local');
+  });
+});
