@@ -32,11 +32,23 @@
  * mailbox server for inbound and never sends for the app.
  */
 
+import { compose } from './mail-template.js';
+
 export interface Mail {
   to: string;
   subject: string;
   text: string;
   html?: string;
+}
+
+/** The account page on THIS deployment — where a person manages or cancels a
+ *  subscription. Derived from the app's own base URL, so a self-hoster's mail
+ *  links to their server. There is no direct link to the Stripe portal: opening
+ *  it is a POST that needs an authenticated session, so the account page is the
+ *  only address that works from an inbox. */
+function accountUrl(): string {
+  const base = (process.env.BETTER_AUTH_URL || process.env.APP_URL || 'https://chatrecall.dev').replace(/\/+$/, '');
+  return `${base}/app?view=account`;
 }
 
 /** True when a real SMTP transport is configured. */
@@ -117,28 +129,25 @@ export async function sendMail(mail: Mail): Promise<{ sent: boolean; reason?: st
   }
 }
 
+const SELF_HOST_URL = 'https://chatrecall.dev/self-hosting/';
+
 /** The password-reset message. Kept here so the wording lives with the transport
  *  rather than inside the auth config. */
 export function resetPasswordMail(to: string, url: string, expiresInMinutes: number): Mail {
-  const text = [
-    'Someone asked to reset the password for your chat-recall account.',
-    '',
-    'Open this link to choose a new one:',
-    url,
-    '',
-    `The link works once and expires in ${expiresInMinutes} minutes.`,
-    'If this was not you, ignore this message — nothing has changed.',
-  ].join('\n');
-  return { to, subject: 'Reset your chat-recall password', text };
+  return compose({
+    to,
+    subject: 'Reset your chat-recall password',
+    preheader: `The link works once and expires in ${expiresInMinutes} minutes.`,
+    blocks: [
+      { kind: 'lead', text: 'Someone asked to reset the password for your chat-recall account.' },
+      { kind: 'p', text: 'If it was you, choose a new one here:' },
+      { kind: 'cta', label: 'Choose a new password', url },
+      { kind: 'small', text: `The link works once and expires in ${expiresInMinutes} minutes.` },
+      { kind: 'p', text: 'If it was not you, ignore this message. Nothing has changed, and nobody can reach your account with it.' },
+    ],
+  });
 }
 
-/**
- * The address-confirmation message.
- *
- * It leads with what confirming unlocks rather than with the word "verify",
- * because the trial does not start until this link is opened — so this mail is
- * the first step of the product, not an administrative chore.
- */
 /**
  * The confirmation CODE.
  *
@@ -152,107 +161,101 @@ export function resetPasswordMail(to: string, url: string, expiresInMinutes: num
  * A code cannot be spent by something reading the mail, and it finishes in the
  * tab the person is already looking at.
  *
- * The code goes on its own line with nothing after it, because that is what makes
- * it selectable on a phone, and iOS/Android offer a one-tap autofill from a mail
- * shaped this way.
+ * ── Why the code is a `code` block in BOTH renderings ──────────────────────
+ *
+ * The plain-text form puts it on its own line with nothing after it, because
+ * that is what makes it selectable on a phone and what iOS and Android match
+ * when they offer one-tap autofill. The HTML form must not undo that: the code
+ * sits alone in its own element, as literal text, never split across tags and
+ * never rendered as an image. Both autofill paths keep working.
  */
 export function verifyOtpMail(
   to: string,
   otp: string,
   type: 'sign-in' | 'email-verification' | 'forget-password' | 'change-email',
 ): Mail {
-  const subject = type === 'forget-password'
-    ? 'Your chat-recall password reset code'
-    : 'Your chat-recall confirmation code';
-  const lead = type === 'forget-password'
-    ? 'Enter this code to reset your password:'
-    : 'Enter this code to confirm your address and start your chat-recall trial:';
-  const text = [
-    lead,
-    '',
-    otp,
-    '',
-    'It expires in 15 minutes.',
-    '',
-    type === 'forget-password'
-      ? 'If you did not ask to reset your password, ignore this message and nothing changes.'
-      : 'Your trial begins when you enter it, so nothing is counting down until you do.',
-    '',
-    'If you did not create a chat-recall account, ignore this message.',
-  ].join('\n');
-  return { to, subject, text };
+  const reset = type === 'forget-password';
+  return compose({
+    to,
+    subject: reset ? 'Your chat-recall password reset code' : 'Your chat-recall confirmation code',
+    preheader: `${otp} — it expires in 15 minutes.`,
+    blocks: [
+      {
+        kind: 'lead',
+        text: reset
+          ? 'Enter this code to reset your password:'
+          : 'Enter this code to confirm your address and start your trial:',
+      },
+      { kind: 'otp', code: otp },
+      { kind: 'small', text: 'It expires in 15 minutes.' },
+      {
+        kind: 'p',
+        text: reset
+          ? 'If you did not ask to reset your password, ignore this message and nothing changes.'
+          : 'Your trial begins when you enter it, so nothing is counting down until you do.',
+      },
+      { kind: 'small', text: 'If you did not create a chat-recall account, ignore this message.' },
+    ],
+  });
 }
 
-
 /**
- * Trial-ending notice.
+ * Trial-ending notice — for a STRIPE trial, which always has a card behind it.
  *
- * The pricing page says, twice, "We email you before the trial ends." Nothing
- * sent it: the live webhook was not subscribed to
- * customer.subscription.trial_will_end, nothing handled it, and no reminder
- * existed here. A trial lapsed in silence and the customer found out when sync
- * stopped, which is the worst possible moment to learn it.
+ * ── What this message is, and what it is not ───────────────────────────────
  *
- * Stripe fires trial_will_end three days out. The mail leads with what actually
- * happens, because the honest answer is still reassuring: nothing is deleted and
- * export always works, even though recall itself stops. "Everything already
- * synced stays searchable" was the old promise and is no longer true — see the
- * hard stop in util/billing.ts.
+ * This fires on `customer.subscription.trial_will_end`, and a Stripe trial only
+ * exists AFTER checkout (see the trialArg block in routes/billing.ts): a card is
+ * on file by definition. So "if you do nothing" here does not mean access lapses
+ * — it means the customer is CHARGED.
+ *
+ * The previous copy said the opposite. It was the no-card reminder's text on the
+ * card-trial's trigger, so it warned a paying customer that their access was
+ * about to switch off three days before taking their money. That is the single
+ * worst thing a message in a billing flow can get backwards: it invites a
+ * cancellation from someone who was happy, and a dispute from someone who was
+ * not reading closely.
+ *
+ * The no-card trial has its own, entirely separate set of reminders in
+ * services/trial-reminders.ts. Do not merge the two again.
+ *
+ * A pre-charge notice is also simply the right thing to send. It is what stops a
+ * charge being a surprise, and an unsurprised customer does not open a dispute.
  */
-export function trialEndingMail(to: string, endsAt: Date, upgradeUrl: string): Mail {
-  const when = endsAt.toISOString().slice(0, 10);
-  const text = [
-    `Your chat-recall trial ends on ${when}.`,
-    '',
-    'If you do nothing:',
-    '',
-    '  - recall switches off: searches stop answering',
-    '  - new sessions stop syncing',
-    '  - your history stays on the server, and export keeps working',
-    '  - nothing is deleted',
-    '',
-    'Because your transcripts live on your own disk, one `chat-recall sync --full`',
-    'brings the server current again the day you subscribe. You lose no history by',
-    'waiting.',
-    '',
-    'Keep syncing:',
-    '',
-    `  ${upgradeUrl}`,
-    '',
-    'Or run the server yourself instead — free forever for one person, every',
-    'feature, no licence key: https://chatrecall.dev/self-hosting/',
-    '',
-    'Questions: contact@chatrecall.dev',
-  ].join('\n');
-  return { to, subject: `Your chat-recall trial ends on ${when}`, text };
+export function trialEndingMail(to: string, chargesAt: Date, manageUrl?: string): Mail {
+  const when = chargesAt.toISOString().slice(0, 10);
+  const manage = manageUrl || accountUrl();
+  return compose({
+    to,
+    subject: `Your chat-recall subscription starts on ${when}`,
+    preheader: 'Nothing switches off. This is only so the charge is not a surprise.',
+    blocks: [
+      { kind: 'lead', text: `Your chat-recall trial ends on ${when}, and your subscription starts the same day.` },
+      { kind: 'p', text: 'You have a card on file, so nothing switches off and nothing breaks. This message exists only so the charge is never a surprise.' },
+      { kind: 'p', text: 'If that is what you want, there is nothing to do. Recall keeps answering, your sessions keep syncing, and everything you built up during the trial carries straight over.' },
+      { kind: 'p', text: `If it is not, cancel before ${when} and you will not be charged:` },
+      { kind: 'cta', label: 'Manage or cancel your subscription', url: manage },
+      { kind: 'p', text: 'Either way the data stays yours. Cancelling deletes nothing, export always works, and your transcripts never stopped living on your own disk.' },
+    ],
+  });
 }
 
 /** The self-host licence email. The serial is the deliverable, so it leads. */
 export function licenceSerialMail(to: string, serial: string, interval: 'month' | 'year'): Mail {
-  const text = [
-    'Your chat-recall self-host licence is ready.',
-    '',
-    `  ${serial}`,
-    '',
-    'Set it on your server and restart:',
-    '',
-    `  CHAT_RECALL_LICENSE_SERIAL=${serial}`,
-    '',
-    'That unlocks COLLABORATION on your own infrastructure: a second member, shared',
-    'project history, assigning work to a teammate, and per-member activity.',
-    'Running chat-recall for one person is free and already includes the whole',
-    'single-user product — sync, code findings, secret monitoring, analytics, your',
-    'own task board and Toolkit. This licence adds the second person, not the',
-    'product.',
-    '',
-    'The server checks the licence periodically and keeps working for up to two weeks',
-    'if it cannot reach us, so a network problem on either side never stops your',
-    'install.',
-    '',
-    `Billed ${interval === 'year' ? 'annually' : 'monthly'}. Cancel any time from the`,
-    'billing portal; your data is yours and stays on your hardware either way.',
-    '',
-    'Questions: contact@chatrecall.dev',
-  ].join('\n');
-  return { to, subject: 'Your chat-recall self-host licence', text };
+  return compose({
+    to,
+    subject: 'Your chat-recall self-host licence',
+    preheader: `${serial} — set it on your server and restart.`,
+    blocks: [
+      { kind: 'lead', text: 'Your chat-recall self-host licence is ready.' },
+      { kind: 'code', lines: [serial] },
+      { kind: 'p', text: 'Set it on your server and restart:' },
+      { kind: 'code', lines: [`CHAT_RECALL_LICENSE_SERIAL=${serial}`] },
+      { kind: 'p', text: 'That unlocks collaboration on your own infrastructure: a second member, shared project history, assigning work to a teammate, and per-member activity.' },
+      { kind: 'p', text: 'Running chat-recall for one person stays free and already includes the whole single-user product — sync, code findings, secret monitoring, analytics, your own task board and Toolkit. This licence adds the second person, not the product.' },
+      { kind: 'p', text: 'The server checks the licence periodically and keeps working for up to two weeks if it cannot reach us, so a network problem on either side never stops your install.' },
+      { kind: 'small', text: `Billed ${interval === 'year' ? 'annually' : 'monthly'}. Cancel any time from the billing portal; your data is yours and stays on your hardware either way.` },
+      { kind: 'links', items: [{ label: 'Self-hosting guide', url: SELF_HOST_URL }] },
+    ],
+  });
 }
