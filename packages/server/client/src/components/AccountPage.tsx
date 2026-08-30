@@ -7,6 +7,7 @@ import { formatMB } from '../utils/bytes';
 import LicenceDeliveryPanel from './LicenceDelivery';
 import DataControls from './DataControls';
 import TwoFactorCard from './TwoFactorCard';
+import ProfileCard from './ProfileCard';
 import {
   getProjectTree,
   getEntitlement, startCheckout, openBillingPortal, getAlertConfig, setAlertConfig,
@@ -89,131 +90,270 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
       </div>
       {err && <div className="acct-err">{err}</div>}
 
-      {/* Above the subscription card on purpose: someone who has just paid for a
-          self-hosted licence is here for the serial and nothing else. It renders
-          nothing for a hosted-plan purchase. */}
+      {/* Above everything on purpose: someone who has just paid for a self-hosted
+          licence is here for the serial and nothing else. It renders nothing for
+          a hosted-plan purchase. */}
       {checkoutSession && <LicenceDeliveryPanel sessionId={checkoutSession} />}
 
-      <section className="acct-card">
-        <h2>Subscription</h2>
-        {!ent ? <p className="muted">Loading…</p> : ent.onTrial && ent.entitled !== false ? (
-          <>
+      <div className="acct-layout">
+        <AccountNav />
+
+        <div className="acct-main">
+          <AcctSection id="sec-profile" title="Profile" blurb="Who you are signed in as.">
+            <ProfileCard onError={setErr} />
+          </AcctSection>
+
+          {/* Security is one group, not three cards scattered between billing and
+              sync rules. Someone auditing their own account should never have to
+              scroll past a plan picker to find the second half of it. */}
+          <AcctSection
+            id="sec-security"
+            title="Security"
+            blurb="What stands between a stolen password and everything you have synced."
+          >
+            <TwoFactorCard />
+            <AlertsCard onError={setErr} />
+          </AcctSection>
+
+          <AcctSection id="sec-billing" title="Billing" blurb="Your plan, and what changes when it ends.">
+            <SubscriptionCard
+              ent={ent} busy={busy} showPlans={showPlans}
+              onShowPlans={() => setShowPlans(true)} onManage={manage} onError={setErr}
+            />
+          </AcctSection>
+
+          {/* The two device cards are now adjacent. "Connect a machine" used to sit
+              between Subscription and Your machines, so the one pair that belong
+              together were the one pair separated. */}
+          <AcctSection id="sec-machines" title="Machines" blurb="The devices that sync to this account.">
+            <section className="acct-card"><ConnectMachine /></section>
+            <section className="acct-card">
+              <h2>Your machines</h2>
+              <FleetHealth />
+            </section>
+          </AcctSection>
+
+          <AcctSection
+            id="sec-data"
+            title="Data"
+            blurb="What syncs, what you can take away, and what you can erase."
+          >
+            <section className="acct-card">
+              <h2>Sync rules</h2>
+              <SyncRules />
+            </section>
+            <DataControls projects={dataProjects} />
+          </AcctSection>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One titled group of cards.
+ *
+ * The page was eight cards in a flat column with no grouping, so "where do I
+ * change my password" and "where do I turn on 2FA" had the same answer: scroll
+ * and read every heading. A group label costs one line and turns a list into a
+ * structure.
+ */
+function AcctSection(
+  { id, title, blurb, children }: { id: string; title: string; blurb: string; children: React.ReactNode },
+) {
+  return (
+    <section className="acct-sec" id={id} aria-labelledby={`${id}-h`}>
+      <div className="acct-sec-head">
+        <h2 id={`${id}-h`}>{title}</h2>
+        <p className="acct-sec-blurb">{blurb}</p>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+const ACCT_NAV = [
+  ['sec-profile', 'Profile'],
+  ['sec-security', 'Security'],
+  ['sec-billing', 'Billing'],
+  ['sec-machines', 'Machines'],
+  ['sec-data', 'Data'],
+] as const;
+
+/**
+ * The section rail.
+ *
+ * A rail rather than tabs: every section here is short, and tabs would hide four
+ * fifths of an account page behind a click for no gain. This keeps one scroll —
+ * so ctrl-F still finds everything — and adds a map of it.
+ *
+ * The highlight follows the scroll through an IntersectionObserver rather than
+ * the URL hash, because a hash only changes when something is clicked and would
+ * sit on "Profile" the whole way down the page.
+ */
+function AccountNav() {
+  const [active, setActive] = useState<string>(ACCT_NAV[0][0]);
+  useEffect(() => {
+    const seen = new Map<string, number>();
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) seen.set(e.target.id, e.intersectionRatio);
+        let best = ''; let ratio = -1;
+        for (const [id, r] of seen) if (r > ratio) { best = id; ratio = r; }
+        if (best && ratio > 0) setActive(best);
+      },
+      // A band across the upper middle of the viewport: the section a reader is
+      // actually looking at, not whichever one happens to touch the top edge.
+      { rootMargin: '-12% 0px -55% 0px', threshold: [0, 0.25, 0.5, 1] },
+    );
+    for (const [id] of ACCT_NAV) {
+      const el = document.getElementById(id);
+      if (el) io.observe(el);
+    }
+    return () => io.disconnect();
+  }, []);
+
+  return (
+    <nav className="acct-nav" aria-label="Account sections">
+      <ul>
+        {ACCT_NAV.map(([id, label]) => (
+          <li key={id}>
+            <a
+              href={`#${id}`}
+              className={active === id ? 'is-active' : undefined}
+              aria-current={active === id ? 'true' : undefined}
+              onClick={(e) => {
+                e.preventDefault();
+                document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                setActive(id);
+              }}
+            >
+              {label}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  );
+}
+
+/**
+ * The subscription card, lifted out of the page body.
+ *
+ * It was ~100 lines of branching JSX inline in AccountPage's return, which is a
+ * large part of why the page read as a wall: the one card with four states
+ * (trialing, dormant, subscribed, billing-disabled) sat in the middle of seven
+ * simple ones. The branches are unchanged — only their address is.
+ */
+function SubscriptionCard(
+  { ent, busy, showPlans, onShowPlans, onManage, onError }: {
+    ent: Entitlement | null;
+    busy: boolean;
+    showPlans: boolean;
+    onShowPlans: () => void;
+    onManage: () => void;
+    onError: (s: string) => void;
+  },
+) {
+  return (
+    <section className="acct-card">
+      <h2>Subscription</h2>
+      {!ent ? <p className="muted">Loading…</p> : ent.onTrial && ent.entitled !== false ? (
+        <>
+          <div className="acct-row">
+            <span>Trial</span>
+            <span>
+              {(ent.trialDaysLeft ?? 0) <= 0
+                ? 'ends today'
+                : `${ent.trialDaysLeft} day${ent.trialDaysLeft === 1 ? '' : 's'} left`}
+            </span>
+          </div>
+          {/* The actual date. "13 days left" is a number to do arithmetic on;
+              a date is something to plan around, and this branch never showed
+              one even though the other branch does. */}
+          {ent.currentPeriodEnd && (
             <div className="acct-row">
-              <span>Trial</span>
+              <span>Ends</span>
+              <span>{new Date(ent.currentPeriodEnd).toLocaleDateString()}</span>
+            </div>
+          )}
+          <p className="muted">
+            No card needed for the trial. When it ends, recall switches off — searches and session
+            reads stop, and new sessions stop syncing. Nothing is deleted: your history stays on
+            the server, export keeps working, and subscribing turns it all back on.
+          </p>
+          {/* The picker is not open by default while the trial is healthy.
+              Three priced cards with seat spinners under "14 days left" asks
+              for a purchase decision on day one, which is the one thing a
+              trial exists to postpone. It opens on request, and opens itself
+              once the end is near enough to be the point. */}
+          {showPlans ? (
+            <PlanPicker onError={onError} />
+          ) : (
+            <div className="acct-actions">
+              <Button variant="secondary" onClick={onShowPlans} data-testid="see-plans">
+                See plans
+              </Button>
+            </div>
+          )}
+        </>
+      ) : !ent.billingEnabled ? (
+        <p className="muted">Billing isn't enabled on this deployment — all features are available.</p>
+      ) : ent.entitled === false ? (
+        <>
+          {/* DORMANT — the floor a lapsed tenant lands on, never bought. Stated
+              as the one thing that changed, not as an expired-status badge,
+              which read as "broken" to the person deciding whether to pay. */}
+          <div className="acct-row">
+            <span>Plan</span>
+            <span className="badge badge-free" data-testid="free-plan-badge">Dormant</span>
+          </div>
+          <p className="muted">
+            Recall is switched off: searches and session reads are refused, and new sessions are
+            not syncing. Nothing was deleted — your history is intact and export keeps working.
+            Subscribe and one <code>chat-recall sync --full</code> brings the server current.
+          </p>
+          {/* The meters, from the same payload the server enforces with — the
+              page must never show a fuller or emptier meter than the gate acts
+              on. Rendered only when the server sent usage (metered tenants). */}
+          {ent.usage && ent.limits && (
+            <div className="acct-row" data-testid="free-usage-meter">
+              <span>Sync this month</span>
               <span>
-                {(ent.trialDaysLeft ?? 0) <= 0
-                  ? 'ends today'
-                  : `${ent.trialDaysLeft} day${ent.trialDaysLeft === 1 ? '' : 's'} left`}
+                {formatMB(ent.usage.monthBytes)}
+                {ent.limits.syncBytesPerMonth != null && ` of ${formatMB(ent.limits.syncBytesPerMonth)}`}
+                {ent.limits.syncStorageBytes != null &&
+                  ` · stored ${formatMB(ent.usage.storedBytes)} of ${formatMB(ent.limits.syncStorageBytes)}`}
               </span>
             </div>
-            {/* The actual date. "13 days left" is a number to do arithmetic on;
-                a date is something to plan around, and this branch never showed
-                one even though the other branch does. */}
-            {ent.currentPeriodEnd && (
-              <div className="acct-row">
-                <span>Ends</span>
-                <span>{new Date(ent.currentPeriodEnd).toLocaleDateString()}</span>
-              </div>
-            )}
-            <p className="muted">
-              No card needed for the trial. When it ends, recall switches off — searches and session
-              reads stop, and new sessions stop syncing. Nothing is deleted: your history stays on
-              the server, export keeps working, and subscribing turns it all back on.
-            </p>
-            {/* The picker is not open by default while the trial is healthy.
-                Three priced cards with seat spinners under "14 days left" asks
-                for a purchase decision on day one, which is the one thing a
-                trial exists to postpone. It opens on request, and opens itself
-                once the end is near enough to be the point. */}
-            {showPlans ? (
-              <PlanPicker onError={setErr} />
-            ) : (
-              <div className="acct-actions">
-                <Button variant="secondary" onClick={() => setShowPlans(true)} data-testid="see-plans">
-                  See plans
-                </Button>
-              </div>
-            )}
-          </>
-        ) : !ent.billingEnabled ? (
-          <p className="muted">Billing isn't enabled on this deployment — all features are available.</p>
-        ) : ent.entitled === false ? (
-          <>
-            {/* DORMANT — the floor a lapsed tenant lands on, never bought. Stated
-                as the one thing that changed, not as an expired-status badge,
-                which read as "broken" to the person deciding whether to pay. */}
-            <div className="acct-row">
-              <span>Plan</span>
-              <span className="badge badge-free" data-testid="free-plan-badge">Dormant</span>
+          )}
+          {ent.hasSubscription && (
+            <div className="acct-actions">
+              <Button variant="secondary" disabled={busy} onClick={onManage}>Manage subscription</Button>
             </div>
-            <p className="muted">
-              Recall is switched off: searches and session reads are refused, and new sessions are
-              not syncing. Nothing was deleted — your history is intact and export keeps working.
-              Subscribe and one <code>chat-recall sync --full</code> brings the server current.
-            </p>
-            {/* The meters, from the same payload the server enforces with — the
-                page must never show a fuller or emptier meter than the gate acts
-                on. Rendered only when the server sent usage (metered tenants). */}
-            {ent.usage && ent.limits && (
-              <div className="acct-row" data-testid="free-usage-meter">
-                <span>Sync this month</span>
-                <span>
-                  {formatMB(ent.usage.monthBytes)}
-                  {ent.limits.syncBytesPerMonth != null && ` of ${formatMB(ent.limits.syncBytesPerMonth)}`}
-                  {ent.limits.syncStorageBytes != null &&
-                    ` · stored ${formatMB(ent.usage.storedBytes)} of ${formatMB(ent.limits.syncStorageBytes)}`}
-                </span>
-              </div>
-            )}
-            {ent.hasSubscription && (
-              <div className="acct-actions">
-                <Button variant="secondary" disabled={busy} onClick={manage}>Manage subscription</Button>
-              </div>
-            )}
-            <PlanPicker onError={setErr} />
-          </>
-        ) : (
-          <>
-            <div className="acct-row">
-              <span>Status</span>
-              <span className={`badge badge-${ent.status}`}>{labelFor(ent.status)}</span>
+          )}
+          <PlanPicker onError={onError} />
+        </>
+      ) : (
+        <>
+          <div className="acct-row">
+            <span>Status</span>
+            <span className={`badge badge-${ent.status}`}>{labelFor(ent.status)}</span>
+          </div>
+          {ent.currentPeriodEnd && (
+            <div className="acct-row"><span>{ent.status === 'trialing' ? 'Trial ends' : 'Renews'}</span>
+              <span>{new Date(ent.currentPeriodEnd).toLocaleDateString()}</span></div>
+          )}
+          {ent.hasSubscription ? (
+            <div className="acct-actions">
+              <Button variant="secondary" disabled={busy} onClick={onManage}>Manage subscription</Button>
             </div>
-            {ent.currentPeriodEnd && (
-              <div className="acct-row"><span>{ent.status === 'trialing' ? 'Trial ends' : 'Renews'}</span>
-                <span>{new Date(ent.currentPeriodEnd).toLocaleDateString()}</span></div>
-            )}
-            {ent.hasSubscription ? (
-              <div className="acct-actions">
-                <Button variant="secondary" disabled={busy} onClick={manage}>Manage subscription</Button>
-              </div>
-            ) : (
-              <PlanPicker onError={setErr} />
-            )}
-          </>
-        )}
-      </section>
-
-      <section style={{ marginBottom: 18 }}>
-        <ConnectMachine />
-      </section>
-
-      <section className="acct-card">
-        <h2>Your machines</h2>
-        <FleetHealth />
-      </section>
-
-      <section className="acct-card">
-        <h2>Sync rules</h2>
-        <SyncRules />
-      </section>
-
-      <AlertsCard onError={setErr} />
-
-      {/* Last on the page: everything above manages the account, this ends it.
-          Export sits above the deletes inside the panel for the same reason. */}
-      <TwoFactorCard />
-      <DataControls projects={dataProjects} />
-    </div>
+          ) : (
+            <PlanPicker onError={onError} />
+          )}
+        </>
+      )}
+    </section>
   );
 }
 
@@ -493,7 +633,85 @@ function labelFor(s: Entitlement['status']): string {
 }
 
 const ACCT_CSS = `
-.acct { max-width: 720px; margin: 0 auto; padding: 32px 24px; color: var(--cr-fg-1,#e8eaed); width:100%; }
+.acct { max-width: 1020px; margin: 0 auto; padding: 32px 24px 96px; color: var(--cr-fg-1,#e8eaed); width:100%; }
+
+/* Rail + content. The rail is a map of one scroll, not a tab bar: every section
+   here is short, so hiding four fifths of the page behind a click would cost
+   ctrl-F and buy nothing. */
+.acct-layout { display: grid; grid-template-columns: 180px minmax(0,1fr); gap: 40px; align-items: start; }
+.acct-nav { position: sticky; top: 32px; }
+.acct-nav ul { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:2px; }
+.acct-nav a {
+  display:block; padding:8px 12px; border-radius:9px; font-size:14px; font-weight:500;
+  color: var(--cr-fg-2,#909caf); text-decoration:none; border-left:2px solid transparent;
+  transition: color .12s ease, background-color .12s ease, border-color .12s ease;
+}
+.acct-nav a:hover { color: var(--cr-fg-1,#e8eaed); background: var(--cr-ink-2,#171b21); }
+.acct-nav a.is-active {
+  color: var(--cr-brand-500,#f5a97f); background: var(--cr-brand-surf); border-left-color: var(--cr-brand-500,#f5a97f);
+}
+.acct-main { min-width: 0; }
+
+/* A group of cards under one label. */
+.acct-sec { margin-bottom: 44px; scroll-margin-top: 24px; }
+.acct-sec:last-child { margin-bottom: 0; }
+.acct-sec-head { margin-bottom: 14px; }
+.acct-sec-head h2 {
+  font-size: 12px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
+  color: var(--cr-fg-2,#909caf); margin: 0 0 4px;
+}
+.acct-sec-blurb { margin: 0; font-size: 14px; line-height: 1.5; color: var(--cr-fg-3,#6b7280); }
+
+/* Profile card */
+.pf-id { display:flex; align-items:center; gap:14px; padding-bottom:18px;
+  border-bottom:1px solid var(--cr-line-1,#1e232b); }
+.pf-avatar {
+  flex:0 0 auto; width:52px; height:52px; border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  font-family: var(--cr-font-display, ui-monospace, monospace);
+  font-size:17px; font-weight:700; letter-spacing:-0.02em;
+  color: var(--cr-brand-500,#f5a97f);
+  background: var(--cr-brand-surf); border:1px solid var(--cr-brand-line);
+}
+.pf-idtext { min-width:0; }
+.pf-name { font-size:17px; font-weight:600; letter-spacing:-0.01em; margin-bottom:3px;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pf-mail { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  font-size:13px; color: var(--cr-fg-3,#6b7280); }
+.pf-chip { padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; letter-spacing:.02em; }
+.pf-chip-ok { background: var(--cr-ok-surf,#10241a); color: var(--cr-ok-500,#3fb950); }
+.pf-chip-warn { background: var(--cr-warn-surf,#241d10); color: var(--cr-warn-500,#d29922); }
+.pf-warn { display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+  margin:16px 0 4px; padding:14px 16px; border-radius:11px;
+  background: var(--cr-warn-surf,#241d10); border:1px solid var(--cr-warn-line,#3a2f14); }
+.pf-warn > p { flex:1 1 240px; }
+.pf-ok { margin:16px 0 4px; padding:10px 14px; border-radius:9px; font-size:13px;
+  background: var(--cr-ok-surf,#10241a); border:1px solid var(--cr-ok-line,#1c3a24); color: var(--cr-ok-500,#3fb950); }
+.pf-field { margin-top:18px; }
+.pf-field > label { display:block; font-size:13px; font-weight:600; margin-bottom:8px; color: var(--cr-fg-2,#909caf); }
+.pf-inline { display:flex; gap:10px; align-items:center; }
+.pf-inline > *:first-child { flex:1 1 auto; min-width:0; }
+.pf-pw { display:flex; flex-direction:column; gap:10px; margin-top:8px;
+  padding:16px; border-radius:11px; background: var(--cr-ink-0,#0b0d10); border:1px solid var(--cr-line-1,#1e232b); }
+
+@media (max-width: 860px) {
+  /* The rail becomes a scrollable chip row above the content. Sticky, because on
+     a phone the sections are far apart and a nav that scrolls away is a nav that
+     only works before you need it. */
+  .acct-layout { grid-template-columns: minmax(0,1fr); gap: 20px; }
+  .acct-nav { position: sticky; top: 0; z-index: 5; margin: 0 -24px; padding: 10px 24px;
+    background: var(--cr-ink-0,#0b0d10); border-bottom:1px solid var(--cr-line-1,#1e232b); }
+  .acct-nav ul { flex-direction: row; gap:6px; overflow-x:auto; scrollbar-width:none; }
+  .acct-nav ul::-webkit-scrollbar { display:none; }
+  .acct-nav a { white-space:nowrap; border-left:none; border-bottom:2px solid transparent; border-radius:8px; }
+  .acct-nav a.is-active { border-left-color: transparent; border-bottom-color: var(--cr-brand-500,#f5a97f); }
+  .acct-sec { margin-bottom: 34px; scroll-margin-top: 64px; }
+  .pf-inline { flex-direction: column; align-items: stretch; }
+  /* space-between on a narrow row squeezes the value into a two-word column
+     against the label. Stack them instead — the label reads as a label either
+     way, and the value gets the full width. */
+  .acct-row { flex-direction: column; align-items: flex-start; gap: 3px; }
+}
 .acct-head { display:flex; align-items:center; justify-content:space-between; margin-bottom: 24px; }
 .acct-head h1 { font-size: clamp(20px, 5vw, 26px); margin: 0; letter-spacing:-0.02em; }
 .acct-card { background: var(--cr-ink-1,#12151a); border:1px solid var(--cr-line-1,#1e232b); border-radius: 14px; padding: 22px; margin-bottom: 18px; }
