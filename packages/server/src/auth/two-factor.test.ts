@@ -85,7 +85,13 @@ describe('NO SMS, and nothing that would grow into it', () => {
   });
 
   test('the panel says so to the user, not just in a comment', () => {
-    expect(cardSrc).toMatch(/never send codes by SMS/i);
+    // NOT "we never send codes by SMS or email", which is what this said until
+    // 2026-08-30. The product emails a code at sign-up, sign-in, password reset
+    // and change-email (see verifyOtpMail), so that sentence was contradicted by
+    // the message a user had received minutes earlier — on the security page, of
+    // all places. The true claim is narrower and is about the SECOND factor only.
+    expect(cardSrc).toMatch(/never a text message/i);
+    expect(cardSrc).not.toMatch(/never send codes by SMS or email/i);
   });
 });
 
