@@ -173,16 +173,31 @@ function registerOpencodeJson(path: string, spec: McpLaunchSpec): McpRegisterRes
   if (!cfg.$schema) cfg.$schema = 'https://opencode.ai/config.json';
   const mcp = (cfg.mcp || {}) as Record<string, unknown>;
   const existing = mcp[MCP_SERVER_NAME] as
-    | { command?: string[]; environment?: Record<string, string>; enabled?: boolean }
+    | { type?: string; command?: string[]; environment?: Record<string, string>; enabled?: boolean }
     | undefined;
 
   const argv = [spec.command, ...(spec.args ?? [])];
   const entry: Record<string, unknown> = { type: 'local', command: argv, enabled: true };
   if (spec.env) entry.environment = { ...existing?.environment, ...spec.env };
 
+  /* "Already configured" must mean OpenCode WILL SPAWN IT, not "our key is in
+   * the file".
+   *
+   * This checked the command, the env, and that `enabled` was not literally
+   * false — and skipped the two fields OpenCode actually gates on. An entry
+   * written by an older version, or hand-edited, could have the right command
+   * and no `type`, and init would report "already configured" while OpenCode
+   * silently refused to start it. The one report a user gets was the one thing
+   * that could not be true.
+   *
+   * `type` and `enabled` are now compared against the exact values we write, so
+   * anything short of a spawnable entry is repaired instead of blessed.
+   * Reported by a user whose laptop said "already configured" and had no
+   * chat-recall tools in OpenCode. */
   const isCurrent = !!existing
+    && existing.type === 'local'
+    && existing.enabled === true
     && JSON.stringify(existing.command ?? null) === JSON.stringify(argv)
-    && existing.enabled !== false
     && Object.entries(spec.env ?? {}).every(([k, v]) => existing.environment?.[k] === v);
   if (isCurrent) return { id, label, path, state: 'current' };
 
