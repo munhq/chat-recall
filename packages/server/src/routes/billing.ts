@@ -504,8 +504,11 @@ export async function applyStripeEvent(
       if (to && endsAtSec) {
         try {
           const { sendMail, trialEndingMail } = await import('../auth/mailer.js');
-          const url = process.env.TRIAL_UPGRADE_URL || 'https://chatrecall.dev/pricing/';
-          await sendMail(trialEndingMail(to, new Date(endsAtSec * 1000), url));
+          // The account page, NOT the pricing page: this reader is already a
+          // customer with a card on file, and the only thing they might want
+          // from this mail is to cancel before the charge. Sending them to a
+          // price list answers a question they have already answered.
+          await sendMail(trialEndingMail(to, new Date(endsAtSec * 1000)));
         } catch (e) {
           // A mail failure must never 5xx the webhook: Stripe would retry the
           // event, and the entitlement work is already done.
