@@ -51,7 +51,7 @@ const BOT_WORKTREE_MARKERS = ['.claude-pr-bot'];
 const resolveCache = new Map<string, ResolvedProject>();
 
 /** Git remote cache keyed on git toplevel realpath. */
-const gitCache = new Map<string, { remote: string | null }>();
+const gitCache = new Map<string, RemoteProbe>();
 
 /** Auto-workspace cache keyed on parent dir realpath. */
 const workspaceCache = new Map<string, string | null>();
@@ -298,9 +298,9 @@ function resolveGit(realPath: string): ResolvedProject | null {
   const toplevel = findGitToplevel(realPath);
   if (!toplevel) return null;
 
-  const remote = getGitRemote(toplevel);
-  if (remote) {
-    const parsed = parseGitRemote(remote);
+  const probe = getGitRemote(toplevel);
+  if (probe.kind === 'remote') {
+    const parsed = parseGitRemote(probe.url);
     if (parsed) {
       return {
         id: `git:${parsed.host}/${parsed.owner}/${parsed.repo}`,
@@ -308,6 +308,16 @@ function resolveGit(realPath: string): ResolvedProject | null {
         source: 'git-remote',
       };
     }
+  }
+
+  // A repo whose remote we could not READ is not a local-only repo, and giving
+  // it the local-only id is the mistake this whole probe exists to stop. Say so
+  // once, loudly enough to be found in a log, then fall through — we still have
+  // to return an id, and the next run will resolve it properly now that the
+  // failure is neither cached nor on a 2-second fuse.
+  if (probe.kind === 'failed') {
+    console.error(`[project] could not read git remotes in ${toplevel} — filing it as a `
+      + `local-only repo for now, which is probably wrong: ${probe.reason}`);
   }
 
   const hash = createHash('sha1').update(toplevel).digest('hex').slice(0, 12);
@@ -330,22 +340,77 @@ function findGitToplevel(realPath: string): string | null {
   return null;
 }
 
-function getGitRemote(toplevel: string): string | null {
-  const cached = gitCache.get(toplevel);
-  if (cached) return cached.remote;
-  let remote: string | null = null;
+/**
+ * The remote for a repo, and — when there is none — WHY.
+ *
+ * WHAT WENT WRONG. This ran `git remote get-url origin` and collapsed every
+ * failure into `null`, which the caller reads as "this repo has no remote" and
+ * turns into a permanent `git-local:<sha1(path)>` identity. Four different
+ * things produced that same null:
+ *
+ *   1. the repo genuinely has no remote          ← the only one that should
+ *   2. its remote is not called `origin`
+ *   3. `git` is not on PATH in the indexer's environment
+ *   4. the 2000ms timeout expired
+ *
+ * Cases 2 to 4 mint a DIFFERENT, permanent id for a repo that has a remote, so
+ * the same project is filed twice and its sessions split between the two. It is
+ * not hypothetical: `coolcode`, whose origin is a plain
+ * https://github.com/…/coolcode.git, arrived on the board as
+ * `git-local:9c548119504c`.
+ *
+ * The failure was also CACHED, so one expired timeout poisoned every later
+ * lookup in that process.
+ *
+ * Now: list the remotes first, which answers "does git work here at all" and
+ * "which remotes exist" in one call; prefer `origin`, else take the first one
+ * (case 2 disappears — a repo with an `upstream` and no `origin` is still a
+ * repo with a remote); and only a probe that DEFINITIVELY answered is cached,
+ * so a transient failure is retried on the next run instead of being frozen in.
+ */
+type RemoteProbe =
+  | { kind: 'remote'; url: string }
+  | { kind: 'none' }                    // git answered: this repo has no remotes
+  | { kind: 'failed'; reason: string }; // git could not answer
+
+const GIT_TIMEOUT_MS = 10_000;
+
+function git(toplevel: string, args: string): string {
+  return execSync(`git ${args}`, {
+    cwd: toplevel,
+    stdio: ['ignore', 'pipe', 'ignore'],
+    encoding: 'utf-8',
+    timeout: GIT_TIMEOUT_MS,
+  });
+}
+
+function probeGitRemote(toplevel: string): RemoteProbe {
+  let names: string[];
   try {
-    remote = execSync('git remote get-url origin', {
-      cwd: toplevel,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      encoding: 'utf-8',
-      timeout: 2000,
-    }).trim() || null;
-  } catch {
-    remote = null;
+    names = git(toplevel, 'remote').split('\n').map((n) => n.trim()).filter(Boolean);
+  } catch (err) {
+    // git missing, timed out, or the repo is unreadable. NOT "no remote".
+    return { kind: 'failed', reason: err instanceof Error ? err.message : String(err) };
   }
-  gitCache.set(toplevel, { remote });
-  return remote;
+  if (names.length === 0) return { kind: 'none' };
+
+  const pick = names.includes('origin') ? 'origin' : names[0];
+  try {
+    const url = git(toplevel, `remote get-url ${pick}`).trim();
+    return url ? { kind: 'remote', url } : { kind: 'none' };
+  } catch (err) {
+    return { kind: 'failed', reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+function getGitRemote(toplevel: string): RemoteProbe {
+  const cached = gitCache.get(toplevel);
+  if (cached) return cached;
+  const probe = probeGitRemote(toplevel);
+  // Only a definitive answer is remembered. Caching a failure is how one slow
+  // moment became every lookup's answer for the rest of the run.
+  if (probe.kind !== 'failed') gitCache.set(toplevel, probe);
+  return probe;
 }
 
 /** Parse common git remote URL shapes into host/owner/repo. */
