@@ -54,9 +54,17 @@ router.get('/', async (_req, res) => {
     const cfg = loadProjectsConfig();
     const summaries = await listProjectsSummary();
 
+    // A representative path per project, for the same reason the tree endpoint
+    // loads one: a `git-local:` id is a hash and carries no name. Both
+    // endpoints must resolve the name the SAME way or the list and the tree
+    // disagree about what a project is called.
+    const pathMap = await listProjectIdPaths();
+
     // Annotate each project_id with its source (parse the prefix) and
     // workspace membership (from the config).
-    const projects: AggregatedProject[] = summaries.map(s => annotate(s, cfg));
+    const projects: AggregatedProject[] = summaries.map(
+      s => annotate(s, cfg, pathMap.get(s.project_id) || ''),
+    );
 
     // Group: workspaces at top, then plain projects, sorted by activity.
     const workspaces = projects.filter(p => p.is_workspace);
@@ -207,8 +215,8 @@ function buildTreeFromSummaries(
 ): TreeNode[] {
   interface Annotated extends TreeNode { projectPath: string }
   const annotated: Annotated[] = summaries.map(s => {
-    const { source, displayName } = parseProjectId(s.project_id);
     const projectPath = pathMap.get(s.project_id) || '';
+    const { source, displayName } = parseProjectId(s.project_id, projectPath);
     const orphan = source === 'path' && projectPath !== '' && !existsSync(projectPath);
     return {
       id: s.project_id,
@@ -380,8 +388,22 @@ async function listProjectsSummary(): Promise<ProjectSummaryRow[]> {
   }
 }
 
-function annotate(s: ProjectSummaryRow, cfg: ProjectsConfig): AggregatedProject {
-  const { source, displayName } = parseProjectId(s.project_id);
+/** project_id → a representative project_path, opened and closed like the
+ *  summary loader beside it. Empty on failure: a missing name is a cosmetic
+ *  loss, and it must never take the projects list down with it. */
+async function listProjectIdPaths(): Promise<Map<string, string>> {
+  const store = await createStore();
+  try {
+    return new Map((await store.listAllProjectIdPaths()).map(r => [r.project_id, r.project_path]));
+  } catch {
+    return new Map();
+  } finally {
+    await store.close();
+  }
+}
+
+function annotate(s: ProjectSummaryRow, cfg: ProjectsConfig, samplePath = ''): AggregatedProject {
+  const { source, displayName } = parseProjectId(s.project_id, samplePath);
 
   // Check whether the user config considers this a workspace or has it
   // listed as a sub-project under a parent.
@@ -418,7 +440,31 @@ function cfgDisplayNameOverride(projectId: string, cfg: ProjectsConfig): string 
   return null;
 }
 
-function parseProjectId(id: string): {
+/**
+ * `samplePath` is a representative project_path for this id, when we have one.
+ *
+ * It only matters for `git-local:` — a repo with no usable remote, whose id is
+ * sha1(toplevel) and therefore carries no name at all. The board showed
+ * "local 9c548119504c" for a real project, which names nothing and cannot be
+ * searched for.
+ *
+ * The name is not missing, it is discarded: project-resolver.ts computes
+ * `displayName: basename(toplevel)` when it mints the id, and only the id is
+ * stored. Rather than widen the sync payload and migrate, this recovers the
+ * same answer from the path the store already keeps per project
+ * (`listAllProjectIdPaths`), which is that same toplevel.
+ *
+ * Falls back to the hash when there is no path — an id with no items yet has
+ * no representative path, and a bad name is worse than an honest hash.
+ */
+/** Last path segment of a POSIX or Windows path. Sessions are indexed on both,
+ *  and a laptop path arriving with backslashes must not become one long name. */
+function basenameOf(p: string): string {
+  const segs = p.replace(/\\/g, '/').split('/').filter(Boolean);
+  return segs[segs.length - 1] || '';
+}
+
+function parseProjectId(id: string, samplePath = ''): {
   source: AggregatedProject['source'];
   displayName: string;
 } {
@@ -427,7 +473,7 @@ function parseProjectId(id: string): {
   m = /^ws:(.+)$/.exec(id);
   if (m) return { source: 'auto-workspace', displayName: m[1] };
   m = /^git-local:(.+)$/.exec(id);
-  if (m) return { source: 'git-local', displayName: `local ${m[1]}` };
+  if (m) return { source: 'git-local', displayName: basenameOf(samplePath) || `local ${m[1]}` };
   m = /^path:(.+)$/.exec(id);
   if (m) {
     const segs = m[1].split('/').filter(Boolean);
@@ -504,3 +550,8 @@ function numParam(q: unknown, def: number): number {
 }
 
 export default router;
+
+/* Pure helpers, exported for tests. The route module opens a store on import
+ * of its handlers, so the test reaches the naming logic through here rather
+ * than standing up a server. */
+export const __testing = { parseProjectId, basenameOf };
