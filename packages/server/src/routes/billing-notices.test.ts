@@ -82,7 +82,14 @@ describe('trial_will_end notifies without changing entitlement', () => {
 });
 
 describe('the copy says what actually happens', () => {
-  const mail = trialEndingMail('buyer@example.com', new Date(TRIAL_END * 1000), 'https://x.test/pricing');
+  // A Stripe trial only exists after checkout, so a card is ALWAYS on file here.
+  // "Do nothing" therefore means "you are charged", not "you lose access". This
+  // block exists because the copy asserted the opposite for months: it reused the
+  // no-card reminder's wording on the card-trial's trigger, and so warned a
+  // paying customer that their access was ending three days before billing them.
+  const mail = trialEndingMail('buyer@example.com', new Date(TRIAL_END * 1000), 'https://x.test/app?view=account');
+  // Assert on content, not on where the hand-wrapped lines happen to break.
+  const flat = mail.text.replace(/\s+/g, ' ');
 
   test('leads with the date, in the subject and the body', () => {
     const day = new Date(TRIAL_END * 1000).toISOString().slice(0, 10);
@@ -90,26 +97,31 @@ describe('the copy says what actually happens', () => {
     expect(mail.text).toContain(day);
   });
 
-  test('states the reassuring facts, because they are the true ones', () => {
-    // The trial ending is not data loss, and a customer deciding whether to pay
-    // deserves to know that rather than be scared into it. What it must NOT do
-    // is over-reassure: 'stays fully searchable' was asserted here until
-    // 2026-08-25, and recall stops on a lapsed account now.
-    expect(mail.text).toContain('nothing is deleted');
-    expect(mail.text).toContain('export keeps working');
-    expect(mail.text).toContain('sync --full');
-    expect(mail.text).not.toMatch(/searchable/i);
+  test('says the subscription STARTS — it never claims access is ending', () => {
+    expect(mail.subject).toMatch(/subscription starts/i);
+    expect(flat).toMatch(/card on file/i);
+    expect(flat).toMatch(/subscription starts the same day/i);
+    // The exact three phrases from the no-card reminder that must never appear
+    // in front of someone who is about to be charged.
+    expect(flat).not.toMatch(/recall switches off/i);
+    expect(flat).not.toMatch(/searches stop/i);
+    expect(flat).not.toMatch(/stop syncing/i);
   });
 
-  test('does not hide that recall itself stops', () => {
-    expect(mail.text).toMatch(/recall switches off/i);
-    expect(mail.text).toMatch(/searches stop/i);
+  test('names the cancel path, because a surprise charge is what causes disputes', () => {
+    expect(flat).toMatch(/cancel before/i);
+    expect(mail.text).toContain('https://x.test/app?view=account');
+    expect(flat).toMatch(/will not be charged/i);
   });
 
-  test('offers the free self-hosted path as well as the paid one', () => {
-    expect(mail.text).toContain('https://x.test/pricing');
-    expect(mail.text).toContain('self-hosting');
+  test('keeps the promises that are still true', () => {
+    expect(flat).toMatch(/deletes nothing/i);
+    expect(flat).toMatch(/export always works/i);
+    expect(flat).not.toMatch(/searchable/i);
   });
 
-
+  test('falls back to this deployment account page when no url is passed', () => {
+    const m = trialEndingMail('buyer@example.com', new Date(TRIAL_END * 1000));
+    expect(m.text).toContain('/app?view=account');
+  });
 });

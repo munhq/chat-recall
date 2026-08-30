@@ -1,17 +1,25 @@
 /**
- * Trial reminders: which stage is due, and the once-only guarantee.
+ * Trial reminders: which stage is due, and what each of the two tracks promises.
  *
  * The stage function is pure, so it is tested directly. The sweep itself is
  * covered through `reminderStage` plus the copy, because the sweep's remaining
  * logic is control-plane I/O that the integration harness exercises end to end.
  */
 import { describe, test, expect } from 'vitest';
-import { reminderStage, trialReminderMail } from './trial-reminders.js';
+import { reminderStage, trialReminderMail, type TrialUsage } from './trial-reminders.js';
+
+/** The body with its wrapping collapsed. Every content assertion goes through
+ *  this: the copy wraps at 78 columns around numbers whose width varies per
+ *  tenant, so a phrase may straddle a line break for one reader and not another. */
+const flat = (text: string) => text.replace(/\s+/g, ' ');
+
+const ACTIVE: TrialUsage = { sessions: 11004, projects: 65, oldestMs: Date.UTC(2025, 4, 7) };
+const ONE: TrialUsage = { sessions: 1, projects: 1, oldestMs: Date.now() };
+const IDLE: TrialUsage = { sessions: 0, projects: 0, oldestMs: null };
+const STAGES = ['half', 'final', 'ended'] as const;
 
 describe('reminderStage', () => {
   test('nothing is due early in the trial', () => {
-    // Re-keyed for the 7-day trial prod runs: at 7 days left the user has just
-    // signed up, and the old threshold fired the halfway nudge on day zero.
     expect(reminderStage(7)).toBeNull();
     expect(reminderStage(4)).toBeNull();
   });
@@ -30,74 +38,164 @@ describe('reminderStage', () => {
   });
 
   test('a skipped sweep still sends the MOST URGENT stage, not the one missed', () => {
-    // Thresholds are <=, not ==, so a tenant first seen at 3 days left gets the
-    // halfway message, and one first seen at 1 day gets the final one. An == test
-    // would silently send nothing at all to a tenant the sweep stepped over.
     expect(reminderStage(2)).toBe('half');
     expect(reminderStage(1)).toBe('final');
   });
 
   test('no end date means no reminder', () => {
-    // A Stripe trial Stripe has not dated yet must not trigger our copy.
     expect(reminderStage(null)).toBeNull();
   });
 });
 
-describe('trialReminderMail', () => {
-  test('every stage promises the data is kept', () => {
-    // The deadline must never read as a threat to the user's own history, or the
-    // email converts worse than sending nothing.
-    for (const stage of ['half', 'final', 'ended'] as const) {
-      const mail = trialReminderMail('a@b.test', stage, 2);
-      expect(mail.to).toBe('a@b.test');
-      expect(mail.subject).toBeTruthy();
-      expect(mail.text).toMatch(/subscribe/i);
+describe('every message, on either track', () => {
+  test('has a recipient, a subject and a way to reach a person', () => {
+    for (const stage of STAGES) {
+      for (const usage of [ACTIVE, IDLE, null]) {
+        const mail = trialReminderMail('a@b.test', stage, 2, usage);
+        expect(mail.to).toBe('a@b.test');
+        expect(mail.subject).toBeTruthy();
+        expect(mail.text).toContain('contact@chatrecall.dev');
+      }
     }
-    expect(trialReminderMail('a@b.test', 'ended', 0).text).toMatch(/nothing is deleted/i);
-    expect(trialReminderMail('a@b.test', 'final', 1).text).toMatch(/nothing is deleted/i);
+  });
+
+  test('links only to pages that exist — no invented docs URL', () => {
+    // Only /, /pricing/ and /self-hosting/ are real. A 404 in a trial reminder
+    // is worse than no link at all.
+    for (const stage of STAGES) {
+      for (const usage of [ACTIVE, IDLE, null]) {
+        const text = flat(trialReminderMail('a@b.test', stage, 2, usage).text);
+        for (const url of text.match(/https:\/\/chatrecall\.dev\S*/g) ?? []) {
+          expect(url).toMatch(/^https:\/\/chatrecall\.dev(\/pricing|\/self-hosting\/|\/app\?view=account)?$/);
+        }
+      }
+    }
+  });
+
+  test('never prints a raw thousands separator into a subject line', () => {
+    // holdingsOf once shortened its sentence with split(','), which cut
+    // "11,004 sessions" down to "11".
+    for (const stage of STAGES) {
+      const subject = trialReminderMail('a@b.test', stage, 3, ACTIVE).subject;
+      expect(subject).not.toMatch(/\b11 sessions\b/);
+      if (/session/.test(subject)) expect(subject).toContain('11,004 sessions');
+    }
+  });
+});
+
+describe('the VALUE track — a trial that has actually been used', () => {
+  test('leads with what the server is really holding', () => {
+    const mail = trialReminderMail('a@b.test', 'half', 3, ACTIVE);
+    expect(flat(mail.text)).toContain('11,004 sessions');
+    expect(flat(mail.text)).toContain('65 projects');
+    expect(flat(mail.text)).toContain('May 2025');
+    expect(mail.subject).toContain('11,004 sessions');
+  });
+
+  test('a recent, single-session account is not padded with a date or a project count', () => {
+    const text = flat(trialReminderMail('a@b.test', 'half', 3, ONE).text);
+    expect(text).toContain('1 session');
+    expect(text).not.toMatch(/from 1 projects/);
+    expect(text).not.toMatch(/the oldest from/);
+  });
+
+  test('unknown usage falls back to the value track, never to "your account is empty"', () => {
+    // Telling an active user their account is empty because a COUNT(*) timed out
+    // is the one mistake here that destroys trust outright.
+    for (const stage of STAGES) {
+      const text = flat(trialReminderMail('a@b.test', stage, 2, null).text);
+      expect(text).not.toMatch(/nothing has synced|never reached the server|account is empty/i);
+    }
+  });
+
+  test('every stage promises the data is kept and names the price', () => {
+    for (const stage of STAGES) {
+      const text = flat(trialReminderMail('a@b.test', stage, 2, ACTIVE).text);
+      expect(text).toMatch(/nothing is deleted|deletes nothing/i);
+      expect(text).toMatch(/pricing/);
+    }
   });
 
   test('the ended notice states what stops and what does not', () => {
-    const text = trialReminderMail('a@b.test', 'ended', 0).text;
-    // Three earlier versions of this copy were wrong, each written for a tier
-    // that no longer existed: "read-only" (nothing was read-only), "the free
-    // plan: your last 7 days stay searchable" (no window, and sync had stopped),
-    // and "everything already synced stays fully searchable" (recall now stops
-    // outright). An email cannot be corrected after it is sent, so the promise
-    // must be the narrow true one: the data is kept, and export works.
+    const text = flat(trialReminderMail('a@b.test', 'ended', 0, ACTIVE).text);
     expect(text).not.toMatch(/read-only/i);
     expect(text).not.toMatch(/free plan/i);
     expect(text).not.toMatch(/searchable/i);
-    expect(text).toMatch(/stop syncing|no longer syncing/i);
+    expect(text).toMatch(/no longer syncing/i);
     expect(text).toMatch(/searches stop/i);
     expect(text).toMatch(/nothing is deleted/i);
     expect(text).toMatch(/sync --full/);       // the one command that restores it
     expect(text).toMatch(/export/i);
   });
 
-  test('the final notice describes the same landing', () => {
-    const text = trialReminderMail('a@b.test', 'final', 1).text;
+  test('the final notice describes the same landing, and that it is reversible', () => {
+    const text = flat(trialReminderMail('a@b.test', 'final', 1, ACTIVE).text);
     expect(text).not.toMatch(/read-only/i);
     expect(text).not.toMatch(/free plan/i);
     expect(text).not.toMatch(/searchable/i);
-    expect(text).toMatch(/syncing stops/i);
+    expect(text).toMatch(/stop syncing/i);
+    expect(text).toMatch(/searches stop/i);
+    expect(text).toMatch(/sync --full/);
+    expect(text).toMatch(/lose no history/i);
+  });
+
+  test('the halfway notice points at the ACCOUNT page, not only the price list', () => {
+    const text = flat(trialReminderMail('a@b.test', 'half', 3, ACTIVE).text);
+    expect(text).toContain('/app?view=account');
+    expect(text).toMatch(/pricing/);
     expect(text).toMatch(/searches stop/i);
   });
 
-  test('the day-4 notice points at the ACCOUNT page, not only the price list', () => {
-    // A connector user has never opened the dashboard — they signed in once at an
-    // OAuth prompt and have worked inside their AI tool since. This mail is where
-    // they learn it exists, and "what am I on, until when" is what they want.
-    const text = trialReminderMail('a@b.test', 'half', 3).text;
-    expect(text).toContain('/app?view=account');
-    expect(text).toMatch(/pricing|subscribe/i);
-    // And it states the landing, like the other two stages, so no stage implies
-    // a softer ending than the product delivers.
-    expect(text).toMatch(/searches stop/i);
+  test('it never claims a number of days elapsed', () => {
+    // `trialLengthDays() - daysLeft` printed "4 days into your trial" to accounts
+    // on a 14-day grant who were 11 days in: the live env length has nothing to
+    // do with the length a given trial was granted under.
+    for (const stage of STAGES) {
+      expect(flat(trialReminderMail('a@b.test', stage, 3, ACTIVE).text)).not.toMatch(/days into your/i);
+    }
   });
 
   test('singular day, not "1 days"', () => {
-    expect(trialReminderMail('a@b.test', 'final', 1).subject).toContain('1 day left');
-    expect(trialReminderMail('a@b.test', 'final', 2).subject).toContain('2 days left');
+    expect(trialReminderMail('a@b.test', 'final', 1, null).subject).toContain('1 day left');
+    expect(trialReminderMail('a@b.test', 'final', 2, null).subject).toContain('2 days left');
+  });
+});
+
+describe('the SETUP track — a trial where nothing was ever synced', () => {
+  test('gives the one command instead of a price', () => {
+    for (const stage of STAGES) {
+      const text = flat(trialReminderMail('a@b.test', stage, 2, IDLE).text);
+      expect(text).toContain('npx chat-recall init');
+    }
+  });
+
+  test('never asks an empty account for money', () => {
+    // The whole reason this track exists: a countdown and an invoice link sent to
+    // someone who has never seen the product work reads as a dunning notice.
+    for (const stage of STAGES) {
+      const text = flat(trialReminderMail('a@b.test', stage, 2, IDLE).text);
+      expect(text).not.toMatch(/subscribe/i);
+      expect(text).not.toContain('https://chatrecall.dev/pricing');
+    }
+  });
+
+  test('offers to restart the clock, at every stage', () => {
+    for (const stage of STAGES) {
+      const text = flat(trialReminderMail('a@b.test', stage, 2, IDLE).text);
+      expect(text).toMatch(/restart|fresh trial/i);
+      expect(text).toMatch(/reply/i);
+    }
+  });
+
+  test('the ended notice asks what was missing rather than closing the door', () => {
+    const text = flat(trialReminderMail('a@b.test', 'ended', 0, IDLE).text);
+    expect(text).toMatch(/fresh trial/i);
+    expect(text).toMatch(/what you expected/i);
+  });
+
+  test('states the privacy facts, since the ask is to run the CLI', () => {
+    const text = flat(trialReminderMail('a@b.test', 'half', 3, IDLE).text);
+    expect(text).toMatch(/masked/i);
+    expect(text).toMatch(/waits for a yes/i);
   });
 });
