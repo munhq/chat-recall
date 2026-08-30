@@ -212,6 +212,82 @@ export async function twoFactorEnabled(): Promise<boolean> {
 }
 
 /**
+ * The signed-in user's own profile fields.
+ *
+ * Read from `/get-session` rather than from a route of our own: better-auth
+ * already owns this record, and a second read path is a second thing that can
+ * disagree with what the server enforces. `twoFactorEnabled` comes from here for
+ * exactly that reason (see twoFactorEnabled() above).
+ */
+export interface SessionUser {
+  id: string;
+  email: string;
+  name: string;
+  emailVerified: boolean;
+  createdAt: string | null;
+  twoFactorEnabled: boolean;
+}
+
+/** The profile of whoever holds this session, or null when nobody does. */
+export async function getSessionUser(): Promise<SessionUser | null> {
+  try {
+    const res = await fetch(authUrl('/get-session'), {
+      credentials: 'include',
+      headers: { accept: 'application/json' },
+    });
+    if (!res.ok) return null;
+    const u = ((await res.json().catch(() => null)) as { user?: Record<string, unknown> } | null)?.user;
+    if (!u?.id) return null;
+    return {
+      id: String(u.id),
+      email: String(u.email ?? ''),
+      name: String(u.name ?? ''),
+      emailVerified: u.emailVerified === true,
+      createdAt: typeof u.createdAt === 'string' ? u.createdAt : null,
+      twoFactorEnabled: u.twoFactorEnabled === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Rename yourself. The only profile field that is ours to change without
+ *  re-verifying something — the address is not, because changing it needs the
+ *  new one confirmed first. */
+export async function updateDisplayName(name: string): Promise<AuthResult> {
+  const res = await fetch(authUrl('/update-user'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (res.ok) return { ok: true };
+  return { ok: false, error: await authError(res, 'could not save your name') };
+}
+
+/**
+ * Change the password, and sign the other browsers out.
+ *
+ * `revokeOtherSessions` defaults ON. Somebody who changes a password usually
+ * suspects the old one, and leaving every other live session signed in makes the
+ * change decorative against the one threat it is for.
+ */
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+  revokeOtherSessions = true,
+): Promise<AuthResult> {
+  const res = await fetch(authUrl('/change-password'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ currentPassword, newPassword, revokeOtherSessions }),
+  });
+  if (res.ok) return { ok: true };
+  return { ok: false, error: await authError(res, 'could not change your password') };
+}
+
+/**
  * Ask for a reset link.
  *
  * Resolves ok for ANY address, including one with no account. That is the
