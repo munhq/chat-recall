@@ -278,7 +278,7 @@ function SubscriptionCard(
             </div>
           )}
           <p className="muted">
-            No card needed for the trial. When it ends, recall switches off — searches and session
+            No card needed for the trial. When it ends, recall switches off: searches and session
             reads stop, and new sessions stop syncing. Nothing is deleted: your history stays on
             the server, export keeps working, and subscribing turns it all back on.
           </p>
@@ -298,7 +298,7 @@ function SubscriptionCard(
           )}
         </>
       ) : !ent.billingEnabled ? (
-        <p className="muted">Billing isn't enabled on this deployment — all features are available.</p>
+        <p className="muted">Billing isn't enabled on this deployment, so all features are available.</p>
       ) : ent.entitled === false ? (
         <>
           {/* DORMANT — the floor a lapsed tenant lands on, never bought. Stated
@@ -310,7 +310,7 @@ function SubscriptionCard(
           </div>
           <p className="muted">
             Recall is switched off: searches and session reads are refused, and new sessions are
-            not syncing. Nothing was deleted — your history is intact and export keeps working.
+            not syncing. Nothing was deleted. Your history is intact and export keeps working.
             Subscribe and one <code>chat-recall sync --full</code> brings the server current.
           </p>
           {/* The meters, from the same payload the server enforces with — the
@@ -402,7 +402,7 @@ function AlertsCard({ onError }: { onError: (s: string) => void }) {
     <section className="acct-card">
       <h2>Secret-leak alerts</h2>
       <p className="muted">When a <strong>live</strong> secret is detected in your sessions, we POST an alert to this webhook
-        (Discord or Slack incoming-webhook URL). We never send the raw secret — only a masked preview.</p>
+        (Discord or Slack incoming-webhook URL). We never send the raw secret, only a masked preview.</p>
       <input className="acct-input" type="url" placeholder="https://discord.com/api/webhooks/…  or  https://hooks.slack.com/…"
         value={url} onChange={(e) => setUrl(e.target.value)} />
       <div className="acct-actions">
@@ -435,7 +435,7 @@ function gateReason(ent: { status?: string; hasSubscription?: boolean } | null):
   // copy did not: it promised a metered free sync after sync left the free tier,
   // and a recent-history window months after the window was removed. Say only
   // what a lapsed account actually keeps — the history on the server, and export.
-  const kept = `Recall is switched off until you subscribe: searches and session reads are refused, and new sessions are not syncing. Nothing is deleted — your full history is intact on the server, export keeps working, and subscribing turns it all back on.`;
+  const kept = `Recall is switched off until you subscribe: searches and session reads are refused, and new sessions are not syncing. Nothing is deleted. Your full history is intact on the server, export keeps working, and subscribing turns it all back on.`;
   if (ent?.status === 'trialing') return { title: 'Your trial has ended', detail: kept };
   if (ent?.status === 'past_due') return {
     title: 'Your last payment did not go through',
@@ -494,7 +494,7 @@ export function ConfirmEmailScreen() {
         <h1>Check your inbox</h1>
         <p className="muted">
           We sent a six-digit code to <strong>{email ?? 'your address'}</strong>. Enter it below and your
-          free trial starts — nothing is counting down until you do, and there is nothing to pay.
+          free trial starts. Nothing is counting down until you do, and there is nothing to pay.
         </p>
         <div style={{ marginTop: 20, display: 'flex', gap: 8, alignItems: 'center' }}>
           <input
@@ -522,7 +522,7 @@ export function ConfirmEmailScreen() {
           </Button>
         </div>
         {err && <div className="acct-err">{err}</div>}
-        {sent && <p className="muted" data-testid="resent">Sent again — check your inbox.</p>}
+        {sent && <p className="muted" data-testid="resent">Sent again. Check your inbox.</p>}
         <p className="muted" style={{ marginTop: 14 }}>
           Not there? It can take a minute, and it is worth checking spam.
         </p>
@@ -607,7 +607,7 @@ export function SubscribeScreen() {
             <h1>Start your {plan.freeTrialDays}-day trial</h1>
             <p className="muted">No card needed. Create your workspace, connect your machine, and your
               AI-session history becomes searchable. When the trial ends, recall switches off until
-              you subscribe — nothing is deleted, and export always works.</p>
+              you subscribe. Nothing is deleted, and export always works.</p>
             {err && <div className="acct-err">{err}</div>}
             <Button variant="primary" disabled={busy} onClick={createWorkspace}>
               {busy ? 'Setting up…' : 'Create your workspace →'}
@@ -617,7 +617,7 @@ export function SubscribeScreen() {
           <>
             <h1>{trialDays ? `Start your ${trialDays}-day free trial` : 'Start your free trial'}</h1>
             <p className="muted">Your subscription is required to access your sessions, search, analytics and live secret-leak
-              alerts. Card required, cancel anytime — no charge until the trial ends.</p>
+              alerts. Card required, cancel anytime, and no charge until the trial ends.</p>
             {err && <div className="acct-err">{err}</div>}
             <StartTrialButton onError={setErr} size="lg" />
           </>

@@ -118,7 +118,7 @@ export default function TwoFactorCard() {
 
           {setup.backupCodes.length > 0 && (
             <div className="tf-warn">
-              <strong>Save these recovery codes now — this is the only time they are shown.</strong>
+              <strong>Save these recovery codes now. This is the only time they are shown.</strong>
               <br />
               They are stored hashed, so we cannot show them again or read them out to you. Each
               works once, and they are the only way in if you lose the authenticator.
