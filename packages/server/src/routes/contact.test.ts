@@ -11,13 +11,13 @@ import { describe, test, expect, beforeAll, afterAll, vi } from 'vitest';
 import express, { type Express } from 'express';
 import request from 'supertest';
 
-const sent: Array<{ to: string; subject: string; text: string }> = [];
+const sent: Array<{ to: string; subject: string; text: string; html?: string }> = [];
 let configured = true;
 let throws = false;
 
 vi.mock('../auth/mailer.js', () => ({
   mailerConfigured: () => configured,
-  sendMail: async (m: { to: string; subject: string; text: string }) => {
+  sendMail: async (m: { to: string; subject: string; text: string; html?: string }) => {
     if (throws) throw new Error('smtp exploded');
     sent.push(m);
     return { sent: true };
@@ -35,7 +35,7 @@ afterAll(() => { sent.length = 0; });
 const good = { email: 'ada@example.com', message: 'We are 40 engineers and want to self-host.' };
 
 describe('POST /api/contact', () => {
-  test('a valid enquiry is delivered, as text only', async () => {
+  test('a valid enquiry is delivered, in both forms', async () => {
     sent.length = 0;
     const r = await request(app).post('/api/contact').type('form').send(good);
     expect(r.status).toBe(200);
@@ -43,8 +43,31 @@ describe('POST /api/contact', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0].text).toContain('ada@example.com');
     expect(sent[0].text).toContain('40 engineers');
-    // Never HTML: nothing an anonymous sender writes may be interpreted.
-    expect(sent[0]).not.toHaveProperty('html');
+    // HTML now, through the same template as every other message this product
+    // sends. It used to be text-only, and a client with nothing to render fell
+    // back to its plain-text default — a monospace wall, for the first message a
+    // prospect ever causes us to send.
+    expect(sent[0].html).toContain('40 engineers');
+  });
+
+  test('an enquiry cannot inject markup into the operator\'s mail client', async () => {
+    // THE RULE THAT REPLACED "never send HTML".
+    //
+    // Text-only was the old defence: an anonymous stranger writes this, and
+    // nothing they write may be interpreted. Sending HTML keeps the defence
+    // and moves it — the template escapes every interpolated value — but the
+    // guarantee now depends on that escaping, so it is asserted here rather
+    // than assumed. If a future block renders raw, this fails.
+    sent.length = 0;
+    await request(app).post('/api/contact').type('form').send({
+      email: 'ada@example.com',
+      message: 'Hello <script>alert(1)</script> and <img src=x onerror=alert(2)>',
+    });
+    expect(sent).toHaveLength(1);
+    const html = sent[0].html ?? '';
+    expect(html).not.toContain('<script>');
+    expect(html).not.toContain('<img src=x');
+    expect(html).toContain('&lt;script&gt;');
   });
 
   test('a bad address is refused and sends nothing', async () => {
