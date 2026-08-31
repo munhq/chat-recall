@@ -842,6 +842,42 @@ BEGIN
   END LOOP;
 END $$;
 
+-- What people actually said.
+--
+-- Enquiries and feedback were emailed and never stored. An inbox is not a
+-- record: it cannot be counted, it cannot be joined to a signup, and the one
+-- thing a founder most needs to reread -- somebody explaining why they did not
+-- get it -- ends up in a thread nobody can find six weeks later.
+--
+-- WRITTEN BEFORE THE MAIL IS SENT, deliberately. If the mailer is down or
+-- misconfigured, the message is still kept: a dropped enquiry is worse than an
+-- honest error, because the sender walks away believing they contacted you.
+--
+-- The source column separates where it came from: the pricing form, or the CLI's own
+-- feedback command from a terminal. Those are different populations. A
+-- website enquiry is usually a lead; a CLI message is usually a user who is
+-- stuck, and the second kind is the one that predicts churn.
+--
+-- NOT RLS-WALLED and no tenant column: most of this arrives from people who have
+-- no account, which is exactly the population worth hearing from.
+CREATE TABLE IF NOT EXISTS feedback (
+  id         BIGSERIAL PRIMARY KEY,
+  created_at BIGINT NOT NULL,
+  source     TEXT   NOT NULL,          -- 'contact' | 'cli'
+  topic      TEXT,
+  email      TEXT,
+  company    TEXT,
+  message    TEXT   NOT NULL,
+  -- Set only when the sender was logged in. Anonymous is the normal case.
+  tenant     TEXT,
+  cli_version TEXT,
+  os          TEXT,
+  -- Whether the notification email went out. A row with mailed = false is one
+  -- somebody has to go and read, because nothing told them about it.
+  mailed     BOOLEAN NOT NULL DEFAULT false
+);
+CREATE INDEX IF NOT EXISTS feedback_created ON feedback (created_at DESC);
+
 -- ── Operator read access for the cockpit ─────────────────────────────────
 -- A cross-tenant SELECT on client_events, and ONLY on client_events.
 --
