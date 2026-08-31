@@ -26,6 +26,7 @@ import { openBrowser } from './open-browser.js';
 import { isOnPath } from '@chat-recall/engine/core/which.js';
 import { readCollectorHealth, judgeHealth, progressLine, collectorHealthPath, STALE_AFTER_MS } from '@chat-recall/engine/core/collector-health.js';
 import { userConsents, serverAllowsTelemetry } from './telemetry-consent.js';
+import { collectEnvNeeds, renderEnvNeeds } from './env-needed.js';
 
 /**
  * Colour a relevance tier for the terminal.
@@ -717,9 +718,11 @@ program
             console.log(`   ${chalk.dim('Re-run `chat-recall toolkit pull` once the server answers.')}`);
           } else if (written.length === 0 && present === 0) {
           } else {
-            const envVars = [...new Set(written.flatMap((o) => o.needsEnv || []))].sort();
-            if (envVars.length) {
-              rep.warn(`${chalk.yellow('Set these env vars — their values were never uploaded:')} ${envVars.join(', ')}`);
+            const needs = collectEnvNeeds(written);
+            if (needs.length) {
+              const [head, ...rest] = renderEnvNeeds(needs, written.length);
+              rep.warn(head!);
+              for (const line of rest) console.log(line);
             }
           }
         } catch (err) {
@@ -2449,11 +2452,10 @@ toolkit
 
     // Env values never leave the source machine, so say which ones to set here
     // rather than leaving a registration that fails on first use.
-    const envVars = [...new Set(written.flatMap(o => o.needsEnv || []))].sort();
-    if (envVars.length) {
+    const needs = collectEnvNeeds(written);
+    if (needs.length) {
       console.log('');
-      console.log(chalk.yellow.bold('Set these environment variables — their values were never uploaded:'));
-      for (const v of envVars) console.log(`  ${v}`);
+      for (const line of renderEnvNeeds(needs, written.length)) console.log(line);
     }
 
     // NAME what could not travel. A partial sync reported as a success is why
