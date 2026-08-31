@@ -16,6 +16,7 @@
  */
 import express from 'express';
 import { sendMail, mailerConfigured } from '../auth/mailer.js';
+import { compose } from '../auth/mail-template.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { storeFeedback, markFeedbackMailed } from '../util/feedback.js';
 
@@ -75,17 +76,30 @@ router.post('/', express.urlencoded({ extended: false, limit: '32kb' }), async (
     return respond(req, res, false, 'contact is not configured on this server');
   }
 
-  const text = [
-    `New ${topic} enquiry from the pricing page.`,
-    '',
-    `From:    ${email}`,
-    company ? `Company: ${company}` : null,
-    '',
-    message,
-  ].filter((l) => l !== null).join('\n');
+  // Through the same template as every other message this product sends.
+  //
+  // These two were the only ones built as bare `text`, so a mail client had
+  // nothing to render and fell back to its plain-text default — a monospace
+  // wall, in a product whose other mail is typeset. An enquiry is the first
+  // thing a prospect ever causes us to send; it should not be the one that
+  // looks unfinished.
+  //
+  // What they said goes in a `quote` block: it is someone else's words, and it
+  // should read as theirs rather than as ours.
+  const mail = compose({
+    to: TO,
+    subject: `chat-recall ${topic} enquiry`,
+    preheader: `${email}${company ? ` · ${company}` : ''}`,
+    blocks: [
+      { kind: 'lead', text: `New ${topic} enquiry from the pricing page.` },
+      { kind: 'p', text: company ? `From ${email} at ${company}.` : `From ${email}.` },
+      { kind: 'quote', text: message },
+      { kind: 'cta', label: 'Reply', url: `mailto:${email}` },
+    ],
+  });
 
   try {
-    const r = await sendMail({ to: TO, subject: `chat-recall ${topic} enquiry`, text });
+    const r = await sendMail(mail);
     if (!r.sent) {
       log.error({ reason: r.reason }, 'contact enquiry not delivered');
       return respond(req, res, false, 'could not send right now — mail us directly');
@@ -159,15 +173,25 @@ router.post('/feedback', express.json({ limit: '16kb' }), async (req, res) => {
 
   if (!mailerConfigured() || !stored) return;
   try {
-    const text = [
-      'Feedback from the CLI.',
-      '',
-      email ? `From:    ${email}` : 'From:    (anonymous)',
-      clip(body.cliVersion, 20) ? `Version: ${clip(body.cliVersion, 20)}` : null,
-      '',
-      message,
-    ].filter((l) => l !== null).join('\n');
-    const r = await sendMail({ to: TO, subject: 'chat-recall feedback', text });
+    const version = clip(body.cliVersion, 20);
+    const who = email || 'someone who did not leave an address';
+    const mail = compose({
+      to: TO,
+      subject: 'chat-recall feedback',
+      preheader: `${who}${version ? ` · cli ${version}` : ''}`,
+      blocks: [
+        { kind: 'lead', text: 'Someone sent feedback from their terminal.' },
+        {
+          kind: 'p',
+          text: version ? `From ${who}, running CLI ${version}.` : `From ${who}.`,
+        },
+        { kind: 'quote', text: message },
+        // Only when there is somewhere to reply. A dead mailto: button is worse
+        // than none: it looks like a way to answer and is not.
+        ...(email ? [{ kind: 'cta' as const, label: 'Reply', url: `mailto:${email}` }] : []),
+      ],
+    });
+    const r = await sendMail(mail);
     if (r.sent) await markFeedbackMailed(stored);
     else log.error({ reason: r.reason }, 'feedback mail not delivered (message is stored)');
   } catch (e) {
