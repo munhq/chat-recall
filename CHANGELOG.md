@@ -4,6 +4,29 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.30] — 2026-08-31
+
+### Fixed
+
+- **The auto-updater filled /tmp and never emptied it.** `executeAutoUpdate`
+  downloaded the release tarball, wrote it into a fresh `mkdtemp` directory, and
+  removed that directory on no exit path — not on success, not on either
+  failure return. Because the updater runs on every sync, the directories
+  accumulate for as long as the collector does. One machine was carrying 5,889
+  of them holding 5.1 GB. npm has copied what it needs by the time `install()`
+  returns, so the staging directory is now deleted on every path below the
+  `mkdtemp`.
+- **Upgrading does not give that disk back, so the updater also sweeps.** A
+  machine that already ran an older version keeps its backlog, and only code
+  that runs often can clear it. The sweep runs on every sync rather than inside
+  `executeAutoUpdate`, which is reached only when an update is due — the
+  machines with a backlog are precisely the ones already up to date. It removes
+  only directories named `cr-update-` plus `mkdtemp`'s six characters, holding
+  nothing but `chat-recall.tgz`, and older than an hour, so a concurrent
+  update's live directory is never pulled out from under it. Rooted at
+  `tmpdir()`, the same call the leak used, so it follows `TMPDIR` on macOS
+  (`/var/folders/…/T`) and `%TEMP%` on Windows instead of assuming `/tmp`.
+
 ## [0.5.21] — 2026-08-27
 
 ### Fixed
