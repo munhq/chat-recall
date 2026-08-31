@@ -131,7 +131,8 @@ function registerMcpServersJson(
   }
   const servers = (cfg.mcpServers || {}) as Record<string, unknown>;
   const existing = servers[MCP_SERVER_NAME] as
-    | { command?: string; args?: string[]; env?: Record<string, string>; alwaysAllow?: string[] }
+    | { command?: string; args?: string[]; env?: Record<string, string>; alwaysAllow?: string[];
+        disabled?: boolean }
     | undefined;
 
   const entry: Record<string, unknown> = {
@@ -141,7 +142,20 @@ function registerMcpServersJson(
   if (spec.alwaysAllow) entry.alwaysAllow = existing?.alwaysAllow ?? spec.alwaysAllow;
   if (spec.env) entry.env = { ...existing?.env, ...spec.env };
 
+  /* A `disabled: true` entry is not a configured one.
+   *
+   * Same defect as OpenCode's `enabled: false`, found by sweeping every client
+   * with deliberately broken shapes rather than waiting for the next report:
+   * all four `mcpServers` clients answered "already configured" for an entry
+   * carrying `disabled: true`, and then no tools appeared.
+   *
+   * Cursor and Gemini honour the key. Claude Code does not — it keeps its
+   * opt-outs in `disabledMcpServers` in ~/.claude.json — so there the key is
+   * meaningless and dropping it is harmless tidying. Repairing in both cases
+   * beats reasoning about which client is reading which field, and it matches
+   * what `init` is for: the user just asked for this server to work. */
   const isCurrent = !!existing
+    && !existing.disabled
     && existing.command === spec.command
     && JSON.stringify(existing.args ?? null) === JSON.stringify(spec.args ?? null)
     && Object.entries(spec.env ?? {}).every(([k, v]) => existing.env?.[k] === v);
