@@ -18,7 +18,7 @@ import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { fetchWithTimeout } from './http.js';
-import { writeFileSync, mkdtempSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join, dirname, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -119,11 +119,19 @@ export async function executeAutoUpdate(plan: UpdatePlan, deps: UpdateDeps): Pro
   catch (e) { return { updated: false, reason: `download failed: ${e instanceof Error ? e.message : e}` }; }
   const got = createHash('sha256').update(buf).digest('hex');
   if (got !== plan.sha256) return { updated: false, reason: `checksum mismatch (expected ${plan.sha256.slice(0, 12)}…, got ${got.slice(0, 12)}…) — NOT installing` };
+  // DELETE THE STAGING DIR ON EVERY EXIT PATH. This leaked: the tarball was
+  // written and never removed, on success and on both failure returns below.
+  // The updater runs on every sync, so on one machine it had left 5,889
+  // directories holding 5.1 GB of near-identical tarballs in /tmp. npm has
+  // copied what it needs by the time `install` returns, so nothing after this
+  // reads `tgz`.
   const dir = mkdtempSync(join(tmpdir(), 'cr-update-'));
+  const discardStaging = () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } };
   const tgz = join(dir, 'chat-recall.tgz');
   writeFileSync(tgz, buf);
   try { deps.install(tgz); }
-  catch (e) { return { updated: false, reason: `install failed: ${e instanceof Error ? e.message : e}` }; }
+  catch (e) { discardStaging(); return { updated: false, reason: `install failed: ${e instanceof Error ? e.message : e}` }; }
+  discardStaging();
 
   // VERIFY THE BYTES ON DISK, because "npm exited 0" is not "the user now runs
   // the new version". This reported `updated 0.5.18 → 0.5.24` on every sync for
