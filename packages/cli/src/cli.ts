@@ -1387,6 +1387,73 @@ program
  * questions ("is my install working?") and for the launch demo where we can
  * show a green-row screenshot before doing anything else.
  */
+/**
+ * `chat-recall feedback "..."` — the terminal's version of a feedback widget.
+ *
+ * This product lives in a shell. There is no web app for an in-app survey to
+ * appear in, so the moment someone thinks "I do not get this" happens at a
+ * prompt, and it has to be answerable without leaving one. A survey tool would
+ * have nowhere to render.
+ *
+ * WORKS WITHOUT A LOGIN. The person most worth hearing from is the one who
+ * could not finish setting it up, and requiring an account would silence
+ * exactly them. With no credentials it falls back to the public server, which
+ * is where an unfinished install was pointed anyway.
+ */
+program
+  .command('feedback')
+  .argument('<message...>', 'what you want to say — anything at all')
+  .description('Send a message to the people who build chat-recall. No account needed.')
+  .option('--email <address>', 'so we can reply; optional')
+  .action(async (words: string[], opts: { email?: string }) => {
+    const message = words.join(' ').trim();
+    if (message.length < 3) {
+      console.error(chalk.red('Say a little more than that.'));
+      process.exitCode = 1;
+      return;
+    }
+
+    const target = firstTarget();
+    const base = target?.base
+      || (process.env.CHAT_RECALL_SERVER || 'https://chatrecall.dev').replace(/\/+$/, '');
+
+    try {
+      const res = await fetch(`${base}/api/contact/feedback`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          // Attached when logged in so a reply can find the account. Absent is
+          // fine and expected.
+          ...(target ? { authorization: `Bearer ${target.token}` } : {}),
+        },
+        body: JSON.stringify({
+          message,
+          email: opts.email ?? null,
+          cliVersion: pkgVersion,
+          os: `${process.platform}-${process.arch}`,
+        }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        console.error(chalk.red(`Could not send: ${body.error || res.status}`));
+        process.exitCode = 1;
+        return;
+      }
+      console.log(chalk.green('Sent. Thank you — this genuinely gets read.'));
+      if (!opts.email) {
+        console.log(chalk.dim('  Add --email <address> next time if you want a reply.'));
+      }
+    } catch (err) {
+      // Print the message so it is not lost with the connection. Somebody who
+      // took the trouble to type it should be able to paste it somewhere else.
+      console.error(chalk.red(`Could not reach ${base}.`));
+      console.error(chalk.dim('  Your message, so it is not lost:'));
+      console.error(chalk.dim(`  ${message}`));
+      process.exitCode = 1;
+    }
+  });
+
 program
   .command('doctor')
   .description('Quick health check across login, server, credentials, hooks, MCP server, and codeindex')
