@@ -231,14 +231,14 @@ function setupTrackMail(to: string, stage: ReminderStage, daysLeft: number) {
     return compose({
       to,
       subject: 'Your chat-recall trial ended before it started',
-      preheader: 'Reply and I will give you a fresh one — no conditions, no card.',
+      preheader: 'Reply and I will give you a fresh one. No conditions, no card.',
       blocks: [
         { kind: 'lead', text: 'Your trial has ended, and no sessions ever reached the server.' },
-        { kind: 'p', text: 'So you never saw the thing you signed up for. That is not a trial you declined — it is one that never ran, and I would rather fix it than let it lapse quietly.' },
+        { kind: 'p', text: 'So you never saw the thing you signed up for. That is not a trial you declined. It is one that never ran, and I would rather fix it than let it lapse quietly.' },
         { kind: 'p', text: 'The offer is open: reply to this message and I will give you a fresh trial, starting the day you are set up. No conditions, and no card.' },
         { kind: 'p', text: 'If you would rather just do it now, it is one command:' },
         ...INSTALL_BLOCKS,
-        { kind: 'p', text: 'And if chat-recall was simply not what you expected, I would still like to know what you were hoping for. Reply and tell me — it is the most useful mail I get.' },
+        { kind: 'p', text: 'And if chat-recall was simply not what you expected, I would still like to know what you were hoping for. Reply and tell me. It is the most useful mail I get.' },
         account,
       ],
       footer: SELF_HOST_FOOTER,
@@ -249,7 +249,7 @@ function setupTrackMail(to: string, stage: ReminderStage, daysLeft: number) {
     return compose({
       to,
       subject: 'One command left on your chat-recall trial',
-      preheader: 'Nothing has synced yet — and I will happily restart the clock.',
+      preheader: 'Nothing has synced yet, and I will happily restart the clock.',
       blocks: [
         { kind: 'lead', text: `Your trial ends ${daysLeft === 1 ? 'tomorrow' : `in ${n(daysLeft)} days`}, and nothing has synced yet.` },
         { kind: 'p', text: 'Which means you have not actually seen what you signed up to try. Two ways to fix that, and either is fine by me.' },
@@ -263,15 +263,15 @@ function setupTrackMail(to: string, stage: ReminderStage, daysLeft: number) {
 
   return compose({
     to,
-    subject: 'Your chat-recall account is empty — this is the one command',
+    subject: 'Your chat-recall account is empty. This is the one command',
     preheader: 'The history is already on your disk. It has just never been searchable.',
     blocks: [
       { kind: 'lead', text: 'Your account is live, but nothing has synced yet.' },
       { kind: 'p', text: 'So there is nothing for chat-recall to recall. That is one command away:' },
       ...INSTALL_BLOCKS,
-      { kind: 'p', text: 'The first sync is usually the surprising part. The history is already on your disk — often months of it — it has simply never been searchable. Once it is, ask your agent:' },
+      { kind: 'p', text: 'The first sync is usually the surprising part. The history is already on your disk (often months of it), and it has simply never been searchable. Once it is, ask your agent:' },
       { kind: 'quote', text: 'What was I working on last week?' },
-      { kind: 'p', text: `You have ${n(daysLeft)} ${plural(daysLeft, 'day')} left, and an empty account is a poor way to spend them. If something blocked you, reply to this message — a person reads it, and I will happily restart the clock so you get a fair look.` },
+      { kind: 'p', text: `You have ${n(daysLeft)} ${plural(daysLeft, 'day')} left, and an empty account is a poor way to spend them. If something blocked you, reply to this message. A person reads it, and I will happily restart the clock so you get a fair look.` },
       account,
     ],
   });
@@ -300,7 +300,7 @@ function valueTrackMail(to: string, stage: ReminderStage, daysLeft: number, usag
   if (stage === 'ended') {
     return compose({
       to,
-      subject: 'Your chat-recall trial has ended — syncing has stopped',
+      subject: 'Your chat-recall trial has ended. Syncing has stopped',
       preheader: 'Nothing was deleted. One command brings it all back.',
       blocks: [
         { kind: 'lead', text: 'Your chat-recall trial has ended.' },
@@ -311,7 +311,7 @@ function valueTrackMail(to: string, stage: ReminderStage, daysLeft: number, usag
         { kind: 'cta', label: 'Subscribe and resume syncing', url: UPGRADE_URL },
         { kind: 'code', lines: ['chat-recall sync --full'] },
         { kind: 'p', text: 'Everything your tools wrote while the trial was over is still on your own disk, so that second step catches the server up completely. You lost nothing by pausing, and you would lose nothing by waiting longer.' },
-        { kind: 'p', text: 'If chat-recall was not right for you, that is genuinely fine — but reply and tell me what was missing. It is the most useful mail I get.' },
+        { kind: 'p', text: 'If chat-recall was not right for you, that is genuinely fine, but reply and tell me what was missing. It is the most useful mail I get.' },
       ],
       footer: SELF_HOST_FOOTER,
     });
@@ -323,10 +323,10 @@ function valueTrackMail(to: string, stage: ReminderStage, daysLeft: number, usag
       subject: h && daysLeft === 1
         ? `Tomorrow: ${h.short} ${h.verb} being searchable`
         : `${n(daysLeft)} ${plural(daysLeft, 'day')} left on your chat-recall trial`,
-      preheader: 'Reversible at any point — your transcripts never left your disk.',
+      preheader: 'Reversible at any point. Your transcripts never left your disk.',
       blocks: [
         { kind: 'lead', text: `Your chat-recall trial ends ${daysLeft === 1 ? 'tomorrow' : `in ${n(daysLeft)} days`}.` },
-        { kind: 'p', text: `Then: searches stop answering, and new sessions stop syncing. Nothing is deleted — the server keeps ${yoursShort} — and export keeps working.` },
+        { kind: 'p', text: `Then: searches stop answering, and new sessions stop syncing. Nothing is deleted, the server keeps ${yoursShort}, and export keeps working.` },
         { kind: 'p', text: 'This is reversible at any point, which is the part worth knowing before you decide. Your transcripts are still on your own disk, so one command brings the server current the day you subscribe:' },
         { kind: 'code', lines: ['chat-recall sync --full'] },
         { kind: 'p', text: 'You lose no history by taking another week to think about it. You lose only the searching.' },
@@ -340,7 +340,7 @@ function valueTrackMail(to: string, stage: ReminderStage, daysLeft: number, usag
   return compose({
     to,
     subject: h
-      ? `${n(daysLeft)} days left — and ${h.short} on the server`
+      ? `${n(daysLeft)} days left, and ${h.short} on the server`
       : `${n(daysLeft)} days left on your chat-recall trial`,
     preheader: h
       ? `That is what stops being searchable in ${n(daysLeft)} days.`
@@ -355,7 +355,7 @@ function valueTrackMail(to: string, stage: ReminderStage, daysLeft: number, usag
             { kind: 'lead' as const, text: `Your chat-recall trial ends in ${n(daysLeft)} days.` },
             { kind: 'p' as const, text: 'The longer it runs the more of your own history it can reach, so this is usually the point where it starts earning its place.' },
           ]),
-      { kind: 'p', text: 'What changes: recall switches off — searches stop answering, and new sessions stop syncing.' },
+      { kind: 'p', text: 'What changes: recall switches off. Searches stop answering, and new sessions stop syncing.' },
       { kind: 'p', text: 'What does not: nothing is deleted, your history stays on the server, and export keeps working.' },
       { kind: 'p', text: 'The part worth paying for is the one that is hard to notice while it works. You stop re-explaining a repository to a fresh agent. You stop hunting for the decision you made six weeks ago. You ask, and the answer is already there.' },
       { kind: 'cta', label: 'Keep recall running', url: UPGRADE_URL },

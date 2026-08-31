@@ -50,6 +50,18 @@ describe('every message the product sends', () => {
     }
   });
 
+  test('NO EM-DASH anywhere in the rendered copy', () => {
+    // The em-dash is the single clearest tell that a machine wrote the copy, and
+    // it was in 13 places across these ten messages. A hyphen doing an em-dash's
+    // job reads as a typo, so each one was fixed by restructuring the sentence:
+    // a period, a comma, a colon or parentheses, whichever the clause wanted.
+    for (const [name, m] of EVERY_MESSAGE) {
+      const found = `${m.subject}\n${m.text}`.match(/[\u2014\u2013]/g) ?? [];
+      expect(found, `${name} contains ${found.length} em/en-dash(es)`).toEqual([]);
+      expect(m.html!.match(/[\u2014\u2013]/g) ?? [], `${name} html`).toEqual([]);
+    }
+  });
+
   test('carries no image of any kind — no logo to block, no tracking pixel', () => {
     // A pixel reporting when you opened your mail would be an odd thing to ship
     // in a product whose argument is care with your data.
