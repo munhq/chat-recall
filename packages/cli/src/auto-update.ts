@@ -18,7 +18,7 @@ import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { fetchWithTimeout } from './http.js';
-import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, rmSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -98,6 +98,56 @@ export function planAutoUpdate(base: string, caps: Caps, ownVersion: string, fla
   if (!isAutoUpdateEnabled(caps.edition, flag)) return { update: false, reason: `auto-update disabled (edition ${caps.edition ?? '?'})` };
   if (compareVersions(rel.version, ownVersion) <= 0) return { update: false, reason: `already current (own ${ownVersion} >= server ${rel.version})` };
   return { update: true, reason: `server ${rel.version} > own ${ownVersion}`, url: tarballUrl(base), sha256: rel.sha256, from: ownVersion, to: rel.version };
+}
+
+/**
+ * Remove staging dirs left behind by older versions.
+ *
+ * The cleanup below only helps someone who installs a build that HAS it. Every
+ * machine that ran an earlier version is already carrying the wreckage — the
+ * measured case was 5,889 directories and 5.1 GB, and fixing the leak does not
+ * give that disk back. So the updater also sweeps on the way past.
+ *
+ * ONLY OUR OWN, and only once they are cold:
+ *   - the name must be `cr-update-` + exactly six characters, mkdtemp's shape on
+ *     every platform, so a directory called `cr-update-notes` is never touched;
+ *   - it must hold nothing but `chat-recall.tgz`, which is the only file this
+ *     code ever writes there — anything else means it is not ours;
+ *   - it must be older than an hour, so a concurrent updater's live staging dir
+ *     is never pulled out from under it.
+ *
+ * Defaults to `tmpdir()`, the same root mkdtemp writes to, so it follows TMPDIR
+ * on macOS (`/var/folders/…/T`) and %TEMP% on Windows rather than assuming
+ * `/tmp`. macOS purges that directory itself eventually; Linux mostly does not,
+ * which is where the backlog was measured.
+ *
+ * Best-effort by design: a sweep that throws must not fail an update.
+ */
+export function sweepStaleStaging(root = tmpdir(), now = Date.now()): number {
+  // mkdtemp appends exactly six characters. The ALPHABET is deliberately not
+  // asserted: Linux glibc and macOS/BSD libc both use [A-Za-z0-9] today, but a
+  // charset this code cannot verify on every platform would silently stop
+  // matching there — and a sweeper that quietly sweeps nothing is the bug it
+  // was written to fix. Length is enough to exclude a hand-made name, and the
+  // contents check below is what actually makes deletion safe.
+  const MKDTEMP_SUFFIX = /^cr-update-.{6}$/s;
+  const COLD_MS = 60 * 60 * 1000;
+  let removed = 0;
+  let entries: string[];
+  try { entries = readdirSync(root); } catch { return 0; }
+  for (const name of entries) {
+    if (!MKDTEMP_SUFFIX.test(name)) continue;
+    const dir = join(root, name);
+    try {
+      const st = statSync(dir);
+      if (!st.isDirectory() || now - st.mtimeMs < COLD_MS) continue;
+      const inside = readdirSync(dir);
+      if (inside.length > 1 || (inside.length === 1 && inside[0] !== 'chat-recall.tgz')) continue;
+      rmSync(dir, { recursive: true, force: true });
+      removed++;
+    } catch { /* vanished or not ours — skip */ }
+  }
+  return removed;
 }
 
 export interface UpdateDeps {
