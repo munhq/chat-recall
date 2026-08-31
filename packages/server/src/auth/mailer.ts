@@ -178,7 +178,7 @@ export function verifyOtpMail(
   return compose({
     to,
     subject: reset ? 'Your chat-recall password reset code' : 'Your chat-recall confirmation code',
-    preheader: `${otp} — it expires in 15 minutes.`,
+    preheader: `${otp}. It expires in 15 minutes.`,
     blocks: [
       {
         kind: 'lead',
@@ -245,14 +245,14 @@ export function licenceSerialMail(to: string, serial: string, interval: 'month' 
   return compose({
     to,
     subject: 'Your chat-recall self-host licence',
-    preheader: `${serial} — set it on your server and restart.`,
+    preheader: `${serial}. Set it on your server and restart.`,
     blocks: [
       { kind: 'lead', text: 'Your chat-recall self-host licence is ready.' },
       { kind: 'code', lines: [serial] },
       { kind: 'p', text: 'Set it on your server and restart:' },
       { kind: 'code', lines: [`CHAT_RECALL_LICENSE_SERIAL=${serial}`] },
       { kind: 'p', text: 'That unlocks collaboration on your own infrastructure: a second member, shared project history, assigning work to a teammate, and per-member activity.' },
-      { kind: 'p', text: 'Running chat-recall for one person stays free and already includes the whole single-user product — sync, code findings, secret monitoring, analytics, your own task board and Toolkit. This licence adds the second person, not the product.' },
+      { kind: 'p', text: 'Running chat-recall for one person stays free and already includes the whole single-user product: sync, code findings, secret monitoring, analytics, your own task board and Toolkit. This licence adds the second person, not the product.' },
       { kind: 'p', text: 'The server checks the licence periodically and keeps working for up to two weeks if it cannot reach us, so a network problem on either side never stops your install.' },
       { kind: 'small', text: `Billed ${interval === 'year' ? 'annually' : 'monthly'}. Cancel any time from the billing portal; your data is yours and stays on your hardware either way.` },
       { kind: 'links', items: [{ label: 'Self-hosting guide', url: SELF_HOST_URL }] },
