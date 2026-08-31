@@ -210,8 +210,9 @@ export async function drainSyncIntents(opts: { verbose?: boolean } = {}): Promis
       pending = data.intents || [];
 
       if (data.cli && data.cli.version) {
-        const { planAutoUpdate, runAutoUpdate } = await import('./auto-update.js');
+        const { planAutoUpdate, runAutoUpdate, sweepStaleStaging } = await import('./auto-update.js');
         const plan = planAutoUpdate(base, { cli: data.cli }, ownVersion, process.env.CHAT_RECALL_AUTO_UPDATE);
+        sweepStaleStaging();
         if (plan.update) {
           void runAutoUpdate(base, authHeaders, ownVersion).catch(() => {});
         }

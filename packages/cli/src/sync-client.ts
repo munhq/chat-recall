@@ -1151,9 +1151,10 @@ const refs = listAvailableBackends().flatMap((b) => {
             setServerIngestConcurrency(base, Math.floor(adv));
           }
           if (body.cli && body.cli.version) {
-            const { planAutoUpdate, runAutoUpdate } = await import('./auto-update.js');
+            const { planAutoUpdate, runAutoUpdate, sweepStaleStaging } = await import('./auto-update.js');
             const authHeaders: Record<string, string> = cred.token ? { authorization: `Bearer ${cred.token}` } : {};
             const plan = planAutoUpdate(base, { cli: body.cli }, ownVersion, process.env.CHAT_RECALL_AUTO_UPDATE);
+            sweepStaleStaging();
             if (plan.update) {
               void runAutoUpdate(base, authHeaders, ownVersion).catch(() => {});
             }
@@ -1352,9 +1353,10 @@ const refs = listAvailableBackends().flatMap((b) => {
       if (!res.ok) throw new Error(`append sync failed: HTTP ${res.status} ${await res.text().catch(() => '')}`);
       const body = await res.json().catch(() => ({})) as { full_resync_needed?: string[], cli?: { version: string; sha256: string } | null };
       if (body.cli && body.cli.version) {
-        const { planAutoUpdate, runAutoUpdate } = await import('./auto-update.js');
+        const { planAutoUpdate, runAutoUpdate, sweepStaleStaging } = await import('./auto-update.js');
         const authHeaders: Record<string, string> = cred.token ? { authorization: `Bearer ${cred.token}` } : {};
         const plan = planAutoUpdate(base, { cli: body.cli }, ownVersion, process.env.CHAT_RECALL_AUTO_UPDATE);
+        sweepStaleStaging();
         if (plan.update) {
           void runAutoUpdate(base, authHeaders, ownVersion).catch(() => {});
         }
