@@ -17,6 +17,7 @@
 import express from 'express';
 import { sendMail, mailerConfigured } from '../auth/mailer.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
+import { storeFeedback, markFeedbackMailed } from '../util/feedback.js';
 
 const log = createLogger('contact');
 const router = express.Router();
@@ -59,10 +60,18 @@ router.post('/', express.urlencoded({ extended: false, limit: '32kb' }), async (
     return respond(req, res, false, 'please say a little about what you need');
   }
 
+  // KEPT BEFORE IT IS SENT. Storing first means a mailer that is down, throttled
+  // or misconfigured costs a notification and not the message itself — and this
+  // route ran for weeks writing to an inbox and nowhere else, so nothing anyone
+  // said could be counted, reread, or joined to whether they later signed up.
+  const stored = await storeFeedback({
+    source: 'contact', topic, email, company, message,
+  });
+
   if (!mailerConfigured()) {
-    // Do not pretend it was sent. A dropped enquiry is worse than an honest error,
-    // because the sender walks away believing they have contacted you.
-    log.error('contact enquiry received but no mailer is configured');
+    // Still an honest error to the sender: they asked for a reply, and nobody
+    // has been told they are waiting. The message itself is safe above.
+    log.error({ stored }, 'contact enquiry received but no mailer is configured');
     return respond(req, res, false, 'contact is not configured on this server');
   }
 
@@ -82,6 +91,7 @@ router.post('/', express.urlencoded({ extended: false, limit: '32kb' }), async (
       return respond(req, res, false, 'could not send right now — mail us directly');
     }
     log.info({ topic }, 'contact enquiry sent');
+    if (stored) await markFeedbackMailed(stored);
     return respond(req, res, true);
   } catch (e) {
     log.error({ err: e }, 'contact enquiry threw');
@@ -102,5 +112,67 @@ function respond(req: express.Request, res: express.Response, ok: boolean, error
   const target = ok ? '/pricing/?sent=1' : `/pricing/?error=${encodeURIComponent(error || 'failed')}`;
   res.redirect(303, target);
 }
+
+/**
+ * POST /api/contact/feedback — the terminal's version of the same thing.
+ *
+ * chat-recall's product surface is a CLI and an MCP server. There is no web app
+ * for a survey widget to appear in, so the place a user is when they think "I
+ * do not get this" is a shell prompt. This is what `chat-recall feedback "..."`
+ * posts to.
+ *
+ * JSON rather than a form, no honeypot, no redirect: the sender is a program.
+ * Rate limited the same as the form, because it is equally public.
+ *
+ * DELIBERATELY ACCEPTS ANONYMOUS. Requiring a login would lose exactly the
+ * person worth hearing from — someone who could not finish setting it up. The
+ * tenant is recorded when the caller happens to be authenticated and left null
+ * otherwise, which is the normal case.
+ */
+router.post('/feedback', express.json({ limit: '16kb' }), async (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const message = clip(body.message, 5000);
+  if (message.length < 3) {
+    res.status(400).json({ ok: false, error: 'message is required' });
+    return;
+  }
+  const email = clip(body.email, 254);
+  if (email && (!looksLikeEmail(email) || hasControlChars(email))) {
+    res.status(400).json({ ok: false, error: 'that email address is not valid' });
+    return;
+  }
+
+  const stored = await storeFeedback({
+    source: 'cli',
+    message,
+    email: email || null,
+    // Set by tenantAuth when the caller is logged in; absent for an anonymous
+    // sender, which is allowed on purpose.
+    tenant: (req as { tenant?: string }).tenant ?? null,
+    cliVersion: clip(body.cliVersion, 20) || null,
+    os: clip(body.os, 20) || null,
+  });
+
+  // Answer 200 as soon as it is kept. The mail is a convenience for the
+  // operator; the user should not wait on it, and should never see it fail.
+  res.status(200).json({ ok: true });
+
+  if (!mailerConfigured() || !stored) return;
+  try {
+    const text = [
+      'Feedback from the CLI.',
+      '',
+      email ? `From:    ${email}` : 'From:    (anonymous)',
+      clip(body.cliVersion, 20) ? `Version: ${clip(body.cliVersion, 20)}` : null,
+      '',
+      message,
+    ].filter((l) => l !== null).join('\n');
+    const r = await sendMail({ to: TO, subject: 'chat-recall feedback', text });
+    if (r.sent) await markFeedbackMailed(stored);
+    else log.error({ reason: r.reason }, 'feedback mail not delivered (message is stored)');
+  } catch (e) {
+    log.error({ err: e }, 'feedback mail threw (message is stored)');
+  }
+});
 
 export default router;
