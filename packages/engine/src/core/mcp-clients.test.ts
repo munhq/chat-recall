@@ -6,7 +6,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { registerMcpEverywhere, inspectMcpClients, MCP_CLIENTS } from './mcp-clients.js';
 
 const SPEC = {
@@ -250,5 +250,58 @@ describe('OpenCode entries are repaired unless they are spawnable', () => {
     const after = readJson(ocPath()).mcp;
     expect(after.theirs).toEqual({ type: 'local', command: ['their-server'], enabled: true });
     expect(after['chat-recall'].type).toBe('local');
+  });
+});
+
+/**
+ * The same defect as OpenCode's, on every other client.
+ *
+ * Found by sweeping each client with deliberately broken shapes instead of
+ * waiting for the next report: all four `mcpServers` clients answered "already
+ * configured" for an entry carrying `disabled: true`, and then no tools
+ * appeared. Cursor and Gemini honour the key; Claude Code keeps its opt-outs in
+ * ~/.claude.json instead, so there dropping it is harmless tidying.
+ */
+describe('a disabled entry is not a configured one', () => {
+  const FILES: Array<[string, string[]]> = [
+    ['claude', ['.mcp.json']],
+    ['cursor', ['.cursor', 'mcp.json']],
+    ['gemini', ['.gemini', 'settings.json']],
+    ['agy', ['.gemini', 'config', 'mcp_config.json']],
+  ];
+
+  test.each(FILES)('%s repairs disabled: true', (id, ...rest) => {
+    const rel = rest.flat() as string[];
+    makeAllPresent();
+    const p = join(home, ...rel);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, JSON.stringify({
+      mcpServers: {
+        'chat-recall': {
+          command: 'chat-recall-mcp',
+          env: { NODE_OPTIONS: '--max-old-space-size=1024' },
+          disabled: true,
+        },
+      },
+    }, null, 2));
+
+    const r = registerMcpEverywhere(SPEC, { home }).find((x) => x.id === id)!;
+    expect(r.state).toBe('repaired');
+    expect(readJson(p).mcpServers['chat-recall'].disabled).toBeUndefined();
+  });
+
+  test('an otherwise-identical entry without it is still left alone', () => {
+    makeAllPresent();
+    const p = join(home, '.mcp.json');
+    writeFileSync(p, JSON.stringify({
+      mcpServers: {
+        'chat-recall': {
+          command: 'chat-recall-mcp',
+          env: { NODE_OPTIONS: '--max-old-space-size=1024' },
+          alwaysAllow: ['recall_search', 'recall_show'],
+        },
+      },
+    }, null, 2));
+    expect(registerMcpEverywhere(SPEC, { home }).find((x) => x.id === 'claude')!.state).toBe('current');
   });
 });
