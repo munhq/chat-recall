@@ -59,15 +59,28 @@ export interface BreakerVerdict {
   retryInMs: number;
   failures: number;
   lastError: string;
+  /**
+   * True only for the failure that OPENS a new incident.
+   *
+   * A tripped breaker re-opens on every attempt until a success clears it, so a
+   * caller that reports "tripped" on each open verdict counts elapsed time, not
+   * incidents. One device reported 823 trips for ONE LAN box that was switched
+   * off — 96 a day, for as long as the box stayed off — and the fleet panel read
+   * that back as if 823 separate things had gone wrong.
+   *
+   * `failures` is the number to read for "how bad is it"; this flag is the one
+   * to count.
+   */
+  tripped: boolean;
 }
 
 /** Should this target be skipped? */
 export function breakerState(serverUrl: string, now = Date.now()): BreakerVerdict {
   const s = state.get(key(serverUrl));
   if (!s || s.openUntil <= now) {
-    return { open: false, retryInMs: 0, failures: s?.failures ?? 0, lastError: s?.lastError ?? '' };
+    return { open: false, retryInMs: 0, failures: s?.failures ?? 0, lastError: s?.lastError ?? '', tripped: false };
   }
-  return { open: true, retryInMs: s.openUntil - now, failures: s.failures, lastError: s.lastError };
+  return { open: true, retryInMs: s.openUntil - now, failures: s.failures, lastError: s.lastError, tripped: false };
 }
 
 /** A walk against this target completed. Clear everything. */
@@ -87,11 +100,13 @@ export function noteTargetFailure(serverUrl: string, error: string, now = Date.n
   if (failures < TRIP_AFTER_FAILURES) {
     // Not yet a pattern — a single failed walk is ordinary.
     state.set(k, { failures, openUntil: 0, lastError });
-    return { open: false, retryInMs: 0, failures, lastError };
+    return { open: false, retryInMs: 0, failures, lastError, tripped: false };
   }
   const cooldown = cooldownFor(failures);
   state.set(k, { failures, openUntil: now + cooldown, lastError });
-  return { open: true, retryInMs: cooldown, failures, lastError };
+  // Exactly AT the threshold is the transition into a new incident. Every later
+  // failure re-opens the SAME incident, because only a success clears `state`.
+  return { open: true, retryInMs: cooldown, failures, lastError, tripped: failures === TRIP_AFTER_FAILURES };
 }
 
 /** One line for the log, or null when there is nothing to say. */

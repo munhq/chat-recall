@@ -155,11 +155,20 @@ async function shipToServer(trigger: string): Promise<void> {
           + `${result.kgEntities} KG entities, ${result.kgTriples} KG triples`,
       );
     }
-    // A completed walk is the only thing that counts as "the collector works".
-    for (const server of syncTargetUrls()) noteSyncOutcome(server, true);
+    // PER TARGET, from the walk's own verdicts — never one verdict applied to
+    // all of them. A walk "succeeds" when ANY target accepted data, so marking
+    // every configured target ok from that wrote `lastOkAt = now, failures = 0`
+    // for a LAN box that had refused the connection. `chat-recall doctor` then
+    // reported it as "Synced 0m ago" for days. An absent map means the walk did
+    // not report per-target outcomes; mark nothing rather than guess.
+    for (const [server, outcome] of Object.entries(result.perTarget ?? {})) {
+      noteSyncOutcome(server, outcome.ok, outcome.error);
+    }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     daemonLog.error(`Sync failed (${trigger}, will retry next flush): ${msg.slice(0, 200)}`);
+    // The walk threw, so NO target got data — marking them all failed is the
+    // honest reading, and the only case where one verdict fits every target.
     for (const server of syncTargetUrls()) noteSyncOutcome(server, false, msg);
   } finally {
     syncInFlight = false;

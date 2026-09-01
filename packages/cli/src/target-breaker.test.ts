@@ -107,3 +107,50 @@ describe('the user is told', () => {
     expect(v.lastError.length).toBeLessThanOrEqual(200);
   });
 });
+
+/**
+ * ONE INCIDENT IS ONE TRIP.
+ *
+ * A tripped breaker re-opens on every attempt until a success clears it, so a
+ * caller that counts "open" verdicts measures how long a box stayed off, not how
+ * often anything went wrong. A LAN box switched off for six days produced 823
+ * "breaker trips" — 96 a day — and the fleet panel reported them as 823 separate
+ * failures against an unnamed "sync target".
+ */
+describe('tripped marks the transition, not the state', () => {
+  test('only the failure that crosses the threshold is a trip', () => {
+    for (let i = 0; i < TRIP_AFTER_FAILURES - 1; i++) {
+      expect(noteTargetFailure(URL_B, 'ECONNREFUSED').tripped).toBe(false);
+    }
+    const first = noteTargetFailure(URL_B, 'ECONNREFUSED');
+    expect(first.open).toBe(true);
+    expect(first.tripped).toBe(true);
+  });
+
+  test('every later failure re-opens the SAME incident', () => {
+    for (let i = 0; i < TRIP_AFTER_FAILURES; i++) noteTargetFailure(URL_B, 'ECONNREFUSED');
+    // 100 more failed walks against a box that is still off.
+    for (let i = 0; i < 100; i++) {
+      const v = noteTargetFailure(URL_B, 'ECONNREFUSED');
+      expect(v.open).toBe(true);
+      expect(v.tripped).toBe(false);
+    }
+    // The STREAK is where the severity lives, and it kept counting.
+    expect(breakerState(URL_B).failures).toBe(TRIP_AFTER_FAILURES + 100);
+  });
+
+  test('a success ends the incident, so the next one trips again', () => {
+    for (let i = 0; i < TRIP_AFTER_FAILURES; i++) noteTargetFailure(URL_B, 'ECONNREFUSED');
+    noteTargetSuccess(URL_B);
+    for (let i = 0; i < TRIP_AFTER_FAILURES - 1; i++) {
+      expect(noteTargetFailure(URL_B, 'ECONNREFUSED').tripped).toBe(false);
+    }
+    expect(noteTargetFailure(URL_B, 'ECONNREFUSED').tripped).toBe(true);
+  });
+
+  test('a plain state read never claims a trip', () => {
+    for (let i = 0; i < TRIP_AFTER_FAILURES; i++) noteTargetFailure(URL_B, 'ECONNREFUSED');
+    expect(breakerState(URL_B).open).toBe(true);
+    expect(breakerState(URL_B).tripped).toBe(false);
+  });
+});
