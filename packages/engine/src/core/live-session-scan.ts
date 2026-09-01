@@ -41,7 +41,7 @@ import {
 // under ESM because backends only USE the imports at function call time,
 // not at module-init time.
 import './backends/index.js';
-import { decodeProjectDirName } from './project-dir-name.js';
+import { resolveProjectDirName } from './project-dir-name.js';
 
 export type AiTool = 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy' | 'cursor';
 
@@ -188,7 +188,7 @@ function sessionFileIndex(): Map<string, LocatedSessionFile[]> {
         const located: LocatedSessionFile = {
           path: join(dir, name),
           projectDir: entry.name,
-          projectPath: decodeProjectDirName(entry.name),
+          projectPath: resolveProjectDirName(entry.name),
         };
         const prior = byId.get(id);
         if (prior) prior.push(located); else byId.set(id, [located]);

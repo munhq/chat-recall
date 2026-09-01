@@ -9,6 +9,7 @@ import { join, basename } from 'path';
 import { stripInjectedBanners } from './chunker.js';
 import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
 import { claudeProjectDirs } from '../core/tool-paths.js';
+import { resolveProjectDirName } from '../core/project-dir-name.js';
 import { estimateCostUsd, METADATA_VERSION } from '../core/model-pricing.js';
 
 export interface SessionEntry {
@@ -587,59 +588,15 @@ export async function parseSessionFile(
 /**
  * Decode a Claude Code project directory name back to a real filesystem path.
  *
- * Claude Code encodes paths by replacing '/' with '-', but this is lossy:
- * both path separators and hyphens/underscores in folder names become '-'.
- * e.g., /home/user/code/personal/k8s_gpu → -home-user-code-personal-k8s-gpu
+ * This used to be a second, hand-rolled greedy prober living here — the
+ * "eleventh decoder" project-dir-name.ts explicitly warns against. It tried
+ * '-', '_' and '.' as JOIN separators but never as a PREFIX, so a dot-directory
+ * was unreachable: `app--agent-worktrees-a1` resolved to `app//agent/...`
+ * instead of `app/.agent/worktrees/a1`, and every per-session worktree was
+ * filed under a project that does not exist rather than the repo it belongs to.
  *
- * Strategy: split on '-', then greedily join segments checking which path exists.
+ * There is now one probing decoder for the whole engine. Do not add another.
  */
-function decodeDirName(dirName: string): string {
-  // Remove leading '-' and split into segments
-  const segments = dirName.replace(/^-/, '').split('-');
-
-  // Greedily build path by checking filesystem
-  let currentPath = '/';
-  let i = 0;
-
-  while (i < segments.length) {
-    // Try joining progressively more segments with hyphens/underscores
-    let matched = false;
-
-    // Try single segment first (most common case: /home, /user, /code, etc.)
-    const singleCandidate = join(currentPath, segments[i]);
-    if (existsSync(singleCandidate)) {
-      currentPath = singleCandidate;
-      i++;
-      matched = true;
-      continue;
-    }
-
-    // Try joining 2, 3, ... segments with common separators (-, _)
-    for (let len = 2; len <= segments.length - i; len++) {
-      const joinedSegments = segments.slice(i, i + len);
-
-      for (const sep of ['-', '_', '.']) {
-        const candidate = join(currentPath, joinedSegments.join(sep));
-        if (existsSync(candidate)) {
-          currentPath = candidate;
-          i += len;
-          matched = true;
-          break;
-        }
-      }
-      if (matched) break;
-    }
-
-    if (!matched) {
-      // No match found — just use '/' like the naive approach
-      currentPath = join(currentPath, segments[i]);
-      i++;
-    }
-  }
-
-  return currentPath;
-}
-
 /**
  * Get all sessions across one or more Claude directories.
  * @param claudeDir - Single projects dir path, OR undefined to auto-discover all Claude dirs
@@ -686,7 +643,7 @@ export function* getAllSessions(claudeDir?: string): Generator<[SessionEntry, st
 
         try {
           const stat = statSync(fullPath);
-          const derivedProjectPath = decodeDirName(projDirEntry.name);
+          const derivedProjectPath = resolveProjectDirName(projDirEntry.name);
           // For new-format sessions, use the newest subagent file's mtime so
           // the indexer detects updates even when the stub hasn't changed.
           const effectiveMtime = getSessionMtime(fullPath);
