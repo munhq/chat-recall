@@ -29,7 +29,7 @@ import { cursorBackend } from './backends/cursor.js';
 import { listChatsIn, transcriptPath } from './backends/cursor-store.js';
 import { cursorChatDirs, cursorHomeDir } from './tool-paths.js';
 import { loadSettings } from './settings.js';
-import { decodeProjectDirName } from './project-dir-name.js';
+import { resolveProjectDirName } from './project-dir-name.js';
 
 export type VaultTool = 'claude' | 'gemini' | 'codex' | 'opencode' | 'cursor' | 'agy';
 
@@ -81,7 +81,7 @@ function* walkClaude(): Generator<VaultSourceFile> {
   for (const proj of projectDirs) {
     if (proj.startsWith('.')) continue;
     // Claude encodes the project path into the dir name as `-home-user-...`.
-    const projectPath = decodeProjectDirName(proj);
+    const projectPath = resolveProjectDirName(proj);
     const projDir = join(root, proj);
     let entries: string[] = [];
     try { entries = readdirSync(projDir); } catch { continue; }
