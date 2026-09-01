@@ -5,7 +5,7 @@
  * server whose failure is hidden by the first server's success.
  */
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import { selectSessions, bulkDelete, listTombstones, restoreSessions, BATCH } from './bulk-delete.js';
+import { selectSessions, bulkDelete, listTombstones, needsConfirmation, restoreSessions, BATCH } from './bulk-delete.js';
 
 vi.mock('./sync-ledger.js', () => ({
   getLedgerData: vi.fn(() => ({})),
@@ -199,5 +199,37 @@ describe('restore', () => {
     const res = await restoreSessions(['s1', 's2'], { targets: [TARGET], fetchImpl: f });
     expect(res.restored).toBe(2);
     expect(dead.size).toBe(0);
+  });
+});
+
+/**
+ * A confirmation gate that fires on the WRONG invocations is not extra safety,
+ * it is a broken command. Adding one to the bulk path silently changed the
+ * meaning of `delete <id>`, which has always deleted immediately — the repo's
+ * own privacy E2E calls it non-interactively and went red on exactly this.
+ */
+describe('needsConfirmation', () => {
+  test('ids typed on the command line are their own confirmation', () => {
+    // The pre-existing contract. Scripts call `delete <id>` with no TTY.
+    expect(needsConfirmation({ argvIds: 1 })).toBe(false);
+    expect(needsConfirmation({ argvIds: 12 })).toBe(false);
+  });
+
+  test('a selector must be confirmed — its size is discovered, not intended', () => {
+    expect(needsConfirmation({ argvIds: 0, project: 'git:x/y' })).toBe(true);
+  });
+
+  test('stdin must be confirmed — unread ids, and no tty left to prompt on', () => {
+    expect(needsConfirmation({ argvIds: 0, stdin: true })).toBe(true);
+  });
+
+  test('mixing explicit ids WITH a selector still confirms', () => {
+    // The selector can still widen the set far past what was typed.
+    expect(needsConfirmation({ argvIds: 3, project: 'git:x/y' })).toBe(true);
+    expect(needsConfirmation({ argvIds: 3, stdin: true })).toBe(true);
+  });
+
+  test('an empty invocation confirms rather than assuming', () => {
+    expect(needsConfirmation({ argvIds: 0 })).toBe(true);
   });
 });
