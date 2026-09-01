@@ -158,3 +158,44 @@ describe('a payload can never carry the user\'s work', () => {
     expect(() => mod.assertNoSensitiveKeys({ projectPath: '/x' })).toThrow(/projectPath/);
   });
 });
+
+/**
+ * THE DE-DUPLICATION KEY MUST BE BOTH THINGS AT ONCE.
+ *
+ * `oversized_session` is re-reported on every walk for as long as a transcript
+ * stays over the ceiling. Counting the events said "38 sessions too large to
+ * archive" on a device that had ONE — the same 117MB OpenCode transcript,
+ * reported 38 times in a week. A count of sessions needs a per-session key.
+ *
+ * That key must not be the session id, and it must not TRIP the key guard
+ * either: a forbidden key is dropped in production (silently, by design), so a
+ * payload that fails the guard would take the count with it and nobody would
+ * find out from the panel.
+ */
+describe('the oversized-session payload counts sessions without naming one', () => {
+  test('the mark is stable, short, and not the input', async () => {
+    const { stableMark } = await import('./telemetry.js');
+    const id = 'opencode_9f8e7d6c-1111-2222-3333-444455556666';
+    expect(stableMark(id)).toMatch(/^[0-9a-f]{12}$/);
+    expect(stableMark(id)).toBe(stableMark(id));            // stable across calls
+    expect(stableMark(id)).not.toContain('opencode');        // not the input
+    expect(stableMark(id)).not.toBe(stableMark(`${id}x`));   // distinguishes sessions
+  });
+
+  test('the payload the collector actually sends passes the key guard', async () => {
+    const { stableMark } = await import('./telemetry.js');
+    const payload = {
+      kind: 'oversized_session',
+      mb: 117,
+      tool: 'opencode',
+      dedupeKey: stableMark('opencode_9f8e7d6c'),
+    };
+    expect(mod.findSensitiveKeys(payload)).toEqual([]);
+    expect(() => mod.assertNoSensitiveKeys(payload)).not.toThrow();
+  });
+
+  test('naming the session directly is still refused', () => {
+    expect(() => mod.assertNoSensitiveKeys({ kind: 'oversized_session', sessionId: 'x' }))
+      .toThrow(/sessionId/);
+  });
+});

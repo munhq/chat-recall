@@ -84,7 +84,7 @@ import { scanPool } from './scan-pool.js';
 import { isPrivateHost, transportRisk, assertTransportSafe } from './transport-safety.js';
 import { breakerState, breakerNotice, noteTargetSuccess, noteTargetFailure } from './target-breaker.js';
 import { setTelemetryEligible } from './telemetry-consent.js';
-import { record, flush } from './telemetry.js';
+import { record, flush, stableMark } from './telemetry.js';
 
 /**
  * The server rule pack as it arrived, kept for the scan workers.
@@ -101,23 +101,91 @@ import { record, flush } from './telemetry.js';
  * deliver a cosmetic field would be worse than a single slot.
  */
 /**
+ * The failure class, carried ON the error, decided where the status is known.
+ *
+ * ── Why a tag and not a message test ─────────────────────────────────────
+ * `classifyError` below used to be the only classifier, and it read the message.
+ * That is a guess, and it guessed wrong for the most common failure this product
+ * has. The 402 handler deliberately prints the server's own sentence instead of
+ * the HTTP line, so `402` is NOT in the message, while the `upgradeUrl` it
+ * appends IS — and a substring test for `https` therefore filed a monthly quota
+ * pause as `insecure_transport`.
+ *
+ * One device reported 651 of them in a week. The fleet panel read that back as
+ * "refusing to sync to a server over plain HTTP — nothing from this device is
+ * reaching it", which was false twice over: the target was a LAN box on http://
+ * that the transport gate had never objected to, and the real condition — sync
+ * paused for billing — had no warning of its own at all.
+ *
+ * The same rewritten message also defeated the retry gate below, which decides
+ * "is this fatal" with /HTTP 4\d\d/. A quota pause was retried four times with
+ * backoff before failing, every batch, for days.
+ *
+ * So the class travels with the error from the place that read the status.
+ */
+const ERROR_CLASS = '__chatRecallErrorClass';
+
+/** An Error that already knows its own failure class. */
+export function classedError(errorClass: FailureClass, message: string): Error {
+  const e = new Error(message);
+  Object.defineProperty(e, ERROR_CLASS, { value: errorClass, enumerable: false });
+  return e;
+}
+
+/** The class a throw site attached, or null when it did not. */
+function taggedClass(err: unknown): FailureClass | null {
+  const v = (err as Record<string, unknown> | null | undefined)?.[ERROR_CLASS];
+  return typeof v === 'string' && v ? (v as FailureClass) : null;
+}
+
+/**
+ * Classes that describe a STANDING condition of the plan or the target, not a
+ * glitch. Retrying one cannot change the answer, so the retry loop stops.
+ */
+const STANDING_FAILURE: ReadonlySet<string> = new Set<FailureClass>([
+  'auth', 'payment_required', 'insecure_transport',
+]);
+
+/** True when this error must not be retried. Exported for the tests. */
+export function isStandingFailure(err: unknown): boolean {
+  const c = taggedClass(err);
+  return c !== null && STANDING_FAILURE.has(c);
+}
+
+export type FailureClass =
+  | 'rate_limited' | 'payment_required' | 'auth' | 'timeout' | 'refused'
+  | 'dns' | 'network' | 'insecure_transport' | 'server_error' | 'other';
+
+/**
  * Reduce an error message to a bounded CLASS.
  *
  * Telemetry must never carry a raw error string: server errors quote paths,
  * payload fragments and occasionally tokens. An enum is enough to answer "what
  * is breaking for customers", and cannot leak.
+ *
+ * A tag from the throw site always wins. The message tests remain for errors
+ * thrown by fetch itself, and by code that predates the tag.
  */
-function classifyError(msg: string): string {
+export function classifyError(msg: string, err?: unknown): FailureClass {
+  const tagged = taggedClass(err);
+  if (tagged) return tagged;
   const m = msg.toLowerCase();
   if (m.includes('429')) return 'rate_limited';
   if (m.includes('402')) return 'payment_required';
   if (m.includes('401') || m.includes('403') || m.includes('token')) return 'auth';
-  if (m.includes('timed out') || m.includes('etimedout')) return 'timeout';
+  // 'aborted due to timeout' is what AbortSignal.timeout actually produces, and
+  // it matches neither of the other two spellings — so the most common timeout
+  // this collector suffers was being filed as 'other'. One machine logged 441 of
+  // them against /api/capabilities alone.
+  if (m.includes('timed out') || m.includes('etimedout') || m.includes('aborted due to timeout')) return 'timeout';
   if (m.includes('econnrefused')) return 'refused';
   if (m.includes('enotfound') || m.includes('dns')) return 'dns';
   if (m.includes('fetch failed') || m.includes('econnreset')) return 'network';
-  if (m.includes('plain http') || m.includes('https')) return 'insecure_transport';
-  if (/5\d\d/.test(m)) return 'server_error';
+  // The transport gate's OWN wording, and nothing else. A bare `https` test
+  // matched every message that merely quoted a URL — which is most of them,
+  // including every 5xx that used to fall through to the line below.
+  if (m.includes('over plain http') || m.includes('unsupported scheme')) return 'insecure_transport';
+  if (/\b5\d\d\b/.test(m)) return 'server_error';
   return 'other';
 }
 
@@ -495,6 +563,28 @@ export interface SyncResult {
   scanned: number;
   /** Total wall-clock ms spent scanning this run. */
   scanMs: number;
+  /**
+   * THIS WALK'S OUTCOME PER TARGET, keyed by server URL.
+   *
+   * The aggregate above cannot answer "did target X accept anything", and the
+   * daemon needs exactly that: it writes the per-target health file that
+   * `chat-recall doctor` reads. Without this it marked EVERY target with the
+   * walk's aggregate verdict, so a walk where the SaaS succeeded and a LAN box
+   * refused the connection wrote `lastOkAt = now, failures = 0` for both — and
+   * `doctor` cheerfully reported a target that had not accepted a byte in days.
+   *
+   * Set by `syncSessions` (the multi-target walk) and absent from a
+   * single-target result, so a consumer must treat "absent" as "unknown" and
+   * mark nothing, never as "all fine".
+   */
+  perTarget?: Record<string, TargetOutcome>;
+}
+
+/** One target's outcome for one walk. */
+export interface TargetOutcome {
+  ok: boolean;
+  /** Why it failed, or why it was not attempted. Absent when ok. */
+  error?: string;
 }
 
 /** compute_cache kinds shipped to the server. Must stay in step with the
@@ -530,6 +620,8 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
   let agg: SyncResult | null = null;
   const errors: string[] = [];
   const skippedTargets: string[] = [];
+  // Per target, for the health file the daemon writes. See SyncResult.perTarget.
+  const perTarget: Record<string, TargetOutcome> = {};
   for (const cred of targets) {
     // CIRCUIT BREAKER. Targets are walked in SEQUENCE, so a dead one does not
     // just fail — it delays every ship to the healthy targets behind it, and
@@ -541,11 +633,18 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
       const notice = breakerNotice(cred.serverUrl, verdict);
       if (notice) console.error(`[sync] ${notice}`);
       skippedTargets.push(cred.serverUrl);
+      // A skipped target did NOT sync. Saying so is the whole point: it is the
+      // case that used to be recorded as a success.
+      perTarget[cred.serverUrl] = {
+        ok: false,
+        error: notice ?? `in failure cooldown for ~${Math.max(1, Math.round(verdict.retryInMs / 60_000))}m`,
+      };
       continue;
     }
     try {
       const r = await syncToTarget(cred, opts);
       noteTargetSuccess(cred.serverUrl);
+      perTarget[cred.serverUrl] = { ok: true };
       agg = agg ? {
         uploaded: agg.uploaded + r.uploaded, skipped: agg.skipped + r.skipped, redactions: agg.redactions + r.redactions,
         items: agg.items + r.items, links: agg.links + r.links, findings: agg.findings + r.findings,
@@ -555,6 +654,7 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       errors.push(`${cred.serverUrl}: ${msg}`);
+      perTarget[cred.serverUrl] = { ok: false, error: msg };
       // Report the NEXT attempt in the same breath as the failure, so the log
       // says what will happen rather than leaving the user to infer it.
       const next = noteTargetFailure(cred.serverUrl, msg);
@@ -563,10 +663,15 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
       // The error CLASS, never the message: a server error string can quote a
       // path or a payload, and this channel must not carry either.
       record({
-        kind: next.open ? 'breaker_trip' : 'target_failure',
+        // `tripped`, not `open`: an open breaker re-opens on every attempt until
+        // a success clears it, so `open` counted elapsed time. Every failure is
+        // still reported — as `target_failure`, carrying the streak in
+        // `failures` — so nothing becomes invisible, it just stops being counted
+        // as a fresh incident.
+        kind: next.tripped ? 'breaker_trip' : 'target_failure',
         failures: next.failures,
         retryInMs: next.retryInMs,
-        errorClass: classifyError(msg),
+        errorClass: classifyError(msg, e),
         local: isLocalHost(cred.serverUrl) ? 1 : 0,
       });
     }
@@ -610,7 +715,9 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
   void flush().catch(() => {});
   if (!agg) throw new Error(`sync failed for all targets:\n  ${errors.join('\n  ')}`);
   if (errors.length > 0) console.error(`[sync] ${errors.length} target(s) failed (others succeeded):\n  ${errors.join('\n  ')}`);
-  return agg;
+  // The per-target verdicts ride out with the aggregate, so the caller never has
+  // to infer one target's fate from the sum of all of them.
+  return { ...agg, perTarget };
 }
 
 export interface ReconcileResult { sessions: number; scanned: number; pushed: number; absent: number; perTarget: Record<string, { pushed: number; absent: number }> }
@@ -947,7 +1054,7 @@ async function syncToTargetInScope(cred: Credentials, opts: SyncToTargetOpts = {
   // (see credentials-env.ts), and a target saved by an older version predates
   // the check entirely. The upload path is the last place to say no.
   const risk = transportRisk(cred.serverUrl);
-  if (risk) throw new Error(risk);
+  if (risk) throw classedError('insecure_transport', risk);
   const sync = loadSettings().sync;
   // Exclusions = local settings ∪ server-side tenant config (dashboard-edited).
   const serverCfg = await fetchTenantSyncConfig(cred);
@@ -1167,7 +1274,7 @@ const refs = listAvailableBackends().flatMap((b) => {
         // token was revoked or the tenant is gone. Every future sync will fail
         // the same way until the human reconnects — say exactly that.
         if (res.status === 401 || res.status === 403) {
-          throw new Error(`server rejected this machine's device token (HTTP ${res.status} — revoked?). Reconnect with: chat-recall login ${base}`);
+          throw classedError('auth', `server rejected this machine's device token (HTTP ${res.status} — revoked?). Reconnect with: chat-recall login ${base}`);
         }
         // 402 is a standing plan condition, not a glitch: a meter (monthly
         // quota / storage cap) or a missing email confirmation. The server's
@@ -1185,7 +1292,9 @@ const refs = listAvailableBackends().flatMap((b) => {
             if (body.resetsAt) detail += ` (resets ${new Date(body.resetsAt).toISOString().slice(0, 10)})`;
             if (body.upgradeUrl) detail += `\n  ${body.upgradeUrl}`;
           } catch { /* non-JSON 402 — print as-is */ }
-          throw new Error(`sync paused by the server: ${detail}`);
+          // CLASSED, because this message deliberately drops the status: the
+          // reader gets the server's sentence, and the machine gets the class.
+          throw classedError('payment_required', `sync paused by the server: ${detail}`);
         }
         if (!retryable) throw new Error(`sync failed: HTTP ${res.status} ${text}`);
         if (attempt >= RETRY_DELAYS_MS.length) throw new Error(`sync failed after ${attempt + 1} attempts: HTTP ${res.status} ${text}`);
@@ -1198,7 +1307,11 @@ const refs = listAvailableBackends().flatMap((b) => {
         await sleep(waitMs);
         continue;
       } catch (err) {
-        const fatal = err instanceof Error && /HTTP 4\d\d|sync failed after/.test(err.message);
+        // A STANDING condition first, by tag — a 402 whose message was rewritten
+        // for the reader has no `HTTP 402` left to match, so the regex alone
+        // retried every quota-paused batch four times with backoff.
+        const fatal = isStandingFailure(err)
+          || (err instanceof Error && /HTTP 4\d\d|sync failed after/.test(err.message));
         if (fatal || attempt >= RETRY_DELAYS_MS.length) throw err;
         console.error(`[sync] upload attempt ${attempt + 1} failed (${err instanceof Error ? err.message : err}) — retrying in ${RETRY_DELAYS_MS[attempt] / 1000}s`);
         await sleep(RETRY_DELAYS_MS[attempt]);
@@ -2158,10 +2271,20 @@ export async function buildConversationSync(
           console.error(`[sync] ${ref.prefixedId} is ${(containerBytes / 1048576).toFixed(0)}MB `
             + `(over the ${(FULL_BUILD_MAX_BYTES / 1048576).toFixed(0)}MB ceiling) — shipping without `
             + 'the raw archive and derived data to keep the walk in memory');
-          // Size and tool only. Knowing that customers hit this, and how big
-          // their sessions get, is how the ceiling gets set from evidence rather
-          // than from one developer's corpus.
-          record({ kind: 'oversized_session', mb: Math.round(containerBytes / 1048576), tool: ref.toolId });
+          // Size, tool, and a de-duplication key. Knowing that customers hit
+          // this, and how big their sessions get, is how the ceiling gets set
+          // from evidence rather than from one developer's corpus.
+          //
+          // `dedupeKey` is what makes the count mean SESSIONS. This event repeats
+          // on every walk while the transcript stays oversized, so the raw event
+          // count read as 38 oversized sessions on a device that had one — the
+          // same 117MB transcript, reported 38 times in a week.
+          record({
+            kind: 'oversized_session',
+            mb: Math.round(containerBytes / 1048576),
+            tool: ref.toolId,
+            dedupeKey: stableMark(ref.prefixedId),
+          });
           includeRaw = false;
           includeMeta = false;
         }
