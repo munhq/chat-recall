@@ -35,13 +35,31 @@ describe('AgyBackend project attribution (Q1)', () => {
     expect(loc!.projectPath).toBe('/home/u/code/personal/infra-interview');
   });
 
-  test('falls back to trustedWorkspaces[0] only when no paths are referenced', () => {
+  test('a session that touched no files stays unattributed, ignoring trustedWorkspaces', () => {
+    // Antigravity is also driven as a general assistant (screen-OCR questions,
+    // one-off prompts) with no repo open. Such a session must NOT inherit the
+    // machine-global trusted workspace — that stamped 81 of 100 real sessions
+    // onto one project they never touched.
     writeFileSync(join(home, 'settings.json'), JSON.stringify({ trustedWorkspaces: ['/home/u/code/fallback'] }));
     writeSession('22222222-2222-2222-2222-222222222222', [
       { source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'hello, no files here', created_at: '2026-07-08T00:00:00Z' },
     ]);
     const loc = agyBackend.findSession('22222222-2222-2222-2222-222222222222');
-    expect(loc!.projectPath).toBe('/home/u/code/fallback');
+    expect(loc!.projectPath).toBe('');
+    expect(loc!.projectDir).toBe('');
+  });
+
+  test('a session that DID touch files is unaffected by the removed fallback', () => {
+    writeFileSync(join(home, 'settings.json'), JSON.stringify({ trustedWorkspaces: ['/home/u/code/fallback'] }));
+    writeSession('55555555-5555-5555-5555-555555555555', [
+      { source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'edit it', created_at: '2026-07-08T00:00:00Z' },
+      { source: 'MODEL', type: 'CODE_ACTION', status: 'OK',
+        content: 'File Path: `file:///home/u/code/personal/realproj/Makefile`' },
+      { source: 'MODEL', type: 'VIEW_FILE',
+        content: 'Viewing `file:///home/u/code/personal/realproj/src/util.ts`' },
+    ]);
+    const loc = agyBackend.findSession('55555555-5555-5555-5555-555555555555');
+    expect(loc!.projectPath).toBe('/home/u/code/personal/realproj');
   });
 });
 
