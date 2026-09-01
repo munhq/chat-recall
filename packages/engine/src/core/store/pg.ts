@@ -1035,6 +1035,9 @@ export class PgStore implements StorageDriver {
     const rows = await this.q(`SELECT session_id, deleted_at FROM session_tombstones WHERE tenant=$1`, [this.t]);
     return rows.map((r: any) => ({ session_id: r.session_id, deleted_at: Number(r.deleted_at) }));
   }
+  async removeTombstone(sessionId: string): Promise<void> {
+    await this.q(`DELETE FROM session_tombstones WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
+  }
   async purgeSession(sessionId: string): Promise<void> {
     const run = async (sql: string, params: unknown[]) => { try { await this.q(sql, params); } catch { /* absent */ } };
     await run(`DELETE FROM memory_metadata WHERE tenant=$1 AND id=$2 AND source_type='session'`, [this.t, sessionId]);
