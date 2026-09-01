@@ -3981,29 +3981,164 @@ program
   });
 
 program
-  .command('delete <session-id>')
-  .description('Delete a session from chat-recall everywhere: purges it on every logged-in server and tombstones it so it can\'t resurrect on the next sync. Does NOT touch the AI tool\'s own transcript file.')
-  .action(async (sessionId: string) => {
+  .command('delete [session-ids...]')
+  .description('Delete sessions from chat-recall everywhere: purges them on every logged-in server and tombstones them so they can\'t resurrect on the next sync. Does NOT touch the AI tool\'s own transcript files.')
+  .option('--project <id>', 'Select every session in a project (e.g. git:github.com/me/repo)')
+  .option('--match <text>', 'With --project: only sessions whose first prompt is EXACTLY this')
+  .option('--tool <name>', 'With --project: only sessions from this tool (claude, codex, …)')
+  .option('--stdin', 'Read session ids from stdin, one per line')
+  .option('-n, --dry-run', 'List what would be deleted and exit')
+  .option('-y, --yes', 'Skip the confirmation prompt')
+  .action(async (sessionIds: string[], opts: { project?: string; match?: string; tool?: string; stdin?: boolean; dryRun?: boolean; yes?: boolean }) => {
     const { loadAllCredentials } = await import('./sync-client.js');
+    const { selectSessions, bulkDelete } = await import('./bulk-delete.js');
     const targets = loadAllCredentials();
     if (targets.length === 0) {
       console.error(chalk.red('Not logged in — run `chat-recall login <server-url>` first.'));
       process.exit(1);
     }
-    let ok = 0;
-    for (const t of targets) {
+    if ((opts.match || opts.tool) && !opts.project) {
+      console.error(chalk.red('--match and --tool select WITHIN a project; pass --project too.'));
+      process.exit(1);
+    }
+
+    let ids = [...sessionIds];
+    let preview: Array<{ sessionId: string; firstPrompt?: string }> = [];
+
+    if (opts.stdin) {
+      const stdin = await new Promise<string>((resolve) => {
+        let buf = '';
+        process.stdin.setEncoding('utf-8');
+        process.stdin.on('data', (d) => { buf += d; });
+        process.stdin.on('end', () => resolve(buf));
+      });
+      ids.push(...stdin.split('\n').map((l) => l.trim()).filter(Boolean));
+    }
+
+    if (opts.project) {
+      // Selection runs against the FIRST server: the id set is the same
+      // everywhere, and listing every target would just be the same walk twice.
       try {
-        const res = await fetch(`${t.serverUrl.replace(/\/+$/, '')}/api/conversations/${encodeURIComponent(sessionId)}`, {
-          method: 'DELETE', headers: { authorization: `Bearer ${t.token}` },
-        });
-        if (res.ok) { ok++; console.log(chalk.green(`✓ Deleted on ${t.serverUrl}`)); }
-        else console.error(chalk.red(`✗ ${t.serverUrl}: HTTP ${res.status}`));
+        preview = await selectSessions(targets[0], { project: opts.project, match: opts.match, tool: opts.tool });
       } catch (e) {
-        console.error(chalk.red(`✗ ${t.serverUrl}: ${e instanceof Error ? e.message : 'failed'}`));
+        console.error(chalk.red(`Could not list sessions: ${e instanceof Error ? e.message : 'failed'}`));
+        process.exit(1);
+      }
+      ids.push(...preview.map((r) => r.sessionId));
+    }
+
+    ids = [...new Set(ids.filter(Boolean))];
+    if (ids.length === 0) {
+      console.log(chalk.yellow('Nothing selected — no session ids given and no selector matched.'));
+      return;
+    }
+
+    // Always show WHAT is going, not just how many. A count is not reviewable.
+    const shown = preview.length > 0 ? preview.slice(0, 10) : ids.slice(0, 10).map((id) => ({ sessionId: id, firstPrompt: undefined }));
+    for (const r of shown) {
+      const label = r.firstPrompt ? chalk.dim(` — ${r.firstPrompt.replace(/\s+/g, ' ').slice(0, 60)}`) : '';
+      console.log(`  ${r.sessionId}${label}`);
+    }
+    if (ids.length > shown.length) console.log(chalk.dim(`  … and ${ids.length - shown.length} more`));
+
+    if (opts.dryRun) {
+      console.log(chalk.cyan(`\nDry run — ${ids.length} session(s) would be deleted on ${targets.length} server(s). Nothing was changed.`));
+      return;
+    }
+
+    // This has no undo, so it does not happen on an implicit yes. A
+    // non-interactive caller must say --yes; prompting into a pipe would
+    // read EOF as consent, which is the worst possible default here.
+    if (!opts.yes) {
+      if (!process.stdin.isTTY) {
+        console.error(chalk.red(`\nRefusing to delete ${ids.length} session(s) without confirmation — pass --yes (or -n to preview).`));
+        process.exit(1);
+      }
+      const readline = await import('node:readline/promises');
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      const answer = await rl.question(chalk.yellow(`\nPermanently delete ${ids.length} session(s) on ${targets.length} server(s)? This cannot be undone. [y/N] `));
+      rl.close();
+      if (answer.trim().toLowerCase() !== 'y') {
+        console.log('Aborted — nothing was deleted.');
+        return;
       }
     }
-    if (ok === 0) process.exit(1);
-    console.log(chalk.dim(`Tombstoned on ${ok}/${targets.length} server(s) — re-sync cannot resurrect it.`));
+
+    const res = await bulkDelete(ids, { targets });
+    for (const [server, r] of Object.entries(res.perTarget)) {
+      if (r.error) console.error(chalk.red(`✗ ${server}: ${r.deleted}/${ids.length} deleted, then failed — ${r.error}`));
+      else console.log(chalk.green(`✓ ${server}: ${r.deleted} deleted`));
+    }
+    if (res.deleted === 0) {
+      console.error(chalk.red('Nothing was deleted.'));
+      process.exit(1);
+    }
+    console.log(chalk.dim(`Tombstoned — re-sync cannot resurrect them. Local transcript files were not touched.`));
+    if (res.deleted < ids.length) {
+      console.error(chalk.yellow(`Note: ${ids.length - res.deleted} session(s) did not delete on any server.`));
+    }
+  });
+
+program
+  .command('restore [session-ids...]')
+  .description('Undo a delete: lifts the tombstone so those sessions can be synced again. Restores no content by itself — re-run `chat-recall index --force` on a machine that still has the transcript. With no ids, lists what has been deleted.')
+  .option('--stdin', 'Read session ids from stdin, one per line')
+  .option('--list', 'Just show what has been deleted, newest first')
+  .option('--limit <n>', 'How many deletions to list (default 50)')
+  .action(async (sessionIds: string[], opts: { stdin?: boolean; list?: boolean; limit?: string }) => {
+    const { loadAllCredentials } = await import('./sync-client.js');
+    const { listTombstones, restoreSessions } = await import('./bulk-delete.js');
+    const targets = loadAllCredentials();
+    if (targets.length === 0) {
+      console.error(chalk.red('Not logged in — run `chat-recall login <server-url>` first.'));
+      process.exit(1);
+    }
+
+    const ids = [...sessionIds];
+    if (opts.stdin) {
+      const buf = await new Promise<string>((resolve) => {
+        let b = ''; process.stdin.setEncoding('utf-8');
+        process.stdin.on('data', (d) => { b += d; });
+        process.stdin.on('end', () => resolve(b));
+      });
+      ids.push(...buf.split('\n').map((l) => l.trim()).filter(Boolean));
+    }
+
+    // No ids is not an error — it is the discovery case. You cannot restore
+    // what you cannot name, and a purged session leaves nothing else to find.
+    if (opts.list || ids.length === 0) {
+      const limit = Math.max(1, parseInt(opts.limit ?? '') || 50);
+      try {
+        const { total, tombstones } = await listTombstones(targets[0], limit);
+        if (total === 0) { console.log(chalk.dim('Nothing has been deleted.')); return; }
+        console.log(chalk.bold(`${total} deleted session(s) — newest first:\n`));
+        for (const t of tombstones) {
+          console.log(`  ${t.session_id}  ${chalk.dim(new Date(t.deleted_at).toISOString().replace('T', ' ').slice(0, 19))}`);
+        }
+        if (total > tombstones.length) console.log(chalk.dim(`\n  … and ${total - tombstones.length} more (--limit to see them)`));
+        console.log(chalk.dim('\nRestore with: chat-recall restore <id...>'));
+      } catch (e) {
+        console.error(chalk.red(`Could not list deletions: ${e instanceof Error ? e.message : 'failed'}`));
+        process.exit(1);
+      }
+      return;
+    }
+
+    const res = await restoreSessions(ids, { targets });
+    for (const [server, r] of Object.entries(res.perTarget)) {
+      if (r.error) console.error(chalk.red(`✗ ${server}: ${r.error}`));
+      else {
+        console.log(chalk.green(`✓ ${server}: ${r.restored} tombstone(s) lifted`));
+        // Never let "0 restored" read as success.
+        if (r.notDeleted > 0) console.log(chalk.yellow(`  ${r.notDeleted} id(s) were not deleted here — nothing to lift`));
+      }
+    }
+    if (res.restored === 0) {
+      console.error(chalk.red('No tombstones were lifted.'));
+      process.exit(1);
+    }
+    console.log(chalk.dim('\nThe content is still gone from the server. Re-upload it from a machine that'));
+    console.log(chalk.dim('still holds the transcript:  chat-recall index --force'));
   });
 
 program
