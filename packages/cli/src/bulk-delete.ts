@@ -226,3 +226,23 @@ export async function restoreSessions(
   out.restored = best;
   return out;
 }
+
+/**
+ * Does this invocation need an explicit confirmation?
+ *
+ * Only when the caller DID NOT ENUMERATE the set. `delete <id>` has always
+ * deleted that id immediately and scripts depend on it — the repo's own privacy
+ * E2E calls it non-interactively, and demanding --yes for ids typed on the
+ * command line broke that contract for no safety gain: naming a session IS the
+ * confirmation.
+ *
+ * A selector is different. --project/--match COMPUTE the set, so its size is
+ * discovered rather than intended, and that is where a wrong pattern quietly
+ * takes hundreds with it. --stdin sits in the same bucket: the ids came from
+ * somewhere the person may not have read, and stdin is already a pipe, so there
+ * is nothing left to prompt on.
+ */
+export function needsConfirmation(opts: { argvIds: number; project?: string; stdin?: boolean }): boolean {
+  const enumeratedByCaller = opts.argvIds > 0 && !opts.project && !opts.stdin;
+  return !enumeratedByCaller;
+}
