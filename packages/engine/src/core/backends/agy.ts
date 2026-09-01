@@ -470,19 +470,6 @@ export const agyBackend = new AgyBackend();
 
 // ── Local helpers ────────────────────────────────────────────────────
 
-function getFallbackProjectPath(homeDir: string): string {
-  try {
-    const settingsPath = join(homeDir, 'settings.json');
-    if (existsSync(settingsPath)) {
-      const json = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-      if (Array.isArray(json?.trustedWorkspaces) && json.trustedWorkspaces[0]) {
-        return json.trustedWorkspaces[0];
-      }
-    }
-  } catch { /* ignore */ }
-  return '';
-}
-
 /**
  * The transcript to read for a session. Prefer `transcript_full.jsonl` — it is
  * the COMPLETE event log (every user turn + every tool call). The plain
@@ -501,14 +488,27 @@ function agyTranscriptPath(logsDir: string): string {
 
 /**
  * Resolve a session's project from the (full) transcript's referenced file
- * paths, falling back to the settings' trusted workspace only when nothing is
- * found. The clean `transcript.jsonl` only references Antigravity's own
- * `brain/…` artifacts, so we always derive from the full log.
+ * paths. Returns '' when the session touched no project — and that empty
+ * result is the correct answer, not a failure.
+ *
+ * There used to be a fallback here to `settings.json` → `trustedWorkspaces[0]`,
+ * a single machine-global path. It was wrong for the majority of sessions:
+ * Antigravity is also driven as a general assistant (screen-OCR questions,
+ * one-off prompts) that never opens a repo. On a real machine 81 of 100
+ * sessions derived no path and every one of them was stamped with that one
+ * workspace — 88 of 100 sessions landed on a single project that only 7 of
+ * them had actually touched, burying the real ones.
+ *
+ * A session with no project now stays unattributed: `resolveProjectId('')`
+ * returns the empty "skip" sentinel, so these rows simply carry no project
+ * instead of contaminating someone else's. The clean `transcript.jsonl` only
+ * references Antigravity's own `brain/…` artifacts, so we always derive from
+ * the full log.
  */
 function resolveAgyProject(logsDir: string, homeDir: string): string {
   const deriveFrom = agyTranscriptPath(logsDir);
-  if (!deriveFrom) return getFallbackProjectPath(homeDir);
-  return extractProjectPathFromTranscript(deriveFrom, homeDir) || getFallbackProjectPath(homeDir);
+  if (!deriveFrom) return '';
+  return extractProjectPathFromTranscript(deriveFrom, homeDir);
 }
 
 function extractProjectPathFromTranscript(path: string, homeDir: string): string {
