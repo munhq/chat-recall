@@ -16,8 +16,8 @@ import { describe, test, expect, beforeEach, vi } from 'vitest';
 import express, { type Express } from 'express';
 import request from 'supertest';
 
-const state: { rows: Array<{ id: string; project_id: string }>; purged: string[]; tombstoned: string[]; throwOnList: boolean } = {
-  rows: [], purged: [], tombstoned: [], throwOnList: false,
+const state: { rows: Array<{ id: string; project_id: string }>; purged: string[]; tombstoned: string[]; restored: string[]; throwOnList: boolean } = {
+  rows: [], purged: [], tombstoned: [], restored: [], throwOnList: false,
 };
 
 vi.mock('../imports.js', () => ({
@@ -31,6 +31,11 @@ vi.mock('../imports.js', () => ({
       state.rows = state.rows.filter((r) => r.id !== id);
     },
     addTombstone: async (id: string) => { state.tombstoned.push(id); },
+    listTombstones: async () => state.tombstoned.map((id, i) => ({ session_id: id, deleted_at: 1000 + i })),
+    removeTombstone: async (id: string) => {
+      state.tombstoned = state.tombstoned.filter((t) => t !== id);
+      state.restored.push(id);
+    },
     close: async () => {},
   }),
 }));
@@ -50,6 +55,7 @@ beforeEach(() => {
   ];
   state.purged = [];
   state.tombstoned = [];
+  state.restored = [];
   state.throwOnList = false;
 });
 
@@ -157,5 +163,78 @@ describe('GET /api/data/export', () => {
   test('exports nothing without deleting anything', async () => {
     await request(await app()).get('/api/data/export');
     expect(state.purged).toEqual([]);
+  });
+});
+
+/**
+ * Restore exists because BULK delete does. One-at-a-time deletion is
+ * self-limiting; a call that removes hundreds at once needs a way back, or a
+ * mis-aimed selector is unrecoverable.
+ *
+ * The failure mode worth testing is a restore that reports success while
+ * lifting nothing — the user then re-syncs, the server silently refuses via the
+ * deadSet, and the data stays gone with no error raised anywhere.
+ */
+describe('GET /api/data/tombstones', () => {
+  test('lists deletions newest first — the only route back from a purge', async () => {
+    // A purged session leaves no metadata, no chunks, no archive. This id list
+    // is all that survives, so without it "undo my delete" needs a uuid nobody
+    // has written down.
+    await request(await app()).post('/api/data/delete').send({ project: 'alpha' });
+    const res = await request(await app()).get('/api/data/tombstones');
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(2);
+    expect(res.body.tombstones[0].deleted_at).toBeGreaterThan(res.body.tombstones[1].deleted_at);
+  });
+
+  test('reports nothing when nothing has been deleted', async () => {
+    const res = await request(await app()).get('/api/data/tombstones');
+    expect(res.body.total).toBe(0);
+    expect(res.body.tombstones).toEqual([]);
+  });
+});
+
+describe('POST /api/data/restore', () => {
+  test('lifts the tombstone so a later sync is no longer refused', async () => {
+    await request(await app()).post('/api/data/delete').send({ project: 'alpha' });
+    expect(state.tombstoned.sort()).toEqual(['s1', 's2']);
+
+    const res = await request(await app()).post('/api/data/restore').send({ session_ids: ['s1', 's2'] });
+    expect(res.status).toBe(200);
+    expect(res.body.restored).toBe(2);
+    expect(state.tombstoned).toEqual([]);
+  });
+
+  test('says so when an id was never deleted here, instead of counting it', async () => {
+    await request(await app()).post('/api/data/delete').send({ project: 'alpha' });
+    const res = await request(await app()).post('/api/data/restore').send({ session_ids: ['s1', 'never-deleted'] });
+    expect(res.body.restored).toBe(1);
+    expect(res.body.notDeleted).toEqual(['never-deleted']);
+  });
+
+  test('the response never claims the content is back', async () => {
+    // Lifting a tombstone removes the REFUSAL. The transcript still has to
+    // exist on some device and be re-shipped; saying "restored" without that
+    // caveat is the difference between a fix and a false all-clear.
+    await request(await app()).post('/api/data/delete').send({ project: 'alpha' });
+    const res = await request(await app()).post('/api/data/restore').send({ session_ids: ['s1'] });
+    expect(res.body.note).toMatch(/index --force/);
+  });
+
+  test('an empty or malformed body is a 400, not a no-op 200', async () => {
+    for (const body of [{}, { session_ids: [] }, { session_ids: 's1' }, { session_ids: [''] }]) {
+      const res = await request(await app()).post('/api/data/restore').send(body);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+      expect(state.restored).toEqual([]);
+    }
+  });
+
+  test('there is no restore-everything switch', async () => {
+    // Re-opening every deletion a tenant ever made would undo the ones made
+    // for privacy. Restore is id-scoped on purpose.
+    await request(await app()).post('/api/data/delete').send({ project: 'alpha' });
+    const res = await request(await app()).post('/api/data/restore').send({ all: true });
+    expect(res.status).toBe(400);
+    expect(state.tombstoned.sort()).toEqual(['s1', 's2']);
   });
 });
