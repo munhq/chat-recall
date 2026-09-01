@@ -161,6 +161,19 @@ describe('probing project names against a real tree', () => {
     expect(probe('')).toBe('');
   });
 
+  test('the probe builds POSIX paths on every host, not host-relative ones', () => {
+    // This is the regression that took the Windows job red. The probe used
+    // `node:path`.join, which renders '/' + 'Users' as '\\Users' on Windows —
+    // so the very next readdir missed, the walk gave up at level one, and every
+    // name fell back to the structural decode with nothing reporting a problem.
+    // A wrong answer produced by the HOST rather than by the name is precisely
+    // what this module exists to prevent.
+    const out = probe('-Users-alice-code-personal-app--agent-worktrees-0b6ad77e');
+    expect(out).toBe('/Users/alice/code/personal/app/.agent/worktrees/0b6ad77e');
+    expect(out.startsWith('/')).toBe(true);
+    expect(out).not.toContain('\\');
+  });
+
   test('an unreadable level stops the probe instead of throwing', () => {
     const boom = () => { throw new Error('EACCES'); };
     const name = '-Users-alice-code-personal-app';
