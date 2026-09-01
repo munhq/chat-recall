@@ -3991,7 +3991,7 @@ program
   .option('-y, --yes', 'Skip the confirmation prompt')
   .action(async (sessionIds: string[], opts: { project?: string; match?: string; tool?: string; stdin?: boolean; dryRun?: boolean; yes?: boolean }) => {
     const { loadAllCredentials } = await import('./sync-client.js');
-    const { selectSessions, bulkDelete } = await import('./bulk-delete.js');
+    const { selectSessions, bulkDelete, needsConfirmation } = await import('./bulk-delete.js');
     const targets = loadAllCredentials();
     if (targets.length === 0) {
       console.error(chalk.red('Not logged in — run `chat-recall login <server-url>` first.'));
@@ -4046,10 +4046,20 @@ program
       return;
     }
 
-    // This has no undo, so it does not happen on an implicit yes. A
-    // non-interactive caller must say --yes; prompting into a pipe would
-    // read EOF as consent, which is the worst possible default here.
-    if (!opts.yes) {
+    // Confirmation is for a set the CALLER DID NOT ENUMERATE.
+    //
+    // `delete <id>` has always deleted that id immediately, and scripts depend
+    // on it — the repo's own privacy E2E calls it non-interactively. Demanding
+    // --yes for ids typed on the command line breaks that contract for no
+    // safety gain: naming a session IS the confirmation, and this used to be
+    // the only way to call the command at all.
+    //
+    // A SELECTOR is different. --project/--match compute the set, so the count
+    // is discovered rather than intended, and that is where a wrong pattern
+    // quietly takes hundreds of sessions with it. --stdin is in the same
+    // bucket: the ids came from somewhere the person may not have read, and
+    // stdin is already a pipe so there is nothing to prompt on.
+    if (!opts.yes && needsConfirmation({ argvIds: sessionIds.length, project: opts.project, stdin: opts.stdin })) {
       if (!process.stdin.isTTY) {
         console.error(chalk.red(`\nRefusing to delete ${ids.length} session(s) without confirmation — pass --yes (or -n to preview).`));
         process.exit(1);
