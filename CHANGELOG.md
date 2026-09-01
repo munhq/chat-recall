@@ -4,6 +4,65 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.31] — 2026-09-01
+
+### Fixed
+
+- **The fleet panel accused a LAN box of shipping transcripts in cleartext.** A
+  device reported 652 `insecure_transport` failures in a week and the panel
+  rendered them as "refusing to sync to a server over plain HTTP — nothing from
+  this device is reaching it". Nothing of the kind had happened: the target was a
+  box on a private address over `http://`, which the transport gate allows by
+  design, and the gate had never fired. The failure class came from a substring
+  test on the error message, and the 402 handler deliberately prints the server's
+  own sentence instead of the HTTP line while appending the `upgradeUrl` from the
+  response body — so `402` was gone from the message and `https://` was in it.
+  651 monthly-quota pauses were filed as a TLS problem. The class now travels on
+  the error, set where the status was read; only the transport gate's own wording
+  still counts as a transport refusal, and the 5xx test moved above it.
+- **A paused sync meter had no warning of its own.** The panel had a sentence for
+  three failure classes, so the same device's 270 billing refusals — the one
+  condition a human could act on — produced nothing, while its only visible
+  warning described a problem it did not have. Billing is now a warning, and any
+  class without a sentence of its own is listed rather than dropped.
+- **Every quota-paused batch was retried four times before failing.** The
+  rewritten 402 message also defeated the retry gate, which asked `/HTTP 4\d\d/`
+  whether a failure was fatal. A standing condition — billing, auth, an unsafe
+  transport — now stops the loop by class, not by wording.
+- **The most common timeout was filed as `other`.** `AbortSignal.timeout`
+  produces "The operation was aborted due to timeout", which matches neither
+  `timed out` nor `etimedout`. One machine logged 441 of them against
+  `/api/capabilities` alone.
+- **`chat-recall doctor` reported a dead sync target as healthy.** A walk pushes
+  to every target in sequence and succeeds when any one accepts data. The daemon
+  recorded that single verdict against every target it knew about, so a walk
+  where the hosted service took four sessions and a LAN box refused the
+  connection wrote `lastOkAt = now, failures = 0` for both, and `doctor` printed
+  "Synced 0m ago" for a box that had not accepted a byte in days. The walk now
+  reports per target and the daemon marks each from its own verdict.
+- **"Stopped trying a sync target 823 times" was one target, switched off.** A
+  tripped breaker re-opens on every attempt until a success clears it, so
+  counting open verdicts measured how long the box stayed off — 96 a day — rather
+  than how often anything broke. Only the failure that crosses the threshold is
+  now a trip; the rest are still reported, carrying the consecutive-failure
+  streak, which is where the severity actually lives. The warning also names the
+  streak, and says the target is on your own network when every trip was against
+  a private address.
+- **"38 sessions too large to archive" was one session.** The
+  `oversized_session` event repeats on every walk for as long as a transcript
+  stays over the ceiling, and the count was a count of events. It was one 117MB
+  OpenCode transcript, reported 38 times. The event now carries a non-reversible
+  per-session mark so the count means sessions; rows from an older collector fall
+  back to size and tool.
+- **Nothing said that a device was six releases behind.** One had
+  `CHAT_RECALL_AUTO_UPDATE=0` in its systemd unit, and every layer stayed quiet
+  by design: the daemon suppresses "disabled" because it would print every six
+  hours forever, and the only telemetry is sent after an update is attempted, so
+  a plan that never runs never reports. The panel now warns when a device's CLI
+  is behind the release its server ships, compared numerically because `0.5.9`
+  sorts above `0.5.30` as text. The collector reports a standing refusal to
+  self-update once per process, with both versions named.
+
 ## [0.5.30] — 2026-08-31
 
 ### Fixed
