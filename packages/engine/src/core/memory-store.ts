@@ -1355,6 +1355,16 @@ export class MemoryStore {
     return this.db.prepare(`SELECT session_id, deleted_at FROM session_tombstones`).all() as any;
   }
 
+  /** Lift a tombstone so a later sync may re-upload the session.
+   *  The counterpart to addTombstone: deleting is meant to stick, but a
+   *  BULK delete that cannot be walked back is a trapdoor, not a control.
+   *  Removing the tombstone restores nothing by itself — the content comes
+   *  back only if some device still holds the transcript and re-ships it. */
+  removeTombstone(sessionId: string): void {
+    this.ensureTombstonesTable();
+    this.db.prepare(`DELETE FROM session_tombstones WHERE session_id = ?`).run(sessionId);
+  }
+
   /** Remove every trace of a session from this store (all tables that key
    *  on session/item id). Foreign-class tables (compute/outcome/metadata
    *  caches share the db file) are cleared best-effort. */
