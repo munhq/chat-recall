@@ -274,6 +274,9 @@ function realRestart(platform: NodeJS.Platform): void {
  * Full flow for one logged-in server. Best-effort — any failure returns a
  * reason and never throws into the daemon loop.
  */
+/** Servers already told "this device will not self-update", per process. */
+const reportedStandingSkip = new Set<string>();
+
 export async function runAutoUpdate(
   base: string,
   authHeaders: Record<string, string>,
@@ -307,7 +310,24 @@ export async function runAutoUpdate(
   const effectiveOwn = newerOf(ownVersion, installedVersion());
 
   const plan = planAutoUpdate(base, caps, effectiveOwn, process.env.CHAT_RECALL_AUTO_UPDATE);
-  if (!plan.update) return { updated: false, reason: plan.reason };
+  if (!plan.update) {
+    // A STANDING refusal is reported ONCE per process per server.
+    //
+    // "already current" is the healthy answer and says nothing. The other two
+    // are permanent until a human acts, and they were completely silent: the
+    // daemon's own log suppresses them by design (see autoUpdateTick), and the
+    // only telemetry, `auto_update_failed`, is never reached because this
+    // returns first. A device therefore sat six releases behind with
+    // CHAT_RECALL_AUTO_UPDATE=0 in its unit file and NOTHING anywhere said so.
+    if (/disabled|no CLI release/.test(plan.reason) && !reportedStandingSkip.has(base)) {
+      reportedStandingSkip.add(base);
+      try {
+        const { reportClientEvent } = await import('./client-events.js');
+        reportClientEvent('auto_update_skipped', { message: `${plan.reason} (server offers ${caps.cli?.version ?? '?'}, this device runs ${effectiveOwn})` });
+      } catch { /* telemetry is best-effort */ }
+    }
+    return { updated: false, reason: plan.reason };
+  }
   const result = await executeAutoUpdate(plan, {
     download: deps?.download ?? realDownload,
     install: deps?.install ?? realInstall,
