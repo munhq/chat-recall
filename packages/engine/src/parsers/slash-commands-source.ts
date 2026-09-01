@@ -31,7 +31,7 @@ import { codexBackend as CODEX } from '../core/backends/codex.js';
 import { isSourceEnabled } from '../core/settings.js';
 import { cursorHomeDir } from '../core/tool-paths.js';
 import { parseFrontmatter, parseScalarToml } from '../core/toolkit-format.js';
-import { decodeProjectDirName } from '../core/project-dir-name.js';
+import { resolveProjectDirName } from '../core/project-dir-name.js';
 
 import { redactInlineSecrets } from '../core/redact-inline.js';
 
@@ -106,7 +106,7 @@ export class SlashCommandsSource implements MemorySource {
         try {
           for (const entry of readdirSync(projectsRoot, { withFileTypes: true })) {
             if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-            const projectPath = decodeProjectDirName(entry.name);
+            const projectPath = resolveProjectDirName(entry.name);
             const cmdDir = join(projectPath, '.claude', 'commands');
             if (existsSync(cmdDir)) roots.push({ path: cmdDir, tool: 'claude', scope: 'project', projectPath, format: 'md' });
           }

@@ -36,7 +36,7 @@ import { computeOutcome } from '../session-outcome.js';
 import { getSessionCommits } from '../session-git.js';
 import { extractFirstUserPromptSync } from '../first-prompt.js';
 import { readTailFromOffset } from './tail-read.js';
-import { decodeProjectDirName } from '../project-dir-name.js';
+import { resolveProjectDirName } from '../project-dir-name.js';
 import {
   extractTurnsFromEvents,
   liveScanEditsFromEvents,
@@ -177,7 +177,7 @@ export class ClaudeBackend implements ToolBackend {
       if (!proj.isDirectory()) continue;
       if (filter && !proj.name.toLowerCase().includes(filter)) continue;
       const projPath = join(root, proj.name);
-      const projectPath = decodeProjectDirName(proj.name);
+      const projectPath = resolveProjectDirName(proj.name);
 
       // Prefer the indexer's sessions-index.json shortcut when present —
       // it carries pre-computed first-prompt + messageCount so we skip
