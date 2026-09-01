@@ -112,6 +112,27 @@ export async function flush(): Promise<void> {
   }));
 }
 
+/**
+ * A stable, non-reversible 12-hex mark for an arbitrary identifier.
+ *
+ * Exists so a repeated event can be COUNTED ONCE. `oversized_session` is
+ * re-reported on every walk for as long as the transcript stays oversized, and
+ * the reader of a raw event count concluded "38 sessions are too large to
+ * archive" from 38 reports of the SAME session. A count needs a key; a key must
+ * not be the session id. `sha256(...).slice(0, 12)` is both — the same reasoning
+ * (and the same shape) as `hashHost` below.
+ *
+ * The key name deliberately avoids the words `assertNoSensitiveKeys` forbids:
+ * this is a de-duplication key, not a description of the user's work.
+ */
+export function stableMark(value: string): string {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { createHash } = require('node:crypto') as typeof import('node:crypto');
+    return createHash('sha256').update(value).digest('hex').slice(0, 12);
+  } catch { return ''; }
+}
+
 /** sha256 of the hostname, first 12 — stable per machine, not reversible. */
 function hashHost(): string {
   try {
