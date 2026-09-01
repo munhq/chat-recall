@@ -4,6 +4,65 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.5.32] — 2026-09-01
+
+### Fixed
+
+- **A repo could be filed under two different projects at once, and per-session
+  worktrees under neither.** Claude Code flattens a project path into a directory
+  name by replacing `/` with `-`, and a `.` or `-` inside a real directory name
+  survives as `-` too — so three characters arrive as one and the name alone
+  cannot say which. `chat-recall` and `chat/recall` encode identically: the real
+  path resolved to its git id while the fiction became
+  `path:/Users/me/code/chat/recall`, splitting one project's history in half.
+  Worse for dot-directories: a per-session worktree's leading dot was flattened,
+  the path did not exist, git could not be consulted, and its sessions landed
+  under a standalone `path:` project instead of the repo they belong to.
+
+  Two defects produced this. Eight non-session sources (plans, hooks, CLAUDE.md,
+  subagents, slash-commands, agent-memory, live-scan, vault) used the cheap
+  structural decoder — which is why the fictional projects showed decisions and a
+  tech stack but zero sessions, since the session parser treats the JSONL `cwd`
+  as ground truth. And the session parser carried a second, hand-rolled prober
+  that tried `-`, `_` and `.` as join separators but never as a prefix, leaving
+  dot-directories unreachable.
+
+  There is now one probing decoder: it lists the real children at each level,
+  encodes each the way the tool would, and takes the longest match. Probing can
+  only improve an answer, never invent one — a Windows-encoded name, a path from
+  another device, or a deleted repo all fall back to the structural decode.
+  Measured against a real store, 62 sessions moved out of fictional projects into
+  the git ids they belong to, and no bucket regressed.
+
+### Added
+
+- **`chat-recall delete` takes many sessions, not one.** Deletion was per-session,
+  which is right for "forget that conversation" and useless against a tool that
+  fabricates sessions — a misfiring model probe wrote 476 one-line transcripts
+  into a single project, 94% of its indexed history. `delete` now accepts a list,
+  `--stdin`, or a `--project`/`--match`/`--tool` selector, with `--dry-run` and a
+  confirmation. It ships tombstones through `POST /api/sync`, the same path the
+  collector uses when a transcript disappears locally, so bulk deletion is not a
+  second implementation of "remove everywhere" that has to stay in agreement with
+  the first.
+
+  The selector walks every page: rows are mtime-ordered, so stopping at page 0 is
+  how a delete reports "0 matched" on a project with hundreds. `--match` is exact,
+  not substring. Confirmation is required only for a set the caller did not
+  enumerate — `delete <id>` still deletes immediately, because naming a session
+  is the confirmation and scripts have always relied on it.
+
+- **`chat-recall restore` undoes a delete.** A tombstone is why deletion sticks,
+  and nothing could lift one. Permanent-by-default is defensible while deletion is
+  one session at a time; it stops being defensible once a single call can remove
+  hundreds, which is a trapdoor rather than a control. `GET /api/data/tombstones`
+  lists what was deleted — restore is impossible without it, since a purged
+  session leaves nothing else to find it by — and `POST /api/data/restore` lifts
+  tombstones for named ids. It is id-scoped on purpose: a restore-everything would
+  re-open every deletion made for privacy. It never claims the content is back,
+  only that the refusal is gone; the transcript still has to exist somewhere and
+  be re-shipped with `index --force`.
+
 ## [0.5.31] — 2026-09-01
 
 ### Fixed
