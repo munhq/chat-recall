@@ -22,7 +22,7 @@
  * resolves the ambiguity against real directories. This function is the cheap
  * structural answer for callers that only need a stable identity.
  */
-import { sep, join } from 'node:path';
+import { sep } from 'node:path';
 import { readdirSync } from 'node:fs';
 
 /** True when the name encodes a Windows drive-rooted path (`C--Users-…`). */
@@ -128,7 +128,12 @@ export function resolveProjectDirName(
 
     if (!best) break;
 
-    current = join(current, best);
+    // POSIX join, spelled out. `node:path`'s join is HOST-relative: on Windows
+    // it renders this as `\\Users\\alice`, the next readdir misses, the probe
+    // gives up at the first level and every name silently falls back to the
+    // structural decode. This branch only ever describes a POSIX path, and the
+    // shape of the NAME has to decide the answer — not the machine reading it.
+    current = current === '/' ? `/${best}` : `${current}/${best}`;
     remaining = remaining.slice(encodeName(best).length).replace(/^-/, '');
   }
 
