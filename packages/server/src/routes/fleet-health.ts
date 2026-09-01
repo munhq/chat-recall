@@ -26,6 +26,7 @@
 
 import express from 'express';
 import { createControlPlane, createStore } from '../imports.js';
+import { cliRelease } from '../util/cli-release.js';
 
 /**
  * Turn one device's raw facts into health + warnings. PURE and exported so the
@@ -38,6 +39,8 @@ export function classifyDevice(
   reported: ReportedSource[],
   now: number,
   telemetry?: DeviceTelemetry,
+  /** The CLI release this server ships, for the version-drift warning. */
+  offeredCli?: string | null,
 ): DeviceHealth {
   const mine = reported.filter((s) => (s.device || '') === d.deviceId);
   const folders = {
@@ -76,9 +79,16 @@ export function classifyDevice(
   // has to interpret is a number that gets skipped.
   if (telemetry) {
     if (telemetry.breakerTrips > 0) {
+      // WHICH target, in the only terms this endpoint has: private address or
+      // public one. "823 trips" for a LAN box somebody switched off is a very
+      // different fact from the same number against the hosted service, and the
+      // reader cannot tell them apart from a count.
+      const where = telemetry.breakerTripsAllLocal ? 'a sync target on your own network' : 'a sync target';
+      const streak = telemetry.worstFailureStreak > 0
+        ? ` (worst run: ${telemetry.worstFailureStreak} consecutive failures)` : '';
       warnings.push(
-        `stopped trying a sync target ${telemetry.breakerTrips} time${telemetry.breakerTrips === 1 ? '' : 's'} `
-        + 'after repeated failures — anything it holds is not reaching that server',
+        `stopped trying ${where} ${telemetry.breakerTrips} time${telemetry.breakerTrips === 1 ? '' : 's'} `
+        + `after repeated failures${streak} — anything it holds is not reaching that server`,
       );
     }
     const rateLimited = telemetry.failuresByClass.rate_limited ?? 0;
@@ -92,9 +102,33 @@ export function classifyDevice(
     if (auth > 0) {
       warnings.push(`${auth} upload${auth === 1 ? '' : 's'} rejected for authentication — this device's token may be revoked`);
     }
+    // BILLING. This is the one the panel used to hide completely: 270 of these
+    // were reported by a device whose only visible warning claimed a TLS problem
+    // it did not have. A paused meter is the most actionable condition here —
+    // nobody has to debug it, somebody has to decide.
+    const payment = telemetry.failuresByClass.payment_required ?? 0;
+    if (payment > 0) {
+      warnings.push(
+        `${payment} upload${payment === 1 ? '' : 's'} refused for billing — that server has paused this `
+        + 'tenant\'s sync until the meter resets or the plan changes',
+      );
+    }
     const transport = telemetry.failuresByClass.insecure_transport ?? 0;
     if (transport > 0) {
       warnings.push('refusing to sync to a server over plain HTTP — nothing from this device is reaching it');
+    }
+    // A class nobody wrote a sentence for must still be visible. Every class
+    // above was added after a silent failure was found by hand; this line is so
+    // the NEXT one does not need that.
+    const NAMED = new Set(['rate_limited', 'auth', 'payment_required', 'insecure_transport']);
+    const others = Object.entries(telemetry.failuresByClass)
+      .filter(([cls, n]) => n > 0 && !NAMED.has(cls))
+      .sort((a, b) => b[1] - a[1]);
+    if (others.length > 0) {
+      warnings.push(
+        `${others.map(([cls, n]) => `${n}× ${cls.replace(/_/g, ' ')}`).join(', ')} — `
+        + 'sync attempts this device could not complete',
+      );
     }
     if (telemetry.oversizedSessions > 0) {
       warnings.push(
@@ -102,6 +136,22 @@ export function classifyDevice(
         + `(largest ${telemetry.oversizedWorstMb}MB) — searchable, but their raw transcript is not stored`,
       );
     }
+    if (telemetry.autoUpdateProblems > 0) {
+      warnings.push(
+        `self-update did not run ${telemetry.autoUpdateProblems} time${telemetry.autoUpdateProblems === 1 ? '' : 's'} `
+        + '— this device cannot pick up fixes on its own',
+      );
+    }
+  }
+  // VERSION DRIFT, the failure that hides behind every other one: a device
+  // running old code has already missed whatever the newer releases fixed, and
+  // no amount of correct telemetry from it can say so. Compared against what
+  // THIS server ships, which is the version the device would install.
+  if (d.cliVersion && offeredCli && compareCliVersions(d.cliVersion, offeredCli) < 0) {
+    warnings.push(
+      `on CLI ${d.cliVersion} while this server ships ${offeredCli} — this device is not `
+      + 'running the current collector',
+    );
   }
 
   return {
@@ -115,6 +165,25 @@ export function classifyDevice(
     warnings,
     ...(telemetry ? { telemetry } : {}),
   };
+}
+
+/**
+ * Compare two dotted release numbers. -1 / 0 / 1, numeric per segment.
+ *
+ * Deliberately small and local: the only versions it ever sees are this
+ * product's own `major.minor.patch`, and a string compare gets 0.5.9 vs 0.5.30
+ * wrong — which is exactly the drift this is here to catch. A non-numeric
+ * segment (a `-rc1` suffix, a `dev` build) compares as 0, so an unparseable
+ * version never produces a false warning.
+ */
+export function compareCliVersions(a: string, b: string): number {
+  const seg = (v: string): number[] => v.trim().replace(/^v/, '').split('.').map((x) => parseInt(x, 10) || 0);
+  const [x, y] = [seg(a), seg(b)];
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] ?? 0) - (y[i] ?? 0);
+    if (d !== 0) return d < 0 ? -1 : 1;
+  }
+  return 0;
 }
 
 /** How far back a device's self-reported telemetry is worth believing. */
@@ -135,7 +204,30 @@ async function collectorTelemetryByDevice(tenant: string): Promise<Map<string, D
   const rows = await tenantQuery(pool, tenant, `
     SELECT device_id,
            count(*) FILTER (WHERE kind = 'breaker_trip')::int        AS breaker_trips,
-           count(*) FILTER (WHERE kind = 'oversized_session')::int   AS oversized,
+           -- The collector reports local:1 for a private/LAN target. Counting the
+           -- trips that were NOT local is what lets the warning say "a server on
+           -- your own network" instead of implying the whole fleet is down.
+           count(*) FILTER (WHERE kind = 'breaker_trip'
+                              AND COALESCE(data->>'local','0') <> '1')::int
+                                                                     AS breaker_trips_remote,
+           count(*) FILTER (WHERE kind IN ('auto_update_failed','auto_update_skipped'))::int
+                                                                     AS auto_update_problems,
+           -- DISTINCT SESSIONS, not events. This repeats on every walk while a
+           -- transcript stays oversized, so count(*) reported one 117MB session
+           -- as 38 of them, and the reader concluded 38 transcripts were losing
+           -- their archive.
+           --
+           -- dedupeKey is a non-reversible per-session mark. A collector that
+           -- predates it sends none, and those rows fall back to size+tool: two
+           -- reports of a 117MB OpenCode session are one session far more often
+           -- than they are two. That fallback can UNDERCOUNT two genuinely
+           -- same-size sessions, which is the right way round to be wrong here —
+           -- the warning's job is "some transcripts are not archived, the worst
+           -- is 117MB", and a 38x overcount got that fact wrong.
+           count(DISTINCT COALESCE(
+                   data->>'dedupeKey',
+                   COALESCE(data->>'mb','?') || ':' || COALESCE(tool,'')))
+             FILTER (WHERE kind = 'oversized_session')::int          AS oversized,
            max((data->>'mb')::int) FILTER (WHERE kind = 'oversized_session') AS oversized_worst_mb,
            max((data->>'rssPeakMb')::int) FILTER (WHERE kind = 'sync_walk')  AS rss_peak_mb,
            (array_agg((data->>'scanMs')::int ORDER BY ts DESC)
@@ -149,6 +241,10 @@ async function collectorTelemetryByDevice(tenant: string): Promise<Map<string, D
     out.set(String(r.device_id), {
       breakerTrips: Number(r.breaker_trips) || 0,
       failuresByClass: {},
+      worstFailureStreak: 0,
+      breakerTripsAllLocal: (Number(r.breaker_trips) || 0) > 0
+        && (Number(r.breaker_trips_remote) || 0) === 0,
+      autoUpdateProblems: Number(r.auto_update_problems) || 0,
       oversizedSessions: Number(r.oversized) || 0,
       oversizedWorstMb: Number(r.oversized_worst_mb) || 0,
       rssPeakMb: r.rss_peak_mb == null ? null : Number(r.rss_peak_mb),
@@ -165,7 +261,11 @@ async function collectorTelemetryByDevice(tenant: string): Promise<Map<string, D
   const byClass = await tenantQuery(pool, tenant, `
     SELECT device_id,
            COALESCE(NULLIF(data->>'errorClass',''), 'other') AS error_class,
-           count(*)::int AS n
+           count(*)::int AS n,
+           -- The streak is where the severity lives: 828 trips against one target
+           -- with a run of 109 consecutive failures is ONE box that is off, and a
+           -- count on its own cannot say that.
+           max((data->>'failures')::int) AS streak
       FROM client_events
      WHERE tenant = $1 AND ts >= $2 AND device_id <> ''
        AND kind IN ('target_failure','breaker_trip','sync_error','auth_error')
@@ -175,10 +275,12 @@ async function collectorTelemetryByDevice(tenant: string): Promise<Map<string, D
   for (const r of byClass.rows as Array<Record<string, unknown>>) {
     const id = String(r.device_id);
     const entry = out.get(id) ?? {
-      breakerTrips: 0, failuresByClass: {}, oversizedSessions: 0,
+      breakerTrips: 0, failuresByClass: {}, worstFailureStreak: 0, breakerTripsAllLocal: false,
+      autoUpdateProblems: 0, oversizedSessions: 0,
       oversizedWorstMb: 0, rssPeakMb: null, lastScanMs: null, recentScanMs: [],
     };
     entry.failuresByClass[String(r.error_class)] = Number(r.n) || 0;
+    entry.worstFailureStreak = Math.max(entry.worstFailureStreak, Number(r.streak) || 0);
     out.set(id, entry);
   }
 
@@ -260,11 +362,32 @@ interface ReportedSource {
  * exists to surface.
  */
 export interface DeviceTelemetry {
-  /** Consecutive-failure breakers that tripped in the window. */
+  /**
+   * Breaker INCIDENTS in the window — a target going from working to given up
+   * on. Not attempts: the collector re-opens a tripped breaker on every walk, so
+   * counting those measured how long a box stayed off, not how often anything
+   * broke. See BreakerVerdict.tripped in the collector.
+   */
   breakerTrips: number;
   /** Individual target failures, by class (rate_limited, dns, timeout, …). */
   failuresByClass: Record<string, number>;
-  /** Sessions skipped from the raw archive for exceeding the size ceiling. */
+  /** Longest run of consecutive failures the device reported for one target. */
+  worstFailureStreak: number;
+  /**
+   * True when every breaker trip in the window was against a private/LAN address.
+   *
+   * The difference between "your laptop cannot reach the hosted service" and
+   * "the box in your study is switched off", which a count alone cannot express.
+   *
+   * Scoped to the TRIPS on purpose. Computed across all failure kinds instead, a
+   * single stray failure against a public host — one in a thousand, on a device
+   * whose 828 trips were every one of them a LAN box — flipped it to false and
+   * took the useful half of the sentence with it.
+   */
+  breakerTripsAllLocal: boolean;
+  /** Times the collector's self-update failed or was refused in the window. */
+  autoUpdateProblems: number;
+  /** DISTINCT sessions skipped from the raw archive for exceeding the ceiling. */
   oversizedSessions: number;
   /** Largest such session, in MB — how far past the ceiling this device goes. */
   oversizedWorstMb: number;
@@ -326,8 +449,12 @@ router.get('/fleet', async (req, res) => {
 
     const now = Date.now();
     const live = devices.filter((d) => !d.revoked);
+    // What this server ships is what a device would install, so it is the right
+    // yardstick for "is this machine current" — not the newest version any
+    // device happens to report, which drifts with whoever updated by hand.
+    const offeredCli = cliRelease()?.version ?? null;
     const out: DeviceHealth[] = live.map((d) =>
-      classifyDevice(d, byDevice.get(d.deviceId) ?? null, reported, now, telemetry.get(d.deviceId)));
+      classifyDevice(d, byDevice.get(d.deviceId) ?? null, reported, now, telemetry.get(d.deviceId), offeredCli));
 
     out.sort((a, b) => (b.lastSeenAt ?? 0) - (a.lastSeenAt ?? 0));
 

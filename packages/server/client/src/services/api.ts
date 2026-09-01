@@ -798,6 +798,9 @@ export interface ReportedSource {
 export interface FleetDeviceTelemetry {
   breakerTrips: number;
   failuresByClass: Record<string, number>;
+  worstFailureStreak?: number;
+  breakerTripsAllLocal?: boolean;
+  autoUpdateProblems?: number;
   oversizedSessions: number;
   oversizedWorstMb: number;
   rssPeakMb: number | null;

@@ -12,7 +12,7 @@
  * actual behaviour possible without a Postgres fleet.
  */
 import { describe, test, expect } from 'vitest';
-import { classifyDevice } from './fleet-health.js';
+import { classifyDevice, compareCliVersions } from './fleet-health.js';
 
 const DAY = 86_400_000;
 const NOW = 1_800_000_000_000;
@@ -122,8 +122,9 @@ describe('warnings are scoped to the right device', () => {
  * purpose is that healthy and broken look identical everywhere else.
  */
 const tel = (o: Partial<NonNullable<Parameters<typeof classifyDevice>[4]>> = {}) => ({
-  breakerTrips: 0, failuresByClass: {}, oversizedSessions: 0,
-  oversizedWorstMb: 0, rssPeakMb: null, lastScanMs: null, ...o,
+  breakerTrips: 0, failuresByClass: {}, worstFailureStreak: 0, breakerTripsAllLocal: false,
+  autoUpdateProblems: 0, oversizedSessions: 0,
+  oversizedWorstMb: 0, rssPeakMb: null, lastScanMs: null, recentScanMs: [], ...o,
 });
 
 describe('telemetry adds warnings the server cannot see on its own', () => {
@@ -205,5 +206,103 @@ describe('telemetry adds warnings the server cannot see on its own', () => {
     const h = classifyDevice(dev(), act(), [src({ decision: 'primary' })], NOW,
       tel({ breakerTrips: 0, oversizedSessions: 0, failuresByClass: { rate_limited: 0, auth: 0 } }));
     expect(h.warnings).toEqual([]);
+  });
+
+  /**
+   * THE CASE THAT MADE THIS PANEL LIE.
+   *
+   * A device reported 270 billing refusals and 652 "insecure transport" in one
+   * week. The insecure-transport count was a misclassification in the collector
+   * (a 402 body carries an upgrade URL, and the classifier matched `https`), and
+   * the billing refusals — the real, actionable condition — produced NO warning
+   * at all, because only three classes had a sentence written for them.
+   *
+   * So the panel's single loudest line accused a LAN box on http:// of leaking
+   * transcripts, while the true cause, a paused meter, was invisible.
+   */
+  test('a billing refusal is a warning of its own, not silence', () => {
+    const h = classifyDevice(dev(), act(), [src({ decision: 'primary' })], NOW,
+      tel({ failuresByClass: { payment_required: 270 } }));
+    expect(h.warnings).toHaveLength(1);
+    expect(h.warnings[0]).toContain('270 uploads refused for billing');
+    expect(h.warnings[0]).toContain('paused');
+    // And it must NOT claim a transport problem it does not have.
+    expect(h.warnings[0]).not.toContain('plain HTTP');
+  });
+
+  test('a class nobody wrote a sentence for is still visible', () => {
+    const h = classifyDevice(dev(), act(), [src({ decision: 'primary' })], NOW,
+      tel({ failuresByClass: { refused: 72, dns: 1 } }));
+    expect(h.warnings).toHaveLength(1);
+    expect(h.warnings[0]).toContain('72× refused');
+    expect(h.warnings[0]).toContain('1× dns');
+  });
+
+  // A dead box in your own study and an unreachable hosted service are the same
+  // COUNT and different problems. The collector reports which; say it.
+  test('an all-private failure names the network it is on', () => {
+    const lan = classifyDevice(dev(), act(), [src({ decision: 'primary' })], NOW,
+      tel({ breakerTrips: 3, breakerTripsAllLocal: true, worstFailureStreak: 109 }));
+    expect(lan.warnings[0]).toContain('a sync target on your own network');
+    expect(lan.warnings[0]).toContain('109 consecutive failures');
+
+    const wan = classifyDevice(dev(), act(), [src({ decision: 'primary' })], NOW,
+      tel({ breakerTrips: 3, breakerTripsAllLocal: false }));
+    expect(wan.warnings[0]).not.toContain('your own network');
+  });
+
+  test('a device that cannot update itself says so', () => {
+    const h = classifyDevice(dev(), act(), [src({ decision: 'primary' })], NOW,
+      tel({ autoUpdateProblems: 7 }));
+    expect(h.warnings[0]).toContain('self-update did not run 7 times');
+    expect(h.warnings[0]).toContain('cannot pick up fixes');
+  });
+});
+
+/**
+ * VERSION DRIFT — the failure that hides behind all the others.
+ *
+ * A device sat on CLI 0.5.24 for six releases with auto-update disabled in its
+ * unit file. Every other number it reported was correct and none of them could
+ * say the thing that mattered: it was not running the collector whose fixes the
+ * operator had already shipped.
+ */
+describe('a device behind the server it syncs to', () => {
+  test('is warned about, with both versions named', () => {
+    const h = classifyDevice(dev({ cliVersion: '0.5.24' }), act(), [src({ decision: 'primary' })], NOW,
+      undefined, '0.5.30');
+    expect(h.warnings).toHaveLength(1);
+    expect(h.warnings[0]).toContain('on CLI 0.5.24 while this server ships 0.5.30');
+  });
+
+  test('a current device is not warned', () => {
+    const h = classifyDevice(dev({ cliVersion: '0.5.30' }), act(), [src({ decision: 'primary' })], NOW,
+      undefined, '0.5.30');
+    expect(h.warnings).toEqual([]);
+  });
+
+  test('a device AHEAD of the server is not warned — a dev box is not a fault', () => {
+    const h = classifyDevice(dev({ cliVersion: '0.6.0' }), act(), [src({ decision: 'primary' })], NOW,
+      undefined, '0.5.30');
+    expect(h.warnings).toEqual([]);
+  });
+
+  test('an unknown version on either side warns about nothing', () => {
+    expect(classifyDevice(dev({ cliVersion: null }), act(), [src({ decision: 'primary' })], NOW,
+      undefined, '0.5.30').warnings).toEqual([]);
+    expect(classifyDevice(dev({ cliVersion: '0.5.24' }), act(), [src({ decision: 'primary' })], NOW,
+      undefined, null).warnings).toEqual([]);
+  });
+
+  // The whole reason this is not a string compare: '0.5.9' > '0.5.30' as text.
+  test('versions compare NUMERICALLY per segment', () => {
+    expect(compareCliVersions('0.5.9', '0.5.30')).toBe(-1);
+    expect(compareCliVersions('0.5.30', '0.5.9')).toBe(1);
+    expect(compareCliVersions('0.5.30', '0.5.30')).toBe(0);
+    expect(compareCliVersions('v0.5.30', '0.5.30')).toBe(0);
+    expect(compareCliVersions('1.0.0', '0.99.99')).toBe(1);
+    expect(compareCliVersions('0.5', '0.5.0')).toBe(0);
+    // An unparseable segment compares as 0 rather than inventing an order.
+    expect(compareCliVersions('dev', '0.0.0')).toBe(0);
   });
 });
