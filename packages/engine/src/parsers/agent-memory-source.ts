@@ -36,7 +36,7 @@ import type {
 import { splitByHeaders } from '../core/utils.js';
 import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
 import { isSourceEnabled } from '../core/settings.js';
-import { decodeProjectDirName } from '../core/project-dir-name.js';
+import { resolveProjectDirName } from '../core/project-dir-name.js';
 
 const MAX_CHUNK_CHARS = 2000;
 const MAX_CHUNKS = 12;
@@ -81,7 +81,7 @@ function parseFrontmatter(content: string): { fm: Frontmatter; body: string } {
  *   -home-user-code-personal-chat-recall → /home/user/code/personal/chat-recall
  */
 function projectHashToPath(hashDir: string): string {
-  return decodeProjectDirName(hashDir);
+  return resolveProjectDirName(hashDir);
 }
 
 /** List the `memory/` dirs that actually exist under <claudeHome>/projects/. */

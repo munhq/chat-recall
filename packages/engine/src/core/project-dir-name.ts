@@ -22,7 +22,8 @@
  * resolves the ambiguity against real directories. This function is the cheap
  * structural answer for callers that only need a stable identity.
  */
-import { sep } from 'node:path';
+import { sep, join } from 'node:path';
+import { readdirSync } from 'node:fs';
 
 /** True when the name encodes a Windows drive-rooted path (`C--Users-…`). */
 export function looksWindowsEncoded(dirName: string): boolean {
@@ -49,6 +50,91 @@ export function decodeProjectDirName(dirName: string): string {
 
   // POSIX: a single leading '-' is the root slash.
   return '/' + dirName.replace(/^-/, '').replace(/-/g, '/');
+}
+
+/**
+ * Decode a project directory name by PROBING the filesystem.
+ *
+ * `decodeProjectDirName` above is the cheap structural answer and it is wrong
+ * whenever a real directory name contains the character the encoding uses as
+ * its separator. Claude Code flattens a path by replacing '/' with '-', and a
+ * '.' or '-' inside a name survives as '-' too, so three different characters
+ * arrive as one and the name alone cannot say which:
+ *
+ *   -Users-me-code-chat-recall           .../chat-recall   or  .../chat/recall
+ *   -Users-me-code-app--agent-wt-a1   .../app/.agent/worktrees/a1
+ *
+ * Both were mis-decoded. The first split one repo across two project ids
+ * (`git-local:` for the real path, `path:/Users/me/code/chat/recall` for the
+ * fiction). The second is how per-session worktrees stopped rolling up into
+ * the repo they belong to: `.agent` became `agent`, the path did not
+ * exist, git could not be consulted, and the sessions landed under a standalone
+ * `path:` project instead of the parent repo's `git:` id.
+ *
+ * The fix is to ask the disk instead of guessing. At each level we list the
+ * real children, encode each one the way Claude Code would, and take the
+ * LONGEST whose encoding matches the head of what is left — so `chat-recall`
+ * beats `chat` when the directory is really there, and `.agent` is found
+ * even though its dot was flattened away.
+ *
+ * Probing can only improve the answer, never regress it: anything that does not
+ * resolve on this machine (a Windows-encoded name, a path synced from another
+ * device, a repo since deleted) falls straight back to the structural decode,
+ * which is exactly what every caller got before.
+ */
+export function resolveProjectDirName(
+  dirName: string,
+  deps: { readdir?: (p: string) => string[] } = {},
+): string {
+  const structural = decodeProjectDirName(dirName);
+  if (!dirName) return structural;
+
+  // A drive-rooted name describes a Windows path. Probing the local
+  // filesystem for it is meaningless on any host and actively wrong on a
+  // Linux server indexing a laptop's transcripts.
+  if (looksWindowsEncoded(dirName)) return structural;
+
+  const readdir =
+    deps.readdir ?? ((p: string) => readdirSync(p, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name));
+
+  // Everything the encoder collapses into '-'.
+  const encodeName = (name: string) => name.replace(/[-_.]/g, '-');
+
+  let remaining = dirName.replace(/^-/, '');
+  let current = '/';
+
+  while (remaining) {
+    let children: string[];
+    try {
+      children = readdir(current);
+    } catch {
+      break; // unreadable level — keep what we have, structural does the rest
+    }
+
+    let best = '';
+    for (const child of children) {
+      const encoded = encodeName(child);
+      if (!encoded || encoded.length < best.length) continue;
+      if (!remaining.startsWith(encoded)) continue;
+      // The match has to end on a separator boundary, or a directory
+      // named `web` would swallow the head of `web-ui` and leave `ui`
+      // dangling as a path segment that was never a directory.
+      const next = remaining[encoded.length];
+      if (next !== undefined && next !== '-') continue;
+      if (encoded.length > best.length) best = child;
+    }
+
+    if (!best) break;
+
+    current = join(current, best);
+    remaining = remaining.slice(encodeName(best).length).replace(/^-/, '');
+  }
+
+  // Nothing matched at all, or the tail could not be resolved: the structural
+  // decode is the honest fallback rather than a half-probed path.
+  return remaining ? structural : current;
 }
 
 /**
