@@ -73,6 +73,14 @@ CLAUDE.local.md
 # CONTRIBUTING.md; agents read this file locally.
 CLAUDE.md
 
+# Per-machine agent/tool state for this working copy. These are local editor
+# and MCP-client configs (permission allow-lists, per-session MCP handshakes)
+# that describe one developer's machine, not the project. Untracked on purpose
+# — same reasoning as CLAUDE.md above.
+.claude/
+.agents/
+.coolcode/
+
 # Operator-only deploy script (private cluster blueprint) — never publish
 scripts/deploy-local.sh
 

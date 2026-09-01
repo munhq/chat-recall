@@ -27,11 +27,11 @@ describe('per-tool extractor version', () => {
     expect(extractorVersionForTool('gemini')).toBe(EXTRACTOR_VERSION);
     expect(extractorVersionForTool('opencode')).toBe(EXTRACTOR_VERSION);
     expect(extractorVersionForTool('cursor')).toBe(EXTRACTOR_VERSION);
-    expect(agy).toBe(EXTRACTOR_VERSION + 2);           // agy read the full log
+    expect(agy).toBe(EXTRACTOR_VERSION + 3);           // agy dropped the project fallback
   });
 
   test('derives the tool from the prefixed session id', () => {
-    expect(extractorVersionForId('agy_abc')).toBe(EXTRACTOR_VERSION + 2);
+    expect(extractorVersionForId('agy_abc')).toBe(EXTRACTOR_VERSION + 3);
     expect(extractorVersionForId('gemini_abc')).toBe(EXTRACTOR_VERSION);
     expect(extractorVersionForId('f8268be2-uuid')).toBe(EXTRACTOR_VERSION + 1); // claude, no prefix
   });

@@ -36,6 +36,13 @@
  *            `transcript.jsonl`. The plain file is only the last exchange, so
  *            most turns AND edits were dropped; the full log is the complete
  *            record. Re-ships agy sessions with their full conversation + edits.
+ *   agy +3 — drop the `trustedWorkspaces[0]` project fallback. Antigravity is
+ *            also used as a general assistant (screen-OCR questions, one-off
+ *            prompts) with no repo open: on a real machine 81 of 100 sessions
+ *            derived no path, and each was stamped with that one global
+ *            workspace, so 88 of 100 sessions landed on a project only 7 had
+ *            touched. A session with no project is now left unattributed.
+ *            Re-ships agy sessions so the bad attribution self-heals.
  *   claude +1 — read `queue-operation` records as prompts. A prompt typed WHILE
  *            A TOOL RUNS is stored as {type:'queue-operation',
  *            operation:'enqueue'}, never as a type:'user' record, so both the
@@ -91,7 +98,7 @@ export function extractorVersionForItem(id: string, sourceType: string): number 
 
 /** Per-tool bumps ON TOP of the base. Key by AiTool id (the id prefix's tool). */
 const TOOL_EXTRACTOR_BUMP: Record<string, number> = {
-  agy: 2,
+  agy: 3,
   claude: 1,
   codex: 1,
 };
