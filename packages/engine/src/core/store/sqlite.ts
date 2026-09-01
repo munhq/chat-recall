@@ -112,6 +112,7 @@ export class SqliteStore implements StorageDriver {
   // ── tombstones / purge ──
   async addTombstone(...a: Args<'addTombstone'>) { return this.inner.addTombstone(...a); }
   async listTombstones(...a: Args<'listTombstones'>) { return this.inner.listTombstones(...a); }
+  async removeTombstone(...a: Args<'removeTombstone'>) { return this.inner.removeTombstone(...a); }
   async purgeSession(...a: Args<'purgeSession'>) { return this.inner.purgeSession(...a); }
 
   // ── raw archive ──

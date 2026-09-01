@@ -124,6 +124,77 @@ router.post('/delete', express.json({ limit: '4kb' }), async (req, res) => {
 });
 
 /**
+ * What has been deleted — the tombstone list.
+ *
+ * Restoring is impossible without this. A purged session leaves no row to find
+ * it by: the metadata, chunks and archive are gone, and all that survives is an
+ * id in `session_tombstones`. Without a way to READ that list, "undo my delete"
+ * requires the user to already know the uuid of something they deleted, which
+ * nobody does.
+ */
+router.get('/tombstones', async (req, res) => {
+  const limit = Math.max(1, Math.min(parseInt(String(req.query.limit)) || 500, 5000));
+  const store = await createStore();
+  try {
+    const all = await store.listTombstones();
+    // Newest deletions first — the ones a person is most likely undoing.
+    const sorted = [...all].sort((a, b) => b.deleted_at - a.deleted_at);
+    res.json({ total: all.length, tombstones: sorted.slice(0, limit) });
+  } catch (e) {
+    log.error({ err: (e as Error).message }, 'tombstone list failed');
+    res.status(500).json({ error: 'list failed' });
+  } finally {
+    await store.close();
+  }
+});
+
+/**
+ * Lift tombstones so a later sync may re-upload those sessions.
+ *
+ * This restores NOTHING on its own, and the response says so: the content is
+ * gone from the server and comes back only if a device still holds the
+ * transcript and re-ships it (`chat-recall index --force`). What this undoes is
+ * the REFUSAL — the `deadSet` check in /api/sync that makes a deletion stick.
+ *
+ * It exists because bulk deletion does. One-at-a-time deletion is self-limiting;
+ * a command that removes hundreds of sessions in a single call needs a way back,
+ * or a mis-aimed selector is unrecoverable. Deliberately id-scoped: there is no
+ * "restore everything", because that would re-open every deliberate deletion the
+ * tenant ever made, including the ones made for privacy.
+ */
+router.post('/restore', express.json({ limit: '256kb' }), async (req, res) => {
+  const raw = req.body?.session_ids;
+  const ids = Array.isArray(raw) ? raw.filter((x): x is string => typeof x === 'string' && !!x.trim()) : [];
+  if (ids.length === 0) return res.status(400).json({ error: 'session_ids (non-empty array) is required' });
+
+  const store = await createStore();
+  try {
+    const known = new Set((await store.listTombstones()).map((t) => t.session_id));
+    let restored = 0;
+    const notDeleted: string[] = [];
+    for (const id of ids) {
+      if (!known.has(id)) { notDeleted.push(id); continue; }
+      await store.removeTombstone(id);
+      restored++;
+    }
+    log.warn({ restored, requested: ids.length }, 'user lifted tombstones');
+    // `notDeleted` is not an error — it is the honest answer to "was this one
+    // of mine?". Silently counting them as restored would report success for
+    // ids that were never deleted here.
+    res.json({
+      restored,
+      notDeleted,
+      note: 'Tombstones lifted. Content returns only when a device still holding the transcript re-ships it — run `chat-recall index --force` there.',
+    });
+  } catch (e) {
+    log.error({ err: (e as Error).message }, 'restore failed');
+    res.status(500).json({ error: 'restore failed' });
+  } finally {
+    await store.close();
+  }
+});
+
+/**
  * Everything. Requires the confirmation phrase typed exactly.
  *
  * A checkbox is not enough for an action with no undo, and a phrase the UI cannot

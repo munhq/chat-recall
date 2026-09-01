@@ -229,6 +229,7 @@ export interface StorageDriver {
   // ── tombstones / purge ──
   addTombstone: AsyncMethod<MemoryStore['addTombstone']>;
   listTombstones: AsyncMethod<MemoryStore['listTombstones']>;
+  removeTombstone: AsyncMethod<MemoryStore['removeTombstone']>;
   purgeSession: AsyncMethod<MemoryStore['purgeSession']>;
 
   // ── raw session archive ──
