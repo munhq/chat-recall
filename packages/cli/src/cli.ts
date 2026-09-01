@@ -4254,10 +4254,11 @@ program
 
 program
   .command('update')
-  .description('Update this CLI now from the server you sync to (same-origin, checksum-pinned) and report exactly why if it cannot')
-  .action(async () => {
-    const { runAutoUpdate } = await import('./auto-update.js');
-    const { refreshUpdateCheck } = await import('./update-notice.js');
+  .description('Update this CLI now from the server you sync to (same-origin, checksum-pinned) and report exactly why if it cannot. Use --from-npm when the server has not rolled the newest release yet.')
+  .option('--from-npm', 'Install the newest published release straight from the npm registry instead of the server tarball')
+  .action(async (opts: { fromNpm?: boolean }) => {
+    const { runAutoUpdate, compareVersions } = await import('./auto-update.js');
+    const { refreshUpdateCheck, newestKnown } = await import('./update-notice.js');
     const { cliVersion } = await import('./http.js');
     const targets = loadAllCredentials();
     if (!targets.length) {
@@ -4278,10 +4279,48 @@ program
       if (/install failed|download failed|checksum/.test(r.reason)) installFailed = true;
       console.log((benign ? chalk.dim('• ') : chalk.red('✗ ')) + r.reason + chalk.dim(` (${base})`));
     }
-    await refreshUpdateCheck(true);
+    const check = await refreshUpdateCheck(true);
     if (installFailed) {
       console.log(chalk.dim('\nThe update was available but did not install — usually npm cannot write the global prefix. Retry with:'));
       console.log(chalk.dim(`  npm install -g chat-recall   (or re-run the installer: curl -fsSL ${targets[0].serverUrl.replace(/\/+$/, '')}/install | sh)`));
+    }
+
+    // The same-origin path above can only ever deliver what the SERVER serves,
+    // and the server advertises a version baked into its image. So a release
+    // can be live on npm while every `chat-recall update` reports "already
+    // current" — which is how this command handed back 0.5.31 on the day 0.5.32
+    // shipped. Say so, and offer the one command that can actually deliver it.
+    if (check) {
+      const own = cliVersion();
+      const { version, source } = newestKnown(check);
+      const behind = source === 'npm' && compareVersions(version, own) > 0;
+      if (behind && !opts.fromNpm) {
+        console.log(chalk.yellow(`\nnpm has ${version}; the server you sync to still serves ${check.serverVersion}.`));
+        console.log(chalk.dim('The server tarball cannot deliver it until that deployment rolls. Get it now with:'));
+        console.log(chalk.dim('  chat-recall update --from-npm'));
+      } else if (behind && opts.fromNpm) {
+        console.log(chalk.dim(`\nInstalling ${version} from npm…`));
+        try {
+          const { execFileSync } = await import('node:child_process');
+          execFileSync('npm', ['install', '-g', `chat-recall@${version}`], { stdio: 'inherit' });
+          // "npm exited 0" is not "the running copy changed" — the same check
+          // runAutoUpdate makes, for the same reason: npm can succeed into a
+          // prefix that is not on PATH.
+          const { installedVersion } = await import('./auto-update.js');
+          const landed = installedVersion();
+          if (landed && compareVersions(landed, version) >= 0) {
+            console.log(chalk.green(`✓ updated to ${landed} from npm`));
+          } else {
+            console.error(chalk.red(`✗ npm reported success but ${landed ?? 'an unknown version'} is still on disk — the package that runs is not the one npm wrote.`));
+            process.exit(1);
+          }
+        } catch (e) {
+          console.error(chalk.red(`✗ npm install failed: ${e instanceof Error ? e.message : e}`));
+          process.exit(1);
+        }
+      } else if (opts.fromNpm) {
+        console.log(chalk.dim(`\nnpm has nothing newer than ${own} — nothing to do.`));
+      }
     }
   });
 
