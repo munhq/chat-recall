@@ -25,7 +25,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { spawn } from 'child_process';
 import { createServer, connect, type Socket, type Server } from 'node:net';
 import { unlinkSync } from 'node:fs';
-import { ensureSocketDir, socketPath, socketPathFromArgv } from './mcp-socket.js';
+import { ensureSocketDir, restrictSocket, socketPath, socketPathFromArgv } from './mcp-socket.js';
 import { fileURLToPath } from 'node:url';
 import {
   createMcpServer, setIndexRunner, setEventReporter, setUpdateNotice, setServerVersion,
@@ -306,9 +306,15 @@ function listen(path: string): Promise<Server | null> {
       }
       const retry = createServer();
       retry.once('error', () => resolve(null));
-      retry.listen(path, () => resolve(retry));
+      retry.listen(path, () => {
+        restrictSocket(path);
+        resolve(retry);
+      });
     });
-    server.listen(path, () => resolve(server));
+    server.listen(path, () => {
+      restrictSocket(path);
+      resolve(server);
+    });
   });
 }
 
