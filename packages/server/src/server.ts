@@ -388,11 +388,14 @@ if (authProviderName() === 'better-auth') {
   // client that fetches the key set during discovery — a directory review is one
   // — saw a broken authorization server.
   //
-  // An EMPTY key set is the correct answer, not a placeholder: the plugin issues
-  // opaque access tokens (32 random characters, looked up server-side), so there
-  // is no signing key for a client to verify anything against, and inventing one
-  // to fill the document would be worse than the 404. `{"keys":[]}` is a valid
-  // JWK Set (RFC 7517) and says exactly that.
+  // An EMPTY key set is the correct answer, not a placeholder, and it is now
+  // SELF-CONSISTENT with what the metadata claims. Access tokens are opaque (32
+  // random characters, looked up server-side), and the id_token is signed HS256
+  // — a symmetric algorithm, which by definition has no public key to publish.
+  // The metadata advertises HS256 for exactly this reason (see the `metadata`
+  // override on the mcp() plugin); it used to say RS256, which sent a client
+  // here looking for a key that could never exist. `{"keys":[]}` is a valid JWK
+  // Set (RFC 7517) and says precisely the true thing.
   //
   // Registered BEFORE the better-auth catch-all, which would otherwise swallow
   // the path and 404 it again.
@@ -465,8 +468,10 @@ if (authProviderName() === 'better-auth') {
   //       document and deliberately not a second handler: better-auth's
   //       metadata already carries every field OIDC requires — issuer,
   //       userinfo_endpoint, jwks_uri, subject_types_supported,
-  //       id_token_signing_alg_values_supported: ["RS256"], and the openid and
-  //       email scopes — so the only thing that was ever missing is that a
+  //       id_token_signing_alg_values_supported (HS256, corrected from the
+  //       RS256 better-auth advertises but never signs with — see the metadata
+  //       override on the mcp() plugin), and the openid and email scopes — so
+  //       the only thing that was ever missing is that a
   //       consumer looking at the OIDC path found nothing. Aliasing the handler
   //       rather than writing a document means the two can never disagree.
   //
