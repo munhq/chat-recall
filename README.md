@@ -12,7 +12,7 @@
 
 **[chatrecall.dev](https://chatrecall.dev)** · [How it works](https://chatrecall.dev/how-it-works/) · [MCP tools](https://chatrecall.dev/mcp/) · [Pricing](https://chatrecall.dev/pricing/) · [Self-host](https://chatrecall.dev/self-hosting/) · [Security](https://chatrecall.dev/security/)
 
-> Memory, secret scanning and code findings across every AI coding tool you use. Claude Code, Gemini CLI, Codex, OpenCode, Antigravity and Cursor share a single searchable history — and the agent works it itself.
+> Memory, secret scanning and code findings across every AI coding tool you use. They all share a single searchable history — and the agent works it itself.
 
 Your coding agents each keep their own transcripts, in their own format, in their own directory, and none of them can read another's. `chat-recall` indexes all of them into one place, redacts secrets on the way, and exposes the result to your agent through **61 MCP tools**.
 
