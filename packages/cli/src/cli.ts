@@ -538,11 +538,13 @@ program
         mcpBinOnPath = isOnPath('chat-recall-mcp');
         const launch: { command: string; args?: string[] } = mcpBinOnPath
           ? { command: 'chat-recall-mcp' }
-          : { command: 'node', args: [join(projectRoot, 'dist', 'mcp.js')] };
-        // Cap the MCP server's V8 heap via the spawner: it's a long-lived
-        // per-session process, and v8.setFlagsFromString can't change the
-        // limit after startup (verified) — NODE_OPTIONS is the only knob
-        // that works when the AI tool owns the spawn.
+          : { command: 'node', args: [join(projectRoot, 'dist', 'mcp-relay.js')] };
+        // Cap the V8 heap via the spawner: v8.setFlagsFromString cannot change
+        // the limit after startup (verified), so NODE_OPTIONS is the only knob
+        // that works when the AI tool owns the spawn. What gets spawned is now
+        // the relay, which needs almost none of it — but the relay hands its
+        // environment to the daemon it starts, so the cap lands on the process
+        // that actually holds the engine.
         const MCP_ENV = { NODE_OPTIONS: '--max-old-space-size=1024' };
 
         // Every tool detected in step 1 gets the entry, not just Claude Code.
