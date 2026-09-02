@@ -38,6 +38,14 @@ import { sendMail, resetPasswordMail, verifyOtpMail } from './mailer.js';
  *  that a link sitting in an inbox is not a standing credential. */
 const RESET_TOKEN_TTL_SECONDS = 60 * 60;
 
+/** Fields we correct in better-auth's published authorization-server metadata.
+ *  See the note at the `mcp()` plugin for why this is spread rather than set. */
+const MCP_METADATA_OVERRIDE = {
+  metadata: {
+    id_token_signing_alg_values_supported: ['HS256'],
+  },
+};
+
 /**
  * Social providers, each enabled only when BOTH its id and secret are present.
  *
@@ -327,6 +335,35 @@ function createAuth() {
         // without a session, which is what this redirect produces.
         loginPage: '/app',
         resource: `${baseURL()}/mcp`,
+        // The advertised ID-token algorithm must be the one we actually use.
+        //
+        // better-auth's /mcp/token signs the id_token with an HMAC key it
+        // GENERATES PER REQUEST and then discards (plugins/mcp/index.mjs:
+        // `generateKey({ name: 'HMAC', hash: 'SHA-256' })`, alg HS256), while
+        // its metadata advertises RS256. Nothing can verify that token — not
+        // the client, not us — and a reviewer who fetches jwks_uri expecting an
+        // RS256 key finds an empty set and reads the server as broken.
+        //
+        // HS256 is the truth, and it is SELF-CONSISTENT with the empty key set:
+        // a symmetric algorithm has no public key to publish, so `{"keys":[]}`
+        // is the correct JWK Set rather than a missing one.
+        //
+        // The consequence is stated plainly for anyone integrating: the ID
+        // token is not a credential to trust. USERINFO is the authoritative
+        // identity source here, which is also how a directory's enterprise
+        // domain restriction reads the verified address.
+        //
+        // SPREAD, not a plain property, and that is not style. better-auth's
+        // `MCPOptions` type declares only loginPage, resource and oidcConfig,
+        // but the runtime reads `options.metadata` — the endpoint calls
+        // `getMCPProviderMetadata(c, options)` with the MCP options while that
+        // function is typed for `OIDCOptions` and spreads `...options?.metadata`
+        // over the document. The override therefore works and cannot be
+        // expressed as a declared property; a spread carries it without an
+        // `as any` over the whole plugin, which would erase the endpoint types
+        // that oAuthDiscoveryMetadata depends on (see the note on getAuth).
+        // Revisit when the upstream type catches up with the upstream code.
+        ...(MCP_METADATA_OVERRIDE as { metadata: Record<string, unknown> }),
       }),
     ],
   });
