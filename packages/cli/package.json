@@ -9,14 +9,13 @@
   "bugs": {
     "url": "https://github.com/munhq/chat-recall/issues"
   },
-  "description": "One searchable history across every AI coding tool — indexes Claude Code, Gemini CLI, Codex, OpenCode, Antigravity and Cursor sessions, redacts secrets, then serves memory, secret scanning and code findings to your agent over MCP.",
+  "description": "One searchable history across every AI coding tool — indexes the sessions those tools already write, redacts secrets, then serves memory, secret scanning and code findings to your agent over MCP.",
   "keywords": [
     "mcp",
     "mcp-server",
     "model-context-protocol",
     "claude-code",
     "claude",
-    "gemini-cli",
     "codex",
     "opencode",
     "antigravity",
