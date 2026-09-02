@@ -498,6 +498,93 @@ export async function mcpSessionUser(
   return { sub: grant.userId, email, roles: rolesFor(email) };
 }
 
+/**
+ * The OIDC userinfo claims for an OAuth access token, or null when the bearer
+ * is not a live grant.
+ *
+ * WHY THIS EXISTS: both discovery documents advertise
+ * `userinfo_endpoint: <baseURL>/api/auth/mcp/userinfo`, and better-auth's MCP
+ * plugin registers no route for it — the same gap as `jwks_uri` (see the note
+ * in server.ts). The URL 404'd, so anything that read the endpoint it was
+ * pointed at saw a broken OpenID provider.
+ *
+ * It is not decorative. ChatGPT's enterprise domain restrictions are exactly
+ * such a reader: the plugin submission form reports the feature as unavailable
+ * unless the server publishes OIDC discovery AND a userinfo endpoint that
+ * returns a VERIFIED email. The scopes were already advertised
+ * (openid/profile/email/offline_access) and already work; only the endpoint was
+ * missing.
+ *
+ * `email_verified` is READ, never assumed. It is the load-bearing claim here: a
+ * consumer restricting access by email domain trusts it, so reporting `true`
+ * for an address nobody confirmed would hand someone a way to claim a domain
+ * that is not theirs. A row we cannot read yields `false` and no email, which
+ * costs a legitimate caller a feature and costs an illegitimate one everything.
+ *
+ * Claims are scoped to the GRANT, per OIDC core 5.4: `sub` always, the email
+ * pair only with the `email` scope, `name` only with `profile`. The token's
+ * scope string is what the user consented to, and returning more than that
+ * because it was convenient is how a userinfo endpoint becomes a directory.
+ */
+export async function mcpUserinfoFor(
+  reqHeaders: Record<string, string | string[] | undefined>,
+): Promise<Record<string, unknown> | null> {
+  const grant = await getAuth().api.getMcpSession({ headers: toHeaders(reqHeaders) });
+  if (!grant?.userId) return null;
+
+  let email: string | null = null;
+  let emailVerified = false;
+  let name: string | null = null;
+  try {
+    // "user" is better-auth's table; both it and "emailVerified" are
+    // case-sensitive in Postgres, so both stay quoted. Same access pattern as
+    // hasVerifiedMember in the engine's control plane.
+    const { rows } = await authPool().query<{
+      email: string | null; emailVerified: boolean | null; name: string | null;
+    }>('SELECT email, "emailVerified", name FROM "user" WHERE id = $1 LIMIT 1', [grant.userId]);
+    email = rows[0]?.email ?? null;
+    emailVerified = rows[0]?.emailVerified === true;
+    name = rows[0]?.name ?? null;
+  } catch {
+    // Fail CLOSED on the claim, not on the request: the grant already proved
+    // who the caller is, so `sub` is still true and still worth returning.
+  }
+
+  return userinfoClaims(
+    grant.userId,
+    (grant as { scopes?: unknown }).scopes,
+    { email, emailVerified, name },
+  );
+}
+
+/**
+ * Shape userinfo claims from a grant's scopes and the user row. Pure, and
+ * separate from the function above for the reason cacheControlFor is separate
+ * from server.ts: the caller needs a live better-auth instance and a database,
+ * and the rule worth testing needs neither.
+ *
+ * `scopes` arrives as better-auth stores it — space-joined
+ * (oidc-provider/schema: `scopes: { type: 'string' }`), which is also the OAuth
+ * wire format. Anything else, including undefined, means no scope was recorded,
+ * and the answer to that is `sub` alone rather than everything.
+ */
+export function userinfoClaims(
+  sub: string,
+  scopes: unknown,
+  user: { email: string | null; emailVerified: boolean; name: string | null },
+): Record<string, unknown> {
+  const granted = new Set(
+    (typeof scopes === 'string' ? scopes : '').split(/[\s,]+/).filter(Boolean),
+  );
+  const claims: Record<string, unknown> = { sub };
+  if (granted.has('email')) {
+    claims.email = user.email;
+    claims.email_verified = user.emailVerified === true;
+  }
+  if (granted.has('profile') && user.name) claims.name = user.name;
+  return claims;
+}
+
 /** Create/upgrade the better-auth tables. Called once at boot (server.ts),
  *  before the HTTP handler is mounted — same fail-fast contract as
  *  ensurePgSchema(). */
