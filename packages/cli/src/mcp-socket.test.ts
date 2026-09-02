@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  daemonEnabled, ensureSocketDir, socketDirCandidates, socketPath, socketPathFromArgv,
-  socketSlug, usableDir,
+  daemonEnabled, ensureSocketDir, privateDir, socketDirCandidates, socketPath,
+  socketPathFromArgv, socketSlug, usableDir,
 } from './mcp-socket.js';
 
 const KEYS = [
@@ -110,6 +110,23 @@ describe('mcp daemon address', () => {
     expect(socketDirCandidates().at(-1)).toBe(`/tmp/chat-recall-${process.getuid!()}`);
     expect(usableDir('/proc/no-such-place/chat-recall')).toBe(false);
     expect(usableDir('/proc/one/two/three/four/five/six/seven/eight')).toBe(false);
+  });
+
+  it('refuses a directory another user owns, even though it is writable', () => {
+    // The /tmp fallback is where another local user can have created the
+    // directory first. /tmp itself is root-owned and world-writable on every
+    // POSIX system — exactly that shape. Writable is not enough; ours is.
+    if (!posix) return;
+    expect(usableDir('/tmp')).toBe(true);
+    expect(privateDir('/tmp')).toBe(false);
+  });
+
+  it('accepts a directory this user created and leaves it 0700', () => {
+    if (!posix) return;
+    const dir = join(scratch, 'mine');
+    expect(usableDir(dir)).toBe(true);
+    expect(privateDir(dir)).toBe(true);
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
   });
 
   it('reports a directory it cannot create as unusable instead of throwing', () => {
