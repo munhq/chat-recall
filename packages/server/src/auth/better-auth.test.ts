@@ -15,7 +15,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { resetLinkFor, RESET_CALLBACK_PATH } from './better-auth.js';
+import { resetLinkFor, RESET_CALLBACK_PATH, userinfoClaims } from './better-auth.js';
 
 const BASE = 'https://chatrecall.dev/api/auth/reset-password/TOK123';
 
@@ -117,5 +117,60 @@ describe('the MCP loginPage', () => {
     const composed = `${loginPage}?response_type=code&client_id=abc`;
     expect(composed.split('?').length - 1).toBe(1);
     expect(new URLSearchParams(composed.split('?')[1]).get('client_id')).toBe('abc');
+  });
+});
+
+/**
+ * OIDC userinfo claims.
+ *
+ * The endpoint exists because both discovery documents advertised
+ * `userinfo_endpoint` while better-auth registered no route for it, so the URL
+ * 404'd in production — and ChatGPT's enterprise domain restrictions read it.
+ * A reachable endpoint and a CORRECT one are different claims, so these pin the
+ * two rules that matter: claims follow the grant's scopes, and email_verified
+ * is never optimistic.
+ */
+describe('userinfoClaims', () => {
+  const verified = { email: 'a@example.com', emailVerified: true, name: 'Ada' };
+
+  it('returns sub alone when no scope was granted', () => {
+    expect(userinfoClaims('u1', '', verified)).toEqual({ sub: 'u1' });
+  });
+
+  it('withholds the email pair unless the email scope was granted', () => {
+    expect(userinfoClaims('u1', 'openid profile', verified)).toEqual({ sub: 'u1', name: 'Ada' });
+  });
+
+  it('returns the email pair with the email scope', () => {
+    expect(userinfoClaims('u1', 'openid email', verified))
+      .toEqual({ sub: 'u1', email: 'a@example.com', email_verified: true });
+  });
+
+  it('reports email_verified false for an unconfirmed address, and still returns it', () => {
+    // The load-bearing case: a consumer restricting access by email domain
+    // trusts this flag, so an unconfirmed address must not read as verified.
+    const claims = userinfoClaims('u1', 'email', { ...verified, emailVerified: false });
+    expect(claims).toEqual({ sub: 'u1', email: 'a@example.com', email_verified: false });
+  });
+
+  it('fails closed when the user row could not be read', () => {
+    // mcpUserinfoFor swallows a database error and passes nulls through; the
+    // grant still proved the sub, but nothing may be asserted about the email.
+    const claims = userinfoClaims('u1', 'openid email profile',
+      { email: null, emailVerified: false, name: null });
+    expect(claims).toEqual({ sub: 'u1', email: null, email_verified: false });
+  });
+
+  it('treats a missing scope string as no scopes rather than as all of them', () => {
+    expect(userinfoClaims('u1', undefined, verified)).toEqual({ sub: 'u1' });
+  });
+
+  it('accepts the comma-separated form some clients send', () => {
+    expect(userinfoClaims('u1', 'openid,email', verified))
+      .toEqual({ sub: 'u1', email: 'a@example.com', email_verified: true });
+  });
+
+  it('omits name when profile was granted but the row has none', () => {
+    expect(userinfoClaims('u1', 'profile', { ...verified, name: null })).toEqual({ sub: 'u1' });
   });
 });
