@@ -1,10 +1,18 @@
 {
   "$schema": "https://glama.ai/mcp/schemas/server.json",
-  "maintainers": ["munhq"],
+  "maintainers": [
+    "munhq"
+  ],
   "name": "chat-recall",
-  "description": "One searchable memory across Claude Code, Gemini, Codex, OpenCode, Antigravity and Cursor — every past session, plan, task and decision, indexed and queryable. Ask what you did two hours ago, whether a thing was already decided, or what the state of a project is, and get an answer drawn from the real transcripts rather than a guess.",
+  "description": "Memory, secret scanning and code findings across Claude Code, Gemini CLI, Codex, OpenCode, Antigravity and Cursor. Every past session, plan, task and decision is indexed and queryable, so you can ask what you did two hours ago or whether a thing was already decided and get an answer drawn from the real transcripts. The same index is scanned for credentials pasted into old conversations, each tracked until it is rotated or dismissed, and a project's code findings are ranked into tasks worth doing.",
   "category": "developer-tools",
-  "tags": ["mcp", "memory", "developer-tools", "search", "context-window"],
+  "tags": [
+    "mcp",
+    "memory",
+    "developer-tools",
+    "search",
+    "context-window"
+  ],
   "license": "Elastic-2.0",
   "repository": "https://github.com/munhq/chat-recall",
   "runtime": "node",

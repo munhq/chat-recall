@@ -1009,12 +1009,18 @@ export function createMcpServer(): Server {
       // These are also what a client shows a user when it asks whether to trust
       // this server, which is a better reason than a score.
       title: 'chat-recall',
+      // Names all THREE things the tool set does, because "memory" alone
+      // described 12 of the 62 tools and sent people looking for a note-taker.
+      // The scanner and the code findings are the other two thirds, and a
+      // listing that hides them is why nobody arrived for them.
       description:
-        'One memory across every AI coding tool you use. Indexes your Claude Code, '
-        + 'Codex, Gemini CLI, OpenCode and Cursor sessions into one searchable history, '
-        + 'so an assistant can resume past work, search what you actually typed, read '
-        + 'the diffs and commits from a session, recall decisions, and flag secrets '
-        + 'pasted into old conversations.',
+        'Memory, secret scanning and code findings across every AI coding tool you use. '
+        + 'Indexes your Claude Code, Codex, Gemini CLI, OpenCode, Antigravity and Cursor '
+        + 'sessions into one searchable history, then works it three ways: an assistant '
+        + 'resumes past work, searches what you actually typed, reads the diffs and commits '
+        + 'from a session and recalls decisions; a scanner flags credentials pasted into old '
+        + 'conversations and tracks each one until it is rotated or dismissed; and code '
+        + 'findings across the project become ranked, actionable tasks.',
       websiteUrl: 'https://chatrecall.dev',
       // Served from the product's own origin, which is what the spec asks for
       // ("URLs serving icons SHOULD be from the same domain"). PNG first: every

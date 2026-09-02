@@ -12,9 +12,17 @@
 
 **[chatrecall.dev](https://chatrecall.dev)** · [How it works](https://chatrecall.dev/how-it-works/) · [MCP tools](https://chatrecall.dev/mcp/) · [Pricing](https://chatrecall.dev/pricing/) · [Self-host](https://chatrecall.dev/self-hosting/) · [Security](https://chatrecall.dev/security/)
 
-> One memory across every AI coding tool you use. Claude Code, Gemini CLI, Codex, OpenCode, Antigravity and Cursor share a single searchable history — and the agent can search it itself.
+> Memory, secret scanning and code findings across every AI coding tool you use. Claude Code, Gemini CLI, Codex, OpenCode, Antigravity and Cursor share a single searchable history — and the agent works it itself.
 
-Your coding agents each keep their own transcripts, in their own format, in their own directory, and none of them can read another's. `chat-recall` indexes all of them into one place, redacts secrets on the way, and exposes the result to your agent through **61 MCP tools** so it can recall its own past work instead of you re-explaining it.
+Your coding agents each keep their own transcripts, in their own format, in their own directory, and none of them can read another's. `chat-recall` indexes all of them into one place, redacts secrets on the way, and exposes the result to your agent through **61 MCP tools**.
+
+Memory is the foundation, not the whole product. One index, read three ways:
+
+| | What it does | Tools |
+|---|---|---|
+| **Recall** | Resume a session, search what you actually typed, read the diffs and commits it produced, recall a decision and why it was made | 37 |
+| **Security** | Flag credentials pasted into past conversations, per session, and track each one until it is rotated or dismissed | 4 |
+| **Code findings** | Rank what is worth fixing in a project and turn it into actionable tasks, with code intelligence over the repo itself | 12 |
 
 That cross-tool part is the point. A single tool's built-in history stops at its own boundary; this does not.
 
