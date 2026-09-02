@@ -127,24 +127,54 @@ export function usableDir(dir: string): boolean {
 }
 
 /**
- * The runtime directory for this user: the first candidate that can be used,
- * created and made private on the way. Throws only when NO candidate works,
+ * Make `dir` private to this user, and report whether that took effect.
+ *
+ * This is also the OWNERSHIP proof. `usableDir` says yes to anything writable,
+ * and on a shared /tmp that includes a directory another local user created
+ * first — our socket would then sit in their directory, theirs to swap out.
+ * chmod(2) fails with EPERM for anyone but the owner, so a chmod that
+ * succeeded means we own the directory; the mode check after it catches a
+ * filesystem that accepts chmod and ignores it (FAT, some FUSE mounts). No
+ * uid comparison, no window between a stat and a chmod. Windows has no POSIX
+ * modes; the per-user LOCALAPPDATA path is the protection there.
+ */
+export function privateDir(dir: string): boolean {
+  if (process.platform === 'win32') return true;
+  try {
+    chmodSync(dir, 0o700);
+    return (statSync(dir).mode & 0o077) === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The runtime directory for this user: the first candidate that can be used
+ * AND made private, created on the way. Throws only when NO candidate works,
  * which the relay turns into serving the session in-process.
  */
 export function ensureSocketDir(): string {
   const candidates = socketDirCandidates();
   for (const dir of candidates) {
     if (!usableDir(dir)) continue;
-    if (process.platform !== 'win32') {
-      try {
-        chmodSync(dir, 0o700);
-      } catch {
-        /* a filesystem with no POSIX modes; the path is still per-user */
-      }
-    }
+    if (!privateDir(dir)) continue;
     return dir;
   }
-  throw new Error(`no writable runtime directory for the MCP daemon (tried ${candidates.join(', ')})`);
+  throw new Error(`no private runtime directory for the MCP daemon (tried ${candidates.join(', ')})`);
+}
+
+/**
+ * Close the socket file itself to other users. connect(2) needs write
+ * permission on a Unix socket, so 0600 refuses every other uid even if the
+ * directory were traversable. Named pipes on Windows are not files.
+ */
+export function restrictSocket(path: string): void {
+  if (process.platform === 'win32') return;
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    /* the directory is already 0700; this is the second lock, not the only one */
+  }
 }
 
 /**
