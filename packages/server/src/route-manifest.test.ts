@@ -188,6 +188,14 @@ const MANIFEST: Record<string, { gates: string[]; reason: string }> = {
     gates: ['<inline>'],
     reason: 'The JWK Set both discovery documents advertise (better-auth publishes jwks_uri and registers no endpoint for it, so the URL 404\'d). DELIBERATELY UNGATED, for the same reason as the two well-known documents: it is part of discovery, read before any credential exists. It returns an EMPTY key set and that is the true answer, not a stub — the MCP plugin issues opaque access tokens looked up server-side, so no signing key exists for a client to verify against. Exposes nothing: a public key would be publishable anyway, and there is not even one.',
   },
+  'get /.well-known/openid-configuration': {
+    gates: ['oauthAuthorizationServerHandler()'],
+    reason: 'OpenID Connect Discovery 1.0, and THE SAME HANDLER as the RFC 8414 document above rather than a second document — better-auth\'s metadata already carries every field OIDC requires (issuer, userinfo_endpoint, jwks_uri, subject_types_supported, id_token_signing_alg_values_supported, and the openid/profile/email scopes), so all that was missing is that an OIDC consumer looking at the conventional path found a 404. Aliasing the handler means the OAuth and OIDC views cannot disagree. Ungated for the same reason as the other two: it is read before any credential exists. ChatGPT enterprise domain restrictions read this path.',
+  },
+  'get /api/auth/mcp/userinfo': {
+    gates: ['<inline>'],
+    reason: 'The OIDC userinfo endpoint both discovery documents ADVERTISE and better-auth registers no route for — the same gap as the jwks entry above, and it 404\'d in production. NOT ungated: it authenticates with the OAuth access token itself (mcpUserinfoFor resolves the bearer to a live grant) and answers 401 with WWW-Authenticate otherwise, so the token IS the gate; tenantAuth would be the wrong one, exactly as for /mcp. Claims are scoped to the grant per OIDC core 5.4 — sub always, email/email_verified only with the email scope, name only with profile — and email_verified is read from the row rather than assumed, because a consumer restricting access by email domain trusts that claim. Registered before the better-auth catch-all, which would otherwise swallow the path.',
+  },
   'get /.well-known/oauth-authorization-server': {
     gates: ['oauthAuthorizationServerHandler()'],
     reason: 'RFC 8414 OAuth discovery. DELIBERATELY UNGATED and unauthenticated: a client reads this in order to find out how to authenticate, so any gate here is a deadlock. It exposes only endpoint URLs and supported grant types — no tenant data, and nothing an attacker cannot infer from the spec.',
@@ -199,6 +207,10 @@ const MANIFEST: Record<string, { gates: string[]; reason: string }> = {
   'get /.well-known/oauth-protected-resource': {
     gates: ['oauthProtectedResourceHandler()'],
     reason: 'RFC 9728 protected-resource metadata, the first document an MCP client fetches after a 401 from /mcp. Ungated for the same reason as the authorization-server document above; it names the resource and its authorization servers, nothing tenant-scoped. Served at the ORIGIN ROOT because clients look there and never under /api/auth.',
+  },
+  'use /.well-known': {
+    gates: ['<inline>'],
+    reason: 'Static files under /.well-known, and ONLY under it. serve-static defaults dotfiles to \'ignore\', so the general express.static mount 404s every dot-prefixed path — correct for a stray .env in dist/, wrong for /.well-known, which is where the spec tells third parties to look for verification tokens. Mounting the directory strips the prefix before serve-static sees it, so the dotfile default still protects the rest of dist/. Registered AFTER the two OAuth discovery routes so those per-request documents win over any same-named file on disk. DELIBERATELY UNGATED: the readers are unauthenticated crawlers and platform verifiers by definition, and the only thing served is a token whose entire purpose is to be publicly fetchable (currently the OpenAI ChatGPT app challenge, written by the marketing build). no-store, because a verification token cached at the edge outlives the one being checked for.',
   },
   'use /api/contact': {
     gates: ["rl('sensitive')", 'contactRouter'],
