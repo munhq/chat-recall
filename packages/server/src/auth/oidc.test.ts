@@ -21,7 +21,12 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { userinfoClaims } from './better-auth.js';
 
-const HERE = new URL('.', import.meta.url).pathname;
+// `import.meta.dirname`, not `new URL('.', import.meta.url).pathname`. On
+// Windows the URL form yields `/D:/a/...` with a leading slash, and joining
+// that produces `D:\D:\a\...` — the file opens on Linux and macOS and fails
+// only on Windows, which is precisely where the first version of this file
+// broke CI. The sibling suite already uses import.meta.dirname; match it.
+const HERE = import.meta.dirname;
 const AUTH_TS = readFileSync(join(HERE, 'better-auth.ts'), 'utf8');
 const SERVER_TS = readFileSync(join(HERE, '..', 'server.ts'), 'utf8');
 
