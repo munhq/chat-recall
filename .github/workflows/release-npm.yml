@@ -105,6 +105,27 @@ jobs:
             }
           ' "$TAG"
 
+      # The plugin manifests drift the same way and are read by two directories:
+      # plugin.json by the Anthropic plugin directory, the Cursor marketplace
+      # manifest by Cursor. Both sat behind the CLI for releases without anything
+      # going red. `npm run version:sync` writes all of them from one number.
+      - name: plugin manifests must match the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          node -e '
+            const tag = process.argv[1];
+            const checks = [
+              ["plugin/.claude-plugin/plugin.json", require("./plugin/.claude-plugin/plugin.json").version],
+              [".cursor-plugin/marketplace.json", require("./.cursor-plugin/marketplace.json").metadata.version],
+            ];
+            let bad = 0;
+            for (const [file, v] of checks) {
+              if (v !== tag) { console.error(`::error::${file} says ${v}, tag is v${tag} — run npm run version:sync`); bad = 1; }
+            }
+            process.exit(bad);
+          ' "$TAG"
+
       # Refuse to ship a licence we did not choose. The manifest shipped "MIT"
       # for months; publishing that once makes that version MIT forever and
       # hands anyone the right to resell it.

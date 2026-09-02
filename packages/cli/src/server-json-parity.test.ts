@@ -105,4 +105,22 @@ describe('server.json version parity', () => {
     // nothing, which — again — would not be red.
     expect(existsSync(join(repoRoot, 'server.json'))).toBe(true);
   });
+
+  it('the Claude Code plugin manifest matches (the Anthropic plugin directory reads it)', () => {
+    const plugin = read('plugin/.claude-plugin/plugin.json');
+    expect(
+      plugin.version,
+      `plugin/.claude-plugin/plugin.json says ${plugin.version}, the CLI is ${cliVersion}. ` +
+      `Run npm run version:sync.`,
+    ).toBe(cliVersion);
+  });
+
+  it('the Cursor marketplace manifest matches', () => {
+    const market = read('.cursor-plugin/marketplace.json');
+    expect(
+      market.metadata?.version,
+      `.cursor-plugin/marketplace.json says ${market.metadata?.version}, the CLI is ${cliVersion}. ` +
+      `Run npm run version:sync.`,
+    ).toBe(cliVersion);
+  });
 });
