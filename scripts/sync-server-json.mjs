@@ -69,3 +69,11 @@ sync('plugin/.claude-plugin/plugin.json', (m) => {
   m.version = cliVersion;
   return before;
 });
+
+// The Cursor plugin marketplace manifest. Same failure, third file: it sat at
+// 0.5.27 while the CLI shipped 0.6.0, and the Cursor listing advertised it.
+sync('.cursor-plugin/marketplace.json', (m) => {
+  const before = [m.metadata?.version];
+  m.metadata = { ...(m.metadata ?? {}), version: cliVersion };
+  return before;
+});
