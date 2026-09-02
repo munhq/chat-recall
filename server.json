@@ -6,12 +6,12 @@
     "url": "https://github.com/munhq/chat-recall",
     "source": "github"
   },
-  "version": "0.5.32",
+  "version": "0.6.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "chat-recall",
-      "version": "0.5.32",
+      "version": "0.6.0",
       "transport": {
         "type": "stdio"
       },
@@ -34,6 +34,20 @@
             "lean",
             "full"
           ]
+        },
+        {
+          "name": "CHAT_RECALL_NO_DAEMON",
+          "description": "Set to 1 to load the whole server inside each session. By default every session with the same profile and server shares one background daemon, and each session is a thin relay onto it — the engine is loaded once per machine instead of once per session. Turn it off for a sandbox with no writable runtime directory.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "CHAT_RECALL_DAEMON_IDLE_SECS",
+          "description": "Seconds with no session attached before the shared daemon exits and returns its memory. Default 900. Set 0 to keep it resident.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "string"
         }
       ],
       "runtimeHint": "npx"
