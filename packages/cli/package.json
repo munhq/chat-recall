@@ -1,6 +1,6 @@
 {
   "name": "chat-recall",
-  "version": "0.5.32",
+  "version": "0.6.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/munhq/chat-recall.git"
@@ -35,8 +35,9 @@
   "license": "Elastic-2.0",
   "bin": {
     "chat-recall": "./dist/cli.js",
-    "chat-recall-mcp": "./dist/mcp.js",
-    "chat-recall-watch": "./dist/watch.js"
+    "chat-recall-mcp": "./dist/mcp-relay.js",
+    "chat-recall-watch": "./dist/watch.js",
+    "chat-recall-mcp-server": "./dist/mcp.js"
   },
   "files": [
     "dist",
