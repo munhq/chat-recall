@@ -5,7 +5,7 @@ in one step, so any agent knows when and how to use `recall_*` to resume prior
 sessions, search past work, recall decisions, and read project intelligence.
 
 > This plugin is the **Claude Code** distribution channel. To light up your other
-> AI tools (Gemini, Codex, OpenCode, Antigravity) too, install the CLI and run
+> AI tools too, install the CLI and run
 > `chat-recall init` — it drops the same skills into every tool's skills dir.
 
 ## Install
