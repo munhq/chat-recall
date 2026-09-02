@@ -374,6 +374,7 @@ if (!ssoAllowed(authProviderName(), { hosted: billingEnabled(), licensed: licenc
 if (authProviderName() === 'better-auth') {
   const {
     authHandler, oauthAuthorizationServerHandler, oauthProtectedResourceHandler, runAuthMigrations,
+    mcpUserinfoFor,
   } = await import('./auth/better-auth.js');
   await runAuthMigrations();
   // Funnel telemetry sits IN FRONT of the auth handler, so it sees the requests
@@ -397,6 +398,32 @@ if (authProviderName() === 'better-auth') {
   // the path and 404 it again.
   app.get('/api/auth/mcp/jwks', (_req, res) => {
     res.type('application/jwk-set+json').json({ keys: [] });
+  });
+
+  // The USERINFO endpoint the discovery documents advertise, which nothing
+  // served either. Same gap as jwks above, with a consequence that is not
+  // cosmetic: ChatGPT's enterprise domain restrictions require OIDC discovery
+  // plus a userinfo response carrying a verified email, and the plugin
+  // submission form reports the feature unavailable without it. The openid and
+  // email scopes were already advertised and already granted; only this route
+  // was missing.
+  //
+  // 401 + WWW-Authenticate on a bad or expired bearer, per OIDC core 5.3.3 and
+  // RFC 6750, so a client knows to refresh rather than to stop. no-store
+  // because these are identity claims about the current holder of a token, and
+  // a cached copy outlives the grant.
+  //
+  // Registered BEFORE the better-auth catch-all, which would otherwise swallow
+  // the path and 404 it again.
+  app.get('/api/auth/mcp/userinfo', async (req, res) => {
+    const claims = await mcpUserinfoFor(req.headers).catch(() => null);
+    if (!claims) {
+      res.setHeader('WWW-Authenticate', 'Bearer error="invalid_token"');
+      res.status(401).json({ error: 'invalid_token' });
+      return;
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(claims);
   });
 
   // CIMD: a client_id that IS an https URL, resolved into a stored client before
@@ -432,6 +459,20 @@ if (authProviderName() === 'better-auth') {
   // these, so putting them behind tenantAuth would be a deadlock.
   app.get('/.well-known/oauth-authorization-server', oauthAuthorizationServerHandler());
   app.get('/.well-known/oauth-protected-resource', oauthProtectedResourceHandler());
+
+  //   /.well-known/openid-configuration (OpenID Connect Discovery 1.0) — the
+  //       SAME document, at the path an OIDC client looks for. Not a second
+  //       document and deliberately not a second handler: better-auth's
+  //       metadata already carries every field OIDC requires — issuer,
+  //       userinfo_endpoint, jwks_uri, subject_types_supported,
+  //       id_token_signing_alg_values_supported: ["RS256"], and the openid and
+  //       email scopes — so the only thing that was ever missing is that a
+  //       consumer looking at the OIDC path found nothing. Aliasing the handler
+  //       rather than writing a document means the two can never disagree.
+  //
+  //       ChatGPT's enterprise domain restrictions read this path; so does any
+  //       IdP-shaped consumer that has never heard of RFC 8414.
+  app.get('/.well-known/openid-configuration', oauthAuthorizationServerHandler());
 
   // The remote MCP endpoint. Mounted HERE, inside the better-auth branch and
   // above every /api gate, for three reasons:
@@ -723,6 +764,41 @@ if (existsSync(STATIC_DIR)) {
   // in util/static-routing.ts — pure, and unit-tested, because the rule it
   // replaces was three lines of endsWith() that quietly applied the SPA shell's
   // no-store to every marketing page as well.
+  /**
+   * Dotfile paths, which the mount below refuses to serve.
+   *
+   * serve-static defaults `dotfiles` to 'ignore', so every path with a
+   * dot-prefixed segment answers 404 through the general mount no matter what
+   * is on disk. That is a sane default and worth keeping: it is what stops a
+   * stray .env or .git in dist/ from being readable. But it also silently
+   * swallows /.well-known, which is where third parties are told by spec to
+   * look for verification tokens.
+   *
+   * Mounting the directory explicitly keeps the default everywhere else: the
+   * mount path is stripped before serve-static sees it, so only files INSIDE
+   * dist/.well-known are reachable and the rest of dist/ keeps ignoring
+   * dotfiles.
+   *
+   * AFTER the two OAuth discovery routes above deliberately — those are
+   * generated per request from the live config and must win over any file that
+   * ever lands on disk under the same name.
+   *
+   * no-store because the file's whole job is to be re-read on demand: the
+   * OpenAI challenge token is rotated by the platform, and a token cached at
+   * the edge outlives the one the form is currently checking for. It is a few
+   * dozen bytes fetched a handful of times.
+   *
+   * The marketing build writes dist/.well-known/openai-apps-challenge when
+   * OPENAI_APPS_CHALLENGE is set (chat-recall-site). Absent that file this
+   * mount serves nothing and falls through, which is why it is safe to leave
+   * mounted in every deployment.
+   */
+  app.use('/.well-known', express.static(resolve(STATIC_DIR, '.well-known'), {
+    dotfiles: 'ignore',
+    index: false,
+    setHeaders: (res) => { res.setHeader('Cache-Control', 'no-store'); },
+  }));
+
   app.use(express.static(STATIC_DIR, {
     setHeaders: (res, filePath) => {
       const value = cacheControlFor(relative(STATIC_DIR, filePath));
