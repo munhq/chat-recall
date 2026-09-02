@@ -1,7 +1,7 @@
 {
   "name": "chat-recall-monorepo",
   "version": "0.4.8",
-  "description": "Memory, secret scanning and code findings across Claude Code, Codex, Gemini CLI, OpenCode, Antigravity and Cursor sessions",
+  "description": "Memory, secret scanning and code findings across the AI coding sessions on your machine",
   "private": true,
   "type": "module",
   "author": "munhq",
