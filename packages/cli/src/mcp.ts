@@ -23,6 +23,9 @@
  */
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { spawn } from 'child_process';
+import { createServer, connect, type Socket, type Server } from 'node:net';
+import { unlinkSync } from 'node:fs';
+import { ensureSocketDir, socketPath, socketPathFromArgv } from './mcp-socket.js';
 import { fileURLToPath } from 'node:url';
 import {
   createMcpServer, setIndexRunner, setEventReporter, setUpdateNotice, setServerVersion,
@@ -256,6 +259,151 @@ function installCrashGuards(): void {
   });
 }
 
+declare const __CLI_VERSION__: string;
+const RELAY_VERSION = typeof __CLI_VERSION__ === 'string' ? __CLI_VERSION__ : '0.0.0';
+
+/** Seconds with no session attached before the daemon exits. 0 keeps it up. */
+function daemonIdleSecs(): number {
+  const raw = process.env.CHAT_RECALL_DAEMON_IDLE_SECS;
+  if (raw === undefined) return 900;
+  const n = Number.parseInt(raw.trim(), 10);
+  return Number.isFinite(n) ? n : 900;
+}
+
+/**
+ * Is something already serving this address?
+ *
+ * The stale check is a connect, never a timestamp or a pid file: the only
+ * question that matters is whether anything answers on that path right now.
+ */
+function addressIsLive(path: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const probe = connect(path);
+    probe.once('connect', () => {
+      probe.destroy();
+      resolve(true);
+    });
+    probe.once('error', () => {
+      probe.destroy();
+      resolve(false);
+    });
+  });
+}
+
+function listen(path: string): Promise<Server | null> {
+  return new Promise((resolve) => {
+    const server = createServer();
+    server.once('error', async (err: NodeJS.ErrnoException) => {
+      if (err.code !== 'EADDRINUSE') return resolve(null);
+      // Either a sibling daemon won the same race honestly — in which case it
+      // serves this profile and there is nothing for us to add — or a previous
+      // daemon died without cleaning up its socket file.
+      if (await addressIsLive(path)) return resolve(null);
+      try {
+        unlinkSync(path);
+      } catch {
+        /* nothing to remove: a named pipe, or another process got there first */
+      }
+      const retry = createServer();
+      retry.once('error', () => resolve(null));
+      retry.listen(path, () => resolve(retry));
+    });
+    server.listen(path, () => resolve(server));
+  });
+}
+
+/**
+ * Serve every session on this profile from one process.
+ *
+ * Each connection gets its own MCP server object — the handshake state and the
+ * request/response pairing are per-client and must not be shared — while the
+ * expensive things behind them are created once: the loaded engine, the
+ * background sync loop, the skills check.
+ *
+ * That last point is a correctness gain, not only a cost one. Background sync
+ * used to run in EVERY session's event loop, with an index lock electing one
+ * writer out of however many were racing. One daemon means one writer by
+ * construction.
+ */
+async function runDaemon(): Promise<boolean> {
+  // The relay that started this process already picked the path and is
+  // waiting on it; its choice wins over anything resolved here. Resolving is
+  // for the case where a person ran `chat-recall-mcp-server --daemon` by hand.
+  let path = socketPathFromArgv(process.argv);
+  if (!path) {
+    try {
+      path = socketPath(ensureSocketDir(), RELAY_VERSION);
+    } catch (err) {
+      // No usable runtime directory means no daemon is possible on this
+      // machine. Say so and leave; sessions serve themselves in-process.
+      console.error(`[mcp] ${(err as Error).message}; sessions will run in-process`);
+      return false;
+    }
+  }
+
+  const server = await listen(path);
+  if (!server) {
+    // Somebody else is serving this profile. Say so, so the caller does NOT go
+    // on to the startup work below: a daemon that lost the race would otherwise
+    // still refresh skills and start a sync loop before exiting, which is the
+    // duplicated work the single-daemon design exists to remove.
+    return false;
+  }
+
+  let live = 0;
+  let idleSince = Date.now();
+
+  server.on('connection', (socket: Socket) => {
+    live += 1;
+    socket.on('close', () => {
+      live -= 1;
+      if (live === 0) idleSince = Date.now();
+    });
+    // A relay that goes away mid-request must not take the daemon with it.
+    socket.on('error', () => { /* the close handler above does the accounting */ });
+
+    void createMcpServer()
+      .connect(new StdioServerTransport(socket, socket))
+      .catch((err) => console.error('[mcp] session failed to start:', err?.message ?? err));
+  });
+
+  console.error(`[mcp] daemon listening on ${path} (v${RELAY_VERSION})`);
+
+  const idleSecs = daemonIdleSecs();
+  if (idleSecs > 0) {
+    const timer = setInterval(() => {
+      if (live > 0) return;
+      if (Date.now() - idleSince < idleSecs * 1000) return;
+      // Stop taking new work first, so a session that arrives during the
+      // wind-down starts a fresh daemon instead of attaching to one that is
+      // leaving.
+      clearInterval(timer);
+      server.close(() => {
+        try {
+          if (process.platform !== 'win32') unlinkSync(path);
+        } catch {
+          /* already gone */
+        }
+        process.exit(0);
+      });
+    }, 5_000);
+    timer.unref();
+  }
+
+  const shutdown = () => {
+    try {
+      server.close();
+      if (process.platform !== 'win32') unlinkSync(path);
+    } catch {
+      /* best effort on the way out */
+    }
+    process.exit(0);
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+  return true;
+}
+
 async function main() {
   installCrashGuards();
   // NOTE on heap bounding: v8.setFlagsFromString('--max-old-space-size=…')
@@ -263,8 +411,14 @@ async function main() {
   // the cap must come from the spawner. `chat-recall init` writes
   // NODE_OPTIONS into the MCP registration for exactly that reason; the
   // in-process defense is the bounded 'changed' sync ticks above.
-  const transport = new StdioServerTransport();
-  await createMcpServer().connect(transport);
+  if (process.argv.includes('--daemon')) {
+    if (!await runDaemon()) return; // another daemon owns this profile
+  } else {
+    // Serving one client over this process's stdio: the path taken when the
+    // daemon is turned off, and the fallback whenever it cannot be reached.
+    const transport = new StdioServerTransport();
+    await createMcpServer().connect(transport);
+  }
 
   // Deliver the chat-recall skills to this machine's AI tools. This is THE
   // delivery hook that works no matter how the MCP was configured — `chat-recall

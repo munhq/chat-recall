@@ -163,6 +163,23 @@ any of it. Secrets are masked client-side before anything leaves the machine.
 }
 ```
 
+`chat-recall-mcp` is a relay, not the server. It finds the background daemon for
+your tool profile, starts one if there is none, and passes bytes to it. Every
+session on a machine therefore shares one loaded engine instead of carrying its
+own: a session costs about 50 MB rather than 87 MB, against a single shared
+daemon, and background sync runs in one process instead of racing a lock in all
+of them. The daemon exits 15 minutes after the last session closes.
+
+Two knobs, both optional:
+
+```bash
+CHAT_RECALL_NO_DAEMON=1          # load the whole server in each session instead
+CHAT_RECALL_DAEMON_IDLE_SECS=0   # keep the daemon resident (default 900)
+```
+
+If the daemon cannot be reached for any reason, the session loads the server
+itself and works exactly as it did before — slower, never broken.
+
 Then install the hooks (one command sets up auto-save, pre-compact backup, and the resume-hint that warns when you're about to redo work):
 
 ```bash
