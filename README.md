@@ -61,6 +61,24 @@ It only touches a config whose tool is on this machine, it never overwrites an e
 /plugin install chat-recall@chat-recall
 ```
 
+Any other MCP client (Claude Desktop, Windsurf, Zed, Cline, or a tool `init` does
+not know) takes the same server as a JSON entry. The bin is `chat-recall-mcp`,
+which is why the package name alone is not enough — `npx -y chat-recall` starts
+the CLI, not the server:
+
+```json
+{
+  "mcpServers": {
+    "chat-recall": {
+      "command": "npx",
+      "args": ["-y", "-p", "chat-recall", "chat-recall-mcp"]
+    }
+  }
+}
+```
+
+The same command as one line, for a `claude mcp add`-style client: `npx -y -p chat-recall chat-recall-mcp`.
+
 Then:
 
 ```bash
