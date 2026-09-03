@@ -1,14 +1,14 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "chat-recall",
-  "description": "One searchable history across every AI coding tool you use: Claude Code, Codex, Gemini CLI, OpenCode, Antigravity and Cursor. The agent recalls past work, a scanner flags secrets pasted into old sessions, and code findings become ranked tasks — all over MCP.",
+  "description": "Turn what your AI coding tools already write into shared team knowledge, leaked-secret alerts, ranked code findings and tracked tasks. Every coding agent keeps a full transcript of its work and nothing reads it: chat-recall indexes Claude Code, Codex, Gemini CLI, OpenCode, Antigravity and Cursor sessions into one place, redacts secrets on the way, and serves the result to your agent over MCP. Free and self-hosted, or hosted.",
   "owner": {
     "name": "munhq"
   },
   "plugins": [
     {
       "name": "chat-recall",
-      "description": "Skills that teach any agent to resume prior sessions, search past work, recall decisions and read project history across all your AI coding tools. Bundles the chat-recall MCP server so install wires everything in one step.",
+      "description": "Skills that teach any agent to use chat-recall: recall a decision and why it was made, find credentials pasted into past sessions, rank what is worth fixing in a repository, and track it on a shared board. Bundles the MCP server so install wires everything in one step.",
       "author": {
         "name": "munhq"
       },
