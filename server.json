@@ -6,12 +6,12 @@
     "url": "https://github.com/munhq/chat-recall",
     "source": "github"
   },
-  "version": "0.6.0",
+  "version": "0.6.1",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "chat-recall",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "transport": {
         "type": "stdio"
       },
@@ -25,7 +25,7 @@
         },
         {
           "name": "CHAT_RECALL_MCP_PROFILE",
-          "description": "Which tools to register: \"lean\" (default, 27 tools — tool choice degrades as the list grows) or \"full\" (all 61 tools, plus recall_help — a directory of the rest). Every tool works when called by name either way.",
+          "description": "Which tools to register: \"lean\" (default, 27 tools \u2014 tool choice degrades as the list grows) or \"full\" (all 61 tools, plus recall_help \u2014 a directory of the rest). Every tool works when called by name either way.",
           "isRequired": false,
           "isSecret": false,
           "format": "string",
@@ -37,7 +37,7 @@
         },
         {
           "name": "CHAT_RECALL_NO_DAEMON",
-          "description": "Set to 1 to load the whole server inside each session. By default every session with the same profile and server shares one background daemon, and each session is a thin relay onto it — the engine is loaded once per machine instead of once per session. Turn it off for a sandbox with no writable runtime directory.",
+          "description": "Set to 1 to load the whole server inside each session. By default every session with the same profile and server shares one background daemon, and each session is a thin relay onto it \u2014 the engine is loaded once per machine instead of once per session. Turn it off for a sandbox with no writable runtime directory.",
           "isRequired": false,
           "isSecret": false,
           "format": "string"
