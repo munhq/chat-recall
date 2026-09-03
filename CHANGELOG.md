@@ -4,6 +4,38 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-09-03
+
+### Added
+- **Two skills, so security and the task board are reachable by name.** Six
+  skills shipped and all of them were recall-shaped; the four security tools and
+  the five task tools were reachable only through the hub, whose description
+  leads with "recall past AI-coding work" — the wrong scent for "did I paste an
+  API key". `chat-recall-security` owns the scan-rotate-dismiss loop and says not
+  to mark a finding `rotated` on the user's behalf. `chat-recall-tasks` owns the
+  board and states the evidence the server actually enforces: `in_progress` is
+  refused without a linked session id, `done` without a diff or commits.
+  62 tools, 0 named in no skill; the 12 still hub-only are index and maintenance
+  plumbing, which is the hub's job.
+
+### Fixed
+- **`recall_recommendation_apply` and `recall_recommendation_dismiss` were in no
+  focused skill.** `chat-recall-project` already carried `recall_recommendations`,
+  so it could find what to fix and neither apply nor dismiss it.
+- **OpenID Connect: the discovery document advertised an algorithm we never sign
+  with.** better-auth publishes `id_token_signing_alg_values_supported: ["RS256"]`
+  while `/mcp/token` signs the id_token with an HMAC key generated per request
+  and discarded. Nothing could verify that token, and a client fetching
+  `jwks_uri` for the RSA key found an empty set. It now advertises HS256, the
+  algorithm actually used — which also makes the empty JWK Set correct rather
+  than a wart, since a symmetric algorithm has no public half to publish.
+
+### Changed
+- **Every published description named only the memory.** Memory is 12 of the 62
+  tools; the secret scanner and the code findings are most of the rest. The
+  registry line, the Glama listing, both npm packages, both plugin marketplace
+  manifests and the MCP server's own description now name all three.
+
 ## [0.5.32] — 2026-09-01
 
 ### Fixed
