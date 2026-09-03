@@ -6,11 +6,11 @@ description: >-
   user says "continue" / "pick up where we left off", "did we decide X",
   "remember when we…", "what was I doing", "what do you know about this
   project/me", or otherwise references earlier work that is not in the current
-  context. Also the entry point for the surfaces no focused skill owns: leaked
-  secrets ("did I paste an API key"), the shared task board and team activity
-  ("what are my open tasks", "what is my team working on"), the ranked findings
-  views ("what should I fix next", "what should I tell Claude about this repo"),
-  and index health ("is chat-recall working", "re-index my sessions"). This is the hub: it routes
+  context. Also the entry point for the surfaces no focused skill owns: team
+  activity ("what is my team working on"), the ranked findings views ("what
+  should I fix next", "what should I tell Claude about this repo"), and index
+  health ("is chat-recall working", "re-index my sessions"). Leaked secrets go
+  to chat-recall-security and the task board to chat-recall-tasks. This is the hub: it routes
   to the focused chat-recall skills and lists every recall_* tool. Reach for it
   whenever the answer lives in PAST work rather than the files in front of you.
 ---
@@ -62,9 +62,11 @@ Match the intent, then read that skill and follow its workflow:
 | Store or recall a decision / fact; "what do you know about…", "did we decide…" | `chat-recall-memory` |
 | The state of a project — "what's been happening in X", cost, findings | `chat-recall-project` |
 | What changed — edits, diffs, commits; "what was I doing 2h ago" | `chat-recall-changes` |
+| Leaked secrets — "did I paste an API key", "what should I rotate" | `chat-recall-security` |
+| The shared task board — open tasks, claiming, closing, what auto-files | `chat-recall-tasks` |
 
-Leaked secrets, the shared task board, team activity and index health have no
-focused skill — use the catalog below directly.
+Team activity and index health have no focused skill — use the catalog below
+directly.
 
 ## Tool catalog
 

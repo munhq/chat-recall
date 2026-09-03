@@ -57,6 +57,22 @@ diary conclusions, and cost. Accepts a path, a name substring, or a project id
 - The two partition the same engines — an item is in one list or the other,
   never both — so acting on both cannot duplicate work.
 
+### Acting on a recommendation
+
+Finding advice and answering it are the same job, so both verbs live here.
+
+- `mcp__chat-recall__recall_recommendation_apply` — apply one: add its rule to
+  the repo's CLAUDE.md, or set the label it asks for. A CLAUDE.md rule needs no
+  permission — it is additive, visible in the diff, and one line the user can
+  delete. DO ask first for anything that changes what the AI is allowed to do
+  destructively.
+- `mcp__chat-recall__recall_recommendation_dismiss` — say no for THIS project,
+  with a reason: a reuse rule on a repo that is deliberately duplicated per
+  environment, a label on a scratch project. It stops being offered for that
+  project and no other. TELL THE USER what you dismissed and why — this changes
+  how future sessions treat their codebase, and a reason nobody sees is a
+  decision nobody can revisit.
+
 ## Tasks and team (shared, not personal notes)
 
 **Working the board out loud.** When you take work from here, say so: that you are
@@ -117,5 +133,7 @@ asks, not to tidy up on their behalf.
    Add `create_tasks: true` to `recall_improvements` ONLY when the user asks for
    the work to be tracked — it writes to the shared board.
 4. "What are my/our open tasks" → `recall_tasks`; "what is the team doing" →
-   `recall_team_activity`.
+   `recall_team_activity`. To CLAIM, close, comment on or re-scope a card, see
+   [chat-recall-tasks] — claiming and closing both have required evidence.
+5. Leaked secrets found in this project's history → [chat-recall-security].
 5. Ground answers in what you found (session ids, finding ids); don't invent status.
