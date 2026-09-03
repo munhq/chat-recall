@@ -825,6 +825,15 @@ export interface SessionMetadataResponse {
   userTitle?: string | null;
   /** Native title from the originating tool (Claude ai-title, OpenCode title…). */
   toolTitle?: string | null;
+  /** The project this session ran in, as the producer reported it (hashed
+   *  unless the user synced with --paths-cleartext).
+   *
+   *  It lives on the memory_metadata ROW, not in extra_json, so the response
+   *  built by computeMetadataResponse never carried it and this endpoint
+   *  answered without it. recall_smart_resume renders "**Project:**
+   *  (unknown)" in that case, which is how a resume dossier came back telling
+   *  the user it had no idea which repository the work was in. */
+  projectPath?: string;
 }
 
 /**
@@ -844,6 +853,10 @@ export async function getSessionMetadata(sessionId: string): Promise<SessionMeta
         extra._contentPreview = meta.content_preview || meta.title || '';
         extra._title = meta.title || '';
         const response = computeMetadataResponse(extra);
+        // The project path is a COLUMN, not part of extra_json, so it has to be
+        // attached here or the response simply lacks it. Every other reader in
+        // this file already reads item.project_path; this one did not.
+        if (meta.project_path) response.projectPath = meta.project_path;
         // Attach the synced AI summary (computeMetadataResponse doesn't know
         // about it — it lives in the metadata cache, populated by sync ingest).
         // This is what recall_summary / recall_smart_resume read.
