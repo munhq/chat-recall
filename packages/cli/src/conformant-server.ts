@@ -29,6 +29,24 @@ export interface RecordedRequest {
   path: string;
   /** Parsed JSON body, when there was one. */
   body?: unknown;
+  /** When the request arrived, and when this stub finished answering it.
+   *  A test that cares about ORDER needs both: two POSTs can arrive in the
+   *  right order and still be answered in the wrong one. */
+  at?: number;
+  doneAt?: number;
+}
+
+export interface ConformantServerOptions {
+  /**
+   * Hold an /api/sync upload open for this many ms before answering.
+   *
+   * A stub that answers instantly cannot distinguish "B was queued after A"
+   * from "B was queued after A LANDED", and the collector's uploads are pooled
+   * and concurrent — so an ordering bug passes against a fast stub every time.
+   * `pick` chooses which uploads to delay from the parsed body.
+   */
+  delayMs?: number;
+  delayWhen?: (body: Record<string, unknown>) => boolean;
 }
 
 export interface ConformantServer {
@@ -57,7 +75,7 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   try { return JSON.parse(raw.toString('utf8')); } catch { return raw.toString('utf8'); }
 }
 
-export async function startConformantServer(): Promise<ConformantServer> {
+export async function startConformantServer(opts: ConformantServerOptions = {}): Promise<ConformantServer> {
   const requests: RecordedRequest[] = [];
   const conversations: Array<Record<string, unknown>> = [];
 
@@ -65,9 +83,11 @@ export async function startConformantServer(): Promise<ConformantServer> {
     void (async () => {
       const path = (req.url || '').split('?')[0];
       const body = await readBody(req);
-      requests.push({ method: req.method || 'GET', path, body });
+      const record: RecordedRequest = { method: req.method || 'GET', path, body, at: Date.now() };
+      requests.push(record);
 
       const json = (status: number, payload: unknown): void => {
+        record.doneAt = Date.now();
         res.writeHead(status, { 'content-type': 'application/json' });
         res.end(JSON.stringify(payload));
       };
@@ -107,6 +127,9 @@ export async function startConformantServer(): Promise<ConformantServer> {
         case '/api/sync': {
           const b = body as { conversations?: Array<Record<string, unknown>>; fields?: unknown[] } | undefined;
           if (Array.isArray(b?.conversations)) conversations.push(...b.conversations);
+          if (opts.delayMs && (!opts.delayWhen || opts.delayWhen((body || {}) as Record<string, unknown>))) {
+            await new Promise((r) => setTimeout(r, opts.delayMs));
+          }
           // `cli: null` so the collector never tries to self-update from a stub.
           return json(200, { accepted: b?.conversations?.length ?? 0, full_resync_needed: [], cli: null, telemetry: false });
         }

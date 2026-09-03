@@ -1377,7 +1377,15 @@ const refs = listAvailableBackends().flatMap((b) => {
   // POST (e.g. one session's findings — the server replaces a session's
   // findings wholesale, so splitting a session across two batches would
   // lose the first half).
-  const makeBatcher = (field: string, maxItems: number, flatten = false, onFlush?: (rows: any[]) => void) => {
+  // `barrier` runs before this batcher's POST is queued, and is how a batch that
+  // DEPENDS on another batch having landed gets that guarantee. submit() does
+  // not await the request — it awaits a free pool slot and returns with the POST
+  // still in flight — so draining A before B only orders the enqueue, never the
+  // arrival.
+  const makeBatcher = (
+    field: string, maxItems: number, flatten = false,
+    onFlush?: (rows: any[]) => void, barrier?: () => Promise<void>,
+  ) => {
     let batch: any[] = [];
     let batchBytes = 0;
     return {
@@ -1395,6 +1403,9 @@ const refs = listAvailableBackends().flatMap((b) => {
       },
       async drain(): Promise<void> {
         if (batch.length === 0) return;
+        // Before the rows are handed to the pool, not after: once submitted they
+        // race everything already in flight.
+        if (barrier) await barrier();
         const rows = flatten ? batch.flat() : batch;
         const bytes = batchBytes;
         batch = [];
@@ -1514,7 +1525,26 @@ const refs = listAvailableBackends().flatMap((b) => {
   const kgTripleBatch = makeBatcher('kg_triples', 1000);
   // Secret findings ship per-session as a GROUP (flatten=true) — the server
   // replaces a session's findings wholesale, so they must land in one POST.
-  const findingsBatch = makeBatcher('findings', 200, true);
+  //
+  // The barrier is load-bearing, and it is a SILENT DATA-LOSS fix. The server
+  // drops a finding whose session has no row yet (routes/sync.ts) — deliberately,
+  // because secret_findings carries a restrictive author_visibility policy and
+  // the insert would 42501 and fail the whole ingest. It logs and continues.
+  //
+  // Findings and session rows travel in separate batches, and submit() returns
+  // with the POST still in flight, so on a session's FIRST sync the finding
+  // could arrive before the session existed and be discarded. Sync is
+  // watermark-based, so that session is rarely shipped again: the one session
+  // where a key was pasted is exactly the one whose finding is lost, for good,
+  // and the security view then answers "no leaked secrets detected".
+  //
+  // Reproduced by running the same fixture twice: first run "1 secret findings
+  // sent" and the server holds 0; second run, session already present, the
+  // server holds 1.
+  //
+  // The barrier also covers the mid-walk flush at the 200 cap, which the
+  // end-of-run drain order could not.
+  const findingsBatch = makeBatcher('findings', 200, true, undefined, () => drainInflight());
   // External detectors (gitleaks/trufflehog) are OPT-IN and default OFF:
   // isSecretScannerAvailable() returns false unless CHAT_RECALL_EXTERNAL_SCANNERS
   // is set AND a binary is on PATH. Resolved once (each check spawns `which`).
