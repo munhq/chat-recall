@@ -49,6 +49,33 @@ const encode = (p) => p.replace(/\//g, '-');
  */
 const SESSIONS = [
   {
+    // THE CREDENTIAL FIXTURE. The security view and the "did I paste an API key"
+    // test case both answer from a finding, and with no finding they answer
+    // "none detected" — which reads as a broken scanner rather than a clean
+    // account, and is a failed test case in review.
+    //
+    // The key is AWS's own documentation example (AKIAIOSFODNN7EXAMPLE). It
+    // matches the AKIA detector in secret-redactor.ts, so a finding is raised,
+    // and it has never been a live credential anywhere, so the liveness check
+    // reports it DEAD. That is the honest demo: a finding a reviewer can see,
+    // graded exactly as a stale key should be. NEVER replace this with a real
+    // or once-real key to make the demo look better.
+    id: 'aa11bb22-cc33-4d44-8e55-f66600000007',
+    project: '/home/user/code/storefront',
+    hoursAgo: 9,
+    model: 'claude-sonnet-4-5',
+    turns: [
+      ['user', 'The nightly export box cannot reach S3. Here is the config it is using, tell me what is wrong:\n\nAWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\nAWS_REGION=eu-west-3\nS3_BUCKET=storefront-exports'],
+      ['assistant', 'Two problems. The bucket is in eu-west-1, not eu-west-3, so every call signs for the wrong region. And you just pasted a live-looking access key id into this conversation: rotate it and load it from the environment instead of the config file. I changed the region and moved the credential lookup to process.env in `scripts/export.ts`.'],
+      ['user', 'Rotated. Keep the env lookup.'],
+      ['assistant', 'Done. `scripts/export.ts` reads AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY from the environment, and the config file no longer carries either.'],
+    ],
+    edits: [
+      { file: '/home/user/code/storefront/scripts/export.ts', old: "const region = 'eu-west-3';", new: "const region = 'eu-west-1';" },
+      { file: '/home/user/code/storefront/scripts/export.ts', old: "const keyId = cfg.AWS_ACCESS_KEY_ID;", new: "const keyId = process.env.AWS_ACCESS_KEY_ID;" },
+    ],
+  },
+  {
     id: 'aa11bb22-cc33-4d44-8e55-f66600000001',
     project: '/home/user/code/example-app',
     hoursAgo: 3,
@@ -266,6 +293,44 @@ try {
     ['packages/cli/dist/cli.js', 'sync', '--paths-cleartext'],
     { env, encoding: 'utf-8' });
   console.log(out.split('\n').filter(Boolean).slice(-8).join('\n'));
+  // THE TASK BOARD. Sessions alone leave it empty, and an empty board is a
+  // failed test case: "What are my open tasks?" is both a submitted test case
+  // and a starter prompt on the ChatGPT listing, and both answer "nothing" on a
+  // board with no cards — which reads as a broken feature rather than a tidy
+  // team.
+  //
+  // Created through the REAL endpoint (POST /api/tasks) for the same reason the
+  // sessions go through the real sync: a fixture written straight into the table
+  // stops resembling what the product produces the moment the shape changes.
+  //
+  // Idempotent by title: re-running the seeder must not pile up duplicates, and
+  // the endpoint only dedupes on linkedFindingId, which these have no reason to
+  // carry.
+  const TASKS = [
+    { title: 'Rotate the export box AWS key and move it out of the config file',
+      description: 'The nightly export config carried an access key id in cleartext. Key rotated; the loader now reads it from the environment. Close once the old key is confirmed revoked.' },
+    { title: 'Backfill the plus-sign email fix into the invite path',
+      description: 'login.ts and reset.ts both encode the address now. The invite acceptance route was not checked and probably has the same bug.' },
+    { title: 'Decide the retention window for storefront export artifacts',
+      description: 'Exports accumulate in the bucket with no lifecycle rule. Needs a number before the next billing review.' },
+  ];
+  const existing = await fetch(`${SERVER}/api/tasks`, { headers: { authorization: `Bearer ${TOKEN}` } })
+    .then((r) => (r.ok ? r.json() : { tasks: [] }))
+    .then((d) => new Set((d.tasks ?? []).map((t) => t.title)))
+    .catch(() => new Set());
+  let made = 0;
+  for (const t of TASKS) {
+    if (existing.has(t.title)) continue;
+    const r = await fetch(`${SERVER}/api/tasks`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ ...t, projectId: 'path:/home/user/code/storefront' }),
+    });
+    if (!r.ok) { console.error(`task "${t.title.slice(0, 40)}…" failed: HTTP ${r.status}`); continue; }
+    made += 1;
+  }
+  console.log(`task board: ${made} created, ${TASKS.length - made} already present`);
+
   console.log(`\nseeded ${SERVER}`);
 } finally {
   rmSync(ROOT, { recursive: true, force: true });
