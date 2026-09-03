@@ -59,9 +59,6 @@ jobs:
           curl -fsSL https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz \
             | tar -xz mcp-publisher
 
-      - name: Login (GitHub Actions OIDC)
-        run: ./mcp-publisher login github-oidc
-
       # The registry VALIDATES that the npm version in server.json already
       # exists. release-npm has now finished, but `npm publish` returning is not
       # the same as the registry serving it — npm says so itself ("your package
@@ -81,6 +78,16 @@ jobs:
           done
           echo "npm never served $VERSION after 15 minutes" >&2
           exit 1
+
+      # AFTER the wait, not before it. The registry JWT is short-lived, and the
+      # wait above is allowed to run for fifteen minutes: on v0.6.1 npm took
+      # twelve, and by the time publish ran the token minted before the wait was
+      # dead — `401 Invalid or expired Registry JWT token: token is expired`.
+      # Nothing was wrong with the credentials or the manifest, so the failure
+      # read as a registry problem rather than an ordering one. Minting the
+      # token last means its lifetime covers only the publish it authorises.
+      - name: Login (GitHub Actions OIDC)
+        run: ./mcp-publisher login github-oidc
 
       # From the repo root, where server.json lives. The manifest's versions
       # must match the npm release — release-npm.yml guards that pairing.
