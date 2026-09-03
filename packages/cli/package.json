@@ -9,7 +9,7 @@
   "bugs": {
     "url": "https://github.com/munhq/chat-recall/issues"
   },
-  "description": "One searchable history across every AI coding tool \u2014 indexes the sessions those tools already write, redacts secrets, then serves memory, secret scanning and code findings to your agent over MCP.",
+  "description": "Shared team knowledge, leaked-secret alerts, ranked code findings and tracked tasks, across every AI coding tool you use",
   "keywords": [
     "mcp",
     "mcp-server",
@@ -20,12 +20,21 @@
     "opencode",
     "antigravity",
     "cursor",
-    "agent-memory",
     "ai-agents",
-    "memory",
-    "semantic-search",
+    "llm",
     "developer-tools",
-    "llm"
+    "secret-scanning",
+    "secret-detection",
+    "leaked-credentials",
+    "security",
+    "code-review",
+    "code-quality",
+    "static-analysis",
+    "task-tracking",
+    "team-knowledge",
+    "knowledge-graph",
+    "agent-memory",
+    "semantic-search"
   ],
   "type": "module",
   "engines": {

@@ -12,19 +12,28 @@
 
 **[chatrecall.dev](https://chatrecall.dev)** · [How it works](https://chatrecall.dev/how-it-works/) · [MCP tools](https://chatrecall.dev/mcp/) · [Pricing](https://chatrecall.dev/pricing/) · [Self-host](https://chatrecall.dev/self-hosting/) · [Security](https://chatrecall.dev/security/)
 
-> Memory, secret scanning and code findings across every AI coding tool you use. They all share a single searchable history — and the agent works it itself.
+> Turn what your AI coding tools already write into shared team knowledge, leaked-secret alerts, ranked code findings and tracked tasks.
 
-Your coding agents each keep their own transcripts, in their own format, in their own directory, and none of them can read another's. `chat-recall` indexes all of them into one place, redacts secrets on the way, and exposes the result to your agent through **61 MCP tools**.
+**Your agents wrote it all down. Nobody read it.**
 
-Memory is the foundation, not the whole product. One index, read three ways:
+Every coding agent you run keeps a full transcript of its work: the decisions, the
+reasoning, the keys somebody pasted, the problems it found and never filed. Each one
+writes to its own directory in its own format, none can read another's, and nothing
+reads any of them. `chat-recall` does, through **61 MCP tools**.
 
 | | What it does | Tools |
 |---|---|---|
-| **Recall** | Resume a session, search what you actually typed, read the diffs and commits it produced, recall a decision and why it was made | 37 |
-| **Security** | Flag credentials pasted into past conversations, per session, and track each one until it is rotated or dismissed | 4 |
-| **Code findings** | Rank what is worth fixing in a project and turn it into actionable tasks, with code intelligence over the repo itself | 12 |
+| **Shared AI knowledge** | Decisions, conventions and project facts one agent learned, available to every other agent and every teammate. Time-aware, so a superseded decision reads as superseded | 16 |
+| **Security findings** | Credentials pasted into past conversations, flagged per session, checked for whether they still work, and tracked until rotated or dismissed | 4 |
+| **Automated code improvements** | Ranks what is actually worth fixing in a repository, then applies or dismisses each recommendation, with code intelligence over the repo itself | 9 |
+| **Task tracking** | A shared board fed by those findings, with rules per repository, so a finding becomes work instead of a report | 5 |
 
-That cross-tool part is the point. A single tool's built-in history stops at its own boundary; this does not.
+Underneath all four is one index of every session your tools already wrote, and 28
+more tools to search, replay and diff it. That index is the mechanism. It is not
+the pitch, and it is not why anyone buys this.
+
+The cross-tool part is what makes it work. A single tool's built-in history stops at
+its own boundary. This does not, and neither does your team.
 
 ## See it work
 
