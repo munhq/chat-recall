@@ -43,10 +43,15 @@ const OUT_CSS = resolve(CLIENT, 'src/fonts.css');
 // The exact weights the design system uses. Adding a weight here without using
 // it ships bytes nobody renders; using one that is not here silently synthesises
 // a fake bold, which looks subtly wrong and is hard to attribute later.
+// Archivo is a VARIABLE font on both axes, which is why the parser below reads
+// a weight RANGE and a font-stretch. It is the marketing site's display voice:
+// chatrecall.dev sets its sheet titles in Archivo at ~84-88% width, which is a
+// single axis position rather than a second file.
 const QUERY =
   'family=Martian+Mono:wght@500;700' +
   '&family=Hanken+Grotesk:wght@400;500;600;700' +
   '&family=JetBrains+Mono:wght@400;500;600' +
+  '&family=Archivo:wdth,wght@62..125,400..900' +
   '&display=swap';
 
 const KEEP_SUBSETS = new Set(['latin', 'latin-ext']);
@@ -79,13 +84,20 @@ async function main() {
     if (!KEEP_SUBSETS.has(subset)) { skipped++; continue; }
 
     const family = /font-family:\s*'([^']+)'/.exec(block)?.[1];
-    const weight = /font-weight:\s*(\d+)/.exec(block)?.[1];
+    // A variable font declares a RANGE ("400 900"); a static one a single value.
+    // Both are valid font-weight, so keep whatever Google wrote and only
+    // normalise it for the filename.
+    const weight = /font-weight:\s*([\d\s]+?)\s*;/.exec(block)?.[1];
+    const stretch = /font-stretch:\s*([^;]+);/.exec(block)?.[1];
     const style = /font-style:\s*(\w+)/.exec(block)?.[1] || 'normal';
     const url = /src:\s*url\(([^)]+)\)/.exec(block)?.[1];
     const range = /unicode-range:\s*([^;]+);/.exec(block)?.[1];
     if (!family || !weight || !url) throw new Error(`incomplete @font-face block for subset ${subset}`);
 
-    const name = `${slug(family)}-${weight}-${subset}.woff2`;
+    // "400 900" is not a filename. A variable face is one file per subset, so
+    // it is named for the axis rather than for a weight it does not have.
+    const wSlug = /\s/.test(weight) ? 'var' : weight;
+    const name = `${slug(family)}-${wSlug}-${subset}.woff2`;
     const dest = resolve(FONT_DIR, name);
     if (!existsSync(dest)) {
       const font = await fetch(url, { headers: { 'user-agent': UA } });
@@ -98,6 +110,7 @@ async function main() {
       `  font-family: '${family}';\n` +
       `  font-style: ${style};\n` +
       `  font-weight: ${weight};\n` +
+      (stretch ? `  font-stretch: ${stretch};\n` : '') +
       // swap: show fallback text immediately and restyle when the font lands.
       // The alternative blocks first paint on a font download, which is a blank
       // page on a slow connection.
