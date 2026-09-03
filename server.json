@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.munhq/chat-recall",
-  "description": "Memory, secret scanning and code findings across every AI coding tool",
+  "description": "Shared team knowledge, leaked-secret alerts, ranked code findings and tracked tasks, across every AI coding tool you use",
   "repository": {
     "url": "https://github.com/munhq/chat-recall",
     "source": "github"
@@ -25,7 +25,7 @@
         },
         {
           "name": "CHAT_RECALL_MCP_PROFILE",
-          "description": "Which tools to register: \"lean\" (default, 27 tools \u2014 tool choice degrades as the list grows) or \"full\" (all 61 tools, plus recall_help \u2014 a directory of the rest). Every tool works when called by name either way.",
+          "description": "Which tools to register: \"lean\" (default, 27 tools \u2014 tool choice degrades as the list grows) or \"full\" (all 61 tools, plus recall_help \u2014 a directory of the rest; 4 code-intelligence tools register only with the codeindex companion on PATH). Every tool works when called by name either way.",
           "isRequired": false,
           "isSecret": false,
           "format": "string",
