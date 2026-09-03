@@ -1,6 +1,6 @@
 {
   "name": "chat-recall",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/munhq/chat-recall.git"
@@ -9,7 +9,7 @@
   "bugs": {
     "url": "https://github.com/munhq/chat-recall/issues"
   },
-  "description": "One searchable history across every AI coding tool — indexes the sessions those tools already write, redacts secrets, then serves memory, secret scanning and code findings to your agent over MCP.",
+  "description": "One searchable history across every AI coding tool \u2014 indexes the sessions those tools already write, redacts secrets, then serves memory, secret scanning and code findings to your agent over MCP.",
   "keywords": [
     "mcp",
     "mcp-server",
