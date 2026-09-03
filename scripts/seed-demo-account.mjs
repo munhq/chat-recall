@@ -76,6 +76,46 @@ const SESSIONS = [
     ],
   },
   {
+    // OAUTH, TWICE, WITH DIFFERENT ENDINGS. "Find my past sessions about OAuth
+    // and tell me which ones actually shipped" is a submitted test case, and the
+    // account had no OAuth session at all — the search correctly returned
+    // nothing and the answer read as an empty product. Two sessions, because the
+    // question is comparative: one that finished and one that did not, so the
+    // answer can distinguish them instead of reporting a single row.
+    id: 'aa11bb22-cc33-4d44-8e55-f66600000008',
+    project: '/home/user/code/dashboard',
+    hoursAgo: 20,
+    model: 'claude-sonnet-4-5',
+    turns: [
+      ['user', 'Add OAuth login to the dashboard. Google and GitHub, and it has to work alongside the existing email and password sign-in.'],
+      ['assistant', 'Added both providers behind a single callback route. `src/auth/oauth.ts` holds the provider config, `src/auth/callback.ts` exchanges the code and links the account to an existing email user when the addresses match, and the sign-in page now renders the two buttons above the password form.'],
+      ['user', 'What happens when someone signs in with Google using an address that already has a password account?'],
+      ['assistant', 'It links rather than duplicates: the callback looks the address up first and attaches the provider identity to the existing user. A social sign-in also marks the address verified, which the trial grant reads. Both paths are covered in `src/auth/oauth.test.ts`.'],
+      ['user', 'Tested it with my own account, works. Ship it.'],
+      ['assistant', 'Merged. Google and GitHub sign-in are live on the dashboard, account linking is by verified email, and the password path is unchanged.'],
+    ],
+    edits: [
+      { file: '/home/user/code/dashboard/src/auth/oauth.ts', old: 'export const providers = [];', new: "export const providers = ['google', 'github'];" },
+      { file: '/home/user/code/dashboard/src/auth/callback.ts', old: 'const user = await createUser(profile);', new: 'const user = await findByEmail(profile.email) ?? await createUser(profile);' },
+      { file: '/home/user/code/dashboard/src/pages/sign-in.tsx', old: '<PasswordForm />', new: '<OAuthButtons />\n<PasswordForm />' },
+    ],
+  },
+  {
+    id: 'aa11bb22-cc33-4d44-8e55-f66600000009',
+    project: '/home/user/code/storefront',
+    hoursAgo: 62,
+    model: 'claude-sonnet-4-5',
+    turns: [
+      ['user', 'Do the same OAuth login for the storefront.'],
+      ['assistant', 'Started the same shape: provider config in `src/auth/oauth.ts` and a callback route. The storefront keeps its sessions in a signed cookie rather than the dashboard\'s server-side table, so the callback cannot reuse the dashboard\'s account-linking code as it stands.'],
+      ['user', 'Leave it for now, I need to think about the cookie change.'],
+      ['assistant', 'Stopped there. The provider config is in place and unused; nothing is wired into the sign-in page, so the storefront login is unchanged and this is safe to leave uncommitted.'],
+    ],
+    edits: [
+      { file: '/home/user/code/storefront/src/auth/oauth.ts', old: 'export const providers = [];', new: "export const providers = ['google'];" },
+    ],
+  },
+  {
     id: 'aa11bb22-cc33-4d44-8e55-f66600000001',
     project: '/home/user/code/example-app',
     hoursAgo: 3,
