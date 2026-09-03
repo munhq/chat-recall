@@ -313,23 +313,65 @@ try {
       description: 'login.ts and reset.ts both encode the address now. The invite acceptance route was not checked and probably has the same bug.' },
     { title: 'Decide the retention window for storefront export artifacts',
       description: 'Exports accumulate in the bucket with no lifecycle rule. Needs a number before the next billing review.' },
+    { title: 'Add a regression test for the missing-config CLI error',
+      projectId: 'path:/home/user/code/checkout',
+      description: 'The abandoned session left a test asserting the error names the config path and carries no stack frame, but the clean-error handling itself was never implemented and nothing was committed.' },
+    { title: 'Rate-limit the dashboard export endpoint',
+      projectId: 'path:/home/user/code/dashboard',
+      description: 'The sliding-window limiter covers the API key path only. The export endpoint is anonymous and unthrottled.' },
   ];
-  const existing = await fetch(`${SERVER}/api/tasks`, { headers: { authorization: `Bearer ${TOKEN}` } })
+  // ASSIGNED TO THE DEMO USER, NOT LEFT UNASSIGNED. "What are my open tasks?"
+  // is a submitted test case and a starter prompt, and a model reading the word
+  // "my" passes mine:true to recall_tasks — which filters on assignee and
+  // returns nothing for an unassigned board. The tool was right and the board
+  // was wrong: three cards existed and ChatGPT answered "you have no open
+  // tasks". Seen in the demo before the recording, which is the only reason it
+  // was caught.
+  // The caller's own sub, read back from a task rather than from a whoami
+  // endpoint — there isn't one on this API, and a card reports `createdBy`,
+  // which IS the authenticated caller. So the first card created (or any card
+  // already on the board) tells us who to assign to.
+  const existingTasks = await fetch(`${SERVER}/api/tasks`, { headers: { authorization: `Bearer ${TOKEN}` } })
     .then((r) => (r.ok ? r.json() : { tasks: [] }))
-    .then((d) => new Set((d.tasks ?? []).map((t) => t.title)))
-    .catch(() => new Set());
-  let made = 0;
+    .then((d) => new Map((d.tasks ?? []).map((t) => [t.title, t])))
+    .catch(() => new Map());
+  let me = [...existingTasks.values()].map((t) => t.createdBy).find(Boolean) ?? null;
+  let made = 0; let fixed = 0;
   for (const t of TASKS) {
-    if (existing.has(t.title)) continue;
+    const already = existingTasks.get(t.title);
+    if (already) {
+      // Backfill the assignee on a board seeded before this change.
+      if (me && !already.assigneeSub) {
+        const r = await fetch(`${SERVER}/api/tasks/${already.id}`, {
+          method: 'PATCH',
+          headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ assigneeSub: me }),
+        });
+        if (r.ok) fixed += 1;
+      }
+      continue;
+    }
     const r = await fetch(`${SERVER}/api/tasks`, {
       method: 'POST',
       headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ ...t, projectId: 'path:/home/user/code/storefront' }),
+      body: JSON.stringify({ ...t, projectId: t.projectId ?? 'path:/home/user/code/storefront', assigneeSub: me }),
     });
     if (!r.ok) { console.error(`task "${t.title.slice(0, 40)}…" failed: HTTP ${r.status}`); continue; }
+    const card = (await r.json().catch(() => ({}))).task;
     made += 1;
+    // First card on an empty board: it just told us who the caller is, so every
+    // later card in this run can be assigned at creation time.
+    if (!me && card?.createdBy) {
+      me = card.createdBy;
+      const back = await fetch(`${SERVER}/api/tasks/${card.id}`, {
+        method: 'PATCH',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ assigneeSub: me }),
+      });
+      if (back.ok) fixed += 1;
+    }
   }
-  console.log(`task board: ${made} created, ${TASKS.length - made} already present`);
+  console.log(`task board: ${made} created, ${TASKS.length - made} already present${fixed ? `, ${fixed} assignee(s) backfilled` : ''}`);
 
   console.log(`\nseeded ${SERVER}`);
 } finally {
