@@ -162,7 +162,7 @@ export default function TrialBanner({
 const CSS = `
 .cr-trialbanner {
   display: flex; align-items: center; gap: 10px;
-  padding: 9px 12px; margin: 0 0 12px; border-radius: var(--cr-radius-md, 8px);
+  padding: 9px 12px; margin: 0 0 12px; border-radius: var(--cr-radius-md);
   border: 1px solid var(--cr-line-2);
   background: var(--cr-ink-1);
   color: var(--cr-fg-1);

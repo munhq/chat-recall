@@ -74,7 +74,7 @@ export default function SyncRules() {
 
   if (state === 'loading') return <div style={{ color: 'var(--cr-fg-3)', fontSize: 13 }}>Loading rules…</div>;
 
-  const cap: React.CSSProperties = { fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--cr-fg-3)' };
+  const cap: React.CSSProperties = { fontSize: 12, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--cr-fg-3)' };
 
   return (
     <div style={{ fontSize: 13 }}>
@@ -85,10 +85,10 @@ export default function SyncRules() {
       </div>
       <div style={{
         color: 'var(--cr-fg-2)', fontSize: 12.5, lineHeight: 1.5, marginBottom: 14,
-        padding: '9px 12px', borderRadius: 'var(--cr-radius-md, 8px)',
+        padding: '9px 12px', borderRadius: 'var(--cr-radius-md)',
         border: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-1)',
       }}>
-        🔒 Personal folders — Pictures, Music, Movies, Documents, Desktop, Downloads — are
+        Personal folders — Pictures, Music, Movies, Documents, Desktop, Downloads — are
         <strong> never indexed by default</strong>. To include a project that lives in one, run
         <code> chat-recall include project &lt;path&gt;</code> on that machine.
       </div>
@@ -98,8 +98,8 @@ export default function SyncRules() {
           so they get an explicit prompt rather than an easily-missed checkbox. */}
       {sources.filter((x) => x.decision === 'pending' && !approvedSources.includes(x.id)).length > 0 && (
         <div style={{
-          margin: '0 0 16px', padding: '12px 14px', borderRadius: 'var(--cr-radius-md, 8px)',
-          border: '1px solid var(--cr-warn-500, #c98a00)', background: 'var(--cr-ink-1)',
+          margin: '0 0 16px', padding: '12px 14px', borderRadius: 'var(--cr-radius-md)',
+          border: '1px solid var(--cr-warn-500)', background: 'var(--cr-ink-1)',
         }}>
           <div style={{ fontWeight: 700, color: 'var(--cr-fg-1)', marginBottom: 6 }}>
             New transcript folders found — not syncing yet
@@ -119,7 +119,7 @@ export default function SyncRules() {
                   <span style={{ fontFamily: 'var(--cr-font-mono)', fontSize: 12.5, color: 'var(--cr-fg-1)', wordBreak: 'break-all' }}>
                     {src.path}
                   </span>
-                  <span style={{ display: 'block', color: 'var(--cr-fg-3)', fontSize: 11.5, marginTop: 2 }}>
+                  <span style={{ display: 'block', color: 'var(--cr-fg-3)', fontSize: 12.5, marginTop: 2 }}>
                     {TOOL_LABELS[src.tool] || src.tool}
                     {src.device ? ` · ${src.device}` : ''}
                     {src.sessions > 0 ? ` · ${src.sessions} session${src.sessions === 1 ? '' : 's'}` : ''}
@@ -132,13 +132,13 @@ export default function SyncRules() {
                 </Button>
                 <button
                   onClick={() => setExcludedSources((prev) => [...new Set([...prev, src.id])])}
-                  style={{ background: 'transparent', border: '1px solid var(--cr-line-1)', color: 'var(--cr-fg-2)', padding: '6px 12px', borderRadius: 4, cursor: 'pointer' }}
+                  style={{ background: 'transparent', border: '1px solid var(--cr-line-1)', color: 'var(--cr-fg-2)', padding: '6px 12px', borderRadius: 0, cursor: 'pointer' }}
                 >
                   Keep out
                 </button>
               </div>
             ))}
-          <div style={{ fontSize: 11.5, color: 'var(--cr-fg-3)', marginTop: 10, lineHeight: 1.5 }}>
+          <div style={{ fontSize: 12.5, color: 'var(--cr-fg-3)', marginTop: 10, lineHeight: 1.5 }}>
             Applies on that machine's next sync. Same thing from a terminal:
             <code style={{ marginLeft: 4 }}>chat-recall sources</code>
             <br />
@@ -170,7 +170,7 @@ export default function SyncRules() {
                   key={`${src.device || ''}|${src.id}`}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
-                    padding: '8px 10px', borderRadius: 'var(--cr-radius-md, 8px)',
+                    padding: '8px 10px', borderRadius: 'var(--cr-radius-md)',
                     border: '1px solid var(--cr-line-1)',
                     background: off ? 'transparent' : 'var(--cr-ink-1)',
                     opacity: off ? 0.6 : 1,
@@ -187,7 +187,7 @@ export default function SyncRules() {
                       fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-1)',
                       wordBreak: 'break-all', fontSize: 12.5,
                     }}>{src.path}</span>
-                    <span style={{ display: 'block', color: 'var(--cr-fg-3)', fontSize: 11.5, marginTop: 2 }}>
+                    <span style={{ display: 'block', color: 'var(--cr-fg-3)', fontSize: 12.5, marginTop: 2 }}>
                       {TOOL_LABELS[src.tool] || src.tool}
                       {src.device ? ` · ${src.device}` : ''}
                       {/* OpenCode keeps sessions in a SQLite file, so a row count
@@ -231,7 +231,7 @@ export default function SyncRules() {
         rows={4}
         style={{
           width: '100%', marginTop: 8, font: 'inherit', fontSize: 12.5, padding: '8px 10px',
-          borderRadius: 'var(--cr-radius-md, 8px)', border: '1px solid var(--cr-line-2)',
+          borderRadius: 'var(--cr-radius-md)', border: '1px solid var(--cr-line-2)',
           background: 'var(--cr-ink-0)', color: 'var(--cr-fg-1)', resize: 'vertical',
         }}
       />
@@ -239,7 +239,7 @@ export default function SyncRules() {
       {err && <div style={{ color: 'var(--cr-err-500)', marginTop: 8 }}>{err}</div>}
       <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
         <Button variant="primary" onClick={save} disabled={state === 'saving'}>
-          {state === 'saving' ? 'Saving…' : state === 'saved' ? 'Saved ✓' : 'Save rules'}
+          {state === 'saving' ? 'Saving…' : state === 'saved' ? 'Saved' : 'Save rules'}
         </Button>
       </div>
     </div>

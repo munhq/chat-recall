@@ -185,7 +185,7 @@ export default function SettingsDialog({ open, onClose, variant = 'modal' }: Pro
     : {
         width: 'min(880px, 100%)', maxHeight: '92dvh', overflowY: 'auto',
         background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-1)',
-        borderRadius: 'var(--cr-radius-lg)', padding: 24, color: 'var(--cr-fg-1)',
+        borderRadius: 0, padding: 24, color: 'var(--cr-fg-1)',
       };
 
   return (
@@ -674,7 +674,7 @@ function SourcesCard({ value, onChange }: { value: SourceSettings; onChange: (v:
   };
   const groupRow = <K extends keyof SourcesEnabled>(label: string, group: K, fields: Array<keyof SourcesEnabled[K]>) => (
     <div key={String(group)} style={{ marginBottom: 12 }}>
-      <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase',
+      <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase',
         marginBottom: 6, color: 'var(--cr-fg-3)' }}>{label}</div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
         {fields.map((f) => {
@@ -682,7 +682,7 @@ function SourcesCard({ value, onChange }: { value: SourceSettings; onChange: (v:
           return (
             <label key={String(f)} style={{
               display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px',
-              borderRadius: 999, fontSize: 12, cursor: 'pointer',
+              borderRadius: 0, fontSize: 12, cursor: 'pointer',
               background: on ? 'var(--cr-brand-surf)' : 'var(--cr-ink-1)',
               border: `1px solid ${on ? 'var(--cr-brand-line)' : 'var(--cr-line-1)'}`,
             }}>
@@ -808,7 +808,7 @@ function SyncCard({
       hint="Upload redacted session data to a chat-recall server (SaaS or self-host). Raw chat content is redacted before it leaves the device; disable Raw archives if you only want derived summaries.">
       <Fields>
         <BoolRow label="Enable sync"
-          help="Master switch. Off ⇒ nothing leaves the device, ever."
+          help="Master switch. If it is off, nothing leaves the device, ever."
           checked={value.enabled} onChange={(b) => onChange({ ...value, enabled: b })} />
         {value.enabled && !privacy.redactIndex && (
           <Banner kind="error">Index redaction is OFF. Turn it on in Privacy before enabling Sync.</Banner>
@@ -821,7 +821,7 @@ function SyncCard({
           value={value.tokenRef ?? ''} placeholder="CHAT_RECALL_SYNC_TOKEN"
           onChange={(v) => onChange({ ...value, tokenRef: v || undefined })} />
 
-        <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase',
+        <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase',
           marginTop: 8, marginBottom: 4, color: 'var(--cr-fg-3)' }}>What leaves the device</div>
         <BoolRow label="Findings (redacted previews of detected secrets)"
           help="Preview is masked tail, never the raw secret."
@@ -839,7 +839,7 @@ function SyncCard({
           help="Rules are configured in the dashboard and fetched by each collector."
           checked={value.upload.customRules} onChange={(b) => setUpload('customRules', b)} />
 
-        <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase',
+        <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase',
           marginTop: 8, marginBottom: 4, color: 'var(--cr-fg-3)' }}>Exclusions</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
           {tools.map(t => {
@@ -847,9 +847,9 @@ function SyncCard({
             return (
               <label key={t} style={{
                 display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px',
-                borderRadius: 999, fontSize: 12, cursor: 'pointer',
-                background: on ? 'var(--cr-warn-surf, var(--cr-ink-1))' : 'var(--cr-ink-1)',
-                border: `1px solid ${on ? 'var(--cr-warn-line, var(--cr-line-1))' : 'var(--cr-line-1)'}`,
+                borderRadius: 0, fontSize: 12, cursor: 'pointer',
+                background: on ? 'var(--cr-warn-surf)' : 'var(--cr-ink-1)',
+                border: `1px solid ${on ? 'var(--cr-warn-line)' : 'var(--cr-line-1)'}`,
               }}>
                 <input type="checkbox" checked={on}
                   onChange={(e) => onChange({
@@ -896,7 +896,7 @@ function BoolRow({
       <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} style={{ marginTop: 3 }} />
       <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         <span style={{ fontSize: 13, fontWeight: 500 }}>{label}</span>
-        {help && <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>{help}</span>}
+        {help && <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{help}</span>}
       </span>
     </label>
   );
@@ -908,8 +908,8 @@ function BoolRow({
 function Card({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
   return (
     <section style={{
-      background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)',
-      borderRadius: 'var(--cr-radius-md)', padding: 20, marginBottom: 16,
+      background: 'var(--cr-ink-0)', border: 'var(--cr-frame-w) solid var(--cr-frame)',
+      borderRadius: 0, padding: 20, marginBottom: 16,
     }}>
       <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, marginBottom: 4 }}>{title}</h3>
       {hint && <p style={{ margin: 0, marginBottom: 16, fontSize: 12, color: 'var(--cr-fg-3)' }}>{hint}</p>}
@@ -944,7 +944,7 @@ function ChoiceGroup({
     <div style={{ marginTop: 12 }}>
       {title && (
         <div style={{
-          fontSize: 11, fontWeight: 600, letterSpacing: 0.5,
+          fontSize: 12, fontWeight: 600, letterSpacing: 0.5,
           textTransform: 'uppercase', marginBottom: 6,
           color: accent === 'ok' ? 'var(--cr-ok-500)' : 'var(--cr-fg-3)',
         }}>{title}</div>
@@ -959,7 +959,7 @@ function ChoiceGroup({
               data-selected={sel}
               style={{
                 display: 'flex', alignItems: 'center', gap: 10,
-                padding: '8px 12px', borderRadius: 6, cursor: 'pointer',
+                padding: '8px 12px', borderRadius: 0, cursor: 'pointer',
                 background: sel ? 'var(--cr-brand-surf)' : 'transparent',
                 border: `1px solid ${sel ? 'var(--cr-brand-line)' : 'var(--cr-line-1)'}`,
                 opacity: muted ? 0.55 : 1,
@@ -974,7 +974,7 @@ function ChoiceGroup({
                 <span style={{ fontSize: 13, fontWeight: 500 }}>{c.label}</span>
                 {c.hint && (
                   <span style={{
-                    fontSize: 11, color: 'var(--cr-fg-3)',
+                    fontSize: 12, color: 'var(--cr-fg-3)',
                     fontFamily: c.hint.includes('-') || c.hint.includes('_') || c.hint.includes('"')
                       ? 'var(--cr-font-mono, ui-monospace, monospace)' : undefined,
                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -983,13 +983,13 @@ function ChoiceGroup({
               </span>
               {c.detected === true && (
                 <span style={{
-                  fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 3,
+                  fontSize: 12, fontWeight: 600, padding: '2px 6px', borderRadius: 0,
                   background: 'var(--cr-ok-surf)', color: 'var(--cr-ok-500)',
-                }}>✓ detected</span>
+                }}>detected</span>
               )}
               {c.detected === false && (
                 <span style={{
-                  fontSize: 10, padding: '2px 6px', borderRadius: 3,
+                  fontSize: 12, padding: '2px 6px', borderRadius: 0,
                   background: 'var(--cr-ink-2)', color: 'var(--cr-fg-3)',
                 }}>install required</span>
               )}
@@ -1050,7 +1050,7 @@ function ProviderRadio<P extends string>({
             data-selected={sel}
             style={{
               display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px',
-              borderRadius: 6, cursor: 'pointer',
+              borderRadius: 0, cursor: 'pointer',
               background: sel ? 'var(--cr-brand-surf)' : 'transparent',
               border: `1px solid ${sel ? 'var(--cr-brand-line)' : 'var(--cr-line-1)'}`,
             }}
@@ -1064,7 +1064,7 @@ function ProviderRadio<P extends string>({
             <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
               <span style={{ fontSize: 13, fontWeight: 500 }}>{hint?.label || p}</span>
               {hint?.requires && (
-                <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>Requires: {hint.requires}</span>
+                <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>Requires: {hint.requires}</span>
               )}
             </span>
           </label>
@@ -1093,7 +1093,7 @@ function TextField(props: { label: string; value: string; onChange: (v: string) 
         onChange={(e) => props.onChange(e.target.value)}
         style={inputStyle}
       />
-      {props.help && <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>{props.help}</span>}
+      {props.help && <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{props.help}</span>}
     </div>
   );
 }
@@ -1180,8 +1180,8 @@ function ModelField(props: {
           {loading ? '…' : 'Load models'}
         </button>
       </div>
-      {models.length > 0 && <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>{models.length} models — pick or type</span>}
-      {err && <span style={{ fontSize: 11, color: 'var(--cr-warn-500)' }}>{err}</span>}
+      {models.length > 0 && <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{models.length} models — pick or type</span>}
+      {err && <span style={{ fontSize: 12, color: 'var(--cr-warn-500)' }}>{err}</span>}
     </div>
   );
 }
@@ -1190,12 +1190,12 @@ function StatusBadge({ ok, message }: { ok: boolean; message: string }) {
   return (
     <div style={{
       display: 'inline-flex', alignItems: 'center', gap: 6,
-      padding: '4px 8px', borderRadius: 4, fontSize: 11,
+      padding: '4px 8px', borderRadius: 0, fontSize: 12,
       background: ok ? 'var(--cr-ok-surf)' : 'var(--cr-warn-surf)',
       color: ok ? 'var(--cr-ok-500)' : 'var(--cr-warn-500)',
       width: 'fit-content',
     }}>
-      <span>{ok ? '✓' : '⚠'}</span> {message}
+      <Icon name={ok ? 'check' : 'zap'} size={13} /> {message}
     </div>
   );
 }
@@ -1204,8 +1204,8 @@ function TestResultLine({ result }: { result: TestResult }) {
   return (
     <div style={{ fontSize: 12, color: result.ok ? 'var(--cr-ok-500)' : 'var(--cr-warn-500)' }}>
       {result.ok
-        ? <>✓ Connected{result.dimension ? ` (dim ${result.dimension})` : ''}{result.note ? ` — ${result.note}` : ''}{result.version ? ` — ${result.version}` : ''}</>
-        : <>✗ {result.error || 'Failed'}</>}
+        ? <>Connected{result.dimension ? ` (dim ${result.dimension})` : ''}{result.note ? ` — ${result.note}` : ''}{result.version ? ` — ${result.version}` : ''}</>
+        : <>{result.error || 'Failed'}</>}
     </div>
   );
 }
@@ -1213,7 +1213,7 @@ function TestResultLine({ result }: { result: TestResult }) {
 function Banner({ kind, children }: { kind: 'ok' | 'error'; children: React.ReactNode }) {
   return (
     <div style={{
-      padding: '10px 12px', marginBottom: 14, borderRadius: 6, fontSize: 12,
+      padding: '10px 12px', marginBottom: 14, borderRadius: 0, fontSize: 12,
       background: kind === 'ok' ? 'var(--cr-ok-surf)' : 'var(--cr-warn-surf)',
       color: kind === 'ok' ? 'var(--cr-ok-500)' : 'var(--cr-warn-500)',
       border: `1px solid ${kind === 'ok' ? 'var(--cr-ok-line)' : 'var(--cr-warn-line)'}`,
@@ -1226,7 +1226,7 @@ function Banner({ kind, children }: { kind: 'ok' | 'error'; children: React.Reac
 const inputStyle: React.CSSProperties = {
   background: 'var(--cr-ink-0)',
   border: '1px solid var(--cr-line-1)',
-  borderRadius: 4,
+  borderRadius: 0,
   padding: '6px 10px',
   fontSize: 13,
   color: 'var(--cr-fg-1)',

@@ -226,7 +226,7 @@ const CSS = `
 .cr-lic-serialwrap { display: flex; flex-direction: column; gap: 10px; padding: 16px;
   border-radius: var(--cr-radius-md); background: var(--cr-ink-0);
   border: 1px solid var(--cr-line-1); }
-.cr-lic-label { font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase;
+.cr-lic-label { font-size: 12.5px; letter-spacing: 0.07em; text-transform: uppercase;
   color: var(--cr-fg-3); }
 .cr-lic-serial { font-family: var(--cr-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: clamp(16px, 3.4vw, 21px); font-weight: 600; letter-spacing: 0.06em;
@@ -243,7 +243,7 @@ const CSS = `
 .cr-lic-step { flex: none; width: 20px; height: 20px; border-radius: var(--cr-radius-xs);
   display: inline-flex; align-items: center; justify-content: center;
   background: var(--cr-ink-2); border: 1px solid var(--cr-line-1);
-  font-size: 11px; color: var(--cr-fg-2); font-variant-numeric: tabular-nums; }
+  font-size: 12px; color: var(--cr-fg-2); font-variant-numeric: tabular-nums; }
 .cr-lic-steps strong { display: block; font-size: 13px; font-weight: 600; color: var(--cr-fg-1);
   margin-bottom: 5px; }
 .cr-lic-steps p { margin: 6px 0 0; font-size: 12px; line-height: 1.55; color: var(--cr-fg-3);

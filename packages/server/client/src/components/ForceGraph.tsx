@@ -204,7 +204,7 @@ export default function ForceGraph({
   };
 
   const btn = {
-    background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 6,
+    background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 0,
     color: 'var(--cr-fg-2)', cursor: 'pointer', width: 26, height: 24, fontSize: 13,
   } as React.CSSProperties;
 
@@ -223,7 +223,7 @@ export default function ForceGraph({
         /* aspectRatio + height:auto, NOT a fixed height: with a fixed 520px box
          * the viewBox scales to the narrow width and letterboxes ~283px of dead
          * space on a phone. maxHeight keeps the desktop size unchanged. */
-        style={{ maxWidth: '100%', width: '100%', height: 'auto', aspectRatio: `${W} / ${H}`, maxHeight: H, background: 'var(--cr-ink-1)', borderRadius: 8, cursor: grabbing ? 'grabbing' : 'grab', touchAction: 'pan-y', userSelect: 'none' }}
+        style={{ maxWidth: '100%', width: '100%', height: 'auto', aspectRatio: `${W} / ${H}`, maxHeight: H, background: 'var(--cr-ink-1)', borderRadius: 0, cursor: grabbing ? 'grabbing' : 'grab', touchAction: 'pan-y', userSelect: 'none' }}
         onWheel={onWheel} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onCancel} onPointerLeave={onUp}
       >
         <g transform={`translate(${view.x} ${view.y}) scale(${view.k})`}>

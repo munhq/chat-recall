@@ -11,7 +11,7 @@
  */
 
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
-import { Card, Chip, SegmentedControl, Button, Icon } from './primitives';
+import { Chip, SegmentedControl, Button, Icon, Plate, Plates, Schedule, Metrics } from './primitives';
 import { summaryTitle } from '../utils/clean';
 import { useUrlState } from '../services/url-state';
 import CodeExplorer, { DependencyMap, PRI_CHIP, PRI_LABEL } from './CodeExplorer';
@@ -121,7 +121,7 @@ function ProjectHeader({ projectName, code, onBack }: { projectName: string; cod
   return (
     <div style={{ padding: '16px 24px 12px', flexShrink: 0 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <button onClick={onBack} title="Back to overview" style={{ background: 'none', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-sm)', color: 'var(--cr-fg-2)', cursor: 'pointer', padding: '4px 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
+        <button onClick={onBack} title="Back to overview" style={{ background: 'none', border: '1px solid var(--cr-line-1)', borderRadius: 0, color: 'var(--cr-fg-2)', cursor: 'pointer', padding: '4px 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12 }}>
           <Icon name="chevronLeft" size={14} /> Overview
         </button>
         <Icon name="folder" size={18} />
@@ -129,10 +129,10 @@ function ProjectHeader({ projectName, code, onBack }: { projectName: string; cod
         {/* Project label switch — drives the safety suggestions in "Do next" */}
         {code.project && (
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }} title="Classify this project so the AI gets the right guardrails">
-            <span style={{ color: 'var(--cr-fg-3)', fontSize: 11 }}>label:</span>
+            <span style={{ color: 'var(--cr-fg-3)', fontSize: 12 }}>label:</span>
             {PROJECT_LABELS.map((l) => (
               <button key={l.value} onClick={() => setLabel(l.value)} disabled={labelBusy} title={l.hint}
-                className="cr-pill" style={{ cursor: labelBusy ? 'wait' : 'pointer', borderRadius: 999, padding: '3px 10px', fontSize: 11, border: '1px solid var(--cr-line-1)',
+                className="cr-pill" style={{ cursor: labelBusy ? 'wait' : 'pointer', borderRadius: 0, padding: '3px 10px', fontSize: 12, border: '1px solid var(--cr-line-1)',
                   background: current === l.value ? 'var(--cr-brand-500)' : 'transparent',
                   color: current === l.value ? '#fff' : 'var(--cr-fg-2)' }}>{l.label}</button>
             ))}
@@ -143,13 +143,13 @@ function ProjectHeader({ projectName, code, onBack }: { projectName: string; cod
           {score != null && (
             <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 4 }}>
               <span style={{ fontFamily: 'var(--cr-font-display)', fontSize: 20, fontWeight: 700, color: tone, lineHeight: 1 }}>{score}</span>
-              <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>/100 health</span>
+              <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>/100 health</span>
             </span>
           )}
           {h && h.critical > 0 && <Chip kind="err" size="sm">{h.critical} critical</Chip>}
           {h && h.hotspots > 0 && <Chip kind="warn" size="sm">{h.hotspots} hotspots</Chip>}
           {b && b.totalSessions > 0 && <Chip kind={b.failedOrAbandoned / b.totalSessions >= 0.3 ? 'err' : 'neutral'} size="sm">{b.totalSessions} sessions · {b.failedOrAbandoned} unresolved</Chip>}
-          {code.project && <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>indexed {fmtAgo(code.project.lastIndexedAt)}</span>}
+          {code.project && <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>indexed {fmtAgo(code.project.lastIndexedAt)}</span>}
         </div>
       </div>
     </div>
@@ -158,13 +158,27 @@ function ProjectHeader({ projectName, code, onBack }: { projectName: string; cod
 
 type ChipKind = 'neutral' | 'mono' | 'brand' | 'ok' | 'warn' | 'err' | 'info';
 
+/**
+ * A section HEADING, not an eyebrow.
+ *
+ * "DO NEXT" / "UNDERSTAND" / "JUMP BACK IN" were set at 12px in the display
+ * face with 0.16em tracking, uppercase, above a plate that already carried its
+ * own header — an uppercase label above a heading, three times on one screen.
+ * The heading now carries itself: grotesk, sentence case, at heading scale,
+ * with the qualifier beside it instead of underneath.
+ */
 function SectionTitle({ title, hint, action, actionLabel }: { title: string; hint?: string; action?: () => void; actionLabel?: string }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
-      <span style={{ fontFamily: 'var(--cr-font-display)', fontSize: 11, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--cr-fg-2)' }}>
-        {title}{hint ? <span style={{ color: 'var(--cr-fg-3)', marginLeft: 8, textTransform: 'none', letterSpacing: 0, fontSize: 12 }}>{hint}</span> : null}
-      </span>
-      {action ? <button onClick={action} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12 }}>{actionLabel || 'view all →'}</button> : null}
+    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap', marginBottom: 10 }}>
+      <h3 style={{ margin: 0 }}>
+        {title}
+        {hint ? <span style={{ color: 'var(--cr-fg-3)', marginLeft: 10, fontFamily: 'var(--cr-font-sans)', fontWeight: 400, fontSize: 12.5, letterSpacing: 0 }}>{hint}</span> : null}
+      </h3>
+      {action ? (
+        <button onClick={action} className="cr-annot cr-annot-red" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          {actionLabel || 'view all'} <Icon name="arrowRight" size={12} />
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -191,31 +205,53 @@ function StructureSummary({ map, onJump }: { map: CodeProject['map']; onJump: (l
   const nGods = map.coupling?.god_modules?.length ?? map.buckets?.god_modules?.length ?? 0;
   const nCycles = map.buckets?.cycles?.length ?? 0;
   const nIslands = map.coupling?.islands?.length ?? map.buckets?.islands?.length ?? 0;
-  const rowStyle: React.CSSProperties = { display: 'flex', width: '100%', alignItems: 'center', gap: 8, padding: '4px 6px', background: 'none', border: 'none', borderRadius: 4, cursor: 'pointer', textAlign: 'left' };
   return (
     <div style={{ marginBottom: 10 }}>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: gods.length || cycles.length ? 8 : 0 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: gods.length || cycles.length ? 10 : 0 }}>
         <Chip kind="mono" size="sm">{map.nodes.length} pkgs</Chip>
         <Chip kind="mono" size="sm">{map.edges.length} imports</Chip>
         {nGods > 0 && <Chip kind="err" size="sm">{nGods} god-module{nGods > 1 ? 's' : ''}</Chip>}
         {nCycles > 0 && <Chip kind="err" size="sm">{nCycles} cycle{nCycles > 1 ? 's' : ''}</Chip>}
         {nIslands > 0 && <Chip kind="neutral" size="sm">{nIslands} island{nIslands > 1 ? 's' : ''}</Chip>}
       </div>
-      {gods.map((g) => (
-        <button key={g.file} onClick={() => onJump('code')} style={{ ...rowStyle, color: 'var(--cr-fg-1)' }}
-          title={`${g.file} — high fan-in AND fan-out (god module). Big blast radius; change carefully. Open Code lens.`}>
-          <span style={{ width: 6, height: 6, borderRadius: 999, background: 'var(--cr-err-500)', flexShrink: 0 }} />
-          <span className="mono" style={{ flex: 1, minWidth: 0, fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{base(g.file)}</span>
-          {g.fanIn != null && <span style={{ fontSize: 11, color: 'var(--cr-fg-3)', whiteSpace: 'nowrap' }}>in {g.fanIn} / out {g.fanOut}</span>}
-        </button>
-      ))}
-      {cycles.map((c, i) => (
-        <button key={`cyc${i}`} onClick={() => onJump('code')} style={{ ...rowStyle, color: 'var(--cr-fg-2)' }}
-          title="Circular dependency — these modules import each other. Break the cycle to decouple. Open Code lens.">
-          <span style={{ color: 'var(--cr-err-500)', flexShrink: 0, fontSize: 13, lineHeight: 1 }}>⟳</span>
-          <span className="mono" style={{ flex: 1, minWidth: 0, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.map(base).join(' → ')}</span>
-        </button>
-      ))}
+      {(gods.length > 0 || cycles.length > 0) && (
+        <Schedule
+          cols={[
+            { key: 'what', kind: 'pn', head: 'Load-bearing' },
+            { key: 'fan', kind: 'val', head: 'Fan in / out' },
+          ]}
+          rows={[
+            ...gods.map((g) => ({
+              id: g.file,
+              onSelect: () => onJump('code'),
+              cells: {
+                what: (
+                  <>
+                    <span className="mono" style={{ fontSize: 12.5 }}>{base(g.file)}</span>
+                    <span className="pn-sub">god module — high fan-in and fan-out, so a big blast radius</span>
+                  </>
+                ),
+                fan: g.fanIn != null
+                  ? <span style={{ color: 'var(--cr-err-500)' }}>{g.fanIn} / {g.fanOut}</span>
+                  : <span className="val-q">—</span>,
+              },
+            })),
+            ...cycles.map((c, i) => ({
+              id: `cyc${i}`,
+              onSelect: () => onJump('code'),
+              cells: {
+                what: (
+                  <>
+                    <span className="mono" style={{ fontSize: 12.5, whiteSpace: 'normal' }}>{c.map(base).join(' to ')}</span>
+                    <span className="pn-sub">circular dependency — these modules import each other</span>
+                  </>
+                ),
+                fan: <span className="val-q">cycle</span>,
+              },
+            })),
+          ]}
+        />
+      )}
     </div>
   );
 }
@@ -250,36 +286,40 @@ function MissionControl({ canonicalId, kgEntity, toolFilter, code, onJump, onOpe
           ranked takeaway (what's load-bearing / what stack) so the graph beneath
           illustrates rather than carries the meaning. */}
       <section>
-        <SectionTitle title="Understand" hint="what's load-bearing · what it's built with" />
-        {/* min(380px,100%) not 380px: this pane is 327px wide on a phone, and a
-          * bare 380px track cannot shrink, so it overflowed by 53px. */}
-        <div style={{ display: 'grid', gridTemplateColumns: hasGraph ? 'repeat(auto-fit,minmax(min(380px,100%),1fr))' : 'minmax(0,1fr)', gap: 16 }}>
-          {hasGraph && (
-            <Card style={{ padding: 12 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <strong style={{ fontSize: 12 }}>Structure <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400 }}>coupling &amp; risk</span></strong>
-                <button onClick={() => onJump('code')} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12 }}>full map →</button>
+        <SectionTitle title="Understand" hint="what is load-bearing, and what it is built with" />
+        {hasGraph ? (
+          <Plates cols={2}>
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+                <span className="cr-plate-t">Structure <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400, fontSize: 12.5 }}>coupling and risk</span></span>
+                <button onClick={() => onJump('code')} className="cr-annot cr-annot-red" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>full map <Icon name="arrowRight" size={12} /></button>
               </div>
               <StructureSummary map={project!.map} onJump={onJump} />
-              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', margin: '2px 0 6px' }}>dot size = symbols · lines = imports · scroll to zoom, drag to pan</div>
+              <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', margin: '8px 0 6px' }}>Dot size is symbols, lines are imports. Scroll to zoom, drag to pan.</div>
               <DependencyMap map={project!.map} />
-            </Card>
-          )}
-          <Card style={{ padding: 12 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-              <strong style={{ fontSize: 12 }}>Decisions &amp; stack <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400 }}>from your sessions</span></strong>
-              <button onClick={() => onJump('knowledge')} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12 }}>explore →</button>
             </div>
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+                <span className="cr-plate-t">Decisions and stack <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400, fontSize: 12.5 }}>from your sessions</span></span>
+                <button onClick={() => onJump('knowledge')} className="cr-annot cr-annot-red" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>explore <Icon name="arrowRight" size={12} /></button>
+              </div>
+              <StackStrip langs={project?.langs} />
+              <KnowledgeGraph entity={kgEntity} embedded />
+            </div>
+          </Plates>
+        ) : (
+          <Plate title={<>Decisions and stack <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400, fontSize: 12.5 }}>from your sessions</span></>}
+            tools={<button onClick={() => onJump('knowledge')} className="cr-annot cr-annot-red" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center', gap: 5 }}>explore <Icon name="arrowRight" size={12} /></button>}>
             <StackStrip langs={project?.langs} />
             <KnowledgeGraph entity={kgEntity} embedded />
-          </Card>
-        </div>
+          </Plate>
+        )}
       </section>
 
       {/* 3 — JUMP BACK IN: a short shortcut to recent work, distinct from the full
           Conversations archive (read/search) and the Activity timeline (edits). */}
       <section>
-        <SectionTitle title="Jump back in" hint="pick up where you left off" action={() => onJump('conversations')} actionLabel="all conversations →" />
+        <SectionTitle title="Jump back in" hint="pick up where you left off" action={() => onJump('conversations')} actionLabel="all conversations" />
         <ProjectHistory projectId={canonicalId} toolFilter={toolFilter} onOpenSession={onOpenSession} />
       </section>
     </div>
@@ -309,19 +349,21 @@ function DoNext({ recs, actions, projectId, hasCode, onReload }: { recs: CodeRec
   const shown = showAll ? items : items.slice(0, 7);
   return (
     <>
-      <SectionTitle title="Do next" hint="fixes, rules & tasks — ranked, one action each" />
-      <Card style={{ padding: 6 }}>
+      <SectionTitle title="Do next" hint="fixes, rules and tasks, ranked, one action each" />
+      <Plate
+        flush
+        caption={items.length > 7
+          ? <button onClick={() => setShowAll(!showAll)} className="cr-annot cr-annot-red" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>{showAll ? 'show less' : `show all ${items.length}`}</button>
+          : undefined}
+      >
         {items.length === 0 ? (
           <div style={{ padding: 16, color: 'var(--cr-fg-3)', fontSize: 13 }}>
-            {hasCode ? 'Nothing queued — clean signals.' : <>This repo isn’t code-indexed yet. The watch daemon picks it up as you work, or run <code>chat-recall code index</code>.</>}
+            {hasCode ? 'Nothing queued — clean signals.' : <>This repo is not code-indexed yet. The watch daemon picks it up as you work, or run <code>chat-recall code index</code>.</>}
           </div>
         ) : (
-          <>
-            {shown.map((it) => <DoNextRow key={it.id} item={it} projectId={projectId} onReload={onReload} />)}
-            {items.length > 7 && <button onClick={() => setShowAll(!showAll)} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12, padding: '8px 10px' }}>{showAll ? 'show less' : `show all ${items.length} →`}</button>}
-          </>
+          shown.map((it) => <DoNextRow key={it.id} item={it} projectId={projectId} onReload={onReload} />)
         )}
-      </Card>
+      </Plate>
     </>
   );
 }
@@ -372,10 +414,10 @@ function DoNextRow({ item, projectId, onReload }: { item: DoItem; projectId: str
           ? <Button variant="primary" onClick={apply} disabled={busy}>{busy ? 'applying…' : item.rec!.kind === 'rule' ? 'Apply to CLAUDE.md' : item.rec!.kind === 'label' ? 'Apply label' : item.rec!.kind === 'skill' ? 'Install skill' : 'Apply'}</Button>
           : <Button variant="primary" onClick={copy}>{copied ? 'copied ✓' : 'Copy prompt'}</Button>}
         {!isRec && <Button variant="ghost" onClick={done} disabled={busy}>Done</Button>}
-        {expandText && <button onClick={() => setOpen(!open)} title="Show detail" style={{ background: 'none', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-sm)', color: 'var(--cr-fg-2)', cursor: 'pointer', padding: '2px 7px', fontSize: 12 }}>{open ? '−' : '⌄'}</button>}
+        {expandText && <button onClick={() => setOpen(!open)} title="Show detail" style={{ background: 'none', border: '1px solid var(--cr-line-1)', borderRadius: 0, color: 'var(--cr-fg-2)', cursor: 'pointer', padding: '2px 7px', fontSize: 12 }}>{open ? '−' : '⌄'}</button>}
       </div>
       {item.detail && <div style={{ color: 'var(--cr-fg-2)', fontSize: 12, marginTop: 4 }}>{item.detail}</div>}
-      {open && expandText && <pre style={{ background: 'var(--cr-ink-2, #0d1117)', border: '1px solid var(--cr-line-1)', borderRadius: 6, padding: 10, fontSize: 11, whiteSpace: 'pre-wrap', fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-1)', marginTop: 6 }}>{expandText}</pre>}
+      {open && expandText && <pre style={{ background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-2)', borderRadius: 0, padding: 10, fontSize: 12, whiteSpace: 'pre-wrap', fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-1)', marginTop: 6 }}>{expandText}</pre>}
       {msg && <span style={{ fontSize: 12, color: err ? 'var(--cr-err-500)' : 'var(--cr-fg-2)', marginLeft: 4 }}>{msg}</span>}
     </div>
   );
@@ -394,13 +436,37 @@ function ProjectHistory({ projectId, toolFilter, onOpenSession }: { projectId: s
       .then((p) => { if (on) { setSessions(p.sessions); setTotal(p.total); setLoading(false); } });
     return () => { on = false; };
   }, [projectId, toolFilter]);
-  if (loading) return <Card style={{ padding: 16, color: 'var(--cr-fg-3)' }}>Loading…</Card>;
-  if (!sessions.length) return <Card style={{ padding: 16, color: 'var(--cr-fg-3)', fontSize: 13 }}>No recorded sessions for this project.</Card>;
+  if (loading) return <Plate><span style={{ color: 'var(--cr-fg-3)' }}>Loading…</span></Plate>;
   return (
-    <Card style={{ padding: 6 }}>
-      {sessions.map((s) => <SessionRow key={s.sessionId} s={s} onOpen={() => onOpenSession(s.sessionId, s)} />)}
-      <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', padding: '6px 10px 2px' }}>{total} conversation{total === 1 ? '' : 's'} in this project</div>
-    </Card>
+    <Plate flush caption={`${total} conversation${total === 1 ? '' : 's'} in this project`}>
+      <Schedule
+        cols={[
+          { key: 'title', kind: 'pn' },
+          { key: 'branch', kind: 'rt' },
+          { key: 'when', kind: 'cmd' },
+        ]}
+        empty="No recorded sessions for this project."
+        rows={sessions.map((s) => {
+          const title = (s as any).userTitle || summaryTitle((s as any).summary, 120) || (s as any).firstPrompt || s.sessionId;
+          const when = (s as any).modified ? new Date((s as any).modified).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+          const status = s.outcome?.status;
+          return {
+            id: s.sessionId,
+            onSelect: () => onOpenSession(s.sessionId, s),
+            cells: {
+              title: (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                  {status && <span title={status.replace('_', ' ')} style={{ width: 7, height: 7, background: OUTCOME_TONE[status] ?? 'var(--cr-fg-3)', flexShrink: 0 }} />}
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</span>
+                </span>
+              ),
+              branch: (s as any).gitBranch ? <Chip kind="mono" size="sm">{(s as any).gitBranch}</Chip> : null,
+              when,
+            },
+          };
+        })}
+      />
+    </Plate>
   );
 }
 
@@ -510,40 +576,38 @@ function ProjectActivity({ projectId, toolFilter, onOpenSession }: { projectId: 
   for (const e of events) { const day = e.ts ? new Date(e.ts).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' }) : 'earlier'; if (!cur || cur.day !== day) { cur = { day, items: [] }; groups.push(cur); } cur.items.push(e); }
   return (
     <div style={{ padding: '16px 24px 48px' }}>
-      <div style={{ display: 'flex', gap: 16, marginBottom: 14, color: 'var(--cr-fg-2)', fontSize: 12 }}>
-        <span><b style={{ color: 'var(--cr-fg-1)' }}>{counts.sessions}</b> sessions</span>
-        <span><b style={{ color: 'var(--cr-fg-1)' }}>{counts.edits}</b> file changes</span>
-      </div>
-      {groups.map((g) => (
-        <div key={g.day} style={{ marginBottom: 14 }}>
-          <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--cr-fg-3)', marginBottom: 6 }}>{g.day}</div>
-          <Card style={{ padding: 4 }}>
-            {g.items.map((e, i) => (
-              <div key={i} onClick={() => onOpenSession(e.sessionId)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 10px', cursor: 'pointer', borderBottom: i < g.items.length - 1 ? '1px solid var(--cr-line-1)' : 'none' }}>
-                <Icon name={e.type === 'session' ? 'message' : 'file'} size={14} style={{ opacity: 0.55, flexShrink: 0 }} />
-                <span style={{ flex: 1, minWidth: 0, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: e.type === 'edit' ? 'var(--cr-font-mono)' : undefined }}>{e.title}</span>
-                {e.type === 'edit' && <Chip kind="mono" size="sm">{e.op}</Chip>}
-                <span style={{ fontSize: 11, color: 'var(--cr-fg-3)', whiteSpace: 'nowrap' }}>{e.ts ? new Date(e.ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : ''}</span>
-              </div>
-            ))}
-          </Card>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function SessionRow({ s, onOpen }: { s: SessionInfo; onOpen: () => void }) {
-  const title = (s as any).userTitle || summaryTitle((s as any).summary, 120) || (s as any).firstPrompt || s.sessionId;
-  const when = (s as any).modified ? new Date((s as any).modified).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-  const status = s.outcome?.status;
-  return (
-    <div onClick={onOpen} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', cursor: 'pointer', borderBottom: '1px solid var(--cr-line-1)' }}>
-      {status && <span title={status.replace('_', ' ')} style={{ width: 7, height: 7, borderRadius: 999, background: OUTCOME_TONE[status] ?? 'var(--cr-fg-3)', flexShrink: 0 }} />}
-      <div style={{ minWidth: 0, flex: 1, fontSize: 13, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</div>
-      {(s as any).gitBranch && <Chip kind="mono" size="sm">{(s as any).gitBranch}</Chip>}
-      <span style={{ fontSize: 11, color: 'var(--cr-fg-3)', whiteSpace: 'nowrap' }}>{when}</span>
-      <Icon name="chevronRight" size={15} style={{ opacity: 0.4 }} />
+      <Metrics
+        style={{ marginBottom: 16 }}
+        caption="This project"
+        items={[
+          { label: 'Sessions', value: String(counts.sessions), icon: 'message' },
+          { label: 'File changes', value: String(counts.edits), icon: 'file' },
+        ]}
+      />
+      <Schedule
+        cols={[
+          { key: 'what', kind: 'pn' },
+          { key: 'op', kind: 'rt' },
+          { key: 'when', kind: 'cmd' },
+        ]}
+        rows={groups.flatMap((g) => [
+          { id: `d_${g.day}`, group: true, cells: { what: g.day } },
+          ...g.items.map((e, i) => ({
+            id: `${g.day}_${i}`,
+            onSelect: () => onOpenSession(e.sessionId),
+            cells: {
+              what: (
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
+                  <Icon name={e.type === 'session' ? 'message' : 'file'} size={14} style={{ color: 'var(--cr-fg-3)', flexShrink: 0 }} />
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', fontFamily: e.type === 'edit' ? 'var(--cr-font-annot)' : undefined, fontSize: e.type === 'edit' ? 12.5 : undefined }}>{e.title}</span>
+                </span>
+              ),
+              op: e.type === 'edit' ? <Chip kind="mono" size="sm">{e.op}</Chip> : null,
+              when: e.ts ? new Date(e.ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '',
+            },
+          })),
+        ])}
+      />
     </div>
   );
 }

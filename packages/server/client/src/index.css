@@ -19,37 +19,56 @@
  * anything that needs a selector below TOKENS:END. */
 /* ────────────────────── Dark (default) ────────────────────── */
 :root {
-  /* Typography — intelligence-console direction (distinctive, not system slop):
+  /* Typography — drawing lettering. Three registers, no overlap of duty:
    *  display = Martian Mono (eyebrows, metrics, nav), body = Hanken Grotesk,
    *  code/data = JetBrains Mono. */
-  --cr-font-display: 'Martian Mono', ui-monospace, monospace;
+  /* Three registers, no overlap of duty. Archivo condensed is the display
+   * voice; Hanken Grotesk is every sentence and every name; Martian Mono is
+   * the annotation hand — numbers, tags, commands, dimensions. Mono standing
+   * in for "technical" is costume, and mono at display scale is the specific
+   * mistake this token block was rewritten to stop making. */
+  --cr-font-display: Archivo, ui-sans-serif, sans-serif;
+  --cr-font-annot: 'Martian Mono', ui-monospace, monospace;
   --cr-font-sans: 'Hanken Grotesk', ui-sans-serif, system-ui, sans-serif;
   /* Ink scale — deep charcoal with clear layering.
    * ink-0 (page) → ink-1 (sidebar, cards) → ink-2 (hover) → ink-3 (active, sub-cards) → ink-4 (segmented-control active, code bg accent) */
-  --cr-ink-0: #090D14;
-  --cr-ink-1: #101620;
-  --cr-ink-2: #1A2230;
-  --cr-ink-3: #243042;
-  --cr-ink-4: #324058;
+  /* CYANOTYPE. The dark theme is a blueprint: prussian stock, white line work,
+   * the same redline as the light theme. It is not a neutral charcoal with a
+   * hue applied — the ramp is one blue, and light is a different material
+   * rather than this inverted. See DESIGN.md in munhq/chat-recall-site. */
+  --cr-ink-0: #0C2843;
+  --cr-ink-1: #0F3153;
+  --cr-ink-2: #143A61;
+  --cr-ink-3: #1A4674;
+  --cr-ink-4: #235688;
 
   /* Foreground — crisp white with diminishing secondary/tertiary.
    * fg-2/fg-3 are tuned so even the smallest caption text (10–11px meta lines,
    * counts, dividers) clears WCAG AA (4.5:1) on every ink surface it lands on,
    * including active ink-3 rows. */
-  --cr-fg-1: #EBF0F8;
-  --cr-fg-2: #909CAF;
-  --cr-fg-3: #8A9AB0;
+  --cr-fg-1: #EAF3FC;
+  --cr-fg-2: #A9C6E2;
+  --cr-fg-3: #83A6C8;
 
   /* Lines */
-  --cr-line-1: #1B2433;
-  --cr-line-2: #2A374C;
-  --cr-line-3: #405366;
+  --cr-line-1: #1D4A73;
+  --cr-line-2: #2A5A88;
+  --cr-line-3: #3D6FA0;
 
   /* Brand — warm amber/orange */
   --cr-brand-500: #F5A97F;
   --cr-brand-600: #E08D5F;
   --cr-brand-700: #C9734A;
-  --cr-brand-surf: rgba(245, 169, 127, 0.10);
+  /* SURFACES ARE SOLID, NOT TRANSLUCENT.
+   *
+   * These were rgba() tints, so a chip's effective background was whatever
+   * happened to be behind it, and its contrast changed with the panel it
+   * landed in. Measured: every tool chip and every semantic chip cleared
+   * 4.5:1 on the sheet and failed it on a raised ground — err at 4.31, the
+   * six tool inks at 3.27-3.63 on the whiteprint. A blend against the sheet
+   * ground fixes the pair, which is also the honest thing in a world with no
+   * depth: nothing here is see-through. */
+  --cr-brand-surf: color-mix(in srgb, var(--cr-brand-500) 10%, var(--cr-ink-0));
   --cr-brand-line: rgba(245, 169, 127, 0.22);
   /* Text/icons that sit ON a solid brand/danger fill (filled buttons). Dark
    * theme fills are LIGHT (amber #F5A97F / red #F85149) so near-black ink reads
@@ -61,41 +80,50 @@
 
   /* Semantic colors */
   --cr-ok-500: #3FB950;
-  --cr-ok-surf: rgba(63, 185, 80, 0.10);
+  --cr-ok-surf: color-mix(in srgb, var(--cr-ok-500) 10%, var(--cr-ink-0));
   --cr-ok-line: rgba(63, 185, 80, 0.22);
 
   --cr-warn-500: #D29922;
-  --cr-warn-surf: rgba(210, 153, 34, 0.10);
+  --cr-warn-surf: color-mix(in srgb, var(--cr-warn-500) 10%, var(--cr-ink-0));
   --cr-warn-line: rgba(210, 153, 34, 0.22);
 
-  --cr-err-500: #F85149;
-  --cr-err-surf: rgba(248, 81, 73, 0.10);
+  --cr-err-500: #FF7A70;
+  --cr-err-surf: color-mix(in srgb, var(--cr-err-500) 10%, var(--cr-ink-0));
   --cr-err-line: rgba(248, 81, 73, 0.22);
 
   --cr-info-500: #58A6FF;
-  --cr-info-surf: rgba(88, 166, 255, 0.10);
+  --cr-info-surf: color-mix(in srgb, var(--cr-info-500) 10%, var(--cr-ink-0));
   --cr-info-line: rgba(88, 166, 255, 0.22);
 
   /* Tool colors */
   --cr-tool-claude: #D4A5FF;
-  --cr-tool-claude-surf: rgba(212, 165, 255, 0.10);
+  --cr-tool-claude-surf: color-mix(in srgb, var(--cr-tool-claude) 10%, var(--cr-ink-0));
   --cr-tool-gemini: #78C9A0;
-  --cr-tool-gemini-surf: rgba(120, 201, 160, 0.10);
+  --cr-tool-gemini-surf: color-mix(in srgb, var(--cr-tool-gemini) 10%, var(--cr-ink-0));
   --cr-tool-opencode: #79C0FF;
-  --cr-tool-opencode-surf: rgba(121, 192, 255, 0.10);
-  --cr-tool-codex: #10A37F;
-  --cr-tool-codex-surf: rgba(16, 163, 127, 0.10);
+  --cr-tool-opencode-surf: color-mix(in srgb, var(--cr-tool-opencode) 10%, var(--cr-ink-0));
+  --cr-tool-codex: #11AF88;
+  --cr-tool-codex-surf: color-mix(in srgb, var(--cr-tool-codex) 10%, var(--cr-ink-0));
 
   --cr-tool-agy: #E879B5;
-  --cr-tool-agy-surf: rgba(232, 121, 181, 0.10);
+  --cr-tool-agy-surf: color-mix(in srgb, var(--cr-tool-agy) 10%, var(--cr-ink-0));
   --cr-tool-cursor: #F0A868;
-  --cr-tool-cursor-surf: rgba(240, 168, 104, 0.10);
+  --cr-tool-cursor-surf: color-mix(in srgb, var(--cr-tool-cursor) 10%, var(--cr-ink-0));
 
   /* Radii */
-  --cr-radius-xs: 4px;
-  --cr-radius-sm: 6px;
-  --cr-radius-md: 8px;
-  --cr-radius-lg: 12px;
+  /* ZERO, everywhere. A drawing has square corners; the one circle in this
+   * world is a callout balloon, which is drawn as a circle on purpose. The
+   * token names stay so nothing has to be rewritten to adopt this. */
+  /* A drawing has no depth; it has line weight. Three weights carry the whole
+   * hierarchy: a 1.5px ink frame is a drawn object, a 1px rule divides one,
+   * and a hairline separates rows inside it. Nothing here casts a shadow. */
+  --cr-frame-w: 1.5px;
+  --cr-frame: var(--cr-fg-1);
+
+  --cr-radius-xs: 0px;
+  --cr-radius-sm: 0px;
+  --cr-radius-md: 0px;
+  --cr-radius-lg: 0px;
 
   /* Motion */
   --cr-dur-fast: 120ms;
@@ -115,21 +143,22 @@
 
 /* ────────────────────── Light ────────────────────── */
 [data-theme="light"] {
-  --cr-ink-0: #FAFBFC;
-  --cr-ink-1: #EDF0F4;
-  --cr-ink-2: #DFE3E9;
-  --cr-ink-3: #CDD3DC;
-  --cr-ink-4: #B4BCC6;
+  /* WHITEPRINT. Drafting paper, print ink, a redline pencil. */
+  --cr-ink-0: #F3F0E9;
+  --cr-ink-1: #EAE6DC;
+  --cr-ink-2: #E1DCCF;
+  --cr-ink-3: #D6D0C0;
+  --cr-ink-4: #C8C1AE;
 
-  --cr-fg-1: #12151C;
-  --cr-fg-2: #4A5464;
+  --cr-fg-1: #161A21;
+  --cr-fg-2: #4E5765;
   /* fg-3 darkened from #7C8698 → clears AA for small caption text on the light
    * ink-0/1/2 surfaces (was failing at ~3:1 everywhere). */
-  --cr-fg-3: #586170;
+  --cr-fg-3: #59616D;
 
-  --cr-line-1: #D9DEE5;
-  --cr-line-2: #C4C9D1;
-  --cr-line-3: #A6AEB9;
+  --cr-line-1: #DCD7CB;
+  --cr-line-2: #C8C3B6;
+  --cr-line-3: #ADA593;
 
   /* Brand — burnt amber. Deepened one step vs the old ramp: brand-500 is used
    * as TEXT throughout the app (links, eyebrows, session ids, inline labels), so
@@ -139,7 +168,7 @@
   --cr-brand-500: #A8491D;
   --cr-brand-600: #96421C;
   --cr-brand-700: #7E3717;
-  --cr-brand-surf: rgba(168, 73, 29, 0.08);
+  --cr-brand-surf: color-mix(in srgb, var(--cr-brand-500) 8%, var(--cr-ink-0));
   --cr-brand-line: rgba(168, 73, 29, 0.18);
 
   --cr-focus-ring: 0 0 0 3px rgba(168, 73, 29, 0.18);
@@ -156,35 +185,35 @@
    * values clear AA both on plain ink and on the tint. Same hues; dark theme
    * (light-on-dark) is unaffected. */
   --cr-ok-500: #157031;
-  --cr-ok-surf: rgba(26, 127, 55, 0.08);
+  --cr-ok-surf: color-mix(in srgb, var(--cr-ok-500) 8%, var(--cr-ink-0));
   --cr-ok-line: rgba(26, 127, 55, 0.20);
 
   --cr-warn-500: #845700;
-  --cr-warn-surf: rgba(154, 103, 0, 0.08);
+  --cr-warn-surf: color-mix(in srgb, var(--cr-warn-500) 8%, var(--cr-ink-0));
   --cr-warn-line: rgba(154, 103, 0, 0.20);
 
-  --cr-err-500: #C21D28;
-  --cr-err-surf: rgba(207, 34, 46, 0.07);
+  --cr-err-500: #A5141E;
+  --cr-err-surf: color-mix(in srgb, var(--cr-err-500) 7%, var(--cr-ink-0));
   --cr-err-line: rgba(207, 34, 46, 0.22);
 
   --cr-info-500: #0A5FBE;
-  --cr-info-surf: rgba(9, 105, 218, 0.07);
+  --cr-info-surf: color-mix(in srgb, var(--cr-info-500) 7%, var(--cr-ink-0));
   --cr-info-line: rgba(9, 105, 218, 0.20);
 
-  --cr-tool-claude: #8250DF;
-  --cr-tool-claude-surf: rgba(130, 80, 223, 0.08);
-  --cr-tool-gemini: #1A7F37;
-  --cr-tool-gemini-surf: rgba(26, 127, 55, 0.08);
-  --cr-tool-opencode: #0969DA;
-  --cr-tool-opencode-surf: rgba(9, 105, 218, 0.08);
-  --cr-tool-codex: #047857;
-  --cr-tool-codex-surf: rgba(4, 120, 87, 0.08);
+  --cr-tool-claude: #7740DC;
+  --cr-tool-claude-surf: color-mix(in srgb, var(--cr-tool-claude) 8%, var(--cr-ink-0));
+  --cr-tool-gemini: #187432;
+  --cr-tool-gemini-surf: color-mix(in srgb, var(--cr-tool-gemini) 8%, var(--cr-ink-0));
+  --cr-tool-opencode: #0861C9;
+  --cr-tool-opencode-surf: color-mix(in srgb, var(--cr-tool-opencode) 8%, var(--cr-ink-0));
+  --cr-tool-codex: #047353;
+  --cr-tool-codex-surf: color-mix(in srgb, var(--cr-tool-codex) 8%, var(--cr-ink-0));
 
-  --cr-tool-agy: #C026B8;
-  --cr-tool-agy-surf: rgba(192, 38, 184, 0.08);
+  --cr-tool-agy: #AC22A5;
+  --cr-tool-agy-surf: color-mix(in srgb, var(--cr-tool-agy) 8%, var(--cr-ink-0));
 
-  --cr-tool-cursor: #B45309;
-  --cr-tool-cursor-surf: rgba(180, 83, 9, 0.08);
+  --cr-tool-cursor: #A34B08;
+  --cr-tool-cursor-surf: color-mix(in srgb, var(--cr-tool-cursor) 8%, var(--cr-ink-0));
 }
 /* TOKENS:END */
 
@@ -210,18 +239,43 @@ code, pre, kbd { font-family: var(--cr-font-mono); }
 /* Scrollbars */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--cr-ink-4); border-radius: 4px; }
+::-webkit-scrollbar-thumb { background: var(--cr-ink-4); border-radius: 0; }
 ::-webkit-scrollbar-thumb:hover { background: var(--cr-line-3); }
 
 /* Typography */
-.cr-h4 {
-  font-size: 11px; font-weight: 600; letter-spacing: 0.05em;
+/* ── Type: three registers ──────────────────────────────────────────────────
+ * Headings are Archivo, condensed and heavy, which is drawing lettering. They
+ * are deliberately not monstrous: this is Operate, the data is the subject and
+ * the heading is its caption.
+ *
+ * THE ANNOTATION FLOOR: nothing functional below 12px, anywhere, including
+ * inside SVG. The first pass at this system set keys and table headers at
+ * 8.5-11px with wide tracking; 161 instances landed under the legibility floor
+ * and the result was, in the client's own words, "way too hard to read". */
+h1, h2, h3 {
+  font-family: var(--cr-font-display);
+  font-weight: 700; font-stretch: 88%;
+  letter-spacing: -0.022em; color: var(--cr-fg-1);
+  text-wrap: balance;
+}
+h1 { font-size: clamp(21px, 2.1vw, 27px); line-height: 1.08; }
+h2 { font-size: 20px; line-height: 1.12; }
+h3 { font-size: 15px; font-weight: 600; font-stretch: 92%; letter-spacing: -0.015em; }
+
+/* The annotation hand. Every uppercase label in the app is this class, at this
+ * size, in this face — a schedule header, a key, a dimension, a tag. It is
+ * NEVER a heading and never sits above one: an eyebrow says nothing the
+ * heading does not. */
+.cr-annot {
+  font-family: var(--cr-font-annot);
+  font-size: 12px; font-weight: 500; letter-spacing: 0.06em;
   text-transform: uppercase; color: var(--cr-fg-3);
 }
-h1, h2, h3 { font-weight: 600; letter-spacing: -0.015em; color: var(--cr-fg-1); }
-h1 { font-size: 24px; }
-h2 { font-size: 20px; }
-h3 { font-size: 15px; }
+.cr-annot-red { color: var(--cr-brand-500); }
+.cr-h4 { font-family: var(--cr-font-annot); font-size: 12px; font-weight: 500;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--cr-fg-3); }
+/* Numbers are annotation too, and they line up. */
+.cr-num { font-family: var(--cr-font-annot); font-variant-numeric: tabular-nums; }
 a { color: var(--cr-brand-500); text-decoration: none; font-size: 13px; }
 a:hover { text-decoration: underline; }
 
@@ -229,6 +283,337 @@ a:hover { text-decoration: underline; }
 /* 100dvh tracks the *dynamic* viewport so the bottom (pagination footer,
  * drawers) isn't hidden under mobile Safari's address bar. 100vh fallback
  * for browsers without dvh. */
+/* ── DRAWING FURNITURE ───────────────────────────────────────────────────────
+ *
+ * The app and the public site are one world. The site is Persuade and this is
+ * Operate, so the drawing metaphor ports as FURNITURE AND DISCIPLINE, not as
+ * literal figures: framed plates, schedules, balloon-numbered references,
+ * notes, and a dimension for a real boundary. Nobody draws an exploded view of
+ * a dashboard.
+ *
+ *   plate       a framed panel with a caption strip. Replaces every card.
+ *   schedule    the table. Replaces every list and every stat grid.
+ *   balloon     a circled number. The join between a figure and its row.
+ *   note        a boxed note. A command, or a limit stated beside its claim.
+ *   dimension   a measured span with a label, for a boundary that matters.
+ *
+ * FOUR RULES A LATER EDIT MUST NOT UNDO:
+ *
+ *  1. NO CARDS. A bordered box with a heading and a paragraph, repeated in a
+ *     gapped grid, is what this replaced. Frames here STACK FLUSH — `+ .cr-plate`
+ *     drops the top border — so a column of panels reads as ONE drawn object
+ *     rather than N boxes. A gapped grid of ink frames is the card grid in
+ *     heavier ink, which is worse than where we started.
+ *  2. ONE GROUND per theme. Separation is rule weight and the frame, never a
+ *     second background colour and never an alternating band.
+ *  3. NO EYEBROWS. `.cr-annot` is for numbers, tags, keys and commands. An
+ *     uppercase label above a heading is banned outright.
+ *  4. THE REFERENT RULE. A number refers to something: a balloon number is a
+ *     row, a row cites a detail. A numbered block with no referent is a card
+ *     wearing a number.
+ */
+
+/* ── PLATE ─────────────────────────────────────────────────────────────────── */
+.cr-plate {
+  border: var(--cr-frame-w) solid var(--cr-frame);
+  background: var(--cr-ink-0);
+  min-width: 0;
+}
+/* Flush stacking. This one selector is what stops the vocabulary being cards. */
+.cr-plate + .cr-plate,
+.cr-plate + .cr-schedule,
+.cr-plate + .cr-note,
+.cr-plate + .cr-dimension,
+.cr-plate + .cr-plates,
+.cr-schedule + .cr-plate,
+.cr-schedule + .cr-schedule,
+.cr-schedule + .cr-note,
+.cr-schedule + .cr-dimension,
+.cr-schedule + .cr-plates,
+.cr-note + .cr-note,
+.cr-note + .cr-plate,
+.cr-note + .cr-schedule,
+.cr-plates + .cr-plate,
+.cr-plates + .cr-schedule,
+.cr-dimension + .cr-plate,
+.cr-dimension + .cr-schedule { border-top: 0; }
+
+.cr-plate-h {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 14px; flex-wrap: wrap;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--cr-line-2);
+}
+.cr-plate-h > h1, .cr-plate-h > h2, .cr-plate-h > h3 { margin: 0; }
+.cr-plate-t {
+  font-family: var(--cr-font-sans);
+  font-size: 14px; font-weight: 600; color: var(--cr-fg-1);
+  letter-spacing: -0.005em; min-width: 0;
+}
+.cr-plate-tools { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.cr-plate-b { padding: 16px 14px; min-width: 0; }
+.cr-plate-b-flush { padding: 0; min-width: 0; }
+/* The caption strip: raised ground, annotation ink. It says what the plate is
+ * a view of, or states the limit of what it shows. */
+.cr-plate-cap {
+  padding: 9px 14px;
+  border-top: 1px solid var(--cr-line-2);
+  background: var(--cr-ink-1);
+  font-size: 12.5px; color: var(--cr-fg-3); line-height: 1.45;
+}
+.cr-plate-cap b, .cr-plate-cap strong { color: var(--cr-fg-1); font-weight: 600; }
+
+/* A flush grid of plates sharing one frame — the site's `.details`, which is
+ * how you get several panels side by side WITHOUT a gapped card grid. */
+.cr-plates {
+  display: grid;
+  border: var(--cr-frame-w) solid var(--cr-frame);
+  min-width: 0;
+}
+.cr-plates > * {
+  border-top: 1px solid var(--cr-line-2);
+  border-right: 1px solid var(--cr-line-2);
+  min-width: 0;
+}
+.cr-plates[data-cols="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.cr-plates[data-cols="2"] > :nth-child(-n+2) { border-top: 0; }
+.cr-plates[data-cols="2"] > :nth-child(2n) { border-right: 0; }
+.cr-plates[data-cols="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.cr-plates[data-cols="3"] > :nth-child(-n+3) { border-top: 0; }
+.cr-plates[data-cols="3"] > :nth-child(3n) { border-right: 0; }
+.cr-plates[data-cols="4"] { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.cr-plates[data-cols="4"] > :nth-child(-n+4) { border-top: 0; }
+.cr-plates[data-cols="4"] > :nth-child(4n) { border-right: 0; }
+
+/* ── SCHEDULE ──────────────────────────────────────────────────────────────── */
+.cr-schedule {
+  width: 100%; border-collapse: collapse;
+  border: var(--cr-frame-w) solid var(--cr-frame);
+  font-size: 14px;
+}
+.cr-schedule caption {
+  caption-side: top; text-align: left;
+  padding: 9px 14px;
+  border: var(--cr-frame-w) solid var(--cr-frame);
+  border-bottom: 1px solid var(--cr-line-2);
+  background: var(--cr-ink-1);
+  font-family: var(--cr-font-sans); font-size: 14px; font-weight: 600;
+  color: var(--cr-fg-1);
+}
+.cr-schedule th {
+  font-family: var(--cr-font-annot);
+  font-size: 12px; font-weight: 500; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--cr-fg-3);
+  text-align: left; padding: 9px 14px;
+  border-bottom: 1px solid var(--cr-line-2);
+  background: var(--cr-ink-1);
+  white-space: nowrap;
+}
+.cr-schedule td {
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--cr-line-1);
+  vertical-align: baseline;
+  color: var(--cr-fg-2); line-height: 1.45;
+}
+.cr-schedule tbody tr:last-child td { border-bottom: 0; }
+.cr-schedule tbody tr:hover td { background: var(--cr-brand-surf); }
+.cr-schedule tbody tr[aria-current="true"] td { background: var(--cr-brand-surf); }
+.cr-schedule tbody tr[role="button"] { cursor: pointer; }
+.cr-schedule tbody tr:focus-visible { outline: none; box-shadow: var(--cr-focus-ring); }
+
+/* The balloon number as a table cell: the join to a figure or a detail. */
+.cr-schedule .no {
+  font-family: var(--cr-font-annot); font-size: 12px; font-weight: 700;
+  color: var(--cr-brand-500); width: 1%; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+/* The part name. Grotesk, not mono — a name is not an annotation. */
+/* The part name shrinks to its content instead of wrapping. Without nowrap a
+ * `width: 1%` cell still breaks at word boundaries, so "Critical findings"
+ * became two lines with 600px of empty description column beside it. */
+.cr-schedule .pn {
+  color: var(--cr-fg-1); font-weight: 600; font-size: 14.5px;
+  padding-right: 24px; min-width: 0; white-space: nowrap;
+}
+/* `white-space: normal` breaks at spaces, and a path has none — so
+ * "path:/home/user/code/example-app" stayed one ~230px token and pushed the
+ * schedule 25px past a phone. A path is metadata, not a command: it may break
+ * anywhere. (A command may NOT — "~/.claud e" reads as a rendering fault and,
+ * worse, as something you could type — which is why `.cmd` stays nowrap.) */
+.cr-schedule .pn .pn-sub { white-space: normal; overflow-wrap: anywhere; }
+.cr-schedule .pn-sub { overflow-wrap: anywhere; }
+.cr-schedule .pn-sub { display: block; margin-top: 3px; font-size: 12.5px; font-weight: 400; color: var(--cr-fg-3); }
+/* A measured value. Right-aligned and tabular, so a column of them scans as a
+ * column and not as text that happens to be numeric. */
+.cr-schedule .val {
+  font-family: var(--cr-font-annot); font-variant-numeric: tabular-nums;
+  font-size: 13px; font-weight: 600; color: var(--cr-fg-1);
+  text-align: right; white-space: nowrap; width: 1%;
+}
+.cr-schedule .val-q { color: var(--cr-fg-3); font-weight: 500; }
+/* nowrap, not break-anywhere: a command broken mid-token ("~/.claud e") reads
+ * as a rendering fault and, worse, as a command you could type. */
+.cr-schedule .cmd {
+  font-family: var(--cr-font-annot); font-size: 12px; color: var(--cr-fg-3);
+  width: 1%; text-align: right; white-space: nowrap;
+}
+.cr-schedule .rt { text-align: right; }
+/* A group heading inside a schedule: a ruled band, not a second table. */
+.cr-schedule .grp td {
+  background: var(--cr-ink-1);
+  border-top: 1px solid var(--cr-line-2);
+  font-family: var(--cr-font-annot); font-size: 12px; font-weight: 500;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--cr-fg-3); padding: 8px 14px;
+}
+.cr-schedule .grp:hover td { background: var(--cr-ink-1); }
+.cr-schedule .empty td {
+  padding: 26px 14px; text-align: center; color: var(--cr-fg-3); font-size: 13px;
+}
+.cr-schedule .empty:hover td { background: none; }
+/* A SCHEDULE INSIDE A PLATE DROPS ITS OWN FRAME.
+ *
+ * Otherwise the plate draws a 1.5px ink frame and the schedule draws a second
+ * one 16px inside it — a frame within a frame, which is the cards-inside-cards
+ * smell in drawing costume. The plate is the drawn object; the schedule inside
+ * it is that object's content, so it keeps its row rules and gives up its
+ * boundary. Same for a plate stack. */
+/* DESCENDANT scope, not child scope: a component nested two or three divs
+ * deep inside a plate still renders a schedule, and a child selector missed
+ * every one of those. */
+.cr-plate .cr-schedule,
+.cr-plates .cr-schedule,
+.cr-secstack .cr-schedule { border: 0; }
+.cr-plate .cr-schedule > caption,
+.cr-plates .cr-schedule > caption,
+.cr-secstack .cr-schedule > caption { border: 0; border-bottom: 1px solid var(--cr-line-2); }
+
+/* Wide schedules scroll inside their own frame. You pan a drawing; you do not
+ * shrink it until the labels are a smudge. */
+/* A wide schedule pans inside its own frame. NOT `min-width: max-content`:
+ * a name column with no width cap makes max-content the widest unwrapped
+ * string in the table, which pushed a 1440px schedule out to 12,443px and
+ * parked every value column off-screen. 100% plus the nowrap cells is what
+ * actually forces a scroll only when one is needed. */
+.cr-sched-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
+.cr-sched-scroll > .cr-schedule { min-width: 100%; }
+
+/* ── BALLOON ───────────────────────────────────────────────────────────────── */
+/* The one circle in a square world, because that is what a callout balloon is.
+ * Filled with the ground so a leader line does not show through. Semantic hue
+ * rides the RING and the NUMBER — never a bar on the edge of a box. */
+.cr-balloon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; flex-shrink: 0;
+  border-radius: 50%;
+  border: 1.6px solid var(--cr-bl, var(--cr-brand-500));
+  background: var(--cr-ink-0);
+  color: var(--cr-bl, var(--cr-brand-500));
+  font-family: var(--cr-font-annot); font-size: 12px; font-weight: 700;
+  line-height: 1; font-variant-numeric: tabular-nums;
+}
+.cr-balloon-lg { width: 28px; height: 28px; font-size: 13px; }
+
+/* ── NOTE ──────────────────────────────────────────────────────────────────── */
+.cr-note {
+  border: var(--cr-frame-w) solid var(--cr-frame);
+  background: var(--cr-ink-0); min-width: 0;
+}
+.cr-note-h {
+  padding: 8px 14px; border-bottom: 1px solid var(--cr-line-2);
+  background: var(--cr-ink-1);
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.cr-note-b { display: flex; align-items: stretch; min-width: 0; }
+.cr-note-b code {
+  flex: 1; min-width: 0; padding: 12px 14px;
+  font-family: var(--cr-font-annot); font-size: 12.5px; color: var(--cr-fg-1);
+  white-space: nowrap; overflow-x: auto; overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.cr-note-b code::before { content: '$ '; color: var(--cr-brand-500); }
+.cr-note-b button {
+  border: 0; border-left: 1px solid var(--cr-line-2);
+  background: var(--cr-ink-1); color: var(--cr-fg-2);
+  font-family: var(--cr-font-annot); font-size: 12px; letter-spacing: 0.06em;
+  text-transform: uppercase; padding: 0 14px; cursor: pointer; white-space: nowrap;
+  transition: color var(--cr-dur-fast) var(--cr-ease);
+}
+.cr-note-b button:hover { color: var(--cr-fg-1); }
+.cr-note-b button[data-copied] { color: var(--cr-ok-500); }
+/* A note used as prose: the limit stated beside the claim it limits. */
+.cr-note-p { padding: 12px 14px; font-size: 13.5px; color: var(--cr-fg-2); line-height: 1.5; }
+.cr-note-p b, .cr-note-p strong { color: var(--cr-fg-1); font-weight: 600; }
+.cr-note-f {
+  padding: 10px 14px; border-top: 1px solid var(--cr-line-2);
+  font-size: 12.5px; color: var(--cr-fg-3); line-height: 1.45;
+}
+
+/* ── DIMENSION ─────────────────────────────────────────────────────────────── */
+/* A measured span with a label. Used sparingly, on a boundary that matters. */
+.cr-dimension {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 14px;
+  border: var(--cr-frame-w) solid var(--cr-frame);
+  background: var(--cr-brand-surf);
+}
+.cr-dimension > span {
+  font-family: var(--cr-font-annot); font-size: 12px; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--cr-brand-500);
+}
+.cr-dimension > i { flex: 1; height: 1px; min-width: 20px; background: var(--cr-brand-500); opacity: 0.5; }
+
+/* A run of sections that becomes a run of flush plates.
+ *
+ * Applied to the CONTAINER, so every direct child is framed and every child's
+ * first element becomes that plate's header strip. This is how a screen with
+ * seven captioned regions becomes seven plates without seven edits — and the
+ * eighth region someone adds next month inherits it for free. */
+.cr-secstack { display: flex; flex-direction: column; }
+.cr-secstack > * {
+  border: var(--cr-frame-w) solid var(--cr-frame);
+  background: var(--cr-ink-0);
+  min-width: 0;
+}
+.cr-secstack > * + * { border-top: 0; }
+/* The header strip. `> :first-child` is the caption every section already had. */
+.cr-secstack > * > :first-child {
+  padding: 9px 14px;
+  margin: 0;
+  border-bottom: 1px solid var(--cr-line-2);
+  font-family: var(--cr-font-sans);
+  font-size: 14px; font-weight: 600; color: var(--cr-fg-1);
+  letter-spacing: -0.005em;
+}
+/* Everything after the header is the body, inset once. */
+.cr-secstack > * > :first-child ~ * { margin-left: 14px; margin-right: 14px; }
+.cr-secstack > * > :first-child + * { margin-top: 14px; }
+.cr-secstack > * > :last-child:not(:first-child) { margin-bottom: 14px; }
+
+/* ── Responsive: a plate grid becomes a plate stack ────────────────────────── */
+@media (max-width: 768px) {
+  /* Optional columns go, so the schedule fits instead of panning. A header
+   * may also take two lines: three nowrap headers plus their padding came to
+   * ~384px against 362px of usable width, so the schedule panned and parked
+   * its last column off-screen for the sake of keeping "SESSIONS" on one
+   * line. A wrapped header costs one row of height and nothing else. */
+  .cr-schedule .opt { display: none; }
+  .cr-schedule th { white-space: normal; }
+  /* Body cells may break a long unbroken token rather than pan the schedule.
+   * `.cmd` is exempt: a command broken mid-token is a lie. */
+  .cr-schedule td:not(.cmd) { overflow-wrap: anywhere; }
+  .cr-schedule .pn { padding-right: 12px; }
+  .cr-schedule th, .cr-schedule td { padding-left: 10px; padding-right: 10px; }
+  /* No keyboard, no keyboard hint. */
+  .cr-kbd-hint { display: none !important; }
+  .cr-plates[data-cols] { grid-template-columns: minmax(0, 1fr); }
+  .cr-plates[data-cols] > * { border-right: 0; border-top: 1px solid var(--cr-line-2); }
+  .cr-plates[data-cols] > :first-child { border-top: 0; }
+  .cr-dimension > i { display: none; }
+  .cr-plate-b { padding: 14px 12px; }
+  .cr-schedule th, .cr-schedule td { padding-left: 12px; padding-right: 12px; }
+}
+
 .app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 .app-row { display: flex; flex: 1; overflow: hidden; }
 
@@ -256,9 +641,9 @@ a:hover { text-decoration: underline; }
 
 .cr-conv-row {
   display: grid;
-  grid-template-columns: 3px 1fr auto;
+  grid-template-columns: 1fr auto;
   column-gap: 14px;
-  padding: 16px 18px 16px 0;
+  padding: 13px 18px;
   border-bottom: 1px solid var(--cr-line-1);
   cursor: pointer;
   transition: background var(--cr-dur-fast) var(--cr-ease);
@@ -266,30 +651,16 @@ a:hover { text-decoration: underline; }
   animation-delay: calc(var(--cr-row-i, 0) * 24ms);
 }
 .cr-conv-row:hover { background: var(--cr-ink-1); }
-.cr-conv-row[aria-current="true"] { background: var(--cr-ink-2); }
-
-.cr-conv-rail {
-  width: 3px;
-  background: var(--cr-row-tool, var(--cr-line-2));
-  transition: width var(--cr-dur-fast) var(--cr-ease), background var(--cr-dur-fast) var(--cr-ease);
-}
-.cr-conv-row[aria-current="true"] .cr-conv-rail {
-  width: 4px;
-  background: var(--cr-brand-500);
-  box-shadow: 0 0 12px var(--cr-brand-line);
-}
-[data-theme="light"] .cr-conv-row[aria-current="true"] .cr-conv-rail {
-  box-shadow: 0 0 0 1px var(--cr-brand-line);
-}
+.cr-conv-row[aria-current="true"] { background: var(--cr-brand-surf); }
 
 .cr-conv-meta {
   display: flex; align-items: center; gap: 8px;
-  font-family: var(--cr-font-mono); font-size: 11px; font-variant-numeric: tabular-nums;
+  font-family: var(--cr-font-mono); font-size: 12px; font-variant-numeric: tabular-nums;
   color: var(--cr-fg-3); margin-bottom: 6px; min-width: 0;
 }
 .cr-conv-meta-tool {
   color: var(--cr-row-tool, var(--cr-fg-3)); font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0.05em; font-size: 10px; flex-shrink: 0;
+  text-transform: uppercase; letter-spacing: 0.05em; font-size: 12px; flex-shrink: 0;
 }
 /* Project leads the meta line — the clearest "where" signal. Brighter and
    heavier than the rest of the caption, with a folder icon. */
@@ -312,19 +683,19 @@ a:hover { text-decoration: underline; }
 }
 /* Tiny source badge on the title line — "AI summary" or "raw" */
 .cr-conv-source {
-  margin-left: 10px; font-size: 10px; font-weight: 500; white-space: nowrap;
-  padding: 1px 5px; border-radius: 3px; vertical-align: 1px; letter-spacing: 0;
+  margin-left: 10px; font-size: 12px; font-weight: 500; white-space: nowrap;
+  padding: 1px 5px; border-radius: 0; vertical-align: 1px; letter-spacing: 0;
 }
 
 .cr-conv-markers {
   display: flex; align-items: center; gap: 6px; flex-shrink: 0;
-  margin-top: 22px;
+  margin-top: 20px;
 }
 
 /* Status prefix dot+word */
 .cr-conv-status {
   display: inline-flex; align-items: center; gap: 6px;
-  font-size: 11px; font-weight: 500; letter-spacing: 0.02em;
+  font-size: 12px; font-weight: 500; letter-spacing: 0.02em;
   text-transform: lowercase; color: var(--cr-row-status, var(--cr-fg-3));
   margin-right: 8px; vertical-align: 1px; white-space: nowrap;
 }
@@ -334,17 +705,17 @@ a:hover { text-decoration: underline; }
 }
 .cr-conv-status[data-status="in_progress"] .cr-conv-status-dot {
   animation: cr-pulse 2.4s ease-in-out infinite;
-  box-shadow: 0 0 6px var(--cr-row-status);
+  box-shadow: none;
 }
 [data-theme="light"] .cr-conv-status[data-status="in_progress"] .cr-conv-status-dot {
-  box-shadow: 0 0 4px var(--cr-row-status);
+  box-shadow: none;
 }
 
 /* Date divider */
 .cr-conv-divider {
   display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
   column-gap: 14px; padding: 28px 18px 14px;
-  font-family: var(--cr-font-mono); font-size: 10px; letter-spacing: 0.18em;
+  font-family: var(--cr-font-mono); font-size: 12px; letter-spacing: 0.18em;
   text-transform: uppercase; color: var(--cr-fg-3);
 }
 .cr-conv-divider::before, .cr-conv-divider::after {
@@ -354,12 +725,11 @@ a:hover { text-decoration: underline; }
 
 /* Skeleton */
 .cr-conv-skeleton {
-  display: grid; grid-template-columns: 3px 1fr; column-gap: 14px;
-  padding: 16px 18px 16px 0; border-bottom: 1px solid var(--cr-line-1);
+  display: grid; grid-template-columns: 1fr; column-gap: 14px;
+  padding: 13px 18px; border-bottom: 1px solid var(--cr-line-1);
 }
-.cr-conv-skeleton-rail { width: 3px; background: var(--cr-line-1); }
 .cr-conv-skeleton-bar {
-  height: 10px; border-radius: 3px;
+  height: 10px; border-radius: 0;
   background: linear-gradient(90deg, var(--cr-ink-1) 0%, var(--cr-ink-2) 50%, var(--cr-ink-1) 100%);
   background-size: 200% 100%;
   animation: cr-shimmer 1.6s ease-in-out infinite;
@@ -382,17 +752,20 @@ a:hover { text-decoration: underline; }
   border-top: 1px solid var(--cr-line-1);
   background: linear-gradient(to bottom, transparent, var(--cr-ink-0) 30%);
   backdrop-filter: blur(8px);
-  font-family: var(--cr-font-mono); font-size: 11px; font-variant-numeric: tabular-nums;
+  font-family: var(--cr-font-mono); font-size: 12px; font-variant-numeric: tabular-nums;
   color: var(--cr-fg-3); z-index: 1;
 }
 [data-theme="light"] .cr-conv-footer {
   background: linear-gradient(to bottom, rgba(250,251,252,0), var(--cr-ink-0) 30%);
 }
 .cr-conv-footer-progress {
-  flex: 1; height: 2px; background: var(--cr-line-1); border-radius: 2px; overflow: hidden;
+  flex: 1; height: 2px; background: var(--cr-line-1); border-radius: 0; overflow: hidden;
 }
 .cr-conv-footer-progress-fill {
-  height: 100%; background: var(--cr-brand-500); transition: width 320ms var(--cr-ease);
+  /* scaleX, not width: animating width relayouts the bar every frame. */
+  height: 100%; width: 100%; background: var(--cr-brand-500);
+  transform-origin: left center;
+  transition: transform 320ms var(--cr-ease);
 }
 
 
@@ -433,7 +806,7 @@ a:hover { text-decoration: underline; }
   color: var(--cr-fg-2);
   background: transparent;
   border: none;
-  border-radius: 6px;
+  border-radius: 0;
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
@@ -459,12 +832,11 @@ a:hover { text-decoration: underline; }
   border-radius: 50%;
   background: var(--cr-pill-color, var(--cr-fg-3));
   flex-shrink: 0;
-  transition: box-shadow var(--cr-dur-fast) var(--cr-ease);
 }
 .cr-tool-pill .cr-tool-pill-label { overflow: hidden; text-overflow: ellipsis; }
-.cr-tool-pill.active .cr-tool-pill-dot {
-  box-shadow: 0 0 0 3px var(--cr-pill-surf, transparent);
-}
+/* No halo. The active pill already carries a fill and an inset rail; a
+ * zero-offset coloured glow on top of that is decoration, and this world has
+ * no shadows at all. */
 /* "All" pill — neutral (no tool color), uses the brand accent instead */
 .cr-tool-pill.cr-tool-pill-all {
   --cr-pill-color: var(--cr-brand-500);
@@ -475,9 +847,9 @@ a:hover { text-decoration: underline; }
  * (Martian Mono) so the sidebar wears the "intelligence console" identity the
  * tokens promise, instead of a generic uppercase gray. */
 .cr-sidebar-section-label {
-  font-family: var(--cr-font-display);
-  font-size: 10px; font-weight: 500; color: var(--cr-fg-2);
-  letter-spacing: 0.14em; text-transform: uppercase;
+  font-family: var(--cr-font-annot);
+  font-size: 12px; font-weight: 500; color: var(--cr-fg-3);
+  letter-spacing: 0.06em; text-transform: uppercase;
   padding-left: 8px; margin-bottom: 8px;
 }
 
@@ -487,7 +859,7 @@ a:hover { text-decoration: underline; }
 
 .cr-sidebar-row {
   display: flex; align-items: center; gap: 8px;
-  padding: 6px 8px; height: 32px; border-radius: 6px; cursor: pointer;
+  padding: 6px 8px; height: 32px; border-radius: 0; cursor: pointer;
   color: var(--cr-fg-2); transition: background var(--cr-dur-fast), color var(--cr-dur-fast);
 }
 .cr-sidebar-row:hover { background: var(--cr-ink-2); color: var(--cr-fg-1); }
@@ -504,7 +876,7 @@ a:hover { text-decoration: underline; }
 
 .cr-sidebar-row-icon { flex-shrink: 0; display: flex; align-items: center; justify-content: center; color: var(--cr-fg-3); }
 .cr-sidebar-row-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-.cr-sidebar-row-count { font-size: 11px; color: var(--cr-fg-3); font-variant-numeric: tabular-nums; }
+.cr-sidebar-row-count { font-size: 12px; color: var(--cr-fg-3); font-variant-numeric: tabular-nums; }
 
 /* Indented sub-row */
 .cr-sidebar-row.indent { height: 28px; padding-top: 4px; padding-bottom: 4px; }
@@ -518,7 +890,7 @@ a:hover { text-decoration: underline; }
 .cr-nav { display: flex; flex-direction: column; gap: 2px; padding: 10px 8px 4px; }
 .cr-nav-item {
   display: flex; align-items: center; gap: 11px; width: 100%;
-  height: 36px; padding: 0 10px; border-radius: 7px;
+  height: 36px; padding: 0 10px; border-radius: 0;
   background: transparent; border: none;
   font-family: var(--cr-font-sans); font-size: 13.5px; font-weight: 500;
   color: var(--cr-fg-2); cursor: pointer; text-align: left;
@@ -543,13 +915,14 @@ a:hover { text-decoration: underline; }
 .cr-topbar {
   height: var(--cr-header-h); flex-shrink: 0;
   display: flex; align-items: center;
-  background: var(--cr-ink-1); border-bottom: 1px solid var(--cr-line-1);
+  background: var(--cr-ink-0);
+  border-bottom: var(--cr-frame-w) solid var(--cr-frame);
   padding: 0 16px; gap: 16px; z-index: 50;
 }
 .cr-topbar-brand {
   display: flex; align-items: center; gap: 8px;
   min-width: var(--cr-sidebar-w); padding-left: 4px;
-  border-radius: 4px;
+  border-radius: 0;
   transition: background var(--cr-dur-fast) var(--cr-ease);
 }
 .cr-topbar-brand:hover { background: var(--cr-ink-2); }
@@ -564,7 +937,7 @@ a:hover { text-decoration: underline; }
 .cr-subbar {
   height: var(--cr-subbar-h); flex-shrink: 0;
   display: flex; align-items: center; justify-content: space-between;
-  padding: 0 18px; border-bottom: 1px solid var(--cr-line-1);
+  padding: 0 18px; border-bottom: 1px solid var(--cr-line-2);
 }
 
 /* Project-workspace lens bar: scroll horizontally instead of clipping when the
@@ -575,7 +948,7 @@ a:hover { text-decoration: underline; }
 
 /* ────────────────────── Split panes (Toolkit / Memory) ────────────────────── */
 .cr-split { display: flex; flex: 1; overflow: hidden; }
-.cr-split-list { flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--cr-line-1); }
+.cr-split-list { flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--cr-line-2); }
 .cr-split-detail { flex: 1; overflow-y: auto; }
 
 /* Conversations lens (project workspace) reuses <ConversationList>, whose root
@@ -678,7 +1051,8 @@ a:hover { text-decoration: underline; }
     position: absolute !important; top: 0; left: 0; bottom: 0;
     z-index: 40; width: var(--cr-sidebar-w); max-width: 86vw;
     transform: translateX(-100%); transition: transform 220ms var(--cr-ease);
-    box-shadow: 8px 0 24px rgba(0,0,0,0.35);
+    background: var(--cr-ink-0);
+    border-right: var(--cr-frame-w) solid var(--cr-frame);
   }
   .app[data-mobile-sidebar-open="true"] .cr-sidebar { transform: translateX(0); }
 
@@ -705,8 +1079,8 @@ a:hover { text-decoration: underline; }
   .cr-viewer-tokens { display: none !important; }
   .cr-chip-tools { white-space: normal !important; height: auto !important; min-height: 22px; padding: 4px 8px !important; line-height: 1.5 !important; word-break: break-word; max-width: 100%; }
 
-  .cr-conv-row { padding: 14px 14px 14px 0 !important; column-gap: 12px !important; }
-  .cr-conv-meta { font-size: 10.5px !important; gap: 8px !important; }
+  .cr-conv-row { padding: 12px 14px !important; column-gap: 12px !important; }
+  .cr-conv-meta { font-size: 12px !important; gap: 8px !important; }
   .cr-conv-meta-time { margin-left: auto; }
   .cr-conv-title { font-size: 14px !important; -webkit-line-clamp: 3 !important; }
   .cr-conv-divider { padding: 20px 14px 10px !important; }
@@ -835,7 +1209,7 @@ a:hover { text-decoration: underline; }
 @media (max-width: 480px) {
   :root { --cr-header-h: 52px; }
   .cr-topbar { padding: 0 8px !important; }
-  .cr-conv-row { padding: 12px 12px 12px 0 !important; }
+  .cr-conv-row { padding: 11px 12px !important; }
   .cr-conv-title { font-size: 13.5px !important; }
   .cr-topbar-search input::placeholder { font-size: 13px; }
 }

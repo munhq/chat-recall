@@ -6,12 +6,12 @@ import {
   type SessionDiffResponse, type SessionDiffFile, type SessionCommitsResponse,
   type AutoTasksStatus,
 } from '../services/api';
-import { Button, Chip, Icon, Input } from './primitives';
+import { Button, Chip, Icon, Input, Schedule } from './primitives';
 
 /**
  * Who may move a card where.
  *
- * `done` is not a column a person drops into. A card asserts a problem exists in
+ * "done" is not a column a person drops into. A card asserts a problem exists in
  * the code, so "done" asserts the code changed — the agent that did the work
  * sets it through the MCP and attaches its session, and the board can then show
  * the files, lines and commits behind the claim. Dragging proves nothing, and
@@ -20,7 +20,7 @@ import { Button, Chip, Icon, Input } from './primitives';
  * What a person CAN do is disagree: reject the card. That is a real verdict, it
  * dismisses the underlying finding, and the auto-filer stops re-filing it.
  *
- * `blocked` is gone. Nothing in the product ever set it — not the filer, not the
+ * "blocked" is gone. Nothing in the product ever set it — not the filer, not the
  * MCP, not one card on any board — so it was a column that could only ever be
  * empty. Rows written before this still load; the type keeps the value.
  */
@@ -29,7 +29,7 @@ const COLUMNS: Array<{ status: TeamTaskStatus; label: string }> = [
   { status: 'in_progress', label: 'In progress' },
   { status: 'done', label: 'Done' },
   // Shut without the work being done — a finding that stopped being reported, or
-  // a duplicate. Its own column because sharing one with `done` is what let a
+  // a duplicate. Its own column because sharing one with "done" is what let a
   // board claim 55 completed cards when 19 had been worked.
   { status: 'closed', label: 'Closed' },
   { status: 'rejected', label: 'Rejected' },
@@ -62,7 +62,7 @@ const autoClosedCount = (items: Array<{ linkedSessionId?: string | null }>): num
 const HUMAN_STATUSES: readonly TeamTaskStatus[] = ['todo', 'closed', 'rejected'];
 
 /**
- * Auto-filed cards carry their severity as a `[critical] `/`[high] ` title
+ * Auto-filed cards carry their severity as a "[critical] "/`[high] ` title
  * prefix (services/auto-tasks.ts writes it, and the finding id — not the title —
  * is the dedup key, so the prefix is display data). Rendering it as a chip beats
  * leaving a bracket in a sentence, and ranking on it puts the criticals at the
@@ -81,7 +81,7 @@ type Member = { sub: string; email: string | null; role: string };
  * The task board.
  *
  * What makes it worth having, when every team already owns a kanban: a card
- * carries `linkedSessionId`, so it shows whether the AI session attached to it
+ * carries "linkedSessionId", so it shows whether the AI session attached to it
  * ACTUALLY shipped code — status, files, lines, commits — and opens the
  * conversation that did the work. Everywhere else a card records that somebody
  * said it was done. Here it can be checked.
@@ -90,8 +90,8 @@ type Member = { sub: string; email: string | null; role: string };
  * Deliberately absent: swimlanes, labels, estimates, sprints, burndown. Losing
  * to Linear on kanban features is certain and irrelevant.
  *
- * The previous version of this file styled itself with `var(--border, #e3e3e8)`,
- * `var(--surface, #fff)` and its own prefers-color-scheme block — none of which
+ * The previous version of this file styled itself with "var(--border, #e3e3e8)",
+ * "var(--surface, #fff)" and its own prefers-color-scheme block — none of which
  * are this app's tokens, so it rendered in hardcoded light grey inside a dark
  * product and ignored the theme toggle entirely. Everything here is --cr-*.
  */
@@ -237,7 +237,7 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
   };
 
   /** The button that makes the switch observable: file the waiting findings now
-   *  instead of waiting for the next `chat-recall code index`. */
+   *  instead of waiting for the next "chat-recall code index". */
   const runNow = async () => {
     setAutoBusy(true);
     setAutoNote('');
@@ -565,7 +565,7 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
  *
  * This replaced a bare checkbox, and the reason is worth writing down: the
  * checkbox set a tenant POLICY, while the only thing that ever files a card is a
- * `chat-recall code index` sync. So ticking it produced no visible change, ever,
+ * "chat-recall code index" sync. So ticking it produced no visible change, ever,
  * and a person who ticked it could not tell it apart from a dead control. Three
  * things fix that, and none of them is a wizard:
  *
@@ -627,7 +627,7 @@ function AutoPanel({
     );
   }
 
-  /** How many open findings sit at `sev` or above, across every project. */
+  /** How many open findings sit at "sev" or above, across every project. */
   const total = (sev: string): number => {
     const floor = SEVERITY_BY_PRI.indexOf(sev as (typeof SEVERITY_BY_PRI)[number]);
     if (floor < 0) return 0;
@@ -758,41 +758,71 @@ function AutoPanel({
               a repository and they show up here.
             </div>
           ) : (
-            <div className="tt-ptiles">
-              {auto.byProject.map((r) => {
+            /* NOT A TILE GRID. This was "repeat(auto-fill, minmax(230px, 1fr))"
+               of bordered boxes — a card grid — and each box was a <button>
+               wrapping a <select> and a nested role="button", which is invalid
+               nesting the browser is entitled to reflow. A schedule row carries
+               the same controls legally, and the per-severity counts line up
+               into columns you can compare down. */
+            <Schedule
+              scroll
+              cols={[
+                { key: 'project', kind: 'pn', head: 'Project' },
+                { key: 'counts', head: 'Findings' },
+                { key: 'waiting', kind: 'val', head: 'Waiting' },
+                { key: 'floor', kind: 'rt', head: 'Floor', optional: true },
+              ]}
+              rows={auto.byProject.map((r) => {
                 const on = projFilter === r.projectId;
-                return (
-                  <button
-                    key={r.projectId}
-                    className={`tt-ptile${on ? ' tt-ptile-on' : ''}${excluded.has(r.projectId) ? ' tt-ptile-off' : ''}`}
-                    onClick={() => onProject(on ? '' : r.projectId)}
-                    title={on ? 'Show every project' : `Show only ${r.projectId}`}
-                  >
-                    <span className="tt-ptile-name">
-                      {r.projectId}
-                      {/* NEVER FILE THIS ONE. A client's repository, an archive, a
-                          mirror: indexed and searchable as before, simply never
-                          put on the board. The severity floor cannot say that —
-                          it is global, and a critical in someone else's codebase
-                          is still a critical. */}
-                      <span
-                        role="button"
-                        tabIndex={0}
-                        data-testid={`exclude-${r.projectId}`}
-                        className="tt-ptile-x"
-                        title={excluded.has(r.projectId)
-                          ? 'Excluded — no cards are filed for this project. Click to allow again.'
-                          : 'Never file cards for this project'}
-                        onClick={(e) => { e.stopPropagation(); onToggleExcluded(r.projectId); }}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); onToggleExcluded(r.projectId); }
-                        }}
-                      >
-                        {excluded.has(r.projectId) ? 'excluded' : 'exclude'}
+                const off = excluded.has(r.projectId);
+                return {
+                  id: r.projectId,
+                  current: on,
+                  onSelect: () => onProject(on ? '' : r.projectId),
+                  style: off ? { opacity: 0.55 } : undefined,
+                  cells: {
+                    project: (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.projectId}</span>
+                        {/* NEVER FILE THIS ONE. A client's repository, an archive, a
+                            mirror: indexed and searchable as before, simply never
+                            put on the board. The severity floor cannot say that —
+                            it is global, and a critical in someone else's codebase
+                            is still a critical. */}
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          data-testid={`exclude-${r.projectId}`}
+                          className="tt-ptile-x"
+                          title={off
+                            ? 'Excluded — no cards are filed for this project. Click to allow again.'
+                            : 'Never file cards for this project'}
+                          onClick={(e) => { e.stopPropagation(); onToggleExcluded(r.projectId); }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); e.preventDefault(); onToggleExcluded(r.projectId); }
+                          }}
+                        >
+                          {off ? 'excluded' : 'exclude'}
+                        </span>
                       </span>
-                      {/* This project's own floor. One number across every repo
-                          forces the strictest on all of them — a client's
-                          codebase and a scratch project are not the same job. */}
+                    ),
+                    counts: (
+                      <span className="tt-ptile-nums">
+                        {SEVERITY_BY_PRI.filter((sv) => (r.counts[sv] ?? 0) > 0).map((sv, i) => (
+                          <span key={sv} className="tt-ptile-n">
+                            {i > 0 && <i />}
+                            <b className={sv === 'critical' ? 'tt-pcrit' : undefined}>{r.counts[sv]}</b> {sv}
+                          </span>
+                        ))}
+                      </span>
+                    ),
+                    waiting: r.eligible > 0
+                      ? r.eligible
+                      : <span className="val-q">{on ? 'filtering' : 'all filed'}</span>,
+                    /* This project's own floor. One number across every repo
+                       forces the strictest on all of them — a client's codebase
+                       and a scratch project are not the same job. */
+                    floor: (
                       <select
                         className="tt-sel-sm tt-ptile-floor"
                         data-testid={`floor-${r.projectId}`}
@@ -810,22 +840,11 @@ function AutoPanel({
                           <option key={sv} value={i}>{sv} and above</option>
                         ))}
                       </select>
-                    </span>
-                    <span className="tt-ptile-nums">
-                      {SEVERITY_BY_PRI.filter((sv) => (r.counts[sv] ?? 0) > 0).map((sv, i) => (
-                        <span key={sv} className="tt-ptile-n">
-                          {i > 0 && <i />}
-                          <b className={sv === 'critical' ? 'tt-pcrit' : undefined}>{r.counts[sv]}</b> {sv}
-                        </span>
-                      ))}
-                    </span>
-                    <span className="tt-ptile-foot">
-                      {r.eligible > 0 ? `${r.eligible} waiting to file` : on ? 'Filtering the board' : 'All filed'}
-                    </span>
-                  </button>
-                );
+                    ),
+                  },
+                };
               })}
-            </div>
+            />
           )}
         </div>
       )}
@@ -910,7 +929,7 @@ function CardEvidence({ task }: { task: TeamTask }) {
   //
   // A session touches every repository it worked in, and only some of that
   // belongs to this card. The first version fell back to "show everything" when
-  // the closer named no files, which is the common case: `files` is optional and
+  // the closer named no files, which is the common case: "files" is optional and
   // every card closed before it existed has none. That fallback re-created the
   // exact bug this block exists to kill — a card rendering another repository's
   // work as though it were the fix. Better to show the commits and say the
@@ -1048,8 +1067,8 @@ function CardEvidence({ task }: { task: TeamTask }) {
 /**
  * "Why is this leaving the board?", asked on the card.
  *
- * `closed` is refused by the server without a reason and `rejected` has nowhere
- * else to record one, so both ask. Inline rather than `window.prompt`: the modal
+ * "closed" is refused by the server without a reason and `rejected` has nowhere
+ * else to record one, so both ask. Inline rather than "window.prompt": the modal
  * blocks the tab, cannot be styled, and is the one control on this board that
  * would not have matched the rest of the app.
  */
@@ -1160,7 +1179,7 @@ const TT_CSS = `
 .tt-sel, .tt-sel-sm { border: 1px solid var(--cr-line-1); border-radius: var(--cr-radius-sm);
   padding: 6px 8px; background: var(--cr-ink-2); color: var(--cr-fg-1); font-size: 13px;
   font-family: inherit; }
-.tt-sel-sm { font-size: 11px; padding: 2px 5px; }
+.tt-sel-sm { font-size: 12px; padding: 2px 5px; }
 .tt-sel:focus-visible, .tt-sel-sm:focus-visible, .tt-cmt:focus-visible {
   outline: 2px solid var(--cr-brand-500); outline-offset: 1px; }
 .tt-auto-wrap { border: 1px solid var(--cr-line-1); border-radius: var(--cr-radius-lg);
@@ -1173,7 +1192,7 @@ const TT_CSS = `
    grey micro-copy doing the panel's most important job. */
 .tt-auto-head { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .tt-auto-head b { font-size: 12.5px; font-weight: 600; color: var(--cr-fg-1); }
-.tt-auto-sub { font-size: 11px; color: var(--cr-fg-3); font-variant-numeric: tabular-nums; }
+.tt-auto-sub { font-size: 12px; color: var(--cr-fg-3); font-variant-numeric: tabular-nums; }
 .tt-auto-actions { margin-left: auto; display: inline-flex; gap: 10px; align-items: center; }
 
 .tt-link { background: none; border: 0; padding: 2px 3px; cursor: pointer; color: var(--cr-fg-3);
@@ -1187,11 +1206,11 @@ const TT_CSS = `
 .tt-switch { display: inline-flex; align-items: center; gap: 9px; cursor: pointer;
   user-select: none; font-size: 13px; color: var(--cr-fg-1); flex: none; }
 .tt-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
-.tt-switch-track { width: 34px; height: 19px; border-radius: 999px; flex: none;
+.tt-switch-track { width: 34px; height: 19px; border-radius: 0; flex: none;
   background: var(--cr-ink-3); border: 1px solid var(--cr-line-1); position: relative;
   transition: background var(--cr-dur-fast), border-color var(--cr-dur-fast); }
 .tt-switch-dot { position: absolute; top: 2px; left: 2px; width: 13px; height: 13px;
-  border-radius: 999px; background: var(--cr-fg-3);
+  border-radius: 0; background: var(--cr-fg-3);
   transition: transform var(--cr-dur-fast), background var(--cr-dur-fast); }
 .tt-switch input:checked + .tt-switch-track { background: var(--cr-brand-surf);
   border-color: var(--cr-brand-line); }
@@ -1205,7 +1224,7 @@ const TT_CSS = `
 /* Skeleton in the panel's own shape. */
 .tt-skel { display: block; border-radius: var(--cr-radius-sm); background: var(--cr-ink-3);
   opacity: 0.55; animation: tt-pulse 1.4s ease-in-out infinite; }
-.tt-skel-switch { width: 34px; height: 19px; border-radius: 999px; flex: none; }
+.tt-skel-switch { width: 34px; height: 19px; border-radius: 0; flex: none; }
 .tt-skel-line { width: 190px; height: 11px; }
 @keyframes tt-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.7; } }
 
@@ -1230,12 +1249,12 @@ const TT_CSS = `
 .tt-sevopt:hover:not(:disabled) { color: var(--cr-fg-1); background: var(--cr-ink-2); }
 .tt-sevopt:disabled { opacity: 0.5; cursor: default; }
 .tt-sevopt-on { background: var(--cr-brand-surf); color: var(--cr-fg-1); font-weight: 600; }
-.tt-sevopt-n { font-style: normal; font-size: 10.5px; opacity: 0.75;
+.tt-sevopt-n { font-style: normal; font-size: 12px; opacity: 0.75;
   font-variant-numeric: tabular-nums; }
 .tt-ptile-n { display: inline-flex; align-items: baseline; gap: 4px; }
 .tt-auto-empty { font-size: 12.5px; color: var(--cr-fg-3); line-height: 1.55; }
 .tt-auto-empty code { background: var(--cr-ink-2); padding: 1px 5px;
-  border-radius: var(--cr-radius-xs); font-size: 11.5px; }
+  border-radius: var(--cr-radius-xs); font-size: 12px; }
 
 /* Findings per project as tiles, not a hairline-per-row table: a repo is a thing
    you click, and a border under every row is the laziest layout there is. */
@@ -1249,16 +1268,16 @@ const TT_CSS = `
 .tt-ptile:focus-visible { outline: 2px solid var(--cr-brand-500); outline-offset: 1px; }
 .tt-ptile-on { border-color: var(--cr-brand-line); background: var(--cr-brand-surf); }
 .tt-ptile-name { font-size: 12.5px; font-weight: 600; color: var(--cr-fg-1); overflow-wrap: anywhere; }
-.tt-ptile-nums { font-size: 11.5px; color: var(--cr-fg-3); display: flex; align-items: baseline;
+.tt-ptile-nums { font-size: 12px; color: var(--cr-fg-3); display: flex; align-items: baseline;
   gap: 5px; flex-wrap: wrap; font-variant-numeric: tabular-nums; }
 .tt-ptile-nums b { font-size: 15px; font-weight: 600; color: var(--cr-fg-1); }
 .tt-ptile-nums i { width: 1px; height: 10px; background: var(--cr-line-1); margin: 0 3px; }
-.tt-ptile-foot { font-size: 10.5px; color: var(--cr-fg-3); }
+.tt-ptile-foot { font-size: 12px; color: var(--cr-fg-3); }
 .tt-pcrit { color: var(--cr-err-500) !important; }
 .tt-pzero { color: var(--cr-fg-3) !important; }
 @media (max-width: 620px) { .tt-auto-actions { margin-left: 0; } }
 
-.tt-board { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px;
+.tt-board { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px;
   align-items: start; }
 .tt-col { background: var(--cr-ink-1); border: 1px solid var(--cr-line-1);
   border-radius: var(--cr-radius-lg); padding: 10px; min-height: 140px;
@@ -1266,11 +1285,11 @@ const TT_CSS = `
 /* The drop target announces itself. Without this a drag is a guess. */
 .tt-col-over { border-color: var(--cr-brand-line); background: var(--cr-brand-surf); }
 .tt-col-head { display: flex; justify-content: space-between; align-items: baseline;
-  font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+  font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase;
   color: var(--cr-fg-3); font-weight: 600; margin-bottom: 10px; }
 .tt-count { font-variant-numeric: tabular-nums; }
 
-.tt-card { background: var(--cr-ink-2); border: 1px solid var(--cr-line-1);
+.tt-card { background: var(--cr-ink-0); border: 1px solid var(--cr-line-2);
   border-radius: var(--cr-radius-md); padding: 10px; margin-bottom: 8px;
   cursor: grab; transition: border-color var(--cr-dur-fast), transform var(--cr-dur-fast); }
 .tt-card:hover { border-color: var(--cr-line-2); }
@@ -1279,20 +1298,20 @@ const TT_CSS = `
 .tt-title { font-size: 13px; font-weight: 500; color: var(--cr-fg-1); line-height: 1.4;
   margin-bottom: 8px; text-wrap: pretty; }
 /* Severity reads as a chip, not as a bracket inside the sentence. */
-.tt-sev { display: inline-block; margin-right: 6px; padding: 1px 5px; border-radius: var(--cr-radius-xs);
-  font-size: 9.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+.tt-sev { display: inline-block; margin-right: 6px; padding: 2px 6px; border-radius: var(--cr-radius-xs);
+  font-size: 12px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
   vertical-align: 1px; }
 .tt-sev-critical { background: var(--cr-err-surf); color: var(--cr-err-500);
   border: 1px solid var(--cr-err-line); }
-.tt-sev-high { background: var(--cr-warn-surf, var(--cr-ink-3)); color: var(--cr-warn-500, var(--cr-fg-2));
-  border: 1px solid var(--cr-warn-line, var(--cr-line-2)); }
-.tt-sev-medium, .tt-sev-low { background: var(--cr-ink-3); color: var(--cr-fg-3);
+.tt-sev-high { background: var(--cr-warn-surf); color: var(--cr-warn-500);
+  border: 1px solid var(--cr-warn-line); }
+.tt-sev-medium, .tt-sev-low { background: var(--cr-ink-1); color: var(--cr-fg-2);
   border: 1px solid var(--cr-line-1); }
 
 .tt-outcome { display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
   margin-bottom: 8px; padding: 5px 7px; border-radius: var(--cr-radius-sm);
   background: var(--cr-ink-0); border: 1px solid var(--cr-line-1);
-  font-size: 10.5px; color: var(--cr-fg-3); text-decoration: none;
+  font-size: 12px; color: var(--cr-fg-3); text-decoration: none;
   font-variant-numeric: tabular-nums; }
 .tt-outcome:hover { border-color: var(--cr-brand-line); color: var(--cr-fg-2); }
 .tt-outcome-status { color: var(--cr-fg-2); font-weight: 500; }
@@ -1301,22 +1320,22 @@ const TT_CSS = `
 /* The never-file toggle on a project tile. Muted until it is on, then it is the
    loudest thing on the tile — an excluded project is a deliberate state, and a
    board silently not filing for a repo would be worse than not having it. */
-.tt-ptile-x { margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 9.5px;
+.tt-ptile-x { margin-left: 6px; padding: 1px 5px; border-radius: 0; font-size: 12px;
   color: var(--cr-fg-3); border: 1px solid var(--cr-line-1); cursor: pointer; }
 .tt-ptile-x:hover { color: var(--cr-fg-1); border-color: var(--cr-line-2); }
 .tt-ptile-off { opacity: 0.55; }
-.tt-ptile-floor { margin-left: 6px; font-size: 9.5px; padding: 1px 4px; }
-.tt-ptile-off .tt-ptile-x { color: var(--cr-warn-500, var(--cr-fg-2));
-  border-color: var(--cr-warn-line, var(--cr-line-2)); }
+.tt-ptile-floor { margin-left: 6px; font-size: 12px; padding: 1px 4px; }
+.tt-ptile-off .tt-ptile-x { color: var(--cr-warn-500);
+  border-color: var(--cr-warn-line); }
 
 /* Asked on the card when it is about to leave the board. */
 .tt-reason { margin-bottom: 8px; padding: 7px; border-radius: var(--cr-radius-sm);
   background: var(--cr-ink-0); border: 1px solid var(--cr-brand-line); }
-.tt-reason-label { display: block; font-size: 10.5px; color: var(--cr-fg-2); margin-bottom: 5px; }
-.tt-reason-input { width: 100%; padding: 5px 7px; font-size: 11px; border-radius: 5px;
+.tt-reason-label { display: block; font-size: 12px; color: var(--cr-fg-2); margin-bottom: 5px; }
+.tt-reason-input { width: 100%; padding: 5px 7px; font-size: 12px; border-radius: 0;
   border: 1px solid var(--cr-line-1); background: var(--cr-ink-2); color: var(--cr-fg-1); }
 .tt-reason-actions { display: flex; gap: 6px; margin-top: 6px; }
-.tt-btn-sm { padding: 3px 9px; font-size: 10.5px; border-radius: 5px; cursor: pointer;
+.tt-btn-sm { padding: 3px 9px; font-size: 12px; border-radius: 0; cursor: pointer;
   border: 1px solid var(--cr-line-1); background: var(--cr-ink-2); color: var(--cr-fg-1); }
 .tt-btn-sm:disabled { opacity: 0.5; cursor: default; }
 .tt-btn-ghost { background: transparent; color: var(--cr-fg-3); }
@@ -1325,35 +1344,35 @@ const TT_CSS = `
    footprint. Sits above the session badge because it is the narrower claim. */
 .tt-evidence { display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
   margin-bottom: 8px; padding: 5px 7px; border-radius: var(--cr-radius-sm);
-  background: var(--cr-ink-0); border: 1px solid var(--cr-ok-line, var(--cr-line-1));
-  font-size: 10.5px; color: var(--cr-fg-3); }
+  background: var(--cr-ink-0); border: 1px solid var(--cr-ok-line);
+  font-size: 12px; color: var(--cr-fg-3); }
 .tt-evidence-label { color: var(--cr-ok-500); font-weight: 500; }
 .tt-sha { font-family: var(--cr-font-mono); color: var(--cr-fg-2);
-  background: var(--cr-ink-2); padding: 1px 5px; border-radius: 4px; }
+  background: var(--cr-ink-2); padding: 1px 5px; border-radius: 0; }
 .tt-evidence-files { color: var(--cr-fg-3); }
 .tt-evidence-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.tt-evidence-more { margin-left: auto; padding: 1px 6px; border-radius: 4px; font-size: 9.5px;
+.tt-evidence-more { margin-left: auto; padding: 1px 6px; border-radius: 0; font-size: 12px;
   cursor: pointer; color: var(--cr-fg-2); background: transparent;
   border: 1px solid var(--cr-line-1); }
 .tt-evidence-more:hover { border-color: var(--cr-brand-line); color: var(--cr-fg-1); }
-.tt-evidence-summary { margin-top: 5px; color: var(--cr-fg-3); font-size: 10.5px; }
+.tt-evidence-summary { margin-top: 5px; color: var(--cr-fg-3); font-size: 12px; }
 .tt-evidence-diff { margin-top: 6px; border-top: 1px solid var(--cr-line-1); padding-top: 6px; }
-.tt-evidence-note { color: var(--cr-fg-3); font-size: 10.5px; }
-.tt-commitfiles { margin: 4px 0 8px 10px; font-size: 10px; color: var(--cr-fg-3);
+.tt-evidence-note { color: var(--cr-fg-3); font-size: 12px; }
+.tt-commitfiles { margin: 4px 0 8px 10px; font-size: 12px; color: var(--cr-fg-3);
   font-family: var(--cr-font-mono); }
 .tt-difffile > summary { display: flex; gap: 8px; align-items: center; cursor: pointer;
-  font-size: 10.5px; color: var(--cr-fg-2); padding: 2px 0; }
+  font-size: 12px; color: var(--cr-fg-2); padding: 2px 0; }
 .tt-diffbody { margin: 4px 0 8px; padding: 7px; border-radius: var(--cr-radius-sm);
-  background: var(--cr-ink-2); border: 1px solid var(--cr-line-1);
-  font-family: var(--cr-font-mono); font-size: 10px; line-height: 1.45;
+  background: var(--cr-ink-1); border: 1px solid var(--cr-line-1);
+  font-family: var(--cr-font-mono); font-size: 12px; line-height: 1.45;
   color: var(--cr-fg-2); max-height: 320px; overflow: auto; white-space: pre; }
 /* Why a card left the board. Muted: it is context, not an achievement. */
 .tt-closedwhy { margin-bottom: 8px; padding: 5px 7px; border-radius: var(--cr-radius-sm);
   background: var(--cr-ink-0); border: 1px solid var(--cr-line-1);
-  font-size: 10.5px; color: var(--cr-fg-3); font-style: italic; }
+  font-size: 12px; color: var(--cr-fg-3); font-style: italic; }
 
 .tt-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
-.tt-due { font-size: 10.5px; color: var(--cr-fg-3); font-variant-numeric: tabular-nums; }
+.tt-due { font-size: 12px; color: var(--cr-fg-3); font-variant-numeric: tabular-nums; }
 .tt-overdue { color: var(--cr-err-500); }
 
 .tt-foot { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -1362,19 +1381,19 @@ const TT_CSS = `
 .tt-foot .tt-sel-sm { min-width: 0; flex: 0 1 auto; max-width: 100%; }
 .tt-avatar { flex: none; width: 22px; height: 22px; border-radius: var(--cr-radius-xs);
   display: inline-flex; align-items: center; justify-content: center;
-  background: var(--cr-ink-3); color: var(--cr-fg-2); font-size: 9.5px; font-weight: 600;
+  background: var(--cr-ink-3); color: var(--cr-fg-2); font-size: 12px; font-weight: 600;
   letter-spacing: 0.02em; }
 .tt-showclosed {
   width: 100%; text-align: left; cursor: pointer;
-  font-size: 11px; color: var(--cr-fg-3);
+  font-size: 12px; color: var(--cr-fg-3);
   background: none; border: 1px dashed var(--cr-line-1); border-radius: var(--cr-radius-xs);
   padding: 8px; margin-top: 4px;
 }
 .tt-showclosed:hover { color: var(--cr-fg-1); border-style: solid; }
-.tt-brief > summary { font-size: 11px; color: var(--cr-fg-3); cursor: pointer; user-select: none; padding: 2px 0; }
+.tt-brief > summary { font-size: 12px; color: var(--cr-fg-3); cursor: pointer; user-select: none; padding: 2px 0; }
 .tt-brief > summary:hover { color: var(--cr-fg-1); }
 .tt-brief-body {
-  font-size: 11px; line-height: 1.45; color: var(--cr-fg-2);
+  font-size: 12px; line-height: 1.45; color: var(--cr-fg-2);
   background: var(--cr-ink-1); border: 1px solid var(--cr-line-1); border-radius: var(--cr-radius-xs);
   padding: 8px; margin: 6px 0 0;
   /* The brief holds file:line lists and a fenced agent prompt. Wrap rather than
@@ -1382,13 +1401,13 @@ const TT_CSS = `
      rest of the column off screen. */
   white-space: pre-wrap; overflow-wrap: anywhere; max-height: 260px; overflow-y: auto;
 }
-.tt-donetag { font-size: 11px; color: var(--cr-ok-500); border: 1px solid var(--cr-line-1);
+.tt-donetag { font-size: 12px; color: var(--cr-ok-500); border: 1px solid var(--cr-line-1);
   padding: 2px 7px; border-radius: var(--cr-radius-xs); background: var(--cr-ink-1); }
 .tt-cmt { background: none; border: 0; cursor: pointer; color: var(--cr-fg-3);
   margin-left: auto; display: inline-flex; padding: 2px; border-radius: var(--cr-radius-xs); }
 .tt-cmt:hover { color: var(--cr-fg-1); }
 
-.tt-empty { color: var(--cr-fg-3); font-size: 11.5px; text-align: center; padding: 14px 6px;
+.tt-empty { color: var(--cr-fg-3); font-size: 12px; text-align: center; padding: 14px 6px;
   border: 1px dashed var(--cr-line-1); border-radius: var(--cr-radius-sm); }
 
 .tt-comments { margin-top: 8px; border-top: 1px solid var(--cr-line-1); padding-top: 8px; }

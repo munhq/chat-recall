@@ -67,13 +67,13 @@ export default function Sparkline({
       <title>{title}</title>
       <path
         d={path} fill="none"
-        stroke="var(--cr-line-3, var(--cr-fg-3))" strokeWidth={2}
+        stroke="var(--cr-line-3)" strokeWidth={2}
         strokeLinecap="round" strokeLinejoin="round"
       />
       {/* The current value, in the accent. A 2px surface ring keeps it legible
           where it overlaps the line. */}
       <circle cx={lastX} cy={lastY} r={3} fill="var(--cr-brand-500)"
-        stroke="var(--cr-ink-0, #fff)" strokeWidth={2} />
+        stroke="var(--cr-ink-0)" strokeWidth={2} />
     </svg>
   );
 }

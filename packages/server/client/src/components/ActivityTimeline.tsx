@@ -15,7 +15,7 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Card, Chip, ToolBadge } from './primitives';
+import { Card, Chip, ToolBadge, Schedule, Metrics, Plate } from './primitives';
 import { getActivitySummary, type ActivitySummaryResponse, type AiTool } from '../services/api';
 import { VALID_TOOL_FILTERS } from '../services/tools';
 import { useSidebarExtrasRegister } from '../context/sidebar-extras';
@@ -80,7 +80,7 @@ function Pulse({ pulse, hourly }: { pulse: ActivitySummaryResponse['pulse']; hou
           <div
             key={p.bucket}
             title={`${bucketLabel(p.bucket, hourly)} · ${p.edits} edit${p.edits === 1 ? '' : 's'} · ${p.sessions} session${p.sessions === 1 ? '' : 's'}`}
-            style={{ width: 16, height: 34, borderRadius: 3, background: bg, border: '1px solid var(--cr-line-1)', flex: '0 0 auto' }}
+            style={{ width: 16, height: 34, borderRadius: 0, background: bg, border: '1px solid var(--cr-line-1)', flex: '0 0 auto' }}
           />
         );
       })}
@@ -109,7 +109,7 @@ function OutcomeBar({ o }: { o: ActivitySummaryResponse['totals'] }) {
   const total = parts.reduce((s, [, n]) => s + n, 0);
   if (total === 0) return null;
   return (
-    <div style={{ display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', gap: 1, background: 'var(--cr-ink-2)' }}>
+    <div style={{ display: 'flex', height: 6, borderRadius: 0, overflow: 'hidden', gap: 1, background: 'var(--cr-ink-2)' }}>
       {parts.filter(([, n]) => n > 0).map(([k, n]) => (
         <div key={k} title={`${OUTCOME_META[k].label}: ${n}`} style={{ width: `${(n / total) * 100}%`, background: OUTCOME_COLOR[k] }} />
       ))}
@@ -119,9 +119,9 @@ function OutcomeBar({ o }: { o: ActivitySummaryResponse['totals'] }) {
 
 function StatTile({ value, label, sub }: { value: React.ReactNode; label: string; sub?: React.ReactNode }) {
   return (
-    <div style={{ padding: '10px 14px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-sm)', minWidth: 96 }}>
+    <div style={{ padding: '10px 14px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 0, minWidth: 96 }}>
       <div style={{ fontSize: 20, fontWeight: 700, color: 'var(--cr-fg-1)', lineHeight: 1.1 }}>{value}</div>
-      <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 2, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
+      <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginTop: 2, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
       {sub && <div style={{ marginTop: 4 }}>{sub}</div>}
     </div>
   );
@@ -183,61 +183,72 @@ export default function ActivityTimeline({ onSessionClick, toolFilter: toolFilte
       {data && hasData && t && (
         <>
           {/* Pulse + totals */}
-          <Card style={{ padding: 16, marginTop: 12, marginBottom: 16 }}>
-            <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
-              Pulse · {hourly ? 'hourly' : 'daily'}
-            </div>
+          {/* The pulse chart, then its totals as a schedule. The four boxes were
+              a stat-tile row on --cr-ink-2 — the template AND a second raised
+              ground — and "PULSE · HOURLY" above them was an eyebrow, so it is
+              the plate's own name now. */}
+          <Plate
+            style={{ marginTop: 12 }}
+            title={<>Pulse <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400, fontSize: 12.5 }}>{hourly ? 'hourly' : 'daily'}</span></>}
+          >
             <Pulse pulse={data.pulse} hourly={hourly} />
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 16 }}>
-              <StatTile value={t.sessions} label="sessions" />
-              <StatTile value={t.files} label="files touched" />
-              <StatTile value={fmtLines(t.linesAdded, t.linesRemoved)} label="lines changed" />
-              <StatTile
-                value={<span style={{ color: 'var(--cr-ok-500)' }}>{t.shipped}</span>}
-                label="shipped"
-                sub={<div style={{ display: 'flex', gap: 8, fontSize: 11, color: 'var(--cr-fg-3)' }}>
-                  <span>⚠ {t.interrupted}</span><span>✕ {t.abandoned}</span><span>◐ {t.inProgress}</span>
-                </div>}
-              />
-            </div>
-          </Card>
+          </Plate>
+          <Metrics
+            style={{ marginBottom: 16 }}
+            items={[
+              { label: 'Sessions', value: String(t.sessions) },
+              { label: 'Files touched', value: String(t.files) },
+              { label: 'Lines changed', value: fmtLines(t.linesAdded, t.linesRemoved) },
+              { label: 'Shipped', value: String(t.shipped), tone: 'ok', sub: `${t.interrupted} interrupted, ${t.abandoned} abandoned, ${t.inProgress} in progress` },
+            ]}
+          />
 
           {/* By project */}
           {data.projects.length > 0 && (
-            <div style={{ marginBottom: 18 }}>
-              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 4px 8px' }}>By project</div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 12 }}>
-                {data.projects.map((p) => (
-                  <Card key={p.id} style={{ padding: 14 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
-                      <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--cr-fg-1)', wordBreak: 'break-word' }}>{p.name}</span>
-                      <Sparkline data={p.sparkline} />
-                    </div>
-                    <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap', fontSize: 12, color: 'var(--cr-fg-2)', marginBottom: 8 }}>
-                      <span>{p.files} file{p.files === 1 ? '' : 's'}</span>
-                      {fmtLines(p.linesAdded, p.linesRemoved)}
-                      <span>{p.sessions} session{p.sessions === 1 ? '' : 's'}</span>
-                    </div>
-                    <OutcomeBar o={{ ...p.outcomes, sessions: p.sessions, files: p.files, linesAdded: p.linesAdded, linesRemoved: p.linesRemoved }} />
-                    {p.hotFiles.length > 0 && (
-                      <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                        {p.hotFiles.map((h) => (
-                          <span key={h.file} title={h.file} style={{ fontSize: 11, fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)', color: 'var(--cr-fg-2)', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 4, padding: '2px 6px' }}>
-                            {base(h.file)} <span style={{ color: 'var(--cr-fg-3)' }}>×{h.edits}</span>
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </Card>
-                ))}
-              </div>
-            </div>
+            /* A card grid of per-project boxes becomes one schedule. Each box
+               held a name, a sparkline, three counts and a chip row — that is a
+               row of comparable data, and in a schedule the counts line up into
+               columns you can read down. The "BY PROJECT" label above it was an
+               eyebrow; the schedule's caption names it. */
+            <Schedule
+              scroll
+              style={{ marginBottom: 18 }}
+              caption="By project"
+              cols={[
+                { key: 'name', kind: 'pn', head: 'Project' },
+                { key: 'trend', head: 'Trend', optional: true },
+                { key: 'files', kind: 'val', head: 'Files' },
+                { key: 'lines', kind: 'rt', head: 'Lines', optional: true },
+                { key: 'sessions', kind: 'val', head: 'Sessions' },
+                { key: 'outcomes', head: 'Outcomes', optional: true },
+              ]}
+              rows={data.projects.map((p) => ({
+                id: p.id,
+                cells: {
+                  name: (
+                    <>
+                      <span style={{ whiteSpace: 'normal', wordBreak: 'break-word' }}>{p.name}</span>
+                      {p.hotFiles.length > 0 && (
+                        <span className="pn-sub">
+                          hot: {p.hotFiles.map((h) => `${base(h.file)} ×${h.edits}`).join(', ')}
+                        </span>
+                      )}
+                    </>
+                  ),
+                  trend: <Sparkline data={p.sparkline} />,
+                  files: p.files,
+                  lines: fmtLines(p.linesAdded, p.linesRemoved),
+                  sessions: p.sessions,
+                  outcomes: <OutcomeBar o={{ ...p.outcomes, sessions: p.sessions, files: p.files, linesAdded: p.linesAdded, linesRemoved: p.linesRemoved }} />,
+                },
+              }))}
+            />
           )}
 
           {/* Hottest files */}
           {data.hotFiles.length > 0 && (
             <Card style={{ padding: 14, marginBottom: 18 }}>
-              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Hottest files</div>
+              <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>Hottest files</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 {data.hotFiles.map((h) => (
                   <div key={`${h.project}-${h.file}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12, padding: '3px 0', borderTop: '1px solid var(--cr-line-1)' }}>
@@ -254,7 +265,7 @@ export default function ActivityTimeline({ onSessionClick, toolFilter: toolFilte
           {/* Sessions — narrative rows */}
           {data.sessions.length > 0 && (
             <div>
-              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 4px 8px' }}>Sessions</div>
+              <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 4px 8px' }}>Sessions</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {data.sessions.map((s) => {
                   const om = OUTCOME_META[s.outcome] || OUTCOME_META.in_progress;

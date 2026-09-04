@@ -19,7 +19,7 @@
  */
 
 import React, { useEffect, useMemo, useState } from 'react';
-import { Card, Chip, SegmentedControl, Button, Icon } from './primitives';
+import { Card, Chip, SegmentedControl, Button, Icon, Schedule, Note, Plate } from './primitives';
 import { stripToolPrefix } from '../services/tools';
 import {
   getSecretsSummary, getFlaggedSessions, getSecretsByRule, getDistinctSecrets,
@@ -52,20 +52,26 @@ function AccountRecsStrip() {
   };
   return (
     <div data-testid="account-recs" style={{ marginBottom: 16 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--cr-fg-2)', marginBottom: 6 }}>Recommendations</div>
+
+      {/* Each recommendation is a plate that names itself. The "Recommendations"
+          label that used to sit above this stack was an eyebrow: it said
+          nothing the plate titles do not. */}
       {recs.map((r) => (
-        <Card key={r.id} style={{ padding: 12, marginBottom: 6 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-            <Chip kind={r.severity === 'high' ? 'err' : r.severity === 'medium' ? 'warn' : 'neutral'} size="sm">{r.severity}</Chip>
-            <strong style={{ fontSize: 13 }}>{r.title}</strong>
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--cr-fg-2)', marginBottom: 8 }}>{r.rationale}</div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <Button variant="primary" onClick={() => apply(r)} disabled={busy === r.id}>{busy === r.id ? 'applying…' : 'Apply to global CLAUDE.md'}</Button>
+        <Plate
+          key={r.id}
+          // NO BALLOON. A balloon number refers to something — a schedule row,
+          // a detail, a part on a figure. Nothing on this screen cites
+          // "recommendation 02", so a number here would be a card wearing one.
+          title={r.title}
+          tools={<Chip kind={r.severity === 'high' ? 'err' : r.severity === 'medium' ? 'warn' : 'neutral'} size="sm">{r.severity}</Chip>}
+        >
+          <div style={{ fontSize: 13, color: 'var(--cr-fg-2)', marginBottom: 12, lineHeight: 1.5 }}>{r.rationale}</div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Button variant="primary" onClick={() => apply(r)} disabled={busy === r.id}>{busy === r.id ? 'Applying…' : 'Apply to global CLAUDE.md'}</Button>
             {(r.action.payload as any)?.text && <Button variant="secondary" onClick={() => navigator.clipboard.writeText(String((r.action.payload as any).text))}>Copy rule</Button>}
-            {msg[r.id] && <span style={{ fontSize: 12, color: 'var(--cr-fg-2)' }}>{msg[r.id]}</span>}
+            {msg[r.id] && <span style={{ fontSize: 12.5, color: 'var(--cr-fg-2)' }}>{msg[r.id]}</span>}
           </div>
-        </Card>
+        </Plate>
       ))}
     </div>
   );
@@ -95,6 +101,33 @@ interface Props {
 }
 
 type Lens = 'action' | 'rules' | 'projects' | 'sessions' | 'config';
+
+/**
+ * A drawn icon per secret kind.
+ *
+ * The engine's classifier carries an EMOJI for each kind, and that is right for
+ * the CLI — a terminal has no icon set. On this surface it was wrong: an emoji
+ * is a glyph the design system does not own, it renders in whatever font the
+ * platform picked, and at 22px next to a 14px label it was the loudest mark on
+ * the security screen. Keyword matching, so a new kind in the engine still
+ * lands on a sensible icon rather than nothing.
+ */
+function kindIcon(label: string): string {
+  const l = label.toLowerCase();
+  if (l.includes('private key') || l.includes('basic auth')) return 'key';
+  if (l.includes('aws') || l.includes('gcp') || l.includes('azure')) return 'cloud';
+  if (l.includes('database') || l.includes('connection string')) return 'database';
+  if (l.includes('url') || l.includes('rpc')) return 'link';
+  if (l.includes('github') || l.includes('gitlab')) return 'code';
+  if (l.includes('slack') || l.includes('telegram')) return 'message';
+  if (l.includes('environment')) return 'terminal';
+  if (l.includes('exchange') || l.includes('stripe')) return 'chart';
+  if (l.includes('jwt') || l.includes('token')) return 'tag';
+  if (l.includes('nvidia')) return 'zap';
+  if (l.includes('context-flagged')) return 'search';
+  if (l.includes('api key') || l.includes('service account')) return 'document';
+  return 'shield';
+}
 
 const SEVERITY_TONE: Record<Severity, { chip: 'err' | 'warn' | 'info' | 'neutral'; bg: string; border: string }> = {
   critical: { chip: 'err',     bg: 'rgba(255, 80, 80, 0.05)', border: 'var(--cr-err-500)' },
@@ -318,95 +351,113 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
     <div className="cr-page-pad" style={{ flex: 1, overflow: 'auto', padding: '20px 24px' }}>
       <AccountRecsStrip />
       {/* ── Hero ────────────────────────────────────────────────── */}
-      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', marginBottom: 16, flexWrap: 'wrap' }}>
-        <div>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: 'var(--cr-fg-1)' }}>Security</h2>
-          {!loading && needRotation > 0 ? (
-            <div style={{ fontSize: 13, marginTop: 3, color: 'var(--cr-err-500)', fontWeight: 600 }}>
-              🔴 {needRotation} secret{needRotation === 1 ? '' : 's'} need rotation now
-              {liveCount > 0 && <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400 }}> · {liveCount} confirmed live</span>}
-            </div>
-          ) : !loading ? (
-            <div style={{ fontSize: 13, marginTop: 3, color: 'var(--cr-ok-500)', fontWeight: 600 }}>✓ Nothing needs rotation right now</div>
-          ) : null}
-          <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginTop: 2 }}>
-            Per-secret analysis · raw values never leave the database
+      <div style={{ marginBottom: 16 }}>
+        <h2 style={{ margin: 0 }}>Security</h2>
+        {!loading && needRotation > 0 ? (
+          <div style={{ fontSize: 13.5, marginTop: 5, color: 'var(--cr-err-500)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 7 }}>
+            {/* An emoji is not an icon. This read "🔴 1 secret need rotation
+                now" — a coloured glyph the icon system does not own, and a
+                verb that did not agree with its subject. */}
+            <Icon name="shield" size={15} />
+            {needRotation === 1 ? '1 secret needs rotation now' : `${needRotation} secrets need rotation now`}
+            {liveCount > 0 && <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400 }}>· {liveCount} confirmed live</span>}
           </div>
+        ) : !loading ? (
+          <div style={{ fontSize: 13.5, marginTop: 5, color: 'var(--cr-ok-500)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: 7 }}>
+            <Icon name="check" size={15} /> Nothing needs rotation right now
+          </div>
+        ) : null}
+        <div style={{ fontSize: 12.5, color: 'var(--cr-fg-3)', marginTop: 4 }}>
+          Per-secret analysis. Raw values never leave the database.
         </div>
-        <span style={{ flex: 1 }} />
-        {!loading && (
-          /* display:contents on desktop, so the five cards stay direct flex
-           * children and the layout is unchanged; a 2-up grid on mobile, where
-           * flex-wrap alone leaves a ragged last row. */
-          <div className="cr-statwrap">
-            <Card
-              interactive
-              onClick={() => { setLens('action'); setSevFilter(f => f === 'critical' ? null : 'critical'); }}
-              title="Show only critical secrets"
-              style={{ padding: '10px 14px', minWidth: 130, borderLeft: '3px solid var(--cr-err-500)', outline: sevFilter === 'critical' ? '2px solid var(--cr-err-500)' : undefined, outlineOffset: 2 }}
-            >
-              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Critical</div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--cr-err-500)' }}>{headline.counts.critical}</div>
-              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>distinct keys</div>
-            </Card>
-            <Card
-              interactive
-              onClick={() => { setLens('action'); setSevFilter(f => f === 'high' ? null : 'high'); }}
-              title="Show only high-severity secrets"
-              style={{ padding: '10px 14px', minWidth: 130, borderLeft: '3px solid var(--cr-warn-500)', outline: sevFilter === 'high' ? '2px solid var(--cr-warn-500)' : undefined, outlineOffset: 2 }}
-            >
-              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>High</div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--cr-warn-500)' }}>{headline.counts.high}</div>
-              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>distinct keys</div>
-            </Card>
-            <Card style={{ padding: '10px 14px', minWidth: 130 }}>
-              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Sessions exposed</div>
-              <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--cr-fg-1)' }}>{headline.sessionsHit}</div>
-              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>contain critical or high</div>
-            </Card>
-            <Card
-              interactive={headline.counts.medium > 0}
-              onClick={headline.counts.medium > 0 ? () => { setLens('action'); setSevFilter(null); requestAnimationFrame(() => document.getElementById('sec-review-queue')?.scrollIntoView({ behavior: 'smooth', block: 'start' })); } : undefined}
-              title={headline.counts.medium > 0 ? 'Jump to the medium-severity review queue' : undefined}
-              style={{ padding: '10px 14px', minWidth: 110 }}
-            >
-              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Medium</div>
-              <div style={{ fontSize: 22, fontWeight: 600, color: 'var(--cr-fg-2)' }}>{headline.counts.medium}</div>
-            </Card>
-            <Card
-              interactive={headline.counts.noise > 0}
-              onClick={headline.counts.noise > 0 ? () => { setLens('action'); setSevFilter(null); setShowNoise(true); requestAnimationFrame(() => document.getElementById('sec-review-queue')?.scrollIntoView({ behavior: 'smooth', block: 'start' })); } : undefined}
-              title={headline.counts.noise > 0 ? 'Reveal noise-tier findings in the review queue' : undefined}
-              style={{ padding: '10px 14px', minWidth: 110, opacity: 0.6 }}
-            >
-              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Noise</div>
-              <div style={{ fontSize: 22, fontWeight: 600, color: 'var(--cr-fg-3)' }}>{headline.counts.noise}</div>
-            </Card>
-          </div>
-        )}
       </div>
+
+      {/* Severity, as one schedule.
+          This was five stat tiles, each with a 3px coloured left border — the
+          hero-metric template AND a coloured bar on a box edge, which is the
+          card mark the Coded Leader Rule forbids. Here the hue rides the
+          VALUE, the rows rank against each other, and a filtered row lights up
+          the way a selected schedule row does. */}
+      {!loading && (
+        <Schedule
+          style={{ marginBottom: 16 }}
+          caption="Exposure"
+          cols={[
+            { key: 'sev', kind: 'pn', head: 'Severity' },
+            { key: 'what', head: 'What it counts' },
+            { key: 'n', kind: 'val', head: 'Count' },
+          ]}
+          rows={[
+            {
+              id: 'critical',
+              current: sevFilter === 'critical',
+              onSelect: () => { setLens('action'); setSevFilter(f => f === 'critical' ? null : 'critical'); },
+              cells: {
+                sev: 'Critical',
+                what: 'distinct keys, rotate these first',
+                n: <span style={{ color: 'var(--cr-err-500)', fontSize: 15 }}>{headline.counts.critical}</span>,
+              },
+            },
+            {
+              id: 'high',
+              current: sevFilter === 'high',
+              onSelect: () => { setLens('action'); setSevFilter(f => f === 'high' ? null : 'high'); },
+              cells: {
+                sev: 'High',
+                what: 'distinct keys, rotate after the critical ones',
+                n: <span style={{ color: 'var(--cr-warn-500)', fontSize: 15 }}>{headline.counts.high}</span>,
+              },
+            },
+            {
+              id: 'medium',
+              onSelect: headline.counts.medium > 0
+                ? () => { setLens('action'); setSevFilter(null); requestAnimationFrame(() => document.getElementById('sec-review-queue')?.scrollIntoView({ behavior: 'smooth', block: 'start' })); }
+                : undefined,
+              cells: {
+                sev: 'Medium',
+                what: 'distinct keys in the review queue',
+                n: <span style={{ fontSize: 15 }}>{headline.counts.medium}</span>,
+              },
+            },
+            {
+              id: 'noise',
+              onSelect: headline.counts.noise > 0
+                ? () => { setLens('action'); setSevFilter(null); setShowNoise(true); requestAnimationFrame(() => document.getElementById('sec-review-queue')?.scrollIntoView({ behavior: 'smooth', block: 'start' })); }
+                : undefined,
+              cells: {
+                sev: 'Noise',
+                what: 'fuzzy matches, likely false positives',
+                n: <span className="val-q">{headline.counts.noise}</span>,
+              },
+            },
+            {
+              id: 'sessions',
+              cells: {
+                sev: 'Sessions exposed',
+                what: 'transcripts containing a critical or high key',
+                n: <span style={{ fontSize: 15 }}>{headline.sessionsHit}</span>,
+              },
+            },
+          ]}
+        />
+      )}
 
       {/* Prevention hint — the findings below tell you what leaked and how to
           rotate; this one line teaches how to stop it happening again. Same
           guidance chat-recall injects into CLAUDE.md, surfaced where it's
           most relevant. */}
-      <div
-        role="note"
-        style={{
-          display: 'flex', alignItems: 'flex-start', gap: 8,
-          padding: '9px 12px', marginBottom: 16, borderRadius: 'var(--cr-radius-md)',
-          background: 'var(--cr-info-surf)', border: '1px solid var(--cr-info-line)',
-          fontSize: 12.5, lineHeight: 1.5, color: 'var(--cr-fg-2)',
-        }}
-      >
-        <Icon name="shield" size={15} style={{ color: 'var(--cr-info-500)', flexShrink: 0, marginTop: 1 }} />
-        <span>
-          <strong style={{ color: 'var(--cr-fg-1)', fontWeight: 600 }}>Prevent leaks:</strong>{' '}
-          reference the environment variable name in prompts (e.g.{' '}
-          <code style={{ fontFamily: 'var(--cr-font-mono)', fontSize: 11.5, color: 'var(--cr-fg-1)' }}>$OPENAI_API_KEY</code>),
-          never the value. A pasted secret can stay in transcripts even after you delete the chat — if one slips through, rotate it.
-        </span>
-      </div>
+      <Note
+        style={{ marginBottom: 16 }}
+        title="Prevent leaks"
+        footer={
+          <>
+            Reference the environment variable name in prompts, for example{' '}
+            <code style={{ fontFamily: 'var(--cr-font-annot)', fontSize: 12.5, color: 'var(--cr-fg-1)' }}>$OPENAI_API_KEY</code>,
+            never the value. A pasted secret can stay in a transcript after you delete the chat.
+            If one slips through, rotate it.
+          </>
+        }
+      />
 
       {error && (
         <Card style={{ padding: 14, marginBottom: 12, borderColor: 'var(--cr-err-500)' }}>
@@ -414,7 +465,11 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
         </Card>
       )}
 
-      <Card style={{ padding: 12, marginBottom: 14, display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+      {/* The five-lens strip is 465px wide and a phone is 390px. The STRIP
+          pans, which is what a tab strip does; the page must not, because a
+          panning page moves the content you are reading. */}
+      <Card style={{ padding: 12, marginBottom: 14, display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', minWidth: 0 }}>
+        <div className="cr-segmented-scroll" style={{ marginBottom: 0, minWidth: 0, maxWidth: '100%' }}>
         <SegmentedControl
           options={[
             { value: 'action', label: 'Action required' },
@@ -427,6 +482,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
           onChange={(v) => setLens(v as Lens)}
           size="sm"
         />
+        </div>
         <span style={{ flex: 1 }} />
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--cr-fg-3)' }}>
           <input
@@ -442,11 +498,11 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
 
       {/* Scope banner — arrived from a conversation's "Rotate & manage →". */}
       {sessionScope && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '9px 14px', borderRadius: 'var(--cr-radius-md)', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-2)', fontSize: 13, color: 'var(--cr-fg-2)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '9px 14px', borderRadius: 0, background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-2)', fontSize: 13, color: 'var(--cr-fg-2)' }}>
           <span>Scoped to <b style={{ color: 'var(--cr-fg-1)' }}>one conversation</b>'s secrets.</span>
           <span style={{ flex: 1 }} />
           <button onClick={() => setSessionScope(null)}
-            style={{ background: 'transparent', border: '1px solid var(--cr-line-2)', color: 'var(--cr-fg-2)', borderRadius: 6, padding: '3px 10px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}>
+            style={{ background: 'transparent', border: '1px solid var(--cr-line-2)', color: 'var(--cr-fg-2)', borderRadius: 0, padding: '3px 10px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}>
             Show all secrets
           </button>
         </div>
@@ -462,7 +518,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
               <span>Filtered to <b style={{ color: 'var(--cr-fg-1)' }}>{sevFilter}</b> · {shownAction.length} secret{shownAction.length === 1 ? '' : 's'}</span>
               <button
                 onClick={() => setSevFilter(null)}
-                style={{ background: 'transparent', border: '1px solid var(--cr-line-2)', color: 'var(--cr-fg-2)', borderRadius: 6, padding: '2px 10px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}
+                style={{ background: 'transparent', border: '1px solid var(--cr-line-2)', color: 'var(--cr-fg-2)', borderRadius: 0, padding: '2px 10px', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' }}
               >
                 Clear filter
               </button>
@@ -471,7 +527,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
           {shownAction.length === 0 && (
             <Card style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>
               <div style={{ fontSize: 14, marginBottom: 6, color: 'var(--cr-ok-500)' }}>
-                ✓ No critical or high-severity secrets detected
+                No critical or high-severity secrets detected
               </div>
               <div style={{ fontSize: 12 }}>
                 Findings populate from the collector. Run <code>chat-recall sync</code> on the
@@ -488,20 +544,16 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
               return (
                 <Card
                   key={s.preview}
-                  style={{
-                    padding: 14,
-                    background: tone.bg,
-                    borderLeft: `4px solid ${tone.border}`,
-                  }}
+                  style={{ padding: 14 }}
                 >
                   {/* Header row: glyph + label + preview + chips */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 22 }} aria-hidden>{s.type.glyph}</span>
+                    <Icon name={kindIcon(s.type.label)} size={18} style={{ color: 'var(--cr-fg-2)' }} />
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
                       <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--cr-fg-1)' }}>
                         {s.type.label}
                       </span>
-                      <span style={{ fontSize: 11, fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-3)', wordBreak: 'break-all', overflowWrap: 'anywhere', maxWidth: '100%' }}>
+                      <span style={{ fontSize: 12, fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-3)', wordBreak: 'break-all', overflowWrap: 'anywhere', maxWidth: '100%' }}>
                         {s.preview}
                       </span>
                     </div>
@@ -513,7 +565,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                       // Trufflehog confirmed this key is currently live
                       // by calling the issuing service. The strongest
                       // possible signal: rotate this NOW.
-                      <Chip kind="err" size="sm">🔴 LIVE — verified</Chip>
+                      <Chip kind="err" size="sm" icon="shield">live, verified</Chip>
                     )}
                     <Chip kind={s.detectors.length >= 2 ? 'err' : 'warn'} size="sm">
                       {s.detectors.length === 1 ? '1 detector' : `${s.detectors.length} agree`}
@@ -523,7 +575,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                     </Chip>
                     {s.dismissal && (
                       <Chip kind="ok" size="sm">
-                        {s.dismissal.status === 'rotated' ? '✓ Rotated' :
+                        {s.dismissal.status === 'rotated' ? 'Rotated' :
                          s.dismissal.status === 'false_positive' ? 'Not a secret' :
                          'Dismissed'}
                       </Chip>
@@ -536,7 +588,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                   </div>
 
                   {/* Meta row */}
-                  <div style={{ marginTop: 10, display: 'flex', gap: 14, fontSize: 11, color: 'var(--cr-fg-3)', flexWrap: 'wrap' }}>
+                  <div style={{ marginTop: 10, display: 'flex', gap: 14, fontSize: 12, color: 'var(--cr-fg-3)', flexWrap: 'wrap' }}>
                     <span>First seen <strong style={{ color: 'var(--cr-fg-2)' }}>{timeAgo(s.firstSeen)}</strong></span>
                     <span>Last seen <strong style={{ color: 'var(--cr-fg-2)' }}>{timeAgo(s.lastSeen)}</strong></span>
                     <span>{s.occurrences} occurrence{s.occurrences === 1 ? '' : 's'}</span>
@@ -549,7 +601,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                         rel="noreferrer"
                         style={{ color: 'var(--cr-brand-500)', fontWeight: 600, textDecoration: 'none' }}
                       >
-                        Rotate ↗
+                        Rotate
                       </a>
                     )}
                     {/* Mark-rotated: closes out the finding once the user
@@ -562,7 +614,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                         style={{ background: 'transparent', border: 0, padding: 0, color: 'var(--cr-ok-500)', fontWeight: 600, cursor: 'pointer' }}
                         title="I've rotated this key on the issuer side"
                       >
-                        ✓ Mark rotated
+                        Mark rotated
                       </button>
                     )}
                     {!s.dismissal && (
@@ -592,8 +644,8 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
 
                   {/* Blast radius — sessions+lines */}
                   {isOpen && (
-                    <div style={{ marginTop: 12, padding: 10, background: 'var(--cr-ink-2)', borderRadius: 4 }}>
-                      <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>
+                    <div style={{ marginTop: 12, padding: 10, background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-2)', borderRadius: 0 }}>
+                      <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>
                         Blast radius
                       </div>
                       <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -613,7 +665,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                             <span style={{ color: 'var(--cr-fg-3)', flex: 1, fontFamily: 'var(--cr-font-mono)', wordBreak: 'break-all' }}>
                               {projectShort(sess.project)}
                             </span>
-                            <span style={{ color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-font-mono)', fontSize: 11 }}>
+                            <span style={{ color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-font-mono)', fontSize: 12 }}>
                               {sess.lines.length === 1 ? `L${sess.lines[0]}` : `${sess.lines.length} lines`}
                             </span>
                           </div>
@@ -639,7 +691,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                 {reviewQueue.slice(0, 30).map(s => (
                   <Card key={s.preview} style={{ padding: 10 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: 16 }}>{s.type.glyph}</span>
+                      <Icon name={kindIcon(s.type.label)} size={15} style={{ color: 'var(--cr-fg-3)' }} />
                       <span style={{ fontWeight: 600, color: 'var(--cr-fg-1)' }}>{s.type.label}</span>
                       <span style={{ fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-3)' }}>{s.preview}</span>
                       <Chip kind={SEVERITY_TONE[s.type.severity].chip} size="sm">{s.type.severity}</Chip>
@@ -648,7 +700,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                       {s.sessions[0] && (
                         <button
                           onClick={() => onSessionClick?.(s.sessions[0].sessionId)}
-                          style={{ background: 'transparent', border: 0, padding: 0, color: 'var(--cr-brand-500)', cursor: 'pointer', fontFamily: 'var(--cr-font-mono)', fontSize: 11 }}
+                          style={{ background: 'transparent', border: 0, padding: 0, color: 'var(--cr-brand-500)', cursor: 'pointer', fontFamily: 'var(--cr-font-mono)', fontSize: 12 }}
                         >
                           {shortId(s.sessions[0].sessionId)} →
                         </button>
@@ -686,14 +738,14 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
       {!loading && lens === 'rules' && (
         <Card style={{ padding: 0 }}>
           <div className="cr-tablescroll">
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <table className="cr-schedule" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ background: 'var(--cr-ink-2)' }}>
-                <th style={{ textAlign: 'left',  padding: '8px 12px', fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Rule</th>
-                <th style={{ textAlign: 'left',  padding: '8px 12px', fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Detector</th>
-                <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Distinct</th>
-                <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Total</th>
-                <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Sessions</th>
+                <th style={{ textAlign: 'left',  padding: '8px 12px', fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Rule</th>
+                <th style={{ textAlign: 'left',  padding: '8px 12px', fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Detector</th>
+                <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Distinct</th>
+                <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Total</th>
+                <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Sessions</th>
               </tr>
             </thead>
             <tbody>
@@ -702,7 +754,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                 return (
                   <tr key={`${r.detector}:${r.rule}`} style={{ borderTop: i === 0 ? 'none' : '1px solid var(--cr-line-1)' }}>
                     <td style={{ padding: '8px 12px', fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-2)' }}>
-                      <span style={{ marginRight: 6 }}>{t.glyph}</span>
+                      <Icon name={kindIcon(t.label)} size={14} style={{ color: 'var(--cr-fg-3)', marginRight: 6, verticalAlign: '-2px' }} />
                       {shortRule(r.detector, r.rule)}
                     </td>
                     <td style={{ padding: '8px 12px' }}>
@@ -724,15 +776,15 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
       {!loading && lens === 'projects' && (
         <Card style={{ padding: 0 }}>
           <div className="cr-tablescroll">
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <table className="cr-schedule" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
             <thead>
               <tr style={{ background: 'var(--cr-ink-2)' }}>
-                <th style={{ textAlign: 'left',  padding: '8px 12px', fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Project</th>
-                <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Critical keys</th>
-                <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>High keys</th>
-                <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Medium keys</th>
-                <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Sessions</th>
-                <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Rotation checklist</th>
+                <th style={{ textAlign: 'left',  padding: '8px 12px', fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Project</th>
+                <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Critical keys</th>
+                <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>High keys</th>
+                <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Medium keys</th>
+                <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Sessions</th>
+                <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Rotation checklist</th>
               </tr>
             </thead>
             <tbody>
@@ -752,18 +804,18 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                           onClick={() => handleWriteTasks(p.project)}
                           disabled={taskBusy === p.project}
                           title="Write SECURITY_TASKS.md into this repo — a per-secret rotation checklist your AI can act on and tick off"
-                          style={{ background: 'transparent', border: '1px solid var(--cr-line-2)', color: 'var(--cr-brand-500)', borderRadius: 6, padding: '3px 10px', fontSize: 12, cursor: taskBusy === p.project ? 'default' : 'pointer', fontFamily: 'inherit', fontWeight: 600, whiteSpace: 'nowrap' }}
+                          style={{ background: 'transparent', border: '1px solid var(--cr-line-2)', color: 'var(--cr-brand-500)', borderRadius: 0, padding: '3px 10px', fontSize: 12, cursor: taskBusy === p.project ? 'default' : 'pointer', fontFamily: 'inherit', fontWeight: 600, whiteSpace: 'nowrap' }}
                         >
                           {taskBusy === p.project ? 'queuing…' : 'Write SECURITY_TASKS.md →'}
                         </button>
                         {taskMsg[p.project] && (
-                          <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 4, maxWidth: 320, marginLeft: 'auto', textAlign: 'right', lineHeight: 1.4 }}>
+                          <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginTop: 4, maxWidth: 320, marginLeft: 'auto', textAlign: 'right', lineHeight: 1.4 }}>
                             {taskMsg[p.project]}
                           </div>
                         )}
                       </>
                     ) : (
-                      <span style={{ fontSize: 11, color: 'var(--cr-fg-4, var(--cr-fg-3))' }}>—</span>
+                      <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>—</span>
                     )}
                   </td>
                 </tr>
@@ -788,7 +840,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
             return (
               <Card
                 key={s.sessionId}
-                style={{ padding: 12, borderLeft: `3px solid var(--cr-${tone}-500)`, cursor: onSessionClick ? 'pointer' : 'default' }}
+                style={{ padding: 12, cursor: onSessionClick ? 'pointer' : 'default' }}
                 onClick={() => onSessionClick?.(s.sessionId)}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -837,7 +889,7 @@ function ManagedPackCard({ pack }: { pack?: ServedRulePack }) {
           Maintained by chat-recall and installed into every device's redactor at sync time — nothing to configure.
         </span>
       </div>
-      <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 8, fontFamily: 'var(--cr-font-mono)' }}>
+      <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginTop: 8, fontFamily: 'var(--cr-font-mono)' }}>
         pack {pack?.version}{pack?.revision ? ` · rev ${pack.revision}` : ''}{pack?.source ? ` · ${pack.source}` : ''}
       </div>
       <button
@@ -929,13 +981,13 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
       {/* List */}
       <Card style={{ padding: 0 }}>
         <div className="cr-tablescroll">
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <table className="cr-schedule" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
           <thead>
             <tr style={{ background: 'var(--cr-ink-2)' }}>
-              <th style={{ textAlign: 'left',  padding: '8px 12px', fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Name</th>
-              <th style={{ textAlign: 'left',  padding: '8px 12px', fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Regex</th>
-              <th style={{ textAlign: 'left',  padding: '8px 12px', fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Severity</th>
-              <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Actions</th>
+              <th style={{ textAlign: 'left',  padding: '8px 12px', fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Name</th>
+              <th style={{ textAlign: 'left',  padding: '8px 12px', fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Regex</th>
+              <th style={{ textAlign: 'left',  padding: '8px 12px', fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Severity</th>
+              <th style={{ textAlign: 'right', padding: '8px 12px', fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -968,7 +1020,7 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
         <Card style={{ padding: 14 }}>
           <button
             onClick={() => setEditing({ name: '', regex: '', severity: 'high', enabled: 1 })}
-            style={{ background: 'var(--cr-brand-500)', color: 'var(--cr-on-brand)', border: 0, padding: '8px 14px', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}
+            style={{ background: 'var(--cr-brand-500)', color: 'var(--cr-on-brand)', border: 0, padding: '8px 14px', borderRadius: 0, cursor: 'pointer', fontWeight: 600 }}
           >
             + Add rule
           </button>
@@ -989,7 +1041,7 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
                 value={editing.name || ''}
                 onChange={(e) => setEditing({ ...editing, name: e.target.value })}
                 placeholder="acme-internal"
-                style={{ display: 'block', marginTop: 4, width: '100%', padding: '8px 10px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 4, color: 'var(--cr-fg-1)', fontFamily: 'var(--cr-font-mono)' }}
+                style={{ display: 'block', marginTop: 4, width: '100%', padding: '8px 10px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 0, color: 'var(--cr-fg-1)', fontFamily: 'var(--cr-font-mono)' }}
               />
             </label>
             <label style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
@@ -998,7 +1050,7 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
                 value={editing.regex || ''}
                 onChange={(e) => setEditing({ ...editing, regex: e.target.value })}
                 placeholder="acme_(?:live|test)_[a-zA-Z0-9]{32}"
-                style={{ display: 'block', marginTop: 4, width: '100%', padding: '8px 10px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 4, color: 'var(--cr-fg-1)', fontFamily: 'var(--cr-font-mono)' }}
+                style={{ display: 'block', marginTop: 4, width: '100%', padding: '8px 10px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 0, color: 'var(--cr-fg-1)', fontFamily: 'var(--cr-font-mono)' }}
               />
             </label>
             <label style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
@@ -1006,7 +1058,7 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
               <select
                 value={editing.severity || 'high'}
                 onChange={(e) => setEditing({ ...editing, severity: e.target.value as TenantRule['severity'] })}
-                style={{ display: 'block', marginTop: 4, padding: '6px 10px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 4, color: 'var(--cr-fg-1)' }}
+                style={{ display: 'block', marginTop: 4, padding: '6px 10px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 0, color: 'var(--cr-fg-1)' }}
               >
                 <option value="critical">critical</option>
                 <option value="high">high</option>
@@ -1020,7 +1072,7 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
                 value={editing.description || ''}
                 onChange={(e) => setEditing({ ...editing, description: e.target.value })}
                 placeholder="What this matches and why it matters"
-                style={{ display: 'block', marginTop: 4, width: '100%', padding: '8px 10px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 4, color: 'var(--cr-fg-1)' }}
+                style={{ display: 'block', marginTop: 4, width: '100%', padding: '8px 10px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 0, color: 'var(--cr-fg-1)' }}
               />
             </label>
             <label style={{ fontSize: 12, color: 'var(--cr-fg-3)', display: 'inline-flex', gap: 6, alignItems: 'center' }}>
@@ -1047,8 +1099,8 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
               </span>
             </label>
             <div style={{ display: 'flex', gap: 10 }}>
-              <button onClick={save} style={{ background: 'var(--cr-brand-500)', color: 'var(--cr-on-brand)', border: 0, padding: '8px 14px', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}>Save</button>
-              <button onClick={() => { setEditing(null); setError(null); }} style={{ background: 'transparent', color: 'var(--cr-fg-2)', border: '1px solid var(--cr-line-1)', padding: '8px 14px', borderRadius: 4, cursor: 'pointer' }}>Cancel</button>
+              <button onClick={save} style={{ background: 'var(--cr-brand-500)', color: 'var(--cr-on-brand)', border: 0, padding: '8px 14px', borderRadius: 0, cursor: 'pointer', fontWeight: 600 }}>Save</button>
+              <button onClick={() => { setEditing(null); setError(null); }} style={{ background: 'transparent', color: 'var(--cr-fg-2)', border: '1px solid var(--cr-line-1)', padding: '8px 14px', borderRadius: 0, cursor: 'pointer' }}>Cancel</button>
             </div>
           </div>
         </Card>
@@ -1065,23 +1117,23 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
           onChange={(e) => setTestSample(e.target.value)}
           placeholder="Sample text to search…"
           rows={3}
-          style={{ width: '100%', padding: '8px 10px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 4, color: 'var(--cr-fg-1)', fontFamily: 'var(--cr-font-mono)', fontSize: 12, marginBottom: 8 }}
+          style={{ width: '100%', padding: '8px 10px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 0, color: 'var(--cr-fg-1)', fontFamily: 'var(--cr-font-mono)', fontSize: 12, marginBottom: 8 }}
         />
         <input
           value={testRegex}
           onChange={(e) => setTestRegex(e.target.value)}
           placeholder="acme_(?:live|test)_[a-zA-Z0-9]{32}"
-          style={{ width: '100%', padding: '8px 10px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 4, color: 'var(--cr-fg-1)', fontFamily: 'var(--cr-font-mono)', fontSize: 12, marginBottom: 8 }}
+          style={{ width: '100%', padding: '8px 10px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 0, color: 'var(--cr-fg-1)', fontFamily: 'var(--cr-font-mono)', fontSize: 12, marginBottom: 8 }}
         />
-        <button onClick={runTest} style={{ background: 'var(--cr-fg-2)', color: 'var(--cr-ink-1)', border: 0, padding: '6px 12px', borderRadius: 4, cursor: 'pointer', fontWeight: 600 }}>Test</button>
+        <button onClick={runTest} style={{ background: 'var(--cr-fg-2)', color: 'var(--cr-ink-1)', border: 0, padding: '6px 12px', borderRadius: 0, cursor: 'pointer', fontWeight: 600 }}>Test</button>
         {testError && <div style={{ color: 'var(--cr-err-500)', marginTop: 8, fontSize: 12 }}>{testError}</div>}
         {testResult && (
-          <div style={{ marginTop: 10, padding: 10, background: 'var(--cr-ink-2)', borderRadius: 4 }}>
+          <div style={{ marginTop: 10, padding: 10, background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-2)', borderRadius: 0 }}>
             <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 6 }}>
               {testResult.count} match{testResult.count === 1 ? '' : 'es'}
             </div>
             {testResult.matches.map((m, i) => (
-              <div key={i} style={{ fontSize: 11, fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-2)' }}>
+              <div key={i} style={{ fontSize: 12, fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-2)' }}>
                 @{m.index}: <span style={{ background: 'var(--cr-warn-500)', color: 'var(--cr-on-warn)', padding: '0 4px' }}>{m.match}</span>
               </div>
             ))}

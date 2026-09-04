@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Card, MetricCard, Icon, Button, Input, Chip } from './primitives';
+import { Card, Metrics, Icon, Button, Input, Chip } from './primitives';
 import { getAdminMetrics, getCodeProjects, type AdminMetricsResponse, type CodeProject } from '../services/api';
 import { formatBytes } from '../utils/bytes';
 
@@ -123,7 +123,7 @@ export default function AdminPage({ onClose }: AdminPageProps) {
             This panel is restricted to platform operators. Please provide the server's <code>ADMIN_KEY</code> to authenticate and view cross-tenant system intelligence.
           </p>
           {error && (
-            <div style={{ padding: '8px 12px', background: 'var(--cr-err-surf)', border: '1px solid var(--cr-err-line)', borderRadius: 'var(--cr-radius-sm)', color: 'var(--cr-err-500)', fontSize: 12.5, marginBottom: 16 }}>
+            <div style={{ padding: '8px 12px', background: 'var(--cr-err-surf)', border: '1px solid var(--cr-err-line)', borderRadius: 0, color: 'var(--cr-err-500)', fontSize: 12.5, marginBottom: 16 }}>
               {error}
             </div>
           )}
@@ -186,17 +186,17 @@ export default function AdminPage({ onClose }: AdminPageProps) {
             
             {/* System Totals */}
             {metrics && (
-              <div>
-                <h3 style={{ marginBottom: 12 }}>System footprint</h3>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 12 }}>
-                  <MetricCard label="Active Tenants" value={String(metrics.totals.tenants)} icon="database" />
-                  <MetricCard label="Total Sessions" value={String(metrics.totals.sessions)} icon="message" />
-                  <MetricCard label="Indexed Chunks" value={fmtTokens(metrics.totals.chunks)} sub="FTS & Vector chunks" icon="zap" />
-                  <MetricCard label="Raw Files" value={String(metrics.totals.raw)} sub="Compressed raw JSONs" icon="file" />
-                  <MetricCard label="Security Findings" value={String(metrics.totals.findings)} tone={metrics.totals.findings > 0 ? 'cost' : 'neutral'} icon="shield" />
-                  <MetricCard label="Verified Secrets" value={String(metrics.totals.verified)} tone={metrics.totals.verified > 0 ? 'err' : 'ok'} icon="check" />
-                </div>
-              </div>
+              <Metrics
+                caption="System footprint"
+                items={[
+                  { label: 'Active tenants', value: String(metrics.totals.tenants), icon: 'database' },
+                  { label: 'Total sessions', value: String(metrics.totals.sessions), icon: 'message' },
+                  { label: 'Indexed chunks', value: fmtTokens(metrics.totals.chunks), sub: 'FTS and vector chunks', icon: 'zap' },
+                  { label: 'Raw files', value: String(metrics.totals.raw), sub: 'compressed raw JSON', icon: 'file' },
+                  { label: 'Security findings', value: String(metrics.totals.findings), tone: metrics.totals.findings > 0 ? 'cost' : 'neutral', icon: 'shield' },
+                  { label: 'Verified secrets', value: String(metrics.totals.verified), tone: metrics.totals.verified > 0 ? 'err' : 'ok', icon: 'check' },
+                ]}
+              />
             )}
 
             {/* Tenant Breakdown */}
@@ -207,7 +207,7 @@ export default function AdminPage({ onClose }: AdminPageProps) {
                   Granular counts of active database rows per workspace tenant.
                 </p>
                 <div className="cr-hscroll">
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, textAlign: 'left' }}>
+                  <table className="cr-schedule" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, textAlign: 'left' }}>
                     <thead>
                       <tr style={{ borderBottom: '1px solid var(--cr-line-2)', color: 'var(--cr-fg-3)', fontWeight: 600 }}>
                         <th style={{ padding: '8px 12px' }}>Tenant Slug</th>
@@ -247,7 +247,7 @@ export default function AdminPage({ onClose }: AdminPageProps) {
                 </div>
               ) : (
                 <div className="cr-hscroll">
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, textAlign: 'left' }}>
+                  <table className="cr-schedule" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, textAlign: 'left' }}>
                     <thead>
                       <tr style={{ borderBottom: '1px solid var(--cr-line-2)', color: 'var(--cr-fg-3)', fontWeight: 600 }}>
                         <th style={{ padding: '8px 12px' }}>Project Path</th>
@@ -268,7 +268,7 @@ export default function AdminPage({ onClose }: AdminPageProps) {
                           <tr key={p.projectId} style={{ borderBottom: '1px solid var(--cr-line-1)' }}>
                             <td style={{ padding: '12px 12px', maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.rootPath}>
                               <div style={{ fontWeight: 600, color: 'var(--cr-fg-1)' }}>{p.rootPath.split('/').pop()}</div>
-                              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>{p.rootPath}</div>
+                              <div style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{p.rootPath}</div>
                             </td>
                             <td style={{ padding: '12px 12px', textAlign: 'center' }}>
                               <Chip kind={h.score >= 70 ? 'ok' : h.score >= 40 ? 'warn' : 'err'} size="sm">
@@ -277,13 +277,13 @@ export default function AdminPage({ onClose }: AdminPageProps) {
                             </td>
                             <td style={{ padding: '12px 12px', textAlign: 'right' }}>
                               <div style={{ fontWeight: 500 }}>{p.fileCount.toLocaleString()} files</div>
-                              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>{p.symbolCount.toLocaleString()} symbols</div>
+                              <div style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{p.symbolCount.toLocaleString()} symbols</div>
                             </td>
                             <td style={{ padding: '12px 12px', textAlign: 'right' }}>
                               {h.totalLines != null ? (
                                 <>
                                   <div style={{ fontWeight: 500 }}>{h.totalLines.toLocaleString()} lines</div>
-                                  <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>{formatBytes(h.totalBytes)}</div>
+                                  <div style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{formatBytes(h.totalBytes)}</div>
                                 </>
                               ) : (
                                 <span style={{ color: 'var(--cr-fg-3)' }}>—</span>
@@ -293,7 +293,7 @@ export default function AdminPage({ onClose }: AdminPageProps) {
                               {savings != null ? (
                                 <>
                                   <div style={{ fontWeight: 600, color: 'var(--cr-ok-500)' }}>{savings}% saved</div>
-                                  <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>
+                                  <div style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
                                     {fmtTokens(h.outlineTokens)} outline / {fmtTokens(h.naiveTokens)} full
                                   </div>
                                 </>
@@ -310,9 +310,9 @@ export default function AdminPage({ onClose }: AdminPageProps) {
                                 <span style={{ color: 'var(--cr-fg-3)' }}>—</span>
                               )}
                             </td>
-                            <td style={{ padding: '12px 12px', textAlign: 'center', fontFamily: 'var(--cr-font-mono)', fontSize: 11.5 }}>
+                            <td style={{ padding: '12px 12px', textAlign: 'center', fontFamily: 'var(--cr-font-mono)', fontSize: 12.5 }}>
                               <div>seq {h.latestSeq ?? '—'}</div>
-                              <div style={{ fontSize: 10, color: 'var(--cr-fg-3)' }}>coll v{p.collectorVersion ?? '—'}</div>
+                              <div style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>coll v{p.collectorVersion ?? '—'}</div>
                             </td>
                             <td style={{ padding: '12px 12px', textAlign: 'right', fontSize: 12, color: 'var(--cr-fg-2)' }}>
                               {relTime(p.lastIndexedAt)}

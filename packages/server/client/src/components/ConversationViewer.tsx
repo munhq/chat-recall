@@ -5,7 +5,7 @@ import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import * as diff from 'diff';
-import { Icon, Button, Chip, ToolBadge, SegmentedControl, Card } from './primitives';
+import { Icon, Button, Chip, ToolBadge, SegmentedControl, Card, Schedule, Plate } from './primitives';
 import type {
   Message,
   SearchResult,
@@ -249,7 +249,7 @@ export default function ConversationViewer({
   /** Delete this conversation everywhere, then leave the view — staying on a
    *  session that no longer exists would show a stale page and a 404 on reload. */
   async function handleDelete() {
-    // `sessionId` is nullable for the empty state. The control is gated on it
+    // "sessionId" is nullable for the empty state. The control is gated on it
     // below, so this cannot fire with null — but the check is what tells the
     // compiler that, and it is cheaper than a non-null assertion that would
     // still be a lie if the gate ever moved.
@@ -288,7 +288,7 @@ export default function ConversationViewer({
   const [titleDraft, setTitleDraft] = useState('');
   const [savingTitle, setSavingTitle] = useState(false);
   // Set after a successful rename so the header updates instantly without
-  // waiting for a metadata refetch. `undefined` = no local edit this session.
+  // waiting for a metadata refetch. "undefined" = no local edit this session.
   const [userTitleOverride, setUserTitleOverride] = useState<string | null | undefined>(undefined);
 
   // Reset cross-section state when session changes AND immediately
@@ -369,9 +369,9 @@ export default function ConversationViewer({
   // Activity (or any ?tab= deep link) flips the tab to 'diff'/'commits'/… via
   // initialTab/URL *after* the session-change effect above already ran, so that
   // effect fetched the previous tab and Diff stayed empty until a manual
-  // refresh. This closes that gap. Guards (`!data && !loading && !error`) dedupe
+  // refresh. This closes that gap. Guards ("!data && !loading && !error") dedupe
   // against the session-change effect and handleViewChange, and let a
-  // `_computing` result re-poll (it nulls the data, re-triggering this).
+  // "_computing" result re-poll (it nulls the data, re-triggering this).
   useEffect(() => {
     if (!sessionId) return;
     if (viewMode === 'diff' && !diffData && !diffLoading && !diffError) {
@@ -451,12 +451,12 @@ export default function ConversationViewer({
 
   // A paginated load holds a WINDOW of the session, not the session. Every
   // count on screen, and the last message rendered, describe that window —
-  // so say so. Presenting `Showing 25 of 1148` for a 500-message window reads
+  // so say so. Presenting "Showing 25 of 1148" for a 500-message window reads
   // as "this session has 25 user messages" when the real answer is unknown
   // until the rest is loaded.
   //
-  // `messagesLoaded` counts what survived the client-side command-noise filter,
-  // so `remainingMessages` is a close estimate rather than an exact figure.
+  // "messagesLoaded" counts what survived the client-side command-noise filter,
+  // so "remainingMessages" is a close estimate rather than an exact figure.
   const sessionTotal = Math.max(totalMessages ?? 0, messages.length);
   const isWindowed = !!hasMoreMessages && messages.length < sessionTotal;
   const remainingMessages = Math.max(sessionTotal - messages.length, 0);
@@ -519,8 +519,8 @@ export default function ConversationViewer({
     return parts.length > 0 ? parts[parts.length - 1] : '';
   })();
   // A user-assigned name (Claude Code's /rename equivalent) always wins over
-  // the auto-derived title. `userTitleOverride` reflects an edit made in this
-  // tab before metadata refetches; `undefined` means "no local edit".
+  // the auto-derived title. "userTitleOverride" reflects an edit made in this
+  // tab before metadata refetches; "undefined" means "no local edit".
   const userTitle =
     (userTitleOverride !== undefined ? userTitleOverride : undefined) ??
     sessionMeta?.userTitle ??
@@ -747,7 +747,7 @@ export default function ConversationViewer({
                 background: 'var(--cr-ink-1)',
                 color: 'var(--cr-fg-1)',
                 border: '1px solid var(--cr-line-2)',
-                borderRadius: 6,
+                borderRadius: 0,
               }}
             />
             <Button onClick={() => void saveTitle()} disabled={savingTitle}>
@@ -780,7 +780,7 @@ export default function ConversationViewer({
                   background: 'none',
                   border: 'none',
                   cursor: 'pointer',
-                  color: userTitle ? 'var(--cr-accent, #6ea8fe)' : 'var(--cr-fg-3)',
+                  color: userTitle ? 'var(--cr-brand-500)' : 'var(--cr-fg-3)',
                   padding: 2,
                   display: 'inline-flex',
                   alignItems: 'center',
@@ -961,7 +961,7 @@ export default function ConversationViewer({
                 gap: 12,
                 background: 'var(--cr-ink-1)',
                 border: '1px solid var(--cr-line-1)',
-                borderRadius: 'var(--cr-radius-md)',
+                borderRadius: 0,
                 padding: '12px 16px',
                 marginBottom: 24 
               }}
@@ -970,7 +970,7 @@ export default function ConversationViewer({
                 <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
                   Filter conversation
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>
+                <div style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
                   {isWindowed ? (
                     <>
                       Showing {filteredMessages.length} of {messages.length} loaded
@@ -983,7 +983,7 @@ export default function ConversationViewer({
                     <button
                       onClick={onLoadAllMessages ?? onLoadMoreMessages}
                       disabled={!!loadingMoreMessages}
-                      style={{ marginLeft: 8, fontSize: 11, padding: '1px 8px', borderRadius: 4,
+                      style={{ marginLeft: 8, fontSize: 12, padding: '1px 8px', borderRadius: 0,
                                border: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-2)',
                                color: 'var(--cr-fg-2)', cursor: loadingMoreMessages ? 'default' : 'pointer',
                                opacity: loadingMoreMessages ? 0.6 : 1 }}
@@ -1023,7 +1023,7 @@ export default function ConversationViewer({
                       background: filter === opt.id ? 'var(--cr-brand-surf)' : 'transparent',
                       color: filter === opt.id ? 'var(--cr-brand-500)' : 'var(--cr-fg-2)',
                       border: `1px solid ${filter === opt.id ? 'var(--cr-brand-line)' : 'transparent'}`,
-                      borderRadius: 6,
+                      borderRadius: 0,
                       fontSize: 12,
                       fontWeight: filter === opt.id ? 600 : 400,
                       cursor: 'pointer',
@@ -1070,7 +1070,7 @@ export default function ConversationViewer({
                   marginTop: 16,
                   padding: '14px 16px',
                   border: '1px dashed var(--cr-warn-line)',
-                  borderRadius: 'var(--cr-radius-md)',
+                  borderRadius: 0,
                   background: 'var(--cr-ink-1)',
                   display: 'flex',
                   alignItems: 'center',
@@ -1123,7 +1123,7 @@ export default function ConversationViewer({
                       marginBottom: 10,
                       background: 'var(--cr-ink-1)',
                       border: '1px solid var(--cr-line-1)',
-                      borderRadius: 'var(--cr-radius-md)',
+                      borderRadius: 0,
                       padding: '10px 14px',
                     }}
                   >
@@ -1144,7 +1144,7 @@ export default function ConversationViewer({
                         {sa.agentType || 'Subagent'}
                         {sa.description ? ` — ${sa.description}` : ''}
                       </span>
-                      <span style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--cr-fg-3)', fontWeight: 400 }}>
+                      <span style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--cr-fg-3)', fontWeight: 400 }}>
                         {sa.messageCount} msgs · {sa.toolUseCount} tool calls · {sa.kind}
                       </span>
                     </summary>
@@ -1169,7 +1169,7 @@ export default function ConversationViewer({
               <div
                 style={{
                   display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
-                  marginBottom: 14, padding: '10px 14px', borderRadius: 'var(--cr-radius-md)',
+                  marginBottom: 14, padding: '10px 14px', borderRadius: 0,
                   border: '1px dashed var(--cr-line-1)', background: 'var(--cr-ink-1)',
                   fontSize: 12, color: 'var(--cr-fg-2)',
                 }}
@@ -1197,43 +1197,39 @@ export default function ConversationViewer({
         {viewMode === 'plans' && (() => {
           const sessionPlans = relatedData?.sessionPlans ?? [];
           const projectPlans = relatedData?.projectPlans ?? [];
-          const PlanCard = ({ plan }: { plan: RelatedItem }) => (
-            <Card interactive style={{ padding: 14, cursor: 'pointer' }} onClick={() => setOpenPlan(plan)}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cr-fg-1)', marginBottom: 6 }}>{plan.title}</div>
-              {plan.contentPreview && (
-                <div style={{ fontSize: 13, color: 'var(--cr-fg-2)', lineHeight: 1.5, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                  {plan.contentPreview}
-                </div>
-              )}
-            </Card>
-          );
+          // Two card grids of identical boxes, each under its own h3, become one
+          // schedule whose two headings are bands inside the same frame.
+          const planRow = (plan: RelatedItem) => ({
+            id: plan.id,
+            onSelect: () => setOpenPlan(plan),
+            cells: {
+              what: (
+                <>
+                  <span style={{ whiteSpace: 'normal' }}>{plan.title}</span>
+                  {plan.contentPreview && <span className="pn-sub">{plan.contentPreview}</span>}
+                </>
+              ),
+            },
+          });
           return (
             <div>
               {relatedLoading && !relatedData ? (
-                <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Loading plans...</div>
-              ) : sessionPlans.length === 0 && projectPlans.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>No plans for this conversation or project.</div>
+                <div style={{ textAlign: 'center', padding: 40, color: 'var(--cr-fg-3)' }}>Loading plans…</div>
               ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-                  {sessionPlans.length > 0 && (
-                    <div>
-                      <h3 style={{ marginBottom: 4, fontSize: 14 }}>This conversation's plan{sessionPlans.length > 1 ? 's' : ''}</h3>
-                      <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 12 }}>Written in this session.</div>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))', gap: 12 }}>
-                        {sessionPlans.map((plan) => <PlanCard key={plan.id} plan={plan} />)}
-                      </div>
-                    </div>
-                  )}
-                  {projectPlans.length > 0 && (
-                    <div>
-                      <h3 style={{ marginBottom: 4, fontSize: 14 }}>Other plans in this project</h3>
-                      <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 12 }}>Not tied to this conversation, but in the same project.</div>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))', gap: 12 }}>
-                        {projectPlans.map((plan) => <PlanCard key={plan.id} plan={plan} />)}
-                      </div>
-                    </div>
-                  )}
-                </div>
+                <Schedule
+                  cols={[{ key: 'what', kind: 'pn' }]}
+                  empty="No plans for this conversation or project."
+                  rows={[
+                    ...(sessionPlans.length > 0
+                      ? [{ id: 'g_sess', group: true, cells: { what: `Written in this session (${sessionPlans.length})` } },
+                         ...sessionPlans.map(planRow)]
+                      : []),
+                    ...(projectPlans.length > 0
+                      ? [{ id: 'g_proj', group: true, cells: { what: 'Elsewhere in this project' } },
+                         ...projectPlans.map(planRow)]
+                      : []),
+                  ]}
+                />
               )}
 
               {openPlan && (
@@ -1243,7 +1239,7 @@ export default function ConversationViewer({
                 >
                   <div
                     onClick={(e) => e.stopPropagation()}
-                    style={{ background: 'var(--cr-ink-0)', border: '1px solid var(--cr-line-1)', borderRadius: 12, maxWidth: 940, width: '100%', position: 'relative', boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}
+                    style={{ background: 'var(--cr-ink-0)', border: '1.5px solid var(--cr-fg-1)', borderRadius: 0, maxWidth: 940, width: '100%', position: 'relative', boxShadow: '0 20px 60px rgba(0,0,0,0.4)' }}
                   >
                     <Button
                       variant="ghost"
@@ -1283,78 +1279,63 @@ export default function ConversationViewer({
                 No related items found.
               </div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-                {relatedData.links.length > 0 && (
-                  <div>
-                    <h3 style={{ marginBottom: 12, fontSize: 14 }}>Linked Items</h3>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))', gap: 12 }}>
-                      {relatedData.links.map((item) => (
-                        <Card
-                          key={`${item.sourceType}-${item.id}`}
-                          interactive
-                          onClick={() => (item.sourceType === 'session' ? onOpenSession?.(item.id) : onOpenItem?.(item.sourceType, item.id))}
-                          style={{ padding: 14 }}
-                        >
-                          <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.02em' }}>
-                            {item.sourceType} · {Math.round(item.confidence * 100)}% Match
-                          </div>
-                          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cr-fg-1)', marginBottom: 6 }}>{item.title}</div>
-                          {item.contentPreview && (
-                            <div style={{ fontSize: 13, color: 'var(--cr-fg-2)', lineHeight: 1.5 }}>{item.contentPreview}</div>
-                          )}
-                        </Card>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                
-                {relatedData.projectPlans.length > 0 && (
-                  <div>
-                    <h3 style={{ marginBottom: 12, fontSize: 14 }}>Project Plans</h3>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))', gap: 12 }}>
-                      {relatedData.projectPlans.map((plan) => (
-                        <Card
-                          key={plan.id}
-                          interactive
-                          onClick={() => onOpenItem?.(plan.sourceType, plan.id)}
-                          style={{ padding: 14 }}
-                        >
-                          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cr-fg-1)', marginBottom: 6 }}>{plan.title}</div>
-                          {plan.contentPreview && (
-                            <div style={{ fontSize: 13, color: 'var(--cr-fg-2)', lineHeight: 1.5 }}>{plan.contentPreview}</div>
-                          )}
-                        </Card>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {relatedData.siblingSessionsInProject.length > 0 && (
-                  <div>
-                    <h3 style={{ marginBottom: 12, fontSize: 14 }}>Other Sessions in Project</h3>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(300px, 100%), 1fr))', gap: 12 }}>
-                      {relatedData.siblingSessionsInProject.map((sib) => (
-                        <Card
-                          key={sib.sessionId}
-                          interactive
-                          onClick={() => onOpenSession?.(sib.sessionId)}
-                          style={{ padding: 14 }}
-                        >
-                          <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cr-fg-1)', marginBottom: 6 }}>
-                            {extractTitle(sib.summary) || extractTitle(sib.firstPrompt) || sib.sessionId.slice(0, 8)}
-                          </div>
-                          <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 6 }}>
-                            {new Date(sib.modified).toLocaleDateString()}
-                          </div>
-                          {sib.summary && (
-                            <div style={{ fontSize: 13, color: 'var(--cr-fg-2)', lineHeight: 1.5 }}>{extractTitle(sib.summary)}</div>
-                          )}
-                        </Card>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
+              <Schedule
+                cols={[
+                  { key: 'what', kind: 'pn' },
+                  { key: 'meta', kind: 'cmd' },
+                ]}
+                empty="Nothing else links to this conversation."
+                rows={[
+                  ...(relatedData.links.length > 0
+                    ? [{ id: 'g_links', group: true, cells: { what: 'Linked items' } },
+                       ...relatedData.links.map((item) => ({
+                         id: `${item.sourceType}-${item.id}`,
+                         onSelect: () => (item.sourceType === 'session' ? onOpenSession?.(item.id) : onOpenItem?.(item.sourceType, item.id)),
+                         cells: {
+                           what: (
+                             <>
+                               <span style={{ whiteSpace: 'normal' }}>{item.title}</span>
+                               {item.contentPreview && <span className="pn-sub">{item.contentPreview}</span>}
+                             </>
+                           ),
+                           meta: `${item.sourceType} · ${Math.round(item.confidence * 100)}% match`,
+                         },
+                       }))]
+                    : []),
+                  ...(relatedData.projectPlans.length > 0
+                    ? [{ id: 'g_plans', group: true, cells: { what: 'Project plans' } },
+                       ...relatedData.projectPlans.map((plan) => ({
+                         id: plan.id,
+                         onSelect: () => onOpenItem?.(plan.sourceType, plan.id),
+                         cells: {
+                           what: (
+                             <>
+                               <span style={{ whiteSpace: 'normal' }}>{plan.title}</span>
+                               {plan.contentPreview && <span className="pn-sub">{plan.contentPreview}</span>}
+                             </>
+                           ),
+                           meta: 'plan',
+                         },
+                       }))]
+                    : []),
+                  ...(relatedData.siblingSessionsInProject.length > 0
+                    ? [{ id: 'g_sibs', group: true, cells: { what: 'Other sessions in this project' } },
+                       ...relatedData.siblingSessionsInProject.map((sib) => ({
+                         id: sib.sessionId,
+                         onSelect: () => onOpenSession?.(sib.sessionId),
+                         cells: {
+                           what: (
+                             <>
+                               <span style={{ whiteSpace: 'normal' }}>{extractTitle(sib.summary) || extractTitle(sib.firstPrompt) || sib.sessionId.slice(0, 8)}</span>
+                               {sib.summary && <span className="pn-sub">{extractTitle(sib.summary)}</span>}
+                             </>
+                           ),
+                           meta: new Date(sib.modified).toLocaleDateString(),
+                         },
+                       }))]
+                    : []),
+                ]}
+              />
             )}
           </div>
         )}
@@ -1383,7 +1364,7 @@ export default function ConversationViewer({
 
 /**
  * SecurityPanel: surfaces secret detector findings for the current
- * session. Findings come from the `secret_findings` SQLite table which
+ * session. Findings come from the "secret_findings" SQLite table which
  * stores ONLY redacted previews — no raw key material is ever
  * transported to the browser. Each row shows detector + named rule +
  * line + masked tail (last 4 chars only) so a reviewer can locate the
@@ -1412,9 +1393,9 @@ function SecurityPanel({
 
   // Dedupe (detector, rule, line) — the scanner currently inserts the
   // same match multiple times (chunker replays / repeated lines).
-  // Then aggregate by `line` so the same line gets one row even if
+  // Then aggregate by "line" so the same line gets one row even if
   // multiple detectors name the same finding differently
-  // (gitleaks: `aws-access-token`, trufflehog: `AWS`).
+  // (gitleaks: "aws-access-token", trufflehog: `AWS`).
   const seen = new Set<string>();
   // Track max cross-session count per line so we surface the BIGGEST
   // blast radius for any preview on that line — that's the trust
@@ -1454,14 +1435,14 @@ function SecurityPanel({
     <div data-testid="conversation-security" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {/* Real findings (gitleaks + trufflehog, run at sync). The action is
           always the same: rotate the exposed credential. */}
-      <div style={{ fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--cr-err-500)', fontWeight: 600, display: 'flex', gap: 10, alignItems: 'baseline' }}>
+      <div style={{ fontSize: 12, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--cr-err-500)', fontWeight: 600, display: 'flex', gap: 10, alignItems: 'baseline' }}>
         <span>Leaked secrets</span>
         <span style={{ color: 'var(--cr-fg-3)' }}>{uniqueTotal}</span>
         {Object.entries(detectorCounts).map(([d, n]) => (
           <span key={d} style={{ color: 'var(--cr-fg-3)', fontWeight: 500, letterSpacing: 0, textTransform: 'none' }}>{d} {n}</span>
         ))}
       </div>
-      <div style={{ padding: '10px 12px', background: 'var(--cr-err-surf, #2a1215)', border: '1px solid var(--cr-err-500)', borderRadius: 'var(--cr-radius-md)', display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+      <div style={{ padding: '10px 12px', background: 'var(--cr-err-surf)', border: '1px solid var(--cr-err-500)', borderRadius: 0, display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
         <div style={{ fontSize: 12.5, color: 'var(--cr-fg-2)', lineHeight: 1.5, flex: 1, minWidth: 220 }}>
           <b>These are real, detected here.</b> Rotate each exposed credential at its source (revoke + reissue) — then it no longer matters that it's in an old transcript. Previews show the last 4 chars only; the raw secret was redacted before sync.
         </div>
@@ -1480,13 +1461,13 @@ function SecurityPanel({
             navigator.clipboard.writeText(prompt).then(() => { setCopiedPrompt(true); setTimeout(() => setCopiedPrompt(false), 1800); });
           }}
           title="Copy a rotation task list to paste into Claude Code (no raw secrets)"
-          style={{ background: 'transparent', border: '1px solid var(--cr-err-500)', color: 'var(--cr-err-500)', borderRadius: 6, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
-          {copiedPrompt ? 'Copied ✓' : 'Copy fix prompt'}
+          style={{ background: 'transparent', border: '1px solid var(--cr-err-500)', color: 'var(--cr-err-500)', borderRadius: 0, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+          {copiedPrompt ? 'Copied' : 'Copy fix prompt'}
         </button>
         {onManage && (
           <button onClick={onManage} title="Open the Security dashboard scoped to this conversation's secrets"
-            style={{ background: 'var(--cr-err-500)', border: 'none', color: 'var(--cr-on-danger)', borderRadius: 6, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
-            Rotate &amp; manage →
+            style={{ background: 'var(--cr-err-500)', border: 'none', color: 'var(--cr-on-danger)', borderRadius: 0, padding: '7px 12px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' }}>
+            Rotate and manage
           </button>
         )}
       </div>
@@ -1495,7 +1476,7 @@ function SecurityPanel({
         const agreement = row.detectors.size;
         const tone = agreement >= 2 ? 'err' : 'warn';
         return (
-          <div key={row.line} style={{ padding: '12px 14px', background: 'var(--cr-ink-1)', borderLeft: `3px solid var(--cr-${tone === 'err' ? 'err' : 'warn'}-500)`, borderRadius: '0 8px 8px 0' }}>
+          <div key={row.line} style={{ padding: '12px 14px', background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-2)', borderRadius: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <Chip kind={tone} size="sm">
                 {agreement === 1 ? '1 detector' : `${agreement} detectors agree`}
@@ -1504,15 +1485,15 @@ function SecurityPanel({
                 // Cross-session blast radius — same redacted key appears
                 // in N other sessions, each one a parallel leak vector.
                 <Chip kind={row.maxCross >= 10 ? 'err' : 'warn'} size="sm">
-                  ⚠ also in {row.maxCross} other session{row.maxCross === 1 ? '' : 's'}
+                  also in {row.maxCross} other session{row.maxCross === 1 ? '' : 's'}
                 </Chip>
               )}
               {[...row.rules].map((r) => (
-                <span key={r} style={{ fontSize: 11.5, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)' }}>{r}</span>
+                <span key={r} style={{ fontSize: 12.5, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)' }}>{r}</span>
               ))}
               <span style={{ flex: 1 }} />
               <button onClick={() => onJumpToLine(row.line)} title={`Jump to line ${row.line} in the transcript`}
-                style={{ background: 'transparent', border: '1px solid var(--cr-line-2)', color: 'var(--cr-fg-2)', borderRadius: 6, padding: '3px 9px', fontSize: 11.5, cursor: 'pointer', fontFamily: 'inherit' }}>
+                style={{ background: 'transparent', border: '1px solid var(--cr-line-2)', color: 'var(--cr-fg-2)', borderRadius: 0, padding: '3px 9px', fontSize: 12.5, cursor: 'pointer', fontFamily: 'inherit' }}>
                 line {row.line} ›
               </button>
             </div>
@@ -1563,7 +1544,7 @@ function MessageBlock({ message, highlight, query }: { message: Message; highlig
         components={{
           // Same look as the results-list <mark> (ConversationList) for consistency.
           mark: ({ children }) => (
-            <mark style={{ background: 'var(--cr-warn-surf, #553)', color: 'var(--cr-warn-500, #fc6)', padding: '0 2px', borderRadius: 2 }}>
+            <mark style={{ background: 'var(--cr-warn-surf)', color: 'var(--cr-warn-500)', padding: '0 2px', borderRadius: 0 }}>
               {children}
             </mark>
           ),
@@ -1574,7 +1555,7 @@ function MessageBlock({ message, highlight, query }: { message: Message; highlig
                 <SyntaxHighlighter
                   language={match[1]}
                   style={vscDarkPlus}
-                  customStyle={{ margin: '0.5rem 0', borderRadius: '6px', maxWidth: '100%', overflowX: 'auto', WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain' }}
+                  customStyle={{ margin: '0.5rem 0', borderRadius: 0, maxWidth: '100%', overflowX: 'auto', WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain' }}
                 >
                   {String(children).replace(/\n$/, '')}
                 </SyntaxHighlighter>
@@ -1602,9 +1583,9 @@ function MessageBlock({ message, highlight, query }: { message: Message; highlig
         // Flash the jumped-to prompt so the eye lands on it.
         ...(highlight ? {
           scrollMarginTop: 80,
-          background: 'var(--cr-brand-surf, rgba(240,165,58,0.10))',
+          background: 'var(--cr-brand-surf)',
           boxShadow: '0 0 0 2px var(--cr-brand-500)',
-          borderRadius: 'var(--cr-radius-md, 8px)',
+          borderRadius: 'var(--cr-radius-md)',
           padding: 12, margin: '-12px -12px 28px',
           transition: 'background 0.4s, box-shadow 0.4s',
         } : {}),
@@ -1615,14 +1596,14 @@ function MessageBlock({ message, highlight, query }: { message: Message; highlig
           width: 32,
           height: 32,
           flexShrink: 0,
-          borderRadius: 8,
+          borderRadius: 0,
           background: message.role === 'user' ? 'var(--cr-ink-2)' : 'var(--cr-brand-surf)',
           border: `1px solid ${message.role === 'user' ? 'var(--cr-line-1)' : 'var(--cr-brand-line)'}`,
           color: message.role === 'user' ? 'var(--cr-fg-2)' : 'var(--cr-brand-500)',
           display: 'inline-flex',
           alignItems: 'center',
           justifyContent: 'center',
-          fontSize: 10,
+          fontSize: 12,
           fontWeight: 700,
           letterSpacing: '0.04em',
           textTransform: 'uppercase',
@@ -1643,7 +1624,7 @@ function MessageBlock({ message, highlight, query }: { message: Message; highlig
               marginBottom: 16, 
               background: 'var(--cr-ink-1)', 
               border: '1px solid var(--cr-line-1)', 
-              borderRadius: 8,
+              borderRadius: 0,
               overflow: 'hidden'
             }}
           >
@@ -1701,7 +1682,7 @@ function MessageBlock({ message, highlight, query }: { message: Message; highlig
                       flex: 1,
                       background: 'var(--cr-ink-1)',
                       border: `1px solid ${isEdit ? 'var(--cr-ok-line)' : 'var(--cr-line-1)'}`,
-                      borderRadius: 8,
+                      borderRadius: 0,
                       overflow: 'hidden'
                     }}
                     open={isEdit}
@@ -1715,13 +1696,13 @@ function MessageBlock({ message, highlight, query }: { message: Message; highlig
                     </summary>
                     
                     <div style={{ padding: '0 12px 12px', borderTop: '1px solid var(--cr-line-1)', paddingTop: 10 }}>
-                      <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginBottom: 6, textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.02em' }}>Input</div>
+                      <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 6, textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.02em' }}>Input</div>
                       
                       {isBash && tc.input.command ? (
                         <SyntaxHighlighter
                           language="bash"
                           style={vscDarkPlus}
-                          customStyle={{ margin: 0, padding: '10px', borderRadius: '6px', fontSize: '12px' }}
+                          customStyle={{ margin: 0, padding: '10px', borderRadius: 0, fontSize: '12px' }}
                         >
                           {tc.input.command}
                         </SyntaxHighlighter>
@@ -1731,7 +1712,7 @@ function MessageBlock({ message, highlight, query }: { message: Message; highlig
                            <SyntaxHighlighter
                               language="diff"
                               style={vscDarkPlus}
-                              customStyle={{ margin: 0, padding: '10px', borderRadius: '6px', fontSize: '12px', border: '1px solid var(--cr-ok-line)' }}
+                              customStyle={{ margin: 0, padding: '10px', borderRadius: 0, fontSize: '12px', border: '1px solid var(--cr-ok-line)' }}
                             >
                               {diffText}
                             </SyntaxHighlighter>
@@ -1742,7 +1723,7 @@ function MessageBlock({ message, highlight, query }: { message: Message; highlig
                            <SyntaxHighlighter
                               language={getLanguage(filePath)}
                               style={vscDarkPlus}
-                              customStyle={{ margin: 0, padding: '10px', borderRadius: '6px', fontSize: '12px', border: '1px solid var(--cr-ok-line)' }}
+                              customStyle={{ margin: 0, padding: '10px', borderRadius: 0, fontSize: '12px', border: '1px solid var(--cr-ok-line)' }}
                             >
                               {tc.input.content}
                             </SyntaxHighlighter>
@@ -1750,20 +1731,20 @@ function MessageBlock({ message, highlight, query }: { message: Message; highlig
                       ) : isEdit && (tc.input.path || tc.input.file_path) ? (
                          <div style={{ marginBottom: 8 }}>
                            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cr-ok-500)', marginBottom: 8 }}>File: {filePath}</div>
-                           <pre style={{ margin: 0, padding: 10, background: 'var(--cr-ink-0)', borderRadius: 6, fontSize: 12, overflowX: 'auto', WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain', border: '1px solid var(--cr-ok-line)' }}>
+                           <pre style={{ margin: 0, padding: 10, background: 'var(--cr-ink-0)', borderRadius: 0, fontSize: 12, overflowX: 'auto', WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain', border: '1px solid var(--cr-ok-line)' }}>
                              <code>{JSON.stringify(tc.input, null, 2)}</code>
                            </pre>
                          </div>
                       ) : (
-                        <pre style={{ margin: 0, padding: 10, background: 'var(--cr-ink-0)', borderRadius: 6, fontSize: 12, overflowX: 'auto', WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain' }}>
+                        <pre style={{ margin: 0, padding: 10, background: 'var(--cr-ink-0)', borderRadius: 0, fontSize: 12, overflowX: 'auto', WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain' }}>
                           <code>{JSON.stringify(tc.input, null, 2)}</code>
                         </pre>
                       )}
 
                       {tc.result && (
                         <>
-                          <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginBottom: 6, marginTop: 14, textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.02em' }}>Result</div>
-                          <pre style={{ margin: 0, padding: 10, background: 'var(--cr-ink-0)', borderRadius: 6, fontSize: 12, overflowX: 'auto', WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain', opacity: 0.9 }}>
+                          <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 6, marginTop: 14, textTransform: 'uppercase', fontWeight: 600, letterSpacing: '0.02em' }}>Result</div>
+                          <pre style={{ margin: 0, padding: 10, background: 'var(--cr-ink-0)', borderRadius: 0, fontSize: 12, overflowX: 'auto', WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain', opacity: 0.9 }}>
                             <code>{typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result, null, 2)}</code>
                           </pre>
                         </>
@@ -1808,20 +1789,20 @@ function StatusChip({ status }: { status: SessionOutcomeResponse['status'] }) {
   return <Chip kind={m.kind} icon={m.icon}>{m.label}</Chip>;
 }
 
-const MARKER_STYLES: Record<PromptMarker, { label: string; kind: Parameters<typeof Chip>[0]['kind']; symbol: string }> = {
-  interrupt: { label: 'interrupt', kind: 'warn', symbol: '⏸' },
-  frustrated: { label: 'frustrated', kind: 'err', symbol: '⚠' },
-  correction: { label: 'correction', kind: 'warn', symbol: '↩' },
-  approval: { label: 'approval', kind: 'ok', symbol: '✓' },
-  question: { label: 'question', kind: 'info', symbol: '?' },
-  directive: { label: 'directive', kind: 'neutral', symbol: '▸' },
-  clarification_request: { label: 'clarify', kind: 'info', symbol: '◇' },
+const MARKER_STYLES: Record<PromptMarker, { label: string; kind: Parameters<typeof Chip>[0]['kind']; icon: string }> = {
+  interrupt: { label: 'interrupt', kind: 'warn', icon: 'clock' },
+  frustrated: { label: 'frustrated', kind: 'err', icon: 'zap' },
+  correction: { label: 'correction', kind: 'warn', icon: 'edit' },
+  approval: { label: 'approval', kind: 'ok', icon: 'check' },
+  question: { label: 'question', kind: 'info', icon: 'message' },
+  directive: { label: 'directive', kind: 'neutral', icon: 'arrowRight' },
+  clarification_request: { label: 'clarify', kind: 'info', icon: 'search' },
 };
 
 function MarkerChip({ marker }: { marker: PromptMarker }) {
   const m = MARKER_STYLES[marker];
   if (!m) return null;
-  return <Chip kind={m.kind} size="sm">{m.symbol} {m.label}</Chip>;
+  return <Chip kind={m.kind} size="sm" icon={m.icon}>{m.label}</Chip>;
 }
 
 /* ────────────────────────────── Metrics ────────────────────────────── */
@@ -1830,7 +1811,7 @@ function MarkerChip({ marker }: { marker: PromptMarker }) {
  *  commits), and the tools it called. All the quantitative stuff that used to
  *  clutter the header now lives on its own tab. */
 /** Humanize a tool id for display. Raw MCP ids like
- *  `mcp__chat-recall__recall_smart_resume` are unreadable — show a clean
+ *  "mcp__chat-recall__recall_smart_resume" are unreadable — show a clean
  *  "smart resume" (full id in the tooltip). Built-ins pass through. */
 function prettyToolName(raw: string): string {
   if (raw.startsWith('mcp__')) {
@@ -1855,8 +1836,8 @@ function MetricsPanel({
   meta: SessionMetadataResponse | null;
   outcome: SessionOutcomeResponse | null;
   messages: Message[];
-  /** True when `messages` is a page of the session rather than all of it. The
-   *  tool counts and prompt jumps below are derived from `messages`, so they
+  /** True when "messages" is a page of the session rather than all of it. The
+   *  tool counts and prompt jumps below are derived from "messages", so they
    *  describe the loaded window and must be labelled as such. */
   windowed?: boolean;
   loadedCount?: number;
@@ -1929,24 +1910,33 @@ function MetricsPanel({
     if (/(edit|write|replace|applypatch|createfile|patch)/.test(n)) return 'var(--cr-ok-500)';
     if (/(bash|shell|runcommand|runterminal|terminal|exec|command)/.test(n)) return 'var(--cr-warn-500)';
     if (/(read|view|glob|grep|^ls$|listdir|listdirectory|search|findfile|cat)/.test(n)) return 'var(--cr-fg-3)';
-    if (/(task|agent|subagent)/.test(n)) return 'var(--cr-tool-claude, #c98bff)';
+    if (/(task|agent|subagent)/.test(n)) return 'var(--cr-tool-claude)';
     return 'var(--cr-fg-2)';
   };
 
   // Shared section caption + stat cell, so every block on this tab reads with
   // the same rhythm (uppercase caption → aligned content).
-  const cap: React.CSSProperties = { fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--cr-fg-3)', fontWeight: 600, margin: '0 0 12px' };
+  // Rendered as the plate header strip by ".cr-secstack > * > :first-child".
+  // Sentence case, grotesk: a panel NAME, which is what it always was.
+  const cap: React.CSSProperties = { fontSize: 14, fontWeight: 600, color: 'var(--cr-fg-1)', letterSpacing: '-0.005em', margin: 0 };
   const StatInline = ({ label, value, sub, tone, onClick }: { label: string; value: string; sub?: React.ReactNode; tone?: string; onClick?: () => void }) => (
     <div onClick={onClick} style={{ cursor: onClick ? 'pointer' : 'default' }} title={onClick ? 'Open detail' : undefined}>
-      <div style={{ fontSize: 21, fontWeight: 700, color: tone || 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums', lineHeight: 1.15 }}>{value}</div>
-      <div style={{ fontSize: 11.5, color: 'var(--cr-fg-3)', letterSpacing: '0.02em', marginTop: 3 }}>
+      <div className="cr-num" style={{ fontSize: 17, fontWeight: 700, color: tone || 'var(--cr-fg-1)', lineHeight: 1.15 }}>{value}</div>
+      <div style={{ fontSize: 12.5, color: 'var(--cr-fg-3)', letterSpacing: '0.02em', marginTop: 3 }}>
         {label}{sub ? <> · {sub}</> : null}{onClick ? ' ›' : ''}
       </div>
     </div>
   );
 
   return (
-    <div data-testid="conversation-metrics" style={{ display: 'flex', flexDirection: 'column', gap: 26 }}>
+    // A STACK OF PLATES, not seven captioned regions floating in one column.
+    // Each section was "<div><div style={cap}>Name</div>…</div>" — an uppercase
+    // label above unheaded content, seven times, which is an eyebrow seven
+    // times. The container class turns every direct child into a framed plate
+    // whose first element becomes its header strip, so the sections stack
+    // flush and read as one drawn sheet. One class, seven sections, and the
+    // next section added inherits it.
+    <div data-testid="conversation-metrics" className="cr-secstack">
       {/* Transcript-derived numbers below (tool activity, tokens by tool, the
           session arc jumps) count only the messages that are loaded. Say which
           figures are partial instead of letting a window pass for a session. */}
@@ -1955,7 +1945,7 @@ function MetricsPanel({
           data-testid="metrics-window-notice"
           style={{
             display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
-            padding: '10px 14px', borderRadius: 'var(--cr-radius-md)',
+            padding: '10px 14px', borderRadius: 0,
             border: '1px dashed var(--cr-line-1)', background: 'var(--cr-ink-1)',
             fontSize: 12, color: 'var(--cr-fg-2)',
           }}
@@ -2019,8 +2009,8 @@ function MetricsPanel({
                 {Math.round(pct * 100)}%{over ? ' · over window' : ''}
               </span>
             </div>
-            <div style={{ position: 'relative', height: 8, borderRadius: 4, background: 'var(--cr-ink-2)', overflow: 'hidden' }}>
-              <div style={{ width: `${Math.min(pct, 1) * 100}%`, height: '100%', background: color, borderRadius: 4 }} />
+            <div style={{ position: 'relative', height: 8, borderRadius: 0, background: 'var(--cr-ink-2)', overflow: 'hidden' }}>
+              <div style={{ width: `${Math.min(pct, 1) * 100}%`, height: '100%', background: color, borderRadius: 0 }} />
             </div>
           </div>
         );
@@ -2039,7 +2029,7 @@ function MetricsPanel({
         return (
           <div>
             <div style={cap}>Session arc · {outcome.prompts.length} prompts</div>
-            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 52, background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-md)', padding: '8px 10px' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 52, background: 'var(--cr-ink-1)', borderRadius: 0, padding: '8px 10px' }}>
               {outcome.prompts.map((p, i) => {
                 const strong = p.markers.some(m => m === 'frustrated' || m === 'correction' || m === 'interrupt');
                 const h = 25 + Math.min(p.intensity || (p.markers.length ? 2 : 1), 5) / 5 * 75;
@@ -2049,11 +2039,11 @@ function MetricsPanel({
                   <div key={i}
                     onClick={jumpable ? () => onOpenPrompt(jumpLine as number) : undefined}
                     title={`#${i + 1} · ${p.markers.join(', ') || 'neutral'}\n${p.text.slice(0, 160)}${jumpable ? '\n\nClick to jump to this prompt in the transcript' : ''}`}
-                    style={{ flex: 1, minWidth: 3, maxWidth: 22, height: `${h}%`, background: markerColor(p.markers), borderRadius: 2, opacity: strong || p.markers.includes('approval') ? 1 : 0.45, cursor: jumpable ? 'pointer' : 'default' }} />
+                    style={{ flex: 1, minWidth: 3, maxWidth: 22, height: `${h}%`, background: markerColor(p.markers), borderRadius: 0, opacity: strong || p.markers.includes('approval') ? 1 : 0.45, cursor: jumpable ? 'pointer' : 'default' }} />
                 );
               })}
             </div>
-            <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 4 }}>Each bar is a prompt, tallest = most intense · red = frustrated, green = approval · click a bar to jump to it ›</div>
+            <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginTop: 4 }}>Each bar is a prompt, tallest = most intense · red = frustrated, green = approval · click a bar to jump to it ›</div>
           </div>
         );
       })()}
@@ -2074,9 +2064,11 @@ function MetricsPanel({
                 const s = MARKER_STYLES[k];
                 return (
                   <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <span style={{ width: 92, fontSize: 12, color: 'var(--cr-fg-2)', flexShrink: 0 }}>{s.symbol} {s.label}</span>
-                    <div style={{ flex: 1, height: 14, background: 'var(--cr-ink-2)', borderRadius: 3, overflow: 'hidden' }}>
-                      <div style={{ width: `${(n / maxN) * 100}%`, height: '100%', background: KIND[s.kind || 'neutral'], borderRadius: 3, minWidth: 3 }} />
+                    <span style={{ width: 104, fontSize: 12, color: 'var(--cr-fg-2)', flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <Icon name={s.icon} size={13} style={{ color: KIND[s.kind || 'neutral'] }} /> {s.label}
+                    </span>
+                    <div style={{ flex: 1, height: 14, background: 'var(--cr-ink-2)', borderRadius: 0, overflow: 'hidden' }}>
+                      <div style={{ width: `${(n / maxN) * 100}%`, height: '100%', background: KIND[s.kind || 'neutral'], borderRadius: 0, minWidth: 3 }} />
                     </div>
                     <span style={{ width: 26, textAlign: 'right', fontSize: 12, color: 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{n}</span>
                   </div>
@@ -2093,26 +2085,28 @@ function MetricsPanel({
           the transcript for the raw calls. */}
       {tools.length > 0 && (
         <div>
-          <div style={cap}>Activity · {toolTotal} tool calls{toolErrors > 0 && <span style={{ color: 'var(--cr-err-500)' }}> · {toolErrors} failed</span>}</div>
+          <div style={cap}>Activity · {toolTotal} tool call{toolTotal === 1 ? '' : 's'}{toolErrors > 0 && <span style={{ color: 'var(--cr-err-500)' }}> · {toolErrors} failed</span>}</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {tools.slice(0, 16).map(([name, n]) => (
               <div key={name} onClick={onOpenTools} title={`${name} — ${n} call(s). Open the tool calls in the transcript.`}
                 style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
                 <span style={{ flex: '0 1 150px', minWidth: 0, fontSize: 12, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prettyToolName(name)}</span>
-                <div style={{ flex: 1, height: 14, background: 'var(--cr-ink-2)', borderRadius: 3, overflow: 'hidden' }}>
-                  <div style={{ width: `${(n / maxTool) * 100}%`, height: '100%', background: toolKindColor(name), borderRadius: 3, minWidth: 3 }} />
+                <div style={{ flex: 1, height: 14, background: 'var(--cr-ink-2)', borderRadius: 0, overflow: 'hidden' }}>
+                  <div style={{ width: `${(n / maxTool) * 100}%`, height: '100%', background: toolKindColor(name), borderRadius: 0, minWidth: 3 }} />
                 </div>
                 <span style={{ width: 30, textAlign: 'right', flexShrink: 0, fontSize: 12, color: 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums' }}>{n}</span>
               </div>
             ))}
-            {tools.length > 16 && <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>+{tools.length - 16} more tool(s)</div>}
+            {tools.length > 16 && <div style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>+{tools.length - 16} more tool(s)</div>}
           </div>
-          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 10.5, color: 'var(--cr-fg-3)', marginTop: 8 }}>
-            <span><span style={{ color: 'var(--cr-ok-500)' }}>■</span> edits</span>
-            <span><span style={{ color: 'var(--cr-info-500)' }}>■</span> web</span>
-            <span><span style={{ color: 'var(--cr-warn-500)' }}>■</span> shell</span>
-            <span><span style={{ color: 'var(--cr-brand-500)' }}>■</span> recall/MCP</span>
-            <span><span style={{ color: 'var(--cr-fg-3)' }}>■</span> reads</span>
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 12.5, color: 'var(--cr-fg-3)', marginTop: 8 }}>
+            {([['edits', 'var(--cr-ok-500)'], ['web', 'var(--cr-info-500)'], ['shell', 'var(--cr-warn-500)'],
+               ['recall and MCP', 'var(--cr-brand-500)'], ['reads', 'var(--cr-fg-3)']] as const).map(([label, colour]) => (
+              <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <span aria-hidden style={{ width: 8, height: 8, background: colour, flexShrink: 0 }} />
+                {label}
+              </span>
+            ))}
           </div>
         </div>
       )}
@@ -2128,8 +2122,8 @@ function MetricsPanel({
               <div key={name} onClick={onOpenTools} title={`${name} — ~${fmtN(t)} tokens of input+output across its calls.`}
                 style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
                 <span style={{ flex: '0 1 150px', minWidth: 0, fontSize: 12, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prettyToolName(name)}</span>
-                <div style={{ flex: 1, height: 14, background: 'var(--cr-ink-2)', borderRadius: 3, overflow: 'hidden' }}>
-                  <div style={{ width: `${(t / maxToolTokens) * 100}%`, height: '100%', background: toolKindColor(name), borderRadius: 3, minWidth: 3 }} />
+                <div style={{ flex: 1, height: 14, background: 'var(--cr-ink-2)', borderRadius: 0, overflow: 'hidden' }}>
+                  <div style={{ width: `${(t / maxToolTokens) * 100}%`, height: '100%', background: toolKindColor(name), borderRadius: 0, minWidth: 3 }} />
                 </div>
                 <span style={{ width: 42, textAlign: 'right', flexShrink: 0, fontSize: 12, color: 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums' }}>{fmtN(t)}</span>
               </div>
@@ -2146,7 +2140,7 @@ function MetricsPanel({
           { key: 'Input', n: meta.inputTokens || 0, c: 'var(--cr-info-500)' },
           { key: 'Output', n: meta.outputTokens || 0, c: 'var(--cr-brand-500)' },
           { key: 'Cache read', n: meta.cacheReadTokens || 0, c: 'var(--cr-ok-500)' },
-          { key: 'Cache write', n: meta.cacheCreationTokens || 0, c: 'var(--cr-tool-claude, #c98bff)' },
+          { key: 'Cache write', n: meta.cacheCreationTokens || 0, c: 'var(--cr-tool-claude)' },
         ].filter(s => s.n > 0);
         const total = seg.reduce((s, x) => s + x.n, 0);
         return (
@@ -2160,13 +2154,13 @@ function MetricsPanel({
             </div>
             {total > 0 && (
               <>
-                <div style={{ display: 'flex', height: 12, borderRadius: 4, overflow: 'hidden', gap: 2, background: 'var(--cr-ink-2)' }}>
+                <div style={{ display: 'flex', height: 12, borderRadius: 0, overflow: 'hidden', gap: 2, background: 'var(--cr-ink-2)' }}>
                   {seg.map(s => <div key={s.key} title={`${s.key}: ${fmtN(s.n)} (${Math.round(s.n / total * 100)}%)`} style={{ width: `${(s.n / total) * 100}%`, background: s.c, minWidth: 2 }} />)}
                 </div>
                 <div style={{ display: 'flex', gap: '6px 18px', flexWrap: 'wrap', marginTop: 8, fontSize: 12 }}>
                   {seg.map(s => (
                     <span key={s.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'var(--cr-fg-2)' }}>
-                      <span style={{ width: 8, height: 8, borderRadius: 2, background: s.c }} />
+                      <span style={{ width: 8, height: 8, borderRadius: 0, background: s.c }} />
                       {s.key} <b style={{ color: 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums' }}>{fmtN(s.n)}</b>
                       <span style={{ color: 'var(--cr-fg-3)' }}>{Math.round(s.n / total * 100)}%</span>
                     </span>
@@ -2174,7 +2168,7 @@ function MetricsPanel({
                 </div>
               </>
             )}
-            <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 10 }}>
+            <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginTop: 10 }}>
               Per-tool cost isn't recorded upstream — tokens are billed per message, not per action.
             </div>
           </div>
@@ -2215,13 +2209,13 @@ function OutcomePanel({
   // the section's tone so the green/amber/red meaning still reads at a glance.
   const Section = ({ tone, title, count, children }: { tone: string; title: string; count?: number; children: React.ReactNode }) => (
     <div>
-      <div style={{ fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase', fontWeight: 600, color: tone, margin: '0 0 12px', display: 'flex', gap: 8, alignItems: 'baseline' }}>
+      <div style={{ fontSize: 12, letterSpacing: '0.08em', textTransform: 'uppercase', fontWeight: 600, color: tone, margin: '0 0 12px', display: 'flex', gap: 8, alignItems: 'baseline' }}>
         {title}{count != null && <span style={{ color: 'var(--cr-fg-3)', fontVariantNumeric: 'tabular-nums' }}>{count}</span>}
       </div>
       {children}
     </div>
   );
-  const item: React.CSSProperties = { padding: '10px 14px', background: 'var(--cr-ink-1)', borderLeft: '2px solid var(--cr-line-2)', borderRadius: '0 6px 6px 0', fontSize: 13, color: 'var(--cr-fg-1)', lineHeight: 1.5 };
+  const item: React.CSSProperties = { padding: '10px 14px', background: 'var(--cr-ink-1)', borderLeft: '2px solid var(--cr-line-2)', borderRadius: 0, fontSize: 13, color: 'var(--cr-fg-1)', lineHeight: 1.5 };
   const list: React.CSSProperties = { display: 'flex', flexDirection: 'column', gap: 6 };
   const empty = (txt: string) => <div style={{ fontSize: 13, color: 'var(--cr-fg-3)', fontStyle: 'italic', padding: '2px 2px' }}>{txt}</div>;
 
@@ -2247,14 +2241,14 @@ function OutcomePanel({
           )}
           {commits.slice(0, 12).map((c) => (
             <div key={c.sha} style={{ ...item, borderLeftColor: 'var(--cr-ok-500)' }}>
-              <span style={{ fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-3)', fontSize: 11.5 }}>{c.shortSha}</span>{' '}
+              <span style={{ fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-3)', fontSize: 12.5 }}>{c.shortSha}</span>{' '}
               {c.subject}
-              <span style={{ color: 'var(--cr-fg-3)', fontSize: 11.5 }}> · {c.repoName} · <span style={{ color: 'var(--cr-ok-500)' }}>+{c.linesAdded}</span> <span style={{ color: 'var(--cr-err-500)' }}>−{c.linesRemoved}</span></span>
+              <span style={{ color: 'var(--cr-fg-3)', fontSize: 12.5 }}> · {c.repoName} · <span style={{ color: 'var(--cr-ok-500)' }}>+{c.linesAdded}</span> <span style={{ color: 'var(--cr-err-500)' }}>−{c.linesRemoved}</span></span>
             </div>
           ))}
           {data.decisions.slice(0, 12).map((d, i) => (
             <div key={`d${i}`} style={{ ...item, borderLeftColor: 'var(--cr-ok-500)' }}>
-              <span style={{ color: 'var(--cr-fg-3)', fontSize: 11.5, textTransform: 'uppercase', letterSpacing: '0.04em', marginRight: 6 }}>decided</span>
+              <span style={{ color: 'var(--cr-fg-3)', fontSize: 12.5, textTransform: 'uppercase', letterSpacing: '0.04em', marginRight: 6 }}>decided</span>
               {d.text}
             </div>
           ))}
@@ -2273,7 +2267,7 @@ function OutcomePanel({
           )}
           {data.blockers.slice(0, 15).map((b, i) => (
             <div key={i} style={{ ...item, borderLeftColor: 'var(--cr-warn-500)' }}>
-              <span style={{ color: 'var(--cr-warn-500)', fontWeight: 600, fontSize: 11.5, textTransform: 'uppercase', letterSpacing: '0.03em', marginRight: 6 }}>
+              <span style={{ color: 'var(--cr-warn-500)', fontWeight: 600, fontSize: 12.5, textTransform: 'uppercase', letterSpacing: '0.03em', marginRight: 6 }}>
                 {b.kind.replace('_', ' ')}
               </span>
               {b.text.length > 300 ? b.text.slice(0, 300) + '…' : b.text}
@@ -2281,7 +2275,7 @@ function OutcomePanel({
           ))}
           {data.claimReaction.claim && !data.claimReaction.reaction && (
             <div style={{ ...item, borderLeftColor: 'var(--cr-warn-500)' }}>
-              <span style={{ color: 'var(--cr-fg-3)', fontSize: 11.5, textTransform: 'uppercase', letterSpacing: '0.04em', marginRight: 6 }}>unconfirmed</span>
+              <span style={{ color: 'var(--cr-fg-3)', fontSize: 12.5, textTransform: 'uppercase', letterSpacing: '0.04em', marginRight: 6 }}>unconfirmed</span>
               Ended on “{data.claimReaction.claim.text.slice(0, 200)}” — you never replied, so it may not actually be done.
             </div>
           )}
@@ -2294,7 +2288,7 @@ function OutcomePanel({
           {frustPrompts.length === 0 && !reactionNegative && empty('No pushback — this one went smoothly.')}
           {data.claimReaction.claim && reactionNegative && (
             <div style={{ ...item, borderLeftColor: 'var(--cr-err-500)' }}>
-              <div style={{ color: 'var(--cr-fg-3)', fontSize: 11.5, marginBottom: 4 }}>AI claimed “{data.claimReaction.claim.text.slice(0, 140)}” — you reacted:</div>
+              <div style={{ color: 'var(--cr-fg-3)', fontSize: 12.5, marginBottom: 4 }}>AI claimed “{data.claimReaction.claim.text.slice(0, 140)}” — you reacted:</div>
               <div>{data.claimReaction.reaction!.text.slice(0, 240)}</div>
             </div>
           )}
@@ -2309,7 +2303,7 @@ function OutcomePanel({
         </div>
       </Section>
 
-      <div style={{ fontSize: 11.5, color: 'var(--cr-fg-3)', borderTop: '1px solid var(--cr-line-1)', paddingTop: 10 }}>
+      <div style={{ fontSize: 12.5, color: 'var(--cr-fg-3)', borderTop: '1px solid var(--cr-line-1)', paddingTop: 10 }}>
         {minutes > 0 && `${minutes} min · `}{data.promptMarkers.total} prompt(s) · peak friction {data.promptMarkers.peakIntensity}/5
       </div>
     </div>
@@ -2379,7 +2373,7 @@ function StructuredSummary({
           <div style={{ marginTop: 16, display: 'inline-flex' }}>{regenButton}</div>
         )}
         {regenError && (
-          <div style={{ marginTop: 12, fontSize: 12, color: 'var(--cr-danger, #d33)' }}>
+          <div style={{ marginTop: 12, fontSize: 12, color: 'var(--cr-err-500)' }}>
             {regenError}
           </div>
         )}
@@ -2394,7 +2388,7 @@ function StructuredSummary({
           <span style={{
             width: 24, height: 24, display: 'inline-flex', alignItems: 'center',
             justifyContent: 'center', background: 'var(--cr-brand-500)',
-            borderRadius: 6, flexShrink: 0, marginTop: 1,
+            borderRadius: 0, flexShrink: 0, marginTop: 1,
           }}>
             <Icon name="file" size={13} style={{ color: 'var(--cr-on-brand)' }} />
           </span>
@@ -2402,7 +2396,7 @@ function StructuredSummary({
             <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cr-fg-1)', letterSpacing: '-0.005em' }}>
               AI Summary
             </div>
-            <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>
+            <div style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
               {override
                 ? 'Just regenerated — not yet persisted to search index'
                 : "Generated summary of this session's activity"}
@@ -2412,9 +2406,9 @@ function StructuredSummary({
         </div>
 
         {regenError && (
-          <div style={{ marginBottom: 12, padding: '8px 12px', background: 'var(--cr-danger-surf, #2a0f0f)',
-                        border: '1px solid var(--cr-danger-line, #5a1f1f)', borderRadius: 6,
-                        fontSize: 12, color: 'var(--cr-danger, #ff8a8a)' }}>
+          <div style={{ marginBottom: 12, padding: '8px 12px', background: 'var(--cr-err-surf)',
+                        border: '1px solid var(--cr-err-line)', borderRadius: 0,
+                        fontSize: 12, color: 'var(--cr-err-500)' }}>
             {regenError}
           </div>
         )}
@@ -2450,7 +2444,7 @@ function StructuredFirstPrompt({ firstPrompt }: { firstPrompt: string }) {
           <span style={{
             width: 24, height: 24, display: 'inline-flex', alignItems: 'center',
             justifyContent: 'center', background: 'var(--cr-info-500)',
-            borderRadius: 6, flexShrink: 0, marginTop: 1,
+            borderRadius: 0, flexShrink: 0, marginTop: 1,
           }}>
             <Icon name="message" size={13} style={{ color: 'var(--cr-on-info)' }} />
           </span>
@@ -2458,7 +2452,7 @@ function StructuredFirstPrompt({ firstPrompt }: { firstPrompt: string }) {
             <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cr-fg-1)', letterSpacing: '-0.005em' }}>
               First Prompt
             </div>
-            <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>
+            <div style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
               The user's opening message for this session
             </div>
           </div>
@@ -2568,7 +2562,7 @@ function DiffPanel({
   return (
     <div data-testid="conversation-diff" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       {/* Same captioned-section header as the Overview tab. */}
-      <div style={{ fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--cr-fg-3)', fontWeight: 600, display: 'flex', gap: 10, alignItems: 'baseline', margin: '0 0 4px' }}>
+      <div style={{ fontSize: 12, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--cr-fg-3)', fontWeight: 600, display: 'flex', gap: 10, alignItems: 'baseline', margin: '0 0 4px' }}>
         <span>Files changed</span>
         <span style={{ color: 'var(--cr-fg-2)' }}>{data.files.length}</span>
         <span style={{ color: 'var(--cr-ok-500)', fontVariantNumeric: 'tabular-nums' }}>+{data.totalLinesAdded.toLocaleString()}</span>
@@ -2603,7 +2597,7 @@ function DiffPanel({
                 <span style={{ color: 'var(--cr-err-500)', fontSize: 12, fontFamily: 'var(--cr-font-mono)', fontVariantNumeric: 'tabular-nums' }}>−{f.linesRemoved}</span>
               </div>
               {/* churn bar: width = this file's share of the busiest file, split add/remove */}
-              <div style={{ display: 'flex', height: 5, width: `${(f.churn / maxChurn) * 100}%`, minWidth: 2, marginTop: 8, marginLeft: 24, borderRadius: 3, overflow: 'hidden', gap: 1 }}>
+              <div style={{ display: 'flex', height: 5, width: `${(f.churn / maxChurn) * 100}%`, minWidth: 2, marginTop: 8, marginLeft: 24, borderRadius: 0, overflow: 'hidden', gap: 1 }}>
                 <div style={{ width: `${(f.linesAdded / Math.max(1, f.churn)) * 100}%`, background: 'var(--cr-ok-500)' }} />
                 <div style={{ width: `${(f.linesRemoved / Math.max(1, f.churn)) * 100}%`, background: 'var(--cr-err-500)' }} />
               </div>
@@ -2615,7 +2609,7 @@ function DiffPanel({
                     language="diff"
                     style={vscDarkPlus}
                     customStyle={{
-                      margin: 0, borderRadius: 4, fontSize: 12,
+                      margin: 0, borderRadius: 0, fontSize: 12,
                       maxHeight: 480, overflow: 'auto', background: 'var(--cr-ink-2)',
                     }}
                   >
@@ -2628,12 +2622,12 @@ function DiffPanel({
                 )}
                 {f.events.length > 0 && (
                   <div style={{ marginTop: 12 }}>
-                    <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>
+                    <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 6 }}>
                       Events
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                       {f.events.map((e, ei) => (
-                        <div key={e.toolUseId || `${f.file || idx}-evt-${ei}`} style={{ display: 'flex', gap: 8, fontSize: 11, fontFamily: 'var(--cr-font-mono)', alignItems: 'center' }}>
+                        <div key={e.toolUseId || `${f.file || idx}-evt-${ei}`} style={{ display: 'flex', gap: 8, fontSize: 12, fontFamily: 'var(--cr-font-mono)', alignItems: 'center' }}>
                           <span style={{ color: e.succeeded ? 'var(--cr-ok-500)' : 'var(--cr-err-500)' }}>
                             {e.succeeded ? '✓' : '✗'}
                           </span>
@@ -2665,7 +2659,7 @@ function CommitsPanel({
   if (!data) return <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>No commit data.</div>;
   // Server returned 202 — payload is being computed in background.
   // Show a quiet "computing" state instead of crashing on
-  // `data.repos.length` (the placeholder body has no repos field).
+  // "data.repos.length" (the placeholder body has no repos field).
   if (data._computing || !Array.isArray(data.repos)) {
     return (
       <div style={{ padding: 40, textAlign: 'center', color: 'var(--cr-fg-3)' }}>
@@ -2695,7 +2689,7 @@ function CommitsPanel({
         <Card key={r.repo} style={{ padding: 16 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 10 }}>
             <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--cr-fg-1)' }}>{r.repoName}</span>
-            <span style={{ fontSize: 11, color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-font-mono)' }}>{r.repo}</span>
+            <span style={{ fontSize: 12, color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-font-mono)' }}>{r.repo}</span>
             <span style={{ flex: 1 }} />
             <Chip kind="info" size="sm">{r.commits.length} commit(s)</Chip>
           </div>
@@ -2707,8 +2701,8 @@ function CommitsPanel({
               }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
                   <span style={{ fontSize: 12, fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-3)' }}>{c.shortSha}</span>
-                  <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>{c.authorIso.slice(0, 16).replace('T', ' ')}</span>
-                  <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>· {c.authorName}</span>
+                  <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{c.authorIso.slice(0, 16).replace('T', ' ')}</span>
+                  <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>· {c.authorName}</span>
                   {c.matchedSessionFiles.length > 0 && (
                     <Chip kind="ok" size="sm">{c.matchedSessionFiles.length} session file(s)</Chip>
                   )}
@@ -2716,7 +2710,7 @@ function CommitsPanel({
                 <div style={{ fontSize: 13, color: 'var(--cr-fg-1)', fontWeight: 500, marginTop: 2, lineHeight: 1.4 }}>
                   {c.subject}
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 2, fontFamily: 'var(--cr-font-mono)' }}>
+                <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginTop: 2, fontFamily: 'var(--cr-font-mono)' }}>
                   +{c.linesAdded} / −{c.linesRemoved} · {c.files.length} file(s)
                 </div>
               </div>

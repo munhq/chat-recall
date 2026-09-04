@@ -246,22 +246,36 @@ function displayName(label: string): string {
 
 const CSS = `
 .cr-planpicker-toggle { display: inline-flex; gap: 2px; padding: 2px; margin-bottom: 14px;
-  border: 1px solid var(--cr-line-1, #2a2a2a); border-radius: 8px; }
+  border: 1px solid var(--cr-line-2); border-radius: 0; }
 .cr-planpicker-toggle button { background: none; border: 0; cursor: pointer; padding: 6px 14px;
-  border-radius: 6px; font-size: 13px; color: var(--cr-fg-3, #999); display: inline-flex;
+  border-radius: 0; font-size: 13px; color: var(--cr-fg-3); display: inline-flex;
   align-items: center; gap: 7px; }
-.cr-planpicker-toggle button.active { background: var(--cr-ink-2, #1e1e1e); color: var(--cr-fg-1, #eee); }
-.cr-planpicker-save { font-size: 10px; letter-spacing: 0.03em;
+.cr-planpicker-toggle button.active { background: var(--cr-ink-2); color: var(--cr-fg-1); }
+.cr-planpicker-save { font-size: 12px; letter-spacing: 0.03em;
   padding: 1px 5px; border-radius: var(--cr-radius-xs); background: var(--cr-brand-surf);
   color: var(--cr-brand-500); font-variant-numeric: tabular-nums; }
 .cr-planpicker-toggle button:focus-visible,
 .cr-planpicker-stepper button:focus-visible { outline: 2px solid var(--cr-brand-500);
   outline-offset: 1px; }
-.cr-planpicker-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
-.cr-planpicker-card { border: 1px solid var(--cr-line-1, #2a2a2a);
-  border-radius: var(--cr-radius-lg); padding: 16px; display: flex; flex-direction: column;
-  gap: 8px; transition: border-color var(--cr-dur-fast), transform var(--cr-dur-fast); }
-.cr-planpicker-card:hover { border-color: var(--cr-line-2); }
+/* The tiers SHARE ONE FRAME, divided by rules — the site's price schedule, not
+   a gapped grid of rounded pricing cards. A zero gap plus per-child rules is what
+   makes several panels read as one drawn object. */
+.cr-planpicker-grid { display: grid; gap: 0;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  border: var(--cr-frame-w) solid var(--cr-frame); background: var(--cr-ink-0); }
+.cr-planpicker-card { border: 0; border-right: 1px solid var(--cr-line-2);
+  border-radius: 0; padding: 16px; display: flex; flex-direction: column;
+  gap: 8px; transition: background var(--cr-dur-fast); }
+.cr-planpicker-card:last-child { border-right: 0; }
+/* Three 190px tracks do not fit a 390px phone, and a panning price list moves
+   the tier you are reading. Below 700px they stack: one column, divided by
+   rules, still one frame. */
+@media (max-width: 700px) {
+  .cr-planpicker-grid { grid-template-columns: minmax(0, 1fr); }
+  .cr-planpicker-card { border-right: 0; border-bottom: 1px solid var(--cr-line-2); }
+  .cr-planpicker-card:last-child { border-bottom: 0; }
+}
+.cr-planpicker-card:hover { background: var(--cr-ink-1); }
 /* Every card's action sits on one line regardless of the content above it, so a
    tier with a seat stepper does not push its button below its neighbours'. */
 .cr-planpicker-card > button:last-child,
@@ -269,16 +283,16 @@ const CSS = `
 @media (prefers-reduced-motion: reduce) {
   .cr-planpicker-card, .cr-planpicker-stepper button { transition: none; }
 }
-.cr-planpicker-name { font-size: 13px; font-weight: 600; color: var(--cr-fg-2, #bbb); }
+.cr-planpicker-name { font-size: 13px; font-weight: 600; color: var(--cr-fg-2); }
 .cr-planpicker-price { font-size: 26px; font-weight: 600; letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums; color: var(--cr-fg-1); }
-.cr-planpicker-per { font-size: 12px; font-weight: 400; color: var(--cr-fg-3, #999); }
+.cr-planpicker-per { font-size: 12px; font-weight: 400; color: var(--cr-fg-3); }
 .cr-planpicker-seats { display: flex; align-items: center; justify-content: space-between;
-  gap: 8px; font-size: 12px; color: var(--cr-fg-3, #999); }
+  gap: 8px; font-size: 12px; color: var(--cr-fg-3); }
 /* Inherits alignment: this renders both on the left-aligned Account card and on
    the centred paywall, and a hardcoded left value stranded it against 500px of empty
    space on the latter. */
-.cr-planpicker-seathint { margin: 14px 0 0; font-size: 11.5px; line-height: 1.5;
+.cr-planpicker-seathint { margin: 14px 0 0; font-size: 12.5px; line-height: 1.5;
   color: var(--cr-fg-3); text-align: inherit; max-width: 62ch; }
 .cr-planpicker-seatblock { display: flex; flex-direction: column; gap: 8px; }
 .cr-planpicker-stepper { display: inline-flex; align-items: stretch;
@@ -299,8 +313,8 @@ const CSS = `
 .cr-planpicker-stepper input[type=number] { -moz-appearance: textfield; appearance: textfield; }
 .cr-planpicker-total { display: flex; align-items: baseline; justify-content: space-between;
   gap: 10px; padding: 7px 9px; border-radius: var(--cr-radius-sm);
-  background: var(--cr-ink-2); font-size: 12px; color: var(--cr-fg-3);
+  background: var(--cr-ink-1); font-size: 12px; color: var(--cr-fg-3);
   font-variant-numeric: tabular-nums; }
 .cr-planpicker-total strong { font-size: 14px; font-weight: 600; color: var(--cr-fg-1); }
-.cr-planpicker-contact { font-size: 12px; color: var(--cr-fg-2, #bbb); }
+.cr-planpicker-contact { font-size: 12px; color: var(--cr-fg-2); }
 `;

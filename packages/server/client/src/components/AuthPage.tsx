@@ -33,8 +33,8 @@ const PROVIDER_LABEL: Record<string, string> = { github: 'GitHub', google: 'Goog
 /**
  * What better-auth left in the URL after its /reset-password/:token redirect.
  *
- * It redirects to the callback with `{ token }` when the token is good and
- * `{ error: 'INVALID_TOKEN' }` when it is expired or already spent. Reading
+ * It redirects to the callback with "{ token }" when the token is good and
+ * "{ error: 'INVALID_TOKEN' }" when it is expired or already spent. Reading
  * only the token would drop that second case silently onto the sign-in form,
  * which reads as "my link did nothing" — the one moment a user needs to be
  * told to request a fresh one.
@@ -81,8 +81,8 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
   const resetting = mode === 'reset';
   const verifying = mode === 'verify';
   const [otp, setOtp] = useState('');
-  /* The second factor. `twoFa` is the six digits from the authenticator;
-   * `useBackup` swaps the field for a recovery code, which is the only way back
+  /* The second factor. "twoFa" is the six digits from the authenticator;
+   * "useBackup" swaps the field for a recovery code, which is the only way back
    * in for someone whose phone is gone. */
   const twofactor = mode === 'twofactor';
   const [twoFa, setTwoFa] = useState('');
@@ -229,7 +229,7 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
     <div className="au-wrap">
       <style>{AUTH_CSS}</style>
       <div className="au-card">
-        <div className="au-brand"><span className="au-logo">◆</span> chat-recall</div>
+        <div className="au-brand"><span className="au-logo" /> chat-recall</div>
         <h1>{heading}</h1>
         <p className="au-sub">{subtitle}</p>
         {/* Social buttons only on the two modes where they mean anything.
@@ -337,22 +337,22 @@ const AUTH_CSS = `
   justify-content: center; padding: 24px 20px;
   background: var(--cr-ink-0); color: var(--cr-fg-1);
   font-family: var(--cr-font-sans);
-  /* One soft brand wash behind the card. Sized in vmax so it scales with the
-   * viewport instead of becoming a hard disc on a phone. */
-  background-image: radial-gradient(60vmax 40vmax at 50% -10%, var(--cr-brand-surf), transparent 70%); }
+  }
 
 /* max-width, not width: this is the signed-out landing for the whole app, so it
  * has to hold at 320px. */
+/* A plate. The border was "1px solid var(--cr-ink-2)" — a GROUND token doing
+   line duty, so the card's edge dissolved into the page once the shadow went. */
 .au-card { width: 100%; max-width: 380px; padding: clamp(24px, 6vw, 36px);
-  background: var(--cr-ink-1); border: 1px solid var(--cr-ink-2);
-  border-radius: var(--cr-radius-lg); box-sizing: border-box;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.34); }
+  background: var(--cr-ink-0); border: var(--cr-frame-w) solid var(--cr-frame);
+  border-radius: 0; box-sizing: border-box;
+  }
 
 .au-brand { display: flex; align-items: center; gap: 7px;
   font-family: var(--cr-font-display); font-size: 13px; font-weight: 600;
   letter-spacing: 0.04em; text-transform: lowercase;
   margin-bottom: 26px; color: var(--cr-fg-2); }
-.au-logo { color: var(--cr-brand-500); font-size: 11px; }
+.au-logo { display: inline-block; width: 12px; height: 12px; background: var(--cr-brand-500); flex: none; }
 
 .au-card h1 { font-family: var(--cr-font-display); font-size: 21px; line-height: 1.25;
   margin: 0 0 7px; color: var(--cr-fg-1); letter-spacing: -0.01em; }
@@ -374,7 +374,7 @@ const AUTH_CSS = `
 .au-social-mark { display: inline-flex; align-items: center; }
 
 .au-or { display: flex; align-items: center; gap: 12px; margin: 22px 0 20px;
-  color: var(--cr-fg-3); font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; }
+  color: var(--cr-fg-3); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; }
 .au-or::before, .au-or::after { content: ""; flex: 1; height: 1px; background: var(--cr-ink-2); }
 
 .au-card label { display: block; font-size: 12px; font-weight: 500;

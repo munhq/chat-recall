@@ -110,7 +110,7 @@ export default function FindingsPanel({
         background: sev === id ? 'var(--cr-ink-3)' : 'transparent',
         border: '1px solid ' + (sev === id ? 'var(--cr-line-2)' : 'transparent'),
         color: sev === id ? 'var(--cr-fg-1)' : 'var(--cr-fg-2)',
-        borderRadius: 'var(--cr-radius-sm)', cursor: 'pointer', padding: '5px 11px', fontSize: 12.5, fontWeight: 600,
+        borderRadius: 0, cursor: 'pointer', padding: '5px 11px', fontSize: 12.5, fontWeight: 600,
       }}
     >
       {label}{n != null ? ` · ${n}` : ''}
@@ -131,15 +131,16 @@ export default function FindingsPanel({
         <select
           value={category}
           onChange={(e) => setCategory(e.target.value)}
-          style={{ background: 'var(--cr-ink-2)', color: 'var(--cr-fg-1)', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-sm)', padding: '6px 10px', fontSize: 12.5, fontFamily: 'inherit' }}
+          style={{ background: 'var(--cr-ink-2)', color: 'var(--cr-fg-1)', border: '1px solid var(--cr-line-1)', borderRadius: 0, padding: '6px 10px', fontSize: 12.5, fontFamily: 'inherit' }}
         >
           {categories.map((c) => <option key={c} value={c}>{c === 'all' ? 'All categories' : c}</option>)}
         </select>
-        <Input placeholder="Filter by repo, rule, file…" value={filter} onChange={(e) => setFilter(e.target.value)} onClear={filter ? () => setFilter('') : undefined} inputSize="md" style={{ minWidth: 220 }} />
+        <Input icon="search"
+          placeholder="Filter by repo, rule, file…" value={filter} onChange={(e) => setFilter(e.target.value)} onClear={filter ? () => setFilter('') : undefined} inputSize="md" style={{ minWidth: 220 }} />
       </div>
 
       {error && (
-        <div role="alert" style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 12px', marginBottom: 14, fontSize: 13, color: 'var(--cr-err-500)', background: 'var(--cr-err-surf)', border: '1px solid var(--cr-err-line)', borderRadius: 'var(--cr-radius-sm)' }}>
+        <div role="alert" style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '8px 12px', marginBottom: 14, fontSize: 13, color: 'var(--cr-err-500)', background: 'var(--cr-err-surf)', border: '1px solid var(--cr-err-line)', borderRadius: 0 }}>
           <Icon name="shield" size={14} /><span>Couldn’t load findings: {error}</span>
         </div>
       )}
@@ -172,7 +173,7 @@ export default function FindingsPanel({
                   <span style={{ flex: 1 }} />
                   <Button variant="ghost" size="sm" onClick={() => copyFix(g)}>{copied === g.key ? 'copied ✓' : 'Copy fix prompt'}</Button>
                   {multi && (
-                    <button onClick={() => toggle(g.key)} title="Show occurrences" style={{ background: 'none', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-sm)', color: 'var(--cr-fg-2)', cursor: 'pointer', padding: '2px 8px', fontSize: 12 }}>{isOpen ? '−' : `⌄`}</button>
+                    <button onClick={() => toggle(g.key)} title="Show occurrences" style={{ background: 'none', border: '1px solid var(--cr-line-1)', borderRadius: 0, color: 'var(--cr-fg-2)', cursor: 'pointer', padding: '2px 8px', fontSize: 12 }}>{isOpen ? '−' : `⌄`}</button>
                   )}
                 </div>
                 <div style={{ padding: '0 14px 12px', fontSize: 12.5, color: 'var(--cr-fg-2)' }}>{g.why}</div>

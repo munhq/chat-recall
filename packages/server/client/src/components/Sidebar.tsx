@@ -284,12 +284,12 @@ function ProjectRow({
     >
       <span className="cr-sidebar-row-label" style={{ fontSize: 13 }}>{label}</span>
       {node.orphan && (
-        <span style={{ marginLeft: 6, fontSize: 9, padding: '1px 4px', borderRadius: 3,
+        <span style={{ marginLeft: 6, fontSize: 12, padding: '1px 4px', borderRadius: 0,
           background: 'var(--cr-ink-2)', color: 'var(--cr-fg-3)', letterSpacing: '0.04em', textTransform: 'uppercase' }}
           title="The original folder for this transcript no longer exists on disk">orphan</span>
       )}
       {showRecency && node.lastMtime && (
-        <span style={{ fontSize: 10.5, color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-font-mono)', marginLeft: 8 }}>
+        <span style={{ fontSize: 12.5, color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-font-mono)', marginLeft: 8 }}>
           {relTime(node.lastMtime)}
         </span>
       )}
@@ -344,7 +344,7 @@ function TreeRow({
             data-testid="tree-chevron"
             onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
             style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent',
-              border: 'none', padding: 0, cursor: 'pointer', width: 18, height: 18, color: 'inherit', borderRadius: 3 }}
+              border: 'none', padding: 0, cursor: 'pointer', width: 18, height: 18, color: 'inherit', borderRadius: 0 }}
           >
             <Icon name="chevronRight" size={11}
               style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }} />

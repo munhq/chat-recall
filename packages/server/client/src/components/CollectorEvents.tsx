@@ -94,8 +94,8 @@ export default function CollectorEvents() {
   }
 
   const sel: React.CSSProperties = {
-    fontSize: 11.5, padding: '3px 6px', color: 'var(--cr-fg-2)',
-    background: 'transparent', border: '1px solid var(--cr-line-1)', borderRadius: 6,
+    fontSize: 12.5, padding: '3px 6px', color: 'var(--cr-fg-2)',
+    background: 'transparent', border: '1px solid var(--cr-line-1)', borderRadius: 0,
   };
 
   return (
@@ -111,11 +111,11 @@ export default function CollectorEvents() {
             {devices.map((d) => <option key={d} value={d}>{d}</option>)}
           </select>
         )}
-        <label style={{ fontSize: 11.5, color: 'var(--cr-fg-2)', display: 'inline-flex', gap: 5, alignItems: 'center' }}>
+        <label style={{ fontSize: 12.5, color: 'var(--cr-fg-2)', display: 'inline-flex', gap: 5, alignItems: 'center' }}>
           <input type="checkbox" checked={failuresOnly} onChange={(e) => setFailuresOnly(e.target.checked)} />
           Failures only
         </label>
-        <span style={{ color: 'var(--cr-fg-3)', fontSize: 11.5, marginLeft: 'auto' }}>
+        <span style={{ color: 'var(--cr-fg-3)', fontSize: 12.5, marginLeft: 'auto' }}>
           {shown.length === events.length
             ? `${events.length} event${events.length === 1 ? '' : 's'}`
             : `${shown.length} of ${events.length}`}
@@ -127,7 +127,7 @@ export default function CollectorEvents() {
       ) : (
         <Card style={{ padding: 0, overflow: 'hidden' }}>
           <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11.5 }}>
+            <table className="cr-schedule" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
               <thead>
                 <tr style={{ color: 'var(--cr-fg-3)', textAlign: 'left' }}>
                   <th style={{ padding: '7px 10px', fontWeight: 500 }}>When</th>

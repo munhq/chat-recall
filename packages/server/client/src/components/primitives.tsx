@@ -44,6 +44,8 @@ const ICONS: Record<string, string> = {
   shield: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
   server: 'M2 17h20M2 12h20M2 7h20M2 17a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10z',
   edit: 'M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z',
+  key: 'M15.5 8.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5zM13.7 7.8L3 18.5V21h2.5l1.5-1.5V17h2.5v-2.5H12l1.7-1.7',
+  link: 'M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.5 1.5M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.5-1.5',
 };
 
 interface IconProps extends React.SVGProps<SVGSVGElement> {
@@ -102,24 +104,26 @@ export function pressableProps(onActivate: () => void): {
 interface KbdProps {
   children: React.ReactNode;
   style?: React.CSSProperties;
+  className?: string;
 }
 
-export function Kbd({ children, style }: KbdProps) {
+export function Kbd({ children, style, className }: KbdProps) {
   return (
     <kbd
+      className={className}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
-        height: 20,
-        padding: '0 6px',
+        height: 22,
+        padding: '0 7px',
         background: 'var(--cr-ink-2)',
         border: '1px solid var(--cr-line-1)',
         borderBottomWidth: 2,
-        borderRadius: 4,
+        borderRadius: 0,
         fontFamily: 'var(--cr-font-mono)',
-        fontSize: 11,
+        fontSize: 12,
         fontWeight: 500,
-        color: 'var(--cr-fg-3)',
+        color: 'var(--cr-fg-2)',
         letterSpacing: 0,
         ...style,
       }}
@@ -141,9 +145,9 @@ interface ChipProps {
 
 export function Chip({ children, kind = 'neutral', icon, size = 'md', style, className }: ChipProps) {
   const sizes: Record<string, { h: number, px: number, fs: number }> = {
-    xs: { h: 18, px: 4, fs: 9 },
-    sm: { h: 20, px: 6, fs: 11 },
-    md: { h: 22, px: 8, fs: 12 },
+    xs: { h: 20, px: 5, fs: 12 },
+    sm: { h: 22, px: 7, fs: 12 },
+    md: { h: 24, px: 9, fs: 12.5 },
   };
   const s = sizes[size] || sizes.md;
   const kinds: Record<string, { bg: string; fg: string; border: string; font?: string }> = {
@@ -168,7 +172,7 @@ export function Chip({ children, kind = 'neutral', icon, size = 'md', style, cla
         background: k.bg,
         color: k.fg,
         border: `1px solid ${k.border}`,
-        borderRadius: 'var(--cr-radius-xs)',
+        borderRadius: 0,
         fontFamily: k.font || 'inherit',
         fontSize: s.fs,
         fontWeight: 500,
@@ -192,7 +196,7 @@ interface ToolBadgeProps {
 export function ToolBadge({ tool, size = 'md' }: ToolBadgeProps) {
   const def = (TOOL_MAP as Record<string, { color: string; surf: string; label: string }>)[tool];
   if (!def) return null;
-  const s = size === 'sm' ? { h: 18, px: 6, fs: 10, dot: 5 } : { h: 22, px: 8, fs: 11, dot: 6 };
+  const s = size === 'sm' ? { h: 22, px: 7, fs: 12, dot: 6 } : { h: 24, px: 9, fs: 12.5, dot: 6 };
   return (
     <span
       style={{
@@ -204,7 +208,7 @@ export function ToolBadge({ tool, size = 'md' }: ToolBadgeProps) {
         background: def.surf,
         color: def.color,
         border: `1px solid ${def.color}40`,
-        borderRadius: 'var(--cr-radius-xs)',
+        borderRadius: 0,
         fontSize: s.fs,
         fontWeight: 500,
         letterSpacing: 0,
@@ -234,7 +238,7 @@ export function SourceBadge({ source, size = 'md' }: SourceBadgeProps) {
   };
   const info = m[source];
   if (!info) return null;
-  const s = size === 'sm' ? { h: 20, px: 6, fs: 11 } : { h: 22, px: 8, fs: 12 };
+  const s = size === 'sm' ? { h: 22, px: 7, fs: 12 } : { h: 24, px: 9, fs: 12.5 };
   return (
     <span
       style={{
@@ -245,7 +249,7 @@ export function SourceBadge({ source, size = 'md' }: SourceBadgeProps) {
         padding: `0 ${s.px}px`,
         background: 'var(--cr-ink-2)',
         border: '1px solid var(--cr-line-1)',
-        borderRadius: 'var(--cr-radius-xs)',
+        borderRadius: 0,
         color: info.color,
         fontSize: s.fs,
         fontWeight: 500,
@@ -277,7 +281,7 @@ export function Avatar({ name, size = 28 }: AvatarProps) {
       style={{
         width: size,
         height: size,
-        borderRadius: Math.round(size * 0.22),
+        borderRadius: 0,
         background: `hsl(${hue} 35% 22%)`,
         color: `hsl(${hue} 70% 75%)`,
         display: 'inline-flex',
@@ -308,7 +312,7 @@ export function Logo({ size = 24 }: LogoProps) {
         height: size,
         background: 'var(--cr-ink-2)',
         border: '1px solid var(--cr-line-1)',
-        borderRadius: Math.round(size * 0.26),
+        borderRadius: 0,
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -421,7 +425,7 @@ export function Button({
         background: bg,
         color: p.fg,
         border: `1px solid ${p.border}`,
-        borderRadius: 'var(--cr-radius-sm)',
+        borderRadius: 0,
         fontFamily: 'inherit',
         fontSize: s.fs,
         fontWeight: 'var(--cr-fw-medium)',
@@ -465,7 +469,7 @@ export function IconButton({ icon, size = 34, onClick, style, title, ...rest }: 
         background: hov ? 'var(--cr-ink-2)' : 'transparent',
         color: hov ? 'var(--cr-fg-1)' : 'var(--cr-fg-2)',
         border: 'none',
-        borderRadius: 'var(--cr-radius-sm)',
+        borderRadius: 0,
         cursor: 'pointer',
         transition: 'background var(--cr-dur-fast), color var(--cr-dur-fast)',
         ...style,
@@ -498,7 +502,7 @@ export function SegmentedControl({ options, value, onChange, size = 'md' }: Segm
         padding: 3,
         background: 'var(--cr-ink-2)',
         border: '1px solid var(--cr-line-1)',
-        borderRadius: 'var(--cr-radius-sm)',
+        borderRadius: 0,
         gap: 2,
         height: h,
         boxSizing: 'border-box',
@@ -515,7 +519,7 @@ export function SegmentedControl({ options, value, onChange, size = 'md' }: Segm
               background: on ? 'var(--cr-ink-4)' : 'transparent',
               color: on ? 'var(--cr-fg-1)' : 'var(--cr-fg-2)',
               border: 'none',
-              borderRadius: 4,
+              borderRadius: 0,
               fontFamily: 'inherit',
               fontSize: 13,
               fontWeight: on ? 500 : 400,
@@ -546,7 +550,11 @@ interface InputProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, '
 }
 
 export const Input = React.forwardRef<HTMLInputElement, InputProps>(
-  ({ value, onChange, placeholder, icon = 'search', onClear, kbd, inputSize = 'md', style, ...rest }, ref) => {
+  // NO DEFAULT ICON. This used to default to 'search', so every call site that
+  // did not pass one — a password field, a one-time-code box, a display-name
+  // field — rendered a magnifier. An icon is a claim about what the field is
+  // for; it has to be asked for.
+  ({ value, onChange, placeholder, icon, onClear, kbd, inputSize = 'md', style, ...rest }, ref) => {
     const [focused, setFocused] = useState(false);
     const h = inputSize === 'sm' ? 32 : inputSize === 'lg' ? 44 : 36;
 
@@ -559,7 +567,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
           height: h,
           background: 'var(--cr-ink-1)',
           border: `1px solid ${focused ? 'var(--cr-line-3)' : 'var(--cr-line-1)'}`,
-          borderRadius: 'var(--cr-radius-sm)',
+          borderRadius: 0,
           transition: 'border-color var(--cr-dur-fast), box-shadow var(--cr-dur-fast)',
           boxShadow: focused ? 'var(--cr-focus-ring)' : 'none',
           flex: 1,
@@ -617,7 +625,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
               justifyContent: 'center',
               background: 'transparent',
               border: 'none',
-              borderRadius: 4,
+              borderRadius: 0,
               color: 'var(--cr-fg-3)',
               cursor: 'pointer',
             }}
@@ -627,6 +635,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
         )}
         {!value && kbd && (
           <Kbd
+            className="cr-kbd-hint"
             style={{
               position: 'absolute',
               right: 10,
@@ -668,11 +677,15 @@ export function Card({ children, style, interactive, onClick, ...rest }: CardPro
       onMouseEnter={interactive ? () => setHov(true) : undefined}
       onMouseLeave={interactive ? () => setHov(false) : undefined}
       style={{
-        background: 'var(--cr-ink-1)',
-        border: `1px solid ${hov ? 'var(--cr-line-2)' : 'var(--cr-line-1)'}`,
-        borderRadius: 'var(--cr-radius-md)',
+        // A plate, not a card: the 1.5px ink frame on the sheet's own ground.
+        // Hover moves the FILL, not the frame weight — a frame that thickens on
+        // hover reads as a layout shift.
+        background: hov ? 'var(--cr-ink-1)' : 'var(--cr-ink-0)',
+        border: 'var(--cr-frame-w) solid var(--cr-frame)',
+        borderRadius: 0,
         padding: 20,
-        transition: 'border-color var(--cr-dur-fast), background var(--cr-dur-fast)',
+        minWidth: 0,
+        transition: 'background var(--cr-dur-fast) var(--cr-ease)',
         cursor: interactive ? 'pointer' : 'default',
         outline: 'none',
         boxShadow: foc ? 'var(--cr-focus-ring)' : undefined,
@@ -685,75 +698,358 @@ export function Card({ children, style, interactive, onClick, ...rest }: CardPro
   );
 }
 
-// ────────────────────────────── MetricCard ──────────────────────────────
-interface MetricCardProps {
+// ═════════════════════════════════════════════════════════════════════════════
+// DRAWING FURNITURE
+//
+// The public site is an engineering drawing set; this app is the same world in
+// Operate mode. The metaphor ports as furniture and discipline — plates,
+// schedules, balloons, notes, dimensions — never as literal figures. Nobody
+// draws an exploded view of a dashboard.
+//
+// These five components exist so the ~45 feature components inherit the world
+// instead of each re-implementing it. Reach for one of these before writing a
+// bordered <div> with a heading in it.
+//
+// The class definitions live in index.css under "DRAWING FURNITURE", with the
+// four rules a later edit must not undo.
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ────────────────────────────── Balloon ──────────────────────────────
+// A circled number: the join between a figure and its schedule row, or between
+// a row and the detail that proves it. THE REFERENT RULE — a balloon number
+// refers to something. A number with nothing on the other end of it is a card
+// wearing a number, and cards are what this world replaced.
+interface BalloonProps {
+  n: number | string;
+  /** Semantic hue rides the RING and the NUMBER, never a bar on a box edge. */
+  tone?: 'brand' | 'ok' | 'warn' | 'err' | 'info';
+  size?: 'md' | 'lg';
+  style?: React.CSSProperties;
+}
+
+const BALLOON_TONES: Record<string, string> = {
+  brand: 'var(--cr-brand-500)',
+  ok: 'var(--cr-ok-500)',
+  warn: 'var(--cr-warn-500)',
+  err: 'var(--cr-err-500)',
+  info: 'var(--cr-info-500)',
+};
+
+export function Balloon({ n, tone = 'brand', size = 'md', style }: BalloonProps) {
+  return (
+    <span
+      className={size === 'lg' ? 'cr-balloon cr-balloon-lg' : 'cr-balloon'}
+      style={{ ['--cr-bl' as string]: BALLOON_TONES[tone], ...style }}
+    >
+      {typeof n === 'number' ? String(n).padStart(2, '0') : n}
+    </span>
+  );
+}
+
+// ────────────────────────────── Plate ──────────────────────────────
+// A framed panel with a header rule and, where it earns one, a caption strip.
+// Replaces every card in the app.
+//
+// Plates STACK FLUSH: two in a row share one edge, so a column of them reads as
+// one drawn object. That is the whole reason this is not a card grid — put
+// plates in a gapped grid and you have rebuilt the card grid in heavier ink.
+// For side-by-side panels use <Plates cols={n}>, which shares one frame.
+interface PlateProps {
+  /** Panel name. Grotesk, not mono — a name is not an annotation. */
+  title?: React.ReactNode;
+  /** A balloon number, when something else on the screen refers to this plate. */
+  no?: number | string;
+  tone?: BalloonProps['tone'];
+  /** Controls that belong to this plate, right-aligned in the header. */
+  tools?: React.ReactNode;
+  /** The caption strip: what this is a view of, or the limit of what it shows. */
+  caption?: React.ReactNode;
+  /** Drop the body padding — for a table, a list or a chart that owns its edges. */
+  flush?: boolean;
+  children?: React.ReactNode;
+  style?: React.CSSProperties;
+  className?: string;
+  id?: string;
+}
+
+export function Plate({ title, no, tone, tools, caption, flush, children, style, className, id }: PlateProps) {
+  return (
+    <div id={id} className={className ? `cr-plate ${className}` : 'cr-plate'} style={style}>
+      {(title || tools || no !== undefined) && (
+        <div className="cr-plate-h">
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+            {no !== undefined && <Balloon n={no} tone={tone} />}
+            <span className="cr-plate-t">{title}</span>
+          </span>
+          {tools && <span className="cr-plate-tools">{tools}</span>}
+        </div>
+      )}
+      {children !== undefined && children !== null && (
+        <div className={flush ? 'cr-plate-b-flush' : 'cr-plate-b'}>{children}</div>
+      )}
+      {caption && <div className="cr-plate-cap">{caption}</div>}
+    </div>
+  );
+}
+
+// Several plates sharing ONE frame, divided by rules. `cols` is explicit rather
+// than auto-fit because the border resets are per-column-count: an auto-fit grid
+// cannot know which child ends a row, so it leaves a stray rule down the middle.
+interface PlatesProps {
+  cols: 2 | 3 | 4;
+  children?: React.ReactNode;
+  style?: React.CSSProperties;
+  className?: string;
+}
+
+export function Plates({ cols, children, style, className }: PlatesProps) {
+  return (
+    <div className={className ? `cr-plates ${className}` : 'cr-plates'} data-cols={cols} style={style}>
+      {children}
+    </div>
+  );
+}
+
+// ────────────────────────────── Schedule ──────────────────────────────
+// The parts list, and the shape every table and every list in this app takes.
+//
+// It also replaces the stat-tile row — big number, small label, coloured top
+// edge, four across. That template is this system's named refusal: it turns six
+// unrelated measurements into six equally-loud boxes and answers no question.
+// Six rows of a schedule answer "which is biggest" at a glance, and the labels
+// stay readable. See <Metrics> below.
+export type ScheduleCol = {
+  key: string;
+  /** Column header. Annotation type, 12px, uppercase — the floor, not below it. */
+  head?: React.ReactNode;
+  /** `pn` part name · `val` measured value · `no` balloon · `cmd` command · `rt` right-aligned. */
+  kind?: 'pn' | 'val' | 'val-q' | 'no' | 'cmd' | 'rt';
+  width?: string;
+  /** Dropped below 768px instead of forcing the whole schedule to pan. */
+  optional?: boolean;
+};
+
+export type ScheduleRow = {
+  id: string;
+  cells: Record<string, React.ReactNode>;
+  /** A ruled band inside the schedule, not a second table. */
+  group?: boolean;
+  onSelect?: () => void;
+  current?: boolean;
+  style?: React.CSSProperties;
+};
+
+interface ScheduleProps {
+  caption?: React.ReactNode;
+  cols: ScheduleCol[];
+  rows: ScheduleRow[];
+  /** Shown in place of the body when there is nothing to list. */
+  empty?: React.ReactNode;
+  /** Let a wide schedule pan inside its own frame instead of squeezing columns. */
+  scroll?: boolean;
+  style?: React.CSSProperties;
+  className?: string;
+}
+
+export function Schedule({ caption, cols, rows, empty, scroll, style, className }: ScheduleProps) {
+  const table = (
+    <table className={className ? `cr-schedule ${className}` : 'cr-schedule'} style={style}>
+      {caption && <caption>{caption}</caption>}
+      {cols.some((c) => c.head !== undefined) && (
+        <thead>
+          <tr>
+            {cols.map((c) => (
+              <th
+                key={c.key}
+                className={[c.kind === 'val' || c.kind === 'cmd' || c.kind === 'rt' ? 'rt' : '', c.optional ? 'opt' : ''].filter(Boolean).join(' ') || undefined}
+                style={c.width ? { width: c.width } : undefined}
+              >
+                {c.head}
+              </th>
+            ))}
+          </tr>
+        </thead>
+      )}
+      <tbody>
+        {rows.length === 0 && empty !== undefined ? (
+          <tr className="empty">
+            <td colSpan={cols.length}>{empty}</td>
+          </tr>
+        ) : (
+          rows.map((r) =>
+            r.group ? (
+              <tr key={r.id} className="grp">
+                <td colSpan={cols.length}>{r.cells[cols[0].key]}</td>
+              </tr>
+            ) : (
+              <tr
+                key={r.id}
+                aria-current={r.current ? 'true' : undefined}
+                style={r.style}
+                {...(r.onSelect ? pressableProps(r.onSelect) : {})}
+              >
+                {cols.map((c) => (
+                  <td key={c.key} className={[c.kind || '', c.optional ? 'opt' : ''].filter(Boolean).join(' ') || undefined}>
+                    {r.cells[c.key]}
+                  </td>
+                ))}
+              </tr>
+            )
+          )
+        )}
+      </tbody>
+    </table>
+  );
+  return scroll ? <div className="cr-sched-scroll">{table}</div> : table;
+}
+
+// ────────────────────────────── Metrics ──────────────────────────────
+// What a stat-tile row becomes. One schedule, one frame, one scan.
+//
+// Deliberately NOT balloon-numbered: nothing refers to "metric 03", and a
+// number with no referent is the card idiom wearing drawing costume.
+export interface Metric {
   label: string;
-  value: string;
-  sub?: string;
-  delta?: string;
-  tone?: 'neutral' | 'brand' | 'cost' | 'savings' | 'ok' | 'err';
+  /** A node, not just a string: a measured value is sometimes two toned
+   *  numbers ("+12 / −9"), and splitting those into a second schedule to
+   *  satisfy a `string` type is worse than widening the type. */
+  value: React.ReactNode;
+  /** The qualifier that makes the number mean something. */
+  sub?: React.ReactNode;
+  tone?: 'neutral' | 'brand' | 'cost' | 'savings' | 'ok' | 'err' | 'warn';
   icon?: string;
 }
 
-export function MetricCard({ label, value, sub, delta, tone = 'neutral', icon }: MetricCardProps) {
-  const tones: Record<string, string> = {
-    neutral: 'var(--cr-fg-1)',
-    brand: 'var(--cr-brand-500)',
-    cost: 'var(--cr-warn-500)',
-    savings: 'var(--cr-ok-500)',
-    ok: 'var(--cr-ok-500)',
-    err: 'var(--cr-err-500)',
-  };
+const METRIC_TONES: Record<string, string> = {
+  neutral: 'var(--cr-fg-1)',
+  brand: 'var(--cr-brand-500)',
+  cost: 'var(--cr-warn-500)',
+  warn: 'var(--cr-warn-500)',
+  savings: 'var(--cr-ok-500)',
+  ok: 'var(--cr-ok-500)',
+  err: 'var(--cr-err-500)',
+};
+
+interface MetricsProps {
+  caption?: React.ReactNode;
+  items: Metric[];
+  style?: React.CSSProperties;
+}
+
+export function Metrics({ caption, items, style }: MetricsProps) {
   return (
-    <div
-      style={{
-        background: 'var(--cr-ink-1)',
-        border: '1px solid var(--cr-line-1)',
-        borderRadius: 'var(--cr-radius-md)',
-        padding: '18px 20px',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 6,
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          fontSize: 12,
-          color: 'var(--cr-fg-3)',
-          fontWeight: 500,
-        }}
-      >
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          {icon && <Icon name={icon} size={13} />}
-          {label}
-        </span>
-        {delta && (
-          <span
-            style={{
-              fontSize: 11,
-              fontWeight: 500,
-              color: delta.startsWith('-') ? 'var(--cr-ok-500)' : 'var(--cr-warn-500)',
+    <Schedule
+      caption={caption}
+      style={style}
+      cols={[
+        { key: 'name', kind: 'pn' },
+        { key: 'value', kind: 'val' },
+      ]}
+      rows={items.map((m) => ({
+        id: m.label,
+        cells: {
+          name: (
+            <>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                {m.icon && <Icon name={m.icon} size={14} style={{ color: 'var(--cr-fg-3)' }} />}
+                {m.label}
+              </span>
+              {m.sub && <span className="pn-sub">{m.sub}</span>}
+            </>
+          ),
+          value: (
+            <span style={{ color: METRIC_TONES[m.tone || 'neutral'], fontSize: 15 }}>{m.value}</span>
+          ),
+        },
+      }))}
+    />
+  );
+}
+
+// ────────────────────────────── Note ──────────────────────────────
+// A boxed drawing note. Two jobs, and only these two: carry a command you can
+// copy, or state a limit beside the claim it limits.
+interface NoteProps {
+  /** Header strip. Annotation type belongs here, not above the note. */
+  title?: React.ReactNode;
+  /** A shell command. Rendered with its own `$` and a copy control. */
+  cmd?: string;
+  children?: React.ReactNode;
+  /** The line below the rule: the caveat, the limit, the "what this costs". */
+  footer?: React.ReactNode;
+  style?: React.CSSProperties;
+  className?: string;
+}
+
+export function Note({ title, cmd, children, footer, style, className }: NoteProps) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className={className ? `cr-note ${className}` : 'cr-note'} style={style}>
+      {title && (
+        <div className="cr-note-h">
+          <span className="cr-annot">{title}</span>
+        </div>
+      )}
+      {cmd && (
+        <div className="cr-note-b">
+          <code>{cmd}</code>
+          <button
+            type="button"
+            data-copied={copied ? '' : undefined}
+            onClick={() => {
+              // navigator.clipboard is undefined on a page served over plain
+              // http from anything but localhost, which is exactly how a
+              // self-hosted server is reached. Failing silently there would
+              // leave a button that does nothing, so fall back to the
+              // execCommand path rather than swallowing the error.
+              const done = () => {
+                setCopied(true);
+                window.setTimeout(() => setCopied(false), 1600);
+              };
+              if (navigator.clipboard?.writeText) {
+                navigator.clipboard.writeText(cmd).then(done, () => undefined);
+                return;
+              }
+              const ta = document.createElement('textarea');
+              ta.value = cmd;
+              ta.style.position = 'fixed';
+              ta.style.opacity = '0';
+              document.body.appendChild(ta);
+              ta.select();
+              try {
+                document.execCommand('copy');
+                done();
+              } finally {
+                document.body.removeChild(ta);
+              }
             }}
           >
-            {delta}
-          </span>
-        )}
-      </div>
-      <div
-        style={{
-          fontSize: 26,
-          fontWeight: 600,
-          letterSpacing: '-0.02em',
-          color: tones[tone],
-          fontVariantNumeric: 'tabular-nums',
-        }}
-      >
-        {value}
-      </div>
-      {sub && <div style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{sub}</div>}
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+      )}
+      {children && <div className="cr-note-p">{children}</div>}
+      {footer && <div className="cr-note-f">{footer}</div>}
+    </div>
+  );
+}
+
+// ────────────────────────────── Dimension ──────────────────────────────
+// A measured span with a label, for a boundary that matters. One per screen at
+// most: a dimension on every edge measures nothing.
+interface DimensionProps {
+  children: React.ReactNode;
+  /** The value at the far end of the span. */
+  value?: React.ReactNode;
+  style?: React.CSSProperties;
+}
+
+export function Dimension({ children, value, style }: DimensionProps) {
+  return (
+    <div className="cr-dimension" style={style}>
+      <span>{children}</span>
+      <i />
+      {value && <span>{value}</span>}
     </div>
   );
 }
