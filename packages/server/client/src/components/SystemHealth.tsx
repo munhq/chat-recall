@@ -54,7 +54,7 @@ export default function SystemHealth() {
       <section style={{ marginBottom: 28 }}>
         <SectionHeading
           title="Your machines"
-          sub="One card per machine. A machine with nothing wrong stays a single quiet line."
+          sub="One row per machine. A machine with nothing wrong stays a single quiet line."
         />
         <FleetHealth />
       </section>

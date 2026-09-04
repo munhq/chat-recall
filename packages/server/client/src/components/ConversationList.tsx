@@ -144,7 +144,7 @@ export default function ConversationList({
           </h3>
           <span
             style={{
-              fontFamily: 'var(--cr-font-mono)',
+              fontFamily: 'var(--cr-font-annot)',
               fontSize: 12,
               color: 'var(--cr-fg-3)',
               fontVariantNumeric: 'tabular-nums',

@@ -122,13 +122,13 @@ const CSS = `
 .trace-line { display:flex; align-items:center; gap:10px; }
 .trace-who { font-size:13px; font-weight:600; }
 .trace-node.user .trace-who { color: var(--cr-brand-500); }
-.trace-time { font-size:12px; color: var(--cr-fg-3); font-family: var(--cr-font-mono,monospace); }
+.trace-time { font-size:12px; color: var(--cr-fg-3); font-family: var(--cr-font-annot); }
 .trace-text { font-size:13px; color: var(--cr-fg-2); margin-top:3px; line-height:1.45; }
 .trace-tools-list { margin-top:8px; display:flex; flex-direction:column; gap:4px; }
 .trace-call { display:flex; align-items:center; gap:8px; font-size:12px; padding:4px 8px; background: var(--cr-ink-1); border:1px solid var(--cr-line-1); border-radius: 0; }
 .trace-call.err { border-color: var(--cr-err-line); }
 .trace-call-name { font-weight:600; white-space:nowrap; }
-.trace-call-target { color: var(--cr-fg-3); font-family: var(--cr-font-mono,monospace); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.trace-call-target { color: var(--cr-fg-3); font-family: var(--cr-font-annot); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .trace-call-badge { margin-left:auto; color: var(--cr-err-500); font-weight:700; }
 .trace-subs { margin-top: 22px; border-top:1px solid var(--cr-line-1); padding-top:16px; }
 .trace-subs-head { font-size:13px; font-weight:600; margin-bottom:10px; }

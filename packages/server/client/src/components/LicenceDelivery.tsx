@@ -228,7 +228,7 @@ const CSS = `
   border: 1px solid var(--cr-line-1); }
 .cr-lic-label { font-size: 12.5px; letter-spacing: 0.07em; text-transform: uppercase;
   color: var(--cr-fg-3); }
-.cr-lic-serial { font-family: var(--cr-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+.cr-lic-serial { font-family: var(--cr-font-annot);
   font-size: clamp(16px, 3.4vw, 21px); font-weight: 600; letter-spacing: 0.06em;
   font-variant-numeric: tabular-nums; color: var(--cr-fg-1); word-break: break-all;
   user-select: all; line-height: 1.35; }
@@ -254,7 +254,7 @@ const CSS = `
    viewport gets a scrollbar on this one box instead. */
 .cr-lic-code { display: block; padding: 7px 9px; border-radius: var(--cr-radius-sm);
   background: var(--cr-ink-0); border: 1px solid var(--cr-line-1);
-  font-family: var(--cr-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(--cr-font-annot);
   font-size: 12px; color: var(--cr-fg-2); user-select: all;
   white-space: pre; overflow-x: auto; overscroll-behavior-x: contain; }
 .cr-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;

@@ -267,7 +267,7 @@ export default function ForceGraph({
                   textAnchor="middle"
                   fontSize={Math.max(7, (n.labelSize ?? 10) / view.k)}
                   fill={n.labelColor || 'var(--cr-fg-2)'}
-                  style={{ fontFamily: 'var(--cr-font-mono)', pointerEvents: 'none' }}
+                  style={{ fontFamily: 'var(--cr-font-annot)', pointerEvents: 'none' }}
                 >
                   {n.label}
                 </text>

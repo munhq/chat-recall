@@ -12,7 +12,7 @@
  * shouted, nobody would read it.
  */
 import React, { useEffect, useState } from 'react';
-import { Card, Chip } from './primitives';
+import { Schedule } from './primitives';
 import Sparkline from './Sparkline';
 import {
   getFleetHealth, getSecurityConfig, setCollectTelemetry,
@@ -82,83 +82,90 @@ export default function FleetHealth() {
 
   return (
     <div style={{ fontSize: 13 }}>
-      {summary && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12, alignItems: 'center' }}>
-          <Chip kind={attention.length === 0 ? 'ok' : 'warn'} size="sm">
-            {attention.length === 0
-              ? `${summary.devices} machine${summary.devices === 1 ? '' : 's'} healthy`
-              : `${attention.length} of ${summary.devices} need attention`}
-          </Chip>
-          {summary.pendingFolders > 0 && (
-            <Chip kind="warn" size="sm">{summary.pendingFolders} folder(s) awaiting a decision</Chip>
-          )}
-        </div>
-      )}
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {devices.map((d) => {
+      {/* ONE SCHEDULE, NOT ONE CARD PER MACHINE. A gapped stack of bordered
+          boxes is the card grid this world replaced, and the warning state was
+          coded by putting an amber BORDER on the box — a coloured bar on a box
+          edge, which the Coded Leader Rule forbids. As rows, the machines line
+          up so you can compare them down the column, and the hue rides the
+          warning text itself, which is the thing that is actually amber. */}
+      <Schedule
+        caption={
+          summary
+            ? [
+                attention.length === 0
+                  ? `${summary.devices} machine${summary.devices === 1 ? '' : 's'} healthy`
+                  : `${attention.length} of ${summary.devices} need attention`,
+                summary.pendingFolders > 0
+                  ? `${summary.pendingFolders} folder${summary.pendingFolders === 1 ? '' : 's'} awaiting a decision`
+                  : null,
+              ].filter(Boolean).join(' · ')
+            : undefined
+        }
+        cols={[
+          { key: 'machine', kind: 'pn', head: 'Machine' },
+          { key: 'state', head: 'State' },
+          { key: 'measured', kind: 'rt', head: 'Measured', optional: true },
+        ]}
+        rows={devices.map((d) => {
           const bad = d.warnings.length > 0;
-          return (
-            <Card key={d.deviceId} style={{
-              padding: '10px 12px',
-              border: bad ? '1px solid var(--cr-warn-500)' : '1px solid var(--cr-line-1)',
-            }}>
-              <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
-                <span style={{ fontWeight: 700, color: 'var(--cr-fg-1)' }}>{d.deviceId}</span>
-                <span style={{ color: 'var(--cr-fg-3)', fontSize: 12.5 }}>
-                  {d.os || 'unknown OS'}
-                  {d.cliVersion ? ` · CLI ${d.cliVersion}` : ''}
-                  {` · last seen ${ago(d.lastSeenAt)}`}
-                  {d.sessions > 0 ? ` · ${d.sessions.toLocaleString()} sessions` : ''}
-                  {d.folders.syncing > 0 ? ` · ${d.folders.syncing} folder${d.folders.syncing === 1 ? '' : 's'} syncing` : ''}
+          let measured: React.ReactNode = null;
+          if (d.telemetry) {
+            const t = d.telemetry;
+            const parts: string[] = [];
+            if (t.lastScanMs != null) parts.push(`scan ${dur(t.lastScanMs)}`);
+            if (t.rssPeakMb != null) parts.push(`peak ${t.rssPeakMb}MB`);
+            const failures = Object.entries(t.failuresByClass)
+              .filter(([, n]) => n > 0)
+              .sort((a, b) => b[1] - a[1]);
+            // Named classes, not a total: "3 rate_limited" is actionable where
+            // "3 failures" sends the reader to the logs.
+            for (const [cls, n] of failures.slice(0, 3)) parts.push(`${n}× ${cls.replace(/_/g, ' ')}`);
+            if (parts.length > 0) {
+              measured = (
+                <span style={{ display: 'inline-flex', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center' }}>
+                  {parts.map((x) => <span key={x}>{x}</span>)}
+                  {/* The trend, beside the value it belongs to. It answers the
+                      question the number alone cannot: is this machine getting
+                      slower? */}
+                  {t.recentScanMs && t.recentScanMs.length >= 2 && (
+                    <Sparkline values={t.recentScanMs} format={dur} label="scan time, recent walks" />
+                  )}
                 </span>
-              </div>
-              {/* Problems in plain language. A number the reader has to interpret
-                  is a number that gets skipped, so the warning says what is wrong
-                  and what it costs. */}
-              {bad && (
-                <ul style={{ margin: '8px 0 0', paddingLeft: 18, color: 'var(--cr-fg-1)', lineHeight: 1.5 }}>
-                  {d.warnings.map((w) => <li key={w}>{w}</li>)}
-                </ul>
-              )}
-              {/* What the collector itself measured, in the muted register and
-                  BELOW the warnings: warnings are what you act on, these are
-                  what you check afterwards. Each value is omitted when the device
-                  did not report it, so a sparse line means "not measured" rather
-                  than "zero" — a distinction that matters when the number is
-                  memory or a failure count. */}
-              {d.telemetry && (() => {
-                const t = d.telemetry!;
-                const parts: string[] = [];
-                if (t.lastScanMs != null) parts.push(`scan ${dur(t.lastScanMs)}`);
-                if (t.rssPeakMb != null) parts.push(`peak ${t.rssPeakMb}MB`);
-                const failures = Object.entries(t.failuresByClass)
-                  .filter(([, n]) => n > 0)
-                  .sort((a, b) => b[1] - a[1]);
-                // Named classes, not a total: "3 rate_limited" is actionable
-                // where "3 failures" sends the reader to the logs.
-                for (const [cls, n] of failures.slice(0, 3)) parts.push(`${n}× ${cls.replace(/_/g, ' ')}`);
-                if (parts.length === 0) return null;
-                return (
-                  <div style={{
-                    marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--cr-line-1)',
-                    color: 'var(--cr-fg-3)', fontSize: 12.5,
-                    fontFamily: 'var(--cr-font-mono)', display: 'flex', gap: 10, flexWrap: 'wrap',
-                  }}>
-                    {parts.map((x) => <span key={x}>{x}</span>)}
-                    {/* The trend, beside the value it belongs to — a stat tile,
-                        not a chart. It answers the question the number alone
-                        cannot: is this machine getting slower? */}
-                    {t.recentScanMs && t.recentScanMs.length >= 2 && (
-                      <Sparkline values={t.recentScanMs} format={dur} label="scan time, recent walks" />
-                    )}
-                  </div>
-                );
-              })()}
-            </Card>
-          );
+              );
+            }
+          }
+          return {
+            id: d.deviceId,
+            cells: {
+              machine: (
+                <>
+                  {d.deviceId}
+                  <span className="pn-sub">
+                    {d.os || 'unknown OS'}
+                    {d.cliVersion ? ` · CLI ${d.cliVersion}` : ''}
+                    {` · last seen ${ago(d.lastSeenAt)}`}
+                    {d.sessions > 0 ? ` · ${d.sessions.toLocaleString()} sessions` : ''}
+                    {d.folders.syncing > 0 ? ` · ${d.folders.syncing} folder${d.folders.syncing === 1 ? '' : 's'} syncing` : ''}
+                  </span>
+                </>
+              ),
+              // Problems in plain language. A number the reader has to interpret
+              // is a number that gets skipped, so the warning says what is wrong
+              // and what it costs.
+              state: bad
+                ? (
+                  <span style={{ color: 'var(--cr-warn-500)' }}>
+                    {d.warnings.map((w) => (
+                      <span key={w} style={{ display: 'block' }}>{w}</span>
+                    ))}
+                  </span>
+                )
+                : <span style={{ color: 'var(--cr-fg-3)' }}>nothing wrong</span>,
+              measured,
+            },
+          };
         })}
-      </div>
+      />
 
       {/* Fleet-wide shape, for the question a per-device card cannot answer:
           how long a sync takes for a real machine, and how much memory it costs.
@@ -168,7 +175,7 @@ export default function FleetHealth() {
         <div style={{
           marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--cr-line-1)',
           color: 'var(--cr-fg-3)', fontSize: 12.5, display: 'flex', gap: 12, flexWrap: 'wrap',
-          fontFamily: 'var(--cr-font-mono)',
+          fontFamily: 'var(--cr-font-annot)',
         }}>
           <span>{fleet.walks.toLocaleString()} walks (7d)</span>
           {fleet.scanMsP50 != null && <span>scan p50 {dur(fleet.scanMsP50)}</span>}

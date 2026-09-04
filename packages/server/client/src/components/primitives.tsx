@@ -120,7 +120,7 @@ export function Kbd({ children, style, className }: KbdProps) {
         border: '1px solid var(--cr-line-1)',
         borderBottomWidth: 2,
         borderRadius: 0,
-        fontFamily: 'var(--cr-font-mono)',
+        fontFamily: 'var(--cr-font-annot)',
         fontSize: 12,
         fontWeight: 500,
         color: 'var(--cr-fg-2)',
@@ -152,7 +152,7 @@ export function Chip({ children, kind = 'neutral', icon, size = 'md', style, cla
   const s = sizes[size] || sizes.md;
   const kinds: Record<string, { bg: string; fg: string; border: string; font?: string }> = {
     neutral: { bg: 'var(--cr-ink-2)', fg: 'var(--cr-fg-2)', border: 'var(--cr-line-1)' },
-    mono: { bg: 'var(--cr-ink-2)', fg: 'var(--cr-fg-2)', border: 'var(--cr-line-1)', font: 'var(--cr-font-mono)' },
+    mono: { bg: 'var(--cr-ink-2)', fg: 'var(--cr-fg-2)', border: 'var(--cr-line-1)', font: 'var(--cr-font-annot)' },
     brand: { bg: 'var(--cr-brand-surf)', fg: 'var(--cr-brand-500)', border: 'var(--cr-brand-line)' },
     ok: { bg: 'var(--cr-ok-surf)', fg: 'var(--cr-ok-500)', border: 'var(--cr-ok-line)' },
     warn: { bg: 'var(--cr-warn-surf)', fg: 'var(--cr-warn-500)', border: 'var(--cr-warn-line)' },

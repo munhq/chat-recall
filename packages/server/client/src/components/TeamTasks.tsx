@@ -1347,7 +1347,7 @@ const TT_CSS = `
   background: var(--cr-ink-0); border: 1px solid var(--cr-ok-line);
   font-size: 12px; color: var(--cr-fg-3); }
 .tt-evidence-label { color: var(--cr-ok-500); font-weight: 500; }
-.tt-sha { font-family: var(--cr-font-mono); color: var(--cr-fg-2);
+.tt-sha { font-family: var(--cr-font-annot); color: var(--cr-fg-2);
   background: var(--cr-ink-2); padding: 1px 5px; border-radius: 0; }
 .tt-evidence-files { color: var(--cr-fg-3); }
 .tt-evidence-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
