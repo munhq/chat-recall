@@ -41,7 +41,7 @@ export default function SessionTrace({ messages, subagents }: { messages: Messag
         <div className="trace-tools">
           {toolCounts.map(([name, c]) => (
             <span key={name} className="trace-chip">
-              {name} <b>×{c.n}</b>{c.err > 0 && <em className="err"> · {c.err}✗</em>}
+              {name} <b>×{c.n}</b>{c.err > 0 && <em className="err"> · {c.err} failed</em>}
             </span>
           ))}
         </div>
@@ -61,9 +61,9 @@ export default function SessionTrace({ messages, subagents }: { messages: Messag
                 <div className="trace-tools-list">
                   {m.toolCalls!.map((tc, j) => (
                     <div key={j} className={`trace-call ${tc.isError ? 'err' : ''}`}>
-                      <span className="trace-call-name">🔧 {tc.name}</span>
+                      <span className="trace-call-name">{tc.name}</span>
                       <span className="trace-call-target">{toolTarget(tc.input)}</span>
-                      {tc.isError && <span className="trace-call-badge">✗</span>}
+                      {tc.isError && <span className="trace-call-badge">failed</span>}
                     </div>
                   ))}
                 </div>
@@ -75,7 +75,7 @@ export default function SessionTrace({ messages, subagents }: { messages: Messag
 
       {subagents.length > 0 && (
         <div className="trace-subs">
-          <div className="trace-subs-head">↪ Subagent handoffs ({subagents.length})</div>
+          <div className="trace-subs-head">Subagent handoffs ({subagents.length})</div>
           {subagents.map((s) => (
             <div key={s.id} className="trace-sub">
               <span className="trace-sub-kind">{s.agentType || s.kind}</span>
@@ -106,34 +106,34 @@ function toolTarget(input: unknown): string {
 
 const CSS = `
 .trace { padding: 4px 2px; }
-.trace-empty { color: var(--cr-fg-3,#6b7280); padding: 24px; font-size: 14px; }
+.trace-empty { color: var(--cr-fg-3); padding: 24px; font-size: 14px; }
 .trace-tools { display:flex; flex-wrap:wrap; gap:8px; margin-bottom: 18px; }
-.trace-chip { font-size:12px; background: var(--cr-ink-2,#171b21); border:1px solid var(--cr-line-1,#1e232b); border-radius:999px; padding:4px 11px; color: var(--cr-fg-2,#aab1bd); }
-.trace-chip b { color: var(--cr-fg-1,#e8eaed); }
-.trace-chip .err { color: var(--cr-err-500,#f87171); font-style:normal; }
+.trace-chip { font-size:12px; background: var(--cr-ink-2); border:1px solid var(--cr-line-1); border-radius: 0; padding:4px 11px; color: var(--cr-fg-2); }
+.trace-chip b { color: var(--cr-fg-1); }
+.trace-chip .err { color: var(--cr-err-500); font-style:normal; }
 .trace-timeline { position:relative; padding-left: 8px; }
 .trace-node { display:flex; gap:12px; padding-bottom: 4px; position:relative; }
-.trace-node::before { content:''; position:absolute; left:4px; top:14px; bottom:-4px; width:1px; background: var(--cr-line-1,#1e232b); }
+.trace-node::before { content:''; position:absolute; left:4px; top:14px; bottom:-4px; width:1px; background: var(--cr-line-1); }
 .trace-node:last-child::before { display:none; }
-.trace-dot { width:9px; height:9px; border-radius:50%; flex:none; margin-top:5px; background: var(--cr-line-3,#39404a); z-index:1; }
-.trace-node.user .trace-dot { background: var(--cr-brand-500,#5b8def); }
-.trace-node.assistant .trace-dot { background: var(--cr-ok-500,#4ade80); }
+.trace-dot { width:9px; height:9px; border-radius:50%; flex:none; margin-top:5px; background: var(--cr-line-3); z-index:1; }
+.trace-node.user .trace-dot { background: var(--cr-brand-500); }
+.trace-node.assistant .trace-dot { background: var(--cr-ok-500); }
 .trace-body { flex:1; min-width:0; padding-bottom: 14px; }
 .trace-line { display:flex; align-items:center; gap:10px; }
 .trace-who { font-size:13px; font-weight:600; }
-.trace-node.user .trace-who { color: var(--cr-brand-500,#5b8def); }
-.trace-time { font-size:11px; color: var(--cr-fg-3,#6b7280); font-family: var(--cr-font-mono,monospace); }
-.trace-text { font-size:13px; color: var(--cr-fg-2,#aab1bd); margin-top:3px; line-height:1.45; }
+.trace-node.user .trace-who { color: var(--cr-brand-500); }
+.trace-time { font-size:12px; color: var(--cr-fg-3); font-family: var(--cr-font-mono,monospace); }
+.trace-text { font-size:13px; color: var(--cr-fg-2); margin-top:3px; line-height:1.45; }
 .trace-tools-list { margin-top:8px; display:flex; flex-direction:column; gap:4px; }
-.trace-call { display:flex; align-items:center; gap:8px; font-size:12px; padding:4px 8px; background: var(--cr-ink-1,#12151a); border:1px solid var(--cr-line-1,#1e232b); border-radius:7px; }
-.trace-call.err { border-color: var(--cr-err-line,#5a2329); }
+.trace-call { display:flex; align-items:center; gap:8px; font-size:12px; padding:4px 8px; background: var(--cr-ink-1); border:1px solid var(--cr-line-1); border-radius: 0; }
+.trace-call.err { border-color: var(--cr-err-line); }
 .trace-call-name { font-weight:600; white-space:nowrap; }
-.trace-call-target { color: var(--cr-fg-3,#6b7280); font-family: var(--cr-font-mono,monospace); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.trace-call-badge { margin-left:auto; color: var(--cr-err-500,#f87171); font-weight:700; }
-.trace-subs { margin-top: 22px; border-top:1px solid var(--cr-line-1,#1e232b); padding-top:16px; }
+.trace-call-target { color: var(--cr-fg-3); font-family: var(--cr-font-mono,monospace); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.trace-call-badge { margin-left:auto; color: var(--cr-err-500); font-weight:700; }
+.trace-subs { margin-top: 22px; border-top:1px solid var(--cr-line-1); padding-top:16px; }
 .trace-subs-head { font-size:13px; font-weight:600; margin-bottom:10px; }
-.trace-sub { padding:8px 12px; background: var(--cr-ink-1,#12151a); border:1px solid var(--cr-line-1,#1e232b); border-radius:8px; margin-bottom:6px; display:flex; flex-wrap:wrap; gap:10px; align-items:baseline; }
-.trace-sub-kind { font-size:12.5px; font-weight:600; color: var(--cr-brand-500,#5b8def); }
-.trace-sub .muted { font-size:12px; color: var(--cr-fg-3,#6b7280); }
-.trace-sub-desc { flex-basis:100%; font-size:12px; color: var(--cr-fg-2,#aab1bd); }
+.trace-sub { padding:8px 12px; background: var(--cr-ink-1); border:1px solid var(--cr-line-1); border-radius: 0; margin-bottom:6px; display:flex; flex-wrap:wrap; gap:10px; align-items:baseline; }
+.trace-sub-kind { font-size:12.5px; font-weight:600; color: var(--cr-brand-500); }
+.trace-sub .muted { font-size:12px; color: var(--cr-fg-3); }
+.trace-sub-desc { flex-basis:100%; font-size:12px; color: var(--cr-fg-2); }
 `;

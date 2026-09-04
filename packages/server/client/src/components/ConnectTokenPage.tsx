@@ -103,7 +103,7 @@ export default function ConnectTokenPage() {
             </div>
             <div style={{ display: 'flex', alignItems: 'stretch', gap: 10 }}>
               <pre style={{
-                flex: 1, margin: 0, padding: '16px 18px', borderRadius: 10,
+                flex: 1, margin: 0, padding: '16px 18px', borderRadius: 0,
                 border: '1px solid var(--cr-line-2)', background: 'var(--cr-ink-1)',
                 fontSize: 16, lineHeight: 1.5, overflowX: 'auto', whiteSpace: 'pre',
                 WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain',
@@ -113,16 +113,16 @@ export default function ConnectTokenPage() {
                 variant="primary"
                 onClick={() => { navigator.clipboard.writeText(token); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
                 aria-label="Copy token to clipboard"
-              >{copied ? 'Copied ✓' : 'Copy'}</Button>
+              >{copied ? 'Copied' : 'Copy'}</Button>
             </div>
             <div style={{
-              marginTop: 18, padding: '10px 12px', borderRadius: 10, fontSize: 13,
+              marginTop: 18, padding: '10px 12px', borderRadius: 0, fontSize: 13,
               border: '1px solid var(--cr-line-1)',
-              background: synced > 0 ? 'var(--cr-ok-surf, #10241a)' : 'var(--cr-ink-1)',
-              color: synced > 0 ? 'var(--cr-ok-500, #4ade80)' : 'var(--cr-fg-2)',
+              background: synced > 0 ? 'var(--cr-ok-surf)' : 'var(--cr-ink-1)',
+              color: synced > 0 ? 'var(--cr-ok-500)' : 'var(--cr-fg-2)',
             }}>
               {synced > 0
-                ? <>✓ First data arrived — {synced} session(s) synced. Taking you to your dashboard…</>
+                ? <>First data arrived — {synced} session(s) synced. Taking you to your dashboard…</>
                 : <>Paste the token in your terminal — sync runs in the background, and this page jumps to your dashboard when the first data lands.</>}
             </div>
             <div style={{ marginTop: 12 }}>

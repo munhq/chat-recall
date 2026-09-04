@@ -101,11 +101,11 @@ export default function FleetHealth() {
           return (
             <Card key={d.deviceId} style={{
               padding: '10px 12px',
-              border: bad ? '1px solid var(--cr-warn-500, #c98a00)' : '1px solid var(--cr-line-1)',
+              border: bad ? '1px solid var(--cr-warn-500)' : '1px solid var(--cr-line-1)',
             }}>
               <div style={{ display: 'flex', gap: 10, alignItems: 'baseline', flexWrap: 'wrap' }}>
                 <span style={{ fontWeight: 700, color: 'var(--cr-fg-1)' }}>{d.deviceId}</span>
-                <span style={{ color: 'var(--cr-fg-3)', fontSize: 11.5 }}>
+                <span style={{ color: 'var(--cr-fg-3)', fontSize: 12.5 }}>
                   {d.os || 'unknown OS'}
                   {d.cliVersion ? ` · CLI ${d.cliVersion}` : ''}
                   {` · last seen ${ago(d.lastSeenAt)}`}
@@ -142,7 +142,7 @@ export default function FleetHealth() {
                 return (
                   <div style={{
                     marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--cr-line-1)',
-                    color: 'var(--cr-fg-3)', fontSize: 11.5,
+                    color: 'var(--cr-fg-3)', fontSize: 12.5,
                     fontFamily: 'var(--cr-font-mono)', display: 'flex', gap: 10, flexWrap: 'wrap',
                   }}>
                     {parts.map((x) => <span key={x}>{x}</span>)}
@@ -167,7 +167,7 @@ export default function FleetHealth() {
       {fleet && fleet.walks > 0 && (
         <div style={{
           marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--cr-line-1)',
-          color: 'var(--cr-fg-3)', fontSize: 11.5, display: 'flex', gap: 12, flexWrap: 'wrap',
+          color: 'var(--cr-fg-3)', fontSize: 12.5, display: 'flex', gap: 12, flexWrap: 'wrap',
           fontFamily: 'var(--cr-font-mono)',
         }}>
           <span>{fleet.walks.toLocaleString()} walks (7d)</span>
@@ -205,7 +205,7 @@ export default function FleetHealth() {
           />
           <label htmlFor="collect-telemetry" style={{ fontSize: 12, color: 'var(--cr-fg-2)', lineHeight: 1.5 }}>
             Let collectors report their own health to this server
-            <span style={{ display: 'block', color: 'var(--cr-fg-3)', fontSize: 11.5 }}>
+            <span style={{ display: 'block', color: 'var(--cr-fg-3)', fontSize: 12.5 }}>
               Walk timings, session counts, failure classes, CLI version and peak memory —
               never transcript content, file paths, project names or session ids.
               It is what makes the warnings above possible. Any machine can also
@@ -216,7 +216,7 @@ export default function FleetHealth() {
       )}
 
       {summary && summary.unattributedSessions > 0 && (
-        <div style={{ color: 'var(--cr-fg-3)', fontSize: 11.5, marginTop: 10 }}>
+        <div style={{ color: 'var(--cr-fg-3)', fontSize: 12.5, marginTop: 10 }}>
           {summary.unattributedSessions.toLocaleString()} older sessions predate per-device tracking,
           so they are not attributed above. They are stored and searchable.
         </div>

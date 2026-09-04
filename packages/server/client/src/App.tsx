@@ -1070,7 +1070,7 @@ function AppInner() {
               style={{
                 fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)',
                 color: 'var(--cr-fg-3)',
-                fontSize: 11,
+                fontSize: 12,
                 marginLeft: 'auto',
                 // minWidth:0 lets the ellipsis do its job instead of the nowrap
                 // text setting a min-content floor for the whole banner.

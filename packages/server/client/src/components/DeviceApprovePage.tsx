@@ -5,8 +5,8 @@ import { deviceDecision } from '../services/auth';
 /**
  * Device-login approval (/device?user_code=…) — RFC 8628's human step.
  *
- * Something asked to connect to the user's account: `chat-recall login` in a
- * terminal, `init`, or the MCP server signing itself in on the user's behalf.
+ * Something asked to connect to the user's account: "chat-recall login" in a
+ * terminal, "init", or the MCP server signing itself in on the user's behalf.
  * They confirm the code matches, and the poller on the other side finishes by
  * itself.
  *
@@ -50,7 +50,7 @@ export default function DeviceApprovePage() {
     <div className="dv-wrap">
       <style>{DEVICE_CSS}</style>
       <div className="dv-card">
-        <div className="dv-brand"><span className="dv-logo">◆</span> chat-recall</div>
+        <div className="dv-brand"><span className="dv-logo" /> chat-recall</div>
         {state === 'approved' ? (
           <>
             <h1>You're connected</h1>
@@ -105,15 +105,17 @@ const DEVICE_CSS = `
   background: var(--cr-ink-0); color: var(--cr-fg-1);
   font-family: var(--cr-font-sans); }
 /* max-width, not width: a fixed 380px card overflows a 375px handset. */
+/* A plate. The border was "1px solid var(--cr-ink-2)" — a GROUND token doing
+   line duty, so the card's edge dissolved into the page once the shadow went. */
 .dv-card { width: 100%; max-width: 380px; padding: clamp(24px, 6vw, 36px);
-  background: var(--cr-ink-1); border: 1px solid var(--cr-ink-2);
-  border-radius: var(--cr-radius-lg); box-sizing: border-box;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.34); }
+  background: var(--cr-ink-0); border: var(--cr-frame-w) solid var(--cr-frame);
+  border-radius: 0; box-sizing: border-box;
+  }
 .dv-brand { display: flex; align-items: center; gap: 7px;
   font-family: var(--cr-font-display); font-size: 13px; font-weight: 600;
   letter-spacing: 0.04em; text-transform: lowercase;
   margin-bottom: 26px; color: var(--cr-fg-2); }
-.dv-logo { color: var(--cr-brand-500); font-size: 11px; }
+.dv-logo { display: inline-block; width: 12px; height: 12px; background: var(--cr-brand-500); flex: none; }
 .dv-card h1 { font-family: var(--cr-font-display); font-size: 21px; line-height: 1.25;
   margin: 0 0 7px; color: var(--cr-fg-1); letter-spacing: -0.01em; }
 .dv-sub { margin: 0 0 20px; font-size: 13px; line-height: 1.55; color: var(--cr-fg-2); }
@@ -147,6 +149,6 @@ const DEVICE_CSS = `
   border-radius: var(--cr-radius-md); font-size: 14px; font-weight: 600;
   text-decoration: none; transition: background 120ms ease; }
 .dv-cta:hover { background: var(--cr-brand-600); }
-.dv-fine { margin: 16px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--cr-fg-3); }
-.dv-fine code { font-family: var(--cr-font-mono); font-size: 11px; }
+.dv-fine { margin: 16px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--cr-fg-3); }
+.dv-fine code { font-family: var(--cr-font-mono); font-size: 12px; }
 `;

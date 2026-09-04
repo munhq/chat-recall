@@ -24,7 +24,7 @@ import {
  *
  * ── The enrolment is two steps on purpose ─────────────────────────────────
  *
- * `enable` returns the QR and the recovery codes but does NOT arm anything. The
+ * "enable" returns the QR and the recovery codes but does NOT arm anything. The
  * factor turns on only after a code from the app verifies. A user who scans the
  * wrong thing, or scans nothing, finds out here — while they can still cancel —
  * instead of at their next sign-in with no way back in.
@@ -178,7 +178,7 @@ const TF_CSS = `
 .tf-ok { background: var(--cr-ok-surf); color: var(--cr-ok-500);
   border: 1px solid var(--cr-ok-line); padding: 8px 12px;
   border-radius: var(--cr-radius-md); margin-bottom: 12px; font-size: 13px; }
-.tf-secret { background: var(--cr-ink-2,#0d1014); border: 1px solid var(--cr-line-1);
+.tf-secret { background: var(--cr-ink-2); border: 1px solid var(--cr-line-1);
   border-radius: var(--cr-radius-md); padding: 10px 12px; font-size: 13px;
   word-break: break-all; user-select: all; margin: 10px 0; }
 .tf-warn { background: var(--cr-err-surf); border: 1px solid var(--cr-err-line);

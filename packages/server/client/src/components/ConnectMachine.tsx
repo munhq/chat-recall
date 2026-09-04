@@ -32,8 +32,8 @@ function ago(ms: number | null | undefined): string {
  *  a device that predates heartbeats hasn't done anything wrong. */
 const HEALTH_LABEL: Record<DeviceHealth, { text: string; tone: string } | null> = {
   ok: null,
-  outdated: { text: 'outdated CLI', tone: 'var(--cr-warn, #d08700)' },
-  offline: { text: 'not syncing', tone: 'var(--cr-danger, #d04437)' },
+  outdated: { text: 'outdated CLI', tone: 'var(--cr-warn-500)' },
+  offline: { text: 'not syncing', tone: 'var(--cr-err-500)' },
   unknown: { text: 'never checked in', tone: 'var(--cr-fg-3)' },
   revoked: null,
 };
@@ -51,7 +51,7 @@ function CopyBlock({ text }: { text: string }) {
   return (
     <div style={{ display: 'flex', alignItems: 'stretch', gap: 8, marginTop: 8 }}>
       <pre style={{
-        flex: 1, margin: 0, padding: '10px 12px', borderRadius: 'var(--cr-radius-md, 8px)',
+        flex: 1, margin: 0, padding: '10px 12px', borderRadius: 'var(--cr-radius-md)',
         border: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-0)', color: 'var(--cr-fg-1)',
         fontSize: 12.5, lineHeight: 1.6, overflowX: 'auto', whiteSpace: 'pre',
         WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain',
@@ -60,7 +60,7 @@ function CopyBlock({ text }: { text: string }) {
         variant="secondary"
         onClick={() => { navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }}
         aria-label="Copy to clipboard"
-      >{copied ? 'Copied ✓' : 'Copy'}</Button>
+      >{copied ? 'Copied' : 'Copy'}</Button>
     </div>
   );
 }
@@ -187,21 +187,21 @@ export default function ConnectMachine({ compact, onFirstData }: { compact?: boo
           Already have the CLI installed? <code>chat-recall login {origin}</code> connects without reinstalling.
         </div>
         <div style={{
-          marginTop: 14, padding: '10px 12px', borderRadius: 'var(--cr-radius-md, 8px)', fontSize: 13,
+          marginTop: 14, padding: '10px 12px', borderRadius: 'var(--cr-radius-md)', fontSize: 13,
           border: '1px solid var(--cr-line-1)',
-          background: synced && synced > 0 ? 'var(--cr-ok-surf, #10241a)' : 'var(--cr-ink-1)',
-          color: synced && synced > 0 ? 'var(--cr-ok-500, #4ade80)' : 'var(--cr-fg-2)',
+          background: synced && synced > 0 ? 'var(--cr-ok-surf)' : 'var(--cr-ink-1)',
+          color: synced && synced > 0 ? 'var(--cr-ok-500)' : 'var(--cr-fg-2)',
         }}>
           {synced && synced > 0
-            ? <>✓ First data arrived — {synced} session(s) synced. You're live.</>
-            : <><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: 'var(--cr-warn-500, #fbbf24)', marginRight: 8 }} />Waiting for the first sync…</>}
+            ? <>First data arrived — {synced} session(s) synced. You're live.</>
+            : <><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: 'var(--cr-warn-500)', marginRight: 8 }} />Waiting for the first sync…</>}
         </div>
 
         {syncLimit && (
           <div
             data-testid="sync-limit-notice"
             style={{
-              marginTop: 10, padding: '10px 12px', borderRadius: 'var(--cr-radius-md, 8px)',
+              marginTop: 10, padding: '10px 12px', borderRadius: 'var(--cr-radius-md)',
               fontSize: 13, lineHeight: 1.55,
               border: '1px solid var(--cr-brand-line)',
               background: 'var(--cr-brand-surf)',
@@ -249,7 +249,7 @@ export default function ConnectMachine({ compact, onFirstData }: { compact?: boo
             <button
               onClick={() => setShowTokenFlow(!showTokenFlow)}
               style={{ background: 'none', border: 'none', padding: 0, font: 'inherit', fontSize: 12.5, color: 'var(--cr-fg-3)', cursor: 'pointer' }}
-            >{showTokenFlow ? '▾' : '▸'} Need a raw device token instead? (CI, bots — no browser)</button>
+            >{showTokenFlow ? '−' : '+'} Need a raw device token instead? (CI, bots — no browser)</button>
             {showTokenFlow && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
                 <input
@@ -259,7 +259,7 @@ export default function ConnectMachine({ compact, onFirstData }: { compact?: boo
                   aria-label="Device name"
                   style={{
                     flex: '1 1 220px', font: 'inherit', fontSize: 13, padding: '9px 12px',
-                    borderRadius: 'var(--cr-radius-md, 8px)', border: '1px solid var(--cr-line-2)',
+                    borderRadius: 'var(--cr-radius-md)', border: '1px solid var(--cr-line-2)',
                     background: 'var(--cr-ink-0)', color: 'var(--cr-fg-1)',
                   }}
                 />

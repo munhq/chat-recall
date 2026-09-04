@@ -59,7 +59,8 @@ export default function SyncCoverage({ onOpenProject }: { onOpenProject?: (proje
   const topProjects = Object.entries(projects).sort((a, b) => b[1] - a[1]).slice(0, 6);
 
   const row: React.CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 };
-  const cap: React.CSSProperties = { fontSize: 11, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--cr-fg-3)', marginTop: 14 };
+  // A group label inside a plate, in the annotation hand at the 12px floor.
+  const cap: React.CSSProperties = { fontFamily: 'var(--cr-font-annot)', fontSize: 12, fontWeight: 500, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--cr-fg-3)', marginTop: 16 };
 
   return (
     <div style={{ fontSize: 13 }}>

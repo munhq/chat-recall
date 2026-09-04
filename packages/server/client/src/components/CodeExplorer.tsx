@@ -13,7 +13,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Card, Chip, SegmentedControl, MetricCard, Button, Icon } from './primitives';
+import { Card, Chip, SegmentedControl, Metrics, Button, Icon, Schedule } from './primitives';
 import { summaryTitle } from '../utils/clean';
 import ForceGraph from './ForceGraph';
 import {
@@ -147,7 +147,7 @@ export default function CodeExplorer({ projectFilter, embedded, onSessionClick }
         <p style={{ color: 'var(--cr-fg-2)', lineHeight: 1.6 }}>
           No repositories indexed yet. From a repo on your machine, run:
         </p>
-        <pre style={{ background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-md)', padding: 14, fontFamily: 'var(--cr-font-mono)' }}>chat-recall code index</pre>
+        <pre style={{ background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-1)', borderRadius: 0, padding: 14, fontFamily: 'var(--cr-font-mono)' }}>chat-recall code index</pre>
         <p style={{ color: 'var(--cr-fg-3)', fontSize: 13 }}>
           codeindex analyses structure, security, duplication, hotspots and dependency cycles; the results land here as an actionable plan.
         </p>
@@ -175,7 +175,7 @@ export default function CodeExplorer({ projectFilter, embedded, onSessionClick }
         {!embedded && <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}><Icon name="code" size={20} /> Code</h2>}
         {!embedded && projects.length > 1 && (
           <select value={projectId ?? ''} onChange={(e) => setProjectId(e.target.value)}
-            style={{ background: 'var(--cr-ink-1)', color: 'var(--cr-fg-1)', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-sm)', padding: '6px 10px', fontFamily: 'var(--cr-font-mono)', fontSize: 12 }}>
+            style={{ background: 'var(--cr-ink-1)', color: 'var(--cr-fg-1)', border: '1px solid var(--cr-line-1)', borderRadius: 0, padding: '6px 10px', fontFamily: 'var(--cr-font-mono)', fontSize: 12 }}>
             {projects.map((p) => <option key={p.projectId} value={p.projectId}>{p.projectId}</option>)}
           </select>
         )}
@@ -185,33 +185,39 @@ export default function CodeExplorer({ projectFilter, embedded, onSessionClick }
           {!embedded && <span style={{ color: 'var(--cr-fg-3)', fontSize: 12 }}>label:</span>}
           {!embedded && LABELS.map((l) => (
             <button key={l.value} onClick={() => setLabel(l.value)} title={`Mark project as ${l.label}`}
-              className="cr-pill" style={{ cursor: 'pointer', borderRadius: 999, padding: '3px 10px', fontSize: 11, border: '1px solid var(--cr-line-1)',
+              className="cr-pill" style={{ cursor: 'pointer', borderRadius: 0, padding: '3px 10px', fontSize: 12, border: '1px solid var(--cr-line-1)',
                 background: project?.label === l.value ? 'var(--cr-brand-500)' : 'transparent',
                 color: project?.label === l.value ? '#fff' : 'var(--cr-fg-2)' }}>{l.label}</button>
           ))}
           <button onClick={() => setTasksOpen(true)} data-testid="tasks-pill"
-            style={{ cursor: 'pointer', borderRadius: 999, padding: '6px 14px', marginLeft: 8, border: '1px solid var(--cr-brand-500)', background: 'var(--cr-brand-surf, transparent)', color: 'var(--cr-brand-500)', fontWeight: 600, fontSize: 13 }}>
-            ▸ tasks · {taskCount}
+            style={{ cursor: 'pointer', borderRadius: 0, padding: '6px 14px', marginLeft: 8, border: '1px solid var(--cr-brand-500)', background: 'var(--cr-brand-surf, transparent)', color: 'var(--cr-brand-500)', fontWeight: 600, fontSize: 13 }}>
+            tasks · {taskCount}
           </button>
         </div>
       </div>
 
-      {/* Hero metrics */}
+      {/* Code health, as one schedule. Six measurements in six equally-loud
+          tiles answered no question; six rows answer "which is worst" on the
+          first pass and keep every label readable. */}
       {h && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: 12, marginBottom: 18 }}>
-          <MetricCard label="Health" value={`${h.score}/100`} tone={h.score >= 70 ? 'ok' : h.score >= 40 ? 'neutral' : 'err'} icon="chart" />
-          <MetricCard label="Findings" value={String(summary?.total ?? h.findings)} sub={`${h.critical} critical · ${h.high} high`} tone={h.critical > 0 ? 'err' : 'neutral'} icon="check" />
-          <MetricCard label="Hotspots" value={String(h.hotspots)} sub="churn × complexity" icon="zap" />
-          <MetricCard label="AI-authored" value={`${Math.round((h.aiAuthoredPct || 0) * 100)}%`} sub="of files" icon="sparkle" />
-          <MetricCard label="Files" value={String(project?.fileCount ?? 0)} sub={`${project?.symbolCount ?? 0} symbols`} icon="file" />
-          <MetricCard
-            label="Sessions"
-            value={behavior ? String(behavior.totalSessions) : '—'}
-            sub={behavior ? `${behavior.failedOrAbandoned} unresolved` : 'no synced sessions'}
-            tone={behavior && behavior.totalSessions > 0 && behavior.failedOrAbandoned / behavior.totalSessions >= 0.3 ? 'err' : 'neutral'}
-            icon="message"
-          />
-        </div>
+        <Metrics
+          style={{ marginBottom: 18 }}
+          caption="Code health"
+          items={[
+            { label: 'Health', value: `${h.score}/100`, tone: h.score >= 70 ? 'ok' : h.score >= 40 ? 'neutral' : 'err', icon: 'chart' },
+            { label: 'Findings', value: String(summary?.total ?? h.findings), sub: `${h.critical} critical, ${h.high} high`, tone: h.critical > 0 ? 'err' : 'neutral', icon: 'check' },
+            { label: 'Hotspots', value: String(h.hotspots), sub: 'churn by complexity', icon: 'zap' },
+            { label: 'AI-authored', value: `${Math.round((h.aiAuthoredPct || 0) * 100)}%`, sub: 'of files', icon: 'sparkle' },
+            { label: 'Files', value: String(project?.fileCount ?? 0), sub: `${project?.symbolCount ?? 0} symbols`, icon: 'file' },
+            {
+              label: 'Sessions',
+              value: behavior ? String(behavior.totalSessions) : '—',
+              sub: behavior ? `${behavior.failedOrAbandoned} unresolved` : 'no synced sessions',
+              tone: behavior && behavior.totalSessions > 0 && behavior.failedOrAbandoned / behavior.totalSessions >= 0.3 ? 'err' : 'neutral',
+              icon: 'message',
+            },
+          ]}
+        />
       )}
 
       {/* Lens tabs */}
@@ -301,76 +307,71 @@ export function FindingList({ findings, onOpen }: { findings: CodeFinding[]; onO
   ))}</>;
 }
 
-function CouplingTable({ title, kind, rows, tone, hint, onItem }: { title: string; kind: string; rows: CodeCouplingMetric[]; tone: ChipKind; hint: string; onItem: (kind: string, file: string) => void }) {
-  return (
-    <Card style={{ padding: 14 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-        <strong style={{ fontSize: 13 }}>{title}</strong><Chip kind={tone} size="sm">{rows.length}</Chip>
-      </div>
-      <div style={{ color: 'var(--cr-fg-3)', fontSize: 11, marginBottom: 8 }}>{hint}</div>
-      {rows.length === 0 ? <span style={{ color: 'var(--cr-fg-3)', fontSize: 12 }}>none</span> : (
-        <div className="cr-hscroll" style={{ maxHeight: 200, overflow: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
-            <thead><tr style={{ color: 'var(--cr-fg-3)', textAlign: 'left' }}>
-              <th style={{ fontWeight: 500 }}>file</th>
-              <th title="in — afferent coupling (fan-in): how many files import this one" style={{ cursor: 'help' }}>in</th>
-              <th title="out — efferent coupling (fan-out): how many files this one imports" style={{ cursor: 'help' }}>out</th>
-              <th title="I — instability = out / (in + out). 0 = stable (safe to depend on), 1 = unstable (changes often ripple out)" style={{ cursor: 'help' }}>I</th>
-            </tr></thead>
-            <tbody>
-              {rows.slice(0, 15).map((m) => (
-                <tr key={m.file} onClick={() => onItem(kind, m.file)} style={{ cursor: 'pointer' }} title="Click for an agent prompt">
-                  <td className="mono" style={{ color: 'var(--cr-fg-2)', paddingRight: 8 }}>{m.file}</td>
-                  <td style={{ color: 'var(--cr-fg-3)' }}>{m.fanIn}</td><td style={{ color: 'var(--cr-fg-3)' }}>{m.fanOut}</td><td style={{ color: 'var(--cr-fg-3)' }}>{m.instability}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </Card>
-  );
-}
 export function StructureView({ findings, buckets, coupling, onOpen, onBucket }: { findings: CodeFinding[]; buckets?: CodeProject['map']['buckets']; coupling?: CodeProject['map']['coupling']; onOpen: (f: CodeFinding) => void; onBucket: (kind: string, file: string) => void }) {
   return (
     <div>
+      {/* Five categorised buckets were five bordered boxes in a gapped grid —
+          a card grid — and each box then drew its OWN table inside itself, so
+          the screen had a frame inside a frame inside a grid. One schedule,
+          with a band per category, says the same thing once. */}
       {coupling ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(260px,1fr))', gap: 12, marginBottom: 16 }}>
-          <CouplingTable title="God modules" kind="god" rows={coupling.god_modules} tone="err" hint="high fan-in AND fan-out" onItem={onBucket} />
-          <CouplingTable title="Stable cores" kind="stable" rows={coupling.stable_cores} tone="ok" hint="depended-on; keep stable" onItem={onBucket} />
-          <CouplingTable title="Unstable drivers" kind="driver" rows={coupling.unstable_drivers} tone="warn" hint="high fan-out; breaks easily" onItem={onBucket} />
-          <CouplingTable title="Islands" kind="island" rows={coupling.islands} tone="neutral" hint="no imports in/out; maybe dead" onItem={onBucket} />
-          {buckets && <BucketCard title="Circular deps" kind="cyc" files={buckets.cycles.map((c) => c.join(' → '))} tone="err" hint="break the cycle" onItem={onBucket} />}
-        </div>
+        <Schedule
+          scroll
+          style={{ marginBottom: 16 }}
+          caption="Coupling"
+          cols={[
+            { key: 'file', kind: 'pn', head: 'File' },
+            { key: 'in', kind: 'val', head: 'Fan in' },
+            { key: 'out', kind: 'val', head: 'Fan out' },
+            { key: 'i', kind: 'val', head: 'Instability', optional: true },
+          ]}
+          rows={([
+            ['God modules', 'god', coupling.god_modules, 'high fan-in and fan-out'],
+            ['Stable cores', 'stable', coupling.stable_cores, 'depended on — keep stable'],
+            ['Unstable drivers', 'driver', coupling.unstable_drivers, 'high fan-out — breaks easily'],
+            ['Islands', 'island', coupling.islands, 'no imports either way — possibly dead'],
+          ] as const).flatMap(([label, kind, rows, hint]) => [
+            { id: `g_${kind}`, group: true, cells: { file: `${label} — ${hint} (${rows.length})` } },
+            ...(rows.length === 0
+              ? [{ id: `e_${kind}`, cells: { file: <span className="val-q">none</span> } }]
+              : rows.slice(0, 15).map((m) => ({
+                  id: `${kind}_${m.file}`,
+                  onSelect: () => onBucket(kind, m.file),
+                  cells: {
+                    file: <span className="mono" style={{ fontSize: 12.5 }}>{m.file}</span>,
+                    in: m.fanIn,
+                    out: m.fanOut,
+                    i: m.instability != null ? m.instability.toFixed(2) : <span className="val-q">—</span>,
+                  },
+                }))),
+          ])}
+        />
       ) : buckets && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 12, marginBottom: 16 }}>
-          <BucketCard title="God modules" kind="god" files={buckets.god_modules} tone="err" hint="high fan-in AND fan-out" onItem={onBucket} />
-          <BucketCard title="Stable cores" kind="stable" files={buckets.stable_cores} tone="ok" hint="depended-on; keep stable" onItem={onBucket} />
-          <BucketCard title="Unstable drivers" kind="driver" files={buckets.unstable_drivers} tone="warn" hint="high fan-out; breaks easily" onItem={onBucket} />
-          <BucketCard title="Islands" kind="island" files={buckets.islands} tone="neutral" hint="no imports in/out; maybe dead" onItem={onBucket} />
-          <BucketCard title="Circular deps" kind="cyc" files={buckets.cycles.map((c) => c.join(' → '))} tone="err" hint="break the cycle" onItem={onBucket} />
-        </div>
+        <Schedule
+          scroll
+          style={{ marginBottom: 16 }}
+          caption="Structure"
+          cols={[{ key: 'file', kind: 'pn', head: 'File' }]}
+          rows={([
+            ['God modules', 'god', buckets.god_modules, 'high fan-in and fan-out'],
+            ['Stable cores', 'stable', buckets.stable_cores, 'depended on — keep stable'],
+            ['Unstable drivers', 'driver', buckets.unstable_drivers, 'high fan-out — breaks easily'],
+            ['Islands', 'island', buckets.islands, 'no imports either way — possibly dead'],
+            ['Circular deps', 'cyc', buckets.cycles.map((c) => c.join(' to ')), 'break the cycle'],
+          ] as const).flatMap(([label, kind, files, hint]) => [
+            { id: `g_${kind}`, group: true, cells: { file: `${label} — ${hint} (${files.length})` } },
+            ...(files.length === 0
+              ? [{ id: `e_${kind}`, cells: { file: <span className="val-q">none</span> } }]
+              : files.slice(0, 12).map((f, i) => ({
+                  id: `${kind}_${i}`,
+                  onSelect: () => onBucket(kind, f),
+                  cells: { file: <span className="mono" style={{ fontSize: 12.5, whiteSpace: 'normal' }}>{f}</span> },
+                }))),
+          ])}
+        />
       )}
       <FindingList findings={findings} onOpen={onOpen} />
     </div>
-  );
-}
-
-function BucketCard({ title, kind, files, tone, hint, onItem }: { title: string; kind: string; files: string[]; tone: ChipKind; hint: string; onItem: (kind: string, file: string) => void }) {
-  return (
-    <Card style={{ padding: 14 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-        <strong style={{ fontSize: 13 }}>{title}</strong><Chip kind={tone} size="sm">{files.length}</Chip>
-      </div>
-      <div style={{ color: 'var(--cr-fg-3)', fontSize: 11, marginBottom: 8 }}>{hint}</div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 140, overflow: 'auto' }}>
-        {files.slice(0, 12).map((f, i) => (
-          <button key={i} onClick={() => onItem(kind, f)} title="Click for an agent prompt"
-            style={{ textAlign: 'left', cursor: 'pointer', background: 'none', border: 'none', padding: '2px 0', color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)', fontSize: 11 }}>{f}</button>
-        ))}
-        {files.length === 0 && <span style={{ color: 'var(--cr-fg-3)', fontSize: 12 }}>none</span>}
-      </div>
-    </Card>
   );
 }
 
@@ -384,10 +385,10 @@ export function HotspotTable({ hotspots, onOpen }: { hotspots: CodeHotspot[]; on
           <span className="mono" style={{ fontSize: 13 }}>{h.file}</span>
           {h.aiAuthored && <Chip kind="brand" size="sm">AI</Chip>}
         </div>
-        <div style={{ height: 4, background: 'var(--cr-line-1)', borderRadius: 2, marginTop: 6, width: '100%', maxWidth: 220 }}>
-          <div style={{ height: '100%', width: `${Math.round((h.score / max) * 100)}%`, background: 'var(--cr-warn-500)', borderRadius: 2 }} />
+        <div style={{ height: 4, background: 'var(--cr-line-1)', borderRadius: 0, marginTop: 6, width: '100%', maxWidth: 220 }}>
+          <div style={{ height: '100%', width: `${Math.round((h.score / max) * 100)}%`, background: 'var(--cr-warn-500)', borderRadius: 0 }} />
         </div>
-        {h.suggestion && <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 4 }}>{h.suggestion}</div>}
+        {h.suggestion && <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginTop: 4 }}>{h.suggestion}</div>}
       </div>}
       right={<span
         className="mono"
@@ -436,10 +437,10 @@ function CircleGraph({ nodes, edges, onNode }: { nodes: Array<{ id: string; labe
 
 function RoleLegend({ counts }: { counts: Record<string, number> }) {
   return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 8, fontSize: 11 }}>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginBottom: 8, fontSize: 12 }}>
       {['god', 'cycle', 'driver', 'stable', 'island'].filter((r) => counts[r]).map((r) => (
         <span key={r} title={ROLE_HINT[r]} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: 'var(--cr-fg-2)', cursor: 'help' }}>
-          <span style={{ width: 9, height: 9, borderRadius: 999, background: ROLE_COLOR[r], flexShrink: 0 }} />
+          <span style={{ width: 9, height: 9, borderRadius: 0, background: ROLE_COLOR[r], flexShrink: 0 }} />
           {ROLE_LABEL[r]} <span style={{ color: 'var(--cr-fg-3)' }}>({counts[r]})</span>
         </span>
       ))}
@@ -488,7 +489,7 @@ export function DependencyMap({ map }: { map?: CodeProject['map'] }) {
       return (
         <Card style={{ padding: 12, overflow: 'auto' }}>
           <RoleLegend counts={counts} />
-          <div style={{ color: 'var(--cr-fg-3)', fontSize: 11, marginBottom: 8 }}>
+          <div style={{ color: 'var(--cr-fg-3)', fontSize: 12, marginBottom: 8 }}>
             {files.length} coupled files · {edges.length} imports
             {counts.island ? ` · ${counts.island} islands hidden (see Structure)` : ''} · dot size = symbols · scroll to zoom, drag to pan
           </div>
@@ -521,24 +522,24 @@ export function Drawer({ content, onClose, onAddTask, onDone, projectId, onSessi
   return (
     <>
       <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000 }} />
-      <div data-testid="code-drawer" style={{ position: 'fixed', right: 0, top: 0, height: '100dvh', width: 'min(540px,96vw)', background: 'var(--cr-ink-1)', borderLeft: '1px solid var(--cr-line-1)', zIndex: 1001, padding: 22, overflow: 'auto', boxShadow: '-12px 0 40px rgba(0,0,0,0.4)' }}>
+      <div data-testid="code-drawer" style={{ position: 'fixed', right: 0, top: 0, height: '100dvh', width: 'min(540px,96vw)', background: 'var(--cr-ink-1)', borderLeft: 'var(--cr-frame-w) solid var(--cr-frame)', zIndex: 1001, padding: 22, overflow: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-          <span style={{ color: 'var(--cr-fg-3)', fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5 }}>{content.kind}</span>
+          <span style={{ color: 'var(--cr-fg-3)', fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.5 }}>{content.kind}</span>
           <button onClick={onClose} style={{ cursor: 'pointer', background: 'none', border: 'none', color: 'var(--cr-fg-3)' }}><Icon name="x" size={18} /></button>
         </div>
         <h3 style={{ margin: '0 0 8px' }}>{content.title}</h3>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
           {content.chip}{content.loc && <span className="mono" style={{ color: 'var(--cr-fg-3)', fontSize: 12 }}>{content.loc}</span>}
         </div>
-        <div style={{ background: 'var(--cr-info-surf, rgba(80,140,255,0.08))', borderLeft: '3px solid var(--cr-info-500, #5b8cff)', padding: '10px 12px', borderRadius: 6, color: 'var(--cr-fg-2)', fontSize: 13, marginBottom: 14 }}>{content.why}</div>
+        <div style={{ background: 'var(--cr-info-surf)', border: '1px solid var(--cr-info-line)', padding: '10px 12px', borderRadius: 0, color: 'var(--cr-fg-2)', fontSize: 13, marginBottom: 14 }}>{content.why}</div>
         <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--cr-fg-2)', marginBottom: 6 }}>Prompt for your agent</div>
-        <pre data-testid="code-prompt" style={{ background: 'var(--cr-ink-2, #0d1117)', border: '1px solid var(--cr-line-1)', borderRadius: 8, padding: 12, fontSize: 12, whiteSpace: 'pre-wrap', fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-1)' }}>{content.prompt}</pre>
+        <pre data-testid="code-prompt" style={{ background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 0, padding: 12, fontSize: 12, whiteSpace: 'pre-wrap', fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-1)' }}>{content.prompt}</pre>
         <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-          <Button variant="primary" onClick={copy}>{copied ? 'copied ✓' : 'Copy prompt'}</Button>
-          <Button variant="secondary" onClick={add}>{added ? 'added ✓' : '+ Add to tasks'}</Button>
+          <Button variant="primary" onClick={copy}>{copied ? 'Copied' : 'Copy prompt'}</Button>
+          <Button variant="secondary" onClick={add}>{added ? 'Added' : 'Add to tasks'}</Button>
           {content.actionId && <Button variant="ghost" onClick={onDone}>Mark done</Button>}
         </div>
-        <div style={{ color: 'var(--cr-fg-3)', fontSize: 11, marginTop: 10 }}>Paste into Claude Code / your agent. It references codeindex tools so the agent verifies before editing.</div>
+        <div style={{ color: 'var(--cr-fg-3)', fontSize: 12, marginTop: 10 }}>Paste into Claude Code / your agent. It references codeindex tools so the agent verifies before editing.</div>
         {content.loc && projectId && (
           <FileSessionHistory projectId={projectId} file={content.loc} onSessionClick={onSessionClick} />
         )}
@@ -608,7 +609,7 @@ function FileSessionHistory({ projectId, file, onSessionClick }: { projectId: st
             <span aria-hidden style={{ width: 7, height: 7, borderRadius: '50%', background: color, flexShrink: 0, alignSelf: 'center' }} />
             {label && <span style={{ color, flexShrink: 0, fontWeight: 600 }}>{label}</span>}
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: 1 }}>{title}</span>
-            <span className="mono" style={{ color: 'var(--cr-fg-3)', flexShrink: 0, fontSize: 11 }}>{timeAgo(s.modified)}</span>
+            <span className="mono" style={{ color: 'var(--cr-fg-3)', flexShrink: 0, fontSize: 12 }}>{timeAgo(s.modified)}</span>
           </button>
         );
       })}
@@ -637,7 +638,7 @@ export function TasksDrawer({ name, projectId, queuedActions, queued, onClose }:
   return (
     <>
       <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000 }} />
-      <div data-testid="tasks-drawer" style={{ position: 'fixed', right: 0, top: 0, height: '100dvh', width: 'min(540px,96vw)', background: 'var(--cr-ink-1)', borderLeft: '1px solid var(--cr-line-1)', zIndex: 1001, padding: 22, overflow: 'auto' }}>
+      <div data-testid="tasks-drawer" style={{ position: 'fixed', right: 0, top: 0, height: '100dvh', width: 'min(540px,96vw)', background: 'var(--cr-ink-0)', borderLeft: 'var(--cr-frame-w) solid var(--cr-frame)', zIndex: 1001, padding: 22, overflow: 'auto' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
           <h3 style={{ margin: 0 }}>Task queue · {all.length}</h3>
           <button onClick={onClose} style={{ cursor: 'pointer', background: 'none', border: 'none', color: 'var(--cr-fg-3)' }}><Icon name="x" size={18} /></button>
@@ -649,11 +650,11 @@ export function TasksDrawer({ name, projectId, queuedActions, queued, onClose }:
               <Button variant="secondary" onClick={copyAll}>Copy all</Button>
               <Button variant="ghost" onClick={exportMd}>Export .md</Button>
             </div>
-            {sendMsg && <div style={{ fontSize: 12, color: 'var(--cr-fg-2)', marginBottom: 12, background: 'var(--cr-ok-surf,rgba(40,180,120,0.1))', padding: '6px 10px', borderRadius: 6 }}>{sendMsg}</div>}
+            {sendMsg && <div style={{ fontSize: 12, color: 'var(--cr-fg-2)', marginBottom: 12, background: 'var(--cr-ok-surf)', padding: '6px 10px', borderRadius: 0 }}>{sendMsg}</div>}
             {all.map((t, i) => (
               <div key={i} style={{ marginBottom: 10 }}>
                 <div style={{ fontWeight: 500, fontSize: 13, marginBottom: 4 }}>{String(i + 1).padStart(2, '0')}. {t.title}</div>
-                <pre style={{ background: 'var(--cr-ink-2, #0d1117)', border: '1px solid var(--cr-line-1)', borderRadius: 6, padding: 10, fontSize: 11, whiteSpace: 'pre-wrap', fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-2)' }}>{t.prompt}</pre>
+                <pre style={{ background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 0, padding: 10, fontSize: 12, whiteSpace: 'pre-wrap', fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-2)' }}>{t.prompt}</pre>
               </div>
             ))}
           </>
@@ -714,11 +715,11 @@ export function RecommendationsView({ recs, dismissed, projectId, onApplied }: {
           <div style={{ color: 'var(--cr-fg-2)', fontSize: 13, marginBottom: 8 }}>{r.rationale}</div>
           {r.evidence?.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 10 }}>
-              {r.evidence.map((e, i) => <span key={i} className="mono" style={{ fontSize: 11, color: 'var(--cr-fg-3)', background: 'var(--cr-ink-2,#0d1117)', padding: '2px 6px', borderRadius: 4 }}>{e}</span>)}
+              {r.evidence.map((e, i) => <span key={i} className="mono" style={{ fontSize: 12, color: 'var(--cr-fg-3)', background: 'var(--cr-ink-2)', padding: '2px 6px', borderRadius: 0 }}>{e}</span>)}
             </div>
           )}
           {r.action.type === 'append_claude_md' && (r.action.payload as any)?.text && (
-            <pre style={{ background: 'var(--cr-ink-2,#0d1117)', border: '1px solid var(--cr-line-1)', borderRadius: 6, padding: 10, fontSize: 12, whiteSpace: 'pre-wrap', fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-1)', marginBottom: 8 }}>{String((r.action.payload as any).text)}</pre>
+            <pre style={{ background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 0, padding: 10, fontSize: 12, whiteSpace: 'pre-wrap', fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-1)', marginBottom: 8 }}>{String((r.action.payload as any).text)}</pre>
           )}
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <Button variant="primary" onClick={() => apply(r)} disabled={busy === r.id}>
@@ -744,7 +745,7 @@ export function RecommendationsView({ recs, dismissed, projectId, onApplied }: {
                 onChange={(e) => setReason(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') void confirmDismiss(r); if (e.key === 'Escape') { setDismissing(null); setReason(''); } }}
                 placeholder="Why does this not apply here? (required)"
-                style={{ flex: '1 1 280px', minWidth: 200, padding: '6px 8px', fontSize: 13, borderRadius: 6, border: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-2,#0d1117)', color: 'var(--cr-fg-1)' }}
+                style={{ flex: '1 1 280px', minWidth: 200, padding: '6px 8px', fontSize: 13, borderRadius: 0, border: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-2)', color: 'var(--cr-fg-1)' }}
               />
               <Button variant="primary" onClick={() => confirmDismiss(r)} disabled={!reason.trim() || busy === r.id}>
                 {busy === r.id ? 'dismissing…' : 'Dismiss'}
@@ -830,7 +831,7 @@ function OverviewTab({ project, behavior }: { project: CodeProject; behavior: { 
         <strong style={{ fontSize: 13 }}>Health snapshot</strong>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
           {SNAP.map(([k, v]) => (
-            <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'var(--cr-ink-2,#0d1117)', border: '1px solid var(--cr-line-1)', borderRadius: 8, padding: '4px 10px', fontSize: 12, color: 'var(--cr-fg-2)' }}>
+            <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 0, padding: '4px 10px', fontSize: 12, color: 'var(--cr-fg-2)' }}>
               {k} <b style={{ color: v > 0 ? 'var(--cr-fg-1)' : 'var(--cr-fg-3)' }}>{v}</b>
             </span>
           ))}
@@ -844,10 +845,10 @@ function OverviewTab({ project, behavior }: { project: CodeProject; behavior: { 
           {langs.slice(0, 13).map((x, i) => (
             <div key={x.l} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <span className="mono" style={{ flex: '0 1 110px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: 'var(--cr-fg-2)' }}>{x.l}</span>
-              <span style={{ flex: 1, height: 8, background: 'var(--cr-ink-2,#0d1117)', borderRadius: 4, overflow: 'hidden' }}>
+              <span style={{ flex: 1, height: 8, background: 'var(--cr-ink-2)', borderRadius: 0, overflow: 'hidden' }}>
                 <span style={{ display: 'block', height: '100%', width: `${Math.max(2, Math.round(((x.symbols || x.files) / maxLang) * 100))}%`, background: palette[i % palette.length] }} />
               </span>
-              <span style={{ flex: '0 1 120px', minWidth: 0, textAlign: 'right', fontSize: 11, color: 'var(--cr-fg-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{x.symbols} sym · {x.files}f</span>
+              <span style={{ flex: '0 1 120px', minWidth: 0, textAlign: 'right', fontSize: 12, color: 'var(--cr-fg-3)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{x.symbols} sym · {x.files}f</span>
             </div>
           ))}
         </div>
@@ -870,7 +871,7 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
     <div style={{ minWidth: 110 }}>
       <div style={{ fontSize: 22, fontWeight: 600 }}>{value}</div>
       <div style={{ fontSize: 12, color: 'var(--cr-fg-2)' }}>{label}</div>
-      {sub && <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>{sub}</div>}
+      {sub && <div style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{sub}</div>}
     </div>
   );
 }

@@ -16,7 +16,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { Icon, Button, Input, SourceBadge, ToolBadge, Card, Chip, pressableProps } from './primitives';
+import { Icon, Button, Input, SourceBadge, ToolBadge, Card, Chip, Schedule, pressableProps } from './primitives';
 import { useSidebarExtrasRegister } from '../context/sidebar-extras';
 import type {
   SourceType,
@@ -97,23 +97,14 @@ function MemoryTypeChip({ chunkType }: { chunkType?: string }) {
     <span
       title={`classified ${meta.label}, importance ${parsed.imp}/5`}
       style={{
-        display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, fontWeight: 600,
+        display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 600,
         color: meta.color, background: meta.surf, border: `1px solid ${meta.color}`,
-        borderRadius: 'var(--cr-radius-xs)', padding: '1px 6px', whiteSpace: 'nowrap',
+        borderRadius: 0, padding: '1px 6px', whiteSpace: 'nowrap',
       }}
     >
       {meta.label}
       {parsed.imp >= 4 && <span style={{ opacity: 0.8 }}>·{parsed.imp}</span>}
     </span>
-  );
-}
-
-function StatTile({ value, label, accent }: { value: React.ReactNode; label: string; accent?: string }) {
-  return (
-    <div style={{ padding: '10px 14px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-sm)', minWidth: 92 }}>
-      <div style={{ fontSize: 20, fontWeight: 700, color: accent || 'var(--cr-fg-1)', lineHeight: 1.1 }}>{value}</div>
-      <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 2, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</div>
-    </div>
   );
 }
 
@@ -314,32 +305,37 @@ export default function MemoryExplorer({ onSessionClick, toolFilter = 'all', pro
           </div>
 
           {overview && (
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'stretch', marginBottom: 14 }}>
-              <StatTile value={overview.total.toLocaleString()} label="memories" accent="var(--cr-brand-500)" />
-              <StatTile value={overview.chunks.toLocaleString()} label="searchable chunks" />
-              {overview.byType.map(x => (
-                <button
-                  key={x.k}
-                  {...pressableProps(() => { setActiveType(x.k as SourceType); setQuery(''); setSearchResults([]); setSelectedId(null); })}
-                  style={{
-                    all: 'unset', cursor: 'pointer', padding: '10px 14px', minWidth: 78,
-                    background: activeType === x.k ? 'var(--cr-brand-surf)' : 'var(--cr-ink-2)',
-                    border: `1px solid ${activeType === x.k ? 'var(--cr-brand-line)' : 'var(--cr-line-1)'}`,
-                    borderRadius: 'var(--cr-radius-sm)',
-                  }}
-                >
-                  <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--cr-fg-1)', lineHeight: 1.1 }}>{x.n.toLocaleString()}</div>
-                  <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 2 }}>{x.label}</div>
-                </button>
-              ))}
-            </div>
+            /* A stat-tile row where the tiles were also FILTER BUTTONS. As a
+               schedule the counts align into a column, and a selected type
+               lights its row the way any selected schedule row does — instead
+               of a tinted box among untinted boxes. */
+            <Schedule
+              style={{ marginBottom: 14 }}
+              caption="What your history holds"
+              cols={[
+                { key: 'what', kind: 'pn' },
+                { key: 'n', kind: 'val', head: 'Count' },
+              ]}
+              rows={[
+                { id: 'total', cells: { what: 'Memories', n: <span style={{ color: 'var(--cr-brand-500)' }}>{overview.total.toLocaleString()}</span> } },
+                { id: 'chunks', cells: { what: 'Searchable chunks', n: overview.chunks.toLocaleString() } },
+                { id: 'g_types', group: true, cells: { what: 'By type — pick one to browse' } },
+                ...overview.byType.map((x) => ({
+                  id: x.k,
+                  current: activeType === x.k,
+                  onSelect: () => { setActiveType(x.k as SourceType); setQuery(''); setSearchResults([]); setSelectedId(null); },
+                  cells: { what: x.label, n: x.n.toLocaleString() },
+                })),
+              ]}
+            />
           )}
 
           {/* Search */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <div style={{ flex: 1 }}>
               <Input
-                placeholder={`Search ${activeType === 'all' ? 'all memory' : pluralizeSource(activeType)}…`}
+                icon="search"
+          placeholder={`Search ${activeType === 'all' ? 'all memory' : pluralizeSource(activeType)}…`}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
@@ -366,7 +362,7 @@ export default function MemoryExplorer({ onSessionClick, toolFilter = 'all', pro
       </div>
 
       {error && (
-        <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 16px 8px', padding: '8px 12px', fontSize: 13, color: 'var(--cr-err-500)', background: 'var(--cr-err-surf)', border: '1px solid var(--cr-err-line)', borderRadius: 'var(--cr-radius-sm)' }}>
+        <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '0 16px 8px', padding: '8px 12px', fontSize: 13, color: 'var(--cr-err-500)', background: 'var(--cr-err-surf)', border: '1px solid var(--cr-err-line)', borderRadius: 0 }}>
           <Icon name="shield" size={14} />
           <span style={{ flex: 1 }}>{error}</span>
           <button onClick={() => setError(null)} style={{ background: 'none', border: 'none', color: 'var(--cr-fg-2)', cursor: 'pointer', fontSize: 12 }}>Dismiss</button>
@@ -378,7 +374,7 @@ export default function MemoryExplorer({ onSessionClick, toolFilter = 'all', pro
         {/* List */}
         <div className="cr-split-list" style={{ width: 400, flexShrink: 0, borderRight: '1px solid var(--cr-line-1)', overflowY: 'auto', background: 'var(--cr-ink-1)' }}>
           {query && searchResults.length > 0 && (
-            <div style={{ padding: '10px 20px', fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid var(--cr-line-1)' }}>
+            <div style={{ padding: '10px 20px', fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid var(--cr-line-1)' }}>
               {searchResults.length} result{searchResults.length === 1 ? '' : 's'} for “{query}”
             </div>
           )}
@@ -406,11 +402,11 @@ export default function MemoryExplorer({ onSessionClick, toolFilter = 'all', pro
                     {tool ? <ToolBadge tool={tool} size="sm" /> : null}
                     <MemoryTypeChip chunkType={item.chunkType} />
                     {item.project_path && (
-                      <span className="mono" style={{ fontSize: 11, color: 'var(--cr-fg-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>
+                      <span className="mono" style={{ fontSize: 12, color: 'var(--cr-fg-2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>
                         {item.project_path.split('/').pop()}
                       </span>
                     )}
-                    <span style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginLeft: 'auto' }}>
+                    <span style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginLeft: 'auto' }}>
                       {new Date(item.mtime).toLocaleDateString()}
                     </span>
                   </div>
@@ -515,8 +511,8 @@ export function MemoryDetail({ item, onSessionClick, onOpenItem }: { item: Memor
         </div>
       )}
 
-      <div style={{ background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-1)', borderRadius: 'var(--cr-radius-md)', padding: 24, position: 'relative' }}>
-        <div style={{ position: 'absolute', top: 12, right: 12, fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', fontWeight: 600 }}>
+      <div style={{ background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-1)', borderRadius: 0, padding: 24, position: 'relative' }}>
+        <div style={{ position: 'absolute', top: 12, right: 12, fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', fontWeight: 600 }}>
           {loading ? 'Loading…' : 'Full Content'}
         </div>
         <div className="markdown-body" style={{ fontSize: 14, lineHeight: 1.6, color: 'var(--cr-fg-1)' }}>
@@ -535,16 +531,16 @@ export function MemoryDetail({ item, onSessionClick, onOpenItem }: { item: Memor
                   const match = /language-(\w+)/.exec(className || '');
                   if (match && String(children).includes('\n')) {
                     return (
-                      <SyntaxHighlighter language={match[1]} style={vscDarkPlus} customStyle={{ margin: '1rem 0', borderRadius: '8px', fontSize: '13px' }}>
+                      <SyntaxHighlighter language={match[1]} style={vscDarkPlus} customStyle={{ margin: '1rem 0', borderRadius: 0, fontSize: '13px' }}>
                         {String(children).replace(/\n$/, '')}
                       </SyntaxHighlighter>
                     );
                   }
-                  return <code style={{ background: 'var(--cr-ink-2)', padding: '2px 4px', borderRadius: 4, fontSize: '0.9em' }} {...props}>{children}</code>;
+                  return <code style={{ background: 'var(--cr-ink-2)', padding: '2px 4px', borderRadius: 0, fontSize: '0.9em' }} {...props}>{children}</code>;
                 },
                 h1: ({ children }) => <h1 style={{ borderBottom: '1px solid var(--cr-line-1)', paddingBottom: '0.3em', marginTop: '1.5em' }}>{children}</h1>,
                 h2: ({ children }) => <h2 style={{ borderBottom: '1px solid var(--cr-line-1)', paddingBottom: '0.3em', marginTop: '1.5em' }}>{children}</h2>,
-                blockquote: ({ children }) => <blockquote style={{ borderLeft: '4px solid var(--cr-brand-500)', paddingLeft: '1em', color: 'var(--cr-fg-3)', margin: '1em 0' }}>{children}</blockquote>,
+                blockquote: ({ children }) => <blockquote style={{ borderLeft: '2px solid var(--cr-line-2)', paddingLeft: '1em', color: 'var(--cr-fg-2)', margin: '1em 0' }}>{children}</blockquote>,
               }}
             >
               {safeContent}

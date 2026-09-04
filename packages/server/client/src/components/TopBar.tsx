@@ -114,6 +114,7 @@ export default function TopBar({ view, setView, enabledViews, query, setQuery, s
       {/* Global search */}
       <div className="cr-topbar-search" style={{ flex: 1, display: 'flex', justifyContent: 'center', maxWidth: 640, margin: '0 auto', gap: 8 }}>
         <Input
+          icon="search"
           ref={searchRef}
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -215,28 +216,33 @@ export function SyncStatusChip({ refreshSignal }: { refreshSignal?: number }) {
   const syncing = s.progress && s.progress.total > 0 ? s.progress : null;
   const word = syncLabel(s);
   const tone = syncTone(s);
-  const dot = tone === 'busy' ? 'var(--cr-accent-500, var(--cr-ok-500))'
+  const dot = tone === 'busy' ? 'var(--cr-ok-500)'
     : tone === 'ok' ? 'var(--cr-ok-500)'
     : tone === 'warn' ? 'var(--cr-warn-500)'
     : 'var(--cr-fg-3)';
+  const num = (n?: number | null) => (typeof n === 'number' ? n.toLocaleString() : '—');
   return (
     <span
       className="cr-topbar-sync"
+      // `num` instead of `.toLocaleString()` on the raw field. An older or
+      // newer server that omits one of these numbers threw a TypeError here,
+      // and because this sits in the TOP BAR it took the whole app down — a
+      // white screen from one missing field in one status response.
       title={syncing
-        ? `Collector is walking ${syncing.total.toLocaleString()} sessions — ${syncing.done.toLocaleString()} considered so far. `
-          + `${s.sessions.toLocaleString()} held · ${s.rawArchived.toLocaleString()} raw-archived`
-        : `${s.sessions.toLocaleString()} sessions held · ${s.rawArchived.toLocaleString()} raw-archived`
+        ? `Collector is walking ${num(syncing.total)} sessions — ${num(syncing.done)} considered so far. `
+          + `${num(s.sessions)} held · ${num(s.rawArchived)} raw-archived`
+        : `${num(s.sessions)} sessions held · ${num(s.rawArchived)} raw-archived`
           + (s.lastSyncAgeMs != null ? ` · last sync ${ago(s.lastSyncAgeMs)}` : '')
           + (s.newestSessionAgeMs != null ? ` · newest session ${ago(s.newestSessionAgeMs)}` : '')}
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 5,
-        padding: '2px 8px 2px 7px', fontSize: 11, fontWeight: 450,
-        color: 'var(--cr-fg-2)', border: '1px solid var(--cr-line-1)', borderRadius: 999,
+        padding: '2px 8px 2px 7px', fontSize: 12, fontWeight: 450,
+        color: 'var(--cr-fg-2)', border: '1px solid var(--cr-line-1)', borderRadius: 0,
       }}
     >
       <span style={{
         width: 6, height: 6, borderRadius: '50%', background: dot, flexShrink: 0,
-        boxShadow: tone === 'ok' ? `0 0 5px ${dot}` : 'none',
+        boxShadow: 'none',
       }} />
       {word}
     </span>
@@ -284,8 +290,8 @@ function PlanChip({ onOpenAccount, enabledViews }: { onOpenAccount: () => void; 
       title={clickable ? 'Your plan — open Account' : 'Your plan'}
       style={{
         ...toneStyle,
-        border: '1px solid', borderRadius: 999, padding: '3px 10px',
-        font: '600 11px/1.4 var(--cr-font-mono, monospace)', letterSpacing: '0.04em',
+        border: '1px solid', borderRadius: 0, padding: '3px 10px',
+        font: '600 12px/1.4 var(--cr-font-annot)', letterSpacing: '0.04em',
         cursor: clickable ? 'pointer' : 'default', whiteSpace: 'nowrap',
       }}
     >

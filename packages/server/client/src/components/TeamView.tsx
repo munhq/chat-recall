@@ -4,7 +4,7 @@ import {
   getMe, getTeamActivity, listMyShares, addShare, removeShare, setActiveTeam, getActiveTeam,
   type TeamActivityResponse, type ProjectShare,
 } from '../services/api';
-import { Button, Card, Chip, Avatar, Input, MetricCard } from './primitives';
+import { Button, Card, Chip, Avatar, Input, Metrics, Schedule } from './primitives';
 import TeamTasks from './TeamTasks';
 
 /**
@@ -121,12 +121,15 @@ export default function TeamView({ onOpenProject }: { onOpenProject?: (projectId
       {tab === 'tasks' && <TeamTasks members={act?.members ?? []} mySub={mySub} />}
       {tab === 'activity' && (
       <>
-      <div className="team-metrics">
-        <MetricCard label="Members" value={String(act?.members.length ?? 0)} icon="grid" />
-        <MetricCard label="Active projects" value={String(activeProjects)} sub={`last ${sinceDays}d`} icon="folder" />
-        <MetricCard label="Sessions" value={String(totalSessions)} sub={`last ${sinceDays}d`} icon="message" />
-        <MetricCard label="Projects I share" value={String(shares.length)} tone={shares.length ? 'ok' : 'neutral'} icon="check" />
-      </div>
+      <Metrics
+        caption="Team activity"
+        items={[
+          { label: 'Members', value: String(act?.members.length ?? 0), icon: 'grid' },
+          { label: 'Active projects', value: String(activeProjects), sub: `last ${sinceDays} days`, icon: 'folder' },
+          { label: 'Sessions', value: String(totalSessions), sub: `last ${sinceDays} days`, icon: 'message' },
+          { label: 'Projects I share', value: String(shares.length), tone: shares.length ? 'ok' : 'neutral', icon: 'check' },
+        ]}
+      />
 
       <section>
         <h2>Projects I share</h2>
@@ -161,14 +164,24 @@ export default function TeamView({ onOpenProject }: { onOpenProject?: (projectId
                 <div className="team-member-name">{m.label}{m.isMe && <Chip kind="brand" size="sm">you</Chip>}</div>
                 <div className="muted">{total} session{total === 1 ? '' : 's'}</div>
               </div>
-              <div className="team-projgrid">
-                {[...m.rows].sort((a, b) => b.lastMtime - a.lastMtime).map((r) => (
-                  <button key={r.projectId} className="team-proj" onClick={() => onOpenProject?.(r.projectId)} title="Open project">
-                    <span className="team-proj-id">{r.projectId}</span>
-                    <span className="team-proj-meta">{r.sessions} · {r.lastMtime ? new Date(r.lastMtime).toISOString().slice(0, 10) : '—'}</span>
-                  </button>
-                ))}
-              </div>
+              <Schedule
+                scroll
+                cols={[
+                  { key: 'project', kind: 'pn', head: 'Project' },
+                  { key: 'sessions', kind: 'val', head: 'Sessions' },
+                  { key: 'last', kind: 'cmd', head: 'Last active' },
+                ]}
+                rows={[...m.rows].sort((a, b) => b.lastMtime - a.lastMtime).map((r) => ({
+                  id: r.projectId,
+                  onSelect: onOpenProject ? () => onOpenProject(r.projectId) : undefined,
+                  cells: {
+                    project: <span className="mono" style={{ fontSize: 12.5 }}>{r.projectId}</span>,
+                    sessions: r.sessions,
+                    last: r.lastMtime ? new Date(r.lastMtime).toISOString().slice(0, 10) : '—',
+                  },
+                }))}
+                empty="No shared projects for this member."
+              />
             </Card>
           );
         })}
@@ -184,10 +197,11 @@ const TEAM_CSS = `
 .team { max-width: 1100px; margin: 0 auto; padding: 20px; }
 .team-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 16px; }
 .team-head h1 { margin: 0 0 4px; }
-.team .muted { color: var(--text-muted, #888); font-size: 13px; margin: 0; }
+.team .muted { color: var(--cr-fg-3); font-size: 13px; margin: 0; }
 .team-range { display: flex; gap: 6px; }
-.team-err { background: var(--danger-bg, #fee); color: var(--danger, #c00); padding: 8px 12px; border-radius: 8px; margin-bottom: 12px; font-size: 13px; }
-.team-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 24px; }
+.team-err { background: var(--cr-err-surf); color: var(--cr-err-500);
+  border: 1px solid var(--cr-err-line); padding: 8px 12px; border-radius: 0;
+  margin-bottom: 12px; font-size: 13px; }
 .team section { margin-bottom: 28px; }
 .team section h2 { margin: 0 0 4px; font-size: 16px; }
 .team-shares { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; min-height: 28px; }
@@ -197,12 +211,4 @@ const TEAM_CSS = `
 .team-add > :first-child { flex: 1; }
 .team-member { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .team-member-name { font-weight: 600; display: flex; align-items: center; gap: 8px; flex: 1; }
-.team-projgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
-.team-proj { text-align: left; background: var(--surface-2, #f6f6f8); border: 1px solid var(--border, #e3e3e8); border-radius: 8px; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
-.team-proj:hover { border-color: var(--accent, #6c5ce7); }
-.team-proj-id { font-size: 12px; font-family: var(--mono, monospace); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.team-proj-meta { font-size: 11px; color: var(--text-muted, #888); }
-@media (prefers-color-scheme: dark) {
-  .team-proj { background: #1c1c22; border-color: #2c2c34; }
-}
 `;
