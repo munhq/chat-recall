@@ -51,7 +51,7 @@ const OUTCOME_COLOR: Record<string, string> = {
 
 function fmtLines(added: number, removed: number): React.ReactNode {
   return (
-    <span style={{ fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)', fontSize: 12 }}>
+    <span style={{ fontFamily: 'var(--cr-font-annot)', fontSize: 12 }}>
       <span style={{ color: 'var(--cr-ok-500)' }}>+{added.toLocaleString()}</span>
       <span style={{ color: 'var(--cr-fg-3)' }}> / </span>
       <span style={{ color: 'var(--cr-err-500)' }}>−{removed.toLocaleString()}</span>
@@ -194,7 +194,7 @@ export default function ActivityTimeline({ onSessionClick, toolFilter: toolFilte
             <Pulse pulse={data.pulse} hourly={hourly} />
           </Plate>
           <Metrics
-            style={{ marginBottom: 16 }}
+            
             items={[
               { label: 'Sessions', value: String(t.sessions) },
               { label: 'Files touched', value: String(t.files) },
@@ -252,7 +252,7 @@ export default function ActivityTimeline({ onSessionClick, toolFilter: toolFilte
               <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                 {data.hotFiles.map((h) => (
                   <div key={`${h.project}-${h.file}`} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, fontSize: 12, padding: '3px 0', borderTop: '1px solid var(--cr-line-1)' }}>
-                    <span style={{ fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)', color: 'var(--cr-fg-1)', wordBreak: 'break-all' }} title={h.file}>{base(h.file)}</span>
+                    <span style={{ fontFamily: 'var(--cr-font-annot)', color: 'var(--cr-fg-1)', wordBreak: 'break-all' }} title={h.file}>{base(h.file)}</span>
                     <span style={{ display: 'flex', gap: 10, whiteSpace: 'nowrap', color: 'var(--cr-fg-3)' }}>
                       <span>{h.project}</span><span style={{ color: 'var(--cr-brand-500)', fontWeight: 600 }}>{h.edits} edits</span>
                     </span>

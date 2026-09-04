@@ -1116,13 +1116,16 @@ export default function ConversationViewer({
                 >
                   Subagent conversations ({subagents.length})
                 </div>
-                {subagents.map((sa) => (
+                {/* Flush, not 10px apart. A gapped column of bordered boxes is
+                    the card stack; sharing edges makes the set one drawn list,
+                    and only the first row pays for a top rule. */}
+                {subagents.map((sa, i) => (
                   <details
                     key={sa.id}
                     style={{
-                      marginBottom: 10,
                       background: 'var(--cr-ink-1)',
                       border: '1px solid var(--cr-line-1)',
+                      borderTop: i === 0 ? '1px solid var(--cr-line-1)' : 0,
                       borderRadius: 0,
                       padding: '10px 14px',
                     }}
@@ -1472,11 +1475,14 @@ function SecurityPanel({
         )}
       </div>
 
-      {rows.map(row => {
+      {/* One occurrence per row, sharing edges. Each used to carry its own
+          complete frame, so a session with six leaks drew six boxes where one
+          ruled list says the same thing. */}
+      {rows.map((row, i) => {
         const agreement = row.detectors.size;
         const tone = agreement >= 2 ? 'err' : 'warn';
         return (
-          <div key={row.line} style={{ padding: '12px 14px', background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-2)', borderRadius: 0 }}>
+          <div key={row.line} style={{ padding: '12px 14px', background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-2)', borderTop: i === 0 ? '1px solid var(--cr-line-2)' : 0, borderRadius: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <Chip kind={tone} size="sm">
                 {agreement === 1 ? '1 detector' : `${agreement} detectors agree`}
@@ -1489,7 +1495,7 @@ function SecurityPanel({
                 </Chip>
               )}
               {[...row.rules].map((r) => (
-                <span key={r} style={{ fontSize: 12.5, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)' }}>{r}</span>
+                <span key={r} style={{ fontSize: 12.5, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-annot)' }}>{r}</span>
               ))}
               <span style={{ flex: 1 }} />
               <button onClick={() => onJumpToLine(row.line)} title={`Jump to line ${row.line} in the transcript`}
@@ -1497,7 +1503,7 @@ function SecurityPanel({
                 line {row.line} ›
               </button>
             </div>
-            <div style={{ marginTop: 8, fontSize: 12, fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-3)', wordBreak: 'break-all' }}>
+            <div style={{ marginTop: 8, fontSize: 12, fontFamily: 'var(--cr-font-annot)', color: 'var(--cr-fg-3)', wordBreak: 'break-all' }}>
               {[...row.previews].join('  ·  ')}
             </div>
           </div>
@@ -2090,7 +2096,7 @@ function MetricsPanel({
             {tools.slice(0, 16).map(([name, n]) => (
               <div key={name} onClick={onOpenTools} title={`${name} — ${n} call(s). Open the tool calls in the transcript.`}
                 style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
-                <span style={{ flex: '0 1 150px', minWidth: 0, fontSize: 12, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prettyToolName(name)}</span>
+                <span style={{ flex: '0 1 150px', minWidth: 0, fontSize: 12, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-annot)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prettyToolName(name)}</span>
                 <div style={{ flex: 1, height: 14, background: 'var(--cr-ink-2)', borderRadius: 0, overflow: 'hidden' }}>
                   <div style={{ width: `${(n / maxTool) * 100}%`, height: '100%', background: toolKindColor(name), borderRadius: 0, minWidth: 3 }} />
                 </div>
@@ -2121,7 +2127,7 @@ function MetricsPanel({
             {toolsByTokens.slice(0, 12).map(([name, t]) => (
               <div key={name} onClick={onOpenTools} title={`${name} — ~${fmtN(t)} tokens of input+output across its calls.`}
                 style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer' }}>
-                <span style={{ flex: '0 1 150px', minWidth: 0, fontSize: 12, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prettyToolName(name)}</span>
+                <span style={{ flex: '0 1 150px', minWidth: 0, fontSize: 12, color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-annot)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{prettyToolName(name)}</span>
                 <div style={{ flex: 1, height: 14, background: 'var(--cr-ink-2)', borderRadius: 0, overflow: 'hidden' }}>
                   <div style={{ width: `${(t / maxToolTokens) * 100}%`, height: '100%', background: toolKindColor(name), borderRadius: 0, minWidth: 3 }} />
                 </div>
@@ -2241,7 +2247,7 @@ function OutcomePanel({
           )}
           {commits.slice(0, 12).map((c) => (
             <div key={c.sha} style={{ ...item, borderLeftColor: 'var(--cr-ok-500)' }}>
-              <span style={{ fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-3)', fontSize: 12.5 }}>{c.shortSha}</span>{' '}
+              <span style={{ fontFamily: 'var(--cr-font-annot)', color: 'var(--cr-fg-3)', fontSize: 12.5 }}>{c.shortSha}</span>{' '}
               {c.subject}
               <span style={{ color: 'var(--cr-fg-3)', fontSize: 12.5 }}> · {c.repoName} · <span style={{ color: 'var(--cr-ok-500)' }}>+{c.linesAdded}</span> <span style={{ color: 'var(--cr-err-500)' }}>−{c.linesRemoved}</span></span>
             </div>
@@ -2588,13 +2594,13 @@ function DiffPanel({
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <Icon name={isOpen ? 'chevronDown' : 'chevronRight'} size={14} />
-                <span style={{ fontFamily: 'var(--cr-font-mono)', fontSize: 12, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={f.file}>
+                <span style={{ fontFamily: 'var(--cr-font-annot)', fontSize: 12, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={f.file}>
                   <span style={{ color: 'var(--cr-fg-3)' }}>{dir}</span>{base}
                 </span>
                 {f.reverted && <Chip kind="warn" size="sm">reverted</Chip>}
                 {f.failedEvents > 0 && <Chip kind="err" size="sm">{f.failedEvents} failed</Chip>}
-                <span style={{ color: 'var(--cr-ok-500)', fontSize: 12, fontFamily: 'var(--cr-font-mono)', fontVariantNumeric: 'tabular-nums' }}>+{f.linesAdded}</span>
-                <span style={{ color: 'var(--cr-err-500)', fontSize: 12, fontFamily: 'var(--cr-font-mono)', fontVariantNumeric: 'tabular-nums' }}>−{f.linesRemoved}</span>
+                <span style={{ color: 'var(--cr-ok-500)', fontSize: 12, fontFamily: 'var(--cr-font-annot)', fontVariantNumeric: 'tabular-nums' }}>+{f.linesAdded}</span>
+                <span style={{ color: 'var(--cr-err-500)', fontSize: 12, fontFamily: 'var(--cr-font-annot)', fontVariantNumeric: 'tabular-nums' }}>−{f.linesRemoved}</span>
               </div>
               {/* churn bar: width = this file's share of the busiest file, split add/remove */}
               <div style={{ display: 'flex', height: 5, width: `${(f.churn / maxChurn) * 100}%`, minWidth: 2, marginTop: 8, marginLeft: 24, borderRadius: 0, overflow: 'hidden', gap: 1 }}>
@@ -2627,7 +2633,7 @@ function DiffPanel({
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                       {f.events.map((e, ei) => (
-                        <div key={e.toolUseId || `${f.file || idx}-evt-${ei}`} style={{ display: 'flex', gap: 8, fontSize: 12, fontFamily: 'var(--cr-font-mono)', alignItems: 'center' }}>
+                        <div key={e.toolUseId || `${f.file || idx}-evt-${ei}`} style={{ display: 'flex', gap: 8, fontSize: 12, fontFamily: 'var(--cr-font-annot)', alignItems: 'center' }}>
                           <span style={{ color: e.succeeded ? 'var(--cr-ok-500)' : 'var(--cr-err-500)' }}>
                             {e.succeeded ? '✓' : '✗'}
                           </span>
@@ -2678,18 +2684,20 @@ function CommitsPanel({
     );
   }
 
+  // GAP 0, and the total is a header rather than a card of its own. A one-line
+  // count in its own bordered box is a card wearing a number: the total refers
+  // to the repos below it, so it belongs above them in the same drawn object.
   return (
-    <div data-testid="conversation-commits" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <Card style={{ padding: 14 }}>
-        <div style={{ fontSize: 13, color: 'var(--cr-fg-2)' }}>
-          <strong>{data.totalCommits}</strong> commit(s) across <strong>{data.repos.length}</strong> repo(s)
-        </div>
-      </Card>
+    <div data-testid="conversation-commits" style={{ display: 'flex', flexDirection: 'column' }}>
+      <Plate
+        title={`${data.totalCommits} commit${data.totalCommits === 1 ? '' : 's'}`}
+        caption={`Across ${data.repos.length} repositor${data.repos.length === 1 ? 'y' : 'ies'}.`}
+      />
       {data.repos.map(r => (
         <Card key={r.repo} style={{ padding: 16 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 10 }}>
             <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--cr-fg-1)' }}>{r.repoName}</span>
-            <span style={{ fontSize: 12, color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-font-mono)' }}>{r.repo}</span>
+            <span style={{ fontSize: 12, color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-font-annot)' }}>{r.repo}</span>
             <span style={{ flex: 1 }} />
             <Chip kind="info" size="sm">{r.commits.length} commit(s)</Chip>
           </div>
@@ -2700,7 +2708,7 @@ function CommitsPanel({
                 paddingLeft: 10,
               }}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: 12, fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-3)' }}>{c.shortSha}</span>
+                  <span style={{ fontSize: 12, fontFamily: 'var(--cr-font-annot)', color: 'var(--cr-fg-3)' }}>{c.shortSha}</span>
                   <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{c.authorIso.slice(0, 16).replace('T', ' ')}</span>
                   <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>· {c.authorName}</span>
                   {c.matchedSessionFiles.length > 0 && (
@@ -2710,7 +2718,7 @@ function CommitsPanel({
                 <div style={{ fontSize: 13, color: 'var(--cr-fg-1)', fontWeight: 500, marginTop: 2, lineHeight: 1.4 }}>
                   {c.subject}
                 </div>
-                <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginTop: 2, fontFamily: 'var(--cr-font-mono)' }}>
+                <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginTop: 2, fontFamily: 'var(--cr-font-annot)' }}>
                   +{c.linesAdded} / −{c.linesRemoved} · {c.files.length} file(s)
                 </div>
               </div>

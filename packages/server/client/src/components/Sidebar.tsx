@@ -289,12 +289,12 @@ function ProjectRow({
           title="The original folder for this transcript no longer exists on disk">orphan</span>
       )}
       {showRecency && node.lastMtime && (
-        <span style={{ fontSize: 12.5, color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-font-mono)', marginLeft: 8 }}>
+        <span style={{ fontSize: 12.5, color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-font-annot)', marginLeft: 8 }}>
           {relTime(node.lastMtime)}
         </span>
       )}
       <span className="cr-sidebar-row-count"
-        style={{ fontFamily: 'var(--cr-font-mono)', fontVariantNumeric: 'tabular-nums', marginLeft: 8 }}>
+        style={{ fontFamily: 'var(--cr-font-annot)', fontVariantNumeric: 'tabular-nums', marginLeft: 8 }}>
         {node.totalCount.toLocaleString()}
       </span>
     </div>
@@ -354,7 +354,7 @@ function TreeRow({
         </span>
         <span className="cr-sidebar-row-label" style={{ fontWeight: muted ? 400 : 600 }}>{node.name}</span>
         <span className="cr-sidebar-row-count"
-          style={{ fontFamily: 'var(--cr-font-mono)', fontVariantNumeric: 'tabular-nums' }}>
+          style={{ fontFamily: 'var(--cr-font-annot)', fontVariantNumeric: 'tabular-nums' }}>
           {node.totalCount.toLocaleString()}
         </span>
       </div>

@@ -13,7 +13,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Card, Chip, SegmentedControl, Metrics, Button, Icon, Schedule } from './primitives';
+import { Card, Chip, SegmentedControl, Metrics, Button, Icon, Schedule, Plate } from './primitives';
 import { summaryTitle } from '../utils/clean';
 import ForceGraph from './ForceGraph';
 import {
@@ -147,7 +147,7 @@ export default function CodeExplorer({ projectFilter, embedded, onSessionClick }
         <p style={{ color: 'var(--cr-fg-2)', lineHeight: 1.6 }}>
           No repositories indexed yet. From a repo on your machine, run:
         </p>
-        <pre style={{ background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-1)', borderRadius: 0, padding: 14, fontFamily: 'var(--cr-font-mono)' }}>chat-recall code index</pre>
+        <pre style={{ background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-1)', borderRadius: 0, padding: 14, fontFamily: 'var(--cr-font-annot)' }}>chat-recall code index</pre>
         <p style={{ color: 'var(--cr-fg-3)', fontSize: 13 }}>
           codeindex analyses structure, security, duplication, hotspots and dependency cycles; the results land here as an actionable plan.
         </p>
@@ -175,7 +175,7 @@ export default function CodeExplorer({ projectFilter, embedded, onSessionClick }
         {!embedded && <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}><Icon name="code" size={20} /> Code</h2>}
         {!embedded && projects.length > 1 && (
           <select value={projectId ?? ''} onChange={(e) => setProjectId(e.target.value)}
-            style={{ background: 'var(--cr-ink-1)', color: 'var(--cr-fg-1)', border: '1px solid var(--cr-line-1)', borderRadius: 0, padding: '6px 10px', fontFamily: 'var(--cr-font-mono)', fontSize: 12 }}>
+            style={{ background: 'var(--cr-ink-1)', color: 'var(--cr-fg-1)', border: '1px solid var(--cr-line-1)', borderRadius: 0, padding: '6px 10px', fontFamily: 'var(--cr-font-annot)', fontSize: 12 }}>
             {projects.map((p) => <option key={p.projectId} value={p.projectId}>{p.projectId}</option>)}
           </select>
         )}
@@ -317,7 +317,7 @@ export function StructureView({ findings, buckets, coupling, onOpen, onBucket }:
       {coupling ? (
         <Schedule
           scroll
-          style={{ marginBottom: 16 }}
+          
           caption="Coupling"
           cols={[
             { key: 'file', kind: 'pn', head: 'File' },
@@ -813,35 +813,52 @@ function OverviewTab({ project, behavior }: { project: CodeProject; behavior: { 
   const DEEPER: Array<[string, number]> = (['crossref_frontend_only', 'crossref_backend_only', 'type_mismatches', 'type_missing_fields', 'db_schema_issues', 'migration_issues', 'manifest_violations'] as const)
     .map((k) => [k, st[k] ?? 0]).filter(([, v]) => (v as number) > 0) as Array<[string, number]>;
   return (
-    <div data-testid="code-overview" style={{ display: 'grid', gap: 14 }}>
+    // GAP 0. Four framed boxes 14px apart is the card stack; flush, they read as
+    // one drawn sheet. The `Stat` rows inside them were the stat-tile template
+    // — a 22px number over a 12px label, five across — which is this system's
+    // named refusal, so they are schedules now.
+    <div data-testid="code-overview" style={{ display: 'grid' }}>
       {/* AI authorship + savings + verdict */}
-      <Card style={{ padding: 16 }}>
-        <strong style={{ fontSize: 13 }}>How this code was built</strong>
-        <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginTop: 10 }}>
-          <Stat label="AI-authored commits" value={h.totalCommits != null ? `${h.aiCommits ?? 0} / ${h.totalCommits}` : '—'} sub={h.totalCommits ? `${Math.round(((h.aiCommits ?? 0) / Math.max(h.totalCommits, 1)) * 100)}% of commits` : ''} />
-          <Stat label="AI-touched files" value={`${Math.round((h.aiAuthoredPct || 0) * 100)}%`} />
-          <Stat label="codeindex token savings" value={h.savingsPct != null ? `${Math.round(h.savingsPct)}%` : '—'} sub="vs reading the whole tree" />
-          <Stat label="Sessions here" value={behavior ? String(behavior.totalSessions) : '—'} sub={behavior ? `${behavior.failedOrAbandoned} unresolved` : 'no synced sessions'} />
-          <Stat label="Health" value={`${h.score}/100`} sub={h.score >= 70 ? 'healthy' : h.score >= 40 ? 'needs work' : 'at risk'} />
-        </div>
-      </Card>
+      <Plate title="How this code was built" flush>
+        <Metrics
+          items={[
+            { label: 'AI-authored commits',
+              value: h.totalCommits != null ? `${h.aiCommits ?? 0} / ${h.totalCommits}` : '—',
+              sub: h.totalCommits ? `${Math.round(((h.aiCommits ?? 0) / Math.max(h.totalCommits, 1)) * 100)}% of commits` : undefined },
+            { label: 'AI-touched files', value: `${Math.round((h.aiAuthoredPct || 0) * 100)}%` },
+            { label: 'codeindex token savings',
+              value: h.savingsPct != null ? `${Math.round(h.savingsPct)}%` : '—',
+              sub: 'vs reading the whole tree' },
+            { label: 'Sessions here',
+              value: behavior ? String(behavior.totalSessions) : '—',
+              sub: behavior ? `${behavior.failedOrAbandoned} unresolved` : 'no synced sessions' },
+            { label: 'Health', value: `${h.score}/100`,
+              sub: h.score >= 70 ? 'healthy' : h.score >= 40 ? 'needs work' : 'at risk' },
+          ]}
+        />
+      </Plate>
 
-      {/* Health snapshot (POC) */}
-      <Card style={{ padding: 16 }} data-testid="health-snapshot">
-        <strong style={{ fontSize: 13 }}>Health snapshot</strong>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
-          {SNAP.map(([k, v]) => (
-            <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-1)', borderRadius: 0, padding: '4px 10px', fontSize: 12, color: 'var(--cr-fg-2)' }}>
-              {k} <b style={{ color: v > 0 ? 'var(--cr-fg-1)' : 'var(--cr-fg-3)' }}>{v}</b>
-            </span>
-          ))}
-        </div>
-      </Card>
+      {/* Health snapshot — key/count pairs, which is a schedule, not a chip row.
+          Each pair used to be its own bordered box: forty little frames inside
+          a frame. */}
+      <div data-testid="health-snapshot" style={{ display: 'contents' }}>
+      <Plate title="Health snapshot" flush>
+        <Schedule
+          cols={[{ key: 'k', kind: 'pn' }, { key: 'v', kind: 'val' }]}
+          rows={SNAP.map(([k, v]) => ({
+            id: k,
+            cells: {
+              k,
+              v: <span style={{ color: v > 0 ? 'var(--cr-fg-1)' : 'var(--cr-fg-3)' }}>{v}</span>,
+            },
+          }))}
+        />
+      </Plate>
+      </div>
 
       {/* Languages breakdown (sized by symbols, POC-style) */}
-      <Card style={{ padding: 16 }}>
-        <strong style={{ fontSize: 13 }}>Languages</strong>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
+      <Plate title="Languages">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {langs.slice(0, 13).map((x, i) => (
             <div key={x.l} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
               <span className="mono" style={{ flex: '0 1 110px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 12, color: 'var(--cr-fg-2)' }}>{x.l}</span>
@@ -852,30 +869,17 @@ function OverviewTab({ project, behavior }: { project: CodeProject; behavior: { 
             </div>
           ))}
         </div>
-      </Card>
+      </Plate>
 
       {/* Count-only analyzer stats */}
       {DEEPER.length > 0 && (
-        <Card style={{ padding: 16 }}>
-          <strong style={{ fontSize: 13 }}>Deeper analysis</strong>
-          <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginTop: 10 }}>
-            {DEEPER.map(([k, v]) => <Stat key={k} label={STAT_LABELS[k] || k} value={String(v)} />)}
-          </div>
-        </Card>
+        <Plate title="Deeper analysis" flush>
+          <Metrics items={DEEPER.map(([k, v]) => ({ label: STAT_LABELS[k] || k, value: String(v) }))} />
+        </Plate>
       )}
     </div>
   );
 }
-function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
-  return (
-    <div style={{ minWidth: 110 }}>
-      <div style={{ fontSize: 22, fontWeight: 600 }}>{value}</div>
-      <div style={{ fontSize: 12, color: 'var(--cr-fg-2)' }}>{label}</div>
-      {sub && <div style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{sub}</div>}
-    </div>
-  );
-}
-
 function Empty({ children }: { children: React.ReactNode }) {
   return <div style={{ padding: 30, textAlign: 'center', color: 'var(--cr-fg-3)' }}>{children}</div>;
 }

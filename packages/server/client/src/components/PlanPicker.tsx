@@ -32,6 +32,12 @@ export default function PlanPicker({ onError }: { onError: (s: string) => void }
   // monthly subscriber churns before the thing has had a chance to prove itself.
   // The yearly tab also carries the saving, so the cheaper option is the one on
   // screen first.
+  //
+  // Yearly is the DEFAULT, not a hardcoded assumption. A deployment that sells
+  // only monthly plans used to open on the yearly tab, where `shown` filters to
+  // nothing — and `hasYearly` is false there, so the toggle that would have let
+  // you back is not rendered either. The result was an empty plan picker with
+  // no way out of it, on a screen whose only job is to sell.
   const [interval, setInterval] = useState<'month' | 'year'>('year');
   // Keyed by tier FAMILY, not by plan key: Team monthly and Team yearly are two
   // keys for one decision, so keying on the key threw the seat count away every
@@ -45,7 +51,16 @@ export default function PlanPicker({ onError }: { onError: (s: string) => void }
 
   useEffect(() => {
     getPlans()
-      .then((c) => setPlans(c.configured ? c.plans : []))
+      .then((c) => {
+        const list = c.configured ? c.plans : [];
+        setPlans(list);
+        // Fall back to the interval the catalogue actually offers. Only when
+        // there is no yearly plan at all — otherwise yearly stays the default,
+        // for the reason above.
+        if (list.length && !list.some((p) => p.selfServe && p.interval === 'year')) {
+          setInterval('month');
+        }
+      })
       .catch(() => setPlans([]));
   }, []);
 

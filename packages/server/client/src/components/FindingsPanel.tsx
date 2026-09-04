@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Card, Chip, Icon, Input, Button } from './primitives';
+import { Chip, Icon, Input, Button, Plate } from './primitives';
 import { getCodeFindings, type CodeFinding } from '../services/api';
 
 /**
@@ -152,24 +152,28 @@ export default function FindingsPanel({
           {findings.length === 0 ? 'No findings — your indexed repos are clean.' : 'No findings match these filters.'}
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        // GAP 0 AND PLATES, NOT CARDS. Ten pixels between framed boxes is the
+        // card list, and a Card carries its frame inline, so the flush rule
+        // that fuses a stack cannot reach it. As plates the findings share
+        // edges and read as one drawn list.
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
           {groups.map((g) => {
             const isOpen = expanded.has(g.key);
             const multi = g.items.length > 1;
             const first = g.items[0];
             const loc = `${first.file}${first.line != null ? `:${first.line}` : ''}`;
             return (
-              <Card key={g.key} style={{ padding: 0, overflow: 'hidden' }}>
+              <Plate key={g.key} flush style={{ overflow: 'hidden' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', flexWrap: 'wrap' }}>
                   <Chip kind={SEV_CHIP(g.severity)} size="sm">{g.severity}</Chip>
-                  <button onClick={() => onOpenProject(g.projectId)} title="Open this project" style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12.5, fontWeight: 600, fontFamily: 'var(--cr-font-mono)', padding: 0 }}>
+                  <button onClick={() => onOpenProject(g.projectId)} title="Open this project" style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12.5, fontWeight: 600, fontFamily: 'var(--cr-font-annot)', padding: 0 }}>
                     {projectNameOf(g.projectId)}
                   </button>
                   <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--cr-fg-1)' }}>{g.rule}</span>
                   <Chip kind="mono" size="sm">{g.category}</Chip>
                   {multi
                     ? <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{g.items.length} occurrences</span>
-                    : <span style={{ fontSize: 12, color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-font-mono)' }}>{loc}</span>}
+                    : <span style={{ fontSize: 12, color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-font-annot)' }}>{loc}</span>}
                   <span style={{ flex: 1 }} />
                   <Button variant="ghost" size="sm" onClick={() => copyFix(g)}>{copied === g.key ? 'copied ✓' : 'Copy fix prompt'}</Button>
                   {multi && (
@@ -186,7 +190,7 @@ export default function FindingsPanel({
                     ))}
                   </div>
                 )}
-              </Card>
+              </Plate>
             );
           })}
         </div>

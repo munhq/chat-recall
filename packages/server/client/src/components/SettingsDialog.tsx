@@ -672,19 +672,33 @@ function SourcesCard({ value, onChange }: { value: SourceSettings; onChange: (v:
     const next = { ...value.enabled, [group]: { ...value.enabled[group], [field]: on } };
     onChange({ ...value, enabled: next });
   };
+  // ONE RULED ROW PER TOOL, NOT FORTY LITTLE BOXES.
+  //
+  // Every surface used to be a bordered, filled chip, so this one section drew
+  // forty framed boxes inside a framed panel — the card grid at chip scale, and
+  // boxes inside a box. The frame also carried the on/off state, which is a
+  // coloured edge doing a job the checkbox already does.
+  //
+  // Now the tool name and its surfaces share a ruled row, the checkbox alone
+  // says on or off, and the label carries the emphasis: full ink when indexed,
+  // muted when not.
   const groupRow = <K extends keyof SourcesEnabled>(label: string, group: K, fields: Array<keyof SourcesEnabled[K]>) => (
-    <div key={String(group)} style={{ marginBottom: 12 }}>
-      <div style={{ fontSize: 12, fontWeight: 600, letterSpacing: 0.5, textTransform: 'uppercase',
-        marginBottom: 6, color: 'var(--cr-fg-3)' }}>{label}</div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+    <div
+      key={String(group)}
+      style={{
+        display: 'flex', gap: 16, alignItems: 'baseline', flexWrap: 'wrap',
+        padding: '9px 0', borderTop: '1px solid var(--cr-line-2)',
+      }}
+    >
+      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cr-fg-1)', minWidth: 108 }}>{label}</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px', flex: 1, minWidth: 0 }}>
         {fields.map((f) => {
           const on = (value.enabled[group] as Record<string, boolean>)[f as string];
           return (
             <label key={String(f)} style={{
-              display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px',
-              borderRadius: 0, fontSize: 12, cursor: 'pointer',
-              background: on ? 'var(--cr-brand-surf)' : 'var(--cr-ink-1)',
-              border: `1px solid ${on ? 'var(--cr-brand-line)' : 'var(--cr-line-1)'}`,
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              fontSize: 12.5, cursor: 'pointer',
+              color: on ? 'var(--cr-fg-1)' : 'var(--cr-fg-3)',
             }}>
               <input type="checkbox" checked={on}
                 onChange={(e) => setEnabled(group, f, e.target.checked)} />
@@ -976,7 +990,7 @@ function ChoiceGroup({
                   <span style={{
                     fontSize: 12, color: 'var(--cr-fg-3)',
                     fontFamily: c.hint.includes('-') || c.hint.includes('_') || c.hint.includes('"')
-                      ? 'var(--cr-font-mono, ui-monospace, monospace)' : undefined,
+                      ? 'var(--cr-font-annot)' : undefined,
                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                   }}>{c.hint}</span>
                 )}

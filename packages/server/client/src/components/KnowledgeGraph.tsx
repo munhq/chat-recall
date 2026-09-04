@@ -153,7 +153,7 @@ function TimelineView({ entries, onPivot }: { entries: KgFact[]; onPivot: (n: st
 
 function FactRow({ f, side, onPivot }: { f: KgFact; side: 'subject' | 'object' | 'both'; onPivot: (n: string) => void }) {
   const ent = (txt: string, active: boolean) => (
-    <button onClick={() => onPivot(txt)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'var(--cr-font-mono)', fontSize: 12, color: active ? 'var(--cr-brand-500)' : 'var(--cr-fg-2)', fontWeight: active ? 600 : 400 }}>{txt}</button>
+    <button onClick={() => onPivot(txt)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'var(--cr-font-annot)', fontSize: 12, color: active ? 'var(--cr-brand-500)' : 'var(--cr-fg-2)', fontWeight: active ? 600 : 400 }}>{txt}</button>
   );
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0', borderBottom: '1px solid var(--cr-line-1)', flexWrap: 'wrap' }}>

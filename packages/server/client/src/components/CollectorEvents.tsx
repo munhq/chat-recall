@@ -148,11 +148,11 @@ export default function CollectorEvents() {
                           the chip's text says which kind it is. */}
                       <Chip kind={FAILURE_KINDS.has(e.kind) ? 'warn' : 'neutral'} size="sm">{e.kind}</Chip>
                     </td>
-                    <td style={{ padding: '7px 10px', color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)' }}>
+                    <td style={{ padding: '7px 10px', color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-annot)' }}>
                       {e.device_id || '—'}
                       {e.cli_version ? <span style={{ color: 'var(--cr-fg-3)' }}> · {e.cli_version}</span> : null}
                     </td>
-                    <td style={{ padding: '7px 10px', color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-mono)' }}>
+                    <td style={{ padding: '7px 10px', color: 'var(--cr-fg-2)', fontFamily: 'var(--cr-font-annot)' }}>
                       {summarise(e) || e.message || '—'}
                     </td>
                   </tr>

@@ -320,7 +320,7 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
 }
 
 const AUTH_CSS = `
-.au-otp { font-family: var(--cr-font-mono); font-size: 20px; letter-spacing: 0.28em;
+.au-otp { font-family: var(--cr-font-annot); font-size: 20px; letter-spacing: 0.28em;
   text-align: center; }
 
 /* Every colour, radius, font and focus ring comes from the design tokens in
