@@ -116,7 +116,7 @@ export default function ConversationList({
       className="cr-conv-list"
       style={{
         flex: '0 0 var(--cr-convos-w)',
-        borderRight: '1px solid var(--cr-line-1)',
+        borderRight: '1px solid var(--cr-line-2)',
         background: 'var(--cr-ink-0)',
         display: 'flex',
         flexDirection: 'column',
@@ -133,17 +133,19 @@ export default function ConversationList({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'space-between',
-          borderBottom: '1px solid var(--cr-line-1)',
+          borderBottom: '1px solid var(--cr-line-2)',
         }}
       >
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
-          <h3 style={{ fontSize: 13, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+          {/* A panel name, in the grotesk. It was set uppercase in the display
+              face, which reads as an eyebrow and breaks the mono duty rule. */}
+          <h3 style={{ fontSize: 14, fontWeight: 600, letterSpacing: '-0.005em', textTransform: 'none' }}>
             {isSearch ? 'Results' : 'Conversations'}
           </h3>
           <span
             style={{
               fontFamily: 'var(--cr-font-mono)',
-              fontSize: 11,
+              fontSize: 12,
               color: 'var(--cr-fg-3)',
               fontVariantNumeric: 'tabular-nums',
               letterSpacing: 0,
@@ -186,7 +188,7 @@ export default function ConversationList({
             title={results.find((r) => r.summaryError)?.summaryError?.error || ''}
             style={{
               padding: '6px 18px',
-              fontSize: 11,
+              fontSize: 12,
               // High-contrast text on the warn tint (the tint + border carry the
               // "warning" signal); warn-on-warn-surf sat just under AA in light.
               color: 'var(--cr-fg-1)',
@@ -214,7 +216,7 @@ export default function ConversationList({
           >
             <Icon name="search" size={22} style={{ opacity: 0.4, marginBottom: 14 }} />
             <div style={{ fontSize: 13, marginBottom: 4 }}>No matching conversations</div>
-            <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', opacity: 0.7 }}>
+            <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', opacity: 0.7 }}>
               Try a different filter or search term
             </div>
           </div>
@@ -251,7 +253,7 @@ export default function ConversationList({
             data-testid="search-window-note"
             style={{
               padding: '12px 18px 16px',
-              fontSize: 11.5,
+              fontSize: 12.5,
               lineHeight: 1.55,
               color: 'var(--cr-fg-3)',
               borderTop: '1px solid var(--cr-line-1)',
@@ -280,7 +282,7 @@ export default function ConversationList({
                     cursor: 'pointer',
                   }}
                 >
-                  Unlock your full history →
+                  Unlock your full history
                 </button>
               </>
             )}
@@ -394,7 +396,6 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
       }
     >
       {/* Tool color rail */}
-      <span className="cr-conv-rail" aria-hidden />
 
       {/* Content column */}
       <div style={{ minWidth: 0 }}>
@@ -412,14 +413,14 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
               title={`Memory source: ${sourceType}`}
               data-testid="source-badge"
               style={{
-                fontSize: 10,
+                fontSize: 12,
                 fontWeight: 700,
                 letterSpacing: '0.06em',
                 color: sourceBadge.fg,
                 background: sourceBadge.bg,
                 border: `1px solid ${sourceBadge.line}`,
                 padding: '1px 5px',
-                borderRadius: 3,
+                borderRadius: 0,
                 textTransform: 'uppercase',
                 flexShrink: 0,
               }}
@@ -442,13 +443,13 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
               title={`${r.runCount} sessions with the same first prompt collapsed into one row (e.g. PR-bot iterations).`}
               data-testid="run-count-badge"
               style={{
-                fontSize: 10,
+                fontSize: 12,
                 fontWeight: 600,
                 color: 'var(--cr-fg-2)',
-                background: 'var(--cr-ink-2)',
+                background: 'var(--cr-ink-1)',
                 border: '1px solid var(--cr-line-1)',
                 padding: '1px 6px',
-                borderRadius: 3,
+                borderRadius: 0,
                 marginLeft: 4,
                 letterSpacing: '0.02em',
               }}
@@ -464,20 +465,20 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
             <span
               title="Relevance score for this query (higher = stronger match)"
               style={{
-                fontSize: 10,
+                fontSize: 12,
                 fontWeight: 600,
                 letterSpacing: '0.04em',
                 color: 'var(--cr-ok-500)',
                 background: 'var(--cr-ok-surf)',
                 border: '1px solid var(--cr-ok-line)',
                 padding: '1px 5px',
-                borderRadius: 3,
+                borderRadius: 0,
               }}
             >
               {scoreLabel(r.score!)}
             </span>
             <span style={{ color: 'var(--cr-line-3)', flexShrink: 0 }}>·</span>
-            <span style={{ color: 'var(--cr-fg-3)', fontSize: 11 }}>
+            <span style={{ color: 'var(--cr-fg-3)', fontSize: 12 }}>
               {r.matchedChunks!.length} match{r.matchedChunks!.length === 1 ? '' : 'es'}
             </span>
           </div>
@@ -512,7 +513,7 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
               className={(hasSummary || userTitle || toolTitle) ? undefined : 'cr-conv-title-faded'}
               title={titleText}
             >
-              {userTitle ? `🏷️ ${titleText}` : titleText}
+              {titleText}
             </span>
           ) : (
             <span style={{ color: 'var(--cr-fg-3)', fontStyle: 'italic', fontSize: 13 }}>
@@ -538,8 +539,8 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
                 title={`Matched chunk · ${matchChunksMeta[idx]?.chunkType || ''}`}
                 style={{
                   padding: '6px 8px',
-                  borderLeft: '2px solid var(--cr-accent-500, #6cf)',
-                  background: 'var(--cr-ink-2)',
+                  borderLeft: '2px solid var(--cr-line-2)',
+                  background: 'var(--cr-ink-1)',
                   color: 'var(--cr-fg-2)',
                   fontSize: 12,
                   lineHeight: 1.45,
@@ -547,11 +548,11 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
                   wordBreak: 'break-word',
                   maxHeight: 96,
                   overflow: 'hidden',
-                  fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)',
+                  fontFamily: 'var(--cr-font-mono)',
                 }}
               >
                 <div style={{
-                  fontSize: 10,
+                  fontSize: 12,
                   color: 'var(--cr-fg-3)',
                   marginBottom: 3,
                   fontFamily: 'inherit',
@@ -564,10 +565,10 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
                     <mark
                       key={i}
                       style={{
-                        background: 'var(--cr-warn-surf, #553)',
-                        color: 'var(--cr-warn-500, #fc6)',
+                        background: 'var(--cr-warn-surf)',
+                        color: 'var(--cr-warn-500)',
                         padding: '0 2px',
-                        borderRadius: 2,
+                        borderRadius: 0,
                       }}
                     >
                       {p.text}
@@ -579,7 +580,7 @@ function ResultRow({ r, on, onClick, index }: { r: SessionInfo; on: boolean; onC
               </div>
             ))}
             {extraMatchCount > 0 && (
-              <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', paddingLeft: 8 }}>
+              <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', paddingLeft: 8 }}>
                 + {extraMatchCount} more match{extraMatchCount === 1 ? '' : 'es'} in this item
               </div>
             )}
@@ -730,7 +731,6 @@ function SkeletonRows({ count }: { count: number }) {
         const w = widths[i % widths.length];
         return (
           <div key={i} className="cr-conv-skeleton" data-testid="conversation-list-skeleton">
-            <span className="cr-conv-skeleton-rail" />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 4 }}>
               <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                 <div className="cr-conv-skeleton-bar" style={{ width: 40, height: 8 }} />
@@ -816,7 +816,7 @@ function PaginationFooter({
     <div className="cr-conv-footer" data-testid="conversation-list-footer">
       <span style={{ flexShrink: 0 }}>{label}</span>
       <span className="cr-conv-footer-progress" aria-hidden>
-        <span className="cr-conv-footer-progress-fill" style={{ width: `${pct}%` }} />
+        <span className="cr-conv-footer-progress-fill" style={{ transform: `scaleX(${pct / 100})` }} />
       </span>
       <button
         type="button"

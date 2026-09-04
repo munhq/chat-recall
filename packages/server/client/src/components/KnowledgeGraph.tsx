@@ -9,7 +9,7 @@
  */
 
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { Card, Chip, Input, Icon, SegmentedControl } from './primitives';
+import { Card, Chip, Input, Icon, SegmentedControl, Metrics, Plates } from './primitives';
 import ForceGraph from './ForceGraph';
 import { getKgStats, getKgTimeline, queryKgEntity, type KgFact, type KgStats } from '../services/api';
 
@@ -66,15 +66,20 @@ export default function KnowledgeGraph({ entity, embedded }: { entity?: string |
         </div>
       )}
 
-      {/* Stat strip */}
+      {/* The stat strip becomes one schedule. Five tiles, each a big number
+          over an uppercase eyebrow, gave "expired: 0" the same weight as
+          "facts: 3" and answered nothing. */}
       {stats && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: 10, marginBottom: 16 }}>
-          <KgStat label="Entities" value={stats.entities} />
-          <KgStat label="Facts (current)" value={stats.current_facts} tone="ok" />
-          <KgStat label="Facts (total)" value={stats.triples} />
-          <KgStat label="Expired" value={stats.expired_facts} tone="muted" />
-          <KgStat label="Relationship types" value={Array.isArray(stats.relationship_types) ? stats.relationship_types.length : stats.relationship_types} />
-        </div>
+        <Metrics
+          style={{ marginBottom: 16 }}
+          caption={embedded ? undefined : 'Graph size'}
+          items={[
+            { label: 'Entities', value: stats.entities.toLocaleString(), sub: 'projects, tools and people' },
+            { label: 'Facts', value: stats.current_facts.toLocaleString(), sub: 'true right now', tone: 'ok' },
+            { label: 'Facts, all time', value: stats.triples.toLocaleString(), sub: `${stats.expired_facts.toLocaleString()} since expired` },
+            { label: 'Relationship types', value: String(Array.isArray(stats.relationship_types) ? stats.relationship_types.length : stats.relationship_types) },
+          ]}
+        />
       )}
 
       {/* Entity search / pivot */}
@@ -83,12 +88,13 @@ export default function KnowledgeGraph({ entity, embedded }: { entity?: string |
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => { if (e.key === 'Enter' && input.trim()) pivot(input.trim()); }}
+          icon="search"
           placeholder="Focus an entity (project, tool, person)…"
           onClear={input ? () => setInput('') : undefined}
           inputSize="md"
           style={{ flex: 1 }}
         />
-        {focus && <Chip kind="brand" size="md">focused: {focus} <span onClick={() => setFocus(null)} style={{ cursor: 'pointer', marginLeft: 6, opacity: 0.7 }}>✕</span></Chip>}
+        {focus && <Chip kind="brand" size="md">focused: {focus} <span onClick={() => setFocus(null)} style={{ cursor: 'pointer', marginLeft: 6, display: 'inline-flex' }}><Icon name="x" size={11} /></span></Chip>}
       </div>
 
       {focus ? (
@@ -114,18 +120,21 @@ function FocusedView({ name, facts, loading, onPivot }: { name: string; facts: K
   const out = facts.filter((f) => f.direction !== 'incoming');
   const inc = facts.filter((f) => f.direction === 'incoming');
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(min(320px,100%),1fr))', gap: 14 }}>
-      <Card style={{ padding: 14 }}>
-        <strong style={{ fontSize: 13 }}>{name} →</strong>
-        <div style={{ color: 'var(--cr-fg-3)', fontSize: 11, marginBottom: 8 }}>outgoing facts</div>
+    /* Two panels SHARING ONE FRAME. Outgoing and incoming facts are two halves
+       of one statement about this entity, so they are divided by a rule rather
+       than separated by a gap into two boxes. */
+    <Plates cols={2}>
+      <div>
+        <span className="cr-plate-t">{name} points to</span>
+        <div style={{ color: 'var(--cr-fg-3)', fontSize: 12.5, margin: '3px 0 10px' }}>outgoing facts</div>
         {out.length === 0 ? <Empty small>none</Empty> : out.map((f, i) => <FactRow key={i} f={f} side="object" onPivot={onPivot} />)}
-      </Card>
-      <Card style={{ padding: 14 }}>
-        <strong style={{ fontSize: 13 }}>→ {name}</strong>
-        <div style={{ color: 'var(--cr-fg-3)', fontSize: 11, marginBottom: 8 }}>incoming facts</div>
+      </div>
+      <div>
+        <span className="cr-plate-t">points to {name}</span>
+        <div style={{ color: 'var(--cr-fg-3)', fontSize: 12.5, margin: '3px 0 10px' }}>incoming facts</div>
         {inc.length === 0 ? <Empty small>none</Empty> : inc.map((f, i) => <FactRow key={i} f={f} side="subject" onPivot={onPivot} />)}
-      </Card>
-    </div>
+      </div>
+    </Plates>
   );
 }
 
@@ -134,7 +143,7 @@ function TimelineView({ entries, onPivot }: { entries: KgFact[]; onPivot: (n: st
   return (
     <Card style={{ padding: 14 }}>
       <strong style={{ fontSize: 13 }}>Recent facts</strong>
-      <div style={{ color: 'var(--cr-fg-3)', fontSize: 11, marginBottom: 10 }}>click any entity to focus the graph on it</div>
+      <div style={{ color: 'var(--cr-fg-3)', fontSize: 12, marginBottom: 10 }}>click any entity to focus the graph on it</div>
       <div style={{ display: 'flex', flexDirection: 'column' }}>
         {entries.map((f, i) => <FactRow key={i} f={f} side="both" onPivot={onPivot} />)}
       </div>
@@ -153,7 +162,7 @@ function FactRow({ f, side, onPivot }: { f: KgFact; side: 'subject' | 'object' |
       {ent(f.object, side === 'object')}
       <span style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
         {f.current === false && <Chip kind="neutral" size="sm">expired</Chip>}
-        {(f.valid_from || f.valid_to) ? <span style={{ fontSize: 10, color: 'var(--cr-fg-3)' }}>{fmtWhen(f.valid_from)}{f.valid_to ? `–${fmtWhen(f.valid_to)}` : ''}</span> : null}
+        {(f.valid_from || f.valid_to) ? <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{fmtWhen(f.valid_from)}{f.valid_to ? `–${fmtWhen(f.valid_to)}` : ''}</span> : null}
       </span>
     </div>
   );
@@ -198,22 +207,12 @@ function KgGraph({ center, facts, onPivot }: { center: string; facts: KgFact[]; 
     from: e.from,
     to: e.to,
     label: e.label,
-    color: 'var(--cr-line-2, var(--cr-line-1))',
+    color: 'var(--cr-line-2)',
     width: 1.2,
     opacity: e.expired ? 0.25 : 0.55,
     dashed: e.expired,
   })), [edges]);
   return <ForceGraph nodes={fgNodes} edges={fgEdges} onNode={onPivot} resetKey={center} layout={KG_LAYOUT} />;
-}
-
-function KgStat({ label, value, tone }: { label: string; value: number; tone?: 'ok' | 'muted' }) {
-  const color = tone === 'ok' ? 'var(--cr-ok-500)' : tone === 'muted' ? 'var(--cr-fg-3)' : 'var(--cr-fg-1)';
-  return (
-    <Card style={{ padding: '12px 14px' }}>
-      <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 22, fontWeight: 700, color, lineHeight: 1 }}>{value.toLocaleString()}</div>
-      <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 9, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--cr-fg-3)', marginTop: 6 }}>{label}</div>
-    </Card>
-  );
 }
 
 function Empty({ children, small }: { children: React.ReactNode; small?: boolean }) {

@@ -53,7 +53,7 @@ function readField<T = unknown>(item: { extra_json?: string }, k: string): T | u
 }
 
 /**
- * Poll recent intents until `id` leaves 'pending' (the local agent picked it
+ * Poll recent intents until "id" leaves 'pending' (the local agent picked it
  * up and acked), or give up. Model B is async: the UI only enqueues; the user's
  * machine does the copy and reports back here.
  */
@@ -250,7 +250,7 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
               press a button that is not on the page is worse than silence. */}
           {!coverageGated && (
             <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 8 }}>
-              Which tool has which skill / MCP / command / agent, per device. A gap = not synced there. Click a cell to queue a copy, ⚡ Sync everything to fan a machine's own artifacts across its tools, or ⬇ Install to put what your account has onto a machine that does not have it yet.
+              Which tool has which skill / MCP / command / agent, per device. A gap = not synced there. Click a cell to queue a copy, use Sync everything to fan a machine's own artifacts across its tools, or Install to put what your account has onto a machine that does not have it yet.
             </div>
           )}
           <SyncMatrix inline onClose={() => {}} onMutated={refreshAfterMutation}
@@ -265,7 +265,8 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
       <div style={{ padding: '12px 32px', borderBottom: '1px solid var(--cr-line-1)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 220 }}>
           <Input
-            placeholder={`Filter ${activeTab}s…`}
+            icon="search"
+          placeholder={`Filter ${activeTab}s…`}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             onClear={search ? () => setSearch('') : undefined}
@@ -346,18 +347,18 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
                     {tool && <ToolBadge tool={tool} size="sm" />}
-                    <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>
+                    <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
                       {readField<string>(item, 'scope') || ''}
                     </span>
                   </div>
                   <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cr-fg-1)', marginBottom: 4 }}>
                     {item.title}
                   </div>
-                  <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {cmd.slice(0, 120)}
                   </div>
                   {allow.length > 0 && (
-                    <div style={{ marginTop: 4, fontSize: 11, color: 'var(--cr-fg-3)' }}>
+                    <div style={{ marginTop: 4, fontSize: 12, color: 'var(--cr-fg-3)' }}>
                       Allow: {allow.slice(0, 4).join(', ')}{allow.length > 4 ? `… +${allow.length - 4}` : ''}
                     </div>
                   )}
@@ -549,7 +550,7 @@ function PromoteRow({
 
   // Copy goes through the Model-B intent queue (works from the SaaS too).
   const handle = async (toTool: ToolId) => {
-    if (!confirm(`Copy ${primaryName} from ${fromTool} → ${toTool}?`)) return;
+    if (!confirm(`Copy ${primaryName} from ${fromTool} to ${toTool}?`)) return;
     setBusy(toTool);
     setMsg(null);
     // Target the device that actually HOLDS the source: the copy is executed
@@ -596,7 +597,7 @@ function PromoteRow({
           } else if (!supports) {
             action = <Chip kind="neutral" size="sm">not supported in {t}</Chip>;
           } else if (t === fromTool) {
-            // We're viewing this row's own tool — should be `has=true`. Defensive.
+            // We're viewing this row's own tool — should be "has=true". Defensive.
             action = <Chip kind="neutral" size="sm">source</Chip>;
           } else {
             action = (
@@ -620,7 +621,7 @@ function PromoteRow({
                 padding: '8px 10px',
                 background: 'var(--cr-ink-1)',
                 border: '1px solid var(--cr-line-1)',
-                borderRadius: 'var(--cr-radius-sm)',
+                borderRadius: 0,
               }}
             >
               <ToolBadge tool={t} size="sm" />
@@ -634,7 +635,7 @@ function PromoteRow({
           marginTop: 12,
           padding: 10,
           fontSize: 12,
-          borderRadius: 'var(--cr-radius-sm)',
+          borderRadius: 0,
           background: msg.kind === 'ok' ? 'var(--cr-ok-surf)' : 'var(--cr-err-surf)',
           color: msg.kind === 'ok' ? 'var(--cr-ok-500)' : 'var(--cr-err-500)',
           border: `1px solid ${msg.kind === 'ok' ? 'var(--cr-ok-line)' : 'var(--cr-err-line)'}`,
@@ -737,9 +738,9 @@ function EmptyListState({
                 alignItems: 'center',
                 gap: 8,
                 padding: '8px 10px',
-                background: 'var(--cr-ink-2)',
-                border: '1px solid var(--cr-line-1)',
-                borderRadius: 'var(--cr-radius-sm)',
+                background: 'var(--cr-ink-0)',
+                border: '1px solid var(--cr-line-2)',
+                borderRadius: 0,
               }}
             >
               {fromTool && <ToolBadge tool={fromTool} size="sm" />}
@@ -757,14 +758,14 @@ function EmptyListState({
                 disabled={busyId !== null}
                 onClick={() => handleImport(row)}
               >
-                {busyId === row.id ? 'Copying…' : `Copy →`}
+                {busyId === row.id ? 'Copying…' : 'Copy'}
               </Button>
             </div>
           );
         })}
       </div>
       {importable.length > 30 && (
-        <div style={{ marginTop: 10, fontSize: 11, color: 'var(--cr-fg-3)' }}>
+        <div style={{ marginTop: 10, fontSize: 12, color: 'var(--cr-fg-3)' }}>
           …and {importable.length - 30} more
         </div>
       )}
@@ -842,7 +843,7 @@ function GateMatrixPreview() {
         gap: '7px 12px',
         alignItems: 'center',
         padding: '14px 16px',
-        borderRadius: 'var(--cr-radius-lg)',
+        borderRadius: 0,
         background: 'var(--cr-ink-0)',
         border: '1px solid var(--cr-line-1)',
         // No hardcoded shadow: the two themes need opposite values and a literal
@@ -868,7 +869,7 @@ function GateMatrixPreview() {
           >
             <span style={{ fontSize: 12, color: 'var(--cr-fg-2)', overflow: 'hidden',
                            textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.name}</span>
-            <span style={{ fontSize: 9.5, color: 'var(--cr-fg-3)', letterSpacing: '0.04em' }}>{row.kind}</span>
+            <span style={{ fontSize: 12.5, color: 'var(--cr-fg-3)', letterSpacing: '0.04em' }}>{row.kind}</span>
           </span>
           {row.have.map((present, j) => (
             <span
@@ -876,7 +877,7 @@ function GateMatrixPreview() {
               className={j === 2 ? 'cr-gate-col3' : undefined}
               style={{
                 justifySelf: 'center', width: 16, height: 16,
-                borderRadius: 'var(--cr-radius-xs)',
+                borderRadius: 0,
                 background: present ? 'var(--cr-ok-surf)' : 'transparent',
                 border: `1px solid ${present ? 'var(--cr-ok-line)' : 'var(--cr-line-2)'}`,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -954,7 +955,7 @@ function ToolkitUpgradePanel({ gate, onClose }: { gate: FeatureGateError; onClos
         alignItems: 'center',
         maxWidth: 860,
         padding: '26px 28px',
-        borderRadius: 'var(--cr-radius-lg)',
+        borderRadius: 0,
         background: 'var(--cr-ink-1)',
         border: '1px solid var(--cr-line-1)',
       }}
@@ -1007,7 +1008,7 @@ function ToolkitUpgradePanel({ gate, onClose }: { gate: FeatureGateError; onClos
             above may lag and this never does. */}
         {/* No opacity here: light --cr-fg-3 is already tuned to clear AA at this
             size, and dimming it further measured 3.98:1. */}
-        <p style={{ margin: '10px 0 0', fontSize: 11, color: 'var(--cr-fg-3)' }}>{gate.message}</p>
+        <p style={{ margin: '10px 0 0', fontSize: 12, color: 'var(--cr-fg-3)' }}>{gate.message}</p>
       </div>
       {/* The container the query measures is the grid's OWN column, not the
           panel: the panel is roughly 2.4x wider than this, so a threshold on it
@@ -1102,7 +1103,7 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
   /**
    * One-click: queue a full cross-tool fan-out. The copy runs on the user's
    * own machine (the local agent has the filesystem) — so this enqueues a
-   * `sync_all` intent, then polls until the agent applies it and reports back.
+   * "sync_all" intent, then polls until the agent applies it and reports back.
    */
   const syncEverything = useCallback(async () => {
     setOneClickMsg(null);
@@ -1137,10 +1138,10 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
    *
    * Different operation from ⚡ Sync everything, which fans a machine's own
    * artifacts across that machine's tools by reading its disk — so it can
-   * never set up a machine that has nothing yet. This queues a `pull`, and the
+   * never set up a machine that has nothing yet. This queues a "pull", and the
    * target device installs from the server on its next drain.
    *
-   * `everything: true` ignores the type tab and installs every type.
+   * "everything: true" ignores the type tab and installs every type.
    */
   const installFromAccount = useCallback(async (everything: boolean) => {
     setOneClickMsg(null);
@@ -1209,7 +1210,7 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
           // drained by op.deviceId's agent, and executeCopy resolves the source
           // from THAT machine's own filesystem — there is no device-to-device
           // transfer. Picking "the first cell that has it" ignored the device
-          // half of the `<device>:<tool>` key, so a laptop's opencode entry got
+          // half of the "<device>:<tool>" key, so a laptop's opencode entry got
           // sent as the source for a PC's opencode column: fromTool === toTool,
           // rejected 400 by the server, 9 at a time.
           const sourceTool = sourceToolOnDevice(matrix, op.type, op.name, op.deviceId, op.tool);
@@ -1332,9 +1333,13 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
           width: '100%', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden',
         } : {
           width: 'min(1100px, 96vw)', maxHeight: '92dvh',
-          background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-2)',
-          borderRadius: 'var(--cr-radius-md)', display: 'flex', flexDirection: 'column',
-          boxShadow: '0 24px 60px rgba(0,0,0,0.5)',
+          // An overlay is a plate: the ink frame separates it, and the backdrop
+          // behind it does the rest. No shadow — a drawing has line weight,
+          // not depth, and a shadow here is the first mark on the sheet that
+          // is not a drawing convention.
+          background: 'var(--cr-ink-0)',
+          border: 'var(--cr-frame-w) solid var(--cr-frame)',
+          borderRadius: 0, display: 'flex', flexDirection: 'column',
         }}
       >
         {/* Header */}
@@ -1350,7 +1355,7 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
             onChange={(e) => setPullDevice(e.target.value)}
             disabled={applying}
             title="Which machine to install on"
-            style={{ fontSize: 12, padding: '4px 6px', borderRadius: 6, border: '1px solid var(--cr-border)', background: 'var(--cr-bg)', color: 'var(--cr-fg)' }}
+            style={{ fontSize: 12, padding: '4px 6px', borderRadius: 0, border: '1px solid var(--cr-line-2)', background: 'var(--cr-ink-0)', color: 'var(--cr-fg-1)' }}
           >
             <option value="">All devices</option>
             {devices.map((d) => <option key={d} value={d}>{d}</option>)}
@@ -1363,7 +1368,7 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
             onClick={() => installFromAccount(false)}
             title={`Install every ${activeType} on your account onto the selected machine, from the server`}
           >
-            {applying ? 'Queuing…' : `⬇ Install ${activeType}s`}
+            {applying ? 'Queuing…' : `Install ${activeType}s`}
           </Button>
           <Button
             data-testid="toolkit-pull-all"
@@ -1373,7 +1378,7 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
             onClick={() => installFromAccount(true)}
             title="Install every artifact type on your account onto the selected machine, from the server"
           >
-            ⬇ Install everything
+            Install everything
           </Button>
           <Button
             data-testid="toolkit-sync-everything"
@@ -1383,7 +1388,7 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
             onClick={syncEverything}
             title="Fan every artifact out to every tool that's missing it (never overwrites)"
           >
-            {applying ? 'Syncing…' : '⚡ Sync everything'}
+            {applying ? 'Syncing…' : 'Sync everything'}
           </Button>
           <Button
             data-testid="toolkit-sync-apply"
@@ -1446,7 +1451,7 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
               data-testid="toolkit-sync-everything-msg"
               style={{
                 marginBottom: 12, padding: 10, fontSize: 12,
-                borderRadius: 'var(--cr-radius-sm)',
+                borderRadius: 0,
                 background: 'var(--cr-ok-surf)', color: 'var(--cr-ok-500)',
                 border: '1px solid var(--cr-ok-line)',
               }}
@@ -1464,7 +1469,7 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
             </div>
           )}
           {matrix && rows.length > 0 && (
-            <table style={{ width: '100%', minWidth: 'max-content', borderCollapse: 'collapse', fontSize: 13 }}>
+            <table className="cr-schedule" style={{ width: '100%', minWidth: 'max-content', borderCollapse: 'collapse', fontSize: 13 }}>
               <thead style={{ position: 'sticky', top: 0, background: 'var(--cr-ink-1)', zIndex: 3 }}>
                 <tr>
                   {/* Sticky so the row label survives a sideways scroll — without
@@ -1480,10 +1485,10 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
                     return (
                       <th key={d} colSpan={supportedTools.length} style={{ ...thStyle('center'), borderBottom: '1px solid var(--cr-line-1)', fontWeight: 600, opacity: offline ? 0.55 : 1 }}>
                         <span title={meta ? `CLI ${meta.cliVersion || 'unknown'}${meta.os ? ` · ${meta.os}` : ''} · last seen ${meta.lastSeenAt ? new Date(meta.lastSeenAt).toLocaleString() : 'never'}` : undefined}>
-                          🖥️ {d === 'local' ? 'This Machine' : d}
+                          {d === 'local' ? 'This machine' : d}
                         </span>
                         {offline && (
-                          <div style={{ fontWeight: 400, fontSize: 10, color: 'var(--cr-danger, #d04437)' }}>not syncing</div>
+                          <div style={{ fontWeight: 400, fontSize: 12, color: 'var(--cr-err-500)' }}>not syncing</div>
                         )}
                       </th>
                     );
@@ -1495,7 +1500,7 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
                       <th key={`${d}:${t}`} style={{ ...thStyle('center'), borderBottom: '1px solid var(--cr-line-1)' }}>
                         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                           <ToolBadge tool={t} size="sm" />
-                          <span style={{ fontSize: 10 }}>{TOOL_LABEL[t]}</span>
+                          <span style={{ fontSize: 12 }}>{TOOL_LABEL[t]}</span>
                         </span>
                       </th>
                     ))
@@ -1517,19 +1522,19 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
                             style={{
                               marginLeft: 6,
                               padding: '2px 6px',
-                              fontSize: '10px',
+                              fontSize: '12px',
                               fontWeight: 500,
-                              color: 'var(--cr-brand-solid-fg, #ffffff)',
-                              background: 'var(--cr-brand, #3b82f6)',
+                              color: 'var(--cr-on-brand)',
+                              background: 'var(--cr-brand-500)',
                               border: 'none',
-                              borderRadius: '4px',
+                              borderRadius: 0,
                               cursor: 'pointer',
                               display: 'inline-flex',
                               alignItems: 'center',
                               gap: 3,
                             }}
                           >
-                            <span>⚡</span>
+                            <Icon name="zap" size={13} />
                             <span>Sync to all</span>
                           </button>
                         )}
@@ -1558,7 +1563,7 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
             </table>
           )}
           {errors.length > 0 && (
-            <div style={{ marginTop: 14, padding: 12, background: 'var(--cr-err-surf)', border: '1px solid var(--cr-err-line)', borderRadius: 'var(--cr-radius-sm)' }}>
+            <div style={{ marginTop: 14, padding: 12, background: 'var(--cr-err-surf)', border: '1px solid var(--cr-err-line)', borderRadius: 0 }}>
               <div style={{ fontSize: 12, color: 'var(--cr-err-500)', fontWeight: 500, marginBottom: 4 }}>
                 {errors.length} change{errors.length === 1 ? '' : 's'} failed:
               </div>
@@ -1577,7 +1582,7 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
 function thStyle(align: 'left' | 'center'): React.CSSProperties {
   return {
     textAlign: align, padding: '8px 6px',
-    fontSize: 11, fontWeight: 500, color: 'var(--cr-fg-3)',
+    fontSize: 12, fontWeight: 500, color: 'var(--cr-fg-3)',
     textTransform: 'uppercase', letterSpacing: '0.04em',
     borderBottom: '1px solid var(--cr-line-1)',
   };
@@ -1653,7 +1658,7 @@ function CellButton({
       style={{
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
         width: 28, height: 28, padding: 0, border: 'none',
-        background: 'transparent', cursor: 'pointer', borderRadius: 6,
+        background: 'transparent', cursor: 'pointer', borderRadius: 0,
       }}
     >
       {icon}

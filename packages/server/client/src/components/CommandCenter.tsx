@@ -4,13 +4,19 @@
  * The restructure: instead of landing on a list of disconnected tabs, you land
  * on one helicopter view that fuses HOW you build (sessions/behaviour) and WHAT
  * you build (code health/findings) with the actionable recommendations that sit
- * at their intersection. Every tile is a door — click through to the focused
- * view. Intelligence-console aesthetic: dark canvas, amber signal, Martian Mono
- * numerals.
+ * at their intersection. Every row is a door — click through to the focused
+ * view.
+ *
+ * This screen is drawn, not decorated. The signals are ONE SCHEDULE, not a row
+ * of stat tiles: six equally-loud boxes with coloured top edges gave every
+ * measurement the same weight and answered no question, and the coloured edge
+ * is the card idiom this world exists to remove. Panels are PLATES that stack
+ * flush, so a column of them reads as one drawn object. No eyebrows: the
+ * heading carries itself.
  */
 
 import React, { useEffect, useState } from 'react';
-import { Card, Chip, Button, Icon, pressableProps } from './primitives';
+import { Chip, Button, Icon, Plate, Schedule, Note } from './primitives';
 import ConnectMachine from './ConnectMachine';
 import SyncCoverage from './SyncCoverage';
 import SyncRules from './SyncRules';
@@ -111,14 +117,9 @@ export default function CommandCenter({ setView, onOpenProject, onFocusProjects,
     return (
       <div className="cr-cmd cr-pad-mobile" style={{ flex: 1, overflow: 'auto', padding: '28px 32px 64px' }}>
         <div style={{ maxWidth: 680, margin: '40px auto 0' }}>
-          <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 10, letterSpacing: '0.32em', textTransform: 'uppercase', color: 'var(--cr-brand-500)', marginBottom: 8 }}>
-            welcome to chat-recall
-          </div>
-          <h1 style={{ fontFamily: 'var(--cr-font-display)', fontWeight: 700, fontSize: 26, margin: '0 0 6px', letterSpacing: '-0.01em' }}>
-            Let’s get your first machine connected
-          </h1>
-          <div style={{ color: 'var(--cr-fg-2)', fontSize: 13, marginBottom: 20 }}>
-            Nothing is synced yet — this dashboard lights up the moment your session history arrives.
+          <h1 style={{ margin: '0 0 8px' }}>Connect your first machine</h1>
+          <div style={{ color: 'var(--cr-fg-2)', fontSize: 14, marginBottom: 20, lineHeight: 1.5 }}>
+            Nothing is synced yet. This dashboard fills in the moment your session history arrives.
           </div>
           <ConnectMachine compact onFirstData={() => getStatus().then((s) => setStatus(s as any)).catch(() => {})} />
         </div>
@@ -129,77 +130,106 @@ export default function CommandCenter({ setView, onOpenProject, onFocusProjects,
   return (
     <div className="cr-cmd cr-pad-mobile" style={{ flex: 1, overflow: 'auto', padding: '28px 32px 64px' }}>
       {syncAlert && (
-        <div role="alert" style={{
-          marginBottom: 18, padding: '12px 16px', borderRadius: 'var(--cr-radius-md, 8px)',
-          border: '1px solid var(--cr-err-500)', background: 'var(--cr-err-surf, #2a1215)',
-          color: 'var(--cr-fg-1)', fontSize: 13, lineHeight: 1.55,
-        }}>
-          {syncAlert.kind === 'no-device' ? (
-            <>
-              <strong style={{ color: 'var(--cr-err-500)' }}>Nothing can sync to this workspace</strong> — it has data
-              but no active device token (all revoked?). Reconnect your machine:{' '}
-              <code>chat-recall login {window.location.origin}</code>{' '}
-              <span style={{ color: 'var(--cr-fg-2)' }}>(or Account → Connect your machine)</span>
-            </>
-          ) : (
-            <>
-              <strong style={{ color: 'var(--cr-err-500)' }}>No sync for {syncAlert.ageH}h</strong> — a device token
-              is active but the collector has not reported. On your machine, check:{' '}
-              <code>chat-recall service status</code> · <code>chat-recall sync</code>
-            </>
-          )}
-        </div>
-      )}
-      {/* Eyebrow + title */}
-      <div style={{ marginBottom: 28 }}>
-        <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 10, letterSpacing: '0.32em', textTransform: 'uppercase', color: 'var(--cr-brand-500)', display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-          <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--cr-ok-500)', boxShadow: '0 0 8px var(--cr-ok-500)' }} /> command center
-        </div>
-        <h1 style={{ fontFamily: 'var(--cr-font-display)', fontWeight: 700, fontSize: 'clamp(21px, 5.5vw, 32px)', margin: 0, letterSpacing: '-0.015em', lineHeight: 1.16, maxWidth: 620 }}>Everything you’re building, at a glance</h1>
-        <div style={{ color: 'var(--cr-fg-2)', fontSize: 14, marginTop: 10, maxWidth: 560, lineHeight: 1.5 }}>How you build × what you build — with the next move on every signal.</div>
-      </div>
-
-      {/* Hero metric strip. No "avg health": averaging N repos into one
-          number hides the one that's on fire and moves for reasons you
-          can't act on — the Code health panel below ranks per-project. */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12, marginBottom: 28 }}>
-        <Metric label="Projects" value={loading ? '—' : String(projects.length)} onClick={() => setView('projects')} />
-        <Metric label="Critical findings" value={loading ? '—' : String(criticals)} tone={criticals > 0 ? 'err' : 'ok'} onClick={() => (onFocusProjects ? onFocusProjects('critical') : setView('projects'))} />
-        <Metric label="Hotspots" value={loading ? '—' : String(hotspots)} onClick={() => (onFocusProjects ? onFocusProjects('hotspots') : setView('projects'))} />
-        <Metric label="Leaked secrets" value={loading ? '—' : String(leaked)} tone={leaked > 0 ? 'err' : 'ok'} onClick={() => setView('security')} />
-        <Metric
-          label={syncTick?.arriving ? 'Sessions · syncing…' : 'Sessions'}
-          value={syncTick ? String(syncTick.sessions) : status?.totalSessions != null ? String(status.totalSessions) : '—'}
-          onClick={() => setView('search')}
+        <Note
+          style={{ marginBottom: 18, ['--cr-frame' as string]: 'var(--cr-err-500)' }}
+          title={syncAlert.kind === 'no-device' ? 'Nothing can sync to this workspace' : `No sync for ${syncAlert.ageH} hours`}
+          cmd={syncAlert.kind === 'no-device' ? `chat-recall login ${window.location.origin}` : 'chat-recall service status'}
+          footer={
+            syncAlert.kind === 'no-device'
+              ? <>This workspace holds data but has no active device token. Run the command above on your machine, or open Account and connect it.</>
+              : <>A device token is active but the collector has not reported. Check the service, then force a push with <code>chat-recall sync</code>.</>
+          }
         />
+      )}
+      {/* No eyebrow. "COMMAND CENTER" above "Everything you're building" said
+          nothing the heading did not, and the sidebar already names the view. */}
+      <div style={{ marginBottom: 24 }}>
+        <h1 style={{ margin: 0, maxWidth: '24ch' }}>Everything you’re building</h1>
+        <div style={{ color: 'var(--cr-fg-2)', fontSize: 14, marginTop: 10, maxWidth: '58ch', lineHeight: 1.5 }}>
+          How you build and what you build, with the next move on every signal.
+        </div>
       </div>
 
-      <div className="cr-stack-mobile" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.3fr) minmax(0,1fr)', gap: 16, alignItems: 'start' }}>
-        {/* Left: this week's story + recommendations + code health */}
-        <div style={{ display: 'grid', gap: 16 }}>
+      {/* The signals, as one schedule. No "avg health": averaging N repos into
+          one number hides the one that is on fire and moves for reasons you
+          cannot act on — the Code health plate below ranks per-project.
+          Every row is a door; the hue rides the VALUE, never a bar on an edge. */}
+      <Schedule
+        style={{ marginBottom: 24 }}
+        caption="Signals"
+        cols={[
+          { key: 'name', kind: 'pn', head: 'Signal', width: '1%' },
+          { key: 'what', head: 'What it counts' },
+          { key: 'value', kind: 'val', head: 'Count' },
+          { key: 'go', kind: 'cmd' },
+        ]}
+        rows={[
+          { key: 'Projects', v: loading ? '—' : String(projects.length), tone: null, what: 'repositories chat-recall has indexed', go: () => setView('projects') },
+          { key: 'Critical findings', v: loading ? '—' : String(criticals), tone: criticals > 0 ? 'var(--cr-err-500)' : 'var(--cr-ok-500)', what: 'across every indexed project', go: () => (onFocusProjects ? onFocusProjects('critical') : setView('projects')) },
+          { key: 'Hotspots', v: loading ? '—' : String(hotspots), tone: null, what: 'files ranked by churn against complexity', go: () => (onFocusProjects ? onFocusProjects('hotspots') : setView('projects')) },
+          { key: 'Leaked secrets', v: loading ? '—' : String(leaked), tone: leaked > 0 ? 'var(--cr-err-500)' : 'var(--cr-ok-500)', what: 'credentials found in transcripts, action required', go: () => setView('security') },
+          { key: 'Sessions', v: syncTick ? String(syncTick.sessions) : status?.totalSessions != null ? String(status.totalSessions) : '—', tone: null, what: syncTick?.arriving ? 'synced to this workspace, more arriving now' : 'synced to this workspace', go: () => setView('search') },
+        ].map((r) => ({
+          id: r.key,
+          onSelect: r.go,
+          cells: {
+            name: r.key,
+            what: r.what,
+            value: <span style={{ color: r.tone ?? 'var(--cr-fg-1)', fontSize: 15 }}>{r.v}</span>,
+            go: <Icon name="arrowRight" size={14} />,
+          },
+        }))}
+      />
+
+      <div className="cr-stack-mobile" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.3fr) minmax(0,1fr)', gap: 20, alignItems: 'start' }}>
+        {/* Left: this week's story + recommendations + code health. Gap 0 —
+            the plates share edges, which is what makes them a drawing rather
+            than a stack of boxes. */}
+        <div style={{ display: 'grid', gap: 0, minWidth: 0 }}>
           <Panel title="Last 7 days" hint="what actually happened" action={() => setView('search')}>
             <WeekStrip />
           </Panel>
           <Panel
             title="Recommendations"
-            hint="behaviour × code"
+            hint="behaviour and code"
             action={recs.length > 4 ? () => setShowAllRecs((v) => !v) : null}
-            actionLabel={showAllRecs ? 'show less' : `view all ${recs.length} →`}
+            actionLabel={showAllRecs ? 'show less' : `view all ${recs.length}`}
           >
             {recs.length === 0 ? <Empty>No recommendations right now — clean signals.</Empty> : (showAllRecs ? recs : recs.slice(0, 4)).map((r) => (
               <RecRow key={r.id} rec={r} />
             ))}
           </Panel>
-          <Panel title="Code health" hint={`${projects.length} project(s)`} action={() => setView('projects')}>
-            {projects.length === 0 ? (
-              <Empty>No repos indexed yet — the watch daemon picks them up as you work, or run <code>chat-recall code index</code>.</Empty>
-            ) : projects.slice(0, 6).map((p) => <ProjectRow key={p.projectId} p={p} onOpen={() => onOpenProject(p.projectId)} />)}
+          <Panel title="Code health" hint={`${projects.length} project${projects.length === 1 ? '' : 's'}`} action={() => setView('projects')} flush>
+            <Schedule
+              cols={[
+                { key: 'name', kind: 'pn' },
+                { key: 'crit', kind: 'rt' },
+                { key: 'score', kind: 'val' },
+              ]}
+              rows={projects.slice(0, 6).map((p) => {
+                const score = p.health?.score ?? 0;
+                // The hue rides the SCORE, which is the annotation. The old row
+                // carried a coloured progress bar under the project name — a bar
+                // on a box, and a chart standing in for one number.
+                const tone = score >= 70 ? 'var(--cr-ok-500)' : score >= 40 ? 'var(--cr-warn-500)' : 'var(--cr-err-500)';
+                return {
+                  id: p.projectId,
+                  onSelect: () => onOpenProject(p.projectId),
+                  cells: {
+                    name: <span className="mono" style={{ fontSize: 12.5, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.projectId.replace(/^git:/, '')}</span>,
+                    crit: p.health?.critical ? <Chip kind="err" size="sm">{p.health.critical} critical</Chip> : null,
+                    score: <span style={{ color: tone, fontSize: 15 }}>{score}</span>,
+                  },
+                };
+              })}
+              empty={<>No repositories indexed yet. The watch daemon picks them up as you work, or run <code>chat-recall code index</code>.</>}
+            />
           </Panel>
         </div>
 
-        {/* Right: coverage + security + jump-offs */}
-        <div style={{ display: 'grid', gap: 16 }}>
-          <Panel title="What's synced" hint="coverage by tool · type · project" action={() => setView('search')}>
+        {/* Right: coverage, sync rules, security */}
+        <div style={{ display: 'grid', gap: 0, minWidth: 0 }}>
+          <Panel title="What's synced" hint="by tool, type and project" action={() => setView('search')}>
             <SyncCoverage />
           </Panel>
           {/* Cloud puts Sync rules in Account (the settings surface); selfhost
@@ -212,78 +242,49 @@ export default function CommandCenter({ setView, onOpenProject, onFocusProjects,
           <Panel title="Security" hint="leaked secrets" action={() => setView('security')}>
             {leaked === 0 ? <Empty>No leaked secrets detected.</Empty> : (
               <div>
-                <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 30, fontWeight: 700, color: 'var(--cr-err-500)', lineHeight: 1 }}>{leaked}</div>
-                <div style={{ color: 'var(--cr-fg-2)', fontSize: 13, marginTop: 6 }}>secret(s) across {secrets?.sessionsWithFindings ?? 0} session(s)</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+                  <span className="cr-num" style={{ fontSize: 22, fontWeight: 700, color: 'var(--cr-err-500)', lineHeight: 1 }}>{leaked}</span>
+                  <span style={{ color: 'var(--cr-fg-2)', fontSize: 13 }}>
+                    {leaked === 1 ? 'secret' : 'secrets'} across {secrets?.sessionsWithFindings ?? 0} {secrets?.sessionsWithFindings === 1 ? 'session' : 'sessions'}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 12 }}>
                   {(secrets?.topRules || []).slice(0, 5).map((r) => <Chip key={r.rule} kind="err" size="sm">{r.rule} · {r.n}</Chip>)}
                 </div>
-                <Button variant="secondary" onClick={() => setView('security')} style={{ marginTop: 12 }}>Review &amp; remediate</Button>
+                <Button variant="secondary" onClick={() => setView('security')} style={{ marginTop: 14 }}>Review and remediate</Button>
               </div>
             )}
           </Panel>
-          <Panel title="Jump in" hint="">
-            <div className="cr-stack-mobile" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-              {[['projects', 'Projects', 'folder'], ['search', 'Conversations', 'message'], ['memory', 'Memory', 'brain'], ['security', 'Security', 'check'], ['toolkit', 'Toolkit', 'terminal'], ['dashboard', 'Insights', 'chart']].map(([v, label, icon]) => (
-                <button key={v} onClick={() => setView(v)} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderRadius: 'var(--cr-radius-md)', border: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-1)', color: 'var(--cr-fg-1)', cursor: 'pointer', fontSize: 13 }}>
-                  <Icon name={icon} size={15} /> {label}
-                </button>
-              ))}
-            </div>
-          </Panel>
         </div>
       </div>
     </div>
   );
 }
 
-function Metric({ label, value, suffix, tone = 'neutral', onClick }: { label: string; value: string; suffix?: string; tone?: 'neutral' | 'ok' | 'warn' | 'err'; onClick?: () => void }) {
-  const toneColor = tone === 'ok' ? 'var(--cr-ok-500)' : tone === 'warn' ? 'var(--cr-warn-500)' : tone === 'err' ? 'var(--cr-err-500)' : null;
-  // A toned tile (a problem worth acting on) carries a colored top edge so it
-  // reads at a glance across the strip — the signal, not just a red number.
+function Panel({ title, hint, action, actionLabel = 'view all', flush, children }: { title: string; hint?: string; action?: (() => void) | null; actionLabel?: string; flush?: boolean; children: React.ReactNode }) {
   return (
-    <Card
-      interactive={!!onClick}
-      onClick={onClick}
-      style={{
-        padding: '18px 18px 16px',
-        cursor: onClick ? 'pointer' : 'default',
-        boxShadow: toneColor ? `inset 0 2px 0 ${toneColor}` : undefined,
-      }}
+    <Plate
+      flush={flush}
+      title={
+        <>
+          {title}
+          {hint ? <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400, marginLeft: 8, fontSize: 12.5 }}>{hint}</span> : null}
+        </>
+      }
+      tools={
+        action ? (
+          <button
+            onClick={action}
+            className="cr-annot cr-annot-red"
+            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center', gap: 5 }}
+          >
+            {actionLabel} <Icon name="arrowRight" size={12} />
+          </button>
+        ) : null
+      }
     >
-      <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 'clamp(24px, 6vw, 32px)', fontWeight: 700, color: toneColor || 'var(--cr-fg-1)', lineHeight: 1, letterSpacing: '-0.02em', fontVariantNumeric: 'tabular-nums' }}>
-        {value}<span style={{ fontSize: 14, color: 'var(--cr-fg-3)' }}>{suffix}</span>
-      </div>
-      <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--cr-fg-2)', marginTop: 12 }}>{label}</div>
-    </Card>
-  );
-}
-
-function Panel({ title, hint, action, actionLabel = 'view all →', children }: { title: string; hint?: string; action?: (() => void) | null; actionLabel?: string; children: React.ReactNode }) {
-  return (
-    <Card style={{ padding: 16 }}>
-      <div className="cr-wrap-mobile" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <span style={{ fontFamily: 'var(--cr-font-display)', fontSize: 10, letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--cr-fg-2)' }}>{title}{hint ? <span style={{ color: 'var(--cr-fg-3)', marginLeft: 8 }}>{hint}</span> : null}</span>
-        {action ? <button onClick={action} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12 }}>{actionLabel}</button> : null}
-      </div>
       {children}
-    </Card>
-  );
-}
-
-function ProjectRow({ p, onOpen }: { p: CodeProject; onOpen: () => void }) {
-  const s = p.health?.score ?? 0;
-  const tone = s >= 70 ? 'var(--cr-ok-500)' : s >= 40 ? 'var(--cr-warn-500)' : 'var(--cr-err-500)';
-  return (
-    <div {...pressableProps(onOpen)} aria-label={`Open project ${p.projectId.replace(/^git:/, '')}`} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 0', cursor: 'pointer', borderBottom: '1px solid var(--cr-line-1)' }}>
-      <div style={{ minWidth: 0, flex: 1 }}>
-        <div className="mono" style={{ fontSize: 12, color: 'var(--cr-fg-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.projectId.replace(/^git:/, '')}</div>
-        <div style={{ height: 4, background: 'var(--cr-line-1)', borderRadius: 2, marginTop: 5, width: '100%' }}>
-          <div style={{ height: '100%', width: `${s}%`, background: tone, borderRadius: 2 }} />
-        </div>
-      </div>
-      <span style={{ fontFamily: 'var(--cr-font-display)', fontSize: 14, fontWeight: 700, color: tone }}>{s}</span>
-      {p.health?.critical ? <Chip kind="err" size="sm">{p.health.critical}C</Chip> : null}
-    </div>
+    </Plate>
   );
 }
 
@@ -403,7 +404,7 @@ function WeekStrip() {
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 14px', marginBottom: 12, fontSize: 12 }}>
         {WEEK_LANES.filter(({ lane }) => (laneTotals.get(lane) ?? 0) > 0).map(({ lane, label, color }) => (
           <span key={lane} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: 'var(--cr-fg-2)' }}>
-            <span aria-hidden style={{ width: 8, height: 8, borderRadius: 2, background: color, flexShrink: 0 }} />
+            <span aria-hidden style={{ width: 8, height: 8, borderRadius: 0, background: color, flexShrink: 0 }} />
             <strong style={{ color: 'var(--cr-fg-1)', fontVariantNumeric: 'tabular-nums' }}>{laneTotals.get(lane)}</strong> {label}
           </span>
         ))}
@@ -430,13 +431,15 @@ function WeekStrip() {
                     <div key={lane} style={{
                       height: Math.max(3, Math.round((n / maxDay) * BAR_AREA)),
                       background: color,
-                      borderRadius: 2,
+                      borderRadius: 0,
                       marginTop: 2, // the 2px surface gap between stacked segments
                     }} />
                   );
                 })}
               </div>
-              <div style={{ fontSize: 9, color: 'var(--cr-fg-3)', textAlign: 'center', marginTop: 4, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+              {/* THE ANNOTATION FLOOR: this was 9px, which is not readable and
+                  is not negotiable per-label. 12px is the minimum, everywhere. */}
+              <div className="cr-annot" style={{ fontSize: 12, textAlign: 'center', marginTop: 6 }}>
                 {weekday}
               </div>
             </div>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Card, Chip, Input, Button, Icon, SegmentedControl } from './primitives';
+import { Card, Chip, Input, Button, Icon, SegmentedControl, Schedule } from './primitives';
 import type { ProjectTreeNode } from '../App';
 import { getCodeProjects, type CodeProject } from '../services/api';
 import ActivityTimeline from './ActivityTimeline';
@@ -139,7 +139,7 @@ export default function ProjectsDashboard({
         {activeTab === 'repos' && (
           <div className="cr-pad-mobile" style={{ padding: '20px 28px 40px' }}>
             {emphasis && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, padding: '8px 12px', fontSize: 13, color: 'var(--cr-fg-1)', background: 'var(--cr-brand-surf)', border: '1px solid var(--cr-brand-line)', borderRadius: 'var(--cr-radius-sm)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, padding: '8px 12px', fontSize: 13, color: 'var(--cr-fg-1)', background: 'var(--cr-brand-surf)', border: '1px solid var(--cr-brand-line)', borderRadius: 0 }}>
                 <span>Sorted by <b>{emphasis === 'critical' ? 'critical findings' : 'hotspots'}</b> — repos with the most appear first.</span>
                 <span style={{ flex: 1 }} />
                 <button onClick={onClearEmphasis} style={{ background: 'none', border: 'none', color: 'var(--cr-brand-500)', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>Clear</button>
@@ -147,7 +147,8 @@ export default function ProjectsDashboard({
             )}
             <div style={{ display: 'flex', gap: 12, marginBottom: 18, maxWidth: 480 }}>
               <Input
-                placeholder="Filter repositories..."
+                icon="search"
+          placeholder="Filter repositories..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onClear={searchQuery ? () => setSearchQuery('') : undefined}
@@ -156,102 +157,50 @@ export default function ProjectsDashboard({
               />
             </div>
 
-            {filteredProjects.length === 0 ? (
-              <div style={{ color: 'var(--cr-fg-3)', padding: '12px 0' }}>
-                {loaded === false ? 'Loading active projects…' : 'No matching repositories found.'}
-              </div>
-            ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 14 }}>
-                {filteredProjects.map((p) => {
-                  const healthScore = p.details?.health?.score;
-                  const label = p.details?.label;
-                  const fileCount = p.details?.fileCount || 0;
-                  const symbolCount = p.details?.symbolCount || 0;
-                  
-                  return (
-                    <Card
-                      key={p.id}
-                      interactive
-                      onClick={() => onPick(p.id)}
-                      style={{ padding: 18, cursor: 'pointer', display: 'flex', flexDirection: 'column', gap: 12 }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
-                        <div style={{ overflow: 'hidden' }}>
-                          <div
-                            className="mono"
-                            style={{
-                              fontSize: 14,
-                              fontWeight: 600,
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              whiteSpace: 'nowrap',
-                              color: 'var(--cr-fg-1)'
-                            }}
-                            title={p.name}
-                          >
-                            {p.name}
-                          </div>
-                          <div
-                            style={{
-                              color: 'var(--cr-fg-3)',
-                              fontSize: 11,
-                              overflow: 'hidden',
-                              textOverflow: 'ellipsis',
-                              whiteSpace: 'nowrap',
-                              marginTop: 2
-                            }}
-                            title={p.id}
-                          >
-                            {p.id}
-                          </div>
-                        </div>
-
-                        {healthScore != null && (
-                          <Chip
-                            kind={healthScore >= 70 ? 'ok' : healthScore >= 40 ? 'warn' : 'err'}
-                            size="sm"
-                          >
-                            {healthScore}
-                          </Chip>
-                        )}
-                      </div>
-
-                      <div style={{ display: 'flex', gap: 16, borderTop: '1px solid var(--cr-line-1)', paddingTop: 12 }}>
-                        <div>
-                          <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cr-fg-1)' }}>{p.count}</div>
-                          <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>sessions</div>
-                        </div>
-                        {fileCount > 0 && (
-                          <div>
-                            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cr-fg-1)' }}>{fileCount}</div>
-                            <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>files</div>
-                          </div>
-                        )}
-                        {symbolCount > 0 && (
-                          <div>
-                            <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--cr-fg-1)' }}>{symbolCount}</div>
-                            <div style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>symbols</div>
-                          </div>
-                        )}
-                      </div>
-
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 'auto', paddingTop: 4 }}>
-                        {label ? (
-                          <Chip kind="brand" size="sm">{label.toUpperCase()}</Chip>
-                        ) : (
-                          <div />
-                        )}
-                        {p.lastMtime && (
-                          <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>
-                            Active {fmtAgo(p.lastMtime)}
-                          </span>
-                        )}
-                      </div>
-                    </Card>
-                  );
-                })}
-              </div>
-            )}
+            {/* NOT A CARD GRID. This was a gapped 3-across grid of framed boxes,
+                each carrying a name, a path, a big number and a timestamp — the
+                shape this whole world replaced, and the ink frame only made it
+                louder. A schedule ranks the same repositories, aligns every
+                number into a column you can compare down, and reads the same at
+                five rows or fifty. */}
+            <Schedule
+              scroll
+              caption="Active repositories"
+              cols={[
+                { key: 'name', kind: 'pn', head: 'Repository' },
+                { key: 'health', head: 'Health', kind: 'rt' },
+                { key: 'sessions', kind: 'val', head: 'Sessions' },
+                { key: 'files', kind: 'val', head: 'Files', optional: true },
+                { key: 'symbols', kind: 'val', head: 'Symbols', optional: true },
+                { key: 'active', kind: 'cmd', head: 'Last active', optional: true },
+              ]}
+              empty={loaded === false ? 'Loading active projects…' : 'No matching repositories found.'}
+              rows={filteredProjects.map((p) => {
+                const healthScore = p.details?.health?.score;
+                const label = p.details?.label;
+                const fileCount = p.details?.fileCount || 0;
+                const symbolCount = p.details?.symbolCount || 0;
+                return {
+                  id: p.id,
+                  onSelect: () => onPick(p.id),
+                  cells: {
+                    name: (
+                      <>
+                        <span className="mono" style={{ fontSize: 13.5, fontWeight: 600 }} title={p.name}>{p.name}</span>
+                        <span className="pn-sub" title={p.id}>{p.id}</span>
+                      </>
+                    ),
+                    health: healthScore != null
+                      ? <Chip kind={healthScore >= 70 ? 'ok' : healthScore >= 40 ? 'warn' : 'err'} size="sm">{healthScore}</Chip>
+                      : label ? <Chip kind="brand" size="sm">{label}</Chip> : null,
+                    sessions: p.count,
+                    files: fileCount || <span className="val-q">—</span>,
+                    symbols: symbolCount || <span className="val-q">—</span>,
+                    active: p.lastMtime ? fmtAgo(p.lastMtime) : '—',
+                  },
+                };
+              })}
+            />
           </div>
         )}
 

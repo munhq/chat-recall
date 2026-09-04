@@ -11,13 +11,31 @@
  * rendering is faked.
  */
 import { test, expect, type Page, type Route } from '@playwright/test';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+/**
+ * The captured payload is not committed — it is one real customer's card. Point
+ * REAL_CARD_FIXTURE at a capture, or drop one at e2e/fixtures/real-card.json.
+ *
+ * WHY THIS IS A SKIP AND NOT A DEFAULT PATH. The default used to be an absolute
+ * path into one machine's scratch directory, with a session id in it. That path
+ * can never exist again, and `readFileSync` at module scope meant the whole
+ * suite — all 18 specs — died at COLLECTION time with ENOENT, so no test in the
+ * repository could run. It also published a home directory and a private
+ * project path from a committed file.
+ */
 const FIXTURE = process.env.REAL_CARD_FIXTURE
-  ?? '/tmp/claude-1000/-home-adi-code-personal-chat-recall/44d087bd-26ff-49ff-bbe3-75c9506a4a58/scratchpad/real-card.json';
+  ?? resolve(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'real-card.json');
 
-const REAL = JSON.parse(readFileSync(FIXTURE, 'utf8')) as { tasks: any[] };
+const HAVE_FIXTURE = existsSync(FIXTURE);
+const REAL = HAVE_FIXTURE
+  ? (JSON.parse(readFileSync(FIXTURE, 'utf8')) as { tasks: any[] })
+  : { tasks: [{}] };
 const CARD = REAL.tasks[0];
+
+test.skip(!HAVE_FIXTURE, `no captured card at ${FIXTURE} — set REAL_CARD_FIXTURE`);
 
 async function mock(page: Page) {
   await page.route('**/api/status', (r: Route) =>

@@ -85,7 +85,7 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
           {isCloud() && (
             <Button variant="ghost" onClick={() => logout()} data-testid="account-signout">Sign out</Button>
           )}
-          <Button variant="ghost" onClick={onClose}>← Back</Button>
+          <Button variant="ghost" icon="chevronLeft" onClick={onClose}>Back</Button>
         </div>
       </div>
       {err && <div className="acct-err">{err}</div>}
@@ -425,7 +425,7 @@ function AlertsCard({ onError }: { onError: (s: string) => void }) {
 /**
  * Why this screen is in front of you, in its own words.
  *
- * `ent` is null while the lookup is in flight or if it failed; the wording then
+ * "ent" is null while the lookup is in flight or if it failed; the wording then
  * stays neutral rather than inventing a reason.
  */
 function gateReason(ent: { status?: string; hasSubscription?: boolean } | null): {
@@ -490,7 +490,7 @@ export function ConfirmEmailScreen() {
     <div className="sub-screen">
       <style>{ACCT_CSS}</style>
       <div className="sub-box" data-testid="confirm-email-screen">
-        <div className="sub-logo">◆ chat-recall</div>
+        <div className="sub-logo">chat-recall</div>
         <h1>Check your inbox</h1>
         <p className="muted">
           We sent a six-digit code to <strong>{email ?? 'your address'}</strong>. Enter it below and your
@@ -512,7 +512,7 @@ export function ConfirmEmailScreen() {
             data-testid="otp-input"
             style={{
               flex: 1, padding: '10px 12px', fontSize: 18, letterSpacing: '0.18em',
-              fontFamily: 'var(--cr-font-mono)', borderRadius: 'var(--cr-radius-md)',
+              fontFamily: 'var(--cr-font-mono)', borderRadius: 0,
               border: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-1)',
               color: 'var(--cr-fg-1)',
             }}
@@ -552,7 +552,7 @@ export function SubscribeScreen() {
   useEffect(() => {
     getMe().then((me) => setHasWorkspace(me.teams.length > 0)).catch(() => setHasWorkspace(false));
   }, []);
-  // NO NUMERIC FALLBACK. This was `?? 14`, so the headline rendered
+  // NO NUMERIC FALLBACK. This was "?? 14", so the headline rendered
   // "Start your 14-day free trial" for the moment before /api/billing/plans
   // arrived, then snapped to 7 — the first thing a new signup saw was the
   // product changing its own offer in front of them. 14 was also simply wrong:
@@ -581,7 +581,7 @@ export function SubscribeScreen() {
     <div className="sub-screen">
       <style>{ACCT_CSS}</style>
       <div className="sub-box">
-        <div className="sub-logo">◆ chat-recall</div>
+        <div className="sub-logo">chat-recall</div>
         {hasWorkspace === null ? (
           <p className="muted">Loading…</p>
         ) : hasWorkspace ? (
@@ -610,7 +610,7 @@ export function SubscribeScreen() {
               you subscribe. Nothing is deleted, and export always works.</p>
             {err && <div className="acct-err">{err}</div>}
             <Button variant="primary" disabled={busy} onClick={createWorkspace}>
-              {busy ? 'Setting up…' : 'Create your workspace →'}
+              {busy ? 'Setting up…' : 'Create your workspace'}
             </Button>
           </>
         ) : (
@@ -633,7 +633,7 @@ function labelFor(s: Entitlement['status']): string {
 }
 
 const ACCT_CSS = `
-.acct { max-width: 1020px; margin: 0 auto; padding: 32px 24px 96px; color: var(--cr-fg-1,#e8eaed); width:100%; }
+.acct { max-width: 1020px; margin: 0 auto; padding: 32px 24px 96px; color: var(--cr-fg-1); width:100%; }
 
 /* Rail + content. The rail is a map of one scroll, not a tab bar: every section
    here is short, so hiding four fifths of the page behind a click would cost
@@ -642,13 +642,13 @@ const ACCT_CSS = `
 .acct-nav { position: sticky; top: 32px; }
 .acct-nav ul { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:2px; }
 .acct-nav a {
-  display:block; padding:8px 12px; border-radius:9px; font-size:14px; font-weight:500;
-  color: var(--cr-fg-2,#909caf); text-decoration:none; border-left:2px solid transparent;
+  display:block; padding:8px 12px; border-radius: 0; font-size:14px; font-weight:500;
+  color: var(--cr-fg-2); text-decoration:none; border-left:2px solid transparent;
   transition: color .12s ease, background-color .12s ease, border-color .12s ease;
 }
-.acct-nav a:hover { color: var(--cr-fg-1,#e8eaed); background: var(--cr-ink-2,#171b21); }
+.acct-nav a:hover { color: var(--cr-fg-1); background: var(--cr-ink-2); }
 .acct-nav a.is-active {
-  color: var(--cr-brand-500,#f5a97f); background: var(--cr-brand-surf); border-left-color: var(--cr-brand-500,#f5a97f);
+  color: var(--cr-brand-500); background: var(--cr-brand-surf); border-left-color: var(--cr-brand-500);
 }
 .acct-main { min-width: 0; }
 
@@ -656,43 +656,47 @@ const ACCT_CSS = `
 .acct-sec { margin-bottom: 44px; scroll-margin-top: 24px; }
 .acct-sec:last-child { margin-bottom: 0; }
 .acct-sec-head { margin-bottom: 14px; }
+/* NOT AN EYEBROW. This was 12px/700 at .09em uppercase above a framed card
+   that already carried its own title — an uppercase label above a heading,
+   once per section. A heading at heading scale, in the display face. */
 .acct-sec-head h2 {
-  font-size: 12px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase;
-  color: var(--cr-fg-2,#909caf); margin: 0 0 4px;
+  font-family: var(--cr-font-display); font-size: 18px; font-weight: 700;
+  font-stretch: 92%; letter-spacing: -0.015em; text-transform: none;
+  color: var(--cr-fg-1); margin: 0 0 4px;
 }
-.acct-sec-blurb { margin: 0; font-size: 14px; line-height: 1.5; color: var(--cr-fg-3,#6b7280); }
+.acct-sec-blurb { margin: 0; font-size: 14px; line-height: 1.5; color: var(--cr-fg-3); }
 
 /* Profile card */
 .pf-id { display:flex; align-items:center; gap:14px; padding-bottom:18px;
-  border-bottom:1px solid var(--cr-line-1,#1e232b); }
+  border-bottom:1px solid var(--cr-line-1); }
 .pf-avatar {
   flex:0 0 auto; width:52px; height:52px; border-radius:50%;
   display:flex; align-items:center; justify-content:center;
   font-family: var(--cr-font-display, ui-monospace, monospace);
   font-size:17px; font-weight:700; letter-spacing:-0.02em;
-  color: var(--cr-brand-500,#f5a97f);
+  color: var(--cr-brand-500);
   background: var(--cr-brand-surf); border:1px solid var(--cr-brand-line);
 }
 .pf-idtext { min-width:0; }
 .pf-name { font-size:17px; font-weight:600; letter-spacing:-0.01em; margin-bottom:3px;
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .pf-mail { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
-  font-size:13px; color: var(--cr-fg-3,#6b7280); }
-.pf-chip { padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; letter-spacing:.02em; }
-.pf-chip-ok { background: var(--cr-ok-surf,#10241a); color: var(--cr-ok-500,#3fb950); }
-.pf-chip-warn { background: var(--cr-warn-surf,#241d10); color: var(--cr-warn-500,#d29922); }
+  font-size:13px; color: var(--cr-fg-3); }
+.pf-chip { padding:2px 8px; border-radius: 0; font-size:12px; font-weight:600; letter-spacing:.02em; }
+.pf-chip-ok { background: var(--cr-ok-surf); color: var(--cr-ok-500); }
+.pf-chip-warn { background: var(--cr-warn-surf); color: var(--cr-warn-500); }
 .pf-warn { display:flex; align-items:center; gap:14px; flex-wrap:wrap;
-  margin:16px 0 4px; padding:14px 16px; border-radius:11px;
-  background: var(--cr-warn-surf,#241d10); border:1px solid var(--cr-warn-line,#3a2f14); }
+  margin:16px 0 4px; padding:14px 16px; border-radius: 0;
+  background: var(--cr-warn-surf); border:1px solid var(--cr-warn-line); }
 .pf-warn > p { flex:1 1 240px; }
-.pf-ok { margin:16px 0 4px; padding:10px 14px; border-radius:9px; font-size:13px;
-  background: var(--cr-ok-surf,#10241a); border:1px solid var(--cr-ok-line,#1c3a24); color: var(--cr-ok-500,#3fb950); }
+.pf-ok { margin:16px 0 4px; padding:10px 14px; border-radius: 0; font-size:13px;
+  background: var(--cr-ok-surf); border:1px solid var(--cr-ok-line); color: var(--cr-ok-500); }
 .pf-field { margin-top:18px; }
-.pf-field > label { display:block; font-size:13px; font-weight:600; margin-bottom:8px; color: var(--cr-fg-2,#909caf); }
+.pf-field > label { display:block; font-size:13px; font-weight:600; margin-bottom:8px; color: var(--cr-fg-2); }
 .pf-inline { display:flex; gap:10px; align-items:center; }
 .pf-inline > *:first-child { flex:1 1 auto; min-width:0; }
 .pf-pw { display:flex; flex-direction:column; gap:10px; margin-top:8px;
-  padding:16px; border-radius:11px; background: var(--cr-ink-0,#0b0d10); border:1px solid var(--cr-line-1,#1e232b); }
+  padding:16px; border-radius: 0; background: var(--cr-ink-0); border:1px solid var(--cr-line-1); }
 
 @media (max-width: 860px) {
   /* The rail becomes a scrollable chip row above the content. Sticky, because on
@@ -700,11 +704,11 @@ const ACCT_CSS = `
      only works before you need it. */
   .acct-layout { grid-template-columns: minmax(0,1fr); gap: 20px; }
   .acct-nav { position: sticky; top: 0; z-index: 5; margin: 0 -24px; padding: 10px 24px;
-    background: var(--cr-ink-0,#0b0d10); border-bottom:1px solid var(--cr-line-1,#1e232b); }
+    background: var(--cr-ink-0); border-bottom:1px solid var(--cr-line-1); }
   .acct-nav ul { flex-direction: row; gap:6px; overflow-x:auto; scrollbar-width:none; }
   .acct-nav ul::-webkit-scrollbar { display:none; }
-  .acct-nav a { white-space:nowrap; border-left:none; border-bottom:2px solid transparent; border-radius:8px; }
-  .acct-nav a.is-active { border-left-color: transparent; border-bottom-color: var(--cr-brand-500,#f5a97f); }
+  .acct-nav a { white-space:nowrap; border-left:none; border-bottom:2px solid transparent; border-radius: 0; }
+  .acct-nav a.is-active { border-left-color: transparent; border-bottom-color: var(--cr-brand-500); }
   .acct-sec { margin-bottom: 34px; scroll-margin-top: 64px; }
   .pf-inline { flex-direction: column; align-items: stretch; }
   /* space-between on a narrow row squeezes the value into a two-word column
@@ -714,18 +718,18 @@ const ACCT_CSS = `
 }
 .acct-head { display:flex; align-items:center; justify-content:space-between; margin-bottom: 24px; }
 .acct-head h1 { font-size: clamp(20px, 5vw, 26px); margin: 0; letter-spacing:-0.02em; }
-.acct-card { background: var(--cr-ink-1,#12151a); border:1px solid var(--cr-line-1,#1e232b); border-radius: 14px; padding: 22px; margin-bottom: 18px; }
+.acct-card { background: var(--cr-ink-0); border: var(--cr-frame-w) solid var(--cr-frame); border-radius: 0; padding: 22px; margin-bottom: 18px; }
 .acct-card h2 { font-size: 16px; margin: 0 0 14px; }
-.acct-row { display:flex; justify-content:space-between; padding: 8px 0; border-bottom:1px solid var(--cr-line-1,#1e232b); font-size:14px; }
+.acct-row { display:flex; justify-content:space-between; padding: 8px 0; border-bottom:1px solid var(--cr-line-1); font-size:14px; }
 .acct-row:last-of-type { border-bottom:none; }
-.muted { color: var(--cr-fg-3,#6b7280); font-size: 14px; line-height:1.55; }
+.muted { color: var(--cr-fg-3); font-size: 14px; line-height:1.55; }
 .acct-actions { display:flex; gap: 10px; align-items:center; margin-top: 16px; flex-wrap:wrap; }
-.acct-input { width:100%; box-sizing:border-box; font: inherit; font-size:14px; padding: 10px 12px; border-radius:9px; border:1px solid var(--cr-line-2,#2a2f37); background: var(--cr-ink-0,#0b0d10); color: var(--cr-fg-1,#e8eaed); margin-top: 8px; }
-.acct-err { background: var(--cr-err-surf,#2a1416); border:1px solid var(--cr-err-line,#5a2329); color: var(--cr-err-500,#f87171); padding: 10px 14px; border-radius:9px; margin-bottom:16px; font-size:13px; }
-.badge { padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight:600; }
-.badge-active, .badge-trialing { background: var(--cr-ok-surf,#10241a); color: var(--cr-ok-500,#4ade80); }
-.badge-past_due { background: var(--cr-err-surf,#2a1416); color: var(--cr-err-500,#f87171); }
-.badge-canceled, .badge-none { background: var(--cr-ink-2,#171b21); color: var(--cr-fg-3,#6b7280); }
+.acct-input { width:100%; box-sizing:border-box; font: inherit; font-size:14px; padding: 10px 12px; border-radius: 0; border:1px solid var(--cr-line-2); background: var(--cr-ink-0); color: var(--cr-fg-1); margin-top: 8px; }
+.acct-err { background: var(--cr-err-surf); border:1px solid var(--cr-err-line); color: var(--cr-err-500); padding: 10px 14px; border-radius: 0; margin-bottom:16px; font-size:13px; }
+.badge { padding: 3px 9px; border-radius: 0; font-size: 12px; font-weight:600; }
+.badge-active, .badge-trialing { background: var(--cr-ok-surf); color: var(--cr-ok-500); }
+.badge-past_due { background: var(--cr-err-surf); color: var(--cr-err-500); }
+.badge-canceled, .badge-none { background: var(--cr-ink-2); color: var(--cr-fg-3); }
 .badge-free { background: var(--cr-brand-surf); border:1px solid var(--cr-brand-line); color: var(--cr-brand-500); }
 /* Scrolls, and starts from the top once it no longer fits.
    align-items:center on a fixed, non-scrolling box centres overflow OUT of the
@@ -735,7 +739,7 @@ const ACCT_CSS = `
    deliberately provides became unreachable. */
 .sub-screen { position:fixed; inset:0; display:flex; align-items:flex-start; justify-content:center;
   overflow-y:auto; overscroll-behavior:contain;
-  background: var(--cr-ink-0,#0b0d10); padding:24px; z-index: 1000; }
+  background: var(--cr-ink-0); padding:24px; z-index: 1000; }
 /* Wide enough for a three-tier catalogue on one row. At 460px the third tier
    wrapped to its own line, and the bottom-aligned CTAs then left a 150px void
    inside the short cards. */
@@ -756,6 +760,6 @@ const ACCT_CSS = `
 /* Centred only on this host, whose box is centred; on the Account card the same
    block stays flush with the grid above it. */
 .sub-box .cr-planpicker-seathint { margin-inline: auto; }
-.sub-logo { color: var(--cr-brand-500,#5b8def); font-weight:700; margin-bottom: 20px; }
+.sub-logo { color: var(--cr-brand-500); font-weight:700; margin-bottom: 20px; }
 .sub-box h1 { font-size: 28px; letter-spacing:-0.02em; margin: 0 0 14px; }
 `;

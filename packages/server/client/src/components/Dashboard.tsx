@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Icon, Chip, MetricCard, Card, Avatar, IconButton } from './primitives';
+import { Icon, Chip, Metrics, Card, Avatar, IconButton, Plate, Schedule } from './primitives';
 import { getAnalytics, getPatterns, getSyncStatus, getSecretsSummary, type AnalyticsData, type PatternsResponse, type SyncStatus, type SecretsSummary } from '../services/api';
 
 type InsightsToolFilter = 'all' | 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy' | 'cursor';
@@ -91,7 +91,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
     return (
       <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 12 }}>
         <div style={{ color: 'var(--cr-err-500)' }}>{error || 'No data'}</div>
-        <button onClick={() => load(toolFilter)} style={{ padding: '8px 16px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-2)', borderRadius: 'var(--cr-radius-sm)', color: 'var(--cr-fg-1)', cursor: 'pointer' }}>
+        <button onClick={() => load(toolFilter)} style={{ padding: '8px 16px', background: 'var(--cr-ink-2)', border: '1px solid var(--cr-line-2)', borderRadius: 0, color: 'var(--cr-fg-1)', cursor: 'pointer' }}>
           Retry
         </button>
       </div>
@@ -150,70 +150,40 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
           style={{
             background: 'var(--cr-ink-1)',
             border: '1px solid var(--cr-line-1)',
-            borderRadius: 'var(--cr-radius-lg)',
+            borderRadius: 0,
             padding: 28,
             marginBottom: 24,
             position: 'relative',
             overflow: 'hidden',
           }}
         >
-          <div
-            style={{
-              position: 'absolute',
-              top: -80,
-              right: -80,
-              width: 260,
-              height: 260,
-              background: 'radial-gradient(circle, rgba(245,169,127,0.12) 0%, transparent 60%)',
-              pointerEvents: 'none',
-            }}
-          />
           <div style={{ position: 'relative' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
               <h3>This week</h3>
-              <span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>calendar week, Sun–Sat</span>
+              <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>calendar week, Sun–Sat</span>
               {costDelta !== 0 && (
                 <Chip kind={costDelta > 0 ? 'warn' : 'ok'} icon={costDelta > 0 ? 'arrowUp' : 'arrowDown'}>
                   {Math.abs(costDelta)}% vs last week
                 </Chip>
               )}
             </div>
-            <div
-              className="cr-stat-grid-4"
-              style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 32, marginBottom: 20 }}
-            >
-              {[
-                { v: String(data.periodComparison.thisWeek.sessions), l: 'Sessions', tone: 'neutral' as const },
-                { v: fmtCost(data.periodComparison.thisWeek.cost), l: 'Cost', tone: 'cost' as const },
-                { v: `${data.periodComparison.thisWeek.cacheRate}%`, l: 'Cache hit', tone: 'savings' as const },
-                { v: fmtTokens(data.periodComparison.thisWeek.tokens), l: 'Tokens used', tone: 'neutral' as const },
-              ].map((s) => (
-                <div key={s.l}>
-                  <div
-                    style={{
-                      fontSize: 32,
-                      fontWeight: 600,
-                      letterSpacing: '-0.025em',
-                      color:
-                        s.tone === 'cost'
-                          ? 'var(--cr-warn-500)'
-                          : s.tone === 'savings'
-                          ? 'var(--cr-ok-500)'
-                          : 'var(--cr-fg-1)',
-                      fontVariantNumeric: 'tabular-nums',
-                    }}
-                  >
-                    {s.v}
-                  </div>
-                  <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginTop: 2, fontWeight: 500 }}>{s.l}</div>
-                </div>
-              ))}
-            </div>
+            {/* The last stat-tile row in the app. Four 32px numbers over four
+                12px labels, evenly weighted, answering nothing — one schedule
+                instead, with the hue on the value. */}
+            <Metrics
+              style={{ marginBottom: 20 }}
+              items={[
+                { label: 'Sessions', value: String(data.periodComparison.thisWeek.sessions) },
+                { label: 'Cost', value: fmtCost(data.periodComparison.thisWeek.cost), tone: 'cost' },
+                { label: 'Cache hit', value: `${data.periodComparison.thisWeek.cacheRate}%`, sub: 'tokens served from cache', tone: 'savings' },
+                { label: 'Tokens used', value: fmtTokens(data.periodComparison.thisWeek.tokens) },
+              ]}
+            />
             {insights.length > 0 && (
               <div
                 style={{
                   padding: '12px 14px',
-                  borderRadius: 'var(--cr-radius-sm)',
+                  borderRadius: 0,
                   background: 'var(--cr-warn-surf)',
                   border: '1px solid var(--cr-warn-line)',
                   display: 'flex',
@@ -229,65 +199,72 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
           </div>
         </div>
 
-        {/* Lifetime metric grid */}
-        <div className="cr-stat-grid-4" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24 }}>
-          <MetricCard
-            label="Total sessions"
-            value={String(summary.totalSessions)}
-            sub={fmtSignedDelta(data.periodComparison.thisWeek.sessions, 'this week')}
-            icon="message"
-          />
-          <MetricCard
-            label="Total cost"
-            value={fmtCost(summary.totalCostUsd)}
-            sub={
-              summary.sessionsWithoutPricing > 0
-                ? `${summary.sessionsWithoutPricing} session${summary.sessionsWithoutPricing === 1 ? '' : 's'} w/o pricing`
-                : 'Lifetime'
-            }
-            tone="cost"
-            icon="sparkle"
-          />
-          <MetricCard
-            label="Compute time"
-            value={fmtDuration(summary.totalDurationMin)}
-            sub={`Across ${data.projects.length} project${data.projects.length === 1 ? '' : 's'}`}
-            icon="clock"
-          />
-          <MetricCard
-            label="Cache reads"
-            value={`${fmtTokens(summary.totalCacheReadTokens)} tokens`}
-            // Cache reads are billed at ~10% of base input on Anthropic; we don't
-            // know the actual base price for non-Anthropic models, so keep this
-            // a token count rather than a fabricated dollar amount.
-            sub="Saved vs. re-uploading"
-            tone="savings"
-            icon="zap"
-          />
-          <MetricCard
-            label="Hours this week"
-            value={String(summary.hoursPerWeek)}
-            sub="Active AI session time"
-            icon="clock"
-          />
-          <MetricCard
-            label="Synced sessions"
-            value={syncStatus ? String(syncStatus.sessions) : '—'}
-            sub={syncStatus?.newestSessionAgeMs != null
-              ? `newest ${Math.max(0, Math.round(syncStatus.newestSessionAgeMs / 60000))} min ago`
-              : 'Server coverage'}
-            icon="cloud"
-          />
-          <MetricCard
-            label="Security findings"
-            value={securitySummary ? String(securitySummary.actionRequired) : '—'}
-            sub={securitySummary
-              ? `${securitySummary.verified} verified live · ${securitySummary.distinct} distinct`
-              : 'No scan data yet'}
-            tone={securitySummary && securitySummary.actionRequired > 0 ? 'err' : 'ok'}
-            icon="shield"
-          />
-        </div>
+        {/* Lifetime totals, as one schedule. Seven unrelated measurements in a
+            4-across tile grid gave each the same weight and answered nothing;
+            one schedule ranks them, keeps every qualifier legible, and drops
+            the coloured top edges that were the card idiom's signature. */}
+        <Metrics
+          style={{ marginBottom: 24 }}
+          caption="Lifetime totals"
+          items={[
+            {
+              label: 'Total sessions',
+              value: String(summary.totalSessions),
+              sub: fmtSignedDelta(data.periodComparison.thisWeek.sessions, 'this week'),
+              icon: 'message',
+            },
+            {
+              label: 'Total cost',
+              value: fmtCost(summary.totalCostUsd),
+              sub:
+                summary.sessionsWithoutPricing > 0
+                  ? `${summary.sessionsWithoutPricing} session${summary.sessionsWithoutPricing === 1 ? '' : 's'} without pricing`
+                  : 'lifetime',
+              tone: 'cost',
+              icon: 'sparkle',
+            },
+            {
+              label: 'Compute time',
+              value: fmtDuration(summary.totalDurationMin),
+              sub: `across ${data.projects.length} project${data.projects.length === 1 ? '' : 's'}`,
+              icon: 'clock',
+            },
+            {
+              label: 'Cache reads',
+              value: `${fmtTokens(summary.totalCacheReadTokens)} tokens`,
+              // Cache reads are billed at ~10% of base input on Anthropic; we don't
+              // know the actual base price for non-Anthropic models, so keep this
+              // a token count rather than a fabricated dollar amount.
+              sub: 'saved against re-uploading',
+              tone: 'savings',
+              icon: 'zap',
+            },
+            {
+              label: 'Hours this week',
+              value: String(summary.hoursPerWeek),
+              sub: 'active AI session time',
+              icon: 'clock',
+            },
+            {
+              label: 'Synced sessions',
+              value: syncStatus ? String(syncStatus.sessions) : '—',
+              sub:
+                syncStatus?.newestSessionAgeMs != null
+                  ? `newest ${Math.max(0, Math.round(syncStatus.newestSessionAgeMs / 60000))} min ago`
+                  : 'server coverage',
+              icon: 'cloud',
+            },
+            {
+              label: 'Security findings',
+              value: securitySummary ? String(securitySummary.actionRequired) : '—',
+              sub: securitySummary
+                ? `${securitySummary.verified} verified live, ${securitySummary.distinct} distinct`
+                : 'no scan data yet',
+              tone: securitySummary && securitySummary.actionRequired > 0 ? 'err' : 'ok',
+              icon: 'shield',
+            },
+          ]}
+        />
 
         {/* Cost chart */}
         {data.dailyCost.length > 0 && (
@@ -309,7 +286,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
                     height: `${(v.cost / maxDailyCost) * 100}%`,
                     background: v.cost > 3 ? 'var(--cr-warn-500)' : 'var(--cr-brand-500)',
                     opacity: v.cost > 3 ? 0.95 : 0.75,
-                    borderRadius: '3px 3px 0 0',
+                    borderRadius: 0,
                     minHeight: 2,
                     transition: 'opacity var(--cr-dur-fast)',
                   }}
@@ -321,7 +298,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
                 display: 'flex',
                 justifyContent: 'space-between',
                 marginTop: 10,
-                fontSize: 11,
+                fontSize: 12,
                 color: 'var(--cr-fg-3)',
               }}
             >
@@ -331,9 +308,11 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
           </Card>
         )}
 
-        {/* Two-column: tools + projects */}
-        <div className="cr-stat-grid-2" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-          <Card style={{ padding: 24 }}>
+        {/* Two panels SHARING ONE FRAME, not two framed boxes with a gap
+            between them. A gapped grid of ink frames is the card grid in
+            heavier ink, which is worse than where this started. */}
+        <div className="cr-plates" data-cols="2">
+          <Card style={{ padding: 24, border: 0, background: 'transparent' }}>
             <div className="cr-wrap-mobile" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
               <h3>Top tools</h3>
               <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{data.tools.length} total</span>
@@ -353,7 +332,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
                         flex: 1,
                         height: 8,
                         background: 'var(--cr-ink-2)',
-                        borderRadius: 4,
+                        borderRadius: 0,
                         overflow: 'hidden',
                       }}
                     >
@@ -362,7 +341,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
                           height: '100%',
                           width: `${(b.sessions / max) * 100}%`,
                           background: 'var(--cr-brand-500)',
-                          borderRadius: 4,
+                          borderRadius: 0,
                         }}
                       />
                     </div>
@@ -384,7 +363,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
             </div>
           </Card>
 
-          <Card style={{ padding: 24 }}>
+          <Card style={{ padding: 24, border: 0, background: 'transparent' }}>
             <div className="cr-wrap-mobile" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
               <h3>Top projects</h3>
               <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{data.projects.length} total</span>
@@ -409,7 +388,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
                       <div style={{ fontSize: 13, fontWeight: 500, color: 'var(--cr-fg-1)', letterSpacing: '-0.005em' }}>
                         {p.name}
                       </div>
-                      <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 2 }}>
+                      <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginTop: 2 }}>
                         {p.sessions} sessions · {p.languages.slice(0, 3).map((l) => l.language).join(' · ')}
                       </div>
                     </div>
@@ -492,38 +471,31 @@ function PatternsSection({
           <p style={{ fontSize: 12, color: 'var(--cr-fg-3)', margin: '4px 0 16px' }}>
             Topics that show up across many sessions — recurring problem areas.
           </p>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(280px, 100%), 1fr))', gap: 12 }}>
-            {patterns.topics.slice(0, 9).map((t) => (
-              <div
-                key={t.topic}
-                role={onJumpToSearch ? 'button' : undefined}
-                tabIndex={onJumpToSearch ? 0 : undefined}
-                onClick={() => onJumpToSearch?.(t.topic)}
-                onKeyDown={(e) => { if (onJumpToSearch && (e.key === 'Enter' || e.key === ' ')) onJumpToSearch(t.topic); }}
-                data-testid="patterns-topic"
-                style={{
-                  padding: 14,
-                  border: '1px solid var(--cr-line-1)',
-                  borderRadius: 'var(--cr-radius-md)',
-                  background: 'var(--cr-ink-0)',
-                  cursor: onJumpToSearch ? 'pointer' : 'default',
-                  transition: 'border-color var(--cr-dur-fast), background var(--cr-dur-fast)',
-                }}
-                onMouseEnter={(e) => { if (onJumpToSearch) e.currentTarget.style.borderColor = 'var(--cr-brand-line)'; }}
-                onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--cr-line-1)'; }}
-              >
-                <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 }}>
-                  <span style={{ fontSize: 13, fontWeight: 600, textTransform: 'capitalize' }}>{t.topic}</span>
-                  <Chip kind="info">{t.sessionCount}</Chip>
-                </div>
-                {t.sampleSessions[0] && (
-                  <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', lineHeight: 1.45 }}>
-                    {t.sampleSessions[0].snippet}…
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
+          {/* Nine hand-rolled bordered boxes in a gapped grid — a card grid that
+              did not even use the Card primitive. A schedule ranks the topics by
+              how often they recur, which is the question the panel answers. */}
+          <Schedule
+            cols={[
+              { key: 'topic', kind: 'pn', head: 'Topic' },
+              { key: 'n', kind: 'val', head: 'Sessions' },
+            ]}
+            rows={patterns.topics.slice(0, 9).map((t) => ({
+              id: t.topic,
+              onSelect: onJumpToSearch ? () => onJumpToSearch(t.topic) : undefined,
+              style: { textTransform: 'capitalize' as const },
+              cells: {
+                topic: (
+                  <span data-testid="patterns-topic">
+                    <span style={{ whiteSpace: 'normal' }}>{t.topic}</span>
+                    {t.sampleSessions[0] && (
+                      <span className="pn-sub" style={{ textTransform: 'none' }}>{t.sampleSessions[0].snippet}…</span>
+                    )}
+                  </span>
+                ),
+                n: t.sessionCount,
+              },
+            }))}
+          />
         </Card>
       )}
 
@@ -556,7 +528,7 @@ function PatternsSection({
                     padding: '6px 8px',
                     borderBottom: '1px solid var(--cr-line-1)',
                     alignItems: 'baseline',
-                    borderRadius: 4,
+                    borderRadius: 0,
                     cursor: onClick ? 'pointer' : 'default',
                     transition: 'background var(--cr-dur-fast)',
                   }}
@@ -592,7 +564,7 @@ function PatternsSection({
                 style={{
                   padding: '10px 12px',
                   border: '1px solid var(--cr-line-1)',
-                  borderRadius: 'var(--cr-radius-md)',
+                  borderRadius: 0,
                   marginBottom: 8,
                   background: 'var(--cr-ink-0)',
                 }}
@@ -601,12 +573,12 @@ function PatternsSection({
                   <span style={{ fontSize: 12, color: 'var(--cr-fg-2)' }}>{projShort}</span>
                   <Chip kind="warn">{Math.round(r.overlap * 100)}% overlap · {r.sharedFiles.length} shared file{r.sharedFiles.length === 1 ? '' : 's'}</Chip>
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-mono, monospace)', display: 'flex', gap: 8, alignItems: 'baseline' }}>
+                <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-mono, monospace)', display: 'flex', gap: 8, alignItems: 'baseline' }}>
                   <SessionLink id={r.a.id} date={r.a.mtime.slice(0, 10)} onClick={onJumpToSession} />
-                  <span>↔</span>
+                  <Icon name="arrowRight" size={13} style={{ color: 'var(--cr-fg-3)' }} />
                   <SessionLink id={r.b.id} date={r.b.mtime.slice(0, 10)} onClick={onJumpToSession} />
                 </div>
-                <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 4, fontFamily: 'var(--cr-mono, monospace)', wordBreak: 'break-all' }}>
+                <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginTop: 4, fontFamily: 'var(--cr-mono, monospace)', wordBreak: 'break-all' }}>
                   {r.sharedFiles.slice(0, 3).join(' · ')}
                   {r.sharedFiles.length > 3 ? ` · +${r.sharedFiles.length - 3} more` : ''}
                 </div>
@@ -645,7 +617,7 @@ function SessionLink({
 function LegendDot({ color, label }: { color: string; label: string }) {
   return (
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-      <span style={{ width: 8, height: 8, borderRadius: 2, background: color }} />
+      <span style={{ width: 8, height: 8, borderRadius: 0, background: color }} />
       {label}
     </span>
   );
@@ -681,38 +653,47 @@ function ImproveYourClaude({ data, secrets, syncStatus }: { data: AnalyticsData;
   const usd = (n: number) => (n >= 1 ? `$${n.toFixed(0)}` : `$${n.toFixed(2)}`);
 
   return (
-    <Card style={{ padding: 20, marginBottom: 24 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-        <Icon name="sparkle" size={16} />
-        <strong style={{ fontSize: 14 }}>Improve your Claude</strong>
-        <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>what your sessions reveal about your setup</span>
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12, marginBottom: 16 }}>
-        <ImpSignal label="Completion" value={completion != null ? `${completion}%` : '—'} sub={classified ? `${clean}/${classified} shipped vs abandoned` : 'no decided outcomes'} tone={completion == null ? 'neutral' : completion >= 70 ? 'ok' : 'err'} />
-        <ImpSignal label="Context exhaustion" value={String(ctxHit)} sub="sessions near limit" tone={ctxHit >= 3 ? 'warn' : 'ok'} />
-        <ImpSignal label="Leaked secrets" value={String(leaked)} sub={secrets ? `across ${secrets.sessionsWithFindings} sessions` : '—'} tone={leaked > 0 ? 'err' : 'ok'} />
-        <ImpSignal label="Top model" value={topModel ? shortM(topModel.model) : '—'} sub={topModel ? `${usd(topModel.cost)} · all-time` : ''} tone="neutral" />
-        <ImpSignal label="Synced" value={syncStatus ? String(syncStatus.sessions) : '—'} sub="sessions on server" tone="neutral" />
-      </div>
-      <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '0.14em', fontFamily: 'var(--cr-font-display)', marginBottom: 8 }}>Suggested CLAUDE.md additions</div>
-      <div style={{ display: 'grid', gap: 8 }}>
-        {sugg.map((s, i) => (
-          <div key={i} style={{ display: 'flex', gap: 10, padding: '8px 0', borderBottom: i < sugg.length - 1 ? '1px solid var(--cr-line-1)' : 'none' }}>
-            <Chip kind="brand" size="sm">tip</Chip>
-            <div><div style={{ fontSize: 13, fontWeight: 500 }}>{s.t}</div><div style={{ fontSize: 12, color: 'var(--cr-fg-2)', marginTop: 2 }}>{s.d}</div></div>
-          </div>
-        ))}
-      </div>
-    </Card>
+    <Plate
+      style={{ marginBottom: 24 }}
+      title={
+        <>
+          Improve your Claude
+          <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400, marginLeft: 8, fontSize: 12.5 }}>what your sessions reveal about your setup</span>
+        </>
+      }
+      flush
+    >
+      {/* Five bordered tiles inside a bordered panel — a card grid nested in a
+          card, which is always wrong. One schedule instead, and the eyebrow
+          "SUGGESTED CLAUDE.MD ADDITIONS" becomes the second schedule's own
+          caption. Two flush schedules, one drawn object. */}
+      <Metrics
+        items={[
+          { label: 'Completion', value: completion != null ? `${completion}%` : '—', sub: classified ? `${clean} of ${classified} shipped, not abandoned` : 'no decided outcomes', tone: completion == null ? 'neutral' : completion >= 70 ? 'ok' : 'err' },
+          { label: 'Context exhaustion', value: String(ctxHit), sub: 'sessions near the window limit', tone: ctxHit >= 3 ? 'warn' : 'ok' },
+          { label: 'Leaked secrets', value: String(leaked), sub: secrets ? `across ${secrets.sessionsWithFindings} sessions` : '—', tone: leaked > 0 ? 'err' : 'ok' },
+          { label: 'Top model', value: topModel ? shortM(topModel.model) : '—', sub: topModel ? `${usd(topModel.cost)} all-time` : undefined },
+          { label: 'Synced', value: syncStatus ? String(syncStatus.sessions) : '—', sub: 'sessions on the server' },
+        ]}
+      />
+      <Schedule
+        caption="Suggested CLAUDE.md additions"
+        cols={[{ key: 'tip', kind: 'no' }, { key: 'body', kind: 'pn' }]}
+        rows={sugg.map((x, i) => ({
+          id: String(i),
+          cells: {
+            tip: <Chip kind="brand" size="sm">tip</Chip>,
+            body: (
+              <>
+                <span style={{ whiteSpace: 'normal' }}>{x.t}</span>
+                <span className="pn-sub">{x.d}</span>
+              </>
+            ),
+          },
+        }))}
+        empty="Nothing to suggest — your setup looks clean."
+      />
+    </Plate>
   );
 }
-function ImpSignal({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone: 'ok' | 'warn' | 'err' | 'neutral' }) {
-  const color = tone === 'ok' ? 'var(--cr-ok-500)' : tone === 'warn' ? 'var(--cr-warn-500)' : tone === 'err' ? 'var(--cr-err-500)' : 'var(--cr-fg-1)';
-  return (
-    <div style={{ background: 'var(--cr-ink-2,#0d1117)', border: '1px solid var(--cr-line-1)', borderRadius: 8, padding: '12px 14px' }}>
-      <div style={{ fontFamily: 'var(--cr-font-display)', fontSize: 22, fontWeight: 700, color, lineHeight: 1 }}>{value}</div>
-      <div style={{ fontSize: 11, color: 'var(--cr-fg-2)', marginTop: 6 }}>{label}</div>
-      {sub && <div style={{ fontSize: 10, color: 'var(--cr-fg-3)', marginTop: 2 }}>{sub}</div>}
-    </div>
-  );
-}
+

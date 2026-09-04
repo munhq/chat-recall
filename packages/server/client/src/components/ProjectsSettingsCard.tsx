@@ -114,9 +114,9 @@ export default function ProjectsSettingsCard() {
             disabled={!dirty || saving}
             style={{
               padding: '6px 14px',
-              background: dirty ? 'var(--cr-brand-500, #6c8eff)' : 'var(--cr-ink-2)',
+              background: dirty ? 'var(--cr-brand-500)' : 'var(--cr-ink-2)',
               border: '1px solid var(--cr-line-1)',
-              borderRadius: 6,
+              borderRadius: 0,
               color: dirty ? '#fff' : 'var(--cr-fg-3)',
               fontSize: 12,
               cursor: dirty && !saving ? 'pointer' : 'not-allowed',
@@ -124,20 +124,20 @@ export default function ProjectsSettingsCard() {
           >
             {saving ? 'Saving + re-bucketing…' : dirty ? 'Save & rebuild tree' : 'No changes'}
           </button>
-          {status && <small style={{ color: 'var(--cr-ok-500, #5bc28e)' }}>{status}</small>}
+          {status && <small style={{ color: 'var(--cr-ok-500)' }}>{status}</small>}
         </div>
       }
     >
       {error && (
-        <div style={{ padding: 8, color: 'var(--cr-err-500, #d33)', fontSize: 12 }}>{error}</div>
+        <div style={{ padding: 8, color: 'var(--cr-err-500)', fontSize: 12 }}>{error}</div>
       )}
 
-      <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginBottom: 8 }}>
+      <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 8 }}>
         Showing top {visibleProjects.length} of {data.all.filter(p => !p.project_id.startsWith('untracked:')).length} projects by activity.
       </div>
 
       <div className="cr-tablescroll">
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, color: 'var(--cr-fg-1)' }}>
+        <table className="cr-schedule" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, color: 'var(--cr-fg-1)' }}>
           <thead>
             <tr style={{ borderBottom: '1px solid var(--cr-line-1)' }}>
               <Th>Name</Th>
@@ -166,7 +166,7 @@ export default function ProjectsSettingsCard() {
         <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6, color: 'var(--cr-fg-1)' }}>
           Ignore patterns
         </div>
-        <div style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginBottom: 8 }}>
+        <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 8 }}>
           Folders matching these globs get no project_id. Use to hide PR-bot worktrees, /tmp scratch, etc.
         </div>
         <IgnoreList
@@ -212,7 +212,7 @@ function Row({ project, nameOverride, isWorkspaceOverride, onRename, onToggleWs 
             border: '1px solid transparent',
             color: 'var(--cr-fg-1)',
             padding: '3px 6px',
-            borderRadius: 4,
+            borderRadius: 0,
             fontFamily: 'inherit',
             fontSize: 12,
           }}
@@ -220,13 +220,13 @@ function Row({ project, nameOverride, isWorkspaceOverride, onRename, onToggleWs 
           onBlurCapture={e => { e.currentTarget.style.border = '1px solid transparent'; }}
         />
       </Td>
-      <Td><code style={{ fontSize: 10, color: 'var(--cr-fg-3)' }}>{project.project_id}</code></Td>
-      <Td><span style={{ fontSize: 11, color: 'var(--cr-fg-3)' }}>{project.source}</span></Td>
+      <Td><code style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{project.project_id}</code></Td>
+      <Td><span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{project.source}</span></Td>
       <Td align="right">{project.items}</Td>
       <Td>
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
           <input type="checkbox" checked={isWs} onChange={onToggleWs} />
-          <span style={{ fontSize: 11, color: 'var(--cr-fg-2)' }}>
+          <span style={{ fontSize: 12, color: 'var(--cr-fg-2)' }}>
             {isWs ? 'workspace' : 'project'}
           </span>
         </label>
@@ -246,14 +246,14 @@ function CardBox({ title, hint, footer, children }: {
       style={{
         background: 'var(--cr-ink-1)',
         border: '1px solid var(--cr-line-1)',
-        borderRadius: 8,
+        borderRadius: 0,
         padding: 18,
         marginBottom: 14,
       }}
     >
       <div style={{ marginBottom: 12 }}>
         <h3 style={{ margin: 0, fontSize: 14, color: 'var(--cr-fg-1)' }}>{title}</h3>
-        {hint && <small style={{ color: 'var(--cr-fg-3)', fontSize: 11 }}>{hint}</small>}
+        {hint && <small style={{ color: 'var(--cr-fg-3)', fontSize: 12 }}>{hint}</small>}
       </div>
       {children}
       {footer && <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--cr-line-1)' }}>{footer}</div>}
@@ -269,7 +269,7 @@ function Th({ children, align }: { children: React.ReactNode; align?: 'left' | '
         textAlign: align || 'left',
         color: 'var(--cr-fg-3)',
         fontWeight: 500,
-        fontSize: 10,
+        fontSize: 12,
         letterSpacing: '0.04em',
         textTransform: 'uppercase',
       }}
@@ -300,10 +300,10 @@ function IgnoreList({ rules, onAdd, onRemove }: { rules: string[]; onAdd: (m: st
             padding: '6px 10px',
             background: 'var(--cr-ink-2)',
             border: '1px solid var(--cr-line-1)',
-            borderRadius: 4,
+            borderRadius: 0,
             color: 'var(--cr-fg-1)',
             fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-            fontSize: 11,
+            fontSize: 12,
           }}
         />
         <button
@@ -312,9 +312,9 @@ function IgnoreList({ rules, onAdd, onRemove }: { rules: string[]; onAdd: (m: st
             padding: '6px 12px',
             background: 'var(--cr-ink-2)',
             border: '1px solid var(--cr-line-1)',
-            borderRadius: 4,
+            borderRadius: 0,
             color: 'var(--cr-fg-1)',
-            fontSize: 11,
+            fontSize: 12,
             cursor: 'pointer',
           }}
         >
@@ -326,11 +326,11 @@ function IgnoreList({ rules, onAdd, onRemove }: { rules: string[]; onAdd: (m: st
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
           {rules.map(r => (
-            <div key={r} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', background: 'var(--cr-ink-2)', borderRadius: 3 }}>
-              <code style={{ flex: 1, color: 'var(--cr-fg-1)', fontSize: 11 }}>{r}</code>
+            <div key={r} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', background: 'var(--cr-ink-2)', borderRadius: 0 }}>
+              <code style={{ flex: 1, color: 'var(--cr-fg-1)', fontSize: 12 }}>{r}</code>
               <button
                 onClick={() => onRemove(r)}
-                style={{ background: 'transparent', border: 'none', color: 'var(--cr-fg-3)', cursor: 'pointer', fontSize: 11 }}
+                style={{ background: 'transparent', border: 'none', color: 'var(--cr-fg-3)', cursor: 'pointer', fontSize: 12 }}
               >
                 remove
               </button>

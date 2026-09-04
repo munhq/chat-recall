@@ -6,7 +6,7 @@ import { Avatar } from './primitives';
 /**
  * The top-right avatar, as a menu rather than a link.
  *
- * It used to navigate straight to the Account page and render `name="User"` — a
+ * It used to navigate straight to the Account page and render "name="User"" — a
  * placeholder that never said who was signed in — and there was no sign-out
  * control anywhere in the app at all.
  *
@@ -105,22 +105,22 @@ const MENU_CSS = `
 /* Anchored to the RIGHT edge: the trigger is the last item in the header, so a
    left-anchored menu would run off the viewport on a narrow window. */
 .cr-usermenu-pop { position: absolute; top: calc(100% + 8px); right: 0; min-width: 216px;
-  background: var(--cr-ink-2); border: 1px solid var(--cr-line-1, #1e232b);
-  border-radius: var(--cr-radius-md, 8px); padding: 4px;
-  box-shadow: 0 14px 36px rgba(0,0,0,0.44); z-index: 60; }
+  background: var(--cr-ink-1); border: var(--cr-frame-w) solid var(--cr-frame);
+  border-radius: var(--cr-radius-md); padding: 4px;
+  border: var(--cr-frame-w) solid var(--cr-frame); z-index: 60; }
 
 /* min-width:0 + ellipsis: addresses are long and this box must not grow to fit
    one. The full value is in the trigger's title attribute. */
 .cr-usermenu-who { padding: 8px 10px 9px; margin-bottom: 4px;
-  border-bottom: 1px solid var(--cr-line-1, #1e232b);
+  border-bottom: 1px solid var(--cr-line-1);
   font-size: 12px; color: var(--cr-fg-2); min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .cr-usermenu-item { display: block; width: 100%; text-align: left;
   padding: 9px 10px; min-height: 38px; background: transparent; border: none;
-  border-radius: var(--cr-radius-sm, 6px); color: var(--cr-fg-1);
+  border-radius: var(--cr-radius-sm); color: var(--cr-fg-1);
   font: inherit; font-size: 13px; cursor: pointer; }
 .cr-usermenu-item:hover { background: var(--cr-ink-3); }
 .cr-usermenu-item:focus-visible { outline: none; box-shadow: var(--cr-focus-ring); }
-.cr-usermenu-item.danger { color: var(--cr-err-500, #f87171); }
+.cr-usermenu-item.danger { color: var(--cr-err-500); }
 `;
