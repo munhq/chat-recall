@@ -116,7 +116,7 @@ export default function SyncRules() {
                 padding: '7px 0', borderTop: '1px solid var(--cr-line-1)',
               }}>
                 <span style={{ flex: 1, minWidth: 220 }}>
-                  <span style={{ fontFamily: 'var(--cr-font-mono)', fontSize: 12.5, color: 'var(--cr-fg-1)', wordBreak: 'break-all' }}>
+                  <span style={{ fontFamily: 'var(--cr-font-annot)', fontSize: 12.5, color: 'var(--cr-fg-1)', wordBreak: 'break-all' }}>
                     {src.path}
                   </span>
                   <span style={{ display: 'block', color: 'var(--cr-fg-3)', fontSize: 12.5, marginTop: 2 }}>
@@ -162,7 +162,13 @@ export default function SyncRules() {
             work profile out of this workspace. chat-recall can only switch off a folder a machine
             already found; it can never be pointed at a new path from here.
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, margin: '0 0 16px' }}>
+          {/* RULED ROWS, NOT ONE BOX PER FOLDER. A gapped column of bordered
+              boxes is the card list, and the box also carried the on/off state
+              — a frame doing the checkbox's job. A single top rule separates
+              the rows; the label's ink says whether the folder syncs.
+              (It also asked for `--cr-radius-md`, a rounded corner this world
+              does not have.) */}
+          <div style={{ display: 'flex', flexDirection: 'column', margin: '0 0 16px' }}>
             {sources.map((src) => {
               const off = excludedSources.includes(src.id);
               return (
@@ -170,9 +176,8 @@ export default function SyncRules() {
                   key={`${src.device || ''}|${src.id}`}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
-                    padding: '8px 10px', borderRadius: 'var(--cr-radius-md)',
-                    border: '1px solid var(--cr-line-1)',
-                    background: off ? 'transparent' : 'var(--cr-ink-1)',
+                    padding: '9px 2px', borderRadius: 0,
+                    borderTop: '1px solid var(--cr-line-2)',
                     opacity: off ? 0.6 : 1,
                   }}
                 >
@@ -184,7 +189,7 @@ export default function SyncRules() {
                   />
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <span style={{
-                      fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-1)',
+                      fontFamily: 'var(--cr-font-annot)', color: 'var(--cr-fg-1)',
                       wordBreak: 'break-all', fontSize: 12.5,
                     }}>{src.path}</span>
                     <span style={{ display: 'block', color: 'var(--cr-fg-3)', fontSize: 12.5, marginTop: 2 }}>

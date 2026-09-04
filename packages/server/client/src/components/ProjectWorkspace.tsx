@@ -577,7 +577,7 @@ function ProjectActivity({ projectId, toolFilter, onOpenSession }: { projectId: 
   return (
     <div style={{ padding: '16px 24px 48px' }}>
       <Metrics
-        style={{ marginBottom: 16 }}
+        
         caption="This project"
         items={[
           { label: 'Sessions', value: String(counts.sessions), icon: 'message' },

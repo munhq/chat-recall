@@ -260,6 +260,74 @@ try {
   console.log(`wrote ${SESSIONS.length} fixture sessions across 3 invented projects`);
 
   /**
+   * THE TOOLKIT. Sessions alone leave the Toolkit screen at zero of everything,
+   * and "Skills 0 / MCPs 0 / Commands 0" reads as a broken feature rather than
+   * an empty account. Those zeros are also why the published Toolkit screenshot
+   * could not be taken from the demo account: it was taken from a real machine,
+   * which is how a device name and a real MCP inventory reached a public README.
+   *
+   * These fixtures are written into the SANDBOX, not posted as rows. The
+   * collector discovers them from disk exactly as it discovers a user's own, so
+   * the demo keeps matching what the product actually produces.
+   *
+   * EVERY NAME HERE IS INVENTED, for the same reason every path above is.
+   */
+  const SKILLS = [
+    ['api-contract-review', 'Review an OpenAPI change for breaking fields, renamed paths and missing examples.'],
+    ['migration-writer', 'Write a reversible SQL migration from a described schema change, with the down step.'],
+    ['release-notes', 'Turn a commit range into release notes grouped by user-visible change.'],
+    ['flaky-test-triage', 'Classify a failing test as flaky, environment-dependent or a real regression.'],
+    ['perf-budget', 'Check a page against its size and request budget, and name the biggest offender.'],
+    ['sql-explain', 'Read an EXPLAIN plan and say which index would remove the sequential scan.'],
+  ];
+  const SUBAGENTS = [
+    ['schema-reviewer', 'Reviews a migration for lock duration, nullability and index coverage.'],
+    ['test-writer', 'Writes unit tests for a changed function, including the failure paths.'],
+    ['changelog-editor', 'Rewrites a changelog entry so it says what changed for the reader.'],
+    ['dependency-auditor', 'Reports which direct dependencies moved a major version, and what broke.'],
+  ];
+  const COMMANDS = [
+    ['ship-check', 'Run the pre-release checks and report the first one that fails.'],
+    ['rollback-plan', 'Write the rollback steps for the change on the current branch.'],
+    ['explain-query', 'Explain a slow query and propose one index.'],
+    ['tidy-imports', 'Sort and de-duplicate imports in the files changed on this branch.'],
+    ['spec-to-tests', 'Turn an acceptance criteria list into failing tests.'],
+  ];
+  const MCPS = {
+    postgres: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-postgres', 'postgres://localhost:5432/example'] },
+    github: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-github'] },
+    filesystem: { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/home/user/code'] },
+    playwright: { command: 'npx', args: ['-y', '@playwright/mcp'] },
+    'chat-recall': { command: 'chat-recall-mcp', args: [] },
+  };
+  const HOOKS = {
+    SessionStart: [{ matcher: 'startup|clear', hooks: [{ type: 'command', command: 'chat-recall memory wake-up --project .' }] }],
+    PostToolUse: [{ matcher: 'Edit|Write', hooks: [{ type: 'command', command: 'npx prettier --write "$CLAUDE_FILE_PATHS"' }] }],
+    Stop: [{ hooks: [{ type: 'command', command: 'chat-recall index --quiet' }] }],
+  };
+
+  for (const [name, description] of SKILLS) {
+    const dir = join(HOME, 'skills', name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'SKILL.md'),
+      `---\nname: ${name}\ndescription: ${description}\n---\n\n# ${name}\n\n${description}\n\n## When to use it\n\nUse it when the change touches the area named above and you want the same\nchecks every time.\n`);
+  }
+  mkdirSync(join(HOME, 'agents'), { recursive: true });
+  for (const [name, description] of SUBAGENTS) {
+    writeFileSync(join(HOME, 'agents', `${name}.md`),
+      `---\nname: ${name}\ndescription: ${description}\n---\n\n${description}\n`);
+  }
+  mkdirSync(join(HOME, 'commands'), { recursive: true });
+  for (const [name, description] of COMMANDS) {
+    writeFileSync(join(HOME, 'commands', `${name}.md`),
+      `---\ndescription: ${description}\n---\n\n${description}\n`);
+  }
+  writeFileSync(join(HOME, 'settings.json'), JSON.stringify({ hooks: HOOKS }, null, 2));
+  mkdirSync(join(ROOT, 'fakehome'), { recursive: true });
+  writeFileSync(join(ROOT, 'fakehome', '.mcp.json'), JSON.stringify({ mcpServers: MCPS }, null, 2));
+  console.log(`wrote toolkit fixtures: ${SKILLS.length} skills, ${Object.keys(MCPS).length} MCPs, ${COMMANDS.length} commands, ${SUBAGENTS.length} subagents, 3 hook events`);
+
+  /**
    * EVERY TOOL HOME, not just Claude's.
    *
    * The first version of this script set CHAT_RECALL_CLAUDE_HOME alone and ran a

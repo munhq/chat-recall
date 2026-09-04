@@ -129,11 +129,13 @@ function kindIcon(label: string): string {
   return 'shield';
 }
 
-const SEVERITY_TONE: Record<Severity, { chip: 'err' | 'warn' | 'info' | 'neutral'; bg: string; border: string }> = {
-  critical: { chip: 'err',     bg: 'rgba(255, 80, 80, 0.05)', border: 'var(--cr-err-500)' },
-  high:     { chip: 'warn',    bg: 'rgba(255, 180, 0, 0.04)', border: 'var(--cr-warn-500)' },
-  medium:   { chip: 'info',    bg: 'transparent',             border: 'var(--cr-line-1)' },
-  noise:    { chip: 'neutral', bg: 'transparent',             border: 'var(--cr-line-1)' },
+// `fg` is the Coded Leader colour: the hue rides the VALUE — the word
+// "critical" itself — never a bar on the edge of the box that holds it.
+const SEVERITY_TONE: Record<Severity, { chip: 'err' | 'warn' | 'info' | 'neutral'; bg: string; border: string; fg: string }> = {
+  critical: { chip: 'err',     bg: 'rgba(255, 80, 80, 0.05)', border: 'var(--cr-err-500)',  fg: 'var(--cr-err-500)' },
+  high:     { chip: 'warn',    bg: 'rgba(255, 180, 0, 0.04)', border: 'var(--cr-warn-500)', fg: 'var(--cr-warn-500)' },
+  medium:   { chip: 'info',    bg: 'transparent',             border: 'var(--cr-line-1)',   fg: 'var(--cr-fg-2)' },
+  noise:    { chip: 'neutral', bg: 'transparent',             border: 'var(--cr-line-1)',   fg: 'var(--cr-fg-3)' },
 };
 
 /* ── Utilities ──────────────────────────────────────────────────── */
@@ -380,7 +382,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
           the way a selected schedule row does. */}
       {!loading && (
         <Schedule
-          style={{ marginBottom: 16 }}
+          
           caption="Exposure"
           cols={[
             { key: 'sev', kind: 'pn', head: 'Severity' },
@@ -553,7 +555,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                       <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--cr-fg-1)' }}>
                         {s.type.label}
                       </span>
-                      <span style={{ fontSize: 12, fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-3)', wordBreak: 'break-all', overflowWrap: 'anywhere', maxWidth: '100%' }}>
+                      <span style={{ fontSize: 12, fontFamily: 'var(--cr-font-annot)', color: 'var(--cr-fg-3)', wordBreak: 'break-all', overflowWrap: 'anywhere', maxWidth: '100%' }}>
                         {s.preview}
                       </span>
                     </div>
@@ -656,16 +658,16 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                               style={{
                                 background: 'transparent', border: 0, padding: 0,
                                 color: 'var(--cr-brand-500)', cursor: 'pointer',
-                                fontFamily: 'var(--cr-font-mono)', fontSize: 12,
+                                fontFamily: 'var(--cr-font-annot)', fontSize: 12,
                                 textDecoration: 'underline', minWidth: 90, textAlign: 'left',
                               }}
                             >
                               {shortId(sess.sessionId)}
                             </button>
-                            <span style={{ color: 'var(--cr-fg-3)', flex: 1, fontFamily: 'var(--cr-font-mono)', wordBreak: 'break-all' }}>
+                            <span style={{ color: 'var(--cr-fg-3)', flex: 1, fontFamily: 'var(--cr-font-annot)', wordBreak: 'break-all' }}>
                               {projectShort(sess.project)}
                             </span>
-                            <span style={{ color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-font-mono)', fontSize: 12 }}>
+                            <span style={{ color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-font-annot)', fontSize: 12 }}>
                               {sess.lines.length === 1 ? `L${sess.lines[0]}` : `${sess.lines.length} lines`}
                             </span>
                           </div>
@@ -687,33 +689,51 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                   {reviewQueue.length} item{reviewQueue.length === 1 ? '' : 's'} — verify whether each is a real credential
                 </span>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {reviewQueue.slice(0, 30).map(s => (
-                  <Card key={s.preview} style={{ padding: 10 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, flexWrap: 'wrap' }}>
-                      <Icon name={kindIcon(s.type.label)} size={15} style={{ color: 'var(--cr-fg-3)' }} />
-                      <span style={{ fontWeight: 600, color: 'var(--cr-fg-1)' }}>{s.type.label}</span>
-                      <span style={{ fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-3)' }}>{s.preview}</span>
-                      <Chip kind={SEVERITY_TONE[s.type.severity].chip} size="sm">{s.type.severity}</Chip>
-                      <span style={{ flex: 1 }} />
-                      <span style={{ color: 'var(--cr-fg-3)' }}>{s.sessionCount} sess · {s.occurrences} occ</span>
-                      {s.sessions[0] && (
-                        <button
-                          onClick={() => onSessionClick?.(s.sessions[0].sessionId)}
-                          style={{ background: 'transparent', border: 0, padding: 0, color: 'var(--cr-brand-500)', cursor: 'pointer', fontFamily: 'var(--cr-font-mono)', fontSize: 12 }}
-                        >
-                          {shortId(s.sessions[0].sessionId)} →
-                        </button>
-                      )}
-                    </div>
-                  </Card>
-                ))}
-                {reviewQueue.length > 30 && (
-                  <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', textAlign: 'center', padding: 8 }}>
-                    +{reviewQueue.length - 30} more medium-severity items
-                  </div>
-                )}
-              </div>
+              {/* Thirty bordered boxes in a gapped column, every one carrying
+                  the same five fields — the card list a schedule replaces. As
+                  rows the severities and counts line up in columns you can
+                  compare down, and the trailing "+N more" becomes the caption,
+                  which is where a stated limit belongs. */}
+              <Schedule
+                scroll
+                caption={reviewQueue.length > 30
+                  ? `The first 30 of ${reviewQueue.length} medium-severity items.`
+                  : undefined}
+                cols={[
+                  { key: 'kind', kind: 'pn', head: 'Detector' },
+                  { key: 'preview', head: 'Preview' },
+                  { key: 'sev', kind: 'val', head: 'Severity' },
+                  { key: 'seen', kind: 'val', head: 'Seen', optional: true },
+                  { key: 'go', kind: 'rt', optional: true },
+                ]}
+                rows={reviewQueue.slice(0, 30).map(s => ({
+                  id: s.preview,
+                  cells: {
+                    kind: (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                        <Icon name={kindIcon(s.type.label)} size={15} style={{ color: 'var(--cr-fg-3)' }} />
+                        {s.type.label}
+                      </span>
+                    ),
+                    preview: (
+                      <span style={{ fontFamily: 'var(--cr-font-annot)', color: 'var(--cr-fg-3)' }}>{s.preview}</span>
+                    ),
+                    // The hue rides the VALUE, not a bar on the row's edge.
+                    sev: (
+                      <span style={{ color: SEVERITY_TONE[s.type.severity].fg }}>{s.type.severity}</span>
+                    ),
+                    seen: `${s.sessionCount} sess · ${s.occurrences} occ`,
+                    go: s.sessions[0] ? (
+                      <button
+                        onClick={() => onSessionClick?.(s.sessions[0].sessionId)}
+                        style={{ background: 'transparent', border: 0, padding: 0, color: 'var(--cr-brand-500)', cursor: 'pointer', fontFamily: 'var(--cr-font-annot)', fontSize: 12 }}
+                      >
+                        {shortId(s.sessions[0].sessionId)} →
+                      </button>
+                    ) : null,
+                  },
+                }))}
+              />
             </div>
           )}
 
@@ -753,7 +773,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                 const t = classify(r.detector, r.rule);
                 return (
                   <tr key={`${r.detector}:${r.rule}`} style={{ borderTop: i === 0 ? 'none' : '1px solid var(--cr-line-1)' }}>
-                    <td style={{ padding: '8px 12px', fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-2)' }}>
+                    <td style={{ padding: '8px 12px', fontFamily: 'var(--cr-font-annot)', color: 'var(--cr-fg-2)' }}>
                       <Icon name={kindIcon(t.label)} size={14} style={{ color: 'var(--cr-fg-3)', marginRight: 6, verticalAlign: '-2px' }} />
                       {shortRule(r.detector, r.rule)}
                     </td>
@@ -792,7 +812,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                 const realPath = p.project && p.project !== '(unknown)';
                 return (
                 <tr key={p.project} style={{ borderTop: i === 0 ? 'none' : '1px solid var(--cr-line-1)' }}>
-                  <td style={{ padding: '8px 12px', fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-2)', wordBreak: 'break-all' }}>{projectShort(p.project)}</td>
+                  <td style={{ padding: '8px 12px', fontFamily: 'var(--cr-font-annot)', color: 'var(--cr-fg-2)', wordBreak: 'break-all' }}>{projectShort(p.project)}</td>
                   <td style={{ padding: '8px 12px', textAlign: 'right', color: p.critical > 0 ? 'var(--cr-err-500)' : 'var(--cr-fg-3)', fontVariantNumeric: 'tabular-nums', fontWeight: p.critical > 0 ? 700 : 400 }}>{p.critical}</td>
                   <td style={{ padding: '8px 12px', textAlign: 'right', color: p.high > 0 ? 'var(--cr-warn-500)' : 'var(--cr-fg-3)', fontVariantNumeric: 'tabular-nums', fontWeight: p.high > 0 ? 600 : 400 }}>{p.high}</td>
                   <td style={{ padding: '8px 12px', textAlign: 'right', color: 'var(--cr-fg-2)', fontVariantNumeric: 'tabular-nums' }}>{p.medium}</td>
@@ -845,7 +865,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
                   <Chip kind={tone} size="sm">{s.agreement === 1 ? '1 detector' : `${s.agreement} agree`}</Chip>
-                  <span style={{ fontFamily: 'var(--cr-font-mono)', fontSize: 12, color: 'var(--cr-brand-500)' }}>{shortId(s.sessionId)}</span>
+                  <span style={{ fontFamily: 'var(--cr-font-annot)', fontSize: 12, color: 'var(--cr-brand-500)' }}>{shortId(s.sessionId)}</span>
                   <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{projectShort(s.project)}</span>
                   <span style={{ flex: 1 }} />
                   <span style={{ fontSize: 12, color: 'var(--cr-fg-2)' }}>{s.total.toLocaleString()} findings</span>
@@ -889,7 +909,7 @@ function ManagedPackCard({ pack }: { pack?: ServedRulePack }) {
           Maintained by chat-recall and installed into every device's redactor at sync time — nothing to configure.
         </span>
       </div>
-      <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginTop: 8, fontFamily: 'var(--cr-font-mono)' }}>
+      <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginTop: 8, fontFamily: 'var(--cr-font-annot)' }}>
         pack {pack?.version}{pack?.revision ? ` · rev ${pack.revision}` : ''}{pack?.source ? ` · ${pack.source}` : ''}
       </div>
       <button
@@ -964,19 +984,20 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
     } catch (e) { setTestError((e as Error).message); }
   }
 
+  // GAP 0. Three framed boxes 14px apart is a card stack. Flush, the pack, the
+  // note and the rule list read as one drawn object, because `.cr-note +
+  // .cr-plate` and its siblings drop the doubled edge.
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <div style={{ display: 'flex', flexDirection: 'column' }}>
       <ManagedPackCard pack={pack} />
 
-      <Card style={{ padding: 14 }}>
-        <div style={{ fontSize: 13, color: 'var(--cr-fg-2)', lineHeight: 1.5 }}>
-          Patterns added here run alongside the managed rules above. Each rule is a regex
-          matched against the raw session text. Use this for internal API key shapes,
-          custom token prefixes, or hostnames you don't want pasted into AI sessions.
-          Rules are stored here and executed on each device at sync time — the server never
-          receives unredacted text, so matching has to happen where the text still is.
-        </div>
-      </Card>
+      <Note>
+        Patterns added here run alongside the managed rules above. Each rule is a regex
+        matched against the raw session text. Use this for internal API key shapes,
+        custom token prefixes, or hostnames you don't want pasted into AI sessions.
+        Rules are stored here and executed on each device at sync time — the server never
+        receives unredacted text, so matching has to happen where the text still is.
+      </Note>
 
       {/* List */}
       <Card style={{ padding: 0 }}>
@@ -1133,7 +1154,7 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
               {testResult.count} match{testResult.count === 1 ? '' : 'es'}
             </div>
             {testResult.matches.map((m, i) => (
-              <div key={i} style={{ fontSize: 12, fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-2)' }}>
+              <div key={i} style={{ fontSize: 12, fontFamily: 'var(--cr-font-annot)', color: 'var(--cr-fg-2)' }}>
                 @{m.index}: <span style={{ background: 'var(--cr-warn-500)', color: 'var(--cr-on-warn)', padding: '0 4px' }}>{m.match}</span>
               </div>
             ))}

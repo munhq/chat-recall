@@ -8,7 +8,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Card, Chip, Input, ToolBadge, Button, SegmentedControl, Icon, pressableProps } from './primitives';
+import { Card, Chip, Input, ToolBadge, Button, SegmentedControl, Icon, pressableProps, Plate, Schedule, Note } from './primitives';
 import { formatMoney } from '../utils/money';
 import { useSidebarExtrasRegister } from '../context/sidebar-extras';
 import { TOOL_IDS, VALID_TOOL_FILTERS, type ToolId } from '../services/tools';
@@ -354,7 +354,7 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
                   <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--cr-fg-1)', marginBottom: 4 }}>
                     {item.title}
                   </div>
-                  <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', fontFamily: 'var(--cr-font-annot)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {cmd.slice(0, 120)}
                   </div>
                   {allow.length > 0 && (
@@ -424,16 +424,14 @@ function ToolkitDetail({ item, kind, allRows }: { item: MemoryMetadataRow; kind:
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
-        {tool && <ToolBadge tool={tool} />}
-        {peers.length > 0 && (
-          <Chip kind="ok">also in: {peers.join(', ')}</Chip>
-        )}
-        {kind === 'skill' && peers.length === 0 && (
-          <Chip kind="warn">only in {tool}</Chip>
-        )}
-        {scope && <Chip kind="neutral">{scope}</Chip>}
-      </div>
+      {/* The badge is the coded leader for this item. The chips beside it said
+          the scope, the peers and the portability a second time, and the
+          schedule below says all three with room for the value. */}
+      {tool && (
+        <div style={{ marginBottom: 8 }}>
+          <ToolBadge tool={tool} />
+        </div>
+      )}
       <h3 style={{ margin: '0 0 8px 0', fontSize: 22, fontWeight: 600 }}>{skillName || item.title}</h3>
       {description && (
         <p style={{ color: 'var(--cr-fg-2)', fontSize: 14, lineHeight: 1.5, marginTop: 4 }}>
@@ -441,42 +439,71 @@ function ToolkitDetail({ item, kind, allRows }: { item: MemoryMetadataRow; kind:
         </p>
       )}
 
+      {/* ONE STACK, NOT FOUR CARDS. Everything below is a sibling of everything
+          else, which is what `.cr-plate + .cr-plate { border-top: 0 }` needs to
+          fire. A margin on each child would reopen the gaps and rebuild the
+          card stack in heavier ink — the exact thing this vocabulary replaced.
+          The margin belongs on the container. */}
+      <div style={{ marginTop: 16 }}>
       {kind === 'mcp' && (
-        <Card style={{ padding: 16, marginTop: 16 }}>
-          <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 6 }}>Command</div>
-          <pre style={{ margin: 0, fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)', fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--cr-fg-1)' }}>
-            {command || '(none)'}
-          </pre>
-          {allow.length > 0 && (
-            <>
-              <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', margin: '12px 0 6px' }}>Always allow</div>
-              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                {allow.map(a => <Chip key={a} kind="neutral" size="sm">{a}</Chip>)}
-              </div>
-            </>
-          )}
-        </Card>
+        <Note
+          title="Command"
+          cmd={command || undefined}
+          footer={allow.length > 0 ? `Always allow: ${allow.join(', ')}` : undefined}
+        >
+          {!command && 'No command is recorded for this server.'}
+        </Note>
       )}
+
+      {/* The scope, the peers and the file on disk are properties of the SAME
+          item, so they are rows of one parts list. Three stacked cards claimed
+          each was its own subject. */}
+      <Schedule
+        caption="Where this lives"
+        cols={[{ key: 'k', kind: 'pn' }, { key: 'v', kind: 'val' }]}
+        rows={[
+          ...(scope ? [{ id: 'scope', cells: { k: 'Scope', v: scope } }] : []),
+          ...(kind === 'skill'
+            ? [{
+                id: 'peers',
+                cells: {
+                  k: 'Also in',
+                  v: peers.length > 0
+                    ? peers.join(', ')
+                    : <span style={{ color: 'var(--cr-warn-500)' }}>{tool} only</span>,
+                },
+              }]
+            : []),
+          {
+            id: 'file',
+            cells: {
+              k: 'Source file',
+              v: (
+                <code style={{ fontFamily: 'var(--cr-font-annot)', fontSize: 12, wordBreak: 'break-all' }}>
+                  {item.file_path}
+                </code>
+              ),
+            },
+          },
+        ]}
+      />
 
       {kind === 'skill' && Object.keys(subdirs).length > 0 && (
-        <Card style={{ padding: 16, marginTop: 16 }}>
-          <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 6 }}>Skill assets</div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {Object.entries(subdirs).map(([name, count]) => (
-              <Chip key={name} kind="neutral" size="sm">{name}: {count}</Chip>
-            ))}
-          </div>
-        </Card>
+        <Schedule
+          caption="Skill assets"
+          cols={[
+            { key: 'dir', kind: 'pn', head: 'Directory' },
+            { key: 'n', kind: 'val', head: 'Files' },
+          ]}
+          rows={Object.entries(subdirs).map(([name, count]) => ({
+            id: name,
+            cells: { dir: name, n: count },
+          }))}
+        />
       )}
 
-      <Card style={{ padding: 16, marginTop: 16 }}>
-        <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 6 }}>Source file</div>
-        <code style={{ fontFamily: 'var(--cr-font-mono, ui-monospace, monospace)', fontSize: 12, color: 'var(--cr-fg-2)', wordBreak: 'break-all' }}>
-          {item.file_path}
-        </code>
-      </Card>
-
       <PromoteRow item={item} kind={kind} fromTool={tool} allRows={allRows} />
+      </div>
     </div>
   );
 }
@@ -568,37 +595,35 @@ function PromoteRow({
   // rather than offering buttons that would fail.
   if (!CROSS_TOOL_TYPES.has(kind)) {
     return (
-      <Card style={{ padding: 16, marginTop: 16 }}>
-        <div style={{ fontSize: 13, color: 'var(--cr-fg-2)', fontWeight: 500, marginBottom: 4 }}>
-          Tool-specific — not portable across tools
-        </div>
-        <div style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
-          {kind === 'hook'
-            ? 'Hooks are Claude Code settings.json event handlers; other tools have their own mechanisms.'
-            : 'Plugins use a different bundle format per tool. Promote the skills/MCPs inside them instead.'}
-        </div>
-      </Card>
+      <Note title="Not portable">
+        {kind === 'hook'
+          ? 'Hooks are Claude Code settings.json event handlers. Other tools have their own mechanisms.'
+          : 'Plugins use a different bundle format for each tool. Promote the skills and MCPs inside them instead.'}
+      </Note>
     );
   }
 
-  // Cross-tool availability matrix — one row per AI tool, with explicit state.
+  // Cross-tool availability. This was six bordered boxes in a stack — a card
+  // list of six comparable rows, which is the one shape a schedule exists for.
+  // As rows the states line up in a column you can read down.
   return (
-    <Card style={{ padding: 16, marginTop: 16 }}>
-      <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 10 }}>
-        Cross-tool availability
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {ALL_AI_TOOLS.map(t => {
+    <Plate title="Cross-tool availability" flush>
+      <Schedule
+        cols={[
+          { key: 'tool', kind: 'pn', head: 'Tool' },
+          { key: 'state', kind: 'rt', head: 'State' },
+        ]}
+        rows={ALL_AI_TOOLS.map(t => {
           const has = !!presence[t];
           const supports = supportedTools.has(t);
           let action: React.ReactNode;
           if (has) {
-            action = <Chip kind="ok" size="sm">installed</Chip>;
+            action = <span style={{ color: 'var(--cr-ok-500)' }}>installed</span>;
           } else if (!supports) {
-            action = <Chip kind="neutral" size="sm">not supported in {t}</Chip>;
+            action = <span style={{ color: 'var(--cr-fg-3)' }}>not supported</span>;
           } else if (t === fromTool) {
             // We're viewing this row's own tool — should be "has=true". Defensive.
-            action = <Chip kind="neutral" size="sm">source</Chip>;
+            action = <span style={{ color: 'var(--cr-fg-3)' }}>source</span>;
           } else {
             action = (
               <Button
@@ -611,28 +636,12 @@ function PromoteRow({
               </Button>
             );
           }
-          return (
-            <div
-              key={t}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                padding: '8px 10px',
-                background: 'var(--cr-ink-1)',
-                border: '1px solid var(--cr-line-1)',
-                borderRadius: 0,
-              }}
-            >
-              <ToolBadge tool={t} size="sm" />
-              {action}
-            </div>
-          );
+          return { id: t, cells: { tool: <ToolBadge tool={t} size="sm" />, state: action } };
         })}
-      </div>
+      />
       {msg && (
         <div style={{
-          marginTop: 12,
+          margin: 12,
           padding: 10,
           fontSize: 12,
           borderRadius: 0,
@@ -643,7 +652,7 @@ function PromoteRow({
           {msg.text}
         </div>
       )}
-    </Card>
+    </Plate>
   );
 }
 
@@ -725,50 +734,43 @@ function EmptyListState({
   return (
     <div style={{ padding: '20px 16px' }}>
       <div style={{ marginBottom: 12, fontSize: 13, color: 'var(--cr-fg-2)' }}>
-        No {kind}s in {targetTool}. Import from another tool:
+        No {kind}s in {targetTool}. Import one from another tool:
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        {importable.slice(0, 30).map(row => {
+      {/* Was a stack of bordered boxes, one per importable item — a card list
+          of rows that all answer the same question. The count that used to
+          trail the stack is the schedule's caption, where a limit belongs. */}
+      <Schedule
+        caption={
+          importable.length > 30
+            ? `The first 30 of ${importable.length}. Filter above to narrow the list.`
+            : undefined
+        }
+        cols={[
+          { key: 'from', kind: 'no', head: 'From' },
+          { key: 'name', kind: 'pn', head: 'Name' },
+          { key: 'act', kind: 'rt' },
+        ]}
+        rows={importable.slice(0, 30).map(row => {
           const fromTool = readTool(row);
-          return (
-            <div
-              key={row.id}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                padding: '8px 10px',
-                background: 'var(--cr-ink-0)',
-                border: '1px solid var(--cr-line-2)',
-                borderRadius: 0,
-              }}
-            >
-              {fromTool && <ToolBadge tool={fromTool} size="sm" />}
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{
-                  fontSize: 12, fontWeight: 500, color: 'var(--cr-fg-1)',
-                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-                }}>
-                  {row.title}
-                </div>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={busyId !== null}
-                onClick={() => handleImport(row)}
-              >
-                {busyId === row.id ? 'Copying…' : 'Copy'}
-              </Button>
-            </div>
-          );
+          return {
+            id: row.id,
+            cells: {
+              from: fromTool ? <ToolBadge tool={fromTool} size="sm" /> : null,
+              name: row.title,
+              act: (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={busyId !== null}
+                  onClick={() => handleImport(row)}
+                >
+                  {busyId === row.id ? 'Copying…' : 'Copy'}
+                </Button>
+              ),
+            },
+          };
         })}
-      </div>
-      {importable.length > 30 && (
-        <div style={{ marginTop: 10, fontSize: 12, color: 'var(--cr-fg-3)' }}>
-          …and {importable.length - 30} more
-        </div>
-      )}
+      />
     </div>
   );
 }
@@ -780,9 +782,6 @@ function EmptyListState({
 // queued mutations in parallel and refreshes the matrix.
 
 const ALL_TOOLS_ORDERED: SyncTool[] = ['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor'];
-const TOOL_LABEL: Record<SyncTool, string> = {
-  claude: 'Claude', agy: 'Antigravity', gemini: 'Gemini', opencode: 'OpenCode', codex: 'Codex', cursor: 'Cursor',
-};
 
 type CellAction = 'add' | 'remove';
 type PendingMap = Map<string, CellAction>; // key = "<type>:<name>:<deviceId>:<tool>"
@@ -1342,13 +1341,18 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
           borderRadius: 0, display: 'flex', flexDirection: 'column',
         }}
       >
-        {/* Header */}
-        <div className="cr-wrap-mobile" style={{ padding: '14px 18px', borderBottom: '1px solid var(--cr-line-1)', display: 'flex', alignItems: 'center', gap: 12 }}>
-          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 600 }}>Sync across tools</h2>
-          <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
-            Click a cell to queue a change. Filled = present; ring = pending add; X = pending remove.
+        {/* Header. This is a plate header and now says so: the same rule
+            weight, the same title type and the same right-aligned tools slot
+            every other panel uses. Hand-rolled, its six controls read as a
+            loose row of boxes floating above the table. */}
+        <div className="cr-plate-h cr-wrap-mobile">
+          <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 10, minWidth: 0, flexWrap: 'wrap' }}>
+            <h2 className="cr-plate-t">Sync across tools</h2>
+            <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
+              Click a cell to queue a change. Filled = present; ring = pending add; X = pending remove.
+            </span>
           </span>
-          <div style={{ flex: 1 }} />
+          <span className="cr-plate-tools">
           <select
             data-testid="toolkit-pull-device"
             value={pullDevice}
@@ -1404,6 +1408,7 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
             }
           </Button>
           <Button variant="ghost" size="sm" onClick={onClose}>Close</Button>
+          </span>
         </div>
 
         {/* Toolbar: type tabs, search, filter */}
@@ -1497,11 +1502,11 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
                 <tr>
                   {devices.flatMap(d =>
                     supportedTools.map(t => (
+                      // ToolBadge already prints the dot AND the tool name, so a
+                      // second label beside it rendered "CLAUDE CLAUDE" in every
+                      // column and pushed the last tool off the right edge.
                       <th key={`${d}:${t}`} style={{ ...thStyle('center'), borderBottom: '1px solid var(--cr-line-1)' }}>
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                          <ToolBadge tool={t} size="sm" />
-                          <span style={{ fontSize: 12 }}>{TOOL_LABEL[t]}</span>
-                        </span>
+                        <ToolBadge tool={t} size="sm" />
                       </th>
                     ))
                   )}

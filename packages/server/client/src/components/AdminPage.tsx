@@ -222,11 +222,11 @@ export default function AdminPage({ onClose }: AdminPageProps) {
                       {metrics.tenants.map((t) => (
                         <tr key={t.tenant} style={{ borderBottom: '1px solid var(--cr-line-1)' }}>
                           <td style={{ padding: '10px 12px', fontWeight: 600, color: 'var(--cr-fg-1)' }}>{t.tenant}</td>
-                          <td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: 'var(--cr-font-mono)' }}>{t.sessions.toLocaleString()}</td>
-                          <td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: 'var(--cr-font-mono)' }}>{t.chunks.toLocaleString()}</td>
-                          <td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: 'var(--cr-font-mono)' }}>{t.raw.toLocaleString()}</td>
-                          <td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: 'var(--cr-font-mono)' }}>{t.findings.toLocaleString()}</td>
-                          <td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: 'var(--cr-font-mono)', fontWeight: t.verified > 0 ? 600 : 400, color: t.verified > 0 ? 'var(--cr-err-500)' : 'inherit' }}>{t.verified.toLocaleString()}</td>
+                          <td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: 'var(--cr-font-annot)' }}>{t.sessions.toLocaleString()}</td>
+                          <td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: 'var(--cr-font-annot)' }}>{t.chunks.toLocaleString()}</td>
+                          <td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: 'var(--cr-font-annot)' }}>{t.raw.toLocaleString()}</td>
+                          <td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: 'var(--cr-font-annot)' }}>{t.findings.toLocaleString()}</td>
+                          <td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: 'var(--cr-font-annot)', fontWeight: t.verified > 0 ? 600 : 400, color: t.verified > 0 ? 'var(--cr-err-500)' : 'inherit' }}>{t.verified.toLocaleString()}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -310,7 +310,7 @@ export default function AdminPage({ onClose }: AdminPageProps) {
                                 <span style={{ color: 'var(--cr-fg-3)' }}>—</span>
                               )}
                             </td>
-                            <td style={{ padding: '12px 12px', textAlign: 'center', fontFamily: 'var(--cr-font-mono)', fontSize: 12.5 }}>
+                            <td style={{ padding: '12px 12px', textAlign: 'center', fontFamily: 'var(--cr-font-annot)', fontSize: 12.5 }}>
                               <div>seq {h.latestSeq ?? '—'}</div>
                               <div style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>coll v{p.collectorVersion ?? '—'}</div>
                             </td>

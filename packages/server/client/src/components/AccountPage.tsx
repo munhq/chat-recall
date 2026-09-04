@@ -512,7 +512,7 @@ export function ConfirmEmailScreen() {
             data-testid="otp-input"
             style={{
               flex: 1, padding: '10px 12px', fontSize: 18, letterSpacing: '0.18em',
-              fontFamily: 'var(--cr-font-mono)', borderRadius: 0,
+              fontFamily: 'var(--cr-font-annot)', borderRadius: 0,
               border: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-1)',
               color: 'var(--cr-fg-1)',
             }}

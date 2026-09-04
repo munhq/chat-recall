@@ -352,7 +352,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
                         minWidth: 50,
                         textAlign: 'right',
                         fontVariantNumeric: 'tabular-nums',
-                        fontFamily: 'var(--cr-font-mono)',
+                        fontFamily: 'var(--cr-font-annot)',
                       }}
                     >
                       {b.sessions.toLocaleString()}
@@ -398,7 +398,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
                         fontWeight: 600,
                         color: 'var(--cr-warn-500)',
                         fontVariantNumeric: 'tabular-nums',
-                        fontFamily: 'var(--cr-font-mono)',
+                        fontFamily: 'var(--cr-font-annot)',
                       }}
                     >
                       {fmtCost(p.totalCost)}

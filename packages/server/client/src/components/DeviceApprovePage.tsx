@@ -119,7 +119,7 @@ const DEVICE_CSS = `
 .dv-card h1 { font-family: var(--cr-font-display); font-size: 21px; line-height: 1.25;
   margin: 0 0 7px; color: var(--cr-fg-1); letter-spacing: -0.01em; }
 .dv-sub { margin: 0 0 20px; font-size: 13px; line-height: 1.55; color: var(--cr-fg-2); }
-.dv-code { font-family: var(--cr-font-mono); font-size: clamp(21px, 6.5vw, 28px);
+.dv-code { font-family: var(--cr-font-annot); font-size: clamp(21px, 6.5vw, 28px);
   letter-spacing: 0.2em; text-align: center;
   background: var(--cr-ink-0); border: 1px solid var(--cr-ink-3);
   border-radius: var(--cr-radius-md); padding: 14px;
