@@ -175,5 +175,11 @@ describe('sync parity — synced conversation == local conversation', () => {
     for (const c of chunks) expect(c.chunk_type.startsWith('tool')).toBe(false);
 
     await store.close();
-  });
+  // 60s, not the 15s default. This test writes a tool-heavy transcript, runs a
+  // real sync through the router, and reads it back out of the store — it costs
+  // ~4s on Linux and ran 15.8s on the Windows runner, which is 3-4x slower for
+  // SQLite and filesystem work. It passed there only by luck. The other heavy
+  // store tests already carry 30s-60s budgets for the same reason; this one was
+  // the outlier. Still bounded, so a genuine hang fails rather than hangs.
+  }, 60000);
 });
