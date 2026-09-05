@@ -37,13 +37,15 @@ its own boundary. This does not, and neither does your team.
 
 ## See it work
 
-Every screen below is a real MCP call against a real server — the exact tool and
-arguments are shown above each response. Nothing is mocked, replayed or re-timed.
+Every screen below is real output against a real server, captured from the demo
+account. Nothing is mocked, replayed or re-timed.
 
-**One memory, every tool.** Here **OpenCode** is asked about a **Claude Code**
-session: a different tool, a different transcript format, one index.
+**One index, every tool.** Search finds a session by what was *discussed* in it,
+not by its filename, and `memory status` shows every source type in one place —
+sessions beside the skills, MCPs, commands, subagents and hooks that produced
+them.
 
-![recall_smart_resume called from OpenCode with a Claude Code session id, returning that session's request, plan and completed work](docs/media/7-cross-claude.png)
+![chat-recall search finding a past session by what was discussed in it, and memory status listing every indexed source type](docs/media/7-cross-claude.png)
 
 **Or just ask in plain English** — no tool names, no session ids. The agent picks
 the call itself:
