@@ -15,6 +15,11 @@ import { mkdirSync } from 'node:fs';
 
 const BASE = process.env.BASE || 'http://127.0.0.1:5174';
 const OUT = process.env.OUT || 'shots';
+/* The app ignores prefers-color-scheme and reads its own key, so a context
+ * colorScheme alone yields two identical captures and a false pass. Set the
+ * key the app actually reads. */
+const THEME = process.env.THEME === 'light' ? 'light' : 'dark';
+const SUFFIX = THEME === 'light' ? '-light' : '';
 mkdirSync(OUT, { recursive: true });
 
 /* WHAT COUNTS AS REAL DATA ON THE PAGE.
@@ -50,7 +55,7 @@ const FORBIDDEN = [
 
 const b = await chromium.launch();
 const ctx = await b.newContext({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 2 });
-await ctx.addInitScript("try{localStorage.setItem('cr-theme','dark')}catch{}");
+await ctx.addInitScript(`try{localStorage.setItem('cr-theme','${THEME}')}catch{}`);
 const p = await ctx.newPage();
 let failed = 0;
 
@@ -63,8 +68,8 @@ async function shoot(name, go) {
     failed += 1;
     return;
   }
-  await p.screenshot({ path: `${OUT}/${name}.png`, fullPage: true });
-  console.log(`${name.padEnd(22)} captured, clean`);
+  await p.screenshot({ path: `${OUT}/${name}${SUFFIX}.png`, fullPage: true });
+  console.log(`${(name + SUFFIX).padEnd(28)} captured, clean`);
 }
 
 await shoot('project-overview', async () => {
@@ -91,4 +96,4 @@ await shoot('conversation-overview', async () => {
 
 await b.close();
 if (failed) { console.error(`\n${failed} capture(s) refused.`); process.exit(1); }
-console.log('\nall figures captured from the demo account');
+console.log(`\nall figures captured from the demo account (${THEME})`);
