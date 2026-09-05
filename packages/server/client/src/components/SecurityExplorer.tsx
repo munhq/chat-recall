@@ -385,9 +385,8 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
           
           caption="Exposure"
           cols={[
-            { key: 'sev', kind: 'pn', head: 'Severity' },
-            { key: 'what', head: 'What it counts' },
-            { key: 'n', kind: 'val', head: 'Count' },
+            { key: 'sev', kind: 'pn', head: 'Severity', width: 'auto' },
+            { key: 'n', kind: 'val', head: 'Count', width: '1%' },
           ]}
           rows={[
             {
@@ -396,7 +395,6 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
               onSelect: () => { setLens('action'); setSevFilter(f => f === 'critical' ? null : 'critical'); },
               cells: {
                 sev: 'Critical',
-                what: 'distinct keys, rotate these first',
                 n: <span style={{ color: 'var(--cr-err-500)', fontSize: 15 }}>{headline.counts.critical}</span>,
               },
             },
@@ -406,7 +404,6 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
               onSelect: () => { setLens('action'); setSevFilter(f => f === 'high' ? null : 'high'); },
               cells: {
                 sev: 'High',
-                what: 'distinct keys, rotate after the critical ones',
                 n: <span style={{ color: 'var(--cr-warn-500)', fontSize: 15 }}>{headline.counts.high}</span>,
               },
             },
@@ -417,7 +414,6 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                 : undefined,
               cells: {
                 sev: 'Medium',
-                what: 'distinct keys in the review queue',
                 n: <span style={{ fontSize: 15 }}>{headline.counts.medium}</span>,
               },
             },
@@ -428,7 +424,6 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                 : undefined,
               cells: {
                 sev: 'Noise',
-                what: 'fuzzy matches, likely false positives',
                 n: <span className="val-q">{headline.counts.noise}</span>,
               },
             },
@@ -436,7 +431,6 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
               id: 'sessions',
               cells: {
                 sev: 'Sessions exposed',
-                what: 'transcripts containing a critical or high key',
                 n: <span style={{ fontSize: 15 }}>{headline.sessionsHit}</span>,
               },
             },
@@ -453,10 +447,9 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
         title="Prevent leaks"
         footer={
           <>
-            Reference the environment variable name in prompts, for example{' '}
-            <code style={{ fontFamily: 'var(--cr-font-annot)', fontSize: 12.5, color: 'var(--cr-fg-1)' }}>$OPENAI_API_KEY</code>,
-            never the value. A pasted secret can stay in a transcript after you delete the chat.
-            If one slips through, rotate it.
+            Name the variable, never the value:{' '}
+            <code style={{ fontFamily: 'var(--cr-font-annot)', fontSize: 12.5, color: 'var(--cr-fg-1)' }}>$OPENAI_API_KEY</code>.
+            A pasted secret outlives the chat you delete.
           </>
         }
       />
@@ -532,17 +525,17 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                 No critical or high-severity secrets detected
               </div>
               <div style={{ fontSize: 12 }}>
-                Findings populate from the collector. Run <code>chat-recall sync</code> on the
-                machine where your sessions live — secrets are scanned and masked client-side,
-                then shipped here.
+                Run <code>chat-recall sync</code> where your sessions live. Secrets are masked before they ship.
               </div>
             </Card>
           )}
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {shownAction.map(s => {
+            {(() => { const toldImpact = new Set<string>(); return shownAction.map(s => {
               const tone = SEVERITY_TONE[s.type.severity];
               const isOpen = expanded.has(s.preview);
+              const firstOfRule = !toldImpact.has(s.type.label);
+              toldImpact.add(s.type.label);
               return (
                 <Card
                   key={s.preview}
@@ -584,10 +577,12 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                     )}
                   </div>
 
-                  {/* Impact line */}
-                  <div style={{ marginTop: 10, fontSize: 13, color: 'var(--cr-fg-2)', lineHeight: 1.45 }}>
-                    {s.type.impact}
-                  </div>
+                  {/* Impact line, on the first finding of this rule only. */}
+                  {firstOfRule && (
+                    <div style={{ marginTop: 10, fontSize: 13, color: 'var(--cr-fg-2)', lineHeight: 1.45 }}>
+                      {s.type.impact}
+                    </div>
+                  )}
 
                   {/* Meta row */}
                   <div style={{ marginTop: 10, display: 'flex', gap: 14, fontSize: 12, color: 'var(--cr-fg-3)', flexWrap: 'wrap' }}>
@@ -677,7 +672,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
                   )}
                 </Card>
               );
-            })}
+            }); })()}
           </div>
 
           {/* Review queue — medium severity */}
@@ -906,7 +901,7 @@ function ManagedPackCard({ pack }: { pack?: ServedRulePack }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <Chip kind="ok" size="sm">{managed.length} managed rules active</Chip>
         <span style={{ fontSize: 12, color: 'var(--cr-fg-2)' }}>
-          Maintained by chat-recall and installed into every device's redactor at sync time — nothing to configure.
+          Maintained by chat-recall and installed into every device's redactor at sync time. Nothing to configure.
         </span>
       </div>
       <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginTop: 8, fontFamily: 'var(--cr-font-annot)' }}>
@@ -992,11 +987,10 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
       <ManagedPackCard pack={pack} />
 
       <Note>
-        Patterns added here run alongside the managed rules above. Each rule is a regex
-        matched against the raw session text. Use this for internal API key shapes,
-        custom token prefixes, or hostnames you don't want pasted into AI sessions.
-        Rules are stored here and executed on each device at sync time — the server never
-        receives unredacted text, so matching has to happen where the text still is.
+        Patterns here run alongside the managed rules above. Each rule is a regex matched
+        against the raw session text: use it for internal API key shapes, custom token
+        prefixes, or hostnames you don't want pasted into a session. Each device runs them
+        at sync time, because the server never receives unredacted text.
       </Note>
 
       {/* List */}
@@ -1113,9 +1107,9 @@ function CustomRulesPanel({ onChanged }: { onChanged: () => void }) {
               <span>
                 Also redact matches (not just report them)
                 <span style={{ display: 'block', color: 'var(--cr-fg-3)', marginTop: 2 }}>
-                  Every device applies this pattern when redacting, from its next sync on — no CLI
-                  upgrade needed. Over-broad patterns are rejected on save, because a rule that
-                  matches ordinary text would replace real content with [REDACTED] everywhere.
+                  Every device applies this pattern when redacting, from its next sync on. No CLI
+                  upgrade needed. A pattern that matches ordinary text is rejected on save: it would
+                  replace real content with [REDACTED] everywhere.
                 </span>
               </span>
             </label>

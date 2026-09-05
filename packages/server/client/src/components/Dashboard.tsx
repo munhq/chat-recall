@@ -127,7 +127,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
           <div>
             <h2>Insights</h2>
             <p className="cr-lead" style={{ marginTop: 4 }}>
-              What's working, what's not — and how to improve your Claude setup.
+              What's working, and what to change.
             </p>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -449,8 +449,7 @@ function PatternsSection({
       <Card style={{ padding: 24, marginTop: 24 }} data-testid="patterns-section">
         <h3>Patterns</h3>
         <p style={{ fontSize: 13, color: 'var(--cr-fg-3)', marginTop: 8 }}>
-          No patterns yet. Once chat-recall has indexed sessions with file activity, this panel surfaces
-          repeated work, hot files, and likely-redundant sessions.
+          No patterns yet. They appear once your sessions have file activity behind them.
         </p>
       </Card>
     );
@@ -469,7 +468,7 @@ function PatternsSection({
         <Card style={{ padding: 24, marginBottom: 16 }} data-testid="patterns-topics">
           <h3 style={{ marginTop: 0 }}>Repeated work</h3>
           <p style={{ fontSize: 12, color: 'var(--cr-fg-3)', margin: '4px 0 16px' }}>
-            Topics that show up across many sessions — recurring problem areas.
+            The problem areas you keep coming back to.
           </p>
           {/* Nine hand-rolled bordered boxes in a gapped grid — a card grid that
               did not even use the Card primitive. A schedule ranks the topics by
@@ -503,7 +502,7 @@ function PatternsSection({
         <Card style={{ padding: 24, marginBottom: 16 }} data-testid="patterns-hot-files">
           <h3 style={{ marginTop: 0 }}>Hot files</h3>
           <p style={{ fontSize: 12, color: 'var(--cr-fg-3)', margin: '4px 0 16px' }}>
-            Files touched by the most sessions. Multiple-project hits often signal a copy-paste pattern.
+            Touched by the most sessions. A hit in several projects is usually a copy-paste.
           </p>
           <div style={{ fontSize: 12, fontFamily: 'var(--cr-mono, monospace)' }}>
             {patterns.hotFiles.slice(0, 12).map((f) => {
@@ -549,8 +548,7 @@ function PatternsSection({
         <Card style={{ padding: 24, marginBottom: 16 }} data-testid="patterns-redundancy">
           <h3 style={{ marginTop: 0 }}>Redundancy alerts</h3>
           <p style={{ fontSize: 12, color: 'var(--cr-fg-3)', margin: '4px 0 16px' }}>
-            Pairs of sessions in the same project with significant file overlap — flagged as likely
-            duplicate work. The agent can read the older one before redoing it.
+            Two sessions, one project, the same files. Read the older one before redoing it.
           </p>
           {patterns.redundancyPairs.slice(0, 6).map((r, i) => {
             const projShort = r.projectPath.split('/').slice(-2).join('/') || r.projectPath;

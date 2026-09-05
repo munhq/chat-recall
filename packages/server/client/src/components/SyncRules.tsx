@@ -79,18 +79,16 @@ export default function SyncRules() {
   return (
     <div style={{ fontSize: 13 }}>
       <div style={{ color: 'var(--cr-fg-2)', lineHeight: 1.55, marginBottom: 12 }}>
-        Choose what chat-recall should <strong>never</strong> sync. These rules apply to every machine
-        you connect, starting at its next sync. (A machine can always add its own stricter rules —
-        nothing here can loosen those.)
+        What <strong>never</strong> syncs, on every machine you connect. A machine can be stricter, never looser.
       </div>
       <div style={{
         color: 'var(--cr-fg-2)', fontSize: 12.5, lineHeight: 1.5, marginBottom: 14,
         padding: '9px 12px', borderRadius: 'var(--cr-radius-md)',
         border: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-1)',
       }}>
-        Personal folders — Pictures, Music, Movies, Documents, Desktop, Downloads — are
-        <strong> never indexed by default</strong>. To include a project that lives in one, run
-        <code> chat-recall include project &lt;path&gt;</code> on that machine.
+        Pictures, Music, Movies, Documents, Desktop and Downloads are
+        <strong> never indexed</strong>. To add a project inside one, run
+        <code> chat-recall include project &lt;path&gt;</code> there.
       </div>
 
       {/* Folders the collector found but nobody has decided about yet. These are
@@ -157,10 +155,7 @@ export default function SyncRules() {
         <>
           <div style={cap}>Transcript sources on your machines</div>
           <div style={{ color: 'var(--cr-fg-2)', fontSize: 12.5, lineHeight: 1.5, margin: '6px 0 10px' }}>
-            Each machine reports the profile folders it finds for every AI tool — Claude Code, Gemini,
-            Codex, Antigravity and OpenCode. Untick one to stop syncing it, which is how you keep a
-            work profile out of this workspace. chat-recall can only switch off a folder a machine
-            already found; it can never be pointed at a new path from here.
+            What each machine found. Untick one to stop syncing it. Nothing here can point at a new path.
           </div>
           {/* RULED ROWS, NOT ONE BOX PER FOLDER. A gapped column of bordered
               boxes is the card list, and the box also carried the on/off state
@@ -226,8 +221,7 @@ export default function SyncRules() {
 
       <div style={cap}>Don't sync these folders</div>
       <div style={{ color: 'var(--cr-fg-3)', fontSize: 12, marginTop: 4, marginBottom: 2 }}>
-        One path per line. Matches any project whose path contains the text — so <code>.claude-pr-bot</code>
-        skips every worktree under it.
+        One path per line, matched as a substring: <code>.claude-pr-bot</code> skips every worktree under it.
       </div>
       <textarea
         value={projects}

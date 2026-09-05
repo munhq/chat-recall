@@ -222,7 +222,7 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
         <div className="cr-page-header-row" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>Toolkit</h2>
           <span className="cr-page-header-lead" style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
-            Skills, MCPs, and other config-y primitives — cross-tool, promotable.
+            One library of skills, MCPs and commands, on every tool.
           </span>
           <div className="cr-page-header-spacer" style={{ flex: 1 }} />
           <div style={{ minWidth: 240 }}>
@@ -250,7 +250,7 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
               press a button that is not on the page is worse than silence. */}
           {!coverageGated && (
             <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginBottom: 8 }}>
-              Which tool has which skill / MCP / command / agent, per device. A gap = not synced there. Click a cell to queue a copy, use Sync everything to fan a machine's own artifacts across its tools, or Install to put what your account has onto a machine that does not have it yet.
+              Which tool has what, per device. A gap is a copy waiting to happen: click it.
             </div>
           )}
           <SyncMatrix inline onClose={() => {}} onMutated={refreshAfterMutation}
@@ -975,12 +975,11 @@ function ToolkitUpgradePanel({ gate, onClose }: { gate: FeatureGateError; onClos
             textWrap: 'balance',
           }}
         >
-          Install a tool once. Have it everywhere.
+          Write a skill once and every tool gets it.
         </h2>
         <p style={{ margin: '0 0 18px', fontSize: 13.5, lineHeight: 1.6, color: 'var(--cr-fg-2)', maxWidth: '46ch' }}>
-          Toolkit lines up every skill, MCP, command and agent across your AI tools
-          and machines, then fills the gaps — so a skill you wrote for one tool
-          reaches the rest without you copying files by hand.
+          A skill you wrote for one tool reaches the rest, on every machine,
+          without you copying files by hand.
         </p>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
           {/* Always an action. The server normally sends upgradeUrl, but a 402
