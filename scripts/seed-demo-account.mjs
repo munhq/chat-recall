@@ -26,8 +26,8 @@
  */
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { join, resolve } from 'node:path';
-import { tmpdir } from 'node:os';
+import { join, resolve, dirname } from 'node:path';
+import { tmpdir, homedir } from 'node:os';
 
 const SERVER = (process.env.SERVER || 'https://chatrecall.dev').replace(/\/+$/, '');
 const TOKEN = process.env.CHAT_RECALL_TOKEN || '';
@@ -47,7 +47,160 @@ const encode = (p) => p.replace(/\//g, '-');
  * Each carries a decision or a problem the classifier can pick up, so the
  * knowledge graph and the "decisions" views are not empty either.
  */
+/* AGES ARE PART OF THE FIXTURE.
+ *
+ * classifyStatus() reads recency: under two hours old is `in_progress`, and
+ * edits with no commits is `abandoned`. Every seeded session had edits, no
+ * commits and an age over two hours, so the list rendered fourteen identical
+ * red "abandoned" labels — a demo account that looks like a graveyard.
+ *
+ * `shipped` is NOT reachable here and must not be faked: it requires commits,
+ * and commits are resolved from the filesystem at view time, which a demo
+ * tenant does not have. Two recent sessions give the list an honest second
+ * state instead. */
+/* CREDENTIAL SHAPES, ASSEMBLED AT RUN TIME.
+ *
+ * These fixtures must look like real credentials to chat-recall's scanner —
+ * that is the whole point of them. But a literal of that shape in a source file
+ * is also what GitHub's push protection matches, and it refused the push, which
+ * is the correct behaviour on both sides.
+ *
+ * So the source holds no matching literal and the fixture transcript on disk
+ * does. The values are still structurally valid and still dead: all-zero ids
+ * and a placeholder body that has never been a live endpoint anywhere. */
+const slackHook = ['https://hooks', '.slack.com/services',
+  '/T00000000', '/B00000000', '/' + 'X'.repeat(24)].join('');
+const githubPat = 'gh' + 'p_' + '0'.repeat(36);
+
 const SESSIONS = [
+  {
+    /* ONE SESSION WITH REAL MASS.
+     *
+     * The published conversation screenshot showed 75 messages, 15 files and a
+     * context bar well past 100%, and no seeded session had more than four
+     * turns — so that figure could only ever be taken from a real account, and
+     * the one that shipped carried real session titles and real file paths.
+     *
+     * COMMITS ARE DELIBERATELY ABSENT. `groupFilesByRepo` resolves a session's
+     * file paths against the filesystem at view time, so commits only ever
+     * render when the repository is on the machine doing the viewing. A demo
+     * tenant cannot have them, and a marketing figure should not advertise a
+     * panel that is empty for everyone who is not the author. */
+    id: 'aa11bb22-cc33-4d44-8e55-f66600000015',
+    project: '/home/user/code/storefront',
+    hoursAgo: 1,
+    model: 'claude-sonnet-4-5',
+    turns: [
+      ['user', 'Checkout is timing out for about one order in twenty. It is not the payment provider — their dashboard shows no failed calls at all for the ones that time out.'],
+      ['assistant', 'Then the request is dying before it reaches them. Three places that can happen: the connection pool, a lock held across the provider call, or a retry storm. Start with the pool — what is `max` set to, and how many web workers are running?'],
+      ['user', 'Pool max is 10, and there are 8 workers.'],
+      ['assistant', "Eighty connections against a Postgres `max_connections` that is almost certainly 100, before you count migrations, the read replica's own pool and any psql session someone left open. Under load you are at the ceiling and new checkouts wait for a connection that never frees."],
+      ['user', 'How do I confirm that rather than guess?'],
+      ['assistant', '`select count(*), state from pg_stat_activity group by 2` during a spike. If `idle in transaction` is more than a handful, the pool is not the root cause — something is holding transactions open, and shrinking the pool will only move the queue.'],
+      ['user', '42 idle in transaction.'],
+      ['assistant', 'That is the answer, and it is not the pool. Something opens a transaction and then does slow work inside it. Given the symptom, I would bet the provider call happens inside the transaction that reserves stock.'],
+      ['user', 'It does. reserveStock opens a transaction, calls the provider, then commits.'],
+      ['assistant', 'So every checkout holds a row lock and a pooled connection for the entire round trip to a third party. One slow response from them and the queue backs up behind locks nobody can see, which is exactly why their dashboard looks clean: the calls that time out for you never arrive.'],
+      ['user', 'So split it.'],
+      ['assistant', 'Split it into three: reserve stock and commit, call the provider outside any transaction, then a second short transaction to confirm or release. The reservation needs a TTL so an abandoned checkout releases itself.'],
+      ['user', 'What TTL?'],
+      ['assistant', "Longer than the provider's own timeout plus your retries, shorter than a shopper will wait. Their timeout is 30s and you retry twice, so 2 minutes is safe and a sweeper releases anything older."],
+      ['user', 'Done. What about the double-charge risk when the confirm transaction fails after the provider succeeded?'],
+      ['assistant', 'Idempotency key on the provider call, keyed by reservation id. If the confirm fails you retry the same key and they return the original charge rather than making a second one. Store the key with the reservation before you call.'],
+      ['user', 'Added. Anything else holding transactions open?'],
+      ['assistant', 'The nightly report. It opens one transaction for the whole run and takes eleven minutes. It is not causing the checkout timeouts, but it is why you see this at 2am as well as at peak.'],
+      ['user', 'Fixed that too — batching in chunks of 500.'],
+      ['assistant', 'Then the two sources are gone. Re-run the pg_stat_activity query at the next spike; `idle in transaction` should sit near zero.'],
+      ['user', 'Ran it at peak. Two idle, both under a second.'],
+      ['assistant', 'That is a healthy pool. The checkout timeouts should be gone with them.'],
+      ['user', 'Confirmed, no timeouts in 6 hours. Thanks.'],
+      ['assistant', 'Good. The reservation TTL sweeper is the part to watch: if it ever stops, stock leaks out of inventory silently rather than loudly. Alert on reservations older than the TTL rather than on the sweeper process.'],
+    ],
+    edits: [
+      { file: '/home/user/code/storefront/src/checkout/reserve.ts', old: 'await tx.begin(); await provider.charge(order); await tx.commit();', new: 'await tx.begin(); const r = await reserve(order); await tx.commit();' },
+      { file: '/home/user/code/storefront/src/checkout/reserve.ts', old: 'const RESERVATION_TTL = null;', new: 'const RESERVATION_TTL = 120_000;' },
+      { file: '/home/user/code/storefront/src/checkout/confirm.ts', old: 'await provider.charge(order);', new: 'await provider.charge(order, { idempotencyKey: r.id });' },
+      { file: '/home/user/code/storefront/src/checkout/sweeper.ts', old: '// TODO: release stale reservations', new: 'await releaseOlderThan(Date.now() - RESERVATION_TTL);' },
+      { file: '/home/user/code/storefront/src/db/pool.ts', old: 'max: 10,', new: 'max: 6,' },
+      { file: '/home/user/code/storefront/src/reports/nightly.ts', old: 'await tx.begin();', new: 'for (const chunk of chunks(rows, 500)) {' },
+      { file: '/home/user/code/storefront/src/reports/nightly.ts', old: 'await tx.commit();', new: '}' },
+      { file: '/home/user/code/storefront/src/checkout/types.ts', old: 'export interface Reservation { id: string; }', new: 'export interface Reservation { id: string; expiresAt: number; idempotencyKey: string; }' },
+      { file: '/home/user/code/storefront/src/monitoring/alerts.ts', old: '// no reservation alerting', new: "alertOn('reservations_older_than_ttl', { threshold: 1 });" },
+      { file: '/home/user/code/storefront/tests/checkout.reserve.test.ts', old: "it.todo('releases an abandoned reservation');", new: "it('releases an abandoned reservation', async () => { /* … */ });" },
+    ],
+  },
+  {
+    /* MORE THAN ONE FINDING, AND MORE THAN ONE SEVERITY.
+     *
+     * One finding renders a security board with a single row, which is why the
+     * published security screenshot had to be taken from a real account — and
+     * that image shipped 8392 real findings and the last four characters of
+     * three live keys to a public marketing page.
+     *
+     * EVERY VALUE BELOW IS STRUCTURALLY VALID AND HAS NEVER BEEN LIVE. They are
+     * vendor documentation examples or obvious placeholders that still match the
+     * detector's shape, so the scanner grades them honestly and the liveness
+     * check reports DEAD. Never swap one for a real or once-real key to make the
+     * board look busier. */
+    id: 'aa11bb22-cc33-4d44-8e55-f66600000011',
+    project: '/home/user/code/acme-api',
+    hoursAgo: 31,
+    model: 'claude-sonnet-4-5',
+    turns: [
+      ['user', 'CI cannot clone the private module. This is the URL the job uses:\n\nhttps://ci-bot:EXAMPLEPASSWORDNOTREAL@git.example.com/acme/shared.git\n\nWhy does it 403?'],
+      ['assistant', 'The token has read access to the org, not to that repository, so the clone is authorised and then refused at the repo boundary. Two things: grant the deploy key on `acme/shared`, and take the credential out of the URL. A password in a git remote ends up in every CI log line that echoes the command, and in the reflog on every runner that has ever cloned it. Use a deploy key or a credential helper instead.'],
+      ['user', 'Moved it to a deploy key.'],
+      ['assistant', 'Good. `.github/workflows/ci.yml` now clones over SSH with the deploy key, and the URL carries no credential. Rotate the old one — it was in the workflow file, so it is in the repository history until you do.'],
+    ],
+    edits: [
+      { file: '/home/user/code/acme-api/.github/workflows/ci.yml', old: 'url: https://ci-bot:***@git.example.com/acme/shared.git', new: 'url: git@git.example.com:acme/shared.git' },
+    ],
+  },
+  {
+    id: 'aa11bb22-cc33-4d44-8e55-f66600000012',
+    project: '/home/user/code/example-app',
+    hoursAgo: 44,
+    model: 'claude-sonnet-4-5',
+    turns: [
+      ['user', `The webhook relay stopped posting. Config:\n\nSLACK_WEBHOOK=${slackHook}\nGITHUB_TOKEN=${githubPat}\n\nIs the token expired?`],
+      ['assistant', 'The token is not the problem — the relay is posting to a webhook that was revoked, so Slack returns 404 and the relay treats it as retryable and backs off forever. Recreate the webhook. Separately: you have just pasted both a Slack webhook and a GitHub token into this chat, and a webhook URL is itself the credential. Anyone holding it can post as that app. Rotate both and read them from the environment.'],
+      ['user', 'Rotated. Reading from env now.'],
+      ['assistant', 'Confirmed. `src/relay.ts` reads SLACK_WEBHOOK and GITHUB_TOKEN from `process.env` and fails loudly at boot when either is missing, rather than posting into the void.'],
+    ],
+    edits: [
+      { file: '/home/user/code/example-app/src/relay.ts', old: 'const hook = cfg.SLACK_WEBHOOK;', new: 'const hook = requireEnv("SLACK_WEBHOOK");' },
+    ],
+  },
+  {
+    id: 'aa11bb22-cc33-4d44-8e55-f66600000013',
+    project: '/home/user/code/dashboard',
+    hoursAgo: 58,
+    model: 'gpt-5-codex',
+    turns: [
+      ['user', 'Local migrations fail against staging. Connection string:\n\npostgres://app:EXAMPLEPASSWORDNOTREAL@db.staging.example.com:5432/app?sslmode=disable\n\nIt times out.'],
+      ['assistant', 'It times out because `sslmode=disable` is refused by the staging proxy, which only accepts TLS — the connection is dropped before the handshake finishes, so you see a timeout rather than a rejection. Set `sslmode=require`. Also: that string carries the database password. Put it in a secret store and reference it by name; a connection string in a shell history is a password in a shell history.'],
+      ['user', 'sslmode=require worked.'],
+      ['assistant', 'Migrations run. `scripts/migrate.ts` now builds the URL from DATABASE_URL and refuses to start if sslmode is absent, so a working local default cannot silently become an insecure staging connection.'],
+    ],
+    edits: [
+      { file: '/home/user/code/dashboard/scripts/migrate.ts', old: "sslmode=disable", new: "sslmode=require" },
+    ],
+  },
+  {
+    id: 'aa11bb22-cc33-4d44-8e55-f66600000014',
+    project: '/home/user/code/widget-cli',
+    hoursAgo: 71,
+    model: 'claude-sonnet-4-5',
+    turns: [
+      ['user', 'Signing broke after the key rotation. This is what the build uses:\n\n-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAexampleexampleexampleexampleexampleexampleexampleex\nampleexampleexampleexampleexampleexampleexampleexampleexampleexampl\n-----END RSA PRIVATE KEY-----\n\nWhat changed?'],
+      ['assistant', 'Stop — do not paste that anywhere else, and rotate it. A private key in a chat transcript is the whole credential, not a reference to it; it is now in this session file on disk and in any backup of it. On the actual failure: the new key is PKCS#1 and the signer expects PKCS#8, so it parses as garbage rather than erroring clearly. Convert it, load it from the keychain, and never put it in the build config.'],
+      ['user', 'Rotated and moved to the keychain.'],
+      ['assistant', 'Signing works. `build/sign.ts` reads the key from the OS keychain at run time and the build config holds only the key identifier.'],
+    ],
+    edits: [
+      { file: '/home/user/code/widget-cli/build/sign.ts', old: 'const key = readFileSync("signing.pem");', new: 'const key = await keychain.get("widget-cli-signing");' },
+    ],
+  },
   {
     // THE CREDENTIAL FIXTURE. The security view and the "did I paste an API key"
     // test case both answer from a finding, and with no finding they answer
@@ -118,7 +271,7 @@ const SESSIONS = [
   {
     id: 'aa11bb22-cc33-4d44-8e55-f66600000001',
     project: '/home/user/code/example-app',
-    hoursAgo: 3,
+    hoursAgo: 1,
     model: 'claude-sonnet-4-5',
     turns: [
       ['user', 'The login endpoint returns 500 when the email has a plus sign. Can you find why?'],
@@ -251,6 +404,11 @@ function buildTranscript(s) {
   return lines.map((l) => JSON.stringify(l)).join('\n') + '\n';
 }
 
+/* Declared out here so the finally block can remove it. Inside the try it is a
+ * different scope, and `typeof FIXTURE_ROOT` there is simply "undefined" — the
+ * cleanup would have looked correct and never run. */
+let FIXTURE_ROOT = null;
+
 try {
   for (const s of SESSIONS) {
     const dir = join(HOME, 'projects', encode(s.project));
@@ -328,6 +486,101 @@ try {
   console.log(`wrote toolkit fixtures: ${SKILLS.length} skills, ${Object.keys(MCPS).length} MCPs, ${COMMANDS.length} commands, ${SUBAGENTS.length} subagents, 3 hook events`);
 
   /**
+   * CODE INTELLIGENCE. The project view is half the product and the demo
+   * account had zero code findings, so "Structure", "coupling & risk" and the
+   * health score all rendered empty. That is why the published project
+   * screenshot was taken from a real machine, and why it shipped 147 real
+   * sessions, real internal file paths and a real knowledge graph to a public
+   * marketing page.
+   *
+   * `collectCode` runs the REAL codeindex binary over a REAL directory — it
+   * cannot be faked with rows, and it refuses a temp path outright
+   * (isJunkWorkspacePath). So the fixtures are small but genuine repositories:
+   * an import cycle, one oversized module and a shared type barrel, which is
+   * enough for codeindex to report cycles, a god module and coupling honestly.
+   *
+   * THE PROJECT ID IS DECLARED, NOT DERIVED. resolveProjectId() would otherwise
+   * name these by their path on the machine that ran the seeder, which is the
+   * exact leak this is fixing. projects.json maps each fixture root to the same
+   * invented id the sessions already use, so the code data lands on the same
+   * project and the operator's home never reaches the server.
+   */
+  const CODE_FIXTURES = {
+    'example-app': {
+      // A cycle: auth → session → auth. Deliberate, and the kind of thing the
+      // findings view exists to name.
+      'src/auth.ts':
+        "import { readSession } from './session.js';\n" +
+        "import type { User } from './types.js';\n\n" +
+        "export function currentUser(token: string): User | null {\n" +
+        "  const s = readSession(token);\n  return s ? s.user : null;\n}\n",
+      'src/session.ts':
+        "import { currentUser } from './auth.js';\n" +
+        "import type { Session } from './types.js';\n\n" +
+        "const store = new Map<string, Session>();\n" +
+        "export function readSession(token: string): Session | null {\n" +
+        "  return store.get(token) ?? null;\n}\n" +
+        "export function refresh(token: string): boolean {\n" +
+        "  return currentUser(token) !== null;\n}\n",
+      'src/types.ts':
+        "export interface User { id: string; email: string; }\n" +
+        "export interface Session { user: User; expiresAt: number; }\n",
+      // The god module: everything imports it and it does too much.
+      'src/server.ts':
+        "import { currentUser } from './auth.js';\n" +
+        "import { readSession, refresh } from './session.js';\n" +
+        "import type { User, Session } from './types.js';\n\n" +
+        Array.from({ length: 40 }, (_, i) =>
+          `export function handler${i}(token: string): string {\n` +
+          `  const u = currentUser(token);\n` +
+          `  if (!u) return 'anonymous';\n` +
+          `  const s = readSession(token);\n` +
+          `  if (s && refresh(token)) return u.email;\n` +
+          `  return u.id;\n}\n`).join('\n'),
+    },
+    'acme-api': {
+      'src/index.ts':
+        "import { rateLimit } from './limit.js';\n" +
+        "export function search(q: string, ip: string): string[] {\n" +
+        "  if (!rateLimit(ip)) throw new Error('slow down');\n" +
+        "  return q.split(' ');\n}\n",
+      'src/limit.ts':
+        "const seen = new Map<string, number>();\n" +
+        "export function rateLimit(ip: string): boolean {\n" +
+        "  const n = (seen.get(ip) ?? 0) + 1;\n  seen.set(ip, n);\n  return n < 100;\n}\n",
+    },
+    'storefront': {
+      'src/checkout.ts':
+        "import { price } from './price.js';\n" +
+        "export function total(items: string[]): number {\n" +
+        "  return items.reduce((n, i) => n + price(i), 0);\n}\n",
+      'src/price.ts':
+        "export function price(_sku: string): number { return 999; }\n",
+    },
+  };
+
+  // NOT under ROOT: ROOT is an mkdtemp path and isJunkWorkspacePath() refuses
+  // anything with a `tmp` component, which is the whole point of that guard.
+  // Removed in the same finally block that removes ROOT.
+  FIXTURE_ROOT = mkdtempSync(join(homedir(), '.chat-recall-demo-repos-'));
+  const declared = [];
+  for (const [name, files] of Object.entries(CODE_FIXTURES)) {
+    const repo = join(FIXTURE_ROOT, name);
+    for (const [rel, body] of Object.entries(files)) {
+      const dest = join(repo, rel);
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(dest, body);
+    }
+    writeFileSync(join(repo, 'package.json'),
+      JSON.stringify({ name, version: '1.0.0', private: true }, null, 2));
+    declared.push({ id: `path:/home/user/code/${name}`, name, root: repo });
+  }
+  // The sandbox data dir is created further down, after this block runs.
+  mkdirSync(join(ROOT, 'data'), { recursive: true });
+  writeFileSync(join(ROOT, 'data', 'projects.json'), JSON.stringify({ projects: declared }, null, 2));
+  console.log(`wrote ${declared.length} code fixtures and declared their project ids`);
+
+  /**
    * EVERY TOOL HOME, not just Claude's.
    *
    * The first version of this script set CHAT_RECALL_CLAUDE_HOME alone and ran a
@@ -401,6 +654,23 @@ try {
     ['packages/cli/dist/cli.js', 'sync', '--paths-cleartext'],
     { env, encoding: 'utf-8' });
   console.log(out.split('\n').filter(Boolean).slice(-8).join('\n'));
+
+  // CODE INTELLIGENCE, through the real binary. Each fixture is indexed as its
+  // declared project id, so the findings, the coupling map and the health score
+  // land on the same projects the sessions did.
+  for (const d of declared) {
+    try {
+      const o = execFileSync(process.execPath,
+        ['packages/cli/dist/cli.js', 'code', 'index', d.root],
+        { env, encoding: 'utf-8' });
+      const last = o.split('\n').filter(Boolean).pop() || '';
+      console.log(`code index ${d.name}: ${last.replace(/\s+/g, ' ').trim().slice(0, 90)}`);
+    } catch (e) {
+      // Never fatal: a machine without the codeindex binary should still get a
+      // seeded account, just without the code views.
+      console.error(`code index ${d.name} failed: ${String(e.message || e).split('\n')[0].slice(0, 120)}`);
+    }
+  }
   // THE TASK BOARD. Sessions alone leave it empty, and an empty board is a
   // failed test case: "What are my open tasks?" is both a submitted test case
   // and a starter prompt on the ChatGPT listing, and both answer "nothing" on a
@@ -484,4 +754,7 @@ try {
   console.log(`\nseeded ${SERVER}`);
 } finally {
   rmSync(ROOT, { recursive: true, force: true });
+  // The code fixtures live outside ROOT (see FIXTURE_ROOT) and must be removed
+  // with it, or every run leaves a directory in the operator's home.
+  if (FIXTURE_ROOT) rmSync(FIXTURE_ROOT, { recursive: true, force: true });
 }
