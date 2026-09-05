@@ -1009,18 +1009,23 @@ export function createMcpServer(): Server {
       // These are also what a client shows a user when it asks whether to trust
       // this server, which is a better reason than a score.
       title: 'chat-recall',
-      // Names all THREE things the tool set does, because "memory" alone
+      // Names all FOUR things the tool set does, because "memory" alone
       // described 12 of the 62 tools and sent people looking for a note-taker.
-      // The scanner and the code findings are the other two thirds, and a
+      // The scanner, the code findings and the task board are the rest, and a
       // listing that hides them is why nobody arrived for them.
+      //
+      // It said THREE until the task board shipped and this lead sentence was
+      // not revisited — server.json and the npm package already named four, so
+      // the protocol description was the one surface still a version behind.
       description:
-        'Memory, secret scanning and code findings across every AI coding tool you use. '
+        'Memory, secret alerts, ranked code findings and tracked tasks across every AI coding tool you use. '
         + 'Indexes your Claude Code, Codex, Gemini CLI, OpenCode, Antigravity and Cursor '
-        + 'sessions into one searchable history, then works it three ways: an assistant '
+        + 'sessions into one searchable history, then works it four ways: an assistant '
         + 'resumes past work, searches what you actually typed, reads the diffs and commits '
         + 'from a session and recalls decisions; a scanner flags credentials pasted into old '
-        + 'conversations and tracks each one until it is rotated or dismissed; and code '
-        + 'findings across the project become ranked, actionable tasks.',
+        + 'conversations and tracks each one until it is rotated or dismissed; code findings '
+        + 'across the project are ranked by what to fix first; and a shared board turns them '
+        + 'into tasks a teammate or an agent can claim and close.',
       websiteUrl: 'https://chatrecall.dev',
       // Served from the product's own origin, which is what the spec asks for
       // ("URLs serving icons SHOULD be from the same domain"). PNG first: every
