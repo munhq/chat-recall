@@ -1,7 +1,7 @@
 {
   "name": "chat-recall-monorepo",
   "version": "0.4.8",
-  "description": "Memory, secret scanning and code findings across the AI coding sessions on your machine",
+  "description": "Memory, secret alerts, ranked code findings and tracked tasks across the AI coding sessions on your machine",
   "private": true,
   "type": "module",
   "author": "munhq",
