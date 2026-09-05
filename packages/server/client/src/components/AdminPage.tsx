@@ -95,9 +95,8 @@ export default function AdminPage({ onClose }: AdminPageProps) {
             <h3 style={{ margin: 0 }}>Not available on this account</h3>
           </div>
           <p style={{ fontSize: 13, color: 'var(--cr-fg-2)', lineHeight: 1.5, marginBottom: 20 }}>
-            This panel is for platform operators. You are signed in correctly —
-            this account just is not one. Nothing is wrong with your session, and
-            there is no key or setting on your side that changes it.
+            This panel is for platform operators, and this account is not one.
+            No key or setting on your side changes that.
           </p>
           {onClose && (
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>

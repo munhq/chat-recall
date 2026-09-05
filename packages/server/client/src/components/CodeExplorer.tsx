@@ -702,7 +702,7 @@ export function RecommendationsView({ recs, dismissed, projectId, onApplied }: {
   const copyRule = (r: CodeRecommendation) => { const t = (r.action.payload as any)?.text; if (t) navigator.clipboard.writeText(String(t)); };
   // The empty state is only empty when nothing was dismissed either — otherwise it
   // would hide the undo for every card the person retired.
-  if (!recs.length && !dismissed.length) return <Empty>No recommendations yet — index a project with findings, or wait for behavioral signal. The engine turns code × behavior into rules, labels and skills to apply.</Empty>;
+  if (!recs.length && !dismissed.length) return <Empty>No recommendations yet. Index a project, or wait for a few more sessions.</Empty>;
   return (
     <div data-testid="recs-list">
       {recs.map((r) => (

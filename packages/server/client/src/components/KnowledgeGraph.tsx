@@ -62,7 +62,7 @@ export default function KnowledgeGraph({ entity, embedded }: { entity?: string |
       {!embedded && (
         <div style={{ marginBottom: 18 }}>
           <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}><Icon name="brain" size={20} /> Knowledge graph</h2>
-          <div style={{ color: 'var(--cr-fg-2)', fontSize: 13, marginTop: 4 }}>Temporal facts auto-extracted from your work — what you use, what you chose, who works on what.</div>
+          <div style={{ color: 'var(--cr-fg-2)', fontSize: 13, marginTop: 4 }}>What you use, what you chose, who works on what.</div>
         </div>
       )}
 
