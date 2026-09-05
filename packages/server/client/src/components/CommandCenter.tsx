@@ -143,38 +143,39 @@ export default function CommandCenter({ setView, onOpenProject, onFocusProjects,
       )}
       {/* No eyebrow. "COMMAND CENTER" above "Everything you're building" said
           nothing the heading did not, and the sidebar already names the view. */}
+      {/* No subtitle either. "How you build and what you build, with the next
+          move on every signal" described the page to someone already on it. */}
       <div style={{ marginBottom: 24 }}>
         <h1 style={{ margin: 0, maxWidth: '24ch' }}>Everything you’re building</h1>
-        <div style={{ color: 'var(--cr-fg-2)', fontSize: 14, marginTop: 10, maxWidth: '58ch', lineHeight: 1.5 }}>
-          How you build and what you build, with the next move on every signal.
-        </div>
       </div>
 
       {/* The signals, as one schedule. No "avg health": averaging N repos into
           one number hides the one that is on fire and moves for reasons you
           cannot act on — the Code health plate below ranks per-project.
-          Every row is a door; the hue rides the VALUE, never a bar on an edge. */}
+          Every row is a door; the hue rides the VALUE, never a bar on an edge.
+          NO "WHAT IT COUNTS" COLUMN. Five rows each carried a phrase glossing
+          its own label — "Projects: repositories chat-recall has indexed" — so
+          a five-number summary read as a paragraph. A label that needs a gloss
+          is the wrong label. */}
       <Schedule
         style={{ marginBottom: 24 }}
         caption="Signals"
         cols={[
-          { key: 'name', kind: 'pn', head: 'Signal', width: '1%' },
-          { key: 'what', head: 'What it counts' },
-          { key: 'value', kind: 'val', head: 'Count' },
+          { key: 'name', kind: 'pn', head: 'Signal' },
+          { key: 'value', kind: 'val', head: 'Count', width: '1%' },
           { key: 'go', kind: 'cmd' },
         ]}
         rows={[
-          { key: 'Projects', v: loading ? '—' : String(projects.length), tone: null, what: 'repositories chat-recall has indexed', go: () => setView('projects') },
-          { key: 'Critical findings', v: loading ? '—' : String(criticals), tone: criticals > 0 ? 'var(--cr-err-500)' : 'var(--cr-ok-500)', what: 'across every indexed project', go: () => (onFocusProjects ? onFocusProjects('critical') : setView('projects')) },
-          { key: 'Hotspots', v: loading ? '—' : String(hotspots), tone: null, what: 'files ranked by churn against complexity', go: () => (onFocusProjects ? onFocusProjects('hotspots') : setView('projects')) },
-          { key: 'Leaked secrets', v: loading ? '—' : String(leaked), tone: leaked > 0 ? 'var(--cr-err-500)' : 'var(--cr-ok-500)', what: 'credentials found in transcripts, action required', go: () => setView('security') },
-          { key: 'Sessions', v: syncTick ? String(syncTick.sessions) : status?.totalSessions != null ? String(status.totalSessions) : '—', tone: null, what: syncTick?.arriving ? 'synced to this workspace, more arriving now' : 'synced to this workspace', go: () => setView('search') },
+          { key: 'Projects', v: loading ? '—' : String(projects.length), tone: null, go: () => setView('projects') },
+          { key: 'Critical findings', v: loading ? '—' : String(criticals), tone: criticals > 0 ? 'var(--cr-err-500)' : 'var(--cr-ok-500)', go: () => (onFocusProjects ? onFocusProjects('critical') : setView('projects')) },
+          { key: 'Hotspot files', v: loading ? '—' : String(hotspots), tone: null, go: () => (onFocusProjects ? onFocusProjects('hotspots') : setView('projects')) },
+          { key: 'Leaked secrets', v: loading ? '—' : String(leaked), tone: leaked > 0 ? 'var(--cr-err-500)' : 'var(--cr-ok-500)', go: () => setView('security') },
+          { key: 'Sessions', v: syncTick ? String(syncTick.sessions) : status?.totalSessions != null ? String(status.totalSessions) : '—', tone: null, go: () => setView('search') },
         ].map((r) => ({
           id: r.key,
           onSelect: r.go,
           cells: {
             name: r.key,
-            what: r.what,
             value: <span style={{ color: r.tone ?? 'var(--cr-fg-1)', fontSize: 15 }}>{r.v}</span>,
             go: <Icon name="arrowRight" size={14} />,
           },

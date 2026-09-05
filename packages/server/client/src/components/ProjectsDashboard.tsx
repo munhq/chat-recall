@@ -116,7 +116,7 @@ export default function ProjectsDashboard({
           Projects &amp; Activity
         </h2>
         <div style={{ color: 'var(--cr-fg-2)', fontSize: 13, marginTop: 4 }}>
-          Browse repo workspaces, overall code outlines, file edits timelines and project insights.
+          Every repository your sessions touched.
         </div>
       </div>
 

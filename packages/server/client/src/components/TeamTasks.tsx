@@ -381,9 +381,9 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
                 if (!id) return;
                 if (col.status === 'done') {
                   // Say why, instead of a silent no-op or a 409 from the server.
-                  setErr('A task is marked done by the work, not by hand. The agent that fixes it '
-                    + 'closes it and attaches its session, or it closes itself when a re-index stops '
-                    + 'reporting the finding. If it should not be worked at all, reject it.');
+                  setErr('The agent that fixes a card closes it and attaches its session, or the '
+                    + 'card closes itself when a re-index stops reporting the finding. If it should '
+                    + 'not be worked at all, reject it.');
                   return;
                 }
                 void move(id, col.status);
@@ -546,7 +546,7 @@ export default function TeamTasks({ members, mySub }: { members: Member[]; mySub
               {items.length === 0 && (
                 <div className="tt-empty">
                   {col.status === 'done' ? 'Nothing finished yet.'
-                    : col.status === 'closed' ? 'Cards that stopped applying — the finding went away, or it duplicated another.'
+                    : col.status === 'closed' ? 'The finding went away, or it duplicated another.'
                     : col.status === 'rejected' ? 'Reject a card to stop it coming back.'
                     : col.status === 'in_progress' ? 'An agent claims a card here.'
                     : 'Drop a card here.'}

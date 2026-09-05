@@ -109,7 +109,7 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
           <AcctSection
             id="sec-security"
             title="Security"
-            blurb="What stands between a stolen password and everything you have synced."
+            blurb="A second factor at every sign-in."
           >
             <TwoFactorCard />
             <AlertsCard onError={setErr} />
@@ -136,7 +136,7 @@ export default function AccountPage({ onClose }: { onClose: () => void }) {
           <AcctSection
             id="sec-data"
             title="Data"
-            blurb="What syncs, what you can take away, and what you can erase."
+            blurb="What syncs, and what you can export or delete."
           >
             <section className="acct-card">
               <h2>Sync rules</h2>
