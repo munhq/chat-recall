@@ -69,7 +69,6 @@ That indexes the transcripts already on your disk, detects which AI tools you ha
 |---|---|
 | Claude Code | `~/.mcp.json` |
 | Codex | `~/.codex/config.toml` |
-| Gemini CLI | `~/.gemini/settings.json` |
 | OpenCode | `~/.config/opencode/opencode.json` |
 | Cursor | `~/.cursor/mcp.json` |
 
@@ -131,7 +130,7 @@ Exclusions live on the machine that holds the data, so the CLI owns them; they a
 
 ## Four things it actually does
 
-1. **Cross-tool unified memory.** One index, one search, one UI over Claude Code (`~/.claude/projects/`), Gemini CLI (`~/.gemini/tmp/`), Codex (`~/.codex/`), OpenCode (`~/.local/share/opencode/`), Antigravity and Cursor (`~/.cursor/` for the CLI, `~/.config/Cursor/` for the IDE). Sessions, plans, tasks, CLAUDE.md files, paste cache, shell history and agent diaries all share one pluggable `MemorySource` interface.
+1. **Cross-tool unified memory.** One index, one search, one UI over Claude Code (`~/.claude/projects/`), Codex (`~/.codex/`), OpenCode (`~/.local/share/opencode/`), Antigravity (`~/.gemini/antigravity-cli/`) and Cursor (`~/.cursor/` for the CLI, `~/.config/Cursor/` for the IDE). Sessions, plans, tasks, CLAUDE.md files, paste cache, shell history and agent diaries all share one pluggable `MemorySource` interface.
 2. **The agent recalls itself.** 61 MCP tools, so Claude Code can `recall_smart_resume`, `recall_search` (with `like_session` to find similar work), `recall_edits_timeline`, `recall_subagent_search` and `recall_redundant_files` rather than asking you what happened last time. It writes back too, via `recall_decision_record`, `recall_kg_add` and `recall_set`.
 3. **Warns before you redo work.** A `UserPromptSubmit` hook searches for similar past sessions on every prompt and injects a short "you have done this before, in session X" note into the agent's context.
 4. **Temporal knowledge graph.** Decisions and tool mentions become entity-relationship triples with `valid_from`/`valid_to` windows, so you can ask what was decided in March and whether it still holds.
@@ -262,7 +261,6 @@ codeindex is open source (MIT) at [github.com/munhq/codeindex](https://github.co
 | Source | Origin | Notes |
 |--------|--------|-------|
 | **Sessions (Claude)** | `~/.claude/projects/<hash>/<uuid>.jsonl` | Full transcripts, tokens, cost, files touched, models used |
-| **Sessions (Gemini CLI)** | `~/.gemini/tmp/*/chats/*.json` | Tokens and tool usage extracted where present |
 | **Sessions (OpenCode)** | `~/.local/share/opencode/opencode.db` (SQLite) | Cost, tokens, todos |
 | **Subagent transcripts** | `<session-dir>/<id>/subagents/*.jsonl` | Explore, aside, **and `acompact-*`** (orphaned compacted history) |
 | **Plans** | `~/.claude/plans/*.md` | Agent planning docs, split by `##` |
@@ -339,7 +337,7 @@ No telemetry. Your data lives in **your** server's Postgres — back that up how
 packages/
 ├── engine/src/
 │   ├── core/
-│   │   ├── backends/        ToolBackend per AI tool (claude, gemini, opencode, codex, agy)
+│   │   ├── backends/        ToolBackend per AI tool (claude, opencode, codex, agy, cursor)
 │   │   ├── tool-backend.ts  Registry interface — single source of truth for tool identity
 │   │   ├── tool-paths.ts    Env-overridable default paths for each tool
 │   │   ├── generic-engine.ts  Shared turn extraction / edit scan / replay (canonical events)
@@ -362,13 +360,13 @@ e2e/                     Playwright tests for the dashboard
 Two extension points, both registry-driven:
 
 - **Adding a new content type** (e.g. another file format to index) — implement `MemorySource` (`discover` → `parse` → `extractLinks`) and register it in the `SourceRegistry`.
-- **Adding a new AI tool** (a seventh backend alongside Claude/Gemini/OpenCode/Codex/Antigravity/Cursor) — implement `ToolBackend` (paths, ID handling, `readEvents`, `fileToolMap`, `extractEditDelta`) and register it in `packages/engine/src/core/backends/index.ts`. All paths are env-overridable via `CHAT_RECALL_{CLAUDE,GEMINI,CODEX,AGY,CURSOR,CURSOR_IDE}_HOME` / `CHAT_RECALL_OPENCODE_DB`.
+- **Adding a new AI tool** (a sixth backend alongside Claude/OpenCode/Codex/Antigravity/Cursor) — implement `ToolBackend` (paths, ID handling, `readEvents`, `fileToolMap`, `extractEditDelta`) and register it in `packages/engine/src/core/backends/index.ts`. All paths are env-overridable via `CHAT_RECALL_{CLAUDE,CODEX,AGY,CURSOR,CURSOR_IDE}_HOME` / `CHAT_RECALL_OPENCODE_DB`.
 
 ## Requirements
 
 - Node.js 22 or later. The Docker image and CI run 24.
 - Sessions written by a supported tool, in its standard location: `~/.claude/`,
-  `~/.codex/`, `~/.local/share/opencode/`, `~/.gemini/`.
+  `~/.codex/`, `~/.local/share/opencode/`, `~/.gemini/antigravity-cli/`.
 
 That is the whole list. No API key is needed to install, index or search.
 

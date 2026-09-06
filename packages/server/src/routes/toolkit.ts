@@ -34,7 +34,7 @@ function isToolkitType(t: string): t is ToolkitType {
 }
 
 // GET /api/toolkit/status — counts per (type, tool) so the UI can render
-// "skill: 43 claude · 43 opencode · 0 gemini" without listing items.
+// "skill: 43 claude · 43 opencode · 0 codex" without listing items.
 router.get('/status', async (_req, res) => {
   const store = await createStore();
   try {
@@ -110,7 +110,7 @@ router.get('/item/:type/:id', async (req, res) => {
 // Note:  cp CLAUDE.md → GEMINI.md or AGENTS.md in same project dir
 // ─────────────────────────────────────────────────────────────────
 
-const TARGET_TOOLS = ['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor'] as const;
+const TARGET_TOOLS = ['claude', 'agy', 'opencode', 'codex', 'cursor'] as const;
 type TargetTool = (typeof TARGET_TOOLS)[number];
 
 /** Toolkit primitives that have a clean global-scope cross-tool matrix. */
@@ -178,7 +178,7 @@ interface PromoteResult {
 //
 // Body: { type: 'skill'|'mcp', name, tool }
 // Removes one entry from one tool. For Skills, deletes the on-disk dir.
-// For MCPs in JSON-backed tools (claude/gemini/opencode), deletes the
+// For MCPs in JSON-backed tools (claude/agy/opencode), deletes the
 // keyed entry. For Codex MCPs (TOML), rewrites the file without the
 // [mcp_servers.<name>] block.
 // ─────────────────────────────────────────────────────────────────
@@ -255,8 +255,8 @@ function removeMcpFromTool(name: string, tool: TargetTool): PromoteResult {
       } catch { /* try next */ }
     }
     return { ok: false, status: 404, error: `MCP "${name}" not found in claude configs` };
-  } else if (tool === 'gemini') {
-    path = join(home, '.gemini', 'settings.json'); key = 'mcpServers';
+  } else if (tool === 'agy') {
+    path = join(home, '.gemini', 'config', 'mcp_config.json'); key = 'mcpServers';
   } else {
     // opencode — try both possible locations
     const cands = [
@@ -388,8 +388,8 @@ router.get('/matrix', async (_req, res) => {
 // content into every tool that's missing it. Idempotent: existing entries
 // are reported as "skipped: already_exists", never overwritten. Conflicts
 // where two source tools have the same name are resolved by precedence:
-//   skill: claude > codex > opencode  (gemini has no skills surface)
-//   mcp:   claude > codex > gemini > opencode
+//   skill: claude > codex > opencode
+//   mcp:   claude > codex > agy > opencode
 //
 // dryRun returns the plan without writing anything.
 // ─────────────────────────────────────────────────────────────────

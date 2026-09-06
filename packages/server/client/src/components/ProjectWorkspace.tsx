@@ -411,7 +411,7 @@ function DoNextRow({ item, projectId, onReload }: { item: DoItem; projectId: str
         <Chip kind="mono" size="sm">{item.tag}</Chip>
         <span className="cr-donext-title" style={{ fontSize: 13, fontWeight: 500, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.title}</span>
         {isRec
-          ? <Button variant="primary" onClick={apply} disabled={busy}>{busy ? 'applying…' : item.rec!.kind === 'rule' ? 'Apply to CLAUDE.md' : item.rec!.kind === 'label' ? 'Apply label' : item.rec!.kind === 'skill' ? 'Install skill' : 'Apply'}</Button>
+          ? <Button variant="primary" onClick={apply} disabled={busy}>{busy ? 'applying…' : item.rec!.kind === 'rule' ? 'Apply rule' : item.rec!.kind === 'label' ? 'Apply label' : item.rec!.kind === 'skill' ? 'Install skill' : 'Apply'}</Button>
           : <Button variant="primary" onClick={copy}>{copied ? 'copied ✓' : 'Copy prompt'}</Button>}
         {!isRec && <Button variant="ghost" onClick={done} disabled={busy}>Done</Button>}
         {expandText && <button onClick={() => setOpen(!open)} title="Show detail" style={{ background: 'none', border: '1px solid var(--cr-line-1)', borderRadius: 0, color: 'var(--cr-fg-2)', cursor: 'pointer', padding: '2px 7px', fontSize: 12 }}>{open ? '−' : '⌄'}</button>}

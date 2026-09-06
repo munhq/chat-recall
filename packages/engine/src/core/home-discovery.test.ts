@@ -44,13 +44,6 @@ describe('signature identification — by content, not name', () => {
     expect(identifyHome(join(root, 'goose'))).toBeNull();
   });
 
-  test('Gemini and Antigravity are distinguished, even nested', () => {
-    put('gem/tmp/-proj/chats/session-1.jsonl');
-    put('gem/antigravity-cli/brain/s1/.system_generated/logs/a.jsonl');
-    expect(identifyHome(join(root, 'gem'))).toBe('gemini');
-    expect(identifyHome(join(root, 'gem', 'antigravity-cli'))).toBe('agy');
-  });
-
   test('OpenCode is identified by its database file', () => {
     put('oc/opencode.db', 'sqlite');
     expect(identifyHome(join(root, 'oc'))).toBe('opencode');

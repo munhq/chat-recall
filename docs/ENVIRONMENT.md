@@ -38,7 +38,6 @@ Point the collector at non-standard tool locations (useful for fixtures/tests):
 | Variable | Overrides |
 |---|---|
 | `CHAT_RECALL_CLAUDE_HOME` | `~/.claude` |
-| `CHAT_RECALL_GEMINI_HOME` | `~/.gemini` |
 | `CHAT_RECALL_CODEX_HOME` | `~/.codex` |
 | `CHAT_RECALL_AGY_HOME` | the agy tool home |
 | `CHAT_RECALL_CURSOR_HOME` | `~/.cursor` (the `cursor-agent` CLI store) |

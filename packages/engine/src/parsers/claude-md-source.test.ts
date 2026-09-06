@@ -43,7 +43,7 @@ describe('ClaudeMdSource', () => {
     const items = await collect(tmp);
     const tools = items.map(i => i.extra?.tool).filter(Boolean);
     // AGENTS.md is yielded twice (one for opencode, one for codex tagging).
-    expect(tools).toEqual(expect.arrayContaining(['claude', 'gemini', 'opencode']));
+    expect(tools).toEqual(expect.arrayContaining(['claude', 'agy', 'opencode']));
   });
 
   test('parse() splits CLAUDE.md into chunks by ## headers', async () => {

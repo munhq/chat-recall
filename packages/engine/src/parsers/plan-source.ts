@@ -24,7 +24,6 @@ import type {
   MemoryLink,
 } from '../types/memory.js';
 import { splitByHeaders, discoverSubdirs } from '../core/utils.js';
-import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
 import { opencodeBackend as OPENCODE } from '../core/backends/opencode.js';
 import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
 import { agyBackend as AGY } from '../core/backends/agy.js';
@@ -111,9 +110,8 @@ export class PlanSource implements MemorySource {
     }
 
     // 2) Gemini plans — ~/.gemini/tmp/<sha256>/<uuid>/plans/*.md
-    if (isSourceEnabled('gemini', 'plans')) {
-      yield* this.discoverGeminiPlans();
-    }
+    if (isSourceEnabled('agy', 'plans')) {
+      }
 
     // 3) OpenCode plans — ~/.local/share/opencode/plans/*.md
     if (isSourceEnabled('opencode', 'plans')) {
@@ -211,66 +209,6 @@ export class PlanSource implements MemorySource {
           },
         };
       } catch { /* skip */ }
-    }
-  }
-
-  /** Walk Gemini's per-session plan directories and yield each .md file. */
-  private async *discoverGeminiPlans(): AsyncGenerator<MemoryItem> {
-    const tmpRoot = GEMINI.tmpDir();
-    if (!existsSync(tmpRoot)) return;
-
-    // Resolve project hashes back to paths the same way GeminiSessionSource does.
-    const projMap = new Map<string, string>();
-    const projectsPath = GEMINI.projectsJson();
-    if (existsSync(projectsPath)) {
-      try {
-        const data = JSON.parse(readFileSync(projectsPath, 'utf-8'));
-        for (const path of Object.keys(data.projects || {})) {
-          projMap.set(createHash('sha256').update(path).digest('hex'), path);
-        }
-      } catch { /* tolerate */ }
-    }
-
-    let projDirs: string[];
-    try { projDirs = readdirSync(tmpRoot); } catch { return; }
-
-    for (const projDir of projDirs) {
-      const projPath = projMap.get(projDir) || '';
-      const projRoot = join(tmpRoot, projDir);
-      let sessions: string[];
-      try { sessions = readdirSync(projRoot); } catch { continue; }
-
-      for (const sess of sessions) {
-        const plansDir = join(projRoot, sess, 'plans');
-        if (!existsSync(plansDir)) continue;
-        let files: string[];
-        try { files = readdirSync(plansDir).filter(f => f.endsWith('.md')); } catch { continue; }
-
-        for (const file of files) {
-          const filePath = join(plansDir, file);
-          try {
-            const stat = statSync(filePath);
-            const content = readFileSync(filePath, 'utf-8');
-            const firstLine = content.split('\n').find(l => l.trim())?.replace(/^#+\s*/, '').trim() || file;
-            const planName = `${GEMINI.idPrefix}plan_${sess}_${basename(file, '.md')}`;
-
-            yield {
-              id: planName,
-              sourceType: 'plan',
-              title: firstLine.slice(0, 150),
-              projectPath: projPath,
-              filePath,
-              mtime: stat.mtimeMs,
-              contentPreview: content.slice(0, 300),
-              extra: {
-                tool: 'gemini',
-                geminiSessionId: sess,
-                fileSize: stat.size,
-              },
-            };
-          } catch { /* skip */ }
-        }
-      }
     }
   }
 
@@ -412,10 +350,6 @@ export class PlanSource implements MemorySource {
         if (parent) return CLAUDE.toPrefixedId(parent);
       }
       return undefined;
-    }
-    if (tool === 'gemini') {
-      const gid = item.extra?.geminiSessionId as string | undefined;
-      return gid ? GEMINI.toPrefixedId(gid) : undefined;
     }
     if (tool === 'agy') {
       const aid = item.extra?.agySessionId as string | undefined;

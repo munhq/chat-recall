@@ -157,7 +157,7 @@ export interface LiveScanEditsResult {
 
 /**
  * One AI tool. Anything tool-specific in the codebase reaches through this
- * interface — there should be no `if (tool === 'gemini')` chains outside
+ * interface — there should be no `if (tool === 'codex')` chains outside
  * backend implementations once the registry migration is complete.
  */
 export interface ToolBackend {

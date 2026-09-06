@@ -12,7 +12,7 @@
  * CLI is kept for legacy sessions but demoted.
  */
 
-export type ToolId = 'claude' | 'agy' | 'gemini' | 'opencode' | 'codex' | 'cursor';
+export type ToolId = 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor';
 
 export interface ToolDef {
   id: ToolId;
@@ -29,7 +29,6 @@ export interface ToolDef {
 export const TOOLS: ToolDef[] = [
   { id: 'claude',   label: 'Claude',       color: 'var(--cr-tool-claude)',   surf: 'var(--cr-tool-claude-surf)',   icon: 'zap' },
   { id: 'agy',      label: 'Antigravity',  color: 'var(--cr-tool-agy)',      surf: 'var(--cr-tool-agy-surf)',      icon: 'zap' },
-  { id: 'gemini',   label: 'Gemini',       color: 'var(--cr-tool-gemini)',   surf: 'var(--cr-tool-gemini-surf)',   icon: 'zap' },
   { id: 'opencode', label: 'OpenCode',     color: 'var(--cr-tool-opencode)', surf: 'var(--cr-tool-opencode-surf)', icon: 'zap' },
   { id: 'codex',    label: 'Codex',        color: 'var(--cr-tool-codex)',    surf: 'var(--cr-tool-codex-surf)',    icon: 'zap' },
   { id: 'cursor',   label: 'Cursor',       color: 'var(--cr-tool-cursor)',   surf: 'var(--cr-tool-cursor-surf)',   icon: 'zap' },

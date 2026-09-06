@@ -48,7 +48,7 @@ describe('registerMcpEverywhere', () => {
   test('writes every present client, each in its own format', () => {
     makeAllPresent();
     const results = registerMcpEverywhere(SPEC, { home });
-    expect(results.map((r) => r.id).sort()).toEqual(['agy', 'claude', 'codex', 'cursor', 'gemini', 'opencode']);
+    expect(results.map((r) => r.id).sort()).toEqual(['agy', 'claude', 'codex', 'cursor', 'opencode']);
     expect(results.every((r) => r.state === 'created')).toBe(true);
 
     // Claude Code and Cursor: plain mcpServers
@@ -59,11 +59,7 @@ describe('registerMcpEverywhere', () => {
       expect(cfg.mcpServers['chat-recall'].alwaysAllow).toEqual(['recall_search', 'recall_show']);
     }
 
-    // Gemini CLI: same shape, different file
-    expect(readJson(join(home, '.gemini', 'settings.json')).mcpServers['chat-recall'].command)
-      .toBe('chat-recall-mcp');
-
-    // Antigravity: same shape again, under the Gemini config dir it shares
+    // Antigravity: same shape, under the config dir it keeps in ~/.gemini
     expect(readJson(join(home, '.gemini', 'config', 'mcp_config.json')).mcpServers['chat-recall'].command)
       .toBe('chat-recall-mcp');
 
@@ -119,14 +115,14 @@ describe('registerMcpEverywhere', () => {
 });
 
 describe('what the user already had in the file', () => {
-  test('Gemini keeps its unrelated settings and its other servers', () => {
-    mkdirSync(join(home, '.gemini'), { recursive: true });
-    writeFileSync(join(home, '.gemini', 'settings.json'), JSON.stringify({
+  test('Antigravity keeps its unrelated settings and its other servers', () => {
+    mkdirSync(join(home, '.gemini', 'config'), { recursive: true });
+    writeFileSync(join(home, '.gemini', 'config', 'mcp_config.json'), JSON.stringify({
       theme: 'dark',
       mcpServers: { other: { command: 'other-mcp' } },
     }));
     registerMcpEverywhere(SPEC, { home });
-    const cfg = readJson(join(home, '.gemini', 'settings.json'));
+    const cfg = readJson(join(home, '.gemini', 'config', 'mcp_config.json'));
     expect(cfg.theme).toBe('dark');
     expect(cfg.mcpServers.other.command).toBe('other-mcp');
     expect(cfg.mcpServers['chat-recall'].command).toBe('chat-recall-mcp');
@@ -183,11 +179,11 @@ describe('inspectMcpClients', () => {
   test('reports per client, so doctor can name the one that is missing', () => {
     makeAllPresent();
     registerMcpEverywhere(SPEC, { home });
-    rmSync(join(home, '.gemini', 'settings.json'));
+    rmSync(join(home, '.gemini', 'config', 'mcp_config.json'));
     const rows = inspectMcpClients({ home });
-    const gemini = rows.find((r) => r.id === 'gemini')!;
-    expect(gemini.present).toBe(true);
-    expect(gemini.registered).toBe(false);
+    const agy = rows.find((r) => r.id === 'agy')!;
+    expect(agy.present).toBe(true);
+    expect(agy.registered).toBe(false);
     expect(rows.find((r) => r.id === 'codex')!.registered).toBe(true);
     expect(rows.find((r) => r.id === 'opencode')!.registered).toBe(true);
   });
@@ -257,16 +253,15 @@ describe('OpenCode entries are repaired unless they are spawnable', () => {
  * The same defect as OpenCode's, on every other client.
  *
  * Found by sweeping each client with deliberately broken shapes instead of
- * waiting for the next report: all four `mcpServers` clients answered "already
+ * waiting for the next report: every `mcpServers` client answered "already
  * configured" for an entry carrying `disabled: true`, and then no tools
- * appeared. Cursor and Gemini honour the key; Claude Code keeps its opt-outs in
+ * appeared. Cursor and Antigravity honour the key; Claude Code keeps its opt-outs in
  * ~/.claude.json instead, so there dropping it is harmless tidying.
  */
 describe('a disabled entry is not a configured one', () => {
   const FILES: Array<[string, string[]]> = [
     ['claude', ['.mcp.json']],
     ['cursor', ['.cursor', 'mcp.json']],
-    ['gemini', ['.gemini', 'settings.json']],
     ['agy', ['.gemini', 'config', 'mcp_config.json']],
   ];
 

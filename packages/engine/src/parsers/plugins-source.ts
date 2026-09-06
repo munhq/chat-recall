@@ -24,7 +24,7 @@ import type {
   MemoryLink,
   SourceType,
 } from '../types/memory.js';
-import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
+import { agyBackend as AGY } from '../core/backends/agy.js';
 import { codexBackend as CODEX } from '../core/backends/codex.js';
 import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
 import { isSourceEnabled } from '../core/settings.js';
@@ -85,8 +85,8 @@ export class PluginsSource implements MemorySource {
     }
 
     // ── Gemini — ~/.gemini/extensions/<name>/gemini-extension.json ───
-    const gemRoot = GEMINI.extensionsDir();
-    if (isSourceEnabled('gemini', 'extensions') && existsSync(gemRoot)) {
+    const gemRoot = AGY.sharedExtensionsDir();
+    if (isSourceEnabled('agy', 'extensions') && existsSync(gemRoot)) {
       let entries: string[];
       try { entries = readdirSync(gemRoot); } catch { entries = []; }
       for (const name of entries) {
@@ -104,7 +104,7 @@ export class PluginsSource implements MemorySource {
 
         const mcpServers = manifest.mcpServers ? Object.keys(manifest.mcpServers) : [];
         yield {
-          id: `${GEMINI.idPrefix}plugin_${manifest.name || name}`,
+          id: `${AGY.idPrefix}plugin_${manifest.name || name}`,
           sourceType: 'plugin',
           title: manifest.name || name,
           projectPath: '',
@@ -112,7 +112,7 @@ export class PluginsSource implements MemorySource {
           mtime,
           contentPreview: (manifest.description || '').slice(0, 300),
           extra: {
-            tool: 'gemini',
+            tool: 'agy',
             pluginName: manifest.name || name,
             description: manifest.description || '',
             version: manifest.version || '',

@@ -36,7 +36,7 @@ import type {
   SourceType,
 } from '../types/memory.js';
 import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
-import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
+import { agyBackend as AGY } from '../core/backends/agy.js';
 import { codexBackend as CODEX } from '../core/backends/codex.js';
 import { cursorHomeDir } from '../core/tool-paths.js';
 import { isSourceEnabled } from '../core/settings.js';
@@ -71,10 +71,11 @@ function rebuildBody(content: string): Record<string, unknown> {
   return out;
 }
 
-// No 'agy': Antigravity has no skills dir of its own and reads Gemini's
+// The shared ~/.gemini/skills, attributed to Antigravity: Gemini CLI created
+// that directory, Gemini CLI is gone, and Antigravity still reads it
 // ~/.gemini/skills, so the gemini root already covers it (see team-merge's
 // installPathFor, which maps agy → geminiBackend.skillsDir()).
-export type SkillTool = 'shared' | 'claude' | 'gemini' | 'opencode' | 'codex' | 'cursor';
+export type SkillTool = 'shared' | 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor';
 
 interface SkillRoot {
   path: string;
@@ -97,8 +98,9 @@ function resolveRoots(): SkillRoot[] {
   if (isSourceEnabled('claude', 'skills')) {
     all.push({ path: CLAUDE.skillsDir(), tool: 'claude' });
   }
-  if (isSourceEnabled('gemini', 'skills')) {
-    all.push({ path: GEMINI.skillsDir(), tool: 'gemini' });
+  if (isSourceEnabled('agy', 'skills')) {
+    all.push({ path: join(AGY.homeDir(), 'skills'), tool: 'agy' });
+    all.push({ path: AGY.sharedSkillsDir(), tool: 'agy' });
   }
   if (isSourceEnabled('opencode', 'skills')) {
     all.push(

@@ -5,7 +5,7 @@
 import express from 'express';
 import { getRecentSessions, getSessionPath, getSessionPaths, getRelatedItems, getSessionMetadata, getSessionIndex, hydrateSessions } from '../services/sessions.js';
 import type { SessionIndexEntry } from '../services/sessions.js';
-import { getConversation, getGeminiConversation, getOpenCodeConversation, getOpenCodeSubagents, getCodexConversation, getCodexSubagents, getSubagents } from '../services/parser.js';
+import { getConversation, getOpenCodeConversation, getOpenCodeSubagents, getCodexConversation, getCodexSubagents, getSubagents } from '../services/parser.js';
 import type { Subagent } from '../services/parser.js';
 import { canonicalEventsToMessages, getBackendForId } from '../imports.js';
 import {
@@ -1707,10 +1707,7 @@ router.get('/:id', async (req, res) => {
       // 3. Parse and cache
       let messages;
       let subagents: Subagent[] = [];
-      if (tool === 'gemini') {
-        if (!filePath) throw new Error('Session path not found');
-        messages = await getGeminiConversation(filePath);
-      } else if (tool === 'agy' || tool === 'cursor') {
+      if (tool === 'agy' || tool === 'cursor') {
         // Antigravity and Cursor — parse through the generic event bridge (no
         // hand-written parser; the ToolBackend's readEvents() feeds
         // canonicalEventsToMessages). Same path parseTranscript uses.

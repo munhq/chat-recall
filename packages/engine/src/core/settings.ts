@@ -27,7 +27,6 @@ import { getDataDir } from './paths.js';
  * settings, settings would otherwise pull in the whole summary module).
  */
 const CLI_DETECTION_ORDER: Array<{ preset: string; bin: string; cmd: string }> = [
-  { preset: 'gemini',     bin: 'gemini',   cmd: 'gemini -p " "' },
   { preset: 'claude-cli', bin: 'claude',   cmd: 'claude -p " "' },
   { preset: 'opencode',   bin: 'opencode', cmd: 'opencode run "$(cat {prompt_file})"' },
   { preset: 'kilocode',   bin: 'kilocode', cmd: 'kilocode run "$(cat {prompt_file})"' },
@@ -70,8 +69,10 @@ export type SummaryProvider =
   | 'cli'
   | 'ollama'
   | 'ollama-cloud'
+  /* The Gemini API, not the CLI. Google switched the CLI off on 2026-06-18,
+   * so the `gemini-cli` preset that shelled out to its binary went with it;
+   * the API and GEMINI_API_KEY were never deprecated and stay. */
   | 'gemini'
-  | 'gemini-cli'   // legacy alias for the dedicated gemini-CLI invocation
   | 'openai'
   | 'nvidia'
   | 'openai-compat'
@@ -127,13 +128,17 @@ export interface SourcesEnabled {
   claude:   { sessions: boolean; plans: boolean; tasks: boolean; pasteCache: boolean;
               history: boolean; skills: boolean; agents: boolean; commands: boolean;
               hooks: boolean; plugins: boolean; agentMemory: boolean };
-  gemini:   { sessions: boolean; plans: boolean; brain: boolean; extensions: boolean;
-              skills: boolean; agents: boolean; commands: boolean };
+
   opencode: { sessions: boolean; plans: boolean; todos: boolean; skills: boolean;
               agents: boolean; commands: boolean };
   codex:    { sessions: boolean; plugins: boolean; skills: boolean;
               agents: boolean; commands: boolean };
-  agy:      { sessions: boolean; plans: boolean };
+  /* Antigravity absorbed what used to be the `gemini` block. `brain` is
+   * ~/.gemini/antigravity/brain and ~/.gemini/antigravity-cli/brain; the
+   * skills/agents/commands/extensions are the shared ~/.gemini roots Gemini
+   * CLI created and Antigravity inherited. */
+  agy:      { sessions: boolean; plans: boolean; brain: boolean; extensions: boolean;
+              skills: boolean; agents: boolean; commands: boolean };
   // No `rules` flag: `.cursor/rules/*.mdc` has no MemorySource reading it yet,
   // and a toggle that switches nothing is worse than an absent one.
   cursor:   { sessions: boolean; skills: boolean; agents: boolean; commands: boolean };
@@ -251,7 +256,7 @@ export interface SyncSettings {
    */
   pathsCleartext?: boolean;
   /** Tools whose findings/meta never leave the device. */
-  excludeTools: Array<'claude' | 'gemini' | 'codex' | 'opencode' | 'agy' | 'cursor'>;
+  excludeTools: Array<'claude' | 'codex' | 'opencode' | 'agy' | 'cursor'>;
   /** Project paths whose findings/meta never leave the device. */
   excludeProjects: string[];
   /**
@@ -337,7 +342,7 @@ export interface TeamSettings {
   /**
    * Per-type publish opt-ins. Keys mirror the cross-tool toolkit
    * primitives — `instructions` covers CLAUDE.md/AGENTS.md/GEMINI.md,
-   * `plugins` covers Claude/Codex plugins + Gemini extensions.
+   * `plugins` covers Claude/Codex plugins + Antigravity extensions.
    */
   publishAllowed: {
     skills: boolean;
@@ -364,7 +369,7 @@ export interface TeamSettings {
     /** 24-char hex (12 bytes) — sha256(masterKey)[:12]. Public id for routing. */
     keyId?: string;
     /** Which tools to back up (default: all installed). */
-    syncTools: Array<'claude' | 'gemini' | 'codex' | 'opencode' | 'cursor' | 'agy'>;
+    syncTools: Array<'claude' | 'codex' | 'opencode' | 'cursor' | 'agy'>;
     /** Project denylist for Vault uploads (extends `privacy.projectDenylist`). */
     excludeProjects: string[];
     /** Last-successful-sync watermark (ms epoch). */
@@ -383,7 +388,13 @@ export interface AppSettings {
   v: number;
 }
 
-const SCHEMA_VERSION = 3;
+/* 4: the `gemini` source block is gone. Google switched Gemini CLI off on
+ *    2026-06-18, and the flags that were not about the CLI itself — brain,
+ *    extensions, skills, agents, commands, all under ~/.gemini — belong to
+ *    Antigravity, which inherited that directory. mergeSources carries a v3
+ *    file's gemini flags onto `agy` so a reader who had switched brain
+ *    indexing OFF does not get it switched back on. */
+const SCHEMA_VERSION = 4;
 
 /** Default per-source enable map: everything on. */
 function defaultSourcesEnabled(): SourcesEnabled {
@@ -391,13 +402,12 @@ function defaultSourcesEnabled(): SourcesEnabled {
     claude:   { sessions: true, plans: true, tasks: true, pasteCache: true, history: true,
                 skills: true, agents: true, commands: true, hooks: true, plugins: true,
                 agentMemory: true },
-    gemini:   { sessions: true, plans: true, brain: true, extensions: true,
-                skills: true, agents: true, commands: true },
     opencode: { sessions: true, plans: true, todos: true, skills: true,
                 agents: true, commands: true },
     codex:    { sessions: true, plugins: true, skills: true,
                 agents: true, commands: true },
-    agy:      { sessions: true, plans: true },
+    agy:      { sessions: true, plans: true, brain: true, extensions: true,
+                skills: true, agents: true, commands: true },
     cursor:   { sessions: true, skills: true, agents: true, commands: true },
     shared:   { skills: true },
     common:   { mcps: true, agentMd: true },
@@ -470,7 +480,7 @@ function defaultTeam(): TeamSettings {
     },
     vault: {
       enabled: false,
-      syncTools: ['claude', 'gemini', 'codex', 'opencode', 'agy', 'cursor'],
+      syncTools: ['claude', 'codex', 'opencode', 'agy', 'cursor'],
       excludeProjects: [],
     },
   };
@@ -497,12 +507,20 @@ function freshDefaults(): AppSettings {
  */
 function mergeSources(base: SourceSettings, partial?: Partial<SourceSettings>): SourceSettings {
   if (!partial) return base;
+  /* A v3 file still carries a `gemini` block. Everything in it except
+   * `sessions` and `plans` — which were Gemini CLI's own transcripts and tmp
+   * plans, and are gone with the CLI — described directories under ~/.gemini
+   * that Antigravity inherited. Carry those flags onto `agy` so an explicit
+   * OFF survives the schema change; a v4 `agy` block always wins over it. */
+  const legacyGemini = (partial.enabled as Record<string, unknown> | undefined)?.gemini;
+  const inherited = legacyGemini && typeof legacyGemini === 'object'
+    ? (({ sessions: _s, plans: _p, ...rest }) => rest)(legacyGemini as Record<string, boolean>)
+    : {};
   const enabled: SourcesEnabled = {
     claude:   { ...base.enabled.claude,   ...(partial.enabled?.claude   ?? {}) },
-    gemini:   { ...base.enabled.gemini,   ...(partial.enabled?.gemini   ?? {}) },
     opencode: { ...base.enabled.opencode, ...(partial.enabled?.opencode ?? {}) },
     codex:    { ...base.enabled.codex,    ...(partial.enabled?.codex    ?? {}) },
-    agy:      { ...base.enabled.agy,      ...(partial.enabled?.agy      ?? {}) },
+    agy:      { ...base.enabled.agy, ...inherited, ...(partial.enabled?.agy ?? {}) },
     cursor:   { ...base.enabled.cursor,   ...(partial.enabled?.cursor   ?? {}) },
     shared:   { ...base.enabled.shared,   ...(partial.enabled?.shared   ?? {}) },
     common:   { ...base.enabled.common,   ...(partial.enabled?.common   ?? {}) },

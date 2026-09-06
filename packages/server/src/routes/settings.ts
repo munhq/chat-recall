@@ -121,9 +121,7 @@ router.get('/', async (_req, res) => {
     if (settings.embedding.provider === 'ollama') {
       status.ollama = await probeOllama(settings.embedding.ollamaHost || process.env.OLLAMA_HOST || 'http://localhost:11434');
     }
-    if (settings.summary.provider === 'gemini-cli') {
-      status.geminiCli = await probeGeminiCli();
-    } else if (settings.summary.provider === 'cli' && settings.summary.cliCommand) {
+    if (settings.summary.provider === 'cli' && settings.summary.cliCommand) {
       status.cli = await probeCli(settings.summary.cliCommand);
     }
 
@@ -242,10 +240,6 @@ router.post('/test', async (req, res) => {
     if (kind === 'summary') {
       const s = config as SummarySettings;
       switch (s.provider) {
-        case 'gemini-cli': {
-          const probe = await probeGeminiCli();
-          return res.json({ ok: probe.available, version: probe.version, error: probe.available ? undefined : '`gemini` CLI not on PATH' });
-        }
         case 'cli': {
           if (!s.cliCommand && !s.cliPreset) return res.json({ ok: false, error: 'Set a CLI command or pick a preset.' });
           const cmd = s.cliCommand

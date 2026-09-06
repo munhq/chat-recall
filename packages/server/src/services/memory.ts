@@ -5,7 +5,7 @@
 import {
   createStore, SourceRegistry,
   SessionSource, PlanSource, TaskSource, ClaudeMdSource, AgentMemorySource, HistorySource, PasteSource,
-  GeminiSessionSource, GeminiBrainSource, OpenCodeSource, OpenCodeTodoSource, DiarySource,
+  AntigravityBrainSource, OpenCodeSource, OpenCodeTodoSource, DiarySource,
   SkillsSource, McpsSource, SlashCommandsSource, SubagentsSource, HooksSource, PluginsSource,
   CodexSessionSource, currentTenant,
 } from '../imports.js';
@@ -48,8 +48,7 @@ export class MemoryService extends SearchCore {
     this.registry.register(new AgentMemorySource());
     this.registry.register(new HistorySource());
     this.registry.register(new PasteSource());
-    this.registry.register(new GeminiSessionSource());
-    this.registry.register(new GeminiBrainSource());
+    this.registry.register(new AntigravityBrainSource());
     this.registry.register(new OpenCodeSource());
     this.registry.register(new OpenCodeTodoSource());
     this.registry.register(new CodexSessionSource());

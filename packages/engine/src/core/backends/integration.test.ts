@@ -16,7 +16,6 @@ import { join } from 'path';
 import Database from 'better-sqlite3';
 
 import { ClaudeBackend } from './claude.js';
-import { GeminiBackend } from './gemini.js';
 import { OpencodeBackend } from './opencode.js';
 import { CodexBackend } from './codex.js';
 import { getRecentSessions } from '../context.js';
@@ -195,123 +194,6 @@ describe('Claude backend integration', () => {
   });
 });
 
-// ── Gemini ─────────────────────────────────────────────────────────
-
-describe('Gemini backend integration', () => {
-  let home: string;
-  let saved: string | undefined;
-  beforeEach(() => {
-    home = tmp('gemini');
-    saved = process.env.CHAT_RECALL_GEMINI_HOME;
-    process.env.CHAT_RECALL_GEMINI_HOME = home;
-  });
-  afterEach(() => {
-    if (saved === undefined) delete process.env.CHAT_RECALL_GEMINI_HOME;
-    else process.env.CHAT_RECALL_GEMINI_HOME = saved;
-    rmSync(home, { recursive: true, force: true });
-  });
-
-  function writeJsonl(innerId: string, projHash: string, events: object[]) {
-    const dir = join(home, 'tmp', projHash, 'chats');
-    mkdirSync(dir, { recursive: true });
-    const meta = { sessionId: innerId, projectHash: projHash, startTime: '2026-05-06T10:00:00Z', kind: 'main' };
-    writeFileSync(
-      join(dir, `session-2026-05-06T10-00-${innerId.slice(0, 8)}.jsonl`),
-      [meta, ...events].map(e => JSON.stringify(e)).join('\n') + '\n',
-    );
-  }
-
-  it('readEvents handles user/gemini messages and toolCalls', () => {
-    const id = 'aaaaaaaa-1111-1111-1111-111111111111';
-    writeJsonl(id, 'projhash', [
-      { id: 'm1', timestamp: '2026-05-06T10:01:00Z', type: 'user', content: [{ text: 'help' }] },
-      {
-        id: 'm2', timestamp: '2026-05-06T10:01:05Z', type: 'gemini',
-        text: 'will edit',
-        toolCalls: [
-          { id: 'tc1', name: 'replace', args: { file_path: '/foo.py', old_string: 'a', new_string: 'b' }, result: 'ok' },
-        ],
-      },
-    ]);
-    const b = new GeminiBackend();
-    const events = b.readEvents(id);
-    const kinds = events.map(e => e.kind);
-    expect(kinds).toContain('user');
-    expect(kinds).toContain('assistant_text');
-    expect(kinds).toContain('tool_use');
-    expect(kinds).toContain('tool_result');
-  });
-
-  it('extractTurns returns canonical turns from a .jsonl session', () => {
-    const id = 'bbbbbbbb-2222-2222-2222-222222222222';
-    writeJsonl(id, 'h', [
-      { id: 'm1', type: 'user', content: [{ text: 'hi' }] },
-      { id: 'm2', type: 'gemini', text: 'hello' },
-    ]);
-    const r = new GeminiBackend().extractTurns(id);
-    expect(r.found).toBe(true);
-    expect(r.turns.map(t => t.kind)).toEqual(['user', 'assistant_text']);
-  });
-
-  it('liveScanEdits picks up replace + write_file', () => {
-    const id = 'cccccccc-3333-3333-3333-333333333333';
-    writeJsonl(id, 'h', [
-      { id: 'm1', type: 'gemini', text: '', toolCalls: [
-        { id: 'tc1', name: 'replace',     args: { file_path: '/a.py', old_string: 'x', new_string: 'y' } },
-        { id: 'tc2', name: 'write_file',  args: { file_path: '/b.py', content: 'def hi(): pass' } },
-        { id: 'tc3', name: 'read_file',   args: { file_path: '/c.py' } },
-      ] },
-    ]);
-    const r = new GeminiBackend().liveScanEdits(id);
-    expect(r.edits.map(e => `${e.op}:${e.file}`).sort()).toEqual([
-      'edit:/a.py',
-      'read:/c.py',
-      'write:/b.py',
-    ]);
-  });
-
-  it('collectRecentEdits returns edits across .json + .jsonl', () => {
-    const id = 'ffffffff-6666-6666-6666-666666666666';
-    writeJsonl(id, 'h2', [
-      { id: 'm1', type: 'gemini', text: '', toolCalls: [
-        { id: 'tc1', name: 'replace', args: { file_path: '/g.py', old_string: 'a', new_string: 'b' } },
-      ] },
-    ]);
-    const edits = new GeminiBackend().collectRecentEdits({ sinceMs: 0 });
-    expect(edits.length).toBeGreaterThanOrEqual(1);
-    expect(edits.some(e => e.file === '/g.py')).toBe(true);
-  });
-
-  it('replay produces a diff for replace', () => {
-    const id = 'dddddddd-4444-4444-4444-444444444444';
-    writeJsonl(id, 'h', [
-      { id: 'm1', type: 'gemini', text: '', toolCalls: [
-        { id: 'tc1', name: 'replace', args: { file_path: '/x.py', old_string: 'foo', new_string: 'bar' } },
-      ] },
-    ]);
-    const r = new GeminiBackend().replay(id);
-    expect(r.found).toBe(true);
-    expect(r.files).toHaveLength(1);
-    expect(r.files[0].diff).toContain('-foo');
-    expect(r.files[0].diff).toContain('+bar');
-  });
-
-  it('legacy .json blob format still works', () => {
-    const id = 'eeeeeeee-5555-5555-5555-555555555555';
-    const dir = join(home, 'tmp', 'h', 'chats');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `session-2026-04-22T11-23-${id.slice(0, 8)}.json`), JSON.stringify({
-      sessionId: id,
-      messages: [
-        { type: 'user', timestamp: '2026-04-22T11:23:00Z', content: [{ text: 'legacy' }] },
-        { type: 'gemini', timestamp: '2026-04-22T11:23:30Z', text: 'reply' },
-      ],
-    }));
-    const r = new GeminiBackend().extractTurns(id);
-    expect(r.found).toBe(true);
-    expect(r.turns.map(t => t.kind)).toEqual(['user', 'assistant_text']);
-  });
-});
 
 // ── OpenCode ───────────────────────────────────────────────────────
 
@@ -555,7 +437,6 @@ describe('cross-backend listing', () => {
   // through the registry.
 
   let claudeHome: string;
-  let geminiHome: string;
   let codexHome: string;
   let agyHome: string;
   let cursorHome: string;
@@ -567,7 +448,6 @@ describe('cross-backend listing', () => {
   beforeEach(() => {
     _resetRegistryForTests();
     claudeHome   = tmp('cross-claude');
-    geminiHome   = tmp('cross-gemini');
     codexHome    = tmp('cross-codex');
     agyHome      = tmp('cross-agy');
     cursorHome   = tmp('cross-cursor');
@@ -585,7 +465,6 @@ describe('cross-backend listing', () => {
     saved.CURSOR_IDE_HOME = process.env.CHAT_RECALL_CURSOR_IDE_HOME;
     saved.OPENCODE_DB    = process.env.CHAT_RECALL_OPENCODE_DB;
     process.env.CHAT_RECALL_CLAUDE_HOME = claudeHome;
-    process.env.CHAT_RECALL_GEMINI_HOME = geminiHome;
     process.env.CHAT_RECALL_CODEX_HOME  = codexHome;
     process.env.CHAT_RECALL_AGY_HOME    = agyHome;
     process.env.CHAT_RECALL_CURSOR_HOME = cursorHome;
@@ -601,7 +480,7 @@ describe('cross-backend listing', () => {
       if (v === undefined) delete process.env[envKey];
       else process.env[envKey] = v;
     }
-    [claudeHome, geminiHome, codexHome, agyHome, cursorHome, cursorIdeHome, opencodeDir].forEach(d => {
+    [claudeHome, codexHome, agyHome, cursorHome, cursorIdeHome, opencodeDir].forEach(d => {
       try { rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
     });
   });
@@ -613,12 +492,6 @@ describe('cross-backend listing', () => {
     writeFileSync(join(cdir, '11111111-1111-4111-8111-111111111111.jsonl'),
       JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: 'cl prompt' }] } }) + '\n');
 
-    // Gemini session
-    const gdir = join(geminiHome, 'tmp', 'h', 'chats');
-    mkdirSync(gdir, { recursive: true });
-    writeFileSync(join(gdir, 'session-2026-05-06T10-00-aaaaaaaa.jsonl'),
-      JSON.stringify({ sessionId: 'aaaaaaaa-1111-1111-1111-111111111111', kind: 'main' }) + '\n' +
-      JSON.stringify({ id: 'm1', type: 'user', content: [{ text: 'gm prompt' }] }) + '\n');
 
     // Codex session
     const day = join(codexHome, 'sessions', '2026', '05', '06');
@@ -648,7 +521,6 @@ describe('cross-backend listing', () => {
     const tools = new Set(recent.map(s => s.tool));
     // Every backend's home is populated, so every tool should show up.
     expect(tools.has('claude')).toBe(true);
-    expect(tools.has('gemini')).toBe(true);
     expect(tools.has('codex')).toBe(true);
     expect(tools.has('opencode')).toBe(true);
     expect(tools.has('agy')).toBe(true);

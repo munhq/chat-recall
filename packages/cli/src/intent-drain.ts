@@ -22,9 +22,17 @@ import {
   executeSyncAll, executeCopy,
   type SyncType, type TargetTool as SyncTargetTool,
 } from '@chat-recall/engine/core/toolkit-sync.js';
+import {
+  instructionsFilename, instructionsPath, type ToolId,
+} from '@chat-recall/engine/core/artifact-codec.js';
+import { claudeBackend } from '@chat-recall/engine/core/backends/claude.js';
+import { codexBackend } from '@chat-recall/engine/core/backends/codex.js';
+import { cursorBackend } from '@chat-recall/engine/core/backends/cursor.js';
+import { opencodeBackend } from '@chat-recall/engine/core/backends/opencode.js';
+import { agyBackend } from '@chat-recall/engine/core/backends/agy.js';
 import { pushProjectTaskStatuses } from './project-tasks.js';
 
-interface PendingIntent {
+export interface PendingIntent {
   id: string;
   kind: 'copy' | 'sync_all' | 'pull' | 'code_apply' | 'recheck_session';
   artifact_type: string | null;
@@ -33,9 +41,57 @@ interface PendingIntent {
   to_tool: string | null;
 }
 
-/** Apply a code recommendation locally. Currently: append a rule to the
- *  project's CLAUDE.md (idempotent — skips if the exact rule is already there). */
-function applyCodeRecommendation(intent: PendingIntent): { status: 'done' | 'error'; result: string } {
+/** Every instruction filename a project may carry, in precedence order. */
+const INSTRUCTION_FILENAMES = ['CLAUDE.md', 'AGENTS.md', 'GEMINI.md'];
+
+/** The tools and the instruction file each one reads. */
+const INSTRUCTION_TOOLS: { id: ToolId; isAvailable: () => boolean }[] = [
+  { id: 'claude', isAvailable: () => claudeBackend.isAvailable() },
+  { id: 'codex', isAvailable: () => codexBackend.isAvailable() },
+  { id: 'cursor', isAvailable: () => cursorBackend.isAvailable() },
+  { id: 'opencode', isAvailable: () => opencodeBackend.isAvailable() },
+  { id: 'agy', isAvailable: () => agyBackend.isAvailable() },
+];
+
+/**
+ * Every instruction file a recommendation rule should reach.
+ *
+ * This used to be CLAUDE.md and nothing else, in both scopes. A rule is
+ * guidance for whatever agent is about to edit the repo, and the filename is
+ * per tool — CLAUDE.md for Claude Code, AGENTS.md for Codex, Cursor and
+ * OpenCode, GEMINI.md for Gemini and Antigravity — so a Codex user got the
+ * rule written into a file their tool never opens, and silently kept the
+ * behaviour the rule existed to stop.
+ *
+ * Project scope: every one of those files the project ALREADY has. Writing to
+ * a file that exists is never a surprise. Only when the project has none do we
+ * create, and then only for the tools installed on this machine.
+ *
+ * Global scope: the user-level file of each installed tool.
+ *
+ * Claude is the fallback in both, for a machine where nothing is detected.
+ */
+export function instructionTargets(rootPath: string | undefined, isGlobal: boolean): string[] {
+  const installed = INSTRUCTION_TOOLS.filter((t) => {
+    try { return t.isAvailable(); } catch { return false; }
+  });
+  const tools = installed.length ? installed : [INSTRUCTION_TOOLS[0]];
+  if (isGlobal) return [...new Set(tools.map((t) => instructionsPath(t.id)))];
+  if (!rootPath) return [];
+  /* GEMINI.md is in this list and no tool maps to it. Antigravity reads BOTH
+   * AGENTS.md (the cross-tool file, which is what instructionsFilename gives
+   * it) and GEMINI.md (its own override, which wins on a conflict). A project
+   * carrying a GEMINI.md is telling Antigravity something, and a rule that
+   * skipped it would be overridden by whatever is in there. */
+  const present = INSTRUCTION_FILENAMES.map((f) => join(rootPath, f)).filter((p) => existsSync(p));
+  if (present.length) return present;
+  return [...new Set(tools.map((t) => join(rootPath, instructionsFilename(t.id))))];
+}
+
+/** Apply a code recommendation locally: append a rule to every instruction
+ *  file the relevant tools read (idempotent — a file that already contains the
+ *  exact rule is skipped). */
+export function applyCodeRecommendation(intent: PendingIntent): { status: 'done' | 'error'; result: string } {
   try {
     const meta = JSON.parse(intent.name || '{}') as { rootPath?: string; filename?: string; content?: string; global?: boolean; payload?: { text?: string; global?: boolean } };
     if (intent.artifact_type === 'write_tasks_file') {
@@ -46,24 +102,27 @@ function applyCodeRecommendation(intent: PendingIntent): { status: 'done' | 'err
     }
     if (intent.artifact_type === 'append_claude_md') {
       const text = meta.payload?.text?.trim();
-      const isGlobal = meta.global || meta.payload?.global;
+      const isGlobal = Boolean(meta.global || meta.payload?.global);
       if (!text) return { status: 'error', result: JSON.stringify({ error: 'missing text' }) };
-      // global → ~/.claude/CLAUDE.md (user-wide); else the project's CLAUDE.md.
-      let file: string;
-      if (isGlobal) {
-        const dir = join(homedir(), '.claude');
+      if (!isGlobal && !meta.rootPath) return { status: 'error', result: JSON.stringify({ error: 'missing rootPath' }) };
+      const targets = instructionTargets(meta.rootPath, isGlobal);
+      if (!targets.length) return { status: 'error', result: JSON.stringify({ error: 'no instruction file to write' }) };
+      const appended: string[] = [];
+      const skipped: string[] = [];
+      for (const file of targets) {
+        const dir = file.slice(0, file.lastIndexOf('/'));
         try { mkdirSync(dir, { recursive: true }); } catch { /* exists */ }
-        file = join(dir, 'CLAUDE.md');
-      } else {
-        if (!meta.rootPath) return { status: 'error', result: JSON.stringify({ error: 'missing rootPath' }) };
-        file = join(meta.rootPath, 'CLAUDE.md');
+        const existing = existsSync(file) ? readFileSync(file, 'utf8') : '';
+        if (existing.includes(text)) { skipped.push(file); continue; }
+        const block = `${existing && !existing.endsWith('\n') ? '\n' : ''}\n## Rule (added by chat-recall recommendation)\n${text}\n`;
+        if (existing) appendFileSync(file, block);
+        else writeFileSync(file, `# ${(meta.rootPath?.split('/').pop()) || 'Global'} instructions\n${block}`);
+        appended.push(file);
       }
-      const existing = existsSync(file) ? readFileSync(file, 'utf8') : '';
-      if (existing.includes(text)) return { status: 'done', result: JSON.stringify({ skipped: 'rule already present', file }) };
-      const block = `${existing && !existing.endsWith('\n') ? '\n' : ''}\n## Rule (added by chat-recall recommendation)\n${text}\n`;
-      if (existing) appendFileSync(file, block);
-      else writeFileSync(file, `# ${(meta.rootPath?.split('/').pop()) || 'Global'} instructions\n${block}`);
-      return { status: 'done', result: JSON.stringify({ appended: file }) };
+      // One shape in both cases. An earlier version returned a STRING under
+      // `skipped` when nothing was appended and an ARRAY otherwise, so a
+      // caller reading result.skipped.length got 24 for "rule already present".
+      return { status: 'done', result: JSON.stringify({ appended, skipped }) };
     }
     return { status: 'error', result: JSON.stringify({ error: `unsupported code_apply action: ${intent.artifact_type}` }) };
   } catch (e) {

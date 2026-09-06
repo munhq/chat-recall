@@ -34,7 +34,7 @@ describe('PluginsSource', () => {
     expect(items.find(i => i.extra.tool === 'claude' && i.title === 'rust-analyzer-lsp')).toBeDefined();
   });
 
-  test('reads Gemini extensions/<n>/gemini-extension.json', async () => {
+  test('reads the shared extensions/<n>/gemini-extension.json', async () => {
     const dir = join(tmpHome, '.gemini', 'extensions', 'gcloud');
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'gemini-extension.json'), JSON.stringify({
@@ -45,7 +45,7 @@ describe('PluginsSource', () => {
       mcpServers: { gcloud: { command: 'npx', args: [] } },
     }));
     const items = await collect();
-    const r = items.find(i => i.extra.tool === 'gemini' && i.title === 'gcloud');
+    const r = items.find(i => i.extra.tool === 'agy' && i.title === 'gcloud');
     expect(r).toBeDefined();
     expect(r.extra.mcpServers).toContain('gcloud');
   });

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Icon, Chip, Metrics, Card, Avatar, IconButton, Plate, Schedule } from './primitives';
 import { getAnalytics, getPatterns, getSyncStatus, getSecretsSummary, type AnalyticsData, type PatternsResponse, type SyncStatus, type SecretsSummary } from '../services/api';
 
-type InsightsToolFilter = 'all' | 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy' | 'cursor';
+type InsightsToolFilter = 'all' | 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor';
 
 function fmtTokens(n: number): string {
   if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
@@ -58,7 +58,7 @@ export default function Dashboard({ onJumpToSession, onJumpToSearch, toolFilter:
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Sidebar drives the source filter — coerce unknown strings to 'all'.
-  const toolFilter: InsightsToolFilter = (['all', 'claude', 'gemini', 'opencode', 'codex', 'agy', 'cursor'] as const).includes(toolFilterProp as any)
+  const toolFilter: InsightsToolFilter = (['all', 'claude', 'opencode', 'codex', 'agy', 'cursor'] as const).includes(toolFilterProp as any)
     ? (toolFilterProp as InsightsToolFilter)
     : 'all';
 
@@ -621,7 +621,7 @@ function LegendDot({ color, label }: { color: string; label: string }) {
   );
 }
 
-// ── Improve your Claude: derive workflow signals + concrete CLAUDE.md tips ────
+// ── Improve your agent: workflow signals + concrete instruction-file rules ───
 function ImproveYourClaude({ data, secrets, syncStatus }: { data: AnalyticsData; secrets: SecretsSummary | null; syncStatus: SyncStatus | null }) {
   const lc = (s: string) => s.toLowerCase();
   // Match the real classifier statuses (shipped/abandoned/interrupted/
@@ -641,7 +641,7 @@ function ImproveYourClaude({ data, secrets, syncStatus }: { data: AnalyticsData;
   const topModel = (data.costByModel || [])[0];
 
   const sugg: Array<{ t: string; d: string }> = [];
-  if (classified >= 4 && completion != null && completion < 70) sugg.push({ t: 'Add a definition-of-done to CLAUDE.md', d: `${100 - completion}% of classified sessions ended interrupted/abandoned. A "not done until build + tests pass, verified" rule cuts re-work.` });
+  if (classified >= 4 && completion != null && completion < 70) sugg.push({ t: 'Add a definition-of-done rule', d: `${100 - completion}% of classified sessions ended interrupted/abandoned. A "not done until build + tests pass, verified" rule cuts re-work.` });
   if (ctxHit >= 3) sugg.push({ t: 'Tell the AI to split large tasks + use recall', d: `${ctxHit} sessions hit high context usage. Add "break big tasks into steps; recall prior context instead of re-reading the whole repo."` });
   if (leaked > 0) sugg.push({ t: 'Add a no-secrets rule + rotate', d: `${leaked} secret(s) flagged in your sessions. Add "never echo secrets; load from env/secret-manager" and rotate the exposed ones.` });
   if (data.summary.totalSessions > 0 && data.summary.sessionsWithoutPricing / data.summary.totalSessions > 0.3) sugg.push({ t: 'Pin model ids for accurate cost', d: `${data.summary.sessionsWithoutPricing} sessions ran on models without known pricing — your cost view undercounts.` });
@@ -675,7 +675,7 @@ function ImproveYourClaude({ data, secrets, syncStatus }: { data: AnalyticsData;
         ]}
       />
       <Schedule
-        caption="Suggested CLAUDE.md additions"
+        caption="Suggested rules"
         cols={[{ key: 'tip', kind: 'no' }, { key: 'body', kind: 'pn' }]}
         rows={sugg.map((x, i) => ({
           id: String(i),
