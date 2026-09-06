@@ -85,9 +85,9 @@ describe('GET /api/conversations/:id/outcome/badge', () => {
     expect(res.status).toBe(404);
   });
 
-  test('404 for unknown Gemini/OpenCode session ids', async () => {
+  test('404 for unknown Codex/OpenCode session ids', async () => {
     // Both go through the MemoryStore lookup path.
-    const r1 = await request(app).get('/api/conversations/gemini_no-such-session/outcome/badge');
+    const r1 = await request(app).get('/api/conversations/codex_no-such-session/outcome/badge');
     const r2 = await request(app).get('/api/conversations/opencode_no-such-session/outcome/badge');
     expect(r1.status).toBe(404);
     expect(r2.status).toBe(404);

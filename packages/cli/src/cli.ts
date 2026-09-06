@@ -397,7 +397,6 @@ program
       // sessions this machine will ship). No summary generation happens in the
       // thin collector — that's the server's job.
       const clis: { name: string; cmd: string; available: boolean }[] = [
-        { name: 'Gemini CLI', cmd: 'gemini', available: false },
         { name: 'Claude CLI', cmd: 'claude', available: false },
         { name: 'OpenCode', cmd: 'opencode', available: false },
         { name: 'Codex', cmd: 'codex', available: false },
@@ -833,7 +832,7 @@ program
 
 program
   .command('install-skills')
-  .description('Install the chat-recall skills into every local AI tool (Claude/Gemini/Codex/OpenCode/Antigravity) so agents know how to use the recall_* tools')
+  .description('Install the chat-recall skills into every local AI tool (Claude/Codex/Cursor/OpenCode/Antigravity) so agents know how to use the recall_* tools')
   .option('--uninstall', 'Remove the chat-recall-managed skills from every tool')
   .option('--all-tools', 'Install to every supported tool, even ones not detected on this machine')
   .action(async (opts: { uninstall?: boolean; allTools?: boolean }) => {
@@ -2084,7 +2083,6 @@ sources
       console.error(chalk.dim('  Expected one of:'));
       console.error(chalk.dim('    <dir>/projects/<project>/<uuid>.jsonl        (Claude Code)'));
       console.error(chalk.dim('    <dir>/sessions/YYYY/MM/DD/rollout-*.jsonl    (Codex)'));
-      console.error(chalk.dim('    <dir>/tmp/<project>/chats/session-*.json      (Gemini)'));
       console.error(chalk.dim('    <dir>/brain/<id>/.system_generated/logs/*     (Antigravity)'));
       console.error(chalk.dim('    <dir>/opencode.db                             (OpenCode)'));
       process.exit(1);

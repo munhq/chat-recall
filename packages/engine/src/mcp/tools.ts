@@ -134,7 +134,7 @@ function emptyIndexHint(): string {
       + '  2. chat-recall init\n'
       + '     Prints a URL and waits. Tell the user to open it and approve — one click, same account,\n'
       + '     not a second signup. Do not kill the command while it waits.\n'
-      + '  3. It then indexes this machine\'s Claude Code, Codex, Gemini CLI, OpenCode, Antigravity and\n'
+      + '  3. It then indexes this machine\'s Claude Code, Codex, OpenCode, Antigravity and\n'
       + '     Cursor sessions, redacts secrets locally, and syncs them.\n'
       + '  4. Call recall_status to confirm, then retry what you were asked.\n'
       + 'If you have no shell, give the user steps 1 and 2 verbatim.\n\n'
@@ -1019,7 +1019,7 @@ export function createMcpServer(): Server {
       // the protocol description was the one surface still a version behind.
       description:
         'Memory, secret alerts, ranked code findings and tracked tasks across every AI coding tool you use. '
-        + 'Indexes your Claude Code, Codex, Gemini CLI, OpenCode, Antigravity and Cursor '
+        + 'Indexes your Claude Code, Codex, OpenCode, Antigravity and Cursor '
         + 'sessions into one searchable history, then works it four ways: an assistant '
         + 'resumes past work, searches what you actually typed, reads the diffs and commits '
         + 'from a session and recalls decisions; a scanner flags credentials pasted into old '
@@ -1367,11 +1367,11 @@ The name persists across re-syncs and summary regeneration (it's stored separate
       {
         name: 'recall_edits_timeline',
         description: `Chronological list of file edits across recent sessions, spanning every AI tool
-chat-recall indexes — Claude Code, Gemini CLI, OpenCode, Codex, Antigravity and Cursor.
+chat-recall indexes — Claude Code, Codex, Cursor, OpenCode and Antigravity.
 
 Returns rows shaped like (timestamp, tool, session_id, project, file, op) sorted newest
-first. Pulls live from each tool's native session store — Claude JSONL, Gemini chat
-JSON, OpenCode SQLite — so the active session is included even though its metadata
+first. Pulls live from each tool's native session store — Claude JSONL, Codex JSONL,
+OpenCode SQLite — so the active session is included even though its metadata
 hasn't been re-indexed yet.
 
 Great for "what were we just changing?" — call with \`since_hours: 2\` to see the last
@@ -3071,7 +3071,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
             lines.push(`Input: ${(meta.inputTokens / 1_000_000).toFixed(1)}M tokens | Output: ${(meta.outputTokens / 1000).toFixed(1)}k tokens`);
             lines.push(`Cache reads: ${(meta.cacheReadTokens / 1_000_000).toFixed(1)}M | Peak context: ${(meta.peakContextTokens / 1000).toFixed(0)}k`);
           } else {
-            lines.push('Tokens/cost: not reported by this tool (Gemini/OpenCode/Codex transcripts carry no per-session token counters)');
+            lines.push('Tokens/cost: not reported by this tool (OpenCode/Codex transcripts carry no per-session token counters)');
           }
           if (meta.filesModified.length > 0) {
             lines.push(`Files modified: ${meta.filesModified.length}`);
