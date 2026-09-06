@@ -71,10 +71,10 @@ function rebuildBody(content: string): Record<string, unknown> {
   return out;
 }
 
-// The shared ~/.gemini/skills, attributed to Antigravity: Gemini CLI created
-// that directory, Gemini CLI is gone, and Antigravity still reads it
-// ~/.gemini/skills, so the gemini root already covers it (see team-merge's
-// installPathFor, which maps agy → geminiBackend.skillsDir()).
+// TWO ANTIGRAVITY ROOTS, both read. ~/.gemini/antigravity-cli/skills is its
+// own, and where every install writes. ~/.gemini/skills is the shared root
+// Gemini CLI created and Antigravity still reads; it is attributed to
+// Antigravity because no other tool is left there.
 export type SkillTool = 'shared' | 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor';
 
 interface SkillRoot {
