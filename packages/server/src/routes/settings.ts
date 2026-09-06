@@ -44,7 +44,7 @@ const PRESETS = {
     none:             { label: 'None — keyword search only (FTS5)', requires: 'Nothing. Works out of the box.' },
     ollama:           { label: 'Ollama (local, free) — recommended', requires: 'Ollama running locally + `ollama pull nomic-embed-text`. No key, no upload.' },
     nvidia:           { label: 'NVIDIA NIM (free credits at signup) ✓ verified', requires: 'NVIDIA_API_KEY (`nvapi-…` from build.nvidia.com)' },
-    gemini:           { label: 'Google Gemini (free tier ~100 req/day)', requires: 'GEMINI_API_KEY (same key as the gemini CLI)' },
+    gemini:           { label: 'Google Gemini (free tier ~100 req/day)', requires: 'GEMINI_API_KEY (from aistudio.google.com)' },
     openai:           { label: 'OpenAI (paid, no free tier)', requires: 'OPENAI_API_KEY' },
     'openai-compat':  { label: 'Custom OpenAI-compatible endpoint', requires: 'Base URL + model + dimension. For LocalAI, vLLM, llama.cpp HTTP server, etc. Note: OpenRouter currently proxies embeddings to OpenAI and requires paid credits.' },
   },
@@ -74,17 +74,6 @@ async function probeOllama(host: string): Promise<{ reachable: boolean; models?:
   } catch (e) {
     return { reachable: false, error: (e as Error).message };
   }
-}
-
-/** Best-effort detection: does the `gemini` CLI binary exist on PATH? */
-async function probeGeminiCli(): Promise<{ available: boolean; version?: string }> {
-  const { execFile } = await import('node:child_process');
-  return new Promise(resolve => {
-    execFile('gemini', ['--version'], { timeout: 2000 }, (err, stdout) => {
-      if (err) return resolve({ available: false });
-      resolve({ available: true, version: stdout.trim().slice(0, 80) });
-    });
-  });
 }
 
 async function probeCli(cmd: string): Promise<{ available: boolean }> {

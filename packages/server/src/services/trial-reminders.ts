@@ -211,7 +211,7 @@ const INSTALL_BLOCKS: Block[] = [
   { kind: 'code', lines: ['npx chat-recall init'] },
   {
     kind: 'p',
-    text: 'It finds the transcripts Claude Code, Codex, Gemini CLI, Cursor, OpenCode and Antigravity already wrote to your disk, shows you exactly what would upload, and waits for a yes. Secrets are masked before anything leaves the machine, and project paths are sent as hashes.',
+    text: 'It finds the transcripts Claude Code, Codex, Cursor, OpenCode and Antigravity already wrote to your disk, shows you exactly what would upload, and waits for a yes. Passwords are masked before anything leaves the machine, and project paths are sent as hashes.',
   },
 ];
 
