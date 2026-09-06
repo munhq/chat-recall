@@ -9,7 +9,7 @@
  *
  * What it does:
  *  - Watches ~/.claude/projects (sessions), plans, tasks, history, diary,
- *    plus Codex / Gemini / OpenCode session stores.
+ *    plus Codex / Antigravity / OpenCode session stores.
  *  - Debounces a burst of file events into one flush.
  *  - On each flush: call `syncIncremental()`. If it skips (not logged in,
  *    paused, or another writer holds the sync lock) we log the actionable
@@ -17,7 +17,7 @@
  *
  * What it deliberately does NOT do anymore (all moved server-side):
  *  - No local indexing (LanceDB / FTS / metadata store).
- *  - No summary generation (Ollama / Gemini / Claude). Summaries are now
+ *  - No summary generation (Ollama / Gemini API / Claude). Summaries are now
  *    produced by the server during ingest (see Step F). The intent isn't
  *    lost — it's just relocated to where the data lives.
  *  - No knowledge-graph population, no classifier, no compaction, no
@@ -36,7 +36,7 @@ import { dirname, basename, join, resolve, sep } from 'path';
 import { homedir } from 'os';
 
 import {
-  claudeBackend, codexBackend, geminiBackend, opencodeBackend, listAvailableBackends,
+  claudeBackend, codexBackend, opencodeBackend, listAvailableBackends,
 } from '@chat-recall/engine/core/backends/index.js';
 import { getDiaryDir, getDataDir } from '@chat-recall/engine/core/paths.js';
 import { loadSettings, isPersonalPath } from '@chat-recall/engine/core/settings.js';
@@ -82,7 +82,6 @@ const DIARY_DIR = getDiaryDir();
 
 // Per-tool session sources.
 const CODEX_SESSIONS_DIR = codexBackend.sessionsDir();
-const GEMINI_TMP_DIR = geminiBackend.tmpDir();
 const OPENCODE_DB_PATH = opencodeBackend.dbPath();
 // OpenCode SQLite uses WAL mode — incremental row writes hit the .db-wal
 // file, not the main db. Watching all three (db, db-wal, db-shm) catches
@@ -362,16 +361,6 @@ const codexWatcher = chokidar.watch(`${CODEX_SESSIONS_DIR}/**/rollout-*.jsonl`, 
   ...POLL(5000),
 });
 
-// 7. Gemini sessions — one JSON file per session in
-// ~/.gemini/tmp/<hash>/chats/session-*.json. Gemini rewrites the whole
-// file each time (atomic-rename style); we just watch for changes.
-const geminiWatcher = chokidar.watch(`${GEMINI_TMP_DIR}/**/session-*.json`, {
-  persistent: true,
-  ignoreInitial: true,
-  awaitWriteFinish: { stabilityThreshold: 1500, pollInterval: 200 },
-  ...POLL(5000),
-});
-
 // 8. OpenCode SQLite — watch the db + WAL only. SQLite in WAL mode writes new
 // rows to the .db-wal file; the main .db is touched on checkpoint. Together
 // those two catch every real write.
@@ -424,7 +413,6 @@ const watchers: Record<string, chokidar.FSWatcher> = {
   history: historyWatcher,
   diary: diaryWatcher,
   codex: codexWatcher,
-  gemini: geminiWatcher,
   opencode: opencodeWatcher,
   agentMemory: agentMemoryWatcher,
   cleanup: cleanupWatcher,
@@ -469,7 +457,6 @@ daemonLog.info(`  Watching tasks:    ${TASKS_DIR}`);
 daemonLog.info(`  Watching history:  ${HISTORY_PATH}`);
 daemonLog.info(`  Watching diary:    ${DIARY_DIR}`);
 daemonLog.info(`  Watching codex:    ${CODEX_SESSIONS_DIR}`);
-daemonLog.info(`  Watching gemini:   ${GEMINI_TMP_DIR}`);
 daemonLog.info(`  Watching opencode: ${OPENCODE_DB_DIR}`);
 daemonLog.info(`  Watching agent memory: ${CLAUDE_DIR}/*/memory/`);
 daemonLog.info(`  Resume-guard:      ${CURRENT_RESUME_PATH}`);
