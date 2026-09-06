@@ -43,7 +43,16 @@ import {
 import './backends/index.js';
 import { resolveProjectDirName } from './project-dir-name.js';
 
-export type AiTool = 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy' | 'cursor';
+/* Google switched Gemini CLI off on 2026-06-18 (announced at I/O, 2026-05-19)
+ * and replaced it with Antigravity CLI, which this codebase calls `agy`. The
+ * 'gemini' member is gone with it.
+ *
+ * NOTE that ~/.gemini does NOT go with it: Antigravity's own home is
+ * ~/.gemini/antigravity-cli, and its brain artifacts are under
+ * ~/.gemini/antigravity/brain. Those paths stay, and so does the Gemini API
+ * (GEMINI_API_KEY) as an embedding and summary provider — the API was never
+ * deprecated, only the CLI. */
+export type AiTool = 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor';
 
 // Path subdirs — defaults + env-var overrides come from `tool-paths.ts`
 // so backends and this dispatcher share a single source of truth.

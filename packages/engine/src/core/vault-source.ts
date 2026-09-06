@@ -22,7 +22,6 @@
 import { existsSync, readdirSync, statSync } from 'fs';
 import { extname, join } from 'path';
 import { claudeBackend } from './backends/claude.js';
-import { geminiBackend } from './backends/gemini.js';
 import { codexBackend } from './backends/codex.js';
 import { agyBackend } from './backends/agy.js';
 import { cursorBackend } from './backends/cursor.js';
@@ -31,7 +30,7 @@ import { cursorChatDirs, cursorHomeDir } from './tool-paths.js';
 import { loadSettings } from './settings.js';
 import { resolveProjectDirName } from './project-dir-name.js';
 
-export type VaultTool = 'claude' | 'gemini' | 'codex' | 'opencode' | 'cursor' | 'agy';
+export type VaultTool = 'claude' | 'codex' | 'opencode' | 'cursor' | 'agy';
 
 export interface VaultSourceFile {
   /** chat-recall-style session id: bare `<uuid>` for claude, `<tool>_<id>` for
@@ -54,7 +53,6 @@ export function* walkVaultSources(): Generator<VaultSourceFile> {
   const include = new Set<VaultTool>(t.syncTools);
 
   if (include.has('claude')   && claudeBackend.isAvailable()) yield* walkClaude();
-  if (include.has('gemini')   && geminiBackend.isAvailable()) yield* walkGemini();
   if (include.has('codex')    && codexBackend.isAvailable())  yield* walkCodex();
   if (include.has('agy')      && agyBackend.isAvailable())    yield* walkAgy();
   if (include.has('cursor')   && cursorBackend.isAvailable()) yield* walkCursor();
@@ -92,30 +90,6 @@ function* walkClaude(): Generator<VaultSourceFile> {
       if (!s) continue;
       const sessionId = f.replace(/\.jsonl$/, '');
       yield { sessionId, tool: 'claude', path, mtimeMs: s.mtimeMs, sizeBytes: s.size, projectPath };
-    }
-  }
-}
-
-function* walkGemini(): Generator<VaultSourceFile> {
-  const tmp = geminiBackend.tmpDir();
-  if (!existsSync(tmp)) return;
-  let hashDirs: string[] = [];
-  try { hashDirs = readdirSync(tmp); } catch { return; }
-
-  for (const hash of hashDirs) {
-    const chatsDir = join(tmp, hash, 'chats');
-    if (!existsSync(chatsDir)) continue;
-    let entries: string[] = [];
-    try { entries = readdirSync(chatsDir); } catch { continue; }
-    for (const f of entries) {
-      const ext = extname(f);
-      if (ext !== '.json' && ext !== '.jsonl') continue;
-      const path = join(chatsDir, f);
-      const s = safeStat(path);
-      if (!s) continue;
-      // Gemini session ids in chat-recall use a `gemini_` prefix.
-      const base = f.replace(/^session-/, '').replace(/\.(jsonl?)$/, '');
-      yield { sessionId: `gemini_${base}`, tool: 'gemini', path, mtimeMs: s.mtimeMs, sizeBytes: s.size };
     }
   }
 }

@@ -19,7 +19,6 @@ import { dirname, join, basename } from 'path';
 import { homedir } from 'os';
 
 import { claudeBackend as CLAUDE } from './backends/claude.js';
-import { geminiBackend as GEMINI } from './backends/gemini.js';
 import { opencodeBackend as OPENCODE } from './backends/opencode.js';
 import { cursorHomeDir } from './tool-paths.js';
 import { codexBackend as CODEX } from './backends/codex.js';
@@ -73,19 +72,19 @@ export const NAME_FIELD: Record<SyncType, string> = {
  * copy of this table, and the three drifted. They now import this one.
  */
 export const SUPPORTED_TARGETS: Record<SyncType, TargetTool[]> = {
-  skill:   ['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor'],
-  mcp:     ['claude', 'opencode', 'agy', 'gemini', 'codex', 'cursor'],
-  command: ['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor'],
-  agent:   ['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor'],
-  instructions: ['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor'],
+  skill:   ['claude', 'agy', 'opencode', 'codex', 'cursor'],
+  mcp:     ['claude', 'opencode', 'agy', 'codex', 'cursor'],
+  command: ['claude', 'agy', 'opencode', 'codex', 'cursor'],
+  agent:   ['claude', 'agy', 'opencode', 'codex', 'cursor'],
+  instructions: ['claude', 'agy', 'opencode', 'codex', 'cursor'],
 };
 
 export const SOURCE_PRECEDENCE: Record<SyncType, TargetTool[]> = {
-  skill:   ['claude', 'codex', 'opencode', 'agy', 'gemini', 'cursor'],
-  mcp:     ['claude', 'codex', 'agy', 'gemini', 'opencode', 'cursor'],
-  command: ['claude', 'opencode', 'codex', 'agy', 'gemini', 'cursor'],
-  agent:   ['claude', 'opencode', 'agy', 'gemini', 'codex', 'cursor'],
-  instructions: ['claude', 'codex', 'opencode', 'agy', 'gemini', 'cursor'],
+  skill:   ['claude', 'codex', 'opencode', 'agy', 'cursor'],
+  mcp:     ['claude', 'codex', 'agy', 'opencode', 'cursor'],
+  command: ['claude', 'opencode', 'codex', 'agy', 'cursor'],
+  agent:   ['claude', 'opencode', 'agy', 'codex', 'cursor'],
+  instructions: ['claude', 'codex', 'opencode', 'agy', 'cursor'],
 };
 
 export function supportedTargetsFor(type: SyncType): TargetTool[] { return SUPPORTED_TARGETS[type]; }
@@ -142,7 +141,6 @@ export function skillsDirFor(tool: TargetTool): string {
   switch (tool) {
     case 'claude':   return CLAUDE.skillsDir();
     case 'agy':      return join(AGY.homeDir(), 'skills');
-    case 'gemini':   return GEMINI.skillsDir();
     case 'opencode': return OPENCODE.skillsDir();
     case 'codex':    return CODEX.skillsDir();  // user skills, NOT .system
     case 'cursor':   return join(cursorHomeDir(), 'skills');
@@ -257,7 +255,6 @@ export function writeMcpEntry(toTool: TargetTool, name: string, entry: any): Cop
   }
   let path: string; let key: string;
   if (toTool === 'claude') { path = join(home, '.mcp.json'); key = 'mcpServers'; }
-  else if (toTool === 'gemini') { path = join(home, '.gemini', 'settings.json'); key = 'mcpServers'; }
   else if (toTool === 'agy') { path = join(home, '.gemini', 'config', 'mcp_config.json'); key = 'mcpServers'; }
   else if (toTool === 'cursor') { path = join(cursorHomeDir(), 'mcp.json'); key = 'mcpServers'; }
   else { path = join(home, '.config', 'opencode', 'opencode.json'); key = 'mcp'; }

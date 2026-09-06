@@ -14,7 +14,7 @@ const origHome = homeEnvSnapshot();
 /**
  * ASSERT THE WHOLE PATH, not a `/`-separated tail.
  *
- * These were regex tails like `/\.gemini\/commands\/review\.toml$/`, which is a
+ * These were regex tails like `/commands\/review\.toml$/`, which is a
  * POSIX separator asserted against a `path.join` result — wrong on Windows. The
  * first fix compared a suffix instead, and that hid the interesting half: when
  * it failed it printed only `expected false to be true`, so the actual path
@@ -25,32 +25,32 @@ beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'codec-')); useHomeDir(tmp);
 afterEach(() => { restoreHomeEnv(origHome); rmSync(tmp, { recursive: true, force: true }); });
 
 describe('artifact-codec encodings', () => {
-  test('picks TOML for gemini commands and codex agents only', () => {
-    expect(encodingFor('command', 'gemini')).toBe('toml');
+  test('picks TOML for agy commands and codex agents only', () => {
+    expect(encodingFor('command', 'agy')).toBe('toml');
     expect(encodingFor('command', 'claude')).toBe('md');
     expect(encodingFor('agent', 'codex')).toBe('toml');
     expect(encodingFor('agent', 'opencode')).toBe('md');
-    expect(encodingFor('instructions', 'gemini')).toBe('md');
+    expect(encodingFor('instructions', 'agy')).toBe('md');
   });
 
   test('instruction filenames differ per tool', () => {
     expect(instructionsFilename('claude')).toBe('CLAUDE.md');
-    expect(instructionsFilename('gemini')).toBe('GEMINI.md');
+    expect(instructionsFilename('agy')).toBe('AGENTS.md');
     expect(instructionsFilename('opencode')).toBe('AGENTS.md');
     expect(instructionsFilename('codex')).toBe('AGENTS.md');
   });
 });
 
 describe('command translation', () => {
-  test('Claude markdown → Gemini TOML round-trips name/description/body', () => {
+  test('Claude markdown → Antigravity TOML round-trips name/description/body', () => {
     const p = join(tmp, 'review.md');
     writeFileSync(p, '---\nname: review\ndescription: Code review\n---\nReview the diff for bugs.');
     const art = readCommand(p, 'md');
     expect(art.name).toBe('review');
     expect(art.body).toBe('Review the diff for bugs.');
 
-    const out = emit('command', art, 'gemini');
-    expect(out.path).toBe(join(tmp, '.gemini', 'commands', 'review.toml'));
+    const out = emit('command', art, 'agy');
+    expect(out.path).toBe(join(tmp, '.gemini', 'antigravity-cli', 'commands', 'review.toml'));
     expect(out.content).toContain('description = "Code review"');
     expect(out.content).toContain('prompt = ');
 
@@ -62,7 +62,7 @@ describe('command translation', () => {
     expect(back.description).toBe('Code review');
   });
 
-  test('Gemini TOML → Codex prompt markdown', () => {
+  test('Antigravity TOML → Codex prompt markdown', () => {
     const p = join(tmp, 'test.toml');
     writeFileSync(p, 'description = "run tests"\nprompt = """\nRun all tests.\n"""\n');
     const art = readCommand(p, 'toml');
@@ -105,8 +105,8 @@ describe('instructions translation', () => {
   test('instructions global target uses tool home', () => {
     writeFileSync(join(tmp, 'x'), 'hi');
     const art = readInstructions(join(tmp, 'x'), 'g');
-    const out = emit('instructions', art, 'gemini');
-    expect(out.path).toBe(join(tmp, '.gemini', 'GEMINI.md'));
+    const out = emit('instructions', art, 'agy');
+    expect(out.path).toBe(join(tmp, '.gemini', 'antigravity-cli', 'AGENTS.md'));
   });
 });
 

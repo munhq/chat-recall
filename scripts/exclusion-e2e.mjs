@@ -72,7 +72,6 @@ const env = {
   // The five other backends must stay out of this run: an operator's own Codex
   // or Cursor history is not fixture data, and one stray session would make
   // every count below unreproducible.
-  CHAT_RECALL_GEMINI_HOME: join(ROOT, 'none-gemini'),
   CHAT_RECALL_CODEX_HOME: join(ROOT, 'none-codex'),
   CHAT_RECALL_AGY_HOME: join(ROOT, 'none-agy'),
   CHAT_RECALL_CURSOR_HOME: join(ROOT, 'none-cursor'),

@@ -63,20 +63,20 @@ describe('ToolBackend registry', () => {
   });
 
   it('tryGetBackend returns null for missing tool, throws on getBackend', () => {
-    expect(tryGetBackend('gemini')).toBeNull();
-    expect(() => getBackend('gemini')).toThrow(/No backend registered/);
+    expect(tryGetBackend('codex')).toBeNull();
+    expect(() => getBackend('codex')).toThrow(/No backend registered/);
   });
 
   it('getBackendForId routes prefixed ids to the correct backend', () => {
     const claude = makeBackend('claude', '');
-    const gemini = makeBackend('gemini', 'gemini_');
+    const opencode2 = makeBackend('opencode', 'opencode_');
     const opencode = makeBackend('opencode', 'opencode_');
     const codex = makeBackend('codex', 'codex_');
     const agy = makeBackend('agy', 'agy_');
     const cursor = makeBackend('cursor', 'cursor_');
-    [claude, gemini, opencode, codex, agy, cursor].forEach(registerBackend);
+    [claude, opencode, codex, agy, cursor].forEach(registerBackend);
 
-    expect(getBackendForId('gemini_abc')?.id).toBe('gemini');
+    expect(getBackendForId('opencode_abc')?.id).toBe('opencode');
     expect(getBackendForId('opencode_xyz')?.id).toBe('opencode');
     expect(getBackendForId('codex_q1')?.id).toBe('codex');
     expect(getBackendForId('agy_d1')?.id).toBe('agy');
@@ -94,17 +94,17 @@ describe('ToolBackend registry', () => {
 
   it('listAllBackends returns every registered backend; listAvailableBackends filters', () => {
     registerBackend(makeBackend('claude', '', true));
-    registerBackend(makeBackend('gemini', 'gemini_', false));
+    registerBackend(makeBackend('codex', 'codex_', false));
     registerBackend(makeBackend('opencode', 'opencode_', true));
 
-    expect(listAllBackends().map((b) => b.id).sort()).toEqual(['claude', 'gemini', 'opencode']);
+    expect(listAllBackends().map((b) => b.id).sort()).toEqual(['claude', 'codex', 'opencode']);
     expect(listAvailableBackends().map((b) => b.id).sort()).toEqual(['claude', 'opencode']);
   });
 
   it('production bootstrap registers every AI tool', async () => {
     await bootstrapProduction();
     const ids = listAllBackends().map((b) => b.id).sort();
-    expect(ids).toEqual(['agy', 'claude', 'codex', 'cursor', 'gemini', 'opencode']);
+    expect(ids).toEqual(['agy', 'claude', 'codex', 'cursor', 'opencode']);
   });
 });
 
@@ -134,7 +134,7 @@ describe('registry accessors work on a COLD registry', () => {
     expect(getBackend('claude').id).toBe('claude');
   });
 
-  it.each(['claude', 'gemini', 'opencode', 'codex', 'agy', 'cursor'] as const)(
+  it.each(['claude', 'opencode', 'codex', 'agy', 'cursor'] as const)(
     'getBackend(%s) resolves cold',
     (id) => {
       _resetRegistryForTests();
@@ -146,7 +146,7 @@ describe('registry accessors work on a COLD registry', () => {
     const probes: Array<[string, () => unknown]> = [
       ['getBackend', () => getBackend('claude')],
       ['tryGetBackend', () => tryGetBackend('claude')],
-      ['getBackendForId', () => getBackendForId('gemini_abc123')],
+      ['getBackendForId', () => getBackendForId('opencode_abc123')],
       ['listAllBackends', () => listAllBackends()],
       ['listAvailableBackends', () => listAvailableBackends()],
     ];

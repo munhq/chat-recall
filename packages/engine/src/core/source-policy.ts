@@ -39,9 +39,9 @@ export function _resetSourcePolicyCache(): void {
   cache = null;
 }
 
-type Tool = 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy' | 'cursor';
+type Tool = 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor';
 
-const TOOLS: readonly Tool[] = ['claude', 'gemini', 'opencode', 'codex', 'agy', 'cursor'];
+const TOOLS: readonly Tool[] = ['claude', 'opencode', 'codex', 'agy', 'cursor'];
 
 /** Pull the originating AI tool from `extra.tool`. Falls back per sourceType. */
 function toolOf(item: MemoryItem): Tool | null {
@@ -69,8 +69,8 @@ export function policyKeyFor(item: MemoryItem): string | null {
     case 'command':   return 'claude.commands';
     case 'skill':     return `${tool ?? 'claude'}.skills`;
     case 'plugin':
-      // Gemini calls them "extensions"; Claude/Codex call them "plugins".
-      return tool === 'gemini' ? 'gemini.extensions' : `${tool ?? 'claude'}.plugins`;
+      // Antigravity calls them "extensions"; Claude/Codex call them "plugins".
+      return tool === 'agy' ? 'agy.extensions' : `${tool ?? 'claude'}.plugins`;
     case 'mcp':       return 'common.mcps';
     case 'claude_md': return 'common.agentMd';
     case 'diary':     return null;

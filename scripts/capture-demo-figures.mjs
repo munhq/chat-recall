@@ -79,6 +79,15 @@ await shoot('project-overview', async () => {
   if (await row.count()) { await row.click(); await p.waitForTimeout(2500); }
 });
 
+/* THE TOOLKIT MATRIX. Skills, MCPs and commands against every tool on every
+ * machine, which is the one capability the storefront never showed. The
+ * Coverage tab is the default, so no click is needed — but the matrix loads its
+ * devices after the page settles, hence the longer wait. */
+await shoot('toolkit-coverage', async () => {
+  await p.goto(`${BASE}/?view=toolkit`, { waitUntil: 'networkidle' });
+  await p.waitForTimeout(3000);
+});
+
 await shoot('security-scans', async () => {
   await p.goto(`${BASE}/?view=security`, { waitUntil: 'networkidle' });
   await p.waitForTimeout(2500);

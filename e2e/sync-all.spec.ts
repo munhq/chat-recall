@@ -8,7 +8,7 @@ test('matrix endpoint returns presence per (type, name, tool)', async ({ page })
   expect(typeof data.mcp).toBe('object');
   expect(Array.isArray(data.supportedTargets.skill)).toBe(true);
   expect(Array.isArray(data.supportedTargets.mcp)).toBe(true);
-  // gemini isn't a supported skill target
+  // cursor-ide isn't a supported skill target
   expect(data.supportedTargets.skill).not.toContain('gemini');
   // mcp supports every tool with an MCP config file
   for (const t of ['claude', 'opencode', 'gemini', 'codex', 'agy', 'cursor']) {

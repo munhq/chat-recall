@@ -30,7 +30,7 @@ import {
   _setSourceExclusionFilter,
 } from './tool-paths.js';
 
-export type SourceTool = 'claude' | 'gemini' | 'codex' | 'agy' | 'opencode' | 'cursor';
+export type SourceTool = 'claude' | 'codex' | 'agy' | 'opencode' | 'cursor';
 
 export interface SessionSource {
   /** Stable id derived from the path — what the dashboard toggles and the
@@ -102,8 +102,6 @@ const MAX_DEPTH = 5;
 function isTranscript(tool: SourceTool, name: string): boolean {
   if (name === 'sessions-index.json') return false;
   switch (tool) {
-    case 'gemini':
-      return name.startsWith('session-') && (name.endsWith('.json') || name.endsWith('.jsonl'));
     case 'claude':
     case 'codex':
     case 'agy':
@@ -161,7 +159,6 @@ export function discoverSessionSources(): SessionSource[] {
 
   const dirTools: Array<[SourceTool, string[]]> = [
     ['claude',  claudeProjectDirs({ includeExcluded: true })],
-    ['gemini',  geminiTmpDirs({ includeExcluded: true })],
     ['codex',   codexSessionDirs({ includeExcluded: true })],
     ['agy',     agyBrainDirs({ includeExcluded: true })],
     ['cursor',  cursorChatDirs({ includeExcluded: true })],

@@ -18,19 +18,18 @@ const SETTINGS_FIXTURE = {
   settings: {
     v: 1,
     embedding: { provider: 'ollama', ollamaHost: 'http://localhost:11434', ollamaModel: 'nomic-embed-text' },
-    // Active summary provider is the "cli" row pinned to the gemini preset.
+    // Active summary provider is the "cli" row pinned to the opencode preset.
     // The UI exposes each (provider=cli, preset) pair as a single selectable row
     // via testid `summary-choice-cli:<preset>`.
-    summary:   { provider: 'cli', cliPreset: 'gemini', cliCommand: 'gemini -p " "', cliTimeoutMs: 120_000 },
+    summary:   { provider: 'cli', cliPreset: 'opencode', cliCommand: 'opencode run "$(cat {prompt_file})"', cliTimeoutMs: 120_000 },
   },
   presets: {
     embeddingProviders: ['none', 'ollama', 'nvidia', 'gemini', 'openai', 'openai-compat'],
     summaryProviders:   ['none', 'cli', 'ollama', 'claude'],
-    summaryCliPresets:  ['opencode', 'kilocode', 'gemini', 'claude-cli', 'llm', 'aichat'],
+    summaryCliPresets:  ['opencode', 'kilocode', 'claude-cli', 'llm', 'aichat'],
     summaryCliPresetCommands: {
       opencode:    'opencode -p " "',
       kilocode:    'kilo -p " "',
-      gemini:      'gemini -p " "',
       'claude-cli':'claude -p " "',
       llm:         'llm " "',
       aichat:      'aichat " "',
@@ -55,7 +54,7 @@ const SETTINGS_FIXTURE = {
     // CLI presets all marked detected so they render in the visible "Detected
     // on this machine" group instead of the collapsed install-required group.
     cliDetected: {
-      opencode: true, kilocode: true, gemini: true, 'claude-cli': true, llm: true, aichat: true,
+      opencode: true, kilocode: true, 'claude-cli': true, llm: true, aichat: true,
     },
   },
 };
@@ -102,10 +101,10 @@ test.describe('Settings dialog', () => {
     const dialog = page.getByTestId('settings-dialog');
     await expect(dialog).toBeVisible();
 
-    // The fixture has embedding=ollama, summary=cli/gemini — both should
+    // The fixture has embedding=ollama, summary=cli/opencode — both should
     // be marked selected via data-selected on the wrapping label.
     await expect(dialog.locator('[data-testid="embedding-choice-ollama"]')).toHaveAttribute('data-selected', 'true');
-    await expect(dialog.locator('[data-testid="summary-choice-cli:gemini"]')).toHaveAttribute('data-selected', 'true');
+    await expect(dialog.locator('[data-testid="summary-choice-cli:opencode"]')).toHaveAttribute('data-selected', 'true');
   });
 
   test('switching the embedding provider swaps in provider-specific fields', async ({ page }) => {

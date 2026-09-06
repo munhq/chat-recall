@@ -17,7 +17,6 @@ import '../core/backends/index.js'; // side-effect: registers the backends
 import type { Transcript, TranscriptMessage, Subagent } from './types.js';
 import { TRANSCRIPT_VERSION } from './types.js';
 import { parseClaudeTranscript, parseClaudeTranscriptText, parseClaudeSubagents } from './claude.js';
-import { parseGeminiTranscript } from './gemini.js';
 import { parseOpenCodeTranscript, parseOpenCodeSubagents } from './opencode.js';
 import { parseCodexTranscript, parseCodexSubagents } from './codex.js';
 import { canonicalEventsToMessages } from './from-events.js';
@@ -35,7 +34,6 @@ export {
   type ShadowUpdate, type ShadowStatus, type ShadowMerge,
 } from './shadow.js';
 export { parseClaudeTranscript, parseClaudeSubagents } from './claude.js';
-export { parseGeminiTranscript } from './gemini.js';
 export { parseOpenCodeTranscript, parseOpenCodeSubagents } from './opencode.js';
 export { parseCodexTranscript, parseCodexSubagents } from './codex.js';
 export { canonicalEventsToMessages } from './from-events.js';
@@ -97,12 +95,6 @@ export async function parseTranscript(sessionId: string): Promise<ParsedTranscri
     // Newest mtime across copies — a session whose live half is in a secondary
     // home must not report the stale primary's timestamp.
     return { messages, subagents, mtime: merged.mtime || safeMtime(primaryPath) };
-  }
-
-  if (tool === 'gemini') {
-    const loc = getBackend('gemini').findSession(sessionId);
-    if (!loc) return null;
-    return { messages: await parseGeminiTranscript(loc.path), subagents: [], mtime: loc.mtime || safeMtime(loc.path) };
   }
 
   if (tool === 'opencode') {

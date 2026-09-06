@@ -18,15 +18,17 @@ import { createHash } from 'crypto';
 import { join, basename } from 'path';
 import { claudeHomeDirs } from '@chat-recall/engine/core/tool-paths.js';
 import { claudeBackend } from '@chat-recall/engine/core/backends/claude.js';
-import { geminiBackend } from '@chat-recall/engine/core/backends/gemini.js';
 import { opencodeBackend } from '@chat-recall/engine/core/backends/opencode.js';
 import { codexBackend } from '@chat-recall/engine/core/backends/codex.js';
 import { agyBackend } from '@chat-recall/engine/core/backends/agy.js';
 import { cursorBackend } from '@chat-recall/engine/core/backends/cursor.js';
 import { cursorHomeDir } from '@chat-recall/engine/core/tool-paths.js';
-// NOTE: Antigravity (agy) has no skills dir of its own — it reads Gemini's
-// ~/.gemini/skills (same decision as team-merge.installPathFor). So the Gemini
-// target covers agy; we surface agy only for the "available" hint.
+// NOTE: Antigravity installs into its OWN dir, ~/.gemini/antigravity-cli/skills.
+// This file used to install to the shared ~/.gemini/skills instead, disagreeing
+// with toolkit-sync.skillsDirFor('agy') and team-merge.installPathFor, so where
+// a skill landed depended on which code path put it there. Verified on a real
+// install: both directories exist, and only antigravity-cli/skills is
+// Antigravity's own. The shared one stays a READ root (skills-source scans it).
 
 const MARKER = '.chat-recall-managed';
 
@@ -148,18 +150,15 @@ function claudeSkillTargets(): SkillTarget[] {
   return targets;
 }
 
-/** Per-tool skills dir. agy keeps its own (~/.gemini/antigravity-cli/skills) AND
- *  we also cover ~/.agents/skills (tool-neutral) so any future consumer sees them. */
+/** Per-tool skills dir, one per installed tool. */
 export function skillTargets(): SkillTarget[] {
   return [
     // Per-tool dirs ONLY. We deliberately do NOT also write ~/.agents/skills:
-    // some tools (e.g. Gemini) read BOTH ~/.agents/skills and their own dir, so
-    // installing to both produces "skill conflict" duplicate warnings. Every tool
-    // we support has its own dir, so per-tool coverage is complete.
-    // Antigravity (agy) has no dir of its own — it reads Gemini's ~/.gemini/skills
-    // (same mapping as team-merge), so the Gemini target covers it.
+    // some tools read BOTH ~/.agents/skills and their own dir, so installing to
+    // both produces "skill conflict" duplicate warnings. Every tool we support
+    // has its own dir, so per-tool coverage is complete.
     ...claudeSkillTargets(),
-    { id: 'gemini',   label: 'Gemini CLI / Antigravity', dir: geminiBackend.skillsDir(), available: geminiBackend.isAvailable() || agyBackend.isAvailable() },
+    { id: 'agy',      label: 'Antigravity',  dir: join(agyBackend.homeDir(), 'skills'), available: agyBackend.isAvailable() },
     { id: 'codex',    label: 'Codex',        dir: codexBackend.skillsDir(),    available: codexBackend.isAvailable() },
     { id: 'opencode', label: 'OpenCode',     dir: opencodeBackend.skillsDir(), available: opencodeBackend.isAvailable() },
     // Cursor DOES have its own dir (~/.cursor/skills). `skills-cursor` next to

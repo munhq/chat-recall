@@ -3,7 +3,7 @@
  *
  * Discovers all known per-project notes files:
  *   CLAUDE.md     → tool=claude   (Claude Code)
- *   GEMINI.md     → tool=gemini   (Gemini CLI)
+ *   GEMINI.md     → tool=agy      (Antigravity's own override file)
  *   AGENTS.md     → tool=opencode (OpenCode / Cline / generic agent convention)
  *   AGENTS.md     → tool=codex    (Codex CLI)
  *
@@ -31,7 +31,7 @@ import type {
 } from '../types/memory.js';
 import { splitByHeaders } from '../core/utils.js';
 import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
-import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
+import { agyBackend as AGY } from '../core/backends/agy.js';
 import { isSourceEnabled } from '../core/settings.js';
 import { opencodeBackend as OPENCODE } from '../core/backends/opencode.js';
 import { resolveProjectDirName } from '../core/project-dir-name.js';
@@ -44,11 +44,14 @@ const MAX_CHUNK_CHARS = 2000;
  * its historical id (`<projectName>`).
  */
 // Keyed by FILENAME, so a file is indexed once even when several tools read
-// it. Antigravity reads GEMINI.md and Cursor reads AGENTS.md, both already
-// listed — adding rows for them would double-index the same file.
-const NOTE_FILES: Array<{ filename: string; tool: 'claude' | 'gemini' | 'opencode' | 'codex' }> = [
+// it. Cursor reads AGENTS.md, already listed — adding a row for it would
+// double-index the same file.
+//
+// GEMINI.md belongs to Antigravity, not to the retired Gemini CLI: Antigravity
+// reads both GEMINI.md (its own override) and AGENTS.md (the cross-tool file).
+const NOTE_FILES: Array<{ filename: string; tool: 'claude' | 'agy' | 'opencode' | 'codex' }> = [
   { filename: 'CLAUDE.md',   tool: 'claude' },
-  { filename: 'GEMINI.md',   tool: 'gemini' },
+  { filename: 'GEMINI.md',   tool: 'agy' },
   { filename: 'AGENTS.md',   tool: 'opencode' },
   { filename: 'AGENTS.md',   tool: 'codex' },
 ];
@@ -100,9 +103,9 @@ function discoverProjectDirs(claudeDir?: string): string[] {
     }
   } catch {}
 
-  // 3) Gemini CLI projects — listed by full path in ~/.gemini/projects.json.
-  //    We don't need the SHA mapping here, just the resolved paths.
-  const gemProjects = GEMINI.projectsJson();
+  // 3) The shared projects registry at ~/.gemini/projects.json. Gemini CLI
+  //    wrote it; Antigravity inherited the root and keeps it current.
+  const gemProjects = AGY.sharedProjectsJson();
   if (existsSync(gemProjects)) {
     try {
       const data = JSON.parse(readFileSync(gemProjects, 'utf-8'));
@@ -265,7 +268,7 @@ export class ClaudeMdSource implements MemorySource {
   private fileToItem(
     filePath: string,
     filename: string,
-    tool: 'claude' | 'gemini' | 'opencode' | 'codex',
+    tool: 'claude' | 'agy' | 'opencode' | 'codex',
   ): MemoryItem | null {
     try {
       const stat = statSync(filePath);

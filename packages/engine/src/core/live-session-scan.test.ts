@@ -24,7 +24,6 @@ import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '../test-support/hom
 describe('detectTool', () => {
   const cases: Array<[string, AiTool]> = [
     ['12345678-1234-4321-8765-123456789012', 'claude'],
-    ['gemini_session-2026-01-foo', 'gemini'],
     ['opencode_ses_xyz', 'opencode'],
     ['codex_2026-05-02T10-21-58-019de790', 'codex'],
     ['cursor_54a0cffe-a71b-4c91-a2cb-73749a18f3c9', 'cursor'],

@@ -71,7 +71,7 @@ function writeSettings(content: object): void {
 // Schema migration v1 → v2
 // ---------------------------------------------------------------------------
 
-describe('schema migration v1 → v3', () => {
+describe('schema migration v1 → v4', () => {
   test('v1 file lacking sources/privacy/sync/team gets safe defaults filled in', () => {
     writeSettings({
       v: 1,
@@ -79,10 +79,10 @@ describe('schema migration v1 → v3', () => {
       summary:   { provider: 'none' },
     });
     const s = loadSettings();
-    expect(s.v).toBe(3);
+    expect(s.v).toBe(4);
     expect(s.embedding.provider).toBe('ollama');
     expect(s.sources.enabled.claude.sessions).toBe(true);
-    expect(s.sources.enabled.gemini.brain).toBe(true);
+    expect(s.sources.enabled.agy.brain).toBe(true);
     expect(s.privacy.redactIndex).toBe(false);
     expect(s.privacy.projectDenylist).toEqual([]);
     expect(s.sync.enabled).toBe(false);
@@ -105,7 +105,7 @@ describe('schema migration v1 → v3', () => {
       sync:    { enabled: false, upload: {}, excludeTools: [], excludeProjects: [] },
     });
     const s = loadSettings();
-    expect(s.v).toBe(3);
+    expect(s.v).toBe(4);
     expect(s.privacy.projectDenylist).toEqual(['/x']);  // preserved
     expect(s.team.enabled).toBe(false);
     expect(s.team.publishAllowed.skills).toBe(true);
@@ -123,7 +123,7 @@ describe('schema migration v1 → v3', () => {
     const s = loadSettings();
     expect(s.sources.enabled.claude.pasteCache).toBe(false);
     expect(s.sources.enabled.claude.sessions).toBe(true);   // default kept
-    expect(s.sources.enabled.gemini.sessions).toBe(true);   // sibling tool unaffected
+    expect(s.sources.enabled.agy.sessions).toBe(true);   // sibling tool unaffected
   });
 
   test('redactSettings preserves new blocks but masks secrets', () => {
@@ -141,9 +141,9 @@ describe('schema migration v1 → v3', () => {
     const cur = loadSettings();
     cur.sources.enabled.claude.pasteCache = true;
     const merged = mergeSettings(cur, {
-      sources: { enabled: { gemini: { brain: false } } } as any,
+      sources: { enabled: { agy: { brain: false } } } as any,
     });
-    expect(merged.sources.enabled.gemini.brain).toBe(false);
+    expect(merged.sources.enabled.agy.brain).toBe(false);
     expect(merged.sources.enabled.claude.pasteCache).toBe(true);  // unchanged
     expect(merged.sources.enabled.claude.sessions).toBe(true);
   });
@@ -175,7 +175,7 @@ describe('tool-paths layered resolution', () => {
 // Source policy: enable flag + project allow/denylist + paste-cache hard-skip
 // ---------------------------------------------------------------------------
 
-function sessionItem(opts: { tool: 'claude' | 'gemini' | 'codex' | 'opencode'; project: string }): MemoryItem {
+function sessionItem(opts: { tool: 'claude' | 'agy' | 'codex' | 'opencode'; project: string }): MemoryItem {
   return {
     id: 'sess-1', sourceType: 'session', title: 't',
     projectPath: opts.project, filePath: '/tmp/x.jsonl', mtime: 0,
@@ -187,10 +187,10 @@ describe('source-policy gating', () => {
   test('disabled source rejects items', () => {
     writeSettings({
       v: 2, embedding: { provider: 'none' }, summary: { provider: 'none' },
-      sources: { enabled: { gemini: { sessions: false } } },
+      sources: { enabled: { agy: { sessions: false } } },
     });
     expect(isItemAllowed(sessionItem({ tool: 'claude', project: '/p' }))).toBe(true);
-    expect(isItemAllowed(sessionItem({ tool: 'gemini', project: '/p' }))).toBe(false);
+    expect(isItemAllowed(sessionItem({ tool: 'agy', project: '/p' }))).toBe(false);
   });
 
   test('project denylist filters items by exact + subtree + trailing /*', () => {
@@ -227,9 +227,9 @@ describe('source-policy gating', () => {
   });
 
   test('policyKeyFor maps tool + sourceType correctly', () => {
-    expect(policyKeyFor(sessionItem({ tool: 'gemini', project: '/p' }))).toBe('gemini.sessions');
-    expect(policyKeyFor({ ...sessionItem({ tool: 'claude', project: '/p' }), sourceType: 'plugin', extra: { tool: 'gemini' } } as MemoryItem))
-      .toBe('gemini.extensions');
+    expect(policyKeyFor(sessionItem({ tool: 'agy', project: '/p' }))).toBe('agy.sessions');
+    expect(policyKeyFor({ ...sessionItem({ tool: 'claude', project: '/p' }), sourceType: 'plugin', extra: { tool: 'agy' } } as MemoryItem))
+      .toBe('agy.extensions');
     expect(policyKeyFor({ id: 'd', sourceType: 'diary', title: '', projectPath: '', filePath: '', mtime: 0 })).toBe(null);
   });
 });

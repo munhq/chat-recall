@@ -60,7 +60,8 @@ router.get('/', async (req, res) => {
   finally { await store.close(); }
 });
 
-// POST /api/recommendations/:id/apply — append the rule to the global CLAUDE.md
+// POST /api/recommendations/:id/apply — append the rule to each installed
+// tool's global instruction file (CLAUDE.md / AGENTS.md / GEMINI.md)
 // via the local agent (code_apply intent, global flag).
 router.post('/:id/apply', async (req, res) => {
   const store = await createStore();
@@ -78,7 +79,7 @@ router.post('/:id/apply', async (req, res) => {
     });
     // Remember it's applied so the card stops reappearing on the next fetch.
     await markApplied((req as any).tenant, rec.id);
-    res.json({ ok: true, queued: true, intentId, message: 'Queued — the local agent appends this rule to your global ~/.claude/CLAUDE.md on next drain (≤45s).' });
+    res.json({ ok: true, queued: true, intentId, message: 'Queued — the local agent appends this rule to the global instruction file of each tool you have installed, on next drain (≤45s).' });
   } catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : 'failed' }); }
   finally { await store.close(); }
 });

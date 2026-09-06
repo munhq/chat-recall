@@ -71,7 +71,7 @@ async function getCachedTimeline(opts: {
     sinceMs: opts.sinceMs,
     pattern: opts.pattern,
     projectFilter: opts.projectFilter,
-    tools: opts.tools as ('claude' | 'agy' | 'gemini' | 'opencode' | 'codex' | 'cursor')[] | undefined,
+    tools: opts.tools as ('claude' | 'agy' | 'opencode' | 'codex' | 'cursor')[] | undefined,
     // Server deployments serve synced diff rows only — never live-scan the
     // server host's own filesystem.
     liveFallback: !isServerMode(),

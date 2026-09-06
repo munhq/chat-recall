@@ -723,7 +723,7 @@ export function RecommendationsView({ recs, dismissed, projectId, onApplied }: {
           )}
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <Button variant="primary" onClick={() => apply(r)} disabled={busy === r.id}>
-              {busy === r.id ? 'applying…' : r.kind === 'label' ? 'Apply label' : r.kind === 'rule' ? 'Apply to CLAUDE.md' : 'Apply'}
+              {busy === r.id ? 'applying…' : r.kind === 'label' ? 'Apply label' : r.kind === 'rule' ? 'Apply rule' : 'Apply'}
             </Button>
             {r.action.type === 'append_claude_md' && <Button variant="secondary" onClick={() => copyRule(r)}>Copy rule</Button>}
             {dismissing !== r.id && (

@@ -13,7 +13,6 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { ClaudeBackend, claudeBackend } from './claude.js';
-import { GeminiBackend, geminiBackend } from './gemini.js';
 import { OpencodeBackend, opencodeBackend } from './opencode.js';
 import { CodexBackend, codexBackend } from './codex.js';
 
@@ -59,7 +58,7 @@ describe('ClaudeBackend', () => {
   it('matchesId only accepts uuids, rejects other tools prefixes', () => {
     const b = new ClaudeBackend();
     expect(b.matchesId('550e8400-e29b-41d4-a716-446655440000')).toBe(true);
-    expect(b.matchesId('gemini_550e8400-e29b-41d4-a716-446655440000')).toBe(false);
+    expect(b.matchesId('codex_550e8400-e29b-41d4-a716-446655440000')).toBe(false);
     expect(b.matchesId('opencode_x')).toBe(false);
     expect(b.matchesId('codex_x')).toBe(false);
     expect(b.matchesId('garbage')).toBe(false);
@@ -116,87 +115,6 @@ describe('ClaudeBackend', () => {
   });
 });
 
-// ── Gemini ─────────────────────────────────────────────────────────
-
-describe('GeminiBackend', () => {
-  let home: string;
-  let saved: string | undefined;
-  beforeEach(() => {
-    home = makeTmpDir('gemini');
-    saved = process.env.CHAT_RECALL_GEMINI_HOME;
-    process.env.CHAT_RECALL_GEMINI_HOME = home;
-  });
-  afterEach(() => {
-    if (saved === undefined) delete process.env.CHAT_RECALL_GEMINI_HOME;
-    else process.env.CHAT_RECALL_GEMINI_HOME = saved;
-    rmSync(home, { recursive: true, force: true });
-  });
-
-  it('homeDir respects CHAT_RECALL_GEMINI_HOME', () => {
-    expect(new GeminiBackend().homeDir()).toBe(home);
-  });
-
-  it('subpath helpers anchored at homeDir', () => {
-    const b = new GeminiBackend();
-    expect(b.tmpDir()).toBe(join(home, 'tmp'));
-    expect(b.projectsJson()).toBe(join(home, 'projects.json'));
-  });
-
-  it('isAvailable tracks the tmp directory', () => {
-    const b = new GeminiBackend();
-    expect(b.isAvailable()).toBe(false);
-    mkdirSync(b.tmpDir(), { recursive: true });
-    expect(b.isAvailable()).toBe(true);
-  });
-
-  it('id round-trip', () => {
-    const raw = 'de4e8d4c-b158-42a0-a4eb-af70c48c9bc1';
-    expect(geminiBackend.matchesId('gemini_' + raw)).toBe(true);
-    expect(geminiBackend.matchesId(raw)).toBe(false);
-    expect(geminiBackend.toRawId('gemini_' + raw)).toBe(raw);
-    expect(geminiBackend.toPrefixedId(raw)).toBe('gemini_' + raw);
-    expect(geminiBackend.toPrefixedId('gemini_' + raw)).toBe('gemini_' + raw);
-    expect(geminiBackend.toRawId(raw)).toBe(raw);
-  });
-
-  it('listSessions reads .jsonl gemini transcripts', () => {
-    const b = new GeminiBackend();
-    const projHash = 'abc';
-    const chats = join(b.tmpDir(), projHash, 'chats');
-    mkdirSync(chats, { recursive: true });
-    const innerId = 'de4e8d4c-b158-42a0-a4eb-af70c48c9bc1';
-    const meta = JSON.stringify({ sessionId: innerId, projectHash: projHash, startTime: '2026-05-06T06:37:00Z', kind: 'main' });
-    const userMsg = JSON.stringify({
-      id: 'm1', timestamp: '2026-05-06T06:38:00Z', type: 'user',
-      content: [{ text: 'first prompt body' }],
-    });
-    writeFileSync(join(chats, `session-2026-05-06T06-37-${innerId.slice(0, 8)}.jsonl`), meta + '\n' + userMsg + '\n');
-
-    const sessions = b.listSessions();
-    expect(sessions).toHaveLength(1);
-    expect(sessions[0].rawId).toBe(innerId);
-    expect(sessions[0].prefixedId).toBe('gemini_' + innerId);
-    expect(sessions[0].firstPrompt).toContain('first prompt body');
-  });
-
-  it('listSessions reads legacy .json gemini transcripts', () => {
-    const b = new GeminiBackend();
-    const chats = join(b.tmpDir(), 'def', 'chats');
-    mkdirSync(chats, { recursive: true });
-    const innerId = 'e852575d-6c2e-484b-bc36-7bc4ce57c5ac';
-    const blob = JSON.stringify({
-      sessionId: innerId,
-      messages: [
-        { type: 'user', timestamp: '2026-04-22T11:23:00Z', content: [{ text: 'legacy prompt' }] },
-      ],
-    });
-    writeFileSync(join(chats, `session-2026-04-22T11-23-${innerId.slice(0, 8)}.json`), blob);
-
-    const sessions = b.listSessions();
-    expect(sessions).toHaveLength(1);
-    expect(sessions[0].firstPrompt).toContain('legacy prompt');
-  });
-});
 
 // ── OpenCode ───────────────────────────────────────────────────────
 

@@ -10,7 +10,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { basename, dirname, join } from 'path';
 import { homedir } from 'os';
-import { agyHomeDir, agyBrainDirs } from '../tool-paths.js';
+import { agyHomeDir, agyBrainDirs, geminiHomeDir } from '../tool-paths.js';
 import { readTailFromOffset } from './tail-read.js';
 
 import type {
@@ -49,6 +49,37 @@ export class AgyBackend implements ToolBackend {
   readonly displayName = 'Antigravity';
 
   homeDir(): string { return agyHomeDir(); }
+
+  /**
+   * THE SHARED ROOT ANTIGRAVITY INHERITED: `~/.gemini`.
+   *
+   * Google put Antigravity inside Gemini CLI's directory, so `~/.gemini` now
+   * holds three things at once: Antigravity CLI (`antigravity-cli/`), the
+   * Antigravity desktop app (`antigravity/`), and the user-level
+   * `skills/ commands/ agents/ extensions/ settings.json` that Gemini CLI
+   * created and Antigravity still reads.
+   *
+   * These `shared*` helpers are READ roots for that third group. They used to
+   * hang off the Gemini CLI backend, which was switched off on 2026-06-18;
+   * Antigravity is the only tool left reading them, so they live here.
+   *
+   * WRITES DO NOT GO HERE. An install goes to Antigravity's own directory —
+   * `homeDir()/skills` and friends, which is what `toolkit-sync.ts` and
+   * `artifact-codec.ts` target. Verified on a real install: both
+   * `~/.gemini/skills` and `~/.gemini/antigravity-cli/skills` exist, and only
+   * the second is Antigravity's own.
+   */
+  sharedRootDir(): string { return geminiHomeDir(); }
+  sharedSkillsDir(): string { return join(this.sharedRootDir(), 'skills'); }
+  sharedCommandsDir(): string { return join(this.sharedRootDir(), 'commands'); }
+  sharedAgentsDir(): string { return join(this.sharedRootDir(), 'agents'); }
+  sharedExtensionsDir(): string { return join(this.sharedRootDir(), 'extensions'); }
+  sharedSettingsFile(): string { return join(this.sharedRootDir(), 'settings.json'); }
+  sharedProjectsJson(): string { return join(this.sharedRootDir(), 'projects.json'); }
+
+  /** The DESKTOP app's brain, `~/.gemini/antigravity/brain`. The CLI's own is
+   *  `homeDir()/brain`, reached through `agyBrainDirs()`. Both exist. */
+  desktopBrainDir(): string { return join(this.sharedRootDir(), 'antigravity', 'brain'); }
 
   isAvailable(): boolean {
     return agyBrainDirs().length > 0;

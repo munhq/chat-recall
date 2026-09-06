@@ -69,12 +69,12 @@ description: project audit
     expect(await collect()).toHaveLength(0);
   });
 
-  test('discovers Gemini TOML commands (prompt + description)', async () => {
+  test('discovers Antigravity TOML commands (prompt + description)', async () => {
     mkdirSync(join(tmpHome, '.gemini', 'commands'), { recursive: true });
     writeFileSync(join(tmpHome, '.gemini', 'commands', 'test.toml'),
       'description = "Run the tests"\nprompt = """\nRun all unit tests and report failures.\n"""\n');
     const items = await collect();
-    const g = items.find(i => i.extra.tool === 'gemini');
+    const g = items.find(i => i.extra.tool === 'agy');
     expect(g).toBeDefined();
     expect(g.title).toBe('test');
     expect(g.extra.format).toBe('toml');

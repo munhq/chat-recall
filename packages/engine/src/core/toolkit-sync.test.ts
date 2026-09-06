@@ -62,8 +62,8 @@ describe('executeSyncAll', () => {
 
     const report = await executeSyncAll();
 
-    // Command review → gemini TOML, opencode md, codex prompt md
-    expect(existsSync(join(tmp, '.gemini', 'commands', 'review.toml'))).toBe(true);
+    // Command review → Antigravity TOML, opencode md, codex prompt md
+    expect(existsSync(join(tmp, '.gemini', 'antigravity-cli', 'commands', 'review.toml'))).toBe(true);
     expect(existsSync(join(tmp, '.config', 'opencode', 'commands', 'review.md'))).toBe(true);
     expect(existsSync(join(tmp, '.codex', 'prompts', 'review.md'))).toBe(true);
     // Agent auditor → codex TOML
@@ -81,17 +81,17 @@ describe('executeSyncAll', () => {
 });
 
 describe('executeCopy', () => {
-  test('copies one named command claude → gemini, translating to TOML', async () => {
+  test('copies one named command claude → agy, translating to TOML', async () => {
     w(join(tmp, '.claude', 'commands', 'deploy.md'), '---\nname: deploy\ndescription: ship\n---\nDeploy it.');
-    const r = await executeCopy('command', 'deploy', 'claude', 'gemini');
+    const r = await executeCopy('command', 'deploy', 'claude', 'agy');
     expect(r.ok).toBe(true);
-    const out = join(tmp, '.gemini', 'commands', 'deploy.toml');
+    const out = join(tmp, '.gemini', 'antigravity-cli', 'commands', 'deploy.toml');
     expect(existsSync(out)).toBe(true);
     expect(readFileSync(out, 'utf-8')).toContain('Deploy it.');
   });
 
   test('404 when the named source does not exist', async () => {
-    const r = await executeCopy('command', 'nope', 'claude', 'gemini');
+    const r = await executeCopy('command', 'nope', 'claude', 'agy');
     expect(r.ok).toBe(false);
     expect(r.status).toBe(404);
   });

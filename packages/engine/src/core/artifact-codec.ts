@@ -22,7 +22,6 @@ import { basename, join } from 'path';
 import { homedir } from 'os';
 
 import { claudeBackend as CLAUDE } from './backends/claude.js';
-import { geminiBackend as GEMINI } from './backends/gemini.js';
 import { opencodeBackend as OPENCODE } from './backends/opencode.js';
 import { cursorHomeDir } from './tool-paths.js';
 import { codexBackend as CODEX } from './backends/codex.js';
@@ -36,7 +35,7 @@ import {
   stringifyScalarToml,
 } from './toolkit-format.js';
 
-export type ToolId = 'claude' | 'agy' | 'gemini' | 'opencode' | 'codex' | 'cursor';
+export type ToolId = 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor';
 export type CodecType = 'command' | 'agent' | 'instructions';
 export type Encoding = 'md' | 'toml';
 
@@ -57,7 +56,8 @@ export interface EmittedFile {
 /** The on-disk encoding a tool uses for a given artifact type. */
 export function encodingFor(type: CodecType, tool: ToolId): Encoding {
   if (type === 'instructions') return 'md';
-  if (type === 'command') return tool === 'gemini' ? 'toml' : 'md';
+  // Antigravity's commands are TOML; it inherited Gemini CLI's format.
+  if (type === 'command') return tool === 'agy' ? 'toml' : 'md';
   if (type === 'agent') return tool === 'codex' ? 'toml' : 'md';
   return 'md';
 }
@@ -115,7 +115,6 @@ function commandPath(tool: ToolId, name: string): string {
   switch (tool) {
     case 'claude':   return join(CLAUDE.commandsDir(), `${name}.md`);
     case 'agy':      return join(join(AGY.homeDir(), 'commands'), `${name}.toml`);
-    case 'gemini':   return join(GEMINI.commandsDir(), `${name}.toml`);
     case 'opencode': return join(OPENCODE.commandsDir(), `${name}.md`);
     case 'codex':    return join(CODEX.promptsDir(), `${name}.md`);
     case 'cursor':   return join(cursorHomeDir(), 'commands', `${name}.md`);
@@ -126,7 +125,6 @@ function agentPath(tool: ToolId, name: string): string {
   switch (tool) {
     case 'claude':   return join(CLAUDE.agentsDir(), `${name}.md`);
     case 'agy':      return join(join(AGY.homeDir(), 'agents'), `${name}.md`);
-    case 'gemini':   return join(GEMINI.agentsDir(), `${name}.md`);
     case 'opencode': return join(OPENCODE.agentsDir(), `${name}.md`);
     case 'codex':    return join(CODEX.agentsDir(), `${name}.toml`);
     case 'cursor':   return join(cursorHomeDir(), 'agents', `${name}.md`);
@@ -137,8 +135,14 @@ function agentPath(tool: ToolId, name: string): string {
 export function instructionsFilename(tool: ToolId): string {
   switch (tool) {
     case 'claude': return 'CLAUDE.md';
+    // ANTIGRAVITY READS BOTH, and the two are not equivalent. GEMINI.md is
+    // Antigravity-only and overrides everything under it; AGENTS.md is the
+    // cross-tool foundation that Antigravity, Cursor, Codex and OpenCode all
+    // read. A rule we generate is guidance for whichever agent opens the repo
+    // next, so it belongs in the shared file. Writing GEMINI.md instead put
+    // shared guidance in a vendor-specific override, where no other tool saw
+    // it.
     case 'agy':
-    case 'gemini': return 'GEMINI.md';
     case 'opencode':
     case 'codex':
     // Cursor reads AGENTS.md too (alongside .cursor/rules and CLAUDE.md).
@@ -151,13 +155,12 @@ export function instructionsFilename(tool: ToolId): string {
  * (the sensible cross-tool op); without one we target the tool's global
  * instruction file.
  */
-function instructionsPath(tool: ToolId, projectPath?: string): string {
+export function instructionsPath(tool: ToolId, projectPath?: string): string {
   const file = instructionsFilename(tool);
   if (projectPath) return join(projectPath, file);
   switch (tool) {
     case 'claude':   return join(CLAUDE.homeDir(), file);
     case 'agy':      return join(AGY.homeDir(), file);
-    case 'gemini':   return join(GEMINI.homeDir(), file);
     case 'codex':    return join(CODEX.homeDir(), file);
     case 'opencode': return join(homedir(), '.config', 'opencode', file);
     // Cursor has no single user-scope instructions FILE — user-level guidance
@@ -180,7 +183,7 @@ export function emit(
     return { path: instructionsPath(toTool, projectPath), content: art.body.endsWith('\n') ? art.body : art.body + '\n' };
   }
   if (type === 'command') {
-    if (toTool === 'gemini' || toTool === 'agy') {
+    if (toTool === 'agy') {
       return { path: commandPath(toTool, art.name),
         content: stringifyScalarToml({ description: art.description, prompt: art.body }) };
     }

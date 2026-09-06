@@ -13,7 +13,6 @@
  *
  *   claude    <home>/projects/<project>/<uuid>.jsonl
  *   codex     <home>/sessions/YYYY/MM/DD/rollout-*.jsonl
- *   gemini    <home>/tmp/<project>/chats/session-*.json[l]
  *   agy       <home>/brain/<id>/.system_generated/logs/*.jsonl
  *   opencode  <dir>/opencode.db
  *
@@ -36,7 +35,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'f
 import { homedir, platform as osPlatform } from 'os';
 import { join } from 'path';
 
-export type HomeTool = 'claude' | 'codex' | 'gemini' | 'agy' | 'opencode' | 'cursor';
+export type HomeTool = 'claude' | 'codex' | 'agy' | 'opencode' | 'cursor';
 
 export interface DiscoveredHome {
   tool: HomeTool;
@@ -94,7 +93,6 @@ export function identifyHome(dir: string): HomeTool | null {
   // worst possible false positive here, so the test is the specific filename.
   if (has('sessions') && dirHasTranscript(join(dir, 'sessions'), (f) => f.startsWith('rollout-') && f.endsWith('.jsonl'), 4)) return 'codex';
   // Gemini: tmp/<project>/chats/session-*
-  if (has('tmp') && dirHasTranscript(join(dir, 'tmp'), (f) => f.startsWith('session-'), 3)) return 'gemini';
   // Antigravity: brain/<id>/.system_generated/logs/*.jsonl
   if (has('brain') && dirHasTranscript(join(dir, 'brain'), (f) => f.endsWith('.jsonl'), 4)) return 'agy';
   // Cursor: chats/<md5-of-cwd>/<chatId>/store.db. Probing for `store.db`
@@ -125,7 +123,6 @@ function countSessions(dir: string, tool: HomeTool): number {
   const spec: Record<HomeTool, { sub: string; depth: number; match: (f: string) => boolean }> = {
     claude:   { sub: 'projects', depth: 2, match: (f) => f.endsWith('.jsonl') && f !== 'sessions-index.json' },
     codex:    { sub: 'sessions', depth: 4, match: (f) => f.startsWith('rollout-') && f.endsWith('.jsonl') },
-    gemini:   { sub: 'tmp',      depth: 3, match: (f) => f.startsWith('session-') },
     agy:      { sub: 'brain',    depth: 4, match: (f) => f.endsWith('.jsonl') },
     cursor:   { sub: 'chats',    depth: 3, match: (f) => f === 'store.db' },
     opencode: { sub: '',         depth: 0, match: () => false },
@@ -172,8 +169,6 @@ export function sessionIdsInHome(dir: string, tool: HomeTool): string[] {
         const m = f.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i);
         return m ? `codex_${m[1]}` : null;
       } },
-    gemini: { sub: 'tmp', depth: 3,
-      idOf: (f) => (f.startsWith('session-') ? `gemini_${f.replace(/\.jsonl?$/, '')}` : null) },
     agy: { sub: 'brain', depth: 1, idOf: () => null },   // id is the DIRECTORY name
     cursor: { sub: 'chats', depth: 2, idOf: () => null },// id is the DIRECTORY name
     opencode: { sub: '', depth: 0, idOf: () => null },   // rows, not files

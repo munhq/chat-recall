@@ -90,7 +90,7 @@ export function writeShadowContainer(tool: AiTool, rawId: string, container: Raw
  *  transcript on every resume (measured: a 5-line file became a 9-line one
  *  with the original terminator gone), and its export is regenerated from
  *  SQLite each time. Line-unioning either would resurrect superseded turns. */
-const WHOLE_FILE_TOOLS = new Set<AiTool>(['gemini', 'cursor']);
+const WHOLE_FILE_TOOLS = new Set<AiTool>(['cursor']);
 
 /** Record types Claude Code writes as singletons and rewrites in place
  *  (title/mode/etc.). When both sides have one, the CURRENT value wins — we

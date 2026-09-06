@@ -99,7 +99,6 @@ export {
 // id prefixes, format adapters, and per-session operations.
 export {
   claudeBackend,
-  geminiBackend,
   opencodeBackend,
   codexBackend,
 } from './core/backends/index.js';
@@ -196,8 +195,7 @@ export { ClaudeMdSource } from './parsers/claude-md-source.js';
 export { AgentMemorySource } from './parsers/agent-memory-source.js';
 export { HistorySource } from './parsers/history-source.js';
 export { PasteSource } from './parsers/paste-source.js';
-export { GeminiSessionSource } from './parsers/gemini-source.js';
-export { GeminiBrainSource } from './parsers/gemini-brain-source.js';
+export { AntigravityBrainSource } from './parsers/antigravity-brain-source.js';
 export { OpenCodeSource } from './parsers/opencode-source.js';
 export { OpenCodeTodoSource } from './parsers/opencode-todo-source.js';
 export { DiarySource } from './parsers/diary-source.js';
@@ -253,7 +251,6 @@ export {
   trimTranscriptForSync,
   parseClaudeTranscript,
   parseClaudeSubagents,
-  parseGeminiTranscript,
   parseOpenCodeTranscript,
   parseOpenCodeSubagents,
   parseCodexTranscript,

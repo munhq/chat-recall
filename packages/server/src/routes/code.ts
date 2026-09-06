@@ -453,7 +453,7 @@ router.post('/tasks/status', express.json(), async (req, res) => {
 });
 
 // POST /api/code/recommendations/:id/apply — { project }
-// set_label applies immediately (server-side). Local actions (append a CLAUDE.md
+// set_label applies immediately (server-side). Local actions (append an instruction-file
 // rule, install a skill) enqueue a sync_intent the user's machine agent drains
 // and executes — same rail as toolkit sync. reset_db is never auto-run.
 router.post('/recommendations/:id/apply', async (req, res) => {
@@ -496,7 +496,7 @@ router.post('/recommendations/:id/apply', async (req, res) => {
       name: JSON.stringify({ recId: rec.id, projectId, rootPath: project.rootPath, payload: rec.action.payload }),
       createdBy: 'code-recommendation',
     });
-    res.json({ ok: true, queued: true, intentId: id, message: 'Queued for your machine — the local agent appends the rule to this project\'s CLAUDE.md on next drain (≤45s).' });
+    res.json({ ok: true, queued: true, intentId: id, message: 'Queued for your machine — the local agent appends the rule to this project\'s instruction files on next drain (≤45s).' });
   } catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : 'failed' }); }
   finally { await store.close(); }
 });

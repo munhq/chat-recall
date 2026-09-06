@@ -28,7 +28,7 @@ import { dirname, join } from 'path';
 /** The MCP server name we register under, in every client. */
 export const MCP_SERVER_NAME = 'chat-recall';
 
-export type McpClientId = 'claude' | 'codex' | 'gemini' | 'opencode' | 'cursor' | 'agy';
+export type McpClientId = 'claude' | 'codex' | 'opencode' | 'cursor' | 'agy';
 
 /** What to launch. `args` is omitted for a bin on PATH. */
 export interface McpLaunchSpec {
@@ -300,19 +300,6 @@ export const MCP_CLIENTS: readonly McpClientTarget[] = [
     },
     register(spec, home) {
       return registerCodexToml(this.configPath(home), spec);
-    },
-  },
-  {
-    id: 'gemini',
-    label: 'Gemini CLI',
-    bin: 'gemini',
-    configPath: (home) => join(envHome('CHAT_RECALL_GEMINI_HOME', join(home, '.gemini')), 'settings.json'),
-    isPresent(home) {
-      const p = this.configPath(home);
-      return existsSync(p) || existsSync(dirname(p));
-    },
-    register(spec, home) {
-      return registerMcpServersJson(this, this.configPath(home), spec);
     },
   },
   {
