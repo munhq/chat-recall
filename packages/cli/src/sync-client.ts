@@ -48,7 +48,6 @@ import { listAvailableBackends } from '@chat-recall/engine/core/tool-backend.js'
 import { extractTurnsAny, replaySessionAny } from '@chat-recall/engine/core/session-multi-tool.js';
 import { parseTranscript, trimTranscriptForSync, TRANSCRIPT_VERSION, gzipContainer, mapContainerText, buildRawContainer, containerSrcHash, parseTranscriptFromContainer, updateShadow, type RawContainer } from '@chat-recall/engine/transcript/index.js';
 import { parseClaudeTranscriptText } from '@chat-recall/engine/transcript/claude.js';
-import { parseGeminiTranscriptText } from '@chat-recall/engine/transcript/gemini.js';
 import { parseCodexTranscriptText } from '@chat-recall/engine/transcript/codex.js';
 import { getBackendForId, getBackend, type SessionRef } from '@chat-recall/engine/core/tool-backend.js';
 import { computeOutcome } from '@chat-recall/engine/core/session-outcome.js';
@@ -2595,7 +2594,6 @@ export async function buildConversationSync(
 function parseTailMessages(tool: string, text: string): any[] {
   if (!text || !text.trim()) return [];
   if (tool === 'claude') return parseClaudeTranscriptText(text);
-  if (tool === 'gemini') return parseGeminiTranscriptText(text);
   if (tool === 'codex') return parseCodexTranscriptText(text);
   return [];
 }

@@ -997,7 +997,7 @@ export interface AnalyticsData {
   };
 }
 
-export async function getAnalytics(tool?: 'all' | 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy' | 'cursor'): Promise<AnalyticsData> {
+export async function getAnalytics(tool?: 'all' | 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor'): Promise<AnalyticsData> {
   const url = tool && tool !== 'all'
     ? `${API_BASE}/analytics?tool=${encodeURIComponent(tool)}`
     : `${API_BASE}/analytics`;
@@ -1316,7 +1316,6 @@ export type SummaryProvider =
   | 'ollama'
   | 'ollama-cloud'
   | 'gemini'
-  | 'gemini-cli'
   | 'openai'
   | 'nvidia'
   | 'openai-compat'
@@ -1358,10 +1357,9 @@ export interface SourcesEnabled {
   claude:   { sessions: boolean; plans: boolean; tasks: boolean; pasteCache: boolean;
               history: boolean; skills: boolean; agents: boolean; commands: boolean;
               hooks: boolean; plugins: boolean };
-  gemini:   { sessions: boolean; plans: boolean; brain: boolean; extensions: boolean };
   opencode: { sessions: boolean; plans: boolean; todos: boolean; skills: boolean };
   codex:    { sessions: boolean; plugins: boolean; skills: boolean };
-  agy:      { sessions: boolean; plans: boolean };
+  agy:      { sessions: boolean; plans: boolean; brain: boolean; extensions: boolean };
   cursor:   { sessions: boolean; skills: boolean; agents: boolean; commands: boolean };
   common:   { mcps: boolean; agentMd: boolean };
 }
@@ -1405,7 +1403,7 @@ export interface SyncSettings {
     dismissals: boolean;
     customRules: boolean;
   };
-  excludeTools: Array<'claude' | 'gemini' | 'opencode' | 'codex' | 'agy' | 'cursor'>;
+  excludeTools: Array<'claude' | 'opencode' | 'codex' | 'agy' | 'cursor'>;
   excludeProjects: string[];
   excludePreviewPatterns?: string[];
 }
@@ -1431,7 +1429,6 @@ export interface SettingsResponse {
   };
   status: {
     ollama?: { reachable: boolean; models?: string[]; error?: string };
-    geminiCli?: { available: boolean; version?: string };
     cli?: { available: boolean };
     /** preset name → whether its binary is on PATH */
     cliDetected?: Record<string, boolean>;
@@ -1525,7 +1522,7 @@ export async function getPatterns(): Promise<PatternsResponse> {
 export type ToolkitType = 'skill' | 'mcp' | 'command' | 'agent' | 'hook' | 'plugin';
 
 export interface ToolkitStatus {
-  counts: Record<ToolkitType, Record<'claude' | 'agy' | 'gemini' | 'opencode' | 'codex' | 'cursor', number>>;
+  counts: Record<ToolkitType, Record<'claude' | 'agy' | 'opencode' | 'codex' | 'cursor', number>>;
 }
 
 export async function getToolkitStatus(): Promise<ToolkitStatus> {
@@ -1536,7 +1533,7 @@ export async function getToolkitStatus(): Promise<ToolkitStatus> {
 
 export async function browseToolkit(
   type: ToolkitType,
-  opts: { limit?: number; offset?: number; tool?: 'all' | 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy' | 'cursor' } = {},
+  opts: { limit?: number; offset?: number; tool?: 'all' | 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor' } = {},
 ): Promise<MemoryMetadataRow[]> {
   const params = new URLSearchParams();
   if (opts.limit !== undefined) params.append('limit', String(opts.limit));
@@ -1557,7 +1554,7 @@ export async function getToolkitItem(type: ToolkitType, id: string): Promise<Mem
 export async function promoteToolkitItem(
   type: ToolkitType,
   sourceId: string,
-  toTool: 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy' | 'cursor',
+  toTool: 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor',
 ): Promise<{ ok: boolean; targetPath?: string; error?: string }> {
   const res = await fetchWithTimeout(`${API_BASE}/toolkit/promote`, {
     method: 'POST',
@@ -1571,7 +1568,7 @@ export async function promoteToolkitItem(
 
 // --- Sync-all (bulk promote across tools) ---
 
-export type SyncTool = 'claude' | 'agy' | 'gemini' | 'opencode' | 'codex' | 'cursor';
+export type SyncTool = 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor';
 /** Toolkit primitives with a clean cross-tool sync matrix. */
 export type SyncType = 'skill' | 'mcp' | 'command' | 'agent' | 'instructions';
 
@@ -1848,7 +1845,7 @@ export async function removeToolkitItem(
 // --- Edits timeline / live session files ---
 
 export type EditOp = 'edit' | 'write' | 'multi_edit' | 'notebook_edit' | 'read';
-export type AiTool = 'claude' | 'gemini' | 'opencode' | 'codex' | 'agy' | 'cursor';
+export type AiTool = 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor';
 
 export interface EditRow {
   ts: number;

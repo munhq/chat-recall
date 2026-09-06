@@ -495,7 +495,7 @@ const RecallEditsTimelineSchema = z.object({
     .describe('Filter by project name (matched against the encoded project directory name)'),
   include_reads: z.boolean().optional().default(false)
     .describe('Include read-type tool calls in addition to write/edit ones'),
-  tools: z.array(z.enum(['claude', 'gemini', 'opencode', 'codex', 'agy', 'cursor'])).optional()
+  tools: z.array(z.enum(['claude', 'opencode', 'codex', 'agy', 'cursor'])).optional()
     .describe('Restrict to a subset of AI tools. Default: every tool this machine has.'),
   group_by_repo: z.boolean().optional().default(false)
     .describe('Group output by detected git repo root instead of returning a flat list. Useful when a single session touched multiple repos.'),
@@ -1389,7 +1389,7 @@ aggregate per session instead — "which sessions edited auth.rs in the last mon
             include_reads:  { type: 'boolean', default: false, description: 'Include Read tool_uses too' },
             tools:          {
               type: 'array',
-              items: { type: 'string', enum: ['claude', 'gemini', 'opencode', 'codex', 'agy', 'cursor'] },
+              items: { type: 'string', enum: ['claude', 'opencode', 'codex', 'agy', 'cursor'] },
               description: 'Restrict to specific AI tools. Default: every tool this machine has.',
             },
             group_by_repo:  { type: 'boolean', default: false, description: 'Group results by detected git repo root.' },
@@ -4223,7 +4223,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
             lines.push(`- id: \`${r.id}\``);
             lines.push(r.rationale);
             if (r.evidence?.length) lines.push(`Evidence: ${r.evidence.join('; ')}`);
-            if (r.action?.type === 'append_claude_md') lines.push('Apply → add to CLAUDE.md:\n```\n' + r.action.payload.text + '\n```');
+            if (r.action?.type === 'append_claude_md') lines.push('Apply → add to this project\'s instruction file (CLAUDE.md, AGENTS.md or GEMINI.md — whichever it has):\n```\n' + r.action.payload.text + '\n```');
             else lines.push(`Apply → ${r.action.type} ${JSON.stringify(r.action.payload)}`);
             lines.push('');
           }
@@ -4248,7 +4248,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
           lines.push(`## [${r.severity}] ${r.title} (${r.kind})`);
           lines.push(r.rationale);
           if (r.evidence?.length) lines.push(`Evidence: ${r.evidence.join('; ')}`);
-          if (r.action?.type === 'append_claude_md') lines.push('Apply → add to global CLAUDE.md:\n```\n' + r.action.payload.text + '\n```');
+          if (r.action?.type === 'append_claude_md') lines.push('Apply → add to your global instruction file:\n```\n' + r.action.payload.text + '\n```');
           lines.push('');
         }
         return { content: [{ type: 'text', text: lines.join('\n') }] };
@@ -4295,7 +4295,7 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
           lines.push(rec.rationale);
           if (rec.evidence?.length) lines.push(`Evidence: ${rec.evidence.join('; ')}`);
           if (rec.action?.type === 'append_claude_md') {
-            const target = scope === 'account' ? 'global ~/.claude/CLAUDE.md' : `${scope} CLAUDE.md`;
+            const target = scope === 'account' ? 'your global instruction file' : `the instruction file in ${scope}`;
             lines.push(`Apply → append to ${target}:`);
             lines.push('```\n' + String((rec.action.payload as { text?: string }).text ?? '') + '\n```');
           } else {

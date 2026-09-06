@@ -98,8 +98,6 @@
   /* Tool colors */
   --cr-tool-claude: #D4A5FF;
   --cr-tool-claude-surf: color-mix(in srgb, var(--cr-tool-claude) 10%, var(--cr-ink-0));
-  --cr-tool-gemini: #78C9A0;
-  --cr-tool-gemini-surf: color-mix(in srgb, var(--cr-tool-gemini) 10%, var(--cr-ink-0));
   --cr-tool-opencode: #79C0FF;
   --cr-tool-opencode-surf: color-mix(in srgb, var(--cr-tool-opencode) 10%, var(--cr-ink-0));
   --cr-tool-codex: #11AF88;
@@ -202,8 +200,6 @@
 
   --cr-tool-claude: #7740DC;
   --cr-tool-claude-surf: color-mix(in srgb, var(--cr-tool-claude) 8%, var(--cr-ink-0));
-  --cr-tool-gemini: #187432;
-  --cr-tool-gemini-surf: color-mix(in srgb, var(--cr-tool-gemini) 8%, var(--cr-ink-0));
   --cr-tool-opencode: #0861C9;
   --cr-tool-opencode-surf: color-mix(in srgb, var(--cr-tool-opencode) 8%, var(--cr-ink-0));
   --cr-tool-codex: #047353;

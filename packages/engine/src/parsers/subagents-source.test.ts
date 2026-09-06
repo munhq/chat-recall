@@ -46,7 +46,7 @@ You are a thorough code reviewer.`);
     expect(await collect()).toHaveLength(0);
   });
 
-  test('discovers OpenCode + Gemini markdown agents', async () => {
+  test('discovers OpenCode + Antigravity markdown agents', async () => {
     mkdirSync(join(tmpHome, '.config', 'opencode', 'agents'), { recursive: true });
     writeFileSync(join(tmpHome, '.config', 'opencode', 'agents', 'planner.md'),
       '---\ndescription: plans work\n---\nYou plan.');
@@ -55,7 +55,7 @@ You are a thorough code reviewer.`);
       '---\nname: helper\ndescription: helps\n---\nYou help.');
     const items = await collect();
     expect(items.find(i => i.extra.tool === 'opencode')?.title).toBe('planner');
-    expect(items.find(i => i.extra.tool === 'gemini')?.title).toBe('helper');
+    expect(items.find(i => i.extra.tool === 'agy')?.title).toBe('helper');
   });
 
   test('discovers Codex TOML agents (developer_instructions as body)', async () => {

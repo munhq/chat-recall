@@ -29,7 +29,7 @@ import type {
   MemoryLink,
   SourceType,
 } from '../types/memory.js';
-import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
+import { agyBackend as AGY } from '../core/backends/agy.js';
 import { codexBackend as CODEX } from '../core/backends/codex.js';
 import { isSourceEnabled } from '../core/settings.js';
 import { cursorHomeDir } from '../core/tool-paths.js';
@@ -146,10 +146,10 @@ export class McpsSource implements MemorySource {
     }
 
     // Gemini — settings.json mcpServers
-    const geminiSettings = GEMINI.settingsFile();
+    const geminiSettings = AGY.sharedSettingsFile();
     const gemSettings = readJson(geminiSettings);
     yield* this.fromObject(gemSettings?.mcpServers, {
-      tool: 'gemini',
+      tool: 'agy',
       filePath: geminiSettings,
       scope: 'user',
     });
@@ -187,7 +187,7 @@ export class McpsSource implements MemorySource {
 
   private async *fromObject(
     obj: Record<string, McpConfig> | undefined | null,
-    ctx: { tool: 'claude' | 'opencode' | 'gemini' | 'codex' | 'agy' | 'cursor'; filePath: string; scope: string },
+    ctx: { tool: 'claude' | 'opencode' | 'codex' | 'agy' | 'cursor'; filePath: string; scope: string },
   ): AsyncGenerator<MemoryItem> {
     if (!obj || typeof obj !== 'object') return;
 

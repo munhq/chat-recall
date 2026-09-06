@@ -109,17 +109,17 @@ describe('mergeContainer', () => {
     expect(names).toEqual(['s.jsonl', 'subagents/agent-1.jsonl']);
   });
 
-  test('gemini whole-file: shrink keeps the larger blob', () => {
-    const shadow = container('gemini', 'chat.json', JSON.stringify({ messages: [1, 2, 3, 4, 5] }));
-    const current = container('gemini', 'chat.json', JSON.stringify({ messages: [1] }));
+  test('cursor whole-file: shrink keeps the larger blob', () => {
+    const shadow = container('cursor', 'chat.json', JSON.stringify({ messages: [1, 2, 3, 4, 5] }));
+    const current = container('cursor', 'chat.json', JSON.stringify({ messages: [1] }));
     const m = mergeContainer(shadow, current);
     expect(m.status).toBe('rewrite-merged');
     expect(m.container.files[0].text).toBe(shadow.files[0].text);
   });
 
-  test('gemini whole-file: growth takes current', () => {
-    const shadow = container('gemini', 'chat.json', JSON.stringify({ messages: [1] }));
-    const current = container('gemini', 'chat.json', JSON.stringify({ messages: [1, 2, 3] }));
+  test('cursor whole-file: growth takes current', () => {
+    const shadow = container('cursor', 'chat.json', JSON.stringify({ messages: [1] }));
+    const current = container('cursor', 'chat.json', JSON.stringify({ messages: [1, 2, 3] }));
     const m = mergeContainer(shadow, current);
     expect(m.status).toBe('grew');
     expect(m.container.files[0].text).toBe(current.files[0].text);

@@ -35,8 +35,7 @@ function defaultSourceSettings(): SourceSettings {
     enabled: {
       claude:   { sessions: true, plans: true, tasks: true, pasteCache: true, history: true,
                   skills: true, agents: true, commands: true, hooks: true, plugins: true },
-      gemini:   { sessions: true, plans: true, brain: true, extensions: true },
-      agy:      { sessions: true, plans: true },
+      agy:      { sessions: true, plans: true, brain: true, extensions: true },
       opencode: { sessions: true, plans: true, todos: true, skills: true },
       codex:    { sessions: true, plugins: true, skills: true },
       cursor:   { sessions: true, skills: true, agents: true, commands: true },
@@ -531,7 +530,6 @@ function buildSummaryChoices(
 
 function prettyCliName(preset: string): string {
   switch (preset) {
-    case 'gemini': return 'Google Gemini CLI';
     case 'claude-cli': return 'Claude CLI';
     case 'opencode': return 'OpenCode';
     case 'kilocode': return 'Kilo Code';
@@ -715,10 +713,9 @@ function SourcesCard({ value, onChange }: { value: SourceSettings; onChange: (v:
       hint="Pick exactly which surfaces chat-recall indexes. Anything off here never enters search, summary, or sync.">
       {groupRow('Claude Code',  'claude',
         ['sessions','plans','tasks','pasteCache','history','skills','agents','commands','hooks','plugins'])}
-      {groupRow('Gemini',       'gemini',   ['sessions','plans','brain','extensions'])}
       {groupRow('OpenCode',     'opencode', ['sessions','plans','todos','skills'])}
       {groupRow('Codex',        'codex',    ['sessions','plugins','skills'])}
-      {groupRow('Antigravity',  'agy',      ['sessions','plans'])}
+      {groupRow('Antigravity',  'agy',      ['sessions','plans','brain','extensions'])}
       {groupRow('Cursor',       'cursor',   ['sessions','skills','agents','commands'])}
       {groupRow('Cross-tool',   'common',   ['mcps','agentMd'])}
 
@@ -815,7 +812,7 @@ function SyncCard({
   const setUpload = (k: keyof SyncSettings['upload'], on: boolean) => {
     onChange({ ...value, upload: { ...value.upload, [k]: on } });
   };
-  const tools: Array<'claude' | 'gemini' | 'opencode' | 'codex' | 'agy' | 'cursor'> = ['claude','gemini','opencode','codex','agy','cursor'];
+  const tools: Array<'claude' | 'opencode' | 'codex' | 'agy' | 'cursor'> = ['claude','opencode','codex','agy','cursor'];
 
   return (
     <Card title="Sync to remote"

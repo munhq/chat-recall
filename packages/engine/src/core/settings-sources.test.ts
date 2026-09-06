@@ -64,7 +64,7 @@ describe('schema migration', () => {
     const s = loadSettings();
     expect(s.sources.enabled.claude.sessions).toBe(true);
     expect(s.sources.enabled.claude.pasteCache).toBe(true);
-    expect(s.sources.enabled.gemini.sessions).toBe(true);
+    expect(s.sources.enabled.agy.sessions).toBe(true);
     expect(s.sources.enabled.opencode.sessions).toBe(true);
     expect(s.sources.enabled.codex.sessions).toBe(true);
     expect(s.sources.enabled.common.mcps).toBe(true);
@@ -91,7 +91,7 @@ describe('schema migration', () => {
     expect(s.sources.enabled.claude.sessions).toBe(true);
     expect(s.sources.enabled.claude.history).toBe(true);
     // Other tools defaulted in too
-    expect(s.sources.enabled.gemini.sessions).toBe(true);
+    expect(s.sources.enabled.agy.sessions).toBe(true);
   });
 });
 
@@ -108,7 +108,7 @@ describe('claudeHomeDir layered resolution', () => {
       sources: {
         enabled: {
           claude:   { sessions: true, plans: true, tasks: true, pasteCache: true, history: true, skills: true, agents: true, commands: true, hooks: true, plugins: true },
-          gemini:   { sessions: true, plans: true, brain: true, extensions: true },
+          agy:      { sessions: true, plans: true, brain: true, extensions: true },
           opencode: { sessions: true, plans: true, todos: true, skills: true },
           codex:    { sessions: true, plugins: true, skills: true },
           common:   { mcps: true, agentMd: true },
@@ -214,39 +214,3 @@ describe('PasteSource gate', () => {
   });
 });
 
-describe('PlanSource per-tool branch gates', () => {
-  test('disabling claude.plans keeps gemini/opencode plans flowing', async () => {
-    // Drop a Claude plan and a Gemini plan on disk.
-    const claudePlans = join(tmpHome, '.claude', 'plans');
-    mkdirSync(claudePlans, { recursive: true });
-    writeFileSync(join(claudePlans, 'plan-a.md'), '# Plan A\nbody\n');
-
-    // Gemini plan tree: tmp/<hash>/<uuid>/plans/<file>.md
-    const geminiPlanDir = join(tmpHome, '.gemini', 'tmp', 'h1', 'sess-1', 'plans');
-    mkdirSync(geminiPlanDir, { recursive: true });
-    writeFileSync(join(geminiPlanDir, 'plan-b.md'), '# Plan B\nbody\n');
-    // projects.json so plan-source can resolve the hash to a path
-    writeFileSync(join(tmpHome, '.gemini', 'projects.json'), JSON.stringify({
-      projects: { '/some/project': {} },
-    }));
-
-    // Sanity: both enabled, both yield.
-    let items = await collect(new PlanSource().discover());
-    const titles = items.map((i: any) => i.title);
-    expect(titles.some((t: string) => t.includes('Plan A'))).toBe(true);
-
-    // Disable claude.plans only — gemini still flows.
-    const cur = loadSettings();
-    saveSettings({
-      ...cur,
-      sources: { ...cur.sources, enabled: { ...cur.sources.enabled, claude: { ...cur.sources.enabled.claude, plans: false } } },
-    });
-    _resetSourceSettingsCache();
-    items = await collect(new PlanSource().discover());
-    const titles2 = items.map((i: any) => i.title);
-    expect(titles2.some((t: string) => t.includes('Plan A'))).toBe(false);
-    // Gemini branch still active (we don't assert exact content because
-    // the plan walker has additional disk requirements; the negative
-    // assertion above is the meaningful one).
-  });
-});

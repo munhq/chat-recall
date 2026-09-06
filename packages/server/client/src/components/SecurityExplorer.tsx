@@ -67,7 +67,7 @@ function AccountRecsStrip() {
         >
           <div style={{ fontSize: 13, color: 'var(--cr-fg-2)', marginBottom: 12, lineHeight: 1.5 }}>{r.rationale}</div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-            <Button variant="primary" onClick={() => apply(r)} disabled={busy === r.id}>{busy === r.id ? 'Applying…' : 'Apply to global CLAUDE.md'}</Button>
+            <Button variant="primary" onClick={() => apply(r)} disabled={busy === r.id}>{busy === r.id ? 'Applying…' : 'Apply to my global rules'}</Button>
             {(r.action.payload as any)?.text && <Button variant="secondary" onClick={() => navigator.clipboard.writeText(String((r.action.payload as any).text))}>Copy rule</Button>}
             {msg[r.id] && <span style={{ fontSize: 12.5, color: 'var(--cr-fg-2)' }}>{msg[r.id]}</span>}
           </div>
@@ -440,7 +440,7 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
 
       {/* Prevention hint — the findings below tell you what leaked and how to
           rotate; this one line teaches how to stop it happening again. Same
-          guidance chat-recall injects into CLAUDE.md, surfaced where it's
+          guidance chat-recall injects into your instruction files, surfaced where it's
           most relevant. */}
       <Note
         style={{ marginBottom: 16 }}

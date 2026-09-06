@@ -27,8 +27,8 @@ async function collect(src: any): Promise<any[]> {
 
 function writeFile(p: string, c: string) { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, c); }
 
-describe('command sync claude → gemini', () => {
-  test('a Claude markdown command becomes a Gemini TOML command', async () => {
+describe('command sync claude → agy', () => {
+  test('a Claude markdown command becomes an Antigravity TOML command', async () => {
     writeFile(join(tmp, '.claude', 'commands', 'review.md'),
       '---\nname: review\ndescription: Review the diff\n---\nFind bugs in the staged changes.');
 
@@ -38,13 +38,13 @@ describe('command sync claude → gemini', () => {
 
     // 2. translate + 3. emit (what promote does)
     const art = readCommand(src.filePath, src.extra.format);
-    const out = emit('command', art, 'gemini');
+    const out = emit('command', art, 'agy');
     expect(existsSync(out.path)).toBe(false);
     writeFile(out.path, out.content);
 
     // 4. re-discover — now both tools have `review`
     const after = await collect(new SlashCommandsSource());
-    const gem = after.find(i => i.extra.tool === 'gemini' && i.title === 'review');
+    const gem = after.find(i => i.extra.tool === 'agy' && i.title === 'review');
     expect(gem).toBeDefined();
     expect(gem.extra.format).toBe('toml');
     expect(gem.extra.description).toBe('Review the diff');

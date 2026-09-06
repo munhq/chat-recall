@@ -10,7 +10,6 @@
 export {
   parseClaudeTranscript as getConversation,
   parseClaudeSubagents as getSubagents,
-  parseGeminiTranscript as getGeminiConversation,
   parseOpenCodeTranscript as getOpenCodeConversation,
   parseOpenCodeSubagents as getOpenCodeSubagents,
   parseCodexTranscript as getCodexConversation,

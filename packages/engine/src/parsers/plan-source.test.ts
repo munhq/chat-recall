@@ -35,18 +35,6 @@ Replace OAuth with passkeys.`);
     expect(items[0].extra.isAgentPlan).toBe(true);
   });
 
-  test('discovers Gemini plans under ~/.gemini/tmp/<sha>/<uuid>/plans/*.md', async () => {
-    const dir = join(tmpHome, '.gemini', 'tmp', 'sha1', 'sess1', 'plans');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'investigation.md'), '# Investigation\nbody');
-    const src = new PlanSource();
-    const items: any[] = [];
-    for await (const i of src.discover()) items.push(i);
-    const gemini = items.find(i => i.extra?.tool === 'gemini');
-    expect(gemini).toBeDefined();
-    expect(gemini.id).toMatch(/^gemini_plan_/);
-  });
-
   test('discovers OpenCode plans at ~/.local/share/opencode/plans/*.md', async () => {
     const dir = join(tmpHome, '.local', 'share', 'opencode', 'plans');
     mkdirSync(dir, { recursive: true });
@@ -120,18 +108,6 @@ Some detail here.`);
       .toBe('addc79f4-ccd7-47a5-8eeb-daf7fa546271');
     // And it still records the parent-plan relationship.
     expect(links.find(l => l.linkType === 'agent_plan_parent')?.targetId).toBe('shiny-lark');
-  });
-
-  test('gemini plan links to its gemini_-prefixed session', async () => {
-    const dir = join(tmpHome, '.gemini', 'tmp', 'sha1', 'sess-uuid-1', 'plans');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'investigation.md'), '# Investigation\nbody');
-    const src = new PlanSource();
-    const items: any[] = [];
-    for await (const i of src.discover()) items.push(i);
-    const gemini = items.find(i => i.extra?.tool === 'gemini');
-    const links = await src.extractLinks(gemini);
-    expect(links.find(l => l.linkType === 'plan_for_session')?.targetId).toBe('gemini_sess-uuid-1');
   });
 
   test('parse() splits a plan by ## headers into multiple chunks', async () => {

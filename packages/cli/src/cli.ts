@@ -557,7 +557,7 @@ program
         // Antigravity or Cursor installed never got the server registered
         // there — silently, because the filter just returned a shorter list.
         const MCP_CLIENT_FOR_BIN: Record<string, McpClientId> = {
-          gemini: 'gemini', opencode: 'opencode', codex: 'codex',
+          opencode: 'opencode', codex: 'codex',
           agy: 'agy', 'cursor-agent': 'cursor',
         };
         const detectedClients = clis

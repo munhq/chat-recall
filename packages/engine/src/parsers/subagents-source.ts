@@ -26,7 +26,7 @@ import type {
   SourceType,
 } from '../types/memory.js';
 import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
-import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
+import { agyBackend as AGY } from '../core/backends/agy.js';
 import { opencodeBackend as OPENCODE } from '../core/backends/opencode.js';
 import { codexBackend as CODEX } from '../core/backends/codex.js';
 import { isSourceEnabled } from '../core/settings.js';
@@ -64,7 +64,7 @@ function rebuildBody(content: string): Record<string, unknown> {
   return out;
 }
 
-type AgentTool = 'claude' | 'gemini' | 'opencode' | 'codex' | 'cursor';
+type AgentTool = 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor';
 
 interface AgentRoot {
   path: string;
@@ -114,8 +114,9 @@ export class SubagentsSource implements MemorySource {
         } catch { /* skip */ }
       }
     }
-    if (isSourceEnabled('gemini', 'agents')) {
-      roots.push({ path: GEMINI.agentsDir(), tool: 'gemini', scope: 'user', projectPath: '', format: 'md' });
+    if (isSourceEnabled('agy', 'agents')) {
+      roots.push({ path: join(AGY.homeDir(), 'agents'), tool: 'agy', scope: 'user', projectPath: '', format: 'md' });
+      roots.push({ path: AGY.sharedAgentsDir(), tool: 'agy', scope: 'user', projectPath: '', format: 'md' });
     }
     if (isSourceEnabled('opencode', 'agents')) {
       roots.push({ path: OPENCODE.agentsDir(), tool: 'opencode', scope: 'user', projectPath: '', format: 'md' });

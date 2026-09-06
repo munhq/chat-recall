@@ -599,7 +599,6 @@ try {
     ...process.env,
     CHAT_RECALL_CLAUDE_HOME: HOME,
     CHAT_RECALL_CODEX_HOME: join(empty, 'codex'),
-    CHAT_RECALL_GEMINI_HOME: join(empty, 'gemini'),
     CHAT_RECALL_AGY_HOME: join(empty, 'agy'),
     CHAT_RECALL_CURSOR_HOME: join(empty, 'cursor'),
     CHAT_RECALL_CURSOR_IDE_HOME: join(empty, 'cursor-ide'),

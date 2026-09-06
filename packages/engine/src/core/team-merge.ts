@@ -33,7 +33,6 @@ import { getDataDir } from './paths.js';
 import type { TeamArtifactBody, TeamArtifactType, TeamArtifactTool } from './team-client.js';
 import { teamInstallsList, teamInstallsRecord, teamInstallsForget, type TeamInstallRow } from './team-client.js';
 import { claudeBackend } from './backends/claude.js';
-import { geminiBackend } from './backends/gemini.js';
 import { opencodeBackend } from './backends/opencode.js';
 import { agyBackend } from './backends/agy.js';
 import { cursorBackend } from './backends/cursor.js';
@@ -46,7 +45,7 @@ import { codexBackend } from './backends/codex.js';
  * only meaningful for Claude — we don't fan-hooks out cross-tool).
  */
 /** Tools a team artifact can install into. One list, not five inline copies. */
-type MergeTool = 'claude' | 'agy' | 'gemini' | 'opencode' | 'codex' | 'cursor';
+type MergeTool = 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor';
 
 function installPathFor(art: { type: TeamArtifactType; name: string }, tool: MergeTool): string | null {
   // SKILL.md naming: every tool with a skills concept stores them as
@@ -56,8 +55,11 @@ function installPathFor(art: { type: TeamArtifactType; name: string }, tool: Mer
     case 'skill':
       switch (tool) {
         case 'claude':   return join(claudeBackend.skillsDir(),   art.name, 'SKILL.md');
-        case 'agy':
-        case 'gemini':   return join(geminiBackend.skillsDir(),   art.name, 'SKILL.md');
+        // Antigravity's OWN skills dir. It used to resolve to the shared
+        // ~/.gemini/skills while toolkit-sync installed to
+        // ~/.gemini/antigravity-cli/skills, so a team skill landed in one place
+        // and a synced skill in the other.
+        case 'agy':      return join(agyBackend.homeDir(), 'skills', art.name, 'SKILL.md');
         case 'opencode': return join(opencodeBackend.skillsDir(), art.name, 'SKILL.md');
         // User skills go to ~/.codex/skills (NOT .system, which is OpenAI's bundle).
         case 'codex':    return join(codexBackend.skillsDir(),    art.name, 'SKILL.md');
@@ -83,8 +85,7 @@ function installPathFor(art: { type: TeamArtifactType; name: string }, tool: Mer
       switch (tool) {
         case 'claude':   return join(claudeBackend.plansDir(),    `${art.name}.md`);
         case 'opencode': return join(opencodeBackend.plansDir(),  `${art.name}.md`);
-        case 'agy':
-        case 'gemini':   return null;  // Gemini/agy plans live per-session under tmp/
+        case 'agy':      return null;  // Antigravity plans live per-session
         case 'codex':    return null;
         case 'cursor':   return null;  // Cursor has no plans concept
       }
@@ -120,7 +121,6 @@ function targetsFor(art: { tool: TeamArtifactTool; type: TeamArtifactType }): Me
   // made every agy-tool artifact resolve to `undefined` and install nowhere.
   const installed: Record<MergeTool, boolean> = {
     claude:   claudeBackend.isAvailable(),
-    gemini:   geminiBackend.isAvailable(),
     opencode: opencodeBackend.isAvailable(),
     codex:    codexBackend.isAvailable(),
     agy:      agyBackend.isAvailable(),

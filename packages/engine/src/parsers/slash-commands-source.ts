@@ -25,7 +25,7 @@ import type {
   SourceType,
 } from '../types/memory.js';
 import { claudeBackend as CLAUDE } from '../core/backends/claude.js';
-import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
+import { agyBackend as AGY } from '../core/backends/agy.js';
 import { opencodeBackend as OPENCODE } from '../core/backends/opencode.js';
 import { codexBackend as CODEX } from '../core/backends/codex.js';
 import { isSourceEnabled } from '../core/settings.js';
@@ -63,7 +63,7 @@ function rebuildBody(content: string): Record<string, unknown> {
   return out;
 }
 
-type CmdTool = 'claude' | 'gemini' | 'opencode' | 'codex' | 'cursor';
+type CmdTool = 'claude' | 'agy' | 'opencode' | 'codex' | 'cursor';
 
 interface CmdRoot {
   path: string;
@@ -113,8 +113,9 @@ export class SlashCommandsSource implements MemorySource {
         } catch { /* skip */ }
       }
     }
-    if (isSourceEnabled('gemini', 'commands')) {
-      roots.push({ path: GEMINI.commandsDir(), tool: 'gemini', scope: 'user', projectPath: '', format: 'toml' });
+    if (isSourceEnabled('agy', 'commands')) {
+      roots.push({ path: join(AGY.homeDir(), 'commands'), tool: 'agy', scope: 'user', projectPath: '', format: 'toml' });
+      roots.push({ path: AGY.sharedCommandsDir(), tool: 'agy', scope: 'user', projectPath: '', format: 'toml' });
     }
     if (isSourceEnabled('opencode', 'commands')) {
       roots.push({ path: OPENCODE.commandsDir(), tool: 'opencode', scope: 'user', projectPath: '', format: 'md' });

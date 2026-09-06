@@ -79,10 +79,10 @@ describe('McpsSource', () => {
     expect(r).toBeDefined();
   });
 
-  test('Gemini settings.json with mcpServers', async () => {
+  test('the shared settings.json with mcpServers', async () => {
     writeJson('.gemini/settings.json', { mcpServers: { gcloud: { command: 'npx', args: ['-y', '@google-cloud/gcloud-mcp'] } } });
     const items = await collect();
-    expect(items.find(i => i.extra.tool === 'gemini' && i.extra.mcpName === 'gcloud')).toBeDefined();
+    expect(items.find(i => i.extra.tool === 'agy' && i.extra.mcpName === 'gcloud')).toBeDefined();
   });
 
   test('parse() emits a single MCP chunk with command + allow list', async () => {

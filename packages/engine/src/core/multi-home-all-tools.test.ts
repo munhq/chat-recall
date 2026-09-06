@@ -7,7 +7,6 @@
  * simply never appear, with no error anywhere.
  *
  *   claude    <home>/projects/<project>/<id>.jsonl
- *   gemini    <home>/tmp/<project>/chats/session-*.json[l]
  *   codex     <home>/sessions/YYYY/MM/DD/rollout-*.jsonl
  *   agy       <home>/brain/<id>/.system_generated/logs/*.jsonl
  *   opencode  <data-dir>/opencode.db          (a file, siblings are sibling DIRS)
@@ -56,16 +55,6 @@ afterEach(async () => {
 });
 
 describe('every tool discovers sibling profiles', () => {
-  test('gemini: ~/.gemini and ~/.gemini-work both scanned', async () => {
-    put('.gemini/tmp/projA/chats/session-1.jsonl');
-    put('.gemini-work/tmp/projB/chats/session-2.jsonl');
-    const { geminiTmpDirs } = await paths();
-    const roots = geminiTmpDirs();
-    expect(roots).toHaveLength(2);
-    expect(roots[0]).toContain(join('.gemini', 'tmp'));           // primary first
-    expect(roots.some((r) => r.includes('.gemini-work'))).toBe(true);
-  });
-
   test('codex: sessions/ roots from every home', async () => {
     put('.codex/sessions/2026/08/03/rollout-a.jsonl');
     put('.codex-t2/sessions/2026/08/03/rollout-b.jsonl');
@@ -114,7 +103,6 @@ describe('every tool discovers sibling profiles', () => {
 describe('discovery reports every tool with a usable count', () => {
   test('per-tool nesting is counted correctly, not just Claude\'s', async () => {
     put('.claude/projects/projA/11111111-1111-1111-1111-111111111111.jsonl');
-    put('.gemini/tmp/projA/chats/session-1.json');           // .json, two deep
     put('.codex/sessions/2026/08/03/rollout-a.jsonl');       // three deep
     put('.gemini/antigravity-cli/brain/s1/.system_generated/logs/a.jsonl'); // four deep
     put('.local/share/opencode/opencode.db', 'sqlite');
@@ -123,41 +111,26 @@ describe('discovery reports every tool with a usable count', () => {
     const byTool = new Map(discoverSessionSources().map((s) => [s.tool, s]));
 
     expect(byTool.get('claude')?.sessions).toBe(1);
-    expect(byTool.get('gemini')?.sessions).toBe(1);   // would be 0 if only .jsonl counted
     expect(byTool.get('codex')?.sessions).toBe(1);    // would be 0 at one level deep
     expect(byTool.get('agy')?.sessions).toBe(1);      // would be 0 at one level deep
     expect(byTool.get('opencode')).toBeTruthy();      // present even though rows aren't counted
     for (const s of byTool.values()) expect(s.id).toMatch(/^src_[0-9a-f]{12}$/);
   });
 
+  /* Demonstrated on Antigravity now. It used to be Gemini CLI's two profiles;
+   * agy has the same sibling-home behaviour and is the tool that still ships. */
   test('secondary profiles appear as separate, non-primary sources', async () => {
-    put('.gemini/tmp/projA/chats/session-1.jsonl');
-    put('.gemini-work/tmp/projB/chats/session-2.jsonl');
+    put('.gemini/antigravity-cli/brain/s1/.system_generated/logs/a.jsonl');
+    put('.gemini/antigravity-cli-alt/brain/s2/.system_generated/logs/b.jsonl');
     const { discoverSessionSources } = await import('./source-discovery.js');
-    const gem = discoverSessionSources().filter((s) => s.tool === 'gemini');
-    expect(gem).toHaveLength(2);
-    expect(gem.filter((s) => s.isPrimary)).toHaveLength(1);
-    expect(gem.filter((s) => !s.isPrimary)).toHaveLength(1);
+    const agy = discoverSessionSources().filter((s) => s.tool === 'agy');
+    expect(agy).toHaveLength(2);
+    expect(agy.filter((s) => s.isPrimary)).toHaveLength(1);
+    expect(agy.filter((s) => !s.isPrimary)).toHaveLength(1);
   });
 });
 
 describe('exclusions apply to every tool, not only Claude', () => {
-  test('excluding a gemini profile stops it being scanned', async () => {
-    put('.gemini/tmp/projA/chats/session-1.jsonl');
-    put('.gemini-work/tmp/projB/chats/session-2.jsonl');
-    const { discoverSessionSources, installSourceExclusions } = await import('./source-discovery.js');
-    const { geminiTmpDirs } = await paths();
-
-    const work = discoverSessionSources().find((s) => s.path.includes('.gemini-work'))!;
-    installSourceExclusions([work.id]);
-
-    const roots = geminiTmpDirs();
-    expect(roots).toHaveLength(1);
-    expect(roots[0]).not.toContain('.gemini-work');
-    // Still discoverable, so the dashboard can switch it back on.
-    expect(discoverSessionSources().map((s) => s.id)).toContain(work.id);
-  });
-
   test('excluding an opencode profile stops that db being opened', async () => {
     put('.local/share/opencode/opencode.db', 'sqlite');
     put('.local/share/opencode-work/opencode.db', 'sqlite');

@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { GeminiBrainSource } from './gemini-brain-source.js';
+import { AntigravityBrainSource } from './antigravity-brain-source.js';
 import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '../test-support/home-env.js';
 
 let tmpHome: string;
@@ -11,13 +11,13 @@ beforeEach(() => { tmpHome = mkdtempSync(join(tmpdir(), 'brain-')); useHomeDir(t
 afterEach(() => { restoreHomeEnv(origHome); rmSync(tmpHome, { recursive: true, force: true }); });
 
 async function collect(): Promise<any[]> {
-  const src = new GeminiBrainSource();
+  const src = new AntigravityBrainSource();
   const out: any[] = [];
   for await (const i of src.discover()) out.push(i);
   return out;
 }
 
-describe('GeminiBrainSource', () => {
+describe('AntigravityBrainSource', () => {
   test('discovers antigravity brain artifact files', async () => {
     const dir = join(tmpHome, '.gemini', 'antigravity', 'brain', 'sess1');
     mkdirSync(dir, { recursive: true });
@@ -25,7 +25,7 @@ describe('GeminiBrainSource', () => {
     writeFileSync(join(dir, 'task.md'), '# Task\ndescription');
     const items = await collect();
     expect(items.length).toBeGreaterThanOrEqual(1);
-    expect(items.every(i => i.extra.tool === 'gemini')).toBe(true);
+    expect(items.every(i => i.extra.tool === 'agy')).toBe(true);
   });
 
   test('returns empty when antigravity dir is absent', async () => {
@@ -36,7 +36,7 @@ describe('GeminiBrainSource', () => {
     const dir = join(tmpHome, '.gemini', 'antigravity', 'brain', 's2');
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'task.md'), '# T\nbody body body body body');
-    const src = new GeminiBrainSource();
+    const src = new AntigravityBrainSource();
     const items: any[] = [];
     for await (const i of src.discover()) items.push(i);
     if (items.length === 0) return;

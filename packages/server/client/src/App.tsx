@@ -716,13 +716,13 @@ function AppInner() {
 
   // ── Open-by-id ──────────────────────────────────────────────────
   // A pasted session id IS source-qualified: bare UUID → Claude,
-  // `gemini_…` / `opencode_…` / `codex_…` / `agy_…` / `cursor_…` → that tool. Supported via
+  // `opencode_…` / `codex_…` / `agy_…` / `cursor_…` → that tool. Supported via
   // (a) the ?session=<id> URL param (deep link) and (b) pasting the id
   // into the search box and pressing Enter.
-  const SESSION_ID_RE = /^(gemini_|opencode_|codex_|agy_|cursor_)?[0-9a-f-]{8,}.*$/i;
+  const SESSION_ID_RE = /^(opencode_|codex_|agy_|cursor_)?[0-9a-f-]{8,}.*$/i;
   const looksLikeSessionId = (s: string) =>
-    /^(gemini_|opencode_|codex_|agy_|cursor_)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s.trim()) ||
-    /^(gemini_|opencode_|codex_|agy_|cursor_)\S{8,}$/i.test(s.trim());
+    /^(opencode_|codex_|agy_|cursor_)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s.trim()) ||
+    /^(opencode_|codex_|agy_|cursor_)\S{8,}$/i.test(s.trim());
   const openById = useCallback((id: string) => {
     setView('search');
     handleSelectSession(id.trim()); // writes ?session= itself

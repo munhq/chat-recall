@@ -401,7 +401,7 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
 /**
  * Detail pane for a Skill or MCP. For skills, lists every tool that has a
  * mirror of this skill (by name) — and notes the ones that don't, so the
- * user can see at a glance "this skill is in claude+opencode but not gemini".
+ * user can see at a glance "this skill is in claude+opencode but not codex".
  */
 function ToolkitDetail({ item, kind, allRows }: { item: MemoryMetadataRow; kind: ToolkitType; allRows: MemoryMetadataRow[] }) {
   const tool = readTool(item);
@@ -509,13 +509,13 @@ function ToolkitDetail({ item, kind, allRows }: { item: MemoryMetadataRow; kind:
 }
 
 /** Per-primitive: which AI tools natively expose this surface today.
- *  agy (Antigravity) inherits Gemini CLI's formats — same on-disk shape. */
+ *  Antigravity kept Gemini CLI's on-disk formats after Google retired it. */
 const TOOL_SUPPORT: Record<ToolkitType, ReadonlySet<ToolId>> = {
-  skill:   new Set<ToolId>(['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor']),
-  mcp:     new Set<ToolId>(['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor']),
-  plugin:  new Set<ToolId>(['claude', 'agy', 'gemini', 'codex']),
-  command: new Set<ToolId>(['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor']),
-  agent:   new Set<ToolId>(['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor']),
+  skill:   new Set<ToolId>(['claude', 'agy', 'opencode', 'codex', 'cursor']),
+  mcp:     new Set<ToolId>(['claude', 'agy', 'opencode', 'codex', 'cursor']),
+  plugin:  new Set<ToolId>(['claude', 'agy', 'codex']),
+  command: new Set<ToolId>(['claude', 'agy', 'opencode', 'codex', 'cursor']),
+  agent:   new Set<ToolId>(['claude', 'agy', 'opencode', 'codex', 'cursor']),
   // Hooks remain Claude-specific (settings.json event handlers).
   hook:    new Set<ToolId>(['claude']),
 };
@@ -781,7 +781,7 @@ function EmptyListState({
 // show presence and accept clicks to queue add/remove. Apply runs all
 // queued mutations in parallel and refreshes the matrix.
 
-const ALL_TOOLS_ORDERED: SyncTool[] = ['claude', 'agy', 'gemini', 'opencode', 'codex', 'cursor'];
+const ALL_TOOLS_ORDERED: SyncTool[] = ['claude', 'agy', 'opencode', 'codex', 'cursor'];
 
 type CellAction = 'add' | 'remove';
 type PendingMap = Map<string, CellAction>; // key = "<type>:<name>:<deviceId>:<tool>"

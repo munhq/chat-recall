@@ -1,7 +1,11 @@
 /**
- * Gemini Brain memory source.
+ * Antigravity Brain memory source.
  *
- * Indexes Gemini CLI "brain" artifacts from ~/.gemini/antigravity/brain/<uuid>/
+ * Indexes the Antigravity DESKTOP app's brain artifacts from
+ * ~/.gemini/antigravity/brain/<uuid>/. (Antigravity CLI keeps its own under
+ * ~/.gemini/antigravity-cli/brain, which agyBrainDirs() covers.) The path sits
+ * under ~/.gemini because Google put Antigravity inside Gemini CLI's home; the
+ * artifacts were never Gemini CLI's.
  * Each brain session contains: task.md, implementation_plan.md, session_summary.md,
  * and other markdown files with plans, findings, and status reports.
  *
@@ -18,23 +22,23 @@ import type {
   MemoryChunk,
   MemoryLink,
 } from '../types/memory.js';
-import { geminiBackend as GEMINI } from '../core/backends/gemini.js';
+import { agyBackend as AGY } from '../core/backends/agy.js';
 import { splitByHeaders } from '../core/utils.js';
 import { isSourceEnabled } from '../core/settings.js';
 
 const MAX_CHUNK_CHARS = 2000;
 
-export class GeminiBrainSource implements MemorySource {
+export class AntigravityBrainSource implements MemorySource {
   readonly sourceType = 'plan' as const;
 
   private brainDir: string;
 
   constructor(brainDir?: string) {
-    this.brainDir = brainDir || GEMINI.antigravityBrainDir();
+    this.brainDir = brainDir || AGY.desktopBrainDir();
   }
 
   async *discover(): AsyncGenerator<MemoryItem> {
-    if (!isSourceEnabled('gemini', 'brain')) return;
+    if (!isSourceEnabled('agy', 'brain')) return;
     if (!existsSync(this.brainDir)) return;
 
     const sessions = readdirSync(this.brainDir, { withFileTypes: true });
@@ -67,7 +71,7 @@ export class GeminiBrainSource implements MemorySource {
           }
 
           const artifactType = file.replace('.md', '');
-          const itemId = `${GEMINI.idPrefix}brain_${entry.name}_${artifactType}`;
+          const itemId = `${AGY.idPrefix}brain_${entry.name}_${artifactType}`;
 
           yield {
             id: itemId,
@@ -78,7 +82,7 @@ export class GeminiBrainSource implements MemorySource {
             mtime: stat.mtimeMs,
             contentPreview: metaSummary || firstLine.slice(0, 200),
             extra: {
-              tool: 'gemini',
+              tool: 'agy',
               brainSessionId: entry.name,
               artifactType,
             },
@@ -127,7 +131,7 @@ export class GeminiBrainSource implements MemorySource {
         sourceType: 'plan',
         sourceId: item.id,
         targetType: 'session',
-        targetId: GEMINI.toPrefixedId(brainId),
+        targetId: AGY.toPrefixedId(brainId),
         linkType: 'brain_artifact_for_session',
         confidence: 0.8,
       }];
