@@ -170,9 +170,9 @@ export default function ConnectMachine({ compact, onFirstData }: { compact?: boo
         {compact ? 'Connect your machine' : 'Connected devices'}
       </div>
       <div style={{ color: 'var(--cr-fg-2)', fontSize: 13, lineHeight: 1.55, marginBottom: 4 }}>
-        chat-recall indexes the AI-coding sessions already on your machine (Claude Code, Gemini CLI,
-        OpenCode, Codex), redacts secrets locally, and syncs them here. One command and your
-        history becomes searchable.
+        chat-recall indexes the AI-coding sessions already on your machine (Claude Code, Codex,
+        Cursor, OpenCode, Antigravity), removes passwords locally, and syncs them here. One command
+        and your history becomes searchable.
       </div>
       {err && <div style={{ color: 'var(--cr-err-500)', fontSize: 13, margin: '8px 0' }}>{err}</div>}
 

@@ -217,7 +217,7 @@ export default function AuthPage({ onSuccess, initialMode = 'signin' }: {
     : verifying ? `We sent a 6-digit code to ${email}. It starts your free 7-day trial.`
     : resetting ? 'Pick something you have not used elsewhere.'
       : forgot ? 'We will email you a link. It works once and expires in an hour.'
-        : signup ? 'One memory across Claude Code, Gemini, Codex and OpenCode.'
+        : signup ? 'One memory across Claude Code, Codex, Cursor, OpenCode and Antigravity.'
           : 'Sign in to your chat-recall account.';
   const cta = twofactor ? 'Verify'
     : verifying ? 'Confirm and start my trial'

@@ -723,7 +723,7 @@ function SourcesCard({ value, onChange }: { value: SourceSettings; onChange: (v:
         <Fields>
           <TextField label="Claude home"   value={value.claudeHome ?? ''}     placeholder="~/.claude"
             onChange={(v) => onChange({ ...value, claudeHome: v || undefined })} />
-          <TextField label="Gemini home"   value={value.geminiHome ?? ''}     placeholder="~/.gemini"
+          <TextField label="Shared root"   value={value.geminiHome ?? ''}     placeholder="~/.gemini"
             onChange={(v) => onChange({ ...value, geminiHome: v || undefined })} />
           <TextField label="Antigravity home" value={value.agyHome ?? ''}     placeholder="~/.gemini/antigravity-cli"
             onChange={(v) => onChange({ ...value, agyHome: v || undefined })} />
