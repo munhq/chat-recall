@@ -57,6 +57,53 @@ function apiOrigin(): string {
 }
 const authUrl = (path: string) => `${apiOrigin()}/api/auth${path}`;
 
+type SessionBody = { user?: { id?: string } } | null;
+
+declare global {
+  interface Window {
+    /** Set by the preflight in index.html. See takePreflightSession(). */
+    __crSession?: Promise<SessionBody>;
+  }
+}
+
+/**
+ * The session answer the HTML shell already asked for.
+ *
+ * WHY: this call used to start only after the main bundle had downloaded,
+ * parsed and run, and the app can render nothing until it answers. That made
+ * the boot four strictly serial steps — shell, bundle, session, data — on a
+ * document whose whole reason for being 5KB is to reach the first paint early.
+ * A tiny inline script in index.html now starts the request while the bundle is
+ * still on the wire, so the two waits overlap instead of queueing.
+ *
+ * Two guards, both about being wrong rather than being slow:
+ *
+ *   The shell hardcodes a same-origin path. A build pointed at another API
+ *   origin with VITE_API_BASE must ask that origin itself, so the preflight is
+ *   ignored unless the URL it used is the URL this module would have used.
+ *
+ *   The promise is consumed once and then dropped. It is an answer from page
+ *   load; a later caller asking "am I signed in" wants the answer now, and
+ *   handing it a cached boot-time value is how a signed-out user keeps seeing
+ *   the app.
+ */
+function takePreflightSession(): Promise<SessionBody> | null {
+  if (authUrl('/get-session') !== '/api/auth/get-session') return null;
+  const pending = window.__crSession;
+  window.__crSession = undefined;
+  return pending ?? null;
+}
+
+/** Ask the server directly. The preflight above is an optimisation over this. */
+async function fetchSession(): Promise<SessionBody> {
+  const res = await fetch(authUrl('/get-session'), {
+    credentials: 'include',
+    headers: { accept: 'application/json' },
+  });
+  if (!res.ok) return null;
+  return (await res.json().catch(() => null)) as SessionBody;
+}
+
 /**
  * Ask the server whether this browser has a live session.
  *
@@ -67,12 +114,7 @@ const authUrl = (path: string) => `${apiOrigin()}/api/auth${path}`;
 export async function isSignedIn(): Promise<boolean> {
   if (!CLOUD) return false;
   try {
-    const res = await fetch(authUrl('/get-session'), {
-      credentials: 'include',
-      headers: { accept: 'application/json' },
-    });
-    if (!res.ok) return false;
-    const body = (await res.json().catch(() => null)) as { user?: { id?: string } } | null;
+    const body = await (takePreflightSession() ?? fetchSession());
     return !!body?.user?.id;
   } catch {
     return false;

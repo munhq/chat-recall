@@ -2,8 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { useUrlState } from '../services/url-state';
 import remarkGfm from 'remark-gfm';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { SyntaxHighlighter, vscDarkPlus } from './CodeBlock';
 import * as diff from 'diff';
 import { Icon, Button, Chip, ToolBadge, SegmentedControl, Card, Schedule, Plate } from './primitives';
 import type {

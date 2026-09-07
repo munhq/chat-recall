@@ -38,6 +38,17 @@ export function classifyStaticPath(path: string): StaticVerdict {
 }
 
 /**
+ * A build asset whose file name carries a content hash.
+ *
+ * Vite emits `assets/<name>-<hash><ext>`, and the hash is 8 base64url
+ * characters (`index-C6u9GiO4.js`). Matching the HASH rather than the `assets/`
+ * directory is deliberate: an unhashed file that lands in that directory must
+ * not be given a year of immutability, because nothing would ever fetch the
+ * replacement.
+ */
+const HASHED_ASSET = /-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+$/;
+
+/**
  * What `Cache-Control` a file under STATIC_DIR should be served with.
  *
  * WHAT WENT WRONG BEFORE: the rule was `path.endsWith('index.html')`, written to
@@ -51,7 +62,7 @@ export function classifyStaticPath(path: string): StaticVerdict {
  * re-downloads ~50KB of HTML from the origin, and a conditional request can
  * never be answered with a 304.
  *
- * Three cases, and only the first two are genuinely uncacheable:
+ * Four cases, and only the first two are genuinely uncacheable:
  *
  *   index.html AT THE ROOT — the SPA shell. Must never be cached: a browser
  *     running a stale shell renders current data with outdated code, which is
@@ -61,11 +72,16 @@ export function classifyStaticPath(path: string): StaticVerdict {
  *     cookie. Cloudflare ignores `Vary: Cookie` below Enterprise, so an
  *     edge-cached '/' would eventually hand one kind of visitor the other's
  *     document.
+ *   a font, or a content-hashed build asset — a year, and immutable. The name
+ *     carries the version, so these bytes are the only bytes that name will
+ *     ever have.
  *   everything else under a directory — a marketing page. No session in it, no
  *     personalisation, changes only on deploy.
  *
  * `path` is POSIX-relative to STATIC_DIR. Returning null means "say nothing",
- * which leaves express.static's own ETag and Last-Modified in place.
+ * and the lesson of the hashed-asset case below is that saying nothing hands
+ * the decision to the CDN — so reach for null only where a default is harmless.
+ * It leaves express.static's own ETag and Last-Modified in place.
  */
 export function cacheControlFor(path: string): string | null {
   const rel = path.replace(/\\/g, '/').replace(/^\.?\//, '');
@@ -82,6 +98,22 @@ export function cacheControlFor(path: string): string | null {
   // either — and long enough that a crawl or a burst of traffic does not hit the
   // origin for every page view.
   if (rel.endsWith('.html')) return 'public, max-age=300, stale-while-revalidate=86400';
+
+  // A content-hashed build asset. A year, and immutable, for the same reason a
+  // font gets it: the hash IS the version, so the bytes behind this exact name
+  // can never change. A new build emits a new name.
+  //
+  // WHAT WENT WRONG BEFORE: this function returned null here on purpose, to
+  // "keep express.static's ETag rather than invent a header". Saying nothing
+  // does not mean nothing is said — it means the CDN decides. Measured on
+  // production: the 500KB main bundle answered `cache-control: public,
+  // max-age=14400` and `cf-cache-status: REVALIDATED`. Four hours is a
+  // Cloudflare default, not a policy anyone here chose, and it makes every
+  // return visit after four hours revalidate the largest asset on the critical
+  // path before the app can boot. An ETag turns that into a 304 instead of a
+  // re-download, which is cheaper but still a round trip the hash makes
+  // unnecessary.
+  if (HASHED_ASSET.test(rel)) return 'public, max-age=31536000, immutable';
 
   return null;
 }

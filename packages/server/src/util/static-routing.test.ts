@@ -69,11 +69,27 @@ describe('cacheControlFor', () => {
       .toBe('public, max-age=31536000, immutable');
   });
 
-  // Hashed bundles keep express.static's ETag rather than being given a header
-  // this function has no business inventing.
-  test('says nothing about other assets', () => {
-    expect(cacheControlFor('assets/index-a1b2c3d4.js')).toBeNull();
+  // THE REGRESSION THIS REPLACED: these returned null, so the origin sent no
+  // Cache-Control at all and Cloudflare applied its own four-hour default to the
+  // largest asset on the boot path. Saying nothing is not neutral; it delegates.
+  test('keeps a content-hashed build asset immutable for a year', () => {
+    for (const asset of [
+      'assets/index-a1b2c3d4.js',
+      'assets/index-C6u9GiO4.js',
+      'assets/index-CxtuYwZl.css',
+      'assets/vendor-react-BE_SqJGT.js',
+    ]) {
+      expect(cacheControlFor(asset)).toBe('public, max-age=31536000, immutable');
+    }
+  });
+
+  // The rule keys off the HASH, not the directory. A file that lands in assets/
+  // without one is a file whose name can be reused by a later build, and a year
+  // of immutability would strand every browser that already holds the old bytes.
+  test('says nothing about an unhashed file', () => {
     expect(cacheControlFor('og-card.png')).toBeNull();
+    expect(cacheControlFor('assets/logo.svg')).toBeNull();
+    expect(cacheControlFor('assets/short-abc.js')).toBeNull();
   });
 
   // relative() on Windows produces backslashes, and the rule is about the URL
@@ -82,5 +98,7 @@ describe('cacheControlFor', () => {
     expect(cacheControlFor('guides\\index.html'))
       .toBe('public, max-age=300, stale-while-revalidate=86400');
     expect(cacheControlFor('fonts\\body.woff2')).toBe('public, max-age=31536000, immutable');
+    expect(cacheControlFor('assets\\index-C6u9GiO4.js'))
+      .toBe('public, max-age=31536000, immutable');
   });
 });

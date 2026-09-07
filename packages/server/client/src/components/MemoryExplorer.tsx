@@ -14,8 +14,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { SyntaxHighlighter, vscDarkPlus } from './CodeBlock';
 import { Icon, Button, Input, SourceBadge, ToolBadge, Card, Chip, Schedule, pressableProps } from './primitives';
 import { useSidebarExtrasRegister } from '../context/sidebar-extras';
 import type {
