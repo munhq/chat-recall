@@ -4,7 +4,22 @@
     "skipLibCheck": true,
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "allowSyntheticDefaultImports": true
+    "allowSyntheticDefaultImports": true,
+
+    // WHAT WENT WRONG BEFORE: this project emitted next to its source, so `tsc`
+    // (step one of `npm run build`) wrote vite.config.js and vite.config.d.ts
+    // into this directory. Vite resolves vite.config.js BEFORE vite.config.ts,
+    // so from the second local build onwards it loaded the COMPILED copy and
+    // every later edit to the .ts was silently ignored. Both files are
+    // gitignored, so a fresh clone and the Docker build were always correct —
+    // only a developer's own machine ran a stale config, which is the worst
+    // place for that to be true.
+    //
+    // `noEmit` is not the fix: tsconfig.json references this project, and TS6310
+    // forbids a referenced project from disabling emit. So it still emits, and
+    // the output goes somewhere Vite does not look.
+    "outDir": "./node_modules/.tmp/config",
+    "tsBuildInfoFile": "./node_modules/.tmp/config/tsconfig.node.tsbuildinfo"
   },
   "include": ["vite.config.ts"]
 }

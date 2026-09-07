@@ -1,9 +1,6 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import * as Sentry from '@sentry/browser';
-import App from './App';
-import AuthPage from './components/AuthPage';
-import DeviceApprovePage from './components/DeviceApprovePage';
 import ErrorBoundary from './components/ErrorBoundary';
 import { isCloud, isSignedIn, clearLegacyTokens } from './services/auth';
 import { authorizeResumeUrl } from './utils/oauth-resume';
@@ -22,10 +19,36 @@ if (glitchtipDsn) {
   });
 }
 
+/**
+ * The three screens, each in its own chunk.
+ *
+ * They used to be three static imports, so ONE bundle held the dashboard, the
+ * sign-in form and the device-approval card. A visitor with no session
+ * downloaded the whole dashboard to look at a login form, and a visitor
+ * approving a CLI login downloaded it to look at one card.
+ *
+ * Nothing is warmed ahead of the answer, on purpose. The session preflight in
+ * index.html puts /api/auth/get-session in flight before this bundle has even
+ * been parsed (services/auth.ts), so by the time the branch below runs the
+ * answer is usually already here — and a guess would only trade one wasted
+ * download for another.
+ */
+const App = React.lazy(() => import('./App'));
+const AuthPage = React.lazy(() => import('./components/AuthPage'));
+const DeviceApprovePage = React.lazy(() => import('./components/DeviceApprovePage'));
+
 const root = ReactDOM.createRoot(document.getElementById('root')!);
 
 function render(node: React.ReactNode) {
-  root.render(<React.StrictMode><ErrorBoundary>{node}</ErrorBoundary></React.StrictMode>);
+  root.render(
+    <React.StrictMode>
+      <ErrorBoundary>
+        {/* Same surface as the pre-auth splash, so the wait for a screen chunk
+            and the wait for the session answer look like one wait, not two. */}
+        <React.Suspense fallback={<Splash />}>{node}</React.Suspense>
+      </ErrorBoundary>
+    </React.StrictMode>,
+  );
 }
 
 // Cloud mode routing on first paint. Auth is the embedded better-auth
