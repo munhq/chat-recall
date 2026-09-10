@@ -118,3 +118,6 @@ packages/engine/src/core/no-private-names.test.ts
 # Playwright MCP writes evaluate() exports into the repo root.
 .playwright-mcp/
 icon-datauris.json
+
+# Commit/comment style rules (symlink to ~/.claude/COMMITS.md, never published).
+COMMITS.md

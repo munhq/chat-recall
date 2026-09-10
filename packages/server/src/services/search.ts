@@ -117,10 +117,11 @@ export class SearchService extends SearchCore {
   }
 
   async getStatus() {
-    const idx = await this.index();
     let stats: Awaited<ReturnType<VectorStore['getStats']>>;
     try {
-      stats = await idx.getStats();
+      // This route is on the dashboard boot path, and these counts change only
+      // on a sync. See SearchCore.statsCache.
+      stats = await this.cachedStats();
     } catch (err) {
       stats = {
         totalChunks: 0,
