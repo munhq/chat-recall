@@ -647,14 +647,41 @@ export async function loadRestOfConversation(
 }
 
 
+/**
+ * In-flight + freshly-resolved `/api/status` response, shared by every caller.
+ *
+ * Three components ask for this INDEPENDENTLY on a single dashboard load —
+ * App (`Promise.all([getProjectTree(), getStatus()])`), CommandCenter and
+ * SyncCoverage — so one page view fired three identical requests, each of which
+ * made the server recount the whole corpus. They were visible in the request log
+ * as three /api/status entries about 2s apart.
+ *
+ * The PROMISE is memoized, so callers that arrive during the request join it.
+ * On a cold load all three start before the first response lands.
+ *
+ * The window is short: this de-duplicates one page load, and the server holds
+ * the 30s cache. A user pressing reload still sees current numbers.
+ */
+const STATUS_DEDUPE_MS = 5_000;
+let statusInFlight: { at: number; p: Promise<IndexStats> } | null = null;
+
 export async function getStatus(): Promise<IndexStats> {
-  const res = await fetchWithTimeout(`${API_BASE}/status`);
+  const now = Date.now();
+  if (statusInFlight && now - statusInFlight.at < STATUS_DEDUPE_MS) return statusInFlight.p;
 
-  if (!res.ok) {
-    throw new Error(`Failed to get status: ${res.statusText}`);
-  }
+  const p = (async () => {
+    const res = await fetchWithTimeout(`${API_BASE}/status`);
+    if (!res.ok) {
+      throw new Error(`Failed to get status: ${res.statusText}`);
+    }
+    return (await res.json()) as IndexStats;
+  })();
 
-  return await res.json();
+  // A rejected promise must not be served to later callers for the whole
+  // window: one transient failure would then fail every component on the page.
+  statusInFlight = { at: now, p };
+  p.catch(() => { if (statusInFlight?.p === p) statusInFlight = null; });
+  return p;
 }
 
 /** One (day, status) cell of the activity rollup behind the dashboard's

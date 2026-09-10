@@ -92,7 +92,9 @@ export class MemoryService extends SearchCore {
 
     let indexStats;
     try {
-      indexStats = await (await this.index()).getStats();
+      // Shared 30s cache (SearchCore.statsCache) — /api/memory/status paid the
+      // same three whole-corpus aggregates as /api/status, measured at 6.4s.
+      indexStats = await this.cachedStats();
     } catch {
       // LanceDB may be corrupted — fall back to SQLite-only stats
       indexStats = { totalChunks: 0, totalItems: 0, bySourceType: {}, indexPath: '' };
