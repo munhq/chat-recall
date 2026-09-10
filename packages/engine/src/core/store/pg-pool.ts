@@ -154,6 +154,20 @@ const CONCURRENT_INDEXES: ReadonlyArray<{ name: string; create: string; drops: r
     create: 'CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chunks_tenant_tsv ON memory_chunks USING GIN (tenant, tsv)',
     drops: ['idx_chunks_tsv'],
   },
+  {
+    // The same fix for the typo path. searchFTS falls back to `tenant=$1 AND
+    // $2 <% text` when keyword FTS finds nothing, and gin(text gin_trgm_ops)
+    // matched trigrams across every tenant before the heap filter. Measured on
+    // the same corpus, for the query 'postgress':
+    //
+    //   gin(text)          211.2 ms   5,004 blocks
+    //   gin(tenant,text)    96.3 ms   1,352 blocks
+    //
+    // 594 MB against the 592 MB it replaces.
+    name: 'idx_chunks_tenant_trgm',
+    create: 'CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chunks_tenant_trgm ON memory_chunks USING GIN (tenant, text gin_trgm_ops)',
+    drops: ['idx_chunks_text_trgm'],
+  },
 ];
 
 /**
