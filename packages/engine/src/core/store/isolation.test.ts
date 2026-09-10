@@ -77,4 +77,39 @@ const RLS_PASS = 'rlspass';
     const n = await asTenant(null, (c) => c.query('SELECT count(*)::int AS n FROM memory_metadata').then((r: any) => r.rows[0].n));
     expect(n).toBe(0);
   });
+
+  /**
+   * A policy on a partitioned table is applied to rows reached THROUGH the
+   * parent. A query that names a partition is checked against that partition's
+   * OWN policies, and `CREATE TABLE ... PARTITION OF` gives it none.
+   *
+   * The beforeAll above grants `ON ALL TABLES IN SCHEMA public`, which is what
+   * the deployment does too, and that reaches every partition. So the restricted
+   * role can name one. `SELECT * FROM memory_vectors_p4` answered with every
+   * tenant's rows, and the three tests above all passed while it did, because
+   * each of them queries a parent.
+   *
+   * ENABLE + FORCE with no policy on the partition denies the direct query. The
+   * parent path is unaffected: the tests above still read their own rows.
+   */
+  test('a named partition denies a direct read', async () => {
+    const parts = await sudo.query(`
+      SELECT c.relname, c.relrowsecurity AS rls, c.relforcerowsecurity AS forced
+      FROM pg_inherits i
+      JOIN pg_class c ON c.oid = i.inhrelid
+      JOIN pg_class p ON p.oid = i.inhparent
+      WHERE p.relrowsecurity
+      ORDER BY c.relname`);
+    expect(parts.rows.length, 'no partitions of an RLS parent were found to check').toBeGreaterThan(0);
+
+    for (const part of parts.rows) {
+      expect(part.rls, `${part.relname}: RLS is off`).toBe(true);
+      expect(part.forced, `${part.relname}: RLS is not FORCEd`).toBe(true);
+      // Denied by a revoked grant or by the empty policy set — both are a deny.
+      const rows = await asTenant('teamA', (c) =>
+        c.query(`SELECT count(*)::int AS n FROM ${part.relname}`).then((r: any) => r.rows[0].n),
+      ).catch(() => 0);
+      expect(rows, `${part.relname}: readable by naming it directly`).toBe(0);
+    }
+  });
 });

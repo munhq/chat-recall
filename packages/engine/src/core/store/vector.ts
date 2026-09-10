@@ -281,6 +281,30 @@ export class PgVectorStore implements VectorStore {
              OR EXISTS (SELECT 1 FROM memory_metadata m
                         WHERE m.tenant = memory_vectors.tenant AND m.id = memory_vectors.item_id AND m.source_type = memory_vectors.source_type)
            )`);
+        // The partitions carry the same wall. A policy on a partitioned table is
+        // applied to rows reached THROUGH the parent; a query that names
+        // `memory_vectors_p4` is checked against that partition's OWN policies,
+        // and `CREATE TABLE ... PARTITION OF` gives it none. The app role holds
+        // SELECT on every partition, because `GRANT ... ON ALL TABLES IN SCHEMA
+        // public` reaches them, so `SELECT * FROM memory_vectors_p4` answered
+        // with every tenant's rows.
+        //
+        // ENABLE + FORCE with no policy denies a direct query outright and
+        // leaves the parent path alone: a read through memory_vectors still
+        // applies the two policies above, and an INSERT still routes to its
+        // partition. Driven off pg_inherits so a partition left behind by an
+        // older CHAT_RECALL_VECTOR_PARTITIONS is walled as well.
+        await client.query(`
+          DO $$
+          DECLARE part regclass;
+          BEGIN
+            FOR part IN SELECT inhrelid::regclass FROM pg_inherits
+                         WHERE inhparent = 'memory_vectors'::regclass
+            LOOP
+              EXECUTE format('ALTER TABLE %s ENABLE ROW LEVEL SECURITY', part);
+              EXECUTE format('ALTER TABLE %s FORCE ROW LEVEL SECURITY', part);
+            END LOOP;
+          END $$;`);
         await client.query('COMMIT');
       } catch (e) {
         await client.query('ROLLBACK').catch(() => {});
