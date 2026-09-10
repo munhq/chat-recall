@@ -54,10 +54,21 @@ jobs:
         env:
           TOKEN: ${{ secrets.DEPLOY_DISPATCH_TOKEN }}
         run: |
+          # A MISSING TOKEN FAILS THE JOB. It used to exit 0 with a note that
+          # the deploy repo's poll would cover it, and the token has never been
+          # set: every run since has reported success while dispatching
+          # nothing. The fallback it named does not carry the load either --
+          # GitHub throttles the schedule on a low-traffic repo, and the three
+          # runs before this was found were 01:06, 05:57 and 10:53, hours
+          # apart rather than every 15 minutes. When the site build then began
+          # failing, production stayed on a two-day-old image and both
+          # repositories' CI stayed green.
+          #
+          # Set DEPLOY_DISPATCH_TOKEN to a token with `repo` on
+          # munhq/chat-recall-site.
           if [ -z "${TOKEN:-}" ]; then
-            echo "DEPLOY_DISPATCH_TOKEN is not set — skipping."
-            echo "The deploy repo's */15 poll will pick this commit up instead."
-            exit 0
+            echo "::error::DEPLOY_DISPATCH_TOKEN is not set, so this commit was never handed to the deploy repo."
+            exit 1
           fi
           code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' \
             -X POST \
