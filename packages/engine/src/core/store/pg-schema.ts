@@ -149,6 +149,17 @@ CREATE TABLE IF NOT EXISTS memory_chunks (
                ) STORED,
   PRIMARY KEY (tenant, chunk_id)
 );
+-- btree_gin lets the tenant column join the tsvector in one GIN index, which
+-- puts it in the index condition. The index is built by buildConcurrentIndexes
+-- in pg-pool.ts, because CREATE INDEX CONCURRENTLY cannot run inside the
+-- implicit transaction this string becomes. btree_gin is a trusted extension,
+-- so a non-superuser database owner can create it. A role that cannot leaves
+-- idx_chunks_tsv serving search on its own.
+DO $$ BEGIN
+  CREATE EXTENSION IF NOT EXISTS btree_gin;
+EXCEPTION WHEN OTHERS THEN
+  RAISE NOTICE 'btree_gin unavailable (%) — search uses the tsv-only index', SQLERRM;
+END $$;
 CREATE INDEX IF NOT EXISTS idx_chunks_tsv ON memory_chunks USING GIN (tsv);
 CREATE INDEX IF NOT EXISTS idx_chunks_item ON memory_chunks(tenant, source_type, item_id);
 -- Importance feed (recall_wake_up / topImportantChunks): filter + order by the

@@ -105,6 +105,9 @@ export async function openPgPoolRo(): Promise<any> {
  */
 /** Arbitrary constant, shared by every replica: the schema-bootstrap mutex. */
 const SCHEMA_LOCK_KEY = 8_246_113_001;
+/** The concurrent-index mutex. Distinct from SCHEMA_LOCK_KEY: this one is held
+ *  for the length of an index build, which outlasts the schema bootstrap. */
+const INDEX_LOCK_KEY = 8_246_113_002;
 /** How long to wait for another replica's bootstrap before applying anyway. */
 const SCHEMA_LOCK_WAIT_MS = 60_000;
 /** Attempts at the schema DDL before giving up. A lock conflict with live read
@@ -117,6 +120,88 @@ const SCHEMA_MAX_ATTEMPTS = 5;
  *  lock_not_available (what `lock_timeout` raises). Both mean "someone else
  *  held a conflicting lock", which is transient by definition. */
 const RETRYABLE_LOCK_CODES = new Set(['40P01', '55P03']);
+
+/**
+ * Indexes that are built OUTSIDE the schema string, with CREATE INDEX
+ * CONCURRENTLY.
+ *
+ * PG_SCHEMA is one multi-statement string, which Postgres runs as a single
+ * implicit transaction, and CREATE INDEX CONCURRENTLY is rejected inside a
+ * transaction block. A plain CREATE INDEX would work there, and it holds a
+ * SHARE lock on memory_chunks for the whole build, which blocks every sync
+ * write for as long as the build runs.
+ *
+ * `drops` names indexes that this index makes redundant. They are dropped only
+ * after the replacement reports indisvalid, so a failed build leaves the table
+ * exactly as it was.
+ */
+const CONCURRENT_INDEXES: ReadonlyArray<{ name: string; create: string; drops: readonly string[] }> = [
+  {
+    // Tenant belongs IN the index condition. gin(tsv) alone matched every
+    // tenant's postings and applied `tenant = ...` afterwards as a heap filter,
+    // so one tenant's search read every tenant's matching rows. Measured on
+    // Postgres 18.4 over 1.25M chunks across 50 tenants, on the searchFTS query
+    // shape (rank every match, then order and limit):
+    //
+    //   gin(tsv)          253.2 ms   283,862 blocks   297,185 rows discarded
+    //   gin(tenant,tsv)    36.6 ms    59,922 blocks         0 rows discarded
+    //
+    // The index costs 1% more disk than the one it replaces (196 MB against
+    // 194 MB on that corpus). Cost per search follows the tenant's own rows
+    // rather than the whole corpus, which is what makes it hold at 1000
+    // tenants.
+    name: 'idx_chunks_tenant_tsv',
+    create: 'CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chunks_tenant_tsv ON memory_chunks USING GIN (tenant, tsv)',
+    drops: ['idx_chunks_tsv'],
+  },
+];
+
+/**
+ * Build the concurrent indexes, then retire what they replace.
+ *
+ * Best-effort throughout: every search path works on the index it has today, so
+ * a failure here degrades speed and never correctness.
+ *
+ * A CREATE INDEX CONCURRENTLY that fails leaves an INVALID index behind. That
+ * index is never used for reads and is still maintained on every write, and
+ * `IF NOT EXISTS` sees the name and skips, so the next boot would never retry.
+ * Dropping the invalid leftover first makes the retry real.
+ */
+export async function buildConcurrentIndexes(client: { query: (sql: string, params?: unknown[]) => Promise<any> }): Promise<void> {
+  // Its own mutex, held for the whole build. The schema mutex is released after
+  // 60 seconds by a waiter, and a CREATE INDEX CONCURRENTLY over a large table
+  // runs for longer than that, so a second pod would arrive mid-build, read the
+  // half-built index as INVALID, and drop it out from under the first.
+  //
+  // try-lock and return: another pod is already building these, and the next
+  // boot picks up whatever is left.
+  const got = await client.query('SELECT pg_try_advisory_lock($1) AS ok', [INDEX_LOCK_KEY]);
+  if (!got.rows?.[0]?.ok) return;
+  // CREATE INDEX CONCURRENTLY waits for transactions that started before it.
+  // That wait is the mechanism working, and the bootstrap connection's 30s
+  // lock_timeout would abort it as a failure.
+  await client.query("SET lock_timeout = '0'");
+  try {
+  for (const idx of CONCURRENT_INDEXES) {
+    try {
+      const invalid = await client.query(
+        `SELECT 1 FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
+          WHERE c.relname = $1 AND NOT i.indisvalid`, [idx.name]);
+      if (invalid.rowCount) await client.query(`DROP INDEX CONCURRENTLY IF EXISTS ${idx.name}`);
+      await client.query(idx.create);
+      const ok = await client.query(
+        `SELECT 1 FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
+          WHERE c.relname = $1 AND i.indisvalid`, [idx.name]);
+      if (!ok.rowCount) continue;
+      for (const dead of idx.drops) await client.query(`DROP INDEX CONCURRENTLY IF EXISTS ${dead}`);
+    } catch (e) {
+      console.warn(`[schema] concurrent index ${idx.name} not built (${e instanceof Error ? e.message : String(e)})`);
+    }
+  }
+  } finally {
+    await client.query('SELECT pg_advisory_unlock($1)', [INDEX_LOCK_KEY]).catch(() => {});
+  }
+}
 
 /**
  * Apply the schema DDL, retrying a lock conflict.
@@ -203,6 +288,9 @@ export async function ensurePgSchema(databaseUrl?: string): Promise<void> {
         } finally {
           if (held) await client.query('SELECT pg_advisory_unlock($1)', [SCHEMA_LOCK_KEY]).catch(() => {});
         }
+        // After the schema, and after the schema mutex is released: these builds
+        // run for minutes and take their own lock. See buildConcurrentIndexes.
+        await buildConcurrentIndexes(client).catch(() => {});
       } finally {
         // Destroys the connection, so the advisory lock is released even if the
         // explicit unlock above never ran.
