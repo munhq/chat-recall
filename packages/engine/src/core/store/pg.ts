@@ -22,6 +22,7 @@ import { METADATA_VERSION } from '../model-pricing.js';
 import { applyChunkPrivacy } from '../secret-redactor.js';
 import { SERVER_DETECTOR } from '../secret-detectors.js';
 import { currentAuthor, runUnrestricted } from './tenant-context.js';
+import { getObjectStore, rawObjectKey } from './object-store.js';
 
 type Args<M extends keyof MemoryStore> = MemoryStore[M] extends (...a: infer A) => any ? A : never;
 type Ret<M extends keyof MemoryStore> = MemoryStore[M] extends (...a: any) => infer R ? Awaited<R> : never;
@@ -1048,7 +1049,13 @@ export class PgStore implements StorageDriver {
     // the table is absent (no embedder ever configured).
     await run(`DELETE FROM memory_vectors WHERE tenant=$1 AND item_id=$2 AND source_type='session'`, [this.t, sessionId]);
     await run(`DELETE FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type='session'`, [this.t, sessionId]);
+    // Read the key before the row goes, then drop the row, then the object.
+    // The row is what authorizes and what every read consults, so it goes
+    // first; an object left behind is swept later and serves nobody in the
+    // meantime, because no row names it.
+    const rawRow = await this.one(`SELECT object_key FROM raw_sessions WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]).catch(() => null);
     await run(`DELETE FROM raw_sessions WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
+    if (rawRow?.object_key) await getObjectStore()?.delete(rawRow.object_key).catch(() => { /* orphan; swept later */ });
     await run(`DELETE FROM secret_findings WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
     await run(`DELETE FROM session_metadata WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
     await run(`DELETE FROM compute_cache WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
@@ -1090,22 +1097,45 @@ export class PgStore implements StorageDriver {
     // list in pg-schema.ts), tenant isolation is untouched — app.tenant comes
     // from a separate context — and reads keep the member's real viewer, so this
     // makes nothing newly visible to anyone. See runUnrestricted.
+    // The bytes go to object storage when one is configured, and the row keeps
+    // the key. The object is written FIRST: a row that names an object which
+    // was never stored breaks every later read, and an object with no row
+    // costs storage until the orphan sweep and breaks nothing.
+    //
+    // The key is derived from this.t, the tenant this store was opened with.
+    // Nothing a request supplies reaches it.
+    const objects = getObjectStore();
+    let objectKey = '';
+    if (objects) {
+      objectKey = rawObjectKey(this.t, sessionId);
+      await objects.put(objectKey, gz);
+    }
     await runUnrestricted(() => this.q(
-      `INSERT INTO raw_sessions (tenant, session_id, tool, mtime, size, gz, captured_at, project_id, project_path)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      `INSERT INTO raw_sessions (tenant, session_id, tool, mtime, size, gz, object_key, captured_at, project_id, project_path)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        ON CONFLICT (tenant, session_id) DO UPDATE SET
          tool=excluded.tool, mtime=excluded.mtime, size=excluded.size,
-         gz=excluded.gz, captured_at=excluded.captured_at,
+         gz=excluded.gz, object_key=excluded.object_key, captured_at=excluded.captured_at,
          project_id=CASE WHEN excluded.project_id <> '' THEN excluded.project_id ELSE raw_sessions.project_id END,
          project_path=CASE WHEN excluded.project_path <> '' THEN excluded.project_path ELSE raw_sessions.project_path END`,
-      [this.t, sessionId, tool, intMs(mtime), uncompressedSize, gz, Date.now(), projectId, projectPath]));
+      [this.t, sessionId, tool, intMs(mtime), uncompressedSize, objectKey ? null : gz, objectKey, Date.now(), projectId, projectPath]));
     return 'stored';
   }
   // Primary: fetching a raw archived session is re-processing-adjacent (and may
   // run right after a sync writes it), so keep it strongly consistent.
   async getRawSession(sessionId: string): Promise<{ tool: string; mtime: number; size: number; gz: Buffer; captured_at: number; project_id: string; project_path: string } | null> {
-    const r = await this.one(`SELECT tool, mtime, size, gz, captured_at, project_id, project_path FROM raw_sessions WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
-    return r ? { tool: r.tool, mtime: Number(r.mtime), size: Number(r.size), gz: r.gz, captured_at: Number(r.captured_at), project_id: r.project_id ?? '', project_path: r.project_path ?? '' } : null;
+    const r = await this.one(`SELECT tool, mtime, size, gz, object_key, captured_at, project_id, project_path FROM raw_sessions WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
+    if (!r) return null;
+    // Reaching this line means RLS admitted the row, which is the whole
+    // authorization check: object storage has no policies, and the key that
+    // addresses the object is only in this row.
+    let gz: Buffer = r.gz;
+    if (r.object_key) {
+      const objects = getObjectStore();
+      if (!objects) throw new Error(`session ${sessionId} is archived in object storage, which this server has no configuration for`);
+      gz = await objects.get(r.object_key);
+    }
+    return { tool: r.tool, mtime: Number(r.mtime), size: Number(r.size), gz, captured_at: Number(r.captured_at), project_id: r.project_id ?? '', project_path: r.project_path ?? '' };
   }
   async listRawSessionVersions(): Promise<Array<{ session_id: string; mtime: number; size: number }>> {
     const rows = await this.qr(`SELECT session_id, mtime, size FROM raw_sessions WHERE tenant=$1`, [this.t]);
