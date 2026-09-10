@@ -9,6 +9,22 @@
  * Vectors (pgvector) are added by PgVectorStore separately.
  */
 export const PG_SCHEMA = /* sql */ `
+-- This whole string is ONE implicit transaction, so SET LOCAL covers every
+-- statement below it and cannot be separated from them.
+--
+-- The connection setting alone does not survive the trip. The server pool runs
+-- pgbouncer in transaction mode, so a SET issued on its own lands on one server
+-- connection and the DDL that follows can be handed a different one. The
+-- chat_recall database carries statement_timeout=30s, which then applied to the
+-- bootstrap and cancelled it mid-DDL:
+--
+--   error: canceling statement due to statement timeout   (SQLSTATE 57014)
+--     at async applySchemaWithRetry (core/store/pg-pool.js)
+--
+-- That crashed the pod, and it recovered only because the next boot found most
+-- of the work already done.
+SET LOCAL statement_timeout = 0;
+SET LOCAL lock_timeout = '30s';
 CREATE TABLE IF NOT EXISTS memory_metadata (
   tenant          TEXT NOT NULL DEFAULT 'default',
   id              TEXT NOT NULL,
@@ -153,14 +169,23 @@ CREATE TABLE IF NOT EXISTS memory_chunks (
 -- puts it in the index condition. The index is built by buildConcurrentIndexes
 -- in pg-pool.ts, because CREATE INDEX CONCURRENTLY cannot run inside the
 -- implicit transaction this string becomes. btree_gin is a trusted extension,
--- so a non-superuser database owner can create it. A role that cannot leaves
--- idx_chunks_tsv serving search on its own.
+-- so a non-superuser database owner can create it. Where the role cannot,
+-- buildConcurrentIndexes logs the failure and leaves the table with the
+-- indexes it already has, and search runs on Postgres FTS either way.
 DO $$ BEGIN
   CREATE EXTENSION IF NOT EXISTS btree_gin;
 EXCEPTION WHEN OTHERS THEN
   RAISE NOTICE 'btree_gin unavailable (%) — search uses the tsv-only index', SQLERRM;
 END $$;
-CREATE INDEX IF NOT EXISTS idx_chunks_tsv ON memory_chunks USING GIN (tsv);
+-- The searchable index is idx_chunks_tenant_tsv, built by
+-- buildConcurrentIndexes in pg-pool.ts. It is NOT declared here.
+--
+-- It was, alongside its replacement, and the two fought: this string recreated
+-- idx_chunks_tsv on every boot, buildConcurrentIndexes dropped it again once
+-- the replacement reported indisvalid, and the next pod rebuilt it. Each
+-- rebuild is a full GIN build over memory_chunks that blocks the boot, so pods
+-- stopped answering their probes and Kubernetes restarted them:
+-- three sessions sat in this one statement for 37 seconds at once.
 CREATE INDEX IF NOT EXISTS idx_chunks_item ON memory_chunks(tenant, source_type, item_id);
 -- Importance feed (recall_wake_up / topImportantChunks): filter + order by the
 -- imp digit parsed out of chunk_type. Expression index so the scan is an index
@@ -173,11 +198,12 @@ CREATE INDEX IF NOT EXISTS idx_chunks_importance ON memory_chunks
 -- right sessions). Best-effort: pg_trgm is a "trusted" extension (a non-super
 -- DB owner can create it), but if the role can't, swallow it — searchFTS's
 -- trigram fallback is itself try/wrapped, so search degrades to plain FTS.
+-- The trigram index is idx_chunks_tenant_trgm, built by buildConcurrentIndexes
+-- for the same reason, and it is not declared here either.
 DO $$ BEGIN
   CREATE EXTENSION IF NOT EXISTS pg_trgm;
-  CREATE INDEX IF NOT EXISTS idx_chunks_text_trgm ON memory_chunks USING GIN (text gin_trgm_ops);
 EXCEPTION WHEN OTHERS THEN
-  RAISE NOTICE 'pg_trgm/trigram index unavailable (%) — search falls back to plain FTS', SQLERRM;
+  RAISE NOTICE 'pg_trgm unavailable (%) — search falls back to plain FTS', SQLERRM;
 END $$;
 
 CREATE TABLE IF NOT EXISTS secret_findings (

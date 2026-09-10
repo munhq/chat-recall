@@ -181,6 +181,34 @@ const CONCURRENT_INDEXES: ReadonlyArray<{ name: string; create: string; drops: r
  * `IF NOT EXISTS` sees the name and skips, so the next boot would never retry.
  * Dropping the invalid leftover first makes the retry real.
  */
+/**
+ * Run DDL over a connection that reaches Postgres directly.
+ *
+ * CREATE INDEX CONCURRENTLY cannot run inside a transaction block, so each
+ * statement stands alone -- and through pgbouncer's transaction mode that means
+ * a preceding `SET statement_timeout = 0` can be left on a different server
+ * connection. The chat_recall database sets statement_timeout=30s, which
+ * cancelled the trigram build and left an invalid 146 MB index behind.
+ *
+ * The deployment already provides a direct DSN for its migrate initContainer
+ * (postgresql-rw, no pooler). Using it here makes the session settings hold for
+ * the length of the build. With no direct DSN configured -- self-host, local,
+ * tests -- this falls back to the ordinary connection, where there is no pooler
+ * between the setting and the statement.
+ */
+async function withDdlConnection<T>(poolUrl: string, fn: (c: any) => Promise<T>): Promise<T> {
+  const direct = process.env.CHAT_RECALL_DDL_DATABASE_URL || process.env.MIGRATE_DATABASE_URL;
+  const pg = (await import('pg')).default;
+  const client = new pg.Client({ connectionString: direct || poolUrl });
+  await client.connect();
+  try {
+    await client.query('SET statement_timeout = 0');
+    return await fn(client);
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
 export async function buildConcurrentIndexes(client: { query: (sql: string, params?: unknown[]) => Promise<any> }): Promise<void> {
   // Its own mutex, held for the whole build. The schema mutex is released after
   // 60 seconds by a waiter, and a CREATE INDEX CONCURRENTLY over a large table
@@ -302,9 +330,19 @@ export async function ensurePgSchema(databaseUrl?: string): Promise<void> {
         } finally {
           if (held) await client.query('SELECT pg_advisory_unlock($1)', [SCHEMA_LOCK_KEY]).catch(() => {});
         }
-        // After the schema, and after the schema mutex is released: these builds
-        // run for minutes and take their own lock. See buildConcurrentIndexes.
-        await buildConcurrentIndexes(client).catch(() => {});
+        // DETACHED, and after the schema mutex is released. A CREATE INDEX
+        // CONCURRENTLY over memory_chunks runs for minutes, and ensurePgSchema is
+        // awaited before the server listens: awaiting the build here meant a pod
+        // answered no probe until it finished. Kubernetes killed them for it --
+        // "Container chat-recall failed liveness probe, will be restarted",
+        // exit 137, three restarts during one rollout.
+        //
+        // Detaching costs nothing, because the index being built is not the one
+        // serving reads. Search runs on the existing index until the replacement
+        // reports indisvalid, which is also the only thing that triggers the
+        // drop. A pod that exits mid-build leaves an invalid index, and the next
+        // boot drops it and starts again.
+        void withDdlConnection(url, (c) => buildConcurrentIndexes(c)).catch(() => {});
       } finally {
         // Destroys the connection, so the advisory lock is released even if the
         // explicit unlock above never ran.
