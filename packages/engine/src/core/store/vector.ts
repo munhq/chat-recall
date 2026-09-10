@@ -659,11 +659,29 @@ export class PgVectorStore implements VectorStore {
     // chunks — counting vectors made `/api/status` report `totalChunks: 0` while
     // data was fully searchable. `vectorOk`/`vectorError` still describe the
     // vector subsystem; the counts describe what's actually indexed and queryable.
-    const totalChunks = (await this.qRo(`SELECT COUNT(*)::int AS n FROM memory_chunks WHERE tenant=$1`, [this.t]))[0]?.n ?? 0;
-    const totalItems = (await this.qRo(`SELECT COUNT(DISTINCT item_id)::int AS n FROM memory_chunks WHERE tenant=$1`, [this.t]))[0]?.n ?? 0;
+    //
+    // ONE grouped aggregate, and the totals are summed from it.
+    //
+    // This was three separate whole-corpus scans — `COUNT(*)`, then
+    // `COUNT(DISTINCT item_id)`, then this GROUP BY — measured on a 246k-chunk
+    // tenant at 346ms + 704ms + 129ms. The first two are redundant: the grouped
+    // row set already carries every number, so summing it costs nothing extra.
+    // Same tenant, one query: 57ms.
+    //
+    // It is also MORE correct. An item is identified by (source_type, item_id);
+    // ids are unique only WITHIN a source type. The old top-level
+    // `COUNT(DISTINCT item_id)` merged same-id items of different types and
+    // under-reported — 15439 against a true 15456. Per group, `item_id` IS the
+    // identity, so summing the groups is the composite count, verified equal to
+    // `COUNT(DISTINCT (source_type,item_id))` on the reference tenant.
     const bySourceType: Record<string, { items: number; chunks: number }> = {};
-    for (const r of await this.qRo(`SELECT source_type, COUNT(*)::int AS chunks, COUNT(DISTINCT item_id)::int AS items FROM memory_chunks WHERE tenant=$1 GROUP BY source_type`, [this.t]))
+    let totalChunks = 0;
+    let totalItems = 0;
+    for (const r of await this.qRo(`SELECT source_type, COUNT(*)::int AS chunks, COUNT(DISTINCT item_id)::int AS items FROM memory_chunks WHERE tenant=$1 GROUP BY source_type`, [this.t])) {
       bySourceType[r.source_type] = { items: r.items, chunks: r.chunks };
+      totalChunks += r.chunks;
+      totalItems += r.items;
+    }
     return { totalChunks, totalItems, bySourceType, indexPath: 'postgres', vectorOk: this.vectorOk, vectorError: this.lastError ?? undefined } as any;
   }
   async clear(..._a: Args<'clear'>) { if (!this.tableReady) return; await this.q(`DELETE FROM memory_vectors WHERE tenant=$1`, [this.t]); }
