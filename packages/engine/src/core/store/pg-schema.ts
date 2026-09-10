@@ -573,6 +573,19 @@ CREATE TABLE IF NOT EXISTS raw_sessions (
 );
 ALTER TABLE raw_sessions ADD COLUMN IF NOT EXISTS project_id   TEXT NOT NULL DEFAULT '';
 ALTER TABLE raw_sessions ADD COLUMN IF NOT EXISTS project_path TEXT NOT NULL DEFAULT '';
+-- The archive bytes moved to object storage. An empty object_key means the row
+-- still carries its bytes in gz, which is what a deployment with no object
+-- store configured keeps doing, and what every row written before the move
+-- looks like. getRawSession reads whichever of the two the row has, so the
+-- backfill can run a row at a time with nothing waiting on it.
+--
+-- Authorization does not move with the bytes. The key is reachable only
+-- through this row, and this row is behind tenant_isolation and
+-- author_visibility, so a caller who cannot select it never learns the key.
+ALTER TABLE raw_sessions ADD COLUMN IF NOT EXISTS object_key   TEXT NOT NULL DEFAULT '';
+ALTER TABLE raw_sessions ALTER COLUMN gz DROP NOT NULL;
+-- Finds the rows the backfill still has to move.
+CREATE INDEX IF NOT EXISTS idx_raw_unmigrated ON raw_sessions (tenant) WHERE object_key = '';
 
 CREATE TABLE IF NOT EXISTS wal_log (
   tenant     TEXT NOT NULL DEFAULT 'default',
