@@ -29,6 +29,21 @@ const RLS_PASS = 'rlspass';
     await sudo.query(`GRANT USAGE ON SCHEMA public TO ${RLS_ROLE}`);
     await sudo.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${RLS_ROLE}`);
     await sudo.query(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO ${RLS_ROLE}`);
+    // Again, now that the vector partitions exist. This mirrors the deployment,
+    // where the same blanket grant reaches every partition, and it is what makes
+    // the direct-partition read below a real attempt rather than a privilege error.
+    await sudo.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ${RLS_ROLE}`);
+    // memory_vectors and its partitions are created by PgVectorStore, not by
+    // PG_SCHEMA, so open one here — the partition check below has nothing to
+    // inspect otherwise. init() builds the table, the partitions and the
+    // policies without embedding anything; the stub throws if that changes.
+    const { PgVectorStore } = await import('./vector.js');
+    const stubEmbedder = {
+      dimension: 8,
+      embed: () => { throw new Error('isolation.test must not embed'); },
+      embedQuery: () => { throw new Error('isolation.test must not embed'); },
+    } as any;
+    await new PgVectorStore(stubEmbedder, PG_URL, 'seed').init();
     const u = new URL(PG_URL!);
     u.username = RLS_ROLE;
     u.password = RLS_PASS;
