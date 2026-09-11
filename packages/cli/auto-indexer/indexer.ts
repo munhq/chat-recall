@@ -60,7 +60,7 @@ import { runCollectorMigration } from '../src/collector-migrate.js';
 // Injected by the bundler (scripts/bundle.mjs). Falls back for tsx/dev runs.
 declare const __CLI_VERSION__: string;
 const CLI_VERSION = typeof __CLI_VERSION__ === 'string' ? __CLI_VERSION__ : '0.0.0';
-import { existsSync, readFileSync, statSync } from 'fs';
+import { existsSync, readFileSync, statSync, type Stats } from 'fs';
 import { flushLedger } from '../src/sync-ledger.js';
 import { readCollectorHealth, writeCollectorHealth, updateCollectorHealth, collectorHealthPath, type TargetHealth } from '@chat-recall/engine/core/collector-health.js';
 
@@ -262,7 +262,7 @@ const FORCE_POLL = process.env.CHAT_RECALL_WATCH_POLL === '1';
 interface WatchTuning {
   /** Poll interval when polling is in force. Ignored for native watching. */
   interval: number;
-  ignored?: (p: string) => boolean;
+  ignored?: (p: string, stats?: Stats) => boolean;
   ignoreInitial?: boolean;
 }
 
@@ -315,8 +315,39 @@ function watchWithFallback(name: string, pattern: string | string[], t: WatchTun
 //
 // `ignored` is a function (not a /\/\./ regex) so it ignores ONLY true
 // dotfiles (basename starting with `.`), not the entire ~/.claude tree.
+/**
+ * How recently a transcript must have been written to get its own watcher.
+ *
+ * chokidar watches every file a glob matches, one inotify watch each. This
+ * developer's machine has 13,929 session transcripts, so the sessions watcher
+ * alone held about 14,000 watch descriptors and the daemon carried 17,046
+ * FSWatcher handles in total. Measured over CDP on the running process: 900 MB
+ * of heapUsed against 120 MB external -- the growth is the watcher objects
+ * themselves, not the payloads. It reached 2.1 GB RSS and systemd-oomd killed
+ * it 23 times in 48 hours.
+ *
+ * A finished transcript never changes again, so a watch on it can never fire.
+ * The count that matters is "sessions touched lately", which is tens, not
+ * thousands, and it does not grow with how long someone has used the product.
+ *
+ * A session resumed after the window is not watched, and the 15-minute
+ * heartbeat sync below picks it up: files are selected by mtime there, not by
+ * watcher. So the window trades instant detection on a long-dormant session
+ * for a daemon whose memory does not scale with history.
+ */
+const WATCH_WINDOW_MS = Math.max(1, Number(process.env.CHAT_RECALL_WATCH_WINDOW_DAYS) || 14) * 24 * 60 * 60 * 1000;
+
 const sessionWatcher = watchWithFallback('sessions', `${CLAUDE_DIR}/**/*.jsonl`, {
-  ignored: (p: string) => /agent-/.test(p) || /^\./.test(basename(p)),
+  ignored: (p: string, stats?: Stats) => {
+    if (/agent-/.test(p) || /^\./.test(basename(p))) return true;
+    // stats is absent for some entries during the initial scan; stat then, so
+    // the decision is never "unknown means watch it".
+    const st = stats ?? statSync(p, { throwIfNoEntry: false });
+    // NEVER prune a directory: returning true stops chokidar descending, and a
+    // new session inside it would then be invisible until the next heartbeat.
+    if (!st || st.isDirectory()) return false;
+    return st.mtimeMs < Date.now() - WATCH_WINDOW_MS;
+  },
   interval: 5000,
 });
 
