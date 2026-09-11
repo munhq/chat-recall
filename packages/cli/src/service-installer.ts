@@ -10,7 +10,7 @@
  * service survives `npm prefix` moves better than relying on PATH at boot.
  */
 import { execSync } from 'child_process';
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { fileURLToPath } from 'url';
@@ -61,6 +61,42 @@ export function isServiceRunning(): boolean {
  * Install + start the per-user background service. Returns the paths written
  * (for status messaging) or throws on platform/manager failure.
  */
+/**
+ * Rewrite the service definition when the installed one no longer matches what
+ * this version renders.
+ *
+ * WHY THIS IS NOT JUST installService(). That runs only when someone types
+ * `chat-recall watch --install-service`. An upgrade never rewrote the unit, so
+ * every supervision fix shipped to nobody: machines installed before it kept
+ * the old file, including the start limiter that lets systemd abandon a
+ * crash-looping collector permanently. The daemon calls this on startup, and a
+ * daemon start is what an upgrade produces, so the fix arrives with the code
+ * that needs it.
+ *
+ * Compares the rendered text and returns false when it already matches, so the
+ * common path writes nothing and restarts nothing. Best-effort by contract: a
+ * collector that cannot rewrite its own unit must keep collecting.
+ */
+export function refreshServiceDefinition(): boolean {
+  if (process.platform !== 'linux') return false;   // launchd/schtasks refresh on reinstall
+  try {
+    const { watchJs, node, logFile } = resolveDaemonPaths();
+    const unitPath = join(homedir(), '.config', 'systemd', 'user', 'chat-recall-watch.service');
+    if (!existsSync(unitPath)) return false;        // not service-managed; nothing to refresh
+    const wanted = renderSystemdUnit(watchJs, node, logFile);
+    if (readFileSync(unitPath, 'utf8') === wanted) return false;
+    writeFileSync(unitPath, wanted);
+    // daemon-reload only. Restarting here would kill the process that is
+    // running this code, and the new unit applies on the next start anyway --
+    // which for a crash-looping daemon is seconds away, and is exactly the
+    // case this fixes.
+    execSync('systemctl --user daemon-reload', { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function installService(): ServicePaths {
   const { watchJs, node, logFile, dataDir } = resolveDaemonPaths();
   mkdirSync(dataDir, { recursive: true });
@@ -112,6 +148,24 @@ export function renderSystemdUnit(watchJs: string, node: string, logFile: string
     // largest transcripts.
     `ExecStart=${node} --max-old-space-size=1536 ${watchJs}`,
     'Restart=on-failure', 'RestartSec=10', 'Nice=10',
+    // NEVER STOP RETRYING. systemd's default start limiter gives up after a
+    // burst of restarts and leaves the unit dead until a human notices. On a
+    // developer machine here that was 53 restarts, then
+    //
+    //   chat-recall-watch.service: Start request repeated too quickly.
+    //   Failed to start chat-recall-watch.service
+    //
+    // and twelve hours with nothing collected and nothing said. A collector
+    // that stops forever after a crash loop is worse than one that keeps
+    // crashing: the user is told nothing and their history silently ends.
+    // 0 disables the limiter, so RestartSec above is the only pacing.
+    'StartLimitIntervalSec=0',
+    // A bounded cgroup, so a leak becomes a restart rather than a machine that
+    // swaps. MemoryHigh throttles and reclaims first; MemoryMax is the kill.
+    // --max-old-space-size bounds the V8 heap and NOT Buffers, and the observed
+    // peak was 2.1 GB RSS against a 1536 MB heap cap, so only a cgroup limit
+    // bounds the external half.
+    'MemoryAccounting=yes', 'MemoryHigh=1G', 'MemoryMax=2G',
     // JOURNAL, not append:. The file version had no rotation and nothing to
     // give it any: systemd holds the fd open, so the daemon cannot rename or
     // truncate its own log without leaving systemd writing into a hole. It

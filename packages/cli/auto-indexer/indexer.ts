@@ -874,6 +874,22 @@ async function autoUpdateTick(): Promise<void> {
     } catch { /* best effort — never crash the daemon */ }
   }
 }
+// The service definition this version wants, applied to the one on disk.
+//
+// An upgrade never rewrote the unit -- installService() runs only when someone
+// types `chat-recall watch --install-service` -- so every supervision fix
+// shipped to nobody. Machines kept whatever unit they were installed with,
+// including systemd's default start limiter, which abandons a crash-looping
+// collector permanently and silently. A daemon start is what an upgrade
+// produces, so the refresh belongs here.
+//
+// Immediate, not on a timer: the window this closes is a daemon that is about
+// to die again. daemon-reload only, so this does not restart itself.
+try {
+  const { refreshServiceDefinition } = await import('../src/service-installer.js');
+  if (refreshServiceDefinition()) daemonLog.info('service definition refreshed to this version');
+} catch { /* never block collection on supervision housekeeping */ }
+
 setTimeout(() => { void autoUpdateTick(); }, 30_000);
 setInterval(() => { void autoUpdateTick(); }, 6 * 60 * 60 * 1000).unref();
 
