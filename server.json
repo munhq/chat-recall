@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.munhq/chat-recall",
-  "description": "Shared team knowledge, leaked-secret alerts, ranked code findings and tracked tasks, across every AI coding tool you use",
+  "description": "One searchable history across every AI coding tool, with secret scanning and a shared task board.",
   "repository": {
     "url": "https://github.com/munhq/chat-recall",
     "source": "github"
