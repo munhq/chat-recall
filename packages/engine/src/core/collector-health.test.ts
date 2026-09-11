@@ -9,7 +9,10 @@
  * gets ignored, and then the real outage is invisible again.
  */
 import { describe, test, expect } from 'vitest';
-import { judgeHealth, STALE_AFTER_MS, CRASHLOOP_RESTARTS, type CollectorHealth } from './collector-health.js';
+import { judgeHealth, STALE_AFTER_MS, CRASHLOOP_RESTARTS, updateCollectorHealth, readCollectorHealth, type CollectorHealth } from './collector-health.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const NOW = 1_700_000_000_000;
 const mins = (n: number) => n * 60_000;
@@ -90,5 +93,40 @@ describe('judging collector health', () => {
     expect(v.summary).toContain('not reported');
     expect(v.summary).toContain('restarted 12 times');
     expect(v.summary).toContain('never');
+  });
+});
+
+/**
+ * A write must not erase what it does not mention.
+ *
+ * updateCollectorHealth re-listed the fields it meant to keep, and the two it
+ * did not name were dropped on every write. telemetryEligible is the one that
+ * matters: it is set from a sync response and is the only thing that makes
+ * mayReport() true, so losing it makes flush() drop the queue. The daemon
+ * writes this file every couple of seconds during a walk, so the flag survived
+ * seconds and telemetry escaped only right after a sync.
+ */
+describe('updateCollectorHealth preserves fields it does not know about', () => {
+  test('telemetryEligible and starts survive an unrelated write', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cr-health-'));
+    const prevDir = process.env.CHAT_RECALL_DATA_DIR;
+    process.env.CHAT_RECALL_DATA_DIR = dir;
+    try {
+      updateCollectorHealth({
+        telemetryEligible: { 'https://example.invalid': { allowed: true, at: 1 } },
+        starts: [1, 2, 3],
+      } as Partial<CollectorHealth>);
+      // A progress tick, which is what the daemon writes constantly.
+      updateCollectorHealth({ progress: { done: 1, total: 2 } } as Partial<CollectorHealth>);
+
+      const after = readCollectorHealth();
+      expect(after?.telemetryEligible?.['https://example.invalid']?.allowed).toBe(true);
+      expect(after?.starts).toEqual([1, 2, 3]);
+      expect(after?.progress).toBeTruthy();
+    } finally {
+      if (prevDir === undefined) delete process.env.CHAT_RECALL_DATA_DIR;
+      else process.env.CHAT_RECALL_DATA_DIR = prevDir;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

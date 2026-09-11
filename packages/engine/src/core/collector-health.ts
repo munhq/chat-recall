@@ -118,13 +118,31 @@ export function writeCollectorHealth(h: CollectorHealth): void {
  */
 export function updateCollectorHealth(patch: Partial<CollectorHealth>): void {
   const prior = readCollectorHealth();
+  // SPREAD THE PRIOR RECORD, do not re-list its fields. This named each field it
+  // meant to keep, and the two it did not name were erased on every write:
+  //
+  //   telemetryEligible — set from a sync response, and the ONLY thing that
+  //     makes mayReport() true. The daemon writes this file every couple of
+  //     seconds during a walk, so the flag survived for about as long as it
+  //     took progress to tick, and flush() DROPS the queue when nothing is
+  //     eligible. Telemetry escaped only in the seconds after a sync, which is
+  //     exactly the shape of the data on the server: bursts at sync time and
+  //     silence between. `chat-recall doctor` reported "no server has answered
+  //     yet" on a machine whose server had answered and been forgotten.
+  //
+  //   starts — the restart history recentStarts() reads to count restarts in
+  //     the last hour, which is how a crash loop is supposed to be visible.
+  //
+  // Naming fields here means every field added to CollectorHealth is silently
+  // dropped until someone remembers this function. Spreading makes the default
+  // "keep it", and a caller that wants a field gone passes it as undefined.
   writeCollectorHealth({
+    ...prior,
     v: 1,
     updatedAt: Date.now(),
     startedAt: prior?.startedAt ?? Date.now(),
     restartsLastHour: prior?.restartsLastHour ?? 0,
     targets: prior?.targets ?? {},
-    ...(prior?.progress ? { progress: prior.progress } : {}),
     ...patch,
   } as CollectorHealth);
 }
