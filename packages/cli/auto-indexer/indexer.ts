@@ -521,6 +521,21 @@ setInterval(() => { ticks.request('sync', TICK_PRIORITY.sync, () => shipToServer
  * Numbers only, and the same consent gate as every other event -- record()
  * rejects a payload carrying a path, project or session id structurally.
  */
+/**
+ * How many handles the process holds — the number that identified the watcher
+ * leak (17,046 of them, against 4,255 after the fix).
+ *
+ * _getActiveHandles is undocumented and absent from @types/node, so it is
+ * reached through a narrow cast rather than `any`: the daemon's tsconfig is the
+ * strict one, and this file is what runs on every user's machine all day.
+ * Absent on a runtime that does not expose it, which reports 0 rather than
+ * failing a heartbeat over a diagnostic.
+ */
+function activeHandleCount(): number {
+  const get = (process as unknown as { _getActiveHandles?: () => unknown[] })._getActiveHandles;
+  try { return typeof get === 'function' ? get.call(process).length : 0; } catch { return 0; }
+}
+
 const HEARTBEAT_MS = Math.max(60, Number(process.env.CHAT_RECALL_HEARTBEAT_SECS) || 300) * 1000;
 function beat(): void {
   try {
@@ -528,7 +543,7 @@ function beat(): void {
       kind: 'collector_heartbeat',
       rssMb: Math.round(process.memoryUsage().rss / 1048576),
       heapMb: Math.round(process.memoryUsage().heapUsed / 1048576),
-      watchers: (process._getActiveHandles?.() ?? []).length,
+      watchers: activeHandleCount(),
       uptimeMin: Math.round(process.uptime() / 60),
     });
     void flush().catch(() => {});

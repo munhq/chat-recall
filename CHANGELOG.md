@@ -4,6 +4,16 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.6.3] — 2026-09-11
+
+### Fixed
+- **0.6.2 never reached npm.** The heartbeat read `process._getActiveHandles`,
+  which is undocumented and absent from `@types/node`. `tsc -b` accepts it and
+  the daemon's own stricter config does not, so the build failed at
+  `tsc -p tsconfig.daemon.json` — after the tag, during publish. The handle
+  count now goes through a narrow cast and reports 0 where the runtime does not
+  expose it.
+
 ## [0.6.2] — 2026-09-11
 
 ### Fixed
