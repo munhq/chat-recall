@@ -53,6 +53,7 @@ import { runAutoUpdate } from '../src/auto-update.js';
 import { orderByStaleness, noteIndexed, pruneCursor } from '../src/code-index-cursor.js';
 import { TickQueue, TICK_PRIORITY } from '../src/tick-queue.js';
 import { daemonLog } from '../src/daemon-log.js';
+import { record, flush } from '../src/telemetry.js';
 import { codeFingerprint, checkSelfRestart } from '../src/self-restart.js';
 import { rotateLogIfLarge } from '../src/log-rotate.js';
 import { runCollectorMigration } from '../src/collector-migrate.js';
@@ -498,6 +499,45 @@ daemonLog.info(`  Ready for changes...`);
 // events fire (e.g. sessions written while the daemon was down). Also
 // kick one initial ship shortly after startup to drain any backlog.
 setInterval(() => { ticks.request('sync', TICK_PRIORITY.sync, () => shipToServer('heartbeat')); }, 15 * 60 * 1000).unref();
+
+/**
+ * A liveness beat, independent of whether there was anything to sync.
+ *
+ * Staleness used to be inferred from the ABSENCE of sync_walk events, which has
+ * two holes. A machine that never completed a walk has nothing to go quiet, so
+ * a collector broken from its first run reads as no machine rather than a
+ * broken one. And a walk only reports when a sync happens, so the quiet window
+ * before the server can call a collector dead has to be wide enough to cover a
+ * closed laptop -- six hours, during which a customer's history has stopped and
+ * nothing says so.
+ *
+ * This beats on a fixed interval whether or not work happened, so the server
+ * can alert on a gap measured in minutes.
+ *
+ * It carries the two numbers that diagnosed the OOM: rss, and how many file
+ * watchers are open. 17,046 watchers and 2.1 GB was the shape of that failure,
+ * and it was only visible by attaching a debugger to one machine.
+ *
+ * Numbers only, and the same consent gate as every other event -- record()
+ * rejects a payload carrying a path, project or session id structurally.
+ */
+const HEARTBEAT_MS = Math.max(60, Number(process.env.CHAT_RECALL_HEARTBEAT_SECS) || 300) * 1000;
+function beat(): void {
+  try {
+    record({
+      kind: 'collector_heartbeat',
+      rssMb: Math.round(process.memoryUsage().rss / 1048576),
+      heapMb: Math.round(process.memoryUsage().heapUsed / 1048576),
+      watchers: (process._getActiveHandles?.() ?? []).length,
+      uptimeMin: Math.round(process.uptime() / 60),
+    });
+    void flush().catch(() => {});
+  } catch { /* a measurement must never break what it measures */ }
+}
+// First beat early, so a collector that dies in its first minutes is still a
+// machine the server has heard from rather than one it never knew about.
+setTimeout(beat, 60_000);
+setInterval(beat, HEARTBEAT_MS).unref();
 setTimeout(() => { ticks.request('sync', TICK_PRIORITY.sync, () => shipToServer('startup')); }, 20_000);
 
 // The bundle we booted with. A daemon keeps whatever code Node already parsed,

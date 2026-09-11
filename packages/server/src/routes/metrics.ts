@@ -195,13 +195,28 @@ async function collectFleetHealth(pool: any): Promise<{ failures: Record<string,
         GROUP BY kind`, [now - day]);
     for (const r of f.rows) failures[r.kind] = Number(r.n);
 
+    // Two windows, because two kinds of device report differently.
+    //
+    // A collector on a version that sends collector_heartbeat beats every 5
+    // minutes whether or not it had work, so 30 minutes of silence is already
+    // a fault. One on an older version is only heard from when a sync happens,
+    // so it needs a window wide enough for a closed laptop -- 6 hours -- and
+    // that wait is the reason the heartbeat exists.
+    //
+    // last_beat is NULL for a device that has never sent one, and the COALESCE
+    // puts it on the older, wider rule rather than alerting immediately.
     const d = await pool.query(
       `SELECT
-         count(*) FILTER (WHERE last_ts > $1)                        AS active,
-         count(*) FILTER (WHERE last_ts <= $2 AND last_ts > $3)      AS stale
-       FROM (SELECT device_id, max(ts) AS last_ts FROM client_events
-              WHERE device_id <> '' GROUP BY device_id) d`,
-      [now - day, now - 6 * 60 * 60 * 1000, now - 7 * day]);
+         count(*) FILTER (WHERE last_ts > $1) AS active,
+         count(*) FILTER (
+           WHERE last_ts > $4
+             AND CASE WHEN last_beat IS NOT NULL THEN last_beat <= $5 ELSE last_ts <= $2 END
+         ) AS stale
+       FROM (SELECT device_id,
+                    max(ts) AS last_ts,
+                    max(ts) FILTER (WHERE kind = 'collector_heartbeat') AS last_beat
+               FROM client_events WHERE device_id <> '' GROUP BY device_id) d`,
+      [now - day, now - 6 * 60 * 60 * 1000, now - 7 * day, now - 7 * day, now - 30 * 60 * 1000]);
     active = Number(d.rows[0]?.active ?? 0);
     stale = Number(d.rows[0]?.stale ?? 0);
   } catch (e) {
