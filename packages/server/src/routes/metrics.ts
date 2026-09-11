@@ -28,6 +28,7 @@ import { billingEnabled } from '../util/billing.js';
 import {
   registry,
   gUp, gSessions, gChunks, gRawSessions, gSecretFindings, gSecretFindingsVerified, gTenants,
+  gClientFailures24h, gCollectorsActive, gCollectorsStale,
   gPoolTotal, gPoolIdle, gPoolWaiting,
   gPendingVectors, gPendingSummaries, gPendingRealSummaries,
   gSubscriptions, gSubscriptionsByPlan, gMrrUsd, gTrialsActive, gTrialsExpiring24h,
@@ -166,6 +167,49 @@ async function collectCapacity(pool: any, slugs: string[]) {
     findings += Number(r.findings); verified += Number(r.verified);
   }
   return { sessions, chunks, raw, findings, verified };
+}
+
+/**
+ * Fleet health from client_events — failures reported, and collectors that
+ * stopped reporting at all.
+ *
+ * NOT per tenant, and deliberately: this answers an operator's question ("is
+ * anyone's collector dead?"), so it reads across every tenant in one pass
+ * rather than looping. client_events carries no user content — kind, tool,
+ * CLI version, OS, an opaque device id and a redacted message.
+ *
+ * A dead collector cannot report its own death, so `stale` is measured by
+ * ABSENCE: a device that reported inside the last 7 days and has said nothing
+ * for 6 hours. Bounding it to 7 days keeps a machine that was retired months
+ * ago from alerting forever.
+ */
+async function collectFleetHealth(pool: any): Promise<{ failures: Record<string, number>; active: number; stale: number }> {
+  const now = Date.now();
+  const day = 24 * 60 * 60 * 1000;
+  const failures: Record<string, number> = {};
+  let active = 0, stale = 0;
+  try {
+    const f = await pool.query(
+      `SELECT kind, count(*)::int AS n FROM client_events
+        WHERE ts > $1 AND kind IN ('auto_update_failed','breaker_trip','target_failure','mcp_crash','oversized_session')
+        GROUP BY kind`, [now - day]);
+    for (const r of f.rows) failures[r.kind] = Number(r.n);
+
+    const d = await pool.query(
+      `SELECT
+         count(*) FILTER (WHERE last_ts > $1)                        AS active,
+         count(*) FILTER (WHERE last_ts <= $2 AND last_ts > $3)      AS stale
+       FROM (SELECT device_id, max(ts) AS last_ts FROM client_events
+              WHERE device_id <> '' GROUP BY device_id) d`,
+      [now - day, now - 6 * 60 * 60 * 1000, now - 7 * day]);
+    active = Number(d.rows[0]?.active ?? 0);
+    stale = Number(d.rows[0]?.stale ?? 0);
+  } catch (e) {
+    // Never void a scrape for this. Capacity and pool gauges are the ones that
+    // page; fleet health is a diagnosis aid and can be a tick late.
+    log.warn({ err: e }, 'fleet health: skipped this scrape');
+  }
+  return { failures, active, stale };
 }
 
 /**
@@ -342,6 +386,12 @@ router.get('/', async (req, res) => {
     gSecretFindings.set(cap.findings);
     gSecretFindingsVerified.set(cap.verified);
     gTenants.set(slugs.length);
+
+    const fleet = await collectFleetHealth(pool);
+    gClientFailures24h.reset();   // a kind that stopped happening must go to 0, not keep its last value
+    for (const [kind, n] of Object.entries(fleet.failures)) gClientFailures24h.labels(kind).set(n);
+    gCollectorsActive.set(fleet.active);
+    gCollectorsStale.set(fleet.stale);
 
     const ps = latestPoolStats();
     gPoolTotal.set(ps.total);
