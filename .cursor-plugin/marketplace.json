@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "One searchable history across every AI coding tool you use. The agent recalls past work, a scanner flags secrets pasted into old sessions, and code findings become ranked tasks — all over MCP.",
-    "version": "0.6.2"
+    "version": "0.6.3"
   },
   "plugins": [
     {
