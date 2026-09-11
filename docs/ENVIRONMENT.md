@@ -19,6 +19,7 @@ at time of writing).
 | `CHAT_RECALL_SYNC_TRACE` | off | Set `1` to print per-phase progress + heap/RSS to stderr — how walk OOMs get localized. |
 | `CHAT_RECALL_REDACT_INDEX` | — | Index-time redaction toggle (sync-path redaction is always on regardless). |
 | `CHAT_RECALL_AUTO_UPDATE` | on (self-host) | Controls the daemon's checksum-pinned same-origin self-update. |
+| `CHAT_RECALL_WATCH_WINDOW_DAYS` | `14` | How recently a transcript must have been written for the daemon to put a file watcher on it. chokidar takes one watch descriptor per matched file, and a finished transcript never changes, so watching every session ever written cost 14,000 descriptors and 900 MB of heap on a machine with 13,929 of them. Sessions older than the window still sync — the 15-minute heartbeat does a full ledger walk — they just are not detected the instant they change. |
 | `CHAT_RECALL_OIDC_ISSUER` | — | Fallback OIDC issuer for `chat-recall login` SSO when the server doesn't advertise one and `--issuer` isn't passed. |
 
 ### Auto code-intelligence (collector)
@@ -59,6 +60,16 @@ Set on the **server** container, not the CLI. See the quick-start header of
 | `SECRET_RESCAN` | `0` disables the daily re-scan of ALREADY-STORED (redacted) text with today's rules. That pass is the only thing that can notice a secret a client's redactor missed — it is in the DB in cleartext at that point — so leave it on unless you have a reason. |
 | `SECRET_RESCAN_LIMIT` | Sessions per re-scan run (default `2000`, freshest first). |
 | `SECRET_RESCAN_EXCLUDE_TENANTS` | Comma-separated tenants to skip (default `synccheck`). |
+| `RAW_ARCHIVE_S3_BUCKET` | Keeps the gzipped session archive in an S3-compatible bucket instead of the `raw_sessions.gz` column. Unset (the default) stores it in Postgres, which is what a self-host with no bucket does. On the hosted database that column was 1232 MB of 3564 MB, all of it TOAST, and only one read path touches it. |
+| `RAW_ARCHIVE_S3_ENDPOINT` | S3 endpoint, e.g. `https://s3.example.com`. Required with the bucket. |
+| `RAW_ARCHIVE_S3_ACCESS_KEY_ID` / `..._SECRET_ACCESS_KEY` | Credentials. Give them an identity scoped to this bucket: object storage has no row-level security, so the only thing keeping one tenant's archive from another is that the key is reachable only through a `raw_sessions` row, which is behind the tenant and author policies. |
+| `RAW_ARCHIVE_S3_REGION` | Region for the signature (default `us-east-1`). |
+
+Existing archives keep working when the bucket is turned on: a row with bytes in
+`gz` and no key is read from the column, and one with a key is read from the
+bucket, so both shapes coexist. Move them with
+`npx tsx scripts/backfill-raw-to-object-store.ts`, which is safe to stop and
+re-run and verifies every object before clearing a row.
 
 Other server-internal flags (`CHAT_RECALL_EDITION`, `_ROLE`, `_SERVER_MODE`,
 `_TENANT`, `_FEATURE_*`, `_VECTOR_PARTITIONS`, `_TELEMETRY`) tune SaaS/edition
