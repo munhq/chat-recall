@@ -89,3 +89,27 @@ describe('the Windows Scheduled Task command', () => {
     expect(cmd).toContain('--max-old-space-size=1536');
   });
 });
+
+/**
+ * systemd reads the start limiter from [Unit] and ignores it under [Service],
+ * without complaining. It shipped in the wrong section once: the unit said
+ * StartLimitIntervalSec=0 and `systemctl show` reported the 10s default, so the
+ * collector could still be abandoned after a crash loop — the failure the
+ * setting exists to prevent, with a line in the file claiming otherwise.
+ */
+describe('unit sections', () => {
+  const unit = renderSystemdUnit('/x/watch.js', '/x/node', '/x/watch.log');
+  const inUnit = unit.slice(unit.indexOf('[Unit]'), unit.indexOf('[Service]'));
+  const inService = unit.slice(unit.indexOf('[Service]'), unit.indexOf('[Install]'));
+
+  test('the start limiter is in [Unit], where systemd reads it', () => {
+    expect(inUnit).toContain('StartLimitIntervalSec=0');
+    expect(inService).not.toContain('StartLimitIntervalSec');
+  });
+
+  test('the memory caps are in [Service], where systemd reads those', () => {
+    expect(inService).toContain('MemoryMax=2G');
+    expect(inService).toContain('MemoryHigh=1G');
+    expect(inUnit).not.toContain('Memory');
+  });
+});

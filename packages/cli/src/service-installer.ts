@@ -83,6 +83,15 @@ export function refreshServiceDefinition(): boolean {
     const { watchJs, node, logFile } = resolveDaemonPaths();
     const unitPath = join(homedir(), '.config', 'systemd', 'user', 'chat-recall-watch.service');
     if (!existsSync(unitPath)) return false;        // not service-managed; nothing to refresh
+    const current = readFileSync(unitPath, 'utf8');
+    // ONLY refresh the unit this build is actually installed as. A daemon run
+    // straight out of a checkout would otherwise rewrite ExecStart to its own
+    // path and take over the user's service — which is exactly what happened
+    // while testing this: the unit ended up pointing at a worktree instead of
+    // the installed CLI. Supervision settings are worth refreshing; which
+    // binary the service runs is the installer's decision, not a running
+    // process's.
+    if (!current.includes(watchJs)) return false;
     const wanted = renderSystemdUnit(watchJs, node, logFile);
     if (readFileSync(unitPath, 'utf8') === wanted) return false;
     writeFileSync(unitPath, wanted);
@@ -139,7 +148,15 @@ function installSystemd(watchJs: string, node: string, logFile: string): Service
 /** Render the systemd --user unit file body (pure — no FS, no exec). */
 export function renderSystemdUnit(watchJs: string, node: string, logFile: string): string {
   return [
-    '[Unit]', 'Description=chat-recall live indexer (sessions → local index, optional server sync)', 'After=default.target', '',
+    '[Unit]', 'Description=chat-recall live indexer (sessions → local index, optional server sync)', 'After=default.target',
+    // NEVER STOP RETRYING, and it must be in [Unit] — systemd reads the start
+    // limiter there and ignores it under [Service], silently. The default gives
+    // up after a burst and leaves the unit dead until a human notices: 53
+    // restarts here, then "Start request repeated too quickly", then twelve
+    // hours with nothing collected and nothing said. A collector that stops
+    // forever after a crash loop is worse than one that keeps crashing.
+    // 0 disables the limiter, so RestartSec below is the only pacing.
+    'StartLimitIntervalSec=0', '',
     '[Service]',
     // Bounded heap: the daemon does bursty batch work (transcript parse,
     // base64 payloads); V8's default old-space on a big-RAM box is ~4GB and
@@ -159,7 +176,6 @@ export function renderSystemdUnit(watchJs: string, node: string, logFile: string
     // that stops forever after a crash loop is worse than one that keeps
     // crashing: the user is told nothing and their history silently ends.
     // 0 disables the limiter, so RestartSec above is the only pacing.
-    'StartLimitIntervalSec=0',
     // A bounded cgroup, so a leak becomes a restart rather than a machine that
     // swaps. MemoryHigh throttles and reclaims first; MemoryMax is the kill.
     // --max-old-space-size bounds the V8 heap and NOT Buffers, and the observed
