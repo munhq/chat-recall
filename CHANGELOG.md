@@ -4,6 +4,64 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-09-11
+
+### Fixed
+- **The collector held one file watcher per transcript, and transcripts are
+  never deleted.** chokidar takes a watch descriptor for every file a glob
+  matches, so the sessions watcher grew with a user's whole history. Measured
+  over CDP on a running daemon with 13,929 transcripts: 17,046 watcher handles,
+  900 MB of heap, 2.1 GB RSS. systemd-oomd killed it 23 times in 48 hours. A
+  finished transcript never changes, so watchers now cover a 14-day window —
+  135 files there rather than 13,929 — and the same machine measured 4,255
+  handles and 109 MB of heap. Sessions outside the window still sync: the
+  15-minute heartbeat does a full ledger walk. `CHAT_RECALL_WATCH_WINDOW_DAYS`
+  overrides it.
+- **systemd stopped restarting the collector, permanently and silently.** After
+  53 restarts it answered "Start request repeated too quickly" and left the unit
+  dead — twelve hours with nothing collected and nothing said. The unit now
+  disables the start limiter and carries a memory cap, so a crash is a restart
+  rather than an abandonment.
+- **An upgrade could not fix the unit it shipped with.** The service definition
+  was written only by `chat-recall watch --install-service`, so every
+  supervision fix reached only machines installed after it. The daemon now
+  compares the installed definition with the one this version renders and
+  rewrites it on startup.
+- **Writing collector health erased the fields it did not name.**
+  `telemetryEligible` (what carries reporting eligibility across a restart) and
+  `starts` (the restart history a crash loop is read from) were dropped on every
+  write, and the daemon writes that file every few seconds during a walk.
+- **Purging a session cost two round trips**, and the retention sweeps call it
+  once per session. `DELETE ... RETURNING` is one.
+
+### Added
+- **A collector heartbeat.** Liveness was inferred from the absence of sync
+  events, which needs a six-hour window to allow for a closed laptop, and cannot
+  see a machine that never completed a walk at all. The collector now beats
+  every five minutes whether or not it had work, carrying rss, heap and open
+  handle count — the numbers that diagnosed the leak above, which previously
+  existed only on the machine that had it. `CHAT_RECALL_HEARTBEAT_SECS`
+  overrides the interval.
+- **The raw session archive can live in object storage.**
+  `RAW_ARCHIVE_S3_BUCKET` and friends move the gzipped transcript out of the
+  `raw_sessions.gz` column. On the hosted database that column was 1232 MB of
+  3564 MB, every byte of it TOAST, read only when someone opens one session.
+  Both shapes coexist, so turning it on needs no migration, and
+  `scripts/backfill-raw-to-object-store.ts` moves what is already there.
+  Authorization does not move with the bytes: the key is reachable only through
+  a `raw_sessions` row, which is behind the tenant and author policies.
+- **Fleet health metrics.** `chatrecall_client_failures_24h`,
+  `chatrecall_collectors_active` and `chatrecall_collectors_stale` on the
+  server's `/metrics`. The client failures they report had been arriving and
+  going unread.
+
+### Changed
+- **Search puts the tenant inside the index condition.** `gin(tsv)` matched
+  every tenant's postings and filtered afterwards, so one tenant's search read
+  every tenant's matching rows. Measured across 50 tenants and 1.25M chunks: a
+  common two-term query went from 253 ms and 297,185 discarded rows to 36.6 ms
+  and none. The trigram index for the typo fallback got the same treatment.
+
 ## [0.6.1] — 2026-09-03
 
 ### Added
