@@ -96,6 +96,42 @@ export const gSecretFindings = new Gauge({ name: 'chatrecall_secret_findings_tot
 export const gSecretFindingsVerified = new Gauge({ name: 'chatrecall_secret_findings_verified', help: 'Secret findings confirmed LIVE by the verifier — alert on this', registers: [registry] });
 export const gTenants = new Gauge({ name: 'chatrecall_tenants_total', help: 'Provisioned tenants', registers: [registry] });
 
+/* ── Fleet health ─────────────────────────────────────────────────────────────
+ *
+ * client_events has carried this all along and nothing read it. A collector
+ * that dies stops sending; a CLI that cannot upgrade says so every time it
+ * tries. On the day these gauges were written the table held 4,204
+ * auto_update_failed rows, three CLI versions were live in one person's own
+ * fleet, and one machine had been failing to upgrade for days. None of it was
+ * visible anywhere.
+ *
+ * Labelled by kind rather than one gauge per kind, so a new event kind starts
+ * being reported without a code change here. */
+export const gClientFailures24h = new Gauge({
+  name: 'chatrecall_client_failures_24h',
+  help: 'Client-reported failures in the last 24h, by kind (auto_update_failed, breaker_trip, target_failure, mcp_crash)',
+  labelNames: ['kind'],
+  registers: [registry],
+});
+
+/** Devices that reported recently enough to be considered live. The
+ *  denominator for the gauge below — a fleet of zero must not read as
+ *  "nothing is broken". */
+export const gCollectorsActive = new Gauge({
+  name: 'chatrecall_collectors_active',
+  help: 'Devices that reported in the last 24h',
+  registers: [registry],
+});
+
+/** Devices that were reporting and then went quiet. THE dead-collector signal:
+ *  a stopped collector cannot report its own death, so it is measured by
+ *  absence — active in the last 7 days, silent for the last 6 hours. */
+export const gCollectorsStale = new Gauge({
+  name: 'chatrecall_collectors_stale',
+  help: 'Devices active in the last 7d but silent for 6h — their history has stopped',
+  registers: [registry],
+});
+
 export const gPoolTotal = new Gauge({ name: 'chatrecall_pg_pool_total', help: 'pg pool connections open', registers: [registry] });
 export const gPoolIdle = new Gauge({ name: 'chatrecall_pg_pool_idle', help: 'pg pool connections idle', registers: [registry] });
 export const gPoolWaiting = new Gauge({ name: 'chatrecall_pg_pool_waiting', help: 'requests waiting for a pg connection — alert if sustained >0', registers: [registry] });
