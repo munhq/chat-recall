@@ -1049,13 +1049,20 @@ export class PgStore implements StorageDriver {
     // the table is absent (no embedder ever configured).
     await run(`DELETE FROM memory_vectors WHERE tenant=$1 AND item_id=$2 AND source_type='session'`, [this.t, sessionId]);
     await run(`DELETE FROM content_cache WHERE tenant=$1 AND id=$2 AND source_type='session'`, [this.t, sessionId]);
-    // Read the key before the row goes, then drop the row, then the object.
-    // The row is what authorizes and what every read consults, so it goes
-    // first; an object left behind is swept later and serves nobody in the
-    // meantime, because no row names it.
-    const rawRow = await this.one(`SELECT object_key FROM raw_sessions WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]).catch(() => null);
-    await run(`DELETE FROM raw_sessions WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
-    if (rawRow?.object_key) await getObjectStore()?.delete(rawRow.object_key).catch(() => { /* orphan; swept later */ });
+    // The DELETE returns the key, so this costs ONE round trip. Reading it with
+    // a separate SELECT first cost two, and purgeSession runs once per session
+    // in the retention sweeps (retention.ts calls it in three places): the
+    // extra query per row timed out the idempotency test, which sweeps 200
+    // seeded sessions twice, at 15s on a Windows runner.
+    //
+    // The row goes before the object. The row is what authorizes and what every
+    // read consults, so an object left behind serves nobody and is swept later;
+    // a row pointing at a deleted object would fail every read of that session.
+    const purged = await this.qr(
+      `DELETE FROM raw_sessions WHERE tenant=$1 AND session_id=$2 RETURNING object_key`,
+      [this.t, sessionId]).catch(() => [] as any[]);
+    const purgedKey = purged?.[0]?.object_key;
+    if (purgedKey) await getObjectStore()?.delete(purgedKey).catch(() => { /* orphan; swept later */ });
     await run(`DELETE FROM secret_findings WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
     await run(`DELETE FROM session_metadata WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
     await run(`DELETE FROM compute_cache WHERE tenant=$1 AND session_id=$2`, [this.t, sessionId]);
