@@ -4,6 +4,21 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.6.4] — 2026-09-11
+
+### Fixed
+- **The start limiter was written into the wrong section, so it did nothing.**
+  systemd reads `StartLimitIntervalSec` from `[Unit]` and ignores it under
+  `[Service]`, silently. 0.6.2 and 0.6.3 put it in `[Service]`: the unit file
+  said the limiter was off and `systemctl show` reported the 10s default, so a
+  crash loop could still end in permanent abandonment — the exact failure the
+  setting exists to prevent, with a line in the file claiming otherwise.
+- **A daemon run from a source checkout took over the installed service.** The
+  startup refresh rewrote the unit using the running build's own path, so
+  running one out of a working tree repointed `ExecStart` at it. It now
+  refreshes only the unit that already names this build, leaving which binary
+  the service runs to the installer.
+
 ## [0.6.3] — 2026-09-11
 
 ### Fixed
