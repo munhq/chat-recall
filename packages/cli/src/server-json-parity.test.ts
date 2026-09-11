@@ -115,6 +115,25 @@ describe('server.json version parity', () => {
     ).toBe(cliVersion);
   });
 
+  /**
+   * The MCP registry rejects a description over 100 characters with a 422, and
+   * the only place that limit was written down was the rejection. server.json
+   * carried 120 characters for two releases: npm published, the tag existed,
+   * the GitHub release was cut, and the registry kept advertising a version two
+   * behind because its publish step failed every time.
+   *
+   * Checked here rather than in the workflow, so the limit is enforced where
+   * the string is edited instead of after everything else has shipped.
+   */
+  it('the registry description fits the registry', () => {
+    const server = read('server.json');
+    expect(
+      server.description.length,
+      `server.json description is ${server.description.length} characters; the MCP registry ` +
+      `caps it at 100 and answers 422 over it:\n  ${server.description}`,
+    ).toBeLessThanOrEqual(100);
+  });
+
   it('the Cursor marketplace manifest matches', () => {
     const market = read('.cursor-plugin/marketplace.json');
     expect(
