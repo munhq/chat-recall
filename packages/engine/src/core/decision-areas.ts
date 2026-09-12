@@ -191,3 +191,76 @@ export function parseDecisionSubject(subject: string): { project: string; area: 
   if (i <= 0 || i === subject.length - 1) return null;
   return { project: subject.slice(0, i), area: subject.slice(i + 1) };
 }
+
+/**
+ * Guess which area a decision VALUE belongs to.
+ *
+ * Only used to pre-fill the area when confirming a candidate the extractor
+ * guessed — never to record one unattended. A wrong guess a human corrects in
+ * one click costs nothing; a wrong guess written silently splits the key this
+ * whole module exists to keep whole.
+ *
+ * Returns null rather than guessing wildly. "We chose the second option" names
+ * no area, and an area invented for it would be worse than asking.
+ */
+const VALUE_AREA: Record<string, DecisionArea> = {
+  // auth
+  keycloak: 'auth', auth0: 'auth', betterauth: 'auth', 'better-auth': 'auth',
+  clerk: 'auth', supertokens: 'auth', okta: 'auth', firebase: 'auth',
+  nextauth: 'auth', 'next-auth': 'auth', passkeys: 'auth', oidc: 'auth',
+  saml: 'auth', jwt: 'auth', lucia: 'auth', workos: 'auth',
+  // database
+  postgres: 'database', postgresql: 'database', sqlite: 'database',
+  mysql: 'database', mongodb: 'database', mongo: 'database', redis: 'database',
+  dragonfly: 'database', cockroachdb: 'database', planetscale: 'database',
+  supabase: 'database', dynamodb: 'database', lancedb: 'database',
+  chromadb: 'database', pgvector: 'database', prisma: 'database',
+  drizzle: 'database', sqlalchemy: 'database', typeorm: 'database',
+  // payments
+  stripe: 'payments', paddle: 'payments', lemonsqueezy: 'payments',
+  braintree: 'payments', adyen: 'payments', paypal: 'payments',
+  // frontend
+  react: 'frontend', vue: 'frontend', svelte: 'frontend', angular: 'frontend',
+  solid: 'frontend', htmx: 'frontend', tailwind: 'frontend', shadcn: 'frontend',
+  'next.js': 'frontend', nextjs: 'frontend', remix: 'frontend', astro: 'frontend',
+  vite: 'frontend', webpack: 'frontend',
+  // api
+  trpc: 'api', graphql: 'api', rest: 'api', grpc: 'api', openapi: 'api',
+  express: 'api', fastify: 'api', hono: 'api', fastapi: 'api', django: 'api',
+  // testing
+  vitest: 'testing', jest: 'testing', playwright: 'testing', cypress: 'testing',
+  mocha: 'testing', pytest: 'testing', 'testing-library': 'testing',
+  // observability
+  grafana: 'observability', loki: 'observability', prometheus: 'observability',
+  datadog: 'observability', sentry: 'observability', glitchtip: 'observability',
+  opentelemetry: 'observability', otel: 'observability', jaeger: 'observability',
+  // deploy
+  docker: 'deploy', kubernetes: 'deploy', k8s: 'deploy', k3s: 'deploy',
+  terraform: 'deploy', ansible: 'deploy', argocd: 'deploy', keel: 'deploy',
+  vercel: 'deploy', netlify: 'deploy', fly: 'deploy', railway: 'deploy',
+  'github-actions': 'deploy', nginx: 'deploy', caddy: 'deploy', traefik: 'deploy',
+  // security
+  vault: 'security', 'external-secrets': 'security', 'sealed-secrets': 'security',
+  // licensing
+  mit: 'licensing', apache: 'licensing', bsl: 'licensing', agpl: 'licensing',
+  gpl: 'licensing', 'elastic-license': 'licensing', elv2: 'licensing',
+};
+
+export function inferArea(value: string | null | undefined): DecisionArea | null {
+  if (!value) return null;
+  const v = value.toLowerCase();
+
+  // Exact first — "postgres" should not match on a substring rule.
+  const exact = VALUE_AREA[v.trim().replace(/[\s_]+/g, '-')];
+  if (exact) return exact;
+
+  // Then word-boundary containment, so "moved the writer off the transaction
+  // pooler to postgres" still resolves. Longest key first, or "auth" inside
+  // "betterauth" would win over the real entry.
+  const keys = Object.keys(VALUE_AREA).sort((a, b) => b.length - a.length);
+  for (const k of keys) {
+    const re = new RegExp(`(^|[^a-z0-9])${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`);
+    if (re.test(v)) return VALUE_AREA[k];
+  }
+  return null;
+}
