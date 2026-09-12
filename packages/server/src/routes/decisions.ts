@@ -316,4 +316,116 @@ router.post('/candidates/resolve', express.json(), async (req, res) => {
   }
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/decisions/check — is this tool call about to undo a decision?
+//
+// The register only enforces if something reads it BEFORE the agent acts. This
+// is what the pre-execution hooks call, and it returns a verdict rather than
+// rows so that every harness gets the same answer: the alternative is five
+// hooks each re-implementing the cascade and disagreeing.
+//
+// WARN, not DENY, by default. A wrong block burns the user's turn and teaches
+// them to uninstall the guard; a wrong warning costs a line of context. The
+// caller may escalate per area, but the server never decides to block on its
+// own.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/check', express.json(), async (req, res) => {
+  const names: string[] = Array.isArray(req.body?.names)
+    ? req.body.names.filter((n: unknown): n is string => typeof n === 'string' && !!n.trim())
+      .map((n: string) => n.trim().toLowerCase())
+    : [];
+  const project = typeof req.body?.project === 'string' && req.body.project.trim()
+    ? req.body.project.trim() : null;
+  const via = typeof req.body?.via === 'string' ? req.body.via : null;
+
+  // Nothing named means nothing to check, which is the overwhelmingly common
+  // answer. Return before opening the graph so the hook stays cheap enough to
+  // run on every tool call.
+  if (names.length === 0) return res.json({ verdict: 'allow', findings: [] });
+
+  const kg = await createKnowledgeGraph();
+  try {
+    const [decided, rejected, chosenOver] = await Promise.all([
+      kg.queryRelationship('decided') as Promise<Fact[]>,
+      kg.queryRelationship('rejected') as Promise<Fact[]>,
+      kg.queryRelationship('chosen_over') as Promise<Fact[]>,
+    ]);
+
+    const want = new Set(names);
+    const findings: Array<{
+      name: string; area: string | null; instead: string | null;
+      since: string | null; source_session: string | null; reason: string;
+    }> = [];
+
+    // 1. The strong signal: this name is the live decision's LOSER. `chosen_over`
+    //    is subject=winner, object=loser, so a hit names both sides.
+    for (const c of chosenOver) {
+      if (c.valid_to !== null) continue;
+      const loser = c.object.trim().toLowerCase();
+      if (!want.has(loser)) continue;
+      findings.push({
+        name: loser, area: null, instead: c.subject,
+        since: c.valid_from, source_session: c.source_session ?? null,
+        reason: `${c.subject} was chosen over ${c.object}`,
+      });
+    }
+
+    // 2. Recorded as rejected outright, with no winner named.
+    for (const r of rejected) {
+      if (r.valid_to !== null) continue;
+      const name = r.object.trim().toLowerCase();
+      if (!want.has(name)) continue;
+      if (findings.some((f) => f.name === name)) continue;
+      findings.push({
+        name, area: null, instead: null,
+        since: r.valid_from, source_session: r.source_session ?? null,
+        reason: `${r.object} was rejected`,
+      });
+    }
+
+    // 3. An area is decided and this is not what it decided. Scoped to the
+    //    project when one is given, so a client repo's own override is what its
+    //    agents are held to rather than the account default.
+    const scopes = project ? [project, ACCOUNT_SCOPE] : [ACCOUNT_SCOPE];
+    const live = new Map<string, Fact>();
+    for (const d of decided) {
+      if (d.valid_to !== null) continue;
+      const parsed = parseDecisionSubject(d.subject);
+      if (!parsed) continue;
+      // Most specific scope wins, matching GET / above.
+      const rank = scopes.indexOf(parsed.project);
+      if (rank < 0) continue;
+      const prev = live.get(parsed.area);
+      const prevRank = prev ? scopes.indexOf(parseDecisionSubject(prev.subject)!.project) : 99;
+      if (!prev || rank < prevRank) live.set(parsed.area, d);
+    }
+    for (const [area, d] of live) {
+      const settled = d.object.trim().toLowerCase();
+      for (const n of want) {
+        if (n === settled || settled.includes(n)) continue;   // already the decision
+        if (inferArea(n) !== area) continue;                   // different question
+        if (findings.some((f) => f.name === n)) continue;
+        findings.push({
+          name: n, area, instead: d.object,
+          since: d.valid_from, source_session: d.source_session ?? null,
+          reason: `${area} is decided: ${d.object}`,
+        });
+      }
+    }
+
+    res.json({
+      verdict: findings.length ? 'warn' : 'allow',
+      via,
+      findings,
+    });
+  } catch (error) {
+    // A guard that fails closed would block work whenever the server hiccups,
+    // which is how a safety feature becomes the thing people disable.
+    log.error({ err: error }, 'decision check failed');
+    res.json({ verdict: 'allow', findings: [], error: 'check unavailable' });
+  } finally {
+    await kg.close();
+  }
+});
+
 export default router;
