@@ -1659,6 +1659,34 @@ program
       }
     }
 
+    // The decision guard, per tool. Claude Code is covered by the loop above;
+    // these four keep their pre-execution hook in their own file, so a machine
+    // where only Claude is registered runs the guard on one tool out of five.
+    try {
+      const reg = await import('@chat-recall/engine/core/guard-registration.js');
+      for (const target of reg.guardTargets()) {
+        if (!existsSync(target.homeDir)) continue;
+        const label = `Decision guard — ${target.label}`;
+        if (!existsSync(target.configPath)) {
+          note(false, label, `not registered — run \`chat-recall install-hooks\``);
+          continue;
+        }
+        if (target.tool === 'opencode') {
+          note(true, label, target.configPath);
+          continue;
+        }
+        let registered = false;
+        try {
+          const cfg = JSON.parse(readFileSync(target.configPath, 'utf-8'));
+          registered = JSON.stringify(cfg).includes('chat_recall_guard');
+        } catch { /* unparseable reads as not registered */ }
+        note(registered, label,
+          registered ? target.configPath : `${target.configPath} has no chat-recall entry — run \`chat-recall install-hooks\``);
+      }
+    } catch (err) {
+      note(false, 'Decision guard', `check failed: ${err}`);
+    }
+
     // Skills, per target tool. An agent with no skill file has 50 recall_*
     // tools and no idea when to reach for one, which reads as "recall never
     // works here" rather than as a missing install.
@@ -3066,7 +3094,7 @@ program
   .option('--no-wakeup', "Don't install the SessionStart wake-up hook")
   .option('--no-guard', "Don't install the PreToolUse decision guard")
   .action(async (opts: { uninstall?: boolean; resumeHint?: boolean; escalate?: boolean; wakeup?: boolean; guard?: boolean }) => {
-    const { mkdirSync, copyFileSync, chmodSync, existsSync, readFileSync, writeFileSync, statSync } = await import('fs');
+    const { mkdirSync, copyFileSync, chmodSync, existsSync, readFileSync, writeFileSync, statSync, unlinkSync } = await import('fs');
     const { fileURLToPath } = await import('url');
 
     // Locate the bundled hook scripts. When installed via npm the files live
@@ -3076,6 +3104,10 @@ program
       const candidates = [
         join(here, '..', 'hooks', name),
         join(here, '..', '..', 'hooks', name),
+        // The monorepo root, for a run straight from the checkout. The copy
+        // under packages/cli/hooks is written by the package build, so a
+        // freshly added script is only at the root until that build runs.
+        join(here, '..', '..', '..', 'hooks', name),
       ];
       return candidates.find(p => existsSync(p));
     };
@@ -3147,6 +3179,66 @@ program
     // an uninstall reaches the wake-up registration too.
     const HOOK_EVENTS = ['Stop', 'PreCompact', 'UserPromptSubmit', 'SessionEnd', 'SessionStart', 'PreToolUse'];
 
+    // ── The four tools that are not Claude Code ──────────────────────────────
+    //
+    // `chat-recall guard` already speaks all five harnesses. Registration is
+    // what kept it to one: each of the other four stores its pre-execution hook
+    // in its own file, in its own shape. See core/guard-registration.ts for the
+    // shapes; this reads and writes the files.
+    //
+    // A tool whose directory is absent is skipped, so installing never leaves
+    // config behind for a tool nobody has.
+    const readJson = (file: string): any => {
+      if (!existsSync(file)) return {};
+      try { return JSON.parse(readFileSync(file, 'utf-8')); } catch { return {}; }
+    };
+
+    const addGuardToOtherTools = async (hookPath: string): Promise<void> => {
+      const reg = await import('@chat-recall/engine/core/guard-registration.js');
+      const notes: string[] = [];
+      for (const target of reg.guardTargets()) {
+        if (!existsSync(target.homeDir)) continue;
+        // Each tool runs its own wrapper, which names the harness and execs
+        // the shared script. The registration is then one absolute path.
+        const wrapper = join(hooksDir, reg.guardWrapperName(target.tool));
+        writeFileSync(wrapper, reg.guardWrapperSource(target.tool, hookPath));
+        chmodSync(wrapper, 0o755);
+        mkdirSync(dirname(target.configPath), { recursive: true });
+        if (target.tool === 'opencode') {
+          writeFileSync(target.configPath, reg.opencodePluginSource(wrapper));
+        } else {
+          const merged = reg.registerGuard(target.tool, readJson(target.configPath), reg.guardCommand(wrapper));
+          writeFileSync(target.configPath, JSON.stringify(merged, null, 2) + '\n');
+        }
+        console.log(chalk.green(`\u2713 Registered the guard for ${target.label}`));
+        console.log(chalk.dim(`  ${target.configPath}`));
+        if (target.note) notes.push(`${target.label}: ${target.note}`);
+      }
+      for (const n of notes) console.log(chalk.yellow(`  ! ${n}`));
+    };
+
+    const removeGuardFromOtherTools = async (): Promise<number> => {
+      const reg = await import('@chat-recall/engine/core/guard-registration.js');
+      let removed = 0;
+      for (const target of reg.guardTargets()) {
+        if (!existsSync(target.configPath)) continue;
+        if (target.tool === 'opencode') {
+          // Only ours. The marker is the line install wrote at the top.
+          const body = readFileSync(target.configPath, 'utf-8');
+          if (!body.includes('chat-recall install-hooks')) continue;
+          unlinkSync(target.configPath);
+          removed += 1;
+        } else {
+          const r = reg.unregisterGuard(target.tool, readJson(target.configPath));
+          if (r.removed === 0) continue;
+          writeFileSync(target.configPath, JSON.stringify(r.config, null, 2) + '\n');
+          removed += r.removed;
+        }
+        console.log(chalk.green(`\u2713 Removed the guard from ${target.label} (${target.configPath})`));
+      }
+      return removed;
+    };
+
     if (opts.uninstall) {
       let total = 0;
       for (const hooksJson of hookConfigFiles) {
@@ -3164,6 +3256,7 @@ program
         total += removed;
         console.log(chalk.green(`✓ Removed ${removed} chat-recall hook entr${removed === 1 ? 'y' : 'ies'} from ${hooksJson}`));
       }
+      total += await removeGuardFromOtherTools();
       if (total === 0) console.log(chalk.dim('No chat-recall hook entries were registered.'));
       console.log(chalk.dim(`  (Hook scripts left in ${hooksDir} — delete manually if you want.)`));
       return;
@@ -3210,6 +3303,9 @@ program
     }
 
     const installGuard = opts.guard !== false && !!sourceGuardHook;
+    if (opts.guard !== false && !sourceGuardHook) {
+      console.error(chalk.yellow('! chat_recall_guard_hook.sh is not in this package — the decision guard is not installed.'));
+    }
     if (installGuard) {
       copyFileSync(sourceGuardHook!, installedGuardHook);
       chmodSync(installedGuardHook, 0o755);
@@ -3273,6 +3369,8 @@ program
       mkdirSync(dirname(hooksJson), { recursive: true });
       writeFileSync(hooksJson, JSON.stringify(config, null, 2) + '\n');
     }
+    if (installGuard) await addGuardToOtherTools(installedGuardHook);
+
     const saveSz = statSync(installedSaveHook).size;
     console.log(chalk.green(`✓ Installed chat-recall save hook (${saveSz} bytes)`));
     if (installResume) {
@@ -3282,6 +3380,10 @@ program
     if (installEscalate) {
       const escalateSz = statSync(installedEscalateHook).size;
       console.log(chalk.green(`✓ Installed chat-recall learnings-escalation hook (${escalateSz} bytes)`));
+    }
+    if (installGuard) {
+      const guardSz = statSync(installedGuardHook).size;
+      console.log(chalk.green(`✓ Installed chat-recall decision guard (${guardSz} bytes)`));
     }
     if (installWakeup) {
       const wakeupSz = statSync(installedWakeupHook).size;
@@ -3294,7 +3396,7 @@ program
     for (const [i, f] of hookConfigFiles.entries()) {
       console.log(chalk.dim(`  ${i === 0 ? 'config:   ' : '          '} ${f}`));
     }
-    console.log(chalk.dim(`  events:    Stop, PreCompact${installResume ? ', UserPromptSubmit' : ''}${installEscalate ? ', SessionEnd' : ''}${installWakeup ? ', SessionStart' : ''}`));
+    console.log(chalk.dim(`  events:    Stop, PreCompact${installResume ? ', UserPromptSubmit' : ''}${installEscalate ? ', SessionEnd' : ''}${installWakeup ? ', SessionStart' : ''}${installGuard ? ', PreToolUse' : ''}`));
     console.log();
     console.log(chalk.dim('Run `chat-recall install-hooks --uninstall` to remove later.'));
     if (!installResume) {
