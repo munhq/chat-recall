@@ -49,6 +49,8 @@ type Fact = {
   subject: string; predicate: string; object: string;
   valid_from: string | null; valid_to: string | null;
   confidence?: number; source_session?: string | null; current?: boolean;
+  /** When the row was written. Stands in for `valid_from` when it is null. */
+  recorded_at?: string | null;
 };
 
 export interface DecisionRow {
@@ -149,7 +151,10 @@ router.get('/', async (req, res) => {
       area,
       known: isKnownArea(area),
       value: r.current.object,
-      since: r.current.valid_from,
+      // Facts asserted before addTriple stamped a date have no valid_from, and
+      // a decision without a date persuades nobody. The write date is when
+      // somebody recorded it, so it answers "since when" for those rows.
+      since: r.current.valid_from ?? r.current.recorded_at ?? null,
       why: why.get(decisionSubject(scope === 'account' ? ACCOUNT_SCOPE : scope === 'user' ? `user:${userId}` : project, area)) ?? null,
       source_session: r.current.source_session ?? null,
       scope,
@@ -190,7 +195,7 @@ router.get('/', async (req, res) => {
         seen.set(key, {
           value: c.object,
           mentions: (prev?.mentions ?? 0) + 1,
-          last: [prev?.last ?? '', c.valid_from ?? ''].sort().pop() || null,
+          last: [prev?.last ?? '', c.valid_from ?? c.recorded_at ?? ''].sort().pop() || null,
         });
       }
       candidates = [...seen.values()]
@@ -284,26 +289,38 @@ router.post('/candidates/resolve', express.json(), async (req, res) => {
 
   const kg = await createKnowledgeGraph();
   try {
+    // The live guesses this value came from. Read BEFORE the write, because
+    // confirming supersedes and retires them, and one of them carries the
+    // conversation the extractor read the value out of.
+    const chose = (await kg.queryRelationship('chose')) as Fact[];
+    const target = value.trim().toLowerCase();
+    const guesses = chose.filter((c) => c.valid_to === null && c.object.trim().toLowerCase() === target);
+
+    // A confirmed candidate inherits its guess's session. The dashboard has no
+    // session of its own, so without this the register shows a decision that
+    // no conversation accounts for, and the guard can only assert it.
+    const inherited = [...guesses]
+      .sort((a, b) => String(a.valid_from ?? a.recorded_at ?? '').localeCompare(String(b.valid_from ?? b.recorded_at ?? '')))
+      .reverse()
+      .find((c) => c.source_session)?.source_session ?? undefined;
+    const sourceSession = session_id ?? inherited;
+
     if (action === 'confirm' && area) {
       const subject = decisionSubject(typeof project === 'string' ? project : null, area);
       await kg.addTriple(subject, 'decided', value.trim(), {
-        confidence: 1, sourceSession: session_id ?? undefined, origin: 'asserted', supersede: true,
+        confidence: 1, sourceSession, origin: 'asserted', supersede: true,
       } as never);
       if (typeof reason === 'string' && reason.trim()) {
         await kg.addTriple(subject, 'because', reason.trim(), {
-          confidence: 1, sourceSession: session_id ?? undefined, origin: 'asserted', supersede: false,
+          confidence: 1, sourceSession, origin: 'asserted', supersede: false,
         } as never);
       }
     }
 
     // Retire every live `chose` guess naming this value, whichever subject the
     // extractor filed it under — the candidate row is one value, not one row.
-    const chose = (await kg.queryRelationship('chose')) as Fact[];
-    const target = value.trim().toLowerCase();
     let retired = 0;
-    for (const c of chose) {
-      if (c.valid_to !== null) continue;
-      if (c.object.trim().toLowerCase() !== target) continue;
+    for (const c of guesses) {
       retired += await kg.invalidate(c.subject, 'chose', c.object);
     }
 
@@ -365,7 +382,7 @@ router.post('/check', express.json(), async (req, res) => {
       if (!want.has(loser)) continue;
       findings.push({
         name: loser, area: null, instead: c.subject,
-        since: c.valid_from, source_session: c.source_session ?? null,
+        since: c.valid_from ?? c.recorded_at ?? null, source_session: c.source_session ?? null,
         reason: `${c.subject} was chosen over ${c.object}`,
       });
     }
@@ -378,7 +395,7 @@ router.post('/check', express.json(), async (req, res) => {
       if (findings.some((f) => f.name === name)) continue;
       findings.push({
         name, area: null, instead: null,
-        since: r.valid_from, source_session: r.source_session ?? null,
+        since: r.valid_from ?? r.recorded_at ?? null, source_session: r.source_session ?? null,
         reason: `${r.object} was rejected`,
       });
     }
@@ -407,7 +424,7 @@ router.post('/check', express.json(), async (req, res) => {
         if (findings.some((f) => f.name === n)) continue;
         findings.push({
           name: n, area, instead: d.object,
-          since: d.valid_from, source_session: d.source_session ?? null,
+          since: d.valid_from ?? d.recorded_at ?? null, source_session: d.source_session ?? null,
           reason: `${area} is decided: ${d.object}`,
         });
       }

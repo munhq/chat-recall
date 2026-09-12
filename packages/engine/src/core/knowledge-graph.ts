@@ -48,6 +48,13 @@ export interface KGQueryResult {
   confidence: number;
   source_session: string | null;
   current: boolean;
+  /**
+   * When the row was written, day-granular. `valid_from` says when the fact
+   * became true and stays null when nobody knows; this always has a value, so
+   * a caller that must print a date has one. Asserted facts recorded before
+   * addTriple stamped a date read their date from here.
+   */
+  recorded_at: string | null;
 }
 
 export interface KGTimelineEntry {
@@ -62,18 +69,11 @@ export interface KGTimelineEntry {
   origin: string;
 }
 
-/**
- * Normalize a KG date to date-only `YYYY-MM-DD`. Facts are day-granular, and
- * storing a mix of full ISO timestamps and date-only strings broke lexical
- * comparison (`'2026-01-01T10:00Z' <= '2026-01-01'` is false), so `as_of`
- * queries silently dropped facts. Canonical date-only makes string compare
- * chronological again.
- */
-export function normalizeKgDate(d?: string | null): string | null {
-  if (!d) return null;
-  const m = d.match(/^\d{4}-\d{2}-\d{2}/);
-  return m ? m[0] : d;
-}
+// Date handling lives in kg-dates.ts so the Postgres driver can import it
+// without pulling better-sqlite3 in with it. Re-exported here because callers
+// have always imported normalizeKgDate from this module.
+export { normalizeKgDate, kgToday, resolveValidFrom, kgDay } from './kg-dates.js';
+import { normalizeKgDate, kgToday, resolveValidFrom } from './kg-dates.js';
 
 export interface KGStats {
   entities: number;
@@ -214,10 +214,10 @@ export class KnowledgeGraph {
 
     // Supersede any contradictory active fact (same subject+predicate, different
     // object) so "current" never holds two conflicting values at once.
-    const validFrom = normalizeKgDate(options.validFrom);
+    const validFrom = resolveValidFrom(options.validFrom, options.origin);
     const validTo = normalizeKgDate(options.validTo);
     if (options.supersede) {
-      const asOf = validFrom || new Date().toISOString().slice(0, 10);
+      const asOf = validFrom || kgToday();
       this.db.prepare(`
         UPDATE triples SET valid_to = ?
         WHERE subject = ? AND predicate = ? AND object != ? AND valid_to IS NULL
@@ -342,6 +342,7 @@ export class KnowledgeGraph {
         predicate: string; obj_name: string;
         valid_from: string | null; valid_to: string | null;
         confidence: number; source_session: string | null;
+        extracted_at: string | null;
       }>;
 
       for (const row of rows) {
@@ -355,6 +356,7 @@ export class KnowledgeGraph {
           confidence: row.confidence,
           source_session: row.source_session,
           current: row.valid_to === null,
+          recorded_at: normalizeKgDate(row.extracted_at),
         });
       }
     }
@@ -378,6 +380,7 @@ export class KnowledgeGraph {
         sub_name: string; predicate: string;
         valid_from: string | null; valid_to: string | null;
         confidence: number; source_session: string | null;
+        extracted_at: string | null;
       }>;
 
       for (const row of rows) {
@@ -391,6 +394,7 @@ export class KnowledgeGraph {
           confidence: row.confidence,
           source_session: row.source_session,
           current: row.valid_to === null,
+          recorded_at: normalizeKgDate(row.extracted_at),
         });
       }
     }
@@ -421,6 +425,7 @@ export class KnowledgeGraph {
       sub_name: string; obj_name: string; predicate: string;
       valid_from: string | null; valid_to: string | null;
       confidence: number; source_session: string | null;
+      extracted_at: string | null;
     }>;
 
     return rows.map(row => ({
@@ -433,6 +438,7 @@ export class KnowledgeGraph {
       confidence: row.confidence,
       source_session: row.source_session,
       current: row.valid_to === null,
+      recorded_at: normalizeKgDate(row.extracted_at),
     }));
   }
 

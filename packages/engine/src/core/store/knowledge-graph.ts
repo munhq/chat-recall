@@ -10,6 +10,7 @@ import { currentTenant, currentAuthor } from './tenant-context.js';
 import type { KnowledgeGraph } from '../knowledge-graph.js';
 import { resolveBackend, type CreateStoreOptions } from './index.js';
 import { openPgPool, openPgPoolRo, ensurePgSchema, pgTenant, tenantQuery } from './pg-pool.js';
+import { normalizeKgDate, resolveValidFrom, kgToday, kgDay } from '../kg-dates.js';
 
 type AsyncMethod<M> = M extends (...args: infer A) => infer R
   ? (...args: A) => Promise<Awaited<R>>
@@ -86,13 +87,13 @@ export class PgKnowledgeGraph implements KnowledgeGraphDriver {
     await this.q(`INSERT INTO kg_entities (tenant,id,name) VALUES ($1,$2,$3) ON CONFLICT (tenant,id) DO NOTHING`, [this.t, objId, object]);
     const existing = (await this.q(`SELECT id FROM kg_triples WHERE tenant=$1 AND subject=$2 AND predicate=$3 AND object=$4 AND valid_to IS NULL`, [this.t, subId, pred, objId]))[0];
     if (existing) return existing.id;
-    const { normalizeKgDate } = await import('../knowledge-graph.js');
-    const validFrom = normalizeKgDate(options.validFrom);
+    // An asserted fact with no date given starts today — see resolveValidFrom.
+    const validFrom = resolveValidFrom(options.validFrom, options.origin);
     const validTo = normalizeKgDate(options.validTo);
     // Supersede a contradictory active fact (same subject+predicate, different
     // object) — see the sqlite reference impl. Opt-in via options.supersede.
     if (options.supersede) {
-      const asOf = validFrom || new Date().toISOString().slice(0, 10);
+      const asOf = validFrom || kgToday();
       await this.q(`UPDATE kg_triples SET valid_to=$5 WHERE tenant=$1 AND subject=$2 AND predicate=$3 AND object<>$4 AND valid_to IS NULL`,
         [this.t, subId, pred, objId, asOf]);
     }
@@ -137,12 +138,12 @@ export class PgKnowledgeGraph implements KnowledgeGraphDriver {
     if (direction === 'outgoing' || direction === 'both') {
       const params = asOf ? [this.t, eid, asOf] : [this.t, eid];
       const rows = await this.qRo(`SELECT t.*, e.name AS obj_name FROM kg_triples t JOIN kg_entities e ON e.tenant=t.tenant AND t.object=e.id WHERE t.tenant=$1 AND t.subject=$2${asOfClause}`, params);
-      for (const row of rows) results.push({ direction: 'outgoing', subject: name, predicate: row.predicate, object: row.obj_name, valid_from: row.valid_from, valid_to: row.valid_to, confidence: row.confidence, source_session: row.source_session, current: row.valid_to === null });
+      for (const row of rows) results.push({ direction: 'outgoing', subject: name, predicate: row.predicate, object: row.obj_name, valid_from: row.valid_from, valid_to: row.valid_to, confidence: row.confidence, source_session: row.source_session, current: row.valid_to === null, recorded_at: kgDay(row.extracted_at) });
     }
     if (direction === 'incoming' || direction === 'both') {
       const params = asOf ? [this.t, eid, asOf] : [this.t, eid];
       const rows = await this.qRo(`SELECT t.*, e.name AS sub_name FROM kg_triples t JOIN kg_entities e ON e.tenant=t.tenant AND t.subject=e.id WHERE t.tenant=$1 AND t.object=$2${asOfClause}`, params);
-      for (const row of rows) results.push({ direction: 'incoming', subject: row.sub_name, predicate: row.predicate, object: name, valid_from: row.valid_from, valid_to: row.valid_to, confidence: row.confidence, source_session: row.source_session, current: row.valid_to === null });
+      for (const row of rows) results.push({ direction: 'incoming', subject: row.sub_name, predicate: row.predicate, object: name, valid_from: row.valid_from, valid_to: row.valid_to, confidence: row.confidence, source_session: row.source_session, current: row.valid_to === null, recorded_at: kgDay(row.extracted_at) });
     }
     return results;
   }
@@ -153,7 +154,7 @@ export class PgKnowledgeGraph implements KnowledgeGraphDriver {
     const asOfClause = asOf ? ` AND (t.valid_from IS NULL OR t.valid_from <= $3) AND (t.valid_to IS NULL OR t.valid_to >= $3)` : '';
     const params = asOf ? [this.t, pred, asOf] : [this.t, pred];
     const rows = await this.qRo(`SELECT t.*, s.name AS sub_name, o.name AS obj_name FROM kg_triples t JOIN kg_entities s ON s.tenant=t.tenant AND t.subject=s.id JOIN kg_entities o ON o.tenant=t.tenant AND t.object=o.id WHERE t.tenant=$1 AND t.predicate=$2${asOfClause}`, params);
-    return rows.map(row => ({ direction: 'outgoing' as const, subject: row.sub_name, predicate: pred, object: row.obj_name, valid_from: row.valid_from, valid_to: row.valid_to, confidence: row.confidence, source_session: row.source_session, current: row.valid_to === null }));
+    return rows.map(row => ({ direction: 'outgoing' as const, subject: row.sub_name, predicate: pred, object: row.obj_name, valid_from: row.valid_from, valid_to: row.valid_to, confidence: row.confidence, source_session: row.source_session, current: row.valid_to === null, recorded_at: kgDay(row.extracted_at) }));
   }
 
   async timeline(...a: Args<'timeline'>) {
