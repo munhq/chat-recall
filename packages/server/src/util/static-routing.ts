@@ -46,7 +46,19 @@ export function classifyStaticPath(path: string): StaticVerdict {
  * not be given a year of immutability, because nothing would ever fetch the
  * replacement.
  */
-const HASHED_ASSET = /-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+$/;
+/* The trailing segment must LOOK like a hash, which means carrying at least one
+ * digit or one capital. Without that clause the pattern matched any file whose
+ * name ends in a hyphen and a word of eight letters, and the site is full of
+ * them: apple-touch-icon.png, conversation-overview.webp, project-overview.webp,
+ * toolkit-coverage.webp and every og-guide-<slug>.png were all being served a
+ * year of immutability under a name that will be REUSED by the next build. A
+ * re-rendered card or a replaced touch icon would never reach a browser or a
+ * CDN edge that had already seen the old bytes.
+ *
+ * Vite's hash is 8 base64url characters, so an all-lowercase-letter one occurs
+ * about 0.03% of the time. That build's file falls through to the CDN default
+ * and the next build's name clears it. */
+const HASHED_ASSET = /-(?=[A-Za-z0-9_-]*[0-9A-Z])[A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+$/;
 
 /**
  * What `Cache-Control` a file under STATIC_DIR should be served with.
@@ -99,6 +111,17 @@ export function cacheControlFor(path: string): string | null {
   // origin for every page view.
   if (rel.endsWith('.html')) return 'public, max-age=300, stale-while-revalidate=86400';
 
+  /* Marketing media under an UNHASHED name: a day, a week of serving stale.
+   *
+   * These used to fall through to the hashed-asset rule and get a year of
+   * immutability under a name the next build reuses. An explicit value keeps the
+   * decision here: returning null hands it to Cloudflare, which answered
+   * `max-age=14400` on the bundle for the same reason recorded below. A day
+   * matches how often a screenshot or a social card is re-rendered. */
+  if (/\.(png|jpg|jpeg|webp|avif|gif|svg|ico|mp4|webm)$/.test(rel)) {
+    return 'public, max-age=86400, stale-while-revalidate=604800';
+  }
+
   // A content-hashed build asset. A year, and immutable, for the same reason a
   // font gets it: the hash IS the version, so the bytes behind this exact name
   // can never change. A new build emits a new name.
@@ -116,4 +139,29 @@ export function cacheControlFor(path: string): string | null {
   if (HASHED_ASSET.test(rel)) return 'public, max-age=31536000, immutable';
 
   return null;
+}
+
+/**
+ * Whether a file served straight out of STATIC_DIR must carry
+ * `X-Robots-Tag: noindex`.
+ *
+ * WHAT WENT WRONG BEFORE: the catch-all sets this header on `/app`, and
+ * robots.txt disallowed `/app`, so between them the app shell was believed to
+ * be unindexable. Neither reached the file at its OWN name. express.static is
+ * mounted at the root, so `GET /index.html` answered 200 with the shell — 62
+ * words of body text, a second brand `<title>`, and a canonical pointing at
+ * `/app`. Nothing disallowed that path and nothing set a header on it.
+ *
+ * Its canonical pointed at `/app`, which robots.txt disallowed. A crawler that
+ * cannot fetch `/app` cannot confirm that claim, so `/index.html` stayed
+ * eligible for the index under its own address.
+ *
+ * Only the SHELL at the root. `guides/index.html` and every other marketing
+ * page is also called `index.html`, and those are the pages the site exists to
+ * get indexed — hence an exact match on the relative path, the same test
+ * cacheControlFor already makes.
+ */
+export function robotsTagFor(path: string): string | null {
+  const rel = path.replace(/\\/g, '/').replace(/^\.?\//, '');
+  return rel === 'index.html' ? 'noindex' : null;
 }
