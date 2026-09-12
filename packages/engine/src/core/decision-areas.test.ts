@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'vitest';
 import {
-  canonArea, isKnownArea, decisionSubject, parseDecisionSubject,
+  canonArea, isKnownArea, decisionSubject, parseDecisionSubject, inferArea,
   ACCOUNT_SCOPE, DECISION_AREAS,
 } from './decision-areas.js';
 
@@ -95,5 +95,40 @@ describe('decisionSubject', () => {
     expect(parseDecisionSubject('auth')).toBeNull();
     expect(parseDecisionSubject('chat-recall:')).toBeNull();
     expect(parseDecisionSubject(':auth')).toBeNull();
+  });
+});
+
+describe('inferArea', () => {
+  test('names the area for values people actually decide between', () => {
+    expect(inferArea('Keycloak')).toBe('auth');
+    expect(inferArea('BetterAuth')).toBe('auth');
+    expect(inferArea('Postgres')).toBe('database');
+    expect(inferArea('Stripe')).toBe('payments');
+    expect(inferArea('Playwright')).toBe('testing');
+    expect(inferArea('Grafana')).toBe('observability');
+    expect(inferArea('ArgoCD')).toBe('deploy');
+  });
+
+  test('a longer key wins over one contained inside it', () => {
+    // "auth" must not match inside "betterauth" and mislabel it.
+    expect(inferArea('betterauth')).toBe('auth');
+    expect(inferArea('next-auth')).toBe('auth');
+  });
+
+  test('finds the value inside a sentence, on word boundaries', () => {
+    expect(inferArea('moved the writer off the pooler to postgres')).toBe('database');
+    expect(inferArea('we standardised on playwright for the dashboard')).toBe('testing');
+  });
+
+  test('does not match a substring that is not its own word', () => {
+    // "go" is not in the map, but this guards the boundary rule generally:
+    // "restore" must not resolve to the `rest` api entry.
+    expect(inferArea('restore from backup')).toBeNull();
+  });
+
+  test('returns null rather than inventing an area', () => {
+    expect(inferArea('the second option')).toBeNull();
+    expect(inferArea('')).toBeNull();
+    expect(inferArea(null)).toBeNull();
   });
 });

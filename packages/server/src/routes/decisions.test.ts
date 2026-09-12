@@ -165,3 +165,48 @@ describe('rationale', () => {
     expect(pay.value).toBe('Stripe');
   });
 });
+
+describe('resolving a candidate', () => {
+  test('confirm needs an area it can actually key on', async () => {
+    const r = await request(app).post('/api/decisions/candidates/resolve')
+      .send({ value: 'the second option', action: 'confirm' });
+    expect(r.status).toBe(400);
+  });
+
+  test('an unknown action is refused', async () => {
+    const r = await request(app).post('/api/decisions/candidates/resolve')
+      .send({ value: 'Redis', action: 'maybe' });
+    expect(r.status).toBe(400);
+  });
+
+  test('confirm infers the area from the value when none is given', async () => {
+    const r = await request(app).post('/api/decisions/candidates/resolve')
+      .send({ value: 'Redis', action: 'confirm' });
+    expect(r.status).toBe(200);
+    expect(r.body.area).toBe('database');
+
+    const list = await get();
+    const db = list.body.decisions.find((d: { area: string }) => d.area === 'database');
+    expect(db.value).toBe('Redis');
+  });
+
+  test('an explicit area beats the inferred one', async () => {
+    const r = await request(app).post('/api/decisions/candidates/resolve')
+      .send({ value: 'Firebase', action: 'confirm', area: 'deploy' });
+    expect(r.status).toBe(200);
+    // inferArea('Firebase') says auth; the caller said deploy and wins.
+    expect(r.body.area).toBe('deploy');
+  });
+
+  test('discard retires the guess without recording a decision', async () => {
+    const before = await get();
+    const r = await request(app).post('/api/decisions/candidates/resolve')
+      .send({ value: 'Nothing Anyone Chose', action: 'discard' });
+    expect(r.status).toBe(200);
+    expect(r.body.area).toBeNull();
+
+    const after = await get();
+    // No new decision appeared from a discard.
+    expect(after.body.decisions.length).toBe(before.body.decisions.length);
+  });
+});
