@@ -2973,13 +2973,75 @@ vault
   }));
 
 program
+program
+  .command('guard')
+  .description('Check a pending tool call against the decision register (used by the pre-execution hooks)')
+  .option('--harness <name>', 'claude | codex | agy | cursor | opencode', 'claude')
+  .option('--project <id>', 'Resolve decisions for this project')
+  .option('--enforce', 'Return a blocking verdict instead of a warning')
+  .action(async (opts: { harness?: string; project?: string; enforce?: boolean }) => {
+    // EVERY failure path here exits 0 with no output. A guard that errors is a
+    // guard that blocks work it was never asked to judge, and the first time it
+    // does that a user removes it — after which it protects nothing. Silence is
+    // the correct failure mode for a thing that runs before every tool call.
+    try {
+      const { namesFrom, writeVerdict, explain } = await import(
+        '@chat-recall/engine/core/guard-adapters.js'
+      );
+      const harness = (opts.harness ?? 'claude') as Parameters<typeof namesFrom>[0];
+
+      const raw = await new Promise<string>((resolve) => {
+        let buf = '';
+        const t = setTimeout(() => resolve(buf), 2000);
+        process.stdin.setEncoding('utf8');
+        process.stdin.on('data', (c) => { buf += c; });
+        process.stdin.on('end', () => { clearTimeout(t); resolve(buf); });
+        process.stdin.on('error', () => { clearTimeout(t); resolve(buf); });
+      });
+      if (!raw.trim()) return;
+
+      let payload: unknown;
+      try { payload = JSON.parse(raw); } catch { return; }
+
+      const { names, via } = namesFrom(harness, payload);
+      if (!names.length) return;   // the common case, and it costs one regex pass
+
+      const target = firstTarget();
+      if (!target) return;
+
+      const { fetchWithTimeout } = await import('./http.js');
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      if (target.token) headers.authorization = `Bearer ${target.token}`;
+
+      // 4s, because this sits in front of every tool call. A guard that makes
+      // the agent wait is one the user turns off.
+      const res = await fetchWithTimeout(
+        `${target.base}/api/decisions/check`,
+        { method: 'POST', headers, body: JSON.stringify({ names, via, project: opts.project }) },
+        4000,
+      );
+      if (!res.ok) return;
+      const out = await res.json() as { verdict?: string; findings?: Parameters<typeof explain>[0] };
+      if (!out.findings?.length) return;
+
+      const message = explain(out.findings);
+      const verdict = opts.enforce ? 'deny' : (out.verdict === 'ask' ? 'ask' : 'warn');
+      const written = writeVerdict(harness, verdict as never, message);
+      if (written.json) process.stdout.write(JSON.stringify(written.json));
+    } catch {
+      // Deliberately silent — see above.
+    }
+  });
+
+program
   .command('install-hooks')
   .description('Install Claude Code hooks (Stop + PreCompact + UserPromptSubmit + SessionEnd + SessionStart) into every Claude profile')
   .option('--uninstall', 'Remove hooks instead of installing them')
   .option('--no-resume-hint', "Don't install the UserPromptSubmit resume-hint hook")
   .option('--no-escalate', "Don't install the SessionEnd learnings-escalation hook")
   .option('--no-wakeup', "Don't install the SessionStart wake-up hook")
-  .action(async (opts: { uninstall?: boolean; resumeHint?: boolean; escalate?: boolean; wakeup?: boolean }) => {
+  .option('--no-guard', "Don't install the PreToolUse decision guard")
+  .action(async (opts: { uninstall?: boolean; resumeHint?: boolean; escalate?: boolean; wakeup?: boolean; guard?: boolean }) => {
     const { mkdirSync, copyFileSync, chmodSync, existsSync, readFileSync, writeFileSync, statSync } = await import('fs');
     const { fileURLToPath } = await import('url');
 
@@ -2994,6 +3056,7 @@ program
       return candidates.find(p => existsSync(p));
     };
     const sourceSaveHook = findHook('chat_recall_save_hook.sh');
+    const sourceGuardHook = findHook('chat_recall_guard_hook.sh');
     const sourceResumeHook = findHook('chat_recall_resume_hook.sh');
     const sourceEscalateHook = findHook('chat_recall_escalate_hook.sh');
     const sourceWakeupHook = findHook('chat_recall_wakeup_hook.sh');
@@ -3004,6 +3067,7 @@ program
 
     const hooksDir = getHooksDir();
     const installedSaveHook = join(hooksDir, 'chat_recall_save_hook.sh');
+    const installedGuardHook = join(hooksDir, 'chat_recall_guard_hook.sh');
     const installedResumeHook = join(hooksDir, 'chat_recall_resume_hook.sh');
     const installedEscalateHook = join(hooksDir, 'chat_recall_escalate_hook.sh');
     const installedWakeupHook = join(hooksDir, 'chat_recall_wakeup_hook.sh');
@@ -3050,13 +3114,14 @@ program
         cmd.includes('chat_recall_save_hook.sh') ||
         cmd.includes('chat_recall_resume_hook.sh') ||
         cmd.includes('chat_recall_escalate_hook.sh') ||
-        cmd.includes('chat_recall_wakeup_hook.sh')
+        cmd.includes('chat_recall_wakeup_hook.sh') ||
+        cmd.includes('chat_recall_guard_hook.sh')
       );
     };
 
     // SessionStart joins the list every loop below iterates, so a reinstall or
     // an uninstall reaches the wake-up registration too.
-    const HOOK_EVENTS = ['Stop', 'PreCompact', 'UserPromptSubmit', 'SessionEnd', 'SessionStart'];
+    const HOOK_EVENTS = ['Stop', 'PreCompact', 'UserPromptSubmit', 'SessionEnd', 'SessionStart', 'PreToolUse'];
 
     if (opts.uninstall) {
       let total = 0;
@@ -3120,6 +3185,12 @@ program
       chmodSync(installedEscalateHook, 0o755);
     }
 
+    const installGuard = opts.guard !== false && !!sourceGuardHook;
+    if (installGuard) {
+      copyFileSync(sourceGuardHook!, installedGuardHook);
+      chmodSync(installedGuardHook, 0o755);
+    }
+
     const installWakeup = opts.wakeup !== false && !!sourceWakeupHook;
     if (installWakeup) {
       copyFileSync(sourceWakeupHook!, installedWakeupHook);
@@ -3138,12 +3209,20 @@ program
     // re-injecting the wake-up bundle there is duplicate tokens for no gain.
     const wakeupEntry = { matcher: 'startup|clear', hooks: [{ type: 'command', command: installedWakeupHook }] };
 
+    // Only the tools that can introduce a dependency. Matching everything
+    // would spawn a process on every Read for a check that can never fire.
+    const guardEntry = {
+      matcher: 'Bash|Edit|Write|MultiEdit|NotebookEdit',
+      hooks: [{ type: 'command', command: installedGuardHook }],
+    };
+
     const events: Array<[string, any]> = [
       ['Stop', stopEntry],
       ['PreCompact', precompactEntry],
     ];
     if (installResume) events.push(['UserPromptSubmit', resumeEntry]);
     if (installEscalate) events.push(['SessionEnd', escalateEntry]);
+    if (installGuard) events.push(['PreToolUse', guardEntry]);
 
     // Always strip our prior UserPromptSubmit/SessionEnd entries too — even
     // when reinstalling with those hooks disabled, so we don't leave orphan

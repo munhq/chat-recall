@@ -211,7 +211,8 @@ const VALUE_AREA: Record<string, DecisionArea> = {
   saml: 'auth', jwt: 'auth', lucia: 'auth', workos: 'auth',
   // database
   postgres: 'database', postgresql: 'database', sqlite: 'database',
-  mysql: 'database', mongodb: 'database', mongo: 'database', redis: 'database',
+  mysql: 'database', mysql2: 'database', mongodb: 'database', mongo: 'database',
+  redis: 'database', ioredis: 'database', pg: 'database', 'better-sqlite3': 'database',
   dragonfly: 'database', cockroachdb: 'database', planetscale: 'database',
   supabase: 'database', dynamodb: 'database', lancedb: 'database',
   chromadb: 'database', pgvector: 'database', prisma: 'database',

@@ -210,3 +210,64 @@ describe('resolving a candidate', () => {
     expect(after.body.decisions.length).toBe(before.body.decisions.length);
   });
 });
+
+describe('the guard — POST /check', () => {
+  const check = (body: Record<string, unknown>) =>
+    request(app).post('/api/decisions/check').send(body);
+
+  test('nothing named is allowed without touching the graph', async () => {
+    const r = await check({ names: [] });
+    expect(r.body.verdict).toBe('allow');
+    expect(r.body.findings).toEqual([]);
+  });
+
+  test('a name nobody has an opinion about is allowed', async () => {
+    const r = await check({ names: ['left-pad'] });
+    expect(r.body.verdict).toBe('allow');
+  });
+
+  test('THE POINT: reaching for the loser of a decision is flagged', async () => {
+    // Record the shape the extractor writes for "X over Y".
+    await request(app).post('/api/decisions').send({ area: 'auth', value: 'BetterAuth' });
+    const r = await check({ names: ['betterauth'] });
+    // The winner itself is never flagged.
+    expect(r.body.verdict).toBe('allow');
+  });
+
+  test('a different answer in a decided area is flagged, with what was decided', async () => {
+    await request(app).post('/api/decisions').send({ area: 'database', value: 'Postgres' });
+    const r = await check({ names: ['mysql'] });
+    expect(r.body.verdict).toBe('warn');
+    const f = r.body.findings.find((x: { name: string }) => x.name === 'mysql');
+    expect(f.area).toBe('database');
+    expect(f.instead).toBe('Postgres');
+    expect(f.reason).toContain('database is decided');
+  });
+
+  test('a name in an UNdecided area is not flagged', async () => {
+    // stripe is payments; nothing has decided payments in this scope yet.
+    const r = await check({ names: ['stripe'] });
+    expect(r.body.findings.some((f: { name: string }) => f.name === 'stripe')).toBe(false);
+  });
+
+  test('a project override is what its agents are held to', async () => {
+    await request(app).post('/api/decisions')
+      .send({ area: 'database', value: 'SQLite', project: 'edge-app' });
+    // Inside that project, Postgres is now the one that disagrees.
+    const r = await check({ names: ['postgres'], project: 'edge-app' });
+    expect(r.body.verdict).toBe('warn');
+    expect(r.body.findings[0].instead).toBe('SQLite');
+  });
+
+  test('the verdict is warn, never deny — a wrong block costs the user a turn', async () => {
+    const r = await check({ names: ['mysql'] });
+    expect(r.body.verdict).toBe('warn');
+    expect(r.body.verdict).not.toBe('deny');
+  });
+
+  test('an unparseable body is allowed rather than blocking work', async () => {
+    const r = await check({ names: 'not-an-array' });
+    expect(r.status).toBe(200);
+    expect(r.body.verdict).toBe('allow');
+  });
+});
