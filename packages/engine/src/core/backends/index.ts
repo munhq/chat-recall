@@ -4,7 +4,11 @@
  * usable everywhere else.
  *
  * Adding a new tool: implement ./<tool>.ts, export the singleton, and
- * register it below. No other file in the codebase needs to change.
+ * register it below. That is what the REGISTRY needs. Thirty other files list
+ * the tool ids by name — per-tool skill and MCP paths, sync policy, artifact
+ * encoding, the toolkit matrix, several server routes — and a tool missing from
+ * one of them reads as "this tool has nothing" with no error anywhere. See
+ * docs/ADDING_A_TOOL.md for the command that finds them.
  */
 
 import { registerBackend, _setRegistryBootstrapper } from '../tool-backend.js';
