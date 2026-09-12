@@ -18,9 +18,9 @@ import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { fetchWithTimeout } from './http.js';
-import { writeFileSync, mkdtempSync, rmSync, readdirSync, statSync } from 'node:fs';
+import { writeFileSync, mkdtempSync, rmSync, readdirSync, statSync, mkdirSync } from 'node:fs';
 import { join, dirname, sep } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 
 export interface CliRelease { version: string; sha256: string; }
@@ -255,20 +255,110 @@ export function runningPrefix(moduleUrl = import.meta.url): string | null {
  * So target the prefix this file was loaded from, and fall back to npm's own
  * global only when that cannot be determined.
  */
+/**
+ * Run one npm install, keeping what npm said when it fails.
+ *
+ * `stdio: 'ignore'` discarded npm's stderr, so a failing install reported
+ * `Command failed: npm install -g --prefix "/opt/homebrew" …` and nothing else.
+ * One machine repeated that 4,248 times over ten days and the reason was never
+ * once recoverable from the telemetry — the only line that could have explained
+ * it was being thrown away on purpose.
+ *
+ * stdout stays ignored; npm's progress output is noise. stderr is piped and
+ * appended to the error, trimmed, because that string is carried to the server
+ * in an `auto_update_failed` event and must stay small.
+ */
+function npmInstall(cmd: string): void {
+  try {
+    execSync(cmd, { stdio: ['ignore', 'ignore', 'pipe'] });
+  } catch (e) {
+    const err = e as { stderr?: Buffer | string; message?: string };
+    const detail = String(err.stderr ?? '').trim().split('\n')
+      .filter((l) => l.trim() && !/^npm (notice|warn)\b/i.test(l))
+      .slice(-4).join(' | ').slice(0, 400);
+    throw new Error(detail ? `${err.message ?? 'install failed'} — ${detail}` : (err.message ?? 'install failed'));
+  }
+}
+
 function realInstall(tgz: string): void {
   const prefix = runningPrefix();
   if (prefix) {
-    execSync(`npm install -g --prefix "${prefix}" "${tgz}"`, { stdio: 'ignore' });
+    npmInstall(`npm install -g --prefix "${prefix}" "${tgz}"`);
     return;
   }
-  try { execSync(`npm install -g "${tgz}"`, { stdio: 'ignore' }); }
-  catch { execSync(`npm install -g --prefix "${process.env.HOME}/.local" "${tgz}"`, { stdio: 'ignore' }); }
+  try { npmInstall(`npm install -g "${tgz}"`); }
+  catch { npmInstall(`npm install -g --prefix "${process.env.HOME}/.local" "${tgz}"`); }
 }
 function realRestart(platform: NodeJS.Platform): void {
   if (platform === 'linux') execSync('systemctl --user restart chat-recall-watch.service', { stdio: 'ignore' });
   else if (platform === 'darwin') execSync('launchctl kickstart -k gui/$(id -u)/com.chat-recall.watch', { stdio: 'ignore', shell: '/bin/bash' });
   else if (platform === 'win32') execSync('schtasks /End /TN chat-recall-watch & schtasks /Run /TN chat-recall-watch', { stdio: 'ignore' });
 }
+
+
+/**
+ * Give up on a target version that keeps failing to install.
+ *
+ * ── Why ─────────────────────────────────────────────────────────────────────
+ *
+ * One machine attempted 0.5.32 → 0.6.4 four thousand two hundred and forty-eight
+ * times across ten days, every few minutes, on a failure that was never going to
+ * resolve itself. Nothing anywhere applied a brake: the flow is best-effort, so
+ * each attempt returned a reason, dropped it, and the next sync tried again.
+ *
+ * The cost is not only noise. Each attempt downloads the tarball and shells out
+ * to npm, and the telemetry it generates drowned the failures table — 4,341 of
+ * 17,000 events, all one device, all one cause.
+ *
+ * ── The rule ────────────────────────────────────────────────────────────────
+ *
+ * Three consecutive failures for the SAME target version and this device stops
+ * trying that version. Keyed on the target, so the next release clears it and
+ * gets a fresh three attempts — a broken install must not strand a machine
+ * forever, and the common case (a bad build, fixed in the next patch) recovers
+ * on its own.
+ *
+ * State lives beside the other CLI bookkeeping and is best-effort in both
+ * directions: an unreadable file means "no failures recorded", which retries.
+ * Failing to brake is better than refusing to update because a file is corrupt.
+ */
+const GIVE_UP_AFTER = 3;
+
+function updateStatePath(): string {
+  const dir = process.env.CHAT_RECALL_DATA_DIR || join(homedir(), '.chat-recall');
+  return join(dir, 'auto-update-state.json');
+}
+
+type UpdateState = { target?: string; failures?: number };
+
+export function readUpdateState(): UpdateState {
+  try { return JSON.parse(readFileSync(updateStatePath(), 'utf8')) as UpdateState; }
+  catch { return {}; }
+}
+
+function writeUpdateState(st: UpdateState): void {
+  try {
+    const p = updateStatePath();
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, JSON.stringify(st), 'utf8');
+  } catch { /* best effort — a brake we cannot persist just means we retry */ }
+}
+
+/** True when this device has already given up on installing `target`. */
+export function hasGivenUpOn(target: string, st: UpdateState = readUpdateState()): boolean {
+  return st.target === target && (st.failures ?? 0) >= GIVE_UP_AFTER;
+}
+
+/** Count a failed attempt; returns the new consecutive count for `target`. */
+export function noteUpdateFailure(target: string): number {
+  const st = readUpdateState();
+  const failures = st.target === target ? (st.failures ?? 0) + 1 : 1;
+  writeUpdateState({ target, failures });
+  return failures;
+}
+
+/** A successful install clears the brake. */
+export function clearUpdateFailures(): void { writeUpdateState({}); }
 
 /**
  * Full flow for one logged-in server. Best-effort — any failure returns a
@@ -328,6 +418,16 @@ export async function runAutoUpdate(
     }
     return { updated: false, reason: plan.reason };
   }
+  // Stop hammering a version this device has already failed to install three
+  // times. Reported once at the moment of giving up, then silent until a new
+  // release changes the target.
+  // `to` is always set once plan.update is true, but the type allows undefined;
+  // an unknown target simply has no brake rather than an assertion here.
+  const target = plan.to ?? '';
+  if (target && hasGivenUpOn(target)) {
+    return { updated: false, reason: `gave up installing ${plan.to} after ${GIVE_UP_AFTER} failed attempts — run \`npm install -g chat-recall\` by hand` };
+  }
+
   const result = await executeAutoUpdate(plan, {
     download: deps?.download ?? realDownload,
     install: deps?.install ?? realInstall,
@@ -343,10 +443,21 @@ export async function runAutoUpdate(
   // Dynamic import: client-events → sync-client → auto-update is a cycle at
   // module scope, and telemetry must never be load-order-sensitive.
   if (!result.updated) {
-    try {
-      const { reportClientEvent } = await import('./client-events.js');
-      reportClientEvent('auto_update_failed', { message: `${plan.from} → ${plan.to}: ${result.reason}` });
-    } catch { /* telemetry is best-effort */ }
+    const failures = target ? noteUpdateFailure(target) : 1;
+    // Report every attempt up to the brake, then the one that trips it, then
+    // nothing. A device that has given up is not news on every sync — it is one
+    // fact, and repeating it is what buried the failures table.
+    if (failures <= GIVE_UP_AFTER) {
+      try {
+        const { reportClientEvent } = await import('./client-events.js');
+        const suffix = failures >= GIVE_UP_AFTER
+          ? ` — giving up after ${failures} attempts, needs a manual \`npm install -g chat-recall\``
+          : ` (attempt ${failures} of ${GIVE_UP_AFTER})`;
+        reportClientEvent('auto_update_failed', { message: `${plan.from} → ${plan.to}: ${result.reason}${suffix}` });
+      } catch { /* telemetry is best-effort */ }
+    }
+  } else {
+    clearUpdateFailures();
   }
   return result;
 }
