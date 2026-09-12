@@ -4,6 +4,40 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.6.5] — 2026-09-12
+
+### Added
+- **A decision register, and `recall_decisions` to read it.** One value per area
+  (auth, database, payments, deploy, pricing, licensing…) with the cascade
+  already resolved — a project decision beats an account-wide one, and a
+  personal preference fills a gap without ever overruling a team. It returns
+  what each value replaced, when, and the session behind it, plus the areas
+  nobody has decided. The agent is meant to read it before choosing a library,
+  not after.
+- **An area on `recall_decision_record`.** It is the key a reversal supersedes
+  on: recording a new `auth` decision now closes the previous one and leaves
+  every other area alone.
+- **Confirm or discard the guesses in your history.** The indexer's extracted
+  decisions are offered as candidates with the area pre-filled; either judgement
+  retires the guess so the queue can empty.
+
+### Changed
+- **The Knowledge lens leads with decisions**, with the entity graph one click
+  away. The graph answers how facts connect, which is rarely the question
+  someone arrives with.
+- **Decisions the extractor GUESSED dropped below the wake-up gate** (0.8 →
+  0.6). A regex cannot tell a decision from a sentence naming two tools, and the
+  wake-up bundle has a small fixed budget. They stay in the graph and are
+  offered as candidates instead of arriving as fact.
+
+### Fixed
+- **Recording a decision superseded nothing.** `subject → decided → object` was
+  written with a free-text subject, so "auth", "authentication" and "auth setup"
+  were three separate facts and a later decision closed none of them. Both
+  values stayed live forever. The graph showed it: `decided` had one subject
+  with more than one live value, while the extractor's `chose` had fifty — one
+  of them carrying 227.
+
 ## [0.6.4] — 2026-09-11
 
 ### Fixed
