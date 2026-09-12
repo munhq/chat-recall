@@ -12,7 +12,7 @@ import helmet from 'helmet';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve, relative } from 'node:path';
-import { classifyStaticPath, cacheControlFor } from './util/static-routing.js';
+import { classifyStaticPath, cacheControlFor, robotsTagFor } from './util/static-routing.js';
 import searchRouter from './routes/search.js';
 import conversationsRouter from './routes/conversations.js';
 import statusRouter from './routes/status.js';
@@ -712,6 +712,16 @@ if (existsSync(STATIC_DIR)) {
   const LANDING = resolve(STATIC_DIR, 'landing.html');
   const hasLanding = existsSync(LANDING);
 
+  // Two handlers answer 404 — the catch-all below, and /404.html itself, which
+  // must not serve the not-found page with a 200. One page, one fallback,
+  // declared once here because both are registered around express.static.
+  const NOT_FOUND = resolve(STATIC_DIR, '404.html');
+  const hasNotFound = existsSync(NOT_FOUND);
+  const NOT_FOUND_FALLBACK =
+    '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+    + '<meta name="robots" content="noindex,follow"><title>Page not found</title></head>'
+    + '<body><h1>That page does not exist.</h1><p><a href="/">Home</a></p></body></html>';
+
   /**
    * Does this request carry a live-looking session cookie?
    *
@@ -804,10 +814,46 @@ if (existsSync(STATIC_DIR)) {
     setHeaders: (res) => { res.setHeader('Cache-Control', 'no-store'); },
   }));
 
+  /**
+   * The two built files that must not be reachable at their own file name.
+   *
+   * express.static is mounted at the root, so every file in dist/ has a URL —
+   * including the two that are only ever meant to be served BY something else.
+   * Measured on production before this handler existed:
+   *
+   *   GET /landing.html  -> 200, a byte-identical second address for '/'
+   *   GET /404.html      -> 200, publicly cacheable, on a URL named 404
+   *
+   * The landing page's canonical points at '/', so the duplicate consolidates,
+   * and that holds only for as long as the canonical stays correct. The 404
+   * page carries `noindex,follow`, so what is left there is the status code,
+   * which is the half a crawler acts on.
+   *
+   * Registered BEFORE express.static, whose own file lookup answers both.
+   */
+  app.get('/landing.html', (_req, res) => {
+    res.redirect(301, '/');
+  });
+
+  app.get('/404.html', (_req, res) => {
+    res.status(404);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Robots-Tag', 'noindex');
+    if (hasNotFound) { res.sendFile(NOT_FOUND); return; }
+    res.type('html').send(NOT_FOUND_FALLBACK);
+  });
+
   app.use(express.static(STATIC_DIR, {
     setHeaders: (res, filePath) => {
-      const value = cacheControlFor(relative(STATIC_DIR, filePath));
+      const rel = relative(STATIC_DIR, filePath);
+      const value = cacheControlFor(rel);
       if (value) res.setHeader('Cache-Control', value);
+      // The SPA shell at its own file name. See robotsTagFor: the header the
+      // catch-all sets on /app never reached /index.html, and robots.txt did
+      // not name it either, so the one indexable copy of the shell was the one
+      // nobody had thought about.
+      const robots = robotsTagFor(rel);
+      if (robots) res.setHeader('X-Robots-Tag', robots);
     },
   }));
 
@@ -832,16 +878,16 @@ if (existsSync(STATIC_DIR)) {
    * The allowlist itself lives in util/static-routing.ts, because server.ts
    * starts listening on import and so cannot be unit-tested.
    */
-  const NOT_FOUND = resolve(STATIC_DIR, '404.html');
-  const hasNotFound = existsSync(NOT_FOUND);
-
   app.get(/^\/(?!api|health).*/, (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
 
     if (classifyStaticPath(req.path) === 'app-shell') {
-      // The authenticated product has nothing to index. robots.txt already says
-      // so; this header repeats it to anything that fetched the page anyway —
-      // and unlike robots.txt, a header is honoured on a URL already crawled.
+      // The authenticated product has nothing to index, and this header is the
+      // one thing that says so. robots.txt used to disallow /app as well: a
+      // crawler that obeys a Disallow never fetches the page, so it never reads
+      // this header, and Google stays free to list the bare URL it was never
+      // allowed to look at. The Disallow is gone, so the crawl happens and the
+      // header is read.
       res.setHeader('X-Robots-Tag', 'noindex');
       res.sendFile(SPA_SHELL);
       return;
@@ -855,11 +901,7 @@ if (existsSync(STATIC_DIR)) {
     }
     // No 404.html in this build. Still answer 404 — the status code is the part
     // that matters to a crawler, and a wrong 200 is worse than a plain page.
-    res.type('html').send(
-      '<!doctype html><html lang="en"><head><meta charset="utf-8">'
-      + '<meta name="robots" content="noindex,follow"><title>Page not found</title></head>'
-      + '<body><h1>That page does not exist.</h1><p><a href="/">Home</a></p></body></html>',
-    );
+    res.type('html').send(NOT_FOUND_FALLBACK);
   });
   log.info({ staticDir: STATIC_DIR, landing: hasLanding }, 'serving client');
 }
