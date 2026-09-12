@@ -59,6 +59,19 @@ describe('recording a decision', () => {
     expect(row.since).toBe(new Date().toISOString().slice(0, 10));
   });
 
+  test('a decision stored before dates were stamped still reports one', async () => {
+    // The 41 rows already in the register have a null valid_from, because
+    // neither write path passed one. They read their date from the row's own
+    // write time instead of coming back with since: null forever.
+    const kg = await createKnowledgeGraph();
+    await kg.addTriple('*:caching', 'decided', 'Dragonfly', { confidence: 1 } as never);
+    await kg.close();
+
+    const list = await get();
+    const row = list.body.decisions.find((d: { area: string }) => d.area === 'caching');
+    expect(row.since).toBe(new Date().toISOString().slice(0, 10));
+  });
+
   test('the area is canonicalised, so spellings do not split the key', async () => {
     const r = await post({ area: 'Authentication', value: 'BetterAuth' });
     expect(r.status).toBe(201);
