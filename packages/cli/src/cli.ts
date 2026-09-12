@@ -308,7 +308,7 @@ const DEFAULT_ALLOW = [
   'recall_diary_write', 'recall_diary_read',
   'recall_diff', 'recall_commits', 'recall_markers', 'recall_heal_audit',
   'recall_edits_timeline', 'recall_subagent_search', 'recall_redundant_files',
-  'recall_user_prompts', 'recall_decision_record', 'recall_analytics_summary',
+  'recall_user_prompts', 'recall_decision_record', 'recall_decisions', 'recall_analytics_summary',
   'recall_outcome_summary', 'recall_regenerate_summary', 'recall_shares',
   'recall_wake_up', 'recall_set', 'recall_get', 'recall_rename_session',
   'recall_team_activity', 'recall_recommendations',
