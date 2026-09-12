@@ -163,6 +163,22 @@ const CANONICAL_TOOL: Record<string, string> = {
 const canonTool = (n: string): string => CANONICAL_TOOL[n.toLowerCase()] ?? n;
 
 /**
+ * Confidence for a decision this file GUESSED from a regex.
+ *
+ * Below the 0.7 gate in the wake-up bundle on purpose, so a pattern match never
+ * reaches a new session wearing the same clothes as a decision somebody
+ * actually recorded. It stays in the graph: queryable, and the raw material the
+ * backfill miner offers up for confirmation.
+ *
+ * These were 0.8 — above the gate — and the production graph shows what that
+ * bought: fifty subjects with more than one live `chose`, one of them carrying
+ * 227 distinct values, all of it injected as fact. A regex cannot tell a
+ * decision from a sentence mentioning two tools, and pretending otherwise
+ * spends the small fixed budget a wake-up bundle has on noise.
+ */
+const DECISION_GUESS_CONFIDENCE = 0.6;
+
+/**
  * Strict tool check for SYMMETRIC decision captures ("X over Y", "replaced X
  * with Y"). Both sides must be a known tool or a dotted/hyphenated identifier —
  * NOT a bare proper noun — so "Monday over Tuesday" / "Stripe over Twilio" don't
@@ -295,12 +311,12 @@ export function extractEntities(
         // sides to be tool-ish, or skip. Kills "Monday over Tuesday" garbage.
         if (chosen && looksLikeStrictTool(chosen) && looksLikeStrictTool(rejected)) {
           const c = canonTool(chosen), r = canonTool(rejected);
-          if (projectName) addTriple(projectName, 'chose', c, 0.8);
-          addTriple(projectName || 'project', 'rejected', r, 0.7);
-          addTriple(c, 'chosen_over', r, 0.8);
+          if (projectName) addTriple(projectName, 'chose', c, DECISION_GUESS_CONFIDENCE);
+          addTriple(projectName || 'project', 'rejected', r, DECISION_GUESS_CONFIDENCE);
+          addTriple(c, 'chosen_over', r, DECISION_GUESS_CONFIDENCE);
         }
       } else if (chosen && looksLikeDecisionObject(chosen) && projectName) {
-        addTriple(projectName, 'chose', canonTool(chosen), 0.8);
+        addTriple(projectName, 'chose', canonTool(chosen), DECISION_GUESS_CONFIDENCE);
       }
     }
   }

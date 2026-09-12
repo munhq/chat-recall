@@ -42,6 +42,7 @@ import projectsRouter from './routes/projects.js';
 import ledgersRouter from './routes/ledgers.js';
 import contactRouter from './routes/contact.js';
 import kgRouter from './routes/kg.js';
+import decisionsRouter from './routes/decisions.js';
 import kvRouter from './routes/kv.js';
 import diaryRouter from './routes/diary.js';
 import syncIntentsRouter from './routes/sync-intents.js';
@@ -644,6 +645,10 @@ app.use('/api/projects', paid, rl('read-light'), projectsRouter);
 // Tenant-scoped via the same tenantAuth above; readable/writable over HTTP so
 // the MCP server needs no local store.
 app.use('/api/kg', paid, rl('write-light'), kgRouter);
+// The decision register. Reads the same kg_triples as /api/kg, but returns
+// the cascade already resolved — the dashboard and the MCP tool must not
+// each re-implement project > account > user and disagree about it.
+app.use('/api/decisions', paid, rl('write-light'), decisionsRouter);
 app.use('/api/kv', paid, rl('write-light'), kvRouter);
 app.use('/api/diary', paid, rl('write-light'), diaryRouter);
 // Cross-tool sync intent queue (Model B). MUST be available in BOTH local and

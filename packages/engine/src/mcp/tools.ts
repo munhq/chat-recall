@@ -9,6 +9,10 @@ import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { resumeCommandFor } from '../core/resume-command.js';
 import { resolveProjectId } from '../core/project-resolver.js';
+// Pure string helpers, no I/O — safe for the lean collector import list below.
+import {
+  canonArea, isKnownArea, decisionSubject, DECISION_AREAS,
+} from '../core/decision-areas.js';
 import { config } from 'dotenv';
 import {
   buildHttpError, stalenessBanner, trialEndingBanner, type SyncState,
@@ -843,10 +847,23 @@ const RecallDecisionRecordSchema = z.object({
   subject: z.string().describe('What the decision is about (e.g., "chat-recall", "auth strategy")'),
   decision: z.string().describe('The decision itself in plain words (e.g., "use Postgres full-text search as the default backend")'),
   reason: z.string().optional().describe('Why this was decided — short rationale'),
+  // The key a reversal supersedes on. Without it the subject is free text, so
+  // "auth", "authentication" and "auth setup" are three separate facts and a
+  // later decision never closes an earlier one — see core/decision-areas.ts.
+  area: z.string().optional()
+    .describe(`The area this decides, so a later decision about the SAME area supersedes it. Use one of: ${DECISION_AREAS.join(', ')} — or any short slug for an area not listed. Without it the decision is recorded but nothing it contradicts is closed.`),
+  project: z.string().optional()
+    .describe('Project this decision applies to. Omit for an account-wide decision that applies everywhere.'),
   importance: z.number().min(1).max(5).optional().default(4)
     .describe('1–5; the classifier surfaces 4+ in wake-up context'),
   session_id: z.string().optional().describe('Session this decision was made in (for traceability)'),
   agent_name: z.string().optional().default('agent').describe('Who recorded the decision (for diary linkage)'),
+});
+
+const RecallDecisionsSchema = z.object({
+  area: z.string().optional().describe('Only this area'),
+  project: z.string().optional().describe('Resolve for this project'),
+  include_candidates: z.boolean().optional().default(false),
 });
 
 // ── Analytics summary + wake-up ────────────────────────────────────────────
@@ -1078,7 +1095,7 @@ const LEAN_TOOLS = new Set([
   // Project state and tasks.
   'recall_project_context', 'recall_tasks', 'recall_task_create', 'recall_task_update',
   // Durable memory.
-  'recall_kg_query', 'recall_kg_add', 'recall_decision_record',
+  'recall_kg_query', 'recall_kg_add', 'recall_decision_record', 'recall_decisions',
   'recall_diary_write', 'recall_diary_read',
   // Health, and the one that pays out on day one.
   'recall_status', 'recall_index', 'recall_security_summary',
@@ -2009,18 +2026,43 @@ I asking yesterday?" or "what did I tell the agent in this session?".`,
         name: 'recall_decision_record',
         description: `Record an explicit decision so it shows up in wake-up context. Writes a KG triple
 (subject → decided → decision) plus a diary entry. Use this when you and the user agree on
-something non-obvious that future sessions should remember.`,
+something non-obvious that future sessions should remember.
+
+PASS \`area\`. It is the key a reversal supersedes on: recording a new \`auth\` decision closes the
+previous \`auth\` one and leaves every other area alone. Without it the decision is stored but
+nothing it contradicts is closed, and both answers stay live forever.`,
         inputSchema: {
           type: 'object',
           properties: {
             subject: { type: 'string', description: 'What the decision is about' },
             decision: { type: 'string', description: 'The decision itself' },
             reason: { type: 'string', description: 'Why this was decided' },
+            area: { type: 'string', description: `The area this decides, so a later decision on the same area supersedes it. Standard areas: ${DECISION_AREAS.join(', ')}. Any short slug works for an area not listed.` },
+            project: { type: 'string', description: 'Project this applies to. Omit for an account-wide decision that applies everywhere.' },
             importance: { type: 'number', minimum: 1, maximum: 5, default: 4, description: '1-5. Only 4 and 5 surface in the wake-up bundle, so reserve those for decisions a future session must not miss.' },
             session_id: { type: 'string', description: 'Session this decision came out of. Pass your own current session id so the decision can be traced back to the conversation that made it.' },
             agent_name: { type: 'string', default: 'agent', description: 'Which agent is recording this, so diary entries stay separable per agent.' },
           },
           required: ['subject', 'decision'],
+        },
+      },
+      {
+        name: 'recall_decisions',
+        description: `What this codebase has already settled — read it BEFORE choosing a library, a
+datastore, an auth method or anything else in a decided area, and you will not rebuild what was
+already ruled out.
+
+Returns one effective value per area with the cascade already resolved (project beats account;
+personal preferences fill gaps and never override a team decision), what each value replaced and
+when, and the session it came from. Also returns \`gaps\` — areas nobody has decided, where you are
+free to choose, and where recording the choice afterwards is worth doing.`,
+        inputSchema: {
+          type: 'object',
+          properties: {
+            area: { type: 'string', description: `Only this area. Standard areas: ${DECISION_AREAS.join(', ')}.` },
+            project: { type: 'string', description: 'Resolve for this project, so its overrides win over account-wide decisions. Omit for the account-wide view.' },
+            include_candidates: { type: 'boolean', default: false, description: 'Also return unconfirmed guesses the indexer extracted. These are NOT decisions — never treat one as settled.' },
+          },
         },
       },
       {
@@ -4638,22 +4680,35 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
 
         const confidence = Math.min(1, params.importance / 5);
 
+        // The subject a reversal competes on. With an area it is
+        // `<project>:<area>`, so recording a new auth decision closes the old
+        // auth one and leaves the database decision alone — the server already
+        // defaults supersede to on, it just never had a stable key to fire
+        // against. Without an area the caller's free-text subject is used
+        // unchanged, which is the old behaviour: recorded, supersedes nothing.
+        const area = canonArea(params.area);
+        const kgSubject = area ? decisionSubject(params.project, area) : params.subject;
+
         // 1) Knowledge-graph triple — durable, queryable, time-validated.
         // Server-backed via POST /api/kg/add (tenant-scoped on the server).
         await remotePost<{ id: string }>('/api/kg/add', {
-          subject: params.subject,
+          subject: kgSubject,
           predicate: 'decided',
           object: params.decision,
           confidence,
           source_session: params.session_id,
         });
         if (params.reason) {
+          // `because` is multi-valued by nature — a decision can have several
+          // reasons and a new one does not falsify the old. Opt out of the
+          // supersede the `decided` write above relies on.
           await remotePost<{ id: string }>('/api/kg/add', {
-            subject: params.subject,
+            subject: kgSubject,
             predicate: 'because',
             object: params.reason,
             confidence,
             source_session: params.session_id,
+            supersede: false,
           });
         }
 
@@ -4673,9 +4728,77 @@ async function dispatchTool(request: { params: { name: string; arguments?: unkno
         return {
           content: [{
             type: 'text',
-            text: `Decision recorded.\n- KG: ${params.subject} → decided → ${params.decision}\n- Diary entry: ${diary.id} (importance ${params.importance})`,
+            text: [
+              'Decision recorded.',
+              `- KG: ${kgSubject} → decided → ${params.decision}`,
+              area
+                ? `- Area: ${area}${isKnownArea(area) ? '' : ' (not a standard area — kept as a slug)'} · a later decision on this area supersedes this one`
+                : '- No area given, so nothing this contradicts was closed. Pass `area` to make reversals work.',
+              `- Diary entry: ${diary.id} (importance ${params.importance})`,
+            ].join('\n'),
           }],
         };
+      }
+
+      // ── The decision register ──────────────────────────────────
+      case 'recall_decisions': {
+        const p = RecallDecisionsSchema.parse(args ?? {});
+        requireRemote();
+        type Row = {
+          area: string; value: string; since: string | null; why: string | null;
+          source_session: string | null; scope: string;
+          inherited: boolean; override: boolean; advisory: boolean;
+          history: Array<{ value: string; from: string | null; to: string | null; current: boolean }>;
+        };
+        const r = await remoteGetQS<{
+          scope: string; project: string | null;
+          decisions: Row[]; gaps: Array<{ area: string }>;
+          candidates: Array<{ value: string; mentions: number; last_seen: string | null }>;
+        }>('/api/decisions', {
+          project: p.project,
+          include_candidates: p.include_candidates ? '1' : '0',
+        });
+
+        const rows = p.area
+          ? r.decisions.filter((d) => d.area === canonArea(p.area))
+          : r.decisions;
+
+        const lines: string[] = [];
+        lines.push(r.project ? `Decisions for ${r.project}` : 'Decisions — account-wide');
+
+        if (rows.length === 0) {
+          lines.push('', p.area
+            ? `Nothing decided for "${p.area}". You are free to choose — record it afterwards with recall_decision_record.`
+            : 'Nothing decided yet.');
+        } else {
+          lines.push('');
+          for (const d of rows) {
+            const tags = [
+              d.override ? 'OVERRIDES ACCOUNT' : '',
+              d.inherited ? 'inherited from account' : '',
+              d.advisory ? 'advisory — a personal preference, not binding' : '',
+            ].filter(Boolean).join(' · ');
+            lines.push(`${d.area}: ${d.value}${d.since ? `  (since ${d.since})` : ''}${tags ? `  [${tags}]` : ''}`);
+            if (d.why) lines.push(`    why: ${d.why}`);
+            const replaced = d.history.filter((h) => !h.current);
+            for (const h of replaced) lines.push(`    replaced: ${h.value} (ended ${h.to})`);
+            if (d.source_session) lines.push(`    from session ${d.source_session}`);
+          }
+        }
+
+        if (!p.area && r.gaps.length) {
+          lines.push('', `Not decided: ${r.gaps.map((g) => g.area).join(', ')}`);
+          lines.push('Free to choose in these. Record the choice so the next session inherits it.');
+        }
+
+        if (p.include_candidates && r.candidates?.length) {
+          lines.push('', 'Unconfirmed guesses from indexing — NOT decisions, do not treat as settled:');
+          for (const c of r.candidates.slice(0, 10)) {
+            lines.push(`  ${c.value} (seen ${c.mentions}×${c.last_seen ? `, latest ${c.last_seen}` : ''})`);
+          }
+        }
+
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
       }
 
       // ── Analytics summary ──────────────────────────────────────

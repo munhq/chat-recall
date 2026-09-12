@@ -26,11 +26,27 @@ future sessions inherit them.
 - `recall_diary_read` — prior agent diary entries (narrative
   notes across sessions). `recall_get` — a scoped key/value.
 
+## Check what is already decided (do this BEFORE you choose)
+
+- `recall_decisions` — the decision register, cascade already
+  resolved: one value per area (auth, database, payments, deploy, pricing,
+  licensing…), what it replaced and when, and the session behind it. Call it
+  before picking a library, a datastore or an auth method. If the area is
+  already decided, follow it or say plainly that you are proposing a reversal.
+  It also returns `gaps` — areas nobody has decided, where you are free to
+  choose and should record the choice afterwards.
+
+  Project overrides beat account-wide decisions. A personal preference is
+  returned marked `advisory` and never overrides a team decision.
+
 ## Record new knowledge (do this when something non-obvious is decided)
 
 - `recall_decision_record` — an explicit decision (subject,
-  decision, reason, importance). Shows up in future wake-up context. Use the
-  moment you and the user agree on something a later session would need.
+  decision, reason, importance). **Pass `area`**: it is the key a reversal
+  supersedes on, so recording a new `auth` decision closes the previous one and
+  leaves every other area alone. Without it nothing the decision contradicts is
+  closed. Shows up in future wake-up context. Use the moment you and the user
+  agree on something a later session would need.
 - `recall_kg_add` — assert a fact triple
   (subject → predicate → object, optional `valid_from`). E.g.
   `("chat-recall", "uses", "Postgres")`.

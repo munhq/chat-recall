@@ -117,4 +117,35 @@ describe('precision — prose words are not technologies (anti-noise regression)
     expect(ts.find(t => t.predicate === 'uses' && t.object === 'postgres')).toBeDefined();
     expect(ts.find(t => t.predicate === 'uses' && t.object === 'postgresql')).toBeUndefined();
   });
+
+  /**
+   * The wake-up bundle injects a fact when it is `asserted` or scores >= 0.7.
+   * A decision this file GUESSED from a regex must not clear that bar, or a
+   * sentence mentioning two tools arrives in the next session indistinguishable
+   * from a decision somebody made on purpose.
+   */
+  test('guessed decisions stay below the 0.7 wake-up gate', () => {
+    const ts = extractEntities(
+      'we chose postgres over mysql for the writer, and decided to use redis for the queue',
+      { projectPath: '/code/myapp' },
+    );
+    const guesses = ts.filter(t => ['chose', 'rejected', 'chosen_over'].includes(t.predicate));
+    expect(guesses.length).toBeGreaterThan(0);
+    for (const g of guesses) {
+      expect(g.confidence, `${g.subject} ${g.predicate} ${g.object}`).toBeLessThan(0.7);
+    }
+  });
+
+  test('dependency facts are unaffected by the decision demotion', () => {
+    // `uses` scales with mentions and is a different claim — it says a tool is
+    // present, not that it won an argument. Demoting decisions must not drag it
+    // under the gate too.
+    const ts = extractEntities(
+      'we use postgres. postgres again. postgres a third time. postgres.',
+      { projectPath: '/code/myapp' },
+    );
+    const uses = ts.find(t => t.predicate === 'uses' && t.object === 'postgres');
+    expect(uses).toBeDefined();
+    expect(uses!.confidence).toBeGreaterThanOrEqual(0.7);
+  });
 });

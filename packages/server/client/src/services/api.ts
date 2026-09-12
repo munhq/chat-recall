@@ -380,6 +380,42 @@ export async function getKgTimeline(entity?: string, limit = 100): Promise<{ ent
   const r = await fetchWithTimeout(`${API_BASE}/kg/timeline${qs({ entity, limit })}`);
   return r.ok ? r.json() : { entity: entity ?? null, entries: [] };
 }
+
+/** One area's settled answer, with the cascade already resolved by the server. */
+export interface Decision {
+  area: string;
+  known: boolean;
+  value: string;
+  since: string | null;
+  why: string | null;
+  source_session: string | null;
+  scope: 'account' | 'project' | 'user';
+  inherited: boolean;
+  override: boolean;
+  advisory: boolean;
+  history: Array<{ value: string; from: string | null; to: string | null; current: boolean }>;
+}
+export interface DecisionsResponse {
+  scope: string;
+  project: string | null;
+  decisions: Decision[];
+  gaps: Array<{ area: string }>;
+  candidates: Array<{ value: string; mentions: number; last_seen: string | null }>;
+  areas: string[];
+}
+export async function getDecisions(opts: { project?: string; includeCandidates?: boolean } = {}): Promise<DecisionsResponse> {
+  const r = await fetchWithTimeout(`${API_BASE}/decisions${qs({
+    project: opts.project,
+    include_candidates: opts.includeCandidates ? '1' : '0',
+  })}`);
+  return r.ok ? r.json() : { scope: 'account', project: null, decisions: [], gaps: [], candidates: [], areas: [] };
+}
+export async function recordDecision(body: { area: string; value: string; reason?: string; project?: string }): Promise<boolean> {
+  const r = await fetchWithTimeout(`${API_BASE}/decisions`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  return r.ok;
+}
 // Account-level recommendations (chat-recall's own security + behaviour data).
 export async function getAccountRecommendations(): Promise<{ recommendations: CodeRecommendation[]; behavior: { failedOrAbandoned: number; totalSessions: number } | null }> {
   const r = await fetchWithTimeout(`${API_BASE}/recommendations`);
