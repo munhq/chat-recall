@@ -417,6 +417,30 @@ program
       // problem to report. Names of what WAS found, and a count.
       const foundTools = clis.filter((c) => c.available).map((c) => c.name.replace(/ (CLI|Code)$/, ''));
       if (!foundTools.length) rep.warn(chalk.yellow('No AI tools detected — chat-recall indexes their transcripts, so there is nothing to ship yet.'));
+      else {
+        // TOOLS INSTALLED, BUT NO CONVERSATIONS TO INDEX.
+        //
+        // A real account reached this state and heard nothing: init found the
+        // tool, shipped its skills and MCP config — sixteen toolkit rows — and
+        // synced zero sessions. From the outside that is indistinguishable from
+        // a successful install, so the user has an empty account and no reason
+        // to suspect anything. The `no tools at all` warning above cannot catch
+        // it, because the tools ARE there.
+        //
+        // Checked on disk rather than after the sync, because the first sync is
+        // detached and outlives init — by the time a count exists, nobody is
+        // reading this terminal.
+        try {
+          const { listAvailableBackends } = await import('@chat-recall/engine/core/tool-backend.js');
+          const transcripts = listAvailableBackends()
+            .reduce((n, b) => n + (b.listSessions?.({ limit: 1 })?.length ?? 0), 0);
+          if (transcripts === 0) {
+            rep.warn(chalk.yellow(
+              `Found ${foundTools.join(', ')} but no conversations yet — chat-recall indexes the transcripts your AI tools write as you work. Use one for a while, then run ${chalk.bold('chat-recall sync')}.`,
+            ));
+          }
+        } catch { /* a detection failure must never fail the install */ }
+      }
       // Step 2: Connect to a server. If a URL was supplied (or none is logged
       // in yet) we drive the same login flow the `login` command uses, so
       // there's a single source of truth for credential minting. An existing
