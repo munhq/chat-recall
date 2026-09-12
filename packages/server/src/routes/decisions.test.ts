@@ -17,6 +17,7 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import decisionsRouter from './decisions.js';
+import { createKnowledgeGraph } from '@chat-recall/engine/core/store/knowledge-graph.js';
 import { homeEnvSnapshot, restoreHomeEnv, useHomeDir } from '@chat-recall/engine/test-support/home-env.js';
 
 let tmpHome: string;
@@ -47,6 +48,15 @@ describe('recording a decision', () => {
   test('a value is required', async () => {
     const r = await post({ area: 'auth' });
     expect(r.status).toBe(400);
+  });
+
+  test('a recorded decision says when it was decided', async () => {
+    // A slug area, so this never fills one of the canonical gaps the gap test reads.
+    const r = await post({ area: 'queueing', value: 'NATS' });
+    expect(r.status).toBe(201);
+    const list = await get();
+    const row = list.body.decisions.find((d: { area: string }) => d.area === 'queueing');
+    expect(row.since).toBe(new Date().toISOString().slice(0, 10));
   });
 
   test('the area is canonicalised, so spellings do not split the key', async () => {
@@ -196,6 +206,25 @@ describe('resolving a candidate', () => {
     expect(r.status).toBe(200);
     // inferArea('Firebase') says auth; the caller said deploy and wins.
     expect(r.body.area).toBe('deploy');
+  });
+
+  test('a confirmed guess keeps the conversation it came from', async () => {
+    // The extractor's guess carries the session it read the value out of. The
+    // dashboard has none, so without the inheritance the decision would land
+    // with no conversation behind it.
+    const kg = await createKnowledgeGraph();
+    await kg.addTriple('example-app', 'chose', 'Fastify', {
+      confidence: 0.8, sourceSession: 'sess-from-the-guess', validFrom: '2026-03-02',
+    } as never);
+    await kg.close();
+
+    const r = await request(app).post('/api/decisions/candidates/resolve')
+      .send({ value: 'Fastify', action: 'confirm', area: 'framework' });
+    expect(r.status).toBe(200);
+
+    const list = await get();
+    const row = list.body.decisions.find((d: { area: string }) => d.area === 'framework');
+    expect(row.source_session).toBe('sess-from-the-guess');
   });
 
   test('discard retires the guess without recording a decision', async () => {
