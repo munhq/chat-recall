@@ -19,7 +19,7 @@
 Every coding agent you run keeps a full transcript of its work: the decisions, the
 reasoning, the keys somebody pasted, the problems it found and never filed. Each one
 writes to its own directory in its own format, none can read another's, and nothing
-reads any of them. `chat-recall` does, through **61 MCP tools**.
+reads any of them. `chat-recall` does, through **62 MCP tools**.
 
 | | What it does | Tools |
 |---|---|---|
@@ -131,7 +131,7 @@ Exclusions live on the machine that holds the data, so the CLI owns them; they a
 ## Four things it actually does
 
 1. **Cross-tool unified memory.** One index, one search, one UI over Claude Code (`~/.claude/projects/`), Codex (`~/.codex/`), OpenCode (`~/.local/share/opencode/`), Antigravity (`~/.gemini/antigravity-cli/`) and Cursor (`~/.cursor/` for the CLI, `~/.config/Cursor/` for the IDE). Sessions, plans, tasks, CLAUDE.md files, paste cache, shell history and agent diaries all share one pluggable `MemorySource` interface.
-2. **The agent recalls itself.** 61 MCP tools, so Claude Code can `recall_smart_resume`, `recall_search` (with `like_session` to find similar work), `recall_edits_timeline`, `recall_subagent_search` and `recall_redundant_files` rather than asking you what happened last time. It writes back too, via `recall_decision_record`, `recall_kg_add` and `recall_set`.
+2. **The agent recalls itself.** 62 MCP tools, so Claude Code can `recall_smart_resume`, `recall_search` (with `like_session` to find similar work), `recall_edits_timeline`, `recall_subagent_search` and `recall_redundant_files` rather than asking you what happened last time. It writes back too, via `recall_decision_record`, `recall_kg_add` and `recall_set`.
 3. **Warns before you redo work.** A `UserPromptSubmit` hook searches for similar past sessions on every prompt and injects a short "you have done this before, in session X" note into the agent's context.
 4. **Temporal knowledge graph.** Decisions and tool mentions become entity-relationship triples with `valid_from`/`valid_to` windows, so you can ask what was decided in March and whether it still holds.
 
@@ -270,7 +270,7 @@ codeindex is open source (MIT) at [github.com/munhq/codeindex](https://github.co
 | **Paste** | `~/.claude/paste-cache/*.txt` | Large pasted blobs |
 | **Diary** | `~/.chat-recall/index/diary/<agent>/*.json` | What the agent told its future self via `recall_diary_write` |
 
-## MCP tools (61, including 4 code-intelligence tools that register when the companion binary is installed)
+## MCP tools (62, including 4 code-intelligence tools that register when the companion binary is installed)
 
 **Search & retrieve** — `recall_search`, `recall_memory_search`, `recall_recent`, `recall_show`, `recall_context`, `recall_summary`, `recall_smart_resume`, `recall_project_context`, `recall_weekly_digest`, `recall_analytics_summary`, `recall_wake_up`.
 

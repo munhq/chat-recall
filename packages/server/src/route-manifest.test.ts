@@ -324,6 +324,10 @@ const MANIFEST: Record<string, { gates: string[]; reason: string }> = {
     gates: ['paid', "rl('write-light')", 'kvRouter'],
     reason: 'Key-value recall surface for the thin MCP: memory value (paid).',
   },
+  'use /api/decisions': {
+    gates: ['paid', "rl('write-light')", 'decisionsRouter'],
+    reason: 'The decision register, read by both the dashboard and recall_decisions. Same kg_triples as /api/kg and the same paid memory value, so it takes the same gate; write-light because a GET dominates and a decision is recorded rarely.',
+  },
   'use /api/diary': {
     gates: ['paid', "rl('write-light')", 'diaryRouter'],
     reason: 'Agent-diary recall surface: memory value (paid).',

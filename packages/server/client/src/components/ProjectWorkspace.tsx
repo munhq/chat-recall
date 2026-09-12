@@ -16,6 +16,7 @@ import { summaryTitle } from '../utils/clean';
 import { useUrlState } from '../services/url-state';
 import CodeExplorer, { DependencyMap, PRI_CHIP, PRI_LABEL } from './CodeExplorer';
 import KnowledgeGraph from './KnowledgeGraph';
+import Decisions from './Decisions';
 import ConversationList from './ConversationList';
 import ConversationViewer from './ConversationViewer';
 import { useCodeProject, type UseCodeProject } from '../hooks/useCodeProject';
@@ -93,7 +94,7 @@ export default function ProjectWorkspace({
         {lens === 'code' && <CodeExplorer projectFilter={canonicalId} embedded onSessionClick={openInline} />}
         {lens === 'conversations' && <ConversationsLens projectId={canonicalId} toolFilter={toolFilter} conv={conv} />}
         {lens === 'activity' && <ProjectActivity projectId={canonicalId} toolFilter={toolFilter} onOpenSession={openInline} />}
-        {lens === 'knowledge' && <KnowledgeGraph entity={kgEntity} embedded />}
+        {lens === 'knowledge' && <KnowledgeLens projectId={canonicalId} kgEntity={kgEntity} />}
       </div>
     </div>
   );
@@ -618,4 +619,37 @@ function fmtAgo(ms?: number): string {
   if (d < 3_600_000) return `${Math.max(1, Math.round(d / 60_000))}m ago`;
   if (d < 86_400_000) return `${Math.round(d / 3_600_000)}h ago`;
   return `${Math.round(d / 86_400_000)}d ago`;
+}
+
+
+/**
+ * The Knowledge lens: decisions first, the entity graph behind a toggle.
+ *
+ * The graph was the whole lens and it answers "how do these facts connect",
+ * which is rarely the question someone opens this with. "What did we decide
+ * about auth, and is it still true" is, so that leads and the graph stays
+ * reachable for the times the connections are the point.
+ */
+function KnowledgeLens({ projectId, kgEntity }: { projectId: string; kgEntity?: string | null }) {
+  const [showGraph, setShowGraph] = useState(false);
+  return (
+    <div style={{ padding: '16px 24px 40px' }}>
+      <Decisions project={projectId} embedded />
+      <div style={{ marginTop: 26, borderTop: '1px solid var(--cr-line-2)', paddingTop: 14 }}>
+        <button
+          onClick={() => setShowGraph((v) => !v)}
+          style={{
+            background: 'none', border: 0, padding: 0, cursor: 'pointer', font: 'inherit',
+            fontSize: 13, fontWeight: 600, color: 'var(--cr-brand-500)',
+          }}
+        >
+          {showGraph ? 'Hide the entity graph' : 'Show the entity graph'}
+        </button>
+        <div style={{ color: 'var(--cr-fg-3)', fontSize: 12.5, marginTop: 3 }}>
+          Every fact the indexer extracted, decisions included — how things connect rather than what was settled.
+        </div>
+        {showGraph && <div style={{ marginTop: 14 }}><KnowledgeGraph entity={kgEntity} embedded /></div>}
+      </div>
+    </div>
+  );
 }
