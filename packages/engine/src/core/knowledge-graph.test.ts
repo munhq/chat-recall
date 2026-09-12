@@ -121,4 +121,27 @@ describe('KnowledgeGraph', () => {
     const usesOnly = kg.queryRelationship('uses');
     expect(usesOnly.every(r => r.predicate === 'uses')).toBe(true);
   });
+  test('an asserted fact with no date given starts today', () => {
+    kg.addTriple('acme:auth', 'decided', 'betterauth', { origin: 'asserted', supersede: true });
+    const f = kg.queryRelationship('decided').find(x => x.object === 'betterauth');
+    expect(f?.valid_from).toBe(new Date().toISOString().slice(0, 10));
+  });
+
+  test('an extracted fact with no date given keeps a null start', () => {
+    kg.addTriple('example-app', 'uses', 'postgres');
+    const f = kg.queryRelationship('uses').find(x => x.object === 'postgres');
+    expect(f?.valid_from).toBeNull();
+  });
+
+  test('an explicit validFrom wins over the asserted default', () => {
+    kg.addTriple('acme:auth', 'decided', 'keycloak', { origin: 'asserted', validFrom: '2026-01-01' });
+    const f = kg.queryRelationship('decided').find(x => x.object === 'keycloak');
+    expect(f?.valid_from).toBe('2026-01-01');
+  });
+
+  test('every fact reports the day it was written', () => {
+    kg.addTriple('example-app', 'uses', 'redis');
+    const f = kg.queryRelationship('uses').find(x => x.object === 'redis');
+    expect(f?.recorded_at).toBe(new Date().toISOString().slice(0, 10));
+  });
 });
