@@ -28,6 +28,21 @@ describe('every harness reads its own payload shape', () => {
     expect(got.names).toEqual(['keycloak']);
   });
 
+  test('antigravity sends the command under toolCall.args.CommandLine', () => {
+    const got = namesFrom('agy', {
+      toolCall: { name: 'run_command', args: { CommandLine: 'npm install auth0', Cwd: '/workspace' } },
+    });
+    expect(got.names).toContain('auth0');
+    expect(got.via).toBe('install');
+  });
+
+  test('antigravity file writes are read from CodeContent', () => {
+    const got = namesFrom('agy', {
+      toolCall: { name: 'write_to_file', args: { TargetFile: '/w/app.ts', CodeContent: "import Keycloak from 'keycloak-js';" } },
+    });
+    expect(got.names).toContain('keycloak-js');
+  });
+
   test('cursor beforeShellExecution', () => {
     expect(namesFrom('cursor', { command: 'pnpm add stripe' }).names).toEqual(['stripe']);
   });
@@ -79,6 +94,10 @@ describe('verdicts are written in each harness dialect', () => {
     expect(claude.hookSpecificOutput.additionalContext).toBe(msg);
 
     expect((writeVerdict('agy', 'warn', msg).json as any).decision).toBe('allow');
+    // Cursor's reference prints snake_case and its type definitions camelCase.
+    const cursor = writeVerdict('cursor', 'warn', msg).json as any;
+    expect(cursor.agent_message).toBe(msg);
+    expect(cursor.agentMessage).toBe(msg);
     expect((writeVerdict('cursor', 'warn', msg).json as any).permission).toBe('allow');
     expect((writeVerdict('opencode', 'warn', msg).json as any).block).toBe(false);
 

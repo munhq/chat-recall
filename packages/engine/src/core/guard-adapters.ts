@@ -81,13 +81,16 @@ export function readPayload(harness: Harness, payload: unknown): GuardInput {
       };
     }
     case 'agy': {
-      // Antigravity keeps the same PreToolUse shape Gemini's BeforeTool used.
-      const input = p.tool_input ?? p.args ?? {};
+      // Antigravity sends protojson: { toolCall: { name, args: { CommandLine,
+      // Cwd, … } } }, with the args capitalised. Reading tool_input here found
+      // nothing, so every Antigravity call looked like it introduced no names.
+      const call = p.toolCall ?? p.tool_call ?? {};
+      const input = call.args ?? p.tool_input ?? p.args ?? {};
       return {
-        tool: p.tool_name ?? p.tool ?? null,
-        command: input.command ?? input.cmd ?? null,
-        path: input.file_path ?? input.path ?? null,
-        content: input.content ?? input.new_string ?? null,
+        tool: call.name ?? p.tool_name ?? p.tool ?? null,
+        command: input.CommandLine ?? input.command ?? input.cmd ?? null,
+        path: input.TargetFile ?? input.AbsolutePath ?? input.file_path ?? input.path ?? null,
+        content: input.CodeContent ?? input.ReplacementContent ?? input.content ?? input.new_string ?? null,
       };
     }
     case 'cursor': {
@@ -177,8 +180,17 @@ export function writeVerdict(
       return { json: { decision, reason: message }, exitCode: 0 };
     }
     case 'cursor': {
-      if (verdict === 'deny') return { json: { permission: 'deny', userMessage: message }, exitCode: 0 };
-      return { json: { permission: 'allow', agentMessage: message }, exitCode: 0 };
+      // Cursor's hook reference prints the response fields as user_message and
+      // agent_message; its published type definitions spell them userMessage
+      // and agentMessage. Both are written, and the reader takes the one it
+      // knows.
+      if (verdict === 'deny') {
+        return { json: { permission: 'deny', user_message: message, userMessage: message }, exitCode: 0 };
+      }
+      return {
+        json: { permission: 'allow', agent_message: message, agentMessage: message },
+        exitCode: 0,
+      };
     }
     case 'opencode': {
       // The plugin throws to block; anything else is surfaced as text.

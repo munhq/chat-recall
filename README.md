@@ -256,17 +256,21 @@ guard uninstalled; a wrong warning costs a line of context. Set
 `CHAT_RECALL_GUARD_ENFORCE=1` to block instead, per machine. `CHAT_RECALL_GUARD=0`
 turns it off.
 
-`chat-recall install-hooks` registers it as `PreToolUse` in every Claude profile
-(`--no-guard` to skip). The other four tools each have a pre-execution hook and
-the same entry point works in all of them, but registration is currently manual:
+`chat-recall install-hooks` registers it in all five tools. Each one keeps its
+pre-execution hook in its own file, so the installer writes five shapes and
+skips any tool that is not on the machine (`--no-guard` to skip all of them):
 
-| Tool | Where | Register |
+| Tool | Where | Event |
 |---|---|---|
-| Claude Code | `settings.json` | automatic |
-| Codex | `~/.codex/hooks.json` | `PreToolUse` → `~/.chat-recall/hooks/chat_recall_guard_hook.sh` with `CHAT_RECALL_GUARD_HARNESS=codex` |
-| Antigravity | `~/.gemini/config/hooks.json` | `PreToolUse`, `CHAT_RECALL_GUARD_HARNESS=agy` — the only tool with a real `ask` verdict, so it can prompt rather than warn |
-| Cursor | `.cursor/hooks.json` | `beforeShellExecution`, `CHAT_RECALL_GUARD_HARNESS=cursor` |
-| OpenCode | plugin | call `chat-recall guard --harness opencode` from `tool.execute.before` |
+| Claude Code | `~/.claude/hooks.json`, every profile | `PreToolUse` |
+| Codex | `~/.codex/hooks.json` | `PreToolUse` |
+| Antigravity | `~/.gemini/antigravity-cli/hooks.json` | `PreToolUse` — the one tool with a real `ask` verdict, so it can prompt |
+| Cursor | `~/.cursor/hooks.json` | `beforeShellExecution` + `afterFileEdit` |
+| OpenCode | `~/.config/opencode/plugins/chat-recall-guard.js` | `tool.execute.before` |
+
+**Codex needs one more step.** It runs a hook only after you trust it — open
+Codex and run `/hooks` once. `chat-recall doctor` reports the registration for
+each tool.
 
 Two of those are not full coverage, and the docs say so rather than implying
 otherwise. **Cursor** exposes `beforeShellExecution` but only `afterFileEdit`, so
