@@ -40,30 +40,40 @@
          in the body. Those are therefore the only place the install command can
          live for a reader that cannot run scripts. Keep both in step with
          /llms.txt, which carries the longer version. -->
-    <meta name="description" content="chat-recall indexes your Claude Code, Gemini CLI, Codex, OpenCode and Antigravity sessions into one searchable history and exposes it to your agent over MCP. Install with: npx chat-recall init" />
-    <link rel="canonical" href="https://chatrecall.dev/app" />
+    <!-- Google switched Gemini CLI off and the backend went with it. This line
+         kept naming it to anyone who shared a link or read the page without
+         running it, so it names Cursor, which the product reads. -->
+    <meta name="description" content="chat-recall indexes your Claude Code, Cursor, Codex, OpenCode and Antigravity sessions into one searchable history and exposes it to your agent over MCP. Install with: npx chat-recall init" />
+    <!-- NO CANONICAL. Every URL this document is served at answers
+         X-Robots-Tag: noindex (see util/static-routing.ts), and a noindex page
+         that also claims a canonical asks a crawler to treat the claimed
+         address as real. It claimed /app, which robots.txt disallowed, so
+         nothing could fetch the page the claim pointed at. The indexable
+         description of this product is the marketing build's, at the origin
+         root. -->
     <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="chat-recall" />
     <meta property="og:title" content="chat-recall — one memory across every AI coding tool" />
-    <meta property="og:description" content="One searchable history across Claude Code, Gemini CLI, Codex, OpenCode and Antigravity, exposed to your agent over MCP." />
+    <meta property="og:description" content="One searchable history across Claude Code, Cursor, Codex, OpenCode and Antigravity, exposed to your agent over MCP." />
     <meta property="og:url" content="https://chatrecall.dev/" />
-    <meta name="twitter:card" content="summary" />
-    <!-- schema.org SoftwareApplication: what search engines and assistants read
-         to answer "how do I install this". -->
-    <script type="application/ld+json">
-    {
-      "@context": "https://schema.org",
-      "@type": "SoftwareApplication",
-      "name": "chat-recall",
-      "applicationCategory": "DeveloperApplication",
-      "operatingSystem": "macOS, Linux, Windows",
-      "description": "Indexes Claude Code, Gemini CLI, Codex, OpenCode and Antigravity sessions into one searchable history, exposed to AI agents over MCP.",
-      "url": "https://chatrecall.dev/",
-      "downloadUrl": "https://www.npmjs.com/package/chat-recall",
-      "softwareHelp": "https://chatrecall.dev/llms.txt",
-      "installUrl": "https://www.npmjs.com/package/chat-recall",
-      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
-    }
-    </script>
+    <!-- This document is what a signed-in person copies out of the address bar.
+         It declared twitter:card=summary and no image, so every such link
+         rendered as a bare URL while all nineteen marketing pages rendered a
+         full card. The URL is absolute because a self-hosted build serves no
+         marketing assets, where a relative path answers 404. -->
+    <meta property="og:image" content="https://chatrecall.dev/og-card.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="chat-recall: use your AI conversations as your own database" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="chat-recall — one memory across every AI coding tool" />
+    <meta name="twitter:description" content="One searchable history across Claude Code, Cursor, Codex, OpenCode and Antigravity, exposed to your agent over MCP." />
+    <meta name="twitter:image" content="https://chatrecall.dev/og-card.png" />
+    <meta name="twitter:image:alt" content="chat-recall: use your AI conversations as your own database" />
+    <!-- NO JSON-LD here. This page carried its own SoftwareApplication node
+         with no @id, a description of its own and a single $0 offer, while the
+         marketing build declares https://chatrecall.dev/#app with six offers.
+         One product, one description of it, on the pages that get indexed. -->
   </head>
   <body>
     <noscript>

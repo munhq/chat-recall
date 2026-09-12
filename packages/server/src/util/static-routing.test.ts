@@ -12,7 +12,7 @@
  * kind of defect that needs a test rather than a reviewer.
  */
 import { describe, test, expect } from 'vitest';
-import { classifyStaticPath, cacheControlFor } from './static-routing.js';
+import { classifyStaticPath, cacheControlFor, robotsTagFor } from './static-routing.js';
 
 describe('the app owns three paths and no others', () => {
   test.each(['/app', '/app/', '/device', '/device/'])('%s gets the app shell', (p) => {
@@ -87,9 +87,50 @@ describe('cacheControlFor', () => {
   // without one is a file whose name can be reused by a later build, and a year
   // of immutability would strand every browser that already holds the old bytes.
   test('says nothing about an unhashed file', () => {
-    expect(cacheControlFor('og-card.png')).toBeNull();
-    expect(cacheControlFor('assets/logo.svg')).toBeNull();
     expect(cacheControlFor('assets/short-abc.js')).toBeNull();
+  });
+
+  // A HASH CARRIES A DIGIT OR A CAPITAL. Without that clause the pattern read
+  // any "-<eight or more letters>.<ext>" as a hash, and the site is full of
+  // those: measured on the built output, apple-touch-icon.png,
+  // conversation-overview.webp, project-overview.webp, toolkit-coverage.webp
+  // and every og-guide-<slug>.png were served a year of immutability under
+  // names the next build reuses. Re-rendering a social card could then never
+  // reach a browser or a CDN edge that had already seen the old bytes.
+  test('does not mistake an English word for a content hash', () => {
+    for (const name of [
+      'apple-touch-icon.png',
+      'conversation-overview.webp',
+      'project-overview.webp',
+      'toolkit-coverage.webp',
+      'og-guide-claude-continue-alternative.png',
+      'og-guide-does-claude-code-remember-previous-sessions.png',
+    ]) {
+      expect(cacheControlFor(name)).toBe('public, max-age=86400, stale-while-revalidate=604800');
+    }
+  });
+
+  // Real names emitted by this project's own Vite build. If a future config
+  // changes the hash alphabet, this is the test that says so.
+  test('still recognises a real Vite hash', () => {
+    for (const name of [
+      'assets/index-C2oprdCQ.js',
+      'assets/index-CxtuYwZl.css',
+      'assets/App-Biam4zwc.js',
+      'assets/react-DAXJ19zV.js',
+      'assets/useDocumentScroll-HddF02lS.js',
+    ]) {
+      expect(cacheControlFor(name)).toBe('public, max-age=31536000, immutable');
+    }
+  });
+
+  // Unhashed media carries an explicit short public TTL. Returning null hands
+  // the decision to Cloudflare, which is the failure the hashed-asset comment
+  // above already records.
+  test('gives unhashed media an explicit day', () => {
+    expect(cacheControlFor('og-card.png')).toBe('public, max-age=86400, stale-while-revalidate=604800');
+    expect(cacheControlFor('assets/logo.svg')).toBe('public, max-age=86400, stale-while-revalidate=604800');
+    expect(cacheControlFor('favicon.ico')).toBe('public, max-age=86400, stale-while-revalidate=604800');
   });
 
   // relative() on Windows produces backslashes, and the rule is about the URL
@@ -100,5 +141,35 @@ describe('cacheControlFor', () => {
     expect(cacheControlFor('fonts\\body.woff2')).toBe('public, max-age=31536000, immutable');
     expect(cacheControlFor('assets\\index-C6u9GiO4.js'))
       .toBe('public, max-age=31536000, immutable');
+  });
+});
+
+describe('robotsTagFor', () => {
+  // The defect this was written for. express.static mounts at the root, so the
+  // SPA shell has a URL at its own file name, and that URL answered 200 with 62
+  // words of body text and a canonical pointing at a path robots.txt disallowed.
+  test('noindexes the SPA shell at the root', () => {
+    expect(robotsTagFor('index.html')).toBe('noindex');
+    expect(robotsTagFor('./index.html')).toBe('noindex');
+    expect(robotsTagFor('/index.html')).toBe('noindex');
+  });
+
+  // The pages the site exists to get indexed are ALSO called index.html. A
+  // substring or endsWith() test here would noindex the whole marketing site,
+  // which is the one failure mode worth a test of its own.
+  test('leaves every marketing page alone', () => {
+    for (const page of [
+      'guides/index.html',
+      'guides/claude-continue-alternative/index.html',
+      'pricing/index.html',
+      'landing.html',
+      '404.html',
+    ]) {
+      expect(robotsTagFor(page)).toBeNull();
+    }
+  });
+
+  test('reads a Windows-style relative path', () => {
+    expect(robotsTagFor('guides\\index.html')).toBeNull();
   });
 });

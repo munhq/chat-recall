@@ -370,6 +370,14 @@ const MANIFEST: Record<string, { gates: string[]; reason: string }> = {
     gates: ['<inline>'],
     reason: 'Landing-vs-app-shell switch on the session cookie; presence-only, decides which HTML to serve, never what anyone may read.',
   },
+  'get /landing.html': {
+    gates: ['<inline>'],
+    reason: 'Ungated 301 to /. The marketing page has a URL at its own file name because express.static is mounted at the root, and that second address served a byte-identical copy of the home page. Serves nothing and reads nothing.',
+  },
+  'get /404.html': {
+    gates: ['<inline>'],
+    reason: 'Ungated. Answers 404 with the styled not-found page, because the same file served through express.static answered 200 on a URL named 404. Static bytes, no tenant, no data.',
+  },
 };
 
 // ---------------------------------------------------------------------------
