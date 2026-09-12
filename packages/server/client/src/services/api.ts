@@ -400,7 +400,7 @@ export interface DecisionsResponse {
   project: string | null;
   decisions: Decision[];
   gaps: Array<{ area: string }>;
-  candidates: Array<{ value: string; mentions: number; last_seen: string | null }>;
+  candidates: Array<{ area: string | null; value: string; mentions: number; last_seen: string | null }>;
   areas: string[];
 }
 export async function getDecisions(opts: { project?: string; includeCandidates?: boolean } = {}): Promise<DecisionsResponse> {
@@ -409,6 +409,15 @@ export async function getDecisions(opts: { project?: string; includeCandidates?:
     include_candidates: opts.includeCandidates ? '1' : '0',
   })}`);
   return r.ok ? r.json() : { scope: 'account', project: null, decisions: [], gaps: [], candidates: [], areas: [] };
+}
+/** Confirm a guess into a decision, or discard it. Both retire the guess. */
+export async function resolveCandidate(body: {
+  value: string; action: 'confirm' | 'discard'; area?: string; project?: string;
+}): Promise<boolean> {
+  const r = await fetchWithTimeout(`${API_BASE}/decisions/candidates/resolve`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  return r.ok;
 }
 export async function recordDecision(body: { area: string; value: string; reason?: string; project?: string }): Promise<boolean> {
   const r = await fetchWithTimeout(`${API_BASE}/decisions`, {

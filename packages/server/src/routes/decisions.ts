@@ -34,7 +34,7 @@
 import express from 'express';
 import { createKnowledgeGraph } from '../imports.js';
 import {
-  canonArea, decisionSubject, parseDecisionSubject, isKnownArea,
+  canonArea, decisionSubject, parseDecisionSubject, isKnownArea, inferArea,
   DECISION_AREAS, ACCOUNT_SCOPE,
 } from '@chat-recall/engine/core/decision-areas.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
@@ -196,7 +196,10 @@ router.get('/', async (req, res) => {
       candidates = [...seen.values()]
         .sort((a, b) => b.mentions - a.mentions)
         .slice(0, 25)
-        .map((c) => ({ area: null, value: c.value, mentions: c.mentions, last_seen: c.last }));
+        // A guessed area, so confirming is one click. Null when nothing in the
+        // value names an area — better to ask than to file it under the wrong
+        // key, which is the exact failure this feature removes.
+        .map((c) => ({ area: inferArea(c.value), value: c.value, mentions: c.mentions, last_seen: c.last }));
     }
 
     res.json({
@@ -244,6 +247,69 @@ router.post('/', express.json(), async (req, res) => {
     res.status(201).json({ subject, area, value: value.trim() });
   } catch (error) {
     log.error({ err: error }, 'decision write failed');
+    res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
+  } finally {
+    await kg.close();
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/decisions/candidates/resolve — confirm or discard a guess.
+//
+// Both outcomes retire the guess, which is the point: a candidate you have
+// judged must stop being offered, or the queue never empties and people stop
+// reading it. Confirming also records the decision; discarding only retires it.
+//
+// Retiring is `invalidate` on the extracted `chose` triple rather than a delete.
+// The graph is temporal, so the guess keeps its validity window and the record
+// still shows that the extractor saw this and a human said no.
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/candidates/resolve', express.json(), async (req, res) => {
+  const { value, action, area: rawArea, project, reason, session_id } = req.body ?? {};
+  if (typeof value !== 'string' || !value.trim()) {
+    return res.status(400).json({ error: 'value is required' });
+  }
+  if (action !== 'confirm' && action !== 'discard') {
+    return res.status(400).json({ error: "action must be 'confirm' or 'discard'" });
+  }
+
+  const area = action === 'confirm'
+    ? canonArea(typeof rawArea === 'string' && rawArea ? rawArea : inferArea(value))
+    : null;
+  if (action === 'confirm' && !area) {
+    // Refusing beats guessing. Without an area the decision supersedes nothing,
+    // which is the bug this whole surface exists to remove.
+    return res.status(400).json({ error: 'area is required — nothing in the value names one' });
+  }
+
+  const kg = await createKnowledgeGraph();
+  try {
+    if (action === 'confirm' && area) {
+      const subject = decisionSubject(typeof project === 'string' ? project : null, area);
+      await kg.addTriple(subject, 'decided', value.trim(), {
+        confidence: 1, sourceSession: session_id ?? undefined, origin: 'asserted', supersede: true,
+      } as never);
+      if (typeof reason === 'string' && reason.trim()) {
+        await kg.addTriple(subject, 'because', reason.trim(), {
+          confidence: 1, sourceSession: session_id ?? undefined, origin: 'asserted', supersede: false,
+        } as never);
+      }
+    }
+
+    // Retire every live `chose` guess naming this value, whichever subject the
+    // extractor filed it under — the candidate row is one value, not one row.
+    const chose = (await kg.queryRelationship('chose')) as Fact[];
+    const target = value.trim().toLowerCase();
+    let retired = 0;
+    for (const c of chose) {
+      if (c.valid_to !== null) continue;
+      if (c.object.trim().toLowerCase() !== target) continue;
+      retired += await kg.invalidate(c.subject, 'chose', c.object);
+    }
+
+    res.json({ action, value: value.trim(), area, retired });
+  } catch (error) {
+    log.error({ err: error }, 'candidate resolve failed');
     res.status(500).json({ error: error instanceof Error ? error.message : 'failed' });
   } finally {
     await kg.close();

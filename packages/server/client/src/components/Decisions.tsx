@@ -27,7 +27,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { Chip, Icon, Button } from './primitives';
 import {
-  getDecisions, recordDecision,
+  getDecisions, recordDecision, resolveCandidate,
   type Decision, type DecisionsResponse,
 } from '../services/api';
 
@@ -126,21 +126,13 @@ export default function Decisions({ project, embedded }: { project?: string | nu
             note="These look like decisions from past sessions. They are guesses the indexer made, and bind nothing until you confirm one."
           />
           {candidates.slice(0, 8).map((c) => (
-            <div
+            <CandidateRow
               key={c.value}
-              style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                gap: 12, padding: '11px 12px', borderBottom: '1px solid var(--cr-line-1)',
-              }}
-            >
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: 600, fontSize: 14.5, overflowWrap: 'anywhere' }}>{c.value}</div>
-                <div className="cr-annot" style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 2 }}>
-                  seen {c.mentions}×{c.last_seen ? ` · latest ${fmtDate(c.last_seen)}` : ''}
-                </div>
-              </div>
-              <Chip size="sm">unconfirmed</Chip>
-            </div>
+              candidate={c}
+              areas={data?.areas ?? []}
+              project={project ?? null}
+              onResolved={load}
+            />
           ))}
         </section>
       )}
@@ -336,6 +328,73 @@ function RecordForm({ area, project, onDone, onCancel }: {
         <Button size="sm" onClick={onCancel}>Cancel</Button>
         <Button size="sm" variant="primary" onClick={submit} disabled={saving || !value.trim()}>
           {saving ? 'Recording…' : 'Record'}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+
+
+/**
+ * One guess, with the two judgements that retire it.
+ *
+ * The area is pre-filled from the value where it can be guessed, because the
+ * cost of this queue is per-item and a select someone must open every time is
+ * how a backlog of fourteen never gets cleared. Where nothing in the value
+ * names an area it stays unset and Confirm waits — filing a decision under the
+ * wrong key is the exact failure the register exists to remove.
+ */
+function CandidateRow({ candidate, areas, project, onResolved }: {
+  candidate: { area: string | null; value: string; mentions: number; last_seen: string | null };
+  areas: string[];
+  project: string | null;
+  onResolved: () => void;
+}) {
+  const [area, setArea] = useState(candidate.area ?? '');
+  const [busy, setBusy] = useState<'confirm' | 'discard' | null>(null);
+
+  const act = async (action: 'confirm' | 'discard') => {
+    setBusy(action);
+    const ok = await resolveCandidate({
+      value: candidate.value, action,
+      area: action === 'confirm' ? area : undefined,
+      project: project ?? undefined,
+    });
+    setBusy(null);
+    if (ok) onResolved();
+  };
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      gap: 12, padding: '11px 12px', borderBottom: '1px solid var(--cr-line-1)', flexWrap: 'wrap',
+    }}>
+      <div style={{ minWidth: 180, flex: 1 }}>
+        <div style={{ fontWeight: 600, fontSize: 14.5, overflowWrap: 'anywhere' }}>{candidate.value}</div>
+        <div className="cr-annot" style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 2 }}>
+          seen {candidate.mentions}×{candidate.last_seen ? ` · latest ${fmtDate(candidate.last_seen)}` : ''}
+        </div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <select
+          value={area}
+          onChange={(e) => setArea(e.target.value)}
+          aria-label={`Area for ${candidate.value}`}
+          style={{
+            font: 'inherit', fontSize: 13, padding: '5px 8px',
+            background: 'var(--cr-ink-0)', color: 'var(--cr-fg-1)',
+            border: `1px solid ${area ? 'var(--cr-line-2)' : 'var(--cr-warn-line)'}`,
+          }}
+        >
+          <option value="">which area?</option>
+          {areas.map((a) => <option key={a} value={a}>{a}</option>)}
+        </select>
+        <Button size="sm" onClick={() => act('discard')} disabled={busy !== null}>
+          {busy === 'discard' ? '…' : 'Discard'}
+        </Button>
+        <Button size="sm" variant="primary" onClick={() => act('confirm')} disabled={busy !== null || !area}>
+          {busy === 'confirm' ? '…' : 'Confirm'}
         </Button>
       </div>
     </div>
