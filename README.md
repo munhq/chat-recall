@@ -234,6 +234,47 @@ chat-recall install-hooks --uninstall     # remove all of ours, leave third-part
 | `PreCompact` | Before Claude Code compacts context | Emergency save so nothing is lost to compaction |
 | `SessionEnd` | When the session closes | Escalates the session's learnings in the background, so nothing is delayed |
 
+## The decision guard
+
+A decision nobody reads is a suggestion. `chat-recall guard` runs before a tool
+call and says so when the call reaches for something already ruled out:
+
+```
+chat-recall: this reaches for something already decided against.
+- keycloak was ruled out — BetterAuth is the decision (2026-03-14) · session 8f2c1a4e
+Proceed only if this is a deliberate reversal. If it is, record it:
+recall_decision_record with the area, so the old decision is closed rather than contradicted.
+```
+
+It fires on **installs, imports and manifest edits** — `npm install auth0`, a new
+`import` line, a name added to `package.json`. Never on prose: "we could use
+Auth0" in a sentence must not stop anything, or the guard becomes something
+people switch off.
+
+**It warns; it does not block.** A wrong block costs the user a turn and gets the
+guard uninstalled; a wrong warning costs a line of context. Set
+`CHAT_RECALL_GUARD_ENFORCE=1` to block instead, per machine. `CHAT_RECALL_GUARD=0`
+turns it off.
+
+`chat-recall install-hooks` registers it as `PreToolUse` in every Claude profile
+(`--no-guard` to skip). The other four tools each have a pre-execution hook and
+the same entry point works in all of them, but registration is currently manual:
+
+| Tool | Where | Register |
+|---|---|---|
+| Claude Code | `settings.json` | automatic |
+| Codex | `~/.codex/hooks.json` | `PreToolUse` → `~/.chat-recall/hooks/chat_recall_guard_hook.sh` with `CHAT_RECALL_GUARD_HARNESS=codex` |
+| Antigravity | `~/.gemini/config/hooks.json` | `PreToolUse`, `CHAT_RECALL_GUARD_HARNESS=agy` — the only tool with a real `ask` verdict, so it can prompt rather than warn |
+| Cursor | `.cursor/hooks.json` | `beforeShellExecution`, `CHAT_RECALL_GUARD_HARNESS=cursor` |
+| OpenCode | plugin | call `chat-recall guard --harness opencode` from `tool.execute.before` |
+
+Two of those are not full coverage, and the docs say so rather than implying
+otherwise. **Cursor** exposes `beforeShellExecution` but only `afterFileEdit`, so
+an import added in an edit is reported after the write, not prevented.
+**OpenCode**'s plugin hooks do not fire for subagent tool calls
+([#5894](https://github.com/anomalyco/opencode/issues/5894)), so an agent that
+delegates routes around it.
+
 ## Companion: codeindex (auto-detected)
 
 There's a separate MCP server called **codeindex** (Zig binary, ~56 MB) by [munhq](https://github.com/munhq/codeindex) that gives the agent code-level lookup. The two compose:
