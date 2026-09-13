@@ -133,6 +133,8 @@ export interface SignupAttribution {
   campaign?: string | null;
   /** Joins this tenant to the analytics session that preceded its signup. */
   anonId?: string | null;
+  /** ISO-3166-1 alpha-2, resolved by the edge — see countryFromHeaders. */
+  country?: string | null;
 }
 
 export interface ControlPlane {
@@ -494,19 +496,22 @@ class SqliteControlPlane implements ControlPlane {
     // INSERT OR IGNORE already means "first write wins", which is exactly the
     // first-touch rule — so attribution goes in the same statement and a later
     // call with a different cookie is ignored along with the rest of the row.
-    for (const col of ['signup_source TEXT', 'signup_referrer TEXT', 'signup_campaign TEXT', 'signup_anon_id TEXT']) {
+    for (const col of ['signup_source TEXT', 'signup_referrer TEXT', 'signup_campaign TEXT',
+                       'signup_anon_id TEXT', 'signup_country TEXT']) {
       try { this.db.exec(`ALTER TABLE cp_tenants ADD COLUMN ${col}`); } catch { /* already there */ }
     }
     this.db.prepare(
       `INSERT OR IGNORE INTO cp_tenants
-         (tenant, display_name, created_at, signup_source, signup_referrer, signup_campaign, signup_anon_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (tenant, display_name, created_at, signup_source, signup_referrer, signup_campaign,
+          signup_anon_id, signup_country)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       tenant, displayName ?? tenant, Date.now(),
       attribution?.source ?? null,
       attribution?.referrer ?? null,
       attribution?.campaign ?? null,
       attribution?.anonId ?? null,
+      attribution?.country ?? null,
     );
   }
 
@@ -940,8 +945,9 @@ class PgControlPlane implements ControlPlane {
     // Do NOT change this to DO UPDATE — see the interface comment.
     await this.q(
       `INSERT INTO tenants
-         (tenant, display_name, created_at, signup_source, signup_referrer, signup_campaign, signup_anon_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+         (tenant, display_name, created_at, signup_source, signup_referrer, signup_campaign,
+          signup_anon_id, signup_country)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        ON CONFLICT (tenant) DO NOTHING`,
       [
         tenant, displayName ?? tenant, Date.now(),
@@ -949,6 +955,7 @@ class PgControlPlane implements ControlPlane {
         attribution?.referrer ?? null,
         attribution?.campaign ?? null,
         attribution?.anonId ?? null,
+        attribution?.country ?? null,
       ],
     );
   }

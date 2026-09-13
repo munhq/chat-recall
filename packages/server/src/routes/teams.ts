@@ -26,7 +26,7 @@ import express from 'express';
 import { createControlPlane } from '../imports.js';
 import { isOperatorRequest, requireUser } from '../middleware/auth.js';
 import { loadMemberships, createTeamFor } from '../util/memberships.js';
-import { firstTouchFromCookieHeader } from '@chat-recall/engine/core/attribution.js';
+import { firstTouchFromCookieHeader, countryFromHeaders } from '@chat-recall/engine/core/attribution.js';
 import { sensitiveLimiter } from '../middleware/rate-limit.js';
 import { featureRequired, allows } from '../util/entitlements.js';
 import { tenantPlan } from '../util/billing.js';
@@ -65,7 +65,8 @@ router.post('/teams', async (req, res) => {
 
   const t = await createTeamFor(
     user.sub, user.email, name,
-    firstTouchFromCookieHeader(req.headers.cookie ?? null),
+    { ...firstTouchFromCookieHeader(req.headers.cookie ?? null),
+      country: countryFromHeaders(req.headers) },
   );
   res.json({ slug: t.slug, name: t.name, role: 'owner' });
 });

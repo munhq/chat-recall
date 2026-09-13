@@ -27,7 +27,7 @@ import express from 'express';
 import { createControlPlane } from '../imports.js';
 import { requireUser } from '../middleware/auth.js';
 import { loadMemberships, createTeamFor } from '../util/memberships.js';
-import { firstTouchFromCookieHeader } from '@chat-recall/engine/core/attribution.js';
+import { firstTouchFromCookieHeader, countryFromHeaders } from '@chat-recall/engine/core/attribution.js';
 import { entitledOr402, collaborationOr402, billingEnabled } from '../util/billing.js';
 import { planMinSeats } from '../util/billing-plans.js';
 import { seatCheck } from '../util/license.js';
@@ -61,7 +61,8 @@ router.post('/', async (req, res) => {
   if (!name) return res.status(400).json({ error: 'name required' });
   const t = await createTeamFor(
     user.sub, user.email, name,
-    firstTouchFromCookieHeader(req.headers.cookie ?? null),
+    { ...firstTouchFromCookieHeader(req.headers.cookie ?? null),
+      country: countryFromHeaders(req.headers) },
   );
   res.json({ team: { id: t.slug, name: t.name } });
 });
