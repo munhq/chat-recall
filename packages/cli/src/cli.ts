@@ -1680,8 +1680,14 @@ program
           const cfg = JSON.parse(readFileSync(target.configPath, 'utf-8'));
           registered = JSON.stringify(cfg).includes('chat_recall_guard');
         } catch { /* unparseable reads as not registered */ }
-        note(registered, label,
-          registered ? target.configPath : `${target.configPath} has no chat-recall entry — run \`chat-recall install-hooks\``);
+        // Codex registers and then waits for approval, and nothing on disk
+        // records whether that happened — so the reminder rides on the row it
+        // applies to instead of being printed once at install and forgotten.
+        const detail = registered && target.tool === 'codex'
+          ? `${target.configPath} — approve it in Codex with /hooks`
+          : registered ? target.configPath
+          : `${target.configPath} has no chat-recall entry — run \`chat-recall install-hooks\``;
+        note(registered, label, detail);
       }
     } catch (err) {
       note(false, 'Decision guard', `check failed: ${err}`);
