@@ -72,7 +72,13 @@ export function guardTargets(): GuardTarget[] {
       label: 'Codex',
       configPath: join(codexBackend.homeDir(), 'hooks.json'),
       homeDir: codexBackend.homeDir(),
-      note: 'Codex runs a hook only after you trust it — open Codex and run /hooks once.',
+      // Codex will not run a hook until a person has reviewed it, and the
+      // approval is bound to the hook's hash. There is no way to grant it from
+      // outside: /etc/codex/requirements.toml is the root-owned admin policy,
+      // and the only other route is the per-invocation
+      // --dangerously-bypass-hook-trust flag. An installer that could grant its
+      // own approval is the thing the gate exists to stop.
+      note: 'Codex asks you to approve a hook before it runs one. Run /hooks in Codex once to approve this.',
     },
     {
       tool: 'agy',
