@@ -19,9 +19,18 @@ const ENV_KEYS = ['CI', 'GITHUB_ACTIONS', 'GITLAB_CI', 'BUILDKITE', 'TEAMCITY_VE
 let saved: Record<string, string | undefined>;
 
 /** stderr.isTTY is a getter on a real stream, so it is redefined rather than
- *  assigned; `configurable` keeps each test able to set it again. */
+ *  assigned; `configurable` keeps each test able to set it again.
+ *
+ * The original descriptor is captured once and put back in afterEach. Vitest
+ * reuses a worker across test files, so a file that leaves process.stderr
+ * rewritten hands the next file a terminal that is not there. */
+const TTY_DESC = Object.getOwnPropertyDescriptor(process.stderr, 'isTTY');
 function setTty(v: boolean): void {
   Object.defineProperty(process.stderr, 'isTTY', { value: v, configurable: true });
+}
+function restoreTty(): void {
+  if (TTY_DESC) Object.defineProperty(process.stderr, 'isTTY', TTY_DESC);
+  else delete (process.stderr as unknown as { isTTY?: boolean }).isTTY;
 }
 
 beforeEach(() => {
@@ -36,6 +45,7 @@ afterEach(() => {
   for (const [k, v] of Object.entries(saved)) {
     if (v === undefined) delete process.env[k]; else process.env[k] = v;
   }
+  restoreTty();
   rmSync(dir, { recursive: true, force: true });
 });
 
