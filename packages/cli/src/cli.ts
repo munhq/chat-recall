@@ -27,6 +27,7 @@ import { isOnPath } from '@chat-recall/engine/core/which.js';
 import { readCollectorHealth, judgeHealth, progressLine, collectorHealthPath, STALE_AFTER_MS } from '@chat-recall/engine/core/collector-health.js';
 import { userConsents, serverAllowsTelemetry } from './telemetry-consent.js';
 import { collectEnvNeeds, renderEnvNeeds } from './env-needed.js';
+import { askForStar } from './star-nudge.js';
 
 /**
  * Colour a relevance tier for the terminal.
@@ -1030,6 +1031,9 @@ program
         { const rc = resumeCommandFor(result.sessionId); if (rc) console.log(`   ${chalk.green('Resume:')} ${rc}`); }
         console.log();
       }
+
+      // After results, once per machine, on a terminal only. See star-nudge.ts.
+      askForStar(results.length, chalk.dim);
     } catch (err) {
       console.error(chalk.red('Error:'), err instanceof Error ? err.message : err);
       process.exit(1);
