@@ -27,7 +27,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { runWithTenant, runWithAuthor, createControlPlane } from '../imports.js';
 import { allows } from '../util/entitlements.js';
 import { createTeamFor } from '../util/memberships.js';
-import { firstTouchFromCookieHeader } from '@chat-recall/engine/core/attribution.js';
+import { firstTouchFromCookieHeader, countryFromHeaders } from '@chat-recall/engine/core/attribution.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 
 const log = createLogger('auth');
@@ -504,7 +504,8 @@ async function resolveTenantForUser(
         // request, not through an explicit POST /api/teams.
         const created = await createTeamFor(
           user.sub, user.email, base || 'workspace',
-          firstTouchFromCookieHeader(req.headers.cookie ?? null),
+          { ...firstTouchFromCookieHeader(req.headers.cookie ?? null),
+      country: countryFromHeaders(req.headers) },
           // ownerKeyed: the slug comes from the owner, so a concurrent first
           // request violates the primary key and lands in the catch below rather
           // than creating a SECOND workspace. Without it the recovery under this

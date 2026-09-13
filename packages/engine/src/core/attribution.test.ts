@@ -9,6 +9,7 @@ import {
   parseFirstTouchCookie,
   firstTouchFromCookieHeader,
   SIGNUP_SOURCES,
+  countryFromHeaders,
 } from './attribution.js';
 
 describe('classifyFirstTouch — referrer buckets', () => {
@@ -187,5 +188,37 @@ describe('anonId — the join between a visit and a signup', () => {
     expect(classifyFirstTouch({ a: id }).anonId).toBe(id);                        // direct
     expect(classifyFirstTouch({ r: 'nowhere.example', a: id }).anonId).toBe(id);  // other
     expect(classifyFirstTouch({ u: 'reddit', a: id }).anonId).toBe(id);           // utm branch
+  });
+});
+
+describe('the country the edge resolved', () => {
+  it('reads Cloudflare’s header', () => {
+    expect(countryFromHeaders({ 'cf-ipcountry': 'RO' })).toBe('RO');
+  });
+
+  it('normalises case', () => {
+    expect(countryFromHeaders({ 'cf-ipcountry': 'vn' })).toBe('VN');
+  });
+
+  it('XX is Cloudflare saying it could not place the address', () => {
+    expect(countryFromHeaders({ 'cf-ipcountry': 'XX' })).toBeNull();
+  });
+
+  it('T1 is Tor, which is not a country', () => {
+    expect(countryFromHeaders({ 'cf-ipcountry': 'T1' })).toBeNull();
+  });
+
+  it('anything that is not two letters is refused', () => {
+    expect(countryFromHeaders({ 'cf-ipcountry': 'Romania' })).toBeNull();
+    expect(countryFromHeaders({ 'cf-ipcountry': '' })).toBeNull();
+  });
+
+  it('no proxy header means no country, never a guess', () => {
+    expect(countryFromHeaders({})).toBeNull();
+    expect(countryFromHeaders(null)).toBeNull();
+  });
+
+  it('an array header takes its first value', () => {
+    expect(countryFromHeaders({ 'cf-ipcountry': ['DE', 'FR'] })).toBe('DE');
   });
 });

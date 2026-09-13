@@ -123,6 +123,8 @@ export interface Attribution {
   campaign: string | null;
   /** Joins this signup to the analytics session that preceded it. */
   anonId: string | null;
+  /** ISO-3166-1 alpha-2, from the edge. Null when no proxy supplied one. */
+  country: string | null;
 }
 
 /** Strip a hostname down to something matchable. Never throws. */
@@ -157,18 +159,18 @@ export function classifyFirstTouch(ft: FirstTouch | null | undefined): Attributi
   const referrer = rawHost || null;
 
   const utm = ft?.u?.trim().toLowerCase();
-  if (utm && UTM_MAP[utm]) return { source: UTM_MAP[utm]!, referrer, campaign, anonId };
+  if (utm && UTM_MAP[utm]) return { source: UTM_MAP[utm]!, referrer, campaign, anonId, country: null };
 
-  if (!rawHost) return { source: 'direct', referrer: null, campaign, anonId };
+  if (!rawHost) return { source: 'direct', referrer: null, campaign, anonId, country: null };
 
   // Longest suffix first, so a future shorter entry cannot shadow a longer one.
   const ordered = [...HOST_MAP].sort((a, b) => b[0].length - a[0].length);
   for (const [needle, bucket] of ordered) {
     if (rawHost === needle || rawHost.endsWith(`.${needle}`) || rawHost.includes(needle)) {
-      return { source: bucket, referrer, campaign, anonId };
+      return { source: bucket, referrer, campaign, anonId, country: null };
     }
   }
-  return { source: 'other', referrer, campaign, anonId };
+  return { source: 'other', referrer, campaign, anonId, country: null };
 }
 
 /**
@@ -200,7 +202,42 @@ export function parseFirstTouchCookie(value: string | null | undefined): FirstTo
 
 /** Read `cr_src` out of a raw Cookie header. */
 export function firstTouchFromCookieHeader(header: string | null | undefined): Attribution {
-  if (!header) return { source: 'direct', referrer: null, campaign: null, anonId: null };
+  if (!header) return { source: 'direct', referrer: null, campaign: null, anonId: null, country: null };
   const m = /(?:^|;\s*)cr_src=([^;]*)/.exec(header);
   return classifyFirstTouch(parseFirstTouchCookie(m?.[1]));
+}
+
+/**
+ * The country the edge resolved, from the request headers.
+ *
+ * chatrecall.dev is behind Cloudflare, which sets `CF-IPCountry` on every
+ * request it forwards. The value was arriving on the signup request all along
+ * and nothing read it, so the register could say a tenant came from Reddit and
+ * not what continent they were on — and an email drafted without that is
+ * written blind.
+ *
+ * Header only. No IP is read, stored or resolved here: the edge has already
+ * done the lookup, and keeping the address out of this path means a country can
+ * be recorded without the service ever holding the thing it was derived from.
+ *
+ * `XX` is Cloudflare's own value for an address it could not place and `T1` is
+ * its value for Tor. Both are discarded rather than stored as a country.
+ */
+export function countryFromHeaders(
+  headers: Record<string, string | string[] | undefined> | null | undefined,
+): string | null {
+  if (!headers) return null;
+  const read = (k: string): string | null => {
+    const v = headers[k];
+    const one = Array.isArray(v) ? v[0] : v;
+    return typeof one === 'string' && one.trim() ? one.trim() : null;
+  };
+  const raw = read('cf-ipcountry')
+    ?? read('x-vercel-ip-country')
+    ?? read('fastly-client-country')
+    ?? read('x-geo-country');
+  if (!raw) return null;
+  const code = raw.toUpperCase();
+  if (code === 'XX' || code === 'T1') return null;
+  return /^[A-Z]{2}$/.test(code) ? code : null;
 }

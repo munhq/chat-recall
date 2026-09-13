@@ -321,6 +321,11 @@ ALTER TABLE tenants ADD COLUMN IF NOT EXISTS signup_campaign TEXT;
 -- reddit.com, this knows a tenant was created, and the id is what makes those the
 -- same person rather than two unrelated counts.
 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS signup_anon_id TEXT;
+-- ISO-3166-1 alpha-2, from the edge's own resolution on the signup request.
+-- Cloudflare has set CF-IPCountry on every forwarded request since the domain
+-- moved behind it; nothing read the header, so a tenant's country was
+-- unknowable after the fact even though it arrived with the signup.
+ALTER TABLE tenants ADD COLUMN IF NOT EXISTS signup_country TEXT;
 CREATE INDEX IF NOT EXISTS idx_tenants_signup_anon ON tenants (signup_anon_id) WHERE signup_anon_id IS NOT NULL;
 
 -- ── Control plane: identity → tenant mapping ────────────────────────────
