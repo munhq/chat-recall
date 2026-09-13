@@ -1063,7 +1063,12 @@ const httpServer = app.listen(PORT, HOST, () => {
   // Hourly is ample for day-wide windows, and the per-stage "already sent" flag
   // lives in tenant settings so restarts and extra replicas cannot re-send.
   // Gated on billing being configured: self-host has no trials to remind about.
-  if (isServerMode() && runWorkers && billingEnabled()) {
+  //
+  // TRIAL_REMINDERS=0 stops every one of them at the source. A flag rather than
+  // a code change because the reason to stop is usually about the recipients
+  // rather than the code — on 2026-09-13, five tenants were due a reminder
+  // before anyone had established which countries they were in.
+  if (isServerMode() && runWorkers && billingEnabled() && process.env.TRIAL_REMINDERS !== '0') {
     const TRIAL_SWEEP_MS = 60 * 60 * 1000;
     let trialInFlight = false;
     const trialSweep = async (): Promise<void> => {
@@ -1080,6 +1085,8 @@ const httpServer = app.listen(PORT, HOST, () => {
     setInterval(() => { void trialSweep(); }, TRIAL_SWEEP_MS).unref();
     setTimeout(() => { void trialSweep(); }, 45_000).unref();
     log.info('trial reminder sweep enabled');
+  } else if (isServerMode() && runWorkers && billingEnabled()) {
+    log.warn('trial reminder sweep DISABLED by TRIAL_REMINDERS=0 — nobody is being mailed');
   }
 
   // Licence activation refresh, for a SELF-HOSTED deployment holding a serial. Runs
