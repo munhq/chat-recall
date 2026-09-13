@@ -14,6 +14,7 @@
  */
 import type { Request, Response, NextFunction } from 'express';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
+import { trace } from '@opentelemetry/api';
 import {
   httpRequestDuration, httpRequestsTotal, httpRequestsInFlight,
 } from '../metrics/registry.js';
@@ -55,12 +56,28 @@ export function httpObservability(req: Request, res: Response, next: NextFunctio
     httpRequestDuration.observe(labels, durSec);
     httpRequestsTotal.inc(labels);
 
+    /* trace_id, spelled exactly that way.
+     *
+     * MONITORING.md line 68: "A request-scoped line carries
+     * `"trace_id":"<32 hex>"`. Grafana's Loki datasource matches exactly
+     * that, and it is the only thing that turns a log line into a trace." It
+     * then lists chat-recall as already having the field. It did not — a
+     * production line carried method, route, status, durationMs, length and
+     * reqId, and nothing a trace could be found by.
+     *
+     * Undefined when no span is active, which is every request while
+     * OTEL_EXPORTER_OTLP_ENDPOINT is unset, and every request the sampler
+     * dropped. pino omits an undefined field rather than writing a null, so a
+     * line either carries a usable id or does not mention it. */
+    const ctx = trace.getActiveSpan()?.spanContext();
     const payload = {
       method: req.method,
       route: labels.route,
       status,
       durationMs: Math.round(durSec * 1000),
       length: res.getHeader('content-length'),
+      trace_id: ctx?.traceId,
+      span_id: ctx?.spanId,
     };
     if (status >= 500) log.error(payload, 'request failed');
     else if (status >= 400) log.warn(payload, 'request rejected');
