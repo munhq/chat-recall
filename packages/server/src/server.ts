@@ -2,7 +2,10 @@
  * Express server for chat-recall UI backend.
  */
 
-// MUST be first — installs @sentry/node instrumentation before other modules load.
+// MUST be first, in this order. An instrumentation only patches a module that
+// is required AFTER it registers, so tracing comes before Sentry and both come
+// before express, pg and everything they reach.
+import './otel-start.js';
 import './instrument.js';
 import * as Sentry from '@sentry/node';
 import express from 'express';
