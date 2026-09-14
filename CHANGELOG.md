@@ -4,6 +4,42 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.6.8] — 2026-09-14
+
+Everything here came from opening the app on a phone and looking at it. Every
+one of these passed the structural checks first.
+
+### Fixed
+- **Conversations was unusable on a phone.** The Sessions / Notes toggle is a
+  direct flex child of the view row, so it sat as a 156px column beside the
+  list on a 390px screen: 40% of the viewport for one control, the list crushed
+  into what was left, "Notes &" cut mid-word, "By project" clipped off the
+  edge, the counter broken across three lines and every row wrapped to three.
+- **The top bar clipped the account avatar on every view.** The plan chip and
+  the sync chip take about 200px of the 390 available, so the only control that
+  opens the account menu sat past the right edge. Both leave the phone bar; the
+  plan is on the Account page and the sync time in the sidebar footer.
+- **Account's tab row ended in "Da"** with nothing to say it scrolls. It does
+  scroll, but the scrollbar is hidden and the cut was flush, so Data read as a
+  clipped label rather than a tab one swipe away.
+- **A view this deployment does not have sent you to Conversations** without
+  saying so. `?view=settings` answered with a list of conversations, identical
+  to `?view=search` down to the character count. Each gated view now names
+  where its content actually went.
+
+### Accessibility
+- **Nothing was a `<main>`.** A screen-reader user had no way to skip the rail.
+- **Eight of eleven views had no `<h1>`,** and Overview had two, so moving by
+  heading could not tell you which page had loaded. Every view has exactly one
+  now, worded the way the rail words it.
+- **Hundreds of controls were under the 24px target size** WCAG 2.5.8 asks for
+  — 935 of 957 on the Security list alone, where the per-finding actions render
+  15 to 20 pixels tall. Icon buttons drew their ink and their hit area at the
+  same number, so the mobile menu and the banner dismiss were small on every
+  view. The paint is unchanged; only the target grew.
+- **The project tree's expand control had no accessible name** and read the
+  same whether the folder was open or shut.
+
 ## [0.6.7] — 2026-09-14
 
 ### Fixed
