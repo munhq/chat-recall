@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Icon } from './primitives';
 import { TOOL_SOURCES } from '../services/tools';
+import { syncTone, syncLabel, type SyncFacts } from '../services/sync-label';
 import type { ProjectTreeNode } from '../App';
 
 export interface SidebarSection {
@@ -30,6 +31,8 @@ interface SidebarProps {
   setView?: (v: 'home' | 'decisions' | 'projects' | 'search' | 'memory' | 'tasks' | 'toolkit' | 'security' | 'health' | 'settings' | 'account' | 'admin' | 'team') => void;
   /** Views this deployment supports (/api/capabilities). Absent = all. */
   enabledViews?: Set<string>;
+  /** Collector facts for the footer status chip. Absent = render nothing. */
+  sync?: SyncFacts | null;
 }
 
 // Primary navigation — the single source of truth for the whole app now that
@@ -37,7 +40,7 @@ interface SidebarProps {
 // Every destination is visible; nothing hides behind a "More" overflow.
 // Order = the daily loop: the spine (Overview → Conversations → Projects)
 // first, then the intelligence surfaces, then Security & Deployment last.
-type NavId = 'home' | 'decisions' | 'search' | 'projects' | 'memory' | 'tasks' | 'toolkit' | 'security' | 'health' | 'team';
+type NavId = 'home' | 'decisions' | 'search' | 'projects' | 'tasks' | 'toolkit' | 'security' | 'team';
 const NAV_ITEMS: Array<{ id: NavId; label: string; icon: string }> = [
   { id: 'home', label: 'Overview', icon: 'home' },
   // Second, because it is the only screen that answers a question before work
@@ -47,7 +50,6 @@ const NAV_ITEMS: Array<{ id: NavId; label: string; icon: string }> = [
   { id: 'decisions', label: 'Decisions', icon: 'book' },
   { id: 'search', label: 'Conversations', icon: 'message' },
   { id: 'projects', label: 'Projects', icon: 'folder' },
-  { id: 'memory', label: 'Memory Hub', icon: 'brain' },
   // Not under Team: the board works for one person (your own cards), and only
   // ASSIGNING to someone else needs a team. Buried inside the team-gated view it
   // was invisible to every Solo customer who now pays for it.
@@ -55,12 +57,44 @@ const NAV_ITEMS: Array<{ id: NavId; label: string; icon: string }> = [
   { id: 'team', label: 'Team', icon: 'grid' },
   { id: 'toolkit', label: 'Skills & tools', icon: 'terminal' },
   { id: 'security', label: 'Security', icon: 'shield' },
-  // Last, and deliberately present: the collector's health had no surface at
-  // all — it lived in a Postgres table, a log file on the user's laptop and
-  // `chat-recall doctor`. The fleet panel existed but was buried inside
-  // Account, which nobody opens to ask whether their sync is working.
-  { id: 'health', label: 'System health', icon: 'server' },
+  // System health is NOT a rail item. It is one status panel, and a status
+  // belongs in a persistent indicator that is right most of the time and loud
+  // when it is not — see SyncChip in the rail footer, which opens this page.
+  // The ?view=health deep link still resolves, and enabledViews never gates it.
 ];
+
+const SYNC_TONE_COLOR: Record<string, string> = {
+  ok: 'var(--cr-ok-500)',
+  busy: 'var(--cr-info-500)',
+  warn: 'var(--cr-warn-500)',
+  unknown: 'var(--cr-fg-3)',
+};
+
+function SyncChip({ sync, onOpen }: { sync: SyncFacts; onOpen: () => void }) {
+  const tone = syncTone(sync);
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      data-testid="sync-chip"
+      title="Open system health"
+      style={{
+        display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+        padding: '10px 14px', background: 'none', cursor: 'pointer',
+        border: 0, borderTop: '1px solid var(--cr-line-1)',
+        color: 'var(--cr-fg-3)', font: 'inherit', fontSize: 12.5, textAlign: 'left',
+      }}
+    >
+      <span style={{
+        width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+        background: SYNC_TONE_COLOR[tone] ?? 'var(--cr-fg-3)',
+      }} />
+      <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {syncLabel(sync)}
+      </span>
+    </button>
+  );
+}
 
 // Tool source list comes from the central tools module — adding a tool
 // there automatically appears here. See services/tools.ts.
@@ -71,6 +105,7 @@ export default function Sidebar({
   extraSections,
   view, setView,
   enabledViews,
+  sync,
 }: SidebarProps) {
   const navItems = NAV_ITEMS.filter((n) => !enabledViews || enabledViews.has(n.id));
   return (
@@ -227,6 +262,10 @@ export default function Sidebar({
         </div>
       </div>
 
+      {/* Collector status. Quiet when healthy, which is the point: a green row
+          in the rail earns its place only by being the one thing that turns
+          amber when sync stops. Opens the panel that used to hold a rail slot. */}
+      {sync && setView && <SyncChip sync={sync} onOpen={() => setView('health')} />}
     </aside>
   );
 }

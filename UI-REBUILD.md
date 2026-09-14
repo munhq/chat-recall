@@ -87,14 +87,14 @@ makes them a table of contents rather than a screen.
 
 Each moves a component between screens, so each needs its own verification pass.
 
-- [ ] **D1** Memory Hub: graph becomes a toggle under Decisions; MemoryExplorer
+- [x] **D1** Memory Hub: graph becomes a toggle under Decisions; MemoryExplorer
       becomes a source filter inside Conversations. Rail item removed.
-- [ ] **D2** Team: member activity → Overview; share control → Settings; the
+- [x] **D2** Team: member activity → Overview; share control → Settings; the
       Tasks tab is deleted, it rendered the same component as the rail item.
       Rail item removed.
-- [ ] **D3** System health: a status chip in the rail footer, driven by the
+- [x] **D3** System health: a status chip in the rail footer, driven by the
       stale-sync alert CommandCenter already imports. `?view=health` survives.
-- [ ] **D4** `Analytics & Insights` leaves Overview for Account as `Usage`.
+- [x] **D4** `Analytics & Insights` leaves Overview for Account as `Usage`.
       Touches the entitlement gate — verify a free tenant sees no dead door.
 
 ## E — Density
@@ -136,6 +136,10 @@ Each moves a component between screens, so each needs its own verification pass.
 | 2026-09-14 | B1 | `Decisions` rail item, account scope by default, project scope control, `?view=decisions` deep link. Icon is `book`; `check` already belonged to Tasks. |
 | 2026-09-14 | B2 | The `Decisions and stack` plate renders the register instead of a graph. |
 | 2026-09-14 | C1–C4a | Project Overview is `Do next` alone. Structure and Jump-back-in deleted rather than copied — the Code lens already has Structure and Map tabs, the Conversations lens already is the archive. The stack strip followed the decisions into the Knowledge lens. `StructureSummary` and `ProjectHistory` removed. The `0 imports` / `189 imports` contradiction went with the chip row: `map.edges` is package-level and empty here, `map.fileEdges` is the 189. |
+| 2026-09-14 | D1 | Memory Hub dissolved. Graph is a toggle under Decisions; the note corpus is a `Sessions / Notes & memory` facet of Conversations. `?view=memory` redirects to Conversations so old links land on what they asked for. |
+| 2026-09-14 | D2 | Team's Tasks tab removed — it rendered the same `TeamTasks` the rail item renders, so one board sat at two addresses. Team keeps activity and sharing. |
+| 2026-09-14 | D3 | System health left the rail for a `SyncChip` in the rail footer, driven by `syncTone`/`syncLabel`. `?view=health` still resolves and is still never gated. |
+| 2026-09-14 | D4 | Overview is one screen. The usage report is an Account tab, so the plan boundary runs between pages instead of between two tabs of one rail item. |
 | 2026-09-14 | A2 | All-projects tabs are now `Overview · Do next · Code · Activity`, and the heading is `All projects` — it was `Projects & Activity`, which folded a tab into the title. |
 
 ## Not in scope, still open
