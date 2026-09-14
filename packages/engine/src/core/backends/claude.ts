@@ -7,6 +7,7 @@
  */
 
 import { existsSync, readdirSync, readFileSync, statSync, openSync, readSync, closeSync } from 'fs';
+import { memoInSessionScope } from '../live-session-scan.js';
 import { join, basename } from 'path';
 import { claudeHomeDir, claudeProjectDirs } from '../tool-paths.js';
 
@@ -296,6 +297,15 @@ export class ClaudeBackend implements ToolBackend {
    * splits show up alongside the parent.
    */
   readEvents(rawId: string): CanonicalEvent[] {
+    // Parsing the transcript into canonical events does not depend on what the
+    // caller intends to do with them, so it is memoised for the whole derive
+    // rather than per question. extractTurns asks for assistantMax 2000 and
+    // maxTurns 50000 in the same scope — two different answers, one identical
+    // parse underneath, and the parse is the expensive half.
+    return memoInSessionScope(`events:claude:${rawId}`, () => this.#readEventsUncached(rawId));
+  }
+
+  #readEventsUncached(rawId: string): CanonicalEvent[] {
     // Groups, not paths: the same logical transcript can exist in several homes
     // holding disjoint records (a session resumed under another
     // CLAUDE_CONFIG_DIR). Each group is unioned by record uuid before parsing,

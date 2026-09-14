@@ -128,6 +128,25 @@ function runTask(task: ScanTask): ScanResult {
   return { id: task.id, findings, redactions: count.redactions, rawB64, rawSize };
 }
 
+/**
+ * Hold ONE scan scope open for the life of this worker.
+ *
+ * `withSessionScanScope` invalidates the index when its OUTERMOST call
+ * returns, so wrapping each task would rebuild the index per task — exactly the
+ * cost being removed. Entering with a promise that never settles keeps the
+ * depth at one, and the worker exits with the process.
+ *
+ * Nothing awaits it. The call returns a promise that is deliberately never
+ * resolved; awaiting it would hang the worker on its first task.
+ */
+let scanScopeOpen = false;
+async function holdScanScopeOpen(): Promise<void> {
+  if (scanScopeOpen) return;
+  scanScopeOpen = true;
+  const { withSessionScanScope } = await import('@chat-recall/engine/core/live-session-scan.js');
+  void withSessionScanScope(() => new Promise<never>(() => {}));
+}
+
 async function runDerived(task: DerivedTask): Promise<DerivedResult> {
   if (task.pack && task.packVersion !== installedPackVersion) {
     installServerRulePack(task.pack);
@@ -136,7 +155,25 @@ async function runDerived(task: DerivedTask): Promise<DerivedResult> {
   // Imported lazily and INSIDE the worker: these pull the replay/outcome/turns
   // machinery and the backend registry, which the scan path never needs.
   const { collectDerivedRows } = await import('./derived.js');
+  // THE INDEX IS PER-THREAD. Finding a session builds an index of every
+  // transcript on the machine. The caller opens a scope around the whole walk,
+  // but a worker is a different thread and never saw it, so every task here
+  // rebuilt that index: 3.0s against 0ms once warm, on a machine with 10,624
+  // sessions, paid once per session forever.
+  await holdScanScopeOpen();
   const count = { redactions: 0 };
+  // THE SCOPE BELONGS TO THE WORKER, NOT TO ONE TASK.
+  //
+  // Finding a session builds an index of every transcript on the machine, and
+  // that index is per-thread: the caller opens the scope around the whole walk,
+  // but a worker is a different thread and never saw it. So every task on this
+  // thread rebuilt the index from scratch — measured at 3.0s against 0ms once
+  // warm, on a machine with 10,624 sessions, paid once per session forever.
+  //
+  // Opened once and held for the life of the worker, which is what the caller's
+  // scope is on its own thread. The index holds paths, which are small and
+  // stable; the transcript TEXT stays inside the per-derive read cache, so this
+  // is not the long-lived text cache live-session-scan.ts warns about.
   const rows = collectDerivedRows(
     { prefixedId: task.prefixedId, toolId: task.toolId, mtime: task.mtime },
     task.mtime, count, task.maxRowBytes,
