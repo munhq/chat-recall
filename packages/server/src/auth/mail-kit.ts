@@ -48,3 +48,14 @@ export async function canSendMail(): Promise<boolean> {
   const kit = await mailkit();
   return !!kit && kit.hasCopy();
 }
+
+/**
+ * Install a kit directly. TESTS ONLY.
+ *
+ * The package is an optional dependency of a private repository, so a test run
+ * does not have it and `vi.mock` cannot mock a module that is not on disk. A
+ * route that composes mail still has to be testable, so the seam takes an
+ * injection. Passing null puts it back to "this build has no mailer", which is
+ * the other state worth testing.
+ */
+export function setMailkit(kit: Kit | null): void { loaded = kit; }
