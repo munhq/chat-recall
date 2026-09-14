@@ -33,6 +33,7 @@ import { isCloud } from './services/auth';
 import { completedCheckoutSessionId } from './utils/checkout';
 import {
   getStatus,
+  getSyncStatus,
   getRecentSessionsPage,
   getConversationWithSubagents,
   searchSessions,
@@ -50,6 +51,7 @@ import {
   type MemoryMetadataRow,
   type Subagent,
   type ProjectTreeApiNode,
+  type SyncStatus,
 } from './services/api';
 
 type ViewMode = 'home' | 'decisions' | 'projects' | 'search' | 'memory' | 'tasks' | 'toolkit' | 'security' | 'health' | 'settings' | 'account' | 'connect' | 'admin' | 'team';
@@ -149,6 +151,10 @@ const URL_VIEWS = new Set<ViewMode>(['home', 'decisions', 'projects', 'search', 
 function initialViewFromUrl(): ViewMode {
   try {
     const v = new URLSearchParams(window.location.search).get('view') as ViewMode | null;
+    // Memory Hub was dissolved and its note corpus is a facet of Conversations.
+    // An old bookmark lands on the screen that now holds what it asked for,
+    // rather than snapping back to home as an unknown view.
+    if (v === 'memory') return 'search';
     if (v && URL_VIEWS.has(v)) return v;
   } catch { /* SSR / bad URL — fall through */ }
   return 'home';
@@ -165,11 +171,16 @@ export default function App() {
 function AppInner() {
   const sidebarExtras = useSidebarExtras();
   const [view, setView] = useState<ViewMode>(initialViewFromUrl);
-  const [homeSubTab, setHomeSubTab] = useState<'dashboard' | 'insights'>('dashboard');
-  // Memory now hosts the two "how you think" corpora: the knowledge GRAPH
-  // (temporal facts — previously invisible) and NOTES (plans/tasks/diary/etc).
-  // Toolkit is its own top-level view now (no longer buried here).
-  const [memorySub, setMemorySub] = useState<'graph' | 'notes'>('graph');
+  // Account's two halves: the account itself, and the usage report that used to
+  // be the paid half of Overview.
+  const [accountTab, setAccountTab] = useState<'account' | 'usage'>('account');
+  // Conversations shows sessions, or everything else those sessions left behind
+  // (plans, instruction files, pasted text, history, diary). One screen, because
+  // "what did I work on" and "what did that work leave me" are one question.
+  const [convFacet, setConvFacet] = useState<'sessions' | 'notes'>('sessions');
+  // The entity graph, under Decisions. It was half of "Memory Hub" — a word
+  // that glossed neither of the two unrelated things it held.
+  const [showKg, setShowKg] = useState(false);
   // Deployment capabilities — server mode / SaaS disables the FS-backed
   // views (activity, toolkit, settings, projects). Defaults to everything-on
   // until /api/capabilities answers, so local mode renders unchanged.
@@ -274,8 +285,8 @@ function AppInner() {
   // needs its own gate; without one a free tenant kept a door that 402s.
   const insightsAllowed = tenantFeatures === null || tenantFeatures.has('insights');
   useEffect(() => {
-    if (!insightsAllowed && homeSubTab === 'insights') setHomeSubTab('dashboard');
-  }, [insightsAllowed, homeSubTab]);
+    if (!insightsAllowed && accountTab === 'usage') setAccountTab('account');
+  }, [insightsAllowed, accountTab]);
 
   // Entitlement gate (cloud only). 'loading' until we know; 'subscribe' shows the
   // full-screen trial gate; 'ok' renders the app. No gate when billing is off
@@ -458,6 +469,10 @@ function AppInner() {
   // tree is still in flight (or after a failed fetch).
   const [treeLoaded, setTreeLoaded] = useState(false);
   const [indexHealth, setIndexHealth] = useState<{ vectorOk: boolean; vectorError: string | null } | null>(null);
+  // Collector facts for the rail's footer chip. System health lost its rail
+  // slot; the chip is what keeps "is my sync working" answerable at a glance,
+  // and it is the door to the page that slot used to open.
+  const [syncFacts, setSyncFacts] = useState<SyncStatus | null>(null);
   // Bumped by the topbar "Refresh" button to force an immediate re-fetch of
   // sessions, project tree, and status without waiting for the 30s poll.
   const [refreshNonce, setRefreshNonce] = useState(0);
@@ -465,9 +480,10 @@ function AppInner() {
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
-      Promise.all([getProjectTree(), getStatus()])
-        .then(([tree, stats]) => {
+      Promise.all([getProjectTree(), getStatus(), getSyncStatus().catch(() => null)])
+        .then(([tree, stats, sync]) => {
           if (cancelled) return;
+          setSyncFacts(sync);
           const nodes = projectTreeFromApi(tree.nodes);
           setAllTimeTree(nodes);
           setAllTimeTotal(tree.totalCount);
@@ -1106,7 +1122,31 @@ function AppInner() {
           {/* Full-width scroll pane (matches Home/Team): scrollbar sits at the
               viewport edge; AccountPage's centered column stays centered inside. */}
           <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
-            <AccountPage onClose={() => setView('search')} />
+            {/* Usage is the token, cost and cache-rate report. It was the second
+                tab of Overview, which put a plan boundary inside one rail item.
+                It is a spend report, so it sits beside the rest of the billing
+                surface, and it is gated the same optimistic way every paid
+                surface is: shown while the entitlement is unknown, because the
+                server refuses either way and a flicker costs more than hope. */}
+            <div style={{ padding: '18px 24px 0', maxWidth: 980, margin: '0 auto' }}>
+              <SegmentedControl
+                value={accountTab}
+                onChange={(v) => setAccountTab(v as 'account' | 'usage')}
+                options={[
+                  { value: 'account', label: 'Account' },
+                  ...(insightsAllowed ? [{ value: 'usage', label: 'Usage' }] : []),
+                ]}
+              />
+            </div>
+            {accountTab === 'usage' && insightsAllowed ? (
+              <Dashboard
+                onJumpToSession={handleMemorySessionClick}
+                onJumpToSearch={(q) => { setQuery(q); setView('search'); }}
+                toolFilter={toolFilter}
+              />
+            ) : (
+              <AccountPage onClose={() => setView('search')} />
+            )}
           </div>
         </div>
       ) : view === 'admin' ? (
@@ -1137,13 +1177,35 @@ function AppInner() {
                 onClick: () => { row.onClick(); closeMobileSidebar(); },
               })),
             }))}
+            sync={syncFacts}
             view={view}
             setView={handleSidebarSelectView}
             enabledViews={enabledViews}
           />
 
-          {view === 'search' && (
+          {view === 'search' && convFacet === 'notes' && (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+              <div style={{ padding: '12px 16px 0' }}>
+                <SegmentedControl
+                  value={convFacet}
+                  onChange={(v) => setConvFacet(v as 'sessions' | 'notes')}
+                  options={[{ value: 'sessions', label: 'Sessions' }, { value: 'notes', label: 'Notes & memory' }]}
+                />
+              </div>
+              <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+                <MemoryExplorer onSessionClick={handleMemorySessionClick} toolFilter={toolFilter} projectFilter={projectFilter} projectPathFilter={findProjectPath(projectTree, projectFilter)} />
+              </div>
+            </div>
+          )}
+          {view === 'search' && convFacet === 'sessions' && (
             <>
+              <div style={{ padding: '12px 16px 0' }}>
+                <SegmentedControl
+                  value={convFacet}
+                  onChange={(v) => setConvFacet(v as 'sessions' | 'notes')}
+                  options={[{ value: 'sessions', label: 'Sessions' }, { value: 'notes', label: 'Notes & memory' }]}
+                />
+              </div>
               <ConversationList
                 results={displayedSessions}
                 selected={selectedSessionId}
@@ -1188,24 +1250,12 @@ function AppInner() {
               )}
             </>
           )}
-          {view === 'memory' && (
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-              <div style={{ padding: '12px 16px 0' }}>
-                <SegmentedControl
-                  value={memorySub}
-                  onChange={(v) => setMemorySub(v as 'graph' | 'notes')}
-                  options={[{ value: 'graph', label: 'Knowledge graph' }, { value: 'notes', label: 'Notes & plans' }]}
-                />
-              </div>
-              <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-                {memorySub === 'graph' ? (
-                  <KnowledgeGraph />
-                ) : (
-                  <MemoryExplorer onSessionClick={handleMemorySessionClick} toolFilter={toolFilter} projectFilter={projectFilter} projectPathFilter={findProjectPath(projectTree, projectFilter)} />
-                )}
-              </div>
-            </div>
-          )}
+          {/* "Memory Hub" is dissolved. It held two unrelated things under a
+              word that glossed neither: the entity graph, which is now a toggle
+              under Decisions, and the note corpus, which is now a facet of
+              Conversations. ?view=memory still resolves — see
+              initialViewFromUrl — so old links land on the screen that holds
+              what they asked for. */}
           {view === 'decisions' && (
             <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
               {/* SCOPE FIRST, and account by default.
@@ -1229,6 +1279,19 @@ function AppInner() {
                 />
               </div>
               <Decisions project={projectFilter} />
+              <div style={{ padding: '0 24px 40px' }}>
+                <button
+                  type="button"
+                  onClick={() => setShowKg((v) => !v)}
+                  style={{ background: 'none', border: 0, padding: 0, cursor: 'pointer', font: 'inherit', fontSize: 13, fontWeight: 600, color: 'var(--cr-brand-500)' }}
+                >
+                  {showKg ? 'Hide the entity graph' : 'Show the entity graph'}
+                </button>
+                <div style={{ color: 'var(--cr-fg-3)', fontSize: 12.5, marginTop: 3 }}>
+                  Every fact the indexer extracted, decisions included — how things connect rather than what was settled.
+                </div>
+                {showKg && <div style={{ marginTop: 14 }}><KnowledgeGraph /></div>}
+              </div>
             </div>
           )}
           {view === 'tasks' && (
@@ -1289,37 +1352,24 @@ function AppInner() {
           )}
           {view === 'home' && (
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-              <div style={{ padding: '12px 16px 0', borderBottom: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-1)' }}>
-                <SegmentedControl
-                  value={homeSubTab}
-                  onChange={(v) => setHomeSubTab(v as 'dashboard' | 'insights')}
-                  options={[
-                    { value: 'dashboard', label: 'Command Center' },
-                    ...(insightsAllowed ? [{ value: 'insights', label: 'Analytics & Insights' }] : []),
-                  ]}
-                />
-              </div>
+              {/* ONE SCREEN, no sub-tab.
+                  Overview held Command Center and "Analytics & Insights" side
+                  by side, with the free/paid boundary running between the two
+                  tabs of one rail item — half a destination was purchasable.
+                  The spend report is a tab of Account now, beside the rest of
+                  the billing surface, and the plan boundary runs between pages. */}
               <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-                {homeSubTab === 'dashboard' ? (
-                  <CommandCenter
-                    setView={(v) => {
-                      if (v === 'dashboard') {
-                        if (insightsAllowed) setHomeSubTab('insights');
-                      } else {
-                        setView(v as ViewMode);
-                      }
-                    }}
-                    onOpenProject={(id) => { setProjectFilter(id); setToolFilter('all'); setView('projects'); }}
-                    onFocusProjects={(emphasis) => { setProjectsEmphasis(emphasis); setProjectFilter(null); setToolFilter('all'); setView('projects'); }}
-                    cloud={capabilities?.edition === 'cloud'}
-                  />
-                ) : (
-                  <Dashboard
-                    onJumpToSession={handleMemorySessionClick}
-                    onJumpToSearch={(q) => { setQuery(q); setView('search'); }}
-                    toolFilter={toolFilter}
-                  />
-                )}
+                <CommandCenter
+                  setView={(v) => {
+                    // CommandCenter still says 'dashboard' when it means the
+                    // usage report. That report lives in Account now.
+                    if (v === 'dashboard') setView('account');
+                    else setView(v as ViewMode);
+                  }}
+                  onOpenProject={(id) => { setProjectFilter(id); setToolFilter('all'); setView('projects'); }}
+                  onFocusProjects={(emphasis) => { setProjectsEmphasis(emphasis); setProjectFilter(null); setToolFilter('all'); setView('projects'); }}
+                  cloud={capabilities?.edition === 'cloud'}
+                />
               </div>
             </div>
           )}

@@ -5,12 +5,17 @@ import {
   type TeamActivityResponse, type ProjectShare,
 } from '../services/api';
 import { Button, Card, Chip, Avatar, Input, Metrics, Schedule } from './primitives';
-import TeamTasks from './TeamTasks';
 
 /**
- * Team view (Phase 2) — "what did each teammate do, per project", plus the
- * per-project sharing control. The activity list is RLS-scoped by the server to
- * what this member may see (own + team-shared), so nothing private ever renders.
+ * Team — "what did each teammate do, per project", plus the per-project sharing
+ * control. The activity list is RLS-scoped by the server to what this member may
+ * see (own + team-shared), so nothing private ever renders.
+ *
+ * THE TASKS TAB IS GONE. It rendered TeamTasks — the identical component the
+ * Tasks rail item renders — so the same board lived at two addresses and the
+ * word "Tasks" meant two things depending on which one you had opened. The
+ * board serves one person and only ASSIGNING needs a team, which is why it is a
+ * rail item; a second copy here bought nothing and cost a collision.
  */
 export default function TeamView({ onOpenProject }: { onOpenProject?: (projectId: string) => void }) {
   const [teamSlug, setTeamSlug] = useState<string | null>(null);
@@ -19,7 +24,6 @@ export default function TeamView({ onOpenProject }: { onOpenProject?: (projectId
   const [act, setAct] = useState<TeamActivityResponse | null>(null);
   const [shares, setShares] = useState<ProjectShare[]>([]);
   const [sinceDays, setSinceDays] = useState<number>(30);
-  const [tab, setTab] = useState<'activity' | 'tasks'>('activity');
   const [newProject, setNewProject] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -95,18 +99,13 @@ export default function TeamView({ onOpenProject }: { onOpenProject?: (projectId
           <h1>Team{teamName ? ` · ${teamName}` : ''}</h1>
           <p className="muted">What the team has been working on. You see your own work plus projects teammates have shared.</p>
         </div>
-        {tab === 'activity' && (
+        {(
           <div className="team-range">
             {[7, 30, 90].map((d) => (
               <Button key={d} variant={sinceDays === d ? 'primary' : 'ghost'} onClick={() => setSinceDays(d)}>{d}d</Button>
             ))}
           </div>
         )}
-      </div>
-
-      <div className="team-tabs">
-        <Button variant={tab === 'activity' ? 'primary' : 'ghost'} onClick={() => setTab('activity')}>Activity</Button>
-        <Button variant={tab === 'tasks' ? 'primary' : 'ghost'} onClick={() => setTab('tasks')}>Tasks</Button>
       </div>
 
       {gated && (
@@ -118,8 +117,7 @@ export default function TeamView({ onOpenProject }: { onOpenProject?: (projectId
       )}
       {err && <div className="team-err">{err}</div>}
 
-      {tab === 'tasks' && <TeamTasks members={act?.members ?? []} mySub={mySub} />}
-      {tab === 'activity' && (
+      {(
       <>
       <Metrics
         caption="Team activity"
