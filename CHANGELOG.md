@@ -4,6 +4,37 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.6.6] — 2026-09-14
+
+### Added
+- **The board moves itself.** A prompt that names a card id (`t_…`) claims that
+  card and links your session to it; a commit message that names one closes it,
+  carrying the shas and the files as the evidence the board asks for. Both
+  halves install from `chat-recall init`, on macOS, Linux and Windows — they run
+  the CLI directly, so they need no shell script and no POSIX shell. `doctor`
+  reports the pair per profile.
+
+  Until now nothing in the product ever set `in_progress` or `done`. Every
+  reference to them was a status enum, a glyph, or prose telling the agent to
+  call `recall_task_update` by hand — and that call is the step that gets
+  skipped whenever the work itself goes well.
+
+### Changed
+- **Transactional mail moved to `@munhq/mailkit` and a copy pack.** This
+  repository is public, and eleven messages lived in it as string literals:
+  their subjects, bodies, send schedule and the reasoning behind each one. The
+  renderer and the words are both out of here now. Mail is a hosted-service
+  feature, so the package is an optional dependency and a self-host build omits
+  it entirely — the server then logs that it has no mailer and runs on.
+
+### Fixed
+- **`install-hooks` registered one hook per event and dropped the rest.** It
+  read the first match, so a second hook on `UserPromptSubmit` or `SessionEnd`
+  vanished without a word.
+- **`doctor` reported hooks as healthy when half of them were missing**, because
+  it asked whether an event carried any chat-recall command at all.
+- **The contact form left a request hanging** when the build carried no mailer.
+
 ## [0.6.5] — 2026-09-12
 
 ### Added
