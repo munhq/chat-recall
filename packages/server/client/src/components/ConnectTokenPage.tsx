@@ -58,17 +58,32 @@ export default function ConnectTokenPage() {
   // destination.
   useEffect(() => {
     if (state !== 'done') return;
+    let cancelled = false;
+    // WHAT COUNTS AS "the first data" IS A CHANGE, NOT A COUNT.
+    //
+    // This asked `s.sessions > 0` and left, which is true for anybody who has
+    // ever synced. On an account with 846 sessions the first poll fired 5
+    // seconds after the page opened and replaced the location, so the install
+    // page bounced every existing user to the dashboard before they could copy
+    // the token. The one page a second machine needs was unreachable from an
+    // account that had used the product.
+    //
+    // The baseline is whatever was already there when this page opened. Only a
+    // count ABOVE it means data arrived from the machine being connected.
+    let baseline: number | null = null;
     const t = setInterval(async () => {
       try {
         const s = await getSyncStatus();
-        if (s.sessions > 0) {
+        if (cancelled) return;
+        if (baseline === null) { baseline = s.sessions; return; }
+        if (s.sessions > baseline) {
           setSynced(s.sessions);
           clearInterval(t);
-          setTimeout(() => { window.location.replace('/'); }, 1500);
+          setTimeout(() => { if (!cancelled) window.location.replace('/'); }, 1500);
         }
       } catch { /* keep polling */ }
     }, 5000);
-    return () => clearInterval(t);
+    return () => { cancelled = true; clearInterval(t); };
   }, [state]);
 
   return (
