@@ -4,9 +4,9 @@ import {
   mayClaim, mayClose, COMMIT_LOG_FORMAT, MAX_EVIDENCE_COMMITS, MAX_EVIDENCE_FILES,
 } from './task-hook.js';
 
-/** A real id shape: `t_` plus 18 hex characters. */
-const ID_A = 't_73f0aed74703924a96';
-const ID_B = 't_26fe22c61bcd26a359';
+/** The id SHAPE: `t_` plus 18 hex characters. Invented, not read off a board. */
+const ID_A = 't_0123456789abcdef01';
+const ID_B = 't_fedcba9876543210fe';
 
 describe('extractTaskIds', () => {
   test('finds an id in a sentence', () => {
@@ -28,8 +28,8 @@ describe('extractTaskIds', () => {
   });
 
   test('ignores the wrong length and non-hex characters', () => {
-    expect(extractTaskIds('t_73f0aed74703924a9')).toEqual([]);       // 17
-    expect(extractTaskIds('t_73f0aed74703924zz9')).toEqual([]);      // z is not hex
+    expect(extractTaskIds('t_0123456789abcdef0')).toEqual([]);       // 17
+    expect(extractTaskIds('t_0123456789abcdefzz')).toEqual([]);      // z is not hex
     expect(extractTaskIds('t_')).toEqual([]);
   });
 
