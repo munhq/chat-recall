@@ -370,11 +370,12 @@ program
   .option('--with-codeindex', 'Force-download the codeindex binary during init. Default behavior is to detect an already-installed codeindex on PATH and register it as an MCP server.')
   .option('--skip-codeindex', 'Skip the codeindex companion entirely (no detection, no registration).')
   .option('--skip-service', 'Skip installing the per-user background sync service (Linux/macOS/Windows). By default init installs it so new conversations ship automatically.')
+  .option('--skip-hooks', 'Skip registering the task-board hooks')
   .option('--yes', 'Do not pause before the first upload. The scope summary still prints.', false)
   // For a non-terminal caller (the MCP) that must relay the sign-in link into a
   // conversation instead of printing it to a console nobody is reading.
   .option('--prompt-json', 'Print the device prompt as one JSON line on stdout, then continue', false)
-  .action(async (options: { server?: string; token?: string; skipMcp?: boolean; skipSync?: boolean; withCodeindex?: boolean; skipCodeindex?: boolean; skipService?: boolean; yes?: boolean; promptJson?: boolean }) => {
+  .action(async (options: { server?: string; token?: string; skipMcp?: boolean; skipSync?: boolean; withCodeindex?: boolean; skipCodeindex?: boolean; skipService?: boolean; skipHooks?: boolean; yes?: boolean; promptJson?: boolean }) => {
     try {
       // THE VERSION, ON THE FIRST LINE.
       //
@@ -840,6 +841,23 @@ program
       // One line. The second sentence is an opt-in for a minority case and was
       // costing every user a line during setup; it lives in `--help` and the docs.
       void options.skipService; // retained for back-compat; no longer changes behaviour
+
+      // Step 7: the task-board hooks.
+      //
+      // `init` installed no hooks at all, so the board moved only for someone
+      // who had separately run `install-hooks` — and on Windows that command
+      // refuses. These two need no script and no POSIX shell (see
+      // board-hooks.ts), so every user gets the loop from setup: a prompt that
+      // names a card id claims it, a commit message that names one closes it.
+      if (!options.skipHooks) {
+        try {
+          const { registerBoardHooks, resolveCliEntry } = await import('./board-hooks.js');
+          const { fileURLToPath: toPath } = await import('url');
+          const distDir = toPath(new URL('.', import.meta.url));
+          const written = registerBoardHooks(claudeHookConfigFiles(), process.execPath, resolveCliEntry(distDir));
+          if (written.length) rep.done(chalk.green('✓ Task-board hooks registered'));
+        } catch { /* setup completes without them; `install-hooks` retries */ }
+      }
 
       // Done
       rep.done(chalk.green.bold('✓ Done'));
@@ -1667,7 +1685,10 @@ program
         const boardHits = boardEvents.filter((ev) => [
           ...(Array.isArray(cfg[ev]) ? cfg[ev] : []),
           ...(Array.isArray(settings[ev]) ? settings[ev] : []),
-        ].some((h: any) => (h.hooks?.[0]?.command || '').includes('chat_recall_task_hook')));
+        ].some((h: any) => {
+          const cmd = h.hooks?.[0]?.command || '';
+          return cmd.includes('task-hook') && (cmd.includes('--claim') || cmd.includes('--close'));
+        }));
         note(boardHits.length === boardEvents.length, `Task board hooks (${profile})`,
           boardHits.length === 0 ? 'not registered — run `chat-recall install-hooks`'
             : boardHits.length === boardEvents.length ? 'claim on a prompt, close on a commit'
@@ -3121,6 +3142,12 @@ program
     // trace into a turn is one the user removes, and the board then goes back
     // to being updated by hand — which is the state this command exists to end.
     if (process.env.CHAT_RECALL_TASK_HOOK === '0') return;
+    // No shell wrapper stands in front of this, so there is no `timeout` to
+    // bound it: Claude Code runs the CLI directly, which is what lets these two
+    // hooks work on Windows. The ceiling lives here instead. `unref` keeps the
+    // timer from holding the process open when the work finishes first.
+    const deadline = setTimeout(() => process.exit(0), opts.close ? 20_000 : 10_000);
+    deadline.unref();
     try {
       const {
         extractTaskIds, parseCommitLog, planCloses, parseChangedFiles,
@@ -3256,6 +3283,8 @@ program
   .action(async (opts: { uninstall?: boolean; resumeHint?: boolean; escalate?: boolean; wakeup?: boolean; guard?: boolean; taskBoard?: boolean }) => {
     const { mkdirSync, copyFileSync, chmodSync, existsSync, readFileSync, writeFileSync, statSync, unlinkSync } = await import('fs');
     const { fileURLToPath } = await import('url');
+    const { boardHookEntries, isBoardHookEntry, registerBoardHooks, resolveCliEntry } =
+      await import('./board-hooks.js');
 
     // Locate the bundled hook scripts. When installed via npm the files live
     // at <pkg>/hooks/*.sh; in development they sit next to src/.
@@ -3276,7 +3305,6 @@ program
     const sourceResumeHook = findHook('chat_recall_resume_hook.sh');
     const sourceEscalateHook = findHook('chat_recall_escalate_hook.sh');
     const sourceWakeupHook = findHook('chat_recall_wakeup_hook.sh');
-    const sourceTaskHook = findHook('chat_recall_task_hook.sh');
     if (!sourceSaveHook) {
       console.error(chalk.red('Could not locate chat_recall_save_hook.sh in the package.'));
       process.exit(1);
@@ -3288,7 +3316,6 @@ program
     const installedResumeHook = join(hooksDir, 'chat_recall_resume_hook.sh');
     const installedEscalateHook = join(hooksDir, 'chat_recall_escalate_hook.sh');
     const installedWakeupHook = join(hooksDir, 'chat_recall_wakeup_hook.sh');
-    const installedTaskHook = join(hooksDir, 'chat_recall_task_hook.sh');
 
     /**
      * True when this profile's settings.json ALREADY registers our SessionStart
@@ -3334,9 +3361,8 @@ program
         cmd.includes('chat_recall_resume_hook.sh') ||
         cmd.includes('chat_recall_escalate_hook.sh') ||
         cmd.includes('chat_recall_wakeup_hook.sh') ||
-        cmd.includes('chat_recall_guard_hook.sh') ||
-        cmd.includes('chat_recall_task_hook.sh')
-      );
+        cmd.includes('chat_recall_guard_hook.sh')
+      ) || isBoardHookEntry(h);
     };
 
     // SessionStart joins the list every loop below iterates, so a reinstall or
@@ -3436,14 +3462,26 @@ program
     // hook on every turn is worse than no hook at all, and a wrong green check
     // is worse than both.
     if (process.platform === 'win32') {
-      console.log(chalk.yellow('Hooks are not installed on Windows.'));
+      // The BOARD hooks still install here. They run `chat-recall task-hook`,
+      // which is the CLI itself, so cmd.exe runs them the way sh does — the
+      // refusal below is about the five POSIX scripts and nothing else.
+      if (opts.taskBoard !== false && !opts.uninstall) {
+        const written = registerBoardHooks(hookConfigFiles, process.execPath, resolveCliEntry(here));
+        if (written.length) {
+          console.log(chalk.green('✓ Registered the chat-recall task-board hooks'));
+          console.log(chalk.dim('  A prompt naming a card id claims it; a commit message naming one closes it.'));
+          for (const f of written) console.log(chalk.dim(`  ${f}`));
+          console.log();
+        }
+      }
+      console.log(chalk.yellow('The five shell hooks are not installed on Windows.'));
       console.log(chalk.dim('  They are POSIX shell scripts, and Claude Code runs hook commands through'));
       console.log(chalk.dim('  cmd.exe, which cannot execute them. Registering them would put an error on'));
       console.log(chalk.dim('  every turn instead of saving anything.'));
       console.log(chalk.dim(''));
-      console.log(chalk.dim('  Everything else works: indexing, sync, search and the MCP server are'));
-      console.log(chalk.dim('  unaffected. Hooks only add automatic fact-saving and the wake-up bundle,'));
-      console.log(chalk.dim('  and you can get the same context by calling recall_wake_up from the agent.'));
+      console.log(chalk.dim('  Everything else works: indexing, sync, search, the MCP server and the'));
+      console.log(chalk.dim('  board hooks above. The five scripts add automatic fact-saving and the'));
+      console.log(chalk.dim('  wake-up bundle; recall_wake_up gives an agent the same context on demand.'));
       console.log(chalk.dim(''));
       console.log(chalk.dim('  Under WSL, run this from inside the WSL shell and it installs normally.'));
       return;
@@ -3481,14 +3519,9 @@ program
       chmodSync(installedWakeupHook, 0o755);
     }
 
-    const installTaskBoard = opts.taskBoard !== false && !!sourceTaskHook;
-    if (opts.taskBoard !== false && !sourceTaskHook) {
-      console.error(chalk.yellow('! chat_recall_task_hook.sh is not in this package — the board hooks are not installed.'));
-    }
-    if (installTaskBoard) {
-      copyFileSync(sourceTaskHook!, installedTaskHook);
-      chmodSync(installedTaskHook, 0o755);
-    }
+    // The board hooks run the CLI itself, so they need no script on disk and no
+    // POSIX shell. See board-hooks.ts.
+    const installTaskBoard = opts.taskBoard !== false;
 
     const stopEntry = { matcher: '', hooks: [{ type: 'command', command: installedSaveHook }] };
     // Quoted: the path contains the user's home directory, and a space in it
@@ -3511,8 +3544,7 @@ program
 
     // The board, both halves. The claim runs on the prompt that names a card;
     // the close runs at session end and reads the commits that named one.
-    const taskClaimEntry = { matcher: '', hooks: [{ type: 'command', command: `"${installedTaskHook}" --claim` }] };
-    const taskCloseEntry = { matcher: '', hooks: [{ type: 'command', command: `"${installedTaskHook}" --close` }] };
+    const boardEntries = boardHookEntries(process.execPath, resolveCliEntry(here));
 
     const events: Array<[string, any]> = [
       ['Stop', stopEntry],
@@ -3521,10 +3553,7 @@ program
     if (installResume) events.push(['UserPromptSubmit', resumeEntry]);
     if (installEscalate) events.push(['SessionEnd', escalateEntry]);
     if (installGuard) events.push(['PreToolUse', guardEntry]);
-    if (installTaskBoard) {
-      events.push(['UserPromptSubmit', taskClaimEntry]);
-      events.push(['SessionEnd', taskCloseEntry]);
-    }
+    if (installTaskBoard) for (const pair of boardEntries) events.push(pair);
 
     // Always strip our prior UserPromptSubmit/SessionEnd entries too — even
     // when reinstalling with those hooks disabled, so we don't leave orphan
@@ -3572,8 +3601,7 @@ program
       console.log(chalk.green(`✓ Installed chat-recall decision guard (${guardSz} bytes)`));
     }
     if (installTaskBoard) {
-      const taskSz = statSync(installedTaskHook).size;
-      console.log(chalk.green(`✓ Installed chat-recall task-board hooks (${taskSz} bytes)`));
+      console.log(chalk.green('✓ Registered the chat-recall task-board hooks'));
       console.log(chalk.dim('  A prompt naming a card id claims it; a commit message naming one closes it.'));
     }
     if (installWakeup) {
