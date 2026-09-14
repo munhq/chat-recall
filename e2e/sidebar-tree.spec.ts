@@ -50,7 +50,10 @@ async function mockApi(page: Page) {
 test.describe('Project sidebar tree', () => {
   test.beforeEach(async ({ page }) => {
     await mockApi(page);
-    await page.goto('/');
+    // The project tree renders only on views that read a project filter
+    // (VIEW_FILTERS in components/Sidebar.tsx). Overview is not one of them,
+    // so this lands on Conversations, which is.
+    await page.goto('/?view=search');
     await page.waitForSelector('[data-testid="project-all"]', { timeout: 15000 });
   });
 
@@ -195,7 +198,10 @@ test.describe('Project sidebar tree — edge cases', () => {
       r.fulfill({ status: 200, contentType: 'application/json', body: '{"sessions":[],"count":0}' })
     );
 
-    await page.goto('/');
+    // The project tree renders only on views that read a project filter
+    // (VIEW_FILTERS in components/Sidebar.tsx). Overview is not one of them,
+    // so this lands on Conversations, which is.
+    await page.goto('/?view=search');
     await page.waitForSelector('[data-testid="project-all"]');
 
     // Single project collapses to a single top-level leaf.
@@ -224,7 +230,10 @@ test.describe('Project sidebar tree — edge cases', () => {
       r.fulfill({ status: 200, contentType: 'application/json', body: '{"sessions":[],"count":0}' })
     );
 
-    await page.goto('/');
+    // The project tree renders only on views that read a project filter
+    // (VIEW_FILTERS in components/Sidebar.tsx). Overview is not one of them,
+    // so this lands on Conversations, which is.
+    await page.goto('/?view=search');
     await page.waitForSelector('[data-testid="project-all"]');
 
     // Two disjoint trees: both paths should appear as leaves/nodes

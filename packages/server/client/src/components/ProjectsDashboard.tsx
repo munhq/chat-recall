@@ -112,11 +112,14 @@ export default function ProjectsDashboard({
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       {/* Header */}
       <div className="cr-pad-mobile" style={{ padding: '24px 28px 12px', flexShrink: 0 }}>
+        {/* The heading names the SCOPE, and the tabs below name the view. The
+            old "Projects & Activity" folded one of the tabs into the title, so
+            the title and the tab row disagreed about what this screen was. */}
         <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-          Projects &amp; Activity
+          All projects
         </h2>
         <div style={{ color: 'var(--cr-fg-2)', fontSize: 13, marginTop: 4 }}>
-          Every repository your sessions touched.
+          Every repository your sessions touched. Pick one to narrow these same views to it.
         </div>
       </div>
 
@@ -125,11 +128,22 @@ export default function ProjectsDashboard({
         <SegmentedControl
           value={activeTab}
           onChange={(v) => setActiveTab(v as TabId)}
+          // THE SAME FIVE WORDS A SINGLE PROJECT USES.
+          //
+          // This row read "Active Repositories · Findings · Global Activity ·
+          // System Code Map" — a private vocabulary for one scope. Three of the
+          // four were the project lenses under longer names: Findings and
+          // System Code Map are both Code, Global Activity is Activity. A
+          // reader had to learn two sets of words for one feature, and learn
+          // that they mapped onto each other.
+          //
+          // Now the scope changes and the words do not. See LENSES in
+          // ProjectWorkspace.tsx — these labels track that list.
           options={[
-            { value: 'repos', label: 'Active Repositories' },
-            { value: 'findings', label: 'Findings' },
-            { value: 'activity', label: 'Global Activity' },
-            { value: 'code', label: 'System Code Map' },
+            { value: 'repos', label: 'Overview' },
+            { value: 'findings', label: 'Do next' },
+            { value: 'code', label: 'Code' },
+            { value: 'activity', label: 'Activity' },
           ]}
         />
       </div>

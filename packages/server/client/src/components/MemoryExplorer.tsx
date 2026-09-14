@@ -40,13 +40,41 @@ import {
 const SOURCE_TABS: Array<{ id: SourceType | 'all'; label: string }> = [
   { id: 'all', label: 'Everything' },
   { id: 'plan', label: 'Plans' },
-  // CLAUDE.md / GEMINI.md / AGENTS.md all live in this source type.
-  { id: 'claude_md', label: 'Notes' },
-  { id: 'task', label: 'Tasks' },
-  { id: 'paste', label: 'Pastebin' },
+  // CLAUDE.md / GEMINI.md / AGENTS.md all live in this source type, so the
+  // label names what the files ARE. "Notes" named none of them and read as
+  // something the user had typed.
+  { id: 'claude_md', label: 'Instruction files' },
+  // 'task' is deliberately absent FROM THE TABS. The Tasks rail item owns that
+  // word, and one noun meaning two things on two surfaces is the collision this
+  // pass removes. Task rows are still browsed, searched and counted — see
+  // BROWSE_SOURCES and SOURCE_LABELS below, which is why those lists exist
+  // separately from this one.
+  { id: 'paste', label: 'Pasted text' },
   { id: 'history', label: 'History' },
   { id: 'diary', label: 'Diary' },
 ];
+
+/**
+ * Every primitive source "Everything" pulls from.
+ *
+ * Kept apart from SOURCE_TABS because a source can be browsable without owning
+ * a tab. Building this list from the tabs meant that dropping the Tasks tab
+ * also dropped task rows out of Everything — the rows vanished from the product
+ * because a label was renamed.
+ */
+const BROWSE_SOURCES: readonly SourceType[] = [
+  'plan', 'claude_md', 'task', 'paste', 'history', 'diary',
+];
+
+/** Display name per source, including the ones with no tab of their own. */
+const SOURCE_LABELS: Record<string, string> = {
+  plan: 'Plans',
+  claude_md: 'Instruction files',
+  task: 'Tasks',
+  paste: 'Pasted text',
+  history: 'History',
+  diary: 'Diary',
+};
 
 /** Source-types whose rows carry a meaningful per-tool tag (extra.tool). */
 const TOOL_FILTERABLE: ReadonlySet<SourceType | 'all'> = new Set(['plan', 'claude_md', 'task']);
@@ -164,7 +192,7 @@ export default function MemoryExplorer({ onSessionClick, toolFilter = 'all', pro
     } else if (activeType === 'all' && query === '') {
       // "Everything" browse: pull a mixed recent page across the primitive sources.
       setLoading(true); setError(null);
-      Promise.all(SOURCE_TABS.filter(t => t.id !== 'all').map(t => browseMemory(t.id as SourceType, 40).catch(() => [])))
+      Promise.all(BROWSE_SOURCES.map(t => browseMemory(t, 40).catch(() => [])))
         .then(lists => setItems(scopeToProject(lists.flat().sort((a, b) => b.mtime - a.mtime))))
         .catch((e) => setError(errMsg(e, 'load your memory')))
         .finally(() => setLoading(false));
@@ -281,9 +309,8 @@ export default function MemoryExplorer({ onSessionClick, toolFilter = 'all', pro
   // Overview tiles from status — total memory + a compact source breakdown.
   const overview = useMemo(() => {
     if (!status) return null;
-    const order = ['plan', 'claude_md', 'task', 'paste', 'history', 'diary'];
-    const byType = order
-      .map(k => ({ k, label: SOURCE_TABS.find(t => t.id === k)?.label || k, n: status.bySourceType[k]?.items || 0 }))
+    const byType = BROWSE_SOURCES
+      .map(k => ({ k, label: SOURCE_LABELS[k] ?? k, n: status.bySourceType[k]?.items || 0 }))
       .filter(x => x.n > 0);
     return { total: status.totalItems, chunks: status.totalChunks, byType };
   }, [status]);

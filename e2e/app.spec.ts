@@ -10,10 +10,22 @@ import { test, expect, type Page } from '@playwright/test';
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Land on Conversations and wait for its data.
+ *
+ * This used to `goto('/')` and wait for `project-all`. Both halves were wrong,
+ * and the suite never caught it because Playwright's desktop browser was not
+ * installed on this machine, so every chromium test failed in 2ms and the run
+ * still exited 0.
+ *
+ * The app opens on Overview, not Conversations. And the project tree now
+ * renders only on the views that read a project filter — Overview is not one of
+ * them (see VIEW_FILTERS in components/Sidebar.tsx). Waiting for the tree on
+ * the landing view waits for something that is deliberately not there.
+ */
 async function waitForLoad(page: Page) {
-  // Wait for the sidebar + "All Projects" item to be visible (data loaded)
+  if (!page.url().includes('view=search')) await page.goto('/?view=search');
   await page.waitForSelector('[data-testid="project-all"]', { timeout: 15000 });
-  // Wait for recent sessions panel to appear too
   await page.waitForSelector('[data-testid="recent-sessions"]', { timeout: 15000 }).catch(() => {});
 }
 
@@ -23,7 +35,6 @@ async function waitForLoad(page: Page) {
 
 test.describe('App loads', () => {
   test('shows the header with title and nav buttons', async ({ page }) => {
-    await page.goto('/');
     await waitForLoad(page);
 
     // Brand text lives in a span (data-testid="brand"), not an <h1>.
@@ -31,15 +42,23 @@ test.describe('App loads', () => {
     await expect(page.getByTestId('nav-search')).toBeVisible();
     // Nav moved to the left rail — every destination is visible at once,
     // nothing hides behind a "More" overflow anymore.
-    await expect(page.getByTestId('nav-memory')).toBeVisible();
+    await expect(page.getByTestId('nav-decisions')).toBeVisible();
   });
 
-  test('defaults to conversations view', async ({ page }) => {
+  test('opens on Overview, with the rail and the status chip', async ({ page }) => {
     await page.goto('/');
-    await waitForLoad(page);
+    await expect(page.getByTestId('project-sidebar')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId('nav-home')).toHaveAttribute('aria-current', 'page');
+    // Overview reads neither filter, so the rail carries nav and the collector
+    // chip and nothing that would do nothing.
+    await expect(page.getByTestId('project-all')).toHaveCount(0);
+    await expect(page.getByTestId('sync-chip')).toBeVisible({ timeout: 15000 });
+  });
 
-    await expect(page.getByTestId('search-layout')).toBeVisible();
-    await expect(page.getByTestId('project-sidebar')).toBeVisible();
+  test('Conversations shows the session list and the project tree', async ({ page }) => {
+    await waitForLoad(page);
+    await expect(page.getByTestId('project-all')).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Sessions$/ })).toBeVisible();
   });
 });
 
@@ -49,7 +68,6 @@ test.describe('App loads', () => {
 
 test.describe('Project sidebar', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/');
     await waitForLoad(page);
   });
 
@@ -109,7 +127,6 @@ test.describe('Project sidebar', () => {
 
 test.describe('Conversations list', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/');
     await waitForLoad(page);
   });
 
@@ -155,7 +172,6 @@ test.describe('Conversations list', () => {
 
 test.describe('Search', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/');
     await waitForLoad(page);
   });
 
@@ -217,27 +233,30 @@ test.describe('Search', () => {
 
 test.describe('Navigation', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/');
     await waitForLoad(page);
   });
 
-  test('switching to Memory tab shows memory explorer', async ({ page }) => {
-    await page.getByTestId('nav-memory').click();
+  // The memory explorer is a FACET of Conversations now, not a rail item. It
+  // held half of "Memory Hub", a word that glossed neither of the two unrelated
+  // things it contained.
+  test('the Notes & memory facet shows the memory explorer', async ({ page }) => {
+    await page.getByTestId('nav-search').click();
+    await page.getByRole('button', { name: /^Notes & memory$/ }).click();
 
-    // Memory explorer should appear
     await expect(page.locator('.memory-explorer, [data-testid="memory-explorer"]')).toBeVisible({
       timeout: 5000,
     });
 
-    // Search layout should be gone
-    await expect(page.getByTestId('search-layout')).not.toBeVisible();
+    // The session list is gone while the note corpus is showing.
+    await expect(page.getByTestId('recent-sessions')).toHaveCount(0);
   });
 
-  test('switching back to Conversations shows search layout', async ({ page }) => {
-    await page.getByTestId('nav-memory').click();
+  test('switching back to Sessions shows search layout', async ({ page }) => {
     await page.getByTestId('nav-search').click();
+    await page.getByRole('button', { name: /^Notes & memory$/ }).click();
+    await page.getByRole('button', { name: /^Sessions$/ }).click();
 
-    await expect(page.getByTestId('search-layout')).toBeVisible();
+    await expect(page.getByTestId('memory-explorer')).toHaveCount(0);
     await expect(page.getByTestId('project-sidebar')).toBeVisible();
   });
 });

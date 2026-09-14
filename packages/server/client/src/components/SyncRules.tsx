@@ -83,7 +83,7 @@ export default function SyncRules() {
       </div>
       <div style={{
         color: 'var(--cr-fg-2)', fontSize: 12.5, lineHeight: 1.5, marginBottom: 14,
-        padding: '9px 12px', borderRadius: 'var(--cr-radius-md)',
+        padding: '9px 12px',
         border: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-1)',
       }}>
         Pictures, Music, Movies, Documents, Desktop and Downloads are
@@ -96,7 +96,7 @@ export default function SyncRules() {
           so they get an explicit prompt rather than an easily-missed checkbox. */}
       {sources.filter((x) => x.decision === 'pending' && !approvedSources.includes(x.id)).length > 0 && (
         <div style={{
-          margin: '0 0 16px', padding: '12px 14px', borderRadius: 'var(--cr-radius-md)',
+          margin: '0 0 16px', padding: '12px 14px',
           border: '1px solid var(--cr-warn-500)', background: 'var(--cr-ink-1)',
         }}>
           <div style={{ fontWeight: 700, color: 'var(--cr-fg-1)', marginBottom: 6 }}>
@@ -230,7 +230,7 @@ export default function SyncRules() {
         rows={4}
         style={{
           width: '100%', marginTop: 8, font: 'inherit', fontSize: 12.5, padding: '8px 10px',
-          borderRadius: 'var(--cr-radius-md)', border: '1px solid var(--cr-line-2)',
+          border: '1px solid var(--cr-line-2)',
           background: 'var(--cr-ink-0)', color: 'var(--cr-fg-1)', resize: 'vertical',
         }}
       />
