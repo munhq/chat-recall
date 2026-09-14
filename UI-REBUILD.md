@@ -19,7 +19,12 @@ migrations.
 
 ## Conventions
 
-- Run `npx tsc -b` after every task. It must stay clean.
+- **`npx tsc -b` from the repo root does NOT type-check the client.** The
+  client is checked by its own `tsc` in its build script, so a broken component
+  passes the root build. Verify with:
+  `cd packages/server/client && npx tsc --noEmit -p tsconfig.json`
+  Run BOTH after every task. And never read the exit code through a pipe —
+  `npx tsc -b | head` reports head's status, not tsc's.
 - The app runs at `http://127.0.0.1:5174`; the API at `http://127.0.0.1:5000`.
 - **Force the theme** with `localStorage.setItem('cr-theme', 'light'|'dark')`.
   The app ignores `prefers-color-scheme`, so a context `colorScheme` option
@@ -47,10 +52,10 @@ Label and routing work. No component moves.
 
 ## B — The register gets a route
 
-- [ ] **B1** `Decisions` rail item at position two, account scope by default,
+- [x] **B1** `Decisions` rail item at position two, account scope by default,
       with the same `All projects | <project>` control A2 introduces.
       `Sidebar.tsx`, `App.tsx`
-- [ ] **B2** The plate titled `Decisions and stack` renders no decisions. Render
+- [x] **B2** The plate titled `Decisions and stack` renders no decisions. Render
       `<Decisions project={canonicalId} embedded />` in it.
       `ProjectWorkspace.tsx:304, :312`
 - [ ] **B3** Knowledge-graph facts become writable from the UI. `POST /api/kg/add`
@@ -63,7 +68,7 @@ Label and routing work. No component moves.
 `Overview · Do next · Code · Activity`; a project is
 `Overview · Code · Conversations · Activity · Knowledge`. C4a closes the gap.
 
-- [ ] **C4a** `Do next` becomes a project lens of its own, so both scopes name
+- [x] **C4a** `Do next` becomes a project lens of its own, so both scopes name
       the same views. Falls out of C1–C3 — once the other three sections leave
       Overview, what remains IS Do next.
 
@@ -71,11 +76,11 @@ Label and routing work. No component moves.
 Three of its four sections ship with a link to the tab that owns them, which
 makes them a table of contents rather than a screen.
 
-- [ ] **C1** `Structure` leaves Overview; Code lens owns it.
-- [ ] **C2** `Decisions and stack` leaves Overview; Knowledge lens owns it.
+- [x] **C1** `Structure` leaves Overview; Code lens owns it.
+- [x] **C2** `Decisions and stack` leaves Overview; Knowledge lens owns it.
       (Supersedes B2 — B2 is the stopgap if C lands later.)
-- [ ] **C3** `Jump back in` leaves Overview; Conversations lens owns it.
-- [ ] **C4** `0 imports` and `189 imports` print on one screen from two data
+- [x] **C3** `Jump back in` leaves Overview; Conversations lens owns it.
+- [x] **C4** `0 imports` and `189 imports` print on one screen from two data
       shapes. `ProjectWorkspace.tsx:213`
 
 ## D — Dissolutions
@@ -128,6 +133,9 @@ Each moves a component between screens, so each needs its own verification pass.
 | 2026-09-14 | A1 | Code-lens `Overview` → `Summary`. That screen has NINE tabs, not five — the earlier sweep missed template-literal labels. |
 | 2026-09-14 | A3 | Rail `Toolkit` → `Skills & tools`. |
 | 2026-09-14 | A4/A5 | `Pastebin` → `Pasted text`, `Notes` → `Instruction files`, Tasks tab removed. Dropping the tab also dropped task rows out of "Everything" and printed the raw key `task` in the breakdown, because both were built from the tab list. Split into `BROWSE_SOURCES` + `SOURCE_LABELS` so a source can be browsed and counted without owning a tab. |
+| 2026-09-14 | B1 | `Decisions` rail item, account scope by default, project scope control, `?view=decisions` deep link. Icon is `book`; `check` already belonged to Tasks. |
+| 2026-09-14 | B2 | The `Decisions and stack` plate renders the register instead of a graph. |
+| 2026-09-14 | C1–C4a | Project Overview is `Do next` alone. Structure and Jump-back-in deleted rather than copied — the Code lens already has Structure and Map tabs, the Conversations lens already is the archive. The stack strip followed the decisions into the Knowledge lens. `StructureSummary` and `ProjectHistory` removed. The `0 imports` / `189 imports` contradiction went with the chip row: `map.edges` is package-level and empty here, `map.fileEdges` is the 189. |
 | 2026-09-14 | A2 | All-projects tabs are now `Overview · Do next · Code · Activity`, and the heading is `All projects` — it was `Projects & Activity`, which folded a tab into the title. |
 
 ## Not in scope, still open

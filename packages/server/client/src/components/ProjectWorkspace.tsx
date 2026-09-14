@@ -11,10 +11,10 @@
  */
 
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
-import { Chip, SegmentedControl, Button, Icon, Plate, Plates, Schedule, Metrics } from './primitives';
+import { Chip, SegmentedControl, Button, Icon, Plate, Schedule, Metrics } from './primitives';
 import { summaryTitle } from '../utils/clean';
 import { useUrlState } from '../services/url-state';
-import CodeExplorer, { DependencyMap, PRI_CHIP, PRI_LABEL } from './CodeExplorer';
+import CodeExplorer, { PRI_CHIP, PRI_LABEL } from './CodeExplorer';
 import KnowledgeGraph from './KnowledgeGraph';
 import Decisions from './Decisions';
 import ConversationList from './ConversationList';
@@ -90,11 +90,11 @@ export default function ProjectWorkspace({
         <SegmentedControl value={lens} onChange={(v) => setLens(v as Lens)} options={LENSES} />
       </div>
       <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
-        {lens === 'overview' && <MissionControl canonicalId={canonicalId} kgEntity={kgEntity} toolFilter={toolFilter} code={code} onJump={setLens} onOpenSession={openInline} />}
+        {lens === 'overview' && <MissionControl canonicalId={canonicalId} code={code} />}
         {lens === 'code' && <CodeExplorer projectFilter={canonicalId} embedded onSessionClick={openInline} />}
         {lens === 'conversations' && <ConversationsLens projectId={canonicalId} toolFilter={toolFilter} conv={conv} />}
         {lens === 'activity' && <ProjectActivity projectId={canonicalId} toolFilter={toolFilter} onOpenSession={openInline} />}
-        {lens === 'knowledge' && <KnowledgeLens projectId={canonicalId} kgEntity={kgEntity} />}
+        {lens === 'knowledge' && <KnowledgeLens projectId={canonicalId} kgEntity={kgEntity} langs={code.project?.langs} />}
       </div>
     </div>
   );
@@ -192,71 +192,6 @@ const OUTCOME_TONE: Record<string, string> = {
   abandoned: 'var(--cr-err-500)', discussion: 'var(--cr-fg-3)', unknown: 'var(--cr-fg-3)',
 };
 
-// ── Structure summary: the *conclusion* the dependency graph only implies ─────
-// A force graph of 40 package-dots is a hairball with no takeaway. codeindex
-// already classifies every file by coupling role (god-module / cycle / island)
-// with fan-in/out — the same data the Code lens tables use. Surfacing the top of
-// that ranking above the graph turns "a blob" into "here's the load-bearing code
-// and where the risk is"; every row jumps to the full Code lens.
-function StructureSummary({ map, onJump }: { map: CodeProject['map']; onJump: (l: Lens) => void }) {
-  const base = (f: string) => f.split('/').pop() || f;
-  const gods = (map.coupling?.god_modules?.slice(0, 3).map((g) => ({ file: g.file, fanIn: g.fanIn, fanOut: g.fanOut }))
-    ?? (map.buckets?.god_modules ?? []).slice(0, 3).map((f) => ({ file: f, fanIn: undefined as number | undefined, fanOut: undefined as number | undefined })));
-  const cycles = (map.buckets?.cycles ?? []).slice(0, 2);
-  const nGods = map.coupling?.god_modules?.length ?? map.buckets?.god_modules?.length ?? 0;
-  const nCycles = map.buckets?.cycles?.length ?? 0;
-  const nIslands = map.coupling?.islands?.length ?? map.buckets?.islands?.length ?? 0;
-  return (
-    <div style={{ marginBottom: 10 }}>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: gods.length || cycles.length ? 10 : 0 }}>
-        <Chip kind="mono" size="sm">{map.nodes.length} pkgs</Chip>
-        <Chip kind="mono" size="sm">{map.edges.length} imports</Chip>
-        {nGods > 0 && <Chip kind="err" size="sm">{nGods} god-module{nGods > 1 ? 's' : ''}</Chip>}
-        {nCycles > 0 && <Chip kind="err" size="sm">{nCycles} cycle{nCycles > 1 ? 's' : ''}</Chip>}
-        {nIslands > 0 && <Chip kind="neutral" size="sm">{nIslands} island{nIslands > 1 ? 's' : ''}</Chip>}
-      </div>
-      {(gods.length > 0 || cycles.length > 0) && (
-        <Schedule
-          cols={[
-            { key: 'what', kind: 'pn', head: 'Load-bearing' },
-            { key: 'fan', kind: 'val', head: 'Fan in / out' },
-          ]}
-          rows={[
-            ...gods.map((g) => ({
-              id: g.file,
-              onSelect: () => onJump('code'),
-              cells: {
-                what: (
-                  <>
-                    <span className="mono" style={{ fontSize: 12.5 }}>{base(g.file)}</span>
-                    <span className="pn-sub">god module — high fan-in and fan-out, so a big blast radius</span>
-                  </>
-                ),
-                fan: g.fanIn != null
-                  ? <span style={{ color: 'var(--cr-err-500)' }}>{g.fanIn} / {g.fanOut}</span>
-                  : <span className="val-q">—</span>,
-              },
-            })),
-            ...cycles.map((c, i) => ({
-              id: `cyc${i}`,
-              onSelect: () => onJump('code'),
-              cells: {
-                what: (
-                  <>
-                    <span className="mono" style={{ fontSize: 12.5, whiteSpace: 'normal' }}>{c.map(base).join(' to ')}</span>
-                    <span className="pn-sub">circular dependency — these modules import each other</span>
-                  </>
-                ),
-                fan: <span className="val-q">cycle</span>,
-              },
-            })),
-          ]}
-        />
-      )}
-    </div>
-  );
-}
-
 // ── Stack strip: the KG's most-useful fact at a glance — what this repo is built
 // with. The graph below is for exploring how facts connect; this answers the
 // first question ("what stack?") without making you read a node cloud.
@@ -271,58 +206,28 @@ function StackStrip({ langs }: { langs?: Record<string, number> }) {
 }
 
 // ── Overview = the command surface: Do next → Understand → History ───────────
-function MissionControl({ canonicalId, kgEntity, toolFilter, code, onJump, onOpenSession }: {
-  canonicalId: string; kgEntity: string; toolFilter: string; code: UseCodeProject;
-  onJump: (l: Lens) => void; onOpenSession: (sid: string, info?: SessionInfo | null) => void;
+/**
+ * The project Overview answers ONE question: what do I do here now.
+ *
+ * It used to carry four sections, and three of them shipped with a link to the
+ * lens that owns them — "full map" to Code, "explore" to Knowledge, "all
+ * conversations" to Conversations. A section that comes with a link to somewhere
+ * better is a table of contents, not a screen. Counted, the page put roughly 60
+ * data points in front of a reader who had come to find the next thing to do:
+ * 24 findings, 5 structure chips, 3 god modules, 2 cycles, 8 language chips, 4
+ * graph totals, a 5-part legend and 3 of 208 conversations.
+ *
+ * Each of the three now renders in the lens whose name already promised it.
+ * Nothing was deleted and every one of them is one click away.
+ */
+function MissionControl({ canonicalId, code, reload: _reload }: {
+  canonicalId: string; code: UseCodeProject; reload?: () => void;
 }) {
   const { project, recs, actions, loading, reload } = code;
   if (loading && !project) return <div style={{ padding: 30, color: 'var(--cr-fg-3)' }}>Loading project…</div>;
-  const hasGraph = !!project?.map?.nodes?.length;
   return (
-    <div className="cr-pad-mobile" style={{ padding: '18px 24px 60px', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 22 }}>
-      {/* 1 — DO NEXT: one ranked stream (fixes + rules + tasks) */}
-      <section><DoNext recs={recs} actions={actions} projectId={project?.projectId ?? canonicalId} hasCode={!!project} onReload={reload} /></section>
-
-      {/* 2 — UNDERSTAND: conclusion first, graph second. Each card leads with the
-          ranked takeaway (what's load-bearing / what stack) so the graph beneath
-          illustrates rather than carries the meaning. */}
-      <section>
-        <SectionTitle title="Understand" hint="what is load-bearing, and what it is built with" />
-        {hasGraph ? (
-          <Plates cols={2}>
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
-                <span className="cr-plate-t">Structure <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400, fontSize: 12.5 }}>coupling and risk</span></span>
-                <button onClick={() => onJump('code')} className="cr-annot cr-annot-red" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>full map <Icon name="arrowRight" size={12} /></button>
-              </div>
-              <StructureSummary map={project!.map} onJump={onJump} />
-              <div style={{ fontSize: 12, color: 'var(--cr-fg-3)', margin: '8px 0 6px' }}>Dot size is symbols, lines are imports. Scroll to zoom, drag to pan.</div>
-              <DependencyMap map={project!.map} />
-            </div>
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
-                <span className="cr-plate-t">Decisions and stack <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400, fontSize: 12.5 }}>what this project has settled</span></span>
-                <button onClick={() => onJump('knowledge')} className="cr-annot cr-annot-red" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>explore <Icon name="arrowRight" size={12} /></button>
-              </div>
-              <StackStrip langs={project?.langs} />
-              <Decisions project={canonicalId} embedded />
-            </div>
-          </Plates>
-        ) : (
-          <Plate title={<>Decisions and stack <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400, fontSize: 12.5 }}>from your sessions</span></>}
-            tools={<button onClick={() => onJump('knowledge')} className="cr-annot cr-annot-red" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center', gap: 5 }}>explore <Icon name="arrowRight" size={12} /></button>}>
-            <StackStrip langs={project?.langs} />
-            <Decisions project={canonicalId} embedded />
-          </Plate>
-        )}
-      </section>
-
-      {/* 3 — JUMP BACK IN: a short shortcut to recent work, distinct from the full
-          Conversations archive (read/search) and the Activity timeline (edits). */}
-      <section>
-        <SectionTitle title="Jump back in" hint="pick up where you left off" action={() => onJump('conversations')} actionLabel="all conversations" />
-        <ProjectHistory projectId={canonicalId} toolFilter={toolFilter} onOpenSession={onOpenSession} />
-      </section>
+    <div className="cr-pad-mobile" style={{ padding: '18px 24px 60px' }}>
+      <DoNext recs={recs} actions={actions} projectId={project?.projectId ?? canonicalId} hasCode={!!project} onReload={reload} />
     </div>
   );
 }
@@ -421,53 +326,6 @@ function DoNextRow({ item, projectId, onReload }: { item: DoItem; projectId: str
       {open && expandText && <pre style={{ background: 'var(--cr-ink-1)', border: '1px solid var(--cr-line-2)', borderRadius: 0, padding: 10, fontSize: 12, whiteSpace: 'pre-wrap', fontFamily: 'var(--cr-font-mono)', color: 'var(--cr-fg-1)', marginTop: 6 }}>{expandText}</pre>}
       {msg && <span style={{ fontSize: 12, color: err ? 'var(--cr-err-500)' : 'var(--cr-fg-2)', marginLeft: 4 }}>{msg}</span>}
     </div>
-  );
-}
-
-// ── Jump back in (compact) — the 3 most recent sessions as a shortcut. The full
-// searchable archive is the Conversations lens; the edits+sessions feed is the
-// Activity lens. This is deliberately short so it reads as "resume", not a list.
-function ProjectHistory({ projectId, toolFilter, onOpenSession }: { projectId: string; toolFilter: string; onOpenSession: (sid: string, info?: SessionInfo | null) => void }) {
-  const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    let on = true; setLoading(true);
-    getRecentSessionsPage({ limit: 3, offset: 0, projectFilter: projectId, toolFilter: toolFilter === 'all' ? undefined : toolFilter })
-      .then((p) => { if (on) { setSessions(p.sessions); setTotal(p.total); setLoading(false); } });
-    return () => { on = false; };
-  }, [projectId, toolFilter]);
-  if (loading) return <Plate><span style={{ color: 'var(--cr-fg-3)' }}>Loading…</span></Plate>;
-  return (
-    <Plate flush caption={`${total} conversation${total === 1 ? '' : 's'} in this project`}>
-      <Schedule
-        cols={[
-          { key: 'title', kind: 'pn' },
-          { key: 'branch', kind: 'rt' },
-          { key: 'when', kind: 'cmd' },
-        ]}
-        empty="No recorded sessions for this project."
-        rows={sessions.map((s) => {
-          const title = (s as any).userTitle || summaryTitle((s as any).summary, 120) || (s as any).firstPrompt || s.sessionId;
-          const when = (s as any).modified ? new Date((s as any).modified).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-          const status = s.outcome?.status;
-          return {
-            id: s.sessionId,
-            onSelect: () => onOpenSession(s.sessionId, s),
-            cells: {
-              title: (
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                  {status && <span title={status.replace('_', ' ')} style={{ width: 7, height: 7, background: OUTCOME_TONE[status] ?? 'var(--cr-fg-3)', flexShrink: 0 }} />}
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{title}</span>
-                </span>
-              ),
-              branch: (s as any).gitBranch ? <Chip kind="mono" size="sm">{(s as any).gitBranch}</Chip> : null,
-              when,
-            },
-          };
-        })}
-      />
-    </Plate>
   );
 }
 
@@ -630,10 +488,11 @@ function fmtAgo(ms?: number): string {
  * about auth, and is it still true" is, so that leads and the graph stays
  * reachable for the times the connections are the point.
  */
-function KnowledgeLens({ projectId, kgEntity }: { projectId: string; kgEntity?: string | null }) {
+function KnowledgeLens({ projectId, kgEntity, langs }: { projectId: string; kgEntity?: string | null; langs?: Record<string, number> }) {
   const [showGraph, setShowGraph] = useState(false);
   return (
     <div style={{ padding: '16px 24px 40px' }}>
+      <StackStrip langs={langs} />
       <Decisions project={projectId} embedded />
       <div style={{ marginTop: 26, borderTop: '1px solid var(--cr-line-2)', paddingTop: 14 }}>
         <button
