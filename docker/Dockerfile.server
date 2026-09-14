@@ -18,7 +18,7 @@ COPY package.json package-lock.json tsconfig.base.json tsconfig.json ./
 COPY packages/engine/package.json ./packages/engine/
 COPY packages/cli/package.json ./packages/cli/
 COPY packages/server/package.json ./packages/server/
-RUN npm ci
+RUN npm ci --omit=optional
 COPY packages/engine/ ./packages/engine/
 RUN npx tsc -b packages/engine
 
@@ -52,11 +52,21 @@ RUN npm run build
 FROM node:24-bookworm-slim AS build
 RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
+# MAIL IS A HOSTED-SERVICE FEATURE, and its package is private.
+#
+# `@munhq/mailkit` carries the renderer and, through the pack it loads, every
+# word this server mails. It is an optionalDependency, and this image omits it:
+# a self-host build must succeed on a machine with no access to a private
+# repository. The server loads it with a dynamic import and, when it is absent,
+# logs "mailkit is not installed — this deployment sends no mail" and carries on.
+#
+# The cloud image installs it by building with MAILKIT=1 and a git credential.
+ARG MAILKIT=0
 COPY package.json package-lock.json tsconfig.base.json tsconfig.json ./
 COPY packages/engine/package.json ./packages/engine/
 COPY packages/cli/package.json ./packages/cli/
 COPY packages/server/package.json ./packages/server/
-RUN npm ci
+RUN if [ "$MAILKIT" = "1" ]; then npm ci; else npm ci --omit=optional; fi
 COPY packages/engine/ ./packages/engine/
 COPY packages/server/ ./packages/server/
 COPY packages/cli/ ./packages/cli/

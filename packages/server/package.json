@@ -41,5 +41,8 @@
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/nodemailer": "^8.0.1"
+  },
+  "optionalDependencies": {
+    "@munhq/mailkit": "github:munhq/mailkit#main"
   }
 }
