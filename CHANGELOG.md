@@ -4,6 +4,20 @@ All notable changes are tracked here, newest first. Versioning follows [SemVer](
 
 ## [Unreleased]
 
+## [0.6.7] — 2026-09-14
+
+### Fixed
+- **`?view=memory` rendered nothing.** Memory Hub was dissolved into the Notes
+  & memory facet of Conversations, and no branch draws that view any more. An
+  old bookmark was mapped to Conversations on load and then set straight back
+  by a mount effect that re-read the URL, so the app settled on a view nothing
+  renders and the screen stayed blank. Both readers map it now.
+- **The install page bounced you to the dashboard after seven seconds.**
+  `?view=connect` polls sync status to notice the first data arriving, then
+  leaves — but it asked whether any session had ever synced, which is true for
+  every account that has used the product. It takes a baseline now and leaves
+  only when new data actually arrives from the machine being connected.
+
 ## [0.6.6] — 2026-09-14
 
 ### Added
