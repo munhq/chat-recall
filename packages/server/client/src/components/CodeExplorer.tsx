@@ -227,7 +227,7 @@ export default function CodeExplorer({ projectFilter, embedded, onSessionClick }
           onChange={(v) => setTab(v as Tab)}
           options={[
             { value: 'recs', label: `Recommendations (${recs.length})` },
-            { value: 'overview', label: 'Overview' },
+            { value: 'overview', label: 'Summary' },
             { value: 'plan', label: `Plan (${planActions.length})` },
             { value: 'security', label: `Security (${securityFindings.length})` },
             { value: 'quality', label: `Quality (${qualityFindings.length})` },

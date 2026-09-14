@@ -16,6 +16,7 @@ import SecurityExplorer from './components/SecurityExplorer';
 import CodeExplorer from './components/CodeExplorer';
 import CommandCenter from './components/CommandCenter';
 import ProjectWorkspace from './components/ProjectWorkspace';
+import Decisions from './components/Decisions';
 import KnowledgeGraph from './components/KnowledgeGraph';
 import { SegmentedControl, Card } from './components/primitives';
 import SettingsPage from './components/SettingsPage';
@@ -51,7 +52,7 @@ import {
   type ProjectTreeApiNode,
 } from './services/api';
 
-type ViewMode = 'home' | 'projects' | 'search' | 'memory' | 'tasks' | 'toolkit' | 'security' | 'health' | 'settings' | 'account' | 'connect' | 'admin' | 'team';
+type ViewMode = 'home' | 'decisions' | 'projects' | 'search' | 'memory' | 'tasks' | 'toolkit' | 'security' | 'health' | 'settings' | 'account' | 'connect' | 'admin' | 'team';
 
 /**
  * Recursive tree node used by the project sidebar. One node renders as
@@ -137,7 +138,7 @@ function findProjectPath(tree: ProjectTreeNode[], projectId: string | null): str
 
 
 /** Views that may be addressed via the ?view= deep link. */
-const URL_VIEWS = new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'tasks', 'toolkit', 'security', 'account', 'settings', 'connect', 'team']);
+const URL_VIEWS = new Set<ViewMode>(['home', 'decisions', 'projects', 'search', 'memory', 'tasks', 'toolkit', 'security', 'account', 'settings', 'connect', 'team']);
 
 /**
  * Initial view from the URL. Reading it during state init (not in an effect)
@@ -222,7 +223,7 @@ function AppInner() {
     // that cannot: a deep link or bookmark to ?view=admin mounted the panel
     // before isOperator resolved, so a non-operator got a request they could not
     // satisfy. It is added below, once capabilities say who they are.
-    if (!f) return new Set<ViewMode>(['home', 'projects', 'search', 'memory', 'tasks', 'toolkit', 'security', 'health', 'settings', 'account', 'connect', 'team']);
+    if (!f) return new Set<ViewMode>(['home', 'decisions', 'projects', 'search', 'memory', 'tasks', 'toolkit', 'security', 'health', 'settings', 'account', 'connect', 'team']);
     const out = new Set<ViewMode>();
     out.add('home');    // command center is always available
     out.add('connect'); // installer's token page — must never be capability-gated
@@ -236,6 +237,10 @@ function AppInner() {
     // prompt for a key that would have been ignored. Showing a door that
     // cannot open is worse than showing no door.
     if (isOperator) out.add('admin');
+    // The register rides the same capability as the knowledge graph it is
+    // stored in: both live in the kg_triples table behind /api/decisions and
+    // /api/kg. No separate entitlement — a decision is not a premium fact.
+    if (f.memory) out.add('decisions');
     if (f.codeIntel || f.conversations) out.add('projects');  // the project workspace spine
     if (f.conversations) out.add('search');
     if (f.memory) out.add('memory');
@@ -1199,6 +1204,31 @@ function AppInner() {
                   <MemoryExplorer onSessionClick={handleMemorySessionClick} toolFilter={toolFilter} projectFilter={projectFilter} projectPathFilter={findProjectPath(projectTree, projectFilter)} />
                 )}
               </div>
+            </div>
+          )}
+          {view === 'decisions' && (
+            <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+              {/* SCOPE FIRST, and account by default.
+                  The server resolves project > account > user and returns the
+                  account register when the caller omits a project. Every other
+                  caller asked it the most specific question; this one asks the
+                  general one, because the general answer is what governs a
+                  project nobody has given an opinion about yet. */}
+              <div style={{ padding: '18px 24px 0' }}>
+                <h2 style={{ margin: 0 }}>Decisions</h2>
+                <div style={{ color: 'var(--cr-fg-2)', fontSize: 13, margin: '4px 0 12px' }}>
+                  What this account has settled, and what it has not. Your agents read these before they write code.
+                </div>
+                <SegmentedControl
+                  value={projectFilter ?? '__all__'}
+                  onChange={(v) => setProjectFilter(v === '__all__' ? null : v)}
+                  options={[
+                    { value: '__all__', label: 'All projects' },
+                    ...(projectFilter ? [{ value: projectFilter, label: findProjectName(projectTree, projectFilter) || projectFilter }] : []),
+                  ]}
+                />
+              </div>
+              <Decisions project={projectFilter} />
             </div>
           )}
           {view === 'tasks' && (
