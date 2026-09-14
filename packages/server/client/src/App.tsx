@@ -1259,7 +1259,13 @@ function AppInner() {
           )}
           {view === 'search' && convFacet === 'sessions' && (
             <>
-              <div style={{ padding: '12px 16px 0' }}>
+              {/* A direct flex child of .app-row, so it is a COLUMN beside the
+                  list, not a header above it. Desktop has room for that; at
+                  390px it took 156 of them — 40% of the screen holding one
+                  toggle, with the list crushed into the remaining 234 and
+                  "Notes &" cut mid-word. The class exists so the mobile query
+                  can lay it across the top instead. */}
+              <div className="cr-conv-facet" style={{ padding: '12px 16px 0' }}>
                 <SegmentedControl
                   value={convFacet}
                   onChange={(v) => setConvFacet(v as 'sessions' | 'notes')}

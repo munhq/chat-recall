@@ -1040,8 +1040,32 @@ a:hover { text-decoration: underline; }
   .cr-topbar-search-btn { display: none !important; }
   .cr-topbar-actions .cr-topbar-action-refresh,
   .cr-topbar-actions .cr-topbar-action-theme { display: none !important; }
+
+  /* The plan chip and the sync chip leave the phone top bar.
+   *
+   * "Enterprise" and "synced 3h ago" are ~200px of the 390 available, so the
+   * avatar was pushed past the right edge and clipped on every single view —
+   * the one control that opens the account menu. Neither fact is lost: the
+   * plan is on the Account page and the sync time sits in the sidebar footer,
+   * a tap away in the drawer. */
+  .cr-topbar-plan,
+  .cr-topbar-sync { display: none !important; }
+  /* Whatever remains must not be the thing that shrinks. */
+  .cr-topbar-actions { flex: 0 0 auto !important; }
+  .cr-topbar-actions > * { flex: 0 0 auto !important; }
   .cr-topbar-brand { min-width: 0 !important; padding: 0 !important; margin: 0 !important; gap: 0 !important; }
   .cr-topbar-brand-logo { display: none !important; }
+
+  /* The Sessions / Notes toggle lies ACROSS the top, not beside the list.
+   *
+   * It is a direct flex child of .app-row, so on a phone it became a 156px
+   * column next to a 234px list: 40% of the viewport for one control, the
+   * label clipped to "Notes &", and every row of the list wrapped to three
+   * lines. Wrapping the row lets it take a line of its own and gives the list
+   * the full width back. */
+  .app-row { flex-wrap: wrap; }
+  .cr-conv-facet { flex: 0 0 100% !important; max-width: 100% !important; }
+  .cr-conv-list { flex: 1 1 100% !important; min-width: 0 !important; }
 
   .cr-sidebar {
     position: absolute !important; top: 0; left: 0; bottom: 0;

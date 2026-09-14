@@ -705,7 +705,16 @@ const ACCT_CSS = `
   .acct-layout { grid-template-columns: minmax(0,1fr); gap: 20px; }
   .acct-nav { position: sticky; top: 0; z-index: 5; margin: 0 -24px; padding: 10px 24px;
     background: var(--cr-ink-0); border-bottom:1px solid var(--cr-line-1); }
-  .acct-nav ul { flex-direction: row; gap:6px; overflow-x:auto; scrollbar-width:none; }
+  .acct-nav ul { flex-direction: row; gap:6px; overflow-x:auto; scrollbar-width:none;
+    /* SAY THAT IT SCROLLS. The scrollbar is hidden and the row is wider than a
+       phone, so "Data" was cut flush at the edge and read as a clipped label
+       rather than a tab one swipe away. The fade is the only thing telling a
+       reader there is more of this row. */
+    mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+    /* A swipe should land on a tab, not between two. */
+    scroll-snap-type: x proximity; }
+  .acct-nav li { scroll-snap-align: start; }
   .acct-nav ul::-webkit-scrollbar { display:none; }
   .acct-nav a { white-space:nowrap; border-left:none; border-bottom:2px solid transparent; border-radius: 0; }
   .acct-nav a.is-active { border-left-color: transparent; border-bottom-color: var(--cr-brand-500); }
