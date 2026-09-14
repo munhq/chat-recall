@@ -234,7 +234,7 @@ function AppInner() {
     // that cannot: a deep link or bookmark to ?view=admin mounted the panel
     // before isOperator resolved, so a non-operator got a request they could not
     // satisfy. It is added below, once capabilities say who they are.
-    if (!f) return new Set<ViewMode>(['home', 'decisions', 'projects', 'search', 'memory', 'tasks', 'toolkit', 'security', 'health', 'settings', 'account', 'connect', 'team']);
+    if (!f) return new Set<ViewMode>(['home', 'decisions', 'projects', 'search', 'tasks', 'toolkit', 'security', 'health', 'settings', 'account', 'connect', 'team']);
     const out = new Set<ViewMode>();
     out.add('home');    // command center is always available
     out.add('connect'); // installer's token page — must never be capability-gated
@@ -254,7 +254,10 @@ function AppInner() {
     if (f.memory) out.add('decisions');
     if (f.codeIntel || f.conversations) out.add('projects');  // the project workspace spine
     if (f.conversations) out.add('search');
-    if (f.memory) out.add('memory');
+    // No 'memory' here: nothing renders that view. It stays in ViewMode and in
+    // URL_VIEWS only so an old bookmark can be recognised and mapped, and both
+    // readers of the URL now map it to 'search'.
+
     // Deployment capability AND tenant entitlement — the free plan does not
     // include the toolkit, and this tab was the one paid surface still gated on
     // the deployment alone, so a free tenant got a door that 402s.
@@ -771,7 +774,13 @@ function AppInner() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const v = params.get('view');
-    if (v && ['home', 'projects', 'search', 'memory', 'toolkit', 'security', 'settings', 'account'].includes(v)) setView(v as ViewMode);
+    // 'memory' is READ here and mapped, never set. Memory Hub was dissolved
+    // into the Notes & memory facet of Conversations, and no branch renders a
+    // 'memory' view any more. This effect used to set it straight back after
+    // initialViewFromUrl had already mapped it, so ?view=memory resolved to a
+    // view nothing draws: the screen stayed blank until the tab was closed.
+    const mapped = v === 'memory' ? 'search' : v;
+    if (mapped && ['home', 'projects', 'search', 'toolkit', 'security', 'settings', 'account'].includes(mapped)) setView(mapped as ViewMode);
     const id = params.get('session');
     if (id && looksLikeSessionId(id)) handleSelectSession(id);
     // Back/forward restore the full navigational state recorded in that URL
