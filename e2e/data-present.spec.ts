@@ -32,7 +32,7 @@ test('memory + toolkit sidebar show non-zero counts', async ({ page }) => {
   }
 
   // Toolkit view
-  await page.getByRole('button', { name: /^Toolkit$/ }).click();
+  await page.getByRole('button', { name: /^Skills & tools$/ }).click();
   await page.waitForLoadState('networkidle');
   await page.waitForTimeout(500);
 

@@ -465,19 +465,30 @@ export default function SecurityExplorer({ onSessionClick, focusSession }: Props
           panning page moves the content you are reading. */}
       <Card style={{ padding: 12, marginBottom: 14, display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', minWidth: 0 }}>
         <div className="cr-segmented-scroll" style={{ marginBottom: 0, minWidth: 0, maxWidth: '100%' }}>
+        {/* FOUR VIEWS OF ONE DATASET. "Custom rules" was a fifth option here
+            and it is not a view — it is configuration, and it changes what the
+            scanner finds rather than how these findings are grouped. Wearing
+            the same shape as the four made the row read as five ways to look at
+            your findings, one of which silently was not. It sits beside the row
+            now, as the control it is. */}
         <SegmentedControl
           options={[
             { value: 'action', label: 'Action required' },
             { value: 'rules', label: 'By rule' },
             { value: 'projects', label: 'By project' },
             { value: 'sessions', label: 'By session' },
-            { value: 'config', label: 'Custom rules' },
           ]}
-          value={lens}
+          value={lens === 'config' ? 'action' : lens}
           onChange={(v) => setLens(v as Lens)}
           size="sm"
         />
         </div>
+        <Button
+          variant={lens === 'config' ? 'primary' : 'ghost'}
+          onClick={() => setLens(lens === 'config' ? 'action' : 'config')}
+        >
+          Custom rules
+        </Button>
         <span style={{ flex: 1 }} />
         <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--cr-fg-3)' }}>
           <input

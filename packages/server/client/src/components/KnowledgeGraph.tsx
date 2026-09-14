@@ -9,9 +9,9 @@
  */
 
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import { Card, Chip, Input, Icon, SegmentedControl, Metrics, Plates } from './primitives';
+import { Card, Chip, Input, Icon, Button, SegmentedControl, Metrics, Plates } from './primitives';
 import ForceGraph from './ForceGraph';
-import { getKgStats, getKgTimeline, queryKgEntity, type KgFact, type KgStats } from '../services/api';
+import { getKgStats, getKgTimeline, queryKgEntity, addKgFact, invalidateKgFact, type KgFact, type KgStats } from '../services/api';
 
 // (The junk-word display filter that used to live here is gone: the entity
 // extractor no longer emits fragments — context-gated ambiguous names,
@@ -56,6 +56,35 @@ export default function KnowledgeGraph({ entity, embedded }: { entity?: string |
   useEffect(() => { if (focus) loadFocus(focus); }, [focus, loadFocus]);
 
   const pivot = (name: string) => { if (name) { setFocus(name); setInput(''); } };
+
+  /** Re-read whatever is on screen after a write, plus the totals it moved. */
+  const reload = useCallback(() => {
+    void getKgStats().then(setStats);
+    if (focus) loadFocus(focus);
+    else getKgTimeline(undefined, 120).then((r) => setTimeline((r.entries || []).filter(cleanFact)));
+  }, [focus, loadFocus]);
+
+  /**
+   * Assert a fact by hand.
+   *
+   * The graph is 15,000 rows a regex extracted. Correcting it needed a way to
+   * say the true thing as well as retract the false one, and /api/kg/add had no
+   * client caller at all — only an agent could write here.
+   */
+  const [draft, setDraft] = useState({ subject: '', predicate: '', object: '' });
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+  const assert = async () => {
+    const { subject, predicate, object } = draft;
+    if (!subject.trim() || !predicate.trim() || !object.trim()) return;
+    setSaving(true); setSaveErr(null);
+    try {
+      await addKgFact(subject.trim(), predicate.trim(), object.trim());
+      setDraft({ subject: '', predicate: '', object: '' });
+      reload();
+    } catch (e) { setSaveErr(e instanceof Error ? e.message : 'Could not record that fact'); }
+    finally { setSaving(false); }
+  };
 
   return (
     <div className={embedded ? undefined : 'cr-pad-mobile'} style={{ flex: 1, overflow: 'auto', padding: embedded ? '4px 0 40px' : '24px 28px 56px' }}>
@@ -105,16 +134,46 @@ export default function KnowledgeGraph({ entity, embedded }: { entity?: string |
           {loading ? <Empty>Loading facts about {focus}…</Empty>
             : facts.length === 0 ? <Empty>No facts recorded about <b>{focus}</b> yet. As you work, the indexer extracts decisions and tools into the graph.</Empty>
             : view === 'graph' ? <KgGraph center={focus} facts={facts} onPivot={pivot} />
-            : <FocusedView name={focus} facts={facts} loading={loading} onPivot={pivot} />}
+            : <FocusedView name={focus} facts={facts} loading={loading} onPivot={pivot} onChanged={reload} />}
         </>
       ) : (
-        <TimelineView entries={timeline} onPivot={pivot} />
+        <TimelineView entries={timeline} onPivot={pivot} onChanged={reload} />
       )}
+
+      {/* Say the true thing. A graph you can only read is a graph that stays
+          wrong, and every row here was written by a regex. */}
+      <div style={{ marginTop: 18, borderTop: '1px solid var(--cr-line-2)', paddingTop: 14 }}>
+        <span className="cr-plate-t">Record a fact</span>
+        <div style={{ color: 'var(--cr-fg-3)', fontSize: 12.5, margin: '3px 0 10px' }}>
+          A new value for the same subject and relation replaces the old one, and keeps its history.
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ minWidth: 150, flex: '1 1 150px' }}>
+            <Input inputSize="sm" placeholder="subject (e.g. chat-recall)" value={draft.subject}
+              onChange={(e) => setDraft({ ...draft, subject: e.target.value })} />
+          </div>
+          <div style={{ minWidth: 120, flex: '0 1 140px' }}>
+            <Input inputSize="sm" placeholder="relation (e.g. uses)" value={draft.predicate}
+              onChange={(e) => setDraft({ ...draft, predicate: e.target.value })} />
+          </div>
+          <div style={{ minWidth: 150, flex: '1 1 150px' }}>
+            <Input inputSize="sm" placeholder="object (e.g. postgres)" value={draft.object}
+              onChange={(e) => setDraft({ ...draft, object: e.target.value })} />
+          </div>
+          <Button
+            onClick={assert}
+            disabled={saving || !draft.subject.trim() || !draft.predicate.trim() || !draft.object.trim()}
+          >
+            {saving ? 'Recording…' : 'Record'}
+          </Button>
+        </div>
+        {saveErr && <div style={{ color: 'var(--cr-err-500)', fontSize: 12.5, marginTop: 6 }}>{saveErr}</div>}
+      </div>
     </div>
   );
 }
 
-function FocusedView({ name, facts, loading, onPivot }: { name: string; facts: KgFact[]; loading: boolean; onPivot: (n: string) => void }) {
+function FocusedView({ name, facts, loading, onPivot, onChanged }: { name: string; facts: KgFact[]; loading: boolean; onPivot: (n: string) => void; onChanged?: () => void }) {
   if (loading) return <Empty>Loading facts about {name}…</Empty>;
   if (!facts.length) return <Empty>No facts recorded about <b>{name}</b> yet. As you work, the indexer extracts decisions and tools into the graph.</Empty>;
   const out = facts.filter((f) => f.direction !== 'incoming');
@@ -138,20 +197,39 @@ function FocusedView({ name, facts, loading, onPivot }: { name: string; facts: K
   );
 }
 
-function TimelineView({ entries, onPivot }: { entries: KgFact[]; onPivot: (n: string) => void }) {
+function TimelineView({ entries, onPivot, onChanged }: { entries: KgFact[]; onPivot: (n: string) => void; onChanged?: () => void }) {
   if (!entries.length) return <Empty>The knowledge graph is empty. It populates automatically as you index sessions (decisions, tools, projects, people).</Empty>;
   return (
     <Card style={{ padding: 14 }}>
       <strong style={{ fontSize: 13 }}>Recent facts</strong>
       <div style={{ color: 'var(--cr-fg-3)', fontSize: 12, marginBottom: 10 }}>click any entity to focus the graph on it</div>
       <div style={{ display: 'flex', flexDirection: 'column' }}>
-        {entries.map((f, i) => <FactRow key={i} f={f} side="both" onPivot={onPivot} />)}
+        {entries.map((f, i) => <FactRow key={i} f={f} side="both" onPivot={onPivot} onChanged={onChanged} />)}
       </div>
     </Card>
   );
 }
 
-function FactRow({ f, side, onPivot }: { f: KgFact; side: 'subject' | 'object' | 'both'; onPivot: (n: string) => void }) {
+/**
+ * One fact, and the control that retracts it.
+ *
+ * The graph was read-only here while /api/kg/invalidate had existed all along
+ * and only MCP called it. So an agent could correct a wrong machine-mined fact
+ * and the person looking straight at it could not — 15,000 facts, extracted by
+ * regex, with no way to say "that one is wrong".
+ *
+ * Retracting is temporal, not a delete: the fact keeps its window and renders
+ * as expired, so the record still shows it was believed and when that stopped.
+ */
+function FactRow({ f, side, onPivot, onChanged }: { f: KgFact; side: 'subject' | 'object' | 'both'; onPivot: (n: string) => void; onChanged?: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const retract = async () => {
+    setBusy(true); setErr(null);
+    try { await invalidateKgFact(f.subject, f.predicate, f.object); onChanged?.(); }
+    catch (e) { setErr(e instanceof Error ? e.message : 'Retract failed'); }
+    finally { setBusy(false); }
+  };
   const ent = (txt: string, active: boolean) => (
     <button onClick={() => onPivot(txt)} style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'var(--cr-font-annot)', fontSize: 12, color: active ? 'var(--cr-brand-500)' : 'var(--cr-fg-2)', fontWeight: active ? 600 : 400 }}>{txt}</button>
   );
@@ -163,6 +241,17 @@ function FactRow({ f, side, onPivot }: { f: KgFact; side: 'subject' | 'object' |
       <span style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
         {f.current === false && <Chip kind="neutral" size="sm">expired</Chip>}
         {(f.valid_from || f.valid_to) ? <span style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>{fmtWhen(f.valid_from)}{f.valid_to ? `–${fmtWhen(f.valid_to)}` : ''}</span> : null}
+        {err && <span style={{ fontSize: 12, color: 'var(--cr-err-500)' }}>{err}</span>}
+        {onChanged && f.current !== false && (
+          <button
+            onClick={retract}
+            disabled={busy}
+            title="Mark this fact no longer true"
+            style={{ background: 'none', border: '1px solid var(--cr-line-2)', borderRadius: 0, color: 'var(--cr-fg-3)', cursor: busy ? 'wait' : 'pointer', padding: '1px 7px', fontSize: 12 }}
+          >
+            {busy ? '…' : 'Not true'}
+          </button>
+        )}
       </span>
     </div>
   );
