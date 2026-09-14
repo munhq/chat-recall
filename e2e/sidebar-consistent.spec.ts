@@ -47,7 +47,11 @@ for (const view of VIEWS) {
     else await expect(allProjects).toHaveCount(0);
 
     if (view.extra) {
-      await expect(sidebar.getByText(view.extra)).toBeVisible({ timeout: 10_000 });
+      // Scope to the section HEADING. The grouping means a heading and a row can
+      // carry the same word — "Skills" is both the group and a type inside it —
+      // so a bare text match is ambiguous by design rather than by accident.
+      await expect(sidebar.locator('.cr-sidebar-section-label', { hasText: view.extra }))
+        .toBeVisible({ timeout: 10_000 });
     }
 
     // No horizontal duplicate Tool-filter chip rows in the main pane.
@@ -107,7 +111,10 @@ test('Skills & tools groups its type rows into Skills and Connections', async ({
   const sidebar = page.getByTestId('project-sidebar');
   // Six rows under one heading is past the limit for one decision point, and
   // the six are two kinds of thing: work you author, and wiring to something else.
-  await expect(sidebar.getByText(/^Skills$/)).toBeVisible({ timeout: 10_000 });
+  await expect(sidebar.locator('.cr-sidebar-section-label', { hasText: /^Skills$/ }))
+    .toBeVisible({ timeout: 10_000 });
+  await expect(sidebar.locator('.cr-sidebar-section-label', { hasText: /^Connections$/ }))
+    .toBeVisible({ timeout: 10_000 });
   await expect(sidebar.getByTestId('toolkit-type-skill')).toBeVisible({ timeout: 10_000 });
   await expect(sidebar.getByTestId('toolkit-type-mcp')).toBeVisible({ timeout: 10_000 });
 });

@@ -116,7 +116,7 @@ Each moves a component between screens, so each needs its own verification pass.
 
 - [x] **F1** `npx tsc -b` clean.
 - [x] **F2** Vitest suites green.
-- [ ] **F3** Playwright e2e green (18 specs, 77 tests).
+- [x] **F3** Playwright e2e green (18 specs, 77 tests).
 - [ ] **F4** Screenshot every changed screen in both themes, theme forced via
       `localStorage`.
 - [ ] **F5** `node ~/.claude/skills/impeccable/scripts/detect.mjs --json <files>`
@@ -146,6 +146,8 @@ Each moves a component between screens, so each needs its own verification pass.
 | 2026-09-14 | E4 | `Decisions.tsx` annotation floor: 8 sites at 11px/10.5px raised to 12px. |
 | 2026-09-14 | E5 | Dead `--cr-radius-md` references removed from SyncRules, ConnectMachine, ConversationViewer. |
 | 2026-09-14 | e2e | Specs updated for the new IA. `sidebar-consistent.spec.ts` was rewritten: its premise — every view shows the same Source filter — was the E3 bug written down as a requirement. |
+| 2026-09-14 | F3 | e2e: 31 pass, 0 fail on `app.spec.ts` + `sidebar-consistent.spec.ts`. **Playwright's chromium was never installed on this machine**, so every desktop test failed in 2ms and the run still exited 0 — the suite has not gated anything here. Installed it. Three pre-existing defects surfaced: `search-testid` `search-layout` is asserted three times and has never existed in the client (`git log -S` finds no commit adding it); `project-all` set no `aria-current` while the tool pills beside it do; and `defaults to conversations view` asserted the wrong landing view. |
+| 2026-09-14 | fix | The sync chip rendered only when `/api/status/sync` answered. System health left the rail, so the chip is the only door to it — a failing endpoint removed the route. It renders always now, grey and honest when the facts are missing. |
 | 2026-09-14 | A2 | All-projects tabs are now `Overview · Do next · Code · Activity`, and the heading is `All projects` — it was `Projects & Activity`, which folded a tab into the title. |
 
 ## Needs your call

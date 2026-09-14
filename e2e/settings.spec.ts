@@ -93,7 +93,10 @@ async function mockApi(page: Page, onPut?: (body: any) => void) {
 test.describe('Settings dialog', () => {
   test('opens from the TopBar Settings button and shows current provider selection', async ({ page }) => {
     await mockApi(page);
-    await page.goto('/');
+    // The project tree renders only on views that read a project filter
+    // (VIEW_FILTERS in components/Sidebar.tsx). Overview is not one of them,
+    // so this lands on Conversations, which is.
+    await page.goto('/?view=search');
     await page.waitForSelector('[data-testid="project-all"]');
 
     await expect(page.getByTestId('settings-dialog')).toHaveCount(0);
@@ -109,7 +112,10 @@ test.describe('Settings dialog', () => {
 
   test('switching the embedding provider swaps in provider-specific fields', async ({ page }) => {
     await mockApi(page);
-    await page.goto('/');
+    // The project tree renders only on views that read a project filter
+    // (VIEW_FILTERS in components/Sidebar.tsx). Overview is not one of them,
+    // so this lands on Conversations, which is.
+    await page.goto('/?view=search');
     await page.waitForSelector('[data-testid="project-all"]');
     await page.getByTestId('open-settings').click();
     const dialog = page.getByTestId('settings-dialog');
@@ -129,7 +135,10 @@ test.describe('Settings dialog', () => {
     let received: any = null;
     await mockApi(page, (body) => { received = body; });
 
-    await page.goto('/');
+    // The project tree renders only on views that read a project filter
+    // (VIEW_FILTERS in components/Sidebar.tsx). Overview is not one of them,
+    // so this lands on Conversations, which is.
+    await page.goto('/?view=search');
     await page.waitForSelector('[data-testid="project-all"]');
     await page.getByTestId('open-settings').click();
     const dialog = page.getByTestId('settings-dialog');
@@ -148,7 +157,10 @@ test.describe('Settings dialog', () => {
 
   test('Escape key closes the dialog', async ({ page }) => {
     await mockApi(page);
-    await page.goto('/');
+    // The project tree renders only on views that read a project filter
+    // (VIEW_FILTERS in components/Sidebar.tsx). Overview is not one of them,
+    // so this lands on Conversations, which is.
+    await page.goto('/?view=search');
     await page.waitForSelector('[data-testid="project-all"]');
     await page.getByTestId('open-settings').click();
     await expect(page.getByTestId('settings-dialog')).toBeVisible();
