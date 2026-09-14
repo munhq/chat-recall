@@ -5,7 +5,20 @@
     "outDir": "./dist",
     "allowSyntheticDefaultImports": true
   },
-  "references": [{ "path": "../engine" }],
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "client", "cloud", "src/**/*.test.ts"]
+  "references": [
+    {
+      "path": "../engine"
+    }
+  ],
+  "include": [
+    "src/**/*",
+    "types/**/*.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "client",
+    "cloud",
+    "src/**/*.test.ts"
+  ]
 }
