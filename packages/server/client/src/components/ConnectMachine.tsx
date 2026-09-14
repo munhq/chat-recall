@@ -51,7 +51,7 @@ function CopyBlock({ text }: { text: string }) {
   return (
     <div style={{ display: 'flex', alignItems: 'stretch', gap: 8, marginTop: 8 }}>
       <pre style={{
-        flex: 1, margin: 0, padding: '10px 12px', borderRadius: 'var(--cr-radius-md)',
+        flex: 1, margin: 0, padding: '10px 12px',
         border: '1px solid var(--cr-line-1)', background: 'var(--cr-ink-0)', color: 'var(--cr-fg-1)',
         fontSize: 12.5, lineHeight: 1.6, overflowX: 'auto', whiteSpace: 'pre',
         WebkitOverflowScrolling: 'touch', overscrollBehaviorX: 'contain',
@@ -187,7 +187,7 @@ export default function ConnectMachine({ compact, onFirstData }: { compact?: boo
           Already have the CLI installed? <code>chat-recall login {origin}</code> connects without reinstalling.
         </div>
         <div style={{
-          marginTop: 14, padding: '10px 12px', borderRadius: 'var(--cr-radius-md)', fontSize: 13,
+          marginTop: 14, padding: '10px 12px', fontSize: 13,
           border: '1px solid var(--cr-line-1)',
           background: synced && synced > 0 ? 'var(--cr-ok-surf)' : 'var(--cr-ink-1)',
           color: synced && synced > 0 ? 'var(--cr-ok-500)' : 'var(--cr-fg-2)',
@@ -201,7 +201,7 @@ export default function ConnectMachine({ compact, onFirstData }: { compact?: boo
           <div
             data-testid="sync-limit-notice"
             style={{
-              marginTop: 10, padding: '10px 12px', borderRadius: 'var(--cr-radius-md)',
+              marginTop: 10, padding: '10px 12px',
               fontSize: 13, lineHeight: 1.55,
               border: '1px solid var(--cr-brand-line)',
               background: 'var(--cr-brand-surf)',
@@ -259,7 +259,7 @@ export default function ConnectMachine({ compact, onFirstData }: { compact?: boo
                   aria-label="Device name"
                   style={{
                     flex: '1 1 220px', font: 'inherit', fontSize: 13, padding: '9px 12px',
-                    borderRadius: 'var(--cr-radius-md)', border: '1px solid var(--cr-line-2)',
+                    border: '1px solid var(--cr-line-2)',
                     background: 'var(--cr-ink-0)', color: 'var(--cr-fg-1)',
                   }}
                 />

@@ -168,11 +168,11 @@ export default function Decisions({ project, embedded }: { project?: string | nu
               overflowWrap: 'anywhere',
             }}>
               {d.value}
-              {d.inherited && <span className="cr-annot" style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginLeft: 8 }}>· inherited</span>}
+              {d.inherited && <span className="cr-annot" style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginLeft: 8 }}>· inherited</span>}
               {d.override && <Chip kind="brand" size="sm" style={{ marginLeft: 8 }}>override</Chip>}
               {d.advisory && <Chip size="sm" style={{ marginLeft: 8 }}>advisory</Chip>}
             </span>
-            <span className="cr-annot" style={{ fontSize: 11, color: 'var(--cr-fg-3)', fontVariantNumeric: 'tabular-nums' }}>
+            <span className="cr-annot" style={{ fontSize: 12, color: 'var(--cr-fg-3)', fontVariantNumeric: 'tabular-nums' }}>
               {fmtDate(d.since)}
             </span>
           </button>
@@ -192,7 +192,7 @@ function BandHead({ title, count, note }: { title: string; count: string; note: 
         borderBottom: '1px solid var(--cr-line-2)', paddingBottom: 7,
       }}>
         <span style={{ fontWeight: 700, fontSize: 16 }}>{title}</span>
-        <span className="cr-annot" style={{ fontSize: 11, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '.06em' }}>
+        <span className="cr-annot" style={{ fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '.06em' }}>
           {count}
         </span>
       </div>
@@ -228,7 +228,7 @@ function DecisionDetail({ d, onClose }: { d: Decision; onClose: () => void }) {
         }}
       >
         <div style={{ padding: '16px 20px 13px', borderBottom: '1px solid var(--cr-line-1)' }}>
-          <div className="cr-annot" style={{ fontSize: 11, color: 'var(--cr-brand-500)', textTransform: 'uppercase', letterSpacing: '.06em' }}>
+          <div className="cr-annot" style={{ fontSize: 12, color: 'var(--cr-brand-500)', textTransform: 'uppercase', letterSpacing: '.06em' }}>
             {d.area}
           </div>
           <div style={{ fontWeight: 700, fontSize: 20, marginTop: 4, overflowWrap: 'anywhere' }}>{d.value}</div>
@@ -237,7 +237,7 @@ function DecisionDetail({ d, onClose }: { d: Decision; onClose: () => void }) {
           <Field label="Scope" value={scopeLine} />
           {d.why && <Field label="Why" value={d.why} />}
           <div>
-            <div className="cr-annot" style={{ fontSize: 10.5, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '.06em' }}>
+            <div className="cr-annot" style={{ fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '.06em' }}>
               History
             </div>
             <div style={{ borderLeft: '2px solid var(--cr-line-2)', paddingLeft: 12, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -269,7 +269,7 @@ function DecisionDetail({ d, onClose }: { d: Decision; onClose: () => void }) {
 function Field({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="cr-annot" style={{ fontSize: 10.5, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '.06em' }}>
+      <div className="cr-annot" style={{ fontSize: 12, color: 'var(--cr-fg-3)', textTransform: 'uppercase', letterSpacing: '.06em' }}>
         {label}
       </div>
       <div style={{ fontSize: 14, marginTop: 3, overflowWrap: 'anywhere' }}>{value}</div>
@@ -299,7 +299,7 @@ function RecordForm({ area, project, onDone, onCancel }: {
 
   return (
     <div style={{ border: '1px solid var(--cr-line-2)', padding: 14, marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <div className="cr-annot" style={{ fontSize: 11, color: 'var(--cr-brand-500)', textTransform: 'uppercase', letterSpacing: '.06em' }}>
+      <div className="cr-annot" style={{ fontSize: 12, color: 'var(--cr-brand-500)', textTransform: 'uppercase', letterSpacing: '.06em' }}>
         Decide {area}
       </div>
       <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12.5, color: 'var(--cr-fg-2)' }}>
@@ -372,7 +372,7 @@ function CandidateRow({ candidate, areas, project, onResolved }: {
     }}>
       <div style={{ minWidth: 180, flex: 1 }}>
         <div style={{ fontWeight: 600, fontSize: 14.5, overflowWrap: 'anywhere' }}>{candidate.value}</div>
-        <div className="cr-annot" style={{ fontSize: 11, color: 'var(--cr-fg-3)', marginTop: 2 }}>
+        <div className="cr-annot" style={{ fontSize: 12, color: 'var(--cr-fg-3)', marginTop: 2 }}>
           seen {candidate.mentions}×{candidate.last_seen ? ` · latest ${fmtDate(candidate.last_seen)}` : ''}
         </div>
       </div>
