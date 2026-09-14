@@ -73,7 +73,10 @@ test.describe('Subagent panel', () => {
     const sessionId = await findSessionWithSubagents();
     test.skip(!sessionId, 'No session with subagents found in recent — install some explore/compact subagents first');
 
-    await page.goto('/');
+    // The project tree renders only on views that read a project filter
+    // (VIEW_FILTERS in components/Sidebar.tsx). Overview is not one of them,
+    // so this lands on Conversations, which is.
+    await page.goto('/?view=search');
     await page.waitForSelector('[data-testid="project-all"]', { timeout: 20_000 });
     // Wait until the conversation list actually populates. Under suite load
     // the API can take several seconds to respond on a fresh navigation; if

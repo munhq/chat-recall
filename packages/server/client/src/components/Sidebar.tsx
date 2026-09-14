@@ -70,8 +70,18 @@ const SYNC_TONE_COLOR: Record<string, string> = {
   unknown: 'var(--cr-fg-3)',
 };
 
-function SyncChip({ sync, onOpen }: { sync: SyncFacts; onOpen: () => void }) {
-  const tone = syncTone(sync);
+/**
+ * The collector status, and the door to System health.
+ *
+ * It renders whether or not the facts arrived. System health left the rail for
+ * this chip, so the chip IS the route to that page — a version that disappeared
+ * when /api/status/sync failed took the only door with it, which is strictly
+ * worse than the rail slot it replaced. With no facts the dot is grey and the
+ * label says so; the button still opens the page that explains why.
+ */
+function SyncChip({ sync, onOpen }: { sync: SyncFacts | null; onOpen: () => void }) {
+  const tone = sync ? syncTone(sync) : 'unknown';
+  const label = sync ? syncLabel(sync) : 'Sync status unavailable';
   return (
     <button
       type="button"
@@ -90,7 +100,7 @@ function SyncChip({ sync, onOpen }: { sync: SyncFacts; onOpen: () => void }) {
         background: SYNC_TONE_COLOR[tone] ?? 'var(--cr-fg-3)',
       }} />
       <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-        {syncLabel(sync)}
+        {label}
       </span>
     </button>
   );
@@ -294,7 +304,7 @@ export default function Sidebar({
       {/* Collector status. Quiet when healthy, which is the point: a green row
           in the rail earns its place only by being the one thing that turns
           amber when sync stops. Opens the panel that used to hold a rail slot. */}
-      {sync && setView && <SyncChip sync={sync} onOpen={() => setView('health')} />}
+      {setView && <SyncChip sync={sync ?? null} onOpen={() => setView('health')} />}
     </aside>
   );
 }
@@ -451,9 +461,14 @@ function SidebarRowItem({
   'data-testid'?: string;
 }) {
   return (
+    // Selection is announced, not only painted. The row carried its state in a
+    // CSS class alone, so a screen reader was told nothing about which project
+    // is selected — and the tool pills beside it already set aria-current, so
+    // the two halves of one sidebar disagreed about whether state is speakable.
     <div
       onClick={onClick}
       data-testid={testId}
+      aria-current={active ? 'true' : undefined}
       className={`cr-sidebar-row${active ? ' active' : ''}`}
       title={label}
     >
