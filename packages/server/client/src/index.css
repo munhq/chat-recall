@@ -1248,3 +1248,30 @@ a:hover { text-decoration: underline; }
   white-space: nowrap;
   border: 0;
 }
+
+/* WCAG 2.5.8 — every control answers a pointer at 24px.
+ *
+ * Measured on a phone against the shipped build: the Security list alone had
+ * 935 of its 957 controls under the threshold. "Mark rotated", "Not a secret"
+ * and "Rotate" render at 15-20px tall and repeat once per finding, so a page
+ * of them is hundreds of targets a thumb cannot hit. Overview's sync-rule
+ * checkboxes were 13x13, the browser default nobody set.
+ *
+ * min-height does not apply to a non-replaced inline box, so a link inside a
+ * sentence keeps its own size — which is what 2.5.8 exempts anyway. Only the
+ * block and inline-block controls grow, and only up to the floor. */
+button,
+[role="button"],
+summary,
+select,
+input[type="checkbox"],
+input[type="radio"] {
+  min-height: 24px;
+}
+input[type="checkbox"],
+input[type="radio"] {
+  min-width: 24px;
+  /* The browser default is 13px on every platform. It is a target, not a glyph. */
+  inline-size: 24px;
+  block-size: 24px;
+}

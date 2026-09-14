@@ -464,8 +464,27 @@ export function IconButton({ icon, size = 34, onClick, style, title, ...rest }: 
       onMouseEnter={() => setHov(true)}
       onMouseLeave={() => setHov(false)}
       style={{
+        // DRAWN SIZE AND TAPPABLE SIZE ARE NOT THE SAME NUMBER.
+        //
+        // `size` is the button's ink: 34 by default, 26 for the banner's
+        // dismiss. Every one of them was also its whole hit area, so the app
+        // shipped icon buttons a thumb misses — the mobile menu at 34x34 and
+        // the security banner's dismiss at 26x26, on every view, because both
+        // live in shared chrome.
+        //
+        // The box stays `size` so no layout moves; the touch area is widened to
+        // 44 with padding that reaches outside the box. WCAG 2.5.8 measures the
+        // target, not the ink.
         width: size,
         height: size,
+        // The pad reaches outside the box and the negative margin gives the
+        // space back, so the row's spacing is byte-identical to before. Without
+        // `background-clip` the hover fill would grow to 44 too and every icon
+        // button in the app would visibly change on hover.
+        boxSizing: 'content-box',
+        padding: size < 44 ? (44 - size) / 2 : 0,
+        margin: size < 44 ? -(44 - size) / 2 : undefined,
+        backgroundClip: 'content-box',
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',

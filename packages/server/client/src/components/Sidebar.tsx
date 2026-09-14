@@ -429,8 +429,18 @@ function TreeRow({
             type="button"
             data-testid="tree-chevron"
             onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
+            /* It draws an 11px chevron and nothing else, so without these it is
+               a button a screen reader announces as "button" and nothing more,
+               and it reads the same whether the folder is open or shut. */
+            aria-label={`${open ? 'Collapse' : 'Expand'} ${node.name}`}
+            aria-expanded={open}
+            title={open ? 'Collapse' : 'Expand'}
+            /* 18px drawn, 44px tappable. The hit area grows through a negative
+               margin so the row's own rhythm is untouched — WCAG 2.5.8 asks for
+               the target, not the ink. */
             style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'transparent',
-              border: 'none', padding: 0, cursor: 'pointer', width: 18, height: 18, color: 'inherit', borderRadius: 0 }}
+              border: 'none', padding: 13, margin: -13, cursor: 'pointer', width: 44, height: 44,
+              boxSizing: 'border-box', color: 'inherit', borderRadius: 0, flex: '0 0 auto' }}
           >
             <Icon name="chevronRight" size={11}
               style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }} />
