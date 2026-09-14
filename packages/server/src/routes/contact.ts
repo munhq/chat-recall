@@ -86,8 +86,14 @@ router.post('/', express.urlencoded({ extended: false, limit: '32kb' }), async (
   //
   // What they said goes in a `quote` block: it is someone else's words, and it
   // should read as theirs rather than as ours.
+  // Same shape as the no-mailer branch above: the sender asked for a reply and
+  // nobody has been told they are waiting, so say so rather than returning
+  // without a response and leaving the request hanging.
   const kit = await mailkit();
-  if (!kit) return;
+  if (!kit) {
+    log.error({ stored }, 'contact enquiry received but this build carries no mailer');
+    return respond(req, res, false, 'contact is not configured on this server');
+  }
   const mail = kit.compose({
     to: TO,
     subject: `chat-recall ${topic} enquiry`,
