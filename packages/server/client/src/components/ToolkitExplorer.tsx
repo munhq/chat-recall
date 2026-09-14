@@ -197,9 +197,20 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
 
   // Push toolkit type rows (Skills/MCPs/Commands/Subagents/Hooks/Plugins)
   // into the global Sidebar so the horizontal SegmentedControl can go.
-  useSidebarExtrasRegister(() => ([{
-    heading: 'Type',
-    rows: visibleSubTabs.map(t => {
+  // TWO GROUPS, NOT SIX ROWS UNDER ONE HEADING.
+  // Six items at one decision point is past the limit, and the six are not one
+  // kind of thing: three are work you author (a skill, a command, a subagent)
+  // and three are wiring to something else (an MCP, a hook, a plugin). Reading
+  // them as one list meant deciding between six; reading them as two means
+  // deciding between two, then between three.
+  const groupOf = (id: ToolkitType): 'Skills' | 'Connections' =>
+    (id === 'skill' || id === 'command' || id === 'agent') ? 'Skills' : 'Connections';
+
+  useSidebarExtrasRegister(() => (
+    (['Skills', 'Connections'] as const)
+      .map(heading => ({
+        heading,
+        rows: visibleSubTabs.filter(t => groupOf(t.id) === heading).map(t => {
       const c = (status?.counts[t.id] || {}) as Partial<Record<ToolId, number>>;
       const n = toolFilter === 'all'
         ? TOOL_IDS.reduce((sum, id) => sum + (c[id] || 0), 0)
@@ -210,17 +221,19 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
         count: n,
         on: activeTab === t.id,
         onClick: () => setActiveTab(t.id),
-        testId: `toolkit-type-${t.id}`,
-      };
-    }),
-  }]), [visibleSubTabs, activeTab, toolFilter, status]);
+          testId: `toolkit-type-${t.id}`,
+        };
+        }),
+      }))
+      .filter(sec => sec.rows.length > 0)
+  ), [visibleSubTabs, activeTab, toolFilter, status]);
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', background: 'var(--cr-ink-0)', overflow: 'hidden' }}>
       {/* Title */}
       <div className="cr-page-header" style={{ padding: '20px 32px 12px', background: 'var(--cr-ink-1)' }}>
         <div className="cr-page-header-row" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>Toolkit</h2>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>Skills &amp; tools</h2>
           <span className="cr-page-header-lead" style={{ fontSize: 12, color: 'var(--cr-fg-3)' }}>
             One library of skills, MCPs and commands, on every tool.
           </span>

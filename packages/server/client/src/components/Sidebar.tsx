@@ -96,6 +96,26 @@ function SyncChip({ sync, onOpen }: { sync: SyncFacts; onOpen: () => void }) {
   );
 }
 
+/**
+ * Which filters actually DO something on each view.
+ *
+ * The rail renders on every view, so the source pills and the project tree were
+ * present on all nine — and changed nothing on five of them, because those
+ * screens receive neither `toolFilter` nor `projectFilter`. A control that looks
+ * live and does nothing teaches the reader the controls are unreliable, and
+ * that lesson then applies on the screens where they work.
+ *
+ * A view absent from this map gets neither filter.
+ */
+const VIEW_FILTERS: Record<string, { tool?: boolean; project?: boolean }> = {
+  search:    { tool: true, project: true },   // sessions and the note corpus
+  projects:  { tool: true, project: true },   // the workspace spine
+  decisions: { project: true },               // scopes the register; no per-tool register
+  toolkit:   { tool: true },                  // per-tool coverage; projects mean nothing here
+  // home, tasks, team, security and health read neither. Security groups by
+  // project inside its own views; Team fetches its own scope.
+};
+
 // Tool source list comes from the central tools module — adding a tool
 // there automatically appears here. See services/tools.ts.
 
@@ -108,6 +128,7 @@ export default function Sidebar({
   sync,
 }: SidebarProps) {
   const navItems = NAV_ITEMS.filter((n) => !enabledViews || enabledViews.has(n.id));
+  const filters = VIEW_FILTERS[view ?? ''] ?? {};
   return (
     <aside
       id="cr-sidebar-drawer"
@@ -156,6 +177,8 @@ export default function Sidebar({
             the loud tool colours stay on the conversation rows; here they'd be
             confetti. Selection = solid fill + left accent, the same "you are
             here" language the project rows use. See .cr-tool-rail in index.css. */}
+        {filters.tool && (
+        <>
         <div style={{ padding: '12px 12px 0' }}>
           <div className="cr-sidebar-section-label" style={{ marginBottom: 4 }}>Source</div>
         </div>
@@ -184,6 +207,8 @@ export default function Sidebar({
             );
           })}
         </div>
+        </>
+        )}
 
         {(extraSections || []).map((section) => (
           <React.Fragment key={section.heading}>
@@ -237,6 +262,8 @@ export default function Sidebar({
           );
         })()}
 
+        {filters.project && (
+        <>
         <div className="cr-sidebar-divider" />
         <div style={{ padding: '10px 12px 4px' }}>
           <div className="cr-sidebar-section-label" style={{ marginBottom: 0 }}>Projects</div>
@@ -260,6 +287,8 @@ export default function Sidebar({
             />
           ))}
         </div>
+        </>
+        )}
       </div>
 
       {/* Collector status. Quiet when healthy, which is the point: a green row

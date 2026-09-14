@@ -99,23 +99,23 @@ Each moves a component between screens, so each needs its own verification pass.
 
 ## E — Density
 
-- [ ] **E1** Toolkit's three stacked controls become one grouped set: `Skills`
+- [x] **E1** Toolkit's three stacked controls become one grouped set: `Skills`
       (skills, commands, subagents) and `Connections` (MCPs, hooks, plugins).
-- [ ] **E2** Security `Custom rules` leaves the tab row; it is configuration
+- [x] **E2** Security `Custom rules` leaves the tab row; it is configuration
       wearing the shape of four data views.
-- [ ] **E3** The sidebar's source pills and project tree change nothing on
+- [x] **E3** The sidebar's source pills and project tree change nothing on
       health, team, tasks and security. Pass the sidebar the current view and
       render a filter only where it does something.
-- [ ] **E4** `Decisions.tsx` breaks the 12px annotation floor at 8 sites
+- [x] **E4** `Decisions.tsx` breaks the 12px annotation floor at 8 sites
       (11px and 10.5px): lines 171, 175, 195, 231, 240, 272, 302, 375.
-- [ ] **E5** Dead `--cr-radius-md` references resolve to `0px` and read as
+- [x] **E5** Dead `--cr-radius-md` references resolve to `0px` and read as
       square by accident. `SyncRules.tsx:86,99,233`, `ConnectMachine.tsx:190,204,262`,
       `ConversationViewer.tsx:1593`
 
 ## F — Verification
 
-- [ ] **F1** `npx tsc -b` clean.
-- [ ] **F2** Vitest suites green.
+- [x] **F1** `npx tsc -b` clean.
+- [x] **F2** Vitest suites green.
 - [ ] **F3** Playwright e2e green (18 specs, 77 tests).
 - [ ] **F4** Screenshot every changed screen in both themes, theme forced via
       `localStorage`.
@@ -140,7 +140,21 @@ Each moves a component between screens, so each needs its own verification pass.
 | 2026-09-14 | D2 | Team's Tasks tab removed — it rendered the same `TeamTasks` the rail item renders, so one board sat at two addresses. Team keeps activity and sharing. |
 | 2026-09-14 | D3 | System health left the rail for a `SyncChip` in the rail footer, driven by `syncTone`/`syncLabel`. `?view=health` still resolves and is still never gated. |
 | 2026-09-14 | D4 | Overview is one screen. The usage report is an Account tab, so the plan boundary runs between pages instead of between two tabs of one rail item. |
+| 2026-09-14 | E1 | `Skills & tools` groups its six sidebar type rows into `Skills` (skills, commands, subagents) and `Connections` (MCPs, hooks, plugins). The page heading matched the old rail label and now matches the new one. The three stacked controls I flagged live inside the SyncMatrix overlay, where type, text and state are three different questions — left alone. |
+| 2026-09-14 | E2 | Security's `Custom rules` left the tab row for a button beside it. It is configuration, not a fifth way to group findings. |
+| 2026-09-14 | E3 | `VIEW_FILTERS` in Sidebar.tsx gates the source pills and project tree per view. They rendered on all nine and did nothing on five. |
+| 2026-09-14 | E4 | `Decisions.tsx` annotation floor: 8 sites at 11px/10.5px raised to 12px. |
+| 2026-09-14 | E5 | Dead `--cr-radius-md` references removed from SyncRules, ConnectMachine, ConversationViewer. |
+| 2026-09-14 | e2e | Specs updated for the new IA. `sidebar-consistent.spec.ts` was rewritten: its premise — every view shows the same Source filter — was the E3 bug written down as a requirement. |
 | 2026-09-14 | A2 | All-projects tabs are now `Overview · Do next · Code · Activity`, and the heading is `All projects` — it was `Projects & Activity`, which folded a tab into the title. |
+
+## Needs your call
+
+- `e2e/tool-filter-unified.spec.ts` tests a UI that no longer exists. It drives
+  `nav-activity` and `nav-dashboard`, which left `Sidebar.tsx` in commit
+  fd7b2183, and asserts in-view tool-filter rows that
+  `sidebar-consistent.spec.ts` asserts have count 0. It was already broken
+  before this branch. Deleting it needs written approval, so it is untouched.
 
 ## Not in scope, still open
 

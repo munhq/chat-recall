@@ -31,7 +31,7 @@ test.describe('App loads', () => {
     await expect(page.getByTestId('nav-search')).toBeVisible();
     // Nav moved to the left rail — every destination is visible at once,
     // nothing hides behind a "More" overflow anymore.
-    await expect(page.getByTestId('nav-memory')).toBeVisible();
+    await expect(page.getByTestId('nav-decisions')).toBeVisible();
   });
 
   test('defaults to conversations view', async ({ page }) => {
@@ -221,10 +221,13 @@ test.describe('Navigation', () => {
     await waitForLoad(page);
   });
 
-  test('switching to Memory tab shows memory explorer', async ({ page }) => {
-    await page.getByTestId('nav-memory').click();
+  // The memory explorer is a FACET of Conversations now, not a rail item. It
+  // held half of "Memory Hub", a word that glossed neither of the two unrelated
+  // things it contained.
+  test('the Notes & memory facet shows the memory explorer', async ({ page }) => {
+    await page.getByTestId('nav-search').click();
+    await page.getByRole('button', { name: /^Notes & memory$/ }).click();
 
-    // Memory explorer should appear
     await expect(page.locator('.memory-explorer, [data-testid="memory-explorer"]')).toBeVisible({
       timeout: 5000,
     });
@@ -233,9 +236,10 @@ test.describe('Navigation', () => {
     await expect(page.getByTestId('search-layout')).not.toBeVisible();
   });
 
-  test('switching back to Conversations shows search layout', async ({ page }) => {
-    await page.getByTestId('nav-memory').click();
+  test('switching back to Sessions shows search layout', async ({ page }) => {
     await page.getByTestId('nav-search').click();
+    await page.getByRole('button', { name: /^Notes & memory$/ }).click();
+    await page.getByRole('button', { name: /^Sessions$/ }).click();
 
     await expect(page.getByTestId('search-layout')).toBeVisible();
     await expect(page.getByTestId('project-sidebar')).toBeVisible();

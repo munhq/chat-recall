@@ -1590,7 +1590,7 @@ function MessageBlock({ message, highlight, query }: { message: Message; highlig
           scrollMarginTop: 80,
           background: 'var(--cr-brand-surf)',
           boxShadow: '0 0 0 2px var(--cr-brand-500)',
-          borderRadius: 'var(--cr-radius-md)',
+          
           padding: 12, margin: '-12px -12px 28px',
           transition: 'background 0.4s, box-shadow 0.4s',
         } : {}),
