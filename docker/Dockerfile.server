@@ -18,6 +18,7 @@ COPY package.json package-lock.json tsconfig.base.json tsconfig.json ./
 COPY packages/engine/package.json ./packages/engine/
 COPY packages/cli/package.json ./packages/cli/
 COPY packages/server/package.json ./packages/server/
+COPY .npmrc ./
 RUN npm ci --omit=optional
 COPY packages/engine/ ./packages/engine/
 RUN npx tsc -b packages/engine
@@ -60,13 +61,23 @@ WORKDIR /app
 # repository. The server loads it with a dynamic import and, when it is absent,
 # logs "mailkit is not installed — this deployment sends no mail" and carries on.
 #
-# The cloud image installs it by building with MAILKIT=1 and a git credential.
+# The cloud image installs it by building with MAILKIT=1 and an npm token,
+# passed as a BuildKit secret so it never becomes a layer.
 ARG MAILKIT=0
 COPY package.json package-lock.json tsconfig.base.json tsconfig.json ./
 COPY packages/engine/package.json ./packages/engine/
 COPY packages/cli/package.json ./packages/cli/
 COPY packages/server/package.json ./packages/server/
-RUN if [ "$MAILKIT" = "1" ]; then npm ci; else npm ci --omit=optional; fi
+COPY .npmrc ./
+# The token is a BuildKit secret, so it is never a layer and never in the image.
+# Without MAILKIT=1 the secret is not even required: --omit=optional skips the
+# only @munhq package, and .npmrc redirects nothing else.
+RUN --mount=type=secret,id=npmtoken \
+    if [ "$MAILKIT" = "1" ]; then \
+      NODE_AUTH_TOKEN="$(cat /run/secrets/npmtoken 2>/dev/null || true)" npm ci; \
+    else \
+      npm ci --omit=optional; \
+    fi
 COPY packages/engine/ ./packages/engine/
 COPY packages/server/ ./packages/server/
 COPY packages/cli/ ./packages/cli/
