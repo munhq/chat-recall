@@ -1658,6 +1658,20 @@ program
         note(hits.length === all.length, label,
           hits.length === 0 ? 'none — run `chat-recall install-hooks`'
             : `${hits.join(', ')}${hits.length < all.length ? ` (missing ${all.filter((e) => !hits.includes(e)).join(', ')} — run install-hooks)` : ''}`);
+
+        // The board hooks get their own line. The check above asks whether the
+        // EVENT carries any chat-recall command, and UserPromptSubmit and
+        // SessionEnd already carry the resume hint and the escalation — so a
+        // profile with neither half of the board loop reported green.
+        const boardEvents = ['UserPromptSubmit', 'SessionEnd'];
+        const boardHits = boardEvents.filter((ev) => [
+          ...(Array.isArray(cfg[ev]) ? cfg[ev] : []),
+          ...(Array.isArray(settings[ev]) ? settings[ev] : []),
+        ].some((h: any) => (h.hooks?.[0]?.command || '').includes('chat_recall_task_hook')));
+        note(boardHits.length === boardEvents.length, `Task board hooks (${profile})`,
+          boardHits.length === 0 ? 'not registered — run `chat-recall install-hooks`'
+            : boardHits.length === boardEvents.length ? 'claim on a prompt, close on a commit'
+              : `only ${boardHits.join(', ')} — run \`chat-recall install-hooks\``);
       } catch {
         note(false, label, `${hooksJson} unparseable`);
       }
@@ -3096,6 +3110,141 @@ program
   });
 
 program
+  .command('task-hook')
+  .description('Move a board card when a prompt or a commit names its id (used by the task hooks)')
+  .option('--claim', 'UserPromptSubmit: claim every open card the prompt names')
+  .option('--close', 'SessionEnd: close every open card a recent commit names')
+  .option('--since <hours>', 'How far back --close reads commits', '24')
+  .action(async (opts: { claim?: boolean; close?: boolean; since?: string }) => {
+    // Silent on every failure, for the reason `guard` above is: this runs on
+    // every prompt and at the end of every session. A hook that prints a stack
+    // trace into a turn is one the user removes, and the board then goes back
+    // to being updated by hand — which is the state this command exists to end.
+    if (process.env.CHAT_RECALL_TASK_HOOK === '0') return;
+    try {
+      const {
+        extractTaskIds, parseCommitLog, planCloses, parseChangedFiles,
+        mayClaim, mayClose, COMMIT_LOG_FORMAT,
+      } = await import('@chat-recall/engine/core/task-hook.js');
+
+      const raw = await new Promise<string>((resolve) => {
+        let buf = '';
+        const t = setTimeout(() => resolve(buf), 2000);
+        process.stdin.setEncoding('utf8');
+        process.stdin.on('data', (c) => { buf += c; });
+        process.stdin.on('end', () => { clearTimeout(t); resolve(buf); });
+        process.stdin.on('error', () => { clearTimeout(t); resolve(buf); });
+      });
+      if (!raw.trim()) return;
+
+      let payload: { prompt?: string; session_id?: string; cwd?: string };
+      try { payload = JSON.parse(raw) as typeof payload; } catch { return; }
+
+      // The session id is the whole point of the claim: the board refuses a
+      // `done` that has no session behind it, and a claim with nothing behind
+      // it cannot be asked about.
+      const sessionId = typeof payload.session_id === 'string' ? payload.session_id : '';
+      if (!sessionId) return;
+      const cwd = typeof payload.cwd === 'string' && payload.cwd ? payload.cwd : process.cwd();
+
+      const target = firstTarget();
+      if (!target) return;
+
+      const { fetchWithTimeout } = await import('./http.js');
+      const headers: Record<string, string> = { 'content-type': 'application/json' };
+      if (target.token) headers.authorization = `Bearer ${target.token}`;
+
+      type BoardTask = { id: string; title: string; status: string; linkedSessionId?: string | null };
+      const readCard = async (id: string): Promise<BoardTask | null> => {
+        const res = await fetchWithTimeout(
+          `${target.base}/api/tasks/${encodeURIComponent(id)}`, { headers }, 4000,
+        );
+        if (!res.ok) return null;   // 404 covers an id typed for another board
+        const body = await res.json().catch(() => ({})) as { task?: BoardTask };
+        return body.task ?? null;
+      };
+      const patchCard = async (id: string, body: unknown): Promise<boolean> => {
+        const res = await fetchWithTimeout(
+          `${target.base}/api/tasks/${encodeURIComponent(id)}`,
+          { method: 'PATCH', headers, body: JSON.stringify(body) },
+          6000,
+        );
+        return res.ok;
+      };
+
+      if (opts.claim) {
+        const ids = extractTaskIds(payload.prompt);
+        if (!ids.length) return;   // the common case, and it costs one regex pass
+        const claimed: string[] = [];
+        for (const id of ids) {
+          const card = await readCard(id);
+          if (!card) continue;
+          if (!mayClaim(card.status, card.linkedSessionId, sessionId)) continue;
+          if (await patchCard(id, { status: 'in_progress', linkedSessionId: sessionId })) {
+            claimed.push(`${id} — ${card.title}`);
+          }
+        }
+        if (claimed.length) {
+          // UserPromptSubmit stdout reaches the agent as context, so say what
+          // moved and how the other half of the loop is triggered.
+          process.stdout.write('<!-- chat-recall-task-claim -->\n');
+          process.stdout.write(
+            '**Claimed on the chat-recall board**, linked to this session:\n'
+            + claimed.map((c) => `- 🟡 ${c}`).join('\n')
+            + '\n\nWrite the card id in the commit message and the card closes itself at session end.\n',
+          );
+        }
+        return;
+      }
+
+      if (!opts.close) return;
+
+      const { execFileSync } = await import('node:child_process');
+      const git = (args: string[]): string => {
+        try {
+          return execFileSync('git', args, {
+            cwd, encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'],
+          });
+        } catch { return ''; }
+      };
+      if (!git(['rev-parse', '--is-inside-work-tree']).trim().startsWith('true')) return;
+
+      // Bounded both ways: a window, and a commit count. A session that ends in
+      // a repository with years of history reads 200 commits at most.
+      const hours = Math.max(1, Math.min(720, Number(opts.since) || 24));
+      const intents = planCloses(parseCommitLog(git([
+        'log', `--since=${hours}.hours.ago`, '--max-count=200', '--no-merges',
+        `--pretty=format:${COMMIT_LOG_FORMAT}`,
+      ])));
+      if (!intents.length) return;
+
+      for (const intent of intents) {
+        const card = await readCard(intent.id);
+        if (!card) continue;
+        if (!mayClose(card.status)) continue;
+        // The files scope the card's view of the session diff. The server
+        // refuses a path that climbs out of the repository, and `git show`
+        // prints repo-relative paths.
+        const files = parseChangedFiles(
+          intent.commits.map((sha) => git(['show', '--name-only', '--pretty=format:', sha])).join('\n'),
+        );
+        const shortShas = intent.commits.map((s) => s.slice(0, 8)).join(', ');
+        await patchCard(intent.id, {
+          status: 'done',
+          linkedSessionId: sessionId,
+          doneEvidence: {
+            commits: intent.commits,
+            files,
+            summary: `Closed by ${intent.commits.length === 1 ? 'commit' : 'commits'} ${shortShas}, which named this card.`,
+          },
+        });
+      }
+    } catch {
+      // Deliberately silent — see above.
+    }
+  });
+
+program
   .command('install-hooks')
   .description('Install Claude Code hooks (Stop + PreCompact + UserPromptSubmit + SessionEnd + SessionStart) into every Claude profile')
   .option('--uninstall', 'Remove hooks instead of installing them')
@@ -3103,7 +3252,8 @@ program
   .option('--no-escalate', "Don't install the SessionEnd learnings-escalation hook")
   .option('--no-wakeup', "Don't install the SessionStart wake-up hook")
   .option('--no-guard', "Don't install the PreToolUse decision guard")
-  .action(async (opts: { uninstall?: boolean; resumeHint?: boolean; escalate?: boolean; wakeup?: boolean; guard?: boolean }) => {
+  .option('--no-task-board', "Don't install the hooks that claim and close board cards")
+  .action(async (opts: { uninstall?: boolean; resumeHint?: boolean; escalate?: boolean; wakeup?: boolean; guard?: boolean; taskBoard?: boolean }) => {
     const { mkdirSync, copyFileSync, chmodSync, existsSync, readFileSync, writeFileSync, statSync, unlinkSync } = await import('fs');
     const { fileURLToPath } = await import('url');
 
@@ -3126,6 +3276,7 @@ program
     const sourceResumeHook = findHook('chat_recall_resume_hook.sh');
     const sourceEscalateHook = findHook('chat_recall_escalate_hook.sh');
     const sourceWakeupHook = findHook('chat_recall_wakeup_hook.sh');
+    const sourceTaskHook = findHook('chat_recall_task_hook.sh');
     if (!sourceSaveHook) {
       console.error(chalk.red('Could not locate chat_recall_save_hook.sh in the package.'));
       process.exit(1);
@@ -3137,6 +3288,7 @@ program
     const installedResumeHook = join(hooksDir, 'chat_recall_resume_hook.sh');
     const installedEscalateHook = join(hooksDir, 'chat_recall_escalate_hook.sh');
     const installedWakeupHook = join(hooksDir, 'chat_recall_wakeup_hook.sh');
+    const installedTaskHook = join(hooksDir, 'chat_recall_task_hook.sh');
 
     /**
      * True when this profile's settings.json ALREADY registers our SessionStart
@@ -3173,7 +3325,8 @@ program
       }
     };
 
-    // Identify our entries by command path. Three scripts now: save + resume + escalate.
+    // Identify our entries by command path. Six scripts now: save + resume +
+    // escalate + wakeup + guard + task board.
     const matchesOurs = (h: any) => {
       const cmd = h?.hooks?.[0]?.command;
       return typeof cmd === 'string' && (
@@ -3181,7 +3334,8 @@ program
         cmd.includes('chat_recall_resume_hook.sh') ||
         cmd.includes('chat_recall_escalate_hook.sh') ||
         cmd.includes('chat_recall_wakeup_hook.sh') ||
-        cmd.includes('chat_recall_guard_hook.sh')
+        cmd.includes('chat_recall_guard_hook.sh') ||
+        cmd.includes('chat_recall_task_hook.sh')
       );
     };
 
@@ -3327,6 +3481,15 @@ program
       chmodSync(installedWakeupHook, 0o755);
     }
 
+    const installTaskBoard = opts.taskBoard !== false && !!sourceTaskHook;
+    if (opts.taskBoard !== false && !sourceTaskHook) {
+      console.error(chalk.yellow('! chat_recall_task_hook.sh is not in this package — the board hooks are not installed.'));
+    }
+    if (installTaskBoard) {
+      copyFileSync(sourceTaskHook!, installedTaskHook);
+      chmodSync(installedTaskHook, 0o755);
+    }
+
     const stopEntry = { matcher: '', hooks: [{ type: 'command', command: installedSaveHook }] };
     // Quoted: the path contains the user's home directory, and a space in it
     // ("C:/Users/First Last", "/Users/First Last") would split the command.
@@ -3346,6 +3509,11 @@ program
       hooks: [{ type: 'command', command: installedGuardHook }],
     };
 
+    // The board, both halves. The claim runs on the prompt that names a card;
+    // the close runs at session end and reads the commits that named one.
+    const taskClaimEntry = { matcher: '', hooks: [{ type: 'command', command: `"${installedTaskHook}" --claim` }] };
+    const taskCloseEntry = { matcher: '', hooks: [{ type: 'command', command: `"${installedTaskHook}" --close` }] };
+
     const events: Array<[string, any]> = [
       ['Stop', stopEntry],
       ['PreCompact', precompactEntry],
@@ -3353,6 +3521,10 @@ program
     if (installResume) events.push(['UserPromptSubmit', resumeEntry]);
     if (installEscalate) events.push(['SessionEnd', escalateEntry]);
     if (installGuard) events.push(['PreToolUse', guardEntry]);
+    if (installTaskBoard) {
+      events.push(['UserPromptSubmit', taskClaimEntry]);
+      events.push(['SessionEnd', taskCloseEntry]);
+    }
 
     // Always strip our prior UserPromptSubmit/SessionEnd entries too — even
     // when reinstalling with those hooks disabled, so we don't leave orphan
@@ -3371,8 +3543,12 @@ program
       for (const event of HOOK_EVENTS) {
         const arr = Array.isArray(config.hooks[event]) ? config.hooks[event] : [];
         const without = arr.filter((h: any) => !matchesOurs(h));
-        const wanted = perProfile.find(([e]) => e === event);
-        if (wanted) without.push(wanted[1]);
+        // EVERY entry for this event, because two of ours now share one.
+        // UserPromptSubmit carries the resume hint and the card claim, and
+        // SessionEnd carries the escalation and the card close; reading only
+        // the first match registered one of each pair and dropped the other
+        // silently.
+        for (const [, entry] of perProfile.filter(([e]) => e === event)) without.push(entry);
         if (without.length) config.hooks[event] = without;
         else delete config.hooks[event];
       }
@@ -3395,6 +3571,11 @@ program
       const guardSz = statSync(installedGuardHook).size;
       console.log(chalk.green(`✓ Installed chat-recall decision guard (${guardSz} bytes)`));
     }
+    if (installTaskBoard) {
+      const taskSz = statSync(installedTaskHook).size;
+      console.log(chalk.green(`✓ Installed chat-recall task-board hooks (${taskSz} bytes)`));
+      console.log(chalk.dim('  A prompt naming a card id claims it; a commit message naming one closes it.'));
+    }
     if (installWakeup) {
       const wakeupSz = statSync(installedWakeupHook).size;
       console.log(chalk.green(`✓ Installed chat-recall wake-up hook (${wakeupSz} bytes)`));
@@ -3406,7 +3587,12 @@ program
     for (const [i, f] of hookConfigFiles.entries()) {
       console.log(chalk.dim(`  ${i === 0 ? 'config:   ' : '          '} ${f}`));
     }
-    console.log(chalk.dim(`  events:    Stop, PreCompact${installResume ? ', UserPromptSubmit' : ''}${installEscalate ? ', SessionEnd' : ''}${installWakeup ? ', SessionStart' : ''}${installGuard ? ', PreToolUse' : ''}`));
+    const registeredEvents = ['Stop', 'PreCompact'];
+    if (installResume || installTaskBoard) registeredEvents.push('UserPromptSubmit');
+    if (installEscalate || installTaskBoard) registeredEvents.push('SessionEnd');
+    if (installWakeup) registeredEvents.push('SessionStart');
+    if (installGuard) registeredEvents.push('PreToolUse');
+    console.log(chalk.dim(`  events:    ${registeredEvents.join(', ')}`));
     console.log();
     console.log(chalk.dim('Run `chat-recall install-hooks --uninstall` to remove later.'));
     if (!installResume) {
