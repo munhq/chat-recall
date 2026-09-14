@@ -117,7 +117,10 @@ export default function CommandCenter({ setView, onOpenProject, onFocusProjects,
     return (
       <div className="cr-cmd cr-pad-mobile" style={{ flex: 1, overflow: 'auto', padding: '28px 32px 64px' }}>
         <div style={{ maxWidth: 680, margin: '40px auto 0' }}>
-          <h1 style={{ margin: '0 0 8px' }}>Connect your first machine</h1>
+          {/* h2, not h1. This is a card inside Overview and Overview already
+              owns the page title below it — two h1s left heading navigation
+              unable to say which of them was the page. */}
+          <h2 style={{ margin: '0 0 8px' }}>Connect your first machine</h2>
           <div style={{ color: 'var(--cr-fg-2)', fontSize: 14, marginBottom: 20, lineHeight: 1.5 }}>
             Nothing is synced yet. This dashboard fills in the moment your session history arrives.
           </div>
