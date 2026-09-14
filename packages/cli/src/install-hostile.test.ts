@@ -180,6 +180,28 @@ describe('init against a server that cannot be reached', () => {
     expect(existsSync(join(home, '.mcp.json'))).toBe(true);
   });
 
+  test('init registers the task-board hooks, even when the server is unreachable', async () => {
+    // `init` installed no hooks at all, so the board loop reached only a user
+    // who had separately found and run `install-hooks`. It is a step of setup
+    // now, and it is local work: a server nobody can reach must not skip it.
+    const { home } = await runCli(['init', '--server', await refusedUrl(), ...INIT_LOCAL_ONLY]);
+    const hooksJson = join(home, 'claude', 'hooks.json');
+    expect(existsSync(hooksJson)).toBe(true);
+    const cfg = JSON.parse(readFileSync(hooksJson, 'utf-8'));
+    const commandsFor = (event: string): string[] =>
+      (cfg.hooks?.[event] ?? []).map((h: { hooks?: Array<{ command?: string }> }) => h.hooks?.[0]?.command ?? '');
+    expect(commandsFor('UserPromptSubmit').some((c) => c.includes('task-hook --claim'))).toBe(true);
+    expect(commandsFor('SessionEnd').some((c) => c.includes('task-hook --close'))).toBe(true);
+  });
+
+  test('--skip-hooks leaves the board hooks out', async () => {
+    const { home } = await runCli(['init', '--server', await refusedUrl(), '--skip-hooks', ...INIT_LOCAL_ONLY]);
+    const hooksJson = join(home, 'claude', 'hooks.json');
+    const cfg = existsSync(hooksJson) ? JSON.parse(readFileSync(hooksJson, 'utf-8')) : { hooks: {} };
+    const all = Object.values(cfg.hooks ?? {}).flat() as Array<{ hooks?: Array<{ command?: string }> }>;
+    expect(all.some((h) => (h.hooks?.[0]?.command ?? '').includes('task-hook'))).toBe(false);
+  });
+
   test('THE OUTPUT IS SHORT, and a failure is still visible in it', async () => {
     // This asserted that the numbered steps were contiguous. There are no
     // numbered steps any more — init prints one status line and one summary —

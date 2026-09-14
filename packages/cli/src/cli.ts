@@ -854,8 +854,10 @@ program
           const { registerBoardHooks, resolveCliEntry } = await import('./board-hooks.js');
           const { fileURLToPath: toPath } = await import('url');
           const distDir = toPath(new URL('.', import.meta.url));
-          const written = registerBoardHooks(claudeHookConfigFiles(), process.execPath, resolveCliEntry(distDir));
-          if (written.length) rep.done(chalk.green('✓ Task-board hooks registered'));
+          // Silent, like the MCP wiring above it. init prints one status line
+          // and one done line, and a setup step that announces itself is how
+          // that output grew to forty lines before. `doctor` reports it.
+          registerBoardHooks(claudeHookConfigFiles(), process.execPath, resolveCliEntry(distDir));
         } catch { /* setup completes without them; `install-hooks` retries */ }
       }
 
