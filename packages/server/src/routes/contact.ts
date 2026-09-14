@@ -16,7 +16,7 @@
  */
 import express from 'express';
 import { sendMail, mailerConfigured } from '../auth/mailer.js';
-import { compose } from '../auth/mail-template.js';
+import { mailkit } from '../auth/mail-kit.js';
 import { createLogger } from '@chat-recall/engine/core/logger.js';
 import { storeFeedback, markFeedbackMailed } from '../util/feedback.js';
 
@@ -86,7 +86,9 @@ router.post('/', express.urlencoded({ extended: false, limit: '32kb' }), async (
   //
   // What they said goes in a `quote` block: it is someone else's words, and it
   // should read as theirs rather than as ours.
-  const mail = compose({
+  const kit = await mailkit();
+  if (!kit) return;
+  const mail = kit.compose({
     to: TO,
     subject: `chat-recall ${topic} enquiry`,
     preheader: `${email}${company ? ` · ${company}` : ''}`,
@@ -175,7 +177,9 @@ router.post('/feedback', express.json({ limit: '16kb' }), async (req, res) => {
   try {
     const version = clip(body.cliVersion, 20);
     const who = email || 'someone who did not leave an address';
-    const mail = compose({
+    const kit = await mailkit();
+    if (!kit) return;
+    const mail = kit.compose({
       to: TO,
       subject: 'chat-recall feedback',
       preheader: `${who}${version ? ` · cli ${version}` : ''}`,
