@@ -1,5 +1,24 @@
 import { defineConfig, devices } from '@playwright/test';
 
+/**
+ * WHERE THE BROWSERS ARE.
+ *
+ * Playwright looks in `~/.cache/ms-playwright` by default. On a machine where
+ * they were installed under `~/.local/share/ms-playwright` instead, every
+ * chromium test fails in about 2ms with "Executable doesn't exist" — and the
+ * run still exits 0, because a project whose tests all fail to launch reports
+ * no failures at all. The suite looked green while launching nothing.
+ *
+ * Honour an existing value; otherwise point at the XDG data directory the
+ * install actually uses, and let Playwright fall back to its own default when
+ * neither exists.
+ */
+if (!process.env.PLAYWRIGHT_BROWSERS_PATH) {
+  const xdg = process.env.XDG_DATA_HOME
+    || (process.env.HOME ? `${process.env.HOME}/.local/share` : null);
+  if (xdg) process.env.PLAYWRIGHT_BROWSERS_PATH = `${xdg}/ms-playwright`;
+}
+
 export default defineConfig({
   testDir: './e2e',
   fullyParallel: false,

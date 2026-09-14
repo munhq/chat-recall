@@ -22,9 +22,7 @@ export default function TeamView({ onOpenProject }: { onOpenProject?: (projectId
   const [teamName, setTeamName] = useState<string>('');
   const [mySub, setMySub] = useState<string | null>(null);
   const [act, setAct] = useState<TeamActivityResponse | null>(null);
-  const [shares, setShares] = useState<ProjectShare[]>([]);
   const [sinceDays, setSinceDays] = useState<number>(30);
-  const [newProject, setNewProject] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [gated, setGated] = useState<FeatureGateError | null>(null);
@@ -44,8 +42,7 @@ export default function TeamView({ onOpenProject }: { onOpenProject?: (projectId
   async function refresh(days: number) {
     setErr('');
     try {
-      const [a, s] = await Promise.all([getTeamActivity({ sinceDays: days }), listMyShares()]);
-      setAct(a); setShares(s);
+      setAct(await getTeamActivity({ sinceDays: days }));
     } catch (e: any) {
       // A 402 here is the PLAN boundary, not a failure: the deep link outlives
       // the tab gating (bookmarks, cached bundles), so this view must state the
@@ -73,21 +70,6 @@ export default function TeamView({ onOpenProject }: { onOpenProject?: (projectId
 
   const totalSessions = (act?.activity ?? []).reduce((n, r) => n + r.sessions, 0);
   const activeProjects = new Set((act?.activity ?? []).map((r) => r.projectId)).size;
-
-  async function doAddShare() {
-    const pid = newProject.trim();
-    if (!pid) return;
-    setBusy(true);
-    try { await addShare(pid); setNewProject(''); await refresh(sinceDays); }
-    catch (e: any) { setErr(String(e.message || e)); }
-    finally { setBusy(false); }
-  }
-  async function doRemoveShare(pid: string) {
-    setBusy(true);
-    try { await removeShare(pid); await refresh(sinceDays); }
-    catch (e: any) { setErr(String(e.message || e)); }
-    finally { setBusy(false); }
-  }
 
   if (!teamSlug && !err) return <div className="team"><style>{TEAM_CSS}</style><p className="muted">Loading team…</p></div>;
 
@@ -125,29 +107,9 @@ export default function TeamView({ onOpenProject }: { onOpenProject?: (projectId
           { label: 'Members', value: String(act?.members.length ?? 0), icon: 'grid' },
           { label: 'Active projects', value: String(activeProjects), sub: `last ${sinceDays} days`, icon: 'folder' },
           { label: 'Sessions', value: String(totalSessions), sub: `last ${sinceDays} days`, icon: 'message' },
-          { label: 'Projects I share', value: String(shares.length), tone: shares.length ? 'ok' : 'neutral', icon: 'check' },
         ]}
       />
 
-      <section>
-        <h2>Projects I share</h2>
-        <p className="muted">Sharing a project lets teammates see your sessions, search, and findings for it. Default is private.</p>
-        <div className="team-shares">
-          {shares.length === 0 && <span className="muted">You haven't shared any projects yet.</span>}
-          {shares.map((s) => (
-            <Chip key={s.projectId} kind="ok" icon="folder">
-              {s.projectId}
-              <button className="chip-x" title="Stop sharing" onClick={() => doRemoveShare(s.projectId)} disabled={busy}>×</button>
-            </Chip>
-          ))}
-        </div>
-        <div className="team-add">
-          <Input placeholder="project_id to share (e.g. git:github.com/org/repo)" value={newProject}
-                 onChange={(e) => setNewProject(e.target.value)}
-                 onKeyDown={(e) => { if (e.key === 'Enter') void doAddShare(); }} />
-          <Button variant="primary" onClick={doAddShare} disabled={busy || !newProject.trim()}>Share</Button>
-        </div>
-      </section>
 
       <section>
         <h2>Activity by member</h2>
@@ -186,6 +148,68 @@ export default function TeamView({ onOpenProject }: { onOpenProject?: (projectId
       </section>
       </>
       )}
+    </div>
+  );
+}
+
+/**
+ * Project sharing — a SETTING, and now filed as one.
+ *
+ * It lived on the Team page because that is where teams are discussed, but
+ * "which of my projects can teammates see" is a durable preference about my
+ * account, not a view of what the team did this week. Settings is where a
+ * person goes to change what the product does; this belongs there.
+ */
+export function ProjectSharing() {
+  const [shares, setShares] = useState<ProjectShare[]>([]);
+  const [newProject, setNewProject] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const refresh = async () => {
+    try { setShares(await listMyShares()); }
+    catch (e) { setErr(e instanceof Error ? e.message : 'Could not read your shares'); }
+  };
+  useEffect(() => { void refresh(); }, []);
+
+  async function add() {
+    const pid = newProject.trim();
+    if (!pid) return;
+    setBusy(true); setErr('');
+    try { await addShare(pid); setNewProject(''); await refresh(); }
+    catch (e) { setErr(e instanceof Error ? e.message : 'Could not share that project'); }
+    finally { setBusy(false); }
+  }
+  async function remove(pid: string) {
+    setBusy(true); setErr('');
+    try { await removeShare(pid); await refresh(); }
+    catch (e) { setErr(e instanceof Error ? e.message : 'Could not stop sharing'); }
+    finally { setBusy(false); }
+  }
+
+  return (
+    <div className="team">
+      <style>{TEAM_CSS}</style>
+      <section>
+        <h2>Projects I share</h2>
+        <p className="muted">Sharing a project lets teammates see your sessions, search, and findings for it. Default is private.</p>
+        {err && <div className="team-err">{err}</div>}
+        <div className="team-shares">
+          {shares.length === 0 && <span className="muted">You haven't shared any projects yet.</span>}
+          {shares.map((s) => (
+            <Chip key={s.projectId} kind="ok" icon="folder">
+              {s.projectId}
+              <button className="chip-x" title="Stop sharing" onClick={() => remove(s.projectId)} disabled={busy}>×</button>
+            </Chip>
+          ))}
+        </div>
+        <div className="team-add">
+          <Input placeholder="project_id to share (e.g. git:github.com/org/repo)" value={newProject}
+                 onChange={(e) => setNewProject(e.target.value)}
+                 onKeyDown={(e) => { if (e.key === 'Enter') void add(); }} />
+          <Button variant="primary" onClick={add} disabled={busy || !newProject.trim()}>Share</Button>
+        </div>
+      </section>
     </div>
   );
 }

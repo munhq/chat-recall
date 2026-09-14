@@ -376,6 +376,42 @@ export async function queryKgEntity(entity: string, opts: { as_of?: string; dire
   const r = await fetchWithTimeout(`${API_BASE}/kg/query`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ entity, ...opts }) });
   return r.ok ? r.json() : { entity, facts: [] };
 }
+/**
+ * Assert a fact, and retract one.
+ *
+ * Both routes existed with no client caller at all, so an agent could correct
+ * the graph through MCP and the person reading it could not. A machine-mined
+ * guess that is wrong stayed wrong on screen, permanently, for the only party
+ * who could tell.
+ *
+ * `supersede` defaults to true server-side: a new object for the same
+ * (subject, predicate) closes the prior one rather than piling contradictions.
+ * Retraction is temporal, not a delete — the fact keeps its validity window, so
+ * the record still shows it was believed and when it stopped being true.
+ */
+export async function addKgFact(
+  subject: string, predicate: string, object: string,
+  opts: { supersede?: boolean; confidence?: number } = {},
+): Promise<{ id: string }> {
+  const r = await fetchWithTimeout(`${API_BASE}/kg/add`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ subject, predicate, object, ...opts }),
+  });
+  if (!r.ok) throw new Error(`Couldn't record that fact: ${r.statusText}`);
+  return r.json();
+}
+
+export async function invalidateKgFact(
+  subject: string, predicate: string, object: string,
+): Promise<{ invalidated: number }> {
+  const r = await fetchWithTimeout(`${API_BASE}/kg/invalidate`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ subject, predicate, object }),
+  });
+  if (!r.ok) throw new Error(`Couldn't retract that fact: ${r.statusText}`);
+  return r.json();
+}
+
 export async function getKgTimeline(entity?: string, limit = 100): Promise<{ entity: string | null; entries: KgFact[] }> {
   const r = await fetchWithTimeout(`${API_BASE}/kg/timeline${qs({ entity, limit })}`);
   return r.ok ? r.json() : { entity: entity ?? null, entries: [] };

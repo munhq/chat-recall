@@ -58,7 +58,7 @@ Label and routing work. No component moves.
 - [x] **B2** The plate titled `Decisions and stack` renders no decisions. Render
       `<Decisions project={canonicalId} embedded />` in it.
       `ProjectWorkspace.tsx:304, :312`
-- [ ] **B3** Knowledge-graph facts become writable from the UI. `POST /api/kg/add`
+- [x] **B3** Knowledge-graph facts become writable from the UI. `POST /api/kg/add`
       and `/invalidate` exist and only MCP calls them, so an agent can retract a
       wrong fact and the user cannot. `KnowledgeGraph.tsx`
 
@@ -117,9 +117,9 @@ Each moves a component between screens, so each needs its own verification pass.
 - [x] **F1** `npx tsc -b` clean.
 - [x] **F2** Vitest suites green.
 - [x] **F3** Playwright e2e green (18 specs, 77 tests).
-- [ ] **F4** Screenshot every changed screen in both themes, theme forced via
+- [x] **F4** Screenshot every changed screen in both themes, theme forced via
       `localStorage`.
-- [ ] **F5** `node ~/.claude/skills/impeccable/scripts/detect.mjs --json <files>`
+- [x] **F5** `node ~/.claude/skills/impeccable/scripts/detect.mjs --json <files>`
       clean. It needs `htmlparser2 css-select css-tree domutils` resolvable next
       to the script or it runs degraded and undercounts.
 
@@ -148,6 +148,13 @@ Each moves a component between screens, so each needs its own verification pass.
 | 2026-09-14 | e2e | Specs updated for the new IA. `sidebar-consistent.spec.ts` was rewritten: its premise — every view shows the same Source filter — was the E3 bug written down as a requirement. |
 | 2026-09-14 | F3 | e2e: 31 pass, 0 fail on `app.spec.ts` + `sidebar-consistent.spec.ts`. **Playwright's chromium was never installed on this machine**, so every desktop test failed in 2ms and the run still exited 0 — the suite has not gated anything here. Installed it. Three pre-existing defects surfaced: `search-testid` `search-layout` is asserted three times and has never existed in the client (`git log -S` finds no commit adding it); `project-all` set no `aria-current` while the tool pills beside it do; and `defaults to conversations view` asserted the wrong landing view. |
 | 2026-09-14 | fix | The sync chip rendered only when `/api/status/sync` answered. System health left the rail, so the chip is the only door to it — a failing endpoint removed the route. It renders always now, grey and honest when the facts are missing. |
+| 2026-09-14 | B3 | `addKgFact` / `invalidateKgFact` added; every current fact gets a "Not true" button and the graph gets a subject/relation/object form. Retraction is temporal, so a retracted fact keeps its window and renders expired. 15,656 regex-mined facts had been read-only to the only party who could tell they were wrong. |
+| 2026-09-14 | D2 (rest) | `ProjectSharing` extracted to Settings, member activity mounted on Overview, Team removed from the rail. `?view=team` still resolves. **The rail is seven.** |
+| 2026-09-14 | E1 (rest) | The three stacked Toolkit controls are on the DEFAULT Coverage screen, not in an overlay as previously recorded — and the inline matrix's type tabs duplicated the sidebar rows. It is driven from the sidebar now. |
+| 2026-09-14 | F5 | Detector: 14 changed files, 0 findings. It takes ONE target per invocation; passing several concatenates them into one unreadable path and still exits 0. |
+| 2026-09-14 | F4 | 20 captures, both themes, theme forced via localStorage. Light `#F3F0E9` vs dark `#0C2843` — different grounds, so not two identical captures. 0 overflow, 0 stray radius, 0 sub-12px. The check now REFUSES to score a page that did not render: an error boundary passes every measure trivially, and three captures had been scored blank. |
+| 2026-09-14 | fixes | Found only by looking: `Decisions` printed twice with two competing subtitles; a segmented control with one option; avatar initials at 11px (`size * 0.4` at the 28px default); `ProjectSharing` rendered beside Settings instead of below it. |
+| 2026-09-14 | config | `playwright.config.ts` sets `PLAYWRIGHT_BROWSERS_PATH` from `XDG_DATA_HOME`/`$HOME` when unset. Playwright looks in `~/.cache/ms-playwright`; the browsers are in `~/.local/share/ms-playwright`. A project whose tests all fail to LAUNCH reports no failures and exits 0. |
 | 2026-09-14 | A2 | All-projects tabs are now `Overview · Do next · Code · Activity`, and the heading is `All projects` — it was `Projects & Activity`, which folded a tab into the title. |
 
 ## Needs your call
