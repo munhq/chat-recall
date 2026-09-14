@@ -25,6 +25,7 @@ import type { SessionTurn } from './session-turns.js';
 import { markPrompt, summarizeMarkers, type SessionMarkerCounts, type MarkedPrompt } from './session-sentiment.js';
 import { getSessionCommits, type SessionCommitsResult } from './session-git.js';
 import { getBackendForId } from './tool-backend.js';
+import { extractTurnsAny, replaySessionAny } from './session-multi-tool.js';
 // Side-effect: ensure backends are registered so getBackendForId resolves.
 import './backends/index.js';
 
@@ -201,7 +202,11 @@ export function computeOutcome(sessionId: string, opts: { commitBufferMinutes?: 
   };
   if (!backend) return notFound;
 
-  const turnsRes = backend.extractTurns(sessionId, { assistantMax: 2000 });
+  // Through the shared wrapper, not the backend directly: the wrapper is what
+  // memoises inside an open read scope. Calling the backend here meant a derive
+  // extracted the same turns twice and replayed the same session twice — about
+  // fourteen of its twenty-one seconds.
+  const turnsRes = extractTurnsAny(sessionId, { assistantMax: 2000 });
   if (!turnsRes.found) return notFound;
 
   // Decisions and blockers, pulled from the in-order turn stream.
@@ -245,7 +250,7 @@ export function computeOutcome(sessionId: string, opts: { commitBufferMinutes?: 
     totalLinesAdded = fast.totalLinesAdded;
     totalLinesRemoved = fast.totalLinesRemoved;
   } else {
-    const replay = backend.replay(sessionId);
+    const replay = replaySessionAny(sessionId);
     filesChanged = replay.files.map(f => f.file);
     totalLinesAdded = replay.totalLinesAdded;
     totalLinesRemoved = replay.totalLinesRemoved;

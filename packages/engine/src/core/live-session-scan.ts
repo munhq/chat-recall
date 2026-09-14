@@ -327,13 +327,52 @@ export function resolveSessionContentGroups(sessionId: string): SessionContentGr
 let readScope: { key: string; value: { text: string; mtime: number } } | null = null;
 let readScopeDepth = 0;
 
+/**
+ * The PARSES of that one session, alongside its text.
+ *
+ * Caching the bytes removed the disk reads and left the expensive half in
+ * place. Deriving one session ran `replay` twice and `extractTurns` twice —
+ * once directly for the diff and the markers, and once more inside
+ * computeOutcome, which has no precomputed path on the Claude backend and so
+ * replays in full. Measured on a real session: replay 6880ms then 6403ms for
+ * the identical answer, extractTurns 3826ms then 3225ms. About fourteen of the
+ * twenty-one seconds was work already done.
+ *
+ * Same discipline as the text cache above, for the same reason: entries live
+ * only while a caller holds the scope, and the scope is opened around ONE
+ * session's derive. The map is created when the outermost scope opens and
+ * dropped in the same finally, so nothing outlives the derive it belongs to.
+ */
+let derivedScope: Map<string, unknown> | null = null;
+
 export function withSessionReadCache<T>(fn: () => T): T {
   readScopeDepth++;
+  if (readScopeDepth === 1) derivedScope = new Map();
   try {
     return fn();
   } finally {
-    if (--readScopeDepth === 0) readScope = null;
+    if (--readScopeDepth === 0) { readScope = null; derivedScope = null; }
   }
+}
+
+/**
+ * Compute once per open scope, or compute every time when none is open.
+ *
+ * No scope means no caching and today's behaviour exactly — a caller that has
+ * not opted in never gains a cache it did not ask for, which is what keeps
+ * this from becoming the ambient cache the comment above warns about.
+ *
+ * The key must name every input that changes the answer. An options object
+ * that alters the result belongs in it: `extractTurns` with assistantMax 2000
+ * and with maxTurns 50000 are two different answers to two different
+ * questions.
+ */
+export function memoInSessionScope<T>(key: string, compute: () => T): T {
+  if (!derivedScope) return compute();
+  if (derivedScope.has(key)) return derivedScope.get(key) as T;
+  const value = compute();
+  derivedScope.set(key, value);
+  return value;
 }
 
 export function readSessionGroupText(group: SessionContentGroup): { text: string; mtime: number } {

@@ -9,6 +9,7 @@
  */
 
 import { getBackendForId } from './tool-backend.js';
+import { memoInSessionScope } from './live-session-scan.js';
 // Side-effect: ensure backends are registered. live-session-scan already
 // triggers this transitively, but the explicit import documents intent.
 import './backends/index.js';
@@ -25,7 +26,13 @@ export function extractTurnsAny(
 ): ExtractedTurns {
   const backend = getBackendForId(sessionId);
   if (!backend) return { sessionId, found: false, turns: [], startMs: 0, endMs: 0 };
-  return backend.extractTurns(sessionId, opts);
+  // Once per open read scope. The options are in the key because they change
+  // the answer: assistantMax 2000 for the outcome and maxTurns 50000 for the
+  // markers are two different extractions of the same file.
+  return memoInSessionScope(
+    `turns:${sessionId}:${opts.maxTurns ?? ''}:${opts.assistantMax ?? ''}`,
+    () => backend.extractTurns(sessionId, opts),
+  );
 }
 
 /**
@@ -34,6 +41,7 @@ export function extractTurnsAny(
 export function replaySessionAny(sessionId: string): SessionDiffResult {
   const backend = getBackendForId(sessionId);
   if (!backend) return { sessionId, found: false, projectPath: '', files: [], totalLinesAdded: 0, totalLinesRemoved: 0 };
-  return backend.replay(sessionId);
+  // The single most expensive call in a derive, and it ran twice.
+  return memoInSessionScope(`replay:${sessionId}`, () => backend.replay(sessionId));
 }
 
