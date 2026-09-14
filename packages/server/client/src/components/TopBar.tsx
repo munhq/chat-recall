@@ -143,8 +143,11 @@ export default function TopBar({ view, setView, enabledViews, query, setQuery, s
 
       {/* Right actions — status first (freshness at a glance), then controls. */}
       <div className="cr-topbar-actions" style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-        <PlanChip onOpenAccount={() => setView('account')} enabledViews={enabledViews} />
-        <SyncStatusChip refreshSignal={chipRefresh} />
+        {/* Wrapped so the phone breakpoint can drop them: together they are
+            about 200px of a 390px bar, which pushed the avatar — the only way
+            into the account menu — off the right edge on every view. */}
+        <span className="cr-topbar-plan"><PlanChip onOpenAccount={() => setView('account')} enabledViews={enabledViews} /></span>
+        <span className="cr-topbar-sync"><SyncStatusChip refreshSignal={chipRefresh} /></span>
         <IconButton
           icon="refresh"
           title="Refresh data"
