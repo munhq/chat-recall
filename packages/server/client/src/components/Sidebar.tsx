@@ -27,7 +27,7 @@ interface SidebarProps {
   setToolFilter: (t: string) => void;
   extraSections?: SidebarSection[];
   view?: string;
-  setView?: (v: 'home' | 'projects' | 'search' | 'memory' | 'tasks' | 'toolkit' | 'security' | 'health' | 'settings' | 'account' | 'admin' | 'team') => void;
+  setView?: (v: 'home' | 'decisions' | 'projects' | 'search' | 'memory' | 'tasks' | 'toolkit' | 'security' | 'health' | 'settings' | 'account' | 'admin' | 'team') => void;
   /** Views this deployment supports (/api/capabilities). Absent = all. */
   enabledViews?: Set<string>;
 }
@@ -37,9 +37,14 @@ interface SidebarProps {
 // Every destination is visible; nothing hides behind a "More" overflow.
 // Order = the daily loop: the spine (Overview → Conversations → Projects)
 // first, then the intelligence surfaces, then Security & Deployment last.
-type NavId = 'home' | 'search' | 'projects' | 'memory' | 'tasks' | 'toolkit' | 'security' | 'health' | 'team';
+type NavId = 'home' | 'decisions' | 'search' | 'projects' | 'memory' | 'tasks' | 'toolkit' | 'security' | 'health' | 'team';
 const NAV_ITEMS: Array<{ id: NavId; label: string; icon: string }> = [
   { id: 'home', label: 'Overview', icon: 'home' },
+  // Second, because it is the only screen that answers a question before work
+  // starts rather than after. The register is ACCOUNT-wide and governs every
+  // project, yet its one mount was inside a project workspace — so the only way
+  // to read a cross-project rule was to pick a project it was not about.
+  { id: 'decisions', label: 'Decisions', icon: 'book' },
   { id: 'search', label: 'Conversations', icon: 'message' },
   { id: 'projects', label: 'Projects', icon: 'folder' },
   { id: 'memory', label: 'Memory Hub', icon: 'brain' },
@@ -48,7 +53,7 @@ const NAV_ITEMS: Array<{ id: NavId; label: string; icon: string }> = [
   // was invisible to every Solo customer who now pays for it.
   { id: 'tasks', label: 'Tasks', icon: 'check' },
   { id: 'team', label: 'Team', icon: 'grid' },
-  { id: 'toolkit', label: 'Toolkit', icon: 'terminal' },
+  { id: 'toolkit', label: 'Skills & tools', icon: 'terminal' },
   { id: 'security', label: 'Security', icon: 'shield' },
   // Last, and deliberately present: the collector's health had no surface at
   // all — it lived in a Postgres table, a log file on the user's laptop and

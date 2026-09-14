@@ -301,18 +301,18 @@ function MissionControl({ canonicalId, kgEntity, toolFilter, code, onJump, onOpe
             </div>
             <div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
-                <span className="cr-plate-t">Decisions and stack <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400, fontSize: 12.5 }}>from your sessions</span></span>
+                <span className="cr-plate-t">Decisions and stack <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400, fontSize: 12.5 }}>what this project has settled</span></span>
                 <button onClick={() => onJump('knowledge')} className="cr-annot cr-annot-red" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>explore <Icon name="arrowRight" size={12} /></button>
               </div>
               <StackStrip langs={project?.langs} />
-              <KnowledgeGraph entity={kgEntity} embedded />
+              <Decisions project={canonicalId} embedded />
             </div>
           </Plates>
         ) : (
           <Plate title={<>Decisions and stack <span style={{ color: 'var(--cr-fg-3)', fontWeight: 400, fontSize: 12.5 }}>from your sessions</span></>}
             tools={<button onClick={() => onJump('knowledge')} className="cr-annot cr-annot-red" style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'inline-flex', alignItems: 'center', gap: 5 }}>explore <Icon name="arrowRight" size={12} /></button>}>
             <StackStrip langs={project?.langs} />
-            <KnowledgeGraph entity={kgEntity} embedded />
+            <Decisions project={canonicalId} embedded />
           </Plate>
         )}
       </section>
