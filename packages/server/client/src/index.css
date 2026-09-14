@@ -1226,3 +1226,25 @@ a:hover { text-decoration: underline; }
   /* Filter/label pills sit at 3px vertical padding — about 19px tall. */
   .cr-pill { min-height: 38px; padding-left: 14px !important; padding-right: 14px !important; }
 }
+
+/* Present to a screen reader, absent to the eye.
+ *
+ * Every view is a <main> with its own <h1> naming the page. Eight of eleven
+ * rendered no h1 at all and Overview rendered two, so a screen-reader user
+ * moving by heading could not tell which page they had landed on — and the
+ * visible designs do not all want a title band. This carries the name without
+ * changing any of them.
+ *
+ * Not `display:none` and not `visibility:hidden`: both remove the element from
+ * the accessibility tree, which is the opposite of the point. */
+.cr-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}

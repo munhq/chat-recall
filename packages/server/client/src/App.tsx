@@ -387,10 +387,46 @@ function AppInner() {
     window.addEventListener('cr:confirm-email', onConfirm);
     return () => window.removeEventListener('cr:confirm-email', onConfirm);
   }, []);
-  // If the current view got disabled by a late capabilities answer, fall
-  // back to Conversations instead of rendering a dead panel.
+  /**
+   * A view this deployment does not have falls back to the screen that holds
+   * what it asked for, and to Overview when nothing does.
+   *
+   * It used to send every one of them to Conversations. On the hosted service
+   * `settings` is false — its sync rules and data controls live on Overview and
+   * Account instead — so ?view=settings answered with a list of conversations:
+   * not the page asked for, not an error, and indistinguishable from ?view=search
+   * right down to the character count. A deep link that silently shows something
+   * else is worse than one that fails, because nobody reports it.
+   *
+   * Self-host has `settings` true and still renders SettingsPage; this only
+   * decides where a link goes when the deployment genuinely lacks the view.
+   */
+  /**
+   * What each page is called, for the one <h1> it owes a screen reader.
+   *
+   * These are the rail's own words, so a heading jump and a rail click name the
+   * same place. Rendered visually hidden inside <main>: eight of eleven views
+   * carried no h1 at all and Overview carried two, which left heading
+   * navigation unable to say which page had loaded.
+   */
+  const VIEW_TITLE: Record<string, string> = {
+    home: 'Overview', decisions: 'Decisions', projects: 'Projects',
+    search: 'Conversations', tasks: 'Tasks', toolkit: 'Skills & tools',
+    security: 'Security', account: 'Account', settings: 'Settings',
+    connect: 'Connect a machine', team: 'Team', health: 'System health',
+    admin: 'Admin', memory: 'Conversations',
+  };
+
+  const FALLBACK_VIEW: Partial<Record<ViewMode, ViewMode>> = {
+    settings: 'account',  // sync rules and data controls moved here
+    memory: 'search',     // Memory Hub is the Notes & memory facet
+    health: 'home',       // the status tiles Overview already carries
+    admin: 'home',
+  };
   useEffect(() => {
-    if (!enabledViews.has(view)) setView('search');
+    if (enabledViews.has(view)) return;
+    const to = FALLBACK_VIEW[view] ?? 'home';
+    setView(enabledViews.has(to) ? to : 'home');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabledViews]);
   // toolFilter / projectFilter are URL-backed so a filtered view is shareable
@@ -1008,7 +1044,17 @@ function AppInner() {
   // The installer's token page renders chrome-free: the user is mid-command in
   // a terminal — no sidebar, no tabs, just the token. (Auto-creates the
   // workspace itself, so it must come after the entitlement gate only.)
-  if (view === 'connect') return <ConnectTokenPage />;
+  // The install page returns before the shell — it is a hallway with no rail —
+  // so it carries its own landmark and heading rather than inheriting the ones
+  // every other view gets from <main> below.
+  if (view === 'connect') {
+    return (
+      <main className="app">
+        <h1 className="cr-sr-only">Connect a machine</h1>
+        <ConnectTokenPage />
+      </main>
+    );
+  }
 
   return (
     <div
@@ -1123,11 +1169,12 @@ function AppInner() {
        * Toolkit / Activity / Insights.
        */}
       {view === 'settings' ? (
-        <div className="app-row">
+        <main className="app-row">
+          <h1 className="cr-sr-only">{VIEW_TITLE.settings}</h1>
           <SettingsPage onClose={() => setView('search')} />
-        </div>
+        </main>
       ) : view === 'account' ? (
-        <div className="app-row">
+        <main className="app-row">
           {/* Full-width scroll pane (matches Home/Team): scrollbar sits at the
               viewport edge; AccountPage's centered column stays centered inside. */}
           <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
@@ -1157,13 +1204,17 @@ function AppInner() {
               <AccountPage onClose={() => setView('search')} />
             )}
           </div>
-        </div>
+        </main>
       ) : view === 'admin' ? (
-        <div className="app-row">
+        <main className="app-row">
+          <h1 className="cr-sr-only">{VIEW_TITLE.admin}</h1>
           <AdminPage onClose={() => setView('search')} />
-        </div>
+        </main>
       ) : (
-        <div className="app-row" data-testid="app-layout">
+        <main className="app-row" data-testid="app-layout">
+          {/* AccountPage and CommandCenter ship their own visible h1; every
+              other view in this branch has none, so it is supplied here. */}
+          {view !== 'home' && <h1 className="cr-sr-only">{VIEW_TITLE[view] ?? 'chat-recall'}</h1>}
           <div
             className="cr-mobile-backdrop"
             onClick={closeMobileSidebar}
@@ -1379,7 +1430,7 @@ function AppInner() {
               </div>
             </div>
           )}
-        </div>
+        </main>
       )}
     </div>
   );
