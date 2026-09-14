@@ -43,6 +43,6 @@
     "@types/nodemailer": "^8.0.1"
   },
   "optionalDependencies": {
-    "@munhq/mailkit": "^0.1.0"
+    "@munhq/mailkit": "^0.1.1"
   }
 }
