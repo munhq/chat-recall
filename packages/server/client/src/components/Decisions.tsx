@@ -70,9 +70,22 @@ export default function Decisions({ project, embedded }: { project?: string | nu
           <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
             <Icon name="brain" size={20} /> Decisions
           </h2>
+          {/* SAY WHICH SCOPE THIS IS.
+              The register resolves project > account > user, and the same page
+              shows a different answer depending on whether a project is
+              selected in the sidebar. Without naming the scope, a reader cannot
+              tell an account-wide rule from one project's exception — which is
+              the whole distinction the cascade exists to express. */}
           <div style={{ color: 'var(--cr-fg-2)', fontSize: 13, marginTop: 4 }}>
-            What this codebase has settled, what it hasn&apos;t, and what replaced what.
+            {project
+              ? <>What <b>{project.split('/').pop() || project}</b> has settled, including what it inherits from the account.</>
+              : <>What this account has settled, what it hasn&apos;t, and what replaced what. Every project inherits these unless it overrides one.</>}
           </div>
+          {project && (
+            <div style={{ color: 'var(--cr-fg-3)', fontSize: 12.5, marginTop: 3 }}>
+              Clear the project in the sidebar to see the account register.
+            </div>
+          )}
         </div>
       )}
 

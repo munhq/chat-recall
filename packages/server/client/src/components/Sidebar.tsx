@@ -40,7 +40,7 @@ interface SidebarProps {
 // Every destination is visible; nothing hides behind a "More" overflow.
 // Order = the daily loop: the spine (Overview → Conversations → Projects)
 // first, then the intelligence surfaces, then Security & Deployment last.
-type NavId = 'home' | 'decisions' | 'search' | 'projects' | 'tasks' | 'toolkit' | 'security' | 'team';
+type NavId = 'home' | 'decisions' | 'search' | 'projects' | 'tasks' | 'toolkit' | 'security';
 const NAV_ITEMS: Array<{ id: NavId; label: string; icon: string }> = [
   { id: 'home', label: 'Overview', icon: 'home' },
   // Second, because it is the only screen that answers a question before work
@@ -54,7 +54,10 @@ const NAV_ITEMS: Array<{ id: NavId; label: string; icon: string }> = [
   // ASSIGNING to someone else needs a team. Buried inside the team-gated view it
   // was invisible to every Solo customer who now pays for it.
   { id: 'tasks', label: 'Tasks', icon: 'check' },
-  { id: 'team', label: 'Team', icon: 'grid' },
+  // Team is NOT a rail item. Its Tasks tab rendered the same board the Tasks
+  // item renders; its member activity now sits on Overview, beside the rest of
+  // "what happened"; and its sharing control is a setting, filed under Settings.
+  // ?view=team still resolves for anyone holding the link.
   { id: 'toolkit', label: 'Skills & tools', icon: 'terminal' },
   { id: 'security', label: 'Security', icon: 'shield' },
   // System health is NOT a rail item. It is one status panel, and a status

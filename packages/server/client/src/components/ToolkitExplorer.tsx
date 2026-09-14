@@ -267,7 +267,9 @@ export default function ToolkitExplorer({ toolFilter: toolFilterProp = 'all' }: 
             </div>
           )}
           <SyncMatrix inline onClose={() => {}} onMutated={refreshAfterMutation}
-                      onGated={setCoverageGated} />
+                      onGated={setCoverageGated}
+                      type={activeTab as SyncType}
+                      onTypeChange={(t) => setActiveTab(t as ToolkitType)} />
         </div>
       )}
 
@@ -1036,13 +1038,22 @@ function ToolkitUpgradePanel({ gate, onClose }: { gate: FeatureGateError; onClos
   );
 }
 
-function SyncMatrix({ onClose, onMutated, inline, onGated }: {
+function SyncMatrix({ onClose, onMutated, inline, onGated, type, onTypeChange }: {
   onClose: () => void; onMutated: () => void; inline?: boolean;
   /** Reports the plan gate upward, so the surrounding copy can stand down. */
   onGated?: (gated: boolean) => void;
+  /** Driven from the sidebar when inline. The matrix owns it in the overlay. */
+  type?: SyncType;
+  onTypeChange?: (t: SyncType) => void;
 }) {
   const [matrix, setMatrix] = useState<ToolkitMatrix | null>(null);
-  const [activeType, setActiveType] = useState<SyncType>('skill');
+  const [ownType, setOwnType] = useState<SyncType>('skill');
+  // ONE control per question, not two for the same one. Inline, the sidebar's
+  // Skills/Connections rows already choose the type, and this row repeated them
+  // under different labels — a second control for a choice already made, in a
+  // toolbar that stacked three rows before any content.
+  const activeType = type ?? ownType;
+  const setActiveType = (t: SyncType) => { onTypeChange ? onTypeChange(t) : setOwnType(t); };
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<'all' | 'incomplete'>('incomplete');
   const [pending, setPending] = useState<PendingMap>(new Map());
@@ -1425,15 +1436,17 @@ function SyncMatrix({ onClose, onMutated, inline, onGated }: {
 
         {/* Toolbar: type tabs, search, filter */}
         <div className="cr-wrap-mobile" style={{ padding: '10px 18px', borderBottom: '1px solid var(--cr-line-1)', display: 'flex', alignItems: 'center', gap: 12 }}>
-          <SegmentedControl
-            value={activeType}
-            onChange={(v) => setActiveType(v as SyncType)}
-            options={SYNC_TYPE_TABS.map(t => ({
-              value: t.id,
-              label: matrix ? `${t.label} (${Object.keys(matrix[t.id] || {}).length})` : t.label,
-            }))}
-            size="sm"
-          />
+          {!inline && (
+            <SegmentedControl
+              value={activeType}
+              onChange={(v) => setActiveType(v as SyncType)}
+              options={SYNC_TYPE_TABS.map(t => ({
+                value: t.id,
+                label: matrix ? `${t.label} (${Object.keys(matrix[t.id] || {}).length})` : t.label,
+              }))}
+              size="sm"
+            />
+          )}
           <div style={{ flex: 1, maxWidth: 320 }}>
             <Input
               placeholder={`Filter ${

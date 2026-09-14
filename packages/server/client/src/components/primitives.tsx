@@ -287,7 +287,10 @@ export function Avatar({ name, size = 28 }: AvatarProps) {
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
-        fontSize: Math.round(size * 0.4),
+        // 12px floor. The ratio alone gave 11px at the default 28px size, and
+        // the initials are the only thing identifying a person on a row that
+        // carries no name beside them — functional text, not decoration.
+        fontSize: Math.max(12, Math.round(size * 0.4)),
         fontWeight: 600,
         letterSpacing: '-0.02em',
         border: '1px solid rgba(255,255,255,0.04)',

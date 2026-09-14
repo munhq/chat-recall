@@ -1264,20 +1264,11 @@ function AppInner() {
                   caller asked it the most specific question; this one asks the
                   general one, because the general answer is what governs a
                   project nobody has given an opinion about yet. */}
-              <div style={{ padding: '18px 24px 0' }}>
-                <h2 style={{ margin: 0 }}>Decisions</h2>
-                <div style={{ color: 'var(--cr-fg-2)', fontSize: 13, margin: '4px 0 12px' }}>
-                  What this account has settled, and what it has not. Your agents read these before they write code.
-                </div>
-                <SegmentedControl
-                  value={projectFilter ?? '__all__'}
-                  onChange={(v) => setProjectFilter(v === '__all__' ? null : v)}
-                  options={[
-                    { value: '__all__', label: 'All projects' },
-                    ...(projectFilter ? [{ value: projectFilter, label: findProjectName(projectTree, projectFilter) || projectFilter }] : []),
-                  ]}
-                />
-              </div>
+              {/* The component owns the heading and the blurb. A second copy
+                  here printed "Decisions" twice with two competing subtitles.
+                  Scope comes from the sidebar project tree, which renders on
+                  this view (VIEW_FILTERS) — a one-option segmented control was
+                  a toggle with nothing to toggle. */}
               <Decisions project={projectFilter} />
               <div style={{ padding: '0 24px 40px' }}>
                 <button
@@ -1370,6 +1361,12 @@ function AppInner() {
                   onFocusProjects={(emphasis) => { setProjectsEmphasis(emphasis); setProjectFilter(null); setToolFilter('all'); setView('projects'); }}
                   cloud={capabilities?.edition === 'cloud'}
                 />
+                {/* Who did what, beside what happened. "What has the team been
+                    doing" and "what happened here" are one question, and the
+                    Team page was 214 lines holding one answer to it. */}
+                {enabledViews.has('team') && (
+                  <TeamView onOpenProject={(pid) => { setProjectFilter(pid); setToolFilter('all'); setView('projects'); }} />
+                )}
               </div>
             </div>
           )}
