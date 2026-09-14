@@ -1063,9 +1063,19 @@ a:hover { text-decoration: underline; }
    * label clipped to "Notes &", and every row of the list wrapped to three
    * lines. Wrapping the row lets it take a line of its own and gives the list
    * the full width back. */
-  .app-row { flex-wrap: wrap; }
-  .cr-conv-facet { flex: 0 0 100% !important; max-width: 100% !important; }
-  .cr-conv-list { flex: 1 1 100% !important; min-width: 0 !important; }
+  /* Stack them in a COLUMN. Wrapping the row put the facet on its own line and
+   * gave the list the full width, but it also made the list overflow .app-row —
+   * which is overflow:hidden. The list stopped being its own scroll container,
+   * so 9,723px of conversations sat in a 532px box with no way down: four rows
+   * visible and a finger that does nothing. (scrollTop still moves on an
+   * overflow:hidden element, which is why a programmatic scroll check passed.)
+   *
+   * A column gives the same result the wrap was after — toggle above, list
+   * below, both full width — while leaving the list a flex child that can
+   * shrink and scroll inside the row. */
+  .app-row { flex-direction: column; }
+  .cr-conv-facet { flex: 0 0 auto !important; width: 100% !important; }
+  .cr-conv-list { flex: 1 1 auto !important; min-height: 0 !important; width: 100% !important; }
 
   .cr-sidebar {
     position: absolute !important; top: 0; left: 0; bottom: 0;
