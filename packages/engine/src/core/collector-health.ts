@@ -20,12 +20,49 @@ import { join, dirname } from 'node:path';
 import { getDataDir } from './paths.js';
 
 export interface TargetHealth {
-  /** Epoch ms of the last sync that completed without throwing. */
+  /** Epoch ms of the last time this target ACCEPTED data. See applySyncOutcome. */
   lastOkAt: number | null;
   /** Consecutive failures since the last success. */
   failures: number;
   /** Last error, truncated. Never contains a token: it is a message, not a body. */
   lastError?: string;
+}
+
+/**
+ * Fold one walk's outcome for one target into its health record.
+ *
+ * `lastOkAt` answers the only question anyone opens `doctor` to ask: is my data
+ * arriving. So it moves whenever the target ACCEPTED something, which is not
+ * the same as the walk finishing. A walk that delivered 38 batches and then hit
+ * one fatal error left it untouched, and doctor reported "nothing has synced in
+ * 7h" about a machine whose rows were landing while it said so.
+ *
+ * The failure still counts. Both facts belong on the same line — recent data,
+ * and something going wrong — because reporting only the failure looked like a
+ * total outage, and reporting only the delivery would hide a real fault.
+ *
+ * Pure, and exported, so the rule can be tested. It used to live inside the
+ * collector daemon, which cannot be imported without starting watchers and
+ * timers, so the only way to test it was to copy it — and a copy passes while
+ * the real one is broken.
+ */
+export function applySyncOutcome(
+  prior: TargetHealth | undefined,
+  outcome: { ok: boolean; accepted?: number; error?: string },
+  now = Date.now(),
+): TargetHealth {
+  const t: TargetHealth = { lastOkAt: prior?.lastOkAt ?? null, failures: prior?.failures ?? 0 };
+  if (prior?.lastError !== undefined) t.lastError = prior.lastError;
+  if (outcome.ok) {
+    t.lastOkAt = now;
+    t.failures = 0;
+    delete t.lastError;
+    return t;
+  }
+  if ((outcome.accepted ?? 0) > 0) t.lastOkAt = now;
+  t.failures += 1;
+  t.lastError = (outcome.error ?? 'unknown error').slice(0, 160);
+  return t;
 }
 
 /**

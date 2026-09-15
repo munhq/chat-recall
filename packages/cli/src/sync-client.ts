@@ -584,7 +584,29 @@ export interface TargetOutcome {
   ok: boolean;
   /** Why it failed, or why it was not attempted. Absent when ok. */
   error?: string;
+  /**
+   * Uploads this target ACCEPTED during the walk, whether or not the walk then
+   * failed.
+   *
+   * `ok` alone answers "did the whole walk finish", which is not the question a
+   * user asks. A walk that delivered 38 batches and then hit one fatal error
+   * was recorded as a plain failure, so `lastOkAt` never moved and doctor said
+   * "nothing has synced in 7h" about a machine whose rows were landing as it
+   * spoke. Data arriving and a walk completing are two different facts and the
+   * health file needs both.
+   */
+  accepted?: number;
 }
+
+/**
+ * Uploads accepted per target during the CURRENT walk.
+ *
+ * Module-level because the count is made deep inside the upload pool and read
+ * in the outer catch, where the thrown error is all that survives of a failed
+ * walk. Reset when a target's sync starts.
+ */
+const acceptedUploads = new Map<string, number>();
+export function _acceptedUploads(url: string): number { return acceptedUploads.get(url) ?? 0; }
 
 /** compute_cache kinds shipped to the server. Must stay in step with the
  *  kinds the server's conversation routes read (heavyCacheGet keys). */
@@ -640,10 +662,11 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
       };
       continue;
     }
+    acceptedUploads.set(cred.serverUrl, 0);
     try {
       const r = await syncToTarget(cred, opts);
       noteTargetSuccess(cred.serverUrl);
-      perTarget[cred.serverUrl] = { ok: true };
+      perTarget[cred.serverUrl] = { ok: true, accepted: acceptedUploads.get(cred.serverUrl) ?? 0 };
       agg = agg ? {
         uploaded: agg.uploaded + r.uploaded, skipped: agg.skipped + r.skipped, redactions: agg.redactions + r.redactions,
         items: agg.items + r.items, links: agg.links + r.links, findings: agg.findings + r.findings,
@@ -653,7 +676,9 @@ export async function syncSessions(opts: { sinceMs?: number; cleartextPaths?: bo
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       errors.push(`${cred.serverUrl}: ${msg}`);
-      perTarget[cred.serverUrl] = { ok: false, error: msg };
+      // What this target took before the walk died. Without it, a walk that
+      // delivered thousands of rows and then failed reads as "never synced".
+      perTarget[cred.serverUrl] = { ok: false, error: msg, accepted: acceptedUploads.get(cred.serverUrl) ?? 0 };
       // Report the NEXT attempt in the same breath as the failure, so the log
       // says what will happen rather than leaving the user to infer it.
       const next = noteTargetFailure(cred.serverUrl, msg);
@@ -1150,7 +1175,22 @@ const refs = listAvailableBackends().flatMap((b) => {
   // this politeness (you own the box) → higher cap, zero pacing. An explicit
   // --throttle (opts.throttleMs>0) forces the old serial+sleep mode for a
   // known-fragile server.
-  const MAX_BATCH_BYTES = 4 * 1024 * 1024;
+  // BATCH SIZE IS A DEADLINE, NOT A MEMORY BUDGET.
+  //
+  // The server's work is proportional to what a batch contains, and a hosted
+  // target sits behind a proxy that gives the origin a fixed window — Cloudflare
+  // ends the request at 100s with a 524, whatever either end is doing. Measured
+  // against the hosted service: a 4 MB batch took the origin ~125s. So every
+  // full batch died, the client's own 90s ceiling fired first and called it a
+  // failure, and the retry sent the SAME oversized payload into the same wall.
+  // The server logged 200 at 125s, having done the work twice, for a batch the
+  // client had already given up on.
+  //
+  // 1 MB lands near 30s against the same server, which leaves room for a slow
+  // day without touching the proxy's limit. A local target has no proxy and is
+  // your own box, so it keeps the larger batch.
+  const MAX_BATCH_BYTES = Number(process.env.CHAT_RECALL_MAX_BATCH_BYTES)
+    || (isLocalHost(cred.serverUrl) ? 4 * 1024 * 1024 : 1024 * 1024);
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const explicitThrottle = typeof opts.throttleMs === 'number' && opts.throttleMs > 0;
   const throttleMs = explicitThrottle ? (opts.throttleMs as number) : 0;
@@ -1230,6 +1270,7 @@ const refs = listAvailableBackends().flatMap((b) => {
           signal: ac.signal,
         });
         if (res.ok) {
+          acceptedUploads.set(cred.serverUrl, (acceptedUploads.get(cred.serverUrl) ?? 0) + 1);
           const body = await res.json().catch(() => ({})) as {
             cli?: { version: string; sha256: string } | null;
             telemetry?: boolean;
@@ -1302,7 +1343,13 @@ const refs = listAvailableBackends().flatMap((b) => {
         // belongs — on the server that knows its own load.
         const retryAfterS = Number(res.headers.get('retry-after'));
         const waitMs = res.status === 429 && retryAfterS > 0 ? retryAfterS * 1000 : RETRY_DELAYS_MS[attempt];
-        console.error(`[sync] HTTP ${res.status} from ${base} — backing off ${Math.round(waitMs / 1000)}s (attempt ${attempt + 1})`);
+        // 524 is the proxy ending the request, not the server rejecting it: the
+        // origin is still working and will finish. Retrying the same payload
+        // cannot beat the same clock, so say what would.
+        const why = res.status === 524
+          ? ` — the proxy cut the request at its time limit; the batch is too big for one request`
+          : '';
+        console.error(`[sync] HTTP ${res.status} from ${base}${why} — backing off ${Math.round(waitMs / 1000)}s (attempt ${attempt + 1})`);
         await sleep(waitMs);
         continue;
       } catch (err) {
